@@ -120,7 +120,7 @@ export const SEAT_SECRETS = Object.freeze({
   WISE: Object.freeze({ key: "ZULIP_KEY_WISE", email: "ZULIP_EMAIL_WISE", infisical: Object.freeze({ name: "WISE_ZULIP_KEY", path: "/zulip" }) }),
 });
 
-// The shared HMAC key the server listener signs each seat's wake with
+// The shared HMAC key the server eavesdropper signs each seat's wake with
 // (POST /internal/wake/<SEAT>, src/wake.js).  Only this table turns a seat
 // from the path into a secret name, so a path can never pick another secret.
 // A seat whose secret is unset answers 404 there.
@@ -287,7 +287,7 @@ export function loadConfig(env) {
     }
   }
 
-  // The owner's pinned Zulip user id and human clients (listener rule):  the
+  // The owner's pinned Zulip user id and human clients (eavesdropper rule):  the
   // `owner` flag on a message is a routing hint, never authority.
   const ownerUserId = Number(env.OWNER_USER_ID);
   if (!Number.isSafeInteger(ownerUserId) || ownerUserId <= 0) throw new Error("config: OWNER_USER_ID must be a Zulip user id");

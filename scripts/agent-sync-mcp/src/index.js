@@ -19,7 +19,7 @@
 //      seat's SeatGate;  lifecycle frames answered there (src/mcp-lifecycle.js);
 //      then the tools run with that seat's key only.
 //      /authorize and /admin:  Access JWT re-verified, then our gates.
-//   5. /internal/wake/<SEAT>:  the server listener's signed wake (src/wake.js),
+//   5. /internal/wake/<SEAT>:  the server eavesdropper's signed wake (src/wake.js),
 //      handled before the OAuth library and outside Cloudflare Access.  It
 //      fans out an MCP event to that seat's subscriptions (src/events.js).
 //   6. /internal/spike/<SEAT> (AFC-477, temporary):  one signed, hand-fired
@@ -434,8 +434,8 @@ async function serveMcp(request, env, ctx) {
     ? null
     : grAssertionMinter(env, { seat, scopes, epoch: props.epoch, approvedAt: props.approved_at, phase: props.phase, grantRef });
 
-  // The listener key resolves through Infisical too (optional:  no wake key
-  // means no listener tools, never a 500 - src/eavesdropper.js).
+  // The eavesdropper key resolves through Infisical too (optional:  no wake key
+  // means no eavesdropper tools, never a 500 - src/eavesdropper.js).
   const listenerWakeKey = Object.hasOwn(WAKE_SECRETS, seat)
     ? await resolveSecret(env, { name: WAKE_SECRETS[seat], path: "/wake", envName: WAKE_SECRETS[seat], optional: true })
     : "";
@@ -471,7 +471,7 @@ async function serveMcp(request, env, ctx) {
     // Null without FLEETLINK_AGENT_SECRET:  the FleetLink tools then answer
     // not_configured and every other tool works as before (AFC-328).
     fleetlink: fleetlinkClientFromSecret(fleetlinkSecret, env, { resolvedTokens: fleetlinkTokens }),
-    // Null unless LISTENER_API_URL and this seat's WAKE_HMAC_KEY_<SEAT> are set:  the listener_*
+    // Null unless LISTENER_API_URL and this seat's WAKE_HMAC_KEY_<SEAT> are set:  the eavesdropper_*
     // tools then answer not_configured and every other tool works as before (AFC-330).
     listener: listenerClientFromEnv(env, seat, { wakeKey: listenerWakeKey }),
     // Null unless LISTENER_API_URL and OPERATOR_NOTES_KEY are set:  the notes_* tools then answer not_configured
@@ -488,7 +488,7 @@ async function serveMcp(request, env, ctx) {
     ...(Number.isFinite(auth.expiresAt) ? { expiresAt: auth.expiresAt } : {}),
     extra: { seat },
   };
-  // Events only for a seat the listener can wake (its WAKE_HMAC_KEY_<SEAT> is
+  // Events only for a seat the eavesdropper can wake (its WAKE_HMAC_KEY_<SEAT> is
   // set):  any other seat would list an event that never fires.
   // Resolves through Infisical /wake when INFISICAL_MODE allows; the
   // legacy WAKE_HMAC_KEY_<SEAT> binding is the bounded transitional fallback.
@@ -701,8 +701,8 @@ async function serveSbtBearerMcp(request, env, token, ctx) {
   const fleetlinkSecret = await resolveSecret(env, { name: "FLEETLINK_AGENT_SECRET", path: "/fleetlink", envName: "FLEETLINK_AGENT_SECRET", optional: true });
   const fleetlinkTokens = await resolveFleetlinkSeatTokens(env, [seat]);
   const recallSecrets = await resolveRecallSecrets(env);
-  // The listener key resolves through Infisical too (optional:  no wake key
-  // means no listener tools, never a 500 - src/eavesdropper.js).
+  // The eavesdropper key resolves through Infisical too (optional:  no wake key
+  // means no eavesdropper tools, never a 500 - src/eavesdropper.js).
   const listenerWakeKey = Object.hasOwn(WAKE_SECRETS, seat)
     ? await resolveSecret(env, { name: WAKE_SECRETS[seat], path: "/wake", envName: WAKE_SECRETS[seat], optional: true })
     : "";
@@ -748,13 +748,13 @@ function jsonResponse(body, status, headers = {}) {
 }
 
 /**
- * The listener's wake (src/wake.js):  signature, freshness and shape first,
+ * The eavesdropper's wake (src/wake.js):  signature, freshness and shape first,
  * then a wake_id claim in the seat's SeatGate, then the signed deliveries
  * inside this request (at most WAKE_BUDGET_MS from its arrival), and an answer
  * that says how they went (events.js wakeReply).  A wake every delivery of
  * which failed in a way worth retrying is forgotten and answered 503, so the
- * listener sends it again.  A settled wake_id is a 200 duplicate, so the
- * listener's retry after a lost response never wakes Jet twice.
+ * eavesdropper sends it again.  A settled wake_id is a 200 duplicate, so the
+ * eavesdropper's retry after a lost response never wakes Jet twice.
  */
 async function serveWake(request, env, ctx, config) {
   const started = Date.now();
@@ -788,7 +788,7 @@ async function serveWake(request, env, ctx, config) {
   }
   const wake = checked.wake;
   if (config.mcpDisabled) {
-    // The MCP kill switch stops events too.  Not 5xx:  the listener would retry for nothing.
+    // The MCP kill switch stops events too.  Not 5xx:  the eavesdropper would retry for nothing.
     console.log(JSON.stringify({ event: "wake", seat, verdict: "mcp_disabled", message_id: wake.message_id }));
     return jsonResponse({ ok: true, disabled: true, subscribers: 0 }, 202);
   }
@@ -797,7 +797,7 @@ async function serveWake(request, env, ctx, config) {
   let result = claim;
   if (claim.verdict === "go") {
     // The answer waits for the deliveries, and waitUntil keeps them (and the
-    // settle that ends the claim) running if the listener hangs up first.
+    // settle that ends the claim) running if the eavesdropper hangs up first.
     const work = deliverWake({ gate: seatGate, wake, claim, channels: () => wakeChannels(env, config, seat, seatGate), fetchFn: (...a) => fetch(...a), deadline: started + WAKE_BUDGET_MS });
     ctx.waitUntil(work.catch(() => {}));
     result = await work;

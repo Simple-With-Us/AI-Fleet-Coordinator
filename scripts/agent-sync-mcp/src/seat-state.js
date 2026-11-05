@@ -852,8 +852,8 @@ export const WAKE_SEEN_MS = 15 * MINUTE_MS; // > the wake's 5-minute sent_at win
 // How long one request holds a wake it claimed.  Longer than the Worker's
 // inline delivery (WAKE_BUDGET_MS in events.js, 10 seconds from the request's
 // arrival), so a live delivery is never claimed twice.  Shorter than the
-// listener's retry span (2, 5 and 10 seconds of backoff after its first
-// failure), so the listener's last retry claims again a wake whose isolate died
+// eavesdropper's retry span (2, 5 and 10 seconds of backoff after its first
+// failure), so the eavesdropper's last retry claims again a wake whose isolate died
 // mid-delivery.
 export const WAKE_LEASE_MS = 15 * 1000;
 const WAKE_SEEN_CAP = 500;
@@ -1026,9 +1026,9 @@ async function putWakeSeen(store, seen) {
 }
 
 /**
- * Claim one wake for delivery.  A settled wake_id (the listener retrying after
+ * Claim one wake for delivery.  A settled wake_id (the eavesdropper retrying after
  * a lost response) is "duplicate".  A claim whose lease is still running is
- * "in_flight":  another request is delivering it, and the listener retries
+ * "in_flight":  another request is delivering it, and the eavesdropper retries
  * later.  A claim whose lease ran out (that request died mid-delivery) is
  * claimed again.  The claim holds until eventSettleWake, which only its
  * `token` may call, so a wake is remembered once it was delivered or dropped,
@@ -1072,7 +1072,7 @@ export async function eventClaimWake(store, { wakeId, messageId = null, name = E
  * End a claim (WAKE_OUTCOMES).  Only the request that holds it (`token`) may:
  * one whose lease ran out and was claimed again changes nothing.
  * "retry" (no delivery, and one failed in a way worth retrying) forgets the
- * wake, so the listener's retry claims it again.  Every other outcome settles
+ * wake, so the eavesdropper's retry claims it again.  Every other outcome settles
  * it, and a repeat is "duplicate" from then on.  "channel_refused" is audited
  * with the stream's numeric id only.
  * Returns {ok: true}, or {ok: false} when the claim is no longer this one's.

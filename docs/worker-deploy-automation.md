@@ -1,41 +1,67 @@
-# Mapped Worker deploy automation
+# Worker deploy automation
 
-Default off: set WORKER_DEPLOY_ENABLED=true only after credentials, exact-version
-receipts, and functional probes are reviewed. No secrets are rotated by this
-workflow. CLOUDFLARE_FLEET_API_TOKEN (Fleet-OPS/prod/root) is the existing scoped deploy credential;
-Access-protected probes use WORKER_HEALTH_ACCESS_CLIENT_ID/SECRET.  Do not widen
-access or publish private receipt data to satisfy a probe.  Every probe and API
-request sends an explicit User-Agent, because Cloudflare answers error 1010 to
-Python's default one.
+Two pipelines deploy this repository's Workers, and each Worker belongs to exactly one.  `scripts/worker-targets.json` is the one mapping: its `deployer` field names the pipeline and its `paths` name that Worker's own files.
 
-The job tests current main, serializes deployments, rechecks main immediately
-before mutation, tags the Worker version with the exact SHA, verifies 100%
-production routing to that version, then runs the functional probe. Wrangler
-uses --keep-vars and --strict. Existing schema, bindings and migrations remain
-owned by each Worker's reviewed configuration. A half-hour drain catches merges
-made with bot tokens. Already-live revisions still get a health check.
+| Worker | Pipeline | Gate |
+| --- | --- | --- |
+| `simple-tools-mcp` | `.github/workflows/worker-deploy.yml` | `WORKER_DEPLOY_ENABLED` and `SIMPLE_TOOLS_MCP_DEPLOY_ENABLED`, both off |
+| `alert-ingress` | `.github/workflows/alert-workers-deploy.yml` | A reviewed credential qualification receipt, plus the per-commit review gate |
+| `pr-conflict-watch` | `.github/workflows/alert-workers-deploy.yml` | The same, plus `docs/releases/pr-conflict-zulip-verified.json` |
 
-## Rollback and roll-forward
+`pr-conflict-watch` releases from `workers/pr-conflict-watch/zulip-cutover/`, the tree that is live.
 
-While WORKER_DEPLOY_ENABLED=true the job reconciles every mapped Worker to the
-exact main SHA, so a dashboard or `wrangler rollback` is replaced by main within
-about 30 minutes.  To hold a manual rollback, first set WORKER_DEPLOY_ENABLED to
-anything other than `true` (the job's `if:` gate then skips every run), then roll
-back.  The durable rollback is a revert PR on main, which the job deploys and
-verifies like any other merge.
+Both pipelines test current main, serialize deployments, recheck main immediately before mutation, tag the Worker version with the exact SHA, verify 100% production routing to that version, then probe it.  Wrangler uses `--keep-vars` and `--strict`.  Existing schema, bindings and migrations remain owned by each Worker's reviewed configuration.  Every probe and API request sends an explicit User-Agent, because Cloudflare answers error 1010 to Python's default one.  No secrets are rotated by either workflow.  `CLOUDFLARE_FLEET_API_TOKEN` (Fleet-OPS, prod, root) is the existing scoped deploy credential.  Do not widen access or publish private receipt data to satisfy a probe.
 
-The pre-deploy probe is deliberately fail-closed: the job will not mutate a
-Worker whose live version is unhealthy or whose probe credentials are missing.
-Recovering a broken live Worker is an operator action (pause the job as above,
-then `wrangler rollback` or a manual `wrangler deploy` of the fix); re-enable
-the job once the live probe passes again.
+## What Makes A Deploy
 
-Incomplete targets deliberately excluded from the matrix: pr-conflict-watch. Their private
-or absent health routes need an approved probe before automation can be enabled.
-No public health bypass is introduced. Ambiguous start-jays-services,
-fleet-share-api and BotFleet broker are not included. No iOS workflow is changed.
+A redeploy replaces every isolate and restarts the Worker's Durable Objects, which drops in-memory caches and unflushed buffers.  So a merge that touches none of a Worker's own files must not deploy it.
 
-CI reads the scoped Cloudflare token from Fleet-OPS/prod/root through the existing
-automation identity. Repository bootstrap names: INFISICAL_AUTOMATION_CLIENT_ID
-and INFISICAL_AUTOMATION_CLIENT_SECRET. Provisioning those CI bootstrap secrets
-is a separate approved setup step; activation remains off until cutover.
+On every trigger, the script compares the live version's tag with main over that target's `paths`, minus its `ignore` globs (tests, READMEs).  No difference means no deploy, however many commits main has moved.  A change to a deploy script or workflow alone therefore deploys nothing; the push filter on `worker-deploy.yml` lets such a change run its tests.  Any doubt (no tag, a malformed tag, a tag that is not an ancestor of main) counts as changed.
+
+A test walks every target's imports from its Wrangler `main` and fails if one falls outside that target's `paths`, because a missed path would leave a change undeployed.
+
+### Finding The Live Tag
+
+`wrangler secret put` creates an untagged version holding the same code, so the scripts walk back past those to the tag they copied.  They stop at any other untagged version, because a hand or API upload may hold different code.  The version they reach must also be the one deployed before the secret change.  After a rollback or an upload that was never deployed the next lower number is not the code that was live, so the answer is unknown.  The alert pipeline then refuses with "No exact release baseline" until a tagged deploy sets one, and the mapped pipeline treats the Worker as changed.
+
+### Live Limits
+
+An upload that does not declare `limits` removes live CPU and subrequest limits:  on Nov 4 at 8:25 PM an API upload with no limits removed the ones live on `simple-tools-mcp`.  Both pipelines therefore refuse a deploy when the live Worker has a limit its config does not declare, so declare it in the config first.  A changed value in the config is allowed by the mapped pipeline.  In the alert pipeline any `wrangler.toml` change stays a manual reconciliation, as it was.
+
+## The Budget Guard
+
+The account watchdog stops a Worker by leaving a `workers/message` that starts with `GUARD-TRIPPED`.  Reconciling to main would silently undo that, so both pipelines read the live deployment and version first, and again just before upload, then refuse with a failed run.  In the alert pipeline the other target still proceeds, because qualification does not fail on a stopped Worker's probe.  The settings read must still succeed, so a receipt shows the credential reached it.  Its config and tag baseline are checked but cannot fail the step, because a stopped Worker is not released, and its probe is skipped.  Re-arming is manual:  fix the cause, then deploy by hand with a normal message or run the watchdog's `rearm`, and the next run reconciles as usual.  The refusal reads only the newest deployment.  Any later deployment clears it, including a `wrangler secret put`, so do not change a stopped Worker's secrets by hand before you mean to re-arm it.
+
+## Alert Worker Receipts
+
+The alert pipeline needs `docs/releases/alert-credentials-qualified.json` before its first release.  It records one successful nondeployment run, proving the credential reaches the workflow and reads each target that is not awaiting its Zulip cutover, with the release step skipped.
+
+The receipt is void only when what it proved changes: the workflow's two credential steps (matched by name) or `scripts/infisical-fetch.mjs`.  A lockfile, an action bump or a target list change leaves it valid.  Those are not left unguarded: every commit in the release range that touches `RELEASE_PATHS` must still be a merged pull request with a qualified Kody review and resolved threads, or the release refuses.
+
+To record a receipt:
+
+1. Dispatch `Deploy reviewed alert Workers` on main with `qualify_only` true.
+2. Open a pull request setting `run_id`, `source_sha` (the run's head), `nondeployment: true` and `gate: 2` in the receipt file, and merge it after review.
+
+`gate` must match `RECEIPT_GATE` in `scripts/deploy-alert-workers.py`, so a receipt recorded before the gate narrowed cannot arm a release by itself.
+
+## Arming `simple-tools-mcp`
+
+`scripts/agent-sync-mcp/DEPLOY.md` still says this Worker is deployed by hand and never from CI.  That is an open owner decision, and nothing here changes it.  The automation is prepared and stays off until the owner answers.  To arm it after that answer:
+
+1. Update the never-from-CI wording in `DEPLOY.md`, `wrangler.jsonc`, `package.json` and `agent-sync-mcp.yml`.
+2. Declare the live limits in `wrangler.jsonc`.
+3. Create the `MCP_CANARY_BEARER` repository secret with a bearer chosen for the canary.
+4. Set `WORKER_DEPLOY_ENABLED` and `SIMPLE_TOOLS_MCP_DEPLOY_ENABLED` to `true`.
+
+Once armed, a deploy waits if the Worker was deployed in the last hour, and the next scheduled run retries, so a burst of merges cannot restart the Durable Objects repeatedly.  The canary replaces trust in the static `/health` route:  an unauthenticated `initialize` must answer the OAuth 401, then the bearer must initialize, list the tools and call the read-only `identities` tool.  The job refuses to start a deploy when the canary bearer is absent, and it runs the same canary against the old version before uploading, so an expired bearer stops the deploy instead of failing it after new code is live.  Seat bearers last 90 days.  A failed canary fails the run and leaves the new version live, so recovery is the rollback below.  A run that deploys nothing certifies the live Worker the same way, so a failed canary keeps failing every scheduled run until it is fixed.  That costs six requests to the Worker per run, the probe and five for the canary, at two runs an hour, once armed.
+
+## Rollback And Roll-Forward
+
+While a pipeline is on, a dashboard or `wrangler rollback` of a Worker whose files differ from main is replaced within about 30 minutes.  To hold a manual rollback of `simple-tools-mcp`, first set `SIMPLE_TOOLS_MCP_DEPLOY_ENABLED` to anything other than `true`, then roll back.  To hold one of an alert Worker, disable `Deploy reviewed alert Workers`, then roll back.  The durable rollback is a revert pull request on main, which the pipeline deploys and verifies like any other merge.
+
+The pre-deploy probe is deliberately fail-closed: neither pipeline mutates a Worker whose live version is unhealthy or whose probe credentials are missing.  Recovering a broken live Worker is an operator action (pause as above, then `wrangler rollback` or a manual `wrangler deploy --tag <sha>` of the fix).
+
+No public health bypass is introduced.  Ambiguous `start-jays-services`, `fleet-share-api` and the BotFleet broker are not included.  No iOS workflow is changed.
+
+CI reads the scoped Cloudflare token from Fleet-OPS through the existing automation identity.  Repository bootstrap names: `INFISICAL_AUTOMATION_CLIENT_ID` and `INFISICAL_AUTOMATION_CLIENT_SECRET`.
