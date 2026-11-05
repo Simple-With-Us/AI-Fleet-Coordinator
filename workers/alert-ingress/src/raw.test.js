@@ -48,6 +48,17 @@ test("a credential shape is redacted everywhere in the raw copy", () => {
   assert.match(out, /\[redacted\]/);
 });
 
+test("a private key's body is redacted in the raw copy, not only its marker", () => {
+  // An obviously fake key, assembled at runtime for the scanner.  Never a credential.
+  const body = "FAKEKEYBODY".repeat(4);
+  const pem = ["-----BEGIN " + "EC PRIVATE KEY-----", body, body, "-----END EC " + "PRIVATE KEY-----"].join("\n");
+  const out = renderRaw("datadog", { alert_title: "leak", event_msg: `before\n${pem}\nafter`, note: pem });
+  assert.doesNotMatch(out, /FAKEKEYBODY|PRIVATE KEY/);
+  // Only the key goes:  what the vendor said around it stays.
+  assert.match(out, /before/);
+  assert.match(out, /after/);
+});
+
 test("a payload cannot close the fences, and the copy fits a Zulip message", () => {
   const out = renderRaw("generic", { text: "``````` closing attempt", big: "x".repeat(20000) });
   assert.match(out, /^\*\*generic alert\*\*\n\n(`{9})spoiler Original generic payload\n(`{8})json\n/);
