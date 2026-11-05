@@ -24,6 +24,7 @@ import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { withServiceTitle } from "../src/tool-titles.js";
 import { LINEAR_NAMED_COMMANDS, LINEAR_NAMED_TOOLS } from "../src/linear-named-specs.js";
 import { buildNamedOperation } from "../src/linear-named.js";
 import { LINEAR_MCP_TOOLS, LINEAR_MCP_BY_NAME } from "../src/linear-mcp-specs.js";
@@ -59,7 +60,7 @@ function argList(args) {
 function commandShape(command) {
   return {
     name: command.name,
-    title: command.title,
+    title: withServiceTitle(command).title,
     description: command.description,
     root: command.root,
     args: argList(command.args),
@@ -103,7 +104,7 @@ function coreCatalog() {
     const tool = by[name];
     return {
       name: tool.name,
-      title: tool.title,
+      title: withServiceTitle(tool).title,
       description: tool.description,
       kind: LINEAR_WRITE_TOOLS.has(name) ? "write" : "read",
       input_schema: tool.inputSchema,
@@ -126,7 +127,7 @@ function officialCatalog() {
     return {
       name: spec.name,
       upstream_name: spec.upstreamName,
-      title: spec.title,
+      title: withServiceTitle(spec).title,
       description: spec.description,
       kind: spec.write ? "write" : "read",
       input_schema: spec.inputSchema,
