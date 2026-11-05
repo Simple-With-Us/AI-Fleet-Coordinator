@@ -222,6 +222,29 @@ final class FleetAdmin: ObservableObject {
         await refresh()
     }
 
+    /// The owner-stop record as it was before a controller action, and which service
+    /// that action belongs to.
+    private var controllerActionPrevious: (serviceID: String, previous: Set<String>)?
+
+    /// Records the intent behind an action the panel runs through the ops controller.
+    ///
+    /// The run belongs to the controller rather than to `perform`, so the intent is
+    /// recorded here, before anything can run, exactly as `perform` records it.  One
+    /// controller action at a time, like the sheet itself.
+    func beginControllerAction(_ action: ManagedServiceAction, serviceID: String) {
+        guard controllerActionPrevious == nil else { return }
+        controllerActionPrevious = (serviceID, ownerStops.ids)
+        ownerStops.record(action, id: serviceID)
+    }
+
+    /// Settles a controller action:  a run that did not succeed, including one the
+    /// owner declined at the sheet, puts the record back as it was.
+    func endControllerAction(serviceID: String, succeeded: Bool) {
+        guard let pending = controllerActionPrevious, pending.serviceID == serviceID else { return }
+        if !succeeded { ownerStops.restore(pending.previous) }
+        controllerActionPrevious = nil
+    }
+
     /// Waits for the BotFleet Server's port to close.
     ///
     /// The server's own stop is asynchronous,  and launchd does not own the process,

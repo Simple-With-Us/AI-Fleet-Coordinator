@@ -61,6 +61,10 @@ class MuseArgvTest(unittest.TestCase):
         self.assertNotIn("--disable-sandbox", argv)
         self.assertNotIn("--yolo", argv)
         self.assertEqual(argv[argv.index("--output-schema") + 1], A.MUSE_SCHEMA_SLOT)
+        # Contributor mode is named, not inherited from the ambient settings flag (owner
+        # directive, 2026-11-03):  the flag is a per-run override that is never persisted, so
+        # the run stays on contributor terms even if the ambient setting ever flips.
+        self.assertEqual(argv[argv.index("--contributor-mode") + 1], "on")
 
     def test_the_contributor_tier_is_the_default_and_the_dear_one_is_never_chosen(self) -> None:
         self.assertEqual(C.MUSE_DEFAULT_MODEL, "muse-spark-1.3-contributor")
@@ -429,6 +433,25 @@ class MuseEnvTest(unittest.TestCase):
         self.assertNotIn("AGENT_SEAT", env)
         self.assertNotIn("AGENT_LAUNCHER", env)
 
+    def test_the_meta_api_key_is_carried_through_when_the_daemon_carries_one(self) -> None:
+        # The daemon's own environment is the injection point (owner, 2026-11-03):  a headless
+        # run cannot read the login Keychain item, so the key the operator staged in the
+        # daemon's environment reaches the run, with and without a seat named.
+        for seat in (None, "MM"):
+            env = A.muse_env(
+                {"USER": "fixture-user", "META_API_KEY": "fixture-meta-key"},
+                "/home/fixture-user",
+                "/wake/path",
+                seat=seat,
+            )
+            self.assertEqual(env["META_API_KEY"], "fixture-meta-key")
+
+    def test_no_meta_api_key_is_invented_when_the_daemon_has_none(self) -> None:
+        # Absent and empty both invent nothing:  the run then uses the subscription login.
+        for source in ({"USER": "fixture-user"}, {"USER": "fixture-user", "META_API_KEY": ""}):
+            env = A.muse_env(source, "/home/fixture-user", "/wake/path", seat="MM")
+            self.assertNotIn("META_API_KEY", env)
+
 
 class MuseEnvelopeTest(unittest.TestCase):
     """The MSP records, not claude's stream-json."""
@@ -772,7 +795,9 @@ class McodeFallbackTest(unittest.TestCase):
         # that lies about the command, so the two are pinned together here.
         doc = pathlib.Path(__file__).resolve().parents[3] / "docs" / "protocols" / "agent-sync-listener.md"
         text = doc.read_text(encoding="utf-8")
-        self.assertIn("--max-steps %d --timeout 3m30s" % A.MCODE_MAX_STEPS, text)
+        self.assertIn(
+            "--max-steps %d --timeout %s" % (A.MCODE_MAX_STEPS, A.MCODE_TIMEOUT), text
+        )
 
     def test_the_backup_names_its_model_on_the_command_line(self) -> None:
         # Without `--model`, mcode inherits MiniMax Code's own `defaultModel`, and on this Mac that
@@ -780,6 +805,38 @@ class McodeFallbackTest(unittest.TestCase):
         argv = A.mcode_argv("/usr/local/bin/mcode")
         self.assertIn("--model", argv)
         self.assertEqual(argv[argv.index("--model") + 1], C.MCODE_DEFAULT_MODEL)
+
+    def test_the_backup_names_its_reasoning_effort_on_the_command_line(self) -> None:
+        # Without `--effort`, mcode runs at MiniMax's own default effort, which is MAX — the
+        # highest, most expensive thinking tier — for a bounded four-message fallback prompt.
+        # The owner directed that the effort be named, never defaulted (2026-11-03), and his
+        # determination is that M3.1 at its lowest effort is cheaper and faster than M3 at none.
+        argv = A.mcode_argv("/usr/local/bin/mcode")
+        self.assertEqual(argv[argv.index("--effort") + 1], A.MCODE_REASONING_EFFORT)
+        self.assertEqual(A.MCODE_REASONING_EFFORT, "low")
+
+    def test_the_backup_effort_is_a_level_mcode_accepts(self) -> None:
+        # mcode 0.6.12's level set, from its own argv-validation error (verified live,
+        # 2026-11-03):  "Available levels: default, low, medium, high, xhigh, max".  There
+        # is no `minimal` level — PR #1302 borrowed muse's floor name for mcode and every
+        # daemon-dispatched mcode wake failed validation until the floor was renamed.
+        self.assertIn(
+            A.MCODE_REASONING_EFFORT,
+            {"default", "low", "medium", "high", "xhigh", "max"},
+        )
+        self.assertNotEqual(A.MCODE_REASONING_EFFORT, "minimal")
+
+    def test_the_two_runtimes_keep_their_own_effort_floors(self) -> None:
+        # The floors are NOT one shared constant:  muse's lowest tier that runs is
+        # `minimal`, mcode's is `low`, and each argv must carry its own runtime's name.
+        # Unifying them in either direction breaks one of the two runtimes' validation.
+        self.assertNotEqual(A.MCODE_REASONING_EFFORT, A.MUSE_REASONING_EFFORT)
+        muse_argv = A.muse_argv("/usr/local/bin/muse", C.MUSE_DEFAULT_MODEL)
+        self.assertEqual(
+            muse_argv[muse_argv.index("--reasoning-effort") + 1], "minimal"
+        )
+        mcode_argv = A.mcode_argv("/usr/local/bin/mcode")
+        self.assertEqual(mcode_argv[mcode_argv.index("--effort") + 1], "low")
 
     def test_the_backup_model_is_one_the_catalog_serves(self) -> None:
         # The catalog holds `MiniMax-M3` and `MiniMax-M3.1-Flash`;  the -Preview id is stale.
@@ -1619,6 +1676,16 @@ class McodeFallbackBoundTest(unittest.TestCase):
         argv = A.mcode_argv("/usr/local/bin/mcode")
         self.assertEqual(argv[argv.index("--timeout") + 1], A.MCODE_TIMEOUT)
         self.assertLess(self._seconds(A.MCODE_TIMEOUT), A.WAKE_TIMEOUT)
+
+    def test_the_child_deadline_is_a_single_unit_duration(self) -> None:
+        # mcode 0.6.12 rejects a compound duration at argv validation (verified live,
+        # 2026-11-03):  the same 210 seconds spelled "3m30s" failed every daemon-dispatched
+        # mcode wake, while "210s" ran.  Pin the FORM, not just the length — the two
+        # deadline tests above pass on either spelling, because `_seconds` parses both.
+        self.assertEqual(A.MCODE_TIMEOUT, "210s")
+        self.assertRegex(A.MCODE_TIMEOUT, r"^\d+s$")
+        argv = A.mcode_argv("/usr/local/bin/mcode")
+        self.assertEqual(argv[argv.index("--timeout") + 1], "210s")
 
     def test_the_child_deadline_still_fits_the_measured_run(self) -> None:
         # The measured run finished in 137.8s, so the child's own deadline has to clear it with

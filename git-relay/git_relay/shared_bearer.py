@@ -12,6 +12,11 @@ touches - never from the process environment.
 Failure shape:  fail closed.  A malformed token, an unreachable Worker, a bad answer,
 an expired or paused identity - all resolve to None (the caller answers 401).  Neither
 the bearer nor its hash is ever logged or included in an error string.
+
+A live answer is not reused unless GIT_RELAY_VERIFY_CACHE_S is set, so by default a
+revocation or pause reaches the next Git call.  Only a refusal is remembered as one:  a
+Worker that is down or over its daily limit says nothing about the bearer, so that call
+fails and the next one asks again.
 """
 
 from __future__ import annotations
@@ -39,11 +44,23 @@ TOKEN_RES = (
 
 MAX_RESPONSE_BYTES = 4096
 REQUEST_TIMEOUT_S = 10
-# Positive answers are NOT cached by default:  a revoked or paused identity must
-# lose GR access with its SeatGate row, not with a cache entry.  An operator may
-# set a short TTL knowingly (env GIT_RELAY_VERIFY_CACHE_S, capped here).
+# Positive answers are NOT cached by default:  a revoked or paused identity must lose GR
+# access with its SeatGate row, not with a cache entry.  The cost is that every Git call
+# is a Worker request and SeatGate RPCs against daily caps.  An operator may accept up to
+# POSITIVE_CACHE_CAP_S of revocation lag to save them, by setting GIT_RELAY_VERIFY_CACHE_S.
+DEFAULT_POSITIVE_CACHE_S = "0"
 POSITIVE_CACHE_CAP_S = 60
 NEGATIVE_CACHE_S = 30  # a wrong guess must not hammer the Worker
+# The verify route answers a bearer's verdict as a 200, so the only non-200s that can be
+# remembered as refusals are its own 400 (an identity it does not know) and 401, and a
+# 403.  Anything else says nothing about the bearer:  a 404 is the route's not_configured,
+# which is how a missing or unreadable verify key looks, and 5xx, 429 and redirects are
+# about the Worker.  Error 1027, the daily limit, is sent as a 429 or names itself, in
+# prose ("Error 1027", "error code: 1027") or JSON ("error":1027, "error_code":1027).
+REFUSAL_STATUSES = frozenset({400, 401, 403})
+WORKER_LIMIT_RE = re.compile(
+    rb"""(?:error[\s_-]*(?:code)?|\bcode)["']?\s*:?\s*["']?1027\b""", re.IGNORECASE
+)
 # The cache key is attacker-controlled (any string hashes), so the map is
 # bounded:  oldest entries are evicted past the cap.
 CACHE_MAX_ENTRIES = 1024
@@ -52,6 +69,10 @@ CACHE_MAX_ENTRIES = 1024
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
+
+
+class _VerifyUnavailable(Exception):
+    """No verdict about the bearer.  resolve() fails closed and remembers nothing."""
 
 
 class SharedBearerVerifier:
@@ -80,7 +101,8 @@ class SharedBearerVerifier:
 
         try:
             self._positive_ttl = min(
-                float(os.environ.get("GIT_RELAY_VERIFY_CACHE_S", "0")), POSITIVE_CACHE_CAP_S
+                float(os.environ.get("GIT_RELAY_VERIFY_CACHE_S", DEFAULT_POSITIVE_CACHE_S)),
+                POSITIVE_CACHE_CAP_S,
             )
         except ValueError:
             self._positive_ttl = 0.0
@@ -95,7 +117,8 @@ class SharedBearerVerifier:
             with urllib.request.build_opener(_NoRedirect()).open(req, timeout=timeout) as resp:
                 return resp.status, resp.read(MAX_RESPONSE_BYTES + 1)
         except urllib.error.HTTPError as exc:
-            return exc.code, b""
+            # Kept only to recognize the Worker-limit marker;  never logged.
+            return exc.code, exc.read(MAX_RESPONSE_BYTES + 1)
 
     @staticmethod
     def parse_identity(token: str) -> str | None:
@@ -128,11 +151,9 @@ class SharedBearerVerifier:
             if cached and cached[1] > now:
                 return cached[0]
             resolved = self._verify_remote(identity, digest, now)
-            # Positive answers cache only when the operator opted in
-            # (GIT_RELAY_VERIFY_CACHE_S):  the default verifies every call so a
-            # revocation or pause in the admin panel takes effect immediately.
-            # Refusals always cache briefly, or a guessing loop costs one Worker
-            # call per request.
+            # Positive answers cache for the TTL above, never past the bearer's
+            # own expiry.  Refusals always cache briefly, or a guessing loop costs
+            # one Worker call per request.
             with self._lock:
                 if len(self._cache) >= CACHE_MAX_ENTRIES:
                     oldest = min(self._cache, key=lambda k: self._cache[k][2])
@@ -147,6 +168,8 @@ class SharedBearerVerifier:
             if resolved is not None:
                 return identity_name
             return None
+        except _VerifyUnavailable:
+            return None  # fail closed, and let the next call ask again
         except Exception:
             return None  # fail closed, always
 
@@ -172,13 +195,19 @@ class SharedBearerVerifier:
             body,
             REQUEST_TIMEOUT_S,
         )
-        if status != 200 or not payload or len(payload) > MAX_RESPONSE_BYTES:
+        if status != 200:
+            if status not in REFUSAL_STATUSES or WORKER_LIMIT_RE.search(payload):
+                raise _VerifyUnavailable
             return None
+        if not payload or len(payload) > MAX_RESPONSE_BYTES:
+            raise _VerifyUnavailable
         try:
             answer = json.loads(payload)
         except (ValueError, UnicodeDecodeError):
-            return None
-        if not isinstance(answer, dict) or answer.get("ok") is not True:
+            raise _VerifyUnavailable from None
+        if not isinstance(answer, dict):
+            raise _VerifyUnavailable
+        if answer.get("ok") is not True:
             return None
         # The answer must name the identity we asked about - a route that
         # answers for a different identity is a bug or an attack, not auth.

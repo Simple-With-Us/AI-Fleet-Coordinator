@@ -1,7 +1,7 @@
 ---
 name: secret-handoff
 description: >-
-  Fleet secret handling — fleet-secrets, Zulip bot credentials, Infisical, Coolify token split, grep trap, leak response.  Load BEFORE any command that might touch a credential, before reading ~/.secrets, Infisical, .env, or vault output, and before debugging auth.  Trigger even when the user does not say "secret."
+  Fleet secret handling — scoped Infisical service tokens, fleet-secrets, Zulip bot credentials, Infisical, Coolify token split, grep trap, leak response.  Load BEFORE any command that might touch a credential, before reading ~/.secrets, Infisical, .env, or vault output, and before debugging auth.  Trigger even when the user does not say "secret."
 ---
 
 # Secret handoff (CODEX)
@@ -22,9 +22,13 @@ If you are operating within a BotFleet environment and need an API key or custom
 - The key is securely saved to `~/.botfleet/vault.json` and automatically injected into your tool environment variables.
 - NEVER ask the user to paste a secret directly into the chat transcript.
 
-## Fleet keys come from `fleet-secrets`
+## Fleet keys come from a scoped Infisical service token
 
-The flat file `/Users/jay/.secrets/global-api-keys` is retired in favor of Infisical Fleet-OPS via `fleet-secrets` (OPS-818).  Nothing may read the flat file; there is no `global-api-keys.env` either, and the superseded sibling is a recovery net, not a source.
+A consumer that reads one folder of Infisical on its own (an app on its own project, or a host reading one webhook folder) does not use `fleet-secrets` and never uses the shared Automation identity: it gets its own scoped service token, one project, one environment, one folder, read-only unless write is required, with an expiry, stored in a 0600 file outside every repo and registered in the fleet references registry.  `service-tokens` carries the whole lifecycle, from minting to the registry row to the revocation.
+
+The flat file `~/.secrets/global-api-keys` is retired in favor of Infisical (OPS-818).  Nothing may read the flat file; there is no `global-api-keys.env` either, and the superseded sibling is a recovery net, not a source.
+
+The shared reader `fleet-secrets` is for the shared Fleet-OPS reader alone, and it needs a working login on this host:  without `INFISICAL_AUTOMATION_CLIENT_ID` and `INFISICAL_AUTOMATION_CLIENT_SECRET` it cannot authenticate, so stop and report that instead of substituting another source.  It is never the path for new work; the shared Automation identity is not for a consumer that reads one folder.
 
 On the Mac:
 
@@ -42,13 +46,13 @@ When the owner hands you a new secret, it arrives as the path to a `chmod 600` f
 
 `git-relay` is the only path in the fleet that mints per-bot GitHub App tokens.  A seat never handles an App id, a private key, or the one-hour token expiry: the relay mints and refreshes the seat's own GitHub App token itself, so no credential material is ever pasted into a prompt, a file, or a command line.  PR-write authoring (`open_pr`, `edit_pr`, `reply_thread`, `comment_pr`) runs under the owner's scoped PR-only token, so a PR is authored as the owner and the review bots work normally, while `merge_pr`, `workflow_dispatch` and `resolve_thread` run under the seat's own App token.  Per-seat policy (allowed actions, allowed repos, mint ceilings, an hourly call cap) is an allowlist layer that can only narrow the underlying credential, never exceed it, and every call — allowed or denied — lands in an audit log.
 
-The relay is **not deployed yet** (verified Oct 23 2026): there is no daemon, no launchd job, no seat pointed at it and no service host chosen yet, so the interim `gh` and shell path still stands and no seat should expect a minted token today.
+The relay tools are **live** (verified Nov 4 2026): a seat connected through Fleet MCP calls `gr_open_pr`, `gr_edit_pr`, `gr_reply_thread`, `gr_comment_pr`, `gr_resolve_thread`, `gr_merge_pr` and the `gr_wf_*` workflow verbs, and the relay mints and refreshes that seat's own GitHub App token without any credential material reaching the seat.
 
 ## Zulip bot credentials
 
-Each seat bot's key is its own credential and nobody else's.  Every seat, Mac or cloud, resolves its `<BOT>_ZULIP_EMAIL`, `<BOT>_ZULIP_KEY` and `<BOT>_ZULIP_SITE` at runtime through the same approved path: the process environment first (only when it already holds the Infisical-backed value), then `fleet-secrets get` for that name as the approved fallback (or verify with `simple-chat whoami`).  An independent container value is not a credential source.  A seat that cannot resolve the credential (env empty and `fleet-secrets get` unavailable or missing) stops and asks the owner or operator for a qualified route.  It never pastes, mints or invents a key, never opens Infisical by hand as a second path, and never reads another seat's value.  A missing required credential fails with an error naming the variable.  Infisical Fleet-OPS `/zulip` is the one home of a seat's Zulip key; there is no independent credential source for it.  The CLI accepts an operator-set override for a single invocation (`--rc PATH`, or `ZULIP_RC`); that is not a second home for the key, and an eavesdropper seat never reads the CLI's generic variable triple, so two seats cannot alias one bot.  `simple-chat whoami` shows which source it used, never the key.
+Each seat bot's key is its own credential and nobody else's.  Every seat, Mac or cloud, resolves its `<BOT>_ZULIP_EMAIL`, `<BOT>_ZULIP_KEY` and `<BOT>_ZULIP_SITE` at runtime through the same approved path: the process environment first (only when it already holds the Infisical-backed value), then the consumer's own scoped Infisical service token (or verify with the MCP tool `whoami`).  An independent container value is not a credential source.  A seat that cannot resolve the credential (env empty and `fleet-secrets get` unavailable or missing) stops and asks the owner or operator for a qualified route.  It never pastes, mints or invents a key, never opens Infisical by hand as a second path, and never reads another seat's value.  A missing required credential fails with an error naming the variable.  Infisical Fleet-OPS `/zulip` is the one home of a seat's Zulip key; there is no independent credential source for it.  The CLI accepts an operator-set override for a single invocation (`--rc PATH`, or `ZULIP_RC`); that is not a second home for the key, and an eavesdropper seat never reads the CLI's generic variable triple, so two seats cannot alias one bot.  The MCP tool `whoami` and the CLI `simple-chat whoami` show which source it used, never the key.
 
-Never print, `cat`, echo, or paste a zuliprc or a key, never put one in a message, a DM, a commit, or a log, and never type one literally on a command line.  Never use another seat's key, and never handle Jay's personal API key.  If a key ever lands in a message: delete the message (do not edit — Zulip keeps edit history), have the owner rotate it in Settings → Bots, update Infisical (the only home of the key), and note the leak on the Linear issue (`simple-board comment <id>`) without the value.
+Never print, `cat`, echo, or paste a zuliprc or a key, never put one in a message, a DM, a commit, or a log, and never type one literally on a command line.  Never use another seat's key, and never handle Jay's personal API key.  If a key ever lands in a message: delete the message (do not edit — Zulip keeps edit history), have the owner rotate it in Settings → Bots, update Infisical (the only home of the key), and note the leak on the Linear issue (the MCP tool `linear_comment`, with `id` and `body`) without the value.
 
 ## Secrets-file grep trap (2026-08-14)
 
@@ -64,7 +68,7 @@ fleet-secrets run -- env
 # Read / open-file / cat / less / bat on any secrets file
 ```
 
-Allowed:
+Allowed:  the shared `fleet-secrets` reader, and it needs a working login on this host — without one it cannot authenticate, so stop and report that instead of substituting another source.  A consumer that reads one folder uses its own scoped service token (`service-tokens`) instead.
 
 ```bash
 fleet-secrets names
@@ -133,7 +137,7 @@ Never put `COOLIFY_AGENTS` into Infisical as app `COOLIFY_API_TOKEN`.  Prefer e
 Do not declare a Cloudflare credential dead without a real resource call.
 
 1. `/user/tokens/verify` only understands **user-owned** tokens.  Account-owned tokens 401 there by design — use `/accounts/{id}/tokens/verify` or `GET /zones`.
-2. Global API Key "9103 Unknown X-Auth-Key" can mean the **wrong email**, not a dead key.  This fleet has multiple Cloudflare logins.  Try the pairing in FLEET-PROTOCOL.md / the `CLOUDFLARE_*` names from `fleet-secrets names` before concluding.
+2. Global API Key "9103 Unknown X-Auth-Key" can mean the **wrong email**, not a dead key.  This fleet has multiple Cloudflare logins.  Try the pairing in FLEET-PROTOCOL.md / the `CLOUDFLARE_*` names from the shared `fleet-secrets names` reader before concluding.
 
 Empty `success:true` on a filtered Bearer call means "valid, not scoped to that filter," not dead.  Prefer `CLOUDFLARE_FLEET_API_TOKEN` for ordinary work.
 
@@ -147,7 +151,7 @@ Empty `success:true` on a filtered Bearer call means "valid, not scoped to that 
 
 ## Canon
 
-- `/Users/jay/apps/FLEET-PROTOCOL.md` § Secret handoff, Infisical, Coolify, grep trap, loaded-key byte dumps, leak response
+- `~/apps/FLEET-PROTOCOL.md` § Secret handoff, Infisical, Coolify, grep trap, loaded-key byte dumps, leak response
 - `<YOUR_SKILLS_DIR>/secret-safety/SKILL.md`
 - Coordinator `docs/rollouts/2026-08-15-secret-file-grep-ban.md`
 - Coordinator `docs/rollouts/2026-09-18-secret-guard-od.md`

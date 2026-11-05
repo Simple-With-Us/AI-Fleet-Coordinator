@@ -34,6 +34,7 @@ class StubTools {
     this.linear = null;
     this.recall = null;
     this.gate = { auditCall: async (row) => { this.audits.push(row); } };
+    this.auditRow = async (gate, row) => gate.auditCall(row); // the no-sink default, as on HostedTools
   }
   async call(name, args) {
     this.calls.push({ name, args });

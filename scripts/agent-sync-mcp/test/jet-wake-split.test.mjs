@@ -48,6 +48,7 @@ class StubTools {
     this.grantRef = "abcdef012345";
     this.clientId = "client";
     this.gate = { auditCall: async (row) => { this.audits.push(row); } };
+    this.auditRow = async (gate, row) => gate.auditCall(row); // the no-sink default, as on HostedTools
   }
   async call(name) {
     throw new Error(`the wake-only gate must refuse before ${name} reaches the seat's tools`);

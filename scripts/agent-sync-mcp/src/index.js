@@ -85,8 +85,26 @@ import { serveWa } from "./wa/index.js";
 import { resolveSecret, resolveWakeKeys, infisicalStats, infisicalMode, prefetchFolder } from "./infisical.js";
 import { verifySpike, spikePathSeat, spikeKey, deliverSpike, spikeReply, SPIKE_SIGNATURE_HEADER, SPIKE_MAX_BODY, SPIKE_RATE_LIMIT, SPIKE_RATE_WINDOW_MS } from "./spike.js";
 import { serveLinearWake, LINEAR_WAKE_PATH } from "./linear-wake.js";
+import { AuditBatcher } from "./audit-batch.js";
+import { IdentityCache } from "./identity-cache.js";
 
 export { SeatGate };
+
+// The isolate's per-call audit buffer (R2, DO burn reduction):  one
+// AuditBatcher per isolate, shared by every HostedTools this Worker
+// builds, so tool-call audit rows flush to each seat's gate in batches
+// instead of one Durable Object RPC per call.  The trade is stated in
+// src/audit-batch.js:  rows land seconds late, and an isolate evicted
+// mid-buffer loses its unflushed tail - audit only, never a control.
+const AUDIT_BATCHER = new AuditBatcher();
+const auditSink = (key, gate, row) => AUDIT_BATCHER.append(key, gate, row);
+
+// The isolate's verified-identity cache (R4, DO burn reduction):  one
+// IdentityCache per isolate, shared by every /mcp route, so a credential
+// this isolate has already verified against the gate is not re-verified
+// on every POST inside the window (GATE_IDENTITY_CACHE_MS).  What the
+// window does and does not enforce is stated in src/identity-cache.js.
+const IDENTITY_CACHE = new IdentityCache();
 
 const MAX_TOKEN_BODY = 16 * 1024;
 const CSRF_COOKIE = "__Host-agent-sync-csrf";
@@ -223,7 +241,32 @@ async function serveMcp(request, env, ctx) {
     return invalidToken("This token is not for a hosted seat.");
   }
   const seatGate = gate(env, seat);
-  const result = await seatGate.check({ epoch: props.epoch, approvedAt: props.approved_at, phase: props.phase });
+  // R4:  a fresh cached verification for this exact access token stands
+  // in for the gate check (src/identity-cache.js states what that does
+  // and does not enforce in the window).  The key is the token's hash;
+  // the token itself is never stored.
+  const identityKey = typeof auth.token === "string" && auth.token ? await sha256Hex(auth.token) : null;
+  const identityEntry = IDENTITY_CACHE.get(identityKey);
+  let result;
+  if (identityEntry) {
+    result = { code: "ok" };
+  } else {
+    result = await seatGate.check({ epoch: props.epoch, approvedAt: props.approved_at, phase: props.phase });
+    if (result.code === "ok") {
+      // Only a fully positive verification is cached;  a paused seat
+      // re-checks on every request, exactly as before.  An events-only
+      // seat is never cached:  its calls are refused downstream
+      // regardless, so the cache would buy nothing there and would only
+      // rent out that seat's instant revocation.
+      if (!config.eventsOnlySeats.includes(seat)) {
+        IDENTITY_CACHE.set(identityKey, { seat, via: "oauth", epoch: props.epoch, approvedAt: props.approved_at, phase: props.phase }, config.gateIdentityCacheMs);
+      }
+    } else {
+      // A gate refusal for this credential evicts whatever this isolate
+      // still holds for it.
+      IDENTITY_CACHE.evict(identityKey);
+    }
+  }
   if (result.code !== "ok" && result.code !== "paused") {
     const refused = invalidToken("This grant is no longer valid.");
     try {
@@ -295,6 +338,10 @@ async function serveMcp(request, env, ctx) {
     zulip: key ? new ZulipClient({ email, key, ownerUserId: config.ownerUserId }) : null,
     key,
     gate: seatGate,
+    audit: auditSink,
+    identityCache: IDENTITY_CACHE,
+    identityKey,
+    identityEntry,
     whatsappGate: gate(env, "JET"),
     cf: { asn: request.cf?.asn, country: request.cf?.country },
     // Null when any recall secret is missing:  the recall tools then answer
@@ -381,7 +428,17 @@ async function serveGbBearerMcp(request, env, token) {
   if (!parsed) return refuse();
   const { identity } = parsed;
   const identityGate = gate(env, identity);
-  const checked = await identityGate.gbBearerCheck(await sha256Hex(parsed.token));
+  // R4:  a fresh cached verification for this exact bearer stands in for
+  // gbBearerCheck (src/identity-cache.js states the window's terms).  The
+  // key is the same hash the check itself uses;  the token is never stored.
+  const bearerHash = await sha256Hex(parsed.token);
+  const identityEntry = IDENTITY_CACHE.get(bearerHash);
+  let checked;
+  if (identityEntry) {
+    checked = { ok: true, mcp_accept: true, paused: false };
+  } else {
+    checked = await identityGate.gbBearerCheck(bearerHash);
+  }
   if (!checked.ok) {
     // Only a token whose hash matched is logged (expired).  A wrong guess is not:  anyone can send one, and the
     // audit log is capped, so guesses would push real mint and revoke rows out.  They do count
@@ -394,17 +451,23 @@ async function serveGbBearerMcp(request, env, token) {
       // incomplete - an attacker's guesses do not pause for our outage.
       try { await identityGate.gbBearerMismatch(identity, new Set(GB_IDENTITIES)); } catch { /* A counter is observability, never the security path. */ }
     }
+    IDENTITY_CACHE.evict(bearerHash);
     return refuse();
   }
   // A valid hash is not consent for hosted tool access.  Legacy missing rows
   // and explicit GR-only rows both refuse before loading any persona bundle.
-  if (checked.mcp_accept !== true) return refuse();
+  if (checked.mcp_accept !== true) { IDENTITY_CACHE.evict(bearerHash); return refuse(); }
   await Promise.all(["/zulip", "/linear"].map((path) => prefetchFolder(env, path)));
   const roles = (await resolveDelegatedCredentials(env)).roles;
   const credentials = roles.get(identity);
   if (!credentials) return refuse();
-  const state = await identityGate.getState();
-  if (state.paused) return invalidToken("This identity is paused.");
+  // The pause flag rides the bearer check's own answer (R1):  no second
+  // gate RPC for the one boolean, and the refusal stays in this position.
+  if (checked.paused) { IDENTITY_CACHE.evict(bearerHash); return invalidToken("This identity is paused."); }
+  // The gate's verification is fully positive at this point (the bundle
+  // resolution below is isolate config, re-run on every request either
+  // way):  remember it for this isolate's window (R4).
+  if (!identityEntry) IDENTITY_CACHE.set(bearerHash, { seat: identity, via: "gb-bearer", mcp_accept: true }, config.gateIdentityCacheMs);
   const scopes = ["zulip:read", "zulip:write"];
   const grantRef = await sha256Ref(`gb-bearer:${identity}`);
   await Promise.all(["/fleetlink", "/tools"].map((path) => prefetchFolder(env, path)));
@@ -422,6 +485,10 @@ async function serveGbBearerMcp(request, env, token) {
     grantRef,
     paused: false,
     gate: identityGate,
+    audit: auditSink,
+    identityCache: IDENTITY_CACHE,
+    identityKey: bearerHash,
+    identityEntry,
     // The GR front authenticates to the relay with this same bearer:  the
     // relay resolves it to the identity and applies its own allowlist.
     gr: grClientFromResolved(grSecrets, env, { bearer: token }),
@@ -469,7 +536,17 @@ async function serveSbtBearerMcp(request, env, token) {
     await Promise.all(["/zulip", "/linear"].map((path) => prefetchFolder(env, path)));
   } catch { return refuse(); }
   const seatGate = gate(env, seat);
-  const checked = await seatGate.gbBearerCheck(await sha256Hex(parsed.token));
+  // R4:  a fresh cached verification for this exact bearer stands in for
+  // gbBearerCheck (src/identity-cache.js states the window's terms).  The
+  // key is the same hash the check itself uses;  the token is never stored.
+  const bearerHash = await sha256Hex(parsed.token);
+  const identityEntry = IDENTITY_CACHE.get(bearerHash);
+  let checked;
+  if (identityEntry) {
+    checked = { ok: true, mcp_accept: true, paused: false };
+  } else {
+    checked = await seatGate.gbBearerCheck(bearerHash);
+  }
   if (!checked.ok) {
     // Same cap discipline as serveGbBearerMcp:  only an expired-but-matching
     // bearer writes a row;  guesses are free to send.  They do count against
@@ -480,6 +557,7 @@ async function serveSbtBearerMcp(request, env, token) {
       // Static seat set for the same outage reason as the persona path.
       try { await seatGate.gbBearerMismatch(seat, new Set(BEARER_SEATS)); } catch { /* A counter is observability, never the security path. */ }
     }
+    IDENTITY_CACHE.evict(bearerHash);
     return refuse();
   }
   let credentials;
@@ -487,9 +565,15 @@ async function serveSbtBearerMcp(request, env, token) {
   catch { return refuse(); }
   if (!credentials) return refuse();
   const { key, email } = credentials;
-  if (checked.mcp_accept !== true) return refuse();
-  const state = await seatGate.getState();
-  if (state.paused) return invalidToken("This identity is paused.");
+  if (checked.mcp_accept !== true) { IDENTITY_CACHE.evict(bearerHash); return refuse(); }
+  // The pause flag rides the bearer check's own answer (R1):  no second
+  // gate RPC for the one boolean, and the refusal stays in this position.
+  if (checked.paused) { IDENTITY_CACHE.evict(bearerHash); return invalidToken("This identity is paused."); }
+  // The gate's verification is fully positive at this point:  remember it
+  // for this isolate's window (R4) - unless the seat is events-only, whose
+  // calls are refused downstream regardless and are never cached (serveMcp
+  // states the reasoning in full).
+  if (!identityEntry && !config.eventsOnlySeats.includes(seat)) IDENTITY_CACHE.set(bearerHash, { seat, via: "sbt-bearer", mcp_accept: true }, config.gateIdentityCacheMs);
   const scopes = ["zulip:read", "zulip:write"];
   const grantRef = await sha256Ref(`sbt-bearer:${seat}`);
   await Promise.all(["/fleetlink", "/tools"].map((path) => prefetchFolder(env, path)));
@@ -518,6 +602,10 @@ async function serveSbtBearerMcp(request, env, token) {
     zulip: new ZulipClient({ email, key, ownerUserId: config.ownerUserId }),
     key,
     gate: seatGate,
+    audit: auditSink,
+    identityCache: IDENTITY_CACHE,
+    identityKey: bearerHash,
+    identityEntry,
     cf: { asn: request.cf?.asn, country: request.cf?.country },
     recall: recallClientFromResolved(recallSecrets, env),
     linear: linearClientFromPair(await resolveLinearPair(env, seatTagForSeat(seat)), seat, { gate: seatGate, quota: linearQuotaFromEnv(env) }),
@@ -1185,17 +1273,25 @@ async function serveAdmin(request, env, config, oauth, email) {
       if (!known) return errorPage("Request Refused", "Unknown seat.", 400);
     }
     switch (action) {
+      // Every seat-state change below also drops this isolate's cached
+      // verifications for the seat (R4, src/identity-cache.js):  a change
+      // made through this isolate bites here at once;  other isolates
+      // converge within the cache window.
       case "arm":
         await gate(env, seat).arm({ by: email });
+        IDENTITY_CACHE.evictSeat(seat);
         break;
       case "disarm":
         await gate(env, seat).disarm({ by: email, reason: "admin" });
+        IDENTITY_CACHE.evictSeat(seat);
         break;
       case "pause":
         await gate(env, seat).setPaused({ by: email, paused: true });
+        IDENTITY_CACHE.evictSeat(seat);
         break;
       case "unpause":
         await gate(env, seat).setPaused({ by: email, paused: false });
+        IDENTITY_CACHE.evictSeat(seat);
         break;
       case "revoke": {
         // Kill switch step 2:  the epoch bump is instant, then the KV grants go.
@@ -1273,17 +1369,26 @@ async function serveAdmin(request, env, config, oauth, email) {
         const minted = await gate(env, identity).gbBearerMintChecked({ mintId, hash: await sha256Hex(token), by: email, expiresAt, mcpAccept });
         if (!minted.minted && minted.reason === "completed") return gbBearerMintCompletedPage({ identity, result: minted.result });
         if (!minted.minted) return gbBearerMintRefusedPage({ identity, reason: minted.reason });
+        // A mint is a rotation:  the previous bearer's cached verification
+        // in this isolate dies with it (R4).
+        IDENTITY_CACHE.evictSeat(identity);
         return gbBearerRevealPage({ identity, token, expiresAt, kind, mcpAccept });
       }
       case "revoke_gb_bearer": {
         const identity = parsed.data.identity ?? "";
         if (!GB_IDENTITIES.includes(identity) && !BEARER_SEATS.includes(identity)) return errorPage("Request Refused", "Unknown identity.", 400);
         await gate(env, identity).gbBearerRevoke({ by: email });
+        IDENTITY_CACHE.evictSeat(identity);
         break;
       }
       default:
         return errorPage("Request Refused", "Unknown action.", 400);
     }
+    // The revoke case's own eviction lives here, not inside the case:
+    // that case is byte-pinned against unrelated refactors by
+    // test/admin-lazy-inventory.test.mjs, and an eviction is not part of
+    // the revocation check it guards.
+    if (action === "revoke") IDENTITY_CACHE.evictSeat(seat);
     return new Response(null, { status: 303, headers: withReferrerPolicy({ Location: `/admin?done=${encodeURIComponent(action)}`, "Cache-Control": "no-store" }) });
   }
   return notFound();
@@ -1358,6 +1463,9 @@ async function pauseOnRefreshMismatch(env, config, form, response) {
   try {
     const seatGate = gate(env, seat);
     await seatGate.setPaused({ by: `system:${reason}`, paused: true });
+    // The system's own pause drops this isolate's cached verifications
+    // for the seat at once (R4);  other isolates converge in the window.
+    IDENTITY_CACHE.evictSeat(seat);
   } catch {
     console.log(JSON.stringify({ event: "pause_failed", seat }));
   }

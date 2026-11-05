@@ -445,13 +445,37 @@ class GitHubClient:
         if len(parts) != 2 or not all(parts) or ".." in repo:
             raise ValueError(f"repo must look like owner/name, got {repo!r}")
 
-    def open_pr(self, repo: str, base: str, head: str, title: str, body: str) -> dict:
+    def open_pr(
+        self, repo: str, base: str, head: str, title: str, body: str, draft: bool = False
+    ) -> dict:
         self._check_repo(repo)
+        if type(draft) is not bool:
+            raise ValueError("draft must be a boolean")
+        payload = {"title": title, "head": head, "base": base, "body": body}
+        if draft:
+            payload["draft"] = True
         data = self._call(
             "POST",
             f"/repos/{repo}/pulls",
-            {"title": title, "head": head, "base": base, "body": body},
+            payload,
         )
+        if draft:
+            number = data.get("number") if isinstance(data, dict) else None
+            url = data.get("html_url") if isinstance(data, dict) else None
+            base_row = data.get("base") if isinstance(data, dict) else None
+            base_repo = base_row.get("repo") if isinstance(base_row, dict) else None
+            full_name = base_repo.get("full_name") if isinstance(base_repo, dict) else None
+            if (
+                type(number) is not int
+                or not 1 <= number <= 2**53 - 1
+                or not isinstance(url, str)
+                or len(url) > 2048
+                or url.casefold() != f"https://github.com/{repo}/pull/{number}".casefold()
+                or not isinstance(full_name, str)
+                or full_name.casefold() != repo.casefold()
+                or data.get("draft") is not True
+            ):
+                raise RelayGitHubError(502, "draft PR creation outcome unverifiable")
         return {"number": data.get("number"), "url": data.get("html_url")}
 
     def edit_pr(

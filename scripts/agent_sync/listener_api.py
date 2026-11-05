@@ -24,7 +24,9 @@ them.  Nothing here logs a key, a signature or a body.
 The same server carries the Operator's notes queue (AFC-486, notes_queue.py) under /notes/v1/ when the daemon
 gives it one:  GET and POST there, with its own principals and signature (notes_wire.py).  It likewise carries
 the Linear project webhook (AFC-565, linear_projects_hook.py) under /linear/v1/ when given one:  POST only,
-verified by the Linear-Signature.  Everything else stays GET only.  Python 3.11+, standard library only.
+verified by the Linear-Signature.  It likewise carries the Operator's session registry
+(listener_registry.py) under /registry/v1/ when given one:  GET reads and POST writes there, with its
+own principals and signature.  Everything else stays GET only.  Python 3.11+, standard library only.
 """
 
 from __future__ import annotations
@@ -41,6 +43,7 @@ from typing import Any
 from urllib.parse import parse_qsl, urlsplit
 
 from . import listener_records as LR
+from . import listener_registry as RG
 from . import notes_wire as NW
 from .zulip import UsageError
 
@@ -145,10 +148,14 @@ class ListenerReadApi:
         log: Callable[..., None] | None = None,
         notes: Any = None,
         linear_projects: Any = None,
+        registry: Any = None,
     ) -> None:
         self.root = root
         self.notes = notes  # a notes_queue.NotesQueue, or None:  then /notes/v1/ is 404 like any unknown path
         self.linear_projects = linear_projects  # a linear_projects_hook.LinearProjectsHook, or None
+        self.registry = (
+            registry  # a listener_registry.RegistryService, or None:  then /registry/v1/ is 404
+        )
         self.keys = {
             seat.upper(): key
             for seat, key in keys.items()
@@ -299,17 +306,56 @@ class ListenerReadApi:
                     self._respond(status, answer)
                 return True
 
+            def _registry(self, method: str) -> bool:
+                """Serve a /registry/v1/ request when the daemon gave this server a registry service.  False otherwise."""
+                if owner.registry is None or not self.path.startswith(RG.PREFIX):
+                    return False
+                body = b""
+                if method == "POST":
+                    length = _parse_content_length(self.headers.get("Content-Length"))
+                    if length is None:
+                        self._respond(
+                            411,
+                            {"error": "length_required", "message": "Content-Length is required"},
+                        )
+                        return True
+                    if length > RG.MAX_BODY:
+                        self._respond(
+                            413, {"error": "too_large", "message": "the request body is too large"}
+                        )
+                        return True
+                    try:
+                        body = self.rfile.read(length)
+                    except OSError:
+                        return True
+                    if len(body) != length:
+                        self._respond(
+                            400, {"error": "invalid_argument", "message": "the body ended early"}
+                        )
+                        return True
+                try:
+                    status, answer = owner.registry.handle(method, self.path, self.headers, body)
+                except Exception as exc:  # noqa: BLE001 - one request must never take the server down
+                    owner.log("registry-api-error", error=type(exc).__name__)
+                    status, answer = 500, {"error": "internal", "message": "the registry failed"}
+                self._respond(status, answer)
+                return True
+
             def do_POST(self) -> None:
                 self.close_connection = True
                 if self._notes("POST"):
                     return
                 if self._linear("POST"):
                     return
+                if self._registry("POST"):
+                    return
                 self._respond(405, {"error": "method not allowed"})
 
             def do_GET(self) -> None:
                 self.close_connection = True
                 if self._notes("GET"):
+                    return
+                if self._registry("GET"):
                     return
                 status, body = owner.handle(
                     self.path,

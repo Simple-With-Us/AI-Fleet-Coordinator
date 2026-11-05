@@ -96,6 +96,8 @@ SEAT_PLATFORMS: dict[str, tuple[str, ...]] = {
     "MA": ("muse",),
     "MC": ("muse-code",),
     "OPENCODE": ("opencode",),
+    "KIMI": ("kimi",),
+    "ZC": ("zcode",),
     "GROK-WEB": (),
     "GROK-BOT": (),
     "ECHO": (),
@@ -675,12 +677,14 @@ def _hook_target(platform: str) -> tuple[str, str, int, str]:
     row = install_tools.PLATFORMS.get(platform)
     if row is None:
         raise ValueError("the platform %r has no hook surface" % platform)
-    if platform in ("claude", "codex", "grok", "antigravity", "cursor"):
+    if platform in ("claude", "codex", "grok", "antigravity", "cursor", "zcode"):
         timeout = install_tools.HOOK_TIMEOUT_S
         # Antigravity keeps one named group per hook, so its id is the group name;
         # the others name the hook after the script their command runs.
         hook_id = NAMED_GROUP_HOOK if platform == "antigravity" else LANE_GUARD_HOOK
         return "~/" + row.config_rel, row.event, timeout, hook_id
+    if platform == "kimi":
+        return "~/" + row.config_rel, row.event, install_tools.HOOK_TIMEOUT_S, FLEET_GUARD_HOOK
     if platform == "clutch":
         # The Clutch cordis patch is YAML, which the standard library cannot read.
         # The hook loads a JSON file in the stable dir instead, and that JSON is what
@@ -739,7 +743,7 @@ def _mcp_servers(platform: str) -> tuple[str, ...]:
     the platforms with a fixed seat, and the installer's own note holds it back for
     OpenCode, whose seat is shared with a Conductor session that has no default.
     """
-    fixed_seat = ("muse-code", "minimax", "fx")
+    fixed_seat = ("muse-code", "minimax", "fx", "kimi", "zcode")
     if platform == "muse":
         # The muse target of install_mcp carries the fixed seat MC, so the simple-chat
         # entry is registered as MC and never as MA.
@@ -1046,6 +1050,10 @@ def _build_seats() -> dict[str, dict[str, object]]:
             ),
         ],
     )
+
+    # Kimi Code and Z Code
+    seats["KIMI"] = _harness_seat("KIMI", "kimi", subagents=None)
+    seats["ZC"] = _harness_seat("ZC", "zcode", subagents=None)
 
     # The seats with no Mac config surface.
     seats["GROK-WEB"] = _hosted_seat(

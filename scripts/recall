@@ -519,7 +519,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--all", action="store_true", help="every source (default when --source is omitted)"
     )
     ingp.add_argument(
-        "--source", help="comma-separated subset: board,effort-log,doc,skill,memory,apple-note"
+        "--source", help="comma-separated subset: linear,doc,skill,memory,apple-note,chat-log"
     )
     ingp.add_argument("--fix-seeds", dest="fix_seeds", action="store_true")
     ingp.add_argument("--dry-run", dest="dry_run", action="store_true")

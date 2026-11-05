@@ -65,6 +65,13 @@ export const SHARED_IDENTITY_SEATS = Object.freeze(["CURSOR", "GROK-WEB"]);
 // Phase 0 durations.
 export const ARM_WINDOW_MS = 10 * 60 * 1000;
 export const GRANT_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
+// The in-isolate verified-identity cache window (R4, src/identity-cache.js):
+// how long one isolate may reuse a positive gate verification before it
+// re-verifies live.  The GATE_IDENTITY_CACHE_MS var overrides it per deploy;
+// 0 disables the cache.  The owner accepts the revocation latency this
+// creates (2026-11-03 ruling:  pause and epoch are not the real kill path),
+// and src/identity-cache.js states the full trade.
+export const GATE_IDENTITY_CACHE_MS = 60 * 60 * 1000;
 export const ACCESS_TOKEN_TTL_S = 60 * 60;
 export const REFRESH_TOKEN_TTL_S = 90 * 24 * 60 * 60;
 
@@ -190,6 +197,17 @@ export function loadConfig(env) {
     : parseList(env, "EVENTS_ONLY_SEATS");
   for (const seat of eventsOnlySeats) {
     if (!KNOWN_SEATS.includes(seat)) throw new Error(`config: unknown events-only seat ${seat}`);
+  }
+
+  // The verified-identity cache window is a var for the same reason:  a
+  // reviewed deploy-time change, never a source edit.  Absent means the
+  // compiled default;  0 disables the cache;  anything malformed fails
+  // closed like every other var.
+  const gateIdentityCacheRaw = env.GATE_IDENTITY_CACHE_MS;
+  let gateIdentityCacheMs = GATE_IDENTITY_CACHE_MS;
+  if (gateIdentityCacheRaw !== undefined && gateIdentityCacheRaw !== null && String(gateIdentityCacheRaw).trim() !== "") {
+    gateIdentityCacheMs = Number(gateIdentityCacheRaw);
+    if (!Number.isSafeInteger(gateIdentityCacheMs) || gateIdentityCacheMs < 0) throw new Error("config: GATE_IDENTITY_CACHE_MS must be a non-negative integer number of milliseconds");
   }
 
   const seatsRaw = parseJsonVar(env, "SEATS");
@@ -323,6 +341,7 @@ export function loadConfig(env) {
     scopes: SCOPES,
     hostedSeats: Object.freeze(hostedSeats),
     eventsOnlySeats: Object.freeze(eventsOnlySeats),
+    gateIdentityCacheMs,
     seats: Object.freeze(seats),
     redirectSeats,
     redirectOwner,

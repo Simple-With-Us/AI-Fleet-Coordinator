@@ -58,7 +58,15 @@
   // Our own console.log lines are the audit trail.  The automatic per-request
   // invocation logs are off, because nothing proves they omit the
   // Cf-Access-Jwt-Assertion header or cookies (spec 3.9 never-logged list).
-  "observability": { "enabled": true, "logs": { "enabled": true, "invocation_logs": false } },
+  // Sampling stays at 1:  the tool log lines are the per-seat attribution.
+  "observability": { "enabled": true, "head_sampling_rate": 1, "logs": { "enabled": true, "invocation_logs": false } },
+
+  // Runaway backstop per invocation, about 2.5x the measured p99.9 CPU, and it
+  // covers the SeatGate class too.  200 subrequests because one GET /admin makes
+  // about 131 SeatGate calls, plus its Infisical reads.
+  // docs/cloudflare-workers.md has the design;  scripts/check-worker-guards.py
+  // holds these to scripts/worker-registry.json.
+  "limits": { "cpu_ms": 300, "subrequests": 200 },
 
   "kv_namespaces": [
     // Grants, hashed tokens and encrypted props (the OAuth library's store).
@@ -219,9 +227,10 @@
     // answer not_configured.  Each seat signs with its WAKE_HMAC_KEY_<SEAT>.
     // Set it only after DEPLOY.md "Eavesdropper read API" step 3 passes.  The same
     // origin serves the Operator's /notes/v1/ API for the notes_* tools (AFC-486):
-    // operator.jays.services, the route the owner approved, which carries only
-    // /listener/v1/ and /notes/v1/ to the eavesdropper's port 8788.
-    "LISTENER_API_URL": "https://operator.jays.services",
+    // operator.simplewithus.com, the Operator's own domain (owner rename,
+    // Nov 4, 2026), carries /listener/v1/, /notes/v1/, /linear/v1/,
+    // and /registry/v1/ to the eavesdropper's port 8788.
+    "LISTENER_API_URL": "https://operator.simplewithus.com",
     // The git-relay upstream the gr_* tools call.  GR_WORKFLOW_TOOLS "on"
     // lists and enables the gr_wf_ workflow verb tools (src/config.js);
     // without it they are neither listed nor callable.

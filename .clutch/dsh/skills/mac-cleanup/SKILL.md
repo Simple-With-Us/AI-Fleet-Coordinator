@@ -23,7 +23,7 @@ Optimize local workstation storage and remote Coolify server disk usage by runni
 Any agent (Antigravity, Grok, Claude, Cursor, Codex) or operator can execute the unified cleanup script directly:
 
 ```bash
-bash /Users/jay/apps/mac-auto-cleanup.sh
+bash ~/apps/mac-auto-cleanup.sh
 ```
 
 Or using the CLI shortcut (available in `zsh` and `bash`):
