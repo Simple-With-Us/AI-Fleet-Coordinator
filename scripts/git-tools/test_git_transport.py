@@ -38,20 +38,33 @@ class Transfer(unittest.TestCase):
             calls.append((argv, kw))
             return subprocess.CompletedProcess(argv, 0, stderr="")
 
-        with mock.patch.object(G.subprocess, "run", run), mock.patch.object(G, "_git_binary", return_value="git"):
+        with (
+            mock.patch.object(G.subprocess, "run", run),
+            mock.patch.object(G, "_git_binary", return_value="git"),
+        ):
             with contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(fn(a, BEARER), 0)
         return calls
 
     def test_the_bearer_is_never_in_argv(self):
-        calls = self.capture(G.cmd_clone, ns(repo="Simple-With-Us/Fleet-OPS", dir="out", depth=None, branch=None, partial=False))
+        calls = self.capture(
+            G.cmd_clone,
+            ns(repo="Simple-With-Us/Fleet-OPS", dir="out", depth=None, branch=None, partial=False),
+        )
         argv, kw = calls[0]
-        self.assertEqual(argv, ["git", "clone", "--", "https://github.com/Simple-With-Us/Fleet-OPS.git", "out"])
+        self.assertEqual(
+            argv, ["git", "clone", "--", "https://github.com/Simple-With-Us/Fleet-OPS.git", "out"]
+        )
         self.assertNotIn(BEARER, " ".join(argv))
         env = kw["env"]
-        config = [(env[f"GIT_CONFIG_KEY_{i}"], env[f"GIT_CONFIG_VALUE_{i}"]) for i in range(int(env["GIT_CONFIG_COUNT"]))]
+        config = [
+            (env[f"GIT_CONFIG_KEY_{i}"], env[f"GIT_CONFIG_VALUE_{i}"])
+            for i in range(int(env["GIT_CONFIG_COUNT"]))
+        ]
         self.assertIn((f"url.{G.GIT_ROUTE_BASE}/git/.insteadOf", "https://github.com/"), config)
-        self.assertIn((f"http.{G.GIT_ROUTE_BASE}/.extraHeader", f"Authorization: Bearer {BEARER}"), config)
+        self.assertIn(
+            (f"http.{G.GIT_ROUTE_BASE}/.extraHeader", f"Authorization: Bearer {BEARER}"), config
+        )
         self.assertIn(("credential.helper", ""), config)
         self.assertEqual(env["GIT_TERMINAL_PROMPT"], "0")
 
@@ -65,17 +78,29 @@ class Transfer(unittest.TestCase):
             return subprocess.CompletedProcess(argv, 1, stderr=f"fatal: header {BEARER} refused\n")
 
         err = io.StringIO()
-        with mock.patch.object(G.subprocess, "run", run), mock.patch.object(G, "_git_binary", return_value="git"):
-            with contextlib.redirect_stderr(err):
-                self.assertEqual(G._run_git(["fetch"], BEARER), 1)
+        with (
+            mock.patch.object(G.subprocess, "run", run),
+            mock.patch.object(G, "_git_binary", return_value="git"),
+            contextlib.redirect_stderr(err),
+        ):
+            self.assertEqual(G._run_git(["fetch"], BEARER), 1)
         self.assertNotIn(BEARER, err.getvalue())
         self.assertIn("[bearer]", err.getvalue())
 
     def test_an_option_cannot_be_passed_as_a_value(self):
         cases = (
-            (G.cmd_clone, ns(repo="--upload-pack=x/y", dir=None, depth=None, branch=None, partial=False)),
-            (G.cmd_clone, ns(repo="a/b", dir="--upload-pack=x", depth=None, branch=None, partial=False)),
-            (G.cmd_clone, ns(repo="a/b", dir=None, depth=None, branch="--upload-pack=x", partial=False)),
+            (
+                G.cmd_clone,
+                ns(repo="--upload-pack=x/y", dir=None, depth=None, branch=None, partial=False),
+            ),
+            (
+                G.cmd_clone,
+                ns(repo="a/b", dir="--upload-pack=x", depth=None, branch=None, partial=False),
+            ),
+            (
+                G.cmd_clone,
+                ns(repo="a/b", dir=None, depth=None, branch="--upload-pack=x", partial=False),
+            ),
             (G.cmd_clone, ns(repo="a/../b", dir=None, depth=None, branch=None, partial=False)),
             (G.cmd_fetch, ns(dir=".", remote="--upload-pack=x", refspec=[], prune=False)),
             (G.cmd_fetch, ns(dir=".", remote="origin", refspec=["--upload-pack=x"], prune=False)),
@@ -84,7 +109,10 @@ class Transfer(unittest.TestCase):
         )
         for fn, a in cases:
             with mock.patch.object(G.subprocess, "run", side_effect=AssertionError("git ran")):
-                with self.assertRaises(SystemExit) as caught, contextlib.redirect_stderr(io.StringIO()):
+                with (
+                    self.assertRaises(SystemExit) as caught,
+                    contextlib.redirect_stderr(io.StringIO()),
+                ):
                     fn(a, BEARER)
             self.assertEqual(caught.exception.code, G.EXIT_USAGE, a)
 
@@ -105,14 +133,33 @@ class Transfer(unittest.TestCase):
             subprocess.run(["git", "init", "-q", "-b", "main", str(origin)], check=True)
             (origin / "a.txt").write_text("hello\n")
             subprocess.run(["git", "-C", str(origin), "add", "a.txt"], check=True)
-            subprocess.run(["git", *identity, "-C", str(origin), "commit", "-q", "-m", "one"], check=True)
-            with mock.patch.object(G, "_repo_url", return_value=str(origin)), contextlib.redirect_stdout(io.StringIO()):
-                self.assertEqual(G.cmd_archive(ns(repo="a/b", output=str(root / "out.tar.gz"), ref="main"), BEARER), 0)
-                self.assertEqual(G.cmd_bundle(ns(repo="a/b", output=str(root / "out.bundle")), BEARER), 0)
+            subprocess.run(
+                ["git", *identity, "-C", str(origin), "commit", "-q", "-m", "one"], check=True
+            )
+            with (
+                mock.patch.object(G, "_repo_url", return_value=str(origin)),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                self.assertEqual(
+                    G.cmd_archive(
+                        ns(repo="a/b", output=str(root / "out.tar.gz"), ref="main"), BEARER
+                    ),
+                    0,
+                )
+                self.assertEqual(
+                    G.cmd_bundle(ns(repo="a/b", output=str(root / "out.bundle")), BEARER), 0
+                )
             self.assertGreater((root / "out.tar.gz").stat().st_size, 0)
-            listed = subprocess.run(["tar", "tzf", str(root / "out.tar.gz")], check=True, capture_output=True, text=True).stdout
+            listed = subprocess.run(
+                ["tar", "tzf", str(root / "out.tar.gz")], check=True, capture_output=True, text=True
+            ).stdout
             self.assertIn("a.txt", listed)
-            checked = subprocess.run(["git", "bundle", "list-heads", str(root / "out.bundle")], check=True, capture_output=True, text=True)
+            checked = subprocess.run(
+                ["git", "bundle", "list-heads", str(root / "out.bundle")],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
             self.assertIn("refs/heads/main", checked.stdout)
 
 
@@ -130,21 +177,30 @@ class Publish(unittest.TestCase):
 
     def publish_unmocked(self, specs):
         """publish, leaving validate_arguments to the caller's own patch."""
-        tools = {name: {"read": name == "gr_wf_branch_get", "schema": {"properties": {"identity": {}}}}
-                 for name in ("gr_wf_branch_get", "gr_wf_branch_create", "gr_wf_files_put")}
+        tools = {
+            name: {"read": name == "gr_wf_branch_get", "schema": {"properties": {"identity": {}}}}
+            for name in ("gr_wf_branch_get", "gr_wf_branch_create", "gr_wf_files_put")
+        }
 
         def remote(name, args, write, bearer, deadline=None):
             self.sent.append((name, args, write))
             return {"structured": {"branch": {"commit": {"sha": "a" * 40}}, "commit": "b" * 40}}
 
-        a = ns(repo="Simple-With-Us/CodeCaps", branch="claude/x", message="m", base=None, file=specs)
-        with mock.patch.object(G, "remote_call", remote), mock.patch.object(G, "declared_seat", return_value=None), \
-                contextlib.redirect_stdout(io.StringIO()):
+        a = ns(
+            repo="Simple-With-Us/CodeCaps", branch="claude/x", message="m", base=None, file=specs
+        )
+        with (
+            mock.patch.object(G, "remote_call", remote),
+            mock.patch.object(G, "declared_seat", return_value=None),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
             return G.cmd_publish(tools, a, BEARER, "CLAUDE", 0.0)
 
     def publish(self, specs, base=None, head="a" * 40):
-        tools = {name: {"read": name == "gr_wf_branch_get", "schema": {"properties": {"identity": {}}}}
-                 for name in ("gr_wf_branch_get", "gr_wf_branch_create", "gr_wf_files_put")}
+        tools = {
+            name: {"read": name == "gr_wf_branch_get", "schema": {"properties": {"identity": {}}}}
+            for name in ("gr_wf_branch_get", "gr_wf_branch_create", "gr_wf_files_put")
+        }
         counter = {"n": 0}
 
         def remote(name, args, write, bearer, deadline=None):
@@ -156,9 +212,15 @@ class Publish(unittest.TestCase):
                 return {"structured": {"commit": f"{counter['n']:040x}"}}
             return {"structured": {}}
 
-        a = ns(repo="Simple-With-Us/CodeCaps", branch="claude/x", message="m", base=base, file=specs)
-        with mock.patch.object(G, "remote_call", remote), mock.patch.object(G, "validate_arguments"), \
-                mock.patch.object(G, "declared_seat", return_value=None), contextlib.redirect_stdout(io.StringIO()):
+        a = ns(
+            repo="Simple-With-Us/CodeCaps", branch="claude/x", message="m", base=base, file=specs
+        )
+        with (
+            mock.patch.object(G, "remote_call", remote),
+            mock.patch.object(G, "validate_arguments"),
+            mock.patch.object(G, "declared_seat", return_value=None),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
             return G.cmd_publish(tools, a, BEARER, "CLAUDE", 0.0)
 
     def puts(self):
@@ -214,11 +276,22 @@ class Publish(unittest.TestCase):
 
     def test_a_secret_inside_the_decoded_content_is_still_refused(self):
         token = "ghp_" + "a1b2c3d4" * 5
-        args = {"files": [{"path": "a.txt", "content_b64": base64.b64encode(f"key = {token}\n".encode()).decode("ascii")}]}
+        args = {
+            "files": [
+                {
+                    "path": "a.txt",
+                    "content_b64": base64.b64encode(f"key = {token}\n".encode()).decode("ascii"),
+                }
+            ]
+        }
         self.assertIn("content_b64", G._scan_arguments(args, BEARER))
 
     def test_the_bearer_inside_the_decoded_content_is_still_refused(self):
-        args = {"files": [{"path": "a.txt", "content_b64": base64.b64encode(BEARER.encode()).decode("ascii")}]}
+        args = {
+            "files": [
+                {"path": "a.txt", "content_b64": base64.b64encode(BEARER.encode()).decode("ascii")}
+            ]
+        }
         self.assertIn("content_b64", G._scan_arguments(args, BEARER))
 
     def test_nothing_is_sent_when_any_file_is_bad(self):
@@ -240,7 +313,12 @@ class Parser(unittest.TestCase):
         self.assertEqual(p.parse_args(["clone", "a/b", "dir", "--depth", "1"]).depth, 1)
         self.assertEqual(p.parse_args(["fetch", "origin", "main", "--dir", "x"]).refspec, ["main"])
         self.assertEqual(p.parse_args(["archive", "a/b", "o.zip", "--ref", "v1"]).ref, "v1")
-        self.assertEqual(p.parse_args(["publish", "--repo", "a/b", "--branch", "c", "--message", "m", "--file", "f"]).file, ["f"])
+        self.assertEqual(
+            p.parse_args(
+                ["publish", "--repo", "a/b", "--branch", "c", "--message", "m", "--file", "f"]
+            ).file,
+            ["f"],
+        )
 
 
 if __name__ == "__main__":

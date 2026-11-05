@@ -119,7 +119,11 @@ class InputTooComplexError(ValueError):
 
 
 def scan_args(
-    value: object, path: str = "args", _depth: int = 0, _budget=None, _decoded_elsewhere: bool = False
+    value: object,
+    path: str = "args",
+    _depth: int = 0,
+    _budget=None,
+    _decoded_elsewhere: bool = False,
 ) -> None:
     """Refuse a request when any nested string field matches a credential shape.
 
