@@ -902,6 +902,152 @@ class ChatCatalog:
                 rows.append(row)
         return rows or [self._unavailable("fx", "FX", "no Fx sessions")]
 
+    # ------------------------------------------------------------------ OpenCode
+
+    def _opencode_root(self) -> Path:
+        # The default data home.  An XDG_DATA_HOME outside the scanned home is
+        # out of scope:  the _within guard would reject it anyway.
+        return self.home / ".local" / "share" / "opencode"
+
+    def _scan_opencode(self) -> list[dict[str, Any]]:
+        root = self._opencode_root()
+        db = root / "opencode.db"
+        if db.is_file() and _within(db, self.home):
+            rows = self._opencode_rows_db(db)
+            if rows is None:
+                return [self._unavailable("opencode", "OPENCODE", "unrecognized OpenCode database")]
+            return rows or [self._unavailable("opencode", "OPENCODE", "no OpenCode sessions")]
+        base = root / "storage" / "session"
+        files: list[Path] = []
+        if base.is_dir() and _within(base, self.home):
+            # storage/session/<project>/ses_*.json; bounded like _list_files.
+            for project in sorted(base.iterdir()):
+                if not project.is_dir() or project.is_symlink():
+                    continue
+                for path in sorted(project.glob("ses_*.json")):
+                    if path.is_file() and not path.is_symlink() and _within(path, base):
+                        files.append(path)
+                        if len(files) >= MAX_FILES_PER_SOURCE:
+                            break
+                if len(files) >= MAX_FILES_PER_SOURCE:
+                    break
+        rows = []
+        for path in files:
+            row = self._opencode_row_json(path)
+            if row is not None:
+                rows.append(row)
+        return rows or [self._unavailable("opencode", "OPENCODE", "no OpenCode session store")]
+
+    def _opencode_rows_db(self, db: Path) -> list[dict[str, Any]] | None:
+        # Current opencode keeps one SQLite store (WAL, possibly held open by the
+        # CLI):  open strictly read-only.  Column shape qualified against the owning
+        # source (anomalyco/opencode packages/core/src/session/sql.ts:  session.id /
+        # directory / title / time_created, message.session_id / time_created / data,
+        # part.message_id / session_id / time_created / data).  Returns None when the
+        # actual database does not match the shape this reader knows, so the catalog
+        # says "unrecognized" instead of guessing:  the installed version's schema is
+        # the final contract, and drift must never become wrong rows.
+        try:
+            conn = sqlite3.connect("file:%s?mode=ro" % db, uri=True)
+        except sqlite3.Error:
+            return None
+        try:
+            conn.execute("PRAGMA query_only = ON")
+            tables = {
+                r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+            }
+            if "session" not in tables:
+                return None
+            sessions = conn.execute(
+                "SELECT id, directory, title, time_created FROM session"
+                " ORDER BY time_created DESC LIMIT ?",
+                (MAX_FILES_PER_SOURCE,),
+            ).fetchall()
+            updated: dict[str, float] = {}
+            if "message" in tables:
+                for sid, stamp in conn.execute(
+                    "SELECT session_id, MAX(time_created) FROM message GROUP BY session_id"
+                ):
+                    if isinstance(sid, str) and isinstance(stamp, (int, float)):
+                        updated[sid] = stamp / 1000.0
+            rows = []
+            for sid, cwd, title, created in sessions:
+                if not isinstance(sid, str) or not sid:
+                    continue
+                stamp = updated.get(sid) or (
+                    created / 1000.0 if isinstance(created, (int, float)) else 0.0
+                )
+                rows.append(
+                    self._row(
+                        "opencode",
+                        "OPENCODE",
+                        sid,
+                        cwd=cwd if isinstance(cwd, str) else None,
+                        title=title
+                        if isinstance(title, str) and title.strip()
+                        else "OpenCode chat " + sid[:12],
+                        updated_at=stamp,
+                        source=str(db),
+                        excerpts=self._opencode_excerpts_db(conn, sid, tables),
+                    )
+                )
+            return rows
+        except sqlite3.Error:
+            return None
+        finally:
+            conn.close()
+
+    def _opencode_excerpts_db(
+        self, conn: sqlite3.Connection, sid: str, tables: set[str]
+    ) -> list[dict[str, str]]:
+        if "message" not in tables or "part" not in tables:
+            return []
+        excerpts: list[dict[str, str]] = []
+        try:
+            rows = conn.execute(
+                "SELECT m.data, p.data FROM part p JOIN message m ON m.id = p.message_id"
+                " WHERE p.session_id = ? ORDER BY p.time_created DESC LIMIT ?",
+                (sid, 400),
+            ).fetchall()
+        except sqlite3.Error:
+            return []
+        for mdata, pdata in reversed(rows):
+            try:
+                msg = json.loads(mdata) if isinstance(mdata, str) else None
+                part = json.loads(pdata) if isinstance(pdata, str) else None
+            except ValueError:
+                continue
+            if not isinstance(msg, dict) or not isinstance(part, dict):
+                continue
+            role = msg.get("role")
+            if role not in {"user", "assistant"} or part.get("type") != "text":
+                continue
+            text = self.scrub(_safe_text(part.get("text")))
+            if text:
+                excerpts.append({"role": role, "text": text})
+        return excerpts[-8:]
+
+    def _opencode_row_json(self, path: Path) -> dict[str, Any] | None:
+        # Legacy (pre-SQLite) tree:  storage/session/<project>/ses_*.json.
+        info = self._read_json(path)
+        if not info:
+            return None
+        sid = info.get("id") if isinstance(info.get("id"), str) else path.stem
+        time_info = info.get("time") if isinstance(info.get("time"), dict) else {}
+        stamp = time_info.get("updated") or time_info.get("created") or info.get("time_created")
+        stamp = stamp / 1000.0 if isinstance(stamp, (int, float)) else 0.0
+        return self._row(
+            "opencode",
+            "OPENCODE",
+            sid,
+            cwd=info.get("directory") if isinstance(info.get("directory"), str) else None,
+            title=info.get("title")
+            if isinstance(info.get("title"), str) and info.get("title", "").strip()
+            else "OpenCode chat " + sid[:12],
+            updated_at=stamp,
+            source=str(path),
+        )
+
     def _scan(
         self,
         *,
@@ -918,6 +1064,7 @@ class ChatCatalog:
             self._scan_muse(),
             self._scan_minimax(),
             self._scan_fx(),
+            self._scan_opencode(),
         ]
         # Explicit availability rows ensure unsupported/empty stores remain visible.
         groups.append(self._scan_cursor_local())

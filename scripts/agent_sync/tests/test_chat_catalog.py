@@ -827,3 +827,97 @@ class ChatCatalogTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OpenCodeCatalogTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.home = Path(self.tmp.name)
+        self.clock = FakeClock()
+
+    def catalog(self, **kwargs):
+        return ChatCatalog(home=self.home, host="test-host", clock=self.clock, **kwargs)
+
+    def _db(self) -> Path:
+        db = self.home / ".local" / "share" / "opencode" / "opencode.db"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(db)
+        try:
+            conn.execute(
+                "CREATE TABLE session (id TEXT, project_id TEXT, parent_id TEXT,"
+                " directory TEXT, title TEXT, time_created INTEGER)"
+            )
+            conn.execute(
+                "CREATE TABLE message (id TEXT, session_id TEXT, time_created INTEGER, data TEXT)"
+            )
+            conn.execute(
+                "CREATE TABLE part (id TEXT, message_id TEXT, session_id TEXT,"
+                " time_created INTEGER, data TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO session VALUES ('ses_1', 'p1', NULL, '/srv/app', 'Real chat', 1000)"
+            )
+            conn.execute(
+                "INSERT INTO message VALUES ('msg_1', 'ses_1', 2000,"
+                " '{\"role\": \"user\", \"time\": {\"created\": 2000}}')"
+            )
+            conn.execute(
+                "INSERT INTO part VALUES ('prt_1', 'msg_1', 'ses_1', 2000,"
+                " '{\"type\": \"text\", \"text\": \"hello fleet\"}')"
+            )
+            conn.execute(
+                "INSERT INTO part VALUES ('prt_2', 'msg_1', 'ses_1', 2001,"
+                " '{\"type\": \"tool\", \"state\": {\"status\": \"completed\"}}')"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return db
+
+    def test_sqlite_store_yields_a_catalog_row(self):
+        self._db()
+        catalog = self.catalog()
+        rows = catalog.discover()
+        row = next(r for r in rows if r["platform"] == "opencode")
+        self.assertEqual(row["seat"], "OPENCODE")
+        self.assertEqual(row["session_id"], "ses_1")
+        self.assertEqual(row["title"], "Real chat")
+        self.assertEqual(row["cwd"], "/srv/app")
+        self.assertEqual(row["updated_at"], 2.0)
+        self.assertEqual(row["status"], "available")
+        self.assertFalse(row["capabilities"]["wake"])
+        self.assertEqual(row["capabilities"]["wake_status"], "unsupported")
+        self.assertEqual(catalog.excerpt(row["id"]), [{"role": "user", "text": "hello fleet"}])
+
+    def test_missing_store_reports_unavailable(self):
+        rows = self.catalog().discover()
+        row = next(r for r in rows if r["platform"] == "opencode")
+        self.assertEqual(row["status"], "unavailable")
+        self.assertFalse(row["capabilities"]["read"])
+
+    def test_unknown_database_schema_reports_unrecognized(self):
+        db = self.home / ".local" / "share" / "opencode" / "opencode.db"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(db)
+        conn.execute("CREATE TABLE something_else (id TEXT)")
+        conn.commit()
+        conn.close()
+        rows = self.catalog().discover()
+        row = next(r for r in rows if r["platform"] == "opencode")
+        self.assertEqual(row["status"], "unavailable")
+        self.assertIn("unrecognized", row["error"])
+
+    def test_legacy_json_tree_is_read_when_no_database(self):
+        base = self.home / ".local" / "share" / "opencode" / "storage" / "session" / "proj"
+        base.mkdir(parents=True)
+        (base / "ses_9.json").write_text(
+            json.dumps({"id": "ses_9", "title": "Old chat", "directory": "/old",
+                        "time": {"created": 5000, "updated": 9000}}),
+            encoding="utf-8",
+        )
+        rows = self.catalog().discover()
+        row = next(r for r in rows if r["platform"] == "opencode")
+        self.assertEqual(row["session_id"], "ses_9")
+        self.assertEqual(row["title"], "Old chat")
+        self.assertEqual(row["updated_at"], 9.0)
