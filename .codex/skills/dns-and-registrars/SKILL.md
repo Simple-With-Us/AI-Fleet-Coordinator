@@ -41,7 +41,7 @@ Each account's login, and the zones each account holds, are private inventory in
 
 | Registrar | Use for |
 |-----------|---------|
-| Namecheap | Default for most domains.  `NAMECHEAP_API_KEY` lives in Infisical Fleet-OPS; read it only with `fleet-secrets get NAMECHEAP_API_KEY` (do not read process environment variables for it, and never print or commit the value).  If Infisical is unreachable or the key is missing, stop with a clear error — do not substitute another source. |
+| Namecheap | Default for most domains.  `NAMECHEAP_API_KEY` lives in Infisical Fleet-OPS; read it only with the consumer's own scoped Infisical service token (the `service-tokens` pack) — or the shared `fleet-secrets get NAMECHEAP_API_KEY` reader when it has a working login on this host (do not read process environment variables for it, and never print or commit the value).  If Infisical is unreachable or the key is missing, stop with a clear error — do not substitute another source. |
 | UnstoppableDomains | The operator's private store names which apex lives here |
 | Cloudflare registrar | The ST product domains only (assignment in the private store) |
 
