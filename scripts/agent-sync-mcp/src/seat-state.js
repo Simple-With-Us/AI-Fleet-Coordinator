@@ -11,7 +11,7 @@
 import { WA_EVENT } from "./wa/contract.js";
 import { ARM_WINDOW_MS, GRANT_MAX_AGE_MS, PROPS_PHASE } from "./config.js";
 import { scanSecret } from "./contract.js";
-import { EVENT_NAME, SPIKE_EVENT_NAME, subEventName } from "./events.js";
+import { EVENT_NAME, SPIKE_EVENT_NAME, WEBHOOK_EVENT_NAME, subEventName } from "./events.js";
 
 const AUDIT_CAP = 200;
 // Authorize refusals come from a request that passed Cloudflare Access, so the
@@ -843,7 +843,12 @@ export const WAKE_SEEN_MS = 15 * MINUTE_MS; // > the wake's 5-minute sent_at win
 export const WAKE_LEASE_MS = 15 * 1000;
 const WAKE_SEEN_CAP = 500;
 // Every way a claim can end (eventSettleWake).  "retry" forgets the wake;  the rest settle it.
-export const WAKE_OUTCOMES = Object.freeze(["delivered", "no_subscriber", "rejected", "gone", "not_live", "channel_refused", "retry"]);
+// "uncertain" is the webhook wake's tombstone (src/webhook-wake.js):  a
+// dispatch happened and its fate is unknown, so the wake stays spent - firing
+// again, same id or new, could repeat a turn.  The listener wake never emits
+// it.  "retry" (forget, re-arm the same id) is only for a provable
+// zero-dispatch, and the listener's existing contract.
+export const WAKE_OUTCOMES = Object.freeze(["delivered", "no_subscriber", "rejected", "gone", "not_live", "channel_refused", "retry", "uncertain"]);
 const VERIFIED_CAP = 20;
 const subRef = (id) => String(id ?? "").slice(0, 16);
 
@@ -1164,6 +1169,30 @@ export async function spikeClaim(store, { spikeId, max = 3, windowMs = 60 * MINU
   const mine = subsNamed(subs, SPIKE_EVENT_NAME);
   await audit(store, { event: "spike_captured", spike_ref: ref, subscribers: mine.length }, now);
   return { verdict: "go", subs: mine.map((sub) => ({ ...sub })) };
+}
+
+// Jet's additive webhook wake (owner ask 2026-11-04).  Dedupe and budget are
+// the CANONICAL ones, shared with the listener wake:  the budget reads the
+// same wake_seen ledger eventClaimWake writes, so listener and webhook wakes
+// draw on ONE hourly envelope (the seat's existing wake budget) and the new
+// ingress can never double it;  the claim itself IS eventClaimWake, so a
+// wake_id claimed, in flight or settled on EITHER path can never cause a
+// second event on the other.  Custody after delivery is src/webhook-wake.js's
+// contract (uncertain tombstones, never re-arms).  Budget first:  a
+// rate-limited wake was never claimed and never dispatched, so the same id
+// may come back inside a later window.
+export async function webhookWakeClaim(store, { wakeId, max = 6, windowMs = 60 * MINUTE_MS }, now = Date.now()) {
+  if (typeof wakeId !== "string" || wakeId.length === 0 || wakeId.length > 128) throw new Error("bad wake id");
+  const seen = await wakeSeen(store, now);
+  const inWindow = Object.values(seen)
+    .map(wakeEntry)
+    .filter((entry) => entry && Number.isFinite(entry.at) && now - entry.at < windowMs && entry.at <= now + MINUTE_MS);
+  if (inWindow.length >= max) {
+    const oldest = Math.min(...inWindow.map((entry) => entry.at));
+    await audit(store, { event: "webhook_wake_rate_limited", wake_ref: wakeRefOf(wakeId) }, now);
+    return { verdict: "rate_limited", retryAfterS: Math.max(1, Math.ceil((oldest + windowMs - now) / 1000)) };
+  }
+  return eventClaimWake(store, { wakeId, messageId: null, name: WEBHOOK_EVENT_NAME }, now);
 }
 
 /** Live subscriptions for /admin:  never the URL path or the secret. */

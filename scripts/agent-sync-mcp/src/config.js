@@ -124,6 +124,14 @@ export const WAKE_SECRETS = Object.freeze({
   WISE: "WAKE_HMAC_KEY_INSTINCT",
 });
 
+// Jet's additive webhook wake (owner ask 2026-11-04):  the seat's
+// POST /internal/webhook-wake/<SEAT> signing key binding.  Separate from
+// WAKE_SECRETS:  the webhook key is its own signing domain and is never the
+// seat's wake HMAC key (the Worker refuses to fire when they are equal).
+export const WEBHOOK_WAKE_SECRETS = Object.freeze({
+  JET: "WAKE_WEBHOOK_KEY_JET",
+});
+
 // The Operator notes API key (AFC-486, docs/protocols/operator-notes.md):  the Worker signs every notes_* request
 // to <LISTENER_API_URL>/notes/v1/ as the principal WORKER with this secret, the Infisical key
 // OPERATOR_NOTES_WORKER_KEY (AI Fleet Coordinator, prod, /operator).  One key for every seat:  the seat comes only
@@ -372,6 +380,7 @@ export function loadConfig(env) {
     grWorkflowEnabled: String(env.GR_WORKFLOW_TOOLS ?? "").trim() === "on",
     whatsappWakeEnabled: String(env.WHATSAPP_BRIDGE_WAKE_ENABLED ?? "").trim() === "on",
     spikeExtraEvents: String(env.SPIKE_EXTRA_EVENTS ?? "").trim() === "on",
+    webhookWakeEnabled: String(env.WEBHOOK_WAKE_ENABLED ?? "").trim() === "on",
   });
 }
 

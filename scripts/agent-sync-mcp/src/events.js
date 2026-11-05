@@ -63,7 +63,13 @@ export const EVENT_NAME = "zulip.mention";
 export const SPIKE_EVENT_NAME = "fleet.spike.ping";
 // Every name a subscription may carry.  An unsubscribe accepts any of them
 // whatever the flag says, so a subscription can always be removed.
-export const KNOWN_EVENT_NAMES = Object.freeze([EVENT_NAME, SPIKE_EVENT_NAME, WA_EVENT]);
+// Jet's additive webhook wake (owner ask 2026-11-04):  a second, signed
+// trigger into this delivery plane, on the whatsapp.message pattern - its own
+// event name and signing domain, no Zulip carrier.  Offered only while the
+// deploy's WEBHOOK_WAKE_ENABLED is "on", and fired only by the signed
+// POST /internal/webhook-wake/<SEAT> (src/webhook-wake.js).
+export const WEBHOOK_EVENT_NAME = "fleet.webhook";
+export const KNOWN_EVENT_NAMES = Object.freeze([EVENT_NAME, SPIKE_EVENT_NAME, WA_EVENT, WEBHOOK_EVENT_NAME]);
 // One live destination per seat and event name (Jay:  hold ambiguous routing
 // rather than wake several chats).  A refresh of the same subscription is
 // fine;  a second chat for the same event is refused, never silently swapped
@@ -220,11 +226,41 @@ export function spikeEventDefinition() {
   };
 }
 
+export function webhookEventDefinition() {
+  return {
+    name: WEBHOOK_EVENT_NAME,
+    description:
+      "A doorbell fired by a signed fleet caller (POST /internal/webhook-wake/<SEAT>), for waking Jet about something outside Zulip and WhatsApp.  " +
+      "data holds only the wake's id and the time it was fired - a pure doorbell, no caller content of any kind.  No Zulip or WhatsApp content.",
+    delivery: ["webhook"],
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    payloadSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "The wake's id, unique per wake." },
+        fired_at: { type: "string", description: "When the caller fired it (ISO 8601, UTC)." },
+      },
+      required: ["id", "fired_at"],
+      additionalProperties: false,
+    },
+  };
+}
+
+/** The fleet.webhook event takes no arguments:  absent, null or an empty object.  Anything else is refused. */
+export function validateWebhookWakeArguments(args) {
+  if (args === undefined || args === null) return {};
+  if (typeof args !== "object" || Array.isArray(args)) throw new EventError(INVALID_PARAMS, "arguments must be an object");
+  // The refusal never echoes the argument's name:  the event has no arguments to name.
+  if (Object.keys(args).length > 0) throw new EventError(INVALID_PARAMS, "fleet.webhook takes no arguments");
+  return {};
+}
+
 /** The events a seat offers:  zulip.mention always, and the spike only while SPIKE_EXTRA_EVENTS is "on". */
 export function eventDefinitions(config) {
   const out = [eventDefinition(config)];
   if (config?.spikeExtraEvents === true) out.push(spikeEventDefinition());
   if (config?.whatsappEnabled && config?.eventSeat === "JET") out.push(waDefinition());
+  if (config?.webhookWakeEnabled === true && config?.eventSeat === "JET") out.push(webhookEventDefinition());
   return out;
 }
 
@@ -840,7 +876,7 @@ export class SeatEvents {
     this.requireRead();
     if (this.paused) throw new EventError(INVALID_REQUEST, "This seat is paused.");
     const name = this.checkName(params.name);
-    const args = name === EVENT_NAME ? await validateArguments(params.arguments, this.channels) : name === WA_EVENT ? validateWaArguments(params.arguments) : validateSpikeArguments(params.arguments);
+    const args = name === EVENT_NAME ? await validateArguments(params.arguments, this.channels) : name === WA_EVENT ? validateWaArguments(params.arguments) : name === WEBHOOK_EVENT_NAME ? validateWebhookWakeArguments(params.arguments) : validateSpikeArguments(params.arguments);
     const delivery = params.delivery;
     if (!delivery || typeof delivery !== "object" || delivery.mode !== "webhook") throw new EventError(INVALID_PARAMS, "Only webhook delivery is supported.");
     if (!parseWhsec(delivery.secret)) throw new EventError(INVALID_PARAMS, "delivery.secret must be whsec_ followed by base64 of 24 to 64 bytes.");

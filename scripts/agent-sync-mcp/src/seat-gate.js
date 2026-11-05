@@ -331,4 +331,9 @@ export class SeatGate extends DurableObject {
   spikeClaim(options) {
     return state.spikeClaim(this.store, options);
   }
+
+  // Jet's additive webhook wake (src/webhook-wake.js).
+  webhookWakeClaim(options) {
+    return state.webhookWakeClaim(this.store, options);
+  }
 }

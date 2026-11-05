@@ -37,6 +37,7 @@ import {
   SEAT_SECRETS,
   SEAT_LABELS,
   WAKE_SECRETS,
+  WEBHOOK_WAKE_SECRETS,
   KNOWN_SEATS,
 } from "./config.js";
 import {
@@ -84,6 +85,18 @@ import { verifyHealth, healthKey, healthReport, HEALTH_SIGNATURE_HEADER, HEALTH_
 import { serveWa } from "./wa/index.js";
 import { resolveSecret, resolveWakeKeys, infisicalStats, infisicalMode, prefetchFolder } from "./infisical.js";
 import { verifySpike, spikePathSeat, spikeKey, deliverSpike, spikeReply, SPIKE_SIGNATURE_HEADER, SPIKE_MAX_BODY, SPIKE_RATE_LIMIT, SPIKE_RATE_WINDOW_MS } from "./spike.js";
+import {
+  verifyWebhookWake,
+  webhookWakeAdmission,
+  webhookWakePathSeat,
+  webhookWakeKey,
+  deliverWebhookWake,
+  webhookWakeReply,
+  WEBHOOK_WAKE_SIGNATURE_HEADER,
+  WEBHOOK_WAKE_MAX_BODY,
+  WEBHOOK_WAKE_RATE_LIMIT,
+  WEBHOOK_WAKE_RATE_WINDOW_MS,
+} from "./webhook-wake.js";
 import { serveLinearWake, LINEAR_WAKE_PATH } from "./linear-wake.js";
 import { AuditBatcher } from "./audit-batch.js";
 import { IdentityCache } from "./identity-cache.js";
@@ -741,6 +754,61 @@ async function serveSpike(request, env, ctx, config) {
   }
   console.log(JSON.stringify({ event: "spike", seat, verdict: claim.verdict, outcome: result.outcome ?? null, subscribers: result.subscribers ?? 0, delivered: result.delivered ?? 0 }));
   const reply = spikeReply(result);
+  return jsonResponse(reply.body, reply.status, reply.retryAfterS ? { "Retry-After": String(reply.retryAfterS) } : {});
+}
+
+// ---------------------------------------------------------------- /internal/webhook-wake/<SEAT>
+
+/**
+ * Jet's additive webhook wake (owner ask 2026-11-04:  "jet needs to wake also
+ * his own way"):  a second, signed trigger into the same MCP Events delivery
+ * plane, on the whatsapp.message pattern - its own event name (fleet.webhook)
+ * and its own signing domain, no Zulip carrier.  src/webhook-wake.js holds the
+ * contract.  404 unless WEBHOOK_WAKE_ENABLED is "on", the seat is hosted with
+ * a wake key, and its WAKE_WEBHOOK_KEY_<SEAT> binding is set and distinct from
+ * every seat's wake key.  Then the signature, freshness and shape, then
+ * SeatGate.webhookWakeClaim (dedupe, hourly budget), then delivery.
+ */
+async function serveWebhookWake(request, env, ctx, config) {
+  const started = Date.now();
+  const seat = webhookWakePathSeat(new URL(request.url).pathname);
+  const bound = seat && Object.hasOwn(WEBHOOK_WAKE_SECRETS, seat) && Object.hasOwn(WAKE_SECRETS, seat);
+  const wakeKey = bound ? await resolveSecret(env, { name: WAKE_SECRETS[seat], path: "/wake", envName: WAKE_SECRETS[seat], optional: true }) : null;
+  const key = bound ? webhookWakeKey(env[WEBHOOK_WAKE_SECRETS[seat]]) : "";
+  // WAKE_WEBHOOK_KEY_<SEAT> must never equal any seat's wake key, not only this seat's.
+  const wakeKeys = bound && key ? await resolveWakeKeys(env, Object.values(WAKE_SECRETS)) : [];
+  const admission = webhookWakeAdmission({ enabled: config.webhookWakeEnabled, seat, hostedSeats: config.hostedSeats, bound, wakeKey, key, wakeKeys });
+  if (admission) {
+    if (admission !== "not_admitted") console.log(JSON.stringify({ event: "webhook_wake_refused", seat, reason: admission }));
+    return notFound();
+  }
+  if (request.method !== "POST") return textResponse("Method Not Allowed", 405, { Allow: "POST" });
+  const declared = Number(request.headers.get("content-length") ?? "0");
+  if (Number.isFinite(declared) && declared > WEBHOOK_WAKE_MAX_BODY) return textResponse("Payload Too Large", 413);
+  const bytes = await readBodyBytes(request, WEBHOOK_WAKE_MAX_BODY);
+  if (bytes === null) return textResponse("Payload Too Large", 413);
+  const checked = await verifyWebhookWake({ bytes, signature: request.headers.get(WEBHOOK_WAKE_SIGNATURE_HEADER), key, seat });
+  if (!checked.ok) {
+    console.log(JSON.stringify({ event: "webhook_wake_refused", seat, reason: checked.reason }));
+    return checked.status === 404 ? notFound() : textResponse(checked.status === 401 ? "Unauthorized" : checked.status === 413 ? "Payload Too Large" : "Bad Request", checked.status);
+  }
+  const wake = checked.wake;
+  if (config.mcpDisabled) {
+    console.log(JSON.stringify({ event: "webhook_wake", seat, verdict: "mcp_disabled" }));
+    return jsonResponse({ ok: true, disabled: true, subscribers: 0, delivered: 0 }, 202);
+  }
+  const seatGate = gate(env, seat);
+  const claim = await seatGate.webhookWakeClaim({ wakeId: wake.wake_id, max: WEBHOOK_WAKE_RATE_LIMIT, windowMs: WEBHOOK_WAKE_RATE_WINDOW_MS });
+  let result = claim;
+  if (claim.verdict === "go") {
+    // The answer waits for the delivery and its settle, like the listener's;
+    // waitUntil keeps them running if the caller hangs up first.
+    const work = deliverWebhookWake({ gate: seatGate, wake, claim, fetchFn: (...a) => fetch(...a), deadline: started + WAKE_BUDGET_MS });
+    ctx.waitUntil(work.catch(() => {}));
+    result = { verdict: "go", ...(await work) };
+  }
+  console.log(JSON.stringify({ event: "webhook_wake", seat, verdict: claim.verdict, outcome: result.outcome ?? null, subscribers: result.subscribers ?? 0, delivered: result.delivered ?? 0 }));
+  const reply = webhookWakeReply(result);
   return jsonResponse(reply.body, reply.status, reply.retryAfterS ? { "Retry-After": String(reply.retryAfterS) } : {});
 }
 
@@ -1515,6 +1583,7 @@ export default {
     if (route === "wake") return serveWake(request, env, ctx, config);
     if (route === "wa") return serveWa(request, env, config, gate(env, "JET"));
     if (route === "spike") return serveSpike(request, env, ctx, config);
+    if (route === "webhook_wake") return serveWebhookWake(request, env, ctx, config);
     if (route === "linear_health") return serveLinearHealth(request, env, config);
     if (route === "token") {
       const gated = await gateToken(request, env, config);
