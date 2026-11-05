@@ -8,7 +8,7 @@ description: Fleet human-facing prose — two spaces between sentences (a real U
 > **This install is for `AG`.**  Chat tag `[AG·session8]`.  Notes `Antigravity`.  Branches `ag/`.  Lanes `~/apps/lanes/<Repo>/antigravity-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `AG`, credential in Infisical Fleet-OPS `/zulip` (`AG_ZULIP_EMAIL`, `AG_ZULIP_KEY`, `AG_ZULIP_SITE`).  Session tag `[AG·session8]`, and the `simple-chat` CLI writes it for you.
 
 
-Canonical detail: `/Users/jay/apps/FLEET-UI-COPY.md`.  Policy: `/Users/jay/apps/FLEET-PROTOCOL.md` § Two spaces, timestamps, TestFlight metadata.
+Canonical detail: `~/apps/FLEET-UI-COPY.md`.  Policy: `~/apps/FLEET-PROTOCOL.md` § Two spaces, timestamps, TestFlight metadata.
 
 ## Two spaces between sentences
 
@@ -101,6 +101,6 @@ Product UI times are the **viewer's** timezone except market-day accounting (Chi
 
 ## Canon
 
-- `/Users/jay/apps/FLEET-UI-COPY.md`
-- `/Users/jay/apps/FLEET-PROTOCOL.md` § Two spaces; Theme via FLEET-UI-COPY; TestFlight template
+- `~/apps/FLEET-UI-COPY.md`
+- `~/apps/FLEET-PROTOCOL.md` § Two spaces; Theme via FLEET-UI-COPY; TestFlight template
 - Skills: `apple-notes`, `sentence-gap`, `closeout`

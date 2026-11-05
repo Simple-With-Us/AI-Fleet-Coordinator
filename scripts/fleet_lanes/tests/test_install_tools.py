@@ -312,6 +312,8 @@ class World(unittest.TestCase):
         pkg.mkdir(parents=True)
         for m in T.REQUIRED_MODULES:
             shutil.copy(REAL_PKG / m, pkg / m)
+        # A real install ships it, and a deny says so when it is missing.
+        shutil.copy(REAL_PKG / T.EXCEPTIONS_FILE, pkg / T.EXCEPTIONS_FILE)
         if guard is not None:
             (pkg / "guard.py").write_text(guard, encoding="utf-8")
         if with_lane:
@@ -581,7 +583,7 @@ class MergeTests(unittest.TestCase):
                 self.assertEqual(action, "added")
                 found = T.locate(new, T.PLATFORMS[key])
                 self.assertEqual([e.command for e in found], [self.cmd(key)])
-                self.assertEqual(new["hooks"]["PreToolUse"][0]["matcher"], "Bash")
+                self.assertEqual(new["hooks"]["PreToolUse"][0]["matcher"], T.CLAUDE_MATCHER if key == "claude" else "Bash")
                 self.assertEqual(new, T.new_document(T.PLATFORMS[key], self.cmd(key)))
 
     def test_claude_into_populated_appends_a_last_group_and_keeps_everything(self) -> None:
@@ -593,7 +595,7 @@ class MergeTests(unittest.TestCase):
         self.assertEqual(
             groups[:-1], orig["hooks"]["PreToolUse"]
         )  # positions unchanged (Codex trust is positional)
-        self.assertEqual(groups[-1]["matcher"], "Bash")
+        self.assertEqual(groups[-1]["matcher"], T.CLAUDE_MATCHER)
         self.assertEqual(groups[-1]["hooks"][0]["command"], self.cmd("claude"))
         trimmed = copy.deepcopy(new)
         trimmed["hooks"]["PreToolUse"].pop()
@@ -641,7 +643,18 @@ class MergeTests(unittest.TestCase):
         }
         new, action, _ = self.merge("claude", doc)
         self.assertEqual(action, "updated")
-        self.assertEqual(new["hooks"]["PreToolUse"][0]["matcher"], "Bash")
+        self.assertEqual(new["hooks"]["PreToolUse"][0]["matcher"], T.CLAUDE_MATCHER)
+
+    def test_our_bash_only_group_is_widened_and_a_shared_one_is_not(self) -> None:
+        ours = {"matcher": "Bash", "hooks": [{"type": "command", "command": self.cmd("claude")}]}
+        new, action, notes = self.merge("claude", {"hooks": {"PreToolUse": [copy.deepcopy(ours)]}})
+        self.assertEqual(action, "updated")
+        self.assertEqual(new["hooks"]["PreToolUse"][0]["matcher"], T.CLAUDE_MATCHER)
+        self.assertTrue(any("widened" in n for n in notes))
+        shared = copy.deepcopy(ours)
+        shared["hooks"].append({"type": "command", "command": "/x/theirs.sh"})
+        new, action, _ = self.merge("claude", {"hooks": {"PreToolUse": [shared]}})
+        self.assertEqual((action, new["hooks"]["PreToolUse"][0]["matcher"]), ("unchanged", "Bash"))
 
     def test_an_entry_under_another_event_does_not_count(self) -> None:
         doc = {
@@ -1009,7 +1022,7 @@ class ToolsTests(World):
         s = self.stable()
         names = sorted(p.name for p in (s / "fleet_lanes").iterdir())
         self.assertEqual(
-            names, sorted(list(T.REQUIRED_MODULES) + ["lane.py", T.SECRET_GUARD_MODULE])
+            names, sorted(list(T.REQUIRED_MODULES) + ["lane.py", T.SECRET_GUARD_MODULE, T.EXCEPTIONS_FILE])
         )  # no tests, no __pycache__
         self.assertFalse((s / "fleet_lanes" / "tests").exists())
         self.assertTrue((s / "fleet-apps.json").is_file())
