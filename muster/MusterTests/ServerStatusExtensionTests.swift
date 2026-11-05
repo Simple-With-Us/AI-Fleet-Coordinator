@@ -346,6 +346,14 @@ final class ServerStatusExtensionTests: XCTestCase {
         XCTAssertEqual(timer.lastExitCode, 1)
     }
 
+    func test_a_result_this_app_does_not_know_reads_as_a_failed_run() throws {
+        // Never as a pass or a skip, so a new systemd word cannot hide a job that went wrong.
+        let timer = try decode(ServerService.self, #"{"unit": "a.timer", "activeState": "active", "lastResult": "some-new-word"}"#)
+        XCTAssertTrue(timer.lastRunFailed)
+        XCTAssertEqual(timer.state, .missing)
+        XCTAssertEqual(timer.runText(), "Last run failed.")
+    }
+
     func test_an_active_timer_with_no_result_or_a_skipped_job_is_not_a_failure() throws {
         var cases = [#""#, #", "lastResult": 7"#]
         for word in ["success", "exec-condition", "skipped", "condition", "skip-pre-start", "skip-pre-stop", "skip-post-stop"] {
