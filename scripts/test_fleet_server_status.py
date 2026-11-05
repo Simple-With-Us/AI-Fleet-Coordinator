@@ -2506,9 +2506,7 @@ class ProcessHomeTests(unittest.TestCase):
     def test_a_container_is_named_by_its_row(self):
         identifier = "a" * 64
         text = "0::/system.slice/docker-%s.scope\n" % identifier
-        self.assertEqual(
-            self.home(text, {identifier: "example-app (web)"}), "example-app (web)"
-        )
+        self.assertEqual(self.home(text, {identifier: "example-app (web)"}), "example-app (web)")
         # A container this run did not name is still a container, and not a name it made up.
         self.assertEqual(self.home(text), "a container")
 
