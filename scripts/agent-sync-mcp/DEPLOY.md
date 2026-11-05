@@ -266,7 +266,7 @@ Owner, Thu, Oct 15:  "I'd like Agent-Sync and whatever local agents use to be ab
 
 The `eavesdropper_status`, `eavesdropper_inbox`, `eavesdropper_owner_queue`, `eavesdropper_wakes` and `eavesdropper_held_back` tools (spec section 1.7) read the server listener's signed read API with the seat's `WAKE_HMAC_KEY_<SEAT>`.  Until both halves are set up they answer `not_configured` and nothing else changes.
 
-1. The listener half first:  `docs/protocols/eavesdropper-server.md`, "The Read API", steps 1 to 5 (redeploy, keys, `[listener_api]`, the proxy route, the checks).
+1. The eavesdropper half first:  `docs/protocols/eavesdropper-server.md`, "The Read API", steps 1 to 5 (redeploy, keys, `[listener_api]`, the proxy route, the checks).
 2. Set the var in `wrangler.jsonc`:  `"LISTENER_API_URL": "https://operator.simplewithus.com"` (an https origin with no path;  anything else reads as unset).  Open a PR and merge it.
    Set the fleet knob to the same origin before deploying:  `OPERATOR_API_URL` in Infisical (project "AI Fleet Coordinator", `prod`, root path) is what the Python clients read (simple-notes, the stdio `notes_*` tools, the Mac runner), and the contract is one origin for both (`docs/protocols/operator-notes.md`).  A deploy that moves only the var splits each notes request/response pair across two hosts.
 3. Make sure each seat that should read its records has `WAKE_HMAC_KEY_<SEAT>` (JET already does;  the others only if Jay chose to add them in the server doc's step 2):

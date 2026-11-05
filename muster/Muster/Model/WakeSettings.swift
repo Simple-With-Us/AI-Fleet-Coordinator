@@ -3,13 +3,13 @@ import Foundation
 // The seat wake settings,  as the panel shows them.
 //
 // The panel has two sources and never mixes them:  the configuration file
-// (`~/.agent-sync/listener.toml`) holds what the operator wrote,  and the running listener
+// (`~/.agent-sync/listener.toml`) holds what the operator wrote,  and the running eavesdropper
 // holds what is actually in effect.  A setting where the two disagree is DRIFT,  and it is
 // never shown as a quiet green.
 //
 // MARK: - The wake types
 
-/// The wake types the listener knows.
+/// The wake types the eavesdropper knows.
 enum WakeType: String, CaseIterable {
     case inbox
     case claude
@@ -125,9 +125,9 @@ enum WakeSettingKey: String, CaseIterable, Identifiable {
         }
     }
 
-    /// Whether the listener's own configuration enforces this setting.
+    /// Whether the eavesdropper's own configuration enforces this setting.
     ///
-    /// The dollar cap is read but never acted on:  the listener counts wakes and not
+    /// The dollar cap is read but never acted on:  the eavesdropper counts wakes and not
     /// dollars,  by the owner's ruling of Oct 13, 2026.  A setting the engine does not
     /// enforce is refused with a reason,  rather than written as a number that would never
     /// bind.
@@ -139,7 +139,7 @@ enum WakeSettingKey: String, CaseIterable, Identifiable {
     var refusalReason: String? {
         switch self {
         case .usdPerDay:
-            return "The listener counts wakes and not dollars,  so this cap is never enforced and Muster will not write it."
+            return "The eavesdropper counts wakes and not dollars,  so this cap is never enforced and Muster will not write it."
         case .hostLoadGate:
             return "The owner ruled the host load gate stays off,  so Muster will not turn it on."
         default:
@@ -152,15 +152,15 @@ enum WakeSettingKey: String, CaseIterable, Identifiable {
 
 /// What the panel knows about one setting.
 enum WakeSettingState: String, Equatable {
-    /// The listener is using the value the configuration file holds.
+    /// The eavesdropper is using the value the configuration file holds.
     case match
-    /// The listener is using something else.
+    /// The eavesdropper is using something else.
     case drift
     /// The setting is configured,  but nobody ever proved it works.
     case unproven
-    /// The listener does not report this setting,  so the panel can only show the file.
+    /// The eavesdropper does not report this setting,  so the panel can only show the file.
     case notOwned
-    /// The engine owns this setting,  but the listener does not publish it:  Muster can
+    /// The engine owns this setting,  but the eavesdropper does not publish it:  Muster can
     /// write it,  and cannot say whether it is in effect.
     case unpublished
     /// The file does not hold this setting,  so the live value is the default.
@@ -200,7 +200,7 @@ struct WakeSetting: Identifiable, Equatable {
     let key: WakeSettingKey
     /// What the configuration file holds.
     let configured: ListenerConfigValue?
-    /// What the running listener is using.
+    /// What the running eavesdropper is using.
     let live: ListenerConfigValue?
     let state: WakeSettingState
     /// A line about the setting,  in words.
@@ -222,9 +222,9 @@ struct PinEvidence: Equatable {
     let model: String?
     /// When the pin was made.
     let verifiedAt: Date?
-    /// Whether the listener holds the pin.
+    /// Whether the eavesdropper holds the pin.
     let pinned: Bool
-    /// The listener's own reason,  when it says the pin is stale.
+    /// The eavesdropper's own reason,  when it says the pin is stale.
     let why: String?
 
     /// How old the pin is,  in words.
@@ -326,11 +326,11 @@ struct WakeSeat: Identifiable, Equatable {
 
 /// Everything the panel shows.
 struct WakeSettingsModel: Equatable {
-    /// Whether the listener is running.
+    /// Whether the eavesdropper is running.
     var running: Bool = false
     /// The pid of the running listener.
     var pid: Int?
-    /// When the listener last published its state.
+    /// When the eavesdropper last published its state.
     var updated: Date?
     /// The seats,  in roster order.
     var seats: [WakeSeat] = []
@@ -357,7 +357,7 @@ struct WakeSettingsSources {
     var config: ListenerConfigDocument = ListenerConfigDocument(text: "")
     /// Where the configuration file is.
     var configPath: String = ""
-    /// The listener's own published state,  when it could be read.
+    /// The eavesdropper's own published state,  when it could be read.
     var status: ListenerStatus?
     /// The pins that prove a seat's binaries work:  seat -> runtime -> evidence.
     var pins: [String: [String: PinEvidence]] = [:]
@@ -449,7 +449,7 @@ enum WakeSettingsBuilder {
         )
     }
 
-    /// The value the running listener is using.
+    /// The value the running eavesdropper is using.
     private static func liveValue(
         for key: WakeSettingKey,
         section: String,
@@ -473,7 +473,7 @@ enum WakeSettingsBuilder {
             guard let fallback = fallbackRuntime(section: section, config: config) else { return nil }
             return pins[fallback] == nil ? nil : .text("verified")
         case .fallbackUncontained:
-            // The listener does not publish this,  so the panel has nothing live to compare.
+            // The eavesdropper does not publish this,  so the panel has nothing live to compare.
             return nil
         case .wakesPerHour:
             return live?.budget?["wakes_per_hour"]?.configValue
@@ -540,13 +540,13 @@ enum WakeSettingsBuilder {
             guard configured != nil else { return .unset }
             guard live != nil else { return .unproven }
         case .fallbackUncontained:
-            // The engine reads this one,  but the listener does not publish it.
+            // The engine reads this one,  but the eavesdropper does not publish it.
             return configured == nil ? .unset : .unpublished
         default:
             break
         }
-        // The file first:  a setting nobody holds is the listener's default,  and a
-        // setting only the file holds is one the listener does not publish.
+        // The file first:  a setting nobody holds is the eavesdropper's default,  and a
+        // setting only the file holds is one the eavesdropper does not publish.
         guard let configured else { return .unset }
         guard let live else { return .notOwned }
         if configured.matches(live) { return .match }
@@ -580,7 +580,7 @@ enum WakeSettingsBuilder {
         switch state {
         case .drift:
             let stale = pins["muse"]?.why ?? pins["mcode"]?.why
-            let reason = "The listener is using \(live?.displayText ?? "something else"),  and the file holds \(configured?.displayText ?? "nothing")."
+            let reason = "The eavesdropper is using \(live?.displayText ?? "something else"),  and the file holds \(configured?.displayText ?? "nothing")."
             if let stale { return reason + "  The pin says \(stale)." }
             return reason
         case .unproven:
@@ -590,13 +590,13 @@ enum WakeSettingsBuilder {
             return "This is configured,  but no pin has ever proved it works."
         case .notOwned:
             if let reason = key.refusalReason { return reason }
-            return "The listener does not publish this setting."
+            return "The eavesdropper does not publish this setting."
         case .unpublished:
-            return "The listener reads this one,  but does not publish it,  so only the file can be shown."
+            return "The eavesdropper reads this one,  but does not publish it,  so only the file can be shown."
         case .unset:
-            return "The file holds nothing,  so the listener's default is in effect."
+            return "The file holds nothing,  so the eavesdropper's default is in effect."
         case .off:
-            return "Off:  the listener never holds a wake for load."
+            return "Off:  the eavesdropper never holds a wake for load."
         case .unknown:
             return "This could not be read."
         case .match:
@@ -633,7 +633,7 @@ enum WakeSettingsBuilder {
 
     /// The daemon-wide settings.
     ///
-    /// The host load gate stays off,  by the owner's ruling:  `0` means the listener never
+    /// The host load gate stays off,  by the owner's ruling:  `0` means the eavesdropper never
     /// holds a wake for load.  It is shown as off,  and never as a setting nobody looked at.
     private static func daemonSettings(_ sources: WakeSettingsSources) -> [WakeSetting] {
         let configured = sources.config.value(section: "daemon", key: "host_wake_load_per_core")
@@ -646,7 +646,7 @@ enum WakeSettingsBuilder {
                 live: nil,
                 state: isOff ? .off : .drift,
                 note: isOff
-                    ? "Off:  the listener never holds a wake for load."
+                    ? "Off:  the eavesdropper never holds a wake for load."
                     : "The owner ruled this gate stays off."
             ),
         ]

@@ -164,7 +164,7 @@ export const RESOURCE_SCOPES = Object.freeze({ read: "zulip:read", write: "zulip
 // description only.
 //
 // AFC-328 appends the FleetLink tools after the Linear ones.  AFC-330 appends the rest of Zulip
-// (every tools.json tool after the first ten, as zulip_<name>) and the read-only listener tools
+// (every tools.json tool after the first ten, as zulip_<name>) and the read-only eavesdropper tools
 // after those, so every earlier tool keeps its place.
 export const HOSTED_TOOL_LIST = Object.freeze([...ZULIP_PUBLIC_TOOLS, ...RECALL_TOOLS, ...LINEAR_TOOLS, ...FLEETLINK_TOOLS, ...ZULIP_FULL_PUBLIC_TOOLS, ...EAVESDROPPER_TOOLS, ...NOTES_TOOLS, ...WA_TOOLS, ...GR_TOOLS, ...TYPED_V1_TOOLS, ...WF_V1_TOOLS].map(withServiceTitle));
 const FLEETLINK_BY_NAME = Object.freeze(Object.fromEntries(FLEETLINK_TOOLS.map((tool) => [tool.name, tool])));
@@ -359,7 +359,7 @@ export class HostedTools {
     if (this.fleetlink) this.known.push(...this.fleetlink.secrets().filter(Boolean));
     // The Linear client credentials join the scrub list for the same reason.
     if (this.linear) this.known.push(...this.linear.secrets().filter(Boolean));
-    // The listener read key (the seat's wake key) joins the scrub list too.
+    // The eavesdropper read key (the seat's wake key) joins the scrub list too.
     this.listener = listener ?? null;
     if (this.listener) this.known.push(...this.listener.secrets().filter(Boolean));
     // The Operator notes key (OPERATOR_NOTES_KEY) joins the scrub list too.
@@ -2079,7 +2079,7 @@ export class HostedTools {
   }
 }
 
-// AFC-330:  the rest of Zulip (src/zulip-full.js) and the listener's records (src/listener.js).
+// AFC-330:  the rest of Zulip (src/zulip-full.js) and the eavesdropper's records (src/listener.js).
 Object.assign(HostedTools.prototype, ZULIP_FULL_METHODS, EAVESDROPPER_METHODS, NOTES_METHODS);
 
 /** Why `me` cannot serve `seat`, or null (spec 3.6). */

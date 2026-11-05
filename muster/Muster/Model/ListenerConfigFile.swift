@@ -1,8 +1,8 @@
 import Foundation
 
-// The listener's own configuration file:  `~/.agent-sync/listener.toml`.
+// The eavesdropper's own configuration file:  `~/.agent-sync/listener.toml`.
 //
-// This is not a general TOML implementation.  It reads and writes the shape the listener
+// This is not a general TOML implementation.  It reads and writes the shape the eavesdropper
 // actually uses:  scalars,  string arrays,  and inline tables such as
 //
 //     [seat.MM]
@@ -22,7 +22,7 @@ import Foundation
 //
 // MARK: - Values
 
-/// A value in the listener's configuration file.
+/// A value in the eavesdropper's configuration file.
 enum ListenerConfigValue: Equatable {
     case text(String)
     case bool(Bool)
@@ -362,7 +362,7 @@ private struct ListenerConfigScanner {
 
 // MARK: - The document
 
-/// The listener's configuration file.
+/// The eavesdropper's configuration file.
 ///
 /// Reading gives the values the file holds.  Writing changes one value and nothing else.
 struct ListenerConfigDocument: Equatable {
@@ -396,7 +396,7 @@ struct ListenerConfigDocument: Equatable {
 
         for (number, line) in lines.enumerated() {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
-            // A section header may carry a comment:  the listener's own file has one.
+            // A section header may carry a comment:  the eavesdropper's own file has one.
             if trimmed.hasPrefix("["), !trimmed.hasPrefix("[["),
                let close = trimmed.firstIndex(of: "]") {
                 let name = String(trimmed[trimmed.index(after: trimmed.startIndex)..<close])
@@ -578,7 +578,7 @@ struct ListenerConfigDocument: Equatable {
             // The comma has to stay inside the removed range.  A range that started after
             // it would leave the comma behind as a trailing comma,  and TOML 1.0 forbids one
             // inside an inline table:  `tomllib.load` would reject the whole file,  and the
-            // listener would fall back to an empty config.  So the range covers
+            // eavesdropper would fall back to an empty config.  So the range covers
             // ", key = value",  not "key = value".
             var back = start
             while back > line.startIndex {
