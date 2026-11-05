@@ -34,7 +34,7 @@ initialize.
 - `notifications/*` are dropped locally and never sent.
 - `initialize` is answered from disk for 10 minutes after a real hosted answer, one copy
 per bearer and requested protocol version, so seat instructions and capabilities stay
-the hosted ones.
+the hosted ones.  One in the modern `_meta` form is neither answered from disk nor stored.
 - A first-page `tools/list` (one with no `cursor`, so a malformed cursor reaches the server)
 is served from disk for 10 minutes, per bearer and protocol version, then fetched again.  A
 new hosted tool can take that long to appear.

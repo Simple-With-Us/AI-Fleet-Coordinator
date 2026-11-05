@@ -27,7 +27,7 @@ class Response(io.BytesIO):
         super().__init__(data)
         self.status = status
         self.headers = {"Content-Type": kind}
-        if session:
+        if session is not None:
             self.headers["Mcp-Session-Id"] = session
 
 
@@ -510,6 +510,40 @@ class DiskCacheTests(unittest.TestCase):
         self.upstream.methods.clear()
         self.adapter().call(modern)
         self.assertEqual(self.upstream.methods, ["initialize"])
+
+    def test_an_initialize_in_the_modern_form_never_fills_the_legacy_slot(self):
+        modern_result = {**INIT_RESULT, "protocolVersion": "2026-07-28", "resultType": "complete"}
+
+        def modern_server(request, timeout):
+            body = json.loads(request.data)
+            self.upstream.methods.append(body["method"])
+            reply = {"jsonrpc": "2.0", "id": body["id"], "result": modern_result}
+            return Response(json.dumps(reply).encode())
+
+        modern = frame(
+            "initialize", 2, protocolVersion="2025-06-18", _meta={mod.META_VERSION: "2026-07-28"}
+        )
+        self.adapter(upstream=modern_server).call(modern)
+        self.assertFalse(os.path.exists(self.dir) and os.listdir(self.dir))
+        legacy = self.adapter()
+        self.assertEqual(legacy.call(INITIALIZE)["result"], INIT_RESULT)
+        self.assertEqual(legacy.protocol, INIT_RESULT["protocolVersion"])
+        self.assertEqual(self.upstream.methods, ["initialize", "initialize"])
+        self.adapter(upstream=modern_server).call(modern)  # A legacy answer on disk survives it.
+        self.assertEqual(self.adapter().call(INITIALIZE)["result"], INIT_RESULT)
+        self.assertEqual(self.upstream.methods, ["initialize", "initialize", "initialize"])
+
+    def test_an_empty_session_id_counts_as_no_session(self):
+        upstream = Upstream(session="")
+        adapter = self.adapter(upstream=upstream)
+        adapter.call(INITIALIZE)
+        adapter.call(frame("tools/list", 2))  # A later answer on that same connection.
+        self.assertEqual(len(os.listdir(self.dir)), 2)
+        self.assertNotIn("Mcp-session-id", upstream.requests[-1].headers)
+        warm = self.adapter(upstream=upstream)
+        warm.call(frame("initialize", 3, protocolVersion="2025-06-18"))
+        warm.call(frame("tools/list", 4))
+        self.assertEqual(upstream.methods, ["initialize", "tools/list"])
 
     def test_only_a_request_with_no_cursor_is_a_first_page(self):
         self.adapter().call(frame("tools/list"))

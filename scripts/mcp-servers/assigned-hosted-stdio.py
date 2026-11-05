@@ -280,14 +280,17 @@ class Adapter:
         if self.cache is None or not isinstance(reply.get("result"), dict):
             return
         # A server that issues sessions is stateful, so nothing it said may be replayed:
-        # it must see every initialize again, and its catalog is per session.
-        if session is not None or self.session is not None:
+        # it must see every initialize again, and its catalog is per session.  An empty
+        # session header is no session, as it is everywhere else in this adapter.
+        if session or self.session:
             self.cache.clear()
             return
         result = reply["result"]
         method = message.get("method")
-        if method == "initialize" and usable_initialize(result):
-            self.cache.store(initialize_key(message), result)
+        if method == "initialize":
+            # The key is the legacy slot, which answer_from_cache replays to legacy clients.
+            if not names_envelope(message) and usable_initialize(result):
+                self.cache.store(initialize_key(message), result)
         elif (
             method == "tools/list"
             and first_page_of_tools(message)
