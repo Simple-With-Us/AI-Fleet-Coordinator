@@ -130,7 +130,7 @@
     // is not documented;  a refused one shows on /admin under refusals as
     // callback_host_not_allowed with its host, and is added here.
     "EVENT_CALLBACK_HOSTS": "chatgpt.com,*.chatgpt.com,openai.com,*.openai.com",
-    // Jay's Zulip user id and human clients (the listener's owner rule).  The
+    // Jay's Zulip user id and human clients (the eavesdropper's owner rule).  The
     // `owner` flag on a message is a routing hint, never authority.
     "OWNER_USER_ID": "1211974",
     "OWNER_CLIENTS": "website,ZulipMobile,ZulipFlutter,ZulipElectron,ZulipDesktop",
@@ -222,14 +222,14 @@
     // only after the owner's secrets are installed and linear_whoami answers
     // with the seat's own app (DEPLOY.md step 2c).
     "LINEAR_TOOLS_WRITES": "1",
-    // The server listener's signed read API (AFC-330):  the https origin the
-    // reverse proxy serves /listener/v1/ on.  Empty means the listener_* tools
+    // The server eavesdropper's signed read API (AFC-330):  the https origin the
+    // reverse proxy serves /listener/v1/ on.  Empty means the eavesdropper_* tools
     // answer not_configured.  Each seat signs with its WAKE_HMAC_KEY_<SEAT>.
-    // Set it only after DEPLOY.md "Listener read API" step 3 passes.  The same
+    // Set it only after DEPLOY.md "Eavesdropper read API" step 3 passes.  The same
     // origin serves the Operator's /notes/v1/ API for the notes_* tools (AFC-486):
     // operator.simplewithus.com, the Operator's own domain (owner rename,
     // Nov 4, 2026), carries /listener/v1/, /notes/v1/, /linear/v1/,
-    // and /registry/v1/ to the listener's port 8788.
+    // and /registry/v1/ to the eavesdropper's port 8788.
     "LISTENER_API_URL": "https://operator.simplewithus.com",
     // The git-relay upstream the gr_* tools call.  GR_WORKFLOW_TOOLS "on"
     // lists and enables the gr_wf_ workflow verb tools (src/config.js);

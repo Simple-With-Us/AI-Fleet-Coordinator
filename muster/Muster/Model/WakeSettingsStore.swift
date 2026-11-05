@@ -3,13 +3,13 @@ import Foundation
 
 /// The wake settings panel's store.
 ///
-/// It reads the listener's own status and the configuration file,  and it writes the
-/// configuration file and then asks the listener to act on the change.
+/// It reads the eavesdropper's own status and the configuration file,  and it writes the
+/// configuration file and then asks the eavesdropper to act on the change.
 ///
 /// Two rules hold throughout:
 ///
-///   * a change is never reported as done until the listener has been asked to read the
-///     file,  because a file the listener has not read is not a change
+///   * a change is never reported as done until the eavesdropper has been asked to read the
+///     file,  because a file the eavesdropper has not read is not a change
 ///   * a setting the engine does not enforce is refused with a reason,  rather than
 ///     written as a number that would never bind
 @MainActor
@@ -23,9 +23,9 @@ final class WakeSettingsStore: ObservableObject {
     /// The edited values,  by seat and setting.
     @Published var draft: [String: [WakeSettingKey: String]] = [:]
 
-    /// Where the listener's state lives.
+    /// Where the eavesdropper's state lives.
     private let location: ListenerStateLocation
-    /// The listener's own command line.
+    /// The eavesdropper's own command line.
     private let runner: AgentSyncRunning
     /// The writer,  when the panel may write.
     private let writer: WakeSettingsWriter?
@@ -36,7 +36,7 @@ final class WakeSettingsStore: ObservableObject {
     /// The roster the last full read was given.  The refreshes that follow an apply,  a
     /// pause or a pin are parameterless,  and a parameterless refresh would read with an
     /// empty roster:  a seat that is on the roster but has no `[seat.X]` section and is not
-    /// in the listener's status would drop out of the panel until the next manual refresh.
+    /// in the eavesdropper's status would drop out of the panel until the next manual refresh.
     /// Keeping the last roster makes those refreshes read the same seats.
     private var roster: [String] = []
 
@@ -81,7 +81,7 @@ final class WakeSettingsStore: ObservableObject {
 
     // MARK: Writing
 
-    /// Applies a seat's edited settings,  then asks the listener to read the file.
+    /// Applies a seat's edited settings,  then asks the eavesdropper to read the file.
     func apply(seat: String) async {
         guard let writer else {
             message = "Muster was not allowed to write the configuration file."
@@ -103,7 +103,7 @@ final class WakeSettingsStore: ObservableObject {
             if key == .wakeType {
                 let trimmed = text.trimmingCharacters(in: .whitespaces)
                 guard WakeType(rawValue: trimmed) != nil else {
-                    refusals.append("\(key.title):  the listener knows inbox, claude, http and muse,  and not \(trimmed).")
+                    refusals.append("\(key.title):  the eavesdropper knows inbox, claude, http and muse,  and not \(trimmed).")
                     continue
                 }
             }
@@ -135,14 +135,14 @@ final class WakeSettingsStore: ObservableObject {
             return
         }
 
-        // The file is written;  now the listener has to read it.
+        // The file is written;  now the eavesdropper has to read it.
         let reloaded = await reload()
         var report: [String] = ["The configuration file was written."]
         report.append(reloaded
-            ? "The listener was asked to re-read it."
-            : "The listener could not be asked to re-read it,  so the change is not in effect yet.")
+            ? "The eavesdropper was asked to re-read it."
+            : "The eavesdropper could not be asked to re-read it,  so the change is not in effect yet.")
         if edits.contains(where: { $0.key.isBudget || $0.key.isLiveCap }) {
-            report.append("A reload does not re-read a seat's budget,  so the listener must be restarted before the new cap takes effect.")
+            report.append("A reload does not re-read a seat's budget,  so the eavesdropper must be restarted before the new cap takes effect.")
         }
         if !refusals.isEmpty {
             report.append(refusals.joined(separator: "\n"))
@@ -151,18 +151,18 @@ final class WakeSettingsStore: ObservableObject {
         await refresh()
     }
 
-    /// Asks the listener to re-read the configuration file.
+    /// Asks the eavesdropper to re-read the configuration file.
     @discardableResult
     func reload() async -> Bool {
         do {
             let result = try await runner.run(AgentSyncInvocation.reload())
             if result.exitCode != 0 {
-                message = "The listener did not re-read the configuration file:  \(result.stderrTail)"
+                message = "The eavesdropper did not re-read the configuration file:  \(result.stderrTail)"
                 return false
             }
             return true
         } catch {
-            message = "The listener did not re-read the configuration file:  \(error.localizedDescription)"
+            message = "The eavesdropper did not re-read the configuration file:  \(error.localizedDescription)"
             return false
         }
     }
@@ -231,10 +231,10 @@ final class WakeSettingsStore: ObservableObject {
             if result.exitCode == 0 {
                 message = success
             } else {
-                message = "The listener refused the run:  \(result.stderrTail)"
+                message = "The eavesdropper refused the run:  \(result.stderrTail)"
             }
         } catch {
-            message = "The listener could not be asked:  \(error.localizedDescription)"
+            message = "The eavesdropper could not be asked:  \(error.localizedDescription)"
         }
         await refresh()
     }

@@ -3,7 +3,7 @@ import XCTest
 /// The wake settings panel:  what it shows,  when it says DRIFT,  and what it refuses to
 /// write.
 final class WakeSettingsTests: XCTestCase {
-    /// A file like the listener's own.
+    /// A file like the eavesdropper's own.
     private let sample = """
     [daemon]
     host_wake_load_per_core = 0
@@ -20,7 +20,7 @@ final class WakeSettingsTests: XCTestCase {
     live = { per_hour = 6, per_day = 30, per_topic_minutes = 5, owner_per_day = 20, loop_turns = 3 }
     """
 
-    /// The listener's own account of itself.
+    /// The eavesdropper's own account of itself.
     private let statusJSON = """
     {
       "running": true,
@@ -98,7 +98,7 @@ final class WakeSettingsTests: XCTestCase {
 
     // MARK: The two sources
 
-    /// A setting the file and the listener agree on is a pass.
+    /// A setting the file and the eavesdropper agree on is a pass.
     func test_a_setting_the_listener_matches_is_a_pass() {
         let setting = row(.wakesPerHour, status: statusJSON)
         XCTAssertEqual(setting.state, .match)
@@ -106,7 +106,7 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertEqual(setting.live, .number(5))
     }
 
-    /// A setting the listener does not match is DRIFT,  and never a quiet green.
+    /// A setting the eavesdropper does not match is DRIFT,  and never a quiet green.
     func test_a_setting_the_listener_does_not_match_is_drift() {
         let drifted = statusJSON.replacingOccurrences(
             of: "\"wakes_per_hour\": 5",
@@ -127,7 +127,7 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertEqual(budget.state, .match)
     }
 
-    /// A setting the file does not hold is the listener's default,  and says so.
+    /// A setting the file does not hold is the eavesdropper's default,  and says so.
     func test_a_setting_the_file_does_not_hold_is_the_default() {
         let without = """
         [seat.MM]
@@ -139,7 +139,7 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertTrue(setting.note.contains("default"))
     }
 
-    /// The listener does not publish the fallback's container rule,  so the panel says so
+    /// The eavesdropper does not publish the fallback's container rule,  so the panel says so
     /// instead of claiming it is in effect.
     func test_a_setting_the_listener_does_not_publish_is_not_reported() {
         let setting = row(.fallbackUncontained, status: statusJSON)
@@ -239,7 +239,7 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertEqual(model.problems, ["The listener's status could not be read."])
     }
 
-    /// Without the listener's status,  every live value is unknown.
+    /// Without the eavesdropper's status,  every live value is unknown.
     func test_without_the_status_the_panel_shows_no_live_value() {
         let setting = row(.wakesPerHour)
         XCTAssertNil(setting.live)
