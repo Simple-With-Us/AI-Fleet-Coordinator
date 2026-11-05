@@ -94,7 +94,7 @@ class BridgeTargetConfigurationTest(unittest.TestCase):
     def test_the_published_protocol_carries_no_application_identifier(self) -> None:
         root = pathlib.Path(MBM.__file__).resolve().parents[2]
         for name in (
-            "docs/protocols/agent-sync-server.md",
+            "docs/protocols/eavesdropper-server.md",
             "docs/protocols/muse-inbox-bridge.md",
         ):
             path = root / name
