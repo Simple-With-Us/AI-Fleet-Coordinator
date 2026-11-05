@@ -121,7 +121,6 @@ class Writes(unittest.TestCase):
             [{"path": "x", "sha": blob_sha, "mode": "120000"}],
             [{"path": "x", "sha": "z" * 40, "mode": "100644"}],
         ]:
-
             with self.assertRaises(Refused):
                 WorkflowVerbs.check_shape(a, {"repo": REPO, "base_tree": SHA, "files": files}, REPO)
 
