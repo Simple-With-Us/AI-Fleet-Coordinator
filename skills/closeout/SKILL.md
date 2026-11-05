@@ -12,7 +12,7 @@ Start-of-work is a claim on the Linear issue and a post in its Zulip topic.  En
 - Merged to `main`?  Do **not** use commit ancestry after a squash-merge (`git merge-base --is-ancestor` lies because squash rewrites SHAs and `delete_branch_on_merge` removes the remote).  Use PR state, then a three-dot diff:
 
 ```bash
-gh pr list --head "$BRANCH" --state all --json number,state,mergedAt,url
+# MCP tool: gr_wf_pr_list_page --repo <owner/repo> --head "$BRANCH" --state all   -> number, state, mergedAt, url
 git fetch origin
 git diff origin/main...HEAD    # three-dot: remaining unique work vs merge-base
 # helper: scripts/branch-landed.sh [repo] [branch]
@@ -24,16 +24,16 @@ A two-dot `git diff origin/main HEAD` on a stale lane is actively misleading.  
 
 ## 2. Linear
 
-```bash
-simple-board status <id> completed --resolution "Landed in #<PR>.  <one line>."
-# or: deployed — only after health verify
+```text
+linear_status   id=<id>  status=completed   # or: deployed — only after health verify
+linear_comment  id=<id>  body="Landed in #<PR>.  <one line>."
 ```
 
-The PR body carried `Fixes <ID>` when the PR finished the issue.  Once Linear's GitHub automation is on, that moves the issue to Done on merge; before then, run the command above.  It is the same move done by hand and is safe to repeat.  A PR that carried only `Refs <ID>` never closes the issue, so run the command yourself, or leave the issue open on purpose.  Writes need your bearer-verified seat (`simple-board whoami`), and `--by` must equal it.
+The PR body carried `Fixes <ID>` when the PR finished the issue.  Once Linear's GitHub automation is on, that moves the issue to Done on merge; before then, run the command above.  It is the same move done by hand and is safe to repeat.  A PR that carried only `Refs <ID>` never closes the issue, so run the command yourself, or leave the issue open on purpose.  Writes need your bearer-verified seat (the MCP tool `linear_whoami` names it), and the write's `identity` must equal it.
 
 - **Completed** = merged to main.
 - **Deployed** = released and verified (say how).
-- Correct a wrong status or resolution with a new `simple-board comment` or `simple-board status`, never by editing another seat's comment.
+- Correct a wrong status or resolution with a new `linear_comment` or `linear_status`, never by editing another seat's comment.
 
 Every imported GitHub issue has a Linear twin; work and close the Linear issue, not the GitHub one.  A new GitHub issue filed after the cutover is copied into Linear one way, by Linear's GitHub sync, as an issue with its own id; close that Linear issue, not the GitHub one.  Cross-app work gets an issue on each affected team, linked in the descriptions.
 
@@ -49,11 +49,11 @@ Opening, editing, replying to, resolving and merging a PR all have a credential-
 
 Linear first, then the work topic — the same one you claimed in.
 
-```bash
-simple-chat post --topic "<ID> <subject>" $'repo:  <project>  |  DONE\npr: #<n>\nissue: <ID>\ngates: <what ran>\nwork: <what landed>'
+```text
+zulip_post   channel=<channel>   topic="<ID> <subject>"   text="repo:  <project>  |  DONE\npr: #<n>\nissue: <ID>\ngates: <what ran>\nwork: <what landed>"
 ```
 
-Then resolve the topic when the issue reaches Deployed or Parked: `simple-chat resolve --topic "<topic>"`.  Resolving renames the topic, so post your last words first.  If production is verified after `DONE`, add one line (`deployed:  verified <Day, Mon D> at 3:15pm`).
+Then resolve the topic when the issue reaches Deployed or Parked with the MCP tool `zulip_resolve_topic` (`channel`, `topic`).  Resolving renames the topic, so post your last words first.  If production is verified after `DONE`, add one line (`deployed:  verified <Day, Mon D> at 3:15pm`).
 
 Not a fleet wake (`@**all**`) for a normal closeout.
 
@@ -84,7 +84,7 @@ If you shipped a flag that is off, reserve a Planned enablement row (ST: also `d
 
 ## Parked, not done
 
-If you stop without merge: the issue stays accurate (`simple-board status <id> open` to release it, or `parked`, plus a comment "parked because …"), the work topic says `BLOCKED`/`PARKED` with a `reason:` line, worktree is not dirty with uncommitted finished code.  In Progress after you left is how three agents redo the same slice.
+If you stop without merge: the issue stays accurate (`linear_status` with `id` and `status` = `open` to release it, or `parked`, plus a `linear_comment` "parked because …"), the work topic says `BLOCKED`/`PARKED` with a `reason:` line, worktree is not dirty with uncommitted finished code.  In Progress after you left is how three agents redo the same slice.
 
 ## Fleet recall (every closeout)
 

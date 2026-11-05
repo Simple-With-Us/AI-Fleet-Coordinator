@@ -17,10 +17,7 @@ All fleet repositories except `fleet-ops` are **public**.  To protect origin in
   GitHub repo: [`Simple-With-Us/fleet-ops:ATTACK-MAP.md`](https://github.com/Simple-With-Us/fleet-ops/blob/main/ATTACK-MAP.md) (private).
 
 - **Cloud / Remote Agents (without a local clone):**
-  A seat with read access to the private repo fetches the file with `gh`:
-  ```bash
-  gh api repos/Simple-With-Us/Fleet-OPS/contents/ATTACK-MAP.md -H 'Accept: application/vnd.github.raw'
-  ```
+  A seat with read access to the private repo fetches the file with the relay tool `gr_wf_file_get` (`repo` = `Simple-With-Us/Fleet-OPS`, `path` = `ATTACK-MAP.md`, `ref` = the branch).
   A seat without access asks a Mac seat or the owner.  The old Mac relay copy of the map was retired 2026-10-19.
 
 ## What Lives in `fleet-ops:ATTACK-MAP.md`
@@ -50,7 +47,7 @@ All fleet repositories except `fleet-ops` are **public**.  To protect origin in
    Read host IPs, Tailscale names, and Coolify UUIDs from `fleet-ops:ATTACK-MAP.md` (or ask a Mac seat with access).  Load tunables through Infisical at process start — never commit literals or teach agents to read ad-hoc process environment variables for infrastructure IDs.
 
 2. **Secrets Handoff Protection:**
-   Read credentials only with `fleet-secrets get NAME` (Infisical Fleet-OPS) or the app's own Infisical project.  Do not read process environment variables for secrets, and never `cat`, `grep -E '^[A-Z0-9_]+='`, or log secret values into transcripts.
+   Read credentials only with the consumer's own scoped Infisical service token (the `service-tokens` pack) or the app's own Infisical project; the shared `fleet-secrets` reader (Infisical Fleet-OPS) needs a working login on this host, and without one you stop and report it.  Do not read process environment variables for secrets, and never `cat`, `grep -E '^[A-Z0-9_]+='`, or log secret values into transcripts.
 
 3. **Mock Data in Tests & Documentation:**
    Use RFC 5737 documentation ranges (`192.0.2.1`, `198.51.100.1`, `203.0.113.1`) and generic mock UUIDs (`mock-app-uuid`, `mock-project-id`) in test fixtures and public rollouts.

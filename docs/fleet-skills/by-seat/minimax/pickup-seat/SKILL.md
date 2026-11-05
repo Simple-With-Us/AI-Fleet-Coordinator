@@ -18,37 +18,38 @@ You are **MM**.  Keep `minimax/` branches.  If you continue a peer's `claude/`
 ## INVENTORY
 
 ```bash
-simple-board list --status in_progress --limit 50
-simple-board list --mine <THEIR_TAG> --status open,in_progress
+# MCP tool: linear_list --status in_progress --limit 50
+# MCP tool: linear_list --status open,in_progress
 
 # Pickup is often cross-app:  list every team, not just one app.  The effort logs are archived,
-# so Linear is the whole inventory.  (--mine reads the claimed:<SEAT> label.)
+# so Linear is the whole inventory.  (The list tool takes flat workspace labels only, never a
+# claim label:  read the claimed:<SEAT> label off the result.)
 
-gh pr list --state open --json number,title,author,mergeStateStatus,autoMergeRequest,url
+# MCP tool: gr_wf_pr_list_page --repo <owner/repo> --state open   -> number, title, author, mergeStateStatus, autoMergeRequest, url
 
 git worktree list
 # then git status in each dirty tree you might adopt
 
 git for-each-ref --sort=-committerdate refs/remotes/origin --format='%(committerdate:short) %(refname:short) %(authorname)' | head -30
 
-simple-chat inbox
-simple-chat topics --limit 30
+# MCP tool: zulip_inbox
+# MCP tool: zulip_topics --limit 30
 recall "<what they were working on>" --limit 5
 ```
 
-Also read their last claim in the work topic (`simple-chat read --topic "<topic>"`) and any living Apple Note titled `[TEAM_KEY, Agent] …`.
+Also read their last claim in the work topic (the MCP tool `zulip_read_topic`, with `channel` and `topic`) and any living Apple Note titled `[TEAM_KEY, Agent] …`.
 
 ## CLAIM
 
 Post repo-first, naming exactly what you are taking:
 
-```bash
-simple-chat post --topic "<ID> <subject>" --to "<Peer Display Name>" $'repo:  <project>  |  CLAIMED\nclaim:  picking up <SEAT> cap — issue + PR #<n>\nclaimed:  <Day, Mon D, YYYY>\nKEEPOUT:  <files glob>'
+```text
+zulip_post   channel=<channel>   topic="<ID> <subject>"   to="<Peer Display Name>"   text="repo:  <project>  |  CLAIMED\nclaim:  picking up <SEAT> cap — issue + PR #<n>\nclaimed:  <Day, Mon D, YYYY>\nKEEPOUT:  <files glob>"
 ```
 
-`--to` adds the `@**Name**` that wakes the peer; the bracket label alone wakes nobody.
+`to` adds the `@**Name**` that wakes the peer; the bracket label alone wakes nobody.
 
-Put the same claim on the Linear issue.  `simple-board claim <id> ... --steal --reason "picking up <SEAT> cap"` takes the claim over (a plain `claim` exits 3 while the peer holds it), or use `simple-board comment` when you only mean to help.  The effort logs are archived, so there is no second board to update.
+Put the same claim on the Linear issue.  The MCP tool `linear_claim` takes the claim over once the peer has released it; while the peer still holds it the hosted claim is refused (the `simple-board` CLI fallback still takes `--steal --reason "picking up <SEAT> cap"`), so use `linear_comment` when you only mean to help.  The effort logs are archived, so there is no second board to update.
 
 Never take over a stale claim silently.  Post your own `CLAIMED` in the same topic so the history shows the handoff.
 
@@ -78,8 +79,8 @@ Confirm no new commits or work-topic posts from that seat since the cap before y
 | Committed, not landed | `land-lane` |
 | Uncommitted, finished | commit with credit; land or hold |
 | Uncommitted, unfinished | complete only if owner-directed; else note and park |
-| Claimed, not started | release (`simple-board status <id> open`); work topic + Linear |
-| Genuinely blocked | `simple-board comment` with the reason; escalate P0 |
+| Claimed, not started | release (`linear_status` with `status` = `open`); work topic + Linear |
+| Genuinely blocked | `linear_comment` with the reason; escalate P0 |
 
 Do not kill `com.jay.claude-remote-control` while hunting "stuck Claude."  Monet/Renoir/Claude all look like `claude` in `ps`.
 
@@ -100,7 +101,7 @@ Answer disambiguation pings fast.  Cede lanes the returning seat re-claims, esp
 ## Substitute Agent Directed Closeout `[SUB→ORIGINAL]`
 
 Once you finish taking over a peer agent's work (or reach a clean handoff point):
-1. **Post in the work topic addressed to the original seat.**  A Zulip reply is a post to the same channel and topic, so address it with the envelope plus an @-mention — the bracket label alone wakes nobody.  `simple-chat post --topic "<ID> <subject>" --to "<Original Display Name>"` writes both:
+1. **Post in the work topic addressed to the original seat.**  A Zulip reply is a post to the same channel and topic, so address it with the envelope plus an @-mention — the bracket label alone wakes nobody.  the MCP tool `zulip_post` (`channel`, `topic` = "<ID> <subject>", `to` = "<Original Display Name>") writes both:
    ```text
    [<YOUR_TAG>·session8→<ORIGINAL_TAG>] @**<Original Display Name>** repo:  <repo>  |  DONE
    task:  <Feature / PR #<num>>
