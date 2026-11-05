@@ -112,6 +112,8 @@ def _number(value, field: str) -> int:
 def _validate_args(action: str, args: dict) -> dict:
     """Full shape validation for one action;  returns the canonical arguments.
 
+    git_read is a policy name for the /git/ route (git_read.py), so a JSON call to it is refused here.
+
     Runs before any durable state or side effect:  every field the action
     accepts is checked here, and any field it does NOT accept is rejected, so
     ignored envelope fields cannot defeat the idempotency key and malformed
@@ -123,6 +125,8 @@ def _validate_args(action: str, args: dict) -> dict:
         raise ValueError(f"action {action!r} is registered but not implemented yet")
     if action in SeatPolicy.WORKFLOW_ACTIONS:
         raise ValueError(f"action {action!r} is registered but not wired into the relay yet")
+    if action == git_read.ACTION:
+        raise ValueError("git_read has no JSON call;  it is served on the /git/ route")
     specs: dict = {"repo": ("text", True)}
     if action == "open_pr":
         specs.update(

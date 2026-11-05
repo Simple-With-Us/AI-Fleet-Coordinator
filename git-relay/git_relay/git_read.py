@@ -21,7 +21,7 @@ import http.client
 import json
 import re
 import threading
-from collections.abc import Callable
+from typing import Callable
 
 ACTION = "git_read"
 READ_PERMISSIONS = {"contents": "read"}
@@ -33,9 +33,7 @@ MAX_REQUEST_BYTES = 8 * 1024 * 1024
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024 * 1024
 CHUNK_BYTES = 256 * 1024
 
-_PATH = re.compile(
-    r"/git/([A-Za-z0-9_.-]{1,100})/([A-Za-z0-9_.-]{1,104})/(info/refs|git-upload-pack)"
-)
+_PATH = re.compile(r"/git/([A-Za-z0-9_.-]{1,100})/([A-Za-z0-9_.-]{1,104})/(info/refs|git-upload-pack)")
 _GIT_PROTOCOL = re.compile(r"version=[0-9]{1,2}(?::[a-z0-9=-]{1,40}){0,4}")
 _ADVERTISE = "application/x-git-upload-pack-advertisement"
 _RESULT = "application/x-git-upload-pack-result"
@@ -88,12 +86,7 @@ def _parse(method: str, target: str) -> tuple[str, str, str] | tuple[None, int, 
     return repo, f"/{repo}.git/git-upload-pack", "upload"
 
 
-def handle(
-    relay,
-    handler,
-    method: str,
-    connect: Callable[[], http.client.HTTPConnection] = _default_connect,
-) -> None:
+def handle(relay, handler, method: str, connect: Callable[[], http.client.HTTPConnection] = _default_connect) -> None:
     """Serve one git request.  Every outcome, allowed or denied, past authentication writes exactly one audit row."""
     handler.close_connection = True
     repo, upstream_path, kind = _parse(method, handler.path)
@@ -111,9 +104,7 @@ def handle(
             length = 0
         if length < 1 or length > MAX_REQUEST_BYTES:
             # git sends a chunked body past http.postBuffer, so a client with a long want list sets that higher.
-            _send_json(
-                handler, 411, {"error": "a Content-Length within the byte bound is required"}
-            )
+            _send_json(handler, 411, {"error": "a Content-Length within the byte bound is required"})
             return
         body = handler.rfile.read(length)
     auth = handler.headers.get("Authorization") or ""
@@ -155,11 +146,7 @@ def _serve(relay, handler, seat, repo, upstream_path, kind, body, detail, connec
         return "denied"
     if not _slots.acquire(blocking=False):
         detail["reason"] = "busy"
-        _send_json(
-            handler,
-            503,
-            {"error": "too many git transfers are running;  retry shortly", "retryable": True},
-        )
+        _send_json(handler, 503, {"error": "too many git transfers are running;  retry shortly", "retryable": True})
         return "unavailable"
     conn = None
     try:
@@ -167,19 +154,11 @@ def _serve(relay, handler, seat, repo, upstream_path, kind, body, detail, connec
             token, _expiry = relay.app_minter.token_for(app_slug, repo, dict(READ_PERMISSIONS))
         except Exception as exc:  # noqa: BLE001 - a mint failure of any type is one refusal, named by type only
             detail["reason"] = type(exc).__name__
-            _send_json(
-                handler,
-                503,
-                {"error": "could not obtain read access for this repo", "retryable": True},
-            )
+            _send_json(handler, 503, {"error": "could not obtain read access for this repo", "retryable": True})
             return "unavailable"
         basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
         del token
-        headers = {
-            "Authorization": "Basic " + basic,
-            "User-Agent": "swu-git-relay",
-            "Accept": "*/*",
-        }
+        headers = {"Authorization": "Basic " + basic, "User-Agent": "swu-git-relay", "Accept": "*/*"}
         del basic
         protocol = handler.headers.get("Git-Protocol") or ""
         if _GIT_PROTOCOL.fullmatch(protocol):
@@ -189,9 +168,7 @@ def _serve(relay, handler, seat, repo, upstream_path, kind, body, detail, connec
             if handler.headers.get("Content-Encoding") == "gzip":
                 headers["Content-Encoding"] = "gzip"
         conn = connect()
-        conn.request(
-            "POST" if kind == "upload" else "GET", upstream_path, body=body or None, headers=headers
-        )
+        conn.request("POST" if kind == "upload" else "GET", upstream_path, body=body or None, headers=headers)
         del headers
         resp = conn.getresponse()
         wanted = _RESULT if kind == "upload" else _ADVERTISE
