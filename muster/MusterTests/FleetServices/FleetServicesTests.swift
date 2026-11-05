@@ -559,6 +559,16 @@ final class FleetServicesTests: XCTestCase {
         XCTAssertLessThan(elapsed, 3.0)
     }
 
+    func testATimedSettleDoesNotSleepPastItsBudget() async {
+        // A step longer than what is left must not carry the wait past its budget.
+        let start = Date()
+        let observed = await ManagedServices.settle(to: .running, within: 0.2, interval: 30) {
+            .stopped
+        }
+        XCTAssertEqual(observed, .stopped)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 5.0)
+    }
+
     // MARK: - A stop the owner asked for
 
     func testAStopIsRemembered() {

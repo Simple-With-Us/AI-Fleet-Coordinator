@@ -235,19 +235,21 @@ final class FleetAdminTests: XCTestCase {
         XCTAssertEqual(admin.entries.first { $0.id == FleetServiceRegistry.server.id }?.stoppedByOwner, false)
     }
 
-    /// A LaunchAgent that never gets there is given a budget in time,  not an open-ended
-    /// number of looks.
-    func testAnAgentThatNeverSettlesGivesUpWithinItsBudget() async {
+    /// A look can cost launchctl's whole timeout,  so the budget is time and not a number of
+    /// looks:  each look here costs half the budget,  so a count of eight looks would run all
+    /// eight,  and the read that follows the action adds only a few.
+    func testAnAgentWhoseLooksAreSlowGivesUpWithinItsBudget() async {
         let commands = FleetAdminCommands()
         commands.companionStaysUp = true
         let admin = makeAdmin(commands: commands, server: FleetAdminServer())
         await waitForTheFleet(admin)
+        commands.listingDelay = 0.2
+        let before = commands.launchctlReads.count
 
-        let began = Date()
         await admin.perform(.stop, serviceID: "app.botfleet.companion")
 
         XCTAssertEqual(admin.lastResult?.reason, "it still reads running")
-        XCTAssertLessThan(Date().timeIntervalSince(began), 5)
+        XCTAssertLessThan(commands.launchctlReads.count - before, 9)
     }
 
     func testAStartWaitsAsLongAsAnyOtherServiceAndLongerThanAStop() {
@@ -408,6 +410,8 @@ private final class FleetAdminCommands: CommandRunning {
     /// How many listings still show the companion as it was after launchd is asked to
     /// change it.
     var looksBeforeAChangeShows = 0
+    /// How long launchctl takes to answer a listing.
+    var listingDelay: TimeInterval = 0
     /// The change launchd was asked for,  and how many more listings until it shows.
     private var pendingChange: (running: Bool, looks: Int)?
 
@@ -423,6 +427,7 @@ private final class FleetAdminCommands: CommandRunning {
     }
 
     func run(_ executable: String, _ arguments: [String]) throws -> String {
+        if arguments == ["list"], listingDelay > 0 { Thread.sleep(forTimeInterval: listingDelay) }
         lock.lock()
         recorded.append(FleetAdminCall(executable: executable,
                                        arguments: arguments,
