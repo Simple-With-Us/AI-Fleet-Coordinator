@@ -165,6 +165,15 @@ class Tests(unittest.TestCase):
 
         self.assertEqual(self.qualify_with_one_stopped(tag=no_baseline), running)
         self.assertEqual(self.qualify_with_one_stopped(preflight=drifted), running)
+        # A transport failure or a malformed answer is the same to a target not released.
+        for failure in (m.urllib.error.URLError("x"), KeyError("deployments"), ValueError("x")):
+
+            def broken(name, failure=failure):
+                if name == "alert-ingress":
+                    raise failure
+                return "a" * 40
+
+            self.assertEqual(self.qualify_with_one_stopped(tag=broken), running)
 
     def test_a_running_targets_preconditions_still_fail_qualification(self):
         def no_baseline(name):

@@ -254,7 +254,7 @@ def qualify_credentials():
             tag = deployed_tag(name)
             if not isinstance(tag, str) or not re.fullmatch(r"[0-9a-f]{40}", tag):
                 raise RuntimeError("Missing qualified live version baseline")
-        except RuntimeError:
+        except (RuntimeError, OSError, KeyError, ValueError):
             if not stopped:
                 raise
             print("Stopped by the budget guard; release preconditions unproven: " + name)
