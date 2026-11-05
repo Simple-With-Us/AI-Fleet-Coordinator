@@ -229,11 +229,31 @@ class RelayRoute(SyncCase):
     def test_relay_route_sends_github_fetches_with_only_the_seat_bearer(self) -> None:
         path = self.bearer_file()
         out = S.relay_git_env({"FLEET_SYNC_RELAY_URL": "http://127.0.0.1:8471/", "FLEET_SYNC_BEARER_FILE": str(path)})
-        config = {out[f"GIT_CONFIG_KEY_{i}"]: out[f"GIT_CONFIG_VALUE_{i}"] for i in range(int(out["GIT_CONFIG_COUNT"]))}
-        self.assertEqual(config["url.http://127.0.0.1:8471/git/.insteadOf"], "https://github.com/")
-        self.assertEqual(config["http.http://127.0.0.1:8471/.extraHeader"], "Authorization: Bearer seat-bearer-value")
-        self.assertEqual(config["credential.helper"], "")
+        config = [(out[f"GIT_CONFIG_KEY_{i}"], out[f"GIT_CONFIG_VALUE_{i}"]) for i in range(int(out["GIT_CONFIG_COUNT"]))]
+        self.assertIn(("url.http://127.0.0.1:8471/git/.insteadOf", "https://github.com/"), config)
+        self.assertIn(("url.http://127.0.0.1:8471/git/.insteadOf", "git@github.com:"), config)
+        self.assertIn(("http.http://127.0.0.1:8471/.extraHeader", "Authorization: Bearer seat-bearer-value"), config)
+        self.assertIn(("http.followRedirects", "false"), config)
+        self.assertIn(("credential.helper", ""), config)
         self.assertEqual(out["GIT_TERMINAL_PROMPT"], "0")
+
+    def header(self, out: dict) -> str:
+        count = int(out["GIT_CONFIG_COUNT"])
+        return next(out[f"GIT_CONFIG_VALUE_{i}"] for i in range(count) if out[f"GIT_CONFIG_KEY_{i}"].endswith(".extraHeader"))
+
+    def test_the_environment_bearer_comes_first(self) -> None:
+        path = self.bearer_file()
+        out = S.relay_git_env({"FLEET_SYNC_RELAY_URL": "http://127.0.0.1:8471", "FLEET_SYNC_BEARER_FILE": str(path),
+                               "SIMPLE_TOOLS_BEARER": "from-the-environment"})
+        self.assertEqual(self.header(out), "Authorization: Bearer from-the-environment")
+
+    def test_a_bearer_with_an_equals_sign_is_kept_whole(self) -> None:
+        path = self.home / "seat-bearer"
+        for text, wanted in (("abc=def==\n", "abc=def=="), ("TOKEN=abc=def\n", "abc=def"), ("plain\n", "plain")):
+            path.write_text(text, encoding="utf-8")
+            path.chmod(0o600)
+            out = S.relay_git_env({"FLEET_SYNC_RELAY_URL": "http://127.0.0.1:8471", "FLEET_SYNC_BEARER_FILE": str(path)})
+            self.assertEqual(self.header(out), f"Authorization: Bearer {wanted}", text)
 
     def test_relay_route_refuses_what_could_leak_the_bearer(self) -> None:
         path = self.bearer_file()

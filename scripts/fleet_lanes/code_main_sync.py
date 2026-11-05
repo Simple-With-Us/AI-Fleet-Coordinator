@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import fcntl
 import os
+import re
 import subprocess
 import sys
 import time
@@ -61,39 +62,46 @@ def _first_line(text: str) -> str:
 def relay_git_env(env: Mapping[str, str]) -> dict[str, str] | None:
     """The git environment that sends github.com fetches through the relay as this job's seat, or None when it is not set up.
 
-    FLEET_SYNC_RELAY_URL names the relay and FLEET_SYNC_BEARER_FILE the seat's own bearer file (owner-only).  The relay
-    holds the GitHub credential, so this job holds no GitHub token.  The bearer travels only in the environment.
+    FLEET_SYNC_RELAY_URL names the relay.  The bearer is SIMPLE_TOOLS_BEARER when set, else the seat's own owner-only file
+    in FLEET_SYNC_BEARER_FILE.  The relay holds the GitHub credential, so this job holds no GitHub token.  The bearer
+    travels only in the environment, and git follows no redirect, so it cannot reach another host.
     """
     url = (env.get("FLEET_SYNC_RELAY_URL") or "").strip().rstrip("/")
+    bearer = (env.get("SIMPLE_TOOLS_BEARER") or "").strip()
     path = (env.get("FLEET_SYNC_BEARER_FILE") or "").strip()
-    if not url or not path:
+    if not url or not (bearer or path):
         return None
     parsed = urlsplit(url)
     loopback = parsed.scheme == "http" and parsed.hostname in ("127.0.0.1", "localhost")
     if not loopback and parsed.scheme != "https":
         log("relay route: refused, the URL is neither https nor loopback")
         return None
-    try:
-        info = os.stat(path)
-        if info.st_uid != os.getuid() or info.st_mode & 0o077:
-            log("relay route: refused, the bearer file is not private to this user")
+    if not bearer:
+        try:
+            info = os.stat(path)
+            if info.st_uid != os.getuid() or info.st_mode & 0o077:
+                log("relay route: refused, the bearer file is not private to this user")
+                return None
+            raw = Path(path).read_text().strip()
+        except (OSError, UnicodeDecodeError) as exc:
+            log(f"relay route: bearer file unreadable ({type(exc).__name__})")
             return None
-        raw = Path(path).read_text().strip()
-    except (OSError, UnicodeDecodeError) as exc:
-        log(f"relay route: bearer file unreadable ({type(exc).__name__})")
-        return None
-    bearer = raw.split("=", 1)[1].strip().strip("\"'") if "=" in raw else raw
+        # A NAME=value line, or the bare value:  a bearer may itself contain `=`, so only an upper-case name counts.
+        match = re.fullmatch(r"[A-Z_][A-Z0-9_]*=(.*)", raw, re.S)
+        bearer = match.group(1).strip().strip("\"'") if match else raw
     if not bearer or any(ch.isspace() for ch in bearer):
         log("relay route: refused, the bearer file has no usable value")
         return None
-    config = {
-        f"url.{url}/git/.insteadOf": "https://github.com/",
-        f"http.{url}/.extraHeader": f"Authorization: Bearer {bearer}",
-        "http.postBuffer": str(8 * 1024 * 1024),
-        "credential.helper": "",
-    }
+    config = [
+        (f"url.{url}/git/.insteadOf", "https://github.com/"),
+        (f"url.{url}/git/.insteadOf", "git@github.com:"),
+        (f"http.{url}/.extraHeader", f"Authorization: Bearer {bearer}"),
+        ("http.followRedirects", "false"),
+        ("http.postBuffer", str(8 * 1024 * 1024)),
+        ("credential.helper", ""),
+    ]
     out = {"GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_COUNT": str(len(config))}
-    for index, (key, value) in enumerate(config.items()):
+    for index, (key, value) in enumerate(config):
         out[f"GIT_CONFIG_KEY_{index}"] = key
         out[f"GIT_CONFIG_VALUE_{index}"] = value
     return out

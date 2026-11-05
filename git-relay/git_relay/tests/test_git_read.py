@@ -125,8 +125,8 @@ class GitReadTest(unittest.TestCase):
         conn.close()
         return resp, data
 
-    ADV = "/git/Simple-With-Us/Fleet-OPS.git/info/refs?service=git-upload-pack"
-    PACK = "/git/Simple-With-Us/Fleet-OPS.git/git-upload-pack"
+    ADV = "/git/example-org/example-repo.git/info/refs?service=git-upload-pack"
+    PACK = "/git/example-org/example-repo.git/git-upload-pack"
 
     def test_advertisement_uses_a_read_token_the_caller_never_sees(self):
         port = self.serve(Relay())
@@ -134,53 +134,35 @@ class GitReadTest(unittest.TestCase):
         self.assertEqual(resp.status, 200)
         self.assertEqual(data, b"pack-data")
         self.assertEqual(resp.getheader("Content-Type"), git_read._ADVERTISE)
-        self.assertEqual(
-            self.relay.app_minter.calls,
-            [("swu-claude", "Simple-With-Us/Fleet-OPS", {"contents": "read"})],
-        )
+        self.assertEqual(self.relay.app_minter.calls, [("swu-claude", "example-org/example-repo", {"contents": "read"})])
         method, path, _body, headers = self.upstream.requests[0]
-        self.assertEqual(
-            (method, path),
-            ("GET", "/Simple-With-Us/Fleet-OPS.git/info/refs?service=git-upload-pack"),
-        )
+        self.assertEqual((method, path), ("GET", "/example-org/example-repo.git/info/refs?service=git-upload-pack"))
         expected = base64.b64encode(f"x-access-token:{APP_TOKEN}".encode()).decode()
         self.assertEqual(headers["Authorization"], "Basic " + expected)
         self.assertEqual(headers["Git-Protocol"], "version=2")
         self.assertNotIn(BEARER, json.dumps(headers))
         self.assertNotIn(APP_TOKEN.encode(), data)
-        self.assertEqual(
-            self.relay.audit.rows[0][:4], ("CLAUDE", "git_read", "Simple-With-Us/Fleet-OPS", "ok")
-        )
+        self.assertEqual(self.relay.audit.rows[0][:4], ("CLAUDE", "git_read", "example-org/example-repo", "ok"))
         self.assertNotIn(APP_TOKEN, json.dumps(self.relay.audit.rows))
 
     def test_a_remote_written_without_dot_git_reaches_the_same_repo(self):
         port = self.serve(Relay())
-        resp, _ = self.call(
-            port, "GET", "/git/Simple-With-Us/Fleet-OPS/info/refs?service=git-upload-pack"
-        )
+        resp, _ = self.call(port, "GET", "/git/example-org/example-repo/info/refs?service=git-upload-pack")
         self.assertEqual(resp.status, 200)
-        self.assertEqual(
-            self.upstream.requests[0][1],
-            "/Simple-With-Us/Fleet-OPS.git/info/refs?service=git-upload-pack",
-        )
+        self.assertEqual(self.upstream.requests[0][1], "/example-org/example-repo.git/info/refs?service=git-upload-pack")
 
     def test_upload_pack_forwards_the_body(self):
         upstream = FakeUpstream(content_type=git_read._RESULT, body=b"PACK")
         port = self.serve(Relay(), upstream)
-        resp, data = self.call(
-            port, "POST", self.PACK, body=b"0000", headers={"Content-Type": git_read._REQUEST}
-        )
+        resp, data = self.call(port, "POST", self.PACK, body=b"0000", headers={"Content-Type": git_read._REQUEST})
         self.assertEqual((resp.status, data), (200, b"PACK"))
-        self.assertEqual(
-            upstream.requests[0][:3],
-            ("POST", "/Simple-With-Us/Fleet-OPS.git/git-upload-pack", b"0000"),
-        )
+        self.assertEqual(upstream.requests[0][:3], ("POST", "/example-org/example-repo.git/git-upload-pack", b"0000"))
 
     def test_push_is_refused_on_every_shape(self):
         port = self.serve(Relay())
         for method, path in (
-            ("GET", "/git/Simple-With-Us/Fleet-OPS.git/info/refs?service=git-receive-pack"),
-            ("POST", "/git/Simple-With-Us/Fleet-OPS.git/git-receive-pack"),
+            ("GET", "/git/example-org/example-repo.git/info/refs?service=git-receive-pack"),
+            ("POST", "/git/example-org/example-repo.git/git-receive-pack"),
         ):
             resp, _ = self.call(port, method, path, body=b"0000" if method == "POST" else None)
             self.assertEqual(resp.status, 403, path)
@@ -190,8 +172,8 @@ class GitReadTest(unittest.TestCase):
     def test_only_the_two_git_paths_reach_upstream(self):
         port = self.serve(Relay())
         for path in (
-            "/git/Simple-With-Us/Fleet-OPS.git/HEAD",
-            "/git/Simple-With-Us/Fleet-OPS.git/objects/info/packs",
+            "/git/example-org/example-repo.git/HEAD",
+            "/git/example-org/example-repo.git/objects/info/packs",
             "/git/Simple-With-Us/../other.git/info/refs?service=git-upload-pack",
             "/git/a/b/c.git/info/refs?service=git-upload-pack",
             "/git/Simple-With-Us/.git/info/refs?service=git-upload-pack",
@@ -199,7 +181,7 @@ class GitReadTest(unittest.TestCase):
         ):
             resp, _ = self.call(port, "GET", path)
             self.assertEqual(resp.status, 404, path)
-        resp, _ = self.call(port, "GET", "/git/Simple-With-Us/Fleet-OPS.git/info/refs")
+        resp, _ = self.call(port, "GET", "/git/example-org/example-repo.git/info/refs")
         self.assertEqual(resp.status, 400)
         self.assertEqual(self.upstream.requests, [])
 
@@ -249,20 +231,14 @@ class GitReadTest(unittest.TestCase):
         from git_relay.server import _validate_args
 
         with self.assertRaisesRegex(ValueError, "no JSON call"):
-            _validate_args("git_read", {"repo": "Simple-With-Us/Fleet-OPS"})
+            _validate_args("git_read", {"repo": "example-org/example-repo"})
 
     def test_upload_needs_its_content_type_and_a_length(self):
         port = self.serve(Relay())
-        resp, _ = self.call(
-            port, "POST", self.PACK, body=b"0000", headers={"Content-Type": "text/plain"}
-        )
+        resp, _ = self.call(port, "POST", self.PACK, body=b"0000", headers={"Content-Type": "text/plain"})
         self.assertEqual(resp.status, 415)
         resp, _ = self.call(
-            port,
-            "POST",
-            self.PACK,
-            body=b"",
-            headers={"Content-Type": git_read._REQUEST, "Content-Length": "0"},
+            port, "POST", self.PACK, body=b"", headers={"Content-Type": git_read._REQUEST, "Content-Length": "0"}
         )
         self.assertEqual(resp.status, 411)
 
@@ -278,6 +254,32 @@ class GitReadTest(unittest.TestCase):
         resp, _ = self.call(port, "GET", self.ADV)
         self.assertEqual(resp.status, 503)
         self.assertEqual(self.relay.app_minter.calls, [])
+
+    def test_one_seat_cannot_take_every_transfer(self):
+        port = self.serve(Relay())
+        slot = git_read._seat_slot("CLAUDE")
+        acquired = [slot.acquire(blocking=False) for _ in range(git_read.MAX_PER_SEAT)]
+        self.addCleanup(lambda: [slot.release() for ok in acquired if ok])
+        resp, _ = self.call(port, "GET", self.ADV)
+        self.assertEqual(resp.status, 503)
+        self.assertEqual(self.relay.app_minter.calls, [])
+        # The refusal released the shared slot it never used.
+        held = [git_read._slots.acquire(blocking=False) for _ in range(git_read.MAX_CONCURRENT)]
+        self.addCleanup(lambda: [git_read._slots.release() for ok in held if ok])
+        self.assertTrue(all(held))
+
+    def test_malformed_requests_reach_the_bounded_audit(self):
+        port = self.serve(Relay())
+        self.call(port, "GET", "/git/example-org/example-repo.git/HEAD")
+        self.call(port, "POST", self.PACK, body=b"0000", headers={"Content-Type": "text/plain"})
+        self.assertEqual(self.relay._unauth_auditor.count, 2)
+
+    def test_a_credential_shaped_repo_is_not_written_to_the_audit(self):
+        token = "ghp_" + "a1b2c3d4" * 5
+        port = self.serve(Relay(policy=Policy(denial="repo not allowed for this seat")))
+        self.call(port, "GET", f"/git/example-org/{token}.git/info/refs?service=git-upload-pack")
+        self.assertEqual(self.relay.audit.rows[0][2], "")
+        self.assertNotIn(token, json.dumps(self.relay.audit.rows))
 
 
 if __name__ == "__main__":

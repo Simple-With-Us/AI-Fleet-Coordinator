@@ -9,8 +9,9 @@ GitHub.  The token stays in this process:  the caller never sees it, unlike `min
 git-receive-pack has no route here, and no other GitHub path can be reached.
 
 Every request writes one audit row and draws on the seat's hourly quota.  At most MAX_CONCURRENT exchanges run at
-once, so a slow clone cannot take every request slot from the other relay actions.  Upstream errors are reported by
-status alone:  no upstream text is relayed, and only exception type names reach the audit log.
+once and at most MAX_PER_SEAT for one seat, so a slow clone cannot take every request slot from the other relay actions
+or from other seats.  Upstream errors are reported by status alone:  no upstream text is relayed, and only exception
+type names reach the audit log.  A request refused before it can name a seat goes to the bounded unauthenticated audit.
 """
 
 from __future__ import annotations
@@ -21,30 +22,43 @@ import http.client
 import json
 import re
 import threading
-from collections.abc import Callable
+from typing import Callable
+
+from .secret_scan import find_secret
 
 ACTION = "git_read"
 READ_PERMISSIONS = {"contents": "read"}
 UPSTREAM_HOST = "github.com"
 UPSTREAM_TIMEOUT_S = 300
-MAX_CONCURRENT = 2
+MAX_CONCURRENT = 4
+MAX_PER_SEAT = 2
 # Fetch negotiation sends wants and haves.  A longer list is a client that needs http.postBuffer set, not a bigger cap.
 MAX_REQUEST_BYTES = 8 * 1024 * 1024
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024 * 1024
 CHUNK_BYTES = 256 * 1024
 
-_PATH = re.compile(
-    r"/git/([A-Za-z0-9_.-]{1,100})/([A-Za-z0-9_.-]{1,104})/(info/refs|git-upload-pack)"
-)
+_PATH = re.compile(r"/git/([A-Za-z0-9_.-]{1,100})/([A-Za-z0-9_.-]{1,104})/(info/refs|git-upload-pack)")
 _GIT_PROTOCOL = re.compile(r"version=[0-9]{1,2}(?::[a-z0-9=-]{1,40}){0,4}")
 _ADVERTISE = "application/x-git-upload-pack-advertisement"
 _RESULT = "application/x-git-upload-pack-result"
 _REQUEST = "application/x-git-upload-pack-request"
 _slots = threading.BoundedSemaphore(MAX_CONCURRENT)
+_seat_slots: dict[str, threading.BoundedSemaphore] = {}
+_seat_slots_lock = threading.Lock()
 
 
 def is_git_path(path: str) -> bool:
     return path == "/git" or path.startswith("/git/") or path.startswith("/git?")
+
+
+def _seat_slot(seat: str) -> threading.BoundedSemaphore:
+    with _seat_slots_lock:
+        return _seat_slots.setdefault(seat, threading.BoundedSemaphore(MAX_PER_SEAT))
+
+
+def _audit_repo(repo: str) -> str:
+    """The repo as the audit row may hold it:  a credential-shaped path segment is never written down."""
+    return "" if find_secret(repo) else repo
 
 
 def _default_connect() -> http.client.HTTPConnection:
@@ -88,21 +102,18 @@ def _parse(method: str, target: str) -> tuple[str, str, str] | tuple[None, int, 
     return repo, f"/{repo}.git/git-upload-pack", "upload"
 
 
-def handle(
-    relay,
-    handler,
-    method: str,
-    connect: Callable[[], http.client.HTTPConnection] = _default_connect,
-) -> None:
+def handle(relay, handler, method: str, connect: Callable[[], http.client.HTTPConnection] = _default_connect) -> None:
     """Serve one git request.  Every outcome, allowed or denied, past authentication writes exactly one audit row."""
     handler.close_connection = True
     repo, upstream_path, kind = _parse(method, handler.path)
     if repo is None:
+        relay._unauth_auditor.record(relay.audit, ACTION)
         _send_json(handler, upstream_path, {"error": kind})
         return
     body = b""
     if kind == "upload":
         if handler.headers.get("Content-Type") != _REQUEST:
+            relay._unauth_auditor.record(relay.audit, ACTION)
             _send_json(handler, 415, {"error": "unexpected content type"})
             return
         try:
@@ -111,9 +122,8 @@ def handle(
             length = 0
         if length < 1 or length > MAX_REQUEST_BYTES:
             # git sends a chunked body past http.postBuffer, so a client with a long want list sets that higher.
-            _send_json(
-                handler, 411, {"error": "a Content-Length within the byte bound is required"}
-            )
+            relay._unauth_auditor.record(relay.audit, ACTION)
+            _send_json(handler, 411, {"error": "a Content-Length within the byte bound is required"})
             return
         body = handler.rfile.read(length)
     auth = handler.headers.get("Authorization") or ""
@@ -132,7 +142,7 @@ def handle(
         outcome = "unavailable"
         detail["reason"] = type(exc).__name__
     finally:
-        relay.audit.record(seat, ACTION, repo, outcome, detail)
+        relay.audit.record(seat, ACTION, _audit_repo(repo), outcome, detail)
 
 
 def _serve(relay, handler, seat, repo, upstream_path, kind, body, detail, connect) -> str:
@@ -153,13 +163,15 @@ def _serve(relay, handler, seat, repo, upstream_path, kind, body, detail, connec
         detail["reason"] = f"ceiling lacks {missing}"
         _send_json(handler, 403, {"error": f"seat ceiling does not cover permission {missing!r}"})
         return "denied"
-    if not _slots.acquire(blocking=False):
+    seat_slot = _seat_slot(seat)
+    if not seat_slot.acquire(blocking=False):
         detail["reason"] = "busy"
-        _send_json(
-            handler,
-            503,
-            {"error": "too many git transfers are running;  retry shortly", "retryable": True},
-        )
+        _send_json(handler, 503, {"error": "too many git transfers are running;  retry shortly", "retryable": True})
+        return "unavailable"
+    if not _slots.acquire(blocking=False):
+        seat_slot.release()
+        detail["reason"] = "busy"
+        _send_json(handler, 503, {"error": "too many git transfers are running;  retry shortly", "retryable": True})
         return "unavailable"
     conn = None
     try:
@@ -167,19 +179,11 @@ def _serve(relay, handler, seat, repo, upstream_path, kind, body, detail, connec
             token, _expiry = relay.app_minter.token_for(app_slug, repo, dict(READ_PERMISSIONS))
         except Exception as exc:  # noqa: BLE001 - a mint failure of any type is one refusal, named by type only
             detail["reason"] = type(exc).__name__
-            _send_json(
-                handler,
-                503,
-                {"error": "could not obtain read access for this repo", "retryable": True},
-            )
+            _send_json(handler, 503, {"error": "could not obtain read access for this repo", "retryable": True})
             return "unavailable"
         basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
         del token
-        headers = {
-            "Authorization": "Basic " + basic,
-            "User-Agent": "swu-git-relay",
-            "Accept": "*/*",
-        }
+        headers = {"Authorization": "Basic " + basic, "User-Agent": "swu-git-relay", "Accept": "*/*"}
         del basic
         protocol = handler.headers.get("Git-Protocol") or ""
         if _GIT_PROTOCOL.fullmatch(protocol):
@@ -189,9 +193,7 @@ def _serve(relay, handler, seat, repo, upstream_path, kind, body, detail, connec
             if handler.headers.get("Content-Encoding") == "gzip":
                 headers["Content-Encoding"] = "gzip"
         conn = connect()
-        conn.request(
-            "POST" if kind == "upload" else "GET", upstream_path, body=body or None, headers=headers
-        )
+        conn.request("POST" if kind == "upload" else "GET", upstream_path, body=body or None, headers=headers)
         del headers
         resp = conn.getresponse()
         wanted = _RESULT if kind == "upload" else _ADVERTISE
@@ -218,5 +220,6 @@ def _serve(relay, handler, seat, repo, upstream_path, kind, body, detail, connec
             handler.wfile.write(chunk)
     finally:
         _slots.release()
+        seat_slot.release()
         if conn is not None:
             conn.close()
