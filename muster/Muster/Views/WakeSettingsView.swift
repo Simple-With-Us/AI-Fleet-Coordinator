@@ -576,7 +576,8 @@ struct WakeSettingsView: View {
             if let running = store.running, running.seat == seat.seat {
                 runningLine(running)
             }
-            if let report = store.testReports[seat.seat] {
+            // The seat's own wake and its fallback each keep their last answer, newest first.
+            ForEach(Array(store.allTestReports(seat: seat.seat).enumerated()), id: \.offset) { _, report in
                 testReportBox(report)
             }
             if seat.host.isTheMac {

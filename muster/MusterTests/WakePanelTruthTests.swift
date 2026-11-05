@@ -596,7 +596,7 @@ final class WakePanelTruthTests: XCTestCase {
             stderr: ""
         )
         await store.testWake(seat: "MM", runtime: "muse")
-        let failed = try XCTUnwrap(store.testReports["MM"])
+        let failed = try XCTUnwrap(store.testReport(seat: "MM", runtime: "muse"))
         XCTAssertEqual(failed.verdict, .failed)
         XCTAssertTrue(store.messageIsFailure)
         XCTAssertTrue(store.message?.contains("the binary was not pinned") == true)
@@ -611,7 +611,7 @@ final class WakePanelTruthTests: XCTestCase {
             stderr: ""
         )
         await store.testWake(seat: "MM", runtime: "muse")
-        XCTAssertEqual(store.testReports["MM"]?.verdict, .passed)
+        XCTAssertEqual(store.testReport(seat: "MM", runtime: "muse")?.verdict, .passed)
         XCTAssertFalse(store.messageIsFailure)
         XCTAssertTrue(store.message?.contains("Read its answer below") == true)
         XCTAssertNil(store.pinBlocker(seat: "MM", runtime: "muse", pinKey: "muse"))
@@ -638,10 +638,10 @@ final class WakePanelTruthTests: XCTestCase {
     func test_a_full_pause_is_not_loosened() async throws {
         let home = try makeHome(config: mmConfig)
         let fake = Fake()
-        fake.status = #"{"running": true, "status": {"seats": {"MM": {"wake": "muse", "paused": true, "wakes_paused": true}}, "pause": {"MM": {"by": "JAY", "ts": 1792535804.0}}}}"#
+        fake.status = #"{"running": true, "status": {"seats": {"MM": {"wake": "muse", "paused": true, "wakes_paused": true}}, "pause": {"MM": {"by": "TEST_OWNER", "ts": 1792535804.0}}}}"#
         let store = await makeStore(fake, home: home)
         let mm = try XCTUnwrap(store.model.seats.first)
-        XCTAssertEqual(mm.pauseBy, "JAY")
+        XCTAssertEqual(mm.pauseBy, "TEST_OWNER")
         await store.pause(seat: "MM")
         XCTAssertFalse(fake.commands.contains("pause"))
         XCTAssertTrue(store.message?.contains("would loosen it") == true)
@@ -757,7 +757,7 @@ final class WakePanelTruthTests: XCTestCase {
         fake.release()
         await run.value
         XCTAssertNil(store.running)
-        XCTAssertEqual(store.testReports["MM"]?.verdict, .passed)
+        XCTAssertEqual(store.testReport(seat: "MM", runtime: "muse")?.verdict, .passed)
     }
 
     /// Pin let through by a candidate from a test run elsewhere says Muster never saw its answer;
@@ -811,6 +811,124 @@ final class WakePanelTruthTests: XCTestCase {
         XCTAssertTrue(quiet.settingsOpen(choice: true, hasEdits: false))
         XCTAssertTrue(quiet.settingsOpen(choice: true, hasEdits: true))
         XCTAssertFalse(quiet.settingsOpen(choice: false, hasEdits: true))
+    }
+
+    // MARK: The first review round
+
+    /// A wake this app does not know leaves the pin unknown, and the seat needs a look.
+    func test_an_unknown_wake_needs_a_look() {
+        let json = #"{"running": true, "status": {"seats": {"MM": {"wake": "brand_new"}}}}"#
+        let mm = seat("MM", in: WakeSettingsBuilder.build(sources(status: json)))
+        XCTAssertEqual(mm.pinState, .unknownWake)
+        XCTAssertTrue(mm.pinState.isProblem)
+        XCTAssertTrue(mm.needsAttention)
+    }
+
+    /// The eavesdropper's word that the muse pin does not hold means the model it recorded proves
+    /// nothing, so the Model row is not a pass beside a Pin line that says the pin is stale.
+    func test_a_stale_muse_pin_does_not_pass_the_model() {
+        let json = #"{"running": true, "status": {"seats": {"MM": {"wake": "muse", "pin": {"pinned": false, "why": "pin_stale"}}}}}"#
+        let pins = ["MM": ["muse": pin("muse", model: "muse-spark-1.3-contributor")]]
+        let row = setting(.model, of: seat("MM", in: WakeSettingsBuilder.build(sources(status: json, pins: pins))))
+        XCTAssertEqual(row.state, .unproven)
+        XCTAssertTrue(row.note.contains("does not hold"))
+        XCTAssertTrue(row.note.contains("stale"))
+
+        let holding = #"{"running": true, "status": {"seats": {"MM": {"wake": "muse", "pin": {"pinned": true}}}}}"#
+        XCTAssertEqual(setting(.model, of: seat("MM", in: WakeSettingsBuilder.build(sources(status: holding, pins: pins)))).state, .match)
+    }
+
+    /// A configuration file that was not read is never DEFAULT:  each row is not known, and the
+    /// eavesdropper's own value is still shown.
+    func test_an_unread_file_is_not_the_default() {
+        var unread = sources(status: #"{"running": true, "status": {"seats": {"MM": {"wake": "muse", "budget": {"wakes_per_hour": 5}}}}}"#)
+        unread.config = ListenerConfigDocument(text: "")
+        unread.configReadable = false
+        unread.configProblem = "The configuration file at /tmp/x could not be read:  denied"
+        let row = setting(.wakesPerHour, of: seat("MM", in: WakeSettingsBuilder.build(unread)))
+        XCTAssertEqual(row.state, .unknown)
+        XCTAssertNil(row.configured)
+        XCTAssertEqual(row.live, .number(5))
+        XCTAssertTrue(row.note.contains("was not read"))
+    }
+
+    /// The seat's own test and its fallback's test each keep their answer, so testing the fallback
+    /// never takes away the seat's own way to Pin.
+    @MainActor
+    func test_the_fallback_test_keeps_the_seats_own_answer() async throws {
+        let home = try makeHome(config: mmConfig)
+        let fake = Fake()
+        let store = await makeStore(fake, home: home)
+        fake.testWake = AgentSyncCLIResult(exitCode: 0, stdout: "PASS, NOT PINNED YET: read the result above\n", stderr: "")
+        await store.testWake(seat: "MM", runtime: "muse")
+        fake.testWake = AgentSyncCLIResult(exitCode: 1, stdout: "FAIL: the fallback answered badly\n", stderr: "")
+        await store.testWake(seat: "MM", runtime: "fallback")
+        XCTAssertEqual(store.pinGate(seat: "MM", runtime: "muse", pinKey: "muse"), .inSession)
+        XCTAssertNotNil(store.pinGate(seat: "MM", runtime: "fallback", pinKey: "mcode").blocker)
+        XCTAssertEqual(store.allTestReports(seat: "MM").count, 2)
+        XCTAssertEqual(store.testReport(seat: "MM", runtime: "fallback")?.verdict, .failed)
+    }
+
+    /// A pin candidate that is there and cannot be read is not the same as none:  Pin says why it
+    /// is not offered.
+    @MainActor
+    func test_an_unreadable_candidate_is_not_no_candidate() async throws {
+        let home = try makeHome(config: mmConfig)
+        let location = ListenerStateLocation(home: home)
+        let candidate = location.candidateURL(seat: "MM", runtime: "muse")
+        try FileManager.default.createDirectory(at: candidate.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try #"{"at": "soon", "muse": "/bin/muse"}"#.write(to: candidate, atomically: true, encoding: .utf8)
+        let reader = WakeSettingsReader(location: location, runner: Fake(), roster: ["MM"])
+        guard case .unreadable(let why) = reader.readCandidate(seat: "MM", runtime: "muse") else {
+            return XCTFail("a candidate with no usable time must be unreadable")
+        }
+        XCTAssertTrue(why.contains("no time"))
+        XCTAssertEqual(reader.readCandidate(seat: "MM", runtime: "claude"), .missing)
+
+        let store = await makeStore(Fake(), home: home)
+        XCTAssertNotNil(store.model.seats.first(where: { $0.seat == "MM" })?.unreadableCandidates["muse"])
+        let blocker = try XCTUnwrap(store.pinBlocker(seat: "MM", runtime: "muse", pinKey: "muse"))
+        XCTAssertTrue(blocker.contains("could not be read"))
+    }
+
+    /// An unchanged ledger is not decoded again on the next read, and a changed one is.  The
+    /// counts are worked out for each read's own time either way.
+    func test_an_unchanged_ledger_is_not_parsed_again() throws {
+        let home = try makeHome(config: nil)
+        let url = home.appendingPathComponent("ledger.jsonl")
+        let now = Date()
+        let first = "{\"ts\": \(now.timeIntervalSince1970 - 60), \"wake_id\": \"a\", \"state\": \"accepted\", \"owner\": false}\n"
+        try first.write(to: url, atomically: true, encoding: .utf8)
+        let cache = LedgerParseCache()
+        let reader = WakeSettingsReader(location: ListenerStateLocation(home: home), runner: Fake(), roster: [], ledgerCache: cache)
+        guard case .parsed(let parsed, _) = reader.readLedger(url, at: now) else { return XCTFail("expected rows") }
+        XCTAssertEqual(WakeLedger.usage(from: parsed, now: now).wakesThisHour, 1)
+        guard case .parsed = reader.readLedger(url, at: now.addingTimeInterval(60)) else { return XCTFail("expected rows") }
+        XCTAssertEqual(cache.hits, 1)
+
+        let second = first + "{\"ts\": \(now.timeIntervalSince1970 - 30), \"wake_id\": \"b\", \"state\": \"accepted\", \"owner\": false}\n"
+        try second.write(to: url, atomically: true, encoding: .utf8)
+        guard case .parsed(let again, _) = reader.readLedger(url, at: now.addingTimeInterval(61)) else { return XCTFail("expected rows") }
+        XCTAssertEqual(cache.hits, 1)
+        XCTAssertEqual(WakeLedger.usage(from: again, now: now).wakesThisHour, 2)
+
+        // Past the cache's age the ledger is parsed again even when it has not changed.
+        guard case .parsed = reader.readLedger(url, at: now.addingTimeInterval(61 + LedgerParseCache.maximumAge)) else {
+            return XCTFail("expected rows")
+        }
+        XCTAssertEqual(cache.hits, 1)
+    }
+
+    /// Every way out of an action writes one audit row, a refusal before anything ran included.
+    @MainActor
+    func test_a_refused_action_still_writes_its_audit_row() async throws {
+        let home = try makeHome(config: mmConfig)
+        let store = await makeStore(Fake(), home: home)
+        await store.apply(seat: "MM")
+        await store.resume(seat: "ELSEWHERE")
+        let audit = OpsAuditLog.read(at: home.appendingPathComponent("audit/ops-audit.jsonl"))
+        XCTAssertEqual(audit.entries.map(\.verb), ["wake-resume", "wake-settings-apply"])
+        XCTAssertEqual(audit.entries.map(\.result), ["refused", "refused"])
     }
 
     // MARK: Small pieces

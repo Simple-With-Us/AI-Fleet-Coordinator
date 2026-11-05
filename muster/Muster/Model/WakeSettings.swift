@@ -566,8 +566,10 @@ enum SeatPinState: Equatable {
     /// Whether the owner should look at this.
     var isProblem: Bool {
         switch self {
-        case .notNeeded, .pinned, .unknownWake: return false
-        case .notHolding, .missing, .unreadable: return true
+        case .notNeeded, .pinned: return false
+        // A wake this app does not know leaves the pin it needs unknown, which the panel draws as
+        // a problem, so the summary and the Problems Only filter count it as one too.
+        case .notHolding, .missing, .unreadable, .unknownWake: return true
         case .fileOnly(_, _, let needsLook): return needsLook
         }
     }
@@ -676,6 +678,9 @@ struct WakeSeat: Identifiable, Equatable {
     /// When the last passing test wake left a pin candidate, by pin key.  The eavesdropper pins
     /// only a candidate under a day old.
     var candidates: [String: Date] = [:]
+    /// Pin candidates that are there and could not be read, by pin key, with why.  Such a
+    /// candidate is not known, and never the same as none.
+    var unreadableCandidates: [String: String] = [:]
     /// Why the ledger could not be read, when it could not.  The usage is then not known, and is
     /// never shown as zero.
     var usageProblem: String? = nil
@@ -832,6 +837,8 @@ struct WakeSettingsSources {
     var configProblem: String?
     /// When each seat's pin candidates were left:  seat -> pin key -> time.
     var candidates: [String: [String: Date]] = [:]
+    /// Pin candidates that are there and could not be read:  seat -> pin key -> why.
+    var unreadableCandidates: [String: [String: String]] = [:]
     /// Pin files that are there and could not be read:  seat -> pin key -> why.
     var unreadablePins: [String: [String: String]] = [:]
     /// Ledgers that are there and could not be read:  seat -> why.
@@ -938,6 +945,15 @@ enum WakeSettingsBuilder {
                 for: key, seat: tag, section: section, wake: wake, live: live,
                 seatOff: seatOff, pins: pins, config: sources.config
             )
+            // A file that was not read says nothing about what it holds, so no row is DEFAULT,
+            // PASS or DRIFT for want of a read:  it is not known, beside whatever the eavesdropper
+            // reports.  The problem box above the seats says why the file was not read.
+            if sources.configProblem != nil {
+                return WakeSetting(
+                    seat: tag, key: key, configured: nil, live: row.live, state: .unknown,
+                    note: "The configuration file was not read, so what it holds for this setting is not known."
+                )
+            }
             // A pass or a drift is a claim about what a running eavesdropper uses now.  An old
             // status, or one a stopped eavesdropper left, cannot make it.  A row whose value Muster
             // read from a pin file itself is not the eavesdropper's word, so the status's age says
@@ -1011,6 +1027,7 @@ enum WakeSettingsBuilder {
             fallbackRuntime: fallback,
             fallbackPinState: fallbackPinState,
             candidates: host.isElsewhere ? [:] : (sources.candidates[tag] ?? [:]),
+            unreadableCandidates: host.isElsewhere ? [:] : (sources.unreadableCandidates[tag] ?? [:]),
             usageProblem: host.isElsewhere ? nil : sources.usageProblems[tag],
             tornRecentRows: host.isElsewhere ? 0 : (sources.tornRows[tag] ?? 0),
             claudeBinary: live?.claude,
@@ -1145,6 +1162,7 @@ enum WakeSettingsBuilder {
             seatReported: live != nil,
             seatOff: seatOff,
             publishedFallback: live?.fallback,
+            publishedPin: live?.pin,
             pins: pins
         )
         return WakeSetting(
@@ -1156,7 +1174,7 @@ enum WakeSettingsBuilder {
             note: note(
                 for: key, state: state, wake: wake, fallback: fallback,
                 configured: configured, live: liveValue,
-                publishedFallback: live?.fallback, pins: pins
+                publishedFallback: live?.fallback, publishedPin: live?.pin, pins: pins
             )
         )
     }
@@ -1247,6 +1265,7 @@ enum WakeSettingsBuilder {
         seatReported: Bool,
         seatOff: Bool,
         publishedFallback: ListenerStatus.Fallback?,
+        publishedPin: ListenerStatus.Pin? = nil,
         pins: [String: PinEvidence]
     ) -> WakeSettingState {
         // A setting the engine does not enforce is never a pass,  whatever the two values
@@ -1263,6 +1282,9 @@ enum WakeSettingsBuilder {
             switch wake {
             case "muse":
                 guard let pin = pins["muse"] else { return .unproven }
+                // The eavesdropper says the muse pin no longer holds, so the model it recorded
+                // proves nothing now, whatever it says.
+                if publishedPin?.pinned == false { return .unproven }
                 guard pin.model != nil else { return .unpublished }
             case "openrouter":
                 guard live != nil else { return seatReported ? .unpublished : .unknown }
@@ -1321,6 +1343,7 @@ enum WakeSettingsBuilder {
         configured: ListenerConfigValue?,
         live: ListenerConfigValue?,
         publishedFallback: ListenerStatus.Fallback?,
+        publishedPin: ListenerStatus.Pin? = nil,
         pins: [String: PinEvidence]
     ) -> String {
         let file = configured?.displayText ?? "nothing"
@@ -1332,6 +1355,9 @@ enum WakeSettingsBuilder {
             return "The eavesdropper is using \(live?.displayText ?? "something else"),  and the file holds \(file)."
         case .unproven:
             if key == .model {
+                if wake == "muse", pins["muse"] != nil, publishedPin?.pinned == false {
+                    return "The eavesdropper says the muse pin does not hold, so it proves no model now.\u{00A0} \(PinEvidence.words(forWhy: publishedPin?.why ?? "not_pinned"))"
+                }
                 return "No muse pin proves this model yet."
             }
             if key == .fallback {

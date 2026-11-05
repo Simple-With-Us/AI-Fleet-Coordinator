@@ -37,8 +37,10 @@ final class WakeSettingsStore: ObservableObject {
     @Published private(set) var messageIsFailure = false
     /// The edited values, by seat and setting.
     @Published var draft: [String: [WakeSettingKey: String]] = [:]
-    /// The last test wake or pin of each seat, with everything it printed.
-    @Published private(set) var testReports: [String: TestWakeReport] = [:]
+    /// The last test wake of each seat and runtime (`""` for the seat's own wake when none was
+    /// named), with everything it printed.  The seat's own wake and its fallback each keep their
+    /// own, so testing one never hides the other's answer or its way to Pin.
+    @Published private(set) var testReports: [String: [String: TestWakeReport]] = [:]
     /// The long action that is running now, if any.
     @Published private(set) var running: RunningAction?
     /// Settings whose file value moved under an edit the owner has not applied, by seat.
@@ -87,6 +89,8 @@ final class WakeSettingsStore: ObservableObject {
     /// The newest read started.  Only that read publishes, so a slow older read cannot put older
     /// values on screen or reset what an edit is compared against.
     private var readGeneration = 0
+    /// The ledgers already parsed, so the minute timer does not decode an unchanged ledger again.
+    private let ledgerCache = LedgerParseCache()
 
     init(
         location: ListenerStateLocation = ListenerStateLocation(),
@@ -134,7 +138,8 @@ final class WakeSettingsStore: ObservableObject {
             location: location,
             runner: runner,
             roster: self.roster,
-            partitionURL: partitionURL
+            partitionURL: partitionURL,
+            ledgerCache: ledgerCache
         )
         let sources = await Task.detached(priority: .userInitiated) {
             await reader.read()
@@ -325,6 +330,10 @@ final class WakeSettingsStore: ObservableObject {
     /// Applies a seat's edited settings, then asks the eavesdropper to read the file and says what the
     /// eavesdropper did.
     func apply(seat: String) async {
+        // One audit row for every way out, a refusal before anything ran included.
+        var detail = ""
+        var auditResult = "refused"
+        defer { audit("wake-settings-apply", seat: seat, detail: detail, result: auditResult) }
         guard let writer else {
             say("Muster was not allowed to write the configuration file.", failure: true)
             return
@@ -341,12 +350,14 @@ final class WakeSettingsStore: ObservableObject {
         )
         guard !reading.edits.isEmpty else {
             if reading.refusals.isEmpty {
+                detail = "nothing edited"
                 say("Nothing was changed, so nothing was written.")
             } else {
                 say(reading.refusals.joined(separator: "\n"), failure: true)
             }
             return
         }
+        detail = reading.edits.map(\.key.title).joined(separator: ", ")
         guard let expected = configTextAtRead else {
             say("The configuration file could not be read, so nothing was changed.", failure: true)
             return
@@ -354,24 +365,21 @@ final class WakeSettingsStore: ObservableObject {
 
         begin()
         defer { end() }
-        let detail = reading.edits.map(\.key.title).joined(separator: ", ")
         let prepared: WakeSettingsWriter.PreparedWrite
         do {
             prepared = try writer.prepare(reading.edits, expecting: expected)
         } catch {
             say("The configuration file was not changed: \(error.localizedDescription)", failure: true)
-            audit("wake-settings-apply", seat: seat, detail: detail, result: "refused")
             return
         }
         guard await passesTheListenersCheck(prepared, writer: writer, isRepair: false) else {
-            audit("wake-settings-apply", seat: seat, detail: detail, result: "refused")
             return
         }
         do {
             try writer.commit(prepared)
         } catch {
             say(Self.commitFailure(error), failure: true)
-            audit("wake-settings-apply", seat: seat, detail: detail, result: "failed")
+            auditResult = "failed"
             return
         }
 
@@ -382,13 +390,16 @@ final class WakeSettingsStore: ObservableObject {
             report.append(reading.refusals.joined(separator: "\n"))
         }
         say(report.joined(separator: "\n"), failure: outcome.isFailure)
-        audit("wake-settings-apply", seat: seat, detail: detail, result: outcome.isFailure ? "submitted" : "done")
+        auditResult = outcome.isFailure ? "submitted" : "done"
         await refresh()
     }
 
     /// Takes out a section the eavesdropper refuses to run with.  It is the one write allowed for a
     /// seat the Mac does not hold, because the section is what stops the Mac's eavesdropper.
     func removeRefusedSection(seat: String) async {
+        // One audit row for every way out, a refusal before anything ran included.
+        var auditResult = "refused"
+        defer { audit("wake-section-remove", seat: seat, result: auditResult) }
         guard let writer else {
             say("Muster was not allowed to write the configuration file.", failure: true)
             return
@@ -410,18 +421,16 @@ final class WakeSettingsStore: ObservableObject {
             prepared = try writer.prepareRemoval(ofSeat: seat, expecting: expected)
         } catch {
             say("The configuration file was not changed: \(error.localizedDescription)", failure: true)
-            audit("wake-section-remove", seat: seat, result: "refused")
             return
         }
         guard await passesTheListenersCheck(prepared, writer: writer, isRepair: true) else {
-            audit("wake-section-remove", seat: seat, result: "refused")
             return
         }
         do {
             try writer.commit(prepared)
         } catch {
             say(Self.commitFailure(error), failure: true)
-            audit("wake-section-remove", seat: seat, result: "failed")
+            auditResult = "failed"
             return
         }
         let outcome = await reload()
@@ -430,7 +439,7 @@ final class WakeSettingsStore: ObservableObject {
                 .joined(separator: "\n"),
             failure: outcome.isFailure
         )
-        audit("wake-section-remove", seat: seat, result: outcome.isFailure ? "submitted" : "done")
+        auditResult = outcome.isFailure ? "submitted" : "done"
         await refresh()
     }
 
@@ -531,6 +540,10 @@ final class WakeSettingsStore: ObservableObject {
     /// pause over a full one would let live interrupts back in.  A seat under a full pause is
     /// left as it is.
     func pause(seat: String) async {
+        // One audit row for every way out, a pause left as it was included.
+        var auditResult = "refused"
+        var auditDetail = ""
+        defer { audit("wake-pause", seat: seat, detail: auditDetail, result: auditResult) }
         let host = self.host(of: seat)
         if host.isElsewhere {
             say("Nothing was paused for \(seat).\u{00A0} \(host.readOnlyReason ?? "")", failure: true)
@@ -540,12 +553,15 @@ final class WakeSettingsStore: ObservableObject {
         // wakes-only pause written over a full one would let live interrupts back in.
         switch Self.ownPauseEntry(seat: seat, at: location.pauseURL) {
         case .full:
+            auditDetail = "a full pause is in force"
             say("Nothing was changed for \(seat).\u{00A0} A full pause is already in force, and a wakes-only pause would loosen it.")
             return
         case .wakesOnly:
+            auditDetail = "already paused"
             say("Nothing was changed for \(seat).\u{00A0} Its wakes are already paused.")
             return
         case .unreadable(let why):
+            auditDetail = "the pause file could not be read"
             say("Nothing was paused for \(seat).\u{00A0} The Mac's pause file could not be read, so Muster cannot tell whether a full pause is in force, and a wakes-only pause would loosen one:  \(why)", failure: true)
             return
         case .noEntry:
@@ -553,10 +569,12 @@ final class WakeSettingsStore: ObservableObject {
         }
         let current = model.seats.first(where: { $0.seat == seat })
         if current?.paused == true {
+            auditDetail = "a full pause is in force"
             say("Nothing was changed for \(seat).\u{00A0} A full pause is already in force, and a wakes-only pause would loosen it.")
             return
         }
         if current?.wakesPaused == true {
+            auditDetail = "already paused"
             say("Nothing was changed for \(seat).\u{00A0} Its wakes are already paused.")
             return
         }
@@ -568,7 +586,7 @@ final class WakeSettingsStore: ObservableObject {
         if !host.isTheMac {
             report += "\u{00A0} Muster cannot say the Mac holds this seat, so it may not be the eavesdropper that wakes it."
         }
-        await run(invocation, success: report, auditVerb: "wake-pause", seat: seat)
+        auditResult = await run(invocation, success: report)
     }
 
     /// What the Mac's pause file holds for a seat's own entry.
@@ -610,6 +628,10 @@ final class WakeSettingsStore: ObservableObject {
     /// "nothing was paused" with a pause on every seat in force, and that pause outlives a lift of
     /// the seat's own entry.  Neither one is a seat whose wakes run again.
     func resume(seat: String) async {
+        // One audit row for every way out, a refusal before anything ran included.
+        var auditResult = "refused"
+        var auditDetail = ""
+        defer { audit("wake-resume", seat: seat, detail: auditDetail, result: auditResult) }
         let host = self.host(of: seat)
         guard host.isTheMac else {
             say("Nothing was resumed for \(seat).\u{00A0} \(host.readOnlyReason ?? "")", failure: true)
@@ -627,21 +649,21 @@ final class WakeSettingsStore: ObservableObject {
             let result = try await runner.run(invocation)
             if result.exitCode != 0 {
                 say("The eavesdropper refused the run: \(result.failureTail)", failure: true)
-                audit("wake-resume", seat: seat, result: "refused")
             } else if result.stdout.hasPrefix("nothing was paused") {
                 let more = everySeat ? "\u{00A0} \(stillInForce)" : ""
                 say("Nothing was lifted for \(seat).\u{00A0} No pause names this seat.\(more)", failure: true)
-                audit("wake-resume", seat: seat, detail: "nothing was paused", result: "refused")
+                auditDetail = "nothing was paused"
             } else if everySeat {
                 say("The pause on \(seat) was lifted, and its wakes stay stopped.\u{00A0} \(stillInForce)", failure: true)
-                audit("wake-resume", seat: seat, detail: "a pause on every seat is still in force", result: "done")
+                auditDetail = "a pause on every seat is still in force"
+                auditResult = "done"
             } else {
                 say("The pause was lifted on the Mac's eavesdropper.")
-                audit("wake-resume", seat: seat, result: "done")
+                auditResult = "done"
             }
         } catch {
             say("The eavesdropper could not be asked: \(error.localizedDescription)", failure: true)
-            audit("wake-resume", seat: seat, result: "failed")
+            auditResult = "failed"
         }
         await refresh()
     }
@@ -685,19 +707,32 @@ final class WakeSettingsStore: ObservableObject {
     /// answer the panel shows, or for a candidate under a day old from a run made elsewhere, which
     /// the confirmation names as one Muster did not see.
     func pinGate(seat: String, runtime: String, pinKey: String, now: Date = Date()) -> PinGate {
-        if let report = testReports[seat], report.kind == .run, report.runtime == runtime {
+        if let report = testReports[seat]?[runtime], report.kind == .run {
             switch report.verdict {
             case .passed: return .inSession
             case .failed: return .blocked("The last test wake did not pass, so there is nothing to pin.")
             case .unclear: return .blocked("The last test wake did not say it passed, so Muster will not offer to pin it.")
             }
         }
-        if let seatModel = model.seats.first(where: { $0.seat == seat }),
-           seatModel.hasPinnableCandidate(pinKey, now: now),
+        let seatModel = model.seats.first(where: { $0.seat == seat })
+        if let why = seatModel?.unreadableCandidates[pinKey] {
+            return .blocked("The pin candidate a test left could not be read, so Muster will not offer to pin it.\u{00A0} \(why)")
+        }
+        if let seatModel, seatModel.hasPinnableCandidate(pinKey, now: now),
            let at = seatModel.candidates[pinKey] {
             return .candidate(at)
         }
         return .blocked("No passing test wake in the last day.\u{00A0} Run one and read its answer first.")
+    }
+
+    /// The last test wake of a seat's runtime, or of its own wake when no runtime is named.
+    func testReport(seat: String, runtime: String?) -> TestWakeReport? {
+        testReports[seat]?[runtime ?? ""]
+    }
+
+    /// Every test wake this panel ran for a seat, newest first.
+    func allTestReports(seat: String) -> [TestWakeReport] {
+        (testReports[seat] ?? [:]).values.sorted { $0.finishedAt > $1.finishedAt }
     }
 
     /// Why Pin is not offered for a runtime of a seat, or nil when it is.
@@ -707,6 +742,9 @@ final class WakeSettingsStore: ObservableObject {
 
     /// Runs the seat's wake on the canned hostile messages, and keeps everything it printed.
     func testWake(seat: String, runtime: String?) async {
+        // One audit row for every way out, a refusal before anything ran included.
+        var auditResult = "refused"
+        defer { audit("wake-test", seat: seat, detail: runtime ?? "auto", result: auditResult) }
         let host = self.host(of: seat)
         guard host.isTheMac else {
             say("No test wake was run for \(seat).\u{00A0} \(host.readOnlyReason ?? "")", failure: true)
@@ -724,19 +762,22 @@ final class WakeSettingsStore: ObservableObject {
         do {
             let result = try await runner.run(AgentSyncInvocation.testWakeRun(seat: seat, runtime: runtime))
             let report = TestWakeReport.make(from: result, seat: seat, runtime: runtime, kind: .run)
-            testReports[seat] = report
+            testReports[seat, default: [:]][runtime ?? ""] = report
             say(report.headline, failure: report.verdict != .passed)
-            audit("wake-test", seat: seat, detail: runtime ?? "auto", result: report.verdict == .passed ? "done" : "failed")
+            auditResult = report.verdict == .passed ? "done" : "failed"
         } catch {
-            testReports[seat] = nil
+            testReports[seat]?[runtime ?? ""] = nil
             say("The test wake could not be run: \(error.localizedDescription)", failure: true)
-            audit("wake-test", seat: seat, detail: runtime ?? "auto", result: "failed")
+            auditResult = "failed"
         }
         await refresh()
     }
 
     /// Pins the binary whose test wake passed.
     func pin(seat: String, runtime: String?) async {
+        // One audit row for every way out, a refusal before anything ran included.
+        var auditResult = "refused"
+        defer { audit("wake-pin", seat: seat, detail: runtime ?? "auto", result: auditResult) }
         let host = self.host(of: seat)
         guard host.isTheMac else {
             say("Nothing was pinned for \(seat).\u{00A0} \(host.readOnlyReason ?? "")", failure: true)
@@ -753,32 +794,35 @@ final class WakeSettingsStore: ObservableObject {
             let result = try await runner.run(AgentSyncInvocation.testWakePin(seat: seat, runtime: runtime))
             let report = TestWakeReport.make(from: result, seat: seat, runtime: runtime, kind: .pin)
             say(report.headline, failure: report.verdict != .passed)
-            audit("wake-pin", seat: seat, detail: runtime ?? "auto", result: report.verdict == .passed ? "done" : "refused")
+            auditResult = report.verdict == .passed ? "done" : "refused"
         } catch {
             say("The binary could not be pinned: \(error.localizedDescription)", failure: true)
-            audit("wake-pin", seat: seat, detail: runtime ?? "auto", result: "failed")
+            auditResult = "failed"
         }
         await refresh()
     }
 
-    /// Runs a command line and says what it did.
-    private func run(_ invocation: AgentSyncInvocation, success: String, auditVerb: String, seat: String) async {
+    /// Runs a command line, says what it did, and returns the audit result:  "done", "refused" or
+    /// "failed".  The caller writes the one audit row.
+    private func run(_ invocation: AgentSyncInvocation, success: String) async -> String {
         begin()
         defer { end() }
+        let result: String
         do {
-            let result = try await runner.run(invocation)
-            if result.exitCode == 0 {
+            let answer = try await runner.run(invocation)
+            if answer.exitCode == 0 {
                 say(success)
-                audit(auditVerb, seat: seat, result: "done")
+                result = "done"
             } else {
-                say("The eavesdropper refused the run: \(result.failureTail)", failure: true)
-                audit(auditVerb, seat: seat, result: "refused")
+                say("The eavesdropper refused the run: \(answer.failureTail)", failure: true)
+                result = "refused"
             }
         } catch {
             say("The eavesdropper could not be asked: \(error.localizedDescription)", failure: true)
-            audit(auditVerb, seat: seat, result: "failed")
+            result = "failed"
         }
         await refresh()
+        return result
     }
 }
 

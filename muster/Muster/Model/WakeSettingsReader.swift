@@ -54,6 +54,78 @@ struct ListenerStateLocation: Equatable {
     }
 }
 
+// MARK: - The ledger cache
+
+/// Wake ledgers already parsed, by path, so an unchanged ledger is not decoded on every read.
+///
+/// It is shared by the reads one store starts, which run off the main thread, so it holds a
+/// lock.  An entry is used only while the ledger's size and modification time are the ones it
+/// was parsed at, and for no longer than `maximumAge`.
+final class LedgerParseCache: @unchecked Sendable {
+    /// How long a parse is reused at most.  Torn rows are judged against the last day at parse
+    /// time, so they are judged again at least this often.
+    static let maximumAge: TimeInterval = 600
+
+    /// What identifies one version of a ledger.
+    struct Stamp: Equatable {
+        let size: UInt64
+        let modified: Date
+    }
+
+    private struct Entry {
+        let stamp: Stamp
+        let parsedAt: Date
+        let parsed: WakeLedger.Parsed
+        let truncated: Bool
+    }
+
+    private let lock = NSLock()
+    private var entries: [String: Entry] = [:]
+    private var hitCount = 0
+
+    init() {}
+
+    /// How many reads reused a parse.
+    var hits: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return hitCount
+    }
+
+    /// The ledger's size and modification time, or nil when they cannot be read.
+    static func stamp(of url: URL) -> Stamp? {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let size = (attributes[.size] as? NSNumber)?.uint64Value,
+              let modified = attributes[.modificationDate] as? Date else { return nil }
+        return Stamp(size: size, modified: modified)
+    }
+
+    /// The parse kept for this version of the ledger, if it is young enough.
+    func parsed(for path: String, stamp: Stamp, at now: Date) -> (parsed: WakeLedger.Parsed, truncated: Bool)? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let entry = entries[path], entry.stamp == stamp else { return nil }
+        let age = now.timeIntervalSince(entry.parsedAt)
+        guard age >= 0, age < Self.maximumAge else { return nil }
+        hitCount += 1
+        return (entry.parsed, entry.truncated)
+    }
+
+    /// Keeps a parse of this version of the ledger.
+    func keep(_ parsed: WakeLedger.Parsed, truncated: Bool, for path: String, stamp: Stamp, at now: Date) {
+        lock.lock()
+        defer { lock.unlock() }
+        entries[path] = Entry(stamp: stamp, parsedAt: now, parsed: parsed, truncated: truncated)
+    }
+
+    /// Drops what is kept for a ledger that is gone or cannot be read.
+    func forget(_ path: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        entries[path] = nil
+    }
+}
+
 // MARK: - Reading
 
 /// Reads everything the wake settings panel shows.
@@ -68,19 +140,24 @@ struct WakeSettingsReader {
     var partitionURL: URL?
     /// The clock.
     var now: () -> Date
+    /// Ledgers already parsed, so a read that finds a ledger unchanged does not decode it again.
+    /// Nil parses every ledger on every read.
+    var ledgerCache: LedgerParseCache?
 
     init(
         location: ListenerStateLocation = ListenerStateLocation(),
         runner: AgentSyncRunning = AgentSyncCLI(),
         roster: [String] = [],
         partitionURL: URL? = ListenerPartition.defaultURL(),
-        now: @escaping () -> Date = { Date() }
+        now: @escaping () -> Date = { Date() },
+        ledgerCache: LedgerParseCache? = nil
     ) {
         self.location = location
         self.runner = runner
         self.roster = roster
         self.partitionURL = partitionURL
         self.now = now
+        self.ledgerCache = ledgerCache
     }
 
     /// The maximum size of the configuration and pin files this reads.
@@ -172,6 +249,7 @@ struct WakeSettingsReader {
         var pins: [String: [String: PinEvidence]] = [:]
         var unreadablePins: [String: [String: String]] = [:]
         var candidates: [String: [String: Date]] = [:]
+        var unreadableCandidates: [String: [String: String]] = [:]
         var usage: [String: WakeUsage] = [:]
         var recent: [String: [WakeLedger.Outcome]] = [:]
         var usageProblems: [String: String] = [:]
@@ -184,32 +262,35 @@ struct WakeSettingsReader {
             var seatPins: [String: PinEvidence] = [:]
             var seatUnreadable: [String: String] = [:]
             var seatCandidates: [String: Date] = [:]
+            var seatUnreadableCandidates: [String: String] = [:]
             for runtime in WakeType.pinKeys {
                 switch readPin(seat: directoryName, runtime: runtime) {
                 case .found(let evidence): seatPins[runtime] = evidence
                 case .unreadable(let why): seatUnreadable[runtime] = why
                 case .missing: break
                 }
-                if let at = readCandidate(seat: directoryName, runtime: runtime) {
-                    seatCandidates[runtime] = at
+                switch readCandidate(seat: directoryName, runtime: runtime) {
+                case .found(let at): seatCandidates[runtime] = at
+                case .unreadable(let why): seatUnreadableCandidates[runtime] = why
+                case .missing: break
                 }
             }
             pins[tag] = seatPins
             if !seatUnreadable.isEmpty { unreadablePins[tag] = seatUnreadable }
             if !seatCandidates.isEmpty { candidates[tag] = seatCandidates }
+            if !seatUnreadableCandidates.isEmpty { unreadableCandidates[tag] = seatUnreadableCandidates }
 
             let ledgerURL = location.ledgerURL(seat: directoryName)
-            switch readFile(ledgerURL, limit: Self.maximumLedgerTailBytes, tail: true) {
+            switch readLedger(ledgerURL, at: readAt) {
             case .missing:
                 // No ledger is a seat that has never woken:  zero is the truth.
                 break
             case .unreadable(let why):
                 usageProblems[tag] = "The wake ledger at \(ledgerURL.path) could not be read, so this seat's use is not known:  \(why)"
                 problems.append("\(tag):  the wake ledger could not be read, so its use is not known.")
-            case .text(let text, let truncated):
+            case .parsed(let parsed, let truncated):
                 // One read and one parse for both views:  the ledger was not decoded once
-                // per question.
-                let parsed = WakeLedger.parse(text, now: readAt)
+                // per question.  The counts are always worked out again for this read's time.
                 var counted = WakeLedger.usage(from: parsed, now: readAt)
                 // The end of a large ledger that does not reach back a day leaves rows out of the
                 // window, so the counts are a floor.
@@ -228,6 +309,7 @@ struct WakeSettingsReader {
         sources.pins = pins
         sources.unreadablePins = unreadablePins
         sources.candidates = candidates
+        sources.unreadableCandidates = unreadableCandidates
         sources.usage = usage
         sources.recentWakes = recent
         sources.usageProblems = usageProblems
@@ -280,14 +362,67 @@ struct WakeSettingsReader {
         ))
     }
 
-    /// When a passing test wake of a runtime left its candidate, or nil when there is none.
-    private func readCandidate(seat: String, runtime: String) -> Date? {
+    /// What reading a pin candidate found.
+    enum CandidateRead: Equatable {
+        case missing
+        /// When the passing test wake left it.
+        case found(Date)
+        /// The file is there and is not a candidate this app can read.  The text says why.
+        case unreadable(String)
+    }
+
+    /// When a passing test wake of a runtime left its candidate.  A file that is there and cannot
+    /// be read, or holds no usable time, is unreadable and never the same as no candidate.
+    func readCandidate(seat: String, runtime: String) -> CandidateRead {
         let url = location.candidateURL(seat: seat, runtime: runtime)
-        guard case .text(let text, _) = readFile(url, limit: Self.maximumFileBytes),
-              let data = text.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let at = object["at"] as? Double else { return nil }
-        return Date(timeIntervalSince1970: at)
+        let text: String
+        switch readFile(url, limit: Self.maximumFileBytes) {
+        case .missing: return .missing
+        case .unreadable(let why): return .unreadable(why)
+        case .text(let read, _): text = read
+        }
+        guard let data = text.data(using: .utf8),
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            return .unreadable("The pin candidate at \(url.path) is not a JSON object.")
+        }
+        guard let at = object["at"] as? Double, at.isFinite, at > 0 else {
+            return .unreadable("The pin candidate at \(url.path) holds no time it was made.")
+        }
+        return .found(Date(timeIntervalSince1970: at))
+    }
+
+    /// What reading a wake ledger found.
+    enum LedgerRead {
+        case missing
+        /// The ledger's rows, and whether only its end was read.
+        case parsed(WakeLedger.Parsed, truncated: Bool)
+        case unreadable(String)
+    }
+
+    /// A seat's wake ledger, parsed.  An open panel reads every minute, and decoding a 4 MB tail
+    /// for every seat each time is work for nothing when the ledger has not changed, so a ledger
+    /// whose size and modification time match the last parse reuses it.  It is parsed again at
+    /// least every `LedgerParseCache.maximumAge`, because which torn rows fall inside the last
+    /// day moves with the clock.  The counts are worked out from the rows on every read.
+    func readLedger(_ url: URL, at readAt: Date) -> LedgerRead {
+        let stamp = LedgerParseCache.stamp(of: url)
+        if let stamp, let cached = ledgerCache?.parsed(for: url.path, stamp: stamp, at: readAt) {
+            return .parsed(cached.parsed, truncated: cached.truncated)
+        }
+        switch readFile(url, limit: Self.maximumLedgerTailBytes, tail: true) {
+        case .missing:
+            ledgerCache?.forget(url.path)
+            return .missing
+        case .unreadable(let why):
+            ledgerCache?.forget(url.path)
+            return .unreadable(why)
+        case .text(let text, let truncated):
+            let parsed = WakeLedger.parse(text, now: readAt)
+            if let stamp {
+                ledgerCache?.keep(parsed, truncated: truncated, for: url.path, stamp: stamp, at: readAt)
+            }
+            return .parsed(parsed, truncated: truncated)
+        }
     }
 
     /// A file's text.  A file larger than the limit is refused, or, for a tail read, read from
