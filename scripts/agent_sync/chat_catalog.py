@@ -44,7 +44,9 @@ OPENCODE_EXCERPT_ROW_BYTES = 64 * 1024
 # and spends that many from the budget, so no query plan can turn a bounded
 # row count into unbounded work.  A monotonic wall-clock deadline covers the
 # paths instruction counting cannot see (page cache stalls, IO);  whichever
-# trips first aborts the read as _StoreHeavy.
+# trips first aborts the read as _StoreHeavy.  The clock is checked between
+# instruction groups, so this bounds ACTIVE VM work;  it cannot interrupt one
+# blocking filesystem IO operation and is not a hard wall-clock IO deadline.
 OPENCODE_SQLITE_WORK_STEPS = 5_000_000
 # Granularity:  the handler runs once per this many VM instructions.
 OPENCODE_SQLITE_PROGRESS_STEPS = 1000
@@ -1057,13 +1059,19 @@ class ChatCatalog:
                     if not required <= cols:
                         return None
             where = " WHERE time_archived IS NULL" if "time_archived" in session_cols else ""
-            # substr() caps bound allocation per row:  a giant title or directory
-            # TEXT must never be materialized whole (one VM operation can return
-            # unbounded text, and _row's clip happens only after that).
+            # Allocation guards:  title is clipped (display-only), but identity
+            # and workspace path are never truncated - a truncated id can collide
+            # with another session's prefix, and a truncated directory is a wrong
+            # workspace for preflight.  Sessions whose id or directory exceeds
+            # the guard, or whose columns are not TEXT, are DROPPED from the
+            # window instead (bounded-subset contract, documented and tested).
             sessions = conn.execute(
-                "SELECT substr(id, 1, 128), substr(directory, 1, 1024),"
-                " substr(title, 1, 4096), time_created FROM session"
+                "SELECT id, directory, substr(title, 1, 4096), time_created FROM session"
                 + where
+                + (" AND" if where else " WHERE")
+                + " typeof(id) = 'text' AND length(id) <= 128"
+                + " AND (directory IS NULL OR (typeof(directory) = 'text'"
+                + " AND length(directory) <= 1024))"
                 + " ORDER BY time_created DESC LIMIT ?",
                 (MAX_FILES_PER_SOURCE,),
             ).fetchall()
@@ -1083,12 +1091,16 @@ class ChatCatalog:
                 if not {"session_id", "time_created"} <= cols:
                     continue
                 for sid, stamp in conn.execute(
-                    "SELECT substr(session_id, 1, 128), MAX(time_created) FROM "
+                    "SELECT session_id, MAX(time_created) FROM "
                     + table
-                    + " WHERE session_id IN (SELECT id FROM session"
+                    + " WHERE typeof(session_id) = 'text' AND length(session_id) <= 128"
+                    + " AND session_id IN (SELECT id FROM session"
                     + where
-                    + " ORDER BY time_created DESC LIMIT ?)"
-                    + " GROUP BY substr(session_id, 1, 128)",
+                    + (" AND" if where else " WHERE")
+                    + " typeof(id) = 'text' AND length(id) <= 128"
+                    + " AND (directory IS NULL OR (typeof(directory) = 'text'"
+                    + " AND length(directory) <= 1024))"
+                    + " ORDER BY time_created DESC LIMIT ?) GROUP BY session_id",
                     (MAX_FILES_PER_SOURCE,),
                 ):
                     if isinstance(sid, str) and isinstance(stamp, (int, float)):

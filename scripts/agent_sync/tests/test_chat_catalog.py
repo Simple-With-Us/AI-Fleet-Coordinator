@@ -1218,28 +1218,75 @@ class OpenCodeCatalogTests(unittest.TestCase):
         self.assertEqual(row["status"], "unavailable")
         self.assertIn("exceeds read budget", row["error"])
 
-    def test_oversized_session_metadata_is_capped(self):
-        # A 1MB title / 500KB directory must never be materialized whole:  the
-        # scan completes, output fields stay bounded.
+    def test_overlong_id_sessions_are_dropped_not_truncated(self):
+        # Two distinct sessions whose ids share the first 128 characters must
+        # never collapse into one truncated row:  both are dropped by the
+        # length guard, the normal session keeps its FULL original id.
         db = self._db()
         conn = sqlite3.connect(db)
         try:
+            prefix = "ses_" + "a" * 126
             conn.execute(
-                "INSERT INTO session VALUES ('ses_big', 'p1', NULL, ?, ?, 500)",
-                ("D" * 500_000, "T" * 1_000_000),
+                "INSERT INTO session VALUES (?, 'p1', NULL, '/x', 'Chat X', 600)",
+                (prefix + "X",),
+            )
+            conn.execute(
+                "INSERT INTO session VALUES (?, 'p1', NULL, '/y', 'Chat Y', 700)",
+                (prefix + "Y",),
             )
             conn.commit()
         finally:
             conn.close()
-        rows = self.catalog(max_records=1000).discover()
-        opencode = {
-            r["session_id"]: r for r in rows if r["platform"] == "opencode" and r["status"] != "unavailable"
-        }
-        self.assertIn("ses_big", opencode)
-        self.assertIn("ses_1", opencode)
-        big = opencode["ses_big"]
-        self.assertLessEqual(len(big["title"]), 180)
-        self.assertLessEqual(len(big["cwd"] or ""), 1024)
+        rows = [
+            r
+            for r in self.catalog(max_records=1000).discover()
+            if r["platform"] == "opencode" and r["status"] != "unavailable"
+        ]
+        ids = [r["session_id"] for r in rows]
+        self.assertEqual(ids, ["ses_1"])  # full original id, no truncation
+        self.assertNotIn(prefix, "".join(ids))
+
+    def test_overlong_directory_session_is_dropped(self):
+        # A truncated workspace path would be a wrong workspace for preflight:
+        # the session is dropped, never emitted with a clipped cwd.
+        db = self._db()
+        conn = sqlite3.connect(db)
+        try:
+            conn.execute(
+                "INSERT INTO session VALUES ('ses_longdir', 'p1', NULL, ?, 'Long dir', 800)",
+                ("/" + "d" * 2000,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        rows = [
+            r
+            for r in self.catalog(max_records=1000).discover()
+            if r["platform"] == "opencode" and r["status"] != "unavailable"
+        ]
+        ids = [r["session_id"] for r in rows]
+        self.assertIn("ses_1", ids)
+        self.assertNotIn("ses_longdir", ids)
+
+    def test_oversized_title_is_clipped_but_session_kept(self):
+        # Title is display-only:  clipping it is honest and the session stays.
+        db = self._db()
+        conn = sqlite3.connect(db)
+        try:
+            conn.execute(
+                "INSERT INTO session VALUES ('ses_bigtitle', 'p1', NULL, '/bt', ?, 900)",
+                ("T" * 1_000_000,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        rows = [
+            r
+            for r in self.catalog(max_records=1000).discover()
+            if r["platform"] == "opencode" and r["status"] != "unavailable"
+        ]
+        row = next(r for r in rows if r["session_id"] == "ses_bigtitle")
+        self.assertLessEqual(len(row["title"]), 180)
 
     def test_legacy_enumeration_is_bounded(self):
         # More ses_*.json files than the cap in one project:  exactly the cap is
