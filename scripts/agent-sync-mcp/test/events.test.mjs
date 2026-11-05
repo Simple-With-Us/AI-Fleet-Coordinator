@@ -2,7 +2,7 @@
 // signing (checked against the standardwebhooks reference when installed),
 // the callback URL guard, subscribe verification, delivery retries and 410,
 // expiry, epoch revocation, pause, the wake_id claim, the channel allowlist,
-// the access re-check before every attempt, and the answer to the listener.
+// the access re-check before every attempt, and the answer to the eavesdropper.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -244,7 +244,7 @@ test("a channel filter resolves the name to its current stream id and matches th
   assert.ok(!wakeMatches({ channel: "sandbox" }, sandbox({ stream_id: 642232 }), allowed));
   assert.ok(!wakeMatches({ channel: "sandbox" }, sandbox({ stream_id: 999001 }), allowed));
   assert.ok(!wakeMatches({ channel: "sandbox" }, sandbox({ stream_id: undefined }), allowed));
-  // The id decides, not the listener's display name.
+  // The id decides, not the eavesdropper's display name.
   assert.ok(wakeMatches({ channel: "sandbox" }, sandbox({ reply_to: { type: "stream", channel: "sandbox-old-name", topic: "t" } }), allowed));
   // After a rename the old name no longer resolves, so its filter stops matching (fails closed).
   const renamed = new ChannelSet(SUBSCRIPTIONS.map((s) => (s.stream_id === 642167 ? { ...s, name: "playground" } : s)));
@@ -261,7 +261,7 @@ test("a channel wake needs a stream the seat may use;  a DM needs none and carri
   assert.equal(wakeChannelRefusal(wake({ stream_id: 700001 }), new ChannelSet(SUBSCRIPTIONS, [700001])), "stream_not_allowed", "a denied stream");
   assert.equal(wakeChannelRefusal(wake({ stream_id: 123456 }), allowed), "stream_not_allowed", "a stream the bot is not in");
   assert.equal(wakeChannelRefusal(wake(), null), "no_channel_set", "no set (no key, refused bot) refuses every channel wake");
-  assert.equal(wakeChannelRefusal(wake({ stream_id: undefined }), allowed), "no_stream_id", "an older listener's body fails closed");
+  assert.equal(wakeChannelRefusal(wake({ stream_id: undefined }), allowed), "no_stream_id", "an older eavesdropper's body fails closed");
   assert.equal(wakeChannelRefusal(wake({ stream_id: null }), allowed), "no_stream_id");
   assert.equal(wakeChannelRefusal(wake({ stream_id: "642232" }), allowed), "no_stream_id");
   // dm alone is not enough:  a stream reply_to makes it a channel wake.
@@ -291,7 +291,7 @@ test("event data carries Zulip fields only, matching payloadSchema", () => {
 
 // ---------------------------------------------------------------- held_back
 
-/** One held-back item as the listener sends it (adapters.py held_back_item). */
+/** One held-back item as the eavesdropper sends it (adapters.py held_back_item). */
 function heldItem(overrides = {}) {
   return {
     message_id: 70,
@@ -346,7 +346,7 @@ test("held_back:  only known fields are copied, so an item never carries an exce
   assert.deepEqual(forged.held_back.items[0], { message_id: 70, dm: true, reason: "wakes_per_hour", at: 1_790_000_000 });
 });
 
-test("held_back:  the largest one the listener may send keeps the event under the size cap", () => {
+test("held_back:  the largest one the eavesdropper may send keeps the event under the size cap", () => {
   const long = "\u{1F600}".repeat(100); // 200 UTF-16 code units, 400 bytes
   const items = Array.from({ length: 20 }, (_, i) => heldItem({ message_id: 100 + i, channel: long, topic: long, sender_full_name: long, zulip_link: "h".repeat(200) }));
   const data = eventData(wake({ excerpt: "x".repeat(2400), held_back: { count: 200, items } }), allowed);
@@ -556,8 +556,8 @@ test("delivery:  2xx once, 5xx retried with the same id and a fresh signature, 4
   assert.equal(ok.calls[0].headers["X-MCP-Subscription-Id"], "sub_a");
   assert.equal(ok.calls[0].headers["Content-Type"], "application/json");
 
-  // Two attempts, 1 second apart:  delivery runs inside the listener's request now,
-  // and the listener's own retries are the longer path.
+  // Two attempts, 1 second apart:  delivery runs inside the eavesdropper's request now,
+  // and the eavesdropper's own retries are the longer path.
   assert.deepEqual([...DELIVERY_BACKOFF_MS], [1000]);
   const flaky = fakeCallback({ statuses: [503, 200] });
   const r = await deliverEvent(flaky.fetchFn, sub, event, { sleep, now });
@@ -622,7 +622,7 @@ test("fan-out:  matching subscriptions get one signed event each;  410 drops the
   assert.ok(!JSON.stringify(audit).includes("callback_123"), "no callback path in the audit");
 });
 
-// ---------------------------------------------------------------- the listener's wake, end to end
+// ---------------------------------------------------------------- the eavesdropper's wake, end to end
 
 /** One seat with one live, unfiltered subscription, and a callback that answers `statuses` in turn. */
 async function wakeSetup({ statuses = [], args = {} } = {}) {
@@ -637,7 +637,7 @@ async function wakeSetup({ statuses = [], args = {} } = {}) {
   return { gate, ev, deliveries, fetchFn };
 }
 
-/** The listener's request:  claim, deliver inline, answer. */
+/** The eavesdropper's request:  claim, deliver inline, answer. */
 async function listenerPost(gate, w, fetchFn, sleep = async () => {}, resolve = channels) {
   const claim = await gate.eventClaimWake({ wakeId: w.wake_id, messageId: w.message_id });
   const result = claim.verdict === "go" ? await deliverWake({ gate, wake: w, claim, channels: resolve, fetchFn, sleep }) : claim;
@@ -813,7 +813,7 @@ test("the wake path:  a Zulip failure reading the channels is a retry (503), nev
   const first = await listenerPost(gate, w, fetchFn, undefined, failing);
   assert.deepEqual(first.reply, { status: 503, body: { ok: false, retry: true, subscribers: 1, delivered: 0 } });
   assert.equal(deliveries.length, 0);
-  // The listener's retry, with Zulip back, delivers.
+  // The eavesdropper's retry, with Zulip back, delivers.
   assert.equal((await listenerPost(gate, w, fetchFn)).reply.body.outcome, "delivered");
   // No set (no key installed, or the bot refused):  channel wakes are refused, DMs still go out.
   const none = async () => null;
@@ -931,7 +931,7 @@ test("the inline budget bounds the attempts and the answer comes in time", async
   assert.deepEqual(await run(100, 500).then(({ r, calls }) => [r.outcome, r.attempts, calls]), ["failed", 0, 0]);
 });
 
-test("the answer to the listener:  every verdict and outcome", () => {
+test("the answer to the eavesdropper:  every verdict and outcome", () => {
   assert.deepEqual(wakeReply({ verdict: "duplicate" }), { status: 200, body: { ok: true, duplicate: true } });
   assert.deepEqual(wakeReply({ verdict: "in_flight", retryAfterS: 9 }), { status: 503, body: { ok: false, in_flight: true }, retryAfterS: 9 });
   assert.deepEqual(wakeReply({ verdict: "paused" }), { status: 202, body: { ok: true, paused: true, subscribers: 0 } });

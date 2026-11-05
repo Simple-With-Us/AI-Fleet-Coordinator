@@ -30,9 +30,9 @@ import { FakeLinear, opOf } from "./fake-linear.mjs";
 
 const TOOLS = CONTRACT.tools;
 // The hosted server lists the first ten tools.json tools, hosted-only recall and Linear tools, then
-// the FleetLink tools (AFC-328), the rest of tools.json and the listener tools (AFC-330).
+// the FleetLink tools (AFC-328), the rest of tools.json and the eavesdropper tools (AFC-330).
 const HOSTED_NAMES = ["whoami", "identities", "guide", "zulip_topics", "zulip_read_topic", "zulip_inbox", "zulip_post", "zulip_reply", "zulip_react", "zulip_dm_list", "zulip_dm_read", "zulip_dm_send", "recall_search", "recall_stats", "recall_contribute", "linear_whoami", "linear_list", "linear_show", "linear_file", "linear_claim", "linear_comment", "linear_status", "linear_schema", "linear_query", "linear_mutation", ...LINEAR_NAMED_TOOLS.map((t) => t.name), ...LINEAR_MCP_TOOLS.map((t) => t.name), ...FLEETLINK_TOOLS.map((t) => t.name),
-  // AFC-330:  the rest of Zulip (every tools.json tool after the first ten) and the read-only listener tools.
+  // AFC-330:  the rest of Zulip (every tools.json tool after the first ten) and the read-only eavesdropper tools.
   ...TOOLS.slice(12).map((t) => t.name), "eavesdropper_status", "eavesdropper_inbox", "eavesdropper_owner_queue", "eavesdropper_wakes", "eavesdropper_held_back", "notes_create", "notes_update", "notes_pin", "notes_unpin", "notes_read", "notes_list", "notes_status", "notes_log",
   // The GR-MCP front (gr-tools.js):  listed like every other family;  without
   // GR_UPSTREAM_URL the calls answer not_configured.  The committed config
@@ -433,7 +433,7 @@ async function mcpModern(accessToken, method, params = {}) {
   return { status: res.status, json: line ? JSON.parse(line.slice(5)) : text ? JSON.parse(text) : null };
 }
 
-/** The listener's wake POST (adapters.py):  sorted compact JSON, hex HMAC of the raw bytes. */
+/** The eavesdropper's wake POST (adapters.py):  sorted compact JSON, hex HMAC of the raw bytes. */
 function wakeBytes(overrides = {}) {
   const body = {
     contract: "agent-sync-wake/1", seat: "JET", wake_id: `w-${randomBytes(6).toString("hex")}`, message_id: 9001, trigger_ids: [9001],
@@ -733,13 +733,13 @@ try {
     assert.match(second.json.error.message, /another chat/);
   });
 
-  await step("wake:  a signed listener POST is 202 and delivers one Standard Webhooks event;  a replay is a duplicate", async () => {
+  await step("wake:  a signed eavesdropper POST is 202 and delivers one Standard Webhooks event;  a replay is a duplicate", async () => {
     const before = callbackCalls.length;
     const bytes = wakeBytes();
     const res = await wakePost("JET", bytes);
     assert.equal(res.status, 202, await res.clone().text());
     assert.deepEqual(await res.json(), { ok: true, subscribers: 1, delivered: 1, outcome: "delivered" });
-    assert.equal(callbackCalls.length, before + 1, "delivered before the answer, inside the listener's request");
+    assert.equal(callbackCalls.length, before + 1, "delivered before the answer, inside the eavesdropper's request");
     const delivery = callbackCalls[callbackCalls.length - 1];
     const event = new Webhook(CALLBACK_SECRET).verify(delivery.raw, delivery.headers);
     assert.equal(event.name, "zulip.mention");
@@ -783,7 +783,7 @@ try {
     assert.equal(callbackCalls.length, before, "nothing verified or delivered");
   });
 
-  await step("wake:  a failed delivery is uncertain custody - 202 uncertain, tombstoned, one attempt;  the listener's retry, a same-id copy mid-delivery and later copies are all duplicates", async () => {
+  await step("wake:  a failed delivery is uncertain custody - 202 uncertain, tombstoned, one attempt;  the eavesdropper's retry, a same-id copy mid-delivery and later copies are all duplicates", async () => {
     const before = callbackCalls.length;
     const bytes = wakeBytes();
     callbackStatuses.push(503);
@@ -795,7 +795,7 @@ try {
     let res = await wakePost("JET", bytes);
     // Single attempt:  the 503's fate is unknown (the callback may have been
     // accepted), so the wake is tombstoned, NOT released for an in-request
-    // retry - the daemon's retry must never re-fire the same event id.
+    // retry - the eavesdropper's retry must never re-fire the same event id.
     assert.equal(res.status, 202, await res.clone().text());
     assert.deepEqual(await res.json(), { ok: true, subscribers: 1, delivered: 0, outcome: "uncertain" });
     assert.equal(callbackCalls.length, before + 1, "one attempt inside the request");
@@ -1081,6 +1081,10 @@ try {
     const dead = await call(t.body.access_token, "whoami");
     assert.equal(dead.status, 401);
     assert.match(dead.headers.get("www-authenticate"), /error="invalid_token"/);
+    // A client looping on the stale grant writes one refusal row, not one per retry.
+    for (let i = 0; i < 3; i++) assert.equal((await call(t.body.access_token, "whoami")).status, 401);
+    const refusedRows = (await ns.get(ns.idFromName("JET")).tail(40)).filter((row) => row.event === "mcp_refused" && row.reason === "stale_epoch");
+    assert.equal(refusedRows.length, 1);
     const r = await token({ grant_type: "refresh_token", refresh_token: t.body.refresh_token, client_id: CHATGPT_CLIENT });
     assert.equal(r.body.error, "invalid_grant");
   });
@@ -2167,7 +2171,10 @@ try {
         const token = `sbt_${identity.toLowerCase()}_${"a".repeat(43)}`;
         const ownGate = ns.get(ns.idFromName(identity));
         await ownGate.gbBearerMint({ hash:createHash("sha256").update(token).digest("hex"), by:"test", expiresAt:Date.now()+600000, mcpAccept:true });
-        assert.equal((await mcp(token,"tools/list")).status,401,`${identity}/${mode}/${failureStatus} auth must refuse`);
+        // tools/list needs no secret, so it is answered through the outage;  any
+        // call that would use the unresolved credentials still refuses.
+        assert.equal((await mcp(token,"tools/list")).status,200,`${identity}/${mode}/${failureStatus} a list needs no credential`);
+        assert.equal((await mcp(token,"tools/call",{name:"whoami",arguments:{}})).status,401,`${identity}/${mode}/${failureStatus} auth must refuse`);
         // Use an already-open owner form: required-mode admin diagnostics
         // have independent outage behavior and are not the action under test.
         const csrf = "c".repeat(64);

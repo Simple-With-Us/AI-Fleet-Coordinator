@@ -100,7 +100,7 @@ struct SeatActivityView: View {
                 }
                 .disabled(loading)
             }
-            Text("Which seats are live, what the listener says about them, and when each one last posted.")
+            Text("Which seats are live, what the eavesdropper says about them, and when each one last posted.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
         }
@@ -122,7 +122,7 @@ struct SeatActivityView: View {
             Text(working == 1 ? "1 seat with an open session" : "\(working) seats with an open session")
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundStyle(working > 0 ? Color.primary : Color.secondary)
-                .help("The seats the listener holds a live session for.")
+                .help("The seats the eavesdropper holds a live session for.")
             if !model.readingSeat.isEmpty {
                 Text("Read as \(model.readingSeat)")
                     .font(.system(size: 11, design: .monospaced))
@@ -143,8 +143,8 @@ struct SeatActivityView: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
             Text(ApplyCopy.join(
-                "Open sessions and the listener state come from the listener's own state file, "
-                    + "\(model.listenerPath.isEmpty ? "the listener's state file" : model.listenerPath).",
+                "Open sessions and the eavesdropper state come from the eavesdropper's own state file, "
+                    + "\(model.listenerPath.isEmpty ? "the eavesdropper's state file" : model.listenerPath).",
                 "Presence and the last post come from Zulip, and the panel only reads them."
             ))
                 .font(.system(size: 10))
@@ -182,7 +182,7 @@ struct SeatActivityView: View {
                 .frame(width: seatWidth, alignment: .leading)
             Text("Open Sessions")
                 .frame(width: sessionWidth, alignment: .leading)
-            Text("Listener")
+            Text("Eavesdropper")
                 .frame(width: listenerWidth, alignment: .leading)
             Text("Presence")
                 .frame(width: presenceWidth, alignment: .leading)
@@ -245,10 +245,10 @@ struct SeatActivityView: View {
             }
         }
         .frame(width: sessionWidth, alignment: .leading)
-        .help("The sessions the listener is holding open for this seat.")
+        .help("The sessions the eavesdropper is holding open for this seat.")
     }
 
-    /// The listener's state.
+    /// The eavesdropper's state.
     private func listenerCell(_ row: SeatActivityRow) -> some View {
         Group {
             switch row.listener {
@@ -261,7 +261,7 @@ struct SeatActivityView: View {
             }
         }
         .frame(width: listenerWidth, alignment: .leading)
-        .help("What the listener's own published state says about this seat.")
+        .help("What the eavesdropper's own published state says about this seat.")
     }
 
     /// The seat's Zulip presence.

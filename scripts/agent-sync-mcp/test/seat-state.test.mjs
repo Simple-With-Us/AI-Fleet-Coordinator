@@ -107,7 +107,7 @@ test("a wake is remembered once it is settled, not when it arrives", async () =>
   assert.deepEqual([tail[0].outcome, tail[0].delivered, tail[1].message_id, tail[1].subscribers], ["delivered", 1, 77, 1]);
 });
 
-test("a released wake (every delivery failed retryably) is claimed again by the listener's retry", async () => {
+test("a released wake (every delivery failed retryably) is claimed again by the eavesdropper's retry", async () => {
   const store = S.memoryStore();
   const first = await S.eventClaimWake(store, { wakeId: "w-2" }, T0);
   assert.deepEqual(await S.eventSettleWake(store, { wakeId: "w-2", token: first.token, outcome: "retry" }, T0 + 6000), { ok: true });
@@ -133,13 +133,13 @@ test("a claim nobody settles (the isolate died) is in flight for its lease, then
   await assert.rejects(S.eventSettleWake(store, { wakeId: "w-3", token: again.token, outcome: "maybe" }, T0), /unknown wake outcome/);
 });
 
-test("the lease outlives the inline delivery budget and ends before the listener's last retry", async () => {
+test("the lease outlives the inline delivery budget and ends before the eavesdropper's last retry", async () => {
   const { WAKE_BUDGET_MS } = await import("../src/events.js");
   const listenerRetrySpanMs = (2 + 5 + 10) * 1000; // adapters.py ROUTINE_BACKOFF, after the first failure
   const listenerTimeoutMs = 15_000; // JET's routine timeout_seconds
   assert.ok(S.WAKE_LEASE_MS >= WAKE_BUDGET_MS + 3000, "a live delivery is never claimed twice");
   assert.ok(S.WAKE_LEASE_MS < listenerRetrySpanMs, "a dead delivery is claimed again by the last retry");
-  assert.ok(WAKE_BUDGET_MS <= listenerTimeoutMs - 3000, "the answer beats the listener's timeout");
+  assert.ok(WAKE_BUDGET_MS <= listenerTimeoutMs - 3000, "the answer beats the eavesdropper's timeout");
 });
 
 test("a wake_seen number written by the deployed Worker counts as settled", async () => {

@@ -6,6 +6,21 @@ import { SHARED_CHATGPT_SEATS, loadConfig, PUBLIC_HOST, ISSUER, RESOURCE, REFRES
 import { REALM } from "../src/zulip.js";
 import { ROOT, wranglerConfig, testEnv, CHATGPT_REDIRECT } from "./helpers.mjs";
 
+test("GR_VERIFY_CACHE_MS:  the Git bearer verify cache is off by default, on by its own var alone, and capped at the relay's 60 seconds", () => {
+  assert.equal(loadConfig(testEnv()).grVerifyCacheMs, 0);
+  assert.equal(loadConfig(wranglerConfig().vars).grVerifyCacheMs, 0, "production ships it off");
+  assert.equal(loadConfig(testEnv({ GR_VERIFY_CACHE_MS: "" })).grVerifyCacheMs, 0);
+  assert.equal(loadConfig(testEnv({ GR_VERIFY_CACHE_MS: "60000" })).grVerifyCacheMs, 60_000);
+  // Neither setting moves the other.
+  const identityOn = loadConfig(testEnv({ GATE_IDENTITY_CACHE_MS: "3600000" }));
+  assert.deepEqual([identityOn.gateIdentityCacheMs, identityOn.grVerifyCacheMs], [3_600_000, 0]);
+  const gitOn = loadConfig(testEnv({ GATE_IDENTITY_CACHE_MS: "0", GR_VERIFY_CACHE_MS: "30000" }));
+  assert.deepEqual([gitOn.gateIdentityCacheMs, gitOn.grVerifyCacheMs], [0, 30_000]);
+  for (const bad of ["60001", "-1", "1.5", "soon"]) {
+    assert.throws(() => loadConfig(testEnv({ GR_VERIFY_CACHE_MS: bad })), /GR_VERIFY_CACHE_MS/, bad);
+  }
+});
+
 test("wrangler.jsonc vars load, and Access fails closed until the AUD is set", () => {
   const vars = wranglerConfig().vars;
   const cfg = loadConfig(vars);
