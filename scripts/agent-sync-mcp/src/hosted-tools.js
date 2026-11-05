@@ -1692,6 +1692,11 @@ export class HostedTools {
     }
     audit.body_len = [...text].length;
     const fields = [args.doc_id, text, reason, title, url, args.expected_revision ?? null];
+    const request = { doc_id: args.doc_id, text, reason, seat: this.seat };
+    if (title) request.title = title;
+    if (url) request.url = url;
+    if (args.expected_revision !== undefined) request.expected_revision = args.expected_revision;
+    const body = parseArgs(RECALL_CORRECT_REQUEST, request);
     const { key, prior } = await this.beginRecallMutation("recall_correct", args, audit, fields);
     if (prior) return this.correctResult(prior, true);
     try {
@@ -1700,11 +1705,6 @@ export class HostedTools {
       await this.gate.idemDrop({ key });
       throw error;
     }
-    const request = { doc_id: args.doc_id, text, reason, seat: this.seat };
-    if (title) request.title = title;
-    if (url) request.url = url;
-    if (args.expected_revision !== undefined) request.expected_revision = args.expected_revision;
-    const body = parseArgs(RECALL_CORRECT_REQUEST, request);
     let data;
     try {
       const raw = await this.recallCall(() => recall.correct(body), { write: true });
@@ -1754,6 +1754,9 @@ export class HostedTools {
     if (kind) throw new ToolError("refused_secret", `refusing to retract:  the reason looks like it contains ${kind}`);
     audit.body_len = [...reason].length;
     const fields = [args.doc_id, reason, args.expected_revision ?? null];
+    const request = { doc_id: args.doc_id, reason, seat: this.seat };
+    if (args.expected_revision !== undefined) request.expected_revision = args.expected_revision;
+    const body = parseArgs(RECALL_RETRACT_REQUEST, request);
     const { key, prior } = await this.beginRecallMutation("recall_retract", args, audit, fields);
     if (prior) return this.retractResult(prior, true);
     try {
@@ -1762,9 +1765,6 @@ export class HostedTools {
       await this.gate.idemDrop({ key });
       throw error;
     }
-    const request = { doc_id: args.doc_id, reason, seat: this.seat };
-    if (args.expected_revision !== undefined) request.expected_revision = args.expected_revision;
-    const body = parseArgs(RECALL_RETRACT_REQUEST, request);
     let data;
     try {
       const raw = await this.recallCall(() => recall.retract(body), { write: true });

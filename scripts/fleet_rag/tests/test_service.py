@@ -204,17 +204,19 @@ class AuthTests(_ServiceCase):
         self.assertFalse(server.bearer_ok("", TOKEN))
         self.assertFalse(server.bearer_ok(None, TOKEN))
 
-    def test_owner_bearer_opens_only_the_owner_mutation_routes(self):
+    def test_owner_bearer_opens_owner_mutation_routes_and_mcp(self):
         get_patch, present_patch = self.owner_settings()
         with get_patch, present_patch:
             for method, path, body in (
                 ("GET", "/recall/stats", None),
                 ("POST", "/recall/search", {"query": "x"}),
                 ("POST", "/recall/contribute", {"text": "x", "category": "lesson", "seat": "OWNER"}),
-                ("POST", "/mcp", {"jsonrpc": "2.0", "id": 1, "method": "ping"}),
             ):
                 status, _, _ = self.request(method, path, body, token=OWNER_TOKEN)
                 self.assertEqual(status, 401, (method, path))
+            status, _, body = self.rpc("ping", rid=1, token=OWNER_TOKEN)
+            self.assertEqual(status, 200)
+            self.assertEqual(body["result"], {})
             status, _, body = self.request(
                 "POST", "/recall/retract", {"doc_id": "bad", "reason": "obsolete", "seat": "OWNER"}, token=OWNER_TOKEN
             )
@@ -680,9 +682,11 @@ class RestTests(_ServiceCase):
         self.assertEqual(body["retracted_by"], "OWNER")
         get_patch, present_patch = self.owner_settings()
         with get_patch, present_patch:
-            status, _, _ = self.rpc("tools/call", {"name": "recall_retract",
+            status, _, body = self.rpc("tools/call", {"name": "recall_retract",
                                                    "arguments": {"doc_id": doc_id, "reason": "duplicate", "seat": "OWNER"}}, rid=11, token=OWNER_TOKEN)
-        self.assertEqual(status, 401)
+        self.assertEqual(status, 200)
+        self.assertFalse(body["result"]["isError"])
+        self.assertEqual(body["result"]["structuredContent"]["status"], "already_retracted")
         status, _, body = self.request("POST", "/recall/search", {"query": "update-env", "source": "agent-contribution"})
         self.assertEqual(body["hits"], [])
         status, _, body = self.request("POST", "/recall/search", {"query": "update-env", "source": "agent-contribution",

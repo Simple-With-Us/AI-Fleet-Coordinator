@@ -362,6 +362,21 @@ test("mutation idempotency:  a retry returns the first result;  a reason secret 
   assert.equal(upstream.requests.length, 1);
 });
 
+test("invalid trimmed mutation arguments never reserve an idempotency key", async () => {
+  const doc_id = "contrib/GROK-WEB/2026-11-05/abcd1234";
+  const { tools, upstream, gate } = harness();
+  const cases = [
+    ["recall_correct", { doc_id, text: ` ${"x".repeat(39)} `, reason: "current", idempotency_key: "orphan-check-correct" }],
+    ["recall_retract", { doc_id, reason: " x ", idempotency_key: "orphan-check-retract" }],
+  ];
+  for (const [name, args] of cases) {
+    toolError(await tools.call(name, args), "invalid_argument");
+    toolError(await tools.call(name, args), "invalid_argument");
+    assert.equal(await gate.idemPeek({ key: `rk:${name}:${args.idempotency_key}` }), null);
+  }
+  assert.equal(upstream.requests.length, 0);
+});
+
 test("seat stays a refused argument on every other tool", async () => {
   const { tools } = harness();
   const error = toolError(await tools.call("recall_search", { query: "x", seat: "CLAUDE" }), "invalid_argument");

@@ -964,7 +964,7 @@ class RecallHandler(BaseHTTPRequestHandler):
         if path != MCP_PATH:
             self._not_found()
             return
-        if not self._auth_ok():
+        if not self._mutation_auth_ok():
             self._unauthorized()
             return
         raw = self._read_body()

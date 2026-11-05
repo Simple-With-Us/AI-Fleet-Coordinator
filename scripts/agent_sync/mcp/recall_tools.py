@@ -204,7 +204,7 @@ def hit_item(hit: Mapping[str, Any]) -> dict[str, Any]:
         "doc_id": field("doc_id", HIT_TITLE_LIMIT),
         "url": field("url", HIT_URL_LIMIT),
         "path": field("path", HIT_TITLE_LIMIT),
-        "created": datetime.datetime.fromtimestamp(created / 1000, datetime.UTC).strftime(
+        "created": datetime.datetime.fromtimestamp(created / 1000, datetime.timezone.utc).strftime(
             "%Y-%m-%d"
         )
         if created > 0

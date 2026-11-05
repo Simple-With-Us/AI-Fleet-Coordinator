@@ -640,6 +640,25 @@ class CallPublicTests(unittest.TestCase):
         self.assertNotIn("python-urllib", seen["headers"]["User-Agent"].lower())
         self.assertEqual(res, {"hits": [], "mode": "dense"})
 
+    def test_mutations_disable_automatic_retries(self):
+        for name in ("recall_correct", "recall_retract"):
+            seen = {}
+
+            def fake_http_json(url, body, headers, method=None, timeout=None, retries=None):
+                seen.update(url=url, retries=retries)
+                return {"ok": True, "status": "completed"}
+
+            with mock.patch.object(core, "http_json", fake_http_json):
+                public_fallback.call_public(
+                    name,
+                    {
+                        "doc_id": "contrib/CLAUDE/2026-11-05/472fc36e",
+                        "reason": "make the lesson current",
+                        "seat": "CLAUDE",
+                    },
+                )
+            self.assertEqual(seen["retries"], 0, name)
+
     def test_stats_is_a_get_with_no_body(self):
         seen = {}
 
