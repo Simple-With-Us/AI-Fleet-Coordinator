@@ -59,10 +59,40 @@ def _first_line(text: str) -> str:
     return ""
 
 
-def relay_git_env(env: Mapping[str, str]) -> dict[str, str] | None:
-    """The git environment that sends github.com fetches through the relay as this job's seat, or None when it is not set up.
+def origin_repo(remote: str) -> str | None:
+    """owner/name from any origin form this job accepts, or None when it cannot be read as exactly that."""
+    if remote.startswith("git@"):
+        host, separator, path = remote[4:].partition(":")
+        if not separator:
+            return None
+    elif "://" in remote:
+        parsed = urlsplit(remote)
+        try:
+            host, path = parsed.hostname or "", parsed.path
+        except ValueError:
+            return None
+    else:
+        return None
+    if host.casefold() != "github.com":
+        return None
+    parts = path.strip("/").split("/")
+    if len(parts) != 2:
+        return None
+    owner, name = parts[0], parts[1][:-4] if parts[1].endswith(".git") else parts[1]
+    if not all(re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}", part) for part in (owner, name)) or ".." in owner + name:
+        return None
+    return f"{owner}/{name}"
 
-    FLEET_SYNC_RELAY_URL names the relay.  The bearer is SIMPLE_TOOLS_BEARER when set, else the seat's own owner-only file
+
+def relay_fetch_url(env: Mapping[str, str], repo: str) -> str:
+    return f"{(env.get('FLEET_SYNC_RELAY_URL') or '').strip().rstrip('/')}/git/{repo}.git"
+
+
+def relay_git_env(env: Mapping[str, str], remote: str) -> dict[str, str] | None:
+    """The git environment that sends this clone's fetches through the relay as this job's seat, or None when it cannot.
+
+    The clone's exact origin string is what gets rewritten, so an embedded login, a case-variant host or an explicit port
+    cannot slip past a list of URL patterns.  FLEET_SYNC_RELAY_URL names the relay.  The bearer is SIMPLE_TOOLS_BEARER when set, else the seat's own owner-only file
     in FLEET_SYNC_BEARER_FILE.  The relay holds the GitHub credential, so this job holds no GitHub token.  The bearer
     travels only in the environment, and git follows no redirect, so it cannot reach another host.
     """
@@ -70,6 +100,10 @@ def relay_git_env(env: Mapping[str, str]) -> dict[str, str] | None:
     bearer = (env.get("SIMPLE_TOOLS_BEARER") or "").strip()
     path = (env.get("FLEET_SYNC_BEARER_FILE") or "").strip()
     if not url or not (bearer or path):
+        return None
+    repo = origin_repo(remote)
+    if repo is None:
+        log("relay route: refused, the origin cannot be read as owner/name on GitHub")
         return None
     parsed = urlsplit(url)
     loopback = parsed.scheme == "http" and parsed.hostname in ("127.0.0.1", "localhost")
@@ -93,9 +127,7 @@ def relay_git_env(env: Mapping[str, str]) -> dict[str, str] | None:
         log("relay route: refused, the bearer file has no usable value")
         return None
     config = [
-        (f"url.{url}/git/.insteadOf", "https://github.com/"),
-        (f"url.{url}/git/.insteadOf", "git@github.com:"),
-        (f"url.{url}/git/.insteadOf", "ssh://git@github.com/"),
+        (f"url.{relay_fetch_url(env, repo)}.insteadOf", remote),
         (f"http.{url}/.extraHeader", f"Authorization: Bearer {bearer}"),
         ("http.followRedirects", "false"),
         ("http.postBuffer", str(8 * 1024 * 1024)),
@@ -308,10 +340,16 @@ def process_repo(repo: Path, dry_run: bool, counters: dict[str, int], *, env: Ma
     if (env.get("FLEET_SYNC_RELAY_URL") or "").strip():
         # The configured route is the only route:  every fetch runs as this job's seat, so nothing on this host (a login in
         # git's helper, an SSH key, a URL credential) can serve one.  If the route cannot be set up, the clone fails.
-        relay_env = relay_git_env(env)
+        relay_env = relay_git_env(env, remote)
         if relay_env is None:
             counters["failed"] += 1
             log(f"fail {repo.name}: the relay route is configured but not usable")
+            return
+        # Git decides what the rewrite means, so git is asked:  a rule elsewhere in its config could win over this one.
+        code, resolved, _ = git_full(repo, "ls-remote", "--get-url", "origin", extra_env=relay_env)
+        if code != 0 or resolved != relay_fetch_url(env, origin_repo(remote) or ""):
+            counters["failed"] += 1
+            log(f"fail {repo.name}: origin does not resolve to the relay route")
             return
     code, _, err = git_full(repo, *fetch_args, extra_env=relay_env or {"GIT_TERMINAL_PROMPT": "0"})
     if code != 0:
