@@ -43,6 +43,37 @@ FIELDS = {
 TARGET_RE = re.compile(
     r"(cpu-cores|cpu-weight|ram-budget-gib|ram-critical-gib|ram-reserve-gib|borrow-idle)\.([0-9]{1,10})\.([0-9a-f]{64})"
 )
+# The names the owner reads on Muster's Server Resource Limits page and its review sheet.
+# ResourcePolicyField.title in muster/Muster/Model/ResourcePolicy.swift holds the same words,
+# and the contract fixture in muster/MusterTests/Fixtures keeps the two equal.
+FIELD_TITLES = {
+    "cpu-cores": "CPU Cores",
+    "cpu-weight": "CPU Weight",
+    "ram-budget-gib": "Pressure RAM Limit",
+    "ram-critical-gib": "Critical RAM Limit",
+    "ram-reserve-gib": "Host RAM Reserve",
+    "borrow-idle": "Borrow Idle Memory",
+}
+# The controller's own reason codes (coding_resources.public_snapshot) that may pass through.
+CONTROLLER_REASONS = frozenset(
+    {
+        "no-controller-report",
+        "policy-stale",
+        "no-coding-groups",
+        "cpu-controls-unreadable",
+        "no-online-cpus",
+        "no-production-groups",
+        "production-unprotected",
+        "cpu-policy-missing",
+        "control-write-failures",
+        "controls-suspended",
+        "cpu-mismatch",
+        "memory-limit-mismatch",
+    }
+)
+# A real U+00A0 and a space after each sentence the owner reads.
+GAP = "\u00a0 "
+REFRESH_ADVICE = "Refresh Server Resource Limits in a minute to see whether it is in effect."
 
 
 class Refused(Exception):
@@ -51,6 +82,10 @@ class Refused(Exception):
 
 class Failed(Exception):
     pass
+
+
+class SavedUnverified(Failed):
+    """The policy write landed, and what was meant to follow it was not confirmed."""
 
 
 def canonical(policy):
@@ -162,40 +197,107 @@ def host_bounds():
         raise Refused("host resource bounds are unavailable") from None
 
 
+def gib_text(value_bytes):
+    """Bytes as the page shows them:  whole GiB plainly, otherwise one decimal."""
+    amount = value_bytes / GIB
+    return f"{int(amount)} GiB" if amount == int(amount) else f"{amount:.1f} GiB"
+
+
 def validate(policy, bounds):
-    """Reuse the controller schema, with the broker's additional host bounds."""
+    """Reuse the controller schema, with the broker's additional host bounds.
+
+    Each refusal names the rule it broke and what would be allowed, so the review sheet
+    says what to change instead of a generic schema failure.
+    """
     from hetzner.fleet_coding_memory import validate_policy
 
+    online, total = bounds
+    budget = policy.get("budget_bytes") if isinstance(policy, dict) else None
+    critical = policy.get("critical_budget_bytes") if isinstance(policy, dict) else None
+    if type(budget) is int and type(critical) is int and critical > budget:
+        raise Refused(
+            "Critical RAM Limit cannot be more than Pressure RAM Limit "
+            f"({gib_text(critical)} against {gib_text(budget)}).{GAP}"
+            "Lower Critical RAM Limit first, or raise Pressure RAM Limit first."
+        )
     try:
         validate_policy(canonical(policy))
-        optional = {
-            k: policy[k] for k in ("cpu_cores", "cpu_weight", "allow_borrowing") if k in policy
-        }
-        online, total = bounds
-        if "cpu_cores" in optional and (
-            type(optional["cpu_cores"]) is not int or not 1 <= optional["cpu_cores"] <= online - 2
-        ):
-            raise ValueError()
-        if "cpu_weight" in optional and (
-            type(optional["cpu_weight"]) is not int or not 1 <= optional["cpu_weight"] <= 10000
-        ):
-            raise ValueError()
-        if "allow_borrowing" in optional and type(optional["allow_borrowing"]) is not bool:
-            raise ValueError()
-        if (
-            policy["reserve_bytes"] < 2 * GIB
-            or policy["budget_bytes"] + policy["reserve_bytes"] > total
-        ):
-            raise ValueError()
-        if (
-            not policy["critical_available_bytes"]
-            <= policy["pressure_available_bytes"]
-            <= policy["recovery_available_bytes"]
-            <= total
-        ):
-            raise ValueError()
     except (ValueError, TypeError, KeyError, OverflowError):
-        raise Refused("the complete resource policy fails schema or host safety bounds") from None
+        raise Refused("the complete resource policy fails the controller's schema") from None
+    cores = policy.get("cpu_cores")
+    if "cpu_cores" in policy and (type(cores) is not int or not 1 <= cores <= online - 2):
+        raise Refused(
+            f"CPU Cores must be 1 through {max(0, online - 2)} on this server, "
+            f"which has {online} cores and keeps 2 free."
+        )
+    weight = policy.get("cpu_weight")
+    if "cpu_weight" in policy and (type(weight) is not int or not 1 <= weight <= 10000):
+        raise Refused("CPU Weight must be a whole number from 1 to 10,000.")
+    if "allow_borrowing" in policy and type(policy["allow_borrowing"]) is not bool:
+        raise Refused("Borrow Idle Memory must be on or off.")
+    reserve = policy["reserve_bytes"]
+    if reserve < 2 * GIB:
+        raise Refused("Host RAM Reserve must be at least 2 GiB.")
+    if budget + reserve > total:
+        raise Refused(
+            "Pressure RAM Limit and Host RAM Reserve together must fit in the server's "
+            f"{gib_text(total)} of memory.{GAP}"
+            f"With the reserve at {gib_text(reserve)} the limit can be at most "
+            f"{(total - reserve) // GIB} GiB, and with the limit at {gib_text(budget)} the "
+            f"reserve can be at most {(total - budget) // GIB} GiB."
+        )
+    if (
+        not policy["critical_available_bytes"]
+        <= policy["pressure_available_bytes"]
+        <= policy["recovery_available_bytes"]
+        <= total
+    ):
+        raise Refused("The saved policy's memory pressure levels are out of order for this server.")
+
+
+def production_protection_bytes(policy, total):
+    """The most memory production can be promised, as the controller computes its pool.
+
+    fleet_coding_memory.protected_lows shares max(0, total - reserve - budget) among the
+    production groups as memory.low, scaled down to their own caps, so this is an upper bound.
+    """
+    return max(0, total - policy["reserve_bytes"] - policy["budget_bytes"])
+
+
+def field_display(field, value):
+    """One field's value in the owner's units."""
+    if value is None:
+        return "not set"
+    if field == "borrow-idle":
+        return "On" if value else "Off"
+    if field in ("ram-budget-gib", "ram-critical-gib", "ram-reserve-gib"):
+        return gib_text(value)
+    if field == "cpu-cores":
+        return f"{value} cores"
+    return str(value)
+
+
+def plan_detail(field, before, after, current, patched, total):
+    """The review sheet's plain account of one change and its real effect."""
+    title = FIELD_TITLES[field]
+    sentences = [
+        f"{title} changes from {field_display(field, before)} to {field_display(field, after)}."
+    ]
+    if field in ("ram-budget-gib", "ram-reserve-gib"):
+        now = production_protection_bytes(current, total)
+        then = production_protection_bytes(patched, total)
+        sentence = (
+            f"This change leaves production up to {gib_text(then)} of protected memory "
+            f"(now up to {gib_text(now)})."
+        )
+        if then < now:
+            sentence = "Warning: " + sentence
+        sentences.append(sentence)
+    sentences.append("The memory controller reloads its policy; no service is restarted.")
+    sentences.append(
+        "If something else edits the same policy at the same moment, this change can replace it."
+    )
+    return GAP.join(sentences)
 
 
 def desired(policy):
@@ -204,6 +306,8 @@ def desired(policy):
         "ramCriticalGiB": policy["critical_budget_bytes"] / GIB,
         "reserveGiB": policy["reserve_bytes"] / GIB,
         "allowBorrowing": policy.get("allow_borrowing", True),
+        "pressureAvailableGiB": policy["pressure_available_bytes"] / GIB,
+        "criticalAvailableGiB": policy["critical_available_bytes"] / GIB,
     }
     for source, dest in (("cpu_cores", "cpuCores"), ("cpu_weight", "cpuWeight")):
         if source in policy:
@@ -261,6 +365,22 @@ def public_snapshot(raw, now, policy=None):
     }
     if not isinstance(raw, dict):
         raw = {}
+    # Why the status is not applied, as fixed codes:  the controller's own allowlisted codes
+    # first, then what this broker found.  Never free text from the receipt.
+    reasons = []
+
+    def reason(code):
+        if code not in reasons:
+            reasons.append(code)
+
+    if not raw:
+        reason("receipt-missing")
+    raw_reasons = raw.get("reasons")
+    if isinstance(raw_reasons, list):
+        for code in raw_reasons[:32]:
+            if isinstance(code, str) and code in CONTROLLER_REASONS:
+                reason(code)
+    result["reasons"] = reasons
     source_time = _safe_stamp(raw.get("generatedAt"))
     if source_time:
         result["generatedAt"] = source_time
@@ -275,7 +395,13 @@ def public_snapshot(raw, now, policy=None):
                 10000 if key == "cpuWeight" else 1048576
             ):
                 safe[key] = d[key]
-        for key in ("ramPressureGiB", "ramCriticalGiB", "reserveGiB"):
+        for key in (
+            "ramPressureGiB",
+            "ramCriticalGiB",
+            "reserveGiB",
+            "pressureAvailableGiB",
+            "criticalAvailableGiB",
+        ):
             if type(d.get(key)) in (int, float) and 0 < d[key] <= (2**63 - 1) / GIB:
                 safe[key] = d[key]
         if type(d.get("allowBorrowing")) is bool:
@@ -298,6 +424,11 @@ def public_snapshot(raw, now, policy=None):
             "productionGroups",
             "controlWriteFailures",
             "actualHighMismatches",
+            "availableBytes",
+            "productionProtectedGroups",
+            "productionUnprotectedGroups",
+            "oomKillDelta",
+            "excludedUnits",
         ):
             if type(o.get(key)) is int and 0 <= o[key] <= 2**63 - 1:
                 observed[key] = o[key]
@@ -332,6 +463,23 @@ def public_snapshot(raw, now, policy=None):
         desired_required = ("ramPressureGiB", "ramCriticalGiB", "reserveGiB", "allowBorrowing")
         d = result.get("desired", {})
         complete = all(k in observed for k in required) and all(k in d for k in desired_required)
+        if raw:
+            if (
+                not (
+                    type(raw.get("schemaVersion")) is int
+                    and raw["schemaVersion"] == 1
+                    and "policyRevision" in result
+                )
+                or source_time is None
+                or (o.get("updatedAt") is not None and _safe_stamp(o.get("updatedAt")) is None)
+            ):
+                reason("receipt-invalid")
+            elif not _fresh(source_time, now) or (
+                o.get("updatedAt") is not None and "updatedAt" not in observed
+            ):
+                reason("receipt-stale")
+            elif not complete:
+                reason("receipt-incomplete")
         if (
             type(raw.get("schemaVersion")) is int
             and raw["schemaVersion"] == 1
@@ -343,7 +491,9 @@ def public_snapshot(raw, now, policy=None):
             ram_valid = (
                 0 < total
                 and 0 <= observed["ramCurrentBytes"] <= total
-                and 0 < observed["ramTargetBytes"] <= total
+                # The controller writes a zero target when no coding group is running.
+                and (0 < observed["ramTargetBytes"] or observed["codingGroups"] == 0)
+                and observed["ramTargetBytes"] <= total
                 and d["ramCriticalGiB"] <= d["ramPressureGiB"]
                 and d["reserveGiB"] >= 2
                 and d["ramPressureGiB"] + d["reserveGiB"] <= total / GIB
@@ -353,18 +503,36 @@ def public_snapshot(raw, now, policy=None):
                 and observed["cpuGroups"] > 0
                 and 3 <= observed["cpuOnline"] <= 1048576
             )
+            if not ram_valid:
+                reason("receipt-invalid")
+            elif not counts_present and not reasons:
+                reason("receipt-incomplete")
+            for key, code in (
+                ("policyStale", "policy-stale"),
+                ("controlWriteFailures", "control-write-failures"),
+                ("controlSuspended", "controls-suspended"),
+                ("cpuMismatches", "cpu-mismatch"),
+                ("actualHighMismatches", "memory-limit-mismatch"),
+            ):
+                if observed[key]:
+                    reason(code)
             if ram_valid and counts_present and raw.get("status") in ("applied", "drift"):
                 result["status"] = (
                     "applied"
                     if raw["status"] == "applied" and not any(observed[k] for k in failures)
                     else "drift"
                 )
+    elif raw:
+        reason("receipt-invalid")
     if policy is not None:
         expected = revision(policy)
         result["desired"] = desired(policy)
         result["desiredRevision"] = expected
-        if result.get("policyRevision") != expected and result["status"] == "applied":
-            result["status"] = "drift"
+        if "policyRevision" in result and result["policyRevision"] != expected:
+            # The saved policy is ahead of (or behind) what the controller is running.
+            reason("policy-not-in-effect")
+            if result["status"] == "applied":
+                result["status"] = "drift"
     if result["status"] == "applied":
         d = result.get("desired", {})
         if (
@@ -374,6 +542,7 @@ def public_snapshot(raw, now, policy=None):
             )
             or d.get("cpuCores", 0) > result["observed"]["cpuOnline"] - 2
         ):
+            reason("cpu-values-differ")
             result["status"] = "drift"
     return result
 
@@ -460,6 +629,7 @@ def handle(ctx, action, target, mode):
     }
     event = None
     saved = False
+    in_effect = False
     try:
         if not ctx.platform.startswith("linux") or mode not in ("plan", "yes"):
             raise Refused("resource operations require the server and an explicit plan or yes")
@@ -475,11 +645,15 @@ def handle(ctx, action, target, mode):
                 policy = candidate
             except (Refused, Failed):
                 pass
+            snapshot = public_snapshot(snapshot_reader(), ctx.now(), policy)
+            if policy is None:
+                # The saved values shown are then the controller's copy, not the source's.
+                snapshot["reasons"].append("saved-policy-unreadable")
             answer.update(
                 ok=True,
                 result="planned",
                 detail="coding resource status",
-                resourcePolicy=public_snapshot(snapshot_reader(), ctx.now(), policy),
+                resourcePolicy=snapshot,
             )
             return answer, 0
         if action != "resource-policy":
@@ -487,14 +661,18 @@ def handle(ctx, action, target, mode):
         field, value, expected = parse_target(target)
         store = getattr(ctx, "resource_store", None) or InfisicalStore(ctx)
         with broker_lock(ctx):
+            bounds = getattr(ctx, "resource_host_bounds", host_bounds)()
             current = store.get()
-            validate(current, getattr(ctx, "resource_host_bounds", host_bounds)())
+            validate(current, bounds)
             if revision(current) != expected:
-                raise Refused("the resource policy changed; refresh and approve a new plan")
+                raise Refused(
+                    "The saved resource policy changed since this page read it.\u00a0 "
+                    "Refresh Server Resource Limits and review the change again."
+                )
             key, scale = FIELDS[field]
             patched = copy.deepcopy(current)
             patched[key] = bool(value) if field == "borrow-idle" else value * scale
-            validate(patched, getattr(ctx, "resource_host_bounds", host_bounds)())
+            validate(patched, bounds)
             before = current.get(key, True if key == "allow_borrowing" else None)
             after = patched[key]
             answer["commands"] = [
@@ -505,7 +683,7 @@ def handle(ctx, action, target, mode):
                 answer.update(
                     ok=True,
                     result="planned",
-                    detail="save one policy field and request controller reload; external writers are not serialized by this broker",
+                    detail=plan_detail(field, before, after, current, patched, bounds[1]),
                 )
                 return answer, 0
             event = {
@@ -519,17 +697,24 @@ def handle(ctx, action, target, mode):
             audit(ctx, {**event, "result": "intent"})
             # Read again immediately before the sole PATCH; no automatic retry or rollback.
             if revision(store.get()) != expected:
-                raise Refused("the resource policy changed; refresh and approve a new plan")
+                raise Refused(
+                    "The saved resource policy changed since this page read it.\u00a0 "
+                    "Refresh Server Resource Limits and review the change again."
+                )
             store.save(patched)
             saved = True
             persisted = store.get()
             if revision(persisted) != revision(patched):
-                raise Failed("SavedButApplyUnverified: the saved policy readback did not match")
+                raise SavedUnverified(
+                    "The new value was sent, but reading the saved policy back did not match, "
+                    "so the memory controller was not asked to reload."
+                )
             answer["resourcePolicy"] = public_snapshot(snapshot_reader(), ctx.now(), persisted)
             status, _ = ctx.runner(list(RELOAD), timeout=5, env=ctx.child_env())
             if status:
-                raise Failed(
-                    "SavedButApplyUnverified: policy saved; controller reload was not confirmed"
+                raise SavedUnverified(
+                    "The new value is saved, but the memory controller did not confirm "
+                    "that it reloaded the policy."
                 )
             monotonic = getattr(ctx, "resource_monotonic", time.monotonic)
             sleep = getattr(ctx, "resource_sleep", time.sleep)
@@ -542,14 +727,18 @@ def handle(ctx, action, target, mode):
                 ):
                     break
                 if monotonic() >= deadline:
-                    raise Failed(
-                        "SavedButApplyUnverified: policy saved; applied controller state was not verified"
+                    raise SavedUnverified(
+                        "The new value is saved, but the memory controller did not report it "
+                        "in effect within 15 seconds."
                     )
                 sleep(min(0.25, max(0, deadline - monotonic())))
+            in_effect = True
             audit(ctx, {**event, "result": "done"})
             event = None
             answer.update(
-                ok=True, result="done", detail="policy saved and controller application verified"
+                ok=True,
+                result="done",
+                detail="The new value is saved and the memory controller reports it in effect.",
             )
             return answer, 0
     except Refused as exc:
@@ -557,19 +746,57 @@ def handle(ctx, action, target, mode):
         code = 2
     except Exception as exc:  # noqa: BLE001 - Sanitize all operational failures at the boundary.
         # Unexpected operational failures still need a sanitized answer and outcome audit.
-        detail = (
-            str(exc) if isinstance(exc, Failed) else "the resource operation could not be verified"
-        )
-        if saved and not detail.startswith("SavedButApplyUnverified"):
-            detail = "SavedButApplyUnverified: policy saved; subsequent verification failed"
-        answer.update(result="failed", detail=detail)
-        code = 1
+        if in_effect:
+            # Only the closing audit record failed:  the change is saved and in effect.
+            answer.update(
+                ok=True,
+                result="done",
+                detail="The new value is saved and the memory controller reports it in effect."
+                + GAP
+                + "The outcome could not be written to the server's audit log.",
+            )
+            event = None
+            code = 0
+        elif saved:
+            # The write landed, so this did not fail:  it is saved and not yet confirmed in
+            # effect.  It is answered as submitted, the route's word for work that was sent
+            # and not verified, so Muster never titles a persisted change "failed".
+            what = (
+                str(exc)
+                if isinstance(exc, SavedUnverified)
+                else "The new value is saved, but what happened next could not be checked."
+            )
+            answer.update(
+                ok=True,
+                result="submitted",
+                executionState="saved",
+                verified=False,
+                saved=True,
+                errorCode="saved_apply_unverified",
+                detail=what + GAP + REFRESH_ADVICE,
+            )
+            code = 0
+        else:
+            detail = (
+                str(exc)
+                if isinstance(exc, Failed)
+                else "the resource operation could not be verified"
+            )
+            answer.update(result="failed", detail=detail)
+            code = 1
     if event:
         try:
             audit(ctx, {**event, "result": answer["result"]})
         except Exception:  # noqa: BLE001 - Audit failure must return a sanitized refusal.
-            answer.update(
-                result="failed", detail="the resource-policy outcome audit could not be recorded"
-            )
-            code = 1
+            if saved:
+                # Nothing can undo the save, so the saved fact stays in the answer.
+                answer["detail"] += (
+                    GAP + "The outcome could not be written to the server's audit log."
+                )
+            else:
+                answer.update(
+                    result="failed",
+                    detail="the resource-policy outcome audit could not be recorded",
+                )
+                code = 1
     return answer, code

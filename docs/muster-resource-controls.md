@@ -10,10 +10,12 @@ The source of truth is the complete `CODING_RAM_POLICY` JSON value in Infisical,
 | --- | --- | --- | --- |
 | CPU Cores | `cpu_cores` | Integer, at least 1 and at most online CPU count minus 2 | Selects the first N online CPU IDs, including noncontiguous IDs, as a shared CPU set for configured coding units and containers |
 | CPU Weight | `cpu_weight` | Integer, 1 through 10000 | Sets relative scheduling priority on configured systemd coding units |
-| Pressure RAM Budget | `budget_bytes` | Whole GiB in the editor; bytes in policy | Sets the shared soft RAM target under pressure and in normal mode when borrowing is disabled |
-| Critical RAM Budget | `critical_budget_bytes` | Whole GiB; positive and no greater than the pressure budget | Sets the shared soft RAM target during critical pressure |
-| Host RAM Reserve | `reserve_bytes` | Whole GiB; at least 2 GiB, with pressure budget plus reserve no greater than total host RAM | Preserves the headroom used by the controller's borrowing calculation and production protection |
+| Pressure RAM Limit | `budget_bytes` | Whole GiB in the editor; bytes in policy | Sets the shared soft RAM target under pressure and in normal mode when borrowing is disabled; with borrowing on it is only the floor of the normal target.  It also shrinks production's protected pool, which is total memory minus the reserve minus this limit |
+| Critical RAM Limit | `critical_budget_bytes` | Whole GiB; positive and no greater than the pressure limit | Sets the shared soft RAM target during critical mode.  It does not decide when critical mode starts: `critical_available_bytes` does |
+| Host RAM Reserve | `reserve_bytes` | Whole GiB; at least 2 GiB, with pressure limit plus reserve no greater than total host RAM | Preserves the headroom used by the controller's borrowing calculation and production protection |
 | Borrow Idle Memory | `allow_borrowing` | Boolean; defaults to true when absent | Allows a larger soft RAM target in normal mode while host headroom permits |
+
+Muster shows these names on the page and on the review sheet, and the broker's `FIELD_TITLES` holds the same words.  Each slider stops where the broker stops: Pressure RAM Limit at total memory minus the saved reserve, and Host RAM Reserve at total memory minus the saved pressure limit.  The page and the review sheet both say how much protected memory a change leaves production, with a warning when it lowers it.
 
 CPU cores are an affinity pool shared by coding workloads, rather than a separate allocation per workload.  CPU weight is relative priority when units compete.  All CPU changes write only guarded kernel controls: units use `cpuset.cpus` and `cpu.weight`, and Docker containers use `cpuset.cpus` alone.  Both `systemctl show` and `docker inspect` are discovery-only.  They do not invoke systemd property updates or Docker updates, which can reconcile unrelated hard controls.  Docker HostConfig, CPU weight, CPU shares, and CPU quotas remain unchanged.
 
@@ -35,12 +37,16 @@ The root controller atomically publishes a redacted schema-version-1 receipt at 
 | Drift | A usable receipt shows actual CPU controls or RAM highs that differ from desired controls |
 | Unavailable | Evidence is missing, stale, malformed, suspended, incomplete, or reports a control write failure; absent CPU intent is also unavailable |
 
-The broker also checks receipt age, required fields, host bounds, and the expected policy revision.  `SavedButApplyUnverified` means the desired policy was saved but reload or observed application was not verified.  The saved policy stays visible separately from the observed result, and an uncertain write is not retried automatically.
+The broker also checks receipt age, required fields, host bounds, and the expected policy revision.  Every receipt carries `reasons`, fixed codes that say why the status is not applied (for example `receipt-missing`, `policy-not-in-effect`, `no-coding-groups` or `control-write-failures`), and Muster shows each in plain words.  The broker passes on only the controller codes it allowlists.  It also projects the measured counts that show whether a limit is hurting: available memory, production services with and without protection, out-of-memory kills since the last check, and services exempt from the limits.  A count the controller did not measure stays absent, never zero.
+
+A receipt also names two revisions: `policyRevision`, the one the controller is running, and `desiredRevision`, the saved policy's.  A change is reviewed against `desiredRevision`, which is what the broker compares, so a saved policy that is not yet in effect can still be changed, and the page names that state.
+
+When the policy write lands but the reload or the applied receipt is not confirmed, the broker answers `result: "submitted"`, `executionState: "saved"`, `saved: true` and `errorCode: "saved_apply_unverified"`, with a plain sentence saying the value is saved and not yet confirmed in effect.  A persisted change is never answered as failed.  The saved policy stays visible separately from the observed result, and an uncertain write is not retried automatically.
 
 ## Review And Apply
 
-1. Refresh the direct read-only resource status and use its policy revision for the edit.
-2. Change one field and request a plan through the fixed server route.  The broker validates the complete policy and reports the old value, requested value, and expected revision.
+1. Muster reads the direct read-only resource status when the page opens and every 30 seconds while it is open, and uses the saved policy's revision for the edit.
+2. Change one field and request a plan through the fixed server route.  The broker validates the complete policy and reports the old value, requested value, and expected revision, with a plain sentence that names the change in the owner's units and its effect on production's protected memory.  A refusal names the rule it broke and the largest value allowed.
 3. Review the plan in Muster and complete the existing Touch ID confirmation.  Muster requests a fresh plan afterward and refuses to apply a changed plan.
 4. The apply request carries the same expected revision.  The broker serializes its own writers, rereads policy immediately before its single Infisical PATCH, and records intent and outcome without credential values.
 5. After persisted readback matches the new revision, the broker sends HUP to the existing controller and waits up to 15 seconds for an applied receipt with that revision.  HUP refreshes policy without restarting coding workloads.
