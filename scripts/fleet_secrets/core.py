@@ -532,35 +532,39 @@ def fetch_project(
         status, payload = _api_json(
             "GET", endpoint, token, None, env, max_bytes=max_bytes, deadline=deadline
         )
-        missing = name is not None and status == 404
-        if not missing and (status != 200 or not isinstance(payload, dict)):
+        if name is not None and status == 404:
+            return name, []
+        if status != 200 or not isinstance(payload, dict):
             raise SecretsError("fetch-failed")
-        return name, None if missing else payload
+        records = payload.get("secrets") if name is None else [payload.get("secret")]
+        if not isinstance(records, list):
+            raise SecretsError("fetch-failed: bad-output")
+        pairs = []
+        for record in records:
+            key, value = validate_secret_record(record, project, path, single_scope=len(paths) == 1)
+            if name is not None and key != name:
+                raise SecretsError("unverified-source")
+            pairs.append((key, value))
+        return name, pairs
 
     # Named reads share one deadline, and the knobs ask for every registered name at once, so they
-    # run side by side:  one after another, 31 names took about 13 s against an 8 s budget.  The
-    # first failure cancels every read that has not started.
+    # run side by side:  one after another, 31 names took about 13 s against an 8 s budget.  Each
+    # answer is checked as it arrives, and the first bad one cancels every read not yet started;
+    # a read already in flight may still finish, but its answer is never used.
     answers: dict = {}
     with ThreadPoolExecutor(max_workers=MAX_NAMED_READS) as pool:
         futures = [pool.submit(read_one, item) for item in endpoints]
         try:
             for future in as_completed(futures):
-                name, payload = future.result()
-                answers[name] = payload
+                name, pairs = future.result()
+                answers[name] = pairs
         except BaseException:
             for future in futures:
                 future.cancel()
             raise
     for expected_name, _endpoint in endpoints:
-        payload = answers[expected_name]
-        if payload is None:
-            continue
-        records = payload.get("secrets") if expected_name is None else [payload.get("secret")]
-        if not isinstance(records, list):
-            raise SecretsError("fetch-failed: bad-output")
-        for record in records:
-            key, value = validate_secret_record(record, project, path, single_scope=len(paths) == 1)
-            if (expected_name is not None and key != expected_name) or key in found:
+        for key, value in answers[expected_name]:
+            if key in found:
                 raise SecretsError("unverified-source")
             found[key] = value
     reject_unresolved(found)
