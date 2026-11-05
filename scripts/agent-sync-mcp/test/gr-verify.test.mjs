@@ -33,11 +33,15 @@ async function signedBody(fields) {
 
 function fakeGates(store, state = { paused: false }) {
   return (env, seat) => ({
-    gbBearerCheck: (hash) => S.gbBearerCheck(store, hash),
+    // The pause flag rides gbBearerCheck's answer (R1):  the fake models
+    // pause where the real gate keeps it, in the store, not via getState.
+    gbBearerCheck: async (hash) => {
+      if (state.paused !== undefined) await store.put("paused", state.paused);
+      return S.gbBearerCheck(store, hash);
+    },
     gbBearerStatus: () => S.gbBearerStatus(store),
     gbBearerMismatch: (identity, configured) => S.gbBearerMismatch(store, identity, configured),
     gbBearerMismatches: () => S.gbBearerMismatches(store),
-    getState: async () => state,
     audit: async () => {},
   });
 }

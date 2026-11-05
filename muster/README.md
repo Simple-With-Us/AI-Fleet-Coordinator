@@ -37,6 +37,14 @@ A change is gathered for a second and a half,  so a write that lands in two piec
 
 The first run that could be trusted is a reading and not a change:  there is no earlier answer to compare it with.  A run that could not be trusted says nothing,  and the count is unknown rather than zero.
 
+## App Icon
+
+The Dock icon follows the mode: dark artwork in Dark, light artwork in Light.  The Theme in Settings decides, and when it is System the icon follows macOS, changing as macOS changes.  `AppIconFollower` does this while the app runs.
+
+macOS shows the icon in the app bundle whenever Muster is not running, in Finder and in a Dock tile, and that one is always the light artwork.
+
+The owner's artwork is in `icon-source/`.  After changing it, regenerate `Muster/Assets.xcassets` with `python3 muster/script/generate_app_icons.py`, which needs Pillow.  `script/test_app_icons.py` checks the result, and the macOS CI job checks the built bundle.
+
 ## Prerequisites
 
 - macOS 14 or later.
@@ -123,6 +131,10 @@ Apply unit tests are an XcodeGen target that compiles the non-view sources direc
 cd muster && xcodegen generate --spec project.yml
 xcodebuild -project Muster.xcodeproj -scheme Muster -destination 'platform=macOS' test
 ```
+
+## Hog Hunter On This Mac
+
+The Operations tab shows what the Hog Hunter Mac app says about this Mac: load, CPU, memory, swap, each mounted volume, the busiest processes by name, the last cleanup, the housekeeper lock, the cleaning regimen, the age of the server snapshot Hog Hunter holds, and its version.  The source is one local file the running app writes about once a minute, `~/.local/state/fleet-tools/hoghunter-mac.json` (tool `hoghunter-mac-status`, schemaVersion 1; decoder `Muster/Model/HogHunterMacReport.swift`).  Muster only reads it and has no control of Hog Hunter: no command, no connection and no credential.  The file's authentication is the file system: Muster reads it only when it is a regular file (not a link), owned by the current user and not writable by group or others, and no larger than 256 KB.  A missing file or a report older than 5 minutes reads as unknown, and the panel says Hog Hunter is not running or has not reported.  A file that fails the ownership or link check, a wrong version or tool, or a malformed file reads as unknown too, but states its own reason instead.  Fields the app could not measure are absent and show as Not reported, never as zero.
 
 ## Delivery And Onboarding Limits
 

@@ -3355,12 +3355,21 @@ class WorkflowVerbs:
                 raise RelayGitHubError(502, "GraphQL outcome unverifiable") from None
             raise
         # GraphQL HTTP200 errors may follow partial mutation application; never call them definitely unsent.
+        # Retain only a fixed error type, never provider messages, paths or extensions.
+        errors = data.get("errors") if isinstance(data, dict) else None
+        error_code = None
+        if isinstance(errors, list) and 1 <= len(errors) <= 20:
+            kinds = [error.get("type") if isinstance(error, dict) else None for error in errors]
+            allowed = {"FORBIDDEN", "NOT_FOUND", "UNPROCESSABLE", "RATE_LIMITED"}
+            if all(isinstance(kind, str) and kind in allowed for kind in kinds):
+                if len(set(kinds)) == 1:
+                    error_code = "graphql_" + kinds[0].lower()
         if (
             not isinstance(data, dict)
             or data.get("errors")
             or not isinstance(data.get("data"), dict)
         ):
-            raise RelayGitHubError(502, "GraphQL outcome unverifiable")
+            raise RelayGitHubError(502, "GraphQL outcome unverifiable", code=error_code)
         result = data["data"].get(field)
         if not isinstance(result, dict):
             raise RelayGitHubError(502, "GraphQL result unverifiable")

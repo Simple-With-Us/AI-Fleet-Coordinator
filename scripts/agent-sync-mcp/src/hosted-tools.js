@@ -1,3 +1,4 @@
+import { withServiceTitle } from "./tool-titles.js";
 import { WA_TOOLS, replyArgs as waReplyArgs, statusArgs as waStatusArgs } from "./wa/contract.js";
 import { LINEAR_NAMED_BY_NAME } from "./linear-named-specs.js";
 import { callNamedLinear } from "./linear-named.js";
@@ -62,7 +63,7 @@ import {
   RECALL_MARKER_BEGIN,
   RECALL_MARKER_END,
 } from "./recall.js";
-import { GR_SECRETS, GR_TOOLS, GR_TOOL_NAMES } from "./gr-tools.js";
+import { GR_SECRETS, GR_TOOLS, GR_TOOL_NAMES, GRAPHQL_ERROR_CODES } from "./gr-tools.js";
 import { TYPED_V1_ACTIONS, TYPED_V1_TOOLS } from "./gr-typed-v1.js";
 import { WF_V1_ACTIONS, WF_V1_TOOLS, parseWfV1Args, boundedWorkflowInput, WF_V1_READ_ACTIONS, workflowInputLimit } from "./gr-workflow-v1.js";
 import {
@@ -165,7 +166,7 @@ export const RESOURCE_SCOPES = Object.freeze({ read: "zulip:read", write: "zulip
 // AFC-328 appends the FleetLink tools after the Linear ones.  AFC-330 appends the rest of Zulip
 // (every tools.json tool after the first ten, as zulip_<name>) and the read-only listener tools
 // after those, so every earlier tool keeps its place.
-export const HOSTED_TOOL_LIST = Object.freeze([...ZULIP_PUBLIC_TOOLS, ...RECALL_TOOLS, ...LINEAR_TOOLS, ...FLEETLINK_TOOLS, ...ZULIP_FULL_PUBLIC_TOOLS, ...EAVESDROPPER_TOOLS, ...NOTES_TOOLS, ...WA_TOOLS, ...GR_TOOLS, ...TYPED_V1_TOOLS, ...WF_V1_TOOLS]);
+export const HOSTED_TOOL_LIST = Object.freeze([...ZULIP_PUBLIC_TOOLS, ...RECALL_TOOLS, ...LINEAR_TOOLS, ...FLEETLINK_TOOLS, ...ZULIP_FULL_PUBLIC_TOOLS, ...EAVESDROPPER_TOOLS, ...NOTES_TOOLS, ...WA_TOOLS, ...GR_TOOLS, ...TYPED_V1_TOOLS, ...WF_V1_TOOLS].map(withServiceTitle));
 const FLEETLINK_BY_NAME = Object.freeze(Object.fromEntries(FLEETLINK_TOOLS.map((tool) => [tool.name, tool])));
 export const HOSTED_TOOLS_BY_NAME = Object.freeze(Object.fromEntries(HOSTED_TOOL_LIST.map((tool) => [tool.name, tool])));
 // Every hosted tool is classified here, explicitly, as a read or a write (AFC-331:  a write must name its
@@ -325,8 +326,12 @@ export class HostedTools {
    * @param {object|null} [o.listener]     a ListenerClient for this seat (src/listener.js), or null
    * @param {object|null} [o.notes]        an OperatorNotesClient (src/notes.js), or null when notes are not configured
    * @param {object|null} [o.gr]           a GrRelayClient for this bearer identity (src/gr-tools.js), or null when the GR front is not configured
+   * @param {function|null} [o.audit]      the Worker's isolate audit buffer sink (src/audit-batch.js):  (key, gate, row);  null writes each row to the gate at once
+   * @param {object|null} [o.identityCache]  the Worker's isolate verified-identity cache (src/identity-cache.js), or null
+   * @param {string|null} [o.identityKey]    this credential's cache key (the SHA-256 of the presented credential)
+   * @param {object|null} [o.identityEntry]  the route's fresh cache entry for this credential, or null when the route verified live for this request (the first call always pays the full gate price)
    */
-  constructor({ seat, scopes, clientId, grantRef, paused, config, zulip, key, gate, whatsappGate = null, callerSeat = seat, callerGate = gate, verifySeat = false, delegatedLinear = false, linearCredentialNames = null, cf = {}, recall = null, linear = null, linearWrites = false, fleetlink = null, listener = null, notes = null, gr = null, now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), log = (row) => console.log(JSON.stringify(row)), usersCache = USERS_CACHE, channelsCache = CHANNEL_CACHE, linearWorkspaceCache = LINEAR_WORKSPACE_CACHE }) {
+  constructor({ seat, scopes, clientId, grantRef, paused, config, zulip, key, gate, whatsappGate = null, callerSeat = seat, callerGate = gate, verifySeat = false, delegatedLinear = false, linearCredentialNames = null, cf = {}, recall = null, linear = null, linearWrites = false, fleetlink = null, listener = null, notes = null, gr = null, audit = null, identityCache = null, identityKey = null, identityEntry = null, now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), log = (row) => console.log(JSON.stringify(row)), usersCache = USERS_CACHE, channelsCache = CHANNEL_CACHE, linearWorkspaceCache = LINEAR_WORKSPACE_CACHE }) {
     this.seat = seat;
     this.callerSeat = callerSeat;
     this.callerGate = callerGate;
@@ -361,6 +366,20 @@ export class HostedTools {
     this.notes = notes ?? null;
     if (this.notes) this.known.push(...this.notes.secrets().filter(Boolean));
     this.gate = gate;
+    // The audit sink the Worker installs (src/audit-batch.js, R2):  null
+    // keeps the immediate per-row gate write every other construction -
+    // unit tests included - has always made.
+    this.auditSink = audit;
+    // The verified-identity cache (src/identity-cache.js, R4):  the route
+    // hands over the shared cache, this credential's key, and the entry it
+    // found fresh - an entry whose seat is not this seat is no entry at
+    // all.  A null entry means this request verified live and pays the
+    // full gate price;  a present entry marks every repeat-call shortcut
+    // this class takes (the read reserve, the role verdict).
+    this.identityCache = identityCache;
+    this.identityKey = identityKey;
+    this.identityEntry = identityEntry && identityEntry.seat === seat ? identityEntry : null;
+    this._identityHit = this.identityEntry !== null;
     this.whatsappGate = whatsappGate ?? gate;
     this.cf = cf ?? {};
     this.now = now;
@@ -423,7 +442,7 @@ export class HostedTools {
   async call(name, rawArgs) {
     const spec = Object.hasOwn(HOSTED_TOOLS_BY_NAME, name) ? HOSTED_TOOLS_BY_NAME[name] : null;
     if (!spec) {
-      await this.safely(() => this.gate.auditCall({
+      await this.safely(() => this.auditRow(this.gate, {
         seat: this.seat,
         grant_ref: this.grantRef,
         client_id: this.clientId,
@@ -519,10 +538,23 @@ export class HostedTools {
       country: typeof this.cf.country === "string" ? this.cf.country.slice(0, 2) : null,
       ...audit,
     };
-    await this.safely(() => this.gate.auditCall(row));
-    if (this.callerGate !== this.gate) await this.safely(() => this.callerGate.auditCall(row));
+    await this.safely(() => this.auditRow(this.gate, row));
+    if (this.callerGate !== this.gate) await this.safely(() => this.auditRow(this.callerGate, row));
     this.log({ event: "tool", seat: this.seat, authenticated_seat: this.callerSeat, acting_identity: this.seat, tool: publicName, outcome: row.error_code ?? "ok", latency_ms: latency, grant_ref: this.grantRef });
     return result;
+  }
+
+  /**
+   * One per-call audit row for one gate (spec 3.9).  Direct to the gate,
+   * unless the Worker installed its isolate audit buffer as this
+   * instance's sink (R2, DO burn reduction):  the sink keys the row by the
+   * gate's own name - the acting seat for this gate, the caller seat for
+   * the caller gate - and batches it there.  No other construction passes
+   * a sink, so tests keep the immediate write.
+   */
+  async auditRow(gate, row) {
+    if (this.auditSink) return this.auditSink(gate === this.callerGate ? this.callerSeat : this.seat, gate, row);
+    return gate.auditCall(row);
   }
 
   async safely(fn) {
@@ -585,8 +617,40 @@ export class HostedTools {
 
   // ---------------------------------------------------------------- seat binding
 
-  /** Spec 3.6:  users/me on first use and every 10 minutes;  member bots of this seat only. */
+  /** Drop this credential's cached verification (R4 eviction discipline). */
+  _evictIdentity() {
+    if (this.identityCache && this.identityKey) this.identityCache.evict(this.identityKey);
+    this.identityEntry = null;
+    this._identityHit = false;
+  }
+
+  /**
+   * The seat's verified role, from the identity cache when this request
+   * carries a fresh entry (R4):  the entry's role verdict stands in for
+   * roleGet inside the window.  Otherwise the live verification below
+   * runs, its verdict is recorded on the entry for later calls in the
+   * window, and any failure of it evicts the entry - a seat that cannot
+   * verify live never coasts on a cached verification.
+   */
   async ensureSeat() {
+    const role = this.identityEntry?.role;
+    if (this._identityHit && role?.ok) {
+      this.me = { user_id: role.user_id, role: role.role };
+      return;
+    }
+    try {
+      await this._ensureSeatVerified();
+    } catch (error) {
+      this._evictIdentity();
+      throw error;
+    }
+    if (this.identityCache && this.identityKey && this.me) {
+      this.identityCache.update(this.identityKey, { role: { ok: true, user_id: this.me.user_id, role: this.me.role } });
+    }
+  }
+
+  /** Spec 3.6:  users/me on first use and every 10 minutes;  member bots of this seat only. */
+  async _ensureSeatVerified() {
     if (!this.zulip) {
       throw new ToolError("not_authorized", `No Zulip key is installed for ${this.seat}.  The owner installs it (scripts/agent-sync-mcp/install_seat_key.py).`);
     }
@@ -629,14 +693,27 @@ export class HostedTools {
   }
 
   async reserve(kind) {
-    // A delegated persona cannot multiply the authenticated CURSOR grant's
-    // allowance.  Its own gate is a second, independent limit and token cache.
-    if (this.callerGate !== this.gate) {
-      const callerPolicy = this.callerSeat === "CURSOR" ? this.config.cursorToolBudgets?.[kind] : undefined;
-      await this.reserveOn(this.callerGate, kind, callerPolicy);
+    // A read on a cached identity takes no slot inside the window (R4;
+    // the trade - read spacing, budgets and cooldown unenforced for
+    // reads - is stated in src/identity-cache.js).  Writes always
+    // reserve, cached or not.
+    if (this._identityHit && (kind === "read" || kind === "linear_read")) return;
+    try {
+      // A delegated persona cannot multiply the authenticated CURSOR grant's
+      // allowance.  Its own gate is a second, independent limit and token cache.
+      if (this.callerGate !== this.gate) {
+        const callerPolicy = this.callerSeat === "CURSOR" ? this.config.cursorToolBudgets?.[kind] : undefined;
+        await this.reserveOn(this.callerGate, kind, callerPolicy);
+      }
+      const policy = this.seat === "CURSOR" ? this.config.cursorToolBudgets?.[kind] : undefined;
+      await this.reserveOn(this.gate, kind, policy);
+    } catch (error) {
+      // A reserve refusal is a gate refusal for this credential (a pause
+      // above all):  the cached verification dies with it, so the next
+      // call re-verifies live instead of coasting (R4).
+      this._evictIdentity();
+      throw error;
     }
-    const policy = this.seat === "CURSOR" ? this.config.cursorToolBudgets?.[kind] : undefined;
-    await this.reserveOn(this.gate, kind, policy);
   }
 
   async reserveOn(gate, kind, policy) {
@@ -1352,11 +1429,13 @@ export class HostedTools {
     // body.error "upstream_*" instead.
     if (status === 502 && body && typeof body === "object" && body.outcome === "unknown") {
       const unreadable = typeof body.error === "string" && body.error.startsWith("upstream_");
+      const extra = !unreadable && GRAPHQL_ERROR_CODES.includes(body.github_code) ? { github_code: body.github_code } : null;
       throw new ToolError(
         "outcome_unknown",
         unreadable
           ? "git-relay's server-error answer could not be read, so the call's outcome is unknown:  it may have reached GitHub and been accepted.  Do not retry blindly - check the pull request or workflow state first."
           : "git-relay reports the call's outcome is unknown:  GitHub may have accepted it, and the relay refuses replay until the outcome resolves.  Do not retry blindly - check the pull request or workflow state first.",
+        { extra },
       );
     }
     if (status === 502) throw new ToolError("unavailable", "git-relay answered in a way this server could not read.  The call did not complete.");
