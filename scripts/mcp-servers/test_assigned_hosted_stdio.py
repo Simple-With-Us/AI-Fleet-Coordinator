@@ -1,15 +1,18 @@
-"""Offline synthetic tests. No credentials, network, files or live writes."""
+"""Offline synthetic tests. No credentials, network or live writes; files only in temp folders."""
 
 import http.client
 import importlib.util
 import io
 import json
 import os
+import stat
 import subprocess
 import tempfile
+import time
 import unittest
 import urllib.error
 from pathlib import Path
+from unittest import mock
 
 spec = importlib.util.spec_from_file_location(
     "adapter", Path(__file__).with_name("assigned-hosted-stdio.py")
@@ -98,9 +101,38 @@ class AdapterTests(unittest.TestCase):
         )
         self.assertEqual(result["result"]["tools"][0]["name"], "gr_merge_pr")
 
-    def test_notifications_have_no_stdio_response(self):
-        adapter = mod.Adapter(TOKEN, lambda *a, **kw: Response(b"", status=202))
-        self.assertIsNone(adapter.call({"jsonrpc": "2.0", "method": "notifications/initialized"}))
+    def test_notifications_stay_local_with_no_stdio_response(self):
+        def never(*args, **kw):
+            self.fail("a notification reached the network")
+
+        adapter = mod.Adapter(TOKEN, never)
+        for method in (
+            "notifications/initialized",
+            "notifications/cancelled",
+            "notifications/roots/list_changed",
+        ):
+            self.assertIsNone(adapter.call({"jsonrpc": "2.0", "method": method}))
+
+    def test_bare_tool_call_sends_a_protocol_version_without_initialize(self):
+        seen = []
+
+        def opener(request, timeout):
+            seen.append(request)
+            return Response(json.dumps(self.reply()).encode())
+
+        mod.Adapter(TOKEN, opener).call(self.message())
+        self.assertEqual(seen[0].headers["Mcp-protocol-version"], mod.DEFAULT_PROTOCOL)
+        self.assertNotIn("Mcp-session-id", seen[0].headers)
+
+    def test_first_initialize_names_no_protocol_version(self):
+        seen = []
+
+        def opener(request, timeout):
+            seen.append(request)
+            return Response(json.dumps(self.reply({"protocolVersion": "2025-06-18"})).encode())
+
+        mod.Adapter(TOKEN, opener).call(self.message("initialize"))
+        self.assertNotIn("Mcp-protocol-version", seen[0].headers)
 
     def test_http_transport_parse_loss_are_unknown_no_prose_no_retry(self):
         cases = [
@@ -286,6 +318,248 @@ class AdapterTests(unittest.TestCase):
                 None, None, 302, "redirect", {}, "https://untrusted.invalid"
             )
         )
+
+
+INIT_RESULT = {
+    "protocolVersion": "2025-06-18",
+    "capabilities": {"tools": {}, "events": {}},
+    "serverInfo": {"name": "ST-MCP", "version": "2"},
+    "instructions": "You act as ECHO, with this seat's own instructions.",
+}
+TOOLS_RESULT = {"tools": [{"name": "whoami", "inputSchema": {"type": "object"}}]}
+
+
+class Upstream:
+    """A fake hosted server that counts every POST by its JSON-RPC method."""
+
+    def __init__(self, session=None):
+        self.methods = []
+        self.requests = []
+        self.session = session
+        self.tools = TOOLS_RESULT
+
+    def __call__(self, request, timeout):
+        body = json.loads(request.data)
+        self.methods.append(body["method"])
+        self.requests.append(request)
+        result = {"initialize": INIT_RESULT, "tools/list": self.tools}.get(
+            body["method"], {"content": []}
+        )
+        reply = {"jsonrpc": "2.0", "id": body["id"], "result": result}
+        return Response(json.dumps(reply).encode(), session=self.session)
+
+
+def frame(method, frame_id=1, **params):
+    return {"jsonrpc": "2.0", "id": frame_id, "method": method, "params": params}
+
+
+INITIALIZE = frame("initialize", protocolVersion="2025-06-18", capabilities={})
+TOOL_CALL = frame("tools/call", name="whoami", arguments={})
+INITIALIZED = {"jsonrpc": "2.0", "method": "notifications/initialized"}
+
+
+class DiskCacheTests(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.dir = os.path.join(temp.name, "cache")
+        self.upstream = Upstream()
+
+    def adapter(self, token=TOKEN, upstream=None):
+        return mod.Adapter(token, upstream or self.upstream, cache_dir=self.dir)
+
+    def test_warm_one_shot_session_costs_one_request(self):
+        self.adapter().call(INITIALIZE)
+        self.upstream.methods.clear()
+        adapter = self.adapter()
+        reply = adapter.call(frame("initialize", 41, protocolVersion="2025-06-18"))
+        self.assertEqual(reply["id"], 41)
+        self.assertIsNone(adapter.call(INITIALIZED))
+        self.assertFalse(adapter.call(TOOL_CALL)["result"].get("isError"))
+        self.assertEqual(self.upstream.methods, ["tools/call"])
+
+    def test_cached_initialize_keeps_seat_instructions_capabilities_and_protocol(self):
+        first = self.adapter().call(INITIALIZE)
+        self.assertEqual(first["result"], INIT_RESULT)
+        adapter = self.adapter()
+        second = adapter.call(frame("initialize", "abc", protocolVersion="2025-06-18"))
+        self.assertEqual(second, {"jsonrpc": "2.0", "id": "abc", "result": INIT_RESULT})
+        adapter.call(TOOL_CALL)
+        self.assertEqual(
+            self.upstream.requests[-1].headers["Mcp-protocol-version"], "2025-06-18"
+        )
+        self.assertEqual(self.upstream.methods, ["initialize", "tools/call"])
+
+    def test_each_requested_protocol_version_negotiates_for_itself(self):
+        self.adapter().call(INITIALIZE)
+        self.adapter().call(frame("initialize", protocolVersion="2025-03-26"))
+        self.assertEqual(self.upstream.methods, ["initialize", "initialize"])
+
+    def test_answers_are_never_shared_between_bearers(self):
+        self.adapter().call(INITIALIZE)
+        self.adapter().call(frame("tools/list"))
+        other = "sbt_other_" + "B" * 43
+        self.upstream.methods.clear()
+        adapter = self.adapter(other)
+        adapter.call(INITIALIZE)
+        adapter.call(frame("tools/list"))
+        self.assertEqual(self.upstream.methods, ["initialize", "tools/list"])
+
+    def test_tools_list_is_served_from_disk_then_refreshes_after_the_ttl(self):
+        self.assertEqual(self.adapter().call(frame("tools/list"))["result"], TOOLS_RESULT)
+        self.assertEqual(self.adapter().call(frame("tools/list", 2))["result"], TOOLS_RESULT)
+        self.assertEqual(self.upstream.methods, ["tools/list"])
+        newer = {"tools": TOOLS_RESULT["tools"] + [{"name": "new_tool"}]}
+        self.upstream.tools = newer
+        later = time.time() + mod.CACHE_TTL_S + 1
+        with mock.patch.object(mod.time, "time", return_value=later):
+            self.assertEqual(self.adapter().call(frame("tools/list", 3))["result"], newer)
+            self.assertEqual(self.adapter().call(frame("tools/list", 4))["result"], newer)
+        self.assertEqual(self.upstream.methods, ["tools/list", "tools/list"])
+
+    def test_initialize_refreshes_after_the_ttl_and_a_future_timestamp_is_not_trusted(self):
+        self.adapter().call(INITIALIZE)
+        for offset in (mod.CACHE_TTL_S + 1, -3600):
+            with mock.patch.object(mod.time, "time", return_value=time.time() + offset):
+                cache = mod.DiskCache(self.dir, TOKEN)
+                self.assertIsNone(cache.load(mod.initialize_key(INITIALIZE)))
+
+    def test_paged_lists_are_not_cached(self):
+        self.upstream.tools = {"tools": [], "nextCursor": "page-2"}
+        self.adapter().call(frame("tools/list"))
+        self.adapter().call(frame("tools/list", 2))
+        self.adapter().call(frame("tools/list", 3, cursor="page-2"))
+        self.assertEqual(len(self.upstream.methods), 3)
+
+    def test_errors_and_tool_results_are_not_cached(self):
+        def error(request, timeout):
+            body = json.loads(request.data)
+            reply = {"jsonrpc": "2.0", "id": body["id"], "error": {"code": -1, "message": "no"}}
+            return Response(json.dumps(reply).encode())
+
+        for message in (INITIALIZE, frame("tools/list")):
+            self.adapter(upstream=error).call(message)
+        self.adapter().call(TOOL_CALL)
+        self.adapter().call(TOOL_CALL)
+        self.assertFalse(os.path.exists(self.dir) and os.listdir(self.dir))
+        self.assertEqual(self.upstream.methods, ["tools/call", "tools/call"])
+
+    def test_a_server_that_issues_sessions_keeps_getting_real_initializes(self):
+        upstream = Upstream(session="stateful")
+        self.adapter(upstream=upstream).call(INITIALIZE)
+        self.adapter(upstream=upstream).call(INITIALIZE)
+        self.assertEqual(upstream.methods, ["initialize", "initialize"])
+
+    def test_cache_is_private_and_holds_no_bearer(self):
+        self.adapter().call(INITIALIZE)
+        self.adapter().call(frame("tools/list"))
+        self.assertEqual(stat.S_IMODE(os.stat(self.dir).st_mode), 0o700)
+        names = os.listdir(self.dir)
+        self.assertEqual(len(names), 2)
+        for name in names:
+            path = os.path.join(self.dir, name)
+            self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
+            self.assertNotIn(TOKEN, name)
+            self.assertNotIn(TOKEN, Path(path).read_text())
+
+    def test_a_widened_planted_or_corrupt_file_is_ignored(self):
+        self.adapter().call(frame("tools/list"))
+        name = os.listdir(self.dir)[0]
+        path = os.path.join(self.dir, name)
+        good = Path(path).read_text()
+        os.chmod(path, 0o644)
+        self.adapter().call(frame("tools/list", 2))
+        self.assertEqual(len(self.upstream.methods), 2)
+        os.unlink(path)
+        decoy = os.path.join(os.path.dirname(self.dir), "decoy")
+        Path(decoy).write_text(good)
+        os.chmod(decoy, 0o600)
+        os.symlink(decoy, path)
+        self.adapter().call(frame("tools/list", 3))
+        self.assertEqual(len(self.upstream.methods), 3)
+        for corrupt in (b"not json", b"[]", b'{"at":"x","result":{}}', b'{"at":1}'):
+            os.unlink(path)
+            Path(path).write_bytes(corrupt)
+            os.chmod(path, 0o600)
+            count = len(self.upstream.methods)
+            self.adapter().call(frame("tools/list", 4))
+            self.assertEqual(len(self.upstream.methods), count + 1)
+
+    def test_a_cached_initialize_without_seat_shape_is_not_answered_locally(self):
+        os.makedirs(self.dir, mode=0o700)
+        cache = mod.DiskCache(self.dir, TOKEN)
+        malformed = {"protocolVersion": "bad version", "capabilities": {}}
+        cache.store(mod.initialize_key(INITIALIZE), malformed)
+        self.adapter().call(INITIALIZE)
+        self.assertEqual(self.upstream.methods, ["initialize"])
+
+    def test_an_unusable_cache_folder_changes_nothing_for_the_client(self):
+        parent = os.path.dirname(self.dir)
+        Path(self.dir).write_text("a file where the folder should be")
+        adapter = self.adapter()
+        self.assertEqual(adapter.call(INITIALIZE)["result"], INIT_RESULT)
+        self.assertEqual(adapter.call(frame("tools/list"))["result"], TOOLS_RESULT)
+        self.assertEqual(self.upstream.methods, ["initialize", "tools/list"])
+        self.assertEqual(os.listdir(parent), ["cache"])
+
+    def test_cache_folder_comes_from_the_environment_or_stays_off(self):
+        self.assertEqual(
+            mod.default_cache_dir({"HOME": "/h"}), "/h/.cache/assigned-hosted-stdio"
+        )
+        self.assertEqual(
+            mod.default_cache_dir({"HOME": "/h", "XDG_CACHE_HOME": "/x"}),
+            "/x/assigned-hosted-stdio",
+        )
+        self.assertIsNone(mod.default_cache_dir({"PATH": "/usr/bin:/bin"}))
+        self.assertIsNone(mod.default_cache_dir({"HOME": "relative"}))
+
+
+class BearerRefusalTests(unittest.TestCase):
+    REFUSED = json.dumps(
+        {"error": "invalid_token", "error_description": "This token is not valid."}
+    ).encode()
+
+    def refusing(self, body=REFUSED, code=401):
+        def opener(request, timeout):
+            raise urllib.error.HTTPError("u", code, "refused", {}, io.BytesIO(body))
+
+        return opener
+
+    def test_tool_call_says_the_bearer_was_refused_and_clears_this_seats_cache(self):
+        with tempfile.TemporaryDirectory() as temp:
+            mod.Adapter(TOKEN, Upstream(), cache_dir=temp).call(INITIALIZE)
+            other = mod.DiskCache(temp, "sbt_other_" + "B" * 43)
+            other.store("tools", TOOLS_RESULT)
+            adapter = mod.Adapter(TOKEN, self.refusing(), cache_dir=temp)
+            self.assertEqual(adapter.call(INITIALIZE)["result"], INIT_RESULT)  # Connect succeeds.
+            reply = adapter.call(TOOL_CALL)
+            self.assertTrue(reply["result"]["isError"])
+            error = json.loads(reply["result"]["content"][0]["text"])
+            self.assertEqual(error["code"], "bearer_refused")
+            self.assertFalse(error["retryable"])
+            self.assertIn("did not run", error["message"])
+            self.assertNotIn(TOKEN, json.dumps(reply))
+            self.assertIsNone(
+                mod.DiskCache(temp, TOKEN).load(mod.initialize_key(INITIALIZE))
+            )
+            self.assertEqual(other.load("tools"), TOOLS_RESULT)
+
+    def test_a_real_initialize_also_names_the_refusal(self):
+        reply = mod.Adapter(TOKEN, self.refusing()).call(INITIALIZE)
+        self.assertEqual(reply["error"]["code"], -32000)
+        self.assertIn("refused this connection's assigned bearer", reply["error"]["message"])
+
+    def test_any_other_answer_stays_outcome_unknown(self):
+        for body, code in (
+            (b"not-json", 401),
+            (b"[]", 401),
+            (b'{"error":"other"}', 401),
+            (self.REFUSED, 403),
+            (self.REFUSED, 500),
+        ):
+            reply = mod.Adapter(TOKEN, self.refusing(body, code)).call(TOOL_CALL)
+            error = json.loads(reply["result"]["content"][0]["text"])
+            self.assertEqual(error["code"], "outcome_unknown")
 
 
 class FileFrameTests(unittest.TestCase):

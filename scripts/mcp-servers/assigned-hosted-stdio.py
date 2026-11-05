@@ -1,11 +1,15 @@
 #!/usr/bin/env -S python3 -I
 """Assigned-bearer stdio transport. No secret reader, token minting or retries."""
 
+import hashlib
 import http.client
 import json
 import os
 import re
+import stat
 import sys
+import tempfile
+import time
 import urllib.error
 import urllib.request
 
@@ -13,6 +17,18 @@ ENDPOINT = "https://agents.simplewithus.com/mcp"
 MAX_BYTES = 4 * 1024 * 1024
 MAX_FILE_ARGS_BYTES = 6 * 1024 * 1024
 MAX_FILE_FRAME_BYTES = MAX_FILE_ARGS_BYTES + 65536
+# Each Worker request counts against a daily cap, so discovery is answered from
+# disk for this long after a real answer.  A new tool appears within this window.
+CACHE_TTL_S = 600
+# Sent when this process has no negotiated version, as simple-chat-remote does.
+DEFAULT_PROTOCOL = "2025-06-18"
+PROTOCOL_RE = re.compile(r"[!-~]{1,128}")
+BEARER_REFUSED_MESSAGE = (
+    "The hosted server refused this connection's assigned bearer: it is invalid, expired, "
+    "revoked, paused or not accepted for MCP, or the server could not load its credentials. "
+    "The call did not run. Startup may have been answered from a local cache, so this can be "
+    "the first sign. Ask the host owner to check this seat's bearer; do not use another seat's."
+)
 TOKEN_RE = re.compile(
     r"^(?:sbt_([a-z][a-z0-9-]{1,19})|gbb_([a-z][a-z0-9]{1,19}))_[A-Za-z0-9_-]{43}$"
 )
@@ -32,6 +48,144 @@ def assigned_identity(token):
     if not match:
         raise TransportFailure("assigned bearer is missing or malformed")
     return match[1].upper() if match[1] else "GB-" + match[2].upper()
+
+
+def default_cache_dir(env):
+    """The cache folder, or None.  A host that sets neither variable runs uncached."""
+    base = env.get("XDG_CACHE_HOME", "")
+    if not os.path.isabs(base):
+        home = env.get("HOME", "")
+        if not os.path.isabs(home):
+            return None
+        base = os.path.join(home, ".cache")
+    return os.path.join(base, "assigned-hosted-stdio")
+
+
+class DiskCache:
+    """Hosted discovery answers, one set per bearer.  Holds no bearer and never raises.
+
+    Answers are per seat (instructions, identity enum), so the file names come from
+    the bearer, domain-separated from the hash the hosted server stores.  Anything
+    that is not private to this user is ignored: a planted file must not become the
+    tool catalog.  An unwritable folder (a sandboxed host) only means no caching.
+    """
+
+    def __init__(self, root, token):
+        self.root = root
+        seed = b"assigned-hosted-stdio-cache/1\0" + token.encode() + b"\0" + ENDPOINT.encode()
+        self.prefix = hashlib.sha256(seed).hexdigest()[:32]
+
+    def _private_root(self):
+        os.makedirs(self.root, mode=0o700, exist_ok=True)
+        info = os.lstat(self.root)
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid():
+            raise OSError("unsafe cache folder")
+        os.chmod(self.root, 0o700)  # An inherited default ACL can widen the mkdir mode.
+
+    def _path(self, name):
+        return os.path.join(self.root, f"{self.prefix}.{name}.json")
+
+    def load(self, name):
+        try:
+            self._private_root()
+            fd = os.open(self._path(name), os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+            with os.fdopen(fd, "rb") as source:
+                info = os.fstat(source.fileno())
+                if (
+                    not stat.S_ISREG(info.st_mode)
+                    or info.st_uid != os.geteuid()
+                    or stat.S_IMODE(info.st_mode) & 0o077
+                ):
+                    return None
+                raw = source.read(MAX_BYTES + 1)
+            if len(raw) > MAX_BYTES:
+                return None
+            entry = json.loads(raw)
+            age = time.time() - entry["at"]
+            result = entry["result"]
+            return result if 0 <= age < CACHE_TTL_S and isinstance(result, dict) else None
+        except (OSError, ValueError, KeyError, TypeError, RecursionError):
+            return None
+
+    def store(self, name, result):
+        temp = None
+        try:
+            raw = json.dumps({"at": time.time(), "result": result}).encode()
+            if len(raw) > MAX_BYTES:
+                return
+            self._private_root()
+            fd, temp = tempfile.mkstemp(prefix=self.prefix + ".", suffix=".tmp", dir=self.root)
+            with os.fdopen(fd, "wb") as target:
+                os.fchmod(target.fileno(), 0o600)
+                target.write(raw)
+            os.replace(temp, self._path(name))
+            temp = None
+        except (OSError, ValueError, TypeError, RecursionError):
+            pass
+        finally:
+            if temp:
+                try:
+                    os.unlink(temp)
+                except OSError:
+                    pass
+
+    def clear(self):
+        try:
+            for name in os.listdir(self.root):
+                if name.startswith(self.prefix + "."):
+                    os.unlink(os.path.join(self.root, name))
+        except OSError:
+            pass
+
+
+def initialize_key(message):
+    """The server negotiates against the version asked for, so answers are kept per version."""
+    params = message.get("params")
+    asked = params.get("protocolVersion") if isinstance(params, dict) else None
+    return "init-" + hashlib.sha256(str(asked).encode()).hexdigest()[:16]
+
+
+def usable_initialize(result):
+    return (
+        isinstance(result, dict)
+        and isinstance(result.get("capabilities"), dict)
+        and isinstance(result.get("protocolVersion"), str)
+        and PROTOCOL_RE.fullmatch(result["protocolVersion"]) is not None
+    )
+
+
+def first_page_of_tools(message):
+    params = message.get("params")
+    return not (isinstance(params, dict) and params.get("cursor"))
+
+
+def is_bearer_refusal(error):
+    """Only the hosted server's own invalid_token answer, which it sends before any tool runs."""
+    if error.code != 401:
+        return False
+    try:
+        return json.loads(error.read(4096)).get("error") == "invalid_token"
+    except (OSError, ValueError, AttributeError, RecursionError, http.client.HTTPException):
+        return False
+
+
+def bearer_refused(message):
+    if "id" not in message:
+        return None
+    if message.get("method") == "tools/call":
+        text = json.dumps(
+            {"code": "bearer_refused", "retryable": False, "message": BEARER_REFUSED_MESSAGE}
+        )
+        return {
+            "jsonrpc": "2.0",
+            "id": message["id"],
+            "result": {"isError": True, "content": [{"type": "text", "text": text}]},
+        }
+    return {
+        "jsonrpc": "2.0",
+        "id": message["id"],
+        "error": {"code": -32000, "message": BEARER_REFUSED_MESSAGE},
+    }
 
 
 def failure(message, code="outcome_unknown"):
@@ -70,16 +224,59 @@ def failure(message, code="outcome_unknown"):
 
 
 class Adapter:
-    def __init__(self, token, opener=None):
+    def __init__(self, token, opener=None, cache_dir=None):
         self.identity = assigned_identity(token)  # A local guard, not server authentication.
         self.token = token
         self.opener = opener or urllib.request.build_opener(NoRedirect()).open
         self.session = None
         self.protocol = None
+        self.cache = DiskCache(cache_dir, token) if cache_dir else None
+
+    def answer_from_cache(self, message):
+        if self.cache is None or "id" not in message:
+            return None
+        method = message.get("method")
+        if method == "initialize":
+            result = self.cache.load(initialize_key(message))
+            if not usable_initialize(result):
+                return None
+            self.protocol = result["protocolVersion"]
+            self.session = None
+        elif method == "tools/list" and first_page_of_tools(message):
+            result = self.cache.load("tools")
+            if result is None or not isinstance(result.get("tools"), list):
+                return None
+        else:
+            return None
+        return {"jsonrpc": "2.0", "id": message["id"], "result": result}
+
+    def remember(self, message, reply, session):
+        if self.cache is None or not isinstance(reply.get("result"), dict):
+            return
+        result = reply["result"]
+        method = message.get("method")
+        # A server that starts issuing sessions must see its initialize again.
+        if method == "initialize" and session is None and usable_initialize(result):
+            self.cache.store(initialize_key(message), result)
+        elif (
+            method == "tools/list"
+            and first_page_of_tools(message)
+            and isinstance(result.get("tools"), list)
+            and not result.get("nextCursor")
+        ):
+            self.cache.store("tools", result)
 
     def call(self, message):
         if not isinstance(message, dict) or message.get("jsonrpc") != "2.0":
             raise TransportFailure("invalid JSON-RPC message")
+        method = message.get("method")
+        # The hosted handler is stateless (createMcpHandler, no session generator), so
+        # nothing it does depends on a notification, and each one is a counted request.
+        if isinstance(method, str) and method.startswith("notifications/") and "id" not in message:
+            return None
+        local = self.answer_from_cache(message)
+        if local is not None:
+            return local
         params = message.get("params")
         if message.get("method") == "tools/call" and isinstance(params, dict):
             args = params.get("arguments")
@@ -102,8 +299,8 @@ class Adapter:
         }
         if self.session:
             headers["Mcp-Session-Id"] = self.session
-        if self.protocol:
-            headers["MCP-Protocol-Version"] = self.protocol
+        if self.protocol or method != "initialize":
+            headers["MCP-Protocol-Version"] = self.protocol or DEFAULT_PROTOCOL
         encoded = json.dumps(message).encode()
         if not file_frame_allowed(message, len(encoded)):
             raise TransportFailure("Input frame too large.")
@@ -163,7 +360,14 @@ class Adapter:
                         return failure(message)
                     self.protocol = protocol
                     self.session = session
+                self.remember(message, result, session)
                 return result
+        except urllib.error.HTTPError as error:
+            if is_bearer_refusal(error):
+                if self.cache is not None:
+                    self.cache.clear()
+                return bearer_refused(message)
+            return failure(message)
         except (OSError, ValueError, http.client.HTTPException):
             # Never reflect provider prose, headers, credentials or redirect locations.
             # An accepted write can lose its response even on a non-JSON 4xx/5xx.
@@ -193,7 +397,7 @@ def file_frame_allowed(message, frame_bytes):
 def main():
     token = os.environ.pop("ASSIGNED_MCP_BEARER", "").strip()
     try:
-        adapter = Adapter(token)
+        adapter = Adapter(token, cache_dir=default_cache_dir(os.environ))
     except TransportFailure:
         print("assigned-hosted-stdio: assigned bearer is missing or malformed", file=sys.stderr)
         return 3
