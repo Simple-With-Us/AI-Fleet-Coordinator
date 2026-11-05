@@ -80,6 +80,10 @@ CTS "prod" is an annotated tag `vX.Y.Z` after merge — announce on `#Work-In-Pr
 
 `STATUS.md` / `PLAN.md` (and the archived `docs/EFFORT-LOG.md`) often carry `merge=union` in `.gitattributes`.  Additive edits usually combine.  Never delete another agent's row while resolving.  Up to 3 land attempts are fine.
 
+## Request the Kody review
+
+Kodus is in manual mode, so a push starts nothing.  Once the head is ready, read the PR's comments for an existing request on that head, then post a top-level comment that starts with `@kody start-review` (the relay tool `gr_comment_pr`).  Follow it with the Kodus CLI (`npx @kodus/cli`) if your seat can, or the `Kody Code Review` check on the head: `skipped` means no review ran there.  Every finding gets a comment with its fix, or a dispute based on the code.  The full rule is in `AGENTS.md`, section "Kody reviews are requested by hand".
+
 ## Arm auto-merge
 
 Arm auto-merge with the relay tool `gr_wf_automerge_enable` (`repo`, `number`, `method` = `SQUASH`).
