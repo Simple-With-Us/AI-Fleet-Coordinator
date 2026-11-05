@@ -5,8 +5,9 @@
                                            [--repo OWNER/NAME] [--plan paid|free]
 
 A config fails when it lacks limits.cpu_ms or limits.subrequests, a value is above
-the registry, preview_urls is not false, its log sampling is implicit or above the
-registry, its name is not in the registry, or its path is not listed under that name.
+the registry, preview_urls is not false, its workers_dev as Wrangler would apply it
+differs from the registry, its log sampling is implicit or above the registry, its
+name is not in the registry, or its path is not listed under that name.
 Each [env.*] block is held to the same rules with what it inherits, because a deploy
 with --env runs those values, and under the Worker name it deploys as.
 
@@ -114,6 +115,8 @@ def check_registry(registry: dict) -> list[str]:
             continue
         if row.get("status") not in STATUSES:
             findings.append(f"registry: {name}: status must be one of {sorted(STATUSES)}")
+        if not isinstance(row.get("workers_dev"), bool):
+            findings.append(f"registry: {name}: workers_dev must be true or false")
         for key in ("repo", "health", "deploy"):
             if not isinstance(row.get(key), str) or not row[key].strip():
                 findings.append(f"registry: {name}: {key} must be a non-empty string")
@@ -195,6 +198,15 @@ def check_block(path: str, label: str, config: dict, registry: dict, plan: str) 
 
     if config.get("preview_urls") is not False:
         findings.append(f"{label}: preview_urls must be false")
+
+    # Wrangler's default is on without a route and off with one, and a deploy applies it.
+    has_route = bool(config.get("route") or config.get("routes"))
+    workers_dev = config.get("workers_dev", not has_route)
+    wanted = row.get("workers_dev")
+    if isinstance(wanted, bool) and workers_dev is not wanted:
+        findings.append(
+            f"{label}: workers_dev would deploy as {workers_dev!r}, the registry says {wanted!r}"
+        )
 
     observability = (
         config.get("observability") if isinstance(config.get("observability"), dict) else {}

@@ -61,6 +61,7 @@ REGISTRY = {
             "repo": REPO,
             "config": "wrangler.toml",
             "status": "auto",
+            "workers_dev": True,
             "limits": {"cpu_ms": 100, "subrequests": 100},
             "head_sampling_rate": 0.5,
             "health": "probe",
@@ -128,6 +129,31 @@ class ConfigRules(Base):
             text = good.replace('"preview_urls": false', f'"preview_urls": {value}')
             out = self.findings(text, registry, "wrangler.jsonc")
             self.assertTrue(any("preview_urls must be false" in f for f in out), (value, out))
+
+    def off_registry(self):
+        registry = copy.deepcopy(REGISTRY)
+        registry["workers"]["w"]["workers_dev"] = False
+        return registry
+
+    def test_workers_dev_unset_with_no_route_deploys_on(self):
+        out = self.findings(registry=self.off_registry())
+        self.assertTrue(any("workers_dev would deploy as True" in f for f in out), out)
+
+    def test_workers_dev_unset_with_a_route_deploys_off(self):
+        text = 'routes = [{ pattern = "w.example.com", custom_domain = true }]\n' + GOOD_TOML
+        self.assertEqual(self.findings(text, self.off_registry()), [])
+        out = self.findings(text)
+        self.assertTrue(any("workers_dev would deploy as False" in f for f in out), out)
+
+    def test_workers_dev_explicit_value_must_match_the_row(self):
+        off = "workers_dev = false\n" + GOOD_TOML
+        self.assertEqual(self.findings(off, self.off_registry()), [])
+        out = self.findings(off)
+        self.assertTrue(any("workers_dev would deploy as False" in f for f in out), out)
+
+    def test_workers_dev_of_another_type_fails(self):
+        out = self.findings('workers_dev = "false"\n' + GOOD_TOML, self.off_registry())
+        self.assertTrue(any("workers_dev would deploy as 'false'" in f for f in out), out)
 
     def test_implicit_sampling_fails(self):
         out = self.findings(GOOD_TOML.replace("head_sampling_rate = 0.5\n", ""))
@@ -240,6 +266,11 @@ class EnvironmentBlocks(Base):
         out = self.findings(GOOD_TOML + "[env.prod]\n", self.registry_with_env_worker())
         self.assertEqual(out, [])
 
+    def test_env_that_turns_workers_dev_off_against_its_row_fails(self):
+        text = GOOD_TOML + "[env.prod]\nworkers_dev = false\n"
+        out = self.findings(text, self.registry_with_env_worker())
+        self.assertTrue(any("[env.prod]: workers_dev would deploy as False" in f for f in out), out)
+
     def test_env_may_name_its_worker(self):
         text = GOOD_TOML + '[env.prod]\nname = "w"\n'
         self.assertEqual(self.findings(text), [])
@@ -294,6 +325,14 @@ class RegistryRules(Base):
         out = self.findings(registry=self.mutated(status="live"))
         self.assertTrue(any("status must be one of" in f for f in out), out)
 
+    def test_row_without_a_boolean_workers_dev_fails(self):
+        registry = copy.deepcopy(REGISTRY)
+        del registry["workers"]["w"]["workers_dev"]
+        out = self.findings(registry=registry)
+        self.assertTrue(any("workers_dev must be true or false" in f for f in out), out)
+        out = self.findings(registry=self.mutated(workers_dev=0))
+        self.assertTrue(any("workers_dev must be true or false" in f for f in out), out)
+
     def test_bad_plan_fails(self):
         registry = copy.deepcopy(REGISTRY)
         registry["account_plan"] = "pro"
@@ -305,6 +344,7 @@ class RegistryRules(Base):
             "repo": REPO,
             "config": None,
             "status": "retire",
+            "workers_dev": False,
             "limits": {"cpu_ms": 1, "subrequests": 1},
             "head_sampling_rate": 1,
             "health": "x",
@@ -404,6 +444,17 @@ class LiveTree(unittest.TestCase):
                 "usage-monitor-receipt-lifecycle-auditor",
             },
         )
+
+    def test_workers_dev_is_on_only_where_it_serves_traffic(self):
+        on = {n for n, row in self.registry["workers"].items() if row["workers_dev"]}
+        self.assertEqual(on, {"alert-ingress", "pr-conflict-watch"})
+
+    def test_inbox_ceiling_covers_large_pdf_mail(self):
+        row = self.registry["workers"]["usage-monitor-receipt-inbox"]
+        self.assertEqual(row["limits"], {"cpu_ms": 500, "subrequests": 30})
+
+    def test_registry_does_not_name_the_account(self):
+        self.assertNotIn("account", self.registry)
 
     def test_admin_records_that_it_has_no_config(self):
         row = self.registry["workers"]["admin-jays-services"]

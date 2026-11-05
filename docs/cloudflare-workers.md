@@ -1,10 +1,10 @@
 # Cloudflare Workers Design
 
-The design of every Worker on the Usage.Jays.Services account, and the guards that stop a code bug from running up a bill.  Refs AFC-617.
+The design of every Worker on the fleet's Workers account, and the guards that stop a code bug from running up a bill.  Refs AFC-617.
 
 A past 2-3 hour glitch on another account cost $1,153 in D1 rows written.  The account has three goals: a bug cannot run up a bill on any capped metric, MCP can be used far more and alerts a bit more inside the Workers Free limits, and the design and the deploys come from git.
 
-Hostnames other than the two public entry points below, Access policies, secret names and resource ids live in Fleet-OPS, not here.
+Hostnames other than the public entry point below, Access policies, secret names and resource ids live in Fleet-OPS, not here.
 
 ## The Guards
 
@@ -20,7 +20,7 @@ Hostnames other than the two public entry points below, Access policies, secret 
 
 Limits are per invocation, and Cloudflare documents some per-isolate flexibility, so `cpu_ms` is a strong guard and not an exact one.  Subrequests count `fetch()` and calls to Cloudflare services such as KV, D1 and R2.  Without a limit a Paid Worker gets 10,000 subrequests and 30 seconds of CPU per invocation.
 
-A limit in a config takes effect only when that config is deployed.  Merging it changes nothing live.  The live limits came from direct API uploads made on purpose to apply these caps, at about 7:42 PM on Nov 4, 2026, with `alert-ingress` raised to 200 ms and 50 subrequests at about 9:03 PM.  The current `alert-ingress` and `pr-conflict-watch` versions from those uploads have no `workers/tag`.  A deploy replaces the live values with its config's, and a config with no limits removes them: a `simple-tools-mcp` upload at about 8:25 PM the same evening carried no limits, which dropped its 300 ms and 200 subrequests.  So deploy only from a tree that has these limits, and read the live settings back afterwards.
+A limit in a config takes effect only when that config is deployed.  Merging it changes nothing live.  The live limits came from direct API uploads made on purpose to apply these caps, at about 7:42 PM on Nov 4, 2026, with `alert-ingress` raised to 200 ms and 50 subrequests at about 9:03 PM and `usage-monitor-receipt-inbox` raised to 500 ms at about 9:55 PM.  The current `alert-ingress` and `pr-conflict-watch` versions from those uploads have no `workers/tag`.  A deploy or API upload replaces the live values with what it declares, and an upload without declared limits removes the live limits: a `simple-tools-mcp` upload at about 8:25 PM the same evening carried none, which dropped its 300 ms and 200 subrequests until they were applied again.  So deploy only from a tree that has these limits, and read the live settings back afterwards.
 
 ## The CI Check
 
@@ -29,12 +29,15 @@ A limit in a config takes effect only when that config is deployed.  Merging it
 - `limits.cpu_ms` or `limits.subrequests` is missing, or a value is above its registry row
 - `preview_urls` is not `false`
 - `observability` has no `head_sampling_rate` at its top level or under `logs`, or the rate is above its registry row
+- its `workers_dev`, as Wrangler would apply it, differs from its registry row.  Unset means on without a route and off with one
 - its `name` has no registry row, or its path is not listed under that name
 - an `[env.*]` block breaks any of these with what it inherits, under the Worker name it deploys as, which is `<name>-<env>` unless the block sets `name`
 
-A registry row fails when its status is not `auto`, `gated`, `frozen` or `retire`, its limits, sampling, health or deploy text is missing, a null config has no `no_config_reason`, or a config it names in this repository is not tracked.  An empty file listing fails too, so the check can never pass vacuously.
+A registry row fails when its status is not `auto`, `gated`, `frozen` or `retire`, its limits, sampling, health or deploy text is missing, its `workers_dev` is not true or false, a null config has no `no_config_reason`, or a config it names in this repository is not tracked.  An empty file listing fails too, so the check can never pass vacuously.
 
 This check covers this repository.  Usage-Monitor's rows record its intended values, and nothing enforces them yet.
+
+A row's `workers_dev` is the state that should be live, so the watchdog's daily comparison can report a Worker that has it on while its row says off.  It is on only for `alert-ingress` and `pr-conflict-watch`, which are served from it.
 
 ### Registry Status
 
@@ -72,7 +75,7 @@ Measured figures are from the audit of Nov 3-4, 2026.  CPU figures are a 14-day
 - **Request flow:** the stateless Worker refuses bad routes and obviously bad auth, then hands everything to one named AlertWriter Durable Object, which serializes verifying, deciding, storing and posting.
 - **Storage:** SQLite Durable Object rows.  The KV namespace is a frozen legacy source with no operations since Oct 30.
 - **Triggers:** fetch, and a cron every 5 minutes that promotes incidents past their wait window.
-- **Consumers:** Datadog, PagerDuty, Better Stack and any vendor with a route in its `README.md` post to it on `alert-ingress.jays-services.workers.dev`, which stays on.  The Usage Monitor `/ops` card reads `GET /status`.
+- **Consumers:** Datadog, PagerDuty, Better Stack and any vendor with a route in its `README.md` post to it on its workers.dev hostname, which stays on.  The Usage Monitor `/ops` card reads `GET /status`.
 - **Source:** `workers/alert-ingress`, design in its `README.md`.
 - **Deploy:** `alert-workers-deploy.yml` is the intended path.  Status `auto`.  It has been failing on a stale credential receipt, and any `wrangler.toml` change needs a manual reconcile by design.
 - **Limits:** 200 ms CPU, 50 subrequests, sampling 1.  Peak 36 ms CPU in the Durable Object.  A sweep spends one Zulip call per promoted incident, then one or more per touched topic, so about 17 to 25 incidents promoting in separate topics in one sweep can reach 50.  Past the limit `sendEventOnce` has already recorded `unknown` and never resends, yet the sweep still stores the incident as announced, so its log line is lost for good, and that topic's standing message stays stale until its next event.  That loss falls in a mass outage.  50 is the most the Free plan allows, so the real fix is in the code: stop promoting when the sweep's budget runs low, and leave the rest pending for the next sweep.
@@ -107,7 +110,7 @@ Measured figures are from the audit of Nov 3-4, 2026.  CPU figures are a 14-day
 - **Triggers:** email, fetch and a Durable Object alarm.
 - **Consumers:** the Usage Monitor app.
 - **Source and deploy:** Usage-Monitor `workers/receipt-inbox`, `worker-deploy.yml` with its gate off.  Status `auto`.
-- **Limits:** 200 ms CPU, 30 subrequests, sampling 1.  CPU p99 41 ms.
+- **Limits:** 500 ms CPU, 30 subrequests, sampling 1.  CPU p99 41 ms.  Raised from 200 ms because the full intake path, measured in Node on the server and not in the Workers runtime, takes a median 238 ms at 8 MiB and 309 ms at 10 MiB for one base64 PDF, so 200 ms stops PDF mail from roughly 6.5 MiB and a stop loses the review row.  The cost stays small, because intake is capped at 100 messages and 100 MiB a day, of which public mail may use 60 messages.
 
 ### usage-monitor-receipt-lifecycle-auditor
 
