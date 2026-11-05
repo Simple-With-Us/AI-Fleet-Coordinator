@@ -10,9 +10,9 @@ The only write path for knobs.  What it promises:
     writes.  With neither it refuses.
   * The write goes through the ``infisical`` CLI with an argv list (no shell) and a
     write-capable service token that lives only in this process's memory and in the child's
-    environment as ``INFISICAL_TOKEN``.  The token comes from ``FLEET_KNOBS_WRITE_TOKEN`` or, on
-    the Mac, the login keychain item ``fleet-knobs-write`` (account ``INFISICAL_TOKEN``).  It is
-    never printed, logged, written or put in an argv.  Without one the write is refused with
+    environment as ``INFISICAL_TOKEN``.  The token comes only from ``FLEET_KNOBS_WRITE_TOKEN``
+    and its grant metadata is checked before writing.  It is never printed, logged, written or
+    put in an argv.  Without one the write is refused with
     ``no write token``.  The CLI's output is discarded: only its exit status is kept.
   * After a write the last-known-good copy is refreshed, so a reader that cannot reach
     Infisical sees the new value at once.  A live re-read refreshes it the usual way; when that
@@ -20,7 +20,7 @@ The only write path for knobs.  What it promises:
   * Every ``--yes`` appends one row to ``~/.agent-sync/listener/knobs.jsonl`` (0600): time,
     seat, key, old and new value and the result.
 
-Every outside effect (the CLI, the keychain, the live read, the copy) is a parameter, so the
+Every outside effect (the CLI, the live read, the copy) is a parameter, so the
 tests run none of them.
 """
 
@@ -41,17 +41,15 @@ from .registry import BY_NAME, Spec
 # The knobs live at the root of the AI Fleet Coordinator project (source.argv_for reads "/").
 KNOB_PATH = "/"
 ENV_WRITE_TOKEN = "FLEET_KNOBS_WRITE_TOKEN"
-KEYCHAIN_SERVICE = "fleet-knobs-write"
-KEYCHAIN_ACCOUNT = "INFISICAL_TOKEN"
-SECURITY = "/usr/bin/security"
 WRITE_TIMEOUT = 30
-KEYCHAIN_TIMEOUT = 10
-MAX_TOKEN = 4096
+MAX_TOKEN = 2048
 # Variables that must never reach the write child: any other Infisical credential.
 DROP_FROM_CHILD = (
     source.ENV_TOKEN,
-    source.ENV_AUTOMATION_ID,
-    source.ENV_AUTOMATION_SECRET,
+    "INFISICAL_AUTOMATION_CLIENT_ID",
+    "INFISICAL_AUTOMATION_CLIENT_SECRET",
+    "INFISICAL_UNIVERSAL_AUTH_CLIENT_ID",
+    "INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET",
     ENV_WRITE_TOKEN,
 )
 
@@ -131,27 +129,28 @@ def write_argv(cli: str, name: str, text: str) -> list[str]:
 
 
 def read_token(environ: dict[str, str], platform: str, runner: Runner) -> str:
-    """The write token from the environment, else the Mac keychain, else ""."""
+    """The dedicated writer binding only; never query a local credential store."""
     token = (environ.get(ENV_WRITE_TOKEN) or "").strip()
-    if not token and platform.startswith("darwin"):
-        status, out = runner(
-            [
-                SECURITY,
-                "find-generic-password",
-                "-s",
-                KEYCHAIN_SERVICE,
-                "-a",
-                KEYCHAIN_ACCOUNT,
-                "-w",
-            ],
-            timeout=KEYCHAIN_TIMEOUT,
-            want_stdout=True,
-        )
-        token = out.decode("utf-8", "replace").strip() if status == 0 else ""
-        out = b""
-    if len(token) > MAX_TOKEN or any(c.isspace() or ord(c) < 33 for c in token):
+    if (
+        not token.startswith("st.")
+        or len(token) < 20
+        or len(token) > MAX_TOKEN
+        or any(c.isspace() or ord(c) < 33 for c in token)
+    ):
         return ""
     return token
+
+
+def verify_writer(token: str, environ: dict[str, str]) -> None:
+    """Require metadata to prove this project's prod root write grant before CLI use."""
+    from fleet_secrets import core as secrets
+
+    try:
+        secrets.verify_service_token(token, source.PROJECT_ID, KNOB_PATH, environ, writer=True)
+    except secrets.SecretsError:
+        raise Refused(
+            "write token does not prove the configured project, prod folder, and permissions"
+        ) from None
 
 
 def child_env(environ: dict[str, str], token: str) -> dict[str, str]:
@@ -286,6 +285,7 @@ def set_knob(
             token = read_token(environ, platform, runner)
             if not token:
                 raise Refused("no write token")
+            verify_writer(token, environ)
             env = child_env(environ, token)
             try:
                 status, _ = runner(argv, timeout=WRITE_TIMEOUT, env=env)
@@ -426,6 +426,7 @@ def unset_knob(
             token = read_token(environ, platform, runner)
             if not token:
                 raise Refused("no write token")
+            verify_writer(token, environ)
             env = child_env(environ, token)
             try:
                 status, _ = runner(argv, timeout=WRITE_TIMEOUT, env=env)

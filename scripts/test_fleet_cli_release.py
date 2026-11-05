@@ -224,6 +224,27 @@ class ReleaseTests(unittest.TestCase):
         ]:
             self.assertFalse(release.allowed_path(path), path)
 
+    def test_scoped_verifier_is_required_only_for_new_bundles_and_excludes_the_cli(self):
+        for name in ("__init__", "core"):
+            path = "scripts/fleet_secrets/%s.py" % name
+            self.assertTrue(release.allowed_path(path), path)
+            self.assertIn(path, release.TOOL_REQUIRED)
+            self.assertNotIn(path, release.BASE_REQUIRED)
+            bundle = make_bundle()
+            bundle["files"].pop(path)
+            bundle["bundle_sha256"] = release.manifest_digest(bundle["files"])
+            with self.assertRaisesRegex(release.Refused, "bad_file_set"):
+                release.decode_bundle(json.dumps(bundle).encode())
+        for path in (
+            "scripts/fleet-secrets",
+            "scripts/fleet_secrets/cli.py",
+            "scripts/fleet_secrets/__main__.py",
+            "scripts/fleet_secrets/linux-entrypoint.py",
+            "scripts/fleet_secrets/tests/test_scoped_tokens.py",
+            "scripts/install-fleet-secrets.sh",
+        ):
+            self.assertFalse(release.allowed_path(path), path)
+
     def test_the_shipped_knob_modules_are_exactly_what_a_lookup_imports_and_run_on_stdlib_alone(
         self,
     ):
