@@ -647,6 +647,24 @@ class Qdrant:
             body["filter"] = flt
         return self._call(self._cpath("/points/count"), body)["result"]["count"]
 
+    def retrieve(
+        self, point_id: str, *, with_payload: Any = True, with_vector: bool = False
+    ) -> dict | None:
+        """One point by id, or None when it does not exist."""
+        import urllib.parse
+
+        path = self._cpath("/points/" + urllib.parse.quote(point_id, safe=""))
+        if with_payload is not True or with_vector:
+            path += "?" + urllib.parse.urlencode(
+                {"with_payload": str(with_payload).lower(), "with_vector": str(with_vector).lower()}
+            )
+        try:
+            return self._call(path, method="GET")["result"]
+        except FleetRagError as e:
+            if "HTTP 404" in str(e):
+                return None
+            raise
+
     def scroll(
         self,
         flt: dict | None = None,

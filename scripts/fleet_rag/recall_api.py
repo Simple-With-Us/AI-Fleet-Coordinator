@@ -605,8 +605,24 @@ def recall_contribute(
     if kinds:
         payload["scrubbed"] = kinds
     point = build_point(clean, payload)
+    q = Qdrant(cfg)
+    existing = q.retrieve(point["id"], with_payload=True, with_vector=False)
+    if existing is not None:
+        old = existing.get("payload") or {}
+        return {
+            "id": point["id"],
+            "doc_id": str(old.get("doc_id") or doc_id),
+            "scrubbed": reported,
+            "status": "duplicate",
+            "existing": {
+                "id": str(existing.get("id") or point["id"]),
+                "doc_id": str(old.get("doc_id") or doc_id),
+                "seat": str(old.get("seat") or ""),
+                "retracted": old.get(RETRACTED_FIELD) is True,
+            },
+        }
     point["vector"] = embed(cfg, [clean])[0]
-    status = Qdrant(cfg).upsert([point])
+    status = q.upsert([point])
     return {"id": point["id"], "doc_id": doc_id, "scrubbed": reported, "status": status}
 
 
@@ -740,12 +756,13 @@ def recall_correct(
     url: str | None = None,
     expected_revision: int | None = None,
 ) -> dict:
-    """Replace one agent contribution in place, preserving every prior text in its payload.
+    """Replace one agent contribution in place, preserving every prior version in its payload.
 
     The lesson keeps its original point id and doc_id, so the supported mutation is one atomic
-    Qdrant point upsert, never a delete-then-add pair.  The old text moves into `revisions` before
-    the new text and vector are written;  only the current `text` field is searchable.  The owning
-    seat or OWNER may correct a lesson.  A retracted lesson is not resurrected by correction.
+    Qdrant point write, never a delete-then-add pair.  A text change moves the old text into
+    `revisions` and upserts the new vector;  a metadata-only correction records the old metadata
+    and updates the same point payload.  The owning seat or OWNER may correct a lesson.  A
+    retracted lesson is not resurrected by correction.
     """
     doc_id = _doc_id(doc_id)
     reason = _reason(reason, "reason")
@@ -767,7 +784,20 @@ def recall_correct(
         old_text = str(old.get("text") or "")
         old_hash = str(old.get("content_hash") or content_hash(old_text))
         new_hash = content_hash(clean)
-        if new_hash == old_hash:
+        old_title = str(old.get("title") or "")
+        old_url = str(old.get("url") or "")
+        new_title = _opt_str("title", title)
+        new_url = _opt_str("url", url)
+        if new_title is not None:
+            new_title = _safe_audit_text("title", new_title, 200)
+        if new_url is not None:
+            new_url = _safe_audit_text("url", new_url, 500)
+            if not re.match(r"^https?://", new_url):
+                raise FleetRagError("url must start with http:// or https://")
+        new_title = new_title or old_title
+        new_url = new_url or old_url
+        metadata_changed = new_title != old_title or new_url != old_url
+        if new_hash == old_hash and not metadata_changed:
             return {
                 "id": str(old_point.get("id") or ""),
                 "doc_id": doc_id,
@@ -789,48 +819,45 @@ def recall_correct(
                 "revision": revision,
                 "text": old_text,
                 "content_hash": old_hash,
-                "title": str(old.get("title") or ""),
-                "url": str(old.get("url") or ""),
+                "title": old_title,
+                "url": old_url,
                 "replaced_at": ts,
                 "replaced_by": actor,
                 "reason": reason,
             }
         )
-        new_title = _opt_str("title", title)
-        new_url = _opt_str("url", url)
-        if new_title is not None:
-            new_title = _safe_audit_text("title", new_title, 200)
-        if new_url is not None:
-            new_url = _safe_audit_text("url", new_url, 500)
-            if not re.match(r"^https?://", new_url):
-                raise FleetRagError("url must start with http:// or https://")
-        payload = dict(old)
-        payload.update(
-            {
-                "text": clean,
-                "content_hash": new_hash,
-                "title": new_title or str(old.get("title") or ""),
-                "url": new_url or str(old.get("url") or ""),
-                "updated_at": ts,
-                "revision": revision + 1,
-                "corrected_at": ts,
-                "corrected_by": actor,
-                "correction_reason": reason,
-                "revisions": history,
-            }
-        )
-        if reported:
-            payload["scrubbed"] = reported
-        else:
-            payload.pop("scrubbed", None)
-        point = {
-            "id": str(old_point.get("id") or ""),
-            "payload": payload,
-            "vector": embed(cfg, [clean])[0],
+        fields = {
+            "title": new_title,
+            "url": new_url,
+            "updated_at": ts,
+            "revision": revision + 1,
+            "corrected_at": ts,
+            "corrected_by": actor,
+            "correction_reason": reason,
+            "revisions": history,
         }
-        status = q.upsert([point])
+        if reported:
+            fields["scrubbed"] = reported
+        elif "scrubbed" in old and new_hash != old_hash:
+            # set_payload cannot delete a key; text-changing corrections carry the replacement's
+            # scrub report, while metadata-only corrections preserve the stored one.
+            fields["scrubbed"] = []
+        point_id = str(old_point.get("id") or "")
+        if new_hash == old_hash:
+            status = q.set_payload([point_id], fields)
+        else:
+            payload = dict(old)
+            payload.update({"text": clean, "content_hash": new_hash, **fields})
+            if not reported:
+                payload.pop("scrubbed", None)
+            point = {
+                "id": point_id,
+                "payload": payload,
+                "vector": embed(cfg, [clean])[0],
+            }
+            status = q.upsert([point])
     return {
-        "id": point["id"],
+        "id": point_id,
         "doc_id": doc_id,
         "seat": owner,
         "status": status,
@@ -932,6 +959,11 @@ class FakeQdrant:
 
     def info(self) -> dict:
         return {"status": "green", "points_count": len(self.points), "payload_schema": {}}
+
+    def retrieve(
+        self, point_id: str, *, with_payload: Any = True, with_vector: bool = False
+    ) -> dict | None:
+        return next((p for p in self.points if str(p.get("id")) == str(point_id)), None)
 
     @classmethod
     def _cond(cls, p: dict, cond: dict) -> bool:

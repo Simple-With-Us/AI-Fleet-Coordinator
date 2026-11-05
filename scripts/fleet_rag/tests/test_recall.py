@@ -404,6 +404,53 @@ class CorrectRetractTests(RecallBase):
             recall_api.recall_correct(original["doc_id"], "y" * 50, "stale read", seat="CLAUDE", expected_revision=2)
         self.assertEqual(len(FakeQdrant.upserts), 1)
 
+    def test_metadata_only_correction_updates_the_same_point_with_audit(self):
+        original = self.contribute()
+        res = recall_api.recall_correct(
+            original["doc_id"], GOOD, "link the runbook", seat="CLAUDE",
+            title="pm2 env", url="https://example.com/runbooks/pm2-env", expected_revision=1,
+        )
+        self.assertEqual(res["status"], "completed")
+        self.assertEqual(res["revision"], 2)
+        self.assertEqual(res["content_hash"], res["previous_content_hash"])
+        self.assertEqual(len(FakeQdrant.upserts), 1)  # no re-embed / replacement point write
+        point = next(p for p in FakeQdrant.points if p["payload"].get("doc_id") == original["doc_id"])
+        payload = point["payload"]
+        self.assertEqual(payload["text"], GOOD)
+        self.assertEqual(payload["title"], "pm2 env")
+        self.assertEqual(payload["url"], "https://example.com/runbooks/pm2-env")
+        self.assertEqual(payload["revision"], 2)
+        self.assertEqual(payload["correction_reason"], "link the runbook")
+        self.assertEqual(len(payload["revisions"]), 1)
+        self.assertEqual(payload["revisions"][0]["text"], GOOD)
+        self.assertEqual(payload["revisions"][0]["title"], "")
+
+    def test_recontribute_never_overwrites_retracted_or_corrected_away_point(self):
+        original = self.contribute()
+        recall_api.recall_retract(original["doc_id"], "obsolete instruction", seat="OWNER")
+        res = self.contribute()
+        self.assertEqual(res["status"], "duplicate")
+        self.assertTrue(res["existing"]["retracted"])
+        self.assertEqual(len(FakeQdrant.upserts), 1)
+        point = next(p for p in FakeQdrant.points if p["payload"].get("doc_id") == original["doc_id"])
+        self.assertTrue(point["payload"]["retracted"])
+        self.assertEqual(point["payload"]["retraction_reason"], "obsolete instruction")
+
+        FakeQdrant.reset()
+        corrected = self.contribute()
+        replacement = (
+            "pm2 restart needs --update-env before process env changes take effect; "
+            "check pm2 describe after the restart."
+        )
+        recall_api.recall_correct(corrected["doc_id"], replacement, "make current", seat="CLAUDE")
+        again = self.contribute()
+        self.assertEqual(again["status"], "duplicate")
+        self.assertEqual(again["existing"]["doc_id"], corrected["doc_id"])
+        self.assertEqual(len(FakeQdrant.upserts), 2)
+        point = next(p for p in FakeQdrant.points if p["payload"].get("doc_id") == corrected["doc_id"])
+        self.assertEqual(point["payload"]["text"], replacement)
+        self.assertEqual(len(point["payload"]["revisions"]), 1)
+
     def test_retraction_keeps_audit_excludes_default_search_and_is_idempotent(self):
         original = self.contribute()
         res = recall_api.recall_retract(original["doc_id"], "obsolete instruction", seat="OWNER")
@@ -1339,7 +1386,11 @@ class CliTests(RecallBase):
         self.assertEqual(FakeQdrant.upserts[-1][0]["payload"]["text"], GOOD)
 
         buf = io.StringIO()
-        with mock.patch("sys.stdout", buf), mock.patch("sys.stdin", io.StringIO(GOOD + "\n")):
+        stdin_text = (
+            "Qdrant snapshots belong under /var/lib/qdrant/snapshots; verify a fresh "
+            "snapshot before any collection migration.\n"
+        )
+        with mock.patch("sys.stdout", buf), mock.patch("sys.stdin", io.StringIO(stdin_text)):
             rc = self.cli.main(["contribute", "-", "--category", "runbook", "--seat", "GROK"])
         self.assertEqual(rc, 0)
         self.assertIn("stored contrib/GROK/", buf.getvalue())

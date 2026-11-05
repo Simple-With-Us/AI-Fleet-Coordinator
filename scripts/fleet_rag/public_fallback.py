@@ -79,6 +79,7 @@ TAILSCALE_STATUS_TIMEOUT = 3.0
 # BotFleet LaunchAgent / other GUI-less callers set this so `recall stats --json` never
 # starts Tailscale.app and never waits 120s on private Qdrant.
 SKIP_PRIVATE_ENV = "RECALL_SKIP_PRIVATE"
+LOCAL_MUTATION_ENV = "FLEET_RECALL_LOCAL_MUTATIONS"
 
 # macOS-only corroborating signal for when tailscale_status_text() itself returns None (no
 # Tailscale.app to ask).  Tailscale's mesh addresses are all inside this CGNAT range
@@ -340,6 +341,17 @@ def guard_may_run() -> bool:
     return not tailscale_believed_down(tailscale_status_text())
 
 
+def local_mutation_override_active() -> bool:
+    """True only for an explicit operator-local mutation corpus.
+
+    QDRANT_URL/TEI_URL alone select the direct backend for reads and ordinary writes; an SSH
+    tunnel can point them at the fleet corpus, so they are not authority to bypass the recall
+    service's mutation lock.  Setting FLEET_RECALL_LOCAL_MUTATIONS=1 is the deliberate
+    Run-your-own/operator-corpus override for correction and retraction.
+    """
+    return os.environ.get(LOCAL_MUTATION_ENV, "").strip() == "1"
+
+
 def local_override_active() -> bool:
     """True when an operator has pointed this Mac at Qdrant/TEI directly -- both QDRANT_URL and
     TEI_URL are non-empty in the environment (e.g. the SSH tunnel opened by `recall-tunnel up`
@@ -484,13 +496,25 @@ def call_mutation(name: str, kwargs: dict, run_local: RunLocal) -> dict:
 
     The stock fleet path goes straight to recall.jays.services:  that single service process owns
     the mutation lock in recall_api, so concurrent correction and retraction requests cannot race
-    a read-modify-write from several Macs.  An explicit Run your own override still runs locally,
-    because that operator's Qdrant/TEI pair is not the public fleet corpus.  Tests with the fake
-    backend run locally and never touch the network.
+    a read-modify-write from several Macs.  QDRANT_URL/TEI_URL alone do not override that route;
+    they may name an SSH tunnel into the fleet corpus.  Only the explicit
+    FLEET_RECALL_LOCAL_MUTATIONS=1 operator-corpus override runs a mutation in the caller's
+    process, outside the fleet service's serialization.  A local OWNER mutation still requires
+    RECALL_OWNER_TOKEN so a bare client-supplied seat is not enough.  Tests with the fake backend
+    run locally and never touch the network.
     """
     if name not in ("recall_correct", "recall_retract"):
         raise FleetRagError(f"no mutation route for {name!r}")
-    if using_fake_backend() or local_override_active():
+    if using_fake_backend():
+        return run_local()
+    if local_mutation_override_active():
+        if str(kwargs.get("seat") or "").strip().upper() == "OWNER" and not _resolve_public_env_key(
+            "RECALL_OWNER_TOKEN"
+        ):
+            raise FleetRagError(
+                "a local OWNER recall mutation needs RECALL_OWNER_TOKEN; "
+                "a client-supplied OWNER seat alone is not authority"
+            )
         return run_local()
     allowed = PUBLIC_ALLOWED_ARGS.get(name, set())
     public_kwargs = {k: v for k, v in kwargs.items() if k in allowed and v is not None}

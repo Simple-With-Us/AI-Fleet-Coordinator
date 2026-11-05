@@ -179,8 +179,12 @@ requires the distinct `RECALL_OWNER_TOKEN` bearer; a client-supplied seat value 
 proof.  `recall_correct` replaces the current text in
 one Qdrant point upsert on the same point id and `doc_id`:  the old text, hash, title and URL
 move into the payload's `revisions[]` audit with actor, time and reason, `revision` increments,
-and only the current `text` is embedded or searched.  A same-text correction returns
-`status: unchanged`.  `recall_retract` makes one Qdrant payload write setting `retracted`,
+and only the current `text` is embedded or searched.  A same-text correction with new metadata
+updates that same point's title/URL and audit; one with no text or metadata change returns
+`status: unchanged`.  Contributing text that already occupies the deterministic point id returns
+`duplicate`, even when that point was retracted or later corrected to different text, so a write
+can never erase retraction audit or resurrect old text by overwrite.  `recall_retract` makes one
+Qdrant payload write setting `retracted`,
 `retracted_at`, `retracted_by` and `retraction_reason`; it never deletes the point, and a
 repeat returns `already_retracted`.  Normal search excludes retracted contributions by
 construction (`include_retracted=True` is the audit view), and a retracted contribution cannot
@@ -189,9 +193,13 @@ fail-closed gitleaks gate as a contribution.  `expected_revision` is an optional
 precondition for a caller that read first.
 
 Supported fleet mutation surfaces route through the single recall service process (the stock CLI,
-stdio MCP, seat-mcp and hosted Worker all use the public service route).  An explicit
-Run-your-own local override uses the same implementation in that operator's process against
-their own corpus instead.  `recall_api._MUTATION_LOCK` serializes the read-modify-write
+stdio MCP, seat-mcp and hosted Worker all use the public service route).  `QDRANT_URL` and
+`TEI_URL` alone do not select a local mutation path: an SSH tunnel can point those variables at
+the shared corpus, and that would bypass the service lock and OWNER bearer check.  Only an
+explicit `FLEET_RECALL_LOCAL_MUTATIONS=1` Run-your-own override uses the same implementation in
+that operator's process against their own corpus instead; a local OWNER mutation still requires
+`RECALL_OWNER_TOKEN`, and local mutations are outside the fleet service's serialization.
+`recall_api._MUTATION_LOCK` serializes the read-modify-write
 inside that one process, and each write is deliberately a one-point Qdrant operation because
 Qdrant has no cross-point transaction or compare-and-set.  If the service is ever scaled to
 multiple replicas, that in-process lock no longer spans writers:  run mutations behind one

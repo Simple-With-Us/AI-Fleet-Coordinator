@@ -34,7 +34,10 @@ JSON-RPC errors (-32602 / -32601); a message whose `id` is absent **or null** is
 (202, no body).  `seat` is required on every mutation and the process's own `AGENT_SEAT` is
 never used for a remote caller.  A mutation may be made by the contribution's owning seat or
 the `OWNER` admin seat.  A correction keeps the same point and `doc_id`, moves the old text
-into `revisions[]`, and searches only the replacement.  A retraction keeps the point as audit
+into `revisions[]`, and searches only the replacement.  A same-text metadata correction updates
+the same point and audit; a completely unchanged correction answers `unchanged`.  Re-contributing
+text whose deterministic point id already exists answers `duplicate`, including after retraction
+or correction, rather than overwriting audit.  A retraction keeps the point as audit
 metadata, excludes it from normal search, and is idempotent; `include_retracted=true` is the
 search audit view.  Reasons, titles and URLs are scrubbed and gitleaks-gated like contribution
 text.  The service serializes its one-point read-modify-write in-process; do not scale the

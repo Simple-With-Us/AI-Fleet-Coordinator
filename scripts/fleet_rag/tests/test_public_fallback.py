@@ -657,6 +657,82 @@ class CallPublicTests(unittest.TestCase):
             public_fallback.call_public("recall_ingest", {})
 
 
+# --------------------------------------------------------------------------- mutation routing
+
+
+class CallMutationRoutingTests(unittest.TestCase):
+    def setUp(self):
+        self.env = mock.patch.dict(os.environ, PUBLIC_ENV, clear=False)
+        self.env.start()
+        for key in (
+            "FLEET_RECALL_FAKE",
+            "QDRANT_URL",
+            "TEI_URL",
+            public_fallback.LOCAL_MUTATION_ENV,
+            "RECALL_OWNER_TOKEN",
+        ):
+            os.environ.pop(key, None)
+        self._saved_qdrant = recall_api.Qdrant
+        recall_api.Qdrant = core.Qdrant
+        self.no_fs = mock.patch.object(core, "fleet_secret", return_value=None)
+        self.no_fs.start()
+
+    def tearDown(self):
+        self.no_fs.stop()
+        recall_api.Qdrant = self._saved_qdrant
+        self.env.stop()
+
+    def kwargs(self, seat="CLAUDE"):
+        return {
+            "doc_id": "contrib/CLAUDE/2026-11-05/472fc36e",
+            "text": "x" * 50,
+            "reason": "make the lesson current",
+            "seat": seat,
+        }
+
+    def test_qdrant_tei_override_alone_still_uses_the_service(self):
+        os.environ["QDRANT_URL"] = "http://127.0.0.1:16333"
+        os.environ["TEI_URL"] = "http://127.0.0.1:18081"
+        local = mock.Mock(side_effect=AssertionError("must not bypass the service mutation lock"))
+        with mock.patch.object(public_fallback, "call_public", return_value={"status": "completed"}) as public:
+            res = public_fallback.call_mutation("recall_correct", self.kwargs(), local)
+        self.assertEqual(res, {"status": "completed"})
+        local.assert_not_called()
+        public.assert_called_once_with("recall_correct", self.kwargs())
+
+    def test_explicit_operator_corpus_override_runs_local(self):
+        os.environ[public_fallback.LOCAL_MUTATION_ENV] = "1"
+        local = mock.Mock(return_value={"status": "completed"})
+        with mock.patch.object(
+            public_fallback, "call_public", side_effect=AssertionError("must not call public")
+        ):
+            res = public_fallback.call_mutation("recall_retract", self.kwargs(), local)
+        self.assertEqual(res, {"status": "completed"})
+        local.assert_called_once()
+
+    def test_explicit_local_owner_mutation_requires_owner_token(self):
+        os.environ[public_fallback.LOCAL_MUTATION_ENV] = "1"
+        local = mock.Mock(side_effect=AssertionError("must not run without owner proof"))
+        with self.assertRaisesRegex(FleetRagError, "RECALL_OWNER_TOKEN"):
+            public_fallback.call_mutation("recall_retract", self.kwargs("OWNER"), local)
+        local.assert_not_called()
+
+    def test_explicit_local_owner_mutation_with_owner_token_runs_local(self):
+        os.environ[public_fallback.LOCAL_MUTATION_ENV] = "1"
+        os.environ["RECALL_OWNER_TOKEN"] = "owner-token"
+        local = mock.Mock(return_value={"status": "completed"})
+        res = public_fallback.call_mutation("recall_retract", self.kwargs("OWNER"), local)
+        self.assertEqual(res, {"status": "completed"})
+        local.assert_called_once()
+
+    def test_fake_backend_still_runs_local_without_owner_config(self):
+        recall_api.Qdrant = recall_api.FakeQdrant
+        local = mock.Mock(return_value={"status": "completed"})
+        res = public_fallback.call_mutation("recall_retract", self.kwargs("OWNER"), local)
+        self.assertEqual(res, {"status": "completed"})
+        local.assert_called_once()
+
+
 # --------------------------------------------------------------------------- call_with_fallback
 
 
