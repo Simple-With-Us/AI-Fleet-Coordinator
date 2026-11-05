@@ -628,7 +628,6 @@ _REAPPLY_STATE_ACTIONS = frozenset(
         "wf_pr_draft",
         "wf_pr_edit",
         "wf_pr_ready",
-        "wf_pr_close",
         "wf_pr_reopen",
         "wf_review_thread_resolve",
         "wf_review_thread_unresolve",
