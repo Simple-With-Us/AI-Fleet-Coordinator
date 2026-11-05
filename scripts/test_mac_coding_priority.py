@@ -32,7 +32,19 @@ prio = load()
 
 class EntrypointAllowlist(unittest.TestCase):
     def test_coding_build_and_test_tools_are_allowed(self):
-        for entry in ("npm", "npx", "pnpm", "yarn", "xcodebuild", "swift", "cargo", "go", "pytest", "make", "tsc"):
+        for entry in (
+            "npm",
+            "npx",
+            "pnpm",
+            "yarn",
+            "xcodebuild",
+            "swift",
+            "cargo",
+            "go",
+            "pytest",
+            "make",
+            "tsc",
+        ):
             allowed, reason, _ = prio.check_entrypoint([entry, "--version"])
             self.assertTrue(allowed, f"{entry} must be allowed: {reason}")
 
@@ -182,8 +194,7 @@ class LiveCanary(unittest.TestCase):
         with tempfile.TemporaryDirectory() as scratch:
             script = Path(scratch) / "canary.sh"
             script.write_text(
-                "#!/bin/bash\n"
-                '/bin/ps -o ni=,pri= -p $$ | tr -d " " > "$1"\n',
+                '#!/bin/bash\n/bin/ps -o ni=,pri= -p $$ | tr -d " " > "$1"\n',
                 encoding="utf-8",
             )
             script.chmod(0o755)

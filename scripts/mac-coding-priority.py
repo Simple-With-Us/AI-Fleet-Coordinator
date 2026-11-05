@@ -69,7 +69,8 @@ from pathlib import Path
 
 HOME = Path.home()
 LOG_FILE = Path(
-    os.environ.get("MAC_CODING_PRIORITY_LOG") or HOME / "Library" / "Logs" / "mac-coding-priority.log"
+    os.environ.get("MAC_CODING_PRIORITY_LOG")
+    or HOME / "Library" / "Logs" / "mac-coding-priority.log"
 )
 
 # The nice value and the QoS clamp the helper asks for, and the value the
@@ -198,7 +199,9 @@ def read_priority(pid: int) -> tuple[int, int] | None:
         return None
 
 
-def clamp_applied(observed: tuple[int, int] | None, nice: int, expected_pri: int) -> tuple[bool, str]:
+def clamp_applied(
+    observed: tuple[int, int] | None, nice: int, expected_pri: int
+) -> tuple[bool, str]:
     """Is the clamp in place?  Returns (ok, explanation)."""
     if observed is None:
         return False, "the priority of the launched process could not be read"
