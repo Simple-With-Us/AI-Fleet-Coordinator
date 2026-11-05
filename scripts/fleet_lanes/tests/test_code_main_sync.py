@@ -218,6 +218,80 @@ class Errors(unittest.TestCase):
         line = S._first_line("\nfatal: unable to access 'https://user:secret@github.com/a/b.git/': failed\n")
         self.assertNotIn("secret", line)
 
+
+class RelayRoute(SyncCase):
+    def bearer_file(self, mode: int = 0o600) -> Path:
+        path = self.home / "seat-bearer"
+        path.write_text("seat-bearer-value\n", encoding="utf-8")
+        path.chmod(mode)
+        return path
+
+    def test_relay_route_sends_github_fetches_with_only_the_seat_bearer(self) -> None:
+        path = self.bearer_file()
+        out = S.relay_git_env({"FLEET_SYNC_RELAY_URL": "http://127.0.0.1:8471/", "FLEET_SYNC_BEARER_FILE": str(path)})
+        config = {out[f"GIT_CONFIG_KEY_{i}"]: out[f"GIT_CONFIG_VALUE_{i}"] for i in range(int(out["GIT_CONFIG_COUNT"]))}
+        self.assertEqual(config["url.http://127.0.0.1:8471/git/.insteadOf"], "https://github.com/")
+        self.assertEqual(config["http.http://127.0.0.1:8471/.extraHeader"], "Authorization: Bearer seat-bearer-value")
+        self.assertEqual(config["credential.helper"], "")
+        self.assertEqual(out["GIT_TERMINAL_PROMPT"], "0")
+
+    def test_relay_route_refuses_what_could_leak_the_bearer(self) -> None:
+        path = self.bearer_file()
+        cases = (
+            {"FLEET_SYNC_RELAY_URL": "http://relay.example", "FLEET_SYNC_BEARER_FILE": str(path)},
+            {"FLEET_SYNC_RELAY_URL": "", "FLEET_SYNC_BEARER_FILE": str(path)},
+            {"FLEET_SYNC_RELAY_URL": "https://relay.example", "FLEET_SYNC_BEARER_FILE": ""},
+            {"FLEET_SYNC_RELAY_URL": "https://relay.example", "FLEET_SYNC_BEARER_FILE": str(self.home / "missing")},
+        )
+        with contextlib.redirect_stdout(io.StringIO()):
+            for case in cases:
+                self.assertIsNone(S.relay_git_env(case), case)
+            path.chmod(0o644)
+            self.assertIsNone(S.relay_git_env({"FLEET_SYNC_RELAY_URL": "https://relay.example", "FLEET_SYNC_BEARER_FILE": str(path)}))
+
+    def test_a_failed_fetch_retries_through_the_relay_and_the_bearer_is_never_logged(self) -> None:
+        path = self.bearer_file()
+        self.vars.update({"FLEET_SYNC_RELAY_URL": "http://127.0.0.1:8471", "FLEET_SYNC_BEARER_FILE": str(path)})
+        real = S.git_full
+        seen: list[dict] = []
+
+        def fake(repo, *args, **kwargs):
+            if args[0] == "fetch":
+                seen.append(dict(kwargs.get("extra_env") or {}))
+                if len(seen) == 1:
+                    return 128, "", "fatal: could not read Username for 'https://github.com'"
+                kwargs.pop("extra_env", None)  # the local bare origin needs no relay
+                return real(repo, *args, **kwargs)
+            if args[0] == "-c":
+                seen.append(dict(kwargs.get("extra_env") or {}))
+                kwargs.pop("extra_env", None)
+            return real(repo, *args, **kwargs)
+
+        with mock.patch.object(S, "git_full", fake):
+            code, out = self.sync()
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.head(), self.origin())
+        self.assertNotIn("GIT_CONFIG_COUNT", seen[0])
+        self.assertIn("GIT_CONFIG_COUNT", seen[1])
+        self.assertIn("GIT_CONFIG_COUNT", seen[2], "the merge takes the same route as the fetch")
+        self.assertIn("relay route Example", out)
+        self.assertNotIn("seat-bearer-value", out)
+
+    def test_without_the_relay_a_failed_fetch_still_fails(self) -> None:
+        real = S.git_full
+
+        def fake(repo, *args, **kwargs):
+            if args[0] == "fetch":
+                return 128, "", "fatal: could not read Username for 'https://github.com'"
+            return real(repo, *args, **kwargs)
+
+        with mock.patch.object(S, "git_full", fake):
+            code, out = self.sync()
+        self.assertEqual(code, 1)
+        self.assertIn("could not read Username", out)
+
+
+class Source(unittest.TestCase):
     def test_no_host_path_in_the_source(self) -> None:
         text = Path(S.__file__).read_text(encoding="utf-8")
         for mark in ("/mnt/", "/root/"):

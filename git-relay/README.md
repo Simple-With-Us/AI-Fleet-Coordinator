@@ -201,6 +201,10 @@ runs in the service. This change does not deploy itself or resume a paused write
 (a stdio transcript is too easy to capture);  seats that need a token for git-over-HTTPS call the
 relay's HTTP API directly, where the response goes only to that caller.
 
+## Read-only git
+
+`GET /git/<owner>/<repo>[.git]/info/refs?service=git-upload-pack` and `POST /git/<owner>/<repo>[.git]/git-upload-pack` serve `git fetch` and `git clone` under the action `git_read`, as the seat's own GitHub App, with the seat's bearer in the `Authorization` header.  The relay mints a `contents:read` token for that one repo and keeps it, so the caller never holds a GitHub credential.  Pushing has no route and answers 403.  Each request writes one audit row and draws on the seat's hourly quota, at most two transfers run at once, and a later one answers 503.  A long want list needs `http.postBuffer` set to 8 MiB, because the route refuses a chunked request.  The code is `git_relay/git_read.py`.
+
 ## Audit
 
 One JSON object per line at `GIT_RELAY_AUDIT_PATH` (default `git-relay-audit.jsonl`), fsynced after

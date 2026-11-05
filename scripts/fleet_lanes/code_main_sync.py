@@ -14,6 +14,9 @@ Two faults kept the old job failing on every run for days:
     as failed.  Removing the lock file loses nothing: git writes the new index there and renames it only on success.
   * git's stderr was thrown away, so `fast-forward exit=1` was all the log said.  It now carries git's first line.
 
+A fetch that fails with no local credential retries through the relay's read-only `/git/` route when FLEET_SYNC_RELAY_URL and
+FLEET_SYNC_BEARER_FILE are set, as that bearer's seat.  This job holds no GitHub token.
+
 A folder that is not a repo (such as `Docs`) is passed over without a skip count, and a clone with a row in
 placement-exceptions.json (such as a service-pinned clone) is left alone with its reason logged.  Those rows use class
 `service`.  This job acts on what it reads, so it fails closed:  a row past its expiry still pins the clone, and logs that it
@@ -55,10 +58,52 @@ def _first_line(text: str) -> str:
     return ""
 
 
-def git_full(repo: Path, *args: str, timeout: int = TIMEOUT) -> tuple[int, str, str]:
+def relay_git_env(env: Mapping[str, str]) -> dict[str, str] | None:
+    """The git environment that sends github.com fetches through the relay as this job's seat, or None when it is not set up.
+
+    FLEET_SYNC_RELAY_URL names the relay and FLEET_SYNC_BEARER_FILE the seat's own bearer file (owner-only).  The relay
+    holds the GitHub credential, so this job holds no GitHub token.  The bearer travels only in the environment.
+    """
+    url = (env.get("FLEET_SYNC_RELAY_URL") or "").strip().rstrip("/")
+    path = (env.get("FLEET_SYNC_BEARER_FILE") or "").strip()
+    if not url or not path:
+        return None
+    parsed = urlsplit(url)
+    loopback = parsed.scheme == "http" and parsed.hostname in ("127.0.0.1", "localhost")
+    if not loopback and parsed.scheme != "https":
+        log("relay route: refused, the URL is neither https nor loopback")
+        return None
+    try:
+        info = os.stat(path)
+        if info.st_uid != os.getuid() or info.st_mode & 0o077:
+            log("relay route: refused, the bearer file is not private to this user")
+            return None
+        raw = Path(path).read_text().strip()
+    except (OSError, UnicodeDecodeError) as exc:
+        log(f"relay route: bearer file unreadable ({type(exc).__name__})")
+        return None
+    bearer = raw.split("=", 1)[1].strip().strip("\"'") if "=" in raw else raw
+    if not bearer or any(ch.isspace() for ch in bearer):
+        log("relay route: refused, the bearer file has no usable value")
+        return None
+    config = {
+        f"url.{url}/git/.insteadOf": "https://github.com/",
+        f"http.{url}/.extraHeader": f"Authorization: Bearer {bearer}",
+        "http.postBuffer": str(8 * 1024 * 1024),
+        "credential.helper": "",
+    }
+    out = {"GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_COUNT": str(len(config))}
+    for index, (key, value) in enumerate(config.items()):
+        out[f"GIT_CONFIG_KEY_{index}"] = key
+        out[f"GIT_CONFIG_VALUE_{index}"] = value
+    return out
+
+
+def git_full(repo: Path, *args: str, timeout: int = TIMEOUT, extra_env: Mapping[str, str] | None = None) -> tuple[int, str, str]:
     try:
         result = subprocess.run([GIT, "-C", str(repo), *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                text=True, errors="replace", timeout=timeout, check=False)
+                                text=True, errors="replace", timeout=timeout, check=False,
+                                env={**os.environ, **extra_env} if extra_env else None)
         return result.returncode, result.stdout.strip(), result.stderr
     except subprocess.TimeoutExpired:
         return 124, "", "timed out"
@@ -249,7 +294,16 @@ def process_repo(repo: Path, dry_run: bool, counters: dict[str, int], *, env: Ma
             counters["skipped"] += 1
             log(f"dry-run {repo.name}: main is ahead of or diverged from local origin/main")
         return
-    code, _, err = git_full(repo, "fetch", "--quiet", "--no-tags", "origin", "refs/heads/main:refs/remotes/origin/main")
+    fetch_args = ("fetch", "--quiet", "--no-tags", "origin", "refs/heads/main:refs/remotes/origin/main")
+    code, _, err = git_full(repo, *fetch_args, extra_env={"GIT_TERMINAL_PROMPT": "0"})
+    relay_env = None
+    if code != 0:
+        # A private repo with no local credential:  the relay fetches it as this job's seat, with no GitHub token here.
+        relay_env = relay_git_env(env)
+        if relay_env is not None:
+            code, _, err = git_full(repo, *fetch_args, extra_env=relay_env)
+            if code == 0:
+                log(f"relay route {repo.name}: fetched as this job's seat")
     if code != 0:
         counters["failed"] += 1
         log(f"fail {repo.name}: fetch exit={code}: {_first_line(err)}")
@@ -274,8 +328,9 @@ def process_repo(repo: Path, dry_run: bool, counters: dict[str, int], *, env: Ma
         log(f"skip {repo.name}: local main is ahead of or diverged from origin/main")
         return
     clear_stale_index_lock(repo, time.time(), False)
+    # The merge may fetch missing blobs of a partial clone, so it takes the same route as the fetch.
     code, _, err = git_full(repo, "-c", "core.hooksPath=/dev/null", "merge", "--ff-only", "--no-overwrite-ignore",
-                              "--quiet", "origin/main")
+                              "--quiet", "origin/main", extra_env=relay_env)
     if code != 0:
         counters["failed"] += 1
         log(f"fail {repo.name}: fast-forward exit={code}: {_first_line(err)}")

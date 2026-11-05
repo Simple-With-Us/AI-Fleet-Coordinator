@@ -32,6 +32,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from . import git_read
 from .app_tokens import AppTokenError
 from .audit import AuditLog, UnauthorizedAuditor
 from .github_client import DispatchPreReadUnavailable, GitHubClient, RelayGitHubError
@@ -240,6 +241,7 @@ class ServerUnavailable(Exception):
 # Minimum installation permissions each App action needs;  a seat whose
 # mint_permissions ceiling does not cover these gets a policy denial.
 ACTION_REQUIRED_PERMISSIONS = {
+    "git_read": dict(git_read.READ_PERMISSIONS),
     "merge_pr": {"contents": "write", "pull_requests": "write"},
     "workflow_dispatch": {"actions": "write"},
     # GitHub gates resolveReviewThread at merge level for App tokens: pull_requests
@@ -902,10 +904,15 @@ def make_handler(relay: Relay):
         def do_GET(self) -> None:
             if self.path == "/healthz":
                 self._send(200, {"ok": True})
+            elif git_read.is_git_path(self.path):
+                git_read.handle(relay, self, "GET")
             else:
                 self._send(404, {"error": "not found"})
 
         def do_POST(self) -> None:
+            if git_read.is_git_path(self.path):
+                git_read.handle(relay, self, "POST")
+                return
             parts = self.path.strip("/").split("/")
             if len(parts) != 2 or parts[0] != "v1":
                 self._send(404, {"error": "not found"})
