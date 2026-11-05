@@ -11,6 +11,25 @@ CLAUDE hosted configuration is prepared by AFC-296; its key, deployment, public 
 
 Deploy and operate:  [DEPLOY.md](DEPLOY.md).  Connect a client:  [ARMING-JAY.md](ARMING-JAY.md).  The Phase 0 runbook ([DEPLOY-PHASE0.md](DEPLOY-PHASE0.md)) is kept as the record of how the hostname moved.
 
+## Usage guards
+
+Hard limits so a code bug or a looping client cannot burn a capped metric (AFC-617).  All of them are in this Worker's own memory or in Rate Limiting bindings, so checking them costs no Durable Object, KV or subrequest.
+
+- **Stop switch.**  `GUARD_MODE=off` answers 503 on every route and stops the SeatGate alarm chain, which rechecks hourly.  It is the account watchdog's lever;  unset means on.
+- **`MCP_RATE_LIMITER`.**  300 requests a minute per credential hash, on every authenticated `/mcp` request, handshakes and notifications included, before any Durable Object, secret or SDK work.  Over it the answer is 429 with `Retry-After: 60`.
+- **`AUTH_FAIL_RATE_LIMITER`.**  60 failed `/mcp` authentications a minute per IP.  Past it, this isolate answers 429 to that IP for 60 seconds and writes nothing.  A credential the isolate has already verified is never blocked, because seats on one host share an IP.  A bearer the gate called wrong is refused from memory for 60 seconds.
+- **Refusals write nothing.**  A rate-limited `/oauth/token` writes no row, and diagnostic and refusal rows are capped at 60 a minute per isolate.
+- **Per-invocation budget** (`src/invocation.js`).  50 outbound fetches and 256 gate RPCs a request, and 30 grant listings a minute per isolate.
+- **Not limited.**  `/internal/gr-bearer-verify` and `/internal/gr-assert-verify`, because the relay reads any non-200 as a refusal and caches it for 30 seconds.
+
+Both limits are per Cloudflare location and eventually consistent, so they stop a runaway rather than meter exactly.  A daily account ceiling is the watchdog's job, not this Worker's.
+
+## Lifecycle frames
+
+`initialize`, `ping`, `notifications/*` and `tools/list` are answered before any secret is resolved or any SDK server is built (`src/mcp-lifecycle.js`), after the same authentication and seat checks.  `tools/list` is serialized once per isolate.  The answers are byte-identical to the SDK's, which `test/mcp-lifecycle.test.mjs` pins.  Any other frame goes to the SDK, and so does any request a seat with MCP Events makes over OAuth, because its capabilities depend on its wake key.
+
+So a seat whose credentials cannot be resolved can now connect and list tools, and is refused at its first tool call.
+
 ## Tools
 
 Every tool is `<family>_<verb>` (AFC-331, `docs/protocols/per-call-identity.md`):  the Zulip tools are `zulip_*` under the same names as the stdio server (`tools.json`), beside `linear_*`, `recall_*`, `fleetlink_*` and `eavesdropper_*`;  `whoami` and `identities` stand alone.  The old unprefixed names and `agent_sync_identities` were removed, not aliased:  a call to one answers `unknown_tool` naming its replacement (`scripts/agent_sync/mcp/renamed-tools.json`, shared with stdio).  The hosted `zulip_inbox` description says it lists DMs (spec 1.2);  its schema otherwise follows `tools.json`.

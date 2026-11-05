@@ -32,6 +32,13 @@
 //     the Linear provider-quota reserves and the gr-assert claims.
 //   - The token exchange still re-checks the grant live on every code
 //     exchange and refresh;  only the per-POST verification is cached.
+//   - Git callbacks use shorter windows and their own keys (AFC-617):
+//     /internal/gr-bearer-verify reuses a positive answer for up to
+//     GR_VERIFY_CACHE_MS, and the OAuth Git verify a live-grant listing for up
+//     to GRANT_EXISTS_CACHE_MS (src/index.js).  So a pause or revocation can
+//     reach a bearer's Git calls, WRITES included, up to GR_VERIFY_CACHE_MS
+//     late in an isolate.  The OAuth Git path's epoch and pause check stays
+//     live on every call (claimGrAssert).
 // Eviction is immediate in this isolate when:  the gate refuses the
 // credential on a live verification (check, gbBearerCheck, ensureSeat),
 // a reserve refuses (pause, budget, spacing), an admin action changes

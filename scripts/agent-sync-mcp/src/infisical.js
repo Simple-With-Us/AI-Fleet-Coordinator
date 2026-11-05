@@ -8,9 +8,10 @@
 // Modes (env.INFISICAL_MODE):
 //   "off"      - never call Infisical; env bindings only (current behavior).
 //   "fallback" - Infisical first, env binding on miss/failure.  TRANSITIONAL
-//                only: every read a binding serves is console.warn'ed and
-//                counted in stats.fallbacks, so verification can prove the
-//                service-token path serves before "required" is turned on.
+//                only: every read a binding serves is counted in
+//                stats.fallbacks, and each name is console.warn'ed once per
+//                isolate, so verification can prove the service-token path
+//                serves before "required" is turned on.
 //                An optional, undeclared name that is in neither Infisical
 //                nor a binding is counted apart (stats.absent):  "required"
 //                answers it the same way (capability off), so it is not a
@@ -102,6 +103,13 @@ const folderWarm = new Map();
 // one doomed per-name subrequest each (kody 4365623733:  an outage would
 // otherwise cost ~90 subrequests per request).
 const folderFailed = new Map();
+// A name Infisical just answered 404 for, outside any listing:  until the entry
+// ages out, no further per-name subrequest for it (AFC-617).  Same decisions as
+// a fresh 404, only without the subrequest.
+const missed = new Map();
+// One infisical_fallback line per isolate per name and code (AFC-617:  13,000
+// lines a day for the same names).  stats.fallbacks still counts every read.
+const fallbackLogged = new Set();
 
 export function infisicalStats() {
   return { ...stats };
@@ -116,6 +124,8 @@ export function _resetInfisicalForTests() {
   stats.absent = 0;
   folderWarm.clear();
   folderFailed.clear();
+  missed.clear();
+  fallbackLogged.clear();
 }
 
 const fresh = (at) => at !== undefined && Date.now() - at < CACHE_TTL_MS;
@@ -242,10 +252,17 @@ export async function resolveSecret(env, { name, path, envName, optional = false
   // Fallback mode, folder listing just failed:  no per-name subrequest either.
   const unusable = m === "fallback" && !listed && fresh(folderFailed.get(path));
   try {
-    if (listed) throw new InfisicalError(`Infisical has no ${name} at ${path}`, { code: "not_found", status: 404 });
+    if (listed || fresh(missed.get(cacheKey))) throw new InfisicalError(`Infisical has no ${name} at ${path}`, { code: "not_found", status: 404 });
     if (unusable) throw new InfisicalError(`Infisical listing for ${path} failed recently`, { code: "infisical_unavailable" });
-    const value = await fetchRaw(env, path, name);
+    let value;
+    try {
+      value = await fetchRaw(env, path, name);
+    } catch (error) {
+      if (error instanceof InfisicalError && error.code === "not_found") missed.set(cacheKey, Date.now());
+      throw error;
+    }
     cache.set(cacheKey, { value, at: Date.now() });
+    missed.delete(cacheKey);
     stats.fetched++;
     return value;
   } catch (error) {
@@ -268,7 +285,11 @@ export async function resolveSecret(env, { name, path, envName, optional = false
       return "";
     }
     stats.fallbacks++;
-    logEvent("infisical_fallback", { path, name, binding: envName, served: Boolean(value), code: errorCode(error), status: error?.status ?? null });
+    const logKey = `${cacheKey}\u0001${errorCode(error)}`;
+    if (!fallbackLogged.has(logKey)) {
+      fallbackLogged.add(logKey);
+      logEvent("infisical_fallback", { path, name, binding: envName, served: Boolean(value), code: errorCode(error), status: error?.status ?? null });
+    }
     return value;
   }
 }
