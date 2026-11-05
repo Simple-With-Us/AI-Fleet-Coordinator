@@ -210,7 +210,11 @@ def valid_ref_name(ref: object) -> bool:
     """A plain branch or ref name: no leading dash, no `:`, `+`, `~`, `^`, `*`, `?`, `[`, space,
     backslash or control character, no `..`, `//`, trailing `/` or `.`, no `.lock` or dot-leading
     component.  Stricter than git, never looser."""
-    if not isinstance(ref, str) or not 1 <= len(ref) <= 200 or not _REF_CHARS.match(ref):
+    if (
+        not isinstance(ref, str)
+        or not 1 <= len(ref) <= 200
+        or not _REF_CHARS.match(ref)
+    ):
         return False
     if ".." in ref or "//" in ref or ref.endswith(("/", ".")):
         return False
@@ -235,10 +239,16 @@ def _dest_ok(path: str, write_root: str | None, fold: Callable[[str], str]) -> b
     return write_root is not None and _under_dir(path, write_root, fold)
 
 
-def _worktree_add_ok(a: Sequence[str], write_root: str | None, fold: Callable[[str], str]) -> bool:
+def _worktree_add_ok(
+    a: Sequence[str], write_root: str | None, fold: Callable[[str], str]
+) -> bool:
     """Exactly three shapes:  -b BRANCH PATH SHA | PATH BRANCH | --detach PATH SHA."""
     if len(a) == 4 and a[0] == "-b":
-        return valid_ref_name(a[1]) and _dest_ok(a[2], write_root, fold) and bool(_SHA.match(a[3]))
+        return (
+            valid_ref_name(a[1])
+            and _dest_ok(a[2], write_root, fold)
+            and bool(_SHA.match(a[3]))
+        )
     if len(a) == 3 and a[0] == "--detach":
         return _dest_ok(a[1], write_root, fold) and bool(_SHA.match(a[2]))
     if len(a) == 2 and not a[0].startswith("-"):
@@ -289,7 +299,11 @@ def _git_allowed(
                 return "git"
         return None
     if sub == "show-ref":
-        ok = len(rest) == 3 and rest[:2] == ["--verify", "--quiet"] and _under_origin_refs(rest[2])
+        ok = (
+            len(rest) == 3
+            and rest[:2] == ["--verify", "--quiet"]
+            and _under_origin_refs(rest[2])
+        )
         return "git" if ok else None
     if sub == "for-each-ref":
         ok = (
@@ -308,7 +322,10 @@ def _gh_allowed(args: Sequence[str]) -> bool:
     if len(args) != 7 or list(args[:2]) != ["pr", "view"]:
         return False
     if not (
-        args[2].isdigit() and args[2].isascii() and 1 <= len(args[2]) <= 9 and int(args[2]) > 0
+        args[2].isdigit()
+        and args[2].isascii()
+        and 1 <= len(args[2]) <= 9
+        and int(args[2]) > 0
     ):
         return False
     pairs = {args[3]: args[4], args[5]: args[6]}
@@ -331,7 +348,11 @@ def check_allowed(
     """Return the timeout cap (seconds) when `argv` is an allowlisted command, else raise
     CommandRefused.  `argv[0]` must be the bare name `git` or `gh`.  A `worktree add` is allowed
     only with a destination strictly inside `write_root`, and is refused when no root is given."""
-    if not argv or not all(isinstance(a, str) for a in argv) or any("\x00" in a for a in argv):
+    if (
+        not argv
+        or not all(isinstance(a, str) for a in argv)
+        or any("\x00" in a for a in argv)
+    ):
         raise CommandRefused("empty, non-string or NUL-bearing command")
     fold = fold or (lambda s: s)
     root = os.fspath(write_root) if write_root is not None else None
@@ -353,7 +374,9 @@ def _child_env(base: Mapping[str, str]) -> dict:
 
 def _kill_group(proc: subprocess.Popen) -> None:
     try:
-        os.killpg(proc.pid, signal.SIGKILL)  # start_new_session makes the pgid equal the pid
+        os.killpg(
+            proc.pid, signal.SIGKILL
+        )  # start_new_session makes the pgid equal the pid
     except OSError:
         try:
             proc.kill()
@@ -419,8 +442,16 @@ class Runner:
         cap = check_allowed(argv, write_root=self._write_root, fold=self._fold)
         full = list(argv)
         if full[0] == "git":
-            full = ["git", "--no-optional-locks", "-c", "core.fsmonitor=false", *full[1:]]
-        return self._exec(full, os.fspath(cwd) if cwd is not None else None, self._env, cap)
+            full = [
+                "git",
+                "--no-optional-locks",
+                "-c",
+                "core.fsmonitor=false",
+                *full[1:],
+            ]
+        return self._exec(
+            full, os.fspath(cwd) if cwd is not None else None, self._env, cap
+        )
 
 
 # --------------------------------------------------------------------------- resolving inputs
@@ -433,7 +464,13 @@ def _loose(text: str) -> str:
 def _app_keys(app: L.App) -> set[str]:
     return {
         k.lower()
-        for k in (app.name, app.integration_dir_name, app.lane_dir, app.prefix, app.acronym)
+        for k in (
+            app.name,
+            app.integration_dir_name,
+            app.lane_dir,
+            app.prefix,
+            app.acronym,
+        )
         if k
     }
 
@@ -467,11 +504,14 @@ def resolve_app(registry: L.Registry, query: str) -> L.App:
         return unique[0]
     if unique:
         raise Refusal(
-            f"app {q!r} is ambiguous; it matches:\n" + "\n".join(_app_line(a) for a in unique)
+            f"app {q!r} is ambiguous; it matches:\n"
+            + "\n".join(_app_line(a) for a in unique)
         )
     near = [a for a in registry.apps if any(ql in k or k in ql for k in _app_keys(a))]
     pool = near or list(registry.registered_apps) or list(registry.apps)
-    raise Refusal(f"unknown app {q!r}; candidates:\n" + "\n".join(_app_line(a) for a in pool))
+    raise Refusal(
+        f"unknown app {q!r}; candidates:\n" + "\n".join(_app_line(a) for a in pool)
+    )
 
 
 def _role_lane_seat(raw: str, registry: L.Registry) -> L.Seat | None:
@@ -511,7 +551,9 @@ def _role_lane_seat(raw: str, registry: L.Registry) -> L.Seat | None:
                 f"role {role.tag}'s branch prefix {role.branch_prefix!r} collides with seat {s.name} "
                 f"in fleet-apps.json."
             )
-    return L.Seat(name=role.tag, suffix=role.folder, branch_prefixes=(role.branch_prefix,))
+    return L.Seat(
+        name=role.tag, suffix=role.folder, branch_prefixes=(role.branch_prefix,)
+    )
 
 
 def resolve_seat(env: Mapping[str, str], registry: L.Registry) -> L.Seat:
@@ -705,7 +747,9 @@ def _emit(
 # --------------------------------------------------------------------------- shared checks
 
 
-def _in_tree(ctx: Ctx, path: str | os.PathLike[str], root: str | os.PathLike[str]) -> bool:
+def _in_tree(
+    ctx: Ctx, path: str | os.PathLike[str], root: str | os.PathLike[str]
+) -> bool:
     a, b = ctx.key(path), ctx.key(root)
     return a == b or a.startswith(b.rstrip(os.sep) + os.sep)
 
@@ -713,11 +757,15 @@ def _in_tree(ctx: Ctx, path: str | os.PathLike[str], root: str | os.PathLike[str
 def _external_note(ctx: Ctx) -> str:
     roots = ctx.roots.external_lanes_roots
     return (
-        ", ".join(str(r) for r in roots) if roots else "nowhere (FLEET_LANES_EXTERNAL_ROOT is off)"
+        ", ".join(str(r) for r in roots)
+        if roots
+        else "nowhere (FLEET_LANES_EXTERNAL_ROOT is off)"
     )
 
 
-def _link_between(path: str | os.PathLike[str], write_root: str | os.PathLike[str]) -> list[str]:
+def _link_between(
+    path: str | os.PathLike[str], write_root: str | os.PathLike[str]
+) -> list[str]:
     """The symlinks among the folders between `write_root` and `path` (the lane itself is not one), outermost first.
     Lexical, so it names the spelling the caller used."""
     root = os.fspath(write_root)
@@ -735,7 +783,9 @@ def _link_between(path: str | os.PathLike[str], write_root: str | os.PathLike[st
     return found
 
 
-def _link_hint(ctx: Ctx, path: str | os.PathLike[str], write_root: str | os.PathLike[str]) -> str:
+def _link_hint(
+    ctx: Ctx, path: str | os.PathLike[str], write_root: str | os.PathLike[str]
+) -> str:
     """One extra sentence when a symlinked folder is why a path is outside the map; empty otherwise."""
     for link in _link_between(path, write_root):
         real = os.path.realpath(link)
@@ -768,7 +818,9 @@ def _check_links(
             )
 
 
-def _plan_path(ctx: Ctx, app: L.App, seat: L.Seat, slug: str, branch: str) -> tuple[Path, Path]:
+def _plan_path(
+    ctx: Ctx, app: L.App, seat: L.Seat, slug: str, branch: str
+) -> tuple[Path, Path]:
     """(lane path, write root).  Refuses a path that is not a conforming spot in the map."""
     roots, registry = ctx.roots, ctx.registry
     try:
@@ -782,7 +834,8 @@ def _plan_path(ctx: Ctx, app: L.App, seat: L.Seat, slug: str, branch: str) -> tu
     if got is not want:
         raise Refusal(
             f"{path} is outside the lane map (it classifies as {got}, a new lane must be {want}); "
-            "check FLEET_LANES_ROOT and FLEET_LAYOUT." + _link_hint(ctx, path, write_root)
+            "check FLEET_LANES_ROOT and FLEET_LAYOUT."
+            + _link_hint(ctx, path, write_root)
         )
     if _in_tree(ctx, write_root, roots.code_root):
         raise Refusal(
@@ -807,7 +860,9 @@ def _plan_path(ctx: Ctx, app: L.App, seat: L.Seat, slug: str, branch: str) -> tu
             "a seat name."
         )
     if L.check_branch_name(branch, registry) is not L.BranchVerdict.CONFORMING:
-        raise Refusal(f"branch {branch!r} does not conform to the registry branch prefixes.")
+        raise Refusal(
+            f"branch {branch!r} does not conform to the registry branch prefixes."
+        )
     return path, Path(write_root)
 
 
@@ -819,7 +874,9 @@ def _plan_review_path(
     and folders may be created anywhere at or below the lanes root."""
     roots = ctx.roots
     try:
-        path = L.review_lane_path(app, pr, roots, ctx.registry, seat=seat.suffix if own else None)
+        path = L.review_lane_path(
+            app, pr, roots, ctx.registry, seat=seat.suffix if own else None
+        )
     except L.LayoutError as exc:
         raise Refusal(str(exc))
     got = L.classify_location(path, roots)
@@ -883,7 +940,9 @@ def _guard_destination(ctx: Ctx, tree: Path, path: Path, write_root: Path) -> No
     parent = Path(os.path.realpath(path)).parent
     while ctx.key(parent) != root and ctx.key(parent).startswith(root + os.sep):
         if os.path.lexists(parent / ".git"):
-            raise Refusal(f"{parent} is itself a git checkout; a lane cannot be created inside it.")
+            raise Refusal(
+                f"{parent} is itself a git checkout; a lane cannot be created inside it."
+            )
         parent = parent.parent
     if not (key == root or key.startswith(root + os.sep)):
         raise Refusal(f"{path} is not inside {write_root}.")
@@ -896,7 +955,9 @@ def _worktrees(run: Runner, tree: Path) -> list[D.WorktreeRecord]:
     return D.parse_worktree_porcelain(res.out)
 
 
-def _path_state(ctx: Ctx, run: Runner, tree: Path, path: Path, branch: str | None) -> str:
+def _path_state(
+    ctx: Ctx, run: Runner, tree: Path, path: Path, branch: str | None
+) -> str:
     """'new' when nothing is at `path`, 'same' when it is already the worktree asked for (on
     `branch`, or detached when `branch` is None).  Anything else is a Refusal; nothing is touched."""
     want = ctx.key(path)
@@ -913,7 +974,9 @@ def _path_state(ctx: Ctx, run: Runner, tree: Path, path: Path, branch: str | Non
             "there yourself; lane never prunes or forces."
         )
     on = "detached HEAD" if rec.detached else f"branch {rec.branch}"
-    same = rec.detached if branch is None else (not rec.detached and rec.branch == branch)
+    same = (
+        rec.detached if branch is None else (not rec.detached and rec.branch == branch)
+    )
     if not same:
         raise Refusal(
             f"{path} is already a worktree of {tree} on {on}, not on "
@@ -922,7 +985,9 @@ def _path_state(ctx: Ctx, run: Runner, tree: Path, path: Path, branch: str | Non
     return "same"
 
 
-def _legacy_lane(ctx: Ctx, run: Runner, tree: Path, path: Path, branch: str) -> Path | None:
+def _legacy_lane(
+    ctx: Ctx, run: Runner, tree: Path, path: Path, branch: str
+) -> Path | None:
     """A checkout of `branch` that sits in an old folder and would migrate to exactly `path`."""
     want = ctx.key(path)
     for rec in _worktrees(run, tree):
@@ -980,14 +1045,18 @@ def _repo_lock(ctx: Ctx, run: Runner, tree: Path) -> Iterator[None]:
     The file stays: removing it would let a waiting run lock a file that is no longer the lock."""
     common = _common_dir(run, tree)
     if common is None or not common.is_dir():
-        raise ToolFailure(f"cannot find the git directory of {tree} to take the lane lock.")
+        raise ToolFailure(
+            f"cannot find the git directory of {tree} to take the lane lock."
+        )
     lock_path = common / LOCK_NAME
     deadline = time.monotonic() + LOCK_WAIT
     told = False
     while True:
         try:
             fd = os.open(
-                str(lock_path), os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0), 0o644
+                str(lock_path),
+                os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0),
+                0o644,
             )
         except OSError as exc:
             raise ToolFailure(f"cannot open the lane lock {lock_path}: {exc}")
@@ -1000,7 +1069,9 @@ def _repo_lock(ctx: Ctx, run: Runner, tree: Path) -> Iterator[None]:
                     break
                 except OSError as exc:
                     if exc.errno not in (errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES):
-                        raise ToolFailure(f"cannot take the lane lock {lock_path}: {exc}")
+                        raise ToolFailure(
+                            f"cannot take the lane lock {lock_path}: {exc}"
+                        )
                 if not told:
                     ctx.say(f"waiting for another lane new in {tree} to finish")
                     told = True
@@ -1019,7 +1090,9 @@ def _repo_lock(ctx: Ctx, run: Runner, tree: Path) -> Iterator[None]:
             raise
         if locked and current:
             break
-        os.close(fd)  # someone replaced or removed the file while we waited: lock the new one
+        os.close(
+            fd
+        )  # someone replaced or removed the file while we waited: lock the new one
     try:
         yield
     finally:
@@ -1060,7 +1133,11 @@ def _owner_mismatch(manifest: Mapping[str, object], seat: L.Seat) -> str | None:
     if isinstance(tag, str) and tag.strip():
         mine, theirs, shown = seat.name.lower(), tag.strip().lower(), tag.strip()
     elif isinstance(suffix, str) and suffix.strip():
-        mine, theirs, shown = seat.suffix.lower(), suffix.strip().lower(), suffix.strip()
+        mine, theirs, shown = (
+            seat.suffix.lower(),
+            suffix.strip().lower(),
+            suffix.strip(),
+        )
     else:
         return None
     return shown[:40] if mine != theirs else None
@@ -1106,7 +1183,9 @@ def _write_manifest(
             if tmp.exists():
                 tmp.unlink()
     except OSError as exc:
-        ctx.say(f"warning: {MANIFEST_NAME} was not written ({exc}); the worktree itself is fine.")
+        ctx.say(
+            f"warning: {MANIFEST_NAME} was not written ({exc}); the worktree itself is fine."
+        )
 
 
 def _make_parent(ctx: Ctx, parent: Path, write_root: Path) -> None:
@@ -1125,7 +1204,9 @@ def _branch_state(run: Runner, tree: Path, branch: str) -> tuple[bool, bool]:
     pieces = branch.split("/")
     for i in range(1, len(pieces)):
         parent = "/".join(pieces[:i])
-        res = run(["git", "show-ref", "--verify", "--quiet", f"refs/heads/{parent}"], cwd=tree)
+        res = run(
+            ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{parent}"], cwd=tree
+        )
         if res.ok:
             raise Refusal(
                 f"a branch named {parent!r} exists, which blocks {branch!r}; pick another slug."
@@ -1145,9 +1226,14 @@ def _branch_state(run: Runner, tree: Path, branch: str) -> tuple[bool, bool]:
     if not res.ok:
         raise ToolFailure(f"git for-each-ref failed in {tree}: {_why(res)}")
     names = [ln.strip() for ln in res.out.splitlines() if ln.strip()]
-    local, tracking = f"refs/heads/{branch}" in names, f"refs/remotes/origin/{branch}" in names
+    local, tracking = (
+        f"refs/heads/{branch}" in names,
+        f"refs/remotes/origin/{branch}" in names,
+    )
     children = [
-        n for n in names if n not in (f"refs/heads/{branch}", f"refs/remotes/origin/{branch}")
+        n
+        for n in names
+        if n not in (f"refs/heads/{branch}", f"refs/remotes/origin/{branch}")
     ]
     if children:
         raise Refusal(
@@ -1337,7 +1423,9 @@ def _new_lane(ctx: Ctx, args: argparse.Namespace, app: L.App, seat: L.Seat) -> i
                     f"branch {branch} already exists on origin.  Pick another slug, or pass --reuse-branch."
                 )
             if not _missing_remote_ref(probe):
-                raise ToolFailure(f"could not check origin for branch {branch}: {_why(probe)}")
+                raise ToolFailure(
+                    f"could not check origin for branch {branch}: {_why(probe)}"
+                )
             manifest["base_sha"] = start
 
         _make_parent(ctx, path.parent, write_root)
@@ -1535,7 +1623,9 @@ def _cmd_path(ctx: Ctx, args: argparse.Namespace) -> int:
         if args.slug:
             raise Refusal("--review takes only the app and --pr N (no slug).")
         _plain, lanes_root = _plan_review_path(ctx, app, seat, args.pr)
-        run = Runner(ctx.env, write_root=lanes_root, fold=ctx.fold(), exec_fn=ctx.exec_fn)
+        run = Runner(
+            ctx.env, write_root=lanes_root, fold=ctx.fold(), exec_fn=ctx.exec_fn
+        )
         path, _ = _choose_review_path(ctx, run, app, seat, args.pr)
     else:
         if args.pr is not None:
@@ -1566,7 +1656,9 @@ def _build_parser() -> _Parser:
         help="create a lane (or a review checkout with --review --pr N)",
         description="Create a lane worktree off origin/main and print its path.",
     )
-    new.add_argument("app", help="repo name, code dir, worktree prefix or acronym (any case)")
+    new.add_argument(
+        "app", help="repo name, code dir, worktree prefix or acronym (any case)"
+    )
     new.add_argument("slug", nargs="?", help="lowercase kebab, 1 to 40 characters")
     new.add_argument(
         "--base",
@@ -1575,7 +1667,9 @@ def _build_parser() -> _Parser:
     )
     new.add_argument("--purpose", metavar="TEXT", help="one line saved in the manifest")
     new.add_argument(
-        "--board", metavar="ID", help="Linear issue id (such as AFC-123) saved in the manifest"
+        "--board",
+        metavar="ID",
+        help="Linear issue id (such as AFC-123) saved in the manifest",
     )
     new.add_argument(
         "--reuse-branch",
@@ -1583,7 +1677,9 @@ def _build_parser() -> _Parser:
         help="check out an existing branch instead of creating one",
     )
     new.add_argument(
-        "--review", action="store_true", help="read-only checkout of a PR head (needs --pr)"
+        "--review",
+        action="store_true",
+        help="read-only checkout of a PR head (needs --pr)",
     )
     new.add_argument(
         "--pr", metavar="N", type=_positive_int, help="pull request number for --review"
@@ -1592,14 +1688,18 @@ def _build_parser() -> _Parser:
         "--dry-run", action="store_true", help="show what would happen; change nothing"
     )
     new.add_argument(
-        "--json", action="store_true", help="print the manifest plus the path as JSON on stdout"
+        "--json",
+        action="store_true",
+        help="print the manifest plus the path as JSON on stdout",
     )
     path = sub.add_parser(
         "path",
         help="print the path a lane (or, with --review --pr N, a review checkout) would get; "
         "no side effects",
     )
-    path.add_argument("app", help="repo name, code dir, worktree prefix or acronym (any case)")
+    path.add_argument(
+        "app", help="repo name, code dir, worktree prefix or acronym (any case)"
+    )
     path.add_argument("slug", nargs="?", help="lowercase kebab, 1 to 40 characters")
     path.add_argument(
         "--review", action="store_true", help="the review checkout of a PR (needs --pr)"
@@ -1608,11 +1708,13 @@ def _build_parser() -> _Parser:
         "--pr", metavar="N", type=_positive_int, help="pull request number for --review"
     )
     sub.add_parser(
-        "ls", help="every checkout on this Mac (the doctor report; takes doctor options)"
+        "ls",
+        help="every checkout on this Mac (the doctor report; takes doctor options)",
     )
     sub.add_parser("doctor", help="same as ls")
     sub.add_parser(
-        "retire", help="remove one of your lanes once its work is safe on GitHub (lane retire -h)"
+        "retire",
+        help="remove one of your lanes once its work is safe on GitHub (lane retire -h)",
     )
     sub.add_parser(
         "prune",
@@ -1623,7 +1725,9 @@ def _build_parser() -> _Parser:
 
 
 def _positive_int(text: str) -> int:
-    if not (text.isascii() and text.isdigit() and 1 <= len(text) <= 9 and int(text) > 0):
+    if not (
+        text.isascii() and text.isdigit() and 1 <= len(text) <= 9 and int(text) > 0
+    ):
         raise argparse.ArgumentTypeError(f"expected a positive integer, got {text!r}")
     return int(text)
 
@@ -1663,7 +1767,9 @@ def main(
         # retire.py owns these two, with an allowlist of its own (this module's still refuses every remove).
         from . import retire as R
 
-        return R.main(args_in, env=env, clock=clock, exec_fn=exec_fn, stdout=out, stderr=err)
+        return R.main(
+            args_in, env=env, clock=clock, exec_fn=exec_fn, stdout=out, stderr=err
+        )
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         try:
             args = _build_parser().parse_args(args_in)

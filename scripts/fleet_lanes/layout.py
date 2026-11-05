@@ -46,6 +46,7 @@ directory into one key.
 
 Tests: fleet_lanes/tests/test_layout.py.
 """
+
 from __future__ import annotations
 
 import fnmatch
@@ -54,11 +55,11 @@ import json
 import os
 import re
 import sys
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from dataclasses import replace as _dc_replace
 from functools import lru_cache
 from pathlib import Path
-from typing import Callable, Iterable, Mapping, Sequence
 
 try:
     from enum import StrEnum
@@ -74,6 +75,7 @@ except ImportError:  # Python 3.9 and 3.10, including macOS /usr/bin/python3
             return str(self.value)
 
         __format__ = str.__format__
+
 
 __all__ = [
     "APP_PREFIX_ALIASES",
@@ -197,15 +199,19 @@ class LayoutError(ValueError):
 class LocationClass(StrEnum):
     """Where a path sits relative to the sanctioned and forbidden roots."""
 
-    INTEGRATION_TREE = "INTEGRATION_TREE"            # ~/Code/<registered App>
-    LANE_NESTED = "LANE_NESTED"                      # lanes/<Repo>/<seat>-<slug> (and the legacy lanes/<prefix>/...)
-    LANE_FLAT_LEGACY = "LANE_FLAT_LEGACY"            # ~/apps/<dir> while the mode is nested
-    LANE_FLAT = "LANE_FLAT"                          # ~/apps/<dir> while the mode is flat
-    REVIEW = "REVIEW"                                # lanes/<Repo>/review-pr-<n> (and the legacy lanes/_review/...)
-    MANAGED = "MANAGED"                              # lanes/<Repo>/<slug>-<hex>, lanes/_codex/**, harness-chosen layouts
-    FORBIDDEN_TMP = "FORBIDDEN_TMP"                  # /tmp and friends
+    INTEGRATION_TREE = "INTEGRATION_TREE"  # ~/Code/<registered App>
+    LANE_NESTED = (
+        "LANE_NESTED"  # lanes/<Repo>/<seat>-<slug> (and the legacy lanes/<prefix>/...)
+    )
+    LANE_FLAT_LEGACY = "LANE_FLAT_LEGACY"  # ~/apps/<dir> while the mode is nested
+    LANE_FLAT = "LANE_FLAT"  # ~/apps/<dir> while the mode is flat
+    REVIEW = "REVIEW"  # lanes/<Repo>/review-pr-<n> (and the legacy lanes/_review/...)
+    MANAGED = (
+        "MANAGED"  # lanes/<Repo>/<slug>-<hex>, lanes/_codex/**, harness-chosen layouts
+    )
+    FORBIDDEN_TMP = "FORBIDDEN_TMP"  # /tmp and friends
     FORBIDDEN_CODE_TOPLEVEL = "FORBIDDEN_CODE_TOPLEVEL"  # a checkout directly under ~/Code, not a registered tree
-    UNSANCTIONED = "UNSANCTIONED"                    # anywhere else: reported, not forbidden
+    UNSANCTIONED = "UNSANCTIONED"  # anywhere else: reported, not forbidden
 
 
 class NameVerdict(StrEnum):
@@ -233,6 +239,7 @@ class BranchVerdict(StrEnum):
 
 
 # --------------------------------------------------------------------------- registry
+
 
 def _derive_prefix(repo: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", repo.lower()).strip("-")
@@ -348,18 +355,59 @@ class Seat:
 # disk as simple-with-us-*, simplewithus-* and Simple-With-Us-*; the hyphenated lowercase form is the
 # prefix.
 EXTRA_APPS: tuple[App, ...] = (
-    App("CodeCaps", f"{DEFAULT_OWNER}/codecaps", "codecaps", "CodeCaps", registered=False),
-    App("FleetLink", f"{DEFAULT_OWNER}/FleetLink", "fleetlink", "FleetLink", registered=False),
-    App("Simple-With-Us", f"{DEFAULT_OWNER}/Simple-With-Us", "simple-with-us", "Simple-With-Us",
-        registered=False),
-    App("Kodus-Config", f"{DEFAULT_OWNER}/Kodus-Config", "kodus-config", "", registered=False),
-    App("upptime-status", f"{DEFAULT_OWNER}/upptime-status", "upptime-status", "", registered=False),
+    App(
+        "CodeCaps",
+        f"{DEFAULT_OWNER}/codecaps",
+        "codecaps",
+        "CodeCaps",
+        registered=False,
+    ),
+    App(
+        "FleetLink",
+        f"{DEFAULT_OWNER}/FleetLink",
+        "fleetlink",
+        "FleetLink",
+        registered=False,
+    ),
+    App(
+        "Simple-With-Us",
+        f"{DEFAULT_OWNER}/Simple-With-Us",
+        "simple-with-us",
+        "Simple-With-Us",
+        registered=False,
+    ),
+    App(
+        "Kodus-Config",
+        f"{DEFAULT_OWNER}/Kodus-Config",
+        "kodus-config",
+        "",
+        registered=False,
+    ),
+    App(
+        "upptime-status",
+        f"{DEFAULT_OWNER}/upptime-status",
+        "upptime-status",
+        "",
+        registered=False,
+    ),
     App("mmx-acp", "", "mmx-acp", "", registered=False),
-    App("homebrew-tap", f"{DEFAULT_OWNER}/homebrew-tap", "homebrew-tap", "homebrew-tap", registered=False),
+    App(
+        "homebrew-tap",
+        f"{DEFAULT_OWNER}/homebrew-tap",
+        "homebrew-tap",
+        "homebrew-tap",
+        registered=False,
+    ),
     # A private full clone that lives in the lanes tree (lanes/fleetlink-legacy/claude-legacy-hotfix) but is a
     # different repo from FleetLink.  It had no ~/Code tree until its registry row landed (AFC-252), so this
     # fallback keeps its folder as the GitHub repo name and, with no tree, it gets no `lane new`.
-    App("fleetlink-legacy", f"{DEFAULT_OWNER}/fleetlink-legacy", "fleetlink-legacy", "", registered=False),
+    App(
+        "fleetlink-legacy",
+        f"{DEFAULT_OWNER}/fleetlink-legacy",
+        "fleetlink-legacy",
+        "",
+        registered=False,
+    ),
 )
 
 
@@ -408,7 +456,9 @@ class Registry:
                 return app
         return None
 
-    def app_by_lane_dir(self, name: str, *, case_insensitive: bool = False) -> App | None:
+    def app_by_lane_dir(
+        self, name: str, *, case_insensitive: bool = False
+    ) -> App | None:
         """The app whose lane folder (`App.lane_dir`) is `name`.  An exact match always wins; with
         `case_insensitive` (a case-insensitive volume) a different spelling of the same name also
         matches, so lanes/botfleet finds BotFleet there.  Dots and dashes are never folded:
@@ -430,7 +480,10 @@ class Registry:
         """Look up by repo name or integration dir, ignoring case, dots and dashes."""
         want = _loose(name.strip())
         for app in self.apps:
-            if want in {_loose(app.name), *(_loose(n) for n in app.integration_names())}:
+            if want in {
+                _loose(app.name),
+                *(_loose(n) for n in app.integration_names()),
+            }:
                 return app
         return None
 
@@ -497,7 +550,9 @@ def seat_alias_matches(pattern: str, value: str) -> bool:
     return bool(rx is not None and text and rx.fullmatch(text))
 
 
-def parse_registry(data: Mapping[str, object], *, include_extras: bool = True, source: str = "") -> Registry:
+def parse_registry(
+    data: Mapping[str, object], *, include_extras: bool = True, source: str = ""
+) -> Registry:
     """Build a Registry from already-loaded JSON.  Tolerates missing and extra fields."""
     owner = _as_str(data.get("owner")) or DEFAULT_OWNER
     apps: list[App] = []
@@ -505,24 +560,33 @@ def parse_registry(data: Mapping[str, object], *, include_extras: bool = True, s
     for item in raw_apps if isinstance(raw_apps, list) else []:
         if not isinstance(item, dict):
             continue
-        repo = _as_str(item.get("repo")) or _as_str(item.get("name")) or _as_str(item.get("codeDir"))
+        repo = (
+            _as_str(item.get("repo"))
+            or _as_str(item.get("name"))
+            or _as_str(item.get("codeDir"))
+        )
         if not repo:
             continue
-        apps.append(App(
-            name=repo,
-            owner_repo=_as_str(item.get("ownerRepo")) or f"{owner}/{repo}",
-            prefix=_as_str(item.get("worktreePrefix")) or _derive_prefix(repo),
-            integration_dir_name=_as_str(item.get("codeDir")) or repo,
-            registered=True,
-            acronym=_as_str(item.get("acronym")),
-            display_name=_as_str(item.get("displayName")),
-            kind=_as_str(item.get("kind")),
-        ))
+        apps.append(
+            App(
+                name=repo,
+                owner_repo=_as_str(item.get("ownerRepo")) or f"{owner}/{repo}",
+                prefix=_as_str(item.get("worktreePrefix")) or _derive_prefix(repo),
+                integration_dir_name=_as_str(item.get("codeDir")) or repo,
+                registered=True,
+                acronym=_as_str(item.get("acronym")),
+                display_name=_as_str(item.get("displayName")),
+                kind=_as_str(item.get("kind")),
+            )
+        )
     if include_extras:
         have_names = {a.name.lower() for a in apps}
         have_prefixes = {a.prefix.lower() for a in apps}
         for extra in EXTRA_APPS:
-            if extra.name.lower() in have_names or extra.prefix.lower() in have_prefixes:
+            if (
+                extra.name.lower() in have_names
+                or extra.prefix.lower() in have_prefixes
+            ):
                 continue
             apps.append(extra)
     seats: list[Seat] = []
@@ -534,17 +598,25 @@ def parse_registry(data: Mapping[str, object], *, include_extras: bool = True, s
         if not tag:
             continue
         bps = item.get("branchPrefixes")
-        seats.append(Seat(
-            name=tag,
-            suffix=(_as_str(item.get("worktreeSuffix")) or tag).lower(),
-            branch_prefixes=tuple(b for b in bps if isinstance(b, str) and b) if isinstance(bps, list) else (),
-            retired=bool(item.get("retired")),
-            notes_name=_as_str(item.get("notesName")),
-            alias_pattern=_as_str(item.get("aliasPattern")),
-        ))
+        seats.append(
+            Seat(
+                name=tag,
+                suffix=(_as_str(item.get("worktreeSuffix")) or tag).lower(),
+                branch_prefixes=tuple(b for b in bps if isinstance(b, str) and b)
+                if isinstance(bps, list)
+                else (),
+                retired=bool(item.get("retired")),
+                notes_name=_as_str(item.get("notesName")),
+                alias_pattern=_as_str(item.get("aliasPattern")),
+            )
+        )
     return Registry(
-        owner=owner, apps=tuple(apps), seats=tuple(seats),
-        code_root=_as_str(data.get("codeRoot")), apps_root=_as_str(data.get("appsRoot")), source=source,
+        owner=owner,
+        apps=tuple(apps),
+        seats=tuple(seats),
+        code_root=_as_str(data.get("codeRoot")),
+        apps_root=_as_str(data.get("appsRoot")),
+        source=source,
         role_lanes=_parse_role_lanes(data),
     )
 
@@ -573,19 +645,36 @@ def _parse_role_lanes(data: Mapping[str, object]) -> tuple[RoleLane, ...]:
             or not isinstance(lane, Mapping)
         ):
             continue
-        roles, folder_t, branch_t = lane.get("roles"), lane.get("folderTemplate"), lane.get("branchTemplate")
-        if not isinstance(roles, list) or not isinstance(folder_t, str) or not isinstance(branch_t, str):
+        roles, folder_t, branch_t = (
+            lane.get("roles"),
+            lane.get("folderTemplate"),
+            lane.get("branchTemplate"),
+        )
+        if (
+            not isinstance(roles, list)
+            or not isinstance(folder_t, str)
+            or not isinstance(branch_t, str)
+        ):
             continue
-        if folder_t.count("<role>") != 1 or branch_t.count("<role>") != 1 or not branch_t.replace("<role>", "x").endswith("/"):
+        if (
+            folder_t.count("<role>") != 1
+            or branch_t.count("<role>") != 1
+            or not branch_t.replace("<role>", "x").endswith("/")
+        ):
             continue
         pre = match.split("*")[0]
         for role in roles:
             if not isinstance(role, str) or not role:
                 continue
             low = role.lower()
-            out.append(RoleLane(tag=pre + role, role=role,
-                                folder=folder_t.replace("<role>", low),
-                                branch_prefix=branch_t.replace("<role>", low)))
+            out.append(
+                RoleLane(
+                    tag=pre + role,
+                    role=role,
+                    folder=folder_t.replace("<role>", low),
+                    branch_prefix=branch_t.replace("<role>", low),
+                )
+            )
     return tuple(out)
 
 
@@ -598,8 +687,12 @@ def default_registry_path(env: Mapping[str, str] | None = None) -> Path:
     return Path(__file__).resolve().parents[2] / "fleet-apps.json"
 
 
-def load_registry(path: str | os.PathLike[str] | None = None, *, include_extras: bool = True,
-                  env: Mapping[str, str] | None = None) -> Registry:
+def load_registry(
+    path: str | os.PathLike[str] | None = None,
+    *,
+    include_extras: bool = True,
+    env: Mapping[str, str] | None = None,
+) -> Registry:
     """Read fleet-apps.json.  Raises OSError or ValueError when the file is missing or not JSON."""
     target = Path(path) if path is not None else default_registry_path(env)
     with open(target, encoding="utf-8") as fh:
@@ -614,8 +707,22 @@ def load_registry(path: str | os.PathLike[str] | None = None, *, include_extras:
 # Lane-name tokens for every seat in the registry, kept here so a registry that fails to load
 # still names the seats.  The registry adds to this set.
 CANONICAL_SEATS: tuple[str, ...] = (
-    "claude", "monet", "codex", "antigravity", "cursor", "grok", "grok-build", "deepseek",
-    "harness", "renoir", "fx", "kimi", "minimax", "muse-assist", "muse-code", "wise",
+    "claude",
+    "monet",
+    "codex",
+    "antigravity",
+    "cursor",
+    "grok",
+    "grok-build",
+    "deepseek",
+    "harness",
+    "renoir",
+    "fx",
+    "kimi",
+    "minimax",
+    "muse-assist",
+    "muse-code",
+    "wise",
     "zcode",
 )
 
@@ -640,11 +747,27 @@ SEAT_ALIASES: dict[str, str] = {
 
 # BotFleet bot roles show up in lane names and branch prefixes.  They are not seats.  The
 # engineer, trader and monitor roles complete the current roster (fleet-apps.json lane blocks).
-ROLE_TOKENS = frozenset({
-    "kody", "fixer", "designer", "compiler", "plumber", "publisher", "deployer", "director",
-    "housekeeper", "oracle", "nurse", "accountant", "conductor", "engineer", "trader", "monitor",
-    "bf",
-})
+ROLE_TOKENS = frozenset(
+    {
+        "kody",
+        "fixer",
+        "designer",
+        "compiler",
+        "plumber",
+        "publisher",
+        "deployer",
+        "director",
+        "housekeeper",
+        "oracle",
+        "nurse",
+        "accountant",
+        "conductor",
+        "engineer",
+        "trader",
+        "monitor",
+        "bf",
+    }
+)
 
 
 def canonical_seat_set(registry: Registry | None = None) -> frozenset[str]:
@@ -664,7 +787,11 @@ def seat_alias_map(registry: Registry | None = None) -> dict[str, str]:
     for seat in registry.seats:
         target = seat.suffix.lower()
         tokens = [seat.name.lower()]
-        tokens += [bp[:-1].lower() for bp in seat.branch_prefixes if bp.endswith("/") and bp.count("/") == 1]
+        tokens += [
+            bp[:-1].lower()
+            for bp in seat.branch_prefixes
+            if bp.endswith("/") and bp.count("/") == 1
+        ]
         for tok in tokens:
             if tok and tok != target and tok not in canon and tok not in out:
                 out[tok] = target
@@ -693,6 +820,7 @@ def is_known_seat(token: str, registry: Registry | None = None) -> bool:
 
 
 # --------------------------------------------------------------------------- roots
+
 
 @dataclass(frozen=True)
 class HarnessLocation:
@@ -775,8 +903,9 @@ def _env_root(env: Mapping[str, str], key: str, home: str, default: str) -> str:
     return default
 
 
-def make_tmp_roots(env: Mapping[str, str] | None = None,
-                   home: str | os.PathLike[str] | None = None) -> tuple[tuple[Path, ...], tuple[str, ...]]:
+def make_tmp_roots(
+    env: Mapping[str, str] | None = None, home: str | os.PathLike[str] | None = None
+) -> tuple[tuple[Path, ...], tuple[str, ...]]:
     """Forbidden temp roots and temp globs.  Parses no layout and loads no registry, so a guard
     can call it with nothing else set up.  Each root is listed as written and as resolved."""
     env = os.environ if env is None else env
@@ -806,12 +935,17 @@ def _pattern_under(home: str, rel: str) -> str:
             break
         literal.append(comp)
     base = _real(os.path.join(home, *literal))
-    rest = comps[len(literal):]
+    rest = comps[len(literal) :]
     return "/".join([glob.escape(base), *rest]) if rest else glob.escape(base)
 
 
-def make_roots(home: str | os.PathLike[str], env: Mapping[str, str] | None = None, *,
-               registry: Registry | None = None, case_insensitive: bool | None = None) -> Roots:
+def make_roots(
+    home: str | os.PathLike[str],
+    env: Mapping[str, str] | None = None,
+    *,
+    registry: Registry | None = None,
+    case_insensitive: bool | None = None,
+) -> Roots:
     """Resolve every root under `home`.
 
     `env` is read for FLEET_LAYOUT, FLEET_LANES_ROOT, FLEET_CODE_ROOT, FLEET_APPS_ROOT,
@@ -833,11 +967,19 @@ def make_roots(home: str | os.PathLike[str], env: Mapping[str, str] | None = Non
     else:
         mode = DEFAULT_LAYOUT
         if raw_mode:
-            warnings.append(f"unrecognized {ENV_LAYOUT} {raw_mode!r}; using {DEFAULT_LAYOUT}")
+            warnings.append(
+                f"unrecognized {ENV_LAYOUT} {raw_mode!r}; using {DEFAULT_LAYOUT}"
+            )
 
-    code_root = _real(_env_root(env, ENV_CODE_ROOT, real_home, os.path.join(real_home, "Code")))
-    apps_root = _real(_env_root(env, ENV_APPS_ROOT, real_home, os.path.join(real_home, "apps")))
-    lanes_root = _real(_env_root(env, ENV_LANES_ROOT, real_home, os.path.join(apps_root, "lanes")))
+    code_root = _real(
+        _env_root(env, ENV_CODE_ROOT, real_home, os.path.join(real_home, "Code"))
+    )
+    apps_root = _real(
+        _env_root(env, ENV_APPS_ROOT, real_home, os.path.join(real_home, "apps"))
+    )
+    lanes_root = _real(
+        _env_root(env, ENV_LANES_ROOT, real_home, os.path.join(apps_root, "lanes"))
+    )
 
     if registry is None:
         registry = load_registry(env=env)
@@ -857,19 +999,31 @@ def make_roots(home: str | os.PathLike[str], env: Mapping[str, str] | None = Non
         tmp_roots=tmp_roots,
         tmp_globs=tmp_globs,
         layout_mode=mode,
-        case_insensitive=(sys.platform == "darwin") if case_insensitive is None else bool(case_insensitive),
+        case_insensitive=(sys.platform == "darwin")
+        if case_insensitive is None
+        else bool(case_insensitive),
         integration_names=registry.integration_names(),
         warnings=tuple(warnings),
-        seat_tokens=tuple(sorted(canonical_seat_set(registry) | set(seat_alias_map(registry)) | ROLE_TOKENS)),
+        seat_tokens=tuple(
+            sorted(
+                canonical_seat_set(registry)
+                | set(seat_alias_map(registry))
+                | ROLE_TOKENS
+            )
+        ),
         conductor_root=Path(lanes_root) / CONDUCTOR_DIR,
     )
     external, ext_warnings = _external_lanes_roots(env, roots, real_home)
     if external or ext_warnings:
-        roots = _dc_replace(roots, external_lanes_roots=external, warnings=roots.warnings + ext_warnings)
+        roots = _dc_replace(
+            roots, external_lanes_roots=external, warnings=roots.warnings + ext_warnings
+        )
     return roots
 
 
-def _external_lanes_roots(env: Mapping[str, str], roots: Roots, real_home: str) -> tuple[tuple[Path, ...], tuple[str, ...]]:
+def _external_lanes_roots(
+    env: Mapping[str, str], roots: Roots, real_home: str
+) -> tuple[tuple[Path, ...], tuple[str, ...]]:
     """The external lanes root, checked, and the warnings for a setting that was refused.
 
     FLEET_LANES_EXTERNAL_ROOT unset means the default (/Volumes/External/Lanes); set but empty switches the
@@ -886,35 +1040,52 @@ def _external_lanes_roots(env: Mapping[str, str], roots: Roots, real_home: str) 
     if raw == "~" or raw.startswith("~/"):
         raw = os.path.join(real_home, raw[2:])
     if not os.path.isabs(raw):
-        return (), (f"{ENV_LANES_EXTERNAL_ROOT} must be an absolute path, got {raw!r}; no external lanes root is used",)
+        return (), (
+            f"{ENV_LANES_EXTERNAL_ROOT} must be an absolute path, got {raw!r}; no external lanes root is used",
+        )
     ext = _real(raw)
     ep = _parts(ext, roots)
     lanes_p = _parts(roots.lanes_root, roots)
     if ep == lanes_p:
         return (), ()
-    for label, other in (("the lanes root", roots.lanes_root), ("the home folder", roots.home),
-                         ("~/apps", roots.apps_root), ("~/Code", roots.code_root)):
+    for label, other in (
+        ("the lanes root", roots.lanes_root),
+        ("the home folder", roots.home),
+        ("~/apps", roots.apps_root),
+        ("~/Code", roots.code_root),
+    ):
         if _under(_parts(other, roots), ep):
-            return (), (f"{ENV_LANES_EXTERNAL_ROOT} {ext} is or holds {label}; no external lanes root is used",)
+            return (), (
+                f"{ENV_LANES_EXTERNAL_ROOT} {ext} is or holds {label}; no external lanes root is used",
+            )
     if _under(ep, lanes_p) or _under(ep, _parts(roots.code_root, roots)):
-        return (), (f"{ENV_LANES_EXTERNAL_ROOT} {ext} is inside the lanes root or ~/Code; no external lanes root is used",)
+        return (), (
+            f"{ENV_LANES_EXTERNAL_ROOT} {ext} is inside the lanes root or ~/Code; no external lanes root is used",
+        )
     if _tmp_hit(ep, roots):
-        return (), (f"{ENV_LANES_EXTERNAL_ROOT} {ext} is inside a temp directory, where no checkout may live; "
-                    "no external lanes root is used",)
+        return (), (
+            f"{ENV_LANES_EXTERNAL_ROOT} {ext} is inside a temp directory, where no checkout may live; "
+            "no external lanes root is used",
+        )
     return (Path(ext),), ()
 
 
-def make_guard_roots(home: str | os.PathLike[str], env: Mapping[str, str] | None = None) -> Roots:
+def make_guard_roots(
+    home: str | os.PathLike[str], env: Mapping[str, str] | None = None
+) -> Roots:
     """Roots for a forbidden-tmp guard: reads no file and cannot fail on a bad registry or layout.
 
     The registry is empty, so integration trees are not recognised (INTEGRATION_TREE and
     FORBIDDEN_CODE_TOPLEVEL are not meaningful from these roots), but `is_forbidden_tmp` and the
     FORBIDDEN_TMP class work exactly as with `make_roots`.
     """
-    return make_roots(home, env, registry=Registry(owner=DEFAULT_OWNER, apps=(), seats=()))
+    return make_roots(
+        home, env, registry=Registry(owner=DEFAULT_OWNER, apps=(), seats=())
+    )
 
 
 # --------------------------------------------------------------------------- path helpers
+
 
 def _fold(roots: Roots):
     return str.casefold if roots.case_insensitive else (lambda s: s)
@@ -926,7 +1097,7 @@ def _parts(path: str | os.PathLike[str], roots: Roots) -> tuple[str, ...]:
 
 
 def _under(parts: tuple[str, ...], root_parts: tuple[str, ...]) -> bool:
-    return len(parts) >= len(root_parts) and parts[:len(root_parts)] == root_parts
+    return len(parts) >= len(root_parts) and parts[: len(root_parts)] == root_parts
 
 
 def _glob_match(parts: tuple[str, ...], pattern: str, roots: Roots) -> int:
@@ -955,7 +1126,7 @@ def to_logical(path: str | os.PathLike[str], roots: Roots) -> str:
     for ext in roots.external_lanes_roots:
         ep = _parts(ext, roots)
         if _under(parts, ep):
-            return os.path.join(os.fspath(roots.lanes_root), *orig[len(ep):])
+            return os.path.join(os.fspath(roots.lanes_root), *orig[len(ep) :])
     return s
 
 
@@ -1104,7 +1275,10 @@ def _has_git_entry(directory: str) -> bool:
 
 # --------------------------------------------------------------------------- classification
 
-def _harness_for(parts: tuple[str, ...], roots: Roots) -> tuple[int, HarnessLocation] | None:
+
+def _harness_for(
+    parts: tuple[str, ...], roots: Roots
+) -> tuple[int, HarnessLocation] | None:
     """(components matched, location) of the longest harness location `parts` sits in, else None."""
     best: tuple[int, HarnessLocation] | None = None
     for loc in roots.harness_locations:
@@ -1114,9 +1288,13 @@ def _harness_for(parts: tuple[str, ...], roots: Roots) -> tuple[int, HarnessLoca
     return best
 
 
-def _classify(real: str, roots: Roots, is_checkout: bool | None) -> tuple[LocationClass, str | None]:
+def _classify(
+    real: str, roots: Roots, is_checkout: bool | None
+) -> tuple[LocationClass, str | None]:
     """(class, lane directory or None) for an already-resolved path."""
-    real = to_logical(real, roots)      # a path on the external lanes disk is judged at its lanes-root place
+    real = to_logical(
+        real, roots
+    )  # a path on the external lanes disk is judged at its lanes-root place
     orig = Path(real).parts
     parts = _parts(real, roots)
     fold = _fold(roots)
@@ -1126,20 +1304,26 @@ def _classify(real: str, roots: Roots, is_checkout: bool | None) -> tuple[Locati
 
     best = _harness_for(parts, roots)
     if best is not None:
-        return (LocationClass.MANAGED if best[1].sanctioned else LocationClass.UNSANCTIONED), None
+        return (
+            LocationClass.MANAGED if best[1].sanctioned else LocationClass.UNSANCTIONED
+        ), None
 
     lanes_p = _parts(roots.lanes_root, roots)
     if _under(parts, lanes_p):
         # Folders that start with an underscore are reserved.  _codex is where Codex desktop nests
         # <slug>/<Repo> (layout v2).  _managed and _review are the pre-v2 homes of harness worktrees
         # and PR checks, still recognised so the fleet can migrate.  Any other one is unsanctioned.
-        if _under(parts, _parts(roots.codex_root, roots)) or _under(parts, _parts(roots.legacy_managed_root, roots)):
+        if _under(parts, _parts(roots.codex_root, roots)) or _under(
+            parts, _parts(roots.legacy_managed_root, roots)
+        ):
             return LocationClass.MANAGED, None
-        if roots.conductor_root is not None and _under(parts, _parts(roots.conductor_root, roots)):
+        if roots.conductor_root is not None and _under(
+            parts, _parts(roots.conductor_root, roots)
+        ):
             return LocationClass.MANAGED, None
         if _under(parts, _parts(roots.legacy_review_root, roots)):
             return LocationClass.REVIEW, None
-        rel = parts[len(lanes_p):]
+        rel = parts[len(lanes_p) :]
         if rel and rel[0].startswith("_"):
             return LocationClass.UNSANCTIONED, None
         if len(rel) >= 2:
@@ -1149,7 +1333,7 @@ def _classify(real: str, roots: Roots, is_checkout: bool | None) -> tuple[Locati
             # Reviews and desktop worktrees count in either FLEET_LAYOUT mode, as _review and _managed did;
             # only a lane needs the nested mode.
             name = orig[len(lanes_p) + 1]
-            lane_dir = os.path.join(*orig[:len(lanes_p) + 2])
+            lane_dir = os.path.join(*orig[: len(lanes_p) + 2])
             if is_review_dir_name(name):
                 return LocationClass.REVIEW, lane_dir
             if is_desktop_dir_name(name, roots.seat_tokens):
@@ -1160,28 +1344,39 @@ def _classify(real: str, roots: Roots, is_checkout: bool | None) -> tuple[Locati
 
     code_p = _parts(roots.code_root, roots)
     if _under(parts, code_p):
-        rel = parts[len(code_p):]
+        rel = parts[len(code_p) :]
         if not rel:
             return LocationClass.UNSANCTIONED, None
-        if _loose_exact(rel[0]) in {_loose_exact(fold(n)) for n in roots.integration_names}:
+        if _loose_exact(rel[0]) in {
+            _loose_exact(fold(n)) for n in roots.integration_names
+        }:
             return LocationClass.INTEGRATION_TREE, None
-        top = os.path.join(*orig[:len(code_p) + 1])
+        top = os.path.join(*orig[: len(code_p) + 1])
         checkout = _has_git_entry(top) if is_checkout is None else is_checkout
-        return (LocationClass.FORBIDDEN_CODE_TOPLEVEL if checkout else LocationClass.UNSANCTIONED), None
+        return (
+            LocationClass.FORBIDDEN_CODE_TOPLEVEL
+            if checkout
+            else LocationClass.UNSANCTIONED
+        ), None
 
     apps_p = _parts(roots.apps_root, roots)
     if _under(parts, apps_p):
-        rel = parts[len(apps_p):]
+        rel = parts[len(apps_p) :]
         if not rel or rel[0].startswith(("_", ".")):
             return LocationClass.UNSANCTIONED, None
-        cls = LocationClass.LANE_FLAT if roots.layout_mode == LAYOUT_FLAT else LocationClass.LANE_FLAT_LEGACY
-        return cls, os.path.join(*orig[:len(apps_p) + 1])
+        cls = (
+            LocationClass.LANE_FLAT
+            if roots.layout_mode == LAYOUT_FLAT
+            else LocationClass.LANE_FLAT_LEGACY
+        )
+        return cls, os.path.join(*orig[: len(apps_p) + 1])
 
     return LocationClass.UNSANCTIONED, None
 
 
-def classify_location(path: str | os.PathLike[str], roots: Roots, *,
-                      is_checkout: bool | None = None) -> LocationClass:
+def classify_location(
+    path: str | os.PathLike[str], roots: Roots, *, is_checkout: bool | None = None
+) -> LocationClass:
     """Classify where `path` sits.
 
     Symlinks are resolved first and prefixes are compared case-insensitively when
@@ -1205,8 +1400,13 @@ def lane_root(path: str | os.PathLike[str], roots: Roots) -> Path | None:
 
 # --------------------------------------------------------------------------- naming
 
+
 def is_valid_slug(slug: object) -> bool:
-    return isinstance(slug, str) and 1 <= len(slug) <= SLUG_MAX and bool(_KEBAB_RE.match(slug))
+    return (
+        isinstance(slug, str)
+        and 1 <= len(slug) <= SLUG_MAX
+        and bool(_KEBAB_RE.match(slug))
+    )
 
 
 def validate_slug(slug: str) -> str:
@@ -1214,9 +1414,13 @@ def validate_slug(slug: str) -> str:
     if not isinstance(slug, str):
         raise LayoutError(f"slug must be a string, got {type(slug).__name__}")
     if not 1 <= len(slug) <= SLUG_MAX:
-        raise LayoutError(f"slug must be 1..{SLUG_MAX} chars, got {len(slug)}: {slug!r}")
+        raise LayoutError(
+            f"slug must be 1..{SLUG_MAX} chars, got {len(slug)}: {slug!r}"
+        )
     if not _KEBAB_RE.match(slug):
-        raise LayoutError(f"slug must be lowercase kebab (a-z, 0-9, single dashes inside): {slug!r}")
+        raise LayoutError(
+            f"slug must be lowercase kebab (a-z, 0-9, single dashes inside): {slug!r}"
+        )
     return slug
 
 
@@ -1235,15 +1439,21 @@ _REPO_DIR_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
 def is_valid_repo_dir(name: object) -> bool:
-    return (isinstance(name, str) and 1 <= len(name) <= REPO_DIR_MAX and bool(_REPO_DIR_RE.match(name))
-            and not name.endswith("."))
+    return (
+        isinstance(name, str)
+        and 1 <= len(name) <= REPO_DIR_MAX
+        and bool(_REPO_DIR_RE.match(name))
+        and not name.endswith(".")
+    )
 
 
 def validate_repo_dir(name: str) -> str:
     """The repo folder name, or LayoutError.  See `is_valid_repo_dir`."""
     if not is_valid_repo_dir(name):
-        raise LayoutError(f"repo folder must be one path component of letters, digits, '.', '-' or '_' "
-                          f"(starting with a letter or digit, at most {REPO_DIR_MAX}), got {name!r}")
+        raise LayoutError(
+            f"repo folder must be one path component of letters, digits, '.', '-' or '_' "
+            f"(starting with a letter or digit, at most {REPO_DIR_MAX}), got {name!r}"
+        )
     return name
 
 
@@ -1255,7 +1465,11 @@ def review_dir_name(pr: int, seat: str | None = None) -> str:
     """review-pr-<n>, or review-pr-<n>-<seat> for the second seat that checks the same PR."""
     if not isinstance(pr, int) or isinstance(pr, bool) or not 1 <= pr <= 999_999_999:
         raise LayoutError(f"PR number must be a positive integer, got {pr!r}")
-    return f"{REVIEW_PREFIX}{pr}" if seat is None else f"{REVIEW_PREFIX}{pr}-{_token(seat, 'seat')}"
+    return (
+        f"{REVIEW_PREFIX}{pr}"
+        if seat is None
+        else f"{REVIEW_PREFIX}{pr}-{_token(seat, 'seat')}"
+    )
 
 
 def is_review_dir_name(name: str) -> bool:
@@ -1300,22 +1514,32 @@ def branch_name(seat: str, slug: str, registry: Registry | None = None) -> str:
     return f"{_token(seat.strip().lower(), 'seat')}/{slug}"
 
 
-def _app_dirs(app: App | str, registry: Registry | None, roots: Roots) -> tuple[str, str]:
+def _app_dirs(
+    app: App | str, registry: Registry | None, roots: Roots
+) -> tuple[str, str]:
     """(repo folder, prefix) for an App, or for a string that names one (a repo folder, a prefix or a
     repo name).  A string no app claims is used as the folder as written, and its lowercase as the prefix."""
     if isinstance(app, App):
         return app.lane_dir, app.prefix
     key = str(app).strip()
     if registry is not None:
-        found = (registry.app_by_lane_dir(key, case_insensitive=roots.case_insensitive)
-                 or registry.app_by_prefix(key) or registry.app_by_name(key))
+        found = (
+            registry.app_by_lane_dir(key, case_insensitive=roots.case_insensitive)
+            or registry.app_by_prefix(key)
+            or registry.app_by_name(key)
+        )
         if found is not None:
             return found.lane_dir, found.prefix
     return key, key.lower()
 
 
-def expected_lane_path(app: App | str, seat: str, slug: str | None, roots: Roots,
-                       registry: Registry | None = None) -> Path:
+def expected_lane_path(
+    app: App | str,
+    seat: str,
+    slug: str | None,
+    roots: Roots,
+    registry: Registry | None = None,
+) -> Path:
     """Where a new lane belongs under the active layout mode.
 
     nested: lanes_root/<Repo>/<seat>[-<slug>];  flat: apps_root/<prefix>-<seat>[-<slug>].
@@ -1333,32 +1557,46 @@ def expected_lane_path(app: App | str, seat: str, slug: str | None, roots: Roots
     return roots.lanes_root / lane_dir / nested_dir_name(canon, slug)
 
 
-def review_lane_path(app: App | str, pr: int, roots: Roots, registry: Registry | None = None,
-                     seat: str | None = None) -> Path:
+def review_lane_path(
+    app: App | str,
+    pr: int,
+    roots: Roots,
+    registry: Registry | None = None,
+    seat: str | None = None,
+) -> Path:
     """Where the read-only checkout of PR `pr` belongs: lanes_root/<Repo>/review-pr-<n>.  Pass `seat`
     for the review-pr-<n>-<seat> form a second seat gets when another seat already holds the plain one."""
     lane_dir, _prefix = _app_dirs(app, registry, roots)
     validate_repo_dir(lane_dir)
-    return roots.lanes_root / lane_dir / review_dir_name(pr, None if seat is None else normalize_seat(seat, registry))
+    return (
+        roots.lanes_root
+        / lane_dir
+        / review_dir_name(pr, None if seat is None else normalize_seat(seat, registry))
+    )
 
 
 @dataclass(frozen=True)
 class _SeatHit:
-    kind: str       # canonical | alias | role
-    seat: str       # canonical token, or BF-<ROLE> for a role
+    kind: str  # canonical | alias | role
+    seat: str  # canonical token, or BF-<ROLE> for a role
     ntokens: int
-    text: str       # the tokens as written, joined with dashes
+    text: str  # the tokens as written, joined with dashes
 
 
-def _seat_at(tokens: Sequence[str], i: int, canon: frozenset[str], aliases: Mapping[str, str],
-             roles: Mapping[str, RoleLane] = {}) -> _SeatHit | None:
+def _seat_at(
+    tokens: Sequence[str],
+    i: int,
+    canon: frozenset[str],
+    aliases: Mapping[str, str],
+    roles: Mapping[str, RoleLane] = {},
+) -> _SeatHit | None:
     """Seat at token position i.  Two-token seats (grok-build, muse-code) win over one-token ones.
     A lane-eligible bf-<role>/gb-<role> (the registry's seatApps.patterns lane blocks, AFC-620)
     classifies seat-like with its folder as the seat token;  other roles stay bot roles, and a
     bare `gb` stays the historic cursor alias."""
     for n in (2, 1):
         if i + n <= len(tokens):
-            cand = "-".join(tokens[i:i + n])
+            cand = "-".join(tokens[i : i + n])
             if cand in canon:
                 return _SeatHit("canonical", cand, n, cand)
             if cand in aliases and cand != "gb":
@@ -1382,8 +1620,12 @@ def _seat_at(tokens: Sequence[str], i: int, canon: frozenset[str], aliases: Mapp
     return None
 
 
-def _seat_anywhere(tokens: Sequence[str], canon: frozenset[str], aliases: Mapping[str, str],
-                   roles: Mapping[str, RoleLane] = {}) -> tuple[int, _SeatHit] | None:
+def _seat_anywhere(
+    tokens: Sequence[str],
+    canon: frozenset[str],
+    aliases: Mapping[str, str],
+    roles: Mapping[str, RoleLane] = {},
+) -> tuple[int, _SeatHit] | None:
     for i in range(len(tokens)):
         hit = _seat_at(tokens, i, canon, aliases, roles)
         if hit is not None:
@@ -1426,7 +1668,9 @@ class LaneNameResult:
     layout: str | None = None
 
 
-def _eval_name(name: str, registry: Registry, *, nested_prefix_dir: str | None) -> tuple[NameVerdict, list[str], App | None, _SeatHit | None, str | None]:
+def _eval_name(
+    name: str, registry: Registry, *, nested_prefix_dir: str | None
+) -> tuple[NameVerdict, list[str], App | None, _SeatHit | None, str | None]:
     """Judge one lane directory name.  `nested_prefix_dir` is the lanes/<Repo> folder name for a
     nested lane (the name then holds only <seat>[-<slug>]), or None for a flat lane.  The parent
     folder is the repo folder (`App.lane_dir`); the old lowercase prefix folders (lanes/fleet,
@@ -1449,19 +1693,21 @@ def _eval_name(name: str, registry: Registry, *, nested_prefix_dir: str | None) 
         m = _match_app(lname, registry)
         if m is None:
             toks = lname.split("-")
-            anywhere = _seat_anywhere(toks, canon, aliases, {rl.folder: rl for rl in registry.role_lanes})
+            anywhere = _seat_anywhere(
+                toks, canon, aliases, {rl.folder: rl for rl in registry.role_lanes}
+            )
             reasons.append("no-app-prefix")
             if anywhere is not None:
                 return NameVerdict.NAME_DRIFT, reasons, None, anywhere[1], None
             return NameVerdict.NON_LANE, reasons, None, None, None
         app, text, kind = m
-        exact = kind == "prefix" and name[:len(text)] == text
+        exact = kind == "prefix" and name[: len(text)] == text
         if kind == "alias":
             alias_prefix = True
             reasons.append(f"alias-prefix:{text}")
         elif not exact:
             reasons.append("prefix-case")
-        rest = lname[len(text) + 1:] if len(lname) > len(text) else ""
+        rest = lname[len(text) + 1 :] if len(lname) > len(text) else ""
         has_rest = bool(rest)
     else:
         app = registry.app_by_lane_dir(nested_prefix_dir)
@@ -1487,12 +1733,19 @@ def _eval_name(name: str, registry: Registry, *, nested_prefix_dir: str | None) 
     roles = {rl.folder: rl for rl in registry.role_lanes}
     first = _seat_at(toks, 0, canon, aliases, roles) if toks else None
     if first is not None and first.kind in ("canonical", "alias", "role-lane"):
-        slug = "-".join(toks[first.ntokens:]) or None
+        slug = "-".join(toks[first.ntokens :]) or None
         if slug is not None and len(slug) > SLUG_MAX:
             reasons.append(f"slug-over-{SLUG_MAX}")
         if exact and kebab:
             if first.kind in ("canonical", "role-lane"):
-                reasons.append(("role-token-ok:" if first.kind == "role-lane" else "seat-token-ok:") + first.text)
+                reasons.append(
+                    (
+                        "role-token-ok:"
+                        if first.kind == "role-lane"
+                        else "seat-token-ok:"
+                    )
+                    + first.text
+                )
                 return NameVerdict.CONFORMING, reasons, app, first, slug
             reasons.append("seat-alias:" + first.text)
             return NameVerdict.ALIAS_ONLY, reasons, app, first, slug
@@ -1511,7 +1764,9 @@ def _eval_name(name: str, registry: Registry, *, nested_prefix_dir: str | None) 
     return NameVerdict.NON_LANE, reasons, app, None, None
 
 
-def explain_lane_name(path: str | os.PathLike[str], registry: Registry, roots: Roots) -> LaneNameResult:
+def explain_lane_name(
+    path: str | os.PathLike[str], registry: Registry, roots: Roots
+) -> LaneNameResult:
     """Judge the lane directory name of `path` and say why.
 
     The app is inferred from the name (longest match across registered prefixes and aliases, at the
@@ -1527,38 +1782,56 @@ def explain_lane_name(path: str | os.PathLike[str], registry: Registry, roots: R
     """
     real = resolve_path(path, roots)
     cls, lane_dir = _classify(real, roots, None)
-    if lane_dir is None or cls not in (LocationClass.LANE_NESTED, LocationClass.LANE_FLAT,
-                                       LocationClass.LANE_FLAT_LEGACY):
+    if lane_dir is None or cls not in (
+        LocationClass.LANE_NESTED,
+        LocationClass.LANE_FLAT,
+        LocationClass.LANE_FLAT_LEGACY,
+    ):
         return LaneNameResult(NameVerdict.NON_LANE, (f"location:{cls}",), cls)
     lane = Path(lane_dir)
     if cls is LocationClass.LANE_NESTED:
-        verdict, reasons, app, hit, slug = _eval_name(lane.name, registry, nested_prefix_dir=lane.parent.name)
+        verdict, reasons, app, hit, slug = _eval_name(
+            lane.name, registry, nested_prefix_dir=lane.parent.name
+        )
         layout = LAYOUT_NESTED
     else:
-        verdict, reasons, app, hit, slug = _eval_name(lane.name, registry, nested_prefix_dir=None)
+        verdict, reasons, app, hit, slug = _eval_name(
+            lane.name, registry, nested_prefix_dir=None
+        )
         layout = LAYOUT_FLAT
-    return LaneNameResult(verdict, tuple(reasons), cls, app, hit.seat if hit else None,
-                          hit.text if hit else None, slug, layout)
+    return LaneNameResult(
+        verdict,
+        tuple(reasons),
+        cls,
+        app,
+        hit.seat if hit else None,
+        hit.text if hit else None,
+        slug,
+        layout,
+    )
 
 
-def check_lane_name(path: str | os.PathLike[str], registry: Registry, roots: Roots) -> NameVerdict:
+def check_lane_name(
+    path: str | os.PathLike[str], registry: Registry, roots: Roots
+) -> NameVerdict:
     """CONFORMING, ALIAS-ONLY, NAME-DRIFT or NON-LANE.  See `explain_lane_name` for the reasons."""
     return explain_lane_name(path, registry, roots).verdict
 
 
 # --------------------------------------------------------------------------- layout status (v2)
 
+
 class LayoutStatus(StrEnum):
     """Is a checkout where the v2 layout wants it?  Compares equal to the plain strings."""
 
-    CORRECT = "correct"                  # lanes/<Repo>/<seat>-<slug>, <slug>-<hex>, review-pr-<n>
-    LEGACY_MIGRATE = "legacy-migrate"    # old prefix folder, ~/.codex/worktrees (both move in the migration), flat lane (retires in place)
-    LEGACY = "legacy"                    # lanes/_managed/** and lanes/_review/**: abolished, nothing new goes there
-    CODEX_MANAGED = "codex-managed"      # lanes/_codex/**: Codex desktop's own layout
-    TOOL_MANAGED = "tool-managed"        # another harness's own worktree folder (as before)
-    HUMAN = "human"                      # the integration tree under ~/Code
-    WRONG = "wrong"                      # a temp dir, directly under ~/Code, or inside ~/Code/<Repo>
-    UNSANCTIONED = "unsanctioned"        # anywhere else outside the map
+    CORRECT = "correct"  # lanes/<Repo>/<seat>-<slug>, <slug>-<hex>, review-pr-<n>
+    LEGACY_MIGRATE = "legacy-migrate"  # old prefix folder, ~/.codex/worktrees (both move in the migration), flat lane (retires in place)
+    LEGACY = "legacy"  # lanes/_managed/** and lanes/_review/**: abolished, nothing new goes there
+    CODEX_MANAGED = "codex-managed"  # lanes/_codex/**: Codex desktop's own layout
+    TOOL_MANAGED = "tool-managed"  # another harness's own worktree folder (as before)
+    HUMAN = "human"  # the integration tree under ~/Code
+    WRONG = "wrong"  # a temp dir, directly under ~/Code, or inside ~/Code/<Repo>
+    UNSANCTIONED = "unsanctioned"  # anywhere else outside the map
 
 
 STATUS_LABELS: dict[str, str] = {
@@ -1584,7 +1857,9 @@ class LayoutResult:
     target: Path | None = None
 
 
-def explain_layout(path: str | os.PathLike[str], registry: Registry, roots: Roots) -> LayoutResult:
+def explain_layout(
+    path: str | os.PathLike[str], registry: Registry, roots: Roots
+) -> LayoutResult:
     """Say whether `path` sits where layout v2 puts it, and where a legacy checkout belongs.
 
     Pure, like everything here.  It never changes `classify_location`: a legacy or wrong place keeps
@@ -1597,7 +1872,12 @@ def explain_layout(path: str | os.PathLike[str], registry: Registry, roots: Root
     parts = _parts(real, roots)
     orig = Path(real).parts
 
-    def done(status: LayoutStatus, *reasons: str, app: App | None = None, target: Path | None = None) -> LayoutResult:
+    def done(
+        status: LayoutStatus,
+        *reasons: str,
+        app: App | None = None,
+        target: Path | None = None,
+    ) -> LayoutResult:
         return LayoutResult(status, tuple(reasons), cls, app, target)
 
     if cls is LocationClass.INTEGRATION_TREE:
@@ -1616,13 +1896,17 @@ def explain_layout(path: str | os.PathLike[str], registry: Registry, roots: Root
         if loc.name == "codex":
             tail = orig[n:]
             target = roots.codex_root.joinpath(*tail) if tail else None
-            return done(LayoutStatus.LEGACY_MIGRATE, "codex-worktrees-moves-to-lanes/_codex", target=target)
+            return done(
+                LayoutStatus.LEGACY_MIGRATE,
+                "codex-worktrees-moves-to-lanes/_codex",
+                target=target,
+            )
         return done(LayoutStatus.TOOL_MANAGED, f"harness:{loc.name}")
 
     lanes_p = _parts(roots.lanes_root, roots)
     if _under(parts, lanes_p):
-        rel = parts[len(lanes_p):]
-        orig_rel = orig[len(lanes_p):]
+        rel = parts[len(lanes_p) :]
+        orig_rel = orig[len(lanes_p) :]
         if rel and rel[0] == CODEX_DIR:
             return done(LayoutStatus.CODEX_MANAGED, "lanes/_codex")
         if rel and rel[0] == CONDUCTOR_DIR:
@@ -1632,19 +1916,38 @@ def explain_layout(path: str | os.PathLike[str], registry: Registry, roots: Root
         if cls is LocationClass.UNSANCTIONED or len(orig_rel) < 2:
             return done(LayoutStatus.UNSANCTIONED, "lanes-root-entry-outside-the-map")
         first, name = orig_rel[0], orig_rel[1]
-        kind = ("review-checkout" if cls is LocationClass.REVIEW
-                else "claude-desktop" if cls is LocationClass.MANAGED else "lane")
+        kind = (
+            "review-checkout"
+            if cls is LocationClass.REVIEW
+            else "claude-desktop"
+            if cls is LocationClass.MANAGED
+            else "lane"
+        )
         app = registry.app_by_lane_dir(first)
         if app is not None:
             return done(LayoutStatus.CORRECT, kind, app=app)
         old = registry.app_by_prefix(first)
         if old is not None and first == old.prefix:
-            return done(LayoutStatus.LEGACY_MIGRATE, f"legacy-prefix-dir:{first}", kind, app=old,
-                        target=roots.lanes_root / old.lane_dir / name)
-        cased = registry.app_by_lane_dir(first, case_insensitive=True) if roots.case_insensitive else None
+            return done(
+                LayoutStatus.LEGACY_MIGRATE,
+                f"legacy-prefix-dir:{first}",
+                kind,
+                app=old,
+                target=roots.lanes_root / old.lane_dir / name,
+            )
+        cased = (
+            registry.app_by_lane_dir(first, case_insensitive=True)
+            if roots.case_insensitive
+            else None
+        )
         if cased is not None:
-            return done(LayoutStatus.LEGACY_MIGRATE, f"repo-dir-case:{first}", kind, app=cased,
-                        target=roots.lanes_root / cased.lane_dir / name)
+            return done(
+                LayoutStatus.LEGACY_MIGRATE,
+                f"repo-dir-case:{first}",
+                kind,
+                app=cased,
+                target=roots.lanes_root / cased.lane_dir / name,
+            )
         return done(LayoutStatus.WRONG, f"unknown-repo-folder:{first}", kind)
 
     if cls is LocationClass.LANE_FLAT_LEGACY:
@@ -1652,10 +1955,19 @@ def explain_layout(path: str | os.PathLike[str], registry: Registry, roots: Root
         target = None
         if res.app is not None and res.seat and not res.seat.startswith("BF-"):
             try:
-                target = roots.lanes_root / res.app.lane_dir / nested_dir_name(res.seat, res.slug)
+                target = (
+                    roots.lanes_root
+                    / res.app.lane_dir
+                    / nested_dir_name(res.seat, res.slug)
+                )
             except LayoutError:
                 target = None
-        return done(LayoutStatus.LEGACY_MIGRATE, "flat-lane-under-~/apps", app=res.app, target=target)
+        return done(
+            LayoutStatus.LEGACY_MIGRATE,
+            "flat-lane-under-~/apps",
+            app=res.app,
+            target=target,
+        )
     if cls is LocationClass.LANE_FLAT:
         return done(LayoutStatus.CORRECT, "flat-layout-mode")
     return done(LayoutStatus.UNSANCTIONED, "outside-the-map")
@@ -1715,19 +2027,28 @@ def seat_from_branch(branch: str | None, registry: Registry) -> str | None:
         if b.startswith(rl.branch_prefix) and len(b) > len(rl.branch_prefix):
             return rl.folder
     if b.startswith("agent/"):
-        tail = b[len("agent/"):].split("/", 1)[0].split("-", 1)[0]
+        tail = b[len("agent/") :].split("/", 1)[0].split("-", 1)[0]
         return normalize_seat(tail, registry) if is_known_seat(tail, registry) else None
     head, _, tail = b.partition("/")
-    return normalize_seat(head, registry) if tail and is_known_seat(head, registry) else None
+    return (
+        normalize_seat(head, registry)
+        if tail and is_known_seat(head, registry)
+        else None
+    )
 
 
-def upgrade_with_branch(verdict: NameVerdict, branch: str | None, registry: Registry) -> NameVerdict:
+def upgrade_with_branch(
+    verdict: NameVerdict, branch: str | None, registry: Registry
+) -> NameVerdict:
     """Fold branch evidence into a name verdict.
 
     A name alone can say NON-LANE for a directory that is plainly a lane by its branch (a clone
     named HogHunter on grok/cpu-mach-timebase).  When the verdict is NON-LANE and the branch names
     a seat, this returns NAME-DRIFT.  Every other verdict is returned unchanged.
     """
-    if verdict == NameVerdict.NON_LANE and seat_from_branch(branch, registry) is not None:
+    if (
+        verdict == NameVerdict.NON_LANE
+        and seat_from_branch(branch, registry) is not None
+    ):
         return NameVerdict.NAME_DRIFT
     return verdict

@@ -189,7 +189,8 @@ def resolve_seat(
             who,
             (
                 "no seat assigned by %s:  AGENT_LAUNCHER is set but AGENT_LAUNCH_SEAT is not, so this launched "
-                "session takes no fleet action (no platform default applies under a launcher)" % who
+                "session takes no fleet action (no platform default applies under a launcher)"
+                % who
             ),
         )
     for label, raw in named + [("default", _clean(default))]:
@@ -302,14 +303,18 @@ def _pattern_regex(match: str) -> re.Pattern[str]:
         raise SeatRegistryError(
             "seatApps.patterns match %r may hold only A-Z, 0-9, _, - and *" % match
         )
-    return re.compile("".join(_ROLE_CHARS if ch == "*" else re.escape(ch) for ch in match))
+    return re.compile(
+        "".join(_ROLE_CHARS if ch == "*" else re.escape(ch) for ch in match)
+    )
 
 
 _ROLE_TOKEN_RE = re.compile(r"[A-Z0-9][A-Z0-9_-]*")
 _FOLDER_SLUG_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
 
 
-def _pattern_lane(where: str, item: Mapping[str, Any]) -> tuple[tuple[str, ...], str, str]:
+def _pattern_lane(
+    where: str, item: Mapping[str, Any]
+) -> tuple[tuple[str, ...], str, str]:
     """Validate a pattern row's optional `lane` block:  role tokens plus the folder and branch
     templates that make BF-<ROLE>/GB-<ROLE> tags lane-eligible (AFC-620)."""
     lane = item.get("lane")
@@ -335,13 +340,15 @@ def _pattern_lane(where: str, item: Mapping[str, Any]) -> tuple[tuple[str, ...],
         or len(set(roles)) != len(roles)
     ):
         raise SeatRegistryError(
-            "%s lane.roles must be a non-empty list of distinct upper-case role tokens" % where
+            "%s lane.roles must be a non-empty list of distinct upper-case role tokens"
+            % where
         )
     folder_t, branch_t = lane.get("folderTemplate"), lane.get("branchTemplate")
     for name, tpl in (("folderTemplate", folder_t), ("branchTemplate", branch_t)):
         if not isinstance(tpl, str) or tpl.count("<role>") != 1:
             raise SeatRegistryError(
-                "%s lane.%s must be a string containing exactly one <role>" % (where, name)
+                "%s lane.%s must be a string containing exactly one <role>"
+                % (where, name)
             )
     for role in roles:
         folder = folder_t.replace("<role>", role.lower())
@@ -366,7 +373,8 @@ def _pattern_lane(where: str, item: Mapping[str, Any]) -> tuple[tuple[str, ...],
         ):
             raise SeatRegistryError(
                 "%s lane.branchTemplate renders invalid prefix %r for role %s"
-                " (one lowercase-kebab segment + /, 1..40 chars)" % (where, branch, role)
+                " (one lowercase-kebab segment + /, 1..40 chars)"
+                % (where, branch, role)
             )
     return tuple(roles), folder_t, branch_t
 
@@ -415,7 +423,9 @@ def parse_seat_registry(data: Any, source: str = "") -> SeatRegistry:
     patterns = []
     for item in raw_patterns:
         if not isinstance(item, Mapping) or not isinstance(item.get("match"), str):
-            raise SeatRegistryError("every seatApps.patterns entry needs a match string and an app")
+            raise SeatRegistryError(
+                "every seatApps.patterns entry needs a match string and an app"
+            )
         where = "seatApps.patterns %s" % item["match"]
         roles, folder_template, branch_template = _pattern_lane(where, item)
         patterns.append(
@@ -471,7 +481,9 @@ def load_seat_registry(
         with open(target, encoding="utf-8") as fh:
             data = json.load(fh)
     except (OSError, ValueError) as exc:
-        raise SeatRegistryError("cannot read %s: %s" % (target, type(exc).__name__)) from None
+        raise SeatRegistryError(
+            "cannot read %s: %s" % (target, type(exc).__name__)
+        ) from None
     registry = parse_seat_registry(data, target)
     _registry_cache[target] = (stamp, registry)
     return registry
@@ -482,7 +494,11 @@ def pattern_role(pattern: SeatPattern, seat: str) -> str | None:
     if pattern.match.count("*") != 1:
         return None
     pre, post = pattern.match.split("*")
-    if not (seat.startswith(pre) and seat.endswith(post) and len(seat) >= len(pre) + len(post) + 1):
+    if not (
+        seat.startswith(pre)
+        and seat.endswith(post)
+        and len(seat) >= len(pre) + len(post) + 1
+    ):
         return None
     return seat[len(pre) : len(seat) - len(post) if post else len(seat)]
 
@@ -604,7 +620,9 @@ def partition_path(env: Mapping[str, str], repo_root: str = REPO_ROOT) -> str:
     )
 
 
-def partition_instance(seat: str, env: Mapping[str, str]) -> tuple[str | None, str | None]:
+def partition_instance(
+    seat: str, env: Mapping[str, str]
+) -> tuple[str | None, str | None]:
     """(instance, error):  the instance the partition gives `seat` (mac, server or none), None when
     it does not list the seat, and an error when the file cannot be read (callers fail closed).
     config.load_partition is the daemon's full check; this is the light read the hooks can afford."""
@@ -644,10 +662,15 @@ def served_here(seat: str, env: Mapping[str, str]) -> tuple[bool, str]:
     if instance is None:
         return (
             False,
-            "seat %s is not in the seat partition, so no listener serves it; no inbox here" % seat,
+            "seat %s is not in the seat partition, so no listener serves it; no inbox here"
+            % seat,
         )
-    return False, "seat %s is not served by the %s listener (partition:  %s); no inbox here" % (
-        seat,
-        "Mac" if here == "mac" else here,
-        instance,
+    return (
+        False,
+        "seat %s is not served by the %s listener (partition:  %s); no inbox here"
+        % (
+            seat,
+            "Mac" if here == "mac" else here,
+            instance,
+        ),
     )

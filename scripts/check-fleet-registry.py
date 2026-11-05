@@ -37,7 +37,11 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from agent_sync.identity import GROK_ALIAS_PATTERN, SeatRegistryError, parse_seat_registry
+from agent_sync.identity import (
+    GROK_ALIAS_PATTERN,
+    SeatRegistryError,
+    parse_seat_registry,
+)
 from agent_sync.zulip import DEFAULT_CHANNEL, REALM, credential_file_name
 from public_activity_repos import PUBLIC_REPOS
 
@@ -88,7 +92,9 @@ def zulip_errors(data: dict) -> list[str]:
     seats = [s for s in data.get("seats", []) if isinstance(s, dict)]
     tags = [s.get("tag") or "" for s in seats]
     for tag in sorted({t for t in tags if tags.count(t) > 1}):
-        errors.append(f"seat {tag or '(no tag)'} appears more than once in fleet-apps.json")
+        errors.append(
+            f"seat {tag or '(no tag)'} appears more than once in fleet-apps.json"
+        )
     live = {s["tag"] for s in seats if s.get("tag") and not s.get("retired")}
     emails: dict[str, str] = {}
     for seat in seats:
@@ -113,7 +119,11 @@ def zulip_errors(data: dict) -> list[str]:
             errors.append(
                 f"seat {tag} must carry zulipBotEmail and zulipFileCode together, or neither"
             )
-        if code and seat.get("tag") and code != credential_file_name(tag).removesuffix("-zuliprc"):
+        if (
+            code
+            and seat.get("tag")
+            and code != credential_file_name(tag).removesuffix("-zuliprc")
+        ):
             errors.append(
                 f"seat {tag} zulipFileCode {code!r} disagrees with the agent-sync file-name rule "
                 f"({credential_file_name(tag).removesuffix('-zuliprc')!r})"
@@ -130,7 +140,9 @@ def zulip_errors(data: dict) -> list[str]:
                     f"seat {tag} zulipBotEmail {email!r} ends in -bot-bot; the short name must not end in -bot"
                 )
             elif email in emails:
-                errors.append(f"seat {tag} and seat {emails[email]} share the Zulip bot {email}")
+                errors.append(
+                    f"seat {tag} and seat {emails[email]} share the Zulip bot {email}"
+                )
             else:
                 emails[email] = tag
     errors.extend(alias_pattern_errors(seats))
@@ -193,7 +205,10 @@ def seat_apps_errors(data: dict) -> list[str]:
     # so a mixed-case worktreeSuffix/branchPrefix cannot escape the collision check.
     seat_suffixes = {str(s.get("worktreeSuffix") or "").lower() for s in seats}
     seat_prefixes = {
-        str(bp).lower() for s in seats for bp in (s.get("branchPrefixes") or []) if isinstance(bp, str)
+        str(bp).lower()
+        for s in seats
+        for bp in (s.get("branchPrefixes") or [])
+        if isinstance(bp, str)
     }
     seen_folders: dict[str, str] = {}
     seen_prefixes: dict[str, str] = {}
@@ -275,7 +290,9 @@ def alias_pattern_errors(seats: list[dict]) -> list[str]:
                 f"({GROK_ALIAS_PATTERN!r}); change both"
             )
         aliases = [
-            s.get("tag") or "" for s in seats if s.get("aliasOf") == tag and s.get("retired")
+            s.get("tag") or ""
+            for s in seats
+            if s.get("aliasOf") == tag and s.get("retired")
         ]
         if not aliases:
             errors.append(
@@ -313,7 +330,9 @@ def engine_only_errors(data: dict, agent_sync: str) -> list[str]:
         if seat.get("tag") == "KIMI" and legacy_kimi_mirror:
             continue
         for name in sorted({seat.get("tag") or "", seat.get("notesName") or ""} - {""}):
-            if re.search(rf"(?<![\w-]){re.escape(name)}(?![\w-])", row.group(1), re.IGNORECASE):
+            if re.search(
+                rf"(?<![\w-]){re.escape(name)}(?![\w-])", row.group(1), re.IGNORECASE
+            ):
                 errors.append(
                     f"FLEET-PROTOCOL.md lists live seat {seat.get('tag')} ({name}) in its Engine-only CLIs row; "
                     "a seat is not an engine-only CLI"
@@ -322,7 +341,9 @@ def engine_only_errors(data: dict, agent_sync: str) -> list[str]:
     return errors
 
 
-_LEGACY_KIMI_MIRROR_SHA256 = "27ad2f170794d16c8a4956f2bc3d82c7eefbd9401a9a4b0af50d7b89c1bc40a6"
+_LEGACY_KIMI_MIRROR_SHA256 = (
+    "27ad2f170794d16c8a4956f2bc3d82c7eefbd9401a9a4b0af50d7b89c1bc40a6"
+)
 _LEGACY_KIMI_ENGINE_ONLY_ROW = "Droid, Hermes, Qwen, Kimi, DeepSeek, Pi, Mistral Vibe, GitHub Copilot CLI, any other ACP engine"
 _GENERATED_BODY_SHA256 = re.compile(
     r"\A<!--\s*GENERATED[^\n]*body-sha256:([0-9a-f]{64})\s*-->\n", re.IGNORECASE
@@ -440,7 +461,9 @@ def main() -> int:
         print(f"missing required mirror: {ROOT / doc_names[0]}")
         return 1
     agent_sync = mirror.read_text()
-    live_sync = next((APPS / n for n in doc_names if (APPS / n).is_file()), APPS / doc_names[0])
+    live_sync = next(
+        (APPS / n for n in doc_names if (APPS / n).is_file()), APPS / doc_names[0]
+    )
     live_checks = APPS.is_dir() if _board_home_env else live_sync.is_file()
     if _board_home_env and not live_checks:
         errors.append(f"FLEET_BOARD_HOME is not a directory: {APPS}")
@@ -516,7 +539,9 @@ def main() -> int:
         for lst in lists:
             configured = set(lst.split(","))
             if configured != public_repos:
-                errors.append(f"{wf_name} FLEET_REPOS must match verified public allowlist")
+                errors.append(
+                    f"{wf_name} FLEET_REPOS must match verified public allowlist"
+                )
 
     backup_py = ROOT / "scripts" / "backup-fleet-to-gdrive.py"
     if backup_py.is_file():
@@ -527,9 +552,13 @@ def main() -> int:
             )
         gha = ROOT / ".github" / "workflows" / "backup-repos.yml"
         if not gha.is_file():
-            errors.append("missing .github/workflows/backup-repos.yml (GitHub artifact backup)")
+            errors.append(
+                "missing .github/workflows/backup-repos.yml (GitHub artifact backup)"
+            )
         elif "fleet-apps.json" not in gha.read_text():
-            errors.append(".github/workflows/backup-repos.yml must read fleet-apps.json")
+            errors.append(
+                ".github/workflows/backup-repos.yml must read fleet-apps.json"
+            )
 
     if errors:
         print("fleet registry check FAILED:")
