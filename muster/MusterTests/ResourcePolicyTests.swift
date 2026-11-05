@@ -162,6 +162,21 @@ final class ResourcePolicyTests: XCTestCase {
         XCTAssertFalse(reading.canReviewChanges(at: now))
     }
 
+    func test_a_zero_memory_total_before_the_first_check_is_unknown_not_corrupt() throws {
+        let data = try changingObserved(try json(status: "unavailable")) {
+            $0["ramTotalBytes"] = 0
+            $0["ramCurrentBytes"] = 0
+            $0["ramTargetBytes"] = 0
+            $0["codingGroups"] = 0
+        }
+        let reading = decode(data)
+        XCTAssertEqual(reading.state, .unavailable)
+        let snapshot = try XCTUnwrap(reading.snapshot)
+        XCTAssertNil(snapshot.totalMemoryGiB)
+        XCTAssertNil(ResourcePolicyField.ramBudgetGiB.range(in: snapshot))
+        XCTAssertEqual(snapshot.desired.ramPressureGiB, 8)
+    }
+
     func test_fractional_saved_values_are_shown_as_they_are() throws {
         let source = String(decoding: try json(), as: UTF8.self)
             .replacingOccurrences(of: "\"reserveGiB\":4", with: "\"reserveGiB\":4.5")

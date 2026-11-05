@@ -524,6 +524,18 @@ def public_snapshot(policy, state, cpu, now=None):
         or observed["controlSuspended"]
     )
     drift = observed["cpuMismatches"] or observed["actualHighMismatches"]
+    # A measurement the controller has not made yet, as before its first memory check, is
+    # left out rather than published as zero.  The status above already used the safe default.
+    for source, dest in (
+        ("coding_current_bytes", "ramCurrentBytes"),
+        ("coding_target_bytes", "ramTargetBytes"),
+        ("total_bytes", "ramTotalBytes"),
+        ("coding_groups", "codingGroups"),
+        ("production_groups", "productionGroups"),
+    ):
+        value = report.get(source)
+        if type(value) is not int or value < 0 or (dest == "ramTotalBytes" and value == 0):
+            observed.pop(dest, None)
     return {
         "schemaVersion": 1,
         "generatedAt": now,

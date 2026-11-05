@@ -432,6 +432,10 @@ def public_snapshot(raw, now, policy=None):
         ):
             if type(o.get(key)) is int and 0 <= o[key] <= 2**63 - 1:
                 observed[key] = o[key]
+        if observed.get("ramTotalBytes") == 0:
+            # An older controller writes a zero total before its first memory check.  A
+            # server has memory, so zero means not measured, and it stays absent.
+            del observed["ramTotalBytes"]
         if type(o.get("controlSuspended")) is int and 0 <= o["controlSuspended"] <= 2**63 - 1:
             observed["controlSuspended"] = o["controlSuspended"]
         for key in ("policyStale",):

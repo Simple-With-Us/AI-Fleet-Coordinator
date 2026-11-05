@@ -581,7 +581,9 @@ enum ResourceLimitsCopy {
         let limit = o.ramTargetBytes > 0 ? "of a \(gib(bytes: o.ramTargetBytes)) limit" : "with no coding limit set"
         rows.append(.init(title: "Coding Memory In Use", value: "\(gib(bytes: o.ramCurrentBytes)) \(limit)", kind: .primary))
         if let available = o.availableBytes {
-            let total = o.ramTotalBytes.map { " of \(gib(bytes: $0))" } ?? ""
+            let total = o.ramTotalBytes.flatMap { bytes -> String? in
+                bytes > 0 ? " of \(gib(bytes: bytes))" : nil
+            } ?? ""
             rows.append(.init(title: "Memory Available", value: "\(gib(bytes: available))\(total)", kind: .primary))
         }
         rows.append(.init(title: "Coding Services Limited", value: "\(o.codingGroups)", kind: .primary))
@@ -840,8 +842,9 @@ struct ResourcePolicyReading: Equatable {
         if observed.cpuOnline < 3 { return false }
         if let cores = s.desired.cpuCores, cores > observed.cpuOnline - 2 { return false }
         if let weight = observed.cpuWeight, !(1...10_000).contains(weight) { return false }
-        if let total = observed.ramTotalBytes {
-            if total == 0 { return false }
+        // A zero total is an older controller that has not measured yet:  unknown, not corrupt,
+        // and `totalMemoryGiB` already reads it as unknown.
+        if let total = observed.ramTotalBytes, total > 0 {
             if observed.ramCurrentBytes > total || observed.ramTargetBytes > total { return false }
         }
         // The controller writes a zero target when no coding service is running,  and only then.

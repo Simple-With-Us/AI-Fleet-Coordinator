@@ -742,6 +742,22 @@ class CPUFixture(unittest.TestCase):
             self.policy["critical_available_bytes"] / 1024**3,
         )
 
+    def test_snapshot_before_the_first_memory_check_publishes_no_zero_measurements(self):
+        self.discover()
+        self.controller.apply(self.policy)
+        self.state.pop("last_status", None)
+        snapshot = r.public_snapshot(self.policy, self.state, self.controller)
+        self.assertEqual(snapshot["status"], "unavailable")
+        self.assertIn("no-controller-report", snapshot["reasons"])
+        for key in (
+            "ramTotalBytes",
+            "ramCurrentBytes",
+            "ramTargetBytes",
+            "codingGroups",
+            "productionGroups",
+        ):
+            self.assertNotIn(key, snapshot["observed"])
+
     def test_policy_revision_does_not_normalize_optional_defaults(self):
         original = policy()
         self.assertNotEqual(

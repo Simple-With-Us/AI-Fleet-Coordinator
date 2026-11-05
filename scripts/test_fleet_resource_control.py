@@ -673,6 +673,12 @@ class BrokerTests(unittest.TestCase):
         self.assertNotIn("oomKillDelta", observed)
         self.assertNotIn("availableBytes", observed)
 
+    def test_a_zero_memory_total_from_an_older_controller_stays_unknown(self):
+        result = r.public_snapshot(snapshot(policy(), ramTotalBytes=0), NOW)
+        self.assertNotIn("ramTotalBytes", result["observed"])
+        self.assertEqual(result["status"], "unavailable")
+        self.assertEqual(result["reasons"], ["receipt-incomplete"])
+
     def test_status_with_an_unreadable_saved_policy_says_so(self):
         def get():
             raise r.Failed("the resource policy could not be read from its verified source")

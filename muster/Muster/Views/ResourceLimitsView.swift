@@ -547,10 +547,25 @@ struct ResourceLimitsView: View {
             return
         }
         Task {
-            await refresh()
+            // A read already running (the 30-second one,  say) is waited for,  never
+            // skipped,  so the click is not lost.
+            await finishRefresh()
+            if !reading.canReviewChanges(at: Date()) {
+                await refresh()
+            }
             if reading.canReviewChanges(at: Date()) {
                 send(field)
             }
+        }
+    }
+
+    /// Wait for a read that is already running,  for at most the plan timeout.
+    @MainActor
+    private func finishRefresh() async {
+        var waited = 0
+        while loading && waited < 900 {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            waited += 1
         }
     }
 
