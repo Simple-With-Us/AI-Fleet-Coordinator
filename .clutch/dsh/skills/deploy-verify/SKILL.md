@@ -11,7 +11,7 @@ description: >-
 > **Runtime (Clutch).**  Clutch runs the DSH engine (`clutch`, pm2 `clutch-web`, the Clutch Mac app).  The engine finds skills in `~/.clutch/dsh/skills` before the shared `~/.agents/skills` pack it also reads, so this pack shadows that one.  It loads `~/.clutch/dsh/AGENTS.md` and then the project `AGENTS.md` chain, and reads neither `~/AGENTS.md` nor `~/.claude/CLAUDE.md`.  Start `clutch` inside a lane (`~/apps/lanes/Clutch/clutch-<slug>`).  A seat a launcher assigned (BotFleet, a bridge) beats the CLUTCH default.
 
 
-Read `/Users/jay/apps/COOLIFY.md` before poking the API.  Prefer **public health + `docker ps` on the box** over Coolify UI/API `status` (that field goes stale).
+Read `~/apps/COOLIFY.md` before poking the API.  Prefer **public health + `docker ps` on the box** over Coolify UI/API `status` (that field goes stale).
 
 Operator host (live 2026-08-07+): Hetzner NBG1 **`<PROD_ORIGIN_IP>`** (the host name is in the operator's private inventory on that Mac).  SSH `ssh -i ~/.ssh/hetzner root@<PROD_ORIGIN_IP>`.  Dashboard `https://host.jays.services`.
 
@@ -142,10 +142,10 @@ Move the Linear issue to **Deployed** (`simple-board status <id> deployed --reso
 
 ## Canon
 
-- `/Users/jay/apps/COOLIFY.md`
+- `~/apps/COOLIFY.md`
 - `~/apps/ios-fleet/README.md` — TestFlight ship, the rate gate, and the freshness script
 - `docs/protocols/production-deploys.md` — sanctioned deploy paths and Coolify tokens
-- `/Users/jay/apps/FLEET-PROTOCOL.md` — Releases, Versioning, and Brand Assets (owner copy)
+- `~/apps/FLEET-PROTOCOL.md` — Releases, Versioning, and Brand Assets (owner copy)
 - ST `docs/rollouts/2026-08-07-hetzner-fleet-cutover.md`
 - ST `docs/rollouts/2026-07-10-auto-deploy-on.md` (mechanism; UUIDs/IPs in that note may be pre-cutover)
 - Skills: `secret-handoff`, `closeout`, `land-lane`

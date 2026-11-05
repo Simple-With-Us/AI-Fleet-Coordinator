@@ -46,7 +46,7 @@ There is no effort log to update and nothing for writeback to copy.  The effort
 
 The PR body names the issue (`Fixes <ID>` or `Refs <ID>`), and the branch is `<seat>/<id>-<slug>`.  Say in the closeout post which of the two you used.
 
-Opening, editing, replying to, resolving and merging a PR all have a credential-safe path: `git-relay`, with the MCP wrapper **GR-MCP** (`git-relay mcp`), which exposes `open_pr`, `edit_pr`, `reply_thread`, `comment_pr`, `merge_pr`, `workflow_dispatch` and `resolve_thread`; `mint_token` is deliberately not exposed over MCP, because it returns a raw credential.  A seat reaches the tools with its own bearer token: ST-MCP shares the same bearer-token arrangement, so a seat may find these tools on its ST-MCP connection, while other seats run GR-MCP directly as its own stdio server — the tool names are the same either way.  **The relay is not deployed yet** (verified Oct 23 2026): there is no daemon, no launchd job and no seat pointed at it, so the interim `gh` and shell path is still the one that works, until the owner decides the cutover.
+Opening, editing, replying to, resolving and merging a PR all have a credential-safe path: `git-relay`, with the MCP wrapper **GR-MCP** (`git-relay mcp`), which exposes `open_pr`, `edit_pr`, `reply_thread`, `comment_pr`, `merge_pr`, `workflow_dispatch` and `resolve_thread`; `mint_token` is deliberately not exposed over MCP, because it returns a raw credential.  A seat reaches the tools with its own bearer token: ST-MCP shares the same bearer-token arrangement, so a seat may find these tools on its ST-MCP connection, while other seats run GR-MCP directly as its own stdio server — the tool names are the same either way.  **The relay tools are live** (verified Nov 4 2026): a seat connected through Fleet MCP calls `gr_open_pr`, `gr_edit_pr`, `gr_reply_thread`, `gr_comment_pr`, `gr_resolve_thread`, `gr_merge_pr` and the `gr_wf_*` workflow verbs as its own GitHub App, so every PR write goes through the relay tools.  A personal `gh` credential is not the fleet's route, and another seat's credential is never borrowed: a seat with no relay connection says so and stops.
 
 ## 4. Zulip
 
@@ -66,7 +66,7 @@ Substantial work: living Completion note, `--update` in place.  Title `[TEAM_KE
 
 ## 6. Mac local processes
 
-If this unit created, loaded, bootout, or retired a LaunchAgent, cron, login item, pm2 KeepAlive job, **or a helper other agents run**: add/update a row on `/Users/jay/apps/MAC-LOCAL-PROCESSES.md` **and** `--update "⭐️ Background Jobs Master List"` in the same change.  Say always-on vs on-demand.  Retire in place; never delete historical rows.
+If this unit created, loaded, bootout, or retired a LaunchAgent, cron, login item, pm2 KeepAlive job, **or a helper other agents run**: add/update a row on `~/apps/MAC-LOCAL-PROCESSES.md` **and** `--update "⭐️ Background Jobs Master List"` in the same change.  Say always-on vs on-demand.  Retire in place; never delete historical rows.
 
 Do not SIGKILL `com.jay.claude-remote-control`.
 
@@ -101,8 +101,8 @@ or MCP `recall_contribute`.  40–4000 chars, one idea, category `lesson | pref
 
 ## Canon
 
-- `/Users/jay/apps/FLEET-PROTOCOL.md` — Linear and the claim lifecycle; Apple Notes; Mac local processes; always-commit
-- `/Users/jay/apps/EFFORT-LOG-PROTOCOL.md` — retired stub: the effort logs are archived
+- `~/apps/FLEET-PROTOCOL.md` — Linear and the claim lifecycle; Apple Notes; Mac local processes; always-commit
+- `~/apps/EFFORT-LOG-PROTOCOL.md` — retired stub: the effort logs are archived
 - Skills: `board-ops`, `apple-notes`, `deploy-verify`, `land-lane`
 
 ## Living Handoff Morphing to Closeout

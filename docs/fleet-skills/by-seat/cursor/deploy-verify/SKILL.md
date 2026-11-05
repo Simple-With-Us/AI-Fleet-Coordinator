@@ -11,7 +11,7 @@ description: >-
 > **Runtime fork (Cursor).**  Local Cursor IDE / Auto on this Mac is `[CURSOR]`.  If this session is a **Cursor cloud agent spawned as Grok Bot**, your chat tag is `[GB-<NAME>]` (GB-DIRECTOR, GB-FIXER, GB-DESIGNER, GB-COMPILER, GB-HOUSEKEEPER, GB-PUBLISHER, GB-DEPLOYER, GB-MONITOR, GB-PLUMBER, GB-ORACLE, GB-TRADER, GB-ENGINEER) — not `[GROK-BOT]`, not `[CURSOR]`, and not `[GROK]`.  A DeepSeek *model* inside Cursor is still `[CURSOR]` unless you are the separate DeepSeek Harness seat (`[DSH]`).  Never `[MONET]`.
 
 
-Read `/Users/jay/apps/COOLIFY.md` before poking the API.  Prefer **public health + `docker ps` on the box** over Coolify UI/API `status` (that field goes stale).
+Read `~/apps/COOLIFY.md` before poking the API.  Prefer **public health + `docker ps` on the box** over Coolify UI/API `status` (that field goes stale).
 
 Operator host (live 2026-08-07+): Hetzner NBG1 **`<PROD_ORIGIN_IP>`** (the host name is in the operator's private inventory on that Mac).  SSH `ssh -i ~/.ssh/hetzner root@<PROD_ORIGIN_IP>`.  Dashboard `https://host.jays.services`.
 
@@ -142,10 +142,10 @@ Move the Linear issue to **Deployed** (`simple-board status <id> deployed --reso
 
 ## Canon
 
-- `/Users/jay/apps/COOLIFY.md`
+- `~/apps/COOLIFY.md`
 - `~/apps/ios-fleet/README.md` — TestFlight ship, the rate gate, and the freshness script
 - `docs/protocols/production-deploys.md` — sanctioned deploy paths and Coolify tokens
-- `/Users/jay/apps/FLEET-PROTOCOL.md` — Releases, Versioning, and Brand Assets (owner copy)
+- `~/apps/FLEET-PROTOCOL.md` — Releases, Versioning, and Brand Assets (owner copy)
 - ST `docs/rollouts/2026-08-07-hetzner-fleet-cutover.md`
 - ST `docs/rollouts/2026-07-10-auto-deploy-on.md` (mechanism; UUIDs/IPs in that note may be pre-cutover)
 - Skills: `secret-handoff`, `closeout`, `land-lane`

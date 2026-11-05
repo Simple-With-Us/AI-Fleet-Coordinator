@@ -91,8 +91,8 @@ Answer disambiguation pings fast.  Cede lanes the returning seat re-claims, esp
 
 ## Canon
 
-- `/Users/jay/apps/FLEET-PROTOCOL.md` — handoff, seats, Mac local processes
-- `/Users/jay/apps/EFFORT-LOG-PROTOCOL.md` — retired stub
+- `~/apps/FLEET-PROTOCOL.md` — handoff, seats, Mac local processes
+- `~/apps/EFFORT-LOG-PROTOCOL.md` — retired stub
 - Skills: `session-start`, `board-ops`, `land-lane`, `unstick-pr`, `closeout`
 
 ## Substitute Agent Directed Closeout `[SUB→ORIGINAL]`

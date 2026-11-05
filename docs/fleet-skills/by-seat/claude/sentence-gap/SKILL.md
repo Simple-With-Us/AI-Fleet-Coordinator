@@ -9,7 +9,7 @@ description: >-
 > **This install is for `CLAUDE`.**  Chat tag `[CLAUDE·session8]`.  Notes `Claude`.  Branches `claude/`.  Lanes `~/apps/lanes/<Repo>/claude-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `CLAUDE`, credential in Infisical Fleet-OPS `/zulip` (`CLAUDE_ZULIP_EMAIL`, `CLAUDE_ZULIP_KEY`, `CLAUDE_ZULIP_SITE`).  Session tag `[CLAUDE·session8]`, and the `simple-chat` CLI writes it for you.
 
 
-Source of truth: `/Users/jay/Code/AI-Fleet-Coordinator/docs/SENTENCE-GAP-PORTABLE-SKILL.md`
+Source of truth: `~/Code/AI-Fleet-Coordinator/docs/SENTENCE-GAP-PORTABLE-SKILL.md`
 
 The block below is the canonical protocol, pasted verbatim.  Follow it exactly.  Do not weaken it.  Cloud agents without the Mac filesystem still have the full protocol in this file.
 
