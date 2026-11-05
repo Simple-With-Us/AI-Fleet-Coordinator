@@ -306,11 +306,29 @@ enum SidebarBadges {
 /// the report timer is the repair when the server is reached and its report stopped.  A
 /// plan cannot change anything, and Touch ID comes before any run.
 enum ServerLastKnown {
-    /// The units to list:  the last report's, then the report timer when it named none.
-    static func units(_ services: [ServerService]) -> [String] {
-        var units = services.map(\.unit)
-        if !units.contains(OpsNames.reportTimerUnit) { units.append(OpsNames.reportTimerUnit) }
-        return units
+    /// One unit as the list shows it.  A unit can be named in two scopes, so a row is the
+    /// scope and the unit together, as `ServerService.id` is.
+    struct Row: Equatable, Identifiable {
+        let id: String
+        let unit: String
+        /// The scope the last report gave, or nil for a unit it did not name.
+        let scope: String?
+        /// The unit's last state, in words.
+        let lastState: String
+    }
+
+    /// The rows to list:  the last report's, one per scope and unit, then the report timer
+    /// when the report named it in no scope.
+    static func rows(_ services: [ServerService]) -> [Row] {
+        var rows = services.map { service in
+            Row(id: service.id, unit: service.unit, scope: service.scope ?? "system",
+                lastState: "last known \(service.activeState ?? "not known")")
+        }
+        if !services.contains(where: { $0.unit == OpsNames.reportTimerUnit }) {
+            rows.append(Row(id: "unlisted/\(OpsNames.reportTimerUnit)", unit: OpsNames.reportTimerUnit,
+                            scope: nil, lastState: "not in the last report"))
+        }
+        return rows
     }
 
     /// The actions one unit gets:  Restart when the allowlist names it, and Logs when the
@@ -322,12 +340,6 @@ enum ServerLastKnown {
         if verbs.contains(.restart) { actions.append(.serverUnit(verb: .restart, unit: unit)) }
         actions.append(.logs(unit: unit))
         return actions
-    }
-
-    /// A unit's last state, as the last report gave it.
-    static func lastState(unit: String, services: [ServerService]) -> String {
-        guard let service = services.first(where: { $0.unit == unit }) else { return "not in the last report" }
-        return "last known \(service.activeState ?? "not known")"
     }
 }
 
@@ -399,10 +411,17 @@ enum GridStateFilter: String, CaseIterable, Identifiable {
     case drift = "Drifted"
     case unproven = "Unproven"
 
+    case checkedEarlier = "Checked Earlier"
+
     var id: String { rawValue }
 
-    /// True when a seat with these cell states belongs under the filter.
-    func includes(_ states: [CellState]) -> Bool {
+    /// True when a seat with these cells belongs under the filter.
+    ///
+    /// Checked Earlier uses the Overview's own rule, so the card's count and the seats it
+    /// opens on are the same cells.  With no shared check time nothing is checked earlier,
+    /// as the card's count is then unknown.
+    func includes(_ cells: [GridCell], commonCheckedAt: Date?) -> Bool {
+        let states = cells.map(\.state)
         switch self {
         case .all: return true
         case .attention:
@@ -410,22 +429,10 @@ enum GridStateFilter: String, CaseIterable, Identifiable {
         case .red: return states.contains(where: \.isRed)
         case .drift: return states.contains(.drift)
         case .unproven: return states.contains(.unproven)
+        case .checkedEarlier:
+            guard let commonCheckedAt else { return false }
+            return cells.contains { OverviewCounts.isCheckedEarlier($0, commonCheckedAt: commonCheckedAt) }
         }
-    }
-
-    /// The filter a card asked for, taken once by the grid when it appears.  Only the
-    /// window's views touch it, and they all run on the main thread.
-    private static var requested: GridStateFilter?
-
-    /// Asks the grid to open on a filter.
-    static func request(_ filter: GridStateFilter) {
-        requested = filter
-    }
-
-    /// The filter a card asked for, if any, which is then forgotten.
-    static func takeRequested() -> GridStateFilter? {
-        defer { requested = nil }
-        return requested
     }
 }
 
@@ -458,12 +465,17 @@ struct OverviewCounts: Equatable {
         counts.drift = cells.filter { $0.state == .drift }.count
         counts.unproven = cells.filter { $0.state == .unproven }.count
         if let commonCheckedAt {
-            counts.stale = cells.filter { cell in
-                guard let checkedAt = cell.checkedAt else { return false }
-                return abs(commonCheckedAt.timeIntervalSince(checkedAt)) > 60
-            }.count
+            counts.stale = cells.filter { isCheckedEarlier($0, commonCheckedAt: commonCheckedAt) }.count
         }
         return counts
+    }
+
+    /// True when a cell was checked at another time than the run's shared check time,
+    /// beyond the grid's own sixty-second tolerance.  The count and the grid's filter both
+    /// use this, so they cannot disagree.
+    static func isCheckedEarlier(_ cell: GridCell, commonCheckedAt: Date) -> Bool {
+        guard let checkedAt = cell.checkedAt else { return false }
+        return abs(commonCheckedAt.timeIntervalSince(checkedAt)) > 60
     }
 
     /// What the red count is made of, one line per part, or nil when it is not known.

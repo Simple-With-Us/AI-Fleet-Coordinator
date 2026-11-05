@@ -85,8 +85,10 @@ struct FleetGridView: View {
     /// Artifacts for the selected cell, read off the main thread by `.task`.
     @State private var loadedArtifacts: FleetStore.CellArtifacts?
     @State private var loadedArtifactsCellID: String?
-    /// The Overview's cards ask for the state they count,  so the grid opens on those seats.
     @State private var gridFilter: GridStateFilter = .all
+    /// The filter an Overview card asked for,  held by the window that asked.  The grid
+    /// takes it once when it appears and clears it,  so it never outlives that one visit.
+    @Binding private var request: GridStateFilter?
     @State private var searchText: String = ""
     /// The height of the detail panel,  which the operator drags and which survives
     /// the next launch.
@@ -97,9 +99,14 @@ struct FleetGridView: View {
     private let minPanelHeight: CGFloat = 170
     private let maxPanelHeight: CGFloat = 900
 
+    init(request: Binding<GridStateFilter?> = .constant(nil)) {
+        _request = request
+    }
+
     private var visibleRoster: [String] {
         let base = store.roster.filter { seat in
-            gridFilter.includes(ConfigKind.columnOrder.compactMap { store.cell(seat: seat, kind: $0)?.state })
+            gridFilter.includes(ConfigKind.columnOrder.compactMap { store.cell(seat: seat, kind: $0) },
+                                commonCheckedAt: store.commonCheckedAt)
         }
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !query.isEmpty else { return base }
@@ -155,7 +162,10 @@ struct FleetGridView: View {
             }
         }
         .onAppear {
-            if let requested = GridStateFilter.takeRequested() { gridFilter = requested }
+            if let requested = request {
+                gridFilter = requested
+                request = nil
+            }
         }
     }
 
@@ -168,7 +178,7 @@ struct FleetGridView: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .frame(maxWidth: 460)
+            .frame(maxWidth: 560)
             TextField("Filter seats by tag…", text: $searchText)
                 .textFieldStyle(.roundedBorder)
                 .font(.system(size: 11, design: .monospaced))

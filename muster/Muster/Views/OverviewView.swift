@@ -16,9 +16,12 @@ struct OverviewView: View {
     @EnvironmentObject private var watch: PlaceWatch
     @EnvironmentObject private var router: ServiceActionRouter
     @Binding var selection: MusterDestination
+    /// The filter a count card asks the grid to open on.  The window holds it.
+    @Binding var gridRequest: GridStateFilter?
 
-    init(selection: Binding<MusterDestination>) {
+    init(selection: Binding<MusterDestination>, gridRequest: Binding<GridStateFilter?>) {
         _selection = selection
+        _gridRequest = gridRequest
     }
 
     private var counts: OverviewCounts {
@@ -74,7 +77,7 @@ struct OverviewView: View {
                         count: counts.stale,
                         tint: .secondary,
                         lines: ["Results from another time than the rest of this check"],
-                        filter: .all
+                        filter: .checkedEarlier
                     )
                     OverviewCardButton(hint: "Opens \(MusterDestination.driftHistory.title)") {
                         selection = .driftHistory
@@ -168,7 +171,7 @@ struct OverviewView: View {
         filter: GridStateFilter
     ) -> some View {
         OverviewCardButton(hint: "Opens \(MusterDestination.complianceGrid.title), showing \(filter.rawValue)") {
-            GridStateFilter.request(filter)
+            gridRequest = filter
             selection = .complianceGrid
         } label: {
             cardBody(title: title, systemImage: systemImage, count: count, tint: tint, lines: lines)

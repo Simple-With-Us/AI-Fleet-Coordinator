@@ -119,20 +119,20 @@ struct ServerStatusPanel: View {
         let from = reading.generatedAt.map { "from the report at \(FleetTime.clock($0))" } ?? ""
         return VStack(alignment: .leading, spacing: 8) {
             sectionHeader("Last Known, Not Current", nil, from)
-            ForEach(ServerLastKnown.units(reading.services), id: \.self) { unit in
+            ForEach(ServerLastKnown.rows(reading.services)) { row in
                 HStack(spacing: 8) {
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(OpsNames.unitTitle(unit))
+                        Text(OpsNames.unitTitle(row.unit))
                             .font(.system(size: 12, weight: .semibold))
-                        Text(unit)
+                        Text(row.scope.map { "\(row.unit) (\($0))" } ?? row.unit)
                             .font(.system(size: 10, design: .monospaced))
                             .foregroundStyle(.secondary)
                     }
                     Spacer(minLength: 0)
-                    Text(ServerLastKnown.lastState(unit: unit, services: reading.services))
+                    Text(row.lastState)
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundStyle(.secondary)
-                    ForEach(ServerLastKnown.actions(unit: unit, allowlist: allowlist), id: \.title) { action in
+                    ForEach(ServerLastKnown.actions(unit: row.unit, allowlist: allowlist), id: \.title) { action in
                         Button(Self.verbWord(action)) {
                             controller.plan(action)
                         }

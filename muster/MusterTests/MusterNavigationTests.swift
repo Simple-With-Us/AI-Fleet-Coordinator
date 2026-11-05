@@ -283,39 +283,61 @@ final class MusterNavigationTests: XCTestCase {
 
     // MARK: The grid's filter
 
-    func test_grid_filter_matches_the_state_it_names() {
-        XCTAssertTrue(GridStateFilter.all.includes([.passed]))
-        XCTAssertTrue(GridStateFilter.red.includes([.passed, .missing]))
-        XCTAssertTrue(GridStateFilter.red.includes([.unknown]))
-        XCTAssertFalse(GridStateFilter.red.includes([.drift, .unproven]))
-        XCTAssertTrue(GridStateFilter.drift.includes([.drift]))
-        XCTAssertFalse(GridStateFilter.drift.includes([.missing]))
-        XCTAssertTrue(GridStateFilter.unproven.includes([.unproven]))
-        XCTAssertTrue(GridStateFilter.attention.includes([.unproven]))
-        XCTAssertFalse(GridStateFilter.attention.includes([.passed, .covered, .unsupported]))
+    private func includes(_ filter: GridStateFilter, _ states: [CellState]) -> Bool {
+        filter.includes(states.map { cell($0) }, commonCheckedAt: nil)
     }
 
-    /// A card's filter is taken once, so the next visit to the grid opens on every seat.
-    func test_a_requested_filter_is_taken_once() {
-        _ = GridStateFilter.takeRequested()
-        GridStateFilter.request(.drift)
-        XCTAssertEqual(GridStateFilter.takeRequested(), .drift)
-        XCTAssertNil(GridStateFilter.takeRequested())
+    func test_grid_filter_matches_the_state_it_names() {
+        XCTAssertTrue(includes(.all, [.passed]))
+        XCTAssertTrue(includes(.red, [.passed, .missing]))
+        XCTAssertTrue(includes(.red, [.unknown]))
+        XCTAssertFalse(includes(.red, [.drift, .unproven]))
+        XCTAssertTrue(includes(.drift, [.drift]))
+        XCTAssertFalse(includes(.drift, [.missing]))
+        XCTAssertTrue(includes(.unproven, [.unproven]))
+        XCTAssertTrue(includes(.attention, [.unproven]))
+        XCTAssertFalse(includes(.attention, [.passed, .covered, .unsupported]))
+    }
+
+    /// Checked Earlier opens on the same cells the card counts, by the same rule.
+    func test_checked_earlier_filter_matches_the_count() {
+        let common = FleetTime.parse("2026-10-21T09:00:00Z")
+        let earlier = checkedCell("2026-10-21T08:58:59Z")
+        let same = checkedCell("2026-10-21T08:59:30Z")
+        XCTAssertTrue(GridStateFilter.checkedEarlier.includes([same, earlier], commonCheckedAt: common))
+        XCTAssertFalse(GridStateFilter.checkedEarlier.includes([same], commonCheckedAt: common))
+        XCTAssertFalse(GridStateFilter.checkedEarlier.includes([earlier], commonCheckedAt: nil))
+        let counts = OverviewCounts.make(cells: [same, earlier], trusted: true, commonCheckedAt: common)
+        XCTAssertEqual(counts.stale, 1)
     }
 
     // MARK: Server Status when the report is not current
 
-    private func service(_ unit: String, _ state: String) throws -> ServerService {
-        try JSONDecoder().decode(ServerService.self, from: Data(#"{"unit":"\#(unit)","activeState":"\#(state)","controllable":true}"#.utf8))
+    private func service(_ unit: String, _ state: String, scope: String = "system") throws -> ServerService {
+        try JSONDecoder().decode(ServerService.self, from: Data(#"{"unit":"\#(unit)","scope":"\#(scope)","activeState":"\#(state)","controllable":true}"#.utf8))
     }
 
     func test_last_known_lists_the_report_timer_even_when_the_report_did_not() throws {
         let services = [try service("fleet-cli-git-update.timer", "active")]
-        XCTAssertEqual(ServerLastKnown.units(services), ["fleet-cli-git-update.timer", OpsNames.reportTimerUnit])
-        let withTimer = [try service(OpsNames.reportTimerUnit, "active")]
-        XCTAssertEqual(ServerLastKnown.units(withTimer), [OpsNames.reportTimerUnit])
-        XCTAssertEqual(ServerLastKnown.lastState(unit: OpsNames.reportTimerUnit, services: withTimer), "last known active")
-        XCTAssertEqual(ServerLastKnown.lastState(unit: "other.timer", services: withTimer), "not in the last report")
+        let rows = ServerLastKnown.rows(services)
+        XCTAssertEqual(rows.map(\.unit), ["fleet-cli-git-update.timer", OpsNames.reportTimerUnit])
+        XCTAssertEqual(rows.map(\.lastState), ["last known active", "not in the last report"])
+        XCTAssertNil(rows.last?.scope)
+        let withTimer = [try service(OpsNames.reportTimerUnit, "active", scope: "user")]
+        XCTAssertEqual(ServerLastKnown.rows(withTimer).map(\.unit), [OpsNames.reportTimerUnit])
+    }
+
+    /// One unit in two scopes is two rows, each with its own state and its own identity.
+    func test_last_known_keeps_a_unit_in_two_scopes_apart() throws {
+        let services = [
+            try service("same.timer", "active", scope: "user"),
+            try service("same.timer", "failed", scope: "system"),
+        ]
+        let rows = ServerLastKnown.rows(services).filter { $0.unit == "same.timer" }
+        XCTAssertEqual(rows.count, 2)
+        XCTAssertEqual(Set(rows.map(\.id)).count, 2)
+        XCTAssertEqual(rows.map(\.scope), ["user", "system"])
+        XCTAssertEqual(rows.map(\.lastState), ["last known active", "last known failed"])
     }
 
     /// The repairs come from the allowlist only, and never Start or Stop on an old state.
@@ -337,6 +359,20 @@ final class MusterNavigationTests: XCTestCase {
 
     private func cell(_ state: CellState, rules: [CheckResult] = []) -> GridCell {
         GridCell(seat: "MM", kind: .skills, state: state, rules: rules, coverReason: nil)
+    }
+
+    /// A passing cell whose one rule was checked at a given time.
+    private func checkedCell(_ checkedAt: String) -> GridCell {
+        cell(.passed, rules: [
+            CheckResult(
+                ruleId: "r", seat: "MM", platform: "minimax", kind: "skills",
+                state: "PASS", reason: "ok", reasonCode: "ok",
+                expected: [:], observed: [:],
+                proofLevelRequired: "L0", proofLevelAchieved: "L0",
+                collector: "mac", checkType: "marked_block_hash",
+                checkedAt: checkedAt, expiresAt: nil, ttlSeconds: 900,
+                stale: false, failing: false)
+        ])
     }
 
     func test_counts_read_off_the_cells() {

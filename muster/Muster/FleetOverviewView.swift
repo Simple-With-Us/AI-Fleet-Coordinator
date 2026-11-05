@@ -18,6 +18,8 @@ struct FleetOverviewView: View {
     @AppStorage(MusterSettings.themeDefaultsKey) private var theme: ThemeChoice = .system
     @AppStorage(MusterSettings.sidebarSelectionDefaultsKey) private var storedDestination = MusterDestination.overview.rawValue
     @State private var destination: MusterDestination
+    /// The filter an Overview card asked the grid to open on,  held by this window only.
+    @State private var gridRequest: GridStateFilter?
 
     init() {
         let saved = UserDefaults.standard.string(forKey: MusterSettings.sidebarSelectionDefaultsKey)
@@ -107,6 +109,8 @@ struct FleetOverviewView: View {
         .opsActionSheet()
         .onChange(of: destination) { _, chosen in
             storedDestination = chosen.rawValue
+            // A card's request is for the visit it started,  and no later one.
+            if chosen != .complianceGrid { gridRequest = nil }
         }
         // The menu chooses a place by writing the saved one,  so an open window follows it.
         .onChange(of: storedDestination) { _, saved in
@@ -147,7 +151,9 @@ struct FleetOverviewView: View {
             guard let redCount = monitor.redCount else { return "?" }
             return redCount > 0 ? "\(redCount)" : nil
         case .services:
-            return SidebarBadges.services(admin.entries, readAt: admin.lastReadAt, now: watch.now)
+            // Measured against the clock now,  not the watch's last tick,  so a read that has
+            // just passed its window never reads as current.
+            return SidebarBadges.services(admin.entries, readAt: admin.lastReadAt, now: Date())
         case .serverStatus:
             return PlaceHealthWords.badge(menu.server.health)
         case .overview, .macAgents, .driftHistory, .wakeAndListener, .seatDetail,
@@ -161,9 +167,9 @@ struct FleetOverviewView: View {
     private var detail: some View {
         switch destination {
         case .overview:
-            OverviewView(selection: $destination)
+            OverviewView(selection: $destination, gridRequest: $gridRequest)
         case .complianceGrid:
-            FleetGridView()
+            FleetGridView(request: $gridRequest)
         case .appsAndWork:
             FleetView()
         case .seats:
