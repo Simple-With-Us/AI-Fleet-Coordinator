@@ -241,6 +241,12 @@ def qualify_credentials():
         if name == "pr-conflict-watch" and not cutover_receipt():
             print("Awaiting first verified real Zulip delivery; skipping " + name)
             continue
+        # A stopped Worker fails its probe.  This step runs before the release step on
+        # every trigger, so failing here would stop the other target's release as well.
+        # The release step still refuses it and fails the run.
+        if guard_tripped(name):
+            print("Stopped by the budget guard; skipping " + name)
+            continue
         settings = cloudflare("/workers/scripts/" + name + "/settings")
         preflight_config(target, settings)
         tag = deployed_tag(name)

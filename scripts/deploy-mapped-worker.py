@@ -64,12 +64,15 @@ def deployed_tag(name, read=None):
     `wrangler secret put` creates an untagged version carrying the same code, so those
     are walked back to the version they copied.  Any other untagged version (a hand or
     API upload) may hold different code, so it stays None and is never walked past.
+    The version found must also be the one deployed before the secret change: after a
+    rollback or an upload that was never deployed, the next lower number is not the code
+    that was live, so the answer is None rather than a tag for code that is not running.
     """
     read = read or api
-    deployment = live_deployment(name, read)
-    if not deployment:
+    history = read("/workers/scripts/" + name + "/deployments")["deployments"]
+    if not history:
         return None
-    versions = deployment.get("versions", [])
+    versions = history[0].get("versions", [])
     if len(versions) != 1 or versions[0].get("percentage") != 100:
         return None
     version = read("/workers/scripts/" + name + "/versions/" + versions[0]["version_id"])
@@ -83,10 +86,25 @@ def deployed_tag(name, read=None):
     # the fail-closed answer, and the next tagged deploy clears it.
     listing = read("/workers/scripts/" + name + "/versions?per_page=50")["items"]
     earlier = [v for v in listing if type(v.get("number")) is int and v["number"] < number]
+    passed = {versions[0]["version_id"]}
     for candidate in sorted(earlier, key=lambda v: v["number"], reverse=True):
         annotations = candidate.get("annotations") or {}
         if annotations.get("workers/tag") or annotations.get("workers/triggered_by") != "secret":
+            if candidate.get("id") != deployed_before(history, passed):
+                return None
             return annotations.get("workers/tag")
+        passed.add(candidate.get("id"))
+    return None
+
+
+def deployed_before(history, passed):
+    """The version fully deployed just before the versions in `passed`, newest first."""
+    for deployment in history:
+        versions = deployment.get("versions", [])
+        if len(versions) != 1 or versions[0].get("percentage") != 100:
+            return None
+        if versions[0]["version_id"] not in passed:
+            return versions[0]["version_id"]
     return None
 
 
@@ -137,9 +155,11 @@ def config_limits(path):
     text = pathlib.Path(path).read_text()
     if path.endswith(".toml"):
         return tomllib.loads(text).get("limits") or {}
-    # A full JSONC parser is not needed: whole-line comments are the only thing that
-    # could fake a match, and a block that will not parse fails closed by raising.
-    uncommented = re.sub(r"^\s*//.*$", "", text, flags=re.MULTILINE)
+    # A full JSONC parser is not needed: only a comment could fake a match, and a block
+    # that will not parse fails closed by raising.  A "//" needs space before it so that
+    # a URL value survives; over-stripping can only hide a limit, which refuses the deploy.
+    uncommented = re.sub(r"(^|\s)//.*$", r"\1", text, flags=re.MULTILINE)
+    uncommented = re.sub(r"/\*.*?\*/", "", uncommented, flags=re.DOTALL)
     found = re.search(r'"limits"\s*:\s*(\{[^{}]*\})', uncommented)
     return json.loads(found.group(1)) if found else {}
 
@@ -314,6 +334,9 @@ def main():
         raise SystemExit("This deploy would drop live limits: " + ", ".join(dropped))
     # Do not start a deployment unless probe credentials are present and old live service is healthy.
     probe(target)
+    # Run the canary against the old version too: an expired or revoked bearer has to stop
+    # the deploy here, not fail the run after new code is already live.
+    mcp_canary(target)
     if current_main() != sha:
         print("Superseded before upload; skipping")
         return

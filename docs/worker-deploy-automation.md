@@ -22,7 +22,7 @@ A test walks the MCP Worker's imports and fails if one falls outside its `paths`
 
 ### Finding The Live Tag
 
-`wrangler secret put` creates an untagged version holding the same code, so the scripts walk back past those to the tag they copied.  They stop at any other untagged version, because a hand or API upload may hold different code.  The alert pipeline then refuses with "No exact release baseline" until a tagged deploy sets one, and the mapped pipeline treats the Worker as changed.
+`wrangler secret put` creates an untagged version holding the same code, so the scripts walk back past those to the tag they copied.  They stop at any other untagged version, because a hand or API upload may hold different code.  The version they reach must also be the one deployed before the secret change.  After a rollback or an upload that was never deployed the next lower number is not the code that was live, so the answer is unknown.  The alert pipeline then refuses with "No exact release baseline" until a tagged deploy sets one, and the mapped pipeline treats the Worker as changed.
 
 ### Live Limits
 
@@ -30,7 +30,7 @@ A Wrangler deploy from a config that does not declare `limits` could remove live
 
 ## The Budget Guard
 
-The account watchdog stops a Worker by leaving a `workers/message` that starts with `GUARD-TRIPPED`.  Reconciling to main would silently undo that, so both pipelines read the live deployment and version first, and again just before upload, then refuse with a failed run.  In the alert pipeline the other target still proceeds.  Re-arming is manual: fix the cause, deploy by hand with a normal message, and the next run reconciles as usual.
+The account watchdog stops a Worker by leaving a `workers/message` that starts with `GUARD-TRIPPED`.  Reconciling to main would silently undo that, so both pipelines read the live deployment and version first, and again just before upload, then refuse with a failed run.  In the alert pipeline the other target still proceeds, because qualification skips the stopped Worker as well.  Re-arming is manual: fix the cause, then deploy by hand with a normal message or run the watchdog's `rearm`, and the next run reconciles as usual.  The refusal reads only the newest deployment.  Any later deployment clears it, including a `wrangler secret put`, so do not change a stopped Worker's secrets by hand before you mean to re-arm it.
 
 ## Alert Worker Receipts
 
@@ -54,7 +54,7 @@ To record a receipt:
 3. Create the `MCP_CANARY_BEARER` repository secret with a bearer chosen for the canary.
 4. Set `WORKER_DEPLOY_ENABLED` and `SIMPLE_TOOLS_MCP_DEPLOY_ENABLED` to `true`.
 
-Once armed, a deploy waits if the Worker was deployed in the last hour, and the next scheduled run retries, so a burst of merges cannot restart the Durable Objects repeatedly.  After a deploy, the canary replaces trust in the static `/health` route: an unauthenticated `initialize` must answer the OAuth 401, then the bearer must initialize, list the tools and call the read-only `identities` tool.  The job refuses to start a deploy when the canary bearer is absent.  A failed canary fails the run and leaves the new version live, so recovery is the rollback below.
+Once armed, a deploy waits if the Worker was deployed in the last hour, and the next scheduled run retries, so a burst of merges cannot restart the Durable Objects repeatedly.  After a deploy, the canary replaces trust in the static `/health` route: an unauthenticated `initialize` must answer the OAuth 401, then the bearer must initialize, list the tools and call the read-only `identities` tool.  The job refuses to start a deploy when the canary bearer is absent, and it runs the same canary against the old version before uploading, so an expired bearer stops the deploy instead of failing it after new code is live.  Seat bearers last 90 days.  A failed canary fails the run and leaves the new version live, so recovery is the rollback below.
 
 ## Rollback And Roll-Forward
 

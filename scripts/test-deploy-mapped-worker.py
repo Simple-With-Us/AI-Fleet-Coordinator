@@ -34,7 +34,7 @@ def local_imports(entry):
         seen.add(path)
         if path.suffix not in (".js", ".mjs"):
             continue
-        for spec in re.findall(r"""from\s+["'](\.{1,2}/[^"']+)["']""", path.read_text()):
+        for spec in re.findall(r"""(?:from|import)\s+["'](\.{1,2}/[^"']+)["']""", path.read_text()):
             queue.append(pathlib.Path(os.path.normpath(path.parent / spec)))
     return seen
 
@@ -101,34 +101,51 @@ class Checks(unittest.TestCase):
         self.assertNotIn("start-jays-services", m.TARGETS)
         self.assertNotIn("fleet-share-api", m.TARGETS)
 
-    def walk(self, listing, live=None):
+    def walk(self, listing, live=None, deployed=("live", "v3")):
         live = live or {"number": 5, "annotations": SECRET}
+        history = [{"versions": [{"version_id": v, "percentage": 100}]} for v in deployed]
         return m.deployed_tag(
             "x",
             Reader(
                 {
-                    "/workers/scripts/x/deployments": DEPLOYMENT,
+                    "/workers/scripts/x/deployments": {"deployments": history},
                     "/workers/scripts/x/versions/live": live,
                     "/workers/scripts/x/versions?per_page=50": {"items": listing},
                 }
             ),
         )
 
-    def test_secret_versions_walk_back_to_the_tag_they_copied(self):
-        tagged = {"number": 3, "annotations": {"workers/tag": SHA_A}}
-        secret = {"number": 4, "annotations": SECRET}
-        self.assertEqual(self.walk([secret, tagged]), SHA_A)
+    TAGGED = {"id": "v3", "number": 3, "annotations": {"workers/tag": SHA_A}}
 
-    def test_walk_ignores_versions_newer_than_live_after_a_rollback(self):
-        newer = {"number": 9, "annotations": {"workers/tag": SHA_B}}
-        tagged = {"number": 3, "annotations": {"workers/tag": SHA_A}}
-        self.assertEqual(self.walk([newer, tagged]), SHA_A)
+    def test_secret_versions_walk_back_to_the_tag_they_copied(self):
+        secret = {"id": "v4", "number": 4, "annotations": SECRET}
+        self.assertEqual(self.walk([secret, self.TAGGED], deployed=("live", "v4", "v3")), SHA_A)
+
+    def test_walk_ignores_versions_newer_than_live(self):
+        newer = {"id": "v9", "number": 9, "annotations": {"workers/tag": SHA_B}}
+        self.assertEqual(self.walk([newer, self.TAGGED]), SHA_A)
+
+    def test_watchdog_marker_deployment_of_the_same_version_does_not_break_the_walk(self):
+        # A trip redeploys one version with a message, then re-arm deletes its secret.
+        secret = {"id": "v4", "number": 4, "annotations": SECRET}
+        deployed = ("live", "v4", "v4", "v3")
+        self.assertEqual(self.walk([secret, self.TAGGED], deployed=deployed), SHA_A)
+
+    def test_secret_after_a_rollback_is_not_the_newer_tag(self):
+        # Rolled back from v4 to v3, then a secret change: the next lower number is v4,
+        # but v3 was the code live, so v4's tag would claim code that is not running.
+        rolled_past = {"id": "v4", "number": 4, "annotations": {"workers/tag": SHA_B}}
+        deployed = ("live", "v3", "v4", "v3")
+        self.assertIsNone(self.walk([rolled_past, self.TAGGED], deployed=deployed))
+
+    def test_secret_after_an_undeployed_upload_is_not_that_upload_tag(self):
+        uploaded = {"id": "v4", "number": 4, "annotations": {"workers/tag": SHA_B}}
+        self.assertIsNone(self.walk([uploaded, self.TAGGED], deployed=("live", "v3")))
 
     def test_walk_stops_at_an_untagged_upload(self):
         # An API or hand upload may hold different code, so older tags say nothing.
-        upload = {"number": 4, "annotations": {"workers/triggered_by": "upload"}}
-        tagged = {"number": 3, "annotations": {"workers/tag": SHA_A}}
-        self.assertIsNone(self.walk([upload, tagged]))
+        upload = {"id": "v4", "number": 4, "annotations": {"workers/triggered_by": "upload"}}
+        self.assertIsNone(self.walk([upload, self.TAGGED], deployed=("live", "v4", "v3")))
 
     def test_live_untagged_upload_is_not_walked_past(self):
         self.assertIsNone(
@@ -210,6 +227,11 @@ class Checks(unittest.TestCase):
         run.assert_not_called()
         probe.assert_called_once()
 
+    def test_live_tag_equal_to_main_does_not_redeploy(self):
+        run, probe, _ = self.run_main(deployed_tag=SHA_A)
+        run.assert_not_called()
+        probe.assert_called_once()
+
     def test_changed_worker_deploys_with_exact_tag_after_receipt(self):
         tags = iter([SHA_B, SHA_A])
         with patch.object(m, "deployed_tag", side_effect=lambda name: next(tags)):
@@ -239,7 +261,67 @@ class Checks(unittest.TestCase):
             ):
                 m.main()
         self.assertIn(SHA_A, run.call_args.args[0])
-        canary.assert_called_once()
+        self.assertEqual(canary.call_count, 2)
+
+    def test_stale_canary_bearer_stops_the_deploy_before_upload(self):
+        with (
+            patch.object(m, "deployed_tag", return_value=SHA_B),
+            patch.object(m.sys, "argv", ["deploy", "x"]),
+            patch.dict(
+                m.TARGETS,
+                {
+                    "x": {
+                        "deployer": "worker-deploy",
+                        "health": "https://example.invalid/health",
+                        "paths": ["src/**"],
+                        "command": ["wrangler", "deploy"],
+                        "config": "x.toml",
+                    }
+                },
+            ),
+            patch.object(m.subprocess, "check_output", return_value=SHA_A + "\n"),
+            patch.object(m.subprocess, "run") as run,
+            patch.object(m, "probe"),
+            patch.object(m, "mcp_canary", side_effect=RuntimeError("MCP canary")),
+            patch.object(m, "current_main", return_value=SHA_A),
+            patch.object(m, "guard_tripped", return_value=False),
+            patch.object(m, "worker_changed", return_value=True),
+            patch.object(m, "config_limits", return_value={}),
+            patch.object(m, "api", return_value={}),
+            self.assertRaisesRegex(RuntimeError, "MCP canary"),
+        ):
+            m.main()
+        run.assert_not_called()
+
+    def test_trip_during_the_run_refuses_the_upload(self):
+        with (
+            patch.object(m, "guard_tripped", side_effect=[False, True]),
+            patch.object(m, "deployed_tag", return_value=SHA_B),
+            patch.object(m.sys, "argv", ["deploy", "x"]),
+            patch.dict(
+                m.TARGETS,
+                {
+                    "x": {
+                        "deployer": "worker-deploy",
+                        "health": "https://example.invalid/health",
+                        "paths": ["src/**"],
+                        "command": ["wrangler", "deploy"],
+                        "config": "x.toml",
+                    }
+                },
+            ),
+            patch.object(m.subprocess, "check_output", return_value=SHA_A + "\n"),
+            patch.object(m.subprocess, "run") as run,
+            patch.object(m, "probe"),
+            patch.object(m, "mcp_canary"),
+            patch.object(m, "current_main", return_value=SHA_A),
+            patch.object(m, "worker_changed", return_value=True),
+            patch.object(m, "config_limits", return_value={}),
+            patch.object(m, "api", return_value={}),
+            self.assertRaisesRegex(SystemExit, "budget guard"),
+        ):
+            m.main()
+        run.assert_not_called()
 
     def test_second_deploy_inside_the_interval_waits(self):
         target = {
@@ -324,6 +406,21 @@ class Checks(unittest.TestCase):
                 '{\n  // comment\n  "limits": { "cpu_ms": 300, "subrequests": 200 }\n}\n'
             )
             self.assertEqual(m.config_limits(str(jsonc)), {"cpu_ms": 300, "subrequests": 200})
+            for commented in (
+                '{\n  "name": "x", // "limits": {"cpu_ms": 1}\n}\n',
+                '{\n  /* "limits": {"cpu_ms": 1} */\n  "name": "x"\n}\n',
+                '{\n  /*\n  "limits": {"cpu_ms": 1}\n  */\n  "name": "x"\n}\n',
+            ):
+                jsonc.write_text(commented)
+                self.assertEqual(m.config_limits(str(jsonc)), {}, commented)
+            jsonc.write_text(
+                '{\n  "url": "https://example.invalid",\n  "limits": { "cpu_ms": 3 }\n}\n'
+            )
+            self.assertEqual(m.config_limits(str(jsonc)), {"cpu_ms": 3})
+
+    def test_real_mcp_config_parses_for_the_limit_check(self):
+        declared = m.config_limits(m.TARGETS["simple-tools-mcp"]["config"])
+        self.assertIsInstance(declared, dict)
 
     def repo(self, root):
         def git(*args):
@@ -375,7 +472,11 @@ class Checks(unittest.TestCase):
     def test_every_local_import_of_the_mcp_worker_is_a_target_path(self):
         target = m.TARGETS["simple-tools-mcp"]
         root = pathlib.Path("scripts/agent-sync-mcp/src/index.js")
-        missing = [str(p) for p in local_imports(root) if not m.path_is_relevant(str(p), target)]
+        found = local_imports(root)
+        # A moved entry file must fail here, not pass by walking nothing.
+        self.assertTrue(root.exists())
+        self.assertGreater(len(found), 20)
+        missing = [str(p) for p in found if not m.path_is_relevant(str(p), target)]
         self.assertEqual(missing, [])
 
     def test_matrix_holds_only_this_pipeline_and_has_probes(self):

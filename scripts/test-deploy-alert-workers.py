@@ -94,6 +94,7 @@ class Tests(unittest.TestCase):
             patch.dict(m.os.environ, {"CLOUDFLARE_API_TOKEN": "offline", "GH_TOKEN": "offline"}),
             patch.object(m, "current_main"),
             patch.object(m, "cutover_receipt", return_value=False),
+            patch.object(m, "guard_tripped", return_value=False),
             patch.object(m, "cloudflare", return_value={}),
             patch.object(m, "preflight_config"),
             patch.object(
@@ -103,6 +104,72 @@ class Tests(unittest.TestCase):
         ):
             m.qualify_credentials()
         self.assertEqual(checked, ["alert-ingress"])
+
+    def test_tripped_target_does_not_fail_qualification_for_the_other(self):
+        # The qualify step runs first on every trigger, so a raise here would skip the
+        # release step and stop the healthy Worker's release too.
+        probed = []
+        with (
+            patch.dict(m.os.environ, {"CLOUDFLARE_API_TOKEN": "offline", "GH_TOKEN": "offline"}),
+            patch.object(m, "current_main"),
+            patch.object(m, "cutover_receipt", return_value=True),
+            patch.object(m, "guard_tripped", side_effect=lambda name: name == "alert-ingress"),
+            patch.object(m, "cloudflare", return_value={}),
+            patch.object(m, "preflight_config"),
+            patch.object(m, "deployed_tag", return_value="a" * 40),
+            patch.object(m, "probe", side_effect=probed.append),
+        ):
+            m.qualify_credentials()
+        self.assertEqual(probed, [m.TARGETS["pr-conflict-watch"]])
+
+    def release(self, guard, tags):
+        """Run main() through a real target change, with every external edge mocked."""
+        sha = "a" * 40
+        with (
+            patch.object(m.subprocess, "check_output", return_value=sha),
+            patch.object(m.subprocess, "run") as run,
+            patch.object(m, "current_main", return_value=sha),
+            patch.object(m, "credential_receipt", return_value=True),
+            patch.object(
+                m,
+                "github",
+                return_value={
+                    "workflow_runs": [
+                        {"head_sha": sha, "status": "completed", "conclusion": "success"}
+                    ]
+                },
+            ),
+            patch.object(m, "cutover_receipt", return_value=False),
+            patch.object(m, "guard_tripped", side_effect=guard),
+            patch.object(m, "deployed_tag", side_effect=tags),
+            patch.object(m.m, "worker_changed", return_value=True),
+            patch.object(m, "git", return_value=""),
+            patch.object(m, "reviewed"),
+            patch.object(m, "cloudflare", return_value={}),
+            patch.object(m, "preflight_config"),
+            patch.object(m, "probe"),
+        ):
+            try:
+                m.main()
+            except RuntimeError as error:
+                return run, error
+        return run, None
+
+    def uploads(self, run):
+        return [c.args[0] for c in run.call_args_list if "--tag" in c.args[0]]
+
+    def test_changed_target_releases_with_the_exact_tag(self):
+        run, error = self.release([False, False], ["b" * 40, "a" * 40])
+        self.assertIsNone(error)
+        uploads = self.uploads(run)
+        self.assertEqual(len(uploads), 1)
+        self.assertIn("a" * 40, uploads[0])
+        self.assertIn("--keep-vars", uploads[0])
+
+    def test_trip_during_the_release_refuses_the_upload(self):
+        run, error = self.release([False, True], ["b" * 40])
+        self.assertIn("budget guard tripped: alert-ingress", str(error))
+        self.assertEqual(self.uploads(run), [])
 
     def test_no_review_fails_closed(self):
         with patch.object(m, "github", return_value=[]), self.assertRaises(RuntimeError):
@@ -402,6 +469,7 @@ class Tests(unittest.TestCase):
         with (
             patch.dict(m.os.environ, {"CLOUDFLARE_API_TOKEN": "offline", "GH_TOKEN": "offline"}),
             patch.object(m, "current_main"),
+            patch.object(m, "guard_tripped", return_value=False),
             patch.object(m, "cloudflare", return_value={}),
             patch.object(m, "preflight_config"),
             patch.object(m, "deployed_tag", return_value="a" * 40),
