@@ -948,6 +948,30 @@ test("an out-of-range saved count is logged and cannot shut the day's caps", asy
   assert.deepEqual(lines, ["alert.breaker_state_invalid"]);
 });
 
+test("a saved map of the wrong shape is logged, and a missing one is not", async () => {
+  const clock = 1_800_000_000_000;
+  const day = Math.floor(clock / 86_400_000);
+  const loadLogs = async (record) => {
+    const db = storage();
+    db.data.set("breaker:v1", { day, total: 3, ...record });
+    const lines = [];
+    const saved = console.error;
+    console.error = (line) => lines.push(JSON.parse(line).event);
+    try {
+      const breaker = new DeliveryBreaker(db, () => clock);
+      assert.equal((await breaker.admit("a")).shed, false);
+      assert.equal(breaker.total, 4);
+    } finally {
+      console.error = saved;
+    }
+    return lines;
+  };
+  for (const bad of [{ sources: 5 }, { newBySource: "nope" }, { shed: null }, { sources: [1] }]) {
+    assert.deepEqual(await loadLogs(bad), ["alert.breaker_state_invalid"]);
+  }
+  assert.deepEqual(await loadLogs({}), []);
+});
+
 test("a sound saved record, even one past every cap, logs nothing and is believed", async () => {
   const clock = 1_800_000_000_000;
   const db = storage();

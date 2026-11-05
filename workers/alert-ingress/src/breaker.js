@@ -40,9 +40,12 @@ const count = (value) => (sound(value) ? value : 0);
 const named = (value) => Object.entries(value && typeof value === "object" ? value : {});
 const counts = (value) => new Map(named(value).map(([name, n]) => [name, count(n)]));
 // A field a saved record does not have is not corruption, only a bad value is.
+const mapIsSound = (map) =>
+  map === undefined ||
+  (map !== null && typeof map === "object" && !Array.isArray(map) && Object.values(map).every(sound));
 const recordIsSound = (saved) =>
   [saved.total, saved.shedWrites, saved.newKeys].every((n) => n === undefined || sound(n)) &&
-  [saved.sources, saved.newBySource, saved.shed].every((map) => named(map).every(([, n]) => sound(n)));
+  [saved.sources, saved.newBySource, saved.shed].every(mapIsSound);
 
 export class DeliveryBreaker {
   constructor(storage, now = Date.now) {
