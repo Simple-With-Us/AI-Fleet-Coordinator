@@ -314,16 +314,19 @@ struct AgentSyncInvocation: Equatable {
     }
 
     /// `daemon reload`:  re-read the configuration file.
-    ///
-    /// A reload does not re-read a seat's budget,  so a changed budget needs an eavesdropper
-    /// restart.  The panel says so instead of pretending the reload was enough.
     static func reload() -> AgentSyncInvocation {
         AgentSyncInvocation(["daemon", "reload"])
     }
 
-    /// `daemon check-config --file F --json`:  would the eavesdropper take this candidate file?
-    static func checkConfig(file: String) -> AgentSyncInvocation {
-        AgentSyncInvocation(["daemon", "check-config", "--file", file, "--json"])
+    /// `daemon check-config --file F [--partition P] --json`:  would the eavesdropper take this
+    /// candidate file?
+    ///
+    /// The command line runs from Muster's checkout and the eavesdropper can run from another, so
+    /// `partition` names the copy to judge by.  A checkout too old for the flag exits 2 with no
+    /// answer, and that stops the write.
+    static func checkConfig(file: String, partition: String?) -> AgentSyncInvocation {
+        let copy = partition.map { ["--partition", $0] } ?? []
+        return AgentSyncInvocation(["daemon", "check-config", "--file", file] + copy + ["--json"])
     }
 
     /// `daemon test-wake --seat S --runtime R --run`:  run the seat's wake for real.

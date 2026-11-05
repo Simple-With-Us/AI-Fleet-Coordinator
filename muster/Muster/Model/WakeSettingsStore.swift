@@ -235,16 +235,13 @@ final class WakeSettingsStore: ObservableObject {
         do {
             try writer.commit(prepared)
         } catch {
-            say("The configuration file was not changed: \(error.localizedDescription)", failure: true)
+            say(Self.commitFailure(error), failure: true)
             return
         }
 
         // The file is written;  now the eavesdropper has to read it.
         let outcome = await reload()
         var report = ["The configuration file was written.", outcome.report]
-        if reading.edits.contains(where: { $0.key.isBudget || $0.key.isLiveCap }) {
-            report.append("A reload does not re-read a seat's budget, so the eavesdropper must be restarted before the new cap takes effect.")
-        }
         if !reading.refusals.isEmpty {
             report.append(reading.refusals.joined(separator: "\n"))
         }
@@ -282,7 +279,7 @@ final class WakeSettingsStore: ObservableObject {
         do {
             try writer.commit(prepared)
         } catch {
-            say("The configuration file was not changed: \(error.localizedDescription)", failure: true)
+            say(Self.commitFailure(error), failure: true)
             return
         }
         let outcome = await reload()
@@ -294,8 +291,19 @@ final class WakeSettingsStore: ObservableObject {
         await refresh()
     }
 
+    /// What the panel says when a commit fails.  Every failure but one leaves the file as it was.
+    /// The other one leaves Muster's edit in the file and another writer's text at a temporary path,
+    /// so it must not start by saying the file did not change.
+    static func commitFailure(_ error: Error) -> String {
+        if case WakeSettingsWriter.WriteError.anotherWritersTextMoved(_, _) = error {
+            return error.localizedDescription
+        }
+        return "The configuration file was not changed: \(error.localizedDescription)"
+    }
+
     /// Runs the eavesdropper's own rules on the candidate.  False, with the reason shown, stops the
-    /// write.  A check that cannot run stops it too, because the point is not to guess.
+    /// write.  A check that cannot run stops it too, because the point is not to guess.  The check
+    /// reads the partition this writer goes by, so the eavesdropper's own copy decides here as well.
     private func passesTheListenersCheck(
         _ prepared: WakeSettingsWriter.PreparedWrite,
         writer: WakeSettingsWriter,
@@ -311,7 +319,9 @@ final class WakeSettingsStore: ObservableObject {
         defer { try? FileManager.default.removeItem(at: candidate) }
         let check: ListenerConfigCheck
         do {
-            let result = try await runner.run(AgentSyncInvocation.checkConfig(file: candidate.path))
+            let result = try await runner.run(
+                AgentSyncInvocation.checkConfig(file: candidate.path, partition: writer.partitionURL?.path)
+            )
             guard let data = result.stdout.data(using: .utf8),
                   let decoded = try? JSONDecoder().decode(ListenerConfigCheck.self, from: data) else {
                 say(
@@ -392,6 +402,10 @@ final class WakeSettingsStore: ObservableObject {
 
     /// Lifts the kill switch on the Mac's eavesdropper.  This lets wakes run again, so unlike the pause
     /// it needs a seat the Mac is known to hold.
+    ///
+    /// `daemon resume --seat S` lifts only an entry that names S, and exits 0 either way.  So it says
+    /// "nothing was paused" with a pause on every seat in force, and that pause outlives a lift of
+    /// the seat's own entry.  Neither one is a seat whose wakes run again.
     func resume(seat: String) async {
         let host = self.host(of: seat)
         guard host.isTheMac else {
@@ -402,7 +416,26 @@ final class WakeSettingsStore: ObservableObject {
             say("The seat tag is not a plain token, so nothing was resumed.", failure: true)
             return
         }
-        await run(invocation, success: "The pause was lifted on the Mac's eavesdropper.")
+        let everySeat = model.seats.first(where: { $0.seat == seat })?.everySeatPaused == true
+        let stillInForce = "A pause on every seat is still in force."
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            let result = try await runner.run(invocation)
+            if result.exitCode != 0 {
+                say("The eavesdropper refused the run: \(result.stderrTail)", failure: true)
+            } else if result.stdout.hasPrefix("nothing was paused") {
+                let more = everySeat ? "\u{00A0} \(stillInForce)" : ""
+                say("Nothing was lifted for \(seat).\u{00A0} No pause names this seat.\(more)", failure: true)
+            } else if everySeat {
+                say("The pause on \(seat) was lifted, and its wakes stay stopped.\u{00A0} \(stillInForce)", failure: true)
+            } else {
+                say("The pause was lifted on the Mac's eavesdropper.")
+            }
+        } catch {
+            say("The eavesdropper could not be asked: \(error.localizedDescription)", failure: true)
+        }
+        await refresh()
     }
 
     // MARK: The pin

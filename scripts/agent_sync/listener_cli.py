@@ -352,10 +352,16 @@ def cmd_check_config(rt: Any, args: argparse.Namespace) -> int:
 
     `ok` means the candidate parses, the partition refuses nothing in it, and it brings no error the
     current file does not already have.  An existing soft error on another seat does not block an
-    edit;  an existing partition refusal does, because the listener would refuse any reload of it."""
+    edit;  an existing partition refusal does, because the listener would refuse any reload of it.
+
+    `--partition` names the partition to judge by.  The running listener can read another checkout's
+    copy than this command's, and that copy is the one that can refuse the file, so a tool that knows
+    it (the status's `partition_file`) passes it."""
     root = _root(rt)
     current = _config_path(rt)
-    partition_file = C.partition_path(rt.env)
+    partition_file = (
+        os.path.expanduser(args.partition) if args.partition else C.partition_path(rt.env)
+    )
     partition, partition_problem = C.load_partition(partition_file)
     env_instance = (rt.env.get(C.ENV_INSTANCE) or "").strip().casefold() or None
 
@@ -1665,6 +1671,11 @@ def add_parsers(
         dsub,
     )
     q.add_argument("--file", metavar="PATH", required=True, help="the candidate file to check")
+    q.add_argument(
+        "--partition",
+        metavar="PATH",
+        help="the seat partition to judge by (default: this checkout's copy)",
+    )
     q = add("chats", "discover, inspect, or manage existing-chat Zulip nudges", dsub)
     csub = q.add_subparsers(dest="chats_action", metavar="ACTION", required=True)
     c = csub.add_parser("catalog", parents=[common])

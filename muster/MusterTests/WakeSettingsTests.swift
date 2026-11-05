@@ -58,6 +58,9 @@ final class WakeSettingsTests: XCTestCase {
     }
     """
 
+    /// What `daemon status --json` answers with no eavesdropper running and no status file.
+    private let stoppedStatus = #"{"running": false, "pid": null, "status": {}}"#
+
     /// The sources the builder reads.
     private func sources(
         config: String? = nil,
@@ -210,7 +213,7 @@ final class WakeSettingsTests: XCTestCase {
     /// A section for such a seat in the Mac's file is the thing that stops the eavesdropper,  so the
     /// panel says so,  and the seat counts as a problem.
     func test_a_section_for_a_server_seat_is_named_as_the_problem() {
-        var input = sources(config: sample + "\n[seat.MA]\nbudget = { wakes_per_hour = 9 }\n")
+        var input = sources(config: sample + "\n[seat.MA]\nbudget = { wakes_per_hour = 9 }\n", status: stoppedStatus)
         input.seats = ["MM", "MA"]
         let model = WakeSettingsBuilder.build(input)
         let seat = model.seats[1]
@@ -224,7 +227,7 @@ final class WakeSettingsTests: XCTestCase {
     /// The eavesdropper tests a section's own `instance` key first,  so a seat the partition gives to
     /// the Mac can still be one it refuses.  The panel says so,  and offers the repair.
     func test_a_section_marked_for_the_server_is_refused() throws {
-        var input = sources(config: sample + "\ninstance = \"server\"\n")
+        var input = sources(config: sample + "\ninstance = \"server\"\n", status: stoppedStatus)
         input.seats = ["MM"]
         let model = WakeSettingsBuilder.build(input)
         let seat = try XCTUnwrap(model.seats.first)
@@ -308,6 +311,46 @@ final class WakeSettingsTests: XCTestCase {
         var down = sources(config: sample + "\n[seat.MA]\nwake = \"inbox\"\n", status: stopped)
         down.seats = ["MA"]
         XCTAssertEqual(WakeSettingsBuilder.build(down).seats.first?.host, .server)
+    }
+
+    /// A failed status read says nothing about which copy a running eavesdropper reads,  so Muster's
+    /// own copy cannot call a seat elsewhere,  and its section cannot be offered for removal.
+    func test_with_no_status_no_seat_is_called_elsewhere() throws {
+        var input = sources(config: sample + "\n[seat.MA]\nwake = \"inbox\"\n")
+        input.seats = ["MA"]
+        let seat = try XCTUnwrap(WakeSettingsBuilder.build(input).seats.first)
+        guard case .unknown(let why) = seat.host else {
+            XCTFail("expected an unknown host, got \(seat.host)")
+            return
+        }
+        XCTAssertTrue(why.contains("could not read the eavesdropper's status"))
+        XCTAssertFalse(seat.hasRefusedSection)
+        XCTAssertNil(seat.refusedSectionProblem)
+        // A stopped eavesdropper still answers,  and then the copy Muster read decides.
+        var stopped = sources(config: sample + "\n[seat.MA]\nwake = \"inbox\"\n", status: stoppedStatus)
+        stopped.seats = ["MA"]
+        XCTAssertEqual(WakeSettingsBuilder.build(stopped).seats.first?.hasRefusedSection, true)
+    }
+
+    /// TOML reads `[seat."MM"]` as seat MM,  so the listener holds it.  Muster keeps the quotes,  and
+    /// must not call that name unlisted,  because the panel would then offer to delete a live seat.
+    func test_a_quoted_section_name_is_not_called_unlisted() throws {
+        let config = "[seat.\"MM\"]\nbot = \"MM\"\nwake = \"muse\"\n"
+        var input = sources(config: config, status: stoppedStatus)
+        input.seats = input.config.seatTags
+        XCTAssertEqual(input.seats, ["\"MM\""])
+        let seat = try XCTUnwrap(WakeSettingsBuilder.build(input).seats.first)
+        guard case .unknown(let why) = seat.host else {
+            XCTFail("expected an unknown host, got \(seat.host)")
+            return
+        }
+        XCTAssertTrue(why.contains("cannot read"))
+        XCTAssertTrue(seat.hasSection)
+        XCTAssertFalse(seat.hasRefusedSection)
+
+        let space = try makeWorkspace(config: config)
+        let writer = WakeSettingsWriter(configURL: space.config, partitionURL: space.partition)
+        XCTAssertThrowsError(try writer.prepareRemoval(ofSeat: "\"MM\""))
     }
 
     /// With no readable partition,  a seat's holder is unknown and the panel says so.
@@ -752,11 +795,13 @@ final class WakeSettingsTests: XCTestCase {
         private var calls: [[String]] = []
         private var reloaded = false
         var status = #"{"running": true, "status": {"seats": {}, "pause": {}}}"#
+        var statusExit: Int32 = 0
         var statusAfterReload: String?
         var check = #"{"ok": true, "new_errors": [], "refused": []}"#
         var checkExit: Int32 = 0
         var reloadExit: Int32 = 0
         var reloadError = ""
+        var resumeOutput = "resumed MM\n"
         var configAtCheck: Data?
         var candidateAtCheck: String?
         var configURL: URL?
@@ -784,7 +829,9 @@ final class WakeSettingsTests: XCTestCase {
             switch command {
             case "status":
                 let text = reloaded ? (statusAfterReload ?? status) : status
-                return AgentSyncCLIResult(exitCode: 0, stdout: text, stderr: "")
+                return AgentSyncCLIResult(exitCode: statusExit, stdout: text, stderr: "")
+            case "resume":
+                return AgentSyncCLIResult(exitCode: 0, stdout: resumeOutput, stderr: "")
             case "check-config":
                 candidateAtCheck = try? String(contentsOfFile: arguments[3], encoding: .utf8)
                 configAtCheck = configURL.flatMap { try? Data(contentsOf: $0) }
@@ -858,7 +905,8 @@ final class WakeSettingsTests: XCTestCase {
 
         await store.pause(seat: "MA")
         XCTAssertTrue(store.messageIsFailure)
-        XCTAssertFalse(store.message?.contains("are paused") == true)
+        XCTAssertTrue(store.message?.contains("Nothing was paused for MA") == true)
+        XCTAssertEqual(listener.actions, [])
         await store.resume(seat: "MA")
         XCTAssertTrue(store.messageIsFailure)
         await store.testWake(seat: "MA", runtime: nil)
@@ -882,6 +930,43 @@ final class WakeSettingsTests: XCTestCase {
         await store.resume(seat: "MM")
         XCTAssertEqual(listener.actions, ["pause", "resume"])
         XCTAssertEqual(store.message, "The pause was lifted on the Mac's eavesdropper.")
+    }
+
+    /// `daemon resume --seat S` exits 0 and says "nothing was paused" when no entry names the seat,
+    /// so that is not a lifted pause,  and the report says what is still in force.
+    @MainActor
+    func test_a_resume_that_lifted_nothing_is_a_failure() async throws {
+        let space = try makeWorkspace()
+        let listener = FakeListener()
+        listener.resumeOutput = "nothing was paused\n"
+        let store = await makeStore(listener, space: space)
+        await store.resume(seat: "MM")
+        XCTAssertEqual(listener.actions, ["resume"])
+        XCTAssertTrue(store.messageIsFailure)
+        XCTAssertEqual(store.message, "Nothing was lifted for MM.\u{00A0} No pause names this seat.")
+
+        listener.status = #"{"running": true, "status": {"seats": {}, "pause": {"*": {"wakes_only": true}}}}"#
+        await store.refresh()
+        XCTAssertEqual(store.model.seats.first(where: { $0.seat == "MM" })?.pauseScope, "*")
+        await store.resume(seat: "MM")
+        XCTAssertTrue(store.messageIsFailure)
+        XCTAssertTrue(store.message?.contains("Nothing was lifted for MM") == true)
+        XCTAssertTrue(store.message?.contains("A pause on every seat is still in force.") == true)
+    }
+
+    /// The seat's own entry can be lifted with a pause on every seat still in force,  and its wakes
+    /// then stay stopped,  so that is not reported as a success either.
+    @MainActor
+    func test_a_resume_under_a_pause_on_every_seat_says_so() async throws {
+        let space = try makeWorkspace()
+        let listener = FakeListener()
+        listener.status = #"{"running": true, "status": {"seats": {}, "pause": {"MM": {}, "*": {}}}}"#
+        let store = await makeStore(listener, space: space)
+        await store.resume(seat: "MM")
+        XCTAssertEqual(listener.actions, ["resume"])
+        XCTAssertTrue(store.messageIsFailure)
+        XCTAssertTrue(store.message?.contains("The pause on MM was lifted") == true)
+        XCTAssertTrue(store.message?.contains("A pause on every seat is still in force.") == true)
     }
 
     /// With no partition the pause stays,  because the seat may be the Mac's,  and it says what it
@@ -926,6 +1011,10 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertEqual(listener.actions, ["check-config", "reload"])
         XCTAssertEqual(listener.configAtCheck, before, "the real file changed before the check")
         XCTAssertTrue(listener.candidateAtCheck?.contains("another-model") == true)
+        // The check judges by the partition the writer goes by,  not the command line's own copy.
+        let check = try XCTUnwrap(listener.invocations.first(where: { $0.contains("check-config") }))
+        let flag = try XCTUnwrap(check.firstIndex(of: "--partition"))
+        XCTAssertEqual(check[flag + 1], space.partition.path)
         let document = ListenerConfigDocument(text: try String(contentsOf: space.config, encoding: .utf8))
         XCTAssertEqual(document.value(section: "seat.MM", key: "model"), .text("another-model"))
         XCTAssertFalse(store.messageIsFailure)
@@ -933,6 +1022,30 @@ final class WakeSettingsTests: XCTestCase {
         // The candidate is gone.
         let left = try FileManager.default.contentsOfDirectory(atPath: space.config.deletingLastPathComponent().path)
         XCTAssertFalse(left.contains { $0.contains("muster-check") })
+    }
+
+    /// The check names the partition only when there is one to name.
+    func test_the_check_passes_the_partition_it_is_given() {
+        XCTAssertEqual(
+            AgentSyncInvocation.checkConfig(file: "/c", partition: "/p").arguments,
+            ["daemon", "check-config", "--file", "/c", "--partition", "/p", "--json"]
+        )
+        XCTAssertEqual(
+            AgentSyncInvocation.checkConfig(file: "/c", partition: nil).arguments,
+            ["daemon", "check-config", "--file", "/c", "--json"]
+        )
+    }
+
+    /// The one swap that leaves the file changed does not say it was not changed,  and the others do.
+    @MainActor
+    func test_a_failed_swap_does_not_say_the_file_was_not_changed() async {
+        let moved = WakeSettingsWriter.WriteError.anotherWritersTextMoved(path: "/c", keptAt: "/kept")
+        let report = WakeSettingsStore.commitFailure(moved)
+        XCTAssertFalse(report.contains("was not changed"))
+        XCTAssertTrue(report.contains("/kept"))
+        XCTAssertTrue(report.contains("now holds Muster's edit"))
+        let changed = WakeSettingsWriter.WriteError.changedSinceRead("/c")
+        XCTAssertTrue(WakeSettingsStore.commitFailure(changed).hasPrefix("The configuration file was not changed:"))
     }
 
     /// A candidate the eavesdropper's rules refuse never reaches the file.
@@ -1120,6 +1233,58 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertEqual(listener.actions, [])
         XCTAssertTrue(store.messageIsFailure)
         XCTAssertTrue(store.message?.contains("running eavesdropper holds this seat") == true)
+    }
+
+    /// With no status,  the panel does not offer a repair and the store does not run one:  a running
+    /// eavesdropper may read another copy that gives this seat to the Mac.
+    @MainActor
+    func test_the_repair_stops_when_the_status_cannot_be_read() async throws {
+        let space = try makeWorkspace(config: sample + "\n\n[seat.MA]\nbot = \"MA\"\n")
+        let before = try bytes(space.config)
+        let listener = FakeListener()
+        listener.statusExit = 1
+        let store = await makeStore(listener, space: space)
+        XCTAssertEqual(store.model.seats.first(where: { $0.seat == "MA" })?.hasRefusedSection, false)
+        await store.removeRefusedSection(seat: "MA")
+        XCTAssertEqual(try bytes(space.config), before)
+        XCTAssertEqual(listener.actions, [])
+        XCTAssertTrue(store.messageIsFailure)
+        XCTAssertTrue(store.message?.contains("could not read the eavesdropper's status") == true)
+    }
+
+    // MARK: What the reader reads
+
+    /// The reader and the builder agree on who holds a seat:  a seat the builder shows live data for
+    /// has its pins and ledger read,  so no empty reading stands in for one Muster never made.
+    func test_the_reader_reads_pins_for_a_seat_the_builder_does_not_call_elsewhere() async throws {
+        let space = try makeWorkspace(config: sample + "\n\n[seat.MA]\nbot = \"MA\"\n")
+        let location = ListenerStateLocation(home: space.home)
+        let pinURL = location.pinURL(seat: "MA", runtime: "muse")
+        try FileManager.default.createDirectory(
+            at: pinURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try #"{"at": 1792535804.0, "muse": "/tmp/fixture-apps/muse-bin", "model": "m"}"#
+            .write(to: pinURL, atomically: true, encoding: .utf8)
+
+        // A running eavesdropper too old to name its partition holds MA,  and this copy gives it away.
+        let older = FakeListener()
+        older.status = #"{"running": true, "status": {"seats": {"MA": {"bot": "MA"}}, "pause": {}}}"#
+        let held = await WakeSettingsReader(
+            location: location, runner: older, roster: ["MA"], partitionURL: space.partition
+        ).read()
+        XCTAssertEqual(held.pins["MA"]?["muse"]?.binary, "/tmp/fixture-apps/muse-bin")
+        let seat = try XCTUnwrap(WakeSettingsBuilder.build(held).seats.first(where: { $0.seat == "MA" }))
+        XCTAssertFalse(seat.host.isElsewhere)
+        XCTAssertEqual(seat.pin?.binary, "/tmp/fixture-apps/muse-bin")
+
+        // Once it names the partition,  that copy gives MA away,  so nothing is read for it.
+        let named = FakeListener()
+        named.status = #"{"running": true, "status": {"seats": {"MA": {"bot": "MA"}}, "pause": {}, "partition_file": "\#(space.partition.path)"}}"#
+        let elsewhere = await WakeSettingsReader(
+            location: location, runner: named, roster: ["MA"], partitionURL: space.partition
+        ).read()
+        XCTAssertNil(elsewhere.pins["MA"])
     }
 
     // MARK: What a draft asks for
@@ -1378,12 +1543,15 @@ final class WakeSettingsTests: XCTestCase {
     /// A running eavesdropper lists a seat the file turns off under `disabled` and not under
     /// `seats`,  so its settings are neither unknown nor a problem.  A stopped one has said nothing.
     func test_a_seat_the_file_turns_off_is_not_a_problem() throws {
-        let config = "[seat.MM]\nbot = \"MM\"\nenabled = false\nbudget = { wakes_per_hour = 5 }\n"
+        let config = "[seat.MM]\nbot = \"MM\"\nenabled = false\nmodel = \"x\"\nfallback = \"mcode\"\nbudget = { wakes_per_hour = 5 }\n"
         let running = #"{"running": true, "status": {"disabled": ["MM"], "seats": {}}}"#
         let setting = row(.wakesPerHour, config: config, status: running)
         XCTAssertEqual(setting.state, .seatOff)
         XCTAssertFalse(setting.state.isProblem)
         XCTAssertFalse(setting.note.contains("not known"))
+        // Nobody needs a pin for a model or a fallback on a seat that is off.
+        XCTAssertEqual(row(.model, config: config, status: running).state, .seatOff)
+        XCTAssertEqual(row(.fallback, config: config, status: running).state, .seatOff)
         let seat = try XCTUnwrap(WakeSettingsBuilder.build(sources(config: config, status: running)).seats.first)
         XCTAssertTrue(seat.disabledInFile)
         XCTAssertFalse(seat.needsAttention)

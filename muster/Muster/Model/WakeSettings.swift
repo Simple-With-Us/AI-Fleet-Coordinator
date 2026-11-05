@@ -174,9 +174,16 @@ struct ListenerPartition: Equatable {
     }
 
     /// Who holds a seat.  The eavesdropper upper-cases a section's name before it looks it up.
+    ///
+    /// A name that is not a seat name once upper-cased, like the `"MM"` of a quoted `[seat."MM"]`
+    /// header, may be a seat the eavesdropper holds under the plain name.  TOML reads that header as
+    /// seat MM, and Muster keeps the quotes, so it cannot call this one unlisted.
     func host(of seat: String) -> ListenerSeatHost {
         guard let seats else {
             return .unknown("The seat partition could not be read.\u{00A0} \(problem ?? "")")
+        }
+        guard Self.isSeatName(seat.uppercased()) else {
+            return .unknown("The file names this seat in a way Muster cannot read.")
         }
         let instance = seats[seat.uppercased()] ?? ""
         switch instance {
@@ -284,17 +291,6 @@ enum WakeSettingKey: String, CaseIterable, Identifiable {
         case .liveOwnerPerDay: return ("live", ["owner_per_day"])
         case .liveLoopTurns: return ("live", ["loop_turns"])
         case .hostLoadGate: return ("host_wake_load_per_core", [])
-        }
-    }
-
-    /// The settings that are budgets.
-    var isBudget: Bool {
-        switch self {
-        case .wakesPerHour, .wakesPerDay, .perTopicPerHour, .ownerPerDay,
-             .ownerPerTopicPerHour, .usdPerDay:
-            return true
-        default:
-            return false
         }
     }
 
@@ -491,6 +487,8 @@ struct WakeSeat: Identifiable, Equatable {
     let pauseScope: String?
     /// Whether the Operator is connected for this seat.
     let connected: Bool?
+    /// Whether a pause on every seat is in force, whatever else names this seat.
+    var everySeatPaused: Bool = false
     /// Active red warnings the Operator reports for this seat.
     var redWarnings: [String] = []
     /// Currently queued held-back wakes in the Operator.
@@ -672,6 +670,7 @@ enum WakeSettingsBuilder {
             wakesPaused: live?.wakesPaused ?? false,
             pauseScope: host.isElsewhere ? nil : pauseScope(seat: published, status: sources.status),
             connected: live?.connected,
+            everySeatPaused: !host.isElsewhere && sources.status?.pause["*"] != nil,
             redWarnings: live?.red ?? [],
             heldBackQueueCount: live?.heldBack?.count ?? 0,
             heldBackTotalCount: live?.heldBack?.totals?.held ?? 0,
@@ -693,8 +692,15 @@ enum WakeSettingsBuilder {
     /// Muster read may not be its copy.  If that eavesdropper is running a seat this copy gives away,
     /// the two differ, and calling the seat elsewhere would offer to delete a live seat's section.
     /// A seat it skipped or that the file turns off counts too:  its partition check took those.
-    private static func host(of tag: String, sources: WakeSettingsSources) -> ListenerSeatHost {
+    ///
+    /// With no status at all, Muster does not know whether an eavesdropper is running or which copy
+    /// it reads, so its own copy cannot call a seat elsewhere either.  `daemon status --json` answers
+    /// with an object when the eavesdropper is stopped, so no status only means the command failed.
+    static func host(of tag: String, sources: WakeSettingsSources) -> ListenerSeatHost {
         let host = sources.partition.host(of: tag, in: sources.config)
+        if host.isElsewhere, sources.status == nil {
+            return .unknown("Muster could not read the eavesdropper's status, so it cannot say which partition the eavesdropper reads.")
+        }
         let published = tag.uppercased()
         guard host.isElsewhere,
               sources.status?.running == true,
@@ -807,8 +813,8 @@ enum WakeSettingsBuilder {
     ///   * the two agree:  a pass
     ///   * the two differ:  DRIFT
     ///
-    /// A configured fallback or model with no pin is never a pass:  it is unproven,  because
-    /// nobody ever showed that it works.
+    /// A configured fallback or model with no pin is never a pass:  unless the seat is off,  it is
+    /// unproven,  because nobody ever showed that it works.
     private static func state(
         for key: WakeSettingKey,
         section: String,
@@ -823,6 +829,9 @@ enum WakeSettingsBuilder {
         // say:  the number in the file would not bind anything.
         if !key.isEnforced {
             return .notOwned
+        }
+        if seatOff, configured != nil, live == nil {
+            return .seatOff
         }
         switch key {
         case .model:
@@ -847,7 +856,6 @@ enum WakeSettingsBuilder {
         // setting only the file holds is one the eavesdropper does not publish.
         guard let configured else { return .unset }
         guard let live else {
-            if seatOff { return .seatOff }
             return seatReported ? .notOwned : .unknown
         }
         if configured.matches(live) { return .match }

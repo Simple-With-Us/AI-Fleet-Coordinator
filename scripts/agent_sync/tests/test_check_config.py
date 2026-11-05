@@ -23,11 +23,11 @@ class CheckConfig(ListenerHarness):
         self.current = (self.state_dir / "listener.toml").read_text()
         self.candidate = self.tmp / "candidate.toml"
 
-    def check(self, text: str | None, **env: str) -> tuple[int, dict]:
+    def check(self, text: str | None, *flags: str, **env: str) -> tuple[int, dict]:
         if text is not None:
             self.candidate.write_text(text)
         result = self.run_cli(
-            "daemon", "check-config", "--file", str(self.candidate), "--json", env=self.env(**env)
+            "daemon", "check-config", "--file", str(self.candidate), *flags, "--json", env=self.env(**env)
         )
         return result.code, json.loads(result.out)
 
@@ -118,6 +118,30 @@ class CheckConfig(ListenerHarness):
         self.assertEqual(code, 1)
         self.assertIn("cannot check the seat partition", " ".join(answer["refused"]))
 
+    def test_the_partition_it_is_given_decides(self) -> None:
+        """The running listener can read another checkout's copy than this command's.  Muster passes
+        that copy, so a stale copy here neither refuses a good edit nor passes one it would refuse."""
+        theirs = self.tmp / "the-listeners-partition.toml"
+        theirs.write_text('[seats]\nCLAUDE = "server"\n')
+        code, _answer = self.check(self.current)
+        self.assertEqual(code, 0)
+        code, answer = self.check(self.current, "--partition", str(theirs))
+        self.assertEqual(code, 1)
+        self.assertIn("seat CLAUDE is configured here", " ".join(answer["refused"]))
+        self.assertEqual(answer["partition_file"], str(theirs))
+
+        moved = self.current + '\n[seat.MA]\nbot = "MA"\nwake = "inbox"\n'
+        code, answer = self.check(moved)
+        self.assertIn("seat MA is configured here", " ".join(answer["refused"]))
+        theirs.write_text('[seats]\nCLAUDE = "mac"\nMA = "mac"\n')
+        code, answer = self.check(moved, "--partition", str(theirs))
+        self.assertEqual(answer["refused"], [])
+
+    def test_a_partition_it_is_given_and_cannot_read_refuses_everything(self) -> None:
+        code, answer = self.check(self.current, "--partition", str(self.tmp / "nope.toml"))
+        self.assertEqual(code, 1)
+        self.assertIn("cannot check the seat partition", " ".join(answer["refused"]))
+
     def test_it_changes_nothing(self) -> None:
         before = (self.state_dir / "listener.toml").read_bytes()
         self.check(self.current + '\n[seat.MA]\nwake = "inbox"\n')
@@ -160,6 +184,20 @@ class ReloadAnswer(ListenerHarness):
         status = self.status()
         self.assertEqual(status["reload_at"], self.clock.time())
         self.assertEqual(status["reload_refused"], [])
+
+    def test_a_reload_takes_a_changed_budget_and_live_cap(self) -> None:
+        """So Muster has no restart to ask for after a change to a cap."""
+        self.write_config(budget="wakes_per_hour = 6", live="per_hour = 7")
+        daemon = self.daemon()
+        daemon.write_status()
+        self.assertEqual(self.status()["seats"]["CLAUDE"]["budget"]["wakes_per_hour"], 6)
+
+        self.write_config(budget="wakes_per_hour = 77", live="per_hour = 78")
+        daemon.reload()
+        daemon.write_status()
+        seat = self.status()["seats"]["CLAUDE"]
+        self.assertEqual(seat["budget"]["wakes_per_hour"], 77)
+        self.assertEqual(seat["live"]["per_hour"], 78)
 
     def test_the_partition_it_reads_is_published(self) -> None:
         """Muster goes by this copy when it decides which seat's section it may remove."""

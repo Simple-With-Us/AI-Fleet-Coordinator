@@ -143,7 +143,9 @@ struct WakeSettingsReader {
         var pins: [String: [String: PinEvidence]] = [:]
         var usage: [String: WakeUsage] = [:]
         var recent: [String: [WakeLedger.Outcome]] = [:]
-        for tag in tags where !sources.partition.host(of: tag, in: sources.config).isElsewhere {
+        // The builder's own answer decides which seats have them,  so a seat it shows live data for
+        // never shows zero usage or no pins for want of a read.
+        for tag in tags where !WakeSettingsBuilder.host(of: tag, sources: sources).isElsewhere {
             // The eavesdropper keeps a seat's files under its upper-cased name.
             let directoryName = tag.uppercased()
             var seatPins: [String: PinEvidence] = [:]
