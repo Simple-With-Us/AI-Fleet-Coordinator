@@ -56,6 +56,7 @@ head_sampling_rate = 0.5
 REGISTRY = {
     "account_plan": "paid",
     "free_plan_subrequests": 50,
+    "free_plan_allows_cpu_ms": False,
     "workers": {
         "w": {
             "repo": REPO,
@@ -153,7 +154,18 @@ class ConfigRules(Base):
 
     def test_workers_dev_of_another_type_fails(self):
         out = self.findings('workers_dev = "false"\n' + GOOD_TOML, self.off_registry())
-        self.assertTrue(any("workers_dev would deploy as 'false'" in f for f in out), out)
+        self.assertTrue(any("workers_dev must be true or false" in f for f in out), out)
+        out = self.findings("workers_dev = 0\n" + GOOD_TOML, self.off_registry())
+        self.assertTrue(any("workers_dev must be true or false" in f for f in out), out)
+
+    def test_tables_of_another_type_fail_by_name(self):
+        out = self.findings(GOOD_TOML.split("[limits]")[0] + "limits = 5\n")
+        self.assertTrue(any("limits must be a table" in f for f in out), out)
+        out = self.findings('observability = "on"\n' + GOOD_TOML.split("[observability]")[0])
+        self.assertTrue(any("observability must be a table" in f for f in out), out)
+        text = GOOD_TOML.replace("enabled = true\n", "enabled = true\nlogs = 1\n")
+        out = self.findings(text)
+        self.assertTrue(any("logs must be a table" in f for f in out), out)
 
     def test_implicit_sampling_fails(self):
         out = self.findings(GOOD_TOML.replace("head_sampling_rate = 0.5\n", ""))
@@ -271,6 +283,11 @@ class EnvironmentBlocks(Base):
         out = self.findings(text, self.registry_with_env_worker())
         self.assertTrue(any("[env.prod]: workers_dev would deploy as False" in f for f in out), out)
 
+    def test_malformed_env_block_is_a_finding_and_skips_the_merge(self):
+        text = GOOD_TOML.replace('name = "w"', 'name = "w"\nenv = { prod = 5 }')
+        out = self.findings(text, self.registry_with_env_worker())
+        self.assertEqual(out, ["wrangler.toml: env.prod must be a table"])
+
     def test_env_may_name_its_worker(self):
         text = GOOD_TOML + '[env.prod]\nname = "w"\n'
         self.assertEqual(self.findings(text), [])
@@ -295,6 +312,17 @@ class DowngradeSwitch(Base):
         self.assertEqual(self.findings(text), [])
         out = self.findings(text, self.free_registry())
         self.assertTrue(any("limits.subrequests 51 is above the allowed 50" in f for f in out), out)
+
+    def test_free_fails_a_declared_cpu_ms(self):
+        out = self.findings(registry=self.free_registry())
+        self.assertTrue(any("limits.cpu_ms must be removed" in f for f in out), out)
+        out = self.findings(plan="free")
+        self.assertTrue(any("limits.cpu_ms must be removed" in f for f in out), out)
+
+    def test_registry_can_allow_cpu_ms_on_free(self):
+        registry = self.free_registry()
+        registry["free_plan_allows_cpu_ms"] = True
+        self.assertEqual(self.findings(registry=registry), [])
 
     def test_free_still_requires_subrequests(self):
         text = GOOD_TOML.replace("subrequests = 40\n", "")
@@ -332,6 +360,12 @@ class RegistryRules(Base):
         self.assertTrue(any("workers_dev must be true or false" in f for f in out), out)
         out = self.findings(registry=self.mutated(workers_dev=0))
         self.assertTrue(any("workers_dev must be true or false" in f for f in out), out)
+
+    def test_free_cpu_rule_must_be_a_boolean(self):
+        registry = copy.deepcopy(REGISTRY)
+        registry["free_plan_allows_cpu_ms"] = 0
+        out = self.findings(registry=registry)
+        self.assertTrue(any("free_plan_allows_cpu_ms must be" in f for f in out), out)
 
     def test_bad_plan_fails(self):
         registry = copy.deepcopy(REGISTRY)
@@ -461,13 +495,17 @@ class LiveTree(unittest.TestCase):
         self.assertIsNone(row["config"])
         self.assertTrue(row["no_config_reason"].strip())
 
-    def test_free_plan_rehearsal_flags_only_the_configs_above_50(self):
+    def test_free_plan_rehearsal_flags_the_work_left(self):
         # Worked out from the tree, so the downgrade change itself still passes this test.
         above = []
         for path in guards.tracked_configs(self.root):
-            value = guards.load_config(self.root / path)["limits"]["subrequests"]
-            if value > self.registry["free_plan_subrequests"]:
-                above.append(f"{path}: limits.subrequests {value} is above the allowed 50")
+            limits = guards.load_config(self.root / path)["limits"]
+            if "cpu_ms" in limits:
+                above.append(f"{path}: limits.cpu_ms must be removed")
+            if limits["subrequests"] > self.registry["free_plan_subrequests"]:
+                above.append(
+                    f"{path}: limits.subrequests {limits['subrequests']} is above the allowed 50"
+                )
         out = guards.run(self.root, SCRIPTS / "worker-registry.json", REPO, "free")
         self.assertEqual(len(out), len(above), out)
         for line, expected in zip(sorted(out), sorted(above)):

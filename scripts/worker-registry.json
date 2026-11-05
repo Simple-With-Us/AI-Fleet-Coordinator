@@ -1,6 +1,7 @@
 {
   "account_plan": "paid",
   "free_plan_subrequests": 50,
+  "free_plan_allows_cpu_ms": false,
   "workers": {
     "simple-tools-mcp": {
       "repo": "Simple-With-Us/AI-Fleet-Coordinator",

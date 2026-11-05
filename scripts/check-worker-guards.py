@@ -13,7 +13,8 @@ with --env runs those values, and under the Worker name it deploys as.
 
 Downgrade switch:  the registry's account_plan says which plan the account is on.
 "free" accepts a config with no limits.cpu_ms, because the Free plan's own 10 ms
-applies, and caps limits.subrequests at the registry's free_plan_subrequests.  --plan
+applies, fails one that declares it unless the registry's free_plan_allows_cpu_ms is
+true, and caps limits.subrequests at the registry's free_plan_subrequests.  --plan
 overrides the file for a rehearsal.  docs/cloudflare-workers.md has the checklist.
 
 Reads files only;  it never talks to Cloudflare.  Exit 0 clean, 1 on any finding,
@@ -106,6 +107,8 @@ def check_registry(registry: dict) -> list[str]:
         findings.append(f"registry: account_plan must be one of {sorted(PLANS)}")
     if not is_positive_int(registry.get("free_plan_subrequests")):
         findings.append("registry: free_plan_subrequests must be a positive integer")
+    if not isinstance(registry.get("free_plan_allows_cpu_ms"), bool):
+        findings.append("registry: free_plan_allows_cpu_ms must be true or false")
     workers = registry.get("workers")
     if not isinstance(workers, dict) or not workers:
         return findings + ["registry: workers must be a non-empty object"]
@@ -159,11 +162,24 @@ def check_config(path: str, config: dict, registry: dict, plan: str) -> list[str
         return findings + [f"{path}: env must be a table of environments"]
     base = {k: v for k, v in config.items() if k != "env"}
     for env_name, block in environments.items():
-        block = block if isinstance(block, dict) else {}
+        if not isinstance(block, dict):
+            findings.append(f"{path}: env.{env_name} must be a table")
+            continue
         # Wrangler deploys an environment as <name>-<env> unless the block names it.
         merged = {**base, **block, "name": block.get("name") or f"{base.get('name')}-{env_name}"}
         findings.extend(check_block(path, f"{path} [env.{env_name}]", merged, registry, plan))
     return findings
+
+
+def table(config: dict, key: str, label: str, findings: list[str]) -> dict:
+    """The named table, or {} with a finding when it is present and is not a table."""
+    value = config.get(key)
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        findings.append(f"{label}: {key} must be a table")
+        return {}
+    return value
 
 
 def check_block(path: str, label: str, config: dict, registry: dict, plan: str) -> list[str]:
@@ -176,7 +192,7 @@ def check_block(path: str, label: str, config: dict, registry: dict, plan: str) 
     if path not in config_paths(row):
         findings.append(f"{label}: not listed as a config of {name} in the worker registry")
     ceiling = row.get("limits") if isinstance(row.get("limits"), dict) else {}
-    limits = config.get("limits") if isinstance(config.get("limits"), dict) else {}
+    limits = table(config, "limits", label, findings)
 
     allowed = {"cpu_ms": ceiling.get("cpu_ms"), "subrequests": ceiling.get("subrequests")}
     if plan == "free" and is_positive_int(registry.get("free_plan_subrequests")):
@@ -189,6 +205,8 @@ def check_block(path: str, label: str, config: dict, registry: dict, plan: str) 
             if key == "cpu_ms" and plan == "free":
                 continue
             findings.append(f"{label}: limits.{key} is missing")
+        elif key == "cpu_ms" and plan == "free" and not registry.get("free_plan_allows_cpu_ms"):
+            findings.append(f"{label}: limits.cpu_ms must be removed for the free plan")
         elif not is_positive_int(value):
             findings.append(f"{label}: limits.{key} must be a positive integer")
         elif is_positive_int(top) and value > top:
@@ -203,15 +221,15 @@ def check_block(path: str, label: str, config: dict, registry: dict, plan: str) 
     has_route = bool(config.get("route") or config.get("routes"))
     workers_dev = config.get("workers_dev", not has_route)
     wanted = row.get("workers_dev")
-    if isinstance(wanted, bool) and workers_dev is not wanted:
+    if not isinstance(workers_dev, bool):
+        findings.append(f"{label}: workers_dev must be true or false")
+    elif isinstance(wanted, bool) and workers_dev != wanted:
         findings.append(
             f"{label}: workers_dev would deploy as {workers_dev!r}, the registry says {wanted!r}"
         )
 
-    observability = (
-        config.get("observability") if isinstance(config.get("observability"), dict) else {}
-    )
-    logs = observability.get("logs") if isinstance(observability.get("logs"), dict) else {}
+    observability = table(config, "observability", label, findings)
+    logs = table(observability, "logs", label, findings)
     rates = [
         v
         for v in (observability.get("head_sampling_rate"), logs.get("head_sampling_rate"))

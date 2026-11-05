@@ -20,7 +20,7 @@ Hostnames other than the public entry point below, Access policies, secret names
 
 Limits are per invocation, and Cloudflare documents some per-isolate flexibility, so `cpu_ms` is a strong guard and not an exact one.  Subrequests count `fetch()` and calls to Cloudflare services such as KV, D1 and R2.  Without a limit a Paid Worker gets 10,000 subrequests and 30 seconds of CPU per invocation.
 
-A limit in a config takes effect only when that config is deployed.  Merging it changes nothing live.  The live limits came from direct API uploads made on purpose to apply these caps, at about 7:42 PM on Nov 4, 2026, with `alert-ingress` raised to 200 ms and 50 subrequests at about 9:03 PM and `usage-monitor-receipt-inbox` raised to 500 ms at about 9:55 PM.  The current `alert-ingress` and `pr-conflict-watch` versions from those uploads have no `workers/tag`.  A deploy or API upload replaces the live values with what it declares, and an upload without declared limits removes the live limits: a `simple-tools-mcp` upload at about 8:25 PM the same evening carried none, which dropped its 300 ms and 200 subrequests until they were applied again.  So deploy only from a tree that has these limits, and read the live settings back afterwards.
+A limit in a config takes effect only when that config is deployed.  Merging it changes nothing live.  The live limits came from direct API uploads made on purpose to apply these caps, at about 7:42 PM on Nov 4, 2026, with `alert-ingress` raised to 200 ms and 50 subrequests at about 9:03 PM and `usage-monitor-receipt-inbox` raised to 500 ms at about 9:55 PM.  The current `alert-ingress` and `pr-conflict-watch` versions from those uploads have no `workers/tag`.  A deploy or API upload replaces the live values with what it declares, and an upload without declared limits removes the live limits: a `simple-tools-mcp` upload at about 8:25 PM the same evening carried none, which dropped its 300 ms and 200 subrequests until they were applied again at about 9:49 PM.  So deploy only from a tree that has these limits, and read the live settings back afterwards.
 
 ## The CI Check
 
@@ -50,9 +50,11 @@ A row's `workers_dev` is the state that should be live, so the watchdog's daily 
 
 ### The Downgrade Switch
 
-`account_plan` in the registry is the switch, `paid` today.  Set to `free`, the check accepts a config with no `limits.cpu_ms`, because the Free plan's own 10 ms applies, and caps `limits.subrequests` at `free_plan_subrequests`, which is 50.  Without this switch a check that insisted on these limits could block every deploy after the downgrade, because the documented Free maximum for subrequests is 50.  What Free does with `limits.cpu_ms` present has not been tested.
+`account_plan` in the registry is the switch, `paid` today.  Set to `free`, the check accepts a config with no `limits.cpu_ms`, because the Free plan's own 10 ms applies, fails a config that still declares it, and caps `limits.subrequests` at `free_plan_subrequests`, which is 50.  Without this switch a check that insisted on these limits could block every deploy after the downgrade, because the documented Free maximum for subrequests is 50.
 
-`python3 scripts/check-worker-guards.py --plan free` rehearses it without changing the file.  Today that flags one config: `scripts/agent-sync-mcp/wrangler.jsonc` at 200 subrequests.
+`free_plan_allows_cpu_ms` is `false` because removing the limit loses nothing on Free, while keeping it may stop the deploy.  Cloudflare's configuration page says limits are supported only on the Standard usage model, and a review reported API error 100328 for a declared `cpu_ms` on Free.  Neither has been tested here, and checklist step 7 settles it.
+
+`python3 scripts/check-worker-guards.py --plan free` rehearses it without changing the file.  Today that flags `limits.cpu_ms` in all five tracked configs, and `scripts/agent-sync-mcp/wrangler.jsonc` at 200 subrequests.
 
 ## The Workers
 
@@ -206,8 +208,8 @@ In order.  Do not skip ahead.
 4. Rehearse: deploy `cpu_ms` 10 and `subrequests` 50 to 10% of each Worker, then 100%, and fix every failure.
 5. Require 7 straight days with requests under 85,000, Durable Object requests under 85,000, KV lists under 700, D1 rows written under 50,000, and under 0.1% CPU exceeded.
 6. Decide R2: remove it, or accept it with the watchdog.
-7. On a scratch Worker, confirm what Free does with `limits.cpu_ms`, and confirm the rate-limit binding and service bindings work there.
-8. Change configs for Free: remove `limits.cpu_ms` if refused, and bring `limits.subrequests` to 50 or less.  Set `account_plan` to `free` in the same pull request, and run `python3 scripts/check-worker-guards.py`.
+7. On a scratch Worker, confirm what Free does with `limits.cpu_ms`, set `free_plan_allows_cpu_ms` to match, and confirm the rate-limit binding and service bindings work there.
+8. Change configs for Free: remove `limits.cpu_ms` unless `free_plan_allows_cpu_ms` is `true`, and bring `limits.subrequests` to 50 or less.  Set `account_plan` to `free` in the same pull request, and run `python3 scripts/check-worker-guards.py`.
 9. The owner changes the plan in the dashboard.  The audit's API token could not read subscriptions.
 10. Verify the three crons fire, each row's health proof passes, MCP tools answer, and a test alert lands.
 11. Keep the watchdog, retuned for 80% early warning and R2.  Rolling back is upgrading again and setting `account_plan` back to `paid`.
