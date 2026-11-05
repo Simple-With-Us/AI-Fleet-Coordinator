@@ -17,7 +17,7 @@ Hard limits so a code bug or a looping client cannot burn a capped metric (AFC-6
 
 - **Stop switch.**  `GUARD_MODE=off` answers 503 on every route and stops the SeatGate alarm chain, which rechecks hourly.  It is the account watchdog's lever;  unset means on.
 - **`MCP_RATE_LIMITER`.**  300 requests a minute per credential hash, on every authenticated `/mcp` request, handshakes and notifications included, before any Durable Object, secret or SDK work.  Over it the answer is 429 with `Retry-After: 60`.
-- **`AUTH_FAIL_RATE_LIMITER`.**  60 failed `/mcp` authentications a minute per IP.  Past it, this isolate answers 429 to that IP for 60 seconds and writes nothing.  A credential the isolate has already verified is never blocked, because seats on one host share an IP.  A bearer the gate called wrong is refused from memory for 60 seconds.
+- **`AUTH_FAIL_RATE_LIMITER`.**  60 distinct credentials failing `/mcp` authentication a minute per IP.  Past it, this isolate answers 429 to that IP for 60 seconds and writes nothing.  A credential the isolate has already verified is never blocked, because seats on one host share an IP.  A bearer the gate called wrong is refused from memory for 60 seconds.
 - **Refusals write nothing.**  A rate-limited `/oauth/token` writes no row, and diagnostic and refusal rows are capped at 60 a minute per isolate.
 - **Per-invocation budget** (`src/invocation.js`).  50 outbound fetches and 256 gate RPCs a request, and 30 grant listings a minute per isolate.
 - **Not limited.**  `/internal/gr-bearer-verify` and `/internal/gr-assert-verify`, because the relay reads any non-200 as a refusal and caches it for 30 seconds.

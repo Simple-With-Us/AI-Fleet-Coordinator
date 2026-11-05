@@ -187,6 +187,21 @@ try {
     }
   });
 
+  await step("one client retrying one failing token counts once, and does not lock out other credentials on its IP", async () => {
+    const mf = start({}, { AUTH_FAIL_RATE_LIMITER: { namespace_id: "4", simple: { limit: 2, period: 60 } } });
+    try {
+      const { token: cold, logGate } = await mint(mf);
+      const statuses = [];
+      for (let i = 0; i < 8; i++) statuses.push((await rpc(mf, "expired-oauth-token", "ping")).status);
+      assert.deepEqual(statuses, Array(8).fill(401));
+      const rows = (await logGate.diagnosticTail(50)).filter((row) => row.reason === "mcp_http_401");
+      assert.equal(rows.reduce((total, row) => total + (row.count ?? 1), 0), 1, "the retries wrote one row");
+      assert.equal((await rpc(mf, cold, "ping")).status, 200, "a cold credential on that IP still works");
+    } finally {
+      await mf.dispose();
+    }
+  });
+
   await step("a rate-limited /oauth/token answers 429 and writes no row", async () => {
     const mf = start({}, { TOKEN_RATE_LIMITER: { namespace_id: "3", simple: { limit: 1, period: 60 } } });
     try {

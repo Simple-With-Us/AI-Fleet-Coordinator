@@ -200,8 +200,16 @@ async function guardMcpRequest(request, env, credential) {
   return null;
 }
 
-/** Count one failed authentication.  False once this IP is over the limit:  write nothing for it. */
-async function noteAuthFailure(request, env) {
+/**
+ * Count one failed authentication.  False means write nothing for it:  either this
+ * IP is over the limit, or this credential already failed inside the window.  The
+ * limit counts distinct credentials, because that is what guessing looks like:  one
+ * client retrying one expired token must not lock out other seats sharing its IP.
+ * The per-credential limiter already bounds that retry loop.
+ */
+async function noteAuthFailure(request, env, credential) {
+  if (REFUSALS.get(`failed:${credential}`)) return false;
+  REFUSALS.set(`failed:${credential}`, { seat: "refused" }, REFUSAL_WINDOW_MS);
   const ip = request.headers.get("cf-connecting-ip") ?? "unknown";
   if (await withinLimit(env.AUTH_FAIL_RATE_LIMITER, `authfail:${ip}`)) return true;
   REFUSALS.set(`ip:${ip}`, { seat: "refused" }, REFUSAL_WINDOW_MS);
@@ -1678,8 +1686,9 @@ async function serveRequest(request, env, ctx) {
     if (route === "gr_verify") return serveGrBearerVerify(request, env, gate, { eventsOnlySeats: config.eventsOnlySeats, identityCache: IDENTITY_CACHE, cacheMs: Math.min(GR_VERIFY_CACHE_MS, config.gateIdentityCacheMs) });
     // Enter through the provider so its request-local OAuth helpers exist.
     if (route === "gr_assert_verify") return fetchProvider(request, env, ctx);
+    const credential = route === "mcp" ? await credentialHash(request) : null;
     if (route === "mcp") {
-      const refused = await guardMcpRequest(request, env, await credentialHash(request));
+      const refused = await guardMcpRequest(request, env, credential);
       if (refused) return refused;
     }
     const gbBearer = route === "mcp" ? gbBearerFromRequest(request) : null;
@@ -1691,7 +1700,7 @@ async function serveRequest(request, env, ctx) {
         ? await serveSbtBearerMcp(request, env, sbtBearer, ctx)
         : await fetchProvider(request, env, ctx);
     // A failed authentication counts against its IP, and past the limit it writes nothing.
-    const writeRow = !(route === "mcp" && response.status === 401 && hasAuthorization) || await noteAuthFailure(request, env);
+    const writeRow = !(route === "mcp" && response.status === 401 && hasAuthorization) || await noteAuthFailure(request, env, credential);
     // An unauthenticated MCP discovery 401 is normal OAuth negotiation.
     // Count only failed requests that actually supplied authorization.
     if (writeRow && route === "mcp" && response.status >= 400 && hasAuthorization && response.headers.get("X-Agent-Sync-Diagnostic") !== "recorded") {
