@@ -10,7 +10,7 @@ Owner ruling, Tue, Sep 29, 2026:  every fleet Mac app updates itself through Spa
 4. Every installed copy reads `https://github.com/Simple-With-Us/AI-Fleet-Coordinator/releases/download/muster-feed/appcast.xml` once an hour, downloads the new ZIP in the background, checks its EdDSA signature before unpacking it, and checks that the new app is signed by the same Developer ID team.
 5. The install waits in `UpdateInstallGate` until nothing Muster started is still running and Muster is not the app in front.  Then Sparkle installs it and relaunches Muster.
 
-A pull request that touches `muster/` runs the same job, builds and verifies the bundle with an ad-hoc signature, and publishes nothing.
+A pull request that touches `muster/` runs a separate job with a read-only token, builds and verifies the bundle the same way with an ad-hoc signature, and publishes nothing;  the job that can write releases never runs for a pull request.
 
 ## The Feed, And Why It Is Not `releases/latest`
 

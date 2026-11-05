@@ -173,6 +173,40 @@ struct CheckoutRevision: Equatable {
     }
 }
 
+/// The checkout readings the menu shows, read from disk at most once in `maximumAge`.
+///
+/// The menu's body can be built many times while the app publishes changes, and each build
+/// would otherwise repeat the file reads on the main thread.
+@MainActor
+final class CheckoutReadingCache {
+    static let shared = CheckoutReadingCache()
+    static let maximumAge: TimeInterval = 30
+
+    private let read: () -> [CheckoutRevision.Reading]
+    private let now: () -> Date
+    private var cached: (at: Date, readings: [CheckoutRevision.Reading])?
+
+    init(
+        read: @escaping () -> [CheckoutRevision.Reading] = {
+            CheckoutRevision.musterCheckouts().map { CheckoutRevision.read(root: $0) }
+        },
+        now: @escaping () -> Date = { Date() }
+    ) {
+        self.read = read
+        self.now = now
+    }
+
+    func readings() -> [CheckoutRevision.Reading] {
+        let moment = now()
+        if let cached, moment >= cached.at, moment.timeIntervalSince(cached.at) < Self.maximumAge {
+            return cached.readings
+        }
+        let fresh = read()
+        cached = (moment, fresh)
+        return fresh
+    }
+}
+
 /// The words Settings and the menu show about the build and the checkout.
 enum BuildIdentityCopy {
     /// The gap after a sentence:  a real no-break space and then a space.

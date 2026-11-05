@@ -48,8 +48,8 @@ struct BuildIdentityMenuSection: View {
             if let marker = identity.marker {
                 Text(marker)
             }
-            // The menu's body is built each time it opens,  and this is a few small file reads.
-            ForEach(CheckoutRevision.musterCheckouts().map { CheckoutRevision.read(root: $0) }, id: \.root) { reading in
+            // Read from disk at most every thirty seconds,  however often the body is built.
+            ForEach(CheckoutReadingCache.shared.readings(), id: \.root) { reading in
                 Text(BuildIdentityCopy.menuCheckoutLine(app: identity, checkout: reading))
             }
             if !updater.waitingFor.isEmpty {

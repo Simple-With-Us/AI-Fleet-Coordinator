@@ -357,7 +357,8 @@ def build_identity(directory, configuration, channel=None, override=None):
     elif configuration == "Debug":
         channel = "development"
     else:
-        dirty = run_git(directory, ["status", "--porcelain", "--", "."])
+        # The whole checkout, not only muster/:  a build called main must be main exactly.
+        dirty = run_git(directory, ["status", "--porcelain"])
         on_main = run_git(directory, ["merge-base", "--is-ancestor", "HEAD", "origin/main"])
         clean = dirty.returncode == 0 and not dirty.stdout.strip()
         channel = "main" if clean and on_main.returncode == 0 else "lane"
@@ -370,13 +371,26 @@ def build_identity(directory, configuration, channel=None, override=None):
 
 
 def installed_build_number(app):
-    """The installed copy's CFBundleVersion, or None when there is no readable copy."""
+    """The installed copy's 12-digit CFBundleVersion, or None when there is no installed copy
+    or its number is not in that form (an early scaffold build carried a short one).
+
+    An installed copy whose Info.plist cannot be read is not treated as absent:  the build
+    refuses, because it cannot tell whether it would go backward.
+    """
+    if not os.path.lexists(app):
+        return None
     try:
         with (Path(app) / "Contents/Info.plist").open("rb") as stream:
             info = plistlib.load(stream)
     except (OSError, plistlib.InvalidFileException, ValueError):
-        return None
-    value = info.get("CFBundleVersion") if isinstance(info, dict) else None
+        raise BuildFailure(
+            "The installed Muster at %s has no readable Info.plist, so this build cannot "
+            "tell whether it is older.  Inspect that copy before installing over it." % app,
+            4,
+        ) from None
+    if not isinstance(info, dict):
+        raise BuildFailure("The installed Muster's Info.plist is not a dictionary.", 4)
+    value = info.get("CFBundleVersion")
     return value if isinstance(value, str) and BUILD_NUMBER_PATTERN.match(value) else None
 
 

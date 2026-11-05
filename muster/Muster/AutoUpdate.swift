@@ -97,7 +97,8 @@ final class AppUpdater: NSObject, ObservableObject, SPUUpdaterDelegate {
                  untilInvokingBlock installHandler: @escaping () -> Void) -> Bool {
         guard let gate else { return false }
         let postponed = gate.shouldPostponeRelaunch(installHandler)
-        waitingFor = postponed ? gate.heldBy : []
+        // An automatic install can still be waiting when this relaunch goes ahead.
+        waitingFor = gate.hasPendingInstall ? gate.heldBy : []
         return postponed
     }
 }

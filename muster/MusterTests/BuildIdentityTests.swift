@@ -95,6 +95,32 @@ final class BuildIdentityTests: XCTestCase {
         XCTAssertTrue(BuildIdentityCopy.checkoutLine(reading(nil)).contains("commit unknown"))
     }
 
+    // MARK: - The menu's cache
+
+    @MainActor
+    func testTheMenuReadsTheCheckoutAtMostOnceInThirtySeconds() {
+        var reads = 0
+        var clock = Date(timeIntervalSince1970: 1_000_000)
+        let cache = CheckoutReadingCache(read: {
+            reads += 1
+            return [CheckoutRevision.Reading(root: URL(fileURLWithPath: "/tmp/muster-tests/checkout"),
+                                             revision: nil, reason: "no .git")]
+        }, now: { clock })
+        XCTAssertEqual(cache.readings().count, 1)
+        XCTAssertEqual(cache.readings().count, 1)
+        XCTAssertEqual(reads, 1)
+        clock = clock.addingTimeInterval(CheckoutReadingCache.maximumAge - 1)
+        _ = cache.readings()
+        XCTAssertEqual(reads, 1)
+        clock = clock.addingTimeInterval(2)
+        _ = cache.readings()
+        XCTAssertEqual(reads, 2)
+        // A clock that went backward reads again rather than trusting the old answer.
+        clock = clock.addingTimeInterval(-3600)
+        _ = cache.readings()
+        XCTAssertEqual(reads, 3)
+    }
+
     // MARK: - Reading a checkout's files
 
     private func makeCheckout() throws -> URL {

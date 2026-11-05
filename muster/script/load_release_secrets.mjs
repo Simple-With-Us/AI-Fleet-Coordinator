@@ -51,6 +51,18 @@ const FILES = {
   MUSTER_SPARKLE_ED_PRIVATE_KEY: { file: "sparkle-ed25519.key", pathName: "MUSTER_SPARKLE_KEY_PATH" },
 };
 
+// Node's base64 decoder skips characters it does not know, so a truncated or corrupted value
+// would still decode to something.  Only canonical base64 that round-trips is accepted.
+export function strictBase64(name, path, value) {
+  const compact = String(value).replace(/\s+/g, "");
+  const data = Buffer.from(compact, "base64");
+  if (!compact || compact.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(compact) ||
+      data.length === 0 || data.toString("base64") !== compact) {
+    throw new Error(`${name} in ${path} is not valid base64.`);
+  }
+  return data;
+}
+
 function writePrivate(directory, file, data) {
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   const path = join(directory, file);
@@ -94,10 +106,7 @@ export async function load({ env = process.env, fetchImpl = fetch, log = (line) 
       }
       const target = FILES[name];
       if (target) {
-        const data = target.base64 ? Buffer.from(value.replace(/\s+/g, ""), "base64") : value.endsWith("\n") ? value : `${value}\n`;
-        if (target.base64 && data.length === 0) {
-          throw new Error(`${name} in ${source.path} is not base64.`);
-        }
+        const data = target.base64 ? strictBase64(name, source.path, value) : value.endsWith("\n") ? value : `${value}\n`;
         const path = writePrivate(directory, target.file, data);
         writeGithubEnvValue(env.GITHUB_ENV, target.pathName, path);
       } else {

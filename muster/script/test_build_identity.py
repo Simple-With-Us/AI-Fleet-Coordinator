@@ -95,6 +95,12 @@ class BuildIdentityTests(unittest.TestCase):
         (self.muster / "README.md").write_text("Muster, edited\n")
         self.assertEqual(support.build_identity(self.muster, "Release")["CHANNEL"], "lane")
 
+    def test_uncommitted_changes_outside_muster_make_a_lane_too(self):
+        self.git("update-ref", "refs/remotes/origin/main", "HEAD")
+        (self.repo / "scripts").mkdir()
+        (self.repo / "scripts" / "tool.py").write_text("print('changed')\n")
+        self.assertEqual(support.build_identity(self.muster, "Release")["CHANNEL"], "lane")
+
     def test_no_origin_main_is_a_lane(self):
         self.assertEqual(support.build_identity(self.muster, "Release")["CHANNEL"], "lane")
 
@@ -190,10 +196,22 @@ class RefuseOlderTests(unittest.TestCase):
         support.refuse_older(self.app, "202611041200", False)
         support.refuse_older(self.app, "202611051530", False)
 
-    def test_no_installed_copy_or_an_unreadable_number_passes(self):
-        support.refuse_older(self.app, "202611041200", False)
+    def test_no_installed_copy_or_a_short_scaffold_number_passes(self):
+        support.refuse_older(Path(self.tmp.name) / "Absent.app", "202611041200", False)
         self.install("1001")
         support.refuse_older(self.app, "202611041200", False)
+
+    def test_an_installed_copy_with_an_unreadable_info_plist_refuses(self):
+        for content in (None, b"not a plist"):
+            with self.subTest(content=content):
+                plist = self.app / "Contents/Info.plist"
+                if plist.exists():
+                    plist.unlink()
+                if content is not None:
+                    plist.write_bytes(content)
+                with self.assertRaises(support.BuildFailure) as raised:
+                    support.refuse_older(self.app, "202611041200", True)
+                self.assertEqual(raised.exception.status, 4)
 
 
 if __name__ == "__main__":

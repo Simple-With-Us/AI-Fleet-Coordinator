@@ -6,7 +6,7 @@ import { mkdtempSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { AFC_PROJECT_ID, load, run } from "./load_release_secrets.mjs";
+import { AFC_PROJECT_ID, load, run, strictBase64 } from "./load_release_secrets.mjs";
 
 // A stand-in made at run time, so no project id is committed for the test.
 const FLEET_OPS = randomUUID();
@@ -98,6 +98,16 @@ test("a present token with the wrong scope fails instead of reading as missing",
   const env = environment({ ...TOKENS, INFISICAL_FLEET_OPS_PROJECT_ID: FLEET_OPS });
   const wide = stand_in(FULL, { scopeFor: (folder) => ({ ...folder, path: "/" }) });
   await assert.rejects(load({ env, fetchImpl: wide, log: () => {} }));
+});
+
+test("a certificate that is not canonical base64 fails the job before anything is written", async () => {
+  for (const bad of ["cDEy!!IGJ5dGVz", "cDEyIGJ5dGV", "@@@@", " "]) {
+    const env = environment({ ...TOKENS, INFISICAL_FLEET_OPS_PROJECT_ID: FLEET_OPS });
+    const broken = { ...FULL, "/mac-certs": { ...FULL["/mac-certs"], MAC_CERT_P12_BASE64: bad } };
+    await assert.rejects(load({ env, fetchImpl: stand_in(broken), log: () => {} }), /MAC_CERT_P12_BASE64 in \/mac-certs/);
+  }
+  assert.throws(() => strictBase64("X", "/p", "not base64"));
+  assert.equal(strictBase64("X", "/p", "cDEy\nIGJ5dGVz").toString(), "p12 bytes");
 });
 
 test("an unresolved reference fails the job", async () => {
