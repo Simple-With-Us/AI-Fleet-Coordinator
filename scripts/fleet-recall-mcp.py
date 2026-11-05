@@ -245,6 +245,7 @@ def _bool(args: dict, key: str) -> None:
 
 def _validate_mutation_result(name: str, result: dict) -> dict:
     """Fail closed before a local/public mutation result is returned as tool data."""
+
     def string(field: str, *, required: bool = True) -> str:
         value = result.get(field)
         if value is None and not required:

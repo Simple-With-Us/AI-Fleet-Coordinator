@@ -2702,26 +2702,36 @@ class Tools:
     def _tool_recall_retract(self, args: Mapping[str, Any]) -> dict[str, Any]:
         return self._recall_mutation("recall_retract", args)
 
-    def _recall_mutation_string(self, result: Mapping[str, Any], key: str, *, required: bool = True) -> str:
+    def _recall_mutation_string(
+        self, result: Mapping[str, Any], key: str, *, required: bool = True
+    ) -> str:
         value = result.get(key)
         if value is None and not required:
             return ""
         if not isinstance(value, str):
-            raise ToolError("invalid_response", "fleet recall returned an invalid response field: %s" % key)
+            raise ToolError(
+                "invalid_response", "fleet recall returned an invalid response field: %s" % key
+            )
         return value
 
-    def _recall_mutation_int(self, result: Mapping[str, Any], key: str, *, required: bool = True) -> int:
+    def _recall_mutation_int(
+        self, result: Mapping[str, Any], key: str, *, required: bool = True
+    ) -> int:
         value = result.get(key)
         if value is None and not required:
             return 0
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-            raise ToolError("invalid_response", "fleet recall returned an invalid response field: %s" % key)
+            raise ToolError(
+                "invalid_response", "fleet recall returned an invalid response field: %s" % key
+            )
         return value
 
     def _correct_result(self, result: Mapping[str, Any], *, duplicate: bool) -> dict[str, Any]:
         scrubbed = result.get("scrubbed")
         if not isinstance(scrubbed, list) or any(not isinstance(item, str) for item in scrubbed):
-            raise ToolError("invalid_response", "fleet recall returned an invalid response field: scrubbed")
+            raise ToolError(
+                "invalid_response", "fleet recall returned an invalid response field: scrubbed"
+            )
         shown = {
             "id": self._recall_mutation_string(result, "id"),
             "doc_id": self._recall_mutation_string(result, "doc_id"),
@@ -2740,7 +2750,9 @@ class Tools:
     def _retract_result(self, result: Mapping[str, Any], *, duplicate: bool) -> dict[str, Any]:
         retracted = result.get("retracted")
         if not isinstance(retracted, bool):
-            raise ToolError("invalid_response", "fleet recall returned an invalid response field: retracted")
+            raise ToolError(
+                "invalid_response", "fleet recall returned an invalid response field: retracted"
+            )
         shown = {
             "id": self._recall_mutation_string(result, "id"),
             "doc_id": self._recall_mutation_string(result, "doc_id"),

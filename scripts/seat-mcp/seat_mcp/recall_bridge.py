@@ -197,7 +197,9 @@ def _bounded_arguments(arguments: JsonDict) -> None:
         value, depth = stack.pop()
         nodes += 1
         if nodes > MAX_ARGUMENT_NODES:
-            raise SeatError("recall arguments exceed the %d-node structural limit" % MAX_ARGUMENT_NODES)
+            raise SeatError(
+                "recall arguments exceed the %d-node structural limit" % MAX_ARGUMENT_NODES
+            )
         if depth > MAX_ARGUMENT_DEPTH:
             raise SeatError("recall arguments exceed the %d-level depth limit" % MAX_ARGUMENT_DEPTH)
         if isinstance(value, dict):
@@ -328,7 +330,9 @@ def _mutation_base(arguments: JsonDict, operation: str) -> JsonDict:
     if not doc_id:
         raise SeatError("doc_id is required")
     if not DOC_ID_RE.fullmatch(doc_id):
-        raise SeatError("doc_id must be an agent contribution id like contrib/CLAUDE/2026-11-05/472fc36e")
+        raise SeatError(
+            "doc_id must be an agent contribution id like contrib/CLAUDE/2026-11-05/472fc36e"
+        )
     reason = _opt_str(arguments, "reason")
     if not reason:
         raise SeatError("reason is required")

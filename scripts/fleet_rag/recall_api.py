@@ -630,7 +630,14 @@ def recall_contribute(
         # point and let the same replacement be contributed a second time.
         matches = list(
             q.scroll(
-                {"must": [{"key": "content_hash", "match": {"value": point["payload"]["content_hash"]}}]},
+                {
+                    "must": [
+                        {
+                            "key": "content_hash",
+                            "match": {"value": point["payload"]["content_hash"]},
+                        }
+                    ]
+                },
                 limit=2,
                 with_payload=True,
                 with_vector=False,
@@ -894,9 +901,7 @@ def recall_correct(
     q = Qdrant(cfg)
     with _MUTATION_LOCK:
         old_point = _contribution_point(q, doc_id)
-        plan = _correction_plan(
-            old_point, doc_id, clean, reason, actor, title, url, expected, ts
-        )
+        plan = _correction_plan(old_point, doc_id, clean, reason, actor, title, url, expected, ts)
     vector = None
     if not plan["unchanged"] and not plan["metadata_only"]:
         # TEI is a network call.  Do not hold the fleet mutation lock through it:  re-read and
@@ -957,6 +962,7 @@ def recall_correct(
         "content_hash": plan["new_hash"],
         "scrubbed": reported,
     }
+
 
 def recall_retract(
     doc_id: str,
