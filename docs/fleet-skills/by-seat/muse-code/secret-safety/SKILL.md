@@ -57,7 +57,7 @@ The above pattern is written from one platform's own experience of getting this 
 
 The pattern is identical everywhere: extract the one value you actually need, programmatically, and never let the raw value pass through your own visible output on its way there.
 
-**Infisical Fleet-OPS through `fleet-secrets` (the fleet's only home for keys; the old `~/.secrets` flat files are retired, AFC-359).**  Fetch the one value you need into a variable, or hand a command only the names it needs, and never let the value pass through your own visible output:
+**Infisical Fleet-OPS through `fleet-secrets` (the fleet's only home for keys; the old `~/.secrets` flat files are retired, AFC-359).**  A consumer that reads one folder on its own uses its own scoped service token instead, and never the shared Automation identity: see `service-tokens`.  Fetch the one value you need into a variable, or hand a command only the names it needs, and never let the value pass through your own visible output:
 ```bash
 KEY="$(fleet-secrets get SOME_KEY)"          # exit 3 means the key is absent
 fleet-secrets run --only A,B -- some-command  # A and B appear in that command's environment only
@@ -104,7 +104,7 @@ confirmed leak vector (agent transcript).  **Never run:**
 - `COOLIFY_AGENTS` = **full** deploy/admin → agent ops / GH deploy only — **never** as the app's stats `COOLIFY_API_TOKEN`
 - If Infisical still has `COOLIFY_API_TOKEN` for metrics, it must equal `COOLIFY_SERVER_STATS`, not `COOLIFY_AGENTS`
 
-Canonical: `/Users/jay/apps/FLEET-PROTOCOL.md` § Secrets and Credentials.
+Canonical: `~/apps/FLEET-PROTOCOL.md` § Secrets and Credentials.
 
 **Anything else** — a database column, a cloud vault, a `.env` file, a config JSON, a password manager entry, a token field in some other API's response.  Same rule regardless of source: fetching it is sometimes unavoidable, and once it's fetched, the job shifts from "prevent access" to "prevent it from propagating any further than the one place it's actually needed" — don't let it flow into a second place (a log line, a repeated command, a written file, your own explanatory text) without the inline-redaction technique above.
 
@@ -148,4 +148,4 @@ Safeguards aren't a guarantee, and the response afterward matters as much as the
    - The live chat transcript itself: you have **no capability to delete or edit a prior turn** in this conversation.  Say so plainly if it comes up — don't imply retroactive scrubbing is possible when it isn't.  The correct response to a transcript-level leak is rotation + never re-displaying the value again, not a promise to make the old turn disappear.
 5. Identify the specific technique that caused the leak and change it before doing anything similar again — not just a general resolve to "be more careful."
 
-This is a session-authored propagation of the owner's own words — other platforms should apply the same underlying principle (rotate + delete what you genuinely can + be honest about what you can't) via their own mechanics, not assume identical tool/API names.  Canonical fleet-wide copy: `/Users/jay/apps/FLEET-PROTOCOL.md` § "If a secret leaks anyway: delete it immediately everywhere deletion is possible."
+This is a session-authored propagation of the owner's own words — other platforms should apply the same underlying principle (rotate + delete what you genuinely can + be honest about what you can't) via their own mechanics, not assume identical tool/API names.  Canonical fleet-wide copy: `~/apps/FLEET-PROTOCOL.md` § "If a secret leaks anyway: delete it immediately everywhere deletion is possible."

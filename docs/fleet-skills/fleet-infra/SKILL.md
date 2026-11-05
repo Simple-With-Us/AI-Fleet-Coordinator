@@ -10,7 +10,7 @@ All fleet repositories except `fleet-ops` are **public**.  To protect origin in
 ## Canonical Inventory Location
 
 - **Local Workstation Agents (Mac/Terminal):**
-  Read directly from `/Users/jay/Code/fleet-ops/ATTACK-MAP.md`.
+  Read directly from `~/Code/fleet-ops/ATTACK-MAP.md`.
   GitHub repo: [`Simple-With-Us/fleet-ops:ATTACK-MAP.md`](https://github.com/Simple-With-Us/fleet-ops/blob/main/ATTACK-MAP.md) (private).
 
 - **Cloud / Remote Agents (without a local clone):**

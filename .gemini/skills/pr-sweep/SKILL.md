@@ -11,7 +11,7 @@ description: Sweep the open PRs across the fleet repos and land them — invento
 
 - Run it from a fresh checkout of `origin/main`, never from `~/Code`: `d=$(~/apps/lane new AI-Fleet-Coordinator pr-sweep-run) && cd "$d"`, then `PS="$PWD/scripts/pr-sweep"`.
 - Every PR checkout, the sweep's and each worker's, is a lane made by `lane new`.  On the server that puts it in the lanes root the environment names in `FLEET_LANES_ROOT`, never a clone in `~/.local/state`, a scratchpad or `/tmp`.
-- Coordination follows `/Users/jay/apps/FLEET-PROTOCOL.md`: claim the sweep in Linear (`simple-board claim`) and post in its Zulip work topic before you start, and close out there.  The workers never post; the seat that runs the sweep does.
+- Coordination follows `~/apps/FLEET-PROTOCOL.md`: claim the sweep in Linear (`simple-board claim`) and post in its Zulip work topic before you start, and close out there.  The workers never post; the seat that runs the sweep does.
 - Your seat comes from `AGENT_SEAT` (see `session-start`).  Every worker the sweep launches inherits it.  `pr-sweep` refuses to run without it.
 - The owner rulings the rules carry: merge by default; a hold only for the owner-needed reasons in rule 10; the do-not-automerge and needs-human-merge labels and the CODEOWNERS gate stop only auto-merge; stale Kody reviews may be dismissed under rule 7 (never a human review); a real reply on every thread before it is resolved; no Codex fix requests; merged PRs get a deploy check.  Read them in full with `$PS prompt --common` and `$PS prompt <owner/repo#n> --offline`.
 
@@ -60,11 +60,11 @@ $PS lanes                                           # your lanes (lane prune); a
 - `scripts/branch-landed.sh`: the squash-safe "did this branch land?" check; `lane retire` uses the same PR-state evidence.
 - `scripts/kody-deferred-sweep.mjs`: ranks deferred Kody issues, not PRs.
 - `fleet_facts.github_prs`: the read-only census behind the digest and open loops.  The sweep has its own, because it needs base, head and stack data.
-- The GitHub tools: `git-relay` with the MCP wrapper **GR-MCP** (`git-relay mcp`) is the credential-safe path for the PR writes a sweep makes — `open_pr`, `edit_pr`, `reply_thread`, `comment_pr`, `merge_pr`, `workflow_dispatch` and `resolve_thread` — and `mint_token` is deliberately not exposed over MCP, because it returns a raw credential.  A seat reaches the tools with its own bearer token: ST-MCP shares the same bearer-token arrangement, so a seat may find these tools on its ST-MCP connection, while other seats run GR-MCP directly as its own stdio server — the tool names are the same either way.  **The relay is not deployed yet** (verified Oct 23 2026): there is no daemon, no launchd job and no seat pointed at it, so the sweep's `gh` and shell path is still the one that works, until the owner decides the cutover.
+- The GitHub tools: `git-relay` with the MCP wrapper **GR-MCP** (`git-relay mcp`) is the credential-safe path for the PR writes a sweep makes — `open_pr`, `edit_pr`, `reply_thread`, `comment_pr`, `merge_pr`, `workflow_dispatch` and `resolve_thread` — and `mint_token` is deliberately not exposed over MCP, because it returns a raw credential.  A seat reaches the tools with its own bearer token: ST-MCP shares the same bearer-token arrangement, so a seat may find these tools on its ST-MCP connection, while other seats run GR-MCP directly as its own stdio server — the tool names are the same either way.  **The relay tools are live** (verified Nov 4 2026): a seat connected through Fleet MCP calls `gr_open_pr`, `gr_edit_pr`, `gr_reply_thread`, `gr_comment_pr`, `gr_resolve_thread`, `gr_merge_pr` and the `gr_wf_*` workflow verbs as its own GitHub App, so the sweep's PR writes go through the relay tools.  A personal `gh` credential is not the fleet's route, and another seat's credential is never borrowed.
 
 ## Canon
 
-- `/Users/jay/apps/FLEET-PROTOCOL.md` — Linear and the claim lifecycle; merge requirements
+- `~/apps/FLEET-PROTOCOL.md` — Linear and the claim lifecycle; merge requirements
 - `docs/PR-SWEEP.md`, `scripts/pr_sweep/rules.md`, `scripts/pr_sweep/platforms.json`
 - `docs/protocols/lane-map.md` (Retiring A Lane)
 - Skills: `unstick-pr`, `codex-triage`, `land-lane`, `deploy-verify`, `closeout`

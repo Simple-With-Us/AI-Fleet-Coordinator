@@ -12,7 +12,7 @@ description: Land a Clutch feature branch to main across the fleet — seat work
 
 Always-commit is standing policy.  After each coherent finished unit: commit → push → PR → merge when CI is green.  A remote branch with no PR is unfinished.  Pause only for force-push, prod data wipe, or live-key revoke.
 
-Seat: **CLUTCH**.  Branch: `clutch/<slug>`.  Never `claude/`.  Never land from `~/Code/<repo>` or from branch `main`.
+Seat: **CLUTCH**.  Branch: `clutch/<slug>`.  Never another seat's branch prefix.  Never land from `~/Code/<repo>` or from branch `main`.
 
 ## Preconditions
 
@@ -108,7 +108,7 @@ If the box is gating several lanes, announce the full gate in #builds topic `gat
 
 ## Canon
 
-- `/Users/jay/apps/FLEET-PROTOCOL.md` — Always commit + land; merge requirements; branch/worktree naming
+- `~/apps/FLEET-PROTOCOL.md` — Always commit + land; merge requirements; branch/worktree naming
 - App `AGENTS.md` Pre-Commit / Handoff + Verify before claiming done
 - `scripts/land.sh` when present
 - Skills: `session-start`, `unstick-pr`, `codex-triage`, `deploy-verify`, `closeout`, `owner-copy`

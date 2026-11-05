@@ -57,7 +57,7 @@ git commit -m "Uncommitted work from capped <SEAT> session.
 
 Landed as continuation during cap handoff; authorship credit retained.
 
-Co-Authored-By: Claude <noreply@anthropic.com>"
+Co-Authored-By: <peer's existing trailer>"
 ```
 
 Match the trailer already in history **per tool**, not a fabricated seat email.  Monet and Claude Code both use `Claude <noreply@anthropic.com>`.  Codex/Grok/Cursor trailers stay those tools' trailers.
@@ -88,8 +88,8 @@ Answer disambiguation pings fast.  Cede lanes the returning seat re-claims, esp
 
 ## Canon
 
-- `/Users/jay/apps/FLEET-PROTOCOL.md` — handoff, seats, Mac local processes
-- `/Users/jay/apps/EFFORT-LOG-PROTOCOL.md` — retired stub
+- `~/apps/FLEET-PROTOCOL.md` — handoff, seats, Mac local processes
+- `~/apps/EFFORT-LOG-PROTOCOL.md` — retired stub
 - Skills: `session-start`, `board-ops`, `land-lane`, `unstick-pr`, `closeout`
 
 ## Substitute Agent Directed Closeout `[SUB→ORIGINAL]`

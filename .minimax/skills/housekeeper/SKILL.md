@@ -74,15 +74,15 @@ The snippet also fails closed when `HOUSEKEEPER_LOCK` is unset.  A placeholder 
 df -h / /System/Volumes/Data
 sysctl vm.swapusage
 uptime
-bash /Users/jay/apps/mac-status.sh
-python3 /Users/jay/apps/mac-resource-watch.py --once
+bash ~/apps/mac-status.sh
+python3 ~/apps/mac-resource-watch.py --once
 ```
 
 Safe reclaim (idempotent):
 
 ```bash
-python3 /Users/jay/apps/mac-resource-watch.py --once --no-webhook   # no --clean
-bash /Users/jay/apps/mac-auto-cleanup.sh --pressure
+python3 ~/apps/mac-resource-watch.py --once --no-webhook   # no --clean
+bash ~/apps/mac-auto-cleanup.sh --pressure
 bash "<the janitor script path>"   # exact path: the operator's private inventory on that Mac
 cleanmymac clean --force
 ```
@@ -133,7 +133,7 @@ python3 ~/apps/grok-acp-runtime/grok-drive.py --help
 
 Or hop via the fleet MCP gateway (`drive-grok-tui` skill; URL in `docs/RECALL-ACCESS-CHECK.md`) and inject:
 
-`Run python3 /Users/jay/apps/mac-resource-watch.py --once then report disk free, swap, load, and what cleanup did.`
+`Run python3 ~/apps/mac-resource-watch.py --once then report disk free, swap, load, and what cleanup did.`
 
 Do not skip that hop and invent a cloud-side `du`.
 

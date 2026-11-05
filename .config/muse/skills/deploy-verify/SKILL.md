@@ -11,7 +11,7 @@ description: >-
 > **Runtime (Muse Code).**  Muse Code (`muse` CLI) is the interactive terminal coding agent (`[MC]`).  Notes name `Muse Code`.  Branches `muse-code/`.  New lanes are made with `~/apps/lane new <app> <slug>` at `~/apps/lanes/<Repo>/muse-code-<slug>`, and `AGENT_SEAT=MC` comes from the `muse-seat` wrapper, never from a guess.  Start `muse` inside a lane; `muse -w` appears to make a worktree inside `~/Code/<App>/.muse/worktrees`, so do not use it.  Distinct from **Muse Assist** (`[MA]`, former tag `[MUSE]`), which is the cloud VM batch compute / creative assistant dispatched via Mac/iOS apps.  Project `AGENTS.md` and `CLAUDE.md` load automatically when the workspace is trusted in `~/.config/muse/trust.json`, and the user-level `~/.claude/CLAUDE.md` loads as a fallback.  Skills installed here (`~/.config/muse/skills`) shadow foreign personal skills.  Setup checklist: `docs/MUSE-ONBOARDING.md`.
 
 
-Read `/Users/jay/apps/COOLIFY.md` before poking the API.  Prefer **public health + `docker ps` on the box** over Coolify UI/API `status` (that field goes stale).
+Read `~/apps/COOLIFY.md` before poking the API.  Prefer **public health + `docker ps` on the box** over Coolify UI/API `status` (that field goes stale).
 
 Operator host (live 2026-08-07+): Hetzner NBG1 **`<PROD_ORIGIN_IP>`** (the host name is in the operator's private inventory on that Mac).  SSH `ssh -i ~/.ssh/hetzner root@<PROD_ORIGIN_IP>`.  Dashboard `https://host.jays.services`.
 
@@ -142,10 +142,10 @@ Move the Linear issue to **Deployed** (`simple-board status <id> deployed --reso
 
 ## Canon
 
-- `/Users/jay/apps/COOLIFY.md`
+- `~/apps/COOLIFY.md`
 - `~/apps/ios-fleet/README.md` — TestFlight ship, the rate gate, and the freshness script
 - `docs/protocols/production-deploys.md` — sanctioned deploy paths and Coolify tokens
-- `/Users/jay/apps/FLEET-PROTOCOL.md` — Releases, Versioning, and Brand Assets (owner copy)
+- `~/apps/FLEET-PROTOCOL.md` — Releases, Versioning, and Brand Assets (owner copy)
 - ST `docs/rollouts/2026-08-07-hetzner-fleet-cutover.md`
 - ST `docs/rollouts/2026-07-10-auto-deploy-on.md` (mechanism; UUIDs/IPs in that note may be pre-cutover)
 - Skills: `secret-handoff`, `closeout`, `land-lane`
