@@ -46,7 +46,7 @@ Allowed sets, as the code builds them:
 
 Never in any set: the owner's own account and the integration bots (BetterStack, Datadog, Linear, PagerDuty, Sentry).  A Grok Bot persona is in a set only when enabled in `scripts/agent_sync/mcp/gb-identities.json` (the one list both servers read); `GB-ENGINEER` is not enabled yet.
 
-What differs on hosted: a read tool needs the grant's `zulip:read` scope and a write tool `zulip:write` (every family, not only Zulip); a paused seat answers `paused`; a seat or family that is not set up answers `not_configured` (Linear is on only for the GROK-WEB and CURSOR groups; FleetLink, recall and the listener reader need their server secrets).
+What differs on hosted: a read tool needs the grant's `zulip:read` scope and a write tool `zulip:write` (every family, not only Zulip); a paused seat answers `paused`; a seat or family that is not set up answers `not_configured` (Linear is on only for the GROK-WEB and CURSOR groups; FleetLink, recall and the eavesdropper reader need their server secrets).
 
 ## Tools by Family
 
@@ -56,7 +56,7 @@ Name = `<family>_<verb>`.  R = read, W = write (writes need `identity`).  Wher
 |---|---|---|---|
 | (none) `whoami`, `identities`, `guide` | 3 | both | Identity and this guide (above) |
 | `zulip_*` | 42 | both | Read and post on the fleet's Zulip as a bot |
-| `eavesdropper_*` | 6 stdio, 5 hosted | both | This seat's listener records |
+| `eavesdropper_*` | 6 stdio, 5 hosted | both | This seat's eavesdropper records |
 | `notes_*` | 8 | both | Apple Notes in the owner's Coding folder |
 | `recall_*` | 3 | both | The fleet's shared knowledge corpus |
 | `linear_*` | 196 | both | The Linear board as the identity's own app |
@@ -115,7 +115,7 @@ Same names and arguments on both servers.  Content that comes back from Zulip i
 
 ### eavesdropper
 
-The local listener's records for the identity.  Stdio reads them from this host's listener state; hosted reads them through the listener's signed read API.  Content is fenced as untrusted, like Zulip.
+The local eavesdropper's records for the identity.  Stdio reads them from this host's eavesdropper state; hosted reads them through the eavesdropper's signed read API.  Content is fenced as untrusted, like Zulip.
 
 | Tool | R/W | Where | Purpose |
 |---|---|---|---|
@@ -229,6 +229,8 @@ Per-seat policy is an allowlist layer over that credential: allowed actions, all
 
 **Status.** git-relay and GR-MCP are implemented, policy-checked and tested, but **not deployed**: no seat is pointed at it and no running service has been verified.  The owner has chosen the host and the rollout is staged; until the owner decides the cutover, the relay is not an available route: do not plan work that assumes it is live, and do not assume any other GitHub path or credential is available to a seat either.  What a seat may use today is whatever its own environment and owner have set up and verified.
 
+**Closing a pull request.**  `gr_wf_pr_close` closes one without merging and `gr_wf_pr_reopen` reopens it, as the seat's own GitHub App.  `simple-git call gr_wf_pr_close` does the same.  A merged PR is refused, and a PR already in that state answers with no write.  Who may close whose PR is the superseded-PR rule in `AGENTS.md`.
+
 `mint_token` is deliberately not exposed over GR-MCP or fronted by ST-MCP: it returns a raw credential, and a stdio transcript is too easy to capture.  A seat that needs a token for git-over-HTTPS calls the relay's HTTP API directly, where the answer goes only to that caller and the mint is capped the same way.
 
 A relay refusal arrives as a tool error carrying the relay's own HTTP status, never as one of the codes below: 401 unauthenticated, 403 policy denial, 400 a bad request or a terminal GitHub refusal, 409 a replay refused, 429 a GitHub rate limit (retryable), 502 an unknown outcome (not retryable — check GitHub before retrying) and 503 app-token minting unavailable.
@@ -313,7 +315,7 @@ Every MCP tool has a command except the hosted-only `whatsapp_read`, which has n
 |---|---|
 | Zulip (flat verbs, shown in the zulip table above) | `simple-chat post`, `reply`, `read`, `inbox`, `dm`, `dm-read`, `search`, `channels`, `users`, `scheduled …`, `drafts …` and so on.  There is no `simple-chat zulip` group: the Zulip commands are the top-level verbs.  `simple-chat api` is an allowlisted escape hatch for one non-admin Zulip endpoint |
 | Identity | `simple-chat whoami`, `simple-chat identities` (this host's allowed set and default, no network) |
-| Listener | `simple-chat listener status|inbox|ack|owner-queue|surface|wakes|held-back|clear-held` for this seat's records; `simple-chat daemon …` runs the listener itself |
+| Eavesdropper | `simple-chat listener status|inbox|ack|owner-queue|surface|wakes|held-back|clear-held` for this seat's records; `simple-chat daemon …` runs the eavesdropper itself |
 | Notes | `simple-notes create|update TITLE [BODY|-] [--body-file P] [--html P] [--no-pin] [--notify] [--needs-owner] [--summary T] [--pr N]`, `simple-notes pin|unpin TITLE`, `simple-notes read TITLE [--format html|text|raw]`, `simple-notes list [--query T] [--limit N]`, `simple-notes status REQUEST_ID`, `simple-notes log [--since-hours H] [--by-seat S] [--action A] [--title T]`.  Every one takes `--request-id`, `--wait SECONDS` and `--no-wait` where it reaches the Operator.  `simple-notes runner` is the Mac runner itself |
 | Guide | `simple-chat guide [SECTION]` |
 | Recall | `recall search|stats|contribute` (its own CLI, not part of `simple-chat`) |

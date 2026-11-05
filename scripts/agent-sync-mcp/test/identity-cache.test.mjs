@@ -10,6 +10,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { IdentityCache } from "../src/identity-cache.js";
 import { HostedTools } from "../src/hosted-tools.js";
+import { ApiError } from "../src/contract.js";
 
 const KEY = "a".repeat(64);
 
@@ -162,4 +163,20 @@ test("an entry naming another seat is no entry at all", async () => {
   const tools = toolsWith({ gate, cache, key: KEY, entry: cache.get(KEY, 0) });
   await tools.reserve("read");
   assert.deepEqual(gate.reserves, ["read"], "a foreign seat's verification buys this seat nothing");
+});
+
+test("a downstream 429 evicts a cached identity, so the next read sees the cooldown it just stored", async () => {
+  const cache = new IdentityCache({ now: () => 0 });
+  cache.set(KEY, { seat: "ECHO", via: "sbt-bearer", role: { ok: true, user_id: 42, role: 400 } }, 60_000, 0);
+  const noted = [];
+  const gate = countingGate();
+  gate.noteRateLimited = async (entry) => noted.push(entry);
+  const tools = toolsWith({ gate, cache, key: KEY, entry: cache.get(KEY, 0) });
+  tools.tool_whoami = async () => { throw new ApiError("slow down", { status: 429, data: { retry_after: 7 } }); };
+  const result = await tools.call("whoami", {});
+  assert.equal(result.isError, true);
+  assert.equal(noted.length, 1);
+  assert.equal(cache.get(KEY, 0), null);
+  await tools.reserve("read");
+  assert.deepEqual(gate.reserves, ["read"], "the next read reserves, and reserve reads the cooldown");
 });

@@ -121,6 +121,14 @@ struct FleetRegistrySummary: Equatable {
     var apps: [FleetAppStatus] = []
     var codingApps: [CodingAppStatus] = []
     var problem: String? = nil
+
+    /// The channel as the fleet writes it for people ("Work-In-Progress").  The registry keeps Zulip's lowercase slug.
+    var zulipChannelDisplayName: String {
+        zulipChannel
+            .split(separator: "-", omittingEmptySubsequences: false)
+            .map { $0.prefix(1).uppercased() + $0.dropFirst() }
+            .joined(separator: "-")
+    }
 }
 
 enum FleetRegistryReader {

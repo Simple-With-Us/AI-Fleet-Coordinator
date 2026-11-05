@@ -272,7 +272,7 @@ test("wake release retries are visible with actionable callback guidance", async
   }).text();
   assert.match(html, /Wake Delivery/);
   assert.match(html, /delivery attempt failed and the wake was released for retry/);
-  assert.match(html, /Check the listener&#39;s callback and the Zulip channel delivery/);
+  assert.match(html, /Check the eavesdropper&#39;s callback and the Zulip channel delivery/);
 });
 
 test("wake failures drive the same overview status as the unified error list", async () => {

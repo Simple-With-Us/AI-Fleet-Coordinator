@@ -64,4 +64,17 @@ The pre-deploy probe is deliberately fail-closed: neither pipeline mutates a Wor
 
 No public health bypass is introduced.  Ambiguous `start-jays-services`, `fleet-share-api` and the BotFleet broker are not included.  No iOS workflow is changed.
 
-CI reads the scoped Cloudflare token from Fleet-OPS through the existing automation identity.  Repository bootstrap names: `INFISICAL_AUTOMATION_CLIENT_ID` and `INFISICAL_AUTOMATION_CLIENT_SECRET`.
+CI reads the scoped Cloudflare token from Fleet-OPS/prod/root using a per-use-case
+Infisical service token.  Bind the Fleet-OPS/prod root-scoped read token for this
+workflow as `AFC_WORKER_DEPLOY_INFISICAL_TOKEN`; bind a separate Fleet-OPS/prod
+root-scoped read token for alert-worker deploys as `AFC_ALERT_WORKERS_INFISICAL_TOKEN`.
+
+The source migration also requires explicit project configuration before activation.  Telemetry snippet generation requires the component-specific `INFISICAL_TELEMETRY_CONFIG_PROJECT_ID` alongside `INFISICAL_TELEMETRY_CONFIG_READ_TOKEN`; the generic `INFISICAL_PROJECT_ID` never supplies this bootstrap.  Before running the telemetry generator, stage and read back the exact project's dedicated selector and reader binding together.  Wise relay execution requires `INFISICAL_FLEET_OPS_PROJECT_ID` alongside `WISE_RELAY_INFISICAL_TOKEN`.  Missing or malformed project configuration fails before network access, and token metadata must match the independently configured project.
+
+The reusable Wise workflow retains the secret-based project configuration route used by the alert-worker deploy job.  A caller with an explicit secrets map must forward `wise_infisical_project_id: ${{ secrets.INFISICAL_FLEET_OPS_PROJECT_ID }}` and `wise_infisical_token`; a caller using `secrets: inherit` may supply the canonical `INFISICAL_FLEET_OPS_PROJECT_ID` and `WISE_RELAY_INFISICAL_TOKEN` names.  Before enabling `use_wise_relay` or updating its pinned reusable revision, stage the exact consuming repository's project and reader bindings, verify names-only delivery metadata, and run the bounded grant/project readback in the activation plan.  Source review does not establish these live bindings, install credentials, or activate a runtime.
+
+Provisioning and registering either token is a separate setup step.  This code change
+does not establish that either GitHub secret has been configured; deployment remains
+off until the token binding and registry scope are verified.
+
+The fleet-facts and needs-owner standalone installers carry the existing low-level scoped verifier (`fleet_secrets/__init__.py` and `core.py`) alongside fleet_knobs.  They do not install the fleet-secrets CLI.  Before activating either consumer, install its reviewed stable copy and stage its dedicated `FLEET_KNOBS_INFISICAL_TOKEN` reader with the established AI Fleet Coordinator project, prod environment, exact root folder, and read-only permission.  The explicit reader is still checked against that independent expected authority before any named secret read; no ambient project selector or machine login supplies a fallback.

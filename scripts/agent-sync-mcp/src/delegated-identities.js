@@ -180,6 +180,19 @@ function decorate(spec, allowed, seat) {
 
 const LIST_CACHE = new Map();
 
+/** What makes one tools/list differ from another. */
+export function toolListCacheKey(seat, config = {}) {
+  return `${seat}:${config.whatsappEnabled === true}:${config.grTypedEnabled === true}:${config.grWorkflowEnabled === true}:${config.eventsOnlySeats ? config.eventsOnlySeats.join(",") : ""}`;
+}
+
+/** The identity rule for the MCP `instructions`. */
+export function identityInstructions(seat, allowed) {
+  return `  Each call names the bot it acts as in its identity argument:  writes must name it;  reads without it act as ${seat}.  ` +
+    `This connection may act as ${allowed.join(", ")};  identities lists them with their status.  Tools are named by family:  ` +
+    "zulip_*, linear_*, recall_*, notes_*, fleetlink_* and eavesdropper_*;  whoami, identities and guide stand alone.  " +
+    `Call guide for the full tools guide (or one section), also at ${GUIDE_URL}.`;
+}
+
 const EMPTY_TOOL_SET = Object.freeze({ list: Object.freeze([]), byName: Object.freeze({}) });
 
 /** The tools/list a grant for `seat` gets:  every hosted tool with its identity enum, then identities after whoami. */
@@ -189,7 +202,7 @@ export function toolListFor(seat, config = {}) {
   // `eventsOnlySeats` overrides the production set in tests only.
   const eventsOnlySeats = config.eventsOnlySeats ?? EVENTS_ONLY_SEATS;
   if (eventsOnlySeats.includes(seat)) return EMPTY_TOOL_SET;
-  const cacheKey = `${seat}:${config.whatsappEnabled === true}:${config.grTypedEnabled === true}:${config.grWorkflowEnabled === true}:${config.eventsOnlySeats ? config.eventsOnlySeats.join(",") : ""}`;
+  const cacheKey = toolListCacheKey(seat, config);
   const cached = LIST_CACHE.get(cacheKey);
   if (cached) return cached;
   const allowed = allowedIdentities(seat);
@@ -231,10 +244,7 @@ export class IdentityRouter {
 
   /** The identity rule for the MCP `instructions`. */
   instructions() {
-    return `  Each call names the bot it acts as in its identity argument:  writes must name it;  reads without it act as ${this.seat}.  ` +
-      `This connection may act as ${this.allowed.join(", ")};  identities lists them with their status.  Tools are named by family:  ` +
-      "zulip_*, linear_*, recall_*, notes_*, fleetlink_* and eavesdropper_*;  whoami, identities and guide stand alone.  " +
-      `Call guide for the full tools guide (or one section), also at ${GUIDE_URL}.`;
+    return identityInstructions(this.seat, this.allowed);
   }
 
   async audit(row) {
