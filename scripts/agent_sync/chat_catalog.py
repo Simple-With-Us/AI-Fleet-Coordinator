@@ -953,15 +953,11 @@ class ChatCatalog:
         # legacy scan runs only when the db path is ABSENT.
         if os.path.lexists(db):
             try:
-                usable = (
-                    db.is_file() and _within(db, self.home) and os.access(db, os.R_OK)
-                )
+                usable = db.is_file() and _within(db, self.home) and os.access(db, os.R_OK)
             except OSError:
                 usable = False
             if not usable:
-                return [
-                    self._unavailable("opencode", "OPENCODE", "unusable OpenCode database")
-                ]
+                return [self._unavailable("opencode", "OPENCODE", "unusable OpenCode database")]
             try:
                 rows = self._opencode_rows_db(db)
             except _StoreHeavy:
@@ -970,9 +966,7 @@ class ChatCatalog:
                 ]
             except _StoreOperational:
                 return [
-                    self._unavailable(
-                        "opencode", "OPENCODE", "OpenCode database operational error"
-                    )
+                    self._unavailable("opencode", "OPENCODE", "OpenCode database operational error")
                 ]
             if rows is None:
                 return [self._unavailable("opencode", "OPENCODE", "unrecognized OpenCode database")]
@@ -1019,9 +1013,7 @@ class ChatCatalog:
                 # Malformed session identity:  fail the platform closed, never
                 # substitute path.stem or skip silently.
                 return [
-                    self._unavailable(
-                        "opencode", "OPENCODE", "malformed OpenCode session metadata"
-                    )
+                    self._unavailable("opencode", "OPENCODE", "malformed OpenCode session metadata")
                 ]
             if row is not None:
                 rows.append(row)
