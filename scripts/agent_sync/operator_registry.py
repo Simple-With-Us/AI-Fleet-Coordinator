@@ -758,11 +758,17 @@ class SessionRegistry:
                     # claim, so the row takes the incoming value on its own resume:
                     # the derivation's source-tree support, or a caller's fresher
                     # claim.  Any other stored value is a stored claim, explicit
-                    # or derived, and wins.
+                    # or derived, and wins.  The sentinel is recognized case- and
+                    # whitespace-insensitively on BOTH sides (kody #1348):  a row
+                    # written "UNKNOWN" or " unknown " through the mutable
+                    # session_upsert path is still no claim and takes the update,
+                    # and an unknown-ish incoming value is never stored as one.
+                    # Real claims stay verbatim (any case is a claim).
                     # This is not a batch migration:  rows change only when their own
                     # session next registers, and closed rows keep their history.
+                    stored_capability = str(row["wake_capability"] or "unknown").strip().lower()
                     incoming_capability = str(identity.get("wake_capability") or "unknown")
-                    if row["wake_capability"] == "unknown" and incoming_capability != "unknown":
+                    if stored_capability == "unknown" and incoming_capability.strip().lower() != "unknown":
                         conn.execute(
                             "UPDATE sessions SET wake_capability = ? WHERE record_id = ?",
                             (incoming_capability, record_id),

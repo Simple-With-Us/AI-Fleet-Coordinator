@@ -165,3 +165,76 @@ class RegisterDerivationTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class SentinelNormalizationTest(unittest.TestCase):
+    """Kody #1348: the no-claim sentinel is case/whitespace-insensitive."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db = os.path.join(self.tmp.name, "registry.db")
+
+    def _register(self, platform: str, **kwargs) -> dict:
+        args = dict(
+            platform=platform,
+            verified_host="mac",
+            profile_scope="default",
+            native_session_id=_session_id(platform.replace("-", "x")),
+            seat="CODEX",
+            source="test",
+            issuer=OR.ISSUER_OPERATOR,
+        )
+        args.update(kwargs)
+        return OR.register_session(self.db, **args)
+
+    def _force_stored(self, platform: str, value: str) -> None:
+        row = self._stored(platform)
+        with sqlite3.connect(self.db) as conn:
+            conn.execute(
+                "UPDATE sessions SET wake_capability = ? WHERE record_id = ?",
+                (value, row["record_id"]),
+            )
+
+    def _stored(self, platform: str) -> dict:
+        registry = OR.SessionRegistry(self.db)
+        try:
+            row = registry._get_by_identity(
+                OR.normalize_platform(platform),
+                "mac",
+                "default",
+                _session_id(platform.replace("-", "x")),
+            )
+        finally:
+            registry.close_db()
+        assert row is not None
+        return row
+
+    def test_stored_uppercase_sentinel_takes_the_resume_update(self) -> None:
+        self._register("claude")
+        self._force_stored("claude", "UNKNOWN")
+        out = self._register("claude")
+        self.assertEqual(out["outcome"], "resumed")
+        self.assertEqual(self._stored("claude")["wake_capability"], OR.WAKE_NONE)
+
+    def test_stored_padded_sentinel_takes_the_resume_update(self) -> None:
+        self._register("claude")
+        self._force_stored("claude", " unknown ")
+        self._register("claude")
+        self.assertEqual(self._stored("claude")["wake_capability"], OR.WAKE_NONE)
+
+    def test_case_variant_of_a_real_value_is_a_stored_claim(self) -> None:
+        self._register("claude")
+        self._force_stored("claude", "None")
+        self._register("claude")
+        self.assertEqual(self._stored("claude")["wake_capability"], "None")
+
+    def test_unknownish_incoming_claim_is_never_stored(self) -> None:
+        self._register("zcode")
+        self._force_stored("zcode", "unknown")
+        self._register("zcode", wake_capability="UNKNOWN")
+        self.assertEqual(self._stored("zcode")["wake_capability"], OR.WAKE_UNKNOWN)
+
+    def test_unknownish_incoming_never_overwrites_a_real_claim(self) -> None:
+        self._register("codex", wake_capability="live-verified")
+        self._register("codex", wake_capability=" unknown ")
+        self.assertEqual(self._stored("codex")["wake_capability"], "live-verified")
