@@ -244,10 +244,20 @@ export class DeliveryBreaker {
     } catch {
       // The count stays in memory and goes out with a later delivery.  Refusing
       // here would turn one failed counter write into a lost alert, but a cap that
-      // has gone soft is logged, at most once a minute.
+      // has gone soft is logged, at most once a minute.  The line carries the counts,
+      // because /status reads memory and cannot show how far the saved row is behind.
+      // The put itself is not throttled:  the next delivery retrying it is what
+      // closes the window in which an eviction could lose the count.
       if (!this.logged.has("save-failed")) {
         this.logged.add("save-failed");
-        console.error(JSON.stringify({ event: "alert.breaker_save_failed" }));
+        console.error(
+          JSON.stringify({
+            event: "alert.breaker_save_failed",
+            total: this.total,
+            newKeys: this.newKeys,
+            unsaved: this.unsaved,
+          }),
+        );
       }
     }
   }

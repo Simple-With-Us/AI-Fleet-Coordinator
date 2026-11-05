@@ -74,7 +74,14 @@ export function fromDatadog(payload) {
   // A multi-alert monitor fires once per group; ALERT_SCOPE identifies the
   // triggering group, so it belongs in the state key -- otherwise one group's
   // recovery resolves every other group still down on the same monitor.
-  const scope = oneLine(first(payload.scope)).toLowerCase().slice(0, 128);
+  // The whole scope is scanned before it is cut:  a cut can leave a token shorter
+  // than its shape, which the scan of the finished key would not recognise, and its
+  // prefix would then name durable rows.
+  const wholeScope = oneLine(first(payload.scope)).toLowerCase();
+  const scopeRedacted = carriesCredential(wholeScope);
+  const scope = scopeRedacted
+    ? `redacted-${stableDigest(wholeScope)}`
+    : wholeScope.slice(0, 128);
   const key = monitorId
     ? `datadog:${monitorId}${scope ? `:${scope}` : ""}`
     : `datadog:${title.toLowerCase()}${scope ? `:${scope}` : ""}`;
@@ -83,6 +90,7 @@ export function fromDatadog(payload) {
   return {
     source: "datadog",
     key,
+    ...(scopeRedacted ? { identityRedacted: true } : {}),
     service,
     firing,
     // A recovered event carries no severity; INFO keeps the close quiet.
@@ -196,18 +204,22 @@ function sentryFirst(...vals) {
 }
 
 /**
- * Credential shapes worth refusing in a vendor-supplied identity.
+ * Credential shapes to keep out of anything this worker stores or posts.
  *
  * These are the high-confidence vendor prefixes this fleet actually holds, plus
  * the two generic forms that carry no legitimate identity.  They are anchored
  * and deliberately narrow: a Sentry identity is a short id such as `PROJ-1ABC`
  * or a numeric metric-alert id, so nothing ordinary matches, and an over-broad
- * pattern would refuse real alerts.  The patterns mirror the ones in
+ * pattern would blank real alert text.  The patterns mirror the ones in
  * `scripts/agent-sync-mcp/src/contract.js`, which scans the same fleet's
  * credentials for the same reason.
+ *
+ * A private key is matched through its END marker, or to the end of the value when
+ * the marker is missing or cut off, because the secret is the body and not the
+ * marker.  Whitespace in the body may be real newlines or, after `oneLine`, spaces.
  */
 const CREDENTIAL_SHAPES = [
-  /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/,
   /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/,
   /\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,})\b/,
   /\bsk-(?:ant-)?[A-Za-z0-9_-]{20,}\b/,
@@ -229,10 +241,9 @@ export function redactCredentials(text) {
   return CREDENTIAL_SHAPES_GLOBAL.reduce((out, shape) => out.replace(shape, "[redacted]"), String(text ?? ""));
 }
 
-/** True when `value` carries a credential shape rather than an identity. */
-function credentialShape(value) {
-  const text = String(value || "");
-  return CREDENTIAL_SHAPES.some((shape) => shape.test(text));
+/** True when `text` carries a credential shape.  Parsers lower-case most keys, so case is ignored. */
+function carriesCredential(text) {
+  return CREDENTIAL_SHAPES_ANY_CASE.some((shape) => shape.test(text));
 }
 
 /**
@@ -323,21 +334,8 @@ export function fromSentry(payload) {
   if (!issue && !metric) throw new Error("sentry payload carries no alert");
   if (issue && !issueIdentity) throw new Error("sentry issue has no identity");
   if (metric && !metricIdentity) throw new Error("sentry metric alert has no identity");
-  // The identity is vendor-supplied text that becomes a durable storage key and
-  // is relayed into the standing block, so it is scanned for a credential
-  // before it is used as one.  A body that puts a token where an identity
-  // belongs is refused rather than filed:  persisting or relaying it would copy
-  // secret material out of the payload and into this worker's own storage.
-  // The message names the field and never the value or a prefix of it.
-  const identityField = issue ? "sentry issue identity" : "sentry metric identity";
-  if (credentialShape(issue ? issueIdentity : metricIdentity)) {
-    // The code lets the webhook route answer a bad request that names the
-    // field, instead of the refusal escaping as a writer outage.
-    const error = new Error(`${identityField} looks like a credential`);
-    error.code = "invalid_identity";
-    error.field = identityField;
-    throw error;
-  }
+  // A credential-shaped identity is not refused:  normalize() files it under a
+  // digest of the key, the same as every other source, so the alert still lands.
   const key = issue
     ? `sentry:${issueIdentity.toLowerCase()}`
     : `sentry:metric:${metricIdentity.toLowerCase()}`;
@@ -382,12 +380,6 @@ export function fromPagerDuty(payload) {
     envelope.data && typeof envelope.data === "object" ? envelope.data : {};
   const id = sentryFirst(data.id);
   if (!id) throw new Error("pagerduty incident has no identity");
-  if (credentialShape(id)) {
-    const error = new Error("pagerduty incident identity looks like a credential");
-    error.code = "invalid_identity";
-    error.field = "pagerduty incident identity";
-    throw error;
-  }
   const eventType = sentryFirst(envelope.event_type).toLowerCase();
   const status = sentryFirst(data.status).toLowerCase();
   const firing = status
@@ -510,11 +502,12 @@ export function normalize(source, payload) {
  * The key names durable rows, so a credential in it would be stored even though
  * the values are redacted.  It becomes a digest of itself, so the alert still
  * files, one incident stays one key and two stay two, where refusing would lose a
- * real alert and `[redacted]` would merge unrelated ones.  Parsers lower-case most
- * keys, so the scan ignores case.  A false match costs only a less readable key.
+ * real alert and `[redacted]` would merge unrelated ones.  A false match costs only
+ * a less readable key.  This is the one rule for every source, Sentry and PagerDuty
+ * included:  no parser refuses a delivery over the shape of its identity.
  */
 function withSafeKey(event, hint) {
-  if (!CREDENTIAL_SHAPES_ANY_CASE.some((shape) => shape.test(event.key))) return event;
+  if (!carriesCredential(event.key)) return event;
   return {
     ...event,
     key: `${hint || "generic"}:redacted-${stableDigest(event.key)}`,
@@ -538,4 +531,4 @@ function stableDigest(text) {
   return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
 }
 
-export const __testing = { oneLine, first, credentialShape };
+export const __testing = { oneLine, first };

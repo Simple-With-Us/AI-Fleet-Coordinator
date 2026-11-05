@@ -972,6 +972,31 @@ test("a failed save of the count is logged at most once a minute and admits the 
     await breaker.spendNewKey("a");
   });
   assert.deepEqual(lines.map((line) => line.event), ["alert.breaker_save_failed", "alert.breaker_save_failed"]);
+  // The line says how far the saved row is behind.
+  assert.deepEqual(lines[0], { event: "alert.breaker_save_failed", total: 0, newKeys: 1, unsaved: 1 });
+  assert.deepEqual(lines[1], { event: "alert.breaker_save_failed", total: 0, newKeys: 3, unsaved: 3 });
+});
+
+test("concurrent deliveries lose no breaker count", async () => {
+  const db = storage();
+  const day = Math.floor(Date.now() / 86_400_000);
+  db.data.set("breaker:v1", { day, total: 5, shedWrites: 0, newKeys: 0, sources: { generic: 5 }, newBySource: {}, shed: {} });
+  // A read that yields, so that without the writer's request chain a second
+  // delivery would load over the first one's count.
+  const get = db.get;
+  db.get = async (key) => {
+    await new Promise((resolve) => setTimeout(resolve, 1));
+    return get(key);
+  };
+  const writer = new AlertWriter({ storage: db }, ENV);
+  const answers = await withFetch(zulipStub().fetchStub, () =>
+    Promise.all(Array.from({ length: 8 }, () => hook(writer, firing()))),
+  );
+  assert.deepEqual(answers.map((answer) => answer.status), Array(8).fill(200));
+  assert.equal(writer.breaker.total, 13);
+  await writer.breaker.write(Date.now());
+  assert.equal(db.data.get("breaker:v1").total, 13);
+  assert.equal(db.data.get("breaker:v1").sources.generic, 13);
 });
 
 test("an out-of-range saved count is logged and cannot shut the day's caps", async () => {
@@ -1170,6 +1195,77 @@ test("a failed read of the pending index does not stop the reconcile from promot
   assert.equal(db.data.get("pending:generic:young"), 1);
 });
 
+// One sweep with some writes failing, promoting the one aged incident it holds.
+async function sweepWithFailingWrites(db, { put, del }) {
+  const writer = new AlertWriter({ storage: db }, ENV);
+  const realPut = db.put;
+  const realDelete = db.delete;
+  db.put = async (key, value) => {
+    if (put?.(key)) throw new Error("storage down");
+    return realPut(key, value);
+  };
+  db.delete = async (key) => {
+    if (del?.(key)) throw new Error("storage down");
+    return realDelete(key);
+  };
+  let response;
+  const lines = await capturingLogs(() =>
+    withFetch(zulipStub().fetchStub, async () => {
+      response = await sweepOnce(writer);
+    }),
+  );
+  db.put = realPut;
+  db.delete = realDelete;
+  return { response, lines };
+}
+
+test("a failed write of the reconcile stamp does not stop the promotions", async () => {
+  const db = storage();
+  pendingRow(db, "aged", Date.now() - 60 * 60 * 1000);
+  const { response, lines } = await sweepWithFailingWrites(db, { put: (key) => key === "sweep:reconciled-at" });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).promoted, 1);
+  assert.equal(state(db, "generic:aged").phase, "alerting");
+  assert.deepEqual(
+    lines.filter((line) => line.event === "alert.pending_reconcile_write_failed"),
+    [{ event: "alert.pending_reconcile_write_failed", step: "stamp" }],
+  );
+  // With nothing recorded, the next sweep runs the pass again.
+  assert.equal(db.data.has("sweep:reconciled-at"), false);
+});
+
+test("a failed stamp on the overflow path does not stop the promotions either", async () => {
+  const db = storage();
+  const old = Date.now() - 60 * 60 * 1000;
+  for (let i = 0; i < 2001; i++) db.data.set(`kv:state:generic:fill${i}`, "{}");
+  pendingRow(db, "held", old);
+  const { response, lines } = await sweepWithFailingWrites(db, { put: (key) => key === "sweep:reconciled-at" });
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.overflow, true);
+  assert.equal(body.promoted, 1);
+  assert.ok(lines.some((line) => line.event === "alert.pending_reconcile_write_failed" && line.step === "stamp"));
+});
+
+test("a failed delete of a stale index entry does not stop the promotions or the stamp", async () => {
+  const db = storage();
+  pendingRow(db, "aged", Date.now() - 60 * 60 * 1000);
+  db.data.set("pending:generic:stale", 1);
+  const { response, lines } = await sweepWithFailingWrites(db, { del: (key) => key === "pending:generic:stale" });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).promoted, 1);
+  assert.equal(state(db, "generic:aged").phase, "alerting");
+  assert.deepEqual(
+    lines.filter((line) => line.event === "alert.pending_reconcile_write_failed"),
+    [{ event: "alert.pending_reconcile_write_failed", step: "delete" }],
+  );
+  // The pass did run, so it is not repeated for one entry a later pass drops anyway.
+  assert.ok(db.data.get("sweep:reconciled-at") > 0);
+  assert.equal(db.data.has("pending:generic:stale"), true);
+  await withFetch(zulipStub().fetchStub, () => sweepOnce(new AlertWriter({ storage: db }, ENV)));
+  assert.equal(db.data.has("pending:generic:stale"), false);
+});
+
 // Review fixes:  failures on the Zulip side
 
 test("a raw copy whose rate-limit bookkeeping fails cannot change the delivery's answer", async () => {
@@ -1204,14 +1300,44 @@ test("a notice Zulip did not confirm is tried again soon, not a whole interval l
   const writer = new AlertWriter({ storage: db }, env);
   const empty = () =>
     new Request("https://test/webhook/betterstack", { method: "POST", headers: { "x-betterstack-token": "fixture" } });
-  const saved = console.error;
-  console.error = () => {};
-  try {
-    await withFetch(async () => ({ ok: true, json: async () => ({ result: "error" }) }), () => writer.fetch(empty()));
-  } finally {
-    console.error = saved;
-  }
+  const lines = await capturingLogs(() =>
+    withFetch(async () => ({ ok: true, json: async () => ({ result: "error" }) }), () => writer.fetch(empty())),
+  );
   assert.ok(db.data.get("notice:empty-body:betterstack") < Date.now() - 23 * 60 * 60 * 1000);
+  // The log says Zulip answered and did not confirm, which a network failure does not.
+  const failed = lines.find((line) => line.event === "alert.operator_notice_failed");
+  assert.equal(failed.status, null);
+  assert.equal(failed.outcome, "unconfirmed");
+  db.data.clear();
+  const network = await capturingLogs(() =>
+    withFetch(async () => {
+      throw new Error("network down");
+    }, () => writer.fetch(empty())),
+  );
+  const lost = network.find((line) => line.event === "alert.operator_notice_failed");
+  assert.equal(lost.status, null);
+  assert.equal(lost.outcome, null);
+});
+
+test("a raw copy Zulip did not confirm leaves a log line and changes nothing else", async () => {
+  const db = storage();
+  const writer = new AlertWriter({ storage: db }, ENV);
+  const fetchStub = async (url, opts) => {
+    const raw = new URLSearchParams(opts.body || "").get("to") === "Alerts-Raw";
+    return { ok: true, json: async () => (raw ? { result: "error" } : { result: "success", id: 101 }) };
+  };
+  let response;
+  const lines = await capturingLogs(() =>
+    withFetch(fetchStub, async () => {
+      response = await hook(writer, firing());
+    }),
+  );
+  assert.equal(response.status, 200);
+  assert.equal(state(db, "generic:one").phase, "pending");
+  assert.deepEqual(
+    lines.filter((line) => line.event === "alert.raw_copy_unconfirmed"),
+    [{ event: "alert.raw_copy_unconfirmed", source: "generic" }],
+  );
 });
 
 test("a failed notice logs how Zulip answered", async () => {
@@ -1331,6 +1457,25 @@ test("a credential in alert text never reaches a state row or a queued line", as
   assert.equal(state(db, "generic:one").text.includes(secret), false);
   assert.equal(state(db, "generic:one").text.includes("[redacted]"), true);
   assert.equal(posted.some((body) => body.includes(secret)), false);
+});
+
+test("a private key in alert text leaves no part of its body in a row or a post", async () => {
+  const db = storage();
+  const writer = new AlertWriter({ storage: db }, ENV);
+  // An obviously fake multi-line key, built at runtime for the scanner.  Never a credential.
+  const body = "FAKEKEYBODY".repeat(4);
+  const pem = ["-----BEGIN " + "EC PRIVATE KEY-----", body, body, "-----END EC " + "PRIVATE KEY-----"].join("\n");
+  const posted = [];
+  const fetchStub = async (url, opts) => {
+    posted.push(String(opts.body || ""));
+    return { ok: true, json: async () => ({ result: "success", id: 100 + posted.length }) };
+  };
+  const response = await withFetch(fetchStub, () => hook(writer, firing("one", `down ${pem}`)));
+  assert.equal(response.status, 200);
+  assert.equal(state(db, "generic:one").text, "down [redacted]");
+  assert.equal(JSON.stringify([...db.data]).includes("FAKEKEYBODY"), false);
+  assert.ok(posted.length > 0);
+  assert.equal(posted.some((sent) => sent.includes("FAKEKEYBODY")), false);
 });
 
 test("a credential-shaped label files the alert under a digest and never in a row name", async () => {

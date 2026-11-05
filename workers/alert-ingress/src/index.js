@@ -952,7 +952,13 @@ async function notifyOperator(env, kind, what, source, everyMs = NOTICE_EVERY_MS
     });
     // An answer with no message id is not a delivered notice.  At worst the retry
     // repeats a notice that did land, which beats a guard nobody hears about.
-    if (!posted) throw new Error("operator notice was not confirmed");
+    if (!posted) {
+      // Zulip answered 2xx with no usable id.  The label is for the log alone, so it
+      // can be told from a network failure or a storage failure, which log null.
+      const error = new Error("operator notice was not confirmed");
+      error.outcome = "unconfirmed";
+      throw error;
+    }
   } catch (error) {
     console.error(
       JSON.stringify({
@@ -1063,16 +1069,19 @@ async function postRawCopy(env, source, payload) {
     const pinned = await env.ALERT_STATE.get(svcKey(event.key), "json");
     topic = boundedTopic(typeof pinned === "string" && pinned ? pinned : event.service) || source;
   } catch {
-    // An identity the event path refuses still leaves a raw record, by source.
+    // A body the event path refuses still leaves a raw record, by source.
   }
   try {
-    await postRaw({
+    const id = await postRaw({
       email: credential.email,
       apiKey: credential.apiKey,
       channel: RAW_CHANNEL,
       topic,
       content: renderRaw(source, payload),
     });
+    // A 2xx with no usable id may or may not have landed.  It changes nothing, as
+    // with any failure of this copy, but it leaves a trace.
+    if (!id) console.error(JSON.stringify({ event: "alert.raw_copy_unconfirmed", source }));
   } catch (error) {
     // Its own guard:  this promise is awaited in the route's `finally`, where a
     // rejection would turn an event already recorded into a 503.
@@ -1537,7 +1546,7 @@ async function pendingForSweep(env, now) {
       "inventory:state",
       `The state inventory is over its ${MAX_KEYS}-key bound, so the reconcile cannot run.  Closed rows need pruning.`,
     );
-    await storage.put(RECONCILED_AT, now);
+    await stampReconciled(storage, now);
     const page = await pendingPage(storage);
     return { keys: page.keys, checked: page.keys.length, overflow: true, page };
   }
@@ -1581,12 +1590,27 @@ async function pendingForSweep(env, now) {
     }
   }
   if (usable) {
-    for (const key of present ?? []) {
-      if (!keep.has(key)) await storage.delete?.(pendingKey(key));
+    // Tidying the index must not cost the promotions, which have not run yet.  A
+    // stale entry that stays is dropped when a sweep reads it or by the next pass.
+    try {
+      for (const key of present ?? []) {
+        if (!keep.has(key)) await storage.delete?.(pendingKey(key));
+      }
+    } catch {
+      console.error(JSON.stringify({ event: "alert.pending_reconcile_write_failed", step: "delete" }));
     }
-    await storage.put(RECONCILED_AT, now);
+    await stampReconciled(storage, now);
   }
   return { keys, checked: all.length, overflow: false, page: null };
+}
+
+/** Record the pass.  If that fails, the next sweep repeats it and nothing else is lost. */
+async function stampReconciled(storage, now) {
+  try {
+    await storage.put(RECONCILED_AT, now);
+  } catch {
+    console.error(JSON.stringify({ event: "alert.pending_reconcile_write_failed", step: "stamp" }));
+  }
 }
 
 /** One sweep's turn at the pending index, resuming where the last one stopped. */
@@ -2119,13 +2143,6 @@ const handler = {
             },
           },
         );
-      }
-      // A body whose identity looks like a credential is refused before it
-      // becomes a key.  That is the sender's bad request, so it answers 400
-      // naming the field, never the value, rather than escaping as a writer
-      // outage that a vendor would retry.
-      if (error?.code === "invalid_identity") {
-        return json({ error: "invalid payload", field: error.field }, 400);
       }
       if (error?.code === "credential_unavailable") {
         return json(
