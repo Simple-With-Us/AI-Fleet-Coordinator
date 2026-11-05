@@ -3399,7 +3399,10 @@ class WorkflowVerbs:
 
     def _pr_set_state(self, repo, args, mutation, wanted):
         node = self._pr_node(repo, _int(args, "number"))
-        query = "mutation($id: ID!) { %s(input:{pullRequestId:$id}) { pullRequest { id state } } }" % mutation
+        query = (
+            "mutation($id: ID!) { %s(input:{pullRequestId:$id}) { pullRequest { id state } } }"
+            % mutation
+        )
         pull = _sub(self._fixed_graph(query, {"id": node}, mutation), "pullRequest")
         if pull.get("id") != node or pull.get("state") != wanted:
             raise RelayGitHubError(502, "PR mutation outcome unverifiable")
