@@ -11,7 +11,7 @@ description: >-
 > **Runtime (Clutch).**  Clutch runs the DSH engine (`clutch`, pm2 `clutch-web`, the Clutch Mac app).  The engine finds skills in `~/.clutch/dsh/skills` before the shared `~/.agents/skills` pack it also reads, so this pack shadows that one.  It loads `~/.clutch/dsh/AGENTS.md` and then the project `AGENTS.md` chain, and reads neither `~/AGENTS.md` nor `~/.claude/CLAUDE.md`.  Start `clutch` inside a lane (`~/apps/lanes/Clutch/clutch-<slug>`).  A seat a launcher assigned (BotFleet, a bridge) beats the CLUTCH default.
 
 
-Source of truth: `/Users/jay/Code/AI-Fleet-Coordinator/docs/SENTENCE-GAP-PORTABLE-SKILL.md`
+Source of truth: `~/Code/AI-Fleet-Coordinator/docs/SENTENCE-GAP-PORTABLE-SKILL.md`
 
 The block below is the canonical protocol, pasted verbatim.  Follow it exactly.  Do not weaken it.  Cloud agents without the Mac filesystem still have the full protocol in this file.
 
@@ -595,10 +595,10 @@ it in a different surface.
 
 The `simple-chat` CLI is already covered: `_scan_refusal` in
 `scripts/agent_sync/cli.py` refuses a secret-shaped body, topic or channel before the post goes
-out.  A `gh pr create --body-file` or `gh pr comment --body-file` relay bypasses that CLI, so the
-scan still has to run *before* the `gh` relay.
+out.  The relay tools `gr_open_pr` and `gr_comment_pr` bypass that CLI, so the
+scan still has to run *before* the relay write.
 
-Then pass the file to `gh pr create --body-file`, `gh pr comment --body-file`, or
+Then pass the scanned text to the relay tools `gr_open_pr` or `gr_comment_pr`, or
 `simple-chat post --body-file` — which refuses any file whose mode is not `0600` or `0400`, so
 run `chmod 600` on it first.  There is no override flag.
 
