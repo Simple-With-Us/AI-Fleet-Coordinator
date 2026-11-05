@@ -385,9 +385,7 @@ class DiskCacheTests(unittest.TestCase):
         second = adapter.call(frame("initialize", "abc", protocolVersion="2025-06-18"))
         self.assertEqual(second, {"jsonrpc": "2.0", "id": "abc", "result": INIT_RESULT})
         adapter.call(TOOL_CALL)
-        self.assertEqual(
-            self.upstream.requests[-1].headers["Mcp-protocol-version"], "2025-06-18"
-        )
+        self.assertEqual(self.upstream.requests[-1].headers["Mcp-protocol-version"], "2025-06-18")
         self.assertEqual(self.upstream.methods, ["initialize", "tools/call"])
 
     def test_each_requested_protocol_version_negotiates_for_itself(self):
@@ -503,9 +501,7 @@ class DiskCacheTests(unittest.TestCase):
         self.assertEqual(os.listdir(parent), ["cache"])
 
     def test_cache_folder_comes_from_the_environment_or_stays_off(self):
-        self.assertEqual(
-            mod.default_cache_dir({"HOME": "/h"}), "/h/.cache/assigned-hosted-stdio"
-        )
+        self.assertEqual(mod.default_cache_dir({"HOME": "/h"}), "/h/.cache/assigned-hosted-stdio")
         self.assertEqual(
             mod.default_cache_dir({"HOME": "/h", "XDG_CACHE_HOME": "/x"}),
             "/x/assigned-hosted-stdio",
@@ -539,9 +535,7 @@ class BearerRefusalTests(unittest.TestCase):
             self.assertFalse(error["retryable"])
             self.assertIn("did not run", error["message"])
             self.assertNotIn(TOKEN, json.dumps(reply))
-            self.assertIsNone(
-                mod.DiskCache(temp, TOKEN).load(mod.initialize_key(INITIALIZE))
-            )
+            self.assertIsNone(mod.DiskCache(temp, TOKEN).load(mod.initialize_key(INITIALIZE)))
             self.assertEqual(other.load("tools"), TOOLS_RESULT)
 
     def test_a_real_initialize_also_names_the_refusal(self):
