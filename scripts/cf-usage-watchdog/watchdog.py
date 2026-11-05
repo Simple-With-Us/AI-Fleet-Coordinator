@@ -801,7 +801,8 @@ class Connections:
 
 def label_live_deployment(conn: Any, path: str, message: str) -> Any:
     """A new deployment of the live split as it stands, carrying `message`.  The deployers read only
-    the newest deployment's message."""
+    the newest deployment's message.  Cloudflare's create call takes no precondition, so a deploy that
+    lands between the read and the post is replaced by the older split;  the README says more."""
     result = conn.api("GET", f"{path}/deployments")
     try:
         versions = [

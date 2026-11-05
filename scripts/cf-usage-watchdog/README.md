@@ -38,6 +38,8 @@ Requests a stopped Worker rejects still count, so an outside caller in a loop ke
 
 Every action writes exactly one row, whatever happens to it, and an unexpected error is a failed step that the next poll retries.  One Worker's error does not stop the others.  Cloudflare has no idempotency key for these calls and none is needed: each write sets a value or removes something, so repeating one after a lost answer changes nothing, and the label only adds a deployment of the same split.
 
+One gap stays open in the label.  It reads the live split and posts it straight back, and Cloudflare's create-deployment call takes no precondition, so a deploy landing between those two calls would be replaced by the older split.  A second read just before the post would leave the same gap after it, so there is none.  The newer version stays in the Worker's history and can be deployed again after a re-arm, and nothing detects the overwrite today.
+
 **The alert path has a known weak spot.**  On this server `simple-chat` reaches Zulip through the hosted server, which needs `SIMPLE_CHAT_REMOTE_WRITES=1` for a post (the watchdog sets it), which is the simple-tools-mcp Worker on this same account, with no direct fallback.  If that Worker is the one tripped, or the account is capped, the Zulip post fails.  Pushover is then the only alert that goes out, so configure it before turning on enforce.  The daily check names it when it is missing.
 
 ## Why the stop is the fallback and not a stub version
