@@ -2115,7 +2115,7 @@ class Refusal(Exception):
     """The request cannot be honoured as asked: exit 64."""
 
 
-def seat_owns_folder(seat: "Seat", registry: "Registry") -> bool:
+def seat_owns_folder(seat: Seat, registry: Registry) -> bool:
     """True when the folder name `seat.suffix` belongs to `seat`.
 
     Two registry rows can share a worktreeSuffix: CURSOR and GROK-BOT both use `cursor` (GROK-BOT had
