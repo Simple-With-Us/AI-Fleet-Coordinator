@@ -428,8 +428,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.nice < 0 or args.nice > MAX_NICE_VALUE:
         print(
-            f"mac-coding-priority: --nice must be between 0 and {MAX_NICE_VALUE}; "
-            f"got {args.nice}.",
+            f"mac-coding-priority: --nice must be between 0 and {MAX_NICE_VALUE}; got {args.nice}.",
             file=sys.stderr,
         )
         return EXIT_USAGE
