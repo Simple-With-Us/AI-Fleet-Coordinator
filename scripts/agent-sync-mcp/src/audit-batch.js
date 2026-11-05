@@ -88,12 +88,11 @@ export class AuditBatcher {
   }
 
   _disarmTimer(buf, scope) {
-    // Only the invocation that armed it may cancel it.  Any other leaves it to
-    // fire, find nothing to flush and end.
+    // Only the invocation that armed it may cancel it.  Any other leaves it
+    // standing, to carry later rows or to fire and find nothing to flush.
     const timer = buf.timer;
-    if (!timer) return;
+    if (!timer || timer.scope !== scope) return;
     buf.timer = null;
-    if (timer.scope !== scope) return;
     this.cancel(timer.handle);
     timer.release?.();
   }

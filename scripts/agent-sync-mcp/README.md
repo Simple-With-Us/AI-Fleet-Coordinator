@@ -20,7 +20,7 @@ Hard limits so a code bug or a looping client cannot burn a capped metric (AFC-6
 - **`AUTH_FAIL_RATE_LIMITER`.**  60 distinct credentials failing `/mcp` authentication a minute per IP.  Past it, this isolate answers 429 to that IP for 60 seconds and writes nothing.  A credential the isolate has already verified is never blocked, because seats on one host share an IP.  A bearer the gate called wrong is refused from memory for 60 seconds.
 - **Refusals write nothing.**  A rate-limited `/oauth/token` writes no row, and diagnostic and refusal rows are capped at 60 a minute per isolate.
 - **Per-invocation budget** (`src/invocation.js`).  50 outbound fetches and 256 gate RPCs a request, and 30 grant listings a minute per isolate.
-- **Not limited.**  `/internal/gr-bearer-verify` and `/internal/gr-assert-verify`, because the relay reads any non-200 as a refusal and caches it for 30 seconds.
+- **Not limited.**  `/internal/gr-bearer-verify` and `/internal/gr-assert-verify`, because the relay reads any non-200 as a refusal, and caches a bearer refusal for 30 seconds.
 
 Both limits are per Cloudflare location and eventually consistent, so they stop a runaway rather than meter exactly.  A daily account ceiling is the watchdog's job, not this Worker's.
 

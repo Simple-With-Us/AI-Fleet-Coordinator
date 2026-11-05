@@ -270,6 +270,18 @@ test("after a failed flush the backoff costs one RPC per interval, and the cap s
   assert.equal(attempts, 2);
 });
 
+test("a flush of another invocation leaves the armed timer standing, so later rows ride it", async () => {
+  const gate = fakeGate();
+  const { timers, schedule, cancel } = fakeScheduler();
+  const batcher = new AuditBatcher({ flushRows: 50, flushMs: 5000, now: () => 0, log: () => {}, schedule, cancel });
+  await batcher.append("ECHO", gate, { tool: "a", outcome: "ok" }, { waitUntil() {} }); // arms the timer
+  await batcher.append("ECHO", gate, { tool: "boom", outcome: "error" }, { waitUntil() {} }); // another invocation flushes
+  assert.deepEqual(batcher.pending(), { ECHO: 0 });
+  assert.equal(timers[0].cleared, false);
+  await batcher.append("ECHO", gate, { tool: "b", outcome: "ok" }, { waitUntil() {} });
+  assert.equal(timers.length, 1, "no second timer");
+});
+
 test("HostedTools without a sink writes each row straight to its gate (the standing default)", async () => {
   const calls = [];
   const gate = { auditCall: async (row) => calls.push(["gate", row]) };

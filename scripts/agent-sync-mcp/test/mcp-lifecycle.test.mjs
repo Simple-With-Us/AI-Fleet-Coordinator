@@ -129,3 +129,14 @@ test("an events-only seat, a non-POST, a missing length and a large body are not
   assert.equal((await answerLifecycle(big, { seat: "CLAUDE", config })).request, big);
   assert.equal(big.bodyUsed, false);
 });
+
+test("a body longer than its Content-Length claimed is refused, never forwarded empty", async () => {
+  const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping", params: { pad: "x".repeat(LIFECYCLE_MAX_BYTES) } });
+  const lying = new Request(URL_MCP, {
+    method: "POST",
+    headers: { host: "agents.simplewithus.com", "content-type": "application/json", accept: "application/json, text/event-stream", "content-length": "100" },
+    body,
+  });
+  const seen = await answerLifecycle(lying, { seat: "CLAUDE", config });
+  assert.equal(seen.response?.status, 413);
+});

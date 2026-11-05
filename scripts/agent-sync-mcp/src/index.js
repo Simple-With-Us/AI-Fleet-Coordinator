@@ -169,9 +169,16 @@ async function credentialHash(request) {
   return sha256Hex(/^Bearer\s+(\S+)$/i.exec(header)?.[1] ?? header);
 }
 
-/** A limiter's answer.  A limiter that fails never takes the MCP down with it. */
+/**
+ * A limiter's answer.  A missing or failing limiter never takes the MCP down with
+ * it, and says so in the log.  test/invocation.test.mjs pins the bindings in
+ * wrangler.jsonc, and the account watchdog is the stop if this guard is ever absent.
+ */
 async function withinLimit(limiter, key) {
-  if (!limiter) return true;
+  if (!limiter) {
+    logLimited("rate_limiter_missing");
+    return true;
+  }
   try {
     return (await limiter.limit({ key })).success;
   } catch {

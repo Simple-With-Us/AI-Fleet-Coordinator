@@ -111,7 +111,8 @@ export async function answerLifecycle(request, { seat, config }) {
     || !(declared > 0 && declared <= LIFECYCLE_MAX_BYTES)
     || hostHeaderValidationResponse(request, [PUBLIC_HOST])) return { request };
   const bytes = await readBodyBytes(request, LIFECYCLE_MAX_BYTES);
-  if (bytes === null) return { request: new Request(request.url, { method: "POST", headers }) };
+  // Longer than its Content-Length claimed, and the body is gone:  never forward it empty.
+  if (bytes === null) return { response: new Response("Payload Too Large", { status: 413 }) };
   const carryOn = () => ({ request: new Request(request, { body: bytes, cf: request.cf }) });
   let body;
   try {
