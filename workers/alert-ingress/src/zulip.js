@@ -20,7 +20,11 @@ const API = "https://simplewithus.zulipchat.com/api/v1";
 // topic until an operator reconciles it, so this stays well above a normal call.
 const ZULIP_TIMEOUT_MS = 5000;
 
-/** Basic-auth fetch against the Zulip API.  Returns null on any failure. */
+/**
+ * Basic-auth fetch against the Zulip API.  A non-2xx reply throws with
+ * `error.outcome` set, and a network failure or timeout throws without one, which
+ * callers read as unknown.  A 2xx reply that is not a usable success returns null.
+ */
 async function zulip(path, { email, apiKey, method = "GET", form } = {}) {
   const auth = btoa(`${email}:${apiKey}`);
   // A pending timer keeps a Durable Object active and billed, so the timer is

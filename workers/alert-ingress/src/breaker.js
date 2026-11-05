@@ -32,11 +32,17 @@ const SAVE_EVERY_MS = 60_000;
 const SAVE_MIN_UNSAVED = 5;
 const DAY_MS = 86_400_000;
 
-const count = (value) => (Number.isSafeInteger(value) && value >= 0 ? value : 0);
-const counts = (value) =>
-  new Map(
-    Object.entries(value && typeof value === "object" ? value : {}).map(([name, n]) => [name, count(n)]),
-  );
+// No day's traffic reaches this, so a saved count above it is corruption, and
+// reading it as real would shut the day's caps until the day rolls.
+const MAX_SAVED_COUNT = 1_000_000_000;
+const sound = (value) => Number.isSafeInteger(value) && value >= 0 && value <= MAX_SAVED_COUNT;
+const count = (value) => (sound(value) ? value : 0);
+const named = (value) => Object.entries(value && typeof value === "object" ? value : {});
+const counts = (value) => new Map(named(value).map(([name, n]) => [name, count(n)]));
+// A field a saved record does not have is not corruption, only a bad value is.
+const recordIsSound = (saved) =>
+  [saved.total, saved.shedWrites, saved.newKeys].every((n) => n === undefined || sound(n)) &&
+  [saved.sources, saved.newBySource, saved.shed].every((map) => named(map).every(([, n]) => sound(n)));
 
 export class DeliveryBreaker {
   constructor(storage, now = Date.now) {
@@ -80,6 +86,9 @@ export class DeliveryBreaker {
     if (saved !== undefined && (saved === null || typeof saved !== "object")) {
       console.error(JSON.stringify({ event: "alert.breaker_state_invalid" }));
     } else if (saved?.day === day) {
+      if (!recordIsSound(saved)) {
+        console.error(JSON.stringify({ event: "alert.breaker_state_invalid" }));
+      }
       this.total = count(saved.total);
       this.shedWrites = count(saved.shedWrites);
       this.newKeys = count(saved.newKeys);

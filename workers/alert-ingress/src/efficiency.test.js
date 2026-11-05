@@ -919,6 +919,54 @@ test("a malformed breaker record starts the day over instead of stopping deliver
   assert.deepEqual(lines, ["alert.breaker_state_invalid"]);
 });
 
+test("an out-of-range saved count is logged and cannot shut the day's caps", async () => {
+  const clock = 1_800_000_000_000;
+  const db = storage();
+  const day = Math.floor(clock / 86_400_000);
+  db.data.set("breaker:v1", {
+    day,
+    total: 1e12,
+    shedWrites: 1e12,
+    newKeys: 1e12,
+    sources: { a: 1e12 },
+    newBySource: { a: 1e12 },
+    shed: { "day:a": 1e12 },
+  });
+  const lines = [];
+  const saved = console.error;
+  console.error = (line) => lines.push(JSON.parse(line).event);
+  try {
+    const breaker = new DeliveryBreaker(db, () => clock);
+    assert.equal((await breaker.admit("a")).shed, false);
+    assert.equal(breaker.total, 1);
+    assert.equal(await breaker.spendShedWrite(), true);
+    assert.equal(await breaker.spendNewKey("a"), true);
+    assert.equal(breaker.shed.get("day:a"), 0);
+  } finally {
+    console.error = saved;
+  }
+  assert.deepEqual(lines, ["alert.breaker_state_invalid"]);
+});
+
+test("a sound saved record, even one past every cap, logs nothing and is believed", async () => {
+  const clock = 1_800_000_000_000;
+  const db = storage();
+  const day = Math.floor(clock / 86_400_000);
+  db.data.set("breaker:v1", { day, total: 900_000, shedWrites: 2000, newKeys: 1000, sources: { a: 900_000 }, newBySource: { a: 900 } });
+  const lines = [];
+  const saved = console.error;
+  console.error = (line) => lines.push(line);
+  try {
+    const breaker = new DeliveryBreaker(db, () => clock);
+    assert.equal((await breaker.admit("a")).reason, "day");
+    assert.equal(await breaker.spendShedWrite(), false);
+    assert.equal(await breaker.spendNewKey("a"), false);
+  } finally {
+    console.error = saved;
+  }
+  assert.deepEqual(lines, []);
+});
+
 // Review fixes:  the pending index
 
 function pendingRow(db, id, since) {
