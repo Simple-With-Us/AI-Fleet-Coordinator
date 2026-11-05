@@ -62,7 +62,7 @@ import {
 import { renderRaw } from "./raw.js";
 import { isSevereCpu, resourceMentions } from "./resource.js";
 import { BudgetExceeded, createBudget, guardOff, guardOffResponse } from "./budget-guard.mjs";
-import { DeliveryBreaker } from "./breaker.js";
+import { DeliveryBreaker, NEW_KEYS_PER_DAY, secondsToNextDay } from "./breaker.js";
 
 const DEFAULT_CHANNEL = "alerts";
 // The standing blocks keep DEFAULT_CHANNEL, which also names their records;
@@ -146,6 +146,9 @@ const SOURCE_TOKEN = /^[a-z0-9_-]{1,32}$/;
 const pendingKey = (k) => `pending:${k}`;
 const PENDING_PREFIX = "pending:";
 const PENDING_SCAN_LIMIT = 500;
+// Where the next sweep resumes when the index is longer than one read, so every
+// entry takes its turn.  Written only while the index is over that length.
+const PENDING_CURSOR = "sweep:pending-cursor";
 // When the full state scan last rebuilt the index and repaired legacy markers.
 const RECONCILED_AT = "sweep:reconciled-at";
 // Hourly, because an incident missing from the index is an alert nobody hears
@@ -936,7 +939,7 @@ async function notifyOperator(env, kind, what, source, everyMs = NOTICE_EVERY_MS
     if (!sender || (await zulipPausedUntil(env, sender)) > now) return;
     const credential = resolveCredential(env, sender);
     await storage.put(key, now);
-    await postEvent({
+    const posted = await postEvent({
       email: credential.email,
       apiKey: credential.apiKey,
       channel: LOG_CHANNEL,
@@ -945,6 +948,9 @@ async function notifyOperator(env, kind, what, source, everyMs = NOTICE_EVERY_MS
       service: "alert-ingress",
       what,
     });
+    // An answer with no message id is not a delivered notice.  At worst the retry
+    // repeats a notice that did land, which beats a guard nobody hears about.
+    if (!posted) throw new Error("operator notice was not confirmed");
   } catch (error) {
     console.error(
       JSON.stringify({ event: "alert.operator_notice_failed", kind, status: error?.status ?? null }),
@@ -965,6 +971,20 @@ function shedRefused(retryAfter, reason) {
   error.retryAfter = retryAfter;
   error.reason = reason;
   return error;
+}
+
+/** Log and count a delivery that was shed or refused, so none is lost silently. */
+function recordShed(env, source, reason, refused) {
+  const noted = env.ALERT_BREAKER?.noteShed(source, reason) ?? { today: null, log: true };
+  if (!noted.log) return;
+  console.error(
+    JSON.stringify({
+      event: refused ? "alert.delivery_refused" : "alert.delivery_shed",
+      source,
+      reason,
+      today: noted.today,
+    }),
+  );
 }
 
 function inventoryBoundError() {
@@ -1005,7 +1025,9 @@ async function sendEventOnce(env, identity, args) {
     }
     if (error?.outcome === "refused") {
       await env.WRITER_STORAGE.put(key, { outcome: "refused" });
-      throw new Error("event definitively refused");
+      const refused = new Error("event definitively refused");
+      refused.code = "event_refused";
+      throw refused;
     }
     return null;
   }
@@ -1037,8 +1059,12 @@ async function postRawCopy(env, source, payload) {
       content: renderRaw(source, payload),
     });
   } catch (error) {
+    // Its own guard:  this promise is awaited in the route's `finally`, where a
+    // rejection would turn an event already recorded into a 503.
     if (error?.outcome === "rate_limited") {
-      await noteRateLimit(env, source, error.retryAfter);
+      try {
+        await noteRateLimit(env, source, error.retryAfter);
+      } catch {}
     }
     console.error(JSON.stringify({ event: "alert.raw_copy_failed", source }));
   }
@@ -1059,6 +1085,7 @@ async function handleEvent(source, payload, env, options = {}) {
   const event = normalize(sourceName, payload);
   const channel = DEFAULT_CHANNEL;
   const perIncident = PER_INCIDENT_SOURCES.has(sourceName);
+  let reopening = false;
   if (perIncident && (await env.ALERT_STATE.get(closedKey(event.key)))) {
     // The incident closed and was pruned.  Only a reopen revives it;
     // anything else is a late or repeated delivery about a closed incident.
@@ -1067,7 +1094,7 @@ async function handleEvent(source, payload, env, options = {}) {
     }
     // A reopen mints the incident afresh, which a shed does not record.
     if (shed) throw shedRefused(breaker?.retryAfter ?? 60, breaker?.reason ?? "shed");
-    await env.ALERT_STATE.delete(closedKey(event.key));
+    reopening = true;
   }
   // Keep the original topic for a stable key when vendor labels change.  The
   // svc: pin and the state read are independent, so they run in parallel.
@@ -1126,6 +1153,28 @@ async function handleEvent(source, payload, env, options = {}) {
       throw shedRefused(breaker?.retryAfter ?? 60, "shed-writes");
     }
   } else {
+    // A delivery with no row is the dearest kind, so it has a daily cap of its
+    // own.  A recovery of something never recorded has nothing to lose.  A new
+    // incident keeps its retry, its raw copy is already on its way to
+    // #Alerts-Raw, and the route logs and counts the refusal.
+    if (!prev && breaker?.spendNewKey && !(await breaker.spendNewKey())) {
+      if (result.state.phase === "ok") {
+        return {
+          action: "shed",
+          reason: "new-keys",
+          posted: false,
+          status: null,
+          statusDelivery: { outcome: "shed" },
+        };
+      }
+      await notifyOperator(
+        env,
+        `new-keys:${sourceName}`,
+        `${sourceName} is past the daily cap of ${NEW_KEYS_PER_DAY} new incidents, so new ones are refused for the vendor to retry.  Known incidents still move.  /status counts what was refused.`,
+        sourceName,
+      );
+      throw shedRefused(secondsToNextDay(now), "new-keys");
+    }
     // Over the bound, an incident already recorded still moves, so a recovery
     // cannot be lost, and a new one is refused with a notice instead of
     // failing the same way forever with nobody told.
@@ -1148,6 +1197,7 @@ async function handleEvent(source, payload, env, options = {}) {
       throw shedRefused(3600, "inventory");
     }
   }
+  if (reopening) await env.ALERT_STATE.delete(closedKey(event.key));
   let posted = null;
   let rateLimited = false;
   const sev =
@@ -1298,7 +1348,8 @@ async function runSweep(env) {
   const minOpenMs = Number(env.MIN_OPEN_MS) || DEFAULT_MIN_OPEN_MS;
   const storage = env.WRITER_STORAGE;
   const calls = sweepBudget.invocation();
-  const { keys, checked, overflow } = await pendingForSweep(env, now);
+  const { keys, checked, overflow, page } = await pendingForSweep(env, now);
+  let examined = null;
   let promoted = 0;
   let deferred = 0;
   // Topics are per source: two vendors can share a service name, and each
@@ -1310,6 +1361,10 @@ async function runSweep(env) {
   const preflighted = new Set();
   for (const key of keys) {
     const name = stateKey(key);
+    // Promotion is the only step that can stop the loop, so anything that returns
+    // to the top of it has been looked at.
+    const lookedAt = examined;
+    examined = key;
     // One incident can fail for many reasons, and none of them may abort the
     // batch: a source lookup that throws, a credential that cannot be
     // resolved, a state that cannot be read.  Every item is handled on its
@@ -1370,6 +1425,8 @@ async function runSweep(env) {
     } catch (error) {
       // The budget is spent, so the rest wait for the next sweep.
       if (error instanceof BudgetExceeded) {
+        // This one did not get its turn, so the next sweep starts with it.
+        examined = lookedAt;
         deferred++;
         break;
       }
@@ -1384,6 +1441,7 @@ async function runSweep(env) {
       );
     }
   }
+  await movePendingCursor(storage, page, examined);
   deferred += await flushQueuedEvents(env, calls, now);
   for (const { source, topic } of await listDirtyTopics(env)) {
     dirtyTopics.set(`${source}\u0000${topic}`, { source, topic });
@@ -1429,14 +1487,10 @@ async function runSweep(env) {
  */
 async function pendingForSweep(env, now) {
   const storage = env.WRITER_STORAGE;
-  const indexed = async () =>
-    [...(await storage.list({ prefix: PENDING_PREFIX, limit: PENDING_SCAN_LIMIT })).keys()].map(
-      (name) => name.slice(PENDING_PREFIX.length),
-    );
   const usable = typeof storage?.list === "function";
   if (usable && now - (Number(await storage.get(RECONCILED_AT)) || 0) < RECONCILE_EVERY_MS) {
-    const keys = await indexed();
-    return { keys, checked: keys.length, overflow: false };
+    const page = await pendingPage(storage);
+    return { keys: page.keys, checked: page.keys.length, overflow: false, page };
   }
   let all;
   try {
@@ -1450,11 +1504,14 @@ async function pendingForSweep(env, now) {
       `The state inventory is over its ${MAX_KEYS}-key bound, so the reconcile cannot run.  Closed rows need pruning.`,
     );
     await storage.put(RECONCILED_AT, now);
-    const keys = await indexed();
-    return { keys, checked: keys.length, overflow: true };
+    const page = await pendingPage(storage);
+    return { keys: page.keys, checked: page.keys.length, overflow: true, page };
   }
   const keys = [];
   const keep = new Set();
+  // What the index already holds.  An unchanged entry costs no write:  rewriting
+  // each one hourly is 24 rows a day per pending incident, to store the same 1.
+  const present = usable ? await allPending(storage) : new Set();
   for (const { name } of all) {
     const key = name.slice("state:".length);
     try {
@@ -1471,7 +1528,7 @@ async function pendingForSweep(env, now) {
       if (state.phase !== "pending") continue;
       keys.push(key);
       keep.add(key);
-      await storage?.put(pendingKey(key), 1);
+      if (!present.has(key)) await storage?.put(pendingKey(key), 1);
     } catch {
       // A row that cannot be read keeps any index entry it has.
       keep.add(key);
@@ -1479,12 +1536,58 @@ async function pendingForSweep(env, now) {
     }
   }
   if (usable) {
-    for (const key of await indexed()) {
+    for (const key of present) {
       if (!keep.has(key)) await storage.delete?.(pendingKey(key));
     }
     await storage.put(RECONCILED_AT, now);
   }
-  return { keys, checked: all.length, overflow: false };
+  return { keys, checked: all.length, overflow: false, page: null };
+}
+
+/** One sweep's turn at the pending index, resuming where the last one stopped. */
+async function pendingPage(storage) {
+  const cursor = (await storage.get(PENDING_CURSOR)) || null;
+  const listed = await storage.list({
+    prefix: PENDING_PREFIX,
+    limit: PENDING_SCAN_LIMIT,
+    ...(cursor ? { startAfter: pendingKey(cursor) } : {}),
+  });
+  const keys = [...listed.keys()].map((name) => name.slice(PENDING_PREFIX.length));
+  return { keys, cursor, full: keys.length >= PENDING_SCAN_LIMIT };
+}
+
+/** Every entry of the pending index, for the hourly reconcile. */
+async function allPending(storage) {
+  const present = new Set();
+  let after;
+  for (let turn = 0; turn < 20; turn++) {
+    const listed = await storage.list({
+      prefix: PENDING_PREFIX,
+      limit: PENDING_SCAN_LIMIT,
+      ...(after ? { startAfter: after } : {}),
+    });
+    for (const name of listed.keys()) {
+      present.add(name.slice(PENDING_PREFIX.length));
+      after = name;
+    }
+    if (listed.size < PENDING_SCAN_LIMIT) break;
+  }
+  return present;
+}
+
+/** Save where the next sweep resumes.  It costs a row only while the index is long. */
+async function movePendingCursor(storage, page, examined) {
+  if (!page) return;
+  try {
+    if (page.full) {
+      if (examined && examined !== page.cursor) await storage.put(PENDING_CURSOR, examined);
+    } else if (page.cursor) {
+      await storage.delete?.(PENDING_CURSOR);
+    }
+  } catch {
+    // A cursor that did not move repeats a turn, and the next sweep tries again.
+    console.error(JSON.stringify({ event: "alert.pending_cursor_failed" }));
+  }
 }
 
 /** Post the timeline lines a pause held back.  Returns how many still wait. */
@@ -1518,9 +1621,11 @@ async function flushQueuedEvents(env, calls, now) {
         waiting++;
         continue;
       }
-      // A definitive refusal will not improve with retries every five minutes.
-      await storage.delete?.(key);
       console.error(JSON.stringify({ event: "alert.queued_event_failed", source: item.source }));
+      // A definitive refusal will not improve with retries every five minutes.
+      // Anything else, such as a storage error, may not have sent the line at all.
+      if (error?.code === "event_refused") await storage.delete?.(key);
+      else waiting++;
     }
   }
   return waiting;
@@ -1573,8 +1678,12 @@ const handler = {
     // shape is unchanged; the per-source breakdown is added beside it.
     if (url.pathname === "/status") {
       const collected = await collectTopics(env);
+      // What the guards shed today, where an operator can read it.  A breaker that
+      // cannot read its count must not take the read down with it.
+      const guards = await env.ALERT_BREAKER?.snapshot().catch(() => null);
       return json({
         generatedAt: new Date().toISOString(),
+        guards: guards ?? null,
         channel: DEFAULT_CHANNEL,
         summary: {
           topics: Object.keys(collected.topics).length,
@@ -1916,12 +2025,22 @@ const handler = {
         await handleEvent(source, payload, env, {
           shed,
           paused,
-          breaker: breaker && { ...breaker, spendShedWrite: () => env.ALERT_BREAKER.spendShedWrite() },
+          breaker: breaker && {
+            ...breaker,
+            spendShedWrite: () => env.ALERT_BREAKER.spendShedWrite(),
+            spendNewKey: () => env.ALERT_BREAKER.spendNewKey(source),
+          },
+        }).then((result) => {
+          if (result.action === "shed") {
+            recordShed(env, source, result.reason ?? breaker?.reason ?? "shed", false);
+          }
+          return result;
         }),
       );
     } catch (error) {
       // Nothing was recorded, so the vendor keeps its retry.
       if (error?.code === "shed_refused") {
+        recordShed(env, source, error.reason, true);
         return new Response(
           JSON.stringify({ error: "delivery shed", reason: error.reason }),
           {
@@ -1995,6 +2114,7 @@ export const __testing = {
 };
 
 const MAX_KEYS = 2000;
+const STATUS_MEMO_MS = 30_000;
 // Object-envelope nesting bound.  A JSON:API vendor body reaches four levels
 // (data.relationships.monitor.data); anything deeper is rejected, not walked.
 const MAX_PAYLOAD_DEPTH = 6;
@@ -2370,6 +2490,7 @@ export class AlertWriter {
     this.env = env;
     this.tail = Promise.resolve();
     this.breaker = new DeliveryBreaker(ctx.storage);
+    this.statusBody = null;
   }
   fetch(request) {
     if (guardOff(this.env)) return guardOffResponse();
@@ -2411,9 +2532,16 @@ export class AlertWriter {
     }
   }
   async dispatch(request) {
+    // The writer is one object, so this bounds a full /status read to one per
+    // window however many isolates ask.  Anything else may change what it says.
+    const isStatus = new URL(request.url).pathname === "/status";
+    if (!isStatus) this.statusBody = null;
     const storage = this.ctx.storage,
       legacy = this.env.ALERT_STATE,
       imported = await this.legacyImported();
+    if (isStatus && this.statusBody && this.statusBody.expires > Date.now()) {
+      return new Response(this.statusBody.text, { headers: { "Content-Type": "application/json" } });
+    }
     const overlay = {
       async get(key, type) {
         let value = await storage.get(`kv:${key}`);
@@ -2450,11 +2578,17 @@ export class AlertWriter {
       },
     };
     try {
-      return await handler.fetch(
+      const response = await handler.fetch(
         request,
         { ...this.env, ALERT_STATE: overlay, WRITER_STORAGE: storage, ALERT_BREAKER: this.breaker },
         {},
       );
+      if (isStatus && response.status === 200) {
+        const text = await response.text();
+        this.statusBody = { text, expires: Date.now() + STATUS_MEMO_MS };
+        return new Response(text, { headers: { "Content-Type": "application/json" } });
+      }
+      return response;
     } catch (error) {
       console.error(
         JSON.stringify({
@@ -2488,61 +2622,46 @@ function logWriterUnreachable(where, error) {
   );
 }
 
-const STATUS_CACHE_SECONDS = 30;
+let statusMemo = null;
 /**
- * GET /status through the Cache API, so a burst of readers wakes the writer at
- * most once per 30 seconds per data center.  The query string is not part of
- * the key, so it cannot be used to miss the cache.  A cache failure never fails
- * the read.  Still unauthenticated:  Usage Monitor's /ops reads it with no
- * token, so a bearer has to land there first.  A HEAD reads the same entry, and
- * reaches the writer as a GET so a bodyless reply can never be stored.
+ * GET /status from this isolate's memory, so a burst of readers wakes the writer
+ * at most once per 30 seconds per isolate, and the writer's own copy bounds the
+ * full read.  Memory rather than the Cache API, because the Cache API is only
+ * documented as working on custom domains and this Worker runs on workers.dev.
+ * The query string is not part of the key, so it cannot be used to miss.  Still
+ * unauthenticated:  Usage Monitor's /ops reads it with no token, so a bearer has
+ * to land there first.  A HEAD reads the same copy, and reaches the writer as a
+ * GET, so a bodyless reply can never be kept.
  */
-async function cachedStatus(incoming, env, ctx) {
-  const request = incoming.method === "GET" ? incoming : new Request(incoming.url);
-  const cache = globalThis.caches?.default;
-  const key = new Request(new URL("/status", request.url).toString());
-  if (cache) {
-    try {
-      const hit = await cache.match(key);
-      if (hit) {
-        const served = new Response(hit.body, hit);
-        served.headers.set("x-status-cache", "hit");
-        return served;
-      }
-    } catch {}
+async function cachedStatus(incoming, env) {
+  let served = "hit";
+  if (!statusMemo || statusMemo.expires <= Date.now()) {
+    const response = await writerFor(env).fetch(new Request(new URL("/status", incoming.url).toString()));
+    if (response.status !== 200) return response;
+    statusMemo = { text: await response.text(), expires: Date.now() + STATUS_MEMO_MS };
+    served = "miss";
   }
-  const response = await writerFor(env).fetch(request);
-  if (!cache || response.status !== 200) return response;
-  const fresh = new Response(response.body, response);
-  fresh.headers.set("cache-control", `public, max-age=${STATUS_CACHE_SECONDS}`);
-  fresh.headers.set("x-status-cache", "miss");
-  const stored = cache.put(key, fresh.clone()).catch(() => {});
-  if (ctx?.waitUntil) ctx.waitUntil(stored);
-  return fresh;
+  return new Response(incoming.method === "HEAD" ? null : statusMemo.text, {
+    headers: {
+      "Content-Type": "application/json",
+      "cache-control": `public, max-age=${STATUS_MEMO_MS / 1000}`,
+      "x-status-cache": served,
+    },
+  });
 }
 
 const EMPTY_BODY_REPORT_MS = 24 * 60 * 60 * 1000;
 const emptyBodyReported = new Map();
 /**
  * Whether this empty delivery should reach the writer, which reports it once a
- * day.  Only a sender that proved itself may wake the writer this way, and the
- * memory and cache checks keep that to about once a day, so every other empty
- * delivery is answered here without waking it.
+ * day.  Only a sender that proved itself may wake the writer this way, and at
+ * most once a day per isolate, so nearly every empty delivery is answered here
+ * without waking it.  The writer's durable throttle bounds the notice itself.
  */
 async function emptyBodyReportDue(request, env, source) {
   if ((emptyBodyReported.get(source) || 0) > Date.now()) return false;
   if (!(await verify(request, "", env, source))) return false;
   emptyBodyReported.set(source, Date.now() + EMPTY_BODY_REPORT_MS);
-  const cache = globalThis.caches?.default;
-  if (!cache) return true;
-  try {
-    const key = new Request(`https://alert-ingress.internal/empty-body/${source}`);
-    if (await cache.match(key)) return false;
-    await cache.put(
-      key,
-      new Response("1", { headers: { "cache-control": `public, max-age=${EMPTY_BODY_REPORT_MS / 1000}` } }),
-    );
-  } catch {}
   return true;
 }
 
@@ -2593,7 +2712,7 @@ export default {
         if (request.method !== "GET" && request.method !== "HEAD") {
           return json({ error: "GET only" }, 405);
         }
-        return await cachedStatus(request, env, ctx);
+        return await cachedStatus(request, env);
       }
       return await writerFor(env).fetch(request);
     } catch (error) {
@@ -2644,4 +2763,7 @@ Object.assign(__testing, {
   sendEventOnce,
   transitionIdentity,
   advanceRevision,
+  resetStatusMemo() {
+    statusMemo = null;
+  },
 });

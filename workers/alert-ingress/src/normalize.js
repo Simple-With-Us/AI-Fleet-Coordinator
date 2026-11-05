@@ -484,7 +484,15 @@ const PARSERS = {
 export function normalize(source, payload) {
   const hint = strip(source).toLowerCase();
   const parser = PARSERS[hint] || fromGeneric;
-  const event = parser(payload || {});
+  const parsed = parser(payload || {});
+  // A credential a vendor echoed back never reaches a state row, a queued line or
+  // a Zulip post.  Redacted rather than refused, because the alert is still real.
+  const event = {
+    ...parsed,
+    service: redactCredentials(parsed.service),
+    text: parsed.text == null ? parsed.text : redactCredentials(parsed.text),
+    link: parsed.link == null ? parsed.link : redactCredentials(parsed.link),
+  };
   // Generic routes: the route name is the only authority for the state-key
   // namespace.  A payload claiming source:"datadog" on /webhook/<other> must
   // not overwrite a real datadog incident's state.
