@@ -195,7 +195,7 @@ final class FleetRegistryTests: XCTestCase {
         return try JSONDecoder().decode(FleetViewEnvelope.self, from: Data(json.utf8))
     }
 
-    private func firstAppState(unknownSection: String) throws -> CellState {
+    private func firstAppState(unknownSection: String) throws -> AppWorkState {
         let summary = FleetRegistryReader.build(
             from: Data(sampleRegistry.utf8),
             viewOutput: try envelopeWithUnknownSection(unknownSection),
