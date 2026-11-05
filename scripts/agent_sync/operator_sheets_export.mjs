@@ -88,6 +88,42 @@ async function appendEventOnce(adapter, cells) {
   return "appended";
 }
 
+
+// Display contract (owner rule, SWU Operator workbook Reference > Time Display): timestamps are
+// stored canonically as UTC ISO (operator_registry.py) and formatted for display only at write
+// time here: America/Chicago conversion, 12-hour clock with AM/PM, NO timezone label in the
+// displayed text, written as text values so the workbook timezone cannot reinterpret them.
+// Empty, null, or unparseable values pass through unchanged; non-timestamp cells are untouched.
+const SESSION_TIME_COLUMNS = [12, 13, 14]; // Registered At, Last Seen At, Closed At
+const EVENT_TIME_COLUMNS = [1]; // Recorded At
+
+const DISPLAY_FORMAT = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/Chicago",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "numeric",
+  minute: "2-digit",
+  second: "2-digit",
+  hour12: true,
+});
+
+export function formatDisplayTimestamp(value) {
+  if (value == null || value === "") return value;
+  const ms = Date.parse(value);
+  if (Number.isNaN(ms)) return value; // preserve invalid semantics
+  return DISPLAY_FORMAT.format(new Date(ms)); // e.g. "11/04/2026, 9:05:31 PM" - no zone label
+}
+
+export function formatCellsForDisplay(kind, cells) {
+  const cols = kind === "session_upsert" ? SESSION_TIME_COLUMNS : EVENT_TIME_COLUMNS;
+  const out = cells.slice();
+  for (const i of cols) {
+    if (i < out.length) out[i] = formatDisplayTimestamp(out[i]);
+  }
+  return out;
+}
+
 // outbox: { pending(limit) -> [{outbox_id, kind, payload}], markExported(ids) -> void }
 // The Python bridge (operator_registry.py pending-outbox / mark-exported) is one implementation.
 export async function drainOutbox({
@@ -104,10 +140,11 @@ export async function drainOutbox({
   for (const row of rows) {
     try {
       const payload = typeof row.payload === "string" ? JSON.parse(row.payload) : row.payload;
+      const cells = formatCellsForDisplay(row.kind, payload.cells);
       if (row.kind === "session_upsert") {
-        await upsertSession(adapter, payload.cells);
+        await upsertSession(adapter, cells);
       } else if (row.kind === "event_append") {
-        await appendEventOnce(adapter, payload.cells);
+        await appendEventOnce(adapter, cells);
       } else {
         throw new Error(`unknown outbox kind ${row.kind}`);
       }

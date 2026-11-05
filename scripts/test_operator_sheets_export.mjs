@@ -156,3 +156,66 @@ test('event reconciliation scans blank pages and refuses duplicate Event IDs',as
 test('out-of-page physical row number refuses mutation',async()=>{
  const adapter=fakeAdapter();adapter.inspect=async()=>({sessions:{rowCount:2}});adapter.readRows=async()=>[{rowNumber:300,cells:sessionCells('r')}];const outbox=fakeOutbox([{outbox_id:'badrow',kind:'session_upsert',payload:{cells:sessionCells('r')}}]);assert.deepEqual(await drainOutbox({outbox,adapter}),{exported:0,failed:1});assert.deepEqual(outbox.marked,[]);assert.ok(!adapter.calls.includes('updateSessionRow'));
 });
+
+// Display contract tests (owner rule): America/Chicago conversion, 12-hour AM/PM, no timezone
+// label, text output; invalid/empty pass through; non-timestamp cells unchanged; UTC stays internal.
+import { formatDisplayTimestamp, formatCellsForDisplay } from "./agent_sync/operator_sheets_export.mjs";
+
+test("formatter converts UTC to America/Chicago 12-hour with AM/PM and no zone label", () => {
+  const out = formatDisplayTimestamp("2026-11-04T15:05:31.000Z"); // 9:05:31 AM CST
+  assert.equal(out, "11/04/2026, 9:05:31 AM");
+  assert.ok(!/CT|CST|CDT|Central|UTC|GMT|Z$/i.test(out), "no timezone label: " + out);
+  assert.equal(typeof out, "string");
+});
+
+test("formatter midnight and noon boundaries", () => {
+  assert.match(formatDisplayTimestamp("2026-11-04T06:00:00.000Z"), /12:00:00 AM$/); // midnight Chicago
+  assert.match(formatDisplayTimestamp("2026-11-04T18:00:00.000Z"), /12:00:00 PM$/); // noon Chicago
+});
+
+test("formatter handles DST: same UTC hour renders differently across CST/CDT", () => {
+  const winter = formatDisplayTimestamp("2026-01-15T15:00:00.000Z"); // CST UTC-6 -> 9 AM
+  const summer = formatDisplayTimestamp("2026-07-15T15:00:00.000Z"); // CDT UTC-5 -> 10 AM
+  assert.match(winter, /9:00:00 AM$/);
+  assert.match(summer, /10:00:00 AM$/);
+});
+
+test("formatter preserves the calendar date and passes through empty/invalid values", () => {
+  assert.match(formatDisplayTimestamp("2026-11-04T04:30:00.000Z"), /^11\/03\/2026/); // still Nov 3 in Chicago
+  assert.equal(formatDisplayTimestamp(""), "");
+  assert.equal(formatDisplayTimestamp(null), null);
+  assert.equal(formatDisplayTimestamp("not-a-date"), "not-a-date");
+});
+
+test("formatCellsForDisplay formats only the time columns, UTC remains in the source cells", async () => {
+  const cells = sessionCells("r1");
+  cells[12] = "2026-11-04T15:05:31.000Z";
+  cells[13] = "";
+  cells[14] = "2026-07-15T15:00:00.000Z";
+  const out = formatCellsForDisplay("session_upsert", cells);
+  assert.equal(out[12], "11/04/2026, 9:05:31 AM");
+  assert.equal(out[13], "");
+  assert.match(out[14], /10:00:00 AM$/);
+  assert.equal(out[0], "r1");
+  assert.equal(cells[12], "2026-11-04T15:05:31.000Z"); // internal UTC untouched
+  const ev = eventCells("e1", "r1");
+  ev[1] = "2026-11-04T15:05:31.000Z";
+  const evOut = formatCellsForDisplay("event_append", ev);
+  assert.equal(evOut[1], "11/04/2026, 9:05:31 AM");
+  assert.equal(evOut[4], "register");
+});
+
+test("drainOutbox writes display-formatted timestamps to the adapter", async () => {
+  const adapter = fakeAdapter();
+  const cells = sessionCells("r1");
+  cells[12] = "2026-11-04T15:05:31.000Z";
+  const outbox = fakeOutbox([{ outbox_id: "o1", kind: "session_upsert",
+    payload: JSON.stringify({ cells }) }]);
+  const res = await drainOutbox({ outbox, adapter });
+  assert.deepEqual(res, { exported: 1, failed: 0 });
+  const written = adapter.sessions?.[0] ?? null;
+  // adapter fake stores via appendSession into closure; read through readRows
+  const page = await adapter.readRows("sessions", { startRow: 2, limit: 10 });
+  const row = page.rows[0].cells ?? page.rows[0];
+  assert.equal(row[12], "11/04/2026, 9:05:31 AM");
+});
