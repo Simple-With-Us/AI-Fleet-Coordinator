@@ -2408,7 +2408,7 @@ class RunBehaviourCase(RunBase):
 
     def test_the_alert_uses_the_job_homes_agent_sync_only(self):
         self.assertEqual(
-            fwb.agent_sync_path(self.cfg), str(self.home / ".local" / "bin" / "simple-chat")
+            fwb.simple_chat_path(self.cfg), str(self.home / ".local" / "bin" / "simple-chat")
         )
         self.assertFalse(
             fwb.post_alert(self.cfg, "x")
