@@ -601,7 +601,7 @@ def recall_contribute(
 
     cfg = get_config(need_write=True)
     ts = now_ms()
-    day = datetime.datetime.fromtimestamp(ts / 1000, datetime.UTC).strftime("%Y-%m-%d")
+    day = datetime.datetime.fromtimestamp(ts / 1000, datetime.timezone.utc).strftime("%Y-%m-%d")
     doc_id = f"contrib/{seat}/{day}/{content_hash(clean)[:8]}"
     payload: dict[str, Any] = {
         "source": "agent-contribution",
