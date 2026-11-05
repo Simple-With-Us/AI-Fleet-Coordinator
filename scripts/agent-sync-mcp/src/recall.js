@@ -20,6 +20,9 @@ export const RECALL_USER_AGENT = "agent-sync-mcp/2.0";
 export const RECALL_RESPONSE_LIMIT = 1_000_000; // bytes
 export const RECALL_JSON_DEPTH_LIMIT = 64;
 export const RECALL_JSON_NODE_LIMIT = 20_000;
+export const RECALL_INPUT_BYTES = 16 * 1024;
+export const RECALL_INPUT_DEPTH_LIMIT = 8;
+export const RECALL_INPUT_NODE_LIMIT = 200;
 export const RECALL_SECRETS = Object.freeze({
   token: "RECALL_API_TOKEN",
   accessId: "RECALL_ACCESS_CLIENT_ID",
@@ -457,6 +460,27 @@ function jsonTextWithinLimits(text, maxDepth, maxNodes) {
   return !inString && depth === 0;
 }
 
+/** Byte, depth, node and cycle bounds for untrusted recall tool arguments after the 256 KiB MCP body gate. */
+export function boundedRecallInput(value) {
+  const pending = [{ value, depth: 0 }];
+  const seen = new Set();
+  let nodes = 0;
+  while (pending.length) {
+    const item = pending.pop();
+    if (++nodes > RECALL_INPUT_NODE_LIMIT || item.depth > RECALL_INPUT_DEPTH_LIMIT) return false;
+    if (item.value && typeof item.value === "object") {
+      if (seen.has(item.value)) return false;
+      seen.add(item.value);
+      for (const child of Object.values(item.value)) pending.push({ value: child, depth: item.depth + 1 });
+    }
+  }
+  try {
+    return new TextEncoder().encode(JSON.stringify(value)).byteLength <= RECALL_INPUT_BYTES;
+  } catch {
+    return false;
+  }
+}
+
 /** A RecallError as the ToolError the caller sees.  Never echoes a response body but a 400's own message. */
 export function mapRecallError(error, { write = false, retrySafe = false, known = [] } = {}) {
   if (error instanceof ToolError) return error;
@@ -490,7 +514,7 @@ export function mapRecallError(error, { write = false, retrySafe = false, known 
     const said = upstreamMessage(error.upstreamMessage, known);
     return new ToolError("invalid_argument", said ? `fleet recall refused the request:  ${said}` : "fleet recall refused the request (HTTP 400)", { extra: { status } });
   }
-  if (status >= 500) {
+  if (status === 408 || status >= 500) {
     if (write && !retrySafe) {
       return new ToolError("outcome_unknown", `fleet recall failed (HTTP ${status}), so the write may or may not have landed.  Search recall before retrying.`, { retryable: false, extra: { status } });
     }

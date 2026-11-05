@@ -61,6 +61,7 @@ import {
   REASON_MAX,
   DOC_ID_PATTERN,
   mapRecallError,
+  boundedRecallInput,
   hitItem,
   recallClean,
   recallEnvelope,
@@ -545,6 +546,9 @@ export class HostedTools {
         delete args.seat;
       }
       requestArgs = args;
+      if ((RECALL_READ_TOOLS.has(publicName) || RECALL_WRITE_TOOLS.has(publicName)) && !boundedRecallInput(args)) {
+        throw new ToolError("invalid_argument", "Recall arguments exceed structural limits.");
+      }
       if (publicName.startsWith("gr_wf_") && !boundedWorkflowInput(args, {maxBytes:workflowInputLimit(publicName.slice(3)),maxString:workflowInputLimit(publicName.slice(3))})) throw new ToolError("invalid_argument", "Workflow input exceeds structural limits.");
       const problem = schemaProblem(spec.inputSchema, args);
       if (problem) throw new ToolError("invalid_argument", problem);

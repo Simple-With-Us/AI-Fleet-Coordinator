@@ -235,16 +235,16 @@ test("search sends the three auth headers, a real User-Agent, no redirects and o
 });
 
 test("recall responses are byte, depth and node bounded before parsing", async () => {
-  const client = new RecallClient({ baseUrl: "https://recall.jays.services", token: TOKEN, accessId: ACCESS_ID, accessSecret: ACCESS_SECRET, fetch: async () => new Response('{"ok":true,"text":"' + "é".repeat(500_001) + '"}') });
+  const client = new RecallClient({ baseUrl: "https://recall.example.test", token: TOKEN, accessId: ACCESS_ID, accessSecret: ACCESS_SECRET, fetch: async () => new Response('{"ok":true,"text":"' + "é".repeat(500_001) + '"}') });
   await assert.rejects(() => client.stats(), (error) => error.kind === "too_large");
 
   let text = '{"ok":true';
   for (let i = 0; i < 70; i++) text += ',"a":{"b":[';
   text += "1" + "]}".repeat(70) + "}";
-  const deep = new RecallClient({ baseUrl: "https://recall.jays.services", token: TOKEN, accessId: ACCESS_ID, accessSecret: ACCESS_SECRET, fetch: async () => new Response(text) });
+  const deep = new RecallClient({ baseUrl: "https://recall.example.test", token: TOKEN, accessId: ACCESS_ID, accessSecret: ACCESS_SECRET, fetch: async () => new Response(text) });
   await assert.rejects(() => deep.stats(), (error) => error.kind === "too_large");
 
-  const wide = new RecallClient({ baseUrl: "https://recall.jays.services", token: TOKEN, accessId: ACCESS_ID, accessSecret: ACCESS_SECRET, fetch: async () => new Response(JSON.stringify({ ok: true, values: Array.from({ length: 20_001 }, (_, i) => i) })) });
+  const wide = new RecallClient({ baseUrl: "https://recall.example.test", token: TOKEN, accessId: ACCESS_ID, accessSecret: ACCESS_SECRET, fetch: async () => new Response(JSON.stringify({ ok: true, values: Array.from({ length: 20_001 }, (_, i) => i) })) });
   await assert.rejects(() => wide.stats(), (error) => error.kind === "too_large");
 });
 
@@ -344,6 +344,32 @@ test("a hosted mutation cut off mid-write stays unknown and is not resent", asyn
   const error = toolError(await network.tools.call("recall_correct", { ...args, text: LESSON }), "outcome_unknown");
   assert.equal(error.retryable, false);
   assert.equal(network.upstream.requests.length, 1);
+});
+
+test("an HTTP 408 hosted mutation stays unknown and is not resent", async () => {
+  const { tools, upstream } = harness({ respond: () => ({ status: 408, json: { ok: false } }) });
+  const args = { doc_id: "contrib/GROK-WEB/2026-11-05/abcd1234", reason: "obsolete" };
+  const first = toolError(await tools.call("recall_retract", args), "outcome_unknown");
+  assert.match(first.message, /HTTP 408.*may or may not have landed/);
+  const retry = toolError(await tools.call("recall_retract", args), "outcome_unknown");
+  assert.match(retry.message, /result is unknown/);
+  assert.equal(upstream.requests.length, 1);
+});
+
+test("recall arguments are byte, depth and node bounded before schema validation", async () => {
+  const { tools, upstream } = harness();
+  const doc_id = "contrib/GROK-WEB/2026-11-05/abcd1234";
+  let deep = { value: {} };
+  for (let i = 0; i < 9; i++) deep.value = { child: deep.value };
+  for (const args of [
+    { doc_id, reason: "obsolete", padding: "x".repeat(16 * 1024) },
+    { doc_id, reason: "obsolete", padding: deep },
+    { doc_id, reason: "obsolete", padding: Object.fromEntries(Array.from({ length: 201 }, (_, i) => [`k${i}`, i])) },
+  ]) {
+    const error = toolError(await tools.call("recall_retract", args), "invalid_argument");
+    assert.equal(error.message, "Recall arguments exceed structural limits.");
+  }
+  assert.equal(upstream.requests.length, 0);
 });
 
 test("mutation idempotency:  a retry returns the first result;  a reason secret never leaves", async () => {
