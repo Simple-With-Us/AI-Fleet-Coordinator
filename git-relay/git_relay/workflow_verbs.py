@@ -3431,7 +3431,8 @@ class WorkflowVerbs:
     def wf_pr_close(self, repo, args):
         """Close without merging.  GitHub refuses a merged PR.  Who may close whose PR is fleet policy, in AGENTS.md.
 
-        expected_head_sha, when given, stops the close if someone pushed after the caller decided to close.
+        expected_head_sha, when given, is checked against a read just before the write.  It narrows the race and does not
+        close it:  the write names the PR, not its head, so a push between the read and the write still loses to the close.
         """
         _only(args, ("repo", "number", "expected_head_sha"))
         return self._pr_set_state(repo, args, "closePullRequest", "CLOSED")
