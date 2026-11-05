@@ -317,7 +317,9 @@ struct FleetViewFailure: Equatable {
         let mark = ConfigFileReader.redactionMark
         var redactNext = false
         var out: [String] = []
-        for word in line.split(separator: " ", omittingEmptySubsequences: false).map(String.init) {
+        // A tab separates words too, or a credential after one would hide inside a longer word.
+        let spaced = line.replacingOccurrences(of: "\t", with: " ")
+        for word in spaced.split(separator: " ", omittingEmptySubsequences: false).map(String.init) {
             if word.isEmpty {
                 out.append(word)
                 continue
@@ -357,10 +359,11 @@ struct FleetViewFailure: Equatable {
                 return (String(word[...separator]) + mark, false)
             }
         }
-        // `--token abc` and `password: abc`:  the value is the next word.
+        // `--token abc`, `password: abc` and `"token": "abc"`, the way Python prints JSON and a
+        // dict:  the value is the next word.
         let bare = word.trimmingCharacters(in: punctuation)
         if !bare.contains("="), bare.hasPrefix("--") || bare.hasSuffix(":") {
-            let name = bare.trimmingCharacters(in: CharacterSet(charactersIn: "-:"))
+            let name = bare.trimmingCharacters(in: punctuation.union(CharacterSet(charactersIn: "-:")))
             if ConfigFileReader.isSecretKey(name) {
                 return (word, true)
             }

@@ -128,6 +128,13 @@ final class FleetViewCollectorTests: XCTestCase {
             ("TOKEN=abc123secret python3", "abc123secret"),
             ("OPENAI_API_KEY=abc123secret python3", "abc123secret"),
             (#"{"token":"abc123secret"}"#, "abc123secret"),
+            // A space after the colon, as Python's json.dumps and a printed dict both write it.
+            (#"{"token": "abc123secret"}"#, "abc123secret"),
+            ("{'password': 'hunter2hunter2'}", "hunter2hunter2"),
+            // A tab where a space would be.
+            ("authorization:\tabc123secret", "abc123secret"),
+            ("Authorization: Bearer\tabc123secret", "abc123secret"),
+            ("gh said\t\(fakeGitHubToken)", fakeGitHubToken),
             ("gh said \(fakeGitHubToken)", fakeGitHubToken),
             ("value='\(fakeGitHubPat)'", fakeGitHubPat),
             ("service st.abc123.def456.ghi789 refused", "st.abc123.def456.ghi789"),
