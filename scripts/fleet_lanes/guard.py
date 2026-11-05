@@ -2968,15 +2968,37 @@ class _Evaluator:
             return "~/" + s[len(home) + 1 :]
         return s
 
-    def _seat_token(self) -> str | None:
-        # Canonical seat resolution (AFC-620): the same launcher precedence, conflict refusal and
-        # role-lane synthesis `lane` itself uses, so the deny reason never names a lane `lane new`
-        # would refuse - or refuses one it would open.  Imported lazily: lane imports guard at top.
-        from . import lane as _lane
-
+    def _resolve_seat_for_reason(self) -> L.Seat | None:
+        """The seat the deny reason may name, or None.  Canonical resolution (AFC-620) comes from
+        the lane module when the copy beside this guard provides it.  lane.py is not a required
+        hook module, so a lane-less install - or a stub lane, as the installer tests ship - falls
+        back to the direct registry read, the same answer canonical resolution gives for a plain
+        live seat tag with no launcher in the environment."""
         try:
-            seat = _lane.resolve_seat(self.ctx.env, self.ctx.registry)
+            from . import lane as _lane
         except Exception:
+            _lane = None
+        resolve = getattr(_lane, "resolve_seat", None) if _lane is not None else None
+        if resolve is not None:
+            try:
+                return resolve(self.ctx.env, self.ctx.registry)
+            except Exception:
+                return None
+        raw = (self.ctx.env.get("AGENT_SEAT") or "").strip()
+        if not raw:
+            return None
+        seat = self.ctx.registry.seat_by_name(raw)
+        if seat is None or seat.retired:
+            return None
+        if not seat_owns_folder(seat, self.ctx.registry):
+            return None
+        return seat
+
+    def _seat_token(self) -> str | None:
+        # Canonical seat resolution (AFC-620) where the lane module ships beside this guard;
+        # otherwise the direct registry read (see _resolve_seat_for_reason).
+        seat = self._resolve_seat_for_reason()
+        if seat is None:
             return None
         real = self.ctx.registry.seat_by_name(seat.name)
         if real is not None and not seat_owns_folder(real, self.ctx.registry):
@@ -3088,11 +3110,8 @@ class _Evaluator:
         not retired, has a branch prefix and owns its folder name.  A whole name (antigravity), an
         unknown value, a retired tag or a tag that shares another seat's folder name (GROK-BOT) is
         refused by the CLI, so the reason must not promise a lane for it."""
-        from . import lane as _lane
-
-        try:
-            seat = _lane.resolve_seat(self.ctx.env, self.ctx.registry)
-        except Exception:
+        seat = self._resolve_seat_for_reason()
+        if seat is None:
             return False
         real = self.ctx.registry.seat_by_name(seat.name)
         if real is None:
