@@ -198,6 +198,7 @@ SHIPPED_EXACT = frozenset(
         "scripts/fleet_lanes/lane.py",
         "scripts/fleet_lanes/layout.py",
         "scripts/fleet_lanes/placement.py",
+        "scripts/fleet_lanes/placement-exceptions.json",
         "scripts/fleet_knobs/__init__.py",
         "scripts/fleet_knobs/knobs.py",
         "scripts/fleet_knobs/lkg.py",

@@ -1,7 +1,8 @@
 #!/bin/sh
 # Fleet git shim: stops a misplaced fleet checkout before git creates it (AFC-618).  Installed by
 # fleet_lanes.install_tools;  linked from a PATH folder as `git`.  Every process that finds git on PATH passes through
-# here, so the rules are:  no Python unless the command can make a checkout, and any failure runs the real git.
+# here, so the rules are:  no Python unless the command can make a checkout, and any failure runs the real git.  A fetch only
+# reaches Python when the temp rule could apply to it:  in a temp folder, or with -C or --git-dir naming another repo.
 #
 # Mode file ~/.config/fleet/lane-guard-mode:  off, detect (the default), or block with rule classes.
 # Kill switch:  FLEET_LANE_GUARD=off.  Decisions live in fleet_lanes/git_shim.py.  This file is POSIX sh.
@@ -71,9 +72,10 @@ for _fleet_a in "$@"; do
     continue
   fi
   case $_fleet_a in
-    -c) _fleet_skip=c ;;
+    -c) _fleet_skip=c; _fleet_opts=1 ;;
     --config-env|--config-env=*) _fleet_slow=1; [ "$_fleet_a" = --config-env ] && _fleet_skip=o ;;
-    -C|--git-dir|--work-tree|--namespace|--super-prefix|--exec-path|--attr-source) _fleet_skip=o; _fleet_opts=1 ;;
+    -C|--git-dir|--work-tree|--namespace|--super-prefix|--exec-path|--attr-source|--shallow-file)
+      _fleet_skip=o; _fleet_opts=1 ;;
     -*) case $_fleet_a in --git-dir=*|--work-tree=*) _fleet_opts=1 ;; esac ;;
     *)
       if [ "$_fleet_word" = worktree ]; then
@@ -88,7 +90,22 @@ done
 
 if [ -z "$_fleet_slow" ]; then
   case $_fleet_word in
-    clone) _fleet_slow=1 ;;
+    clone|archive|checkout-index) _fleet_slow=1 ;;
+    fetch|pull|remote)
+      # The guard's init-and-fetch rule, which only ever fires in temp.  Anywhere else this stays out of Python.
+      if [ -n "$_fleet_opts" ] || [ -n "${GIT_DIR:-}" ]; then
+        _fleet_slow=1
+      else
+        case $PWD in
+          /tmp/*|/private/tmp/*|/var/tmp/*|/private/var/tmp/*|/var/folders/*|/private/var/folders/*|/dev/shm/*) _fleet_slow=1 ;;
+          *) case ${TMPDIR:-/nonexistent-tmpdir} in
+               */) case $PWD in "$TMPDIR"*) _fleet_slow=1 ;; esac ;;
+               *) case $PWD in "$TMPDIR"/*) _fleet_slow=1 ;; esac ;;
+             esac ;;
+        esac
+      fi
+      [ -n "$_fleet_slow" ] || exec "$_fleet_real" "$@"
+      ;;
     worktree)
       # Only add and move choose a destination, and `worktree list` is common enough to stay out of Python.
       case $_fleet_sub in
@@ -97,17 +114,18 @@ if [ -z "$_fleet_slow" ]; then
       esac
       ;;
     '') exec "$_fleet_real" "$@" ;;
-    # A builtin cannot be aliased, so these never make a checkout.
-    status|diff|log|add|commit|fetch|push|pull|rev-parse|config|ls-files|show|branch|checkout|switch|merge|rebase|\
-    reset|restore|stash|tag|remote|init|rm|mv|cat-file|for-each-ref|show-ref|symbolic-ref|rev-list|merge-base|blame|\
+    # A builtin cannot be aliased, so these never make a checkout.  Only real builtins belong here:  an alias wins over an external
+    # command, so `ls`, `gui`, `lfs`, `submodule` and the like go through the alias walk below.
+    status|diff|log|add|commit|push|rev-parse|config|ls-files|show|branch|checkout|switch|merge|rebase|\
+    reset|restore|stash|tag|init|rm|mv|cat-file|for-each-ref|show-ref|symbolic-ref|rev-list|merge-base|blame|\
     grep|gc|apply|cherry-pick|revert|am|describe|shortlog|ls-remote|ls-tree|diff-tree|diff-index|diff-files|\
     update-index|update-ref|hash-object|read-tree|write-tree|commit-tree|check-ignore|check-attr|check-ref-format|\
-    name-rev|clean|sparse-checkout|submodule|lfs|version|help|count-objects|verify-pack|pack-objects|index-pack|\
-    unpack-objects|upload-pack|receive-pack|fsck|prune|repack|bisect|archive|format-patch|var|mktree|mergetool|\
-    difftool|notes|reflog|cherry|credential|credential-*|maintenance|range-diff|rerere|whatchanged|send-email|\
-    filter-branch|fast-import|fast-export|bundle|pack-refs|interpret-trailers|checkout-index|merge-file|merge-tree|\
-    annotate|ls|gui|gitk|web--browse|multi-pack-index|commit-graph|get-tar-commit-id|stripspace|column|mailinfo|\
-    send-pack|fetch-pack|http-backend|shell|verify-commit|verify-tag|show-branch|replace|request-pull)
+    name-rev|clean|sparse-checkout|version|help|count-objects|verify-pack|pack-objects|index-pack|\
+    unpack-objects|upload-pack|receive-pack|fsck|prune|repack|bisect|format-patch|var|mktree|\
+    difftool|notes|reflog|cherry|credential|maintenance|range-diff|rerere|\
+    fast-import|fast-export|bundle|pack-refs|interpret-trailers|merge-file|merge-tree|\
+    annotate|multi-pack-index|commit-graph|get-tar-commit-id|stripspace|column|mailinfo|\
+    send-pack|fetch-pack|verify-commit|verify-tag|show-branch|replace)
       exec "$_fleet_real" "$@" ;;
     *)
       # Perhaps an alias.  With -C or --git-dir the answer depends on another repo, so Python asks.  Otherwise follow the
@@ -116,14 +134,31 @@ if [ -z "$_fleet_slow" ]; then
         _fleet_slow=1
       else
         _fleet_w=$_fleet_word
-        for _fleet_n in 1 2 3 4 5; do
-          _fleet_v=$("$_fleet_real" config --get "alias.$_fleet_w" 2>/dev/null) || break
+        _fleet_end=
+        for _fleet_n in 1 2 3 4 5 6 7 8; do
+          _fleet_v=$("$_fleet_real" config --get "alias.$_fleet_w" 2>/dev/null)
+          _fleet_rc=$?
+          if [ $_fleet_rc -eq 1 ]; then
+            _fleet_end=1  # git says there is no such alias
+            break
+          elif [ $_fleet_rc -ne 0 ]; then
+            _fleet_slow=1  # git could not read its config, so Python and then git itself report that
+            break
+          fi
           case $_fleet_v in
-            *clone*|*worktree*) _fleet_slow=1; break ;;
-            '!'*) break ;;
+            *clone*|*worktree*|*archive*|*checkout-index*) _fleet_slow=1; break ;;
+            '!'*git*) _fleet_slow=1; break ;;
+            '!'*) _fleet_end=1; break ;;
           esac
+          # Only a plain first word can be followed here.  An option, a quote, a tab or anything else unusual goes to Python, whose
+          # parser reads it as git does.
           _fleet_w=${_fleet_v%% *}
+          case $_fleet_w in
+            ''|-*|*[!A-Za-z0-9._-]*) _fleet_slow=1; break ;;
+          esac
         done
+        # A chain longer than this walk goes to Python, never through.
+        [ -n "$_fleet_end" ] || _fleet_slow=1
         [ -n "$_fleet_slow" ] || exec "$_fleet_real" "$@"
       fi
       ;;

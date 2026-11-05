@@ -336,7 +336,7 @@ class Exceptions(ShimCase):
         }]}), encoding="utf-8")
         res = self.git("worktree", "add", "-q", str(self.home / "apps" / "svc"), FLEET_PLACEMENT_EXCEPTIONS=str(rows))
         self.assertEqual(res.returncode, 0, res.stderr)
-        self.assertEqual(self.events(), [])
+        self.assertEqual([(e["action"], e["rule"]) for e in self.events()], [("excused", "x")])
 
 
 class Latency(ShimCase):

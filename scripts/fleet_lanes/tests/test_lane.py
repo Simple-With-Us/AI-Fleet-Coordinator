@@ -276,7 +276,7 @@ class WorldCase(unittest.TestCase):
 # --------------------------------------------------------------------------- the allowlist
 
 class AllowlistTests(unittest.TestCase):
-    ROOT = "/Users/jay/apps/lanes"
+    ROOT = "/fleet-lane-test/apps/lanes"  # a path that does not exist, so no real symlink on this host changes the answer
     SHA = "a" * 40
 
     def check(self, argv: List[str], root: Optional[str] = ROOT) -> None:

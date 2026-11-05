@@ -23,6 +23,10 @@
     <string>CLAUDE</string>
     <key>LINEAR_BOARD_WRITES</key>
     <string>1</string>
+    <key>FLEET_APPS_JSON</key>
+    <string>@HOME@/apps/lane-tools/fleet-apps.json</string>
+    <key>SIMPLE_BOARD_BEARER_LOCATOR</key>
+    <string>@BEARER_LOCATOR@</string>
   </dict>
   <key>StartInterval</key>
   <integer>3600</integer>

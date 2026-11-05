@@ -3152,6 +3152,15 @@ def merge_document(doc: dict, plat: Platform, command: str) -> tuple[dict, str, 
             first.group["matcher"] = CLAUDE_MATCHER
             notes.append(f"group matcher widened to {CLAUDE_MATCHER}")
             changed = True
+        elif (
+            plat.config_rel == ".claude/settings.json"
+            and first.group is not None
+            and first.group.get("matcher") != CLAUDE_MATCHER
+        ):
+            notes.append(
+                f"group matcher left narrow at {first.group.get('matcher')}, because the group is shared or customised:  "
+                "Agent, EnterWorktree and the other shells are not gated"
+            )
         if plat.style == "antigravity":
             grp = new[first.group_index]  # type: ignore[index]
             if grp.get("enabled") is False:

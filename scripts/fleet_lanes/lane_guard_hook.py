@@ -70,16 +70,21 @@ def _parse_args(argv: Sequence[str]) -> tuple[str, bool]:
     return fmt, exit2 or fmt in EXIT2_FORMATS
 
 
+_CURSOR_SHORT = (
+    ("inside the ~/Code integration tree", "Blocked a fleet-repo checkout in the integration tree"),
+    ("in temp directories", "Blocked a fleet-repo checkout in a temp directory"),
+    ("outside the lanes folder", "Blocked a fleet-repo checkout outside the lanes folder"),
+    ("as full clones in a lane folder", "Blocked a full clone of a fleet repo in a lane folder"),
+    ("harness worktree", "Blocked a harness worktree in the integration tree"),
+)
+
+
 def render(reason: str, fmt: str, destination: str = "") -> str:
     """The deny JSON for one platform, as one line."""
     if fmt in ("grok", "antigravity"):
         body: dict = {"decision": "deny", "reason": reason}
     elif fmt == "cursor":
-        short = (
-            "Blocked a fleet-repo checkout in the integration tree"
-            if "inside the ~/Code integration tree" in reason
-            else "Blocked a fleet-repo checkout in a temp directory"
-        )
+        short = next((text for mark, text in _CURSOR_SHORT if mark in reason), "Blocked a fleet-repo checkout")
         short += f": {destination}." if destination else "."
         body = {"permission": "deny", "user_message": short, "agent_message": reason}
     else:  # claude, codex, muse

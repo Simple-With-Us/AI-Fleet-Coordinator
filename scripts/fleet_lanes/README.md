@@ -463,7 +463,19 @@ Minimal by default: `fleet-recall` only.  `--with-simple-chat` adds `simple-chat
 
 ### Exceptions
 
-`placement-exceptions.json`, shipped beside the package.  `{home}`, `{code}`, `{apps}` and `{lanes}` are filled from the host's roots, `*` is one path component, and `**` is any number of them.  A row needs `id`, `pattern`, `class` (`service`, `tool-cache`, `third-party-build`, `backup`, `personal`, `trash`), `creator`, `reason`, `decided_by`, `decided_on`, `expires` and `hosts` (`mac`, `server`).  `tests/test_placement.py` is the schema check, and it refuses a private path.
+`placement-exceptions.json`, shipped beside the package.  `{home}`, `{code}`, `{apps}` and `{lanes}` are filled from the host's roots, `*` is one path component, and `**` is any number of them.  A row needs `id`, `pattern`, `class`, `creator`, `reason`, `decided_by`, `decided_on`, `expires` and `hosts` (`mac`, `server`).  A pattern must name a literal folder after its root, so a catch-all never loads.  Dates are staggered, and the doctor warns 30 days ahead (`placement_warnings`, which `--strict-placement` does not fail on).
+
+The class says what a row excuses, because a pattern says only where, and a tool filling its cache and a seat typing a clone can name the same folder.  The shim records every excused command as an `excused` event.
+
+| Class | Excuses |
+|---|---|
+| `service`, `backup` | Everything, from the hook and the shim |
+| `tool-cache`, `package-manager` | A clone reaching the shim, outside temp and `~/Code`.  Never a worktree, and never the hook, which is an agent's own command |
+| `package-temp` | The same, only when the destination really is in temp (pip, pnpm) |
+| `third-party-build` | A mirror or bare clone, or a clone from a local path, which are the two SwiftPM makes, anywhere |
+| `personal`, `trash` | Nothing a guard judges.  The doctor reads them:  a personal row excuses a clone of a repo the registry does not hold, and a cache or personal row never excuses a linked worktree |
+
+`code_main_sync` fails closed where the others fail open:  a lapsed row still pins a clone, and a missing or malformed file fails every clone (`load_exceptions_strict`).  `tests/test_placement.py` is the schema check, and it refuses a private path.
 
 ### Doctor
 
@@ -471,11 +483,13 @@ Minimal by default: `fleet-recall` only.  `--with-simple-chat` adds `simple-chat
 
 ### Git shim
 
-`shims/git` is POSIX `sh` and `git_shim.py` is its decision module.  `install_tools apply tools` writes it to `~/apps/lane-tools/shims/git` and links nothing.  Only `clone`, `worktree add` or `move`, an alias that names one of them, or an inline `-c alias.` starts Python.  Only exit 77 from Python blocks, and a missing Python, a crash, or three seconds elapsed runs the real git.  Events go to `~/.local/state/fleet/lane-guard-events.jsonl`.  `lane` calls real git by absolute path.
+`shims/git` is POSIX `sh` and `git_shim.py` is its decision module.  `install_tools apply tools` writes it to `~/apps/lane-tools/shims/git` and links nothing.  Only `clone`, `worktree add` or `move`, `archive`, `checkout-index`, an alias that may reach one of them, an inline `-c` before an unknown word, or a `fetch`, `pull` or `remote` the temp rule could apply to (in a temp folder, or with `-C`, `--git-dir` or `GIT_DIR` naming another repo) starts Python.  It resolves the roots the way the hook shims do:  the environment, then the home folder, then `FLEET_SERVER_VOLUME`.  A repo is fleet by its origin, so a stray checkout is still judged and a repo with no fleet origin is not.  With `isolation off`, a worktree add into a repo-local harness folder is left alone even under `block code`, because the `isolation` line rules on those.  Only exit 77 from Python blocks, and a missing Python, a crash, or three seconds elapsed runs the real git.  Events go to `~/.local/state/fleet/lane-guard-events.jsonl`.  `lane` calls real git by absolute path.
 
 ### Placement watcher
 
-`python3 -m fleet_lanes.placement_watch` prints what it would file.  `--apply` files issues, posts, and remembers, under `~/.local/state/fleet/`:  `placement-watch.json` (what it has reported), `placement-watch-status.json` (read by `fleet-tools-doctor`) and `placement-report.json`.  It exits 3 on stale inputs and 4 when filing failed.  It files as CLAUDE until the owner chooses otherwise.  `simple-board` needs the seat bearer, so the job's environment must carry `SIMPLE_BOARD_BEARER_LOCATOR`.
+`python3 -m fleet_lanes.placement_watch` prints what it would file.  `--apply` files issues, posts, and remembers, under `~/.local/state/fleet/`:  `placement-watch.json` (what it has reported), `placement-watch-status.json` (read by `fleet-tools-doctor`) and `placement-report.json` (its last sweep, for reading;  it never reads that back).  It exits 3 on stale inputs and 4 when filing failed.  It files as CLAUDE until the owner chooses otherwise.  `simple-board` needs the seat bearer, so the job's environment must carry `SIMPLE_BOARD_BEARER_LOCATOR`, the non-secret `FOLDER:KEY_NAME` of that bearer.  With no locator it sends nothing and says so in the status file.
+
+It holds its sends in two cases, and each says why in the status file.  More than 25 new findings in one run looks like a renamed mount or a wrong root, so it waits for one run with `--accept-burst`.  A lost or corrupt state file would make everything look new, so it waits for one run with `--reset-state`, which keeps the old file beside the new one.  A send whose outcome is unknown (a timeout, an unexpected exit) counts as sent and is never repeated, and only a refusal from the CLI is tried again.  A filing always retries, since the board dedupes it on its uid.
 
 ### code_main_sync
 
@@ -493,7 +507,9 @@ python3 -m fleet_lanes.install_tools plan tools && python3 -m fleet_lanes.instal
 python3 -m fleet_lanes.install_tools apply claude          # widens the Claude matcher;  start new sessions to pick it up
 python3 -m fleet_lanes.install_tools verify all
 # 2. Watcher.  Issues start here, with no denies.
-sed "s#@HOME@#$HOME#g" fleet_lanes/templates/com.jay.lane-placement-watch.plist > ~/Library/LaunchAgents/com.jay.lane-placement-watch.plist
+# Look first:  run it without --apply, and if more than 25 new findings are real, run it once with --apply --accept-burst.
+LOCATOR='FOLDER:KEY_NAME'   # the seat bearer's locator, which the owner names;  it is not a secret
+sed -e "s#@HOME@#$HOME#g" -e "s#@BEARER_LOCATOR@#$LOCATOR#g" fleet_lanes/templates/com.jay.lane-placement-watch.plist > ~/Library/LaunchAgents/com.jay.lane-placement-watch.plist
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.jay.lane-placement-watch.plist
 # 3. Shim, in detect.  Add the Master List rows and refresh the note in the same change.
 mkdir -p ~/.config/fleet && printf 'detect\nisolation off\n' > ~/.config/fleet/lane-guard-mode
@@ -523,6 +539,7 @@ muse plugins list      # disable integration-lane-guard if its command is gone: 
 #    The two stale locks clear themselves on the next run, since no process holds them.
 sudo systemctl start code-main-sync.service && journalctl -u code-main-sync.service -n 25 --no-pager
 # 3. Watcher, then shim in detect.
+# /etc/fleet/placement-watch.conf holds SIMPLE_BOARD_BEARER_LOCATOR=FOLDER:KEY_NAME and FLEET_APPS_JSON=<stable>/fleet-apps.json.
 sudo install -m 0644 systemd/lane-placement-watch.service systemd/lane-placement-watch.timer /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now lane-placement-watch.timer
 printf 'detect\nisolation off\n' > ~/.config/fleet/lane-guard-mode

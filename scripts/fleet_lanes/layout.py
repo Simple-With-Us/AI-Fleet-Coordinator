@@ -529,12 +529,17 @@ def parse_registry(data: Mapping[str, object], *, include_extras: bool = True, s
 
 
 def default_registry_path(env: Mapping[str, str] | None = None) -> Path:
-    """FLEET_APPS_JSON when set, else fleet-apps.json at the repo root (two levels above scripts/)."""
+    """FLEET_APPS_JSON when set, else fleet-apps.json at the repo root (two levels above scripts/), else the one beside the
+    package, which is where the installed copy in <apps>/lane-tools keeps it:  a process with no variable set, such as the git
+    shim or the placement watcher, still reads the real registry there."""
     env = os.environ if env is None else env
     override = (env.get(ENV_APPS_JSON) or "").strip()
     if override:
         return Path(override)
-    return Path(__file__).resolve().parents[2] / "fleet-apps.json"
+    here = Path(__file__).resolve()
+    at_root = here.parents[2] / "fleet-apps.json"
+    beside = here.parents[1] / "fleet-apps.json"
+    return beside if beside.is_file() and not at_root.is_file() else at_root
 
 
 def load_registry(path: str | os.PathLike[str] | None = None, *, include_extras: bool = True,

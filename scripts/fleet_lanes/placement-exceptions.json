@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "notes": "Checkouts the Lane Map does not place but that have a recorded reason.  Schema and rules: fleet_lanes/placement.py.  Patterns use root tokens and never a server volume path.  A row past `expires` stops excusing anything.",
+  "notes": "Checkouts the Lane Map does not place but that have a recorded reason.  Schema, and what each class excuses: fleet_lanes/placement.py.  Patterns use root tokens and never a server volume path.  A row past `expires` stops excusing anything.  Dates are staggered so the rows never lapse together, and the doctor warns 30 days ahead.",
   "exceptions": [
     {
       "id": "service-botfleet-server-mac",
@@ -23,7 +23,7 @@
       "reason": "The Clutch web service and its auto-update job run from this clone.",
       "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
       "decided_on": "2026-11-04",
-      "expires": "2027-02-04",
+      "expires": "2027-02-18",
       "hosts": [
         "mac"
       ]
@@ -36,7 +36,7 @@
       "reason": "Launchd jobs and a running process use this managed runtime checkout.",
       "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
       "decided_on": "2026-11-04",
-      "expires": "2027-02-04",
+      "expires": "2027-03-04",
       "hosts": [
         "mac"
       ]
@@ -62,7 +62,7 @@
       "reason": "This repo has no integration tree under the Code root, so a linked worktree has nothing to hang from and its lanes are full clones until it gets one.",
       "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
       "decided_on": "2026-11-04",
-      "expires": "2027-02-04",
+      "expires": "2027-02-18",
       "hosts": [
         "mac",
         "server"
@@ -76,7 +76,7 @@
       "reason": "Pinned service clone: the BotFleet server unit runs from it and deploys choose its commit, so it is meant to sit off the default branch.",
       "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
       "decided_on": "2026-11-04",
-      "expires": "2027-02-04",
+      "expires": "2027-03-04",
       "hosts": [
         "server"
       ]
@@ -102,7 +102,7 @@
       "reason": "BotFleet owns its bot workspaces; bots clone into them.  Work saved there is handled by the batch plan.",
       "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
       "decided_on": "2026-11-04",
-      "expires": "2027-02-04",
+      "expires": "2027-02-18",
       "hosts": [
         "mac"
       ]
@@ -115,7 +115,7 @@
       "reason": "The BotFleet server data directory owns its bot workspaces.",
       "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
       "decided_on": "2026-11-04",
-      "expires": "2027-02-04",
+      "expires": "2027-03-04",
       "hosts": [
         "server"
       ]
@@ -128,7 +128,7 @@
       "reason": "Data copies from the BotFleet migrations of Oct 30 and 31.",
       "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
       "decided_on": "2026-11-04",
-      "expires": "2027-02-04",
+      "expires": "2027-05-13",
       "hosts": [
         "mac"
       ]
@@ -141,7 +141,7 @@
       "reason": "Codex staging for marketplace and plugin clones.",
       "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
       "decided_on": "2026-11-04",
-      "expires": "2027-02-04",
+      "expires": "2027-03-18",
       "hosts": [
         "mac",
         "server"
@@ -155,7 +155,7 @@
       "reason": "Codex plugin source staging and cache.",
       "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
       "decided_on": "2026-11-04",
-      "expires": "2027-02-04",
+      "expires": "2027-04-01",
       "hosts": [
         "mac"
       ]
@@ -168,7 +168,7 @@
       "reason": "Codex keeps its memories in a private git repo.",
       "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
       "decided_on": "2026-11-04",
-      "expires": "2027-02-04",
+      "expires": "2027-04-15",
       "hosts": [
         "mac",
         "server"
@@ -182,7 +182,7 @@
       "reason": "Claude plugin marketplaces and cache.",
       "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
       "decided_on": "2026-11-04",
-      "expires": "2027-02-04",
+      "expires": "2027-03-18",
       "hosts": [
         "mac",
         "server"
@@ -196,7 +196,7 @@
       "reason": "Claude remote plugin clones.",
       "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
       "decided_on": "2026-11-04",
-      "expires": "2027-02-04",
+      "expires": "2027-04-01",
       "hosts": [
         "server"
       ]
@@ -209,7 +209,7 @@
       "reason": "Grok plugin clones.",
       "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
       "decided_on": "2026-11-04",
-      "expires": "2027-02-04",
+      "expires": "2027-04-15",
       "hosts": [
         "mac",
         "server"
@@ -223,7 +223,7 @@
       "reason": "Grok marketplace cache.",
       "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
       "decided_on": "2026-11-04",
-      "expires": "2027-02-04",
+      "expires": "2027-03-18",
       "hosts": [
         "mac",
         "server"
@@ -237,7 +237,7 @@
       "reason": "Kimi plugin clones.",
       "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
       "decided_on": "2026-11-04",
-      "expires": "2027-02-04",
+      "expires": "2027-04-01",
       "hosts": [
         "mac"
       ]
@@ -250,7 +250,7 @@
       "reason": "Antigravity keeps its CLI state in a git repo.",
       "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
       "decided_on": "2026-11-04",
-      "expires": "2027-02-04",
+      "expires": "2027-04-15",
       "hosts": [
         "mac"
       ]
@@ -263,7 +263,7 @@
       "reason": "Cursor plugin cache.",
       "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
       "decided_on": "2026-11-04",
-      "expires": "2027-02-04",
+      "expires": "2027-03-18",
       "hosts": [
         "server"
       ]
@@ -276,7 +276,7 @@
       "reason": "Separate tool state copies of the plugin and memory repos above.",
       "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
       "decided_on": "2026-11-04",
-      "expires": "2027-02-04",
+      "expires": "2027-04-01",
       "hosts": [
         "server"
       ]
@@ -289,7 +289,7 @@
       "reason": "SwiftPM dependency checkouts in DerivedData, congress-trading-shared among them.",
       "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
       "decided_on": "2026-11-04",
-      "expires": "2027-02-04",
+      "expires": "2027-04-29",
       "hosts": [
         "mac",
         "server"
@@ -303,7 +303,7 @@
       "reason": "SwiftPM dependency mirrors in DerivedData.",
       "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
       "decided_on": "2026-11-04",
-      "expires": "2027-02-04",
+      "expires": "2027-04-29",
       "hosts": [
         "mac",
         "server"
@@ -317,7 +317,7 @@
       "reason": "SwiftPM dependency checkouts in a package build folder.",
       "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
       "decided_on": "2026-11-04",
-      "expires": "2027-02-04",
+      "expires": "2027-04-29",
       "hosts": [
         "mac",
         "server"
@@ -331,7 +331,7 @@
       "reason": "SwiftPM dependency mirrors in a package build folder.",
       "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
       "decided_on": "2026-11-04",
-      "expires": "2027-02-04",
+      "expires": "2027-04-29",
       "hosts": [
         "mac",
         "server"
@@ -345,7 +345,7 @@
       "reason": "The SwiftPM global repository cache.",
       "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
       "decided_on": "2026-11-04",
-      "expires": "2027-02-04",
+      "expires": "2027-04-29",
       "hosts": [
         "mac"
       ]
@@ -358,7 +358,7 @@
       "reason": "The owner's own older repos, outside the fleet.",
       "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
       "decided_on": "2026-11-04",
-      "expires": "2027-02-04",
+      "expires": "2027-05-27",
       "hosts": [
         "mac"
       ]
@@ -371,8 +371,162 @@
       "reason": "Deleted test fixtures such as ship-gate-test; the Trash is not a home for work.",
       "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
       "decided_on": "2026-11-04",
-      "expires": "2027-02-04",
+      "expires": "2027-06-10",
       "hosts": [
+        "server"
+      ]
+    },
+    {
+      "id": "pkg-npm-cache",
+      "pattern": "{home}/.npm/_cacache",
+      "class": "package-manager",
+      "creator": "npm",
+      "reason": "npm clones a git dependency here before it packs it.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-06-24",
+      "hosts": [
+        "mac",
+        "server"
+      ]
+    },
+    {
+      "id": "pkg-pnpm-store-mac",
+      "pattern": "{home}/Library/pnpm/store",
+      "class": "package-manager",
+      "creator": "pnpm",
+      "reason": "pnpm clones a git dependency into its store's tmp folder.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-06-24",
+      "hosts": [
+        "mac",
+        "server"
+      ]
+    },
+    {
+      "id": "pkg-pnpm-store-linux",
+      "pattern": "{home}/.local/share/pnpm/store",
+      "class": "package-manager",
+      "creator": "pnpm",
+      "reason": "pnpm clones a git dependency into its store's tmp folder.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-06-24",
+      "hosts": [
+        "mac",
+        "server"
+      ]
+    },
+    {
+      "id": "pkg-yarn-cache-mac",
+      "pattern": "{home}/Library/Caches/Yarn",
+      "class": "package-manager",
+      "creator": "yarn",
+      "reason": "Yarn clones a git dependency into its cache's .tmp folder.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-07-08",
+      "hosts": [
+        "mac",
+        "server"
+      ]
+    },
+    {
+      "id": "pkg-yarn-cache-linux",
+      "pattern": "{home}/.cache/yarn",
+      "class": "package-manager",
+      "creator": "yarn",
+      "reason": "Yarn clones a git dependency into its cache's .tmp folder.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-07-08",
+      "hosts": [
+        "mac",
+        "server"
+      ]
+    },
+    {
+      "id": "pkg-bun-cache",
+      "pattern": "{home}/.bun/install/cache",
+      "class": "package-manager",
+      "creator": "bun",
+      "reason": "Bun keeps a bare copy of a git dependency in its install cache.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-07-08",
+      "hosts": [
+        "mac",
+        "server"
+      ]
+    },
+    {
+      "id": "pkg-uv-cache",
+      "pattern": "{home}/.cache/uv/git-v0",
+      "class": "package-manager",
+      "creator": "uv",
+      "reason": "uv keeps a git dependency's database and checkouts in its cache.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-07-22",
+      "hosts": [
+        "mac",
+        "server"
+      ]
+    },
+    {
+      "id": "pkg-homebrew-taps",
+      "pattern": "**/Library/Taps",
+      "class": "package-manager",
+      "creator": "homebrew",
+      "reason": "Homebrew clones a tap here, the fleet's own tap included.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-07-22",
+      "hosts": [
+        "mac",
+        "server"
+      ]
+    },
+    {
+      "id": "pkg-pip-build",
+      "pattern": "**/pip-req-build-*",
+      "class": "package-temp",
+      "creator": "pip",
+      "reason": "pip clones a git dependency into a temp build folder.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-08-05",
+      "hosts": [
+        "mac",
+        "server"
+      ]
+    },
+    {
+      "id": "pkg-pip-install",
+      "pattern": "**/pip-install-*",
+      "class": "package-temp",
+      "creator": "pip",
+      "reason": "pip's temp install folder, which can hold a git dependency.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-08-05",
+      "hosts": [
+        "mac",
+        "server"
+      ]
+    },
+    {
+      "id": "pkg-pnpm-temp",
+      "pattern": "**/_tmp_*",
+      "class": "package-temp",
+      "creator": "pnpm",
+      "reason": "pnpm's temp clone, when its store is not on hand.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-08-05",
+      "hosts": [
+        "mac",
         "server"
       ]
     }

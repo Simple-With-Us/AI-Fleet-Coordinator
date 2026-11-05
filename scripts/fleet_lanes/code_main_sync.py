@@ -14,9 +14,12 @@ Two faults kept the old job failing on every run for days:
     as failed.  Removing the lock file loses nothing: git writes the new index there and renames it only on success.
   * git's stderr was thrown away, so `fast-forward exit=1` was all the log said.  It now carries git's first line.
 
-A folder that is not a repo (such as `Docs`) is passed over without a skip count, and a clone with an in-date row in
+A folder that is not a repo (such as `Docs`) is passed over without a skip count, and a clone with a row in
 placement-exceptions.json (such as a service-pinned clone) is left alone with its reason logged.  Those rows use class
-`service`.  Roots come from FLEET_CODE_ROOT or the home folder, so no host path is written here.  Exit 1 only if a
+`service`.  This job acts on what it reads, so it fails closed:  a row past its expiry still pins the clone, and logs that it
+lapsed, because a date passing is no decision to move a service, and a missing or malformed exceptions file fails every clone rather
+than moving a pinned one.  A folder with a `.git` that git cannot read is a failure, not a plain folder.  A fast-forward refuses to
+overwrite an ignored file.  Roots come from FLEET_CODE_ROOT or the home folder, so no host path is written here.  Exit 1 only if a
 clone that should have moved did not.  Python 3.9 safe.  Tests: fleet_lanes/tests/test_code_main_sync.py.
 """
 from __future__ import annotations
@@ -84,23 +87,33 @@ def remote_is_fleet_github(remote: str) -> bool:
 
 
 def resolve_github_token(env: Mapping[str, str], home: Path) -> str:
-    """Name the token git's credential helper will use, fetching one through fleet-secrets if none is set.  Never logged."""
-    for name in ("GITHUB_ADMIN_PAT", "GITHUB_TOKEN"):
+    """Name the token git's credential helper will use, fetching one through fleet-secrets if none is set.  Never logged.
+
+    `gh auth git-credential` reads GH_TOKEN and GITHUB_TOKEN and nothing else, so a token found under another name is exported
+    as GH_TOKEN, or git would never receive it.  A lookup that fails leaves the run to the public repos, and the log says why.
+    """
+    for name in ("GH_TOKEN", "GITHUB_TOKEN"):
         if env.get(name):
             return name
-    tool = home / ".local" / "bin" / "fleet-secrets"
-    if not tool.is_file():
+    token = (env.get("GITHUB_ADMIN_PAT") or "").strip()
+    if not token:
+        tool = home / ".local" / "bin" / "fleet-secrets"
+        if not tool.is_file():
+            return ""
+        try:
+            result = subprocess.run([str(tool), "get", "GITHUB_ADMIN_PAT"], stdout=subprocess.PIPE,
+                                    stderr=subprocess.DEVNULL, text=True, errors="replace", timeout=60, check=False)
+        except subprocess.TimeoutExpired:
+            log("github token: lookup timed out")
+            return ""
+        except OSError:
+            log("github token: lookup could not start")
+            return ""
+        token = result.stdout.strip() if result.returncode == 0 else ""
+    if not token:
         return ""
-    try:
-        result = subprocess.run([str(tool), "get", "GITHUB_ADMIN_PAT"], stdout=subprocess.PIPE,
-                                stderr=subprocess.DEVNULL, text=True, errors="replace", timeout=60, check=False)
-    except (OSError, subprocess.TimeoutExpired):
-        return ""
-    token = result.stdout.strip()
-    if result.returncode == 0 and token:
-        os.environ["GITHUB_ADMIN_PAT"] = token
-        return "GITHUB_ADMIN_PAT"
-    return ""
+    os.environ["GH_TOKEN"] = token
+    return "GH_TOKEN"
 
 
 def lock_is_held(lock: Path) -> bool | None:
@@ -156,7 +169,7 @@ def checkout_state(repo: Path) -> tuple[str, str, str] | None:
 
 
 def _exception(repo: Path, env: Mapping[str, str], home: Path, code_root: Path):
-    """The in-date exception row for this clone, or None."""
+    """The exception hit for this clone, in date or not, or None.  Raises when the rows cannot be trusted, which fails the clone."""
     from fleet_lanes import (
         placement as P,  # A missing package fails this clone rather than moving a pinned one.
     )
@@ -169,8 +182,7 @@ def _exception(repo: Path, env: Mapping[str, str], home: Path, code_root: Path):
     roots.apps_root = Path(env.get("FLEET_APPS_ROOT") or home / "apps")
     roots.lanes_root = Path(env.get("FLEET_LANES_ROOT") or Path(roots.apps_root) / "lanes")
     roots.case_insensitive = sys.platform == "darwin"
-    hit = P.find_exception((str(repo),), roots, P.load_exceptions(env=env), host=P.host_kind(env))
-    return hit.row if hit is not None and not hit.expired else None
+    return P.find_exception((str(repo),), roots, P.load_exceptions_strict(env=env), host=P.host_kind(env))
 
 
 def process_repo(repo: Path, dry_run: bool, counters: dict[str, int], *, env: Mapping[str, str], home: Path,
@@ -181,16 +193,21 @@ def process_repo(repo: Path, dry_run: bool, counters: dict[str, int], *, env: Ma
         return
     code, top = git(repo, "rev-parse", "--show-toplevel")
     if code != 0:
-        log(f"note {repo.name}: not a Git checkout")
+        if (repo / ".git").exists():
+            counters["failed"] += 1
+            log(f"fail {repo.name}: has a .git that git cannot read")
+        else:
+            log(f"note {repo.name}: not a Git checkout")
         return
     if Path(top).resolve() != repo.resolve():
         counters["skipped"] += 1
         log(f"skip {repo.name}: Git top-level does not match Code folder")
         return
-    row = _exception(repo, env, home, code_root)
-    if row is not None:
+    hit = _exception(repo, env, home, code_root)
+    if hit is not None:
         counters["skipped"] += 1
-        log(f"skip {repo.name}: exception {row.id}")
+        lapsed = f" expired {hit.row.expires}, still pinned until someone decides" if hit.expired else ""
+        log(f"skip {repo.name}: exception {hit.row.id}{lapsed}")
         return
     code, remote = git(repo, "remote", "get-url", "origin")
     if code != 0 or not remote_is_fleet_github(remote):
@@ -257,7 +274,8 @@ def process_repo(repo: Path, dry_run: bool, counters: dict[str, int], *, env: Ma
         log(f"skip {repo.name}: local main is ahead of or diverged from origin/main")
         return
     clear_stale_index_lock(repo, time.time(), False)
-    code, _, err = git_full(repo, "-c", "core.hooksPath=/dev/null", "merge", "--ff-only", "--quiet", "origin/main")
+    code, _, err = git_full(repo, "-c", "core.hooksPath=/dev/null", "merge", "--ff-only", "--no-overwrite-ignore",
+                              "--quiet", "origin/main")
     if code != 0:
         counters["failed"] += 1
         log(f"fail {repo.name}: fast-forward exit={code}: {_first_line(err)}")
@@ -291,20 +309,23 @@ def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) ->
         log("skip: another code-main-sync run is active")
         os.close(lock_fd)
         return 0
-    counters = {"updated": 0, "current": 0, "would_update": 0, "skipped": 0, "failed": 0}
-    token_source = "" if args.dry_run else resolve_github_token(env, home)
-    log(f"start: {'dry-run local refs only' if args.dry_run else 'fetch and fast-forward'}")
-    log(f"github token: {token_source or 'none (public repos only)'}")
-    for repo in sorted(root.iterdir(), key=lambda path: path.name.casefold()):
-        if repo.name.startswith(".") or not repo.is_dir():
-            continue
-        try:
-            process_repo(repo, args.dry_run, counters, env=env, home=home, code_root=root)
-        except Exception as exc:  # noqa: BLE001 - one clone must not stop the others
-            counters["failed"] += 1
-            log(f"fail {repo.name}: {type(exc).__name__}")
-    log("summary: " + " ".join(f"{key}={value}" for key, value in counters.items()))
-    return 1 if counters["failed"] else 0
+    try:
+        counters = {"updated": 0, "current": 0, "would_update": 0, "skipped": 0, "failed": 0}
+        token_source = "" if args.dry_run else resolve_github_token(env, home)
+        log(f"start: {'dry-run local refs only' if args.dry_run else 'fetch and fast-forward'}")
+        log(f"github token: {token_source or 'none (public repos only)'}")
+        for repo in sorted(root.iterdir(), key=lambda path: path.name.casefold()):
+            if repo.name.startswith(".") or not repo.is_dir():
+                continue
+            try:
+                process_repo(repo, args.dry_run, counters, env=env, home=home, code_root=root)
+            except Exception as exc:  # noqa: BLE001 - one clone must not stop the others
+                counters["failed"] += 1
+                log(f"fail {repo.name}: {type(exc).__name__}")
+        log("summary: " + " ".join(f"{key}={value}" for key, value in counters.items()))
+        return 1 if counters["failed"] else 0
+    finally:
+        os.close(lock_fd)
 
 
 if __name__ == "__main__":

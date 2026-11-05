@@ -24,11 +24,24 @@ enforcement turns on one rule class at a time and rolls back by editing a file. 
 `detect` and isolation is `off`.  `FLEET_LANE_GUARD=off` in the environment still switches everything off.
 
 The hook rules that deny temp and ~/Code destinations predate this file and are not affected by it: only the shim
-reads `temp` and `code` here.  Python 3.9 safe.
+reads `temp` and `code` here.
+
+What a row excuses depends on its class and on who is asking (`row_excuses`), because a pattern says only where and a
+tool filling its own cache and a seat typing a clone can name the same folder:
+
+    service, backup     everything, from the hook and the shim alike.  The shim still records the excused event.
+    tool-cache          a clone that reaches the shim, outside temp and ~/Code.  Never a worktree, never the hook.
+    package-manager     the same, for the folders a package manager clones a git dependency into.
+    package-temp        the same, and only when the destination really is in temp (pip, pnpm).
+    third-party-build   a mirror or bare clone, or a clone from a local path (the two SwiftPM makes), anywhere.
+    personal, trash     nothing a guard judges, since the source there is a fleet repo.  The doctor reads them.
+
+Python 3.9 safe.
 """
 from __future__ import annotations
 
 import datetime as _dt
+import fcntl
 import fnmatch
 import json
 import os
@@ -67,7 +80,11 @@ HOST_MAC = "mac"
 HOST_SERVER = "server"
 HOSTS = (HOST_MAC, HOST_SERVER)
 
-EXCEPTION_CLASSES = ("service", "tool-cache", "third-party-build", "backup", "personal", "trash")
+CLASS_ISOLATION = "isolation"  # a harness worktree in the integration tree;  the `isolation` line decides, not the classes
+
+EXCEPTION_CLASSES = ("service", "tool-cache", "package-manager", "package-temp", "third-party-build", "backup", "personal",
+                     "trash")
+EXPIRY_WARNING_DAYS = 30
 REQUIRED_ROW_KEYS = ("id", "pattern", "class", "creator", "reason", "decided_by", "decided_on", "expires", "hosts")
 PATTERN_STARTS = ("{home}", "{code}", "{apps}", "{lanes}", "**/")
 # Text that would put private deployment inventory in a tracked file.  Tests and the validator both refuse it.
@@ -118,11 +135,31 @@ class Mode:
     problems: tuple[str, ...] = field(default=())
 
     def blocks(self, cls: str) -> bool:
+        if cls == CLASS_ISOLATION:
+            return self.isolation == MODE_BLOCK
         return self.mode == MODE_BLOCK and cls in self.block_classes
 
 
 def default_exceptions_path() -> str:
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), EXCEPTIONS_NAME)
+
+
+class ExceptionsUnusable(Exception):
+    """The exceptions file is missing, unreadable or holds a bad row.  Only a caller that acts on a row asks for this."""
+
+
+def _pattern_problem(pattern: str) -> str | None:
+    """Why this pattern cannot be a row, or None.  A row must name a place:  a root token or `**/` alone is everything."""
+    if not pattern.startswith(PATTERN_STARTS):
+        return f"pattern must start with one of {PATTERN_STARTS}"
+    rest = pattern
+    for start in PATTERN_STARTS:
+        if pattern.startswith(start):
+            rest = pattern[len(start):]
+            break
+    if not any(part.strip("*?") for part in rest.split("/")):
+        return "pattern must name at least one literal folder after its root"
+    return None
 
 
 def validate_rows(data: Any) -> list[str]:
@@ -148,8 +185,9 @@ def validate_rows(data: Any) -> list[str]:
             problems.append(f"{where}: duplicate id")
         seen.add(rid)
         pattern = str(row.get("pattern", ""))
-        if not pattern.startswith(PATTERN_STARTS):
-            problems.append(f"{where}: pattern must start with one of {PATTERN_STARTS}")
+        why = _pattern_problem(pattern)
+        if why:
+            problems.append(f"{where}: {why}")
         if row.get("class") not in EXCEPTION_CLASSES:
             problems.append(f"{where}: class {row.get('class')!r} is not one of {EXCEPTION_CLASSES}")
         hosts = row.get("hosts")
@@ -171,14 +209,15 @@ def validate_rows(data: Any) -> list[str]:
 
 
 def parse_rows(data: Any) -> tuple[ExceptionRow, ...]:
-    """The usable rows of a parsed file.  A malformed row is dropped, never fatal: a guard must not fail on it."""
+    """The usable rows of a parsed file.  A malformed row or a catch-all pattern is dropped, never fatal:  a guard must not
+    fail on it, and a row that excuses everything must not load."""
     out: list[ExceptionRow] = []
     rows = data.get("exceptions") if isinstance(data, Mapping) else None
     for row in rows if isinstance(rows, list) else ():
         if not isinstance(row, Mapping) or any(not row.get(k) for k in REQUIRED_ROW_KEYS):
             continue
         hosts = row["hosts"]
-        if not isinstance(hosts, list):
+        if not isinstance(hosts, list) or _pattern_problem(str(row["pattern"])):
             continue
         out.append(ExceptionRow(str(row["id"]), str(row["pattern"]), str(row["class"]), str(row["creator"]),
                                 str(row["reason"]), str(row["decided_by"]), str(row["decided_on"]),
@@ -188,7 +227,8 @@ def parse_rows(data: Any) -> tuple[ExceptionRow, ...]:
 
 def load_exceptions(path: str | os.PathLike[str] | None = None,
                     env: Mapping[str, str] | None = None) -> tuple[ExceptionRow, ...]:
-    """The rows on disk.  A missing or unreadable file is no exceptions at all, which reports more, never less."""
+    """The rows on disk, for a caller that reports or decides a deny:  a missing or unreadable file is no exceptions at all,
+    which reports more, never less.  A caller that moves a checkout because no row names it uses load_exceptions_strict."""
     env = os.environ if env is None else env
     target = os.fspath(path) if path is not None else (env.get(ENV_EXCEPTIONS) or default_exceptions_path())
     try:
@@ -196,6 +236,47 @@ def load_exceptions(path: str | os.PathLike[str] | None = None,
             return parse_rows(json.load(fh))
     except (OSError, ValueError):
         return ()
+
+
+def load_exceptions_strict(path: str | os.PathLike[str] | None = None,
+                           env: Mapping[str, str] | None = None) -> tuple[ExceptionRow, ...]:
+    """The rows on disk, or ExceptionsUnusable.  For code_main_sync, where no row means free to move a pinned clone."""
+    env = os.environ if env is None else env
+    target = os.fspath(path) if path is not None else (env.get(ENV_EXCEPTIONS) or default_exceptions_path())
+    try:
+        with open(target, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError) as exc:
+        raise ExceptionsUnusable(f"exceptions file unusable: {type(exc).__name__}") from exc
+    problems = validate_rows(data)
+    if problems:
+        raise ExceptionsUnusable(f"exceptions file has {len(problems)} bad row(s): {problems[0]}")
+    return parse_rows(data)
+
+
+def row_excuses(row: ExceptionRow, *, via: str, clone: bool, in_temp: bool, in_code: bool, mirror_or_local: bool) -> bool:
+    """Whether a row excuses this one checkout command.  The module docstring has the table."""
+    if row.cls in ("service", "backup"):
+        return True
+    if row.cls in ("personal", "trash") or via != "shim" or not clone:
+        return False
+    if row.cls == "third-party-build":
+        return mirror_or_local
+    if in_code:
+        return False
+    if row.cls == "package-temp":
+        return in_temp
+    return not in_temp
+
+
+def row_excuses_checkout(row: ExceptionRow, *, linked_worktree: bool, registered_app: bool) -> bool:
+    """Whether a row excuses a checkout that already exists, for the doctor.  A cache holds clones, never a linked worktree, and
+    a personal row is for repos outside the fleet."""
+    if row.cls in ("service", "backup", "trash"):
+        return True
+    if linked_worktree:
+        return False
+    return not (row.cls == "personal" and registered_app)
 
 
 def _root_tokens(roots: Any) -> dict[str, str]:
@@ -258,6 +339,20 @@ def expired_rows(rows: Sequence[ExceptionRow], *, host: str,
     return [r for r in rows if host in r.hosts and r.expired(today)]
 
 
+def expiring_rows(rows: Sequence[ExceptionRow], *, host: str, today: _dt.date | None = None,
+                  within_days: int = EXPIRY_WARNING_DAYS) -> list[ExceptionRow]:
+    """Rows still in date that lapse within the warning window, so someone can decide before a block starts refusing."""
+    today = today or _dt.date.today()
+    limit = today + _dt.timedelta(days=within_days)
+    out: list[ExceptionRow] = []
+    for row in rows:
+        if host not in row.hosts or row.expired(today):
+            continue
+        if _dt.date.fromisoformat(row.expires) <= limit:
+            out.append(row)
+    return out
+
+
 def mode_file_path(home: str | os.PathLike[str], env: Mapping[str, str] | None = None) -> str:
     env = os.environ if env is None else env
     return env.get(ENV_MODE_FILE) or os.path.join(os.fspath(home), MODE_FILE_REL)
@@ -314,17 +409,32 @@ def event_log_path(home: str | os.PathLike[str], env: Mapping[str, str] | None =
     return os.path.join(state_dir(home, env), EVENT_LOG_NAME)
 
 
+def _rotate_if_large(path: str) -> None:
+    """Rotate under a lock, checking the size again once it is held.  Two writers that both saw a full log would otherwise
+    rename twice, and the second rename puts a one-line file over the generation the watcher has not read."""
+    try:
+        if os.path.getsize(path) <= EVENT_LOG_MAX_BYTES:
+            return
+        fd = os.open(path + ".lock", os.O_WRONLY | os.O_CREAT, 0o600)
+    except OSError:
+        return
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        if os.path.getsize(path) > EVENT_LOG_MAX_BYTES:
+            os.replace(path, path + ".1")
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
 def log_event(home: str | os.PathLike[str], event: Mapping[str, Any],
               env: Mapping[str, str] | None = None) -> None:
     """Append one JSON line.  Never raises: a full disk must not change what a guard decides."""
     try:
         path = event_log_path(home, env)
         os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
-        try:
-            if os.path.getsize(path) > EVENT_LOG_MAX_BYTES:
-                os.replace(path, path + ".1")
-        except OSError:
-            pass
+        _rotate_if_large(path)
         record = {"at": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"), **event}
         line = json.dumps(record, sort_keys=True) + "\n"
         fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)

@@ -232,11 +232,11 @@ The rule is an allow-list.  A fleet destination must be in the lanes root (a fu
 
 | Layer | What It Does | When It Acts |
 |---|---|---|
-| Exceptions file | The one list of checkouts the map does not place.  Every row has class, reason, decided_by, decided_on, expires and hosts.  A row past its expiry stops excusing anything, and the doctor names it.  Patterns use root tokens, never a server volume path. | Read by the four below |
+| Exceptions file | The one list of checkouts the map does not place.  Every row has class, reason, decided_by, decided_on, expires and hosts.  A row past its expiry stops excusing anything, the doctor warns 30 days ahead and then names it, and `code_main_sync` keeps a lapsed row's clone pinned.  Its class says what it excuses:  a tool cache or a package manager's folder covers a clone that reaches the shim, never a worktree and never a command an agent typed (`scripts/fleet_lanes/README.md` has the table).  Patterns use root tokens, never a server volume path. | Read by the four below |
 | Guard (`guard.py`) | The friendly message, on every platform with a hook.  Temp and `~/Code` deny as they always have.  The classes `home`, `apps`, `clone-in-lanes` and `elsewhere` follow the mode file. | Before a shell command, by reading its text |
-| Git shim (`shims/git`) | The stop.  It sits first on PATH and judges the argv git really received, so scripts, subprocesses, `gh repo clone` and aliases all reach it.  Fast path in `sh`, and every failure runs the real git. | Before git creates anything |
+| Git shim (`shims/git`) | The stop.  It sits first on PATH and judges the argv git really received, so scripts, subprocesses, `gh repo clone` and aliases all reach it.  A repo is fleet by its origin here.  `git archive`, `checkout-index`, and a `fetch` or `remote add -f` in temp reach it too.  Fast path in `sh`, and every failure runs the real git, with a `fail-open` event the watcher reports. | Before git creates anything |
 | Doctor (`lane ls`) | The universal backstop.  It finds what got past the others, including absolute-path git and tool-internal worktrees.  `--strict-placement` fails on `placement_anomalies`. | On demand, and in the watcher |
-| Watcher (`placement_watch.py`) | Turns findings into one Linear issue per creator and repo, a post in that issue's topic, and a direct message to the owner only for a leak still growing after seven days or unpushed work in the Code root.  It also reports any hook whose command no longer exists. | Hourly, once installed |
+| Watcher (`placement_watch.py`) | Turns findings into one Linear issue per creator and repo, a post in that issue's topic, and a direct message to the owner only for a leak still growing after seven days or unpushed work in a Code root clone (not a harness worktree inside one).  It also reports any hook whose command no longer exists.  More than 25 new findings in one run, or a lost state file, holds its sends until a person looks. | Hourly, once installed |
 
 **The mode file** is `~/.config/fleet/lane-guard-mode`.  With no file the mode is `detect` and isolation is `off`.
 
@@ -251,7 +251,7 @@ isolation off               # off | detect | block
 
 **Main clones.**  Each clone directly in the Code root belongs on origin's default branch.  The doctor and the watcher report one that is off that branch, detached, ahead of it, more than 20 commits behind it, or holding a stale `index.lock`.  A service-pinned clone gets an exceptions row with its reason.  The Mac's `code-main-keeper` and the server's `code-main-sync` fast-forward clean clones and never touch dirty work, so a report here is a clone they cannot move:  dirty, ahead, or on another branch.
 
-**Limits.**  Every seat runs as the same account, so none of this is a security boundary.  A git found by absolute path, a bundled git, libgit2, or `cp` and `rsync` of a tree pass the shim, and the doctor sweep finds what they leave behind.  A long-running session keeps the PATH it started with, so the shim's reach grows as sessions restart.
+**Limits.**  Every seat runs as the same account, so none of this is a security boundary.  A git found by absolute path, a bundled git, libgit2, or `cp` and `rsync` of a tree pass the shim, and the doctor sweep finds what they leave behind.  A long-running session keeps the PATH it started with, so the shim's reach grows as sessions restart.  A shell alias is read by the guard's parser, so one that runs a script file or builds its command at run time passes, and an alias naming `fetch` is not followed to the temp rule.  An exception row excuses by shape, so a typed `git clone --mirror` into a `.build/repositories` folder passes, recorded as an `excused` event.
 
 ### Tool Checks
 

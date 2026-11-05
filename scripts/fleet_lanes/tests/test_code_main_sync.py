@@ -50,6 +50,7 @@ class SyncCase(unittest.TestCase):
         self.vars = {"HOME": str(self.home), "FLEET_CODE_ROOT": str(self.code), "FLEET_HOST_KIND": "mac",
                      "FLEET_LANE_GUARD_STATE_DIR": str(self.home / "state"), "GITHUB_TOKEN": "x",
                      "FLEET_PLACEMENT_EXCEPTIONS": str(self.home / "no-rows.json")}
+        (self.home / "no-rows.json").write_text('{"exceptions": []}\n', encoding="utf-8")
         self.lock = self.repo / ".git" / "index.lock"
 
     def sync(self, *args: str) -> tuple[int, str]:

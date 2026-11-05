@@ -172,7 +172,7 @@ class Owner(WatchCase):
         self.assertEqual(run.named("simple-chat", "dm"), [])
 
     def test_unpushed_work_in_the_code_root_tells_the_owner_once(self) -> None:
-        p = os.path.join(self.code, "BotFleet/.muse/worktrees/a")
+        p = os.path.join(self.code, "BotFleet")
         co = [{"path": p, "owner_repo": "Simple-With-Us/BotFleet", "unpushed": 2}]
         run = FakeRun()
         self.run_watch(self.report([anomaly(p)], co), run)
@@ -195,8 +195,8 @@ class Owner(WatchCase):
 
 class Inputs(WatchCase):
     def write_report(self, report: dict) -> str:
-        path = os.path.join(self.state, W.REPORT_NAME)
-        os.makedirs(self.state, exist_ok=True)
+        path = os.path.join(self.home, W.MAINTAIN_REPORT)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         Path(path).write_text(json.dumps(report), encoding="utf-8")
         return path
 
@@ -237,7 +237,7 @@ class Inputs(WatchCase):
         self.run_watch(self.report([]), run)
         self.assertEqual(len(run.named("simple-board", "file")), 1)
         call = run.named("simple-board", "file")[0]
-        self.assertEqual(call[call.index("--uid") + 1], "placement-watch:mac:mm|BotFleet")
+        self.assertEqual(call[call.index("--uid") + 1], "placement-watch:mac:minimax|BotFleet")
         self.run_watch(self.report([]), run)
         self.assertEqual(len(run.named("simple-board", "file")), 1)
 

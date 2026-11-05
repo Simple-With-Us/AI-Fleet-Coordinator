@@ -1947,11 +1947,13 @@ def _is_strict_violation(co: Checkout) -> bool:
 
 
 def placement_verdict(co: Checkout, roots: L.Roots, rows: Sequence[P.ExceptionRow], host: str,
-                      today: _dt.date | None = None) -> None:
+                      today: _dt.date | None = None, registry: L.Registry | None = None) -> None:
     """Fill the placement fields of `co`.  Reads no file and changes nothing a cleaner reads.
 
     A violation is a fleet checkout the map calls wrong or unsanctioned, or a full clone in a lane folder, that no
-    in-date exception row excuses.  A tool cache, a third-party repo and a local repo with no remote are not.
+    in-date exception row excuses.  A tool cache, a third-party repo and a local repo with no remote are not.  A row excuses what
+    its class allows (placement.row_excuses_checkout):  a cache or a personal folder never excuses a linked worktree, and a personal
+    folder never excuses a clone of a registered app.
     """
     parts = L._parts(co.realpath, roots)  # noqa: SLF001 - same package
     harness = L._harness_for(parts, roots)  # noqa: SLF001
@@ -1961,7 +1963,8 @@ def placement_verdict(co: Checkout, roots: L.Roots, rows: Sequence[P.ExceptionRo
     if hit is not None:
         co.placement_exception = hit.row.id
         co.placement_exception_expired = hit.expired
-    if co.tool_cache or co.scope == "third-party" or (co.scope != "fleet" and not co.remote_url):
+    # A tool cache holds a tool's own clones.  A linked worktree in one was made by something else, so it is judged.
+    if (co.tool_cache and co.kind != "LINKED-WORKTREE") or co.scope == "third-party" or (co.scope != "fleet" and not co.remote_url):
         return
     reason: str | None = None
     if co.layout_status in ("wrong", "unsanctioned"):
@@ -1975,7 +1978,13 @@ def placement_verdict(co: Checkout, roots: L.Roots, rows: Sequence[P.ExceptionRo
     if reason is None:
         return
     if hit is not None and not hit.expired:
-        return
+        owner_repo = (co.owner_repo or "").casefold()
+        registered = bool(owner_repo) and registry is not None and any(
+            (app.owner_repo or "").casefold() == owner_repo for app in registry.apps
+        )
+        if P.row_excuses_checkout(hit.row, linked_worktree=co.kind == "LINKED-WORKTREE", registered_app=registered):
+            return
+        hit = None
     co.placement_violation = True
     co.placement_reason = f"{reason}; exception {hit.row.id} expired {hit.row.expires}" if hit is not None else reason
 
@@ -1993,8 +2002,10 @@ def _default_branch_ref(ctx: _Ctx, path: str) -> tuple[str, str] | None:
     return None
 
 
-def _rev_count(ctx: _Ctx, path: str, include: str, exclude: str) -> int | None:
-    res = _call(ctx, ["git", "rev-list", "--count", include, "--not", exclude], path)
+def _rev_count(ctx: _Ctx, path: str, include: str, exclude: str, limit: int) -> int | None:
+    """How many commits, counted up to `limit`:  the checks only ask whether a clone is past its limit, so a sweep never walks a
+    long divergent history."""
+    res = _call(ctx, ["git", "rev-list", "--count", f"--max-count={limit}", include, "--not", exclude], path)
     return int(res.out.strip()) if res.ok and res.out.strip().isdigit() else None
 
 
@@ -2012,8 +2023,8 @@ def main_clone_status(ctx: _Ctx, co: Checkout, behind_limit: int) -> dict:
         name = None
     else:
         name, ref = default
-        ahead = _rev_count(ctx, co.path, "HEAD", ref)
-        behind = _rev_count(ctx, co.path, ref, "HEAD")
+        ahead = _rev_count(ctx, co.path, "HEAD", ref, behind_limit + 1)
+        behind = _rev_count(ctx, co.path, ref, "HEAD", behind_limit + 1)
         if co.branch is None:
             issues.append("detached")
         elif co.branch != name:
@@ -2044,7 +2055,9 @@ def _main_clones(ctx: _Ctx, ordered: Sequence[Checkout], behind_limit: int) -> l
     out: list[dict] = []
     for co in ordered:
         parts = L._parts(co.realpath, ctx.roots)  # noqa: SLF001
-        # A local repo with no remote has no default branch to be on.
+        # A local repo with no remote has no default branch to be on, and someone else's repo is not held to the owner's rule.
+        if co.scope == "third-party" or co.tool_cache:
+            continue
         if parts[:-1] == code_root and co.kind == "FULL-CLONE" and co.remote_url:
             out.append(main_clone_status(ctx, co, behind_limit))
     return out
@@ -2356,7 +2369,7 @@ def build_report(home: str | os.PathLike[str], env: Mapping[str, str] | None = N
     exception_rows = P.load_exceptions(env=env)
     host_kind = P.host_kind(env)
     for co in ordered:
-        placement_verdict(co, roots, exception_rows, host_kind)
+        placement_verdict(co, roots, exception_rows, host_kind, registry=registry)
     main_clones = _main_clones(ctx, ordered, main_clone_behind)
     placement_anomalies = [
         {"type": "MISPLACED", "path": co.path, "detail": co.placement_reason}
@@ -2369,6 +2382,11 @@ def build_report(home: str | os.PathLike[str], env: Mapping[str, str] | None = N
     placement_anomalies += [
         {"type": "EXPIRED-EXCEPTION", "path": row.pattern, "detail": f"{row.id} expired {row.expires}"}
         for row in P.expired_rows(exception_rows, host=host_kind)
+    ]
+    # A warning, not an anomaly:  nothing is wrong yet, so --strict-placement still passes, and the watcher files it ahead of the day.
+    placement_warnings = [
+        {"type": "EXPIRING-EXCEPTION", "path": row.pattern, "detail": f"{row.id} expires {row.expires}"}
+        for row in P.expiring_rows(exception_rows, host=host_kind)
     ]
     shown = ordered
     if only_class:
@@ -2407,6 +2425,7 @@ def build_report(home: str | os.PathLike[str], env: Mapping[str, str] | None = N
         "cleaner_candidates": candidates,
         "main_clones": main_clones,
         "placement_anomalies": placement_anomalies,
+        "placement_warnings": placement_warnings,
         "summary": summary,
     }
 

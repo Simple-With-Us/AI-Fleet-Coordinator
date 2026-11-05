@@ -121,7 +121,7 @@ class Matching(unittest.TestCase):
     def test_expired_is_reported_and_marked(self) -> None:
         hit = self.find("/h/apps/svc", row("{apps}/svc", decided_on="2025-01-01", expires="2025-02-01"))
         self.assertTrue(hit.expired)
-        self.assertEqual(len(P.expired_rows(self.rows(row("{a}", decided_on="2025-01-01", expires="2025-02-01")),
+        self.assertEqual(len(P.expired_rows(self.rows(row("{apps}/a", decided_on="2025-01-01", expires="2025-02-01")),
                                             host="mac", today=TODAY)), 1)
 
     def test_an_in_date_row_beats_an_expired_one(self) -> None:

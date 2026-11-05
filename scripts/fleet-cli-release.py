@@ -23,7 +23,7 @@ import uuid
 from pathlib import Path, PurePosixPath
 
 MAX_BUNDLE_BYTES = 8 * 1024 * 1024
-# The reviewed allowlisted runtime contains 149 files. Keep the exact minimum
+# The reviewed allowlisted runtime contains 150 files. Keep the exact minimum
 # ceiling in sender and receiver: a new file still needs an explicit policy review.
 # The 132nd file is storage_guard.py (from main);  the 133rd is platform_letter.py (AFC-564, the shared session-letter
 # library);  the 134th is platform_letter_codex.py (the Codex adapter);  the 135th and 136th are
@@ -37,7 +37,8 @@ MAX_BUNDLE_BYTES = 8 * 1024 * 1024
 # The 148th is agent_sync/registry_api.py, the signed client the package's own registry callers
 # (the operator-registry CLI, the platform-letter registry side) use to reach that API.
 # The 149th is fleet_lanes/placement.py, which guard.py imports for the placement mode and exceptions (AFC-618).
-MAX_FILES = 149
+# The 150th is placement-exceptions.json beside it, without which every excused checkout reads as misplaced.
+MAX_FILES = 150
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MARKER = "# fleet-cli managed wrapper v1"
 # The Agent-Sync Linear catalogs `board commands`, `board run` and `board mcp` read from beside board
@@ -99,6 +100,7 @@ EXACT = frozenset(
         *("scripts/fleet_rag/" + name + ".py" for name in RECALL_MODULES),
         "scripts/fleet_lanes/bin/lane",
         *("scripts/fleet_lanes/" + name + ".py" for name in LANE_MODULES),
+        "scripts/fleet_lanes/placement-exceptions.json",
         *("scripts/fleet_knobs/" + name + ".py" for name in KNOB_MODULES),
         "scripts/fleet-mode",
         "docs/FLEET-MODE.md",

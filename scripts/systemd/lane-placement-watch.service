@@ -10,6 +10,9 @@ Type=oneshot
 User=jay
 Group=jay
 EnvironmentFile=/etc/fleet/lanes.conf
+# Sets SIMPLE_BOARD_BEARER_LOCATOR, the non-secret FOLDER:KEY_NAME of the seat's bearer, and FLEET_APPS_JSON.  The board refuses to write
+# without the locator, and the watcher then files nothing and says so in its status file.
+EnvironmentFile=/etc/fleet/placement-watch.conf
 Environment=HOME=/home/jay
 Environment=AGENT_SEAT=CLAUDE
 Environment=LINEAR_BOARD_WRITES=1

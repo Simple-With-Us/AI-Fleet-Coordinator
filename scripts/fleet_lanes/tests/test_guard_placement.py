@@ -168,11 +168,16 @@ class Exceptions(unittest.TestCase):
     def test_the_shipped_rows_cover_the_tools_that_clone_fleet_sources(self) -> None:
         rows = P.load_exceptions()
         c = ctx("block", rows=rows)
-        for dest in ("~/.claude/plugins/marketplaces/x", "~/.codex/.tmp/marketplaces/.staging/y",
-                     "~/Library/Developer/Xcode/DerivedData/A/SourcePackages/checkouts/congress-trading-shared",
-                     "~/.botfleet/workspaces/abc/BotFleet", "~/Library/Caches/org.swift.swiftpm/repositories/z"):
-            with self.subTest(dest=dest):
-                self.assertEqual(G.evaluate(payload(f"git clone {FLEET} {dest}"), c).action, G.ALLOW)
+        self.assertEqual(G.evaluate(payload(f"git clone {FLEET} ~/.botfleet/workspaces/abc/BotFleet"), c).action, G.ALLOW)
+        cwd = f"{HOME}/Code/BotFleet"
+        derived = f"{HOME}/Library/Developer/Xcode/DerivedData/A/SourcePackages"
+        for argv in (["clone", FLEET, f"{HOME}/.claude/plugins/marketplaces/x"],
+                     ["clone", FLEET, f"{HOME}/.codex/.tmp/marketplaces/.staging/y"],
+                     ["clone", "--shared", "--no-checkout", f"{derived}/repositories/x", f"{derived}/checkouts/x"],
+                     ["clone", "--mirror", FLEET, f"{HOME}/Library/Caches/org.swift.swiftpm/repositories/z"]):
+            with self.subTest(argv=argv):
+                verdict = G.evaluate_git_argv(argv, cwd, c, origin_of=lambda _path: FLEET)
+                self.assertEqual(verdict[0], G.CLASS_EXCUSED)
 
 
 class Spellings(unittest.TestCase):
