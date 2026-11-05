@@ -802,6 +802,11 @@ final class WakeSettingsTests: XCTestCase {
         var reloadExit: Int32 = 0
         var reloadError = ""
         var resumeOutput = "resumed MM\n"
+        var testWakeOutput = ""
+        var testWakeErrors = ""
+        var testWakeExit: Int32 = 0
+        var pinOutput = ""
+        var pinExit: Int32 = 0
         var configAtCheck: Data?
         var candidateAtCheck: String?
         var configURL: URL?
@@ -839,6 +844,11 @@ final class WakeSettingsTests: XCTestCase {
             case "reload":
                 reloaded = reloadExit == 0
                 return AgentSyncCLIResult(exitCode: reloadExit, stdout: "", stderr: reloadError)
+            case "test-wake":
+                if arguments.contains("--pin") {
+                    return AgentSyncCLIResult(exitCode: pinExit, stdout: pinOutput, stderr: "")
+                }
+                return AgentSyncCLIResult(exitCode: testWakeExit, stdout: testWakeOutput, stderr: testWakeErrors)
             default:
                 return AgentSyncCLIResult(exitCode: 0, stdout: "", stderr: "")
             }
@@ -875,7 +885,8 @@ final class WakeSettingsTests: XCTestCase {
             runner: listener,
             partitionURL: resolved,
             reloadPollInterval: 0,
-            reloadPollAttempts: 2
+            reloadPollAttempts: 2,
+            auditURL: space.home.appendingPathComponent("audit/ops-audit.jsonl")
         )
         await store.refresh(roster: ["MM", "MA"])
         return store
@@ -1257,7 +1268,7 @@ final class WakeSettingsTests: XCTestCase {
     /// The reader and the builder agree on who holds a seat:  a seat the builder shows live data for
     /// has its pins and ledger read,  so no empty reading stands in for one Muster never made.
     func test_the_reader_reads_pins_for_a_seat_the_builder_does_not_call_elsewhere() async throws {
-        let space = try makeWorkspace(config: sample + "\n\n[seat.MA]\nbot = \"MA\"\n")
+        let space = try makeWorkspace(config: sample + "\n\n[seat.MA]\nbot = \"MA\"\nwake = \"muse\"\n")
         let location = ListenerStateLocation(home: space.home)
         let pinURL = location.pinURL(seat: "MA", runtime: "muse")
         try FileManager.default.createDirectory(
@@ -1532,12 +1543,14 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertEqual(row(.wakesPerHour, status: status).state, .unknown)
     }
 
-    /// A status that reports the seat without a setting really does not publish it.
+    /// A status that reports the seat without a setting really does not publish it.  That is not
+    /// a setting the engine does not enforce, so it is NOT REPORTED, not NOT ENFORCED.
     func test_a_status_that_reports_the_seat_without_the_setting_does_not_publish_it() {
         let status = #"{"running": true, "status": {"seats": {"MM": {"bot": "MM"}}}}"#
         let setting = row(.wakesPerHour, status: status)
-        XCTAssertEqual(setting.state, .notOwned)
+        XCTAssertEqual(setting.state, .unpublished)
         XCTAssertFalse(setting.state.isProblem)
+        XCTAssertFalse(setting.note.contains("enforce"))
     }
 
     /// A running eavesdropper lists a seat the file turns off under `disabled` and not under
