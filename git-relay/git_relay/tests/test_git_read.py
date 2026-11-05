@@ -200,9 +200,9 @@ class GitReadTest(unittest.TestCase):
         for path in (
             "/git/example-org/example-repo.git/HEAD",
             "/git/example-org/example-repo.git/objects/info/packs",
-            "/git/Simple-With-Us/../other.git/info/refs?service=git-upload-pack",
+            "/git/example-org/../other.git/info/refs?service=git-upload-pack",
             "/git/a/b/c.git/info/refs?service=git-upload-pack",
-            "/git/Simple-With-Us/.git/info/refs?service=git-upload-pack",
+            "/git/example-org/.git/info/refs?service=git-upload-pack",
             "/git/@evil.example/x.git/info/refs?service=git-upload-pack",
         ):
             resp, _ = self.call(port, "GET", path)
