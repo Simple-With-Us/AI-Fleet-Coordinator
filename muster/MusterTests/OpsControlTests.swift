@@ -382,8 +382,13 @@ final class OpsResultParserTests: XCTestCase {
         // It said it did the work and did not stand behind that,  so it may have done it.
         XCTAssertEqual(outcome.kind, .unknown)
         XCTAssertTrue(outcome.runNotKnown)
-        // The answer said ok,  so the words name the exit code and keep the helper's own.
-        XCTAssertEqual(outcome.detail, ApplyCopy.join("The helper said done, but it exited with code 1.", "Done."))
+        // The answer said ok,  so the words name the exit code.
+        XCTAssertEqual(outcome.detail, "The helper said done, but it exited with code 1.")
+        // The helper's own words stay,  after the words that say what disagrees.
+        let worded = OpsResultParser.parse(
+            result(#"{"ok":true,"result":"done","detail":"ran"}"#, exit: 1), mode: .yes, action: unit, timeout: 900
+        )
+        XCTAssertEqual(worded.detail, ApplyCopy.join("The helper said done, but it exited with code 1.", "ran"))
     }
 
     func test_a_done_answer_that_is_not_ok_is_not_known() {
