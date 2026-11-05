@@ -15,21 +15,15 @@ import urllib.request
 spec = importlib.util.spec_from_file_location("mapped", "scripts/deploy-mapped-worker.py")
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
+# scripts/worker-targets.json is the one mapping; a Worker belongs to one pipeline.
 TARGETS = {
-    "alert-ingress": {
-        "root": "workers/alert-ingress/",
-        "config": "workers/alert-ingress/wrangler.toml",
-        "health": "https://alert-ingress.jays-services.workers.dev/health",
-        "ok": True,
-    },
-    "pr-conflict-watch": {
-        "root": "workers/pr-conflict-watch/zulip-cutover/",
-        "config": "workers/pr-conflict-watch/zulip-cutover/wrangler.toml",
-        "health": "https://pr-conflict-watch.jays-services.workers.dev/health",
-        "text": "ok",
-    },
+    name: target
+    for name, target in m.TARGETS.items()
+    if target["deployer"] == "alert-workers-deploy"
 }
 
+# A commit in these needs a qualified review before a target release may ship it.
+# They do not by themselves make a target change: that is each target's own "paths".
 RELEASE_PATHS = [
     "scripts/deploy-alert-workers.py",
     "scripts/deploy-mapped-worker.py",
@@ -40,6 +34,19 @@ RELEASE_PATHS = [
     ".github/workflows/alert-workers-deploy.yml",
     "docs/releases/alert-credentials-qualified.json",
 ]
+
+# What a credential qualification actually proved: how the workflow delivers the
+# credential and reads with it.  The rest of the release source (a lockfile, an
+# action bump, a target list) has no bearing on that proof and is covered by the
+# per-commit review gate instead, so it must not void a receipt.
+CREDENTIAL_WORKFLOW = ".github/workflows/alert-workers-deploy.yml"
+CREDENTIAL_STEPS = (
+    "Load existing scoped release credential",
+    "Qualify existing credential delivery without deployment",
+)
+CREDENTIAL_PATHS = ["scripts/infisical-fetch.mjs"]
+# Bumped when the receipt's meaning changes, so an older receipt cannot arm a release.
+RECEIPT_GATE = 2
 
 
 def git(*args):
@@ -84,6 +91,9 @@ def preflight_config(target, settings):
             raise RuntimeError("Durable Object binding change requires manual reconciliation")
     if config.get("routes") or config.get("route"):
         raise RuntimeError("Route configuration is outside this code-only release")
+    dropped = m.dropped_limits(settings.get("limits"), config.get("limits"))
+    if dropped:
+        raise RuntimeError("Release would drop live limits: " + ", ".join(dropped))
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -133,14 +143,11 @@ def current_main():
 
 
 def deployed_tag(name):
-    deployments = cloudflare("/workers/scripts/" + name + "/deployments")["deployments"]
-    if not deployments:
-        return None
-    versions = deployments[0].get("versions", [])
-    if len(versions) != 1 or versions[0].get("percentage") != 100:
-        return None
-    version = cloudflare("/workers/scripts/" + name + "/versions/" + versions[0]["version_id"])
-    return (version.get("annotations") or {}).get("workers/tag")
+    return m.deployed_tag(name, cloudflare)
+
+
+def guard_tripped(name):
+    return m.guard_tripped(name, cloudflare)
 
 
 def outstanding_requests(reviews):
@@ -230,6 +237,10 @@ def qualify_credentials():
         raise RuntimeError("Existing release credential delivery missing")
     current_main()
     for name, target in TARGETS.items():
+        # An uncut-over target is never released, so it cannot block this proof either.
+        if name == "pr-conflict-watch" and not cutover_receipt():
+            print("Awaiting first verified real Zulip delivery; skipping " + name)
+            continue
         settings = cloudflare("/workers/scripts/" + name + "/settings")
         preflight_config(target, settings)
         tag = deployed_tag(name)
@@ -237,6 +248,35 @@ def qualify_credentials():
             raise RuntimeError("Missing qualified live version baseline")
         probe(target)
     print("Existing credential delivery and scoped live reads qualified; no deployment")
+
+
+def workflow_credential_steps(text):
+    """The text of the workflow steps that deliver and qualify the credential."""
+    lines = text.splitlines()
+    blocks = []
+    for name in CREDENTIAL_STEPS:
+        starts = [i for i, line in enumerate(lines) if line.strip() == "- name: " + name]
+        if len(starts) != 1:
+            raise RuntimeError("Credential step not found: " + name)
+        indent = len(lines[starts[0]]) - len(lines[starts[0]].lstrip())
+        block = [lines[starts[0]]]
+        for line in lines[starts[0] + 1 :]:
+            depth = len(line) - len(line.lstrip())
+            if line.strip() and depth <= indent:
+                break
+            block.append(line)
+        blocks.append("\n".join(block).rstrip())
+    return blocks
+
+
+def credential_source_changed(source):
+    # A credential-unrelated edit keeps the proof; a change to how the credential is
+    # fetched, scoped or qualified voids it until a new nondeployment run is recorded.
+    if git("diff", "--name-only", source, "HEAD", "--", *CREDENTIAL_PATHS):
+        return True
+    qualified = git("show", source + ":" + CREDENTIAL_WORKFLOW)
+    current = git("show", "HEAD:" + CREDENTIAL_WORKFLOW)
+    return workflow_credential_steps(qualified) != workflow_credential_steps(current)
 
 
 def credential_receipt():
@@ -248,6 +288,8 @@ def credential_receipt():
     source = receipt.get("source_sha", "")
     if type(run_id) is not int or run_id <= 0 or not re.fullmatch(r"[0-9a-f]{40}", source):
         raise RuntimeError("Invalid credential qualification receipt")
+    if receipt.get("gate") != RECEIPT_GATE:
+        raise RuntimeError("Credential qualification receipt predates this gate; record a new one")
     run = github("/actions/runs/" + str(run_id))
     if (
         receipt.get("nondeployment") is not True
@@ -281,15 +323,9 @@ def credential_receipt():
         or release[0].get("conclusion") != "skipped"
     ):
         raise RuntimeError("Run did not prove nondeployment qualification")
-    # Receipt itself arrives in a separately reviewed follow-up; executable source must match.
-    if git(
-        "diff",
-        "--name-only",
-        source,
-        "HEAD",
-        "--",
-        *[p for p in RELEASE_PATHS if p != "docs/releases/alert-credentials-qualified.json"],
-    ):
+    # Receipt itself arrives in a separately reviewed follow-up; the source that
+    # delivers the credential must still match what the receipt qualified.
+    if credential_source_changed(source):
         raise RuntimeError("Credential qualification source changed")
     return True
 
@@ -309,31 +345,24 @@ def main():
         for r in runs
     ):
         raise RuntimeError("Exact-main CI has not passed")
+    tripped = []
     for name, target in TARGETS.items():
         # An uncut-over target must not block the independent ingress release.
         if name == "pr-conflict-watch" and not cutover_receipt():
             print("Awaiting first verified real Zulip delivery; skipping " + name)
             continue
+        # Never reconcile over the budget guard, and let the other target proceed.
+        if guard_tripped(name):
+            print("Stopped by the budget guard; re-arm by hand: " + name)
+            tripped.append(name)
+            continue
         live = deployed_tag(name)
         if not isinstance(live, str) or not re.fullmatch(r"[0-9a-f]{40}", live):
             raise RuntimeError("No exact release baseline for " + name)
         subprocess.run(["git", "cat-file", "-e", live + "^{commit}"], check=True, timeout=300)
-        changed = subprocess.check_output(
-            [
-                "git",
-                "diff",
-                "--name-only",
-                live,
-                sha,
-                "--",
-                target["root"],
-                *RELEASE_PATHS,
-                "docs/releases/pr-conflict-zulip-verified.json",
-            ],
-            text=True,
-            timeout=30,
-        ).splitlines()
-        if not changed:
+        # Only this Worker's own files make it a release: a redeploy restarts its
+        # Durable Object, so an unrelated merge must leave it alone.
+        if not m.worker_changed(live, sha, target):
             probe(target)
             continue
         subprocess.run(["git", "merge-base", "--is-ancestor", live, sha], check=True, timeout=300)
@@ -399,6 +428,10 @@ def main():
         if current_main() != sha:
             print("Superseded before release")
             return
+        if guard_tripped(name):
+            print("Stopped by the budget guard; re-arm by hand: " + name)
+            tripped.append(name)
+            continue
         subprocess.run(
             [
                 "scripts/agent-sync-mcp/node_modules/.bin/wrangler",
@@ -428,6 +461,8 @@ def main():
             raise RuntimeError("Wrong version receipt")
         probe(target)
         print("Verified exact release: " + name + " " + sha)
+    if tripped:
+        raise RuntimeError("Release refused, budget guard tripped: " + ", ".join(tripped))
 
 
 if __name__ == "__main__":
