@@ -10,7 +10,7 @@ description: Fleet human-facing prose — two spaces between sentences (a real U
 > **Runtime fork (Cursor).**  Local Cursor IDE / Auto on this Mac is `[CURSOR]`.  If this session is a **Cursor cloud agent spawned as Grok Bot**, your chat tag is `[GB-<NAME>]` (GB-DIRECTOR, GB-FIXER, GB-DESIGNER, GB-COMPILER, GB-HOUSEKEEPER, GB-PUBLISHER, GB-DEPLOYER, GB-MONITOR, GB-PLUMBER, GB-ORACLE, GB-TRADER, GB-ENGINEER) — not `[GROK-BOT]`, not `[CURSOR]`, and not `[GROK]`.  A DeepSeek *model* inside Cursor is still `[CURSOR]` unless you are the separate DeepSeek Harness seat (`[DSH]`).  Never `[MONET]`.
 
 
-Canonical detail: `/Users/jay/apps/FLEET-UI-COPY.md`.  Policy: `/Users/jay/apps/FLEET-PROTOCOL.md` § Two spaces, timestamps, TestFlight metadata.
+Canonical detail: `~/apps/FLEET-UI-COPY.md`.  Policy: `~/apps/FLEET-PROTOCOL.md` § Two spaces, timestamps, TestFlight metadata.
 
 ## Two spaces between sentences
 
@@ -103,6 +103,6 @@ Product UI times are the **viewer's** timezone except market-day accounting (Chi
 
 ## Canon
 
-- `/Users/jay/apps/FLEET-UI-COPY.md`
-- `/Users/jay/apps/FLEET-PROTOCOL.md` § Two spaces; Theme via FLEET-UI-COPY; TestFlight template
+- `~/apps/FLEET-UI-COPY.md`
+- `~/apps/FLEET-PROTOCOL.md` § Two spaces; Theme via FLEET-UI-COPY; TestFlight template
 - Skills: `apple-notes`, `sentence-gap`, `closeout`
