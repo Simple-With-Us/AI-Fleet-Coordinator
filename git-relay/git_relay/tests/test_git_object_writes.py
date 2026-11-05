@@ -82,16 +82,24 @@ class Writes(unittest.TestCase):
         secret_sha, secret_blob = blob_of(b"Authorization: Bearer " + b"a1" * 12)
         with self.assertRaises(Refused):
             self.handle(Client(secret_blob), a).run(
-                a, {"repo": REPO, "base_tree": SHA,
-                    "files": [{"path": "s.py", "sha": secret_sha, "mode": "100644"}]}
+                a,
+                {
+                    "repo": REPO,
+                    "base_tree": SHA,
+                    "files": [{"path": "s.py", "sha": secret_sha, "mode": "100644"}],
+                },
             )
         # An unverifiable blob identity is a 502 unknown-outcome, never a write.
         bad = dict(blob)
         bad["content"] = b64m.b64encode(b"different bytes").decode()
         with self.assertRaises(RelayGitHubError):
             self.handle(Client(bad), a).run(
-                a, {"repo": REPO, "base_tree": SHA,
-                    "files": [{"path": "big.py", "sha": blob_sha, "mode": "100644"}]}
+                a,
+                {
+                    "repo": REPO,
+                    "base_tree": SHA,
+                    "files": [{"path": "big.py", "sha": blob_sha, "mode": "100644"}],
+                },
             )
         # Shape refusals before any upstream call:  mixed keys, workflow path, bad mode.
         for files in [
@@ -101,9 +109,7 @@ class Writes(unittest.TestCase):
             [{"path": "x", "sha": "z" * 40, "mode": "100644"}],
         ]:
             with self.assertRaises(Refused):
-                WorkflowVerbs.check_shape(
-                    a, {"repo": REPO, "base_tree": SHA, "files": files}, REPO
-                )
+                WorkflowVerbs.check_shape(a, {"repo": REPO, "base_tree": SHA, "files": files}, REPO)
 
     def test_commit_exact_tree_parents_and_no_identity_selector(self):
         a = "wf_git_commit_create"
