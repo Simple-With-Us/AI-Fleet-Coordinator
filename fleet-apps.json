@@ -487,12 +487,22 @@
       {
         "match": "BF-*",
         "app": "botfleet",
-        "zulipEmail": "bf-<role>-bot@simplewithus.zulipchat.com"
+        "zulipEmail": "bf-<role>-bot@simplewithus.zulipchat.com",
+        "lane": {
+          "roles": ["COMPILER", "DEPLOYER", "DESIGNER", "DIRECTOR", "ENGINEER", "FIXER", "HOUSEKEEPER", "MONITOR", "ORACLE", "PLUMBER", "PUBLISHER", "TRADER"],
+          "folderTemplate": "bf-<role>",
+          "branchTemplate": "bf-<role>/"
+        }
       },
       {
         "match": "GB-*",
         "app": "grok-bot",
-        "zulipEmail": "<role>-grok-bot@simplewithus.zulipchat.com"
+        "zulipEmail": "<role>-grok-bot@simplewithus.zulipchat.com",
+        "lane": {
+          "roles": ["COMPILER", "DEPLOYER", "DESIGNER", "DIRECTOR", "ENGINEER", "FIXER", "HOUSEKEEPER", "MONITOR", "ORACLE", "PLUMBER", "PUBLISHER", "TRADER"],
+          "folderTemplate": "gb-<role>",
+          "branchTemplate": "gb-<role>/"
+        }
       }
     ]
   },
