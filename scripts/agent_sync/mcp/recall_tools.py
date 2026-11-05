@@ -144,7 +144,10 @@ def failure(code: int, err: str) -> RecallUnavailable:
         lower = err.lower()
         return RecallUnavailable(
             "not_authorized"
-            if "credential" in lower or "key" in lower or "may correct" in lower or "may retract" in lower
+            if "credential" in lower
+            or "key" in lower
+            or "may correct" in lower
+            or "may retract" in lower
             else "invalid_argument",
             "fleet recall refused the request:  %s" % (err or "usage or credential error"),
         )
@@ -209,7 +212,9 @@ def hit_item(hit: Mapping[str, Any]) -> dict[str, Any]:
         "corrected_by": field("corrected_by", HIT_FIELD_LIMIT),
         "correction_reason": field("correction_reason", HIT_FIELD_LIMIT),
         "retracted": hit.get("retracted") is True,
-        "retracted_at": hit.get("retracted_at") if isinstance(hit.get("retracted_at"), int) else None,
+        "retracted_at": hit.get("retracted_at")
+        if isinstance(hit.get("retracted_at"), int)
+        else None,
         "retracted_by": field("retracted_by", HIT_FIELD_LIMIT),
         "retraction_reason": field("retraction_reason", HIT_FIELD_LIMIT),
         "text": text,

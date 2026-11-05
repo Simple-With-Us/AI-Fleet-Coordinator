@@ -50,9 +50,7 @@ def seat_launch(arguments: JsonDict) -> JsonDict:
             "or omit sessionId."
         )
     if seat == "grok-tui" and not (opts.get("sessionId") or opts.get("session_id")):
-        raise SeatError(
-            "grok-tui requires opts.sessionId.  Call grok_sessions_list first."
-        )
+        raise SeatError("grok-tui requires opts.sessionId.  Call grok_sessions_list first.")
 
     if seat == "grok":
         busy = jobs.running_grok_job()
@@ -293,7 +291,7 @@ def tool_schemas() -> list[JsonDict]:
                             "timeoutSec.  sessionId (grok follow-up or grok-tui attach).  "
                             "priorJobId (stuff prior text; required for deepseek follow-up).  "
                             "mcpServers:  array of ~/.grok/config.toml MCP names for a new "
-                            "grok ACP session only (example [\"github\"]).  Empty or omitted "
+                            'grok ACP session only (example ["github"]).  Empty or omitted '
                             "loads none on grok-acp.  grok-tui keeps the TUI set."
                         ),
                         "properties": {
@@ -338,7 +336,10 @@ def tool_schemas() -> list[JsonDict]:
                 "type": "object",
                 "properties": {
                     "jobId": {"type": "string"},
-                    "prompt": {"type": "string", "description": "Optional follow-up.  Starts a new job."},
+                    "prompt": {
+                        "type": "string",
+                        "description": "Optional follow-up.  Starts a new job.",
+                    },
                 },
                 "required": ["jobId"],
             },

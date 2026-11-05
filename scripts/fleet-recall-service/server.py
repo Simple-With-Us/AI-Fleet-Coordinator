@@ -538,7 +538,10 @@ def _dispatch_rpc(msg: JsonDict, rid: Any, *, owner_authorized: bool = False) ->
 
 
 def owner_requested(name: str, args: JsonDict) -> bool:
-    return name in ("recall_correct", "recall_retract") and str(args.get("seat") or "").strip().upper() == "OWNER"
+    return (
+        name in ("recall_correct", "recall_retract")
+        and str(args.get("seat") or "").strip().upper() == "OWNER"
+    )
 
 
 # --------------------------------------------------------------------------- auth / logging

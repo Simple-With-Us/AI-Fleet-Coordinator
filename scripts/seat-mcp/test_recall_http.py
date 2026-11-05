@@ -6,8 +6,8 @@ import json
 import threading
 import unittest
 from http.server import ThreadingHTTPServer
-from urllib.request import Request, urlopen
 from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 
 from seat_mcp import server
 
@@ -53,7 +53,16 @@ class RecallHttpTest(unittest.TestCase):
         req = Request(self.base + "/health")
         with urlopen(req, timeout=5) as resp:
             payload = json.loads(resp.read().decode())
-        self.assertEqual(payload.get("recall"), ["/recall/stats", "/recall/search", "/recall/contribute", "/recall/correct", "/recall/retract"])
+        self.assertEqual(
+            payload.get("recall"),
+            [
+                "/recall/stats",
+                "/recall/search",
+                "/recall/contribute",
+                "/recall/correct",
+                "/recall/retract",
+            ],
+        )
 
     def test_stats_requires_bearer(self) -> None:
         req = Request(self.base + "/recall/stats")
@@ -62,9 +71,15 @@ class RecallHttpTest(unittest.TestCase):
         self.assertEqual(ctx.exception.code, 401)
 
     def test_mutation_aliases(self) -> None:
-        code, payload = self._json("POST", "/recall/correct", {"doc_id": "d", "text": "x" * 60, "reason": "current", "seat": "GROK"})
+        code, payload = self._json(
+            "POST",
+            "/recall/correct",
+            {"doc_id": "d", "text": "x" * 60, "reason": "current", "seat": "GROK"},
+        )
         self.assertEqual((code, payload["revision"]), (200, 2))
-        code, payload = self._json("POST", "/recall/retract", {"doc_id": "d", "reason": "obsolete", "seat": "GROK"})
+        code, payload = self._json(
+            "POST", "/recall/retract", {"doc_id": "d", "reason": "obsolete", "seat": "GROK"}
+        )
         self.assertEqual((code, payload["retracted"]), (200, True))
 
     def test_stats_and_search(self) -> None:

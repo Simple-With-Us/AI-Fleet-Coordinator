@@ -175,9 +175,7 @@ DAY_MS = 86_400_000
 
 _APP_RE = re.compile(r"^[a-z0-9][a-z0-9\-]{0,63}$")
 _SEAT_RE = re.compile(r"^[A-Z][A-Z0-9_\-]{0,31}$")
-_DOC_ID_RE = re.compile(
-    r"^contrib/[A-Z][A-Z0-9_\-]{0,31}/\d{4}-\d{2}-\d{2}/[0-9a-f]{8}$"
-)
+_DOC_ID_RE = re.compile(r"^contrib/[A-Z][A-Z0-9_\-]{0,31}/\d{4}-\d{2}-\d{2}/[0-9a-f]{8}$")
 
 _CACHE: dict[str, dict[str, str]] = {}
 
@@ -270,7 +268,13 @@ def _hit(raw: dict) -> dict:
     for f in HIT_FIELDS:
         out[f] = p.get(f, 0 if f in ("chunk_index", "created_at") else "")
     for f in AUDIT_HIT_FIELDS:
-        default = 0 if f in ("revision", "corrected_at", "retracted_at") else False if f == "retracted" else ""
+        default = (
+            0
+            if f in ("revision", "corrected_at", "retracted_at")
+            else False
+            if f == "retracted"
+            else ""
+        )
         out[f] = p.get(f, default)
     return out
 
@@ -580,7 +584,7 @@ def recall_contribute(
 
     cfg = get_config(need_write=True)
     ts = now_ms()
-    day = datetime.datetime.fromtimestamp(ts / 1000, datetime.timezone.utc).strftime("%Y-%m-%d")
+    day = datetime.datetime.fromtimestamp(ts / 1000, datetime.UTC).strftime("%Y-%m-%d")
     doc_id = f"contrib/{seat}/{day}/{content_hash(clean)[:8]}"
     payload: dict[str, Any] = {
         "source": "agent-contribution",
@@ -617,10 +621,14 @@ def _safe_audit_text(name: str, value: str, maximum: int = REASON_MAX) -> str:
     if not value:
         raise FleetRagError(f"{name} must not be blank")
     if len(value) > maximum:
-        raise FleetRagError(f"{name} must be at most {maximum} characters once trimmed ({len(value)})")
+        raise FleetRagError(
+            f"{name} must be at most {maximum} characters once trimmed ({len(value)})"
+        )
     clean, _ = scrub(value)
     if gitleaks_available() and _still_secret(clean):
-        raise FleetRagError(f"refusing: {name} still looks like it contains a secret after scrubbing")
+        raise FleetRagError(
+            f"refusing: {name} still looks like it contains a secret after scrubbing"
+        )
     return clean
 
 
@@ -692,7 +700,9 @@ def _authorize_change(payload: dict, actor: str) -> str:
 def _check_revision(payload: dict, expected: int | None) -> int:
     revision = payload.get("revision", 1)
     if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
-        raise FleetRagError("the stored contribution has an invalid revision; refusing to change it")
+        raise FleetRagError(
+            "the stored contribution has an invalid revision; refusing to change it"
+        )
     if expected is not None and revision != expected:
         raise FleetRagError(
             f"the contribution is now at revision {revision}, not expected_revision {expected}; "
@@ -751,7 +761,9 @@ def recall_correct(
         owner = _authorize_change(old, actor)
         revision = _check_revision(old, expected)
         if old.get(RETRACTED_FIELD) is True:
-            raise FleetRagError(f"{doc_id} is retracted; correction would resurrect it, so it was refused")
+            raise FleetRagError(
+                f"{doc_id} is retracted; correction would resurrect it, so it was refused"
+            )
         old_text = str(old.get("text") or "")
         old_hash = str(old.get("content_hash") or content_hash(old_text))
         new_hash = content_hash(clean)
@@ -768,7 +780,9 @@ def recall_correct(
             }
         history = old.get("revisions", [])
         if not isinstance(history, list) or any(not isinstance(r, dict) for r in history):
-            raise FleetRagError("the stored contribution has an invalid revision history; refusing to change it")
+            raise FleetRagError(
+                "the stored contribution has an invalid revision history; refusing to change it"
+            )
         history = list(history)
         history.append(
             {

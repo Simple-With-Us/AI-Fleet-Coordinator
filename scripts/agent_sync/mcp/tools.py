@@ -2636,7 +2636,15 @@ class Tools:
             if correcting:
                 text, title, url = RECALL.contribute_fields(args, scan)
                 reason = RECALL._reason_field(args, scan)
-                fingerprint = [self.seat, args["doc_id"], text, reason, title, url, args.get("expected_revision")]
+                fingerprint = [
+                    self.seat,
+                    args["doc_id"],
+                    text,
+                    reason,
+                    title,
+                    url,
+                    args.get("expected_revision"),
+                ]
             else:
                 reason = RECALL._reason_field(args, scan)
                 fingerprint = [self.seat, args["doc_id"], reason, args.get("expected_revision")]
@@ -2646,7 +2654,10 @@ class Tools:
         if explicit:
             key, ttl = "k:recall:%s:%s" % (name, explicit), IDEM_EXPLICIT_TTL
         else:
-            key, ttl = "i:recall:%s" % _sha(json.dumps(fingerprint, ensure_ascii=False)), IDEM_IMPLICIT_TTL
+            key, ttl = (
+                "i:recall:%s" % _sha(json.dumps(fingerprint, ensure_ascii=False)),
+                IDEM_IMPLICIT_TTL,
+            )
         prior = self._idem_peek(key)
         result_name = "_correct_result" if correcting else "_retract_result"
         if prior is not None:
@@ -2659,7 +2670,8 @@ class Tools:
             raise ToolError(
                 "outcome_unknown",
                 "an earlier %s with this key may or may not have landed.  Search recall (with "
-                "include_retracted for a retraction) before retrying, or use a new idempotency_key." % name,
+                "include_retracted for a retraction) before retrying, or use a new idempotency_key."
+                % name,
             )
         call = RECALL.correct if correcting else RECALL.retract
         try:

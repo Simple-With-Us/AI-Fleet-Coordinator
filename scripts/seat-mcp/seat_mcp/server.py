@@ -17,11 +17,23 @@ from urllib.parse import urlparse
 from . import __version__
 from .auth import access_authenticated, bearer_ok, load_token, origin_ok
 from .config import BIND_HOST, BIND_PORT, MCP_PATH
-from .recall_bridge import recall_contribute, recall_correct, recall_retract, recall_search, recall_stats
+from .recall_bridge import (
+    recall_contribute,
+    recall_correct,
+    recall_retract,
+    recall_search,
+    recall_stats,
+)
 from .seats import SeatError
 from .tools import TOOL_IMPL, tool_schemas
 
-RECALL_PATHS = ("/recall/stats", "/recall/search", "/recall/contribute", "/recall/correct", "/recall/retract")
+RECALL_PATHS = (
+    "/recall/stats",
+    "/recall/search",
+    "/recall/contribute",
+    "/recall/correct",
+    "/recall/retract",
+)
 # Largest request body any path reads:  JSON-RPC, /recall/* and the /hooks/ pass-through (AFC-359).
 MAX_BODY_BYTES = 2_000_000
 # /hooks/ body read timeout (AFC-359).  The BotFleet ingress itself refuses bodies over 256 KiB.

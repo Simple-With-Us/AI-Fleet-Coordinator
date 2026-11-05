@@ -73,15 +73,29 @@ def _load_api() -> ModuleType:
         mod = importlib.import_module("fleet_rag.recall_api")
     except ImportError as exc:
         raise SeatError("fleet_rag.recall_api failed to import from %s:  %s" % (home, exc)) from exc
-    for name in ("recall_search", "recall_stats", "recall_contribute", "recall_correct", "recall_retract"):
+    for name in (
+        "recall_search",
+        "recall_stats",
+        "recall_contribute",
+        "recall_correct",
+        "recall_retract",
+    ):
         if not callable(getattr(mod, name, None)):
-            raise SeatError("fleet_rag.recall_api at %s lacks %s; reinstall with scripts/install-fleet-rag.sh" % (home, name))
+            raise SeatError(
+                "fleet_rag.recall_api at %s lacks %s; reinstall with scripts/install-fleet-rag.sh"
+                % (home, name)
+            )
     try:
         fallback = importlib.import_module("fleet_rag.public_fallback")
     except ImportError as exc:
-        raise SeatError("fleet_rag.public_fallback failed to import from %s:  %s" % (home, exc)) from exc
+        raise SeatError(
+            "fleet_rag.public_fallback failed to import from %s:  %s" % (home, exc)
+        ) from exc
     if not callable(getattr(fallback, "call_mutation", None)):
-        raise SeatError("fleet_rag.public_fallback at %s lacks call_mutation; reinstall with scripts/install-fleet-rag.sh" % home)
+        raise SeatError(
+            "fleet_rag.public_fallback at %s lacks call_mutation; reinstall with scripts/install-fleet-rag.sh"
+            % home
+        )
     _api = mod
     return mod
 
@@ -126,6 +140,7 @@ def _call(fn_name: str, **kwargs: Any) -> JsonDict:
 
 # --------------------------------------------------------------------------- argument helpers
 
+
 def _opt_str(arguments: JsonDict, *names: str) -> str | None:
     for name in names:
         val = arguments.get(name)
@@ -155,6 +170,7 @@ def _opt_int(arguments: JsonDict, name: str, lo: int, hi: int) -> int | None:
 
 
 # --------------------------------------------------------------------------- tools
+
 
 def recall_search(arguments: JsonDict) -> JsonDict:
     query = _opt_str(arguments, "query", "q")
@@ -237,7 +253,11 @@ def _mutation_base(arguments: JsonDict, operation: str) -> JsonDict:
     reason = _opt_str(arguments, "reason")
     if not reason:
         raise SeatError("reason is required")
-    kwargs: JsonDict = {"doc_id": doc_id, "reason": reason, "seat": _required_seat(arguments, operation)}
+    kwargs: JsonDict = {
+        "doc_id": doc_id,
+        "reason": reason,
+        "seat": _required_seat(arguments, operation),
+    }
     expected = _opt_int(arguments, "expected_revision", 1, 1000000)
     if expected is None:
         expected = _opt_int(arguments, "expectedRevision", 1, 1000000)
@@ -288,8 +308,16 @@ def recall_tool_schemas() -> list[JsonDict]:
             "type": "string",
             "description": "board|effort-log|apple-note|doc|skill|memory|chat-log|agent-contribution",
         },
-        "seat": {"type": "string", "description": "Uppercase seat tag:  CLAUDE, MONET, GROK, CODEX, AG, CURSOR, OWNER."},
-        "since_days": {"type": "integer", "minimum": 1, "maximum": 3650, "description": "Only points created in the last N days."},
+        "seat": {
+            "type": "string",
+            "description": "Uppercase seat tag:  CLAUDE, MONET, GROK, CODEX, AG, CURSOR, OWNER.",
+        },
+        "since_days": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3650,
+            "description": "Only points created in the last N days.",
+        },
     }
     return [
         {
@@ -303,8 +331,16 @@ def recall_tool_schemas() -> list[JsonDict]:
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "Natural-language question or keywords."},
-                    "limit": {"type": "integer", "minimum": 1, "maximum": MAX_LIMIT, "description": "Default 5."},
+                    "query": {
+                        "type": "string",
+                        "description": "Natural-language question or keywords.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": MAX_LIMIT,
+                        "description": "Default 5.",
+                    },
                     **filter_props,
                     "include_retracted": {
                         "type": "boolean",
@@ -334,12 +370,21 @@ def recall_tool_schemas() -> list[JsonDict]:
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "text": {"type": "string", "description": "The knowledge to store (40..4000 chars)."},
+                    "text": {
+                        "type": "string",
+                        "description": "The knowledge to store (40..4000 chars).",
+                    },
                     "category": {"type": "string", "enum": list(CONTRIBUTE_CATEGORIES)},
                     "app": {"type": "string", "description": "Lowercase app slug.  Default fleet."},
-                    "seat": {"type": "string", "description": "Your uppercase seat tag (required)."},
+                    "seat": {
+                        "type": "string",
+                        "description": "Your uppercase seat tag (required).",
+                    },
                     "title": {"type": "string", "description": "Optional short title."},
-                    "url": {"type": "string", "description": "Optional link (PR, issue, board item)."},
+                    "url": {
+                        "type": "string",
+                        "description": "Optional link (PR, issue, board item).",
+                    },
                 },
                 "required": ["text", "category", "seat"],
             },
@@ -356,9 +401,18 @@ def recall_tool_schemas() -> list[JsonDict]:
                 "type": "object",
                 "properties": {
                     "doc_id": {"type": "string", "description": "Exact contrib/... lesson id."},
-                    "text": {"type": "string", "description": "Replacement lesson text (40..4000 chars)."},
-                    "reason": {"type": "string", "description": "Why the correction is being made (3..500 chars)."},
-                    "seat": {"type": "string", "description": "Your uppercase seat tag (required)."},
+                    "text": {
+                        "type": "string",
+                        "description": "Replacement lesson text (40..4000 chars).",
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "Why the correction is being made (3..500 chars).",
+                    },
+                    "seat": {
+                        "type": "string",
+                        "description": "Your uppercase seat tag (required).",
+                    },
                     "title": {"type": "string", "description": "Optional replacement title."},
                     "url": {"type": "string", "description": "Optional replacement link."},
                     "expected_revision": {"type": "integer", "minimum": 1},
@@ -377,8 +431,14 @@ def recall_tool_schemas() -> list[JsonDict]:
                 "type": "object",
                 "properties": {
                     "doc_id": {"type": "string", "description": "Exact contrib/... lesson id."},
-                    "reason": {"type": "string", "description": "Why the contribution is being retracted (3..500 chars)."},
-                    "seat": {"type": "string", "description": "Your uppercase seat tag (required)."},
+                    "reason": {
+                        "type": "string",
+                        "description": "Why the contribution is being retracted (3..500 chars).",
+                    },
+                    "seat": {
+                        "type": "string",
+                        "description": "Your uppercase seat tag (required).",
+                    },
                     "expected_revision": {"type": "integer", "minimum": 1},
                 },
                 "required": ["doc_id", "reason", "seat"],
