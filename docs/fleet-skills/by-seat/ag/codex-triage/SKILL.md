@@ -14,12 +14,7 @@ Unresolved threads block merge on every protected fleet repo even when checks ar
 
 ## 1. Fetch unresolved threads
 
-```bash
-OWNER="$(gh repo view --json owner --jq .owner.login)"
-REPO="$(gh repo view --json name --jq .name)"
-gh api graphql -f query="query { repository(owner:\"$OWNER\", name:\"$REPO\") { pullRequest(number: <N>) { reviewThreads(first: 100) { nodes { id isResolved path line comments(first: 10) { nodes { author { login } body diffHunk } } } } } } }" \
-  --jq '.data.repository.pullRequest.reviewThreads.nodes | map(select(.isResolved==false))'
-```
+List the review threads with the relay tool `gr_wf_review_threads` (`repo`, `number`; page with `cursor`), and keep only the threads whose `isResolved` is false.
 
 ## 2. Classify against current HEAD
 
@@ -39,11 +34,7 @@ One commit with a regression test per behavior change.  **Push before resolving
 
 Do not resolve without a reply.
 
-```bash
-gh api graphql -f query='mutation($t:ID!,$b:String!){addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$t,body:$b}){comment{id}}}' -F t=<threadId> -f b=<text>
-
-gh api graphql -f query='mutation($t:ID!){resolveReviewThread(input:{threadId:$t}){thread{isResolved}}}' -F t=<threadId>
-```
+Reply on the thread with the relay tool `gr_reply_thread` (`repo`, `number`, `comment_id` = the thread's comment id, `body` = the reply), then resolve it with the relay tool `gr_resolve_thread` (`repo`, `thread_id`).
 
 Reply shape (review-thread replies are PR text: a real U+00A0 plus a space between sentences, converted with the `perl` recipe in `sentence-gap`; since the 2026-10-23 owner ruling, prose files take the same U+00A0 plus a space, and code never does):
 
@@ -65,7 +56,7 @@ The instant the last thread resolves and CI is green, auto-merge fires.  Bots r
 ```bash
 git fetch origin
 # WRONG after squash: git merge-base --is-ancestor <fix-sha> origin/main
-gh pr list --head "$BRANCH" --state all --json number,state,mergedAt,url
+# MCP tool: gr_wf_pr_list_page --repo <owner/repo> --head "$BRANCH" --state all   -> number, state, mergedAt, url
 git diff origin/main...HEAD    # three-dot remaining unique work
 # helper: scripts/branch-landed.sh
 ```
