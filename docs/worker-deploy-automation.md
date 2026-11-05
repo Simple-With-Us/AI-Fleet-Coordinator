@@ -18,7 +18,7 @@ A redeploy replaces every isolate and restarts the Worker's Durable Objects, whi
 
 On every trigger, the script compares the live version's tag with main over that target's `paths`, minus its `ignore` globs (tests, READMEs).  No difference means no deploy, however many commits main has moved.  A change to a deploy script or workflow alone therefore deploys nothing; the push filter on `worker-deploy.yml` lets such a change run its tests.  Any doubt (no tag, a malformed tag, a tag that is not an ancestor of main) counts as changed.
 
-A test walks the MCP Worker's imports and fails if one falls outside its `paths`, because a missed path would leave a change undeployed.
+A test walks every target's imports from its Wrangler `main` and fails if one falls outside that target's `paths`, because a missed path would leave a change undeployed.
 
 ### Finding The Live Tag
 
@@ -26,15 +26,15 @@ A test walks the MCP Worker's imports and fails if one falls outside its `paths`
 
 ### Live Limits
 
-A Wrangler deploy from a config that does not declare `limits` could remove live CPU and subrequest limits.  Both pipelines refuse a deploy when the live Worker has a limit its config does not declare, so declare it in the config first.  A changed value in the config is allowed by the mapped pipeline.  In the alert pipeline any `wrangler.toml` change stays a manual reconciliation, as it was.
+An upload that does not declare `limits` removes live CPU and subrequest limits:  on Nov 4 at 8:25 PM an API upload with no limits removed the ones live on `simple-tools-mcp`.  Both pipelines therefore refuse a deploy when the live Worker has a limit its config does not declare, so declare it in the config first.  A changed value in the config is allowed by the mapped pipeline.  In the alert pipeline any `wrangler.toml` change stays a manual reconciliation, as it was.
 
 ## The Budget Guard
 
-The account watchdog stops a Worker by leaving a `workers/message` that starts with `GUARD-TRIPPED`.  Reconciling to main would silently undo that, so both pipelines read the live deployment and version first, and again just before upload, then refuse with a failed run.  In the alert pipeline the other target still proceeds, because qualification skips the stopped Worker as well.  Re-arming is manual: fix the cause, then deploy by hand with a normal message or run the watchdog's `rearm`, and the next run reconciles as usual.  The refusal reads only the newest deployment.  Any later deployment clears it, including a `wrangler secret put`, so do not change a stopped Worker's secrets by hand before you mean to re-arm it.
+The account watchdog stops a Worker by leaving a `workers/message` that starts with `GUARD-TRIPPED`.  Reconciling to main would silently undo that, so both pipelines read the live deployment and version first, and again just before upload, then refuse with a failed run.  In the alert pipeline the other target still proceeds, because qualification does not fail on a stopped Worker's probe.  It still reads that Worker's settings, config and tag baseline, so a receipt shows the credential reached it, and skips only the probe, which a stopped Worker fails by design.  Re-arming is manual:  fix the cause, then deploy by hand with a normal message or run the watchdog's `rearm`, and the next run reconciles as usual.  The refusal reads only the newest deployment.  Any later deployment clears it, including a `wrangler secret put`, so do not change a stopped Worker's secrets by hand before you mean to re-arm it.
 
 ## Alert Worker Receipts
 
-The alert pipeline needs `docs/releases/alert-credentials-qualified.json` before its first release.  It records one successful nondeployment run, proving the credential reaches the workflow and reads the live targets, with the release step skipped.
+The alert pipeline needs `docs/releases/alert-credentials-qualified.json` before its first release.  It records one successful nondeployment run, proving the credential reaches the workflow and reads each target that is not awaiting its Zulip cutover, with the release step skipped.
 
 The receipt is void only when what it proved changes: the workflow's two credential steps (matched by name) or `scripts/infisical-fetch.mjs`.  A lockfile, an action bump or a target list change leaves it valid.  Those are not left unguarded: every commit in the release range that touches `RELEASE_PATHS` must still be a merged pull request with a qualified Kody review and resolved threads, or the release refuses.
 
@@ -54,7 +54,7 @@ To record a receipt:
 3. Create the `MCP_CANARY_BEARER` repository secret with a bearer chosen for the canary.
 4. Set `WORKER_DEPLOY_ENABLED` and `SIMPLE_TOOLS_MCP_DEPLOY_ENABLED` to `true`.
 
-Once armed, a deploy waits if the Worker was deployed in the last hour, and the next scheduled run retries, so a burst of merges cannot restart the Durable Objects repeatedly.  After a deploy, the canary replaces trust in the static `/health` route: an unauthenticated `initialize` must answer the OAuth 401, then the bearer must initialize, list the tools and call the read-only `identities` tool.  The job refuses to start a deploy when the canary bearer is absent, and it runs the same canary against the old version before uploading, so an expired bearer stops the deploy instead of failing it after new code is live.  Seat bearers last 90 days.  A failed canary fails the run and leaves the new version live, so recovery is the rollback below.
+Once armed, a deploy waits if the Worker was deployed in the last hour, and the next scheduled run retries, so a burst of merges cannot restart the Durable Objects repeatedly.  The canary replaces trust in the static `/health` route:  an unauthenticated `initialize` must answer the OAuth 401, then the bearer must initialize, list the tools and call the read-only `identities` tool.  The job refuses to start a deploy when the canary bearer is absent, and it runs the same canary against the old version before uploading, so an expired bearer stops the deploy instead of failing it after new code is live.  Seat bearers last 90 days.  A failed canary fails the run and leaves the new version live, so recovery is the rollback below.  A run that deploys nothing certifies the live Worker the same way, so a failed canary keeps failing every scheduled run until it is fixed.  That costs five requests to the Worker per run, two runs an hour, once armed.
 
 ## Rollback And Roll-Forward
 

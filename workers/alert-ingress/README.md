@@ -242,7 +242,7 @@ The cleanup removes only the one-line alert rows.  The standing status message t
 
 ### Deployment gate
 
-The CI deployment gate for this Worker is `scripts/worker-targets.json` (OPS-W01).  The entry carries the functional probe, `https://alert-ingress.jays-services.workers.dev/health`, which answers `{"ok":true}`, so a deploy that breaks liveness is refused instead of shipped.  The `worker-deploy` workflow runs only when `vars.WORKER_DEPLOY_ENABLED` is `true`, and it deploys the exact main commit and checks the exact-version receipt.
+The CI deployment gate for this Worker is `scripts/worker-targets.json` (OPS-W01).  The entry names `.github/workflows/alert-workers-deploy.yml` as this Worker's one pipeline and carries the functional probe, `https://alert-ingress.jays-services.workers.dev/health`, which answers `{"ok":true}`, so a release that breaks liveness is refused instead of shipped.  That workflow releases only once a reviewed credential qualification receipt is recorded, and then a merge that changes this Worker's own files replaces every isolate and restarts the `ALERT_WRITER` Durable Object.  `docs/worker-deploy-automation.md` has the receipt steps.  The `worker-deploy` workflow no longer releases this Worker, so `vars.WORKER_DEPLOY_ENABLED` has no effect on it and the Oct 29 note below no longer describes the gate.
 
 As of Oct 29, 2026 that variable is not set in the repository, the organization or any environment.  Every `worker-deploy` run therefore ends `skipped`, and a merge does not redeploy this Worker.  The running version is the one this work deployed.  Arming the variable is an owner decision, because it would redeploy every mapped Worker on every push to `main`.
 

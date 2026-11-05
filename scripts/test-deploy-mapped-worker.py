@@ -39,6 +39,17 @@ def local_imports(entry):
     return seen
 
 
+def worker_entry(config):
+    """A Wrangler config's `main` file, which is relative to the config."""
+    path = pathlib.Path(config)
+    text = path.read_text()
+    if path.suffix == ".toml":
+        main = m.tomllib.loads(text)["main"]
+    else:
+        main = re.search(r'^\s*"main"\s*:\s*"([^"]+)"', text, re.MULTILINE).group(1)
+    return pathlib.Path(os.path.normpath(path.parent / main))
+
+
 class Reader:
     """A fake Cloudflare read keyed by path, so call order is not part of the contract."""
 
@@ -178,7 +189,7 @@ class Checks(unittest.TestCase):
         self.assertTrue(m.guard_tripped("x", reader("GUARD-TRIPPED rows written", None)))
         self.assertTrue(m.guard_tripped("x", reader(None, "GUARD-TRIPPED rows written")))
 
-    def run_main(self, target=None, env=None, **patches):
+    def run_main(self, target=None, env=None, canary_error=None, **patches):
         """Run main() for one target with every external edge mocked."""
         target = target or {
             "deployer": "worker-deploy",
@@ -205,7 +216,7 @@ class Checks(unittest.TestCase):
             patch.object(m.subprocess, "check_output", return_value=SHA_A + "\n"),
             patch.object(m.subprocess, "run") as run,
             patch.object(m, "probe") as probe,
-            patch.object(m, "mcp_canary") as canary,
+            patch.object(m, "mcp_canary", side_effect=canary_error) as canary,
         ):
             for active_patch in active:
                 active_patch.start()
@@ -223,14 +234,60 @@ class Checks(unittest.TestCase):
             outer.assert_not_called()
 
     def test_unrelated_merge_does_not_redeploy(self):
-        run, probe, _ = self.run_main(worker_changed=False)
+        run, probe, canary = self.run_main(worker_changed=False)
         run.assert_not_called()
         probe.assert_called_once()
+        canary.assert_called_once()
 
     def test_live_tag_equal_to_main_does_not_redeploy(self):
-        run, probe, _ = self.run_main(deployed_tag=SHA_A)
+        run, probe, canary = self.run_main(deployed_tag=SHA_A)
         run.assert_not_called()
         probe.assert_called_once()
+        canary.assert_called_once()
+
+    def test_a_failed_canary_fails_the_runs_that_deploy_nothing(self):
+        # A failed canary leaves the new version live, so the next scheduled run takes one
+        # of these paths and must not report the Worker healthy.
+        for patches in ({"deployed_tag": SHA_A}, {"worker_changed": False}):
+            with self.subTest(patches), self.assertRaisesRegex(RuntimeError, "MCP canary"):
+                self.run_main(canary_error=RuntimeError("MCP canary"), **patches)
+
+    def test_deploy_upload_and_git_reads_have_timeouts(self):
+        tags = iter([SHA_B, SHA_A])
+        with patch.object(m, "deployed_tag", side_effect=lambda name: next(tags)):
+            with (
+                patch.object(m.sys, "argv", ["deploy", "x"]),
+                patch.dict(
+                    m.TARGETS,
+                    {
+                        "x": {
+                            "deployer": "worker-deploy",
+                            "health": "https://example.invalid/health",
+                            "paths": ["src/**"],
+                            "command": ["wrangler", "deploy"],
+                            "config": "x.toml",
+                        }
+                    },
+                ),
+                patch.object(m.subprocess, "check_output", return_value=SHA_A + "\n") as rev_parse,
+                patch.object(m.subprocess, "run") as run,
+                patch.object(m, "verify_live"),
+                patch.object(m, "current_main", return_value=SHA_A),
+                patch.object(m, "guard_tripped", return_value=False),
+                patch.object(m, "worker_changed", return_value=True),
+                patch.object(m, "config_limits", return_value={}),
+                patch.object(m, "api", return_value={}),
+            ):
+                m.main()
+        self.assertEqual(rev_parse.call_args.kwargs["timeout"], m.GIT_TIMEOUT_SECONDS)
+        self.assertEqual(run.call_args.kwargs["timeout"], m.DEPLOY_TIMEOUT_SECONDS)
+
+    def test_a_git_timeout_counts_as_changed(self):
+        target = {"paths": ["workers/one/**"]}
+        hung = subprocess.TimeoutExpired("git", m.GIT_TIMEOUT_SECONDS)
+        with patch.object(m.subprocess, "run", side_effect=hung) as run:
+            self.assertTrue(m.worker_changed(SHA_A, SHA_B, target))
+        self.assertEqual(run.call_args.kwargs["timeout"], m.GIT_TIMEOUT_SECONDS)
 
     def test_changed_worker_deploys_with_exact_tag_after_receipt(self):
         tags = iter([SHA_B, SHA_A])
@@ -424,7 +481,7 @@ class Checks(unittest.TestCase):
 
     def repo(self, root):
         def git(*args):
-            subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, timeout=30)
 
         def commit(path, message):
             file = pathlib.Path(root, path)
@@ -433,7 +490,7 @@ class Checks(unittest.TestCase):
             git("add", ".")
             git("commit", "-qm", message)
             return subprocess.check_output(
-                ["git", "rev-parse", "HEAD"], cwd=root, text=True
+                ["git", "rev-parse", "HEAD"], cwd=root, text=True, timeout=30
             ).strip()
 
         git("init", "-q")
@@ -469,15 +526,16 @@ class Checks(unittest.TestCase):
             covered = any(m.fnmatch.fnmatchcase(path, glob) for glob in listed)
             self.assertTrue(covered, path + " is outside the workflow's push filter")
 
-    def test_every_local_import_of_the_mcp_worker_is_a_target_path(self):
-        target = m.TARGETS["simple-tools-mcp"]
-        root = pathlib.Path("scripts/agent-sync-mcp/src/index.js")
-        found = local_imports(root)
-        # A moved entry file must fail here, not pass by walking nothing.
-        self.assertTrue(root.exists())
-        self.assertGreater(len(found), 20)
-        missing = [str(p) for p in found if not m.path_is_relevant(str(p), target)]
-        self.assertEqual(missing, [])
+    def test_every_local_import_of_every_worker_is_a_target_path(self):
+        for name, target in m.TARGETS.items():
+            with self.subTest(name):
+                root = worker_entry(target["config"])
+                found = local_imports(root)
+                # A moved entry file must fail here, not pass by walking nothing.
+                self.assertTrue(root.exists())
+                self.assertGreater(len(found), 1)
+                missing = [str(p) for p in found if not m.path_is_relevant(str(p), target)]
+                self.assertEqual(missing, [])
 
     def test_matrix_holds_only_this_pipeline_and_has_probes(self):
         found = re.search(r"^\s*worker:\s*(\[.*\])\s*$", workflow_text(), re.MULTILINE)

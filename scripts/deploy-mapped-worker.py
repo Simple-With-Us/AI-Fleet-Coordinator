@@ -22,6 +22,8 @@ USER_AGENT = "AI-Fleet-Coordinator-worker-deploy/1.0"
 # must never redeploy over a trip, because that would silently undo it.  Re-arm is manual.
 GUARD_TRIPPED_PREFIX = "GUARD-TRIPPED"
 MAPPED_DEPLOYER = "worker-deploy"
+GIT_TIMEOUT_SECONDS = 30
+DEPLOY_TIMEOUT_SECONDS = 600
 
 
 def api(path):
@@ -138,13 +140,18 @@ def worker_changed(live, sha, target, cwd=None):
         return True
 
     def git(*args):
-        return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+        return subprocess.run(
+            ["git", *args], cwd=cwd, capture_output=True, text=True, timeout=GIT_TIMEOUT_SECONDS
+        )
 
-    if git("cat-file", "-e", live + "^{commit}").returncode != 0:
+    try:
+        if git("cat-file", "-e", live + "^{commit}").returncode != 0:
+            return True
+        if git("merge-base", "--is-ancestor", live, sha).returncode != 0:
+            return True
+        diff = git("diff", "--name-only", "--no-renames", "-z", live, sha)
+    except subprocess.TimeoutExpired:
         return True
-    if git("merge-base", "--is-ancestor", live, sha).returncode != 0:
-        return True
-    diff = git("diff", "--name-only", "--no-renames", "-z", live, sha)
     if diff.returncode != 0:
         return True
     return any(path_is_relevant(path, target) for path in diff.stdout.split("\0") if path)
@@ -290,6 +297,12 @@ def mcp_canary(target):
         raise RuntimeError("MCP canary: " + canary["tool"] + " returned an error")
 
 
+def verify_live(target):
+    """Certify the live Worker: /health alone cannot show that the /mcp path still works."""
+    probe(target)
+    mcp_canary(target)
+
+
 def main():
     name = sys.argv[1]
     if name not in TARGETS:
@@ -303,19 +316,23 @@ def main():
     if gate and os.environ.get(gate) != "true":
         print(gate + " is not armed; skipping " + name)
         return
-    sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    sha = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], text=True, timeout=GIT_TIMEOUT_SECONDS
+    ).strip()
     if current_main() != sha:
         print("Superseded; skipping")
         return
     if guard_tripped(name):
         raise SystemExit(name + " was stopped by the budget guard; re-arm by hand before deploying")
     tag = deployed_tag(name)
+    # A failed canary leaves the new version live, so these paths are the next run's only
+    # chance to see it.  They must not call the Worker healthy on the probe alone.
     if tag == sha:
-        probe(target)
+        verify_live(target)
         print("Already deployed and healthy")
         return
     if not worker_changed(tag, sha, target):
-        probe(target)
+        verify_live(target)
         print("No change to this Worker's files since " + tag[:12] + "; healthy, skipping")
         return
     minimum = target.get("min_deploy_interval_seconds")
@@ -332,11 +349,10 @@ def main():
     dropped = dropped_limits(settings.get("limits"), config_limits(target["config"]))
     if dropped:
         raise SystemExit("This deploy would drop live limits: " + ", ".join(dropped))
-    # Do not start a deployment unless probe credentials are present and old live service is healthy.
-    probe(target)
-    # Run the canary against the old version too: an expired or revoked bearer has to stop
-    # the deploy here, not fail the run after new code is already live.
-    mcp_canary(target)
+    # Do not start a deployment unless probe credentials are present and old live service is
+    # healthy.  This covers the canary too: an expired or revoked bearer has to stop the
+    # deploy here, not fail the run after new code is already live.
+    verify_live(target)
     if current_main() != sha:
         print("Superseded before upload; skipping")
         return
@@ -345,12 +361,12 @@ def main():
     subprocess.run(
         [*target["command"], "--keep-vars", "--strict", "--tag", sha, "--message", "main " + sha],
         check=True,
+        timeout=DEPLOY_TIMEOUT_SECONDS,
         env={**os.environ, "CLOUDFLARE_ACCOUNT_ID": ACCOUNT, "WRANGLER_SEND_METRICS": "false"},
     )
     if deployed_tag(name) != sha:
         raise RuntimeError("Exact version receipt does not match")
-    probe(target)
-    mcp_canary(target)
+    verify_live(target)
     print("Exact Worker version and functional probe verified: " + name + " " + sha)
 
 

@@ -114,13 +114,44 @@ class Tests(unittest.TestCase):
             patch.object(m, "current_main"),
             patch.object(m, "cutover_receipt", return_value=True),
             patch.object(m, "guard_tripped", side_effect=lambda name: name == "alert-ingress"),
-            patch.object(m, "cloudflare", return_value={}),
-            patch.object(m, "preflight_config"),
-            patch.object(m, "deployed_tag", return_value="a" * 40),
+            patch.object(m, "cloudflare", return_value={}) as read,
+            patch.object(m, "preflight_config") as preflight,
+            patch.object(m, "deployed_tag", return_value="a" * 40) as tag,
             patch.object(m, "probe", side_effect=probed.append),
         ):
             m.qualify_credentials()
         self.assertEqual(probed, [m.TARGETS["pr-conflict-watch"]])
+        # The receipt's proof holds for the stopped Worker too: only the probe is skipped.
+        self.assertEqual(preflight.call_count, 2)
+        self.assertEqual([c.args[0] for c in tag.call_args_list], list(m.TARGETS))
+        reads = [c.args[0] for c in read.call_args_list]
+        self.assertIn("/workers/scripts/alert-ingress/settings", reads)
+        self.assertIn("/workers/scripts/pr-conflict-watch/settings", reads)
+
+    def test_a_stopped_target_cannot_pass_qualification_unread(self):
+        def rejected(path):
+            raise RuntimeError("Cloudflare read rejected")
+
+        for patches, error in (
+            ({"cloudflare": rejected}, "read rejected"),
+            ({"deployed_tag": lambda name: None}, "Missing qualified live version baseline"),
+        ):
+            with (
+                self.subTest(error),
+                patch.dict(
+                    m.os.environ, {"CLOUDFLARE_API_TOKEN": "offline", "GH_TOKEN": "offline"}
+                ),
+                patch.object(m, "current_main"),
+                patch.object(m, "cutover_receipt", return_value=True),
+                patch.object(m, "guard_tripped", return_value=True),
+                patch.object(m, "preflight_config"),
+                patch.object(m, "cloudflare", patches.get("cloudflare", lambda path: {})),
+                patch.object(m, "deployed_tag", patches.get("deployed_tag", lambda name: "a" * 40)),
+                patch.object(m, "probe") as probe,
+                self.assertRaisesRegex(RuntimeError, error),
+            ):
+                m.qualify_credentials()
+            probe.assert_not_called()
 
     def release(self, guard, tags):
         """Run main() through a real target change, with every external edge mocked."""
