@@ -244,7 +244,8 @@ struct OpsActionSheet: View {
         case .planned: return "The plan could not be confirmed."
         case .refused: return "The helper refused the action."
         case .failed: return "The action failed."
-        case .unknown: return "The helper's answer could not be read."
+        case .unknown:
+            return outcome.runNotKnown ? "The Mac cannot say whether this ran." : "The helper's answer could not be read."
         }
     }
 

@@ -390,9 +390,10 @@ final class MachineStatusTests: XCTestCase {
         XCTAssertEqual(doctor.server.health, .notKnown)
     }
 
-    func testAReportThatDidNotComeFromTheServerIsRefused() throws {
+    func testAReportThatDidNotComeFromTheServerIsRefusedAndOffersAFetch() throws {
         let menu = MachineMenu(inputs(status: try statusReading(hostRole: "mac"), tools: try toolsReading()))
-        assertLines(menu, contain: ["This report did not come from the server."])
+        // The doctor's next fetch writes the server's own report over the wrong file.
+        assertLines(menu, contain: ["This report did not come from the server.", "Fetch From The Server Again\u{2026}"])
         XCTAssertEqual(menu.server.health, .notKnown)
         XCTAssertTrue(actions(in: menu.server.items).isEmpty)
     }

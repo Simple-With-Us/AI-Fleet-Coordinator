@@ -84,12 +84,49 @@ final class OpsActionPlaceTests: XCTestCase {
         XCTAssertEqual(outcome.detail, "The answer came from the Mac, but this button names the server, so nothing will run.")
     }
 
-    func testAnAnswerFromTheOtherMachineIsRefusedOnARun() {
+    /// The run may have done its work on the machine that answered,  so it is neither done
+    /// nor refused.
+    func testAnAnswerFromTheOtherMachineIsNotKnownOnARun() {
         let outcome = parse(#"{"ok":true,"result":"done","commands":[["x"]],"host":"mac"}"#,
                             mode: .yes, action: timerRestart)
-        XCTAssertEqual(outcome.kind, .refused)
+        XCTAssertEqual(outcome.kind, .unknown)
+        XCTAssertTrue(outcome.runNotKnown)
         XCTAssertFalse(outcome.isSuccess(for: .yes))
-        XCTAssertTrue(outcome.detail.contains("this button names the server"))
+        XCTAssertEqual(outcome.detail, "The answer came from the Mac, but this button names the server, so this cannot be counted as done.")
+    }
+
+    func testAPlanIsNeverARunThatIsNotKnown() {
+        let refused = parse(#"{"ok":true,"result":"planned","commands":[["x"]],"host":"mac"}"#,
+                            mode: .plan, action: timerRestart)
+        XCTAssertFalse(refused.runNotKnown)
+        let noWord = parse(#"{"ok":true,"result":"maybe","commands":[["x"]]}"#, mode: .plan, action: timerRestart)
+        XCTAssertEqual(noWord.kind, .unknown)
+        XCTAssertFalse(noWord.runNotKnown)
+    }
+
+    /// A host that is there and is not a string says nothing about the machine,  and it is
+    /// not the same as a helper too old to carry the field.
+    func testAHostThatIsNotAStringIsRefusedOnAPlan() {
+        let outcome = parse(#"{"ok":true,"result":"planned","commands":[["x"]],"host":7}"#,
+                            mode: .plan, action: timerRestart)
+        XCTAssertEqual(outcome.kind, .refused)
+        XCTAssertFalse(outcome.isSuccess(for: .plan))
+        XCTAssertNil(outcome.answeredFrom)
+        XCTAssertEqual(outcome.detail, "The answer named a machine this app does not know, but this button names the server, so nothing will run.")
+    }
+
+    func testAHostThatIsNotAStringDoesNotCountAsDoneOnARun() {
+        let outcome = parse(#"{"ok":true,"result":"done","commands":[["x"]],"host":["server"]}"#,
+                            mode: .yes, action: timerRestart)
+        XCTAssertEqual(outcome.kind, .unknown)
+        XCTAssertFalse(outcome.isSuccess(for: .yes))
+    }
+
+    func testANullHostIsAMissingHost() {
+        let outcome = parse(#"{"ok":true,"result":"planned","commands":[["x"]],"host":null}"#,
+                            mode: .plan, action: timerRestart)
+        XCTAssertTrue(outcome.isSuccess(for: .plan))
+        XCTAssertNil(outcome.answeredFrom)
     }
 
     func testAnAnswerNamingAMachineThisAppDoesNotKnowIsRefused() {
@@ -121,13 +158,32 @@ final class OpsActionPlaceTests: XCTestCase {
 
     func testAPlanThatCouldNotReachTheServerSaysNothingRan() {
         let silent = OpsProcessResult(exitCode: 255, stdout: "", stderr: "ssh: connect to host: Connection timed out")
-        XCTAssertEqual(OpsResultParser.parse(silent, mode: .plan, action: timerRestart, timeout: 90).detail,
-                       "The server did not answer, so nothing ran.")
-        XCTAssertEqual(OpsResultParser.parse(silent, mode: .yes, action: timerRestart, timeout: 90).detail,
-                       "The server did not answer, so the Mac cannot say whether this ran.")
-        let lookup = OpsProcessResult(exitCode: 255, stdout: "", stderr: "ssh: Could not resolve hostname fleet-ops-ctl")
+        let plan = OpsResultParser.parse(silent, mode: .plan, action: timerRestart, timeout: 90)
+        XCTAssertEqual(plan.detail, "The server did not answer, so nothing ran.")
+        XCTAssertEqual(plan.kind, .failed)
+        XCTAssertFalse(plan.runNotKnown)
+        let run = OpsResultParser.parse(silent, mode: .yes, action: timerRestart, timeout: 90)
+        XCTAssertEqual(run.detail, "The server did not answer, so the Mac cannot say whether this ran.")
+        XCTAssertEqual(run.kind, .unknown, "the words and the kind have to agree")
+        XCTAssertTrue(run.runNotKnown)
+        let lookup = OpsProcessResult(exitCode: 255, stdout: "", stderr: "ssh: Could not resolve hostname server.test")
+        let alias = OpsControlRoute.serverAlias
         XCTAssertEqual(OpsResultParser.parse(lookup, mode: .plan, action: timerRestart, timeout: 90).detail,
-                       "The Mac could not look up the server.\u{00A0} Check the Mac's network, then the fleet-ops-ctl alias in ~/.ssh/config.")
+                       "The Mac could not look up the server.\u{00A0} Check the Mac's network, then the \(alias) alias in ~/.ssh/config.")
+        // ssh stopped before anything reached the helper,  so a run that fails this way ran nothing.
+        let lookupRun = OpsResultParser.parse(lookup, mode: .yes, action: timerRestart, timeout: 90)
+        XCTAssertEqual(lookupRun.kind, .failed)
+        XCTAssertFalse(lookupRun.runNotKnown)
+    }
+
+    func testARunThatTimedOutIsNotKnownAndAPlanThatTimedOutFailed() {
+        let late = OpsProcessResult(exitCode: 15, stdout: "", stderr: "", timedOut: true)
+        let run = OpsResultParser.parse(late, mode: .yes, action: timerRestart, timeout: 90)
+        XCTAssertEqual(run.kind, .unknown)
+        XCTAssertTrue(run.runNotKnown)
+        let plan = OpsResultParser.parse(late, mode: .plan, action: timerRestart, timeout: 90)
+        XCTAssertEqual(plan.kind, .failed)
+        XCTAssertFalse(plan.runNotKnown)
     }
 
     // MARK: - The host on the services
@@ -194,7 +250,8 @@ final class ServiceActionRouterTests: XCTestCase {
             pm2: PM2Client(commands: commands, nodePath: "/usr/bin/node", pm2Path: "/usr/bin/pm2"),
             startup: startup,
             mcpServer: nil,
-            stopServer: { try await api.stopServer() })
+            stopServer: { try await api.stopServer() },
+            agentSettleInterval: 0)
         let admin = FleetAdmin(control: control,
                                startup: startup,
                                presence: ServerPresenceProbe(port: server.port, connect: { _ in server.presence() }),
@@ -388,6 +445,26 @@ final class ServiceActionRouterTests: XCTestCase {
         if case .failed = rig.router.actionState {} else {
             XCTFail("\(String(describing: rig.router.actionState))")
         }
+    }
+
+    // MARK: - A run the Mac cannot say anything about
+
+    func testARunAnsweredByTheOtherMachineIsNotKnownAndStaysWhenTheSheetCloses() async throws {
+        let rig = await makeRig(yes: #"{"ok":true,"result":"done","commands":[["x"]],"host":"mac"}"#)
+        try await runRedeploy(on: rig)
+        let reason = "The answer came from the Mac, but this button names the server, so this cannot be counted as done."
+        let expected = ServiceActionState.notKnown(ServiceActionSubject(action: Self.redeploy), reason: reason)
+        XCTAssertEqual(rig.router.actionState, expected)
+        rig.controller.dismiss()
+        XCTAssertEqual(rig.router.actionState, expected)
+    }
+
+    func testARunThatIsNotKnownNeverSaysItDidNotHappen() {
+        let shellular = ServiceActionSubject(title: "Shellular", host: .mac, action: .restart)
+        let state = ServiceActionState.notKnown(shellular, reason: "no answer")
+        XCTAssertEqual(FleetActionWords.line(for: state), "Whether Shellular restarted on the Mac is not known:  no answer")
+        XCTAssertEqual(FleetActionWords.panelProblem(actionState: state, adminProblem: nil),
+                       "Whether Shellular restarted on the Mac is not known:  no answer")
     }
 
     // MARK: - The whole reason,  in the Services panel

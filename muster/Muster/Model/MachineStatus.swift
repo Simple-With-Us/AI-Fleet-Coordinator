@@ -407,7 +407,9 @@ enum MachineMenuCopy {
             case .reporterOutOfDate:
                 items.append(.line("This Muster cannot read the server's report.\(gap)Update the server's reporter."))
             case .notFromServer:
+                // The next fetch writes the server's own report over this file.
                 items.append(.line("This report did not come from the server."))
+                offersFetch = true
             case .unreadable:
                 items.append(.line("The server's report on the Mac could not be read."))
                 offersFetch = true
@@ -602,7 +604,7 @@ enum MachineMenuCopy {
             return .command(title: line, .openMuster)
         case .running, .done:
             return .line(line)
-        case .failed:
+        case .failed, .notKnown:
             // The whole reason is in the Services panel,  selectable.
             return .command(title: oneRow(line), .openServices)
         }

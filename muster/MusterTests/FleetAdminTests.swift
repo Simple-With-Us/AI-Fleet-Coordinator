@@ -98,6 +98,100 @@ final class FleetAdminTests: XCTestCase {
         XCTAssertEqual(admin.entries.first { $0.id == "app.botfleet.companion" }?.stoppedByOwner, false)
     }
 
+    /// launchctl and the agent do not settle at the same moment,  so a stop that landed is
+    /// not read as one that did not,  and the owner's stop stays on the record.
+    func testAStopThatLandsAMomentLaterIsAStopAndKeepsTheRecord() async {
+        let commands = FleetAdminCommands()
+        commands.companionRunning = true
+        commands.looksBeforeAChangeShows = 2
+        let admin = makeAdmin(commands: commands, server: FleetAdminServer())
+        await waitForTheFleet(admin)
+
+        await admin.perform(.stop, serviceID: "app.botfleet.companion")
+
+        XCTAssertEqual(admin.lastResult?.succeeded, true)
+        XCTAssertNil(admin.problem)
+        XCTAssertEqual(admin.entries.first { $0.id == "app.botfleet.companion" }?.stoppedByOwner, true)
+    }
+
+    func testAStartThatLandsAMomentLaterIsAStart() async {
+        let commands = FleetAdminCommands()
+        commands.looksBeforeAChangeShows = 2
+        let admin = makeAdmin(commands: commands, server: FleetAdminServer())
+        await waitForTheFleet(admin)
+
+        await admin.perform(.start, serviceID: "app.botfleet.companion")
+
+        XCTAssertEqual(admin.lastResult?.succeeded, true)
+        XCTAssertNil(admin.problem)
+    }
+
+    /// launchd's view of the wrapper says nothing about the server,  so a restart is not
+    /// done until the port answers.
+    func testARestartedServerWhosePortStaysClosedIsNotReportedAsRestarted() async {
+        let commands = FleetAdminCommands()
+        commands.serverWrapperRuns = true
+        let server = FleetAdminServer()
+        let admin = makeAdmin(commands: commands, server: server, wrapperInstalled: true,
+                              startWait: ServerPortWait(attempts: 2, interval: 0))
+        await waitForTheFleet(admin)
+        server.closePort(forLooks: .max)
+
+        await admin.perform(.restart, serviceID: FleetServiceRegistry.server.id)
+
+        XCTAssertEqual(admin.lastResult?.succeeded, false)
+        XCTAssertEqual(admin.problem,
+                       "BotFleet Server did not restart on the Mac:  nothing answers on its port on the Mac yet")
+    }
+
+    func testARestartedServerWhosePortAnswersIsRestarted() async {
+        let commands = FleetAdminCommands()
+        commands.serverWrapperRuns = true
+        let server = FleetAdminServer()
+        let admin = makeAdmin(commands: commands, server: server, wrapperInstalled: true,
+                              startWait: ServerPortWait(attempts: 3, interval: 0))
+        await waitForTheFleet(admin)
+        server.closePort(forLooks: 2)
+
+        await admin.perform(.restart, serviceID: FleetServiceRegistry.server.id)
+
+        XCTAssertEqual(admin.lastResult?.succeeded, true)
+        XCTAssertNil(admin.problem)
+    }
+
+    /// A start has its own budget:  a server slower to come up than a port is to close is
+    /// not a start that failed.
+    func testAStartIsGivenItsOwnBudgetAndNotTheStopWait() async {
+        let server = FleetAdminServer()
+        let admin = makeAdmin(commands: FleetAdminCommands(), server: server, wrapperInstalled: true,
+                              stopWait: ServerPortWait(attempts: 1, interval: 0),
+                              startWait: ServerPortWait(attempts: 6, interval: 0))
+        await waitForTheFleet(admin)
+        server.closePort(forLooks: 4)
+
+        await admin.perform(.start, serviceID: FleetServiceRegistry.server.id)
+
+        XCTAssertEqual(admin.lastResult?.succeeded, true)
+        XCTAssertNil(admin.problem)
+    }
+
+    func testAStartThatNeverAnswersSaysSo() async {
+        let server = FleetAdminServer()
+        let admin = makeAdmin(commands: FleetAdminCommands(), server: server, wrapperInstalled: true,
+                              startWait: ServerPortWait(attempts: 2, interval: 0))
+        await waitForTheFleet(admin)
+        server.closePort(forLooks: .max)
+
+        await admin.perform(.start, serviceID: FleetServiceRegistry.server.id)
+
+        XCTAssertEqual(admin.lastResult?.reason, "nothing answers on its port on the Mac yet")
+    }
+
+    func testAStartWaitsAsLongAsAnyOtherServiceAndLongerThanAStop() {
+        XCTAssertEqual(Double(ServerPortWait.start.attempts) * ServerPortWait.start.interval, 20)
+        XCTAssertLessThan(Double(ServerPortWait.stop.attempts) * ServerPortWait.stop.interval, 20)
+    }
+
     /// The stop alert reads the work in flight now,  and an answer that did not come is not
     /// the same as nothing in flight.
     func testTheStopConfirmationReadsWhatIsInFlightNow() async {
@@ -178,7 +272,10 @@ final class FleetAdminTests: XCTestCase {
     /// An admin that talks to fakes rather than to this Mac.
     private func makeAdmin(commands: FleetAdminCommands,
                             server: FleetAdminServer,
-                            refreshInterval: TimeInterval? = nil) -> FleetAdmin {
+                            refreshInterval: TimeInterval? = nil,
+                            wrapperInstalled: Bool = false,
+                            stopWait: ServerPortWait = .stop,
+                            startWait: ServerPortWait = ServerPortWait(attempts: 8, interval: 0)) -> FleetAdmin {
         // The startup policy looks for the installed wrapper and the launch agents
         // under the home it is given,  so a home of its own keeps the test away
         // from the real Mac.
@@ -190,6 +287,14 @@ final class FleetAdminTests: XCTestCase {
             FileManager.default.createFile(atPath: agents.appendingPathComponent("\(label).plist").path,
                                            contents: Data("<plist/>".utf8))
         }
+        if wrapperInstalled {
+            // A wrapper that can carry the startup policy,  which a start or a restart of
+            // the server needs.
+            let apps = home.appendingPathComponent("apps", isDirectory: true)
+            try? FileManager.default.createDirectory(at: apps, withIntermediateDirectories: true)
+            FileManager.default.createFile(atPath: apps.appendingPathComponent("botfleet-server-start.sh").path,
+                                           contents: Data("BF_CONTROL_STARTUP_POLICY_V1".utf8))
+        }
 
         let startup = StartupPolicy(home: home, commands: commands, uid: 501, environment: [:])
         let api = ControlAPI(session: FleetAdminServer.session(),
@@ -198,11 +303,14 @@ final class FleetAdminTests: XCTestCase {
             pm2: PM2Client(commands: commands, nodePath: "/usr/bin/node", pm2Path: "/usr/bin/pm2"),
             startup: startup,
             mcpServer: nil,
-            stopServer: { try await api.stopServer() })
+            stopServer: { try await api.stopServer() },
+            agentSettleInterval: 0)
         return FleetAdmin(control: control,
                           startup: startup,
                           presence: ServerPresenceProbe(port: server.port, connect: { _ in server.presence() }),
                           api: api,
+                          stopWait: stopWait,
+                          startWait: startWait,
                           refreshInterval: refreshInterval)
     }
 }
@@ -230,6 +338,15 @@ private final class FleetAdminCommands: CommandRunning {
     private let boot = UUID().uuidString
     /// True when launchd keeps reporting the companion running,  whatever it is asked.
     var companionStaysUp = false
+    /// True when launchd has a process behind the companion's agent.
+    var companionRunning = false
+    /// True when launchd has a process behind the server's wrapper.
+    var serverWrapperRuns = false
+    /// How many listings still show the companion as it was after launchd is asked to
+    /// change it.
+    var looksBeforeAChangeShows = 0
+    /// The change launchd was asked for,  and how many more listings until it shows.
+    private var pendingChange: (running: Bool, looks: Int)?
 
     var calls: [FleetAdminCall] {
         lock.lock()
@@ -247,13 +364,29 @@ private final class FleetAdminCommands: CommandRunning {
         recorded.append(FleetAdminCall(executable: executable,
                                        arguments: arguments,
                                        onMainThread: Thread.isMainThread))
-        lock.unlock()
+        defer { lock.unlock() }
+        if executable == "/bin/launchctl" {
+            if arguments.first == "bootout" {
+                pendingChange = (running: false, looks: looksBeforeAChangeShows)
+            } else if arguments.first == "kickstart" {
+                pendingChange = (running: true, looks: looksBeforeAChangeShows)
+            }
+        }
         if executable == "/bin/launchctl", arguments == ["list"] {
-            // Neither the server's agent nor the companion's has a process
+            if let change = pendingChange {
+                if change.looks > 0 {
+                    pendingChange = (running: change.running, looks: change.looks - 1)
+                } else {
+                    companionRunning = change.running
+                    pendingChange = nil
+                }
+            }
+            // By default neither the server's agent nor the companion's has a process
             // behind it,  so launchd reports both as stopped.
-            return companionStaysUp
-                ? "PID\tStatus\tLabel\n4242\t0\tapp.botfleet.companion"
-                : "PID\tStatus\tLabel\n-\t0\tother.service"
+            var rows = ["PID\tStatus\tLabel", "-\t0\tother.service"]
+            if companionStaysUp || companionRunning { rows.append("4242\t0\tapp.botfleet.companion") }
+            if serverWrapperRuns { rows.append("4243\t0\tapp.botfleet.server") }
+            return rows.joined(separator: "\n")
         }
         if executable == "/usr/sbin/sysctl" { return boot }
         if arguments.contains("jlist") { return "[]" }
@@ -279,6 +412,8 @@ final class FleetAdminServer {
     private var stoppedNow = false
     private var looks = 0
     private var work: String?
+    /// How many more looks find the port closed.  Nil when the port follows the server.
+    private var closedLooks: Int?
 
     /// The `blockingWork` value the server's status carries,  as JSON,  or nil for none.
     var blockingWorkJSON: String? {
@@ -330,6 +465,13 @@ final class FleetAdminServer {
         state.unlock()
     }
 
+    /// Nothing answers on the port for this many looks,  and then the server does.
+    func closePort(forLooks count: Int) {
+        state.lock()
+        closedLooks = count
+        state.unlock()
+    }
+
     /// What the port says.
     ///
     /// The server is up until it is asked to stop,  and it lets go of the port a
@@ -338,6 +480,11 @@ final class FleetAdminServer {
     func presence() -> ServerPresence {
         state.lock()
         defer { state.unlock() }
+        if let closed = closedLooks {
+            guard closed > 0 else { return .present }
+            closedLooks = closed - 1
+            return .absent
+        }
         guard stoppedNow else { return .present }
         looks += 1
         return looks >= 2 ? .absent : .present

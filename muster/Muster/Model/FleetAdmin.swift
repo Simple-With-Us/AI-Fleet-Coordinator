@@ -2,21 +2,28 @@ import Combine
 import Foundation
 import ServiceManagement
 
-/// How long the admin waits for the BotFleet Server's port to close after a stop.
+/// How long the admin watches the BotFleet Server's port after a change.
 ///
-/// The server's own stop is asynchronous,  so the wait is a budget rather than a
-/// promise:  a server that is still there when the budget runs out is left as it is,
-/// and the read that follows reports it as unknown rather than as stopped.
-struct ServerStopWait: Equatable {
+/// The server moves on its own time,  so the wait is a budget rather than a promise:  a
+/// server that has not got there when the budget runs out is left as it is,  and the
+/// read that follows reports what it finds.
+struct ServerPortWait: Equatable, Sendable {
     /// How many times the port is looked at.
     let attempts: Int
     /// How long the admin waits between two looks.
     let interval: TimeInterval
 
-    init(attempts: Int = 8, interval: TimeInterval = 0.5) {
+    init(attempts: Int, interval: TimeInterval) {
         self.attempts = max(1, attempts)
         self.interval = max(0, interval)
     }
+
+    /// The port closes soon after a stop.
+    static let stop = ServerPortWait(attempts: 8, interval: 0.5)
+    /// The server takes longer to come up than to go,  so a start or a restart gets the
+    /// twenty seconds any other service gets.
+    static let start = ServerPortWait(attempts: PM2Client.settleAttempts,
+                                      interval: FleetServiceControl.settleInterval)
 }
 
 /// How one action on the direct route ended.
@@ -127,7 +134,9 @@ final class FleetAdmin: ObservableObject {
     /// How many reads are in flight,  so an older read ending does not say none is.
     private var readsInFlight = 0
     /// How long a stop waits for the server's port to close.
-    private let stopWait: ServerStopWait
+    private let stopWait: ServerPortWait
+    /// How long a start or a restart waits for the server's port to answer.
+    private let startWait: ServerPortWait
     /// The repeating read.
     private var refreshLoop: Task<Void, Never>?
 
@@ -141,7 +150,8 @@ final class FleetAdmin: ObservableObject {
          startup: StartupPolicy = StartupPolicy(),
          presence: ServerPresenceProbe = ServerPresenceProbe(),
          api: ControlAPI = ControlAPI(),
-         stopWait: ServerStopWait = ServerStopWait(),
+         stopWait: ServerPortWait = .stop,
+         startWait: ServerPortWait = .start,
          refreshInterval: TimeInterval? = FleetAdmin.refreshInterval) {
         let mcp = try? McpServerControl()
         self.mcpServer = mcp
@@ -149,6 +159,7 @@ final class FleetAdmin: ObservableObject {
         self.presence = presence
         self.api = api
         self.stopWait = stopWait
+        self.startWait = startWait
         self.control = control ?? FleetServiceControl(
             pm2: PM2Client(),
             startup: startup,
@@ -292,13 +303,13 @@ final class FleetAdmin: ObservableObject {
                 // as the server is healthy,  so launchctl cannot say whether the
                 // server is still serving:  it says stopped while the server is up.
                 // The port can say it,  so a stop waits for the port to close,  a start
-                // waits for it to open,  and the read that follows reports the server
-                // as it really is.
+                // or a restart waits for it to answer,  and the read that follows reports
+                // the server as it really is.
                 if action == .stop {
                     let gone = await Self.waitForTheServerToGo(presence: presence, wait: stopWait)
                     if !gone { reason = "its port on the Mac is still answering" }
-                } else if action == .start {
-                    let there = await Self.waitForTheServerToAnswer(presence: presence, wait: stopWait)
+                } else if action == .start || action == .restart {
+                    let there = await Self.waitForTheServerToAnswer(presence: presence, wait: startWait)
                     if !there { reason = "nothing answers on its port on the Mac yet" }
                 }
                 // The state the manager reported is the launchd view of a wrapper,
@@ -371,7 +382,7 @@ final class FleetAdmin: ObservableObject {
     /// follows reports it as unknown rather than as stopped.
     @discardableResult
     nonisolated static func waitForTheServerToGo(presence: ServerPresenceProbe,
-                                                 wait: ServerStopWait) async -> Bool {
+                                                 wait: ServerPortWait) async -> Bool {
         for _ in 0..<wait.attempts {
             if presence.presence() == .absent { return true }
             try? await Task.sleep(nanoseconds: UInt64(wait.interval * 1_000_000_000))
@@ -379,9 +390,9 @@ final class FleetAdmin: ObservableObject {
         return presence.presence() == .absent
     }
 
-    /// Waits for something to answer on the BotFleet Server's port after a start.
+    /// Waits for something to answer on the BotFleet Server's port after a start or a restart.
     nonisolated static func waitForTheServerToAnswer(presence: ServerPresenceProbe,
-                                                     wait: ServerStopWait) async -> Bool {
+                                                     wait: ServerPortWait) async -> Bool {
         for _ in 0..<wait.attempts {
             if presence.presence() != .absent { return true }
             try? await Task.sleep(nanoseconds: UInt64(wait.interval * 1_000_000_000))

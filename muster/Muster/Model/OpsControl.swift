@@ -867,6 +867,9 @@ struct OpsResult: Decodable, Equatable {
     let baselineStartMonotonic: UInt64?
     /// The machine the helper says it ran on,  when it says.  Knob answers never carry it.
     let host: String?
+    /// True when `host` is there and is not a string,  which is not the same as a helper
+    /// too old to say.
+    let hostIsMalformed: Bool
 
     enum CodingKeys: String, CodingKey {
         case ok, verb, target, commands, result, detail, old, new, lkg, output, lines, resourcePolicy
@@ -896,6 +899,8 @@ struct OpsResult: Decodable, Equatable {
         invocationID = try? container.decodeIfPresent(String.self, forKey: .invocationID)
         baselineStartMonotonic = try? container.decodeIfPresent(UInt64.self, forKey: .baselineStartMonotonic)
         host = try? container.decodeIfPresent(String.self, forKey: .host)
+        hostIsMalformed = host == nil && container.contains(.host)
+            && (try? container.decodeNil(forKey: .host)) != true
     }
 }
 
@@ -979,6 +984,9 @@ struct OpsOutcome: Equatable {
     /// The machine the helper said it ran on.  Nil when it did not say,  which is not an
     /// error:  the installed copy of the helper may predate the field.
     var answeredFrom: FleetHost? = nil
+    /// True when a run may have done its work and the Mac cannot say:  it lost the helper,
+    /// or the answer does not count.  A plan changes nothing,  so a plan is never this.
+    var runNotKnown: Bool = false
 
     /// True when the run did what its mode asks for:  a plan that planned,  or a run that
     /// was done.  The helper's `ok`,  its result word and its exit code must all agree.
@@ -1019,8 +1027,10 @@ enum OpsResultParser {
 
     /// What a run came to.
     ///
-    /// Every way of not knowing ends as a failure,  never as a success:  a run that timed
-    /// out,  an answer that is not JSON,  and a plan that answers "done" all read as failed.
+    /// Every way of not knowing ends short of a success.  A plan changes nothing,  so one
+    /// that timed out or is not JSON failed.  A run that timed out,  lost the server or was
+    /// answered by the wrong machine may have done its work,  so it reads as unknown,  and
+    /// `refused` and `failed` stay for what is known to have ended that way.
     static func parse(
         _ result: OpsProcessResult,
         mode: OpsMode,
@@ -1029,16 +1039,19 @@ enum OpsResultParser {
     ) -> OpsOutcome {
         if result.timedOut {
             return OpsOutcome(
-                kind: .failed, ok: false, commands: [],
+                kind: mode == .yes ? .unknown : .failed, ok: false, commands: [],
                 detail: "The helper did not finish within \(Int(timeout)) seconds.",
-                exitCode: result.exitCode
+                exitCode: result.exitCode,
+                runNotKnown: mode == .yes
             )
         }
         guard let answer = decode(result.stdout) else {
+            let lost = lostTheServer(result, action: action, mode: mode)
             return OpsOutcome(
-                kind: .failed, ok: false, commands: [],
+                kind: lost ? .unknown : .failed, ok: false, commands: [],
                 detail: unreadableDetail(result, action: action, mode: mode),
-                exitCode: result.exitCode
+                exitCode: result.exitCode,
+                runNotKnown: lost
             )
         }
         var kind = OpsResultKind(rawValue: answer.result ?? "") ?? .unknown
@@ -1079,13 +1092,14 @@ enum OpsResultParser {
         else if case .knobUnset = action { isKnobAction = true }
         else { isKnobAction = false }
         // The answer names the machine it came from,  when the helper is new enough to say.
-        // An answer from the other machine is refused,  on a plan and on a run:  the button
-        // named one machine and another one replied.
+        // The button named one machine and another one replied.  A plan that does is refused,
+        // because nothing has run.  A run that does may have done its work on that machine,
+        // so it does not count as done and the Mac cannot call it refused either.
         var answeredFrom: FleetHost?
-        if !isKnobAction, let named = answer.host {
-            answeredFrom = FleetHost(reportValue: named)
+        if !isKnobAction, answer.host != nil || answer.hostIsMalformed {
+            answeredFrom = FleetHost(reportValue: answer.host)
             if answeredFrom != action.runsOn {
-                kind = .refused
+                kind = mode == .plan ? .refused : .unknown
                 detail = wrongMachineDetail(answeredFrom, action: action, mode: mode)
             }
         }
@@ -1123,8 +1137,19 @@ enum OpsResultParser {
             invocationID: invocationID,
             executionState: answer.executionState,
             baselineStartMonotonic: answer.baselineStartMonotonic,
-            answeredFrom: answeredFrom
+            answeredFrom: answeredFrom,
+            runNotKnown: mode == .yes && kind == .unknown
         )
+    }
+
+    /// True when a run lost the server part way:  ssh failed for a reason other than the
+    /// ones that stop it before anything reaches the helper.
+    private static func lostTheServer(_ result: OpsProcessResult, action: OpsAction, mode: OpsMode) -> Bool {
+        guard mode == .yes, action.runsOnServer, result.exitCode == 255 else { return false }
+        let errors = result.stderr.lowercased()
+        return !errors.contains("could not resolve hostname")
+            && !errors.contains("permission denied")
+            && !errors.contains("host key verification failed")
     }
 
     /// The fixed sentence for an answer that did not come from the machine the button names.

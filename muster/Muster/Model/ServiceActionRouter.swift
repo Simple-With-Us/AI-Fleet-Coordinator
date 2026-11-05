@@ -134,12 +134,15 @@ enum ServiceActionState: Equatable {
     case running(ServiceActionSubject)
     case done(ServiceActionSubject, at: Date)
     case failed(ServiceActionSubject, reason: String)
+    /// A run that may have done its work,  and the Mac cannot say.
+    case notKnown(ServiceActionSubject, reason: String)
 
     var subject: ServiceActionSubject {
         switch self {
         case .waiting(let subject), .running(let subject): return subject
         case .done(let subject, _): return subject
         case .failed(let subject, _): return subject
+        case .notKnown(let subject, _): return subject
         }
     }
 }
@@ -191,6 +194,14 @@ enum FleetActionWords {
             case .readLogs: return "The logs of \(subject.title) were not read \(place):  \(reason)"
             case .other: return "\(subject.title):  did not finish:  \(reason)"
             }
+        case .notKnown(_, let reason):
+            switch subject.verb {
+            case .start: return "Whether \(subject.title) started \(place) is not known:  \(reason)"
+            case .stop: return "Whether \(subject.title) stopped \(place) is not known:  \(reason)"
+            case .restart: return "Whether \(subject.title) restarted \(place) is not known:  \(reason)"
+            case .readLogs: return "Whether the logs of \(subject.title) were read \(place) is not known:  \(reason)"
+            case .other: return "\(subject.title):  how it ended is not known:  \(reason)"
+            }
         }
     }
 
@@ -203,8 +214,11 @@ enum FleetActionWords {
     /// and neither hides the other.
     static func panelProblem(actionState: ServiceActionState?, adminProblem: String?) -> String? {
         var parts: [String] = []
-        if case .some(.failed) = actionState, let actionState {
-            parts.append(line(for: actionState))
+        if let actionState {
+            switch actionState {
+            case .failed, .notKnown: parts.append(line(for: actionState))
+            case .waiting, .running, .done: break
+            }
         }
         if let adminProblem, !parts.contains(adminProblem) {
             parts.append(adminProblem)
@@ -429,7 +443,7 @@ final class ServiceActionRouter: ObservableObject {
             switch actionState {
             case .some(.waiting): actionState = nil
             case .some(.running): if !directInFlight { actionState = nil }
-            case .some(.done), .some(.failed), .none: break
+            case .some(.done), .some(.failed), .some(.notKnown), .none: break
             }
         case .planning(let action), .review(let action, _):
             actionState = .waiting(sheetSubject(for: action))
@@ -445,6 +459,8 @@ final class ServiceActionRouter: ObservableObject {
                 // Accepted and not yet verified,  which is not a failure.  The sheet says so,
                 // and this line goes when the sheet closes.
                 actionState = .running(made)
+            } else if outcome.runNotKnown {
+                actionState = .notKnown(made, reason: outcome.detail)
             } else {
                 actionState = .failed(made, reason: outcome.detail)
             }
