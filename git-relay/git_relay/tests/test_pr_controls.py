@@ -85,14 +85,32 @@ class PrControls(unittest.TestCase):
         for action in (
             "wf_pr_draft",
             "wf_pr_ready",
-            "wf_pr_close",
-            "wf_pr_reopen",
             "wf_automerge_enable",
             "wf_automerge_disable",
         ):
             self.assertEqual(
                 SPECS[action][0], {"pull_requests": "write", "contents": "write"}, action
             )
+        # GitHub documents closing and reopening under pull requests:  write alone, until a live run shows otherwise.
+        for action in ("wf_pr_close", "wf_pr_reopen"):
+            self.assertEqual(SPECS[action][0], {"pull_requests": "write"}, action)
+
+    def test_close_is_fenced_on_the_head_when_asked(self):
+        good, bad = "a" * 40, "b" * 40
+        pull = {"id": "PR_abc", "state": "CLOSED"}
+        read = {"node_id": "PR_abc", "state": "open", "head": {"sha": good}}
+        c = Client(read, {"data": {"closePullRequest": {"pullRequest": pull}}})
+        h = WorkflowVerbs(c, Policy(), "swu-wise", "private", "swu-wise", "wf_pr_close", REPO)
+        self.assertEqual(
+            h.run("wf_pr_close", {"repo": REPO, "number": 1, "expected_head_sha": good}),
+            {"pull": pull},
+        )
+        for expected in (bad, "not-a-sha"):
+            c = Client(read)
+            h = WorkflowVerbs(c, Policy(), "swu-wise", "private", "swu-wise", "wf_pr_close", REPO)
+            with self.assertRaises(Refused):
+                h.run("wf_pr_close", {"repo": REPO, "number": 1, "expected_head_sha": expected})
+            self.assertEqual(len(c.calls), 1, "no write after a refused fence")
 
     def test_close_is_unknown_when_the_state_did_not_change(self):
         for pull in ({"id": "PR_abc", "state": "OPEN"}, {"id": "PR_other", "state": "CLOSED"}):

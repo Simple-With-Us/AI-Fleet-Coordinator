@@ -186,8 +186,8 @@ SPECS = {
     "wf_tag_delete": ({"contents": "write"}, True),
     "wf_pr_draft": ({"pull_requests": "write", "contents": "write"}, True),
     "wf_pr_ready": ({"pull_requests": "write", "contents": "write"}, True),
-    "wf_pr_close": ({"pull_requests": "write", "contents": "write"}, True),
-    "wf_pr_reopen": ({"pull_requests": "write", "contents": "write"}, True),
+    "wf_pr_close": ({"pull_requests": "write"}, True),
+    "wf_pr_reopen": ({"pull_requests": "write"}, True),
     "wf_automerge_enable": ({"pull_requests": "write", "contents": "write"}, True),
     "wf_automerge_disable": ({"pull_requests": "write", "contents": "write"}, True),
     "wf_review_threads": ({"pull_requests": "read"}, False),
@@ -3410,6 +3410,13 @@ class WorkflowVerbs:
         data, node = self._pr_read(repo, _int(args, "number"))
         if data.get("merged") is True:
             raise Refused("a merged PR cannot change state")
+        if "expected_head_sha" in args:
+            expected = args["expected_head_sha"]
+            if not isinstance(expected, str) or not _SHA.fullmatch(expected):
+                raise Refused("invalid expected_head_sha")
+            head = data.get("head")
+            if not isinstance(head, dict) or head.get("sha") != expected:
+                raise Refused("PR head moved")
         if str(data.get("state")).upper() == wanted:
             return {"pull": {"id": node, "state": wanted}}
         query = (
@@ -3422,12 +3429,15 @@ class WorkflowVerbs:
         return {"pull": pull}
 
     def wf_pr_close(self, repo, args):
-        """Close without merging.  GitHub refuses a merged PR.  Who may close whose PR is fleet policy, in AGENTS.md."""
-        _only(args, ("repo", "number"))
+        """Close without merging.  GitHub refuses a merged PR.  Who may close whose PR is fleet policy, in AGENTS.md.
+
+        expected_head_sha, when given, stops the close if someone pushed after the caller decided to close.
+        """
+        _only(args, ("repo", "number", "expected_head_sha"))
         return self._pr_set_state(repo, args, "closePullRequest", "CLOSED")
 
     def wf_pr_reopen(self, repo, args):
-        _only(args, ("repo", "number"))
+        _only(args, ("repo", "number", "expected_head_sha"))
         return self._pr_set_state(repo, args, "reopenPullRequest", "OPEN")
 
     def wf_automerge_disable(self, repo, args):
