@@ -401,7 +401,9 @@ def _expected_revision_arg(value: Any) -> int | None:
     if value is None:
         return None
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-        raise RecallUnavailable("invalid_argument", "argument 'expected_revision' must be a positive integer")
+        raise RecallUnavailable(
+            "invalid_argument", "argument 'expected_revision' must be a positive integer"
+        )
     return value
 
 

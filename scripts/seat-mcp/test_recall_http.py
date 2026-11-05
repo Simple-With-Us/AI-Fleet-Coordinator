@@ -88,9 +88,16 @@ class RecallHttpTest(unittest.TestCase):
         recall_bridge._call = lambda fn_name, **kwargs: kwargs  # type: ignore[attr-defined]
         try:
             for expected_revision in (1.5, "1", True, 0, 1000001):
-                with self.assertRaisesRegex(SeatError, "expected_revision", msg=repr(expected_revision)):
+                with self.assertRaisesRegex(
+                    SeatError, "expected_revision", msg=repr(expected_revision)
+                ):
                     recall_bridge.recall_retract(
-                        {"doc_id": "d", "reason": "obsolete", "seat": "GROK", "expected_revision": expected_revision}
+                        {
+                            "doc_id": "d",
+                            "reason": "obsolete",
+                            "seat": "GROK",
+                            "expected_revision": expected_revision,
+                        }
                     )
             result = recall_bridge.recall_retract(
                 {"doc_id": "d", "reason": "obsolete", "seat": "GROK", "expected_revision": 2}
