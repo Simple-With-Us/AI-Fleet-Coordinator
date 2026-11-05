@@ -54,8 +54,11 @@ counts, `a=1,b=2` or a JSON object).
 
 ## Adding a knob
 
-1. Add a `Spec` to `registry.py` (owner component, kind, default, and how a local file may
-   narrow it).
+1. Add a `Spec` to `registry.py` (owner component, kind, default, how a local file may
+   narrow it, its group and plain label, and the machines and jobs that read it:  `hosts`
+   and `consumers`, or `unknown` and none when nothing here reads it yet).  Then also run
+   `python3 -m fleet_knobs inventory --write-json fleet_knobs/registry.json`, which Muster's
+   Controls tab reads;  a test fails when it drifts.
 2. From `scripts/`:  `python3 -m fleet_knobs inventory --write ../INFISICAL.md`.  CI fails
    when the registry and the INFISICAL.md block differ.
 3. Read it with `knobs.get`.  Never read the environment or a local file for a mode.
@@ -64,9 +67,15 @@ counts, `a=1,b=2` or a JSON object).
 
 ```
 python3 -m fleet_knobs status [--json]     source and set or unset per knob;  secrets never shown
+python3 -m fleet_knobs status --json --values
+                                           the same plus non-secret values, write_token present
+                                           or missing (never the token) and checked_epoch;  Muster
 python3 -m fleet_knobs get NAME            one non-secret value (stale goes to stderr)
 python3 -m fleet_knobs inventory [--check|--write FILE]
+python3 -m fleet_knobs inventory [--json|--check-json|--write-json FILE]
+                                           fleet_knobs/registry.json, every field Muster shows
 python3 -m fleet_knobs set NAME VALUE (--plan|--yes) [--json]
+python3 -m fleet_knobs unset NAME (--plan|--yes) [--json]
 ```
 
 `status` exits 3 when Infisical was unreachable.  It is the check after the first values are

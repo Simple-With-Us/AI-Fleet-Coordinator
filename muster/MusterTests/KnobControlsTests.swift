@@ -296,6 +296,17 @@ final class KnobControlsTests: XCTestCase {
         XCTAssertTrue(lines.contains("MAX_BYTES = \(KnobReader.maxCopyBytes / 1024) * 1024"))
     }
 
+    /// A compliance threshold nobody set is not a threshold, and the row says so.
+    func test_an_unset_compliance_threshold_does_not_read_as_configured() throws {
+        let registry = try realRegistry().applying(try statusFixture())
+        var known = registry
+        let index = try XCTUnwrap(known.knobs.firstIndex { $0.name == "COMPLIANCE_CERT_EXPIRY_DAYS" })
+        known.knobs[index].current = .defaultValue("30")
+        XCTAssertEqual(known.knobs[index].nowText, "not set, so its rule reads unknown (suggested 30)")
+        known.knobs[index].current = .current("30")
+        XCTAssertEqual(known.knobs[index].nowText, "30")
+    }
+
     // MARK: Sentences
 
     func test_problems_are_whole_sentences() {

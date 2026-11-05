@@ -87,8 +87,14 @@ struct KnobRegistry {
         /// The text the panel shows in the "Now" column.
         ///
         /// It is the one renderer,  so the panel and the model cannot say two
-        /// different things about the same knob.
-        var nowText: String { current.displayText }
+        /// different things about the same knob.  A knob whose reader treats the default
+        /// as not set (a compliance threshold) says so,  rather than reading as configured.
+        var nowText: String {
+            if requiresExplicit, case .defaultValue = current {
+                return "not set, so its rule reads unknown (suggested \(canonicalDefault))"
+            }
+            return current.displayText
+        }
 
         /// The value a knob holds now.
         enum CurrentValue: Equatable {
