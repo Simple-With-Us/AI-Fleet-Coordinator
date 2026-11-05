@@ -1,5 +1,4 @@
 import XCTest
-@testable import Muster
 
 final class ZulipChannelDisplayNameTests: XCTestCase {
     func testTheDefaultChannelReadsWithItsCapitals() {
