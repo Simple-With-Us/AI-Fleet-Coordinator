@@ -34,7 +34,11 @@ def file_reason(payload: dict, ctx=None, secret_guard=None) -> str | None:
     try:
         sg = secret_guard if secret_guard is not None else fleet._load_secret_guard()
         patterns = sg.SECRET_FILE_PATTERNS if sg is not None else None
-        if not patterns or not isinstance(patterns, (tuple, list)) or not all(isinstance(p, str) for p in patterns):
+        if (
+            not patterns
+            or not isinstance(patterns, (tuple, list))
+            or not all(isinstance(p, str) for p in patterns)
+        ):
             raise ValueError("invalid secret file pattern table")
         secret_patterns = tuple(re.compile(p, re.IGNORECASE) for p in patterns)
     except Exception:  # noqa: BLE001 -- refuse affected file operations below
@@ -51,7 +55,9 @@ def file_reason(payload: dict, ctx=None, secret_guard=None) -> str | None:
         if reason:
             return reason
     if table_error:
-        return "MiniMax file tool refused: SECRET_FILE_PATTERNS is unavailable or invalid."
+        return (
+            "MiniMax file tool refused: SECRET_FILE_PATTERNS is unavailable or invalid."
+        )
     if ctx.registry.source == "fallback" or not ctx.registry.registered_apps:
         return "MiniMax file tool refused: required FLEET_APPS_JSON registry is unavailable or invalid."
     return None
@@ -60,21 +66,24 @@ def file_reason(payload: dict, ctx=None, secret_guard=None) -> str | None:
 def _path_reason(tool: str, path: str, cwd, ctx, roots, secret_patterns) -> str | None:
     if not os.path.isabs(path) and not path.startswith("~"):
         # No usable cwd: resolve against home rather than skip the whole file policy.
-        path = os.path.join(cwd if isinstance(cwd, str) and os.path.isabs(cwd) else ctx.home, path)
-    lexical = os.path.normpath(os.path.join(ctx.home, path[2:]) if path.startswith("~/") else path)
+        path = os.path.join(
+            cwd if isinstance(cwd, str) and os.path.isabs(cwd) else ctx.home, path
+        )
+    lexical = os.path.normpath(
+        os.path.join(ctx.home, path[2:]) if path.startswith("~/") else path
+    )
     path = layout.resolve_path(path, roots)
     candidates = (lexical, path)
     if any(".secrets" in p.lower().split(os.sep) for p in candidates) or (
         any(pattern.search(p) for p in candidates for pattern in secret_patterns)
     ):
-        return (
-            "MiniMax file tool blocked a secret-bearing path.  Use the approved secrets interface."
-        )
+        return "MiniMax file tool blocked a secret-bearing path.  Use the approved secrets interface."
     location = layout.classify_location(path, roots)
     fold = str.casefold if roots.case_insensitive else (lambda value: value)
     code = fold(str(roots.code_root))
     integration_names = {
-        fold(n).replace("-", "").replace(".", "") for n in ctx.registry.integration_names()
+        fold(n).replace("-", "").replace(".", "")
+        for n in ctx.registry.integration_names()
     }
 
     def integration(candidate):
@@ -89,16 +98,29 @@ def _path_reason(tool: str, path: str, cwd, ctx, roots, secret_patterns) -> str 
         return "MiniMax file tool blocked a read-only review lane.  Use an owned task lane."
     # MiniMax's subprocess allowlist excludes AGENT_SEAT.  Never infer MM from the
     # engine or destination folder: a trusted launcher may have assigned another seat.
-    seat_name = (
-        ctx.env.get("AGENT_LAUNCH_SEAT")
-        if ctx.env.get("AGENT_LAUNCHER")
-        else ctx.env.get("AGENT_SEAT")
-    )
+    # A launcher's seat assignment counts on its own (identity.resolve_seat: the launcher
+    # "set AGENT_LAUNCHER, AGENT_LAUNCH_SEAT, or both"), so AGENT_LAUNCH_SEAT without
+    # AGENT_LAUNCHER still names the seat.  AGENT_LAUNCHER alone names no seat: a launched
+    # session without an assigned seat takes no fleet identity, never the ambient one.
+    if ctx.env.get("AGENT_LAUNCH_SEAT"):
+        seat_name = ctx.env.get("AGENT_LAUNCH_SEAT")
+    elif ctx.env.get("AGENT_LAUNCHER"):
+        seat_name = None
+    else:
+        seat_name = ctx.env.get("AGENT_SEAT")
     seat = ctx.registry.seat_by_name(seat_name) if seat_name else None
+    if seat is None and seat_name:
+        # AFC-620 role lanes: a BF-<ROLE>/GB-<ROLE> launch or seat names the synthesized role
+        # lane seat, so its own lanes authorize and another seat's lanes still block.
+        seat = layout.role_lane_seat(seat_name, ctx.registry)
     lane = layout.explain_lane_name(path, ctx.registry, roots)
     if lane.seat is not None and seat is None:
         return "MiniMax file tool refused: trusted launch/seat identity is unavailable for lane authorization."
-    if seat is not None and lane.seat is not None and lane.seat.lower() != seat.suffix.lower():
+    if (
+        seat is not None
+        and lane.seat is not None
+        and lane.seat.lower() != seat.suffix.lower()
+    ):
         return "MiniMax file tool blocked another seat's lane.  Use the assigned seat's own lane."
     return None
 
@@ -116,7 +138,9 @@ def decide(payload: dict, ctx=None, secret_guard=None):
         if extracted is None:
             return None, ""
         command, cwd, _scratch = extracted
-        normalized = dict(payload, tool_name="Bash", tool_input={"command": command}, cwd=cwd)
+        normalized = dict(
+            payload, tool_name="Bash", tool_input={"command": command}, cwd=cwd
+        )
         denial = fleet.decide(normalized, secret_guard)
         if denial[0]:
             return denial
@@ -138,7 +162,9 @@ def main(
     stderr: IO | None = None,
 ) -> int:
     try:
-        payload = json.loads(lane_guard_hook._read_stdin(sys.stdin if stdin is None else stdin))
+        payload = json.loads(
+            lane_guard_hook._read_stdin(sys.stdin if stdin is None else stdin)
+        )
         if not isinstance(payload, dict):
             return 0
         reason, destination = decide(payload)
