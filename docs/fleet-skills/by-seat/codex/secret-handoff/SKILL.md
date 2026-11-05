@@ -24,7 +24,9 @@ If you are operating within a BotFleet environment and need an API key or custom
 
 ## Fleet keys come from `fleet-secrets`
 
-The flat file `/Users/jay/.secrets/global-api-keys` is retired in favor of Infisical Fleet-OPS via `fleet-secrets` (OPS-818).  Nothing may read the flat file; there is no `global-api-keys.env` either, and the superseded sibling is a recovery net, not a source.
+A consumer that reads one folder of Infisical on its own (an app on its own project, or a host reading one webhook folder) does not use `fleet-secrets` and never uses the shared Automation identity: it gets its own scoped service token, one project, one environment, one folder, read-only unless write is required, with an expiry, stored in a 0600 file outside every repo and registered in the fleet references registry.  `service-tokens` carries the whole lifecycle, from minting to the registry row to the revocation.
+
+The flat file `~/.secrets/global-api-keys` is retired in favor of Infisical Fleet-OPS via `fleet-secrets` (OPS-818).  Nothing may read the flat file; there is no `global-api-keys.env` either, and the superseded sibling is a recovery net, not a source.
 
 On the Mac:
 
@@ -42,7 +44,7 @@ When the owner hands you a new secret, it arrives as the path to a `chmod 600` f
 
 `git-relay` is the only path in the fleet that mints per-bot GitHub App tokens.  A seat never handles an App id, a private key, or the one-hour token expiry: the relay mints and refreshes the seat's own GitHub App token itself, so no credential material is ever pasted into a prompt, a file, or a command line.  PR-write authoring (`open_pr`, `edit_pr`, `reply_thread`, `comment_pr`) runs under the owner's scoped PR-only token, so a PR is authored as the owner and the review bots work normally, while `merge_pr`, `workflow_dispatch` and `resolve_thread` run under the seat's own App token.  Per-seat policy (allowed actions, allowed repos, mint ceilings, an hourly call cap) is an allowlist layer that can only narrow the underlying credential, never exceed it, and every call — allowed or denied — lands in an audit log.
 
-The relay is **not deployed yet** (verified Oct 23 2026): there is no daemon, no launchd job, no seat pointed at it and no service host chosen yet, so the interim `gh` and shell path still stands and no seat should expect a minted token today.
+The relay tools are **live** (verified Nov 4 2026): a seat connected through Fleet MCP calls `gr_open_pr`, `gr_edit_pr`, `gr_reply_thread`, `gr_comment_pr`, `gr_resolve_thread`, `gr_merge_pr` and the `gr_wf_*` workflow verbs, and the relay mints and refreshes that seat's own GitHub App token without any credential material reaching the seat.
 
 ## Zulip bot credentials
 
@@ -147,7 +149,7 @@ Empty `success:true` on a filtered Bearer call means "valid, not scoped to that 
 
 ## Canon
 
-- `/Users/jay/apps/FLEET-PROTOCOL.md` § Secret handoff, Infisical, Coolify, grep trap, loaded-key byte dumps, leak response
+- `~/apps/FLEET-PROTOCOL.md` § Secret handoff, Infisical, Coolify, grep trap, loaded-key byte dumps, leak response
 - `<YOUR_SKILLS_DIR>/secret-safety/SKILL.md`
 - Coordinator `docs/rollouts/2026-08-15-secret-file-grep-ban.md`
 - Coordinator `docs/rollouts/2026-09-18-secret-guard-od.md`

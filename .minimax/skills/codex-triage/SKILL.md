@@ -55,7 +55,7 @@ Reply shape (review-thread replies are PR text: a real U+00A0 plus a space betwe
 
 Never blind-resolve to force a merge.  The gate exists because some findings are real (commit-author, licenses, money-path).
 
-The reply and the resolution have a credential-safe path: `git-relay`, with the MCP wrapper **GR-MCP** (`git-relay mcp`), which exposes `open_pr`, `edit_pr`, `reply_thread`, `comment_pr`, `merge_pr`, `workflow_dispatch` and `resolve_thread`; `mint_token` is deliberately not exposed over MCP, because it returns a raw credential.  A seat reaches the tools with its own bearer token: ST-MCP shares the same bearer-token arrangement, so a seat may find these tools on its ST-MCP connection, while other seats run GR-MCP directly as its own stdio server — the tool names are the same either way.  **The relay is not deployed yet** (verified Oct 23 2026): there is no daemon, no launchd job and no seat pointed at it, so the `gh` GraphQL calls above are still the path that works, until the owner decides the cutover.
+The reply and the resolution have a credential-safe path: `git-relay`, with the MCP wrapper **GR-MCP** (`git-relay mcp`), which exposes `open_pr`, `edit_pr`, `reply_thread`, `comment_pr`, `merge_pr`, `workflow_dispatch` and `resolve_thread`; `mint_token` is deliberately not exposed over MCP, because it returns a raw credential.  A seat reaches the tools with its own bearer token: ST-MCP shares the same bearer-token arrangement, so a seat may find these tools on its ST-MCP connection, while other seats run GR-MCP directly as its own stdio server — the tool names are the same either way.  **The relay tools are live** (verified Nov 4 2026): a seat connected through Fleet MCP calls `gr_open_pr`, `gr_edit_pr`, `gr_reply_thread`, `gr_comment_pr`, `gr_resolve_thread`, `gr_merge_pr` and the `gr_wf_*` workflow verbs as its own GitHub App, so the reply goes through `gr_reply_thread` and the resolution through `gr_resolve_thread`.  A personal `gh` credential is not the fleet's route, and another seat's credential is never borrowed.
 
 ## 5. Auto-merge race
 
@@ -80,6 +80,6 @@ Later rounds on a merged PR are mostly noise.  Triage genuine hazards; surface 
 
 ## Canon
 
-- `/Users/jay/apps/FLEET-PROTOCOL.md` — Merge requirements
+- `~/apps/FLEET-PROTOCOL.md` — Merge requirements
 - App `AGENTS.md` Pre-Commit / Handoff
 - Skills: `unstick-pr`, `land-lane`
