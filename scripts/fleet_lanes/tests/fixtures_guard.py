@@ -172,7 +172,7 @@ DENY_FIXTURES: tuple[GuardFixture, ...] = (
     deny("sweep-bf-st4013-workspace-clone",
          "git worktree add -q /tmp/st4013",
          WT_ADD, "sweep platform-matrix BotFleet native logs (bot workspace nested clone)",
-         cwd="/Users/fixture-home/.botfleet/workspaces/e8da75c0-8b66-4ab5-9dbf-fe6ad7466db4/Socratic.Trade",
+         cwd="/Users/fixture-home/.botfleet/workspaces/fixture-workspace/Socratic.Trade",
          dest="/tmp/st4013"),
     deny("sweep-bf-st-4013-verify",
          "git worktree add --detach /tmp/st-4013-verify",

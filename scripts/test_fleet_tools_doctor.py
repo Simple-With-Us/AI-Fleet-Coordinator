@@ -2156,6 +2156,10 @@ class PlacementWatchTests(unittest.TestCase):
         self.assertIn("held in dry run", rows[0]["detail"])
         self.assertIn("34 findings", rows[0]["detail"])
 
+    def test_a_held_row_says_when_the_watcher_last_acted(self) -> None:
+        rows = self.run_check(json.dumps({"ok": True, "held": True, "last_acting_run": "2026-11-04T20:00:00+00:00"}))
+        self.assertIn("last acting run 2026-11-04", rows[0]["detail"])
+
     def test_a_held_watcher_that_has_stopped_is_still_stale(self) -> None:
         rows = self.run_check(json.dumps({"ok": True, "held": True}), age=4 * 3600)
         self.assertEqual(rows[0]["status"], "FAIL")

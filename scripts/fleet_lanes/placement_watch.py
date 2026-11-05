@@ -34,8 +34,8 @@ inventory.  Exit 0 when it ran;  3 when its inputs are stale or unreadable, the 
 could not run;  4 when filing failed (it retries next run);  5 when it ran but an external root refused to be read, as launchd meets a
 disk it has no permission for, so the result is partial and not clean (`coverage` in the status file).
 The status file beside the state file lets `fleet-tools-doctor` and Muster see a watcher that has gone quiet.  A run without --apply
-writes it too, with `held` true, so a watcher held in dry run shows up instead of leaving no row at all.  It leaves an applying
-watcher's recent status alone, so a dry run by hand neither calls that watcher held nor hides that it has stopped.  It lists no
+writes it too, with `held` true, so a watcher held in dry run shows up instead of leaving no row at all.  It leaves the recent
+status of a run meant to act alone, so a dry run by hand neither calls that watcher held nor hides its errors.  It lists no
 processes (no `ps`).  The seat is CLAUDE until the owner chooses another.  Python 3.9 safe.
 Tests: fleet_lanes/tests/test_placement_watch.py.
 """
@@ -535,17 +535,22 @@ def _write_json(path: str, data: Mapping[str, Any]) -> None:
 
 
 def _write_status(path: str, status: Mapping[str, Any], acting: bool, now: _dt.datetime) -> None:
-    """A dry run does not replace an applying watcher's recent status:  it would call that watcher held, and hide that it had stopped."""
-    if not acting:
-        prior = _read_json(path)
-        if isinstance(prior, dict) and prior.get("applied") is True:
-            try:
-                age = (now - _dt.datetime.fromisoformat(str(prior.get("at")))).total_seconds()
-            except (TypeError, ValueError):
-                age = None
-            if age is not None and age < STATUS_FRESH_HOURS * 3600:
+    """A dry run does not replace the recent status of a run that was meant to act, whether it worked or failed:  it would call that
+    watcher held and hide its errors.  Once that status is stale the watcher is gone or has been held, so the dry run takes over and
+    keeps when the last acting run was, so a watcher that stopped still reads as stopped."""
+    if acting:
+        _write_json(path, {**status, "acting": True})
+        return
+    prior = _read_json(path)
+    prior = prior if isinstance(prior, dict) else {}
+    last = prior.get("at") if prior.get("acting") is True else prior.get("last_acting_run")
+    if prior.get("acting") is True:
+        try:
+            if (now - _dt.datetime.fromisoformat(str(last))).total_seconds() < STATUS_FRESH_HOURS * 3600:
                 return
-    _write_json(path, status)
+        except (TypeError, ValueError):
+            pass
+    _write_json(path, {**status, "acting": False, "last_acting_run": last if isinstance(last, str) else ""})
 
 
 def _nothing_sent(tool: str, code: int, stderr: str) -> bool:
@@ -799,10 +804,14 @@ def _notify_owner(findings: Sequence[Finding], fresh: Mapping[str, list[Finding]
     pending: dict = state.setdefault("repeat_pending", {})
     # Only a misplaced checkout is a leak.  The other rules, a Code clone's old branches among them, stay in their issues.
     for key, items in fresh.items():
-        leaks = (state["groups"].get(key) or {}).get("leaks", {}) if key == "misplaced" else {}
+        if key != "misplaced":
+            continue
+        leaks = (state["groups"].get(key) or {}).get("leaks", {})
         for f in items:
+            # A state file from before one issue per rule class kept this date on the leak's own group.
+            before = (state["groups"].get(f.leak) or {}).get("first_seen", "")
             try:
-                first = _dt.datetime.fromisoformat(leaks.get(f.leak, ""))
+                first = _dt.datetime.fromisoformat(before or leaks.get(f.leak, ""))
             except (TypeError, ValueError):
                 continue
             if (now - first).days >= REPEAT_LEAK_DAYS and f.path not in told:

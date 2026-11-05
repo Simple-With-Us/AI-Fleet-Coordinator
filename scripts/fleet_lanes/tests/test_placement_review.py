@@ -2049,6 +2049,14 @@ class OwnerMessageLimit(WatchRoundTwo):
         self.assertEqual(run.named("simple-chat", "dm"), [])
         self.assertEqual(self.state_doc()["repeat_pending"], {})
 
+    def test_a_state_file_from_before_the_regrouping_keeps_its_leak_date(self) -> None:
+        path = Path(self.state, W.STATE_NAME)
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"groups": {"claude|BotFleet": {"first_seen": "2026-10-01T00:00:00+00:00", "issue": "AFC-1", "paths": {}}}}), encoding="utf-8")
+        run = Run()
+        self.run_watch(self.one(self.p("new"), branch="claude/x"), run)
+        self.assertEqual(len(run.named("simple-chat", "dm")), 1)
+
     def test_seven_days_count_per_leak_not_per_rule_class(self) -> None:
         run = Run()
         self.run_watch(self.one(self.p("old"), branch="claude/x"), run)
@@ -2125,11 +2133,26 @@ class HeldInDryRun(WatchRoundTwo):
         self.dry(self.report([]), now=TW.NOW + dt.timedelta(hours=1))
         self.assertEqual(self.status(), before)
 
-    def test_a_dry_run_replaces_an_applying_status_gone_stale(self) -> None:
+    def test_a_dry_run_replaces_an_applying_status_gone_stale_and_says_when_it_last_acted(self) -> None:
         self.run_watch(self.one(self.p("foo")), Run())
+        acted = self.status()["at"]
         later = TW.NOW + dt.timedelta(hours=4)
         self.dry(self.report([]), now=later)
         self.assertTrue(self.status()["held"])
+        self.assertEqual(self.status()["last_acting_run"], acted)
+        self.dry(self.report([]), now=later + dt.timedelta(hours=5))
+        self.assertEqual(self.status()["last_acting_run"], acted)
+
+    def test_a_dry_run_does_not_hide_a_failed_acting_run(self) -> None:
+        self.assertEqual(self.run_watch(self.one(self.p("foo")), Run(code=1, verb="file")), W.EXIT_FILING)
+        before = self.status()
+        self.assertTrue(before["errors"])
+        self.dry(self.report([]), now=TW.NOW + dt.timedelta(hours=1))
+        self.assertEqual(self.status(), before)
+
+    def test_a_dry_run_with_no_acting_run_before_it_names_none(self) -> None:
+        self.dry(self.report([]))
+        self.assertEqual(self.status()["last_acting_run"], "")
 
 
 class UnreadableRoot(WatchRoundTwo):

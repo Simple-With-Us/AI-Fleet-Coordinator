@@ -272,6 +272,10 @@ class FailOpen(ShimCase):
         log = self.state / "lane-guard-events.jsonl"
         subprocess.run(["/bin/sh", str(script)], env={"HOME": str(self.home), "FLEET_LANES_TEST_RUN": "1", "PATH": "/usr/bin:/bin"}, check=True)
         self.assertFalse(log.exists())
+        (self.home / "bin-link").symlink_to(self.home)
+        for spelled in (f"{self.home}/", str(self.home / "bin-link")):
+            subprocess.run(["/bin/sh", str(script)], env={"HOME": spelled, "FLEET_LANES_TEST_RUN": "1", "PATH": "/usr/bin:/bin"}, check=True)
+            self.assertFalse(log.exists(), spelled)
         other = self.home / "other"
         subprocess.run(["/bin/sh", str(script)], env={"HOME": str(other), "FLEET_LANES_TEST_RUN": "1", "PATH": "/usr/bin:/bin"}, check=True)
         self.assertTrue((other / ".local" / "state" / "fleet" / "lane-guard-events.jsonl").exists())

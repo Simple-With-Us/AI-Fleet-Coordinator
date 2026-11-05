@@ -2101,9 +2101,10 @@ def check_placement_watch(
             "placement-watch", "WARN", why, state="unknown", category="fleet-tool", reason=why
         )
     elif data.get("held"):
+        last = f", last acting run {data['last_acting_run']}" if data.get("last_acting_run") else ""
         why = (
             f"held in dry run, nothing filed:  {data.get('findings', 0)} findings, "
-            f"{data.get('new', 0)} new"
+            f"{data.get('new', 0)} new{last}"
         )
         report.add(
             "placement-watch", "WARN", why, state="unknown", category="fleet-tool", reason=why
