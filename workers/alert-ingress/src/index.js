@@ -148,7 +148,10 @@ const PENDING_PREFIX = "pending:";
 const PENDING_SCAN_LIMIT = 500;
 // When the full state scan last rebuilt the index and repaired legacy markers.
 const RECONCILED_AT = "sweep:reconciled-at";
-const RECONCILE_EVERY_MS = 24 * 60 * 60 * 1000;
+// Hourly, because an incident missing from the index is an alert nobody hears
+// about until this runs.  Code without the index, such as a rollback that is later
+// rolled forward, writes exactly that.  An hour costs about five rows per state.
+const RECONCILE_EVERY_MS = 60 * 60 * 1000;
 // A source's bot is rate limited until this time, from Zulip's Retry-After.
 const zulipPauseKey = (source) => `zulip-pause:${source}`;
 const ZULIP_PAUSE_DEFAULT_S = 60;
@@ -163,6 +166,8 @@ const CATCH_UP_BATCH = 10;
 const STATE_TOUCH_MS = 10 * 60 * 1000;
 const NOTICE_EVERY_MS = 60 * 60 * 1000;
 const NOTICE_DAILY_MS = 24 * 60 * 60 * 1000;
+// A notice that failed to send is tried again this soon, not a whole interval on.
+const NOTICE_RETRY_MS = 5 * 60 * 1000;
 const NOTICE_SOURCES = ["datadog", "betterstack", "pagerduty", "sentry", "generic"];
 // Below the free plan's 50 subrequests, so a large backlog finishes on later
 // sweeps instead of being killed part way through one.
@@ -921,13 +926,13 @@ async function notifyOperator(env, kind, what, source, everyMs = NOTICE_EVERY_MS
   console.error(JSON.stringify({ event: "alert.operator_notice", kind }));
   const storage = env.WRITER_STORAGE;
   if (!storage) return;
+  const key = `notice:${kind}`;
+  const now = Date.now();
+  const sender = [source, ...NOTICE_SOURCES].find(
+    (name) => name && resolveCredential(env, name),
+  );
   try {
-    const key = `notice:${kind}`;
-    const now = Date.now();
     if (now - (Number(await storage.get(key)) || 0) < everyMs) return;
-    const sender = [source, ...NOTICE_SOURCES].find(
-      (name) => name && resolveCredential(env, name),
-    );
     if (!sender || (await zulipPausedUntil(env, sender)) > now) return;
     const credential = resolveCredential(env, sender);
     await storage.put(key, now);
@@ -944,6 +949,12 @@ async function notifyOperator(env, kind, what, source, everyMs = NOTICE_EVERY_MS
     console.error(
       JSON.stringify({ event: "alert.operator_notice_failed", kind, status: error?.status ?? null }),
     );
+    try {
+      await storage.put(key, now - everyMs + NOTICE_RETRY_MS);
+      if (error?.outcome === "rate_limited") {
+        await noteRateLimit(env, sender, error.retryAfter);
+      }
+    } catch {}
   }
 }
 
@@ -1198,7 +1209,11 @@ async function handleEvent(source, payload, env, options = {}) {
     if (isPending && !wasPending) {
       await env.WRITER_STORAGE?.put(pendingKey(event.key), 1);
     }
-    if (stateChanged(prev, result.state) || now - (prev?.updated || 0) >= STATE_TOUCH_MS) {
+    // A repeat on a closed row leaves `updated` where it was, so it is not a touch.
+    const touched =
+      result.state.updated !== prev?.updated &&
+      now - (prev?.updated || 0) >= STATE_TOUCH_MS;
+    if (stateChanged(prev, result.state) || touched) {
       await env.ALERT_STATE.put(stateKey(event.key), JSON.stringify(result.state));
     }
     await putIfChanged(env, svcKey(event.key), JSON.stringify(event.service));
@@ -1290,7 +1305,8 @@ async function runSweep(env) {
   // one owns its own standing message.
   const dirtyTopics = new Map();
   // The inventory a promotion depends on, read before its first send.  A topic
-  // that cannot be read fails here, with nothing posted.
+  // that cannot be read fails here, with nothing posted.  One that is only over
+  // its bound still promotes, because an announced alert beats a current block.
   const preflighted = new Set();
   for (const key of keys) {
     const name = stateKey(key);
@@ -1323,7 +1339,11 @@ async function runSweep(env) {
       }
       const preflightKey = `${source}\u0000${topic}`;
       if (!preflighted.has(preflightKey)) {
-        await collectStates(env, source, DEFAULT_CHANNEL, topic);
+        try {
+          await collectStates(env, source, DEFAULT_CHANNEL, topic);
+        } catch (error) {
+          if (error?.code !== "inventory_bound") throw error;
+        }
         preflighted.add(preflightKey);
       }
       calls.spend("zulipCall");
@@ -1386,6 +1406,12 @@ async function runSweep(env) {
         deferred++;
         return;
       }
+      // An ambiguous write to a message this source owns is safe to repeat, so it
+      // stays on the list.  A refusal or a held topic will not improve by retrying.
+      if (error?.code === "status_delivery_failed" && error.outcome === "unknown") {
+        const barrier = await storage?.get(deliveryBarrierKey(source, DEFAULT_CHANNEL, topic));
+        if (barrier?.id) await markTopicDirty(env, source, topic);
+      }
       console.error(JSON.stringify({ event: "alert.status_refresh_failed" }));
     }
   });
@@ -1394,13 +1420,12 @@ async function runSweep(env) {
 
 /**
  * The incidents to look at:  the pending index, rebuilt from every state row on
- * the first sweep after a deploy that adds it, then once a day as a self-heal.
+ * the first sweep after a deploy that adds it, then hourly as a self-heal.
  *
  * That full pass also does the legacy marker repair.  Records written before
  * vendor routing have no per-source indices, so the new readers cannot see them.
- * It stays as a daily check rather than being removed, because the writer's
- * storage cannot be read from outside to show that no such record is left, and
- * a day's cost is a few hundred rows.
+ * It stays rather than being removed, because the writer's storage cannot be read
+ * from outside to show that no such record is left.
  */
 async function pendingForSweep(env, now) {
   const storage = env.WRITER_STORAGE;
@@ -1422,7 +1447,7 @@ async function pendingForSweep(env, now) {
     await notifyOperator(
       env,
       "inventory:state",
-      `The state inventory is over its ${MAX_KEYS}-key bound, so the daily reconcile cannot run.  Closed rows need pruning.`,
+      `The state inventory is over its ${MAX_KEYS}-key bound, so the reconcile cannot run.  Closed rows need pruning.`,
     );
     await storage.put(RECONCILED_AT, now);
     const keys = await indexed();
@@ -2469,9 +2494,11 @@ const STATUS_CACHE_SECONDS = 30;
  * most once per 30 seconds per data center.  The query string is not part of
  * the key, so it cannot be used to miss the cache.  A cache failure never fails
  * the read.  Still unauthenticated:  Usage Monitor's /ops reads it with no
- * token, so a bearer has to land there first.
+ * token, so a bearer has to land there first.  A HEAD reads the same entry, and
+ * reaches the writer as a GET so a bodyless reply can never be stored.
  */
-async function cachedStatus(request, env, ctx) {
+async function cachedStatus(incoming, env, ctx) {
+  const request = incoming.method === "GET" ? incoming : new Request(incoming.url);
   const cache = globalThis.caches?.default;
   const key = new Request(new URL("/status", request.url).toString());
   if (cache) {
@@ -2560,7 +2587,12 @@ export default {
       return json({ error: "empty body" }, 400);
     }
     try {
-      if (path === "/status" && request.method === "GET") {
+      if (path === "/status") {
+        // Any other method would walk around the cache and wake the writer,
+        // with no credential, on every request.
+        if (request.method !== "GET" && request.method !== "HEAD") {
+          return json({ error: "GET only" }, 405);
+        }
         return await cachedStatus(request, env, ctx);
       }
       return await writerFor(env).fetch(request);

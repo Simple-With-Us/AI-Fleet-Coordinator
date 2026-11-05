@@ -48,7 +48,7 @@ A resource alert tags people (owner, Oct 30, 2026).  When one of Datadog's host
 | Route | Purpose |
 |---|---|
 | `POST /webhook/:source` | vendor event; signature verified, and it replies once the event is recorded and its Zulip calls have finished |
-| `GET  /status` | **machine-readable** status for any consumer that renders it, cached for 30 seconds |
+| `GET  /status` | **machine-readable** status for any consumer that renders it, cached for 30 seconds; a method other than `GET` or `HEAD` gets `405` |
 | `GET  /status/:source/:channel/:topic` | rebuild one source's standing status, with that source's credential |
 | `GET  /status/:channel/:topic` | rebuild every source's standing status for that topic |
 | `GET  /sweep` | run the promotion sweep by hand |
@@ -159,7 +159,7 @@ A code bug or a vendor storm must not run up a bill or use up a cap the fleet sh
 
 **Off switch.**  `GUARD_MODE=off` answers 503 with `Retry-After` on every route, including `/health`, in the entry point and in the writer, and the cron does nothing.  The account watchdog sets it to stop this Worker.  Vendors retry and then give up, so events sent while it is off can be lost.
 
-**Storm breaker.**  Past 60 deliveries a minute from one source, or 5,000 a day in all, a delivery makes no Zulip call and answers by what is safe, because a vendor's retry is its only redelivery:
+**Storm breaker.**  Past 60 deliveries a minute from one source, or 5,000 a day in all (each source keeps 500 a day past that, so one vendor's storm cannot lock the others out), a delivery makes no Zulip call and answers by what is safe, because a vendor's retry is its only redelivery:
 
 | Delivery | Answer | Writes |
 |---|---|---|
@@ -173,11 +173,11 @@ The count lives in memory and is saved at most once a minute, and not at all for
 
 **Writer unreachable.**  The entry point answers `503` with `Retry-After` and logs one `alert.writer_unreachable` line.  It never answers `200` here, since nothing was recorded.  A cron sweep that fails logs `alert.sweep_failed` or `alert.writer_unreachable`.
 
-**Inventory overflow.**  Above the 2,000-key bound a new incident gets `503` and a notice, while a known incident still moves and reports `"statusDelivery": {"outcome": "overflow"}`.  An overflow of the state list stops only the daily reconcile, and promotions continue from the index.
+**Inventory overflow.**  Above the 2,000-key bound a new incident gets `503` and a notice, while a known incident still moves and reports `"statusDelivery": {"outcome": "overflow"}`.  An overflow of the state list stops only the reconcile, and promotions continue from the index.
 
 **Sweep budget.**  One sweep makes at most 40 Zulip calls, below the free plan's 50 subrequests, and the rest wait for the next sweep.
 
-**The sweep's cost.**  The sweep reads the `pending:` index, not every state, so an idle sweep costs a few rows instead of about eight per state.  The full scan that rebuilds the index and repairs legacy markers runs on the first sweep after deploy and then once a day.  The cron stays on `*/5` rather than moving to a Durable Object alarm:  it is 0.3% of the daily request cap, and a cron recovers by itself from a capped outage, where an alarm can use up its retries and lose the alert.
+**The sweep's cost.**  The sweep reads the `pending:` index, not every state, so an idle sweep costs a few rows instead of about eight per state.  The full scan that rebuilds the index and repairs legacy markers runs on the first sweep after deploy and then hourly, so a pending row the index missed, such as one written by older code after a rollback, waits an hour at most.  The cron stays on `*/5` rather than moving to a Durable Object alarm:  it is 0.3% of the daily request cap, and a cron recovers by itself from a capped outage, where an alarm can use up its retries and lose the alert.
 
 **The Zulip timer.**  Each call has a 5-second timeout on a timer cleared when the call ends.  `AbortSignal.timeout` cannot be cleared, and its pending timer held the object active for the full timeout after every call.
 
@@ -220,7 +220,7 @@ cd workers/alert-ingress && node --test src/*.test.js
 
 Pure functions, no Workers runtime needed.  The suite includes the real Oct 18 flap replayed: ten events, zero messages until it genuinely stays open.
 
-The test files are named explicitly on purpose.  On Node 24 the directory form (`node --test src/`) resolves `src/index.js` as a single module and reports one passing test without running any test file, so a gate written that way proves nothing.  The CI step uses the form above, and it runs 220 tests.  `resource.test.js` checks who a resource alert tags:  each resource monitor with or without a scope, CPU severity gating and immediate severe notification, other vendors or a look-alike id, the mentions on their own line under a promoted alert, and none on recovery.  `raw.test.js` covers the raw copy:  each vendor's title and text, the payload spoiler, mentions made harmless, credentials redacted, fences a payload cannot close or inflate, and the 10,000-character Zulip limit.  `writer.test.js` checks that the legacy KV is listed once and never again, and that a failed copy reads through and waits ten minutes to retry.  `efficiency.test.js` covers the usage guards:  the cleared Zulip timer, unchanged deliveries, the pending index, Zulip 429s, the breaker, inventory overflow, and the entry point's off switch, empty-body refusal, writer failures and `/status` cache.  `budget-guard-run.test.js` pulls in the shared guard's `.mjs` tests, which the `*.test.js` glob would otherwise miss.  `pagerduty.test.js` covers the PagerDuty source:  the incident key and its service topic, acknowledged and resolved, the status deciding over the event type, the priority and urgency severities, both ways in (static header and v1 signature), the refusals, a ping dropped without a write, and a closed incident pruned to a tombstone that only a reopen lifts.
+The test files are named explicitly on purpose.  On Node 24 the directory form (`node --test src/`) resolves `src/index.js` as a single module and reports one passing test without running any test file, so a gate written that way proves nothing.  The CI step uses the form above, and it runs 227 tests.  `resource.test.js` checks who a resource alert tags:  each resource monitor with or without a scope, CPU severity gating and immediate severe notification, other vendors or a look-alike id, the mentions on their own line under a promoted alert, and none on recovery.  `raw.test.js` covers the raw copy:  each vendor's title and text, the payload spoiler, mentions made harmless, credentials redacted, fences a payload cannot close or inflate, and the 10,000-character Zulip limit.  `writer.test.js` checks that the legacy KV is listed once and never again, and that a failed copy reads through and waits ten minutes to retry.  `efficiency.test.js` covers the usage guards:  the cleared Zulip timer, unchanged deliveries, the pending index, Zulip 429s, the breaker, inventory overflow, and the entry point's off switch, empty-body refusal, writer failures and `/status` cache.  `budget-guard-run.test.js` pulls in the shared guard's `.mjs` tests, which the `*.test.js` glob would otherwise miss.  `pagerduty.test.js` covers the PagerDuty source:  the incident key and its service topic, acknowledged and resolved, the status deciding over the event type, the priority and urgency severities, both ways in (static header and v1 signature), the refusals, a ping dropped without a write, and a closed incident pruned to a tombstone that only a reopen lifts.
 
 `vendor-routing.test.js` covers the vendor routing: same-topic isolation between two vendors, message ids that are never reused across vendors, the sweep and the resolve path using the right vendor credential, a missing or refused credential failing closed, an ambiguous write that never creates a second message, and a refresh that is refused outside the alerts channel.
 

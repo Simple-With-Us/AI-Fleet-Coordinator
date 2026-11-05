@@ -10,6 +10,10 @@
 
 export const SOURCE_EVENTS_PER_MINUTE = 60;
 export const DELIVERIES_PER_DAY = 5000;
+// A storm from one vendor must not lock the others out until the day resets, so
+// each source keeps this many deliveries a day past the shared cap.  The day's
+// worst case is the cap plus this for each other credentialed source.
+export const SOURCE_DAY_RESERVE = 500;
 // A shed transition still writes its state, so those writes have their own cap.
 export const SHED_WRITES_PER_DAY = 5000;
 
@@ -29,6 +33,7 @@ export class DeliveryBreaker {
     this.shedWrites = 0;
     this.minute = -1;
     this.perSource = new Map();
+    this.perSourceDay = new Map();
     this.announced = new Set();
     this.savedAt = 0;
     this.unsaved = 0;
@@ -42,6 +47,7 @@ export class DeliveryBreaker {
       if (saved?.day === this.day) {
         this.total = saved.total || 0;
         this.shedWrites = saved.shedWrites || 0;
+        this.perSourceDay = new Map(Object.entries(saved.sources || {}));
       }
     } catch {
       // A breaker that cannot read its count starts from zero rather than
@@ -61,6 +67,7 @@ export class DeliveryBreaker {
       this.day = day;
       this.total = 0;
       this.shedWrites = 0;
+      this.perSourceDay.clear();
       this.unsaved = 0;
     }
   }
@@ -74,8 +81,10 @@ export class DeliveryBreaker {
     this.unsaved++;
     const count = (this.perSource.get(source) || 0) + 1;
     this.perSource.set(source, count);
+    const today = (this.perSourceDay.get(source) || 0) + 1;
+    this.perSourceDay.set(source, today);
     const reason =
-      this.total > DELIVERIES_PER_DAY
+      this.total > DELIVERIES_PER_DAY && today > SOURCE_DAY_RESERVE
         ? "day"
         : count > SOURCE_EVENTS_PER_MINUTE
           ? "minute"
@@ -107,6 +116,7 @@ export class DeliveryBreaker {
         day: this.day,
         total: this.total,
         shedWrites: this.shedWrites,
+        sources: Object.fromEntries(this.perSourceDay),
       });
       this.savedAt = at;
       this.unsaved = 0;
