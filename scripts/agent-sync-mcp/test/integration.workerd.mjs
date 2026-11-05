@@ -2157,7 +2157,10 @@ try {
         const token = `sbt_${identity.toLowerCase()}_${"a".repeat(43)}`;
         const ownGate = ns.get(ns.idFromName(identity));
         await ownGate.gbBearerMint({ hash:createHash("sha256").update(token).digest("hex"), by:"test", expiresAt:Date.now()+600000, mcpAccept:true });
-        assert.equal((await mcp(token,"tools/list")).status,401,`${identity}/${mode}/${failureStatus} auth must refuse`);
+        // tools/list needs no secret, so it is answered through the outage;  any
+        // call that would use the unresolved credentials still refuses.
+        assert.equal((await mcp(token,"tools/list")).status,200,`${identity}/${mode}/${failureStatus} a list needs no credential`);
+        assert.equal((await mcp(token,"tools/call",{name:"whoami",arguments:{}})).status,401,`${identity}/${mode}/${failureStatus} auth must refuse`);
         // Use an already-open owner form: required-mode admin diagnostics
         // have independent outage behavior and are not the action under test.
         const csrf = "c".repeat(64);

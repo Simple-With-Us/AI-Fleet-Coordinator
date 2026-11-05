@@ -15,19 +15,20 @@ const signingKey = "s".repeat(48);
 const origin = "https://mcp-fixture.example";
 const script = readFileSync(process.env.GR_ASSERT_TEST_BUNDLE ?? path.join(ROOT, "dist/index.js"), "utf8")
   .replace(/var PUBLIC_HOST = [^;]+;/, 'var PUBLIC_HOST = "mcp-fixture.example";');
-const env = testEnv({
+const envFor = (overrides) => testEnv({
   HOSTED_SEATS: "CODEX", EVENTS_ONLY_SEATS: "JET",
   ZULIP_EMAIL_CODEX: "codex-bot@simplewithus.zulipchat.com",
   INFISICAL_MODE: "required", INFISICAL_SERVICE_TOKEN: "fixture-broad",
   INFISICAL_WORKSPACE_ID: "fixture", INFISICAL_BASE_URL: "https://fixture-infisical.example",
   GR_ASSERT_INFISICAL_SERVICE_TOKEN: "fixture-isolated",
+  ...overrides,
 });
-const mf = new Miniflare(convertV4MiniflareOptions({
+const start = (overrides) => new Miniflare(convertV4MiniflareOptions({
   upstream: origin,
   workers: [{
     name: "cold-gr-callback", modules: true, script,
     compatibilityDate: "2026-09-01", compatibilityFlags: ["nodejs_compat"],
-    bindings: env, kvNamespaces: ["OAUTH_KV"],
+    bindings: envFor(overrides), kvNamespaces: ["OAUTH_KV"],
     durableObjects: { SEAT_GATE: { className: "SeatGate", useSQLite: true } },
     outboundService: async (request) => {
       const url = new URL(request.url);
@@ -42,6 +43,8 @@ const mf = new Miniflare(convertV4MiniflareOptions({
     },
   }],
 }));
+// The live-grant cache off, so every verify lists:  the grant checks themselves.
+let mf = start({ GATE_IDENTITY_CACHE_MS: "0" });
 try {
   const kv = await mf.getKVNamespace("OAUTH_KV");
   const grantId = "fixture-grant";
@@ -83,6 +86,43 @@ try {
   await kv.put(`grant:CODEX:${grantId}`, JSON.stringify({ id: grantId, userId: "CODEX" }));
   assert.deepEqual(await verify(fresh), { ok: true, seat: "CODEX" });
   console.log("Cold callback: live grant succeeds, replay refuses, missing grant preserves nonce.");
+} finally {
+  await mf.dispose();
+}
+
+// The default window (AFC-617):  a positive grant listing holds, so a deleted grant
+// can lag, and the epoch check stays live on every call regardless.
+mf = start({});
+try {
+  const kv = await mf.getKVNamespace("OAUTH_KV");
+  const grantId = "fixture-grant";
+  await kv.put(`grant:CODEX:${grantId}`, JSON.stringify({ id: grantId, userId: "CODEX", expiresAt: Math.floor(Date.now() / 1000) + 3600 }));
+  const ns = await mf.getDurableObjectNamespace("SEAT_GATE");
+  const gate = ns.get(ns.idFromName("CODEX"));
+  await gate.arm({ by: "fixture" });
+  const approved = await gate.approve({ by: "fixture" });
+  const bodyHash = await sha256HexText("{}");
+  const claims = {
+    key: signingKey, seat: "CODEX", action: "wf_repo_get", bodySha256: bodyHash,
+    scopes: ["zulip:read"], epoch: approved.epoch, approvedAt: Date.now(), phase: 2,
+    grantRef: (await sha256HexText(grantId)).slice(0, 12),
+  };
+  const verify = async (token) => {
+    const body = JSON.stringify({ contract: "gr-assert-verify/1", token, action: "wf_repo_get", body_sha256: bodyHash, sent_at: Math.floor(Date.now() / 1000) });
+    const response = await mf.dispatchFetch(origin + "/internal/gr-assert-verify", {
+      method: "POST",
+      headers: { Host: "mcp-fixture.example", "Content-Type": "application/json", "X-Agent-Sync-Signature": await wakeSignature(channelKey, new TextEncoder().encode(body)) },
+      body,
+    });
+    assert.equal(response.status, 200, await response.clone().text());
+    return response.json();
+  };
+  assert.deepEqual(await verify(await mintGrAssertion(claims)), { ok: true, seat: "CODEX" });
+  await kv.delete(`grant:CODEX:${grantId}`);
+  assert.deepEqual(await verify(await mintGrAssertion(claims)), { ok: true, seat: "CODEX" }, "the listing is cached");
+  await gate.bumpEpoch({ by: "fixture" });
+  assert.deepEqual(await verify(await mintGrAssertion(claims)), { ok: false, reason: "grant_invalid" }, "the epoch check is immediate");
+  console.log("Cached grant listing: no KV list on a repeat, and an epoch bump still refuses at once.");
 } finally {
   await mf.dispose();
 }

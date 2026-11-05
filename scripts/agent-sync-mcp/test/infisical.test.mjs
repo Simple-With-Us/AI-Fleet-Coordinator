@@ -650,3 +650,39 @@ test("folder 404 (missing folder) in required mode throws as unavailable, not as
   mockFetch([]);
   await assert.rejects(() => prefetchFolder(ENV, "/nonexistent"), (e) => e.code === "infisical_unavailable" && e.status === 404, "a missing folder is an infra signal, not authoritative emptiness");
 });
+
+test("fallback mode:  a 404 outside a listing is one subrequest per TTL and one log line per isolate;  every read still counts", async () => {
+  _resetInfisicalForTests();
+  let calls = 0;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => { calls += 1; return new Response("{}", { status: 404 }); };
+  const realWarn = console.warn;
+  const lines = [];
+  console.warn = (line) => lines.push(line);
+  try {
+    const env = { ...ENV, INFISICAL_MODE: "fallback", LEGACY: "v0" };
+    for (let i = 0; i < 5; i++) assert.equal(await resolveSecret(env, { name: "S", path: "/linear", envName: "LEGACY" }), "v0");
+    assert.equal(calls, 1);
+    assert.equal(infisicalStats().fallbacks, 5);
+    assert.equal(lines.length, 1);
+  } finally {
+    globalThis.fetch = realFetch;
+    console.warn = realWarn;
+    _resetInfisicalForTests();
+  }
+});
+
+test("required mode:  a cached miss still throws for a declared secret", async () => {
+  _resetInfisicalForTests();
+  let calls = 0;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => { calls += 1; return new Response("{}", { status: 404 }); };
+  try {
+    const env = { ...ENV, INFISICAL_MODE: "required" };
+    for (let i = 0; i < 2; i++) await assert.rejects(() => resolveSecret(env, { name: "S", path: "/linear", envName: "LEGACY" }), /Infisical has no S/);
+    assert.equal(calls, 1);
+  } finally {
+    globalThis.fetch = realFetch;
+    _resetInfisicalForTests();
+  }
+});
