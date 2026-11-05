@@ -80,7 +80,8 @@ class Transfer(unittest.TestCase):
         err = io.StringIO()
         with (
             mock.patch.object(G.subprocess, "run", run),
-            mock.patch.object(G, "_git_binary", return_value="git"),contextlib.redirect_stderr(err)
+            mock.patch.object(G, "_git_binary", return_value="git"),
+            contextlib.redirect_stderr(err),
         ):
             self.assertEqual(G._run_git(["fetch"], BEARER), 1)
         self.assertNotIn(BEARER, err.getvalue())
