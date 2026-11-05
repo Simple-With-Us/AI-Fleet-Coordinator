@@ -168,24 +168,25 @@ def child_env(environ: dict[str, str], token: str) -> dict[str, str]:
     return env
 
 
-def current(name: str) -> tuple[Any, str]:
-    """(typed value, source) from a fresh read: infisical, lkg or default."""
+def current(name: str) -> tuple[Any, str, bool, str | None]:
+    """(typed value, source, stale, reason) from a fresh read: infisical, lkg or default."""
     knobs.refresh()
     knob = knobs.resolve(name)
-    # The third field says whether Infisical was read, so a "default" from a failed read
-    # is never taken as proof that the knob is unset.
-    return knob.value, knob.source, knob.stale
+    # The third field says whether Infisical was read, and the fourth why a default was
+    # answered (unset, invalid or unreachable), so a "default" from a failed read or from a
+    # value Infisical holds but the spec refuses is never taken as proof that it is unset.
+    return knob.value, knob.source, knob.stale, knob.reason
 
 
-def read_old(reader: Callable[[str], tuple], name: str) -> tuple[Any, str, bool | None]:
-    """(value, source, stale) from a reader that answers two or three fields.
+def read_old(reader: Callable[[str], tuple], name: str) -> tuple[Any, str, bool | None, str | None]:
+    """(value, source, stale, reason) from a reader that answers two to four fields.
 
-    A reader that does not say whether its answer is stale answers None for it, and a
-    ``default`` from it is never taken as proof that the knob is unset."""
+    A reader that does not say whether its answer is stale, or why, answers None for it, and
+    a ``default`` from it is never taken as proof that the knob is unset."""
     answer = reader(name)
-    if len(answer) >= 3:
-        return answer[0], answer[1], bool(answer[2])
-    return answer[0], answer[1], None
+    stale = bool(answer[2]) if len(answer) >= 3 else None
+    reason = answer[3] if len(answer) >= 4 else None
+    return answer[0], answer[1], stale, reason
 
 
 def _peek(name: str) -> tuple[Any, str]:
@@ -205,11 +206,19 @@ _DIRECTION_SENTENCES = {
 
 
 def plan_notes(
-    spec: Spec, typed: Any, text: str, old: Any, old_source: str | None
+    spec: Spec,
+    typed: Any,
+    text: str,
+    old: Any,
+    old_source: str | None,
+    stale: bool | None = None,
 ) -> tuple[str, list[str]]:
     """(direction, warnings) for a change:  which way it moves the knob, and what the owner
-    should read before approving it.  Only non-secret knobs get here."""
-    known = old_source in ("infisical", "lkg", "default")
+    should read before approving it.  Only non-secret knobs get here.
+
+    A ``default`` answered while Infisical could not be read is only what a job would fall
+    back to, so it is not a current value:  the direction is unknown and the plan says so."""
+    known = old_source in ("infisical", "lkg") or (old_source == "default" and stale is not True)
     way = values.direction(spec, old, typed) if known else "unknown"
     warnings: list[str] = []
     if way in _DIRECTION_SENTENCES:
@@ -262,7 +271,7 @@ def refresh_lkg(
     read rewrote it), ``patched`` (the read failed, so this key was set in the copy and the copy
     kept its age), or ``not-refreshed:<note>``."""
     try:
-        value, where, _stale = read_old(reader, name)
+        value, where, _stale, _reason = read_old(reader, name)
     except Exception:  # noqa: BLE001 - the copy is a convenience
         value, where = None, "error"
     if where == "infisical" and value == typed:
@@ -377,8 +386,9 @@ def set_knob(
         answer["new"] = text
         answer.update(describe_reach(spec))
         old_value: Any = None
+        stale: bool | None = None
         try:
-            old_value, old_source, _stale = read_old(reader, name)
+            old_value, old_source, stale, _reason = read_old(reader, name)
             answer["old"] = values.render(spec, old_value) if old_value is not None else None
             answer["old_source"] = old_source
         except Exception:  # noqa: BLE001 - the old value is information only
@@ -389,7 +399,7 @@ def set_knob(
             raise Refused(
                 f"{name} already holds this value in Infisical, so there is nothing to write"
             )
-        direction, warnings = plan_notes(spec, typed, text, old_value, answer["old_source"])
+        direction, warnings = plan_notes(spec, typed, text, old_value, answer["old_source"], stale)
         answer["direction"] = direction
         answer["warnings"] = warnings
         cli = find_cli()
@@ -475,7 +485,7 @@ def check_unset(name: str) -> Spec:
 def refresh_lkg_unset(name: str, reader) -> str:
     """Remove the knob from the last-known-good copy after a delete."""
     try:
-        _value, where, _stale = read_old(reader, name)
+        _value, where, _stale, _reason = read_old(reader, name)
     except Exception:  # noqa: BLE001
         where = "error"
     doc, note = lkg.read()
@@ -538,18 +548,19 @@ def unset_knob(
         answer["new_source"] = "default"
         old_value: Any = None
         stale: bool | None = None
+        reason: str | None = None
         try:
-            old_value, old_source, stale = read_old(reader, name)
+            old_value, old_source, stale, reason = read_old(reader, name)
             answer["old"] = values.render(spec, old_value) if old_value is not None else None
             answer["old_source"] = old_source
         except Exception:  # noqa: BLE001
             answer["old_source"] = "unknown"
-        if answer["old_source"] == "default" and stale is False:
+        if answer["old_source"] == "default" and stale is False and reason == "unset":
             # Infisical was read and holds no value, so there is no override to remove.
             raise Refused(f"{name} is not set in Infisical, so it already holds its default")
         typed_default = values.default_value(spec)
         direction, warnings = plan_notes(
-            spec, typed_default, answer["new"], old_value, answer["old_source"]
+            spec, typed_default, answer["new"], old_value, answer["old_source"], stale
         )
         if spec.requires_explicit:
             warnings.append(

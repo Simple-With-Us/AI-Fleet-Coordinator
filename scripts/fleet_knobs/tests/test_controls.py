@@ -274,6 +274,27 @@ class PlanTruthTests(KnobTestCase):
         answer, code = self.unset_plan("CONSULT_ENABLED", reader=lambda n: (False, "default", True))
         self.assertEqual((code, answer["result"]), (0, "planned"), answer)
 
+    def test_a_fallback_default_from_a_failed_read_is_not_a_current_value(self):
+        # Sentry on #1384:  with Infisical unreachable and no copy, the engine answers the
+        # default, stale.  That is not what Infisical holds, so the plan says so.
+        answer, code = self.plan(
+            "LANE_SWEEP_MODE",
+            "act",
+            reader=lambda n: ("report", "default", True, "unreachable:timeout,lkg-absent"),
+        )
+        self.assertEqual(code, 0, answer)
+        self.assertEqual(answer["direction"], "unknown")
+        self.assertIn("The current value could not be read", answer["detail"])
+        self.assertNotIn("do more than it does now", answer["detail"])
+
+    def test_an_invalid_value_infisical_holds_can_be_reset(self):
+        # Sentry on #1384:  a value the spec refuses reads as the default, but Infisical holds
+        # it, so a reset has something to remove and is planned.
+        self.fake.set(secrets={"LANE_SWEEP_MODE": "everything"})
+        answer, code = self.unset_plan("LANE_SWEEP_MODE")
+        self.assertEqual((code, answer["result"]), (0, "planned"), answer)
+        self.assertEqual(answer["old_source"], "default")
+
     def test_a_compliance_reset_says_the_rule_will_read_unknown(self):
         self.fake.set(secrets={"COMPLIANCE_CERT_EXPIRY_DAYS": "30"})
         answer, code = self.unset_plan("COMPLIANCE_CERT_EXPIRY_DAYS")
