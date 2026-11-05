@@ -809,6 +809,28 @@ def normalize_seat(token: str, registry: Registry | None = None) -> str:
     return seat_alias_map(registry).get(t, t)
 
 
+def role_lane_seat(raw: str, registry: Registry) -> Seat | None:
+    """The synthesized lane seat for a role tag (BF-FIXER, GB-PLUMBER) or its folder, from the
+    seatApps.patterns `lane` blocks (AFC-620);  None when `raw` is no role lane, the rendered
+    folder is unusable, or a real seat row already owns that folder (the seat row then wins and
+    the caller's normal seat path applies).  Read-only lookup shared by lane/retire/guard so a
+    role lane resolves to the same seat shape everywhere;  roles never become seats rows, and
+    this synthesis alone must not fan out skill copies, listeners or credentials."""
+    t = (raw or "").strip()
+    if not t:
+        return None
+    for rl in registry.role_lanes:
+        if rl.tag.upper() == t.upper() or rl.folder == t.lower():
+            if not is_valid_slug(rl.folder):
+                return None
+            if registry.seat_by_suffix(rl.folder) is not None:
+                return None
+            return Seat(
+                name=rl.tag, suffix=rl.folder, branch_prefixes=(rl.branch_prefix,)
+            )
+    return None
+
+
 def is_alias_only(token: str, registry: Registry | None = None) -> bool:
     """True for a short form (ag, mm, ...) and False for a canonical token or an unknown one."""
     t = token.strip().lower()

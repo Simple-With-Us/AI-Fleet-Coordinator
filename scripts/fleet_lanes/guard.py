@@ -111,10 +111,16 @@ RULE_WORKTREE_ADD = "worktree-add-into-temp"  # git worktree add
 RULE_WORKTREE_MOVE = "worktree-move-into-temp"  # git worktree move
 RULE_CLONE_CODE = "clone-into-code"  # git clone into the integration tree
 RULE_GH_CLONE_CODE = "gh-clone-into-code"  # gh repo clone into the integration tree
-RULE_WORKTREE_ADD_CODE = "worktree-add-into-code"  # git worktree add into the integration tree
-RULE_WORKTREE_MOVE_CODE = "worktree-move-into-code"  # git worktree move into the integration tree
+RULE_WORKTREE_ADD_CODE = (
+    "worktree-add-into-code"  # git worktree add into the integration tree
+)
+RULE_WORKTREE_MOVE_CODE = (
+    "worktree-move-into-code"  # git worktree move into the integration tree
+)
 RULE_ARCHIVE = "archive-into-temp"  # git archive written or extracted into temp
-RULE_TARBALL = "tarball-into-temp"  # GitHub source tarball downloaded or extracted into temp
+RULE_TARBALL = (
+    "tarball-into-temp"  # GitHub source tarball downloaded or extracted into temp
+)
 RULE_INIT_FETCH = "init-fetch-into-temp"  # git init + remote add + fetch/pull in temp
 RULE_EXPORT = "checkout-index-into-temp"  # git checkout-index --prefix=TEMP/
 DENY_RULES = (
@@ -191,7 +197,14 @@ _GH_API_TARBALL_RE = re.compile(
     r"^/?repos/([^/\s]+)/([^/\s]+)/(?:tarball|zipball)(?:[/?#]|$)", re.IGNORECASE
 )
 
-_SHELL_TOOL_HINTS = ("bash", "shell", "terminal", "run_command", "exec_command", "execute_command")
+_SHELL_TOOL_HINTS = (
+    "bash",
+    "shell",
+    "terminal",
+    "run_command",
+    "exec_command",
+    "execute_command",
+)
 _SHELLS = frozenset({"bash", "sh", "zsh", "dash", "ksh"})
 _RESERVED = frozenset(
     {
@@ -251,7 +264,14 @@ _SPECIAL_ZERO = frozenset(
 )
 
 _GIT_GLOBAL_VALUE = frozenset(
-    {"-c", "--namespace", "--super-prefix", "--config-env", "--attr-source", "--list-cmds"}
+    {
+        "-c",
+        "--namespace",
+        "--super-prefix",
+        "--config-env",
+        "--attr-source",
+        "--list-cmds",
+    }
 )
 _CLONE_VALUE = frozenset(
     {
@@ -444,8 +464,12 @@ class GuardContext:
         self.case_insensitive = roots.case_insensitive
         self.fold = str.casefold if self.case_insensitive else (lambda s: s)
         fold = self.fold
-        self.fleet_owners = frozenset(o.casefold() for o in (*FLEET_OWNERS, registry.owner) if o)
-        self.owner_repos = frozenset(a.owner_repo.casefold() for a in registry.apps if a.owner_repo)
+        self.fleet_owners = frozenset(
+            o.casefold() for o in (*FLEET_OWNERS, registry.owner) if o
+        )
+        self.owner_repos = frozenset(
+            a.owner_repo.casefold() for a in registry.apps if a.owner_repo
+        )
         home_f = fold(home)
         roots_f: list[str] = []
         for root in roots.tmp_roots:
@@ -477,7 +501,9 @@ class GuardContext:
         self.code_root_f = fold(str(roots.code_root))
         self.lanes_root_f = fold(str(roots.lanes_root))
         self.lanes_roots_f = tuple(
-            dict.fromkeys(fold(str(p)) for p in (roots.lanes_root, *roots.external_lanes_roots))
+            dict.fromkeys(
+                fold(str(p)) for p in (roots.lanes_root, *roots.external_lanes_roots)
+            )
         )
         self.harness_f = tuple(
             tuple(fold(loc.glob_or_prefix).split("/"))
@@ -556,7 +582,11 @@ def lane_name_reads_back(
     layout v2 the folder above the name is the app's repo folder (`App.lane_dir`), found from `prefix`.
     """
     try:
-        name = L.lane_dir_name(prefix, seat, slug) if flat else L.nested_dir_name(seat, slug)
+        name = (
+            L.lane_dir_name(prefix, seat, slug)
+            if flat
+            else L.nested_dir_name(seat, slug)
+        )
     except L.LayoutError:
         return False
     parent = None
@@ -565,7 +595,9 @@ def lane_name_reads_back(
         if owner is None or owner.prefix != prefix:
             return False
         parent = owner.lane_dir
-    verdict, _reasons, app, hit, got = L._eval_name(name, registry, nested_prefix_dir=parent)
+    verdict, _reasons, app, hit, got = L._eval_name(
+        name, registry, nested_prefix_dir=parent
+    )
     return (
         verdict == L.NameVerdict.CONFORMING
         and app is not None
@@ -591,7 +623,11 @@ def make_context(
     `case_insensitive` defaults to true on macOS.
     """
     env = dict(os.environ if env is None else env)
-    home_s = os.fspath(home) if home is not None else (env.get("HOME") or os.path.expanduser("~"))
+    home_s = (
+        os.fspath(home)
+        if home is not None
+        else (env.get("HOME") or os.path.expanduser("~"))
+    )
     roots = L.make_guard_roots(home_s, env)
     if case_insensitive is not None:
         roots = dataclasses.replace(roots, case_insensitive=bool(case_insensitive))
@@ -673,7 +709,11 @@ def _extract(payload: Any) -> tuple[str, str, str | None] | None:
         if isinstance(roots, list) and roots and isinstance(roots[0], str):
             cwd = roots[0]
     scratch = payload.get("scratchpad_dir", payload.get("scratchpadDir"))
-    return cmd, cwd, scratch if isinstance(scratch, str) and scratch.startswith("/") else None
+    return (
+        cmd,
+        cwd,
+        scratch if isinstance(scratch, str) and scratch.startswith("/") else None,
+    )
 
 
 def _evaluate(payload: Any, ctx: GuardContext | None) -> Decision:
@@ -696,7 +736,9 @@ def _evaluate(payload: Any, ctx: GuardContext | None) -> Decision:
     if not ev.hits:
         return Decision(ALLOW, "", _OK_NO_MATCH)
     hit = ev.hits[0]
-    return Decision(DENY, ev.reason(hit), hit.rule, ev.display(hit.target), hit.src.label)
+    return Decision(
+        DENY, ev.reason(hit), hit.rule, ev.display(hit.target), hit.src.label
+    )
 
 
 # --------------------------------------------------------------------------- path strings
@@ -1406,7 +1448,9 @@ class _Evaluator:
         if words or redirs:
             self._safe_command(words, redirs, st, last_out if after_pipe else group_in)
 
-    def _safe_command(self, words: list[_Word], redirs: list, st: _State, stdin: Any) -> Any:
+    def _safe_command(
+        self, words: list[_Word], redirs: list, st: _State, stdin: Any
+    ) -> Any:
         try:
             return self._command(words, redirs, st, stdin)
         except Exception:
@@ -1554,7 +1598,8 @@ class _Evaluator:
         base_tmp = self._var("TMPDIR", st) or "/tmp"
         if dir_:
             return _child(
-                self._path(dir_, st), os.path.basename(template) if template else "tmp.XXXXXXXXXX"
+                self._path(dir_, st),
+                os.path.basename(template) if template else "tmp.XXXXXXXXXX",
             )
         if template is None:
             return _child(base_tmp, "tmp.XXXXXXXXXX")
@@ -1565,7 +1610,9 @@ class _Evaluator:
     def _path(self, text: str, st: _State) -> str:
         return _join(st.cwd, text)
 
-    def _assignment(self, word: _Word, expanded: str, st: _State) -> tuple[str, str] | None:
+    def _assignment(
+        self, word: _Word, expanded: str, st: _State
+    ) -> tuple[str, str] | None:
         if not word.segs or word.segs[0][0] != "lit":
             return None
         first = word.segs[0][1]
@@ -1617,7 +1664,9 @@ class _Evaluator:
             known = prefix if prefix.endswith("/") else os.path.dirname(prefix)
         known = _norm(known.rstrip("/")) if known else "/"
         folded = self.ctx.fold(known)
-        return folded == self.ctx.code_root_f or folded.startswith(self.ctx.code_root_f + "/")
+        return folded == self.ctx.code_root_f or folded.startswith(
+            self.ctx.code_root_f + "/"
+        )
 
     def _app_from_name(self, name: str) -> L.App | None:
         if not name or _UNK in name:
@@ -1651,7 +1700,9 @@ class _Evaluator:
                     if root in self.ctx.lanes_roots_f:
                         reg = self.ctx.registry
                         app = (
-                            reg.app_by_lane_dir(first, case_insensitive=self.ctx.case_insensitive)
+                            reg.app_by_lane_dir(
+                                first, case_insensitive=self.ctx.case_insensitive
+                            )
                             or reg.app_by_prefix(first)
                             or self._app_from_name(first)
                         )
@@ -1666,9 +1717,13 @@ class _Evaluator:
         comps = known.split("/")
         for pat in self.ctx.harness_f:
             n = len(pat)
-            if len(comps) > n and all(fnmatch.fnmatchcase(c, p) for c, p in zip(comps, pat)):
+            if len(comps) > n and all(
+                fnmatch.fnmatchcase(c, p) for c, p in zip(comps, pat)
+            ):
                 app = None
-                for comp in comps[n:]:  # below the harness root only (.botfleet is not BotFleet)
+                for comp in comps[
+                    n:
+                ]:  # below the harness root only (.botfleet is not BotFleet)
                     app = self._app_from_name(comp)
                     if app is not None:
                         break
@@ -1691,7 +1746,9 @@ class _Evaluator:
             return None
         app = self._app_from_name(repo)
         label = owner_repo.replace(_UNK, "*")
-        prefix = app.prefix if app else (_derive_prefix(repo) if _UNK not in repo else None)
+        prefix = (
+            app.prefix if app else (_derive_prefix(repo) if _UNK not in repo else None)
+        )
         return _Src(label, app, prefix, label if _UNK not in repo else "", kind)
 
     def _source(self, repo: str, base: str) -> _Src | None:
@@ -1741,7 +1798,9 @@ class _Evaluator:
             and bool(app.owner_repo)
             and src.owner_repo.casefold() == app.owner_repo.casefold()
             and self.ctx.fold(_norm(target))
-            == self.ctx.fold(_join(str(self.ctx.roots.code_root), app.integration_dir_name))
+            == self.ctx.fold(
+                _join(str(self.ctx.roots.code_root), app.integration_dir_name)
+            )
         )
         if not canonical:
             self.hits.append(_Hit(code_rule, target, src, what))
@@ -1824,7 +1883,11 @@ class _Evaluator:
                     b = args[i]
                     if b in ("-u", "--unset", "-C", "--chdir", "-S", "--split-string"):
                         i += 2
-                    elif (b.startswith("-") and len(b) > 1) or b == "-" or _ASSIGN_RE.match(b):
+                    elif (
+                        (b.startswith("-") and len(b) > 1)
+                        or b == "-"
+                        or _ASSIGN_RE.match(b)
+                    ):
                         i += 1
                     else:
                         break
@@ -1848,7 +1911,8 @@ class _Evaluator:
                 while i < n and args[i].startswith("-"):
                     i += (
                         2
-                        if args[i] in ("-u", "-g", "-h", "-p", "-C", "-D", "-r", "-t", "-U", "-T")
+                        if args[i]
+                        in ("-u", "-g", "-h", "-p", "-C", "-D", "-r", "-t", "-U", "-T")
                         else 1
                     )
             elif name == "caffeinate":
@@ -1984,10 +2048,14 @@ class _Evaluator:
         src = self._source(pos[0], eff)
         if src is None:
             return
-        target = _join(eff, pos[1]) if len(pos) > 1 else _child(eff, _humanish(pos[0], bare))
+        target = (
+            _join(eff, pos[1]) if len(pos) > 1 else _child(eff, _humanish(pos[0], bare))
+        )
         self._check(RULE_CLONE, target, src, "a bare clone" if bare else "a clone")
         if sep_dir and not self.hits:
-            self._check(RULE_CLONE, _join(eff, sep_dir), src, "the git directory of a clone")
+            self._check(
+                RULE_CLONE, _join(eff, sep_dir), src, "the git directory of a clone"
+            )
 
     def _worktree(self, rest: list[str], eff: str, repo_dir: str) -> None:
         if not rest:
@@ -2011,15 +2079,21 @@ class _Evaluator:
             if pos:
                 src = self._fleet_path_src(repo_dir)
                 if src is not None:
-                    self._check(RULE_WORKTREE_ADD, _join(eff, pos[0]), src, "a worktree")
+                    self._check(
+                        RULE_WORKTREE_ADD, _join(eff, pos[0]), src, "a worktree"
+                    )
         elif op == "move":
             pos = [a for a in args if not (a.startswith("-") and len(a) > 1)]
             if len(pos) >= 2:
                 src = self._fleet_path_src(repo_dir)
                 if src is not None:
-                    self._check(RULE_WORKTREE_MOVE, _join(eff, pos[1]), src, "a worktree")
+                    self._check(
+                        RULE_WORKTREE_MOVE, _join(eff, pos[1]), src, "a worktree"
+                    )
 
-    def _archive(self, rest: list[str], eff: str, repo_dir: str, redirs: list, st: _State) -> Any:
+    def _archive(
+        self, rest: list[str], eff: str, repo_dir: str, redirs: list, st: _State
+    ) -> Any:
         out: str | None = None
         remote: str | None = None
         pos: list[str] = []
@@ -2099,7 +2173,9 @@ class _Evaluator:
             # A URL, or a local path (absolute once ~ is expanded).  Remote names and refspecs
             # like `origin` or `main` stay relative and are skipped.
             for a in rest:
-                if not a.startswith("-") and ("://" in a or "@" in a or a.startswith("/")):
+                if not a.startswith("-") and (
+                    "://" in a or "@" in a or a.startswith("/")
+                ):
                     src = self._source(a, eff)
                     if src is not None:
                         break
@@ -2186,7 +2262,9 @@ class _Evaluator:
         if src is None:
             return
         target = (
-            self._path(pos[1], st) if len(pos) > 1 else _child(st.cwd, _humanish(pos[0], False))
+            self._path(pos[1], st)
+            if len(pos) > 1
+            else _child(st.cwd, _humanish(pos[0], False))
         )
         self._check(RULE_GH_CLONE, target, src, "a clone")
 
@@ -2348,7 +2426,11 @@ class _Evaluator:
         dest: str | None = None
         infile: str | None = None
         i = 0
-        if args and re.fullmatch(r"[A-Za-z]+", args[0]) and any(op in args[0] for op in "xtcru"):
+        if (
+            args
+            and re.fullmatch(r"[A-Za-z]+", args[0])
+            and any(op in args[0] for op in "xtcru")
+        ):
             letters = args[0]  # old style: tar xzf FILE
             i = 1
             for ch in letters:
@@ -2435,16 +2517,24 @@ class _Evaluator:
         return s
 
     def _seat_token(self) -> str | None:
-        raw = (self.ctx.env.get("AGENT_SEAT") or "").strip()
-        if not raw:
+        # Canonical seat resolution (AFC-620): the same launcher precedence, conflict refusal and
+        # role-lane synthesis `lane` itself uses, so the deny reason never names a lane `lane new`
+        # would refuse - or refuses one it would open.  Imported lazily: lane imports guard at top.
+        from . import lane as _lane
+
+        try:
+            seat = _lane.resolve_seat(self.ctx.env, self.ctx.registry)
+        except Exception:
             return None
-        seat = self.ctx.registry.seat_by_name(raw)
-        if seat is not None and not seat_owns_folder(seat, self.ctx.registry):
+        real = self.ctx.registry.seat_by_name(seat.name)
+        if real is not None and not seat_owns_folder(real, self.ctx.registry):
             return None  # GROK-BOT: the folder name is CURSOR's
-        token = seat.suffix if seat is not None else L.normalize_seat(raw, self.ctx.registry)
+        token = seat.suffix
         return token if L.is_valid_slug(token) else None
 
-    def _slug(self, target: str, app: L.App | None, prefix: str | None, seat: str | None) -> str:
+    def _slug(
+        self, target: str, app: L.App | None, prefix: str | None, seat: str | None
+    ) -> str:
         """The slug for the suggested lane: the target's own name with the app's prefix taken off,
         or `work`.  A slug whose folder would read as another seat's (grok plus build is
         grok-build) is replaced by `work`, because `lane new` refuses it.  `seat` is the folder
@@ -2471,8 +2561,14 @@ class _Evaluator:
         if not prefix or registry.app_by_prefix(prefix) is None:
             return slug  # an unknown app: no folder rule to check against
         flat = self.ctx.roots.layout_mode == L.LAYOUT_FLAT
-        seats = [seat] if seat else [s.suffix for s in registry.seats if self._lane_new_accepts(s)]
-        if all(lane_name_reads_back(prefix, s, slug, registry, flat=flat) for s in seats):
+        seats = (
+            [seat]
+            if seat
+            else [s.suffix for s in registry.seats if self._lane_new_accepts(s)]
+        )
+        if all(
+            lane_name_reads_back(prefix, s, slug, registry, flat=flat) for s in seats
+        ):
             return slug
         return "work"
 
@@ -2497,7 +2593,11 @@ class _Evaluator:
         if (
             seat
             and L.is_valid_slug(seat)
-            and (repo_dir if not flat else (prefix if prefix and L.is_valid_slug(prefix) else None))
+            and (
+                repo_dir
+                if not flat
+                else (prefix if prefix and L.is_valid_slug(prefix) else None)
+            )
         ):
             try:
                 return self.display(
@@ -2534,28 +2634,45 @@ class _Evaluator:
         not retired, has a branch prefix and owns its folder name.  A whole name (antigravity), an
         unknown value, a retired tag or a tag that shares another seat's folder name (GROK-BOT) is
         refused by the CLI, so the reason must not promise a lane for it."""
-        raw = (self.ctx.env.get("AGENT_SEAT") or "").strip()
-        seat = self.ctx.registry.seat_by_name(raw) if raw else None
-        return seat is not None and self._lane_new_accepts(seat)
+        from . import lane as _lane
+
+        try:
+            seat = _lane.resolve_seat(self.ctx.env, self.ctx.registry)
+        except Exception:
+            return False
+        real = self.ctx.registry.seat_by_name(seat.name)
+        if real is None:
+            # AFC-620 role lane: `lane new` accepts it; folder ownership and slug validity are
+            # proven by the synthesis (it refuses a folder any seat row owns).
+            return bool(seat.primary_branch_prefix() and L.is_valid_slug(seat.suffix))
+        return self._lane_new_accepts(real)
 
     def reason(self, hit: _Hit) -> str:
         src = hit.src
         app = src.app
         prefix = app.prefix if app is not None else src.prefix
         seat = self._seat_token()
-        lane_new_works = bool(app is not None and app.registered and app.integration_dir_name)
+        lane_new_works = bool(
+            app is not None and app.registered and app.integration_dir_name
+        )
         usable = self._seat_usable_for_lane_new()
         shown_seat = (seat if usable else None) if lane_new_works else seat
         slug = self._slug(hit.target, app, prefix, shown_seat)
         repo_dir = self._repo_dir(app, src.owner_repo)
-        review = self.display(f"{self.ctx.roots.lanes_root}/{repo_dir or '<Repo>'}/review-pr-<n>")
+        review = self.display(
+            f"{self.ctx.roots.lanes_root}/{repo_dir or '<Repo>'}/review-pr-<n>"
+        )
         is_code_rule = hit.rule in (
             RULE_CLONE_CODE,
             RULE_GH_CLONE_CODE,
             RULE_WORKTREE_ADD_CODE,
             RULE_WORKTREE_MOVE_CODE,
         )
-        location = "inside the ~/Code integration tree" if is_code_rule else "in temp directories"
+        location = (
+            "inside the ~/Code integration tree"
+            if is_code_rule
+            else "in temp directories"
+        )
         blocked = (
             f"Blocked: fleet-repo checkouts are not allowed {location}, and this command "
             f"would put {hit.what} of {src.label} at {self.display(hit.target)}."
@@ -2575,7 +2692,9 @@ class _Evaluator:
             # unknown, retired or folder-sharing one, so in those cases say so up front and show a
             # placeholder.
             token = shown_seat
-            tree = self.display(f"{self.ctx.roots.code_root}/{app.integration_dir_name}")
+            tree = self.display(
+                f"{self.ctx.roots.code_root}/{app.integration_dir_name}"
+            )
             shim = self.display(f"{self.ctx.roots.apps_root}/lane")
             run = f"run `{shim} new {app.name} {slug}` instead"
             run = (
@@ -2597,8 +2716,12 @@ class _Evaluator:
         # refuse, so keep pointing at the lane path itself.
         lane = self._lane(app, repo_dir, prefix, seat, slug)
         if app is not None and app.integration_dir_name:
-            tree = self.display(f"{self.ctx.roots.code_root}/{app.integration_dir_name}")
-            example = f"git -C {tree} worktree add -b {branch_for(seat)} {lane} origin/main"
+            tree = self.display(
+                f"{self.ctx.roots.code_root}/{app.integration_dir_name}"
+            )
+            example = (
+                f"git -C {tree} worktree add -b {branch_for(seat)} {lane} origin/main"
+            )
         else:
             tree = "~/Code/<App>"
             example = f"gh repo clone {src.owner_repo} {lane}" if src.owner_repo else ""

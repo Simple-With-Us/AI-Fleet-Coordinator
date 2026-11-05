@@ -449,13 +449,8 @@ def _lookup_seat(registry: L.Registry, text: str) -> L.Seat | None:
         seat = registry.seat_by_suffix(t.lower())
     if seat is None:
         # Role lanes (AFC-620): a BF-<ROLE>/GB-<ROLE> tag or its folder names the synthesized role
-        # lane seat, so prune/doctor can scope to its lanes.  Roles never become seats rows.
-        for rl in registry.role_lanes:
-            if rl.tag.upper() == t.upper() or rl.folder == t.lower():
-                seat = L.Seat(
-                    name=rl.tag, suffix=rl.folder, branch_prefixes=(rl.branch_prefix,)
-                )
-                break
+        # lane seat (shared canonical lookup), so prune/doctor can scope to its lanes.
+        seat = L.role_lane_seat(t, registry)
     return seat
 
 

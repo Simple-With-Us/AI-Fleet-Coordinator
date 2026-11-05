@@ -45,7 +45,9 @@ class MinimaxHookTests(unittest.TestCase):
 
     def test_integration_reads_and_writes_block_but_public_files_allow(self):
         for tool in ("Read", "Write", "Edit"):
-            self.assertIn("integration tree", self.reason(tool, "Code/BotFleet/src/file.py"))
+            self.assertIn(
+                "integration tree", self.reason(tool, "Code/BotFleet/src/file.py")
+            )
             self.assertIn(
                 "integration tree",
                 self.reason(tool, "Code/BotFleet/.claude/worktrees/work/file.py"),
@@ -53,11 +55,15 @@ class MinimaxHookTests(unittest.TestCase):
             self.assertIsNone(self.reason(tool, "public/file.py"))
 
     def test_symlink_to_secret_is_resolved_without_reading(self):
-        os.symlink(os.path.join(self.home, ".secrets"), os.path.join(self.home, "alias"))
+        os.symlink(
+            os.path.join(self.home, ".secrets"), os.path.join(self.home, "alias")
+        )
         self.assertIn("secret-bearing", self.reason("Read", "alias/dummy"))
 
     def test_secret_named_symlink_stays_secret(self):
-        os.symlink(os.path.join(self.home, "public-config"), os.path.join(self.home, ".env"))
+        os.symlink(
+            os.path.join(self.home, "public-config"), os.path.join(self.home, ".env")
+        )
         self.assertIn("secret-bearing", self.reason("Read", ".env"))
 
     def test_case_insensitive_code_root_and_nested_harness(self):
@@ -67,12 +73,15 @@ class MinimaxHookTests(unittest.TestCase):
         original = mm.layout.make_roots
         for insensitive in (True, False):
             roots = dataclasses.replace(
-                original(self.home, self.env, registry=ctx.registry), case_insensitive=insensitive
+                original(self.home, self.env, registry=ctx.registry),
+                case_insensitive=insensitive,
             )
             with mock.patch.object(mm.layout, "make_roots", return_value=roots):
                 for suffix in ("src/a.py", ".claude/worktrees/work/src/a.py"):
                     for tool in ("Read", "Write", "Edit"):
-                        reason = mm.decide(self.payload(tool, "code/BotFleet/" + suffix), ctx)[0]
+                        reason = mm.decide(
+                            self.payload(tool, "code/BotFleet/" + suffix), ctx
+                        )[0]
                         if insensitive:
                             self.assertIn("integration tree", reason)
                         else:
@@ -84,17 +93,33 @@ class MinimaxHookTests(unittest.TestCase):
         self.assertIn("review lane", self.reason("Edit", path))
 
     def test_launcher_identity_beats_engine_and_ambient_seat(self):
-        env = dict(self.env, AGENT_SEAT="MM", AGENT_LAUNCHER="BotFleet", AGENT_LAUNCH_SEAT="CODEX")
-        self.assertIn(
-            "another seat", self.reason("Write", "apps/lanes/BotFleet/minimax-work/file", env)
+        env = dict(
+            self.env,
+            AGENT_SEAT="MM",
+            AGENT_LAUNCHER="BotFleet",
+            AGENT_LAUNCH_SEAT="CODEX",
         )
-        self.assertIsNone(self.reason("Write", "apps/lanes/BotFleet/codex-work/file", env))
-        self.assertIsNone(self.reason("Read", "apps/lanes/BotFleet/minimax-work/file", env))
+        self.assertIn(
+            "another seat",
+            self.reason("Write", "apps/lanes/BotFleet/minimax-work/file", env),
+        )
+        self.assertIsNone(
+            self.reason("Write", "apps/lanes/BotFleet/codex-work/file", env)
+        )
+        self.assertIsNone(
+            self.reason("Read", "apps/lanes/BotFleet/minimax-work/file", env)
+        )
 
     def test_no_identity_is_not_inferred_as_mm(self):
-        self.assertIn("identity is unavailable", self.reason("Write", "apps/lanes/BotFleet/codex-work/file"))
+        self.assertIn(
+            "identity is unavailable",
+            self.reason("Write", "apps/lanes/BotFleet/codex-work/file"),
+        )
         env = dict(self.env, AGENT_SEAT="MM", AGENT_LAUNCHER="BotFleet")
-        self.assertIn("identity is unavailable", self.reason("Write", "apps/lanes/BotFleet/codex-work/file", env))
+        self.assertIn(
+            "identity is unavailable",
+            self.reason("Write", "apps/lanes/BotFleet/codex-work/file", env),
+        )
 
     def test_shell_policy_bare_ps_lane_clone_and_allow(self):
         for command in (
@@ -103,7 +128,11 @@ class MinimaxHookTests(unittest.TestCase):
             "cat ~/.secrets/dummy",
             self.fleet_clone_into_temp(),
         ):
-            payload = {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": self.home}
+            payload = {
+                "tool_name": "Bash",
+                "tool_input": {"command": command},
+                "cwd": self.home,
+            }
             self.assertIsNotNone(mm.decide(payload)[0], command)
         self.assertIsNone(
             mm.decide({"tool_name": "Bash", "tool_input": {"command": "git status"}})[0]
@@ -140,21 +169,33 @@ class MinimaxHookTests(unittest.TestCase):
             empty = copy.copy(ctx)
             empty.registry = registry
             for tool in ("Read", "Write", "Edit"):
-                reason = mm.decide(self.payload(tool, "Code/ExampleRepo/file.py"), empty)[0]
+                reason = mm.decide(
+                    self.payload(tool, "Code/ExampleRepo/file.py"), empty
+                )[0]
                 self.assertIn("registry is unavailable or invalid", reason)
 
     def test_shell_alternate_fields_and_trailing_process_command_are_guarded(self):
         for field in ("command", "cmd", "CommandLine", "commandLine", "script"):
-            payload = {"tool_name": "bash", "tool_input": {field: self.fleet_clone_into_temp()}}
+            payload = {
+                "tool_name": "bash",
+                "tool_input": {field: self.fleet_clone_into_temp()},
+            }
             self.assertIsNotNone(mm.decide(payload)[0])
-        self.assertIsNotNone(mm.decide({"tool_name": "Bash", "command": self.fleet_clone_into_temp()})[0])
+        self.assertIsNotNone(
+            mm.decide({"tool_name": "Bash", "command": self.fleet_clone_into_temp()})[0]
+        )
         for command in ("true; ps", "true && ps", "true\nps"):
-            self.assertIsNotNone(mm.decide({"tool_name": "Bash", "tool_input": {"command": command}})[0])
+            self.assertIsNotNone(
+                mm.decide({"tool_name": "Bash", "tool_input": {"command": command}})[0]
+            )
 
     def test_code_directory_only_registry_preserves_integration_policy(self):
         import copy
+
         ctx = copy.copy(guard.make_context(self.env, home=self.home))
-        ctx.registry = mm.layout.parse_registry({"apps": [{"codeDir": "ExampleRepo"}]}, source="synthetic")
+        ctx.registry = mm.layout.parse_registry(
+            {"apps": [{"codeDir": "ExampleRepo"}]}, source="synthetic"
+        )
         reason = mm.decide(self.payload("Write", "Code/ExampleRepo/file.py"), ctx)[0]
         self.assertIn("integration tree", reason)
 
@@ -164,20 +205,33 @@ class MinimaxHookTests(unittest.TestCase):
             payload = {"tool_name": tool, "tool_input": args, "cwd": self.home}
             ctx = guard.make_context(self.env, home=self.home)
             self.assertIn("secret-bearing", mm.decide(payload, ctx)[0])
-        payload = {"tool_name": "bash", "tool_input": {"command": "ps", "description": "probe"}}
+        payload = {
+            "tool_name": "bash",
+            "tool_input": {"command": "ps", "description": "probe"},
+        }
         self.assertIsNotNone(mm.decide(payload)[0])
 
     def test_a_missing_cwd_does_not_skip_the_file_policy(self):
-        for tool, field in (("Read", "file_path"), ("Write", "file_path"), ("read", "path")):
+        for tool, field in (
+            ("Read", "file_path"),
+            ("Write", "file_path"),
+            ("read", "path"),
+        ):
             payload = {"tool_name": tool, "tool_input": {field: ".secrets/dummy"}}
             ctx = guard.make_context(self.env, home=self.home)
             with self.subTest(tool=tool):
                 self.assertIn("secret-bearing", mm.decide(payload, ctx)[0])
-        payload = {"tool_name": "Write", "tool_input": {"file_path": "Code/BotFleet/file.py"}}
+        payload = {
+            "tool_name": "Write",
+            "tool_input": {"file_path": "Code/BotFleet/file.py"},
+        }
         ctx = guard.make_context(self.env, home=self.home)
         self.assertIn("integration tree", mm.decide(payload, ctx)[0])
         self.assertIsNone(
-            mm.decide({"tool_name": "Read", "tool_input": {"file_path": "public/file.py"}}, ctx)[0]
+            mm.decide(
+                {"tool_name": "Read", "tool_input": {"file_path": "public/file.py"}},
+                ctx,
+            )[0]
         )
 
     def test_unavailable_secret_table_preserves_other_path_policies(self):
@@ -193,25 +247,39 @@ class MinimaxHookTests(unittest.TestCase):
                 (".secrets/dummy", "secret-bearing"),
             ):
                 with self.subTest(policy=expected, table=sg):
-                    self.assertIn(expected, mm.decide(self.payload("Write", path), ctx, sg)[0])
-            self.assertIn("SECRET_FILE_PATTERNS", mm.decide(self.payload("Read", ".env"), ctx, sg)[0])
+                    self.assertIn(
+                        expected, mm.decide(self.payload("Write", path), ctx, sg)[0]
+                    )
+            self.assertIn(
+                "SECRET_FILE_PATTERNS",
+                mm.decide(self.payload("Read", ".env"), ctx, sg)[0],
+            )
         with mock.patch.object(mm.fleet, "_load_secret_guard", return_value=None):
-            self.assertIn("SECRET_FILE_PATTERNS", mm.decide(self.payload("Read", ".env"), ctx)[0])
+            self.assertIn(
+                "SECRET_FILE_PATTERNS", mm.decide(self.payload("Read", ".env"), ctx)[0]
+            )
             self.assertIn(
                 "integration tree",
                 mm.decide(self.payload("Write", "Code/BotFleet/file.py"), ctx)[0],
             )
 
     def test_fallback_registry_keeps_secret_and_review_checks(self):
-        env = dict(self.env, FLEET_APPS_JSON=os.path.join(self.home, "missing-registry.json"))
+        env = dict(
+            self.env, FLEET_APPS_JSON=os.path.join(self.home, "missing-registry.json")
+        )
         ctx = guard.make_context(env, home=self.home)
         self.assertEqual(ctx.registry.source, "fallback")
         self.assertIn("secret-bearing", mm.decide(self.payload("Read", ".env"), ctx)[0])
         self.assertIn(
             "review lane",
-            mm.decide(self.payload("Write", "apps/lanes/BotFleet/review-pr-1/file.py"), ctx)[0],
+            mm.decide(
+                self.payload("Write", "apps/lanes/BotFleet/review-pr-1/file.py"), ctx
+            )[0],
         )
-        self.assertIn("FLEET_APPS_JSON", mm.decide(self.payload("Write", "Code/BotFleet/file.py"), ctx)[0])
+        self.assertIn(
+            "FLEET_APPS_JSON",
+            mm.decide(self.payload("Write", "Code/BotFleet/file.py"), ctx)[0],
+        )
 
     def test_either_path_field_name_is_checked(self):
         ctx = guard.make_context(self.env, home=self.home)
@@ -244,7 +312,8 @@ class MinimaxHookTests(unittest.TestCase):
         payload = {"tool_name": "Bash", "tool_input": {"command": "ps"}}
         self.assertEqual(mm.main(stdin=io.StringIO(json.dumps(payload)), stdout=out), 0)
         self.assertEqual(
-            json.loads(out.getvalue())["hookSpecificOutput"]["permissionDecision"], "deny"
+            json.loads(out.getvalue())["hookSpecificOutput"]["permissionDecision"],
+            "deny",
         )
         with mock.patch.object(mm, "file_reason", side_effect=RuntimeError):
             self.assertIsNone(mm.decide(self.payload("Read", ".secrets/dummy"))[0])
@@ -252,3 +321,41 @@ class MinimaxHookTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RoleLaneHookTests(unittest.TestCase):
+    """AFC-620: a BF-/GB- role launch or seat identity authorizes its own role lanes and still
+    blocks another seat's lanes (the raw seat_by_name lookup knew no roles)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.home = self.tmp.name
+        self.env = {"HOME": self.home}
+
+    def payload(self, tool, path):
+        return {"tool_name": tool, "tool_input": {"file_path": path}, "cwd": self.home}
+
+    def reason(self, tool, path, env):
+        ctx = guard.make_context(env, home=self.home)
+        return mm.decide(self.payload(tool, path), ctx)[0]
+
+    def test_role_launch_identity_authorizes_its_own_role_lane(self):
+        env = dict(self.env, AGENT_LAUNCHER="BotFleet", AGENT_LAUNCH_SEAT="BF-FIXER")
+        self.assertIsNone(
+            self.reason("Write", "apps/lanes/BotFleet/bf-fixer-work/file", env)
+        )
+        self.assertIn(
+            "another seat",
+            self.reason("Write", "apps/lanes/BotFleet/codex-work/file", env),
+        )
+
+    def test_ambient_role_seat_identity_authorizes_its_own_role_lane(self):
+        env = dict(self.env, AGENT_SEAT="BF-COMPILER")
+        self.assertIsNone(
+            self.reason("Write", "apps/lanes/BotFleet/bf-compiler-work/file", env)
+        )
+        self.assertIn(
+            "another seat",
+            self.reason("Write", "apps/lanes/BotFleet/minimax-work/file", env),
+        )
