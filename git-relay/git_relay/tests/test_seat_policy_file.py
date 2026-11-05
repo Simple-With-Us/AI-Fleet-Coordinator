@@ -285,7 +285,7 @@ class SeatPolicyFile(unittest.TestCase):
         # seat's repositories, actions or permission ceiling fails until this line is edited
         # too, so a widening can never ride in on the policy file alone.  When a policy
         # change is meant, run `seat_policy.py install` for the new digest and update it here.
-        self.assertEqual(seat_policy.digest(SEATS), "b92a6b3888e5fed3")
+        self.assertEqual(seat_policy.digest(SEATS), "3eca9f013dcacb42")
 
     def test_render_refuses_a_malformed_file(self):
         good = json.loads(json.dumps(DOC))

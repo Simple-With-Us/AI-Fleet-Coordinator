@@ -186,8 +186,10 @@ SPECS = {
     "wf_tag_delete": ({"contents": "write"}, True),
     "wf_pr_draft": ({"pull_requests": "write", "contents": "write"}, True),
     "wf_pr_ready": ({"pull_requests": "write", "contents": "write"}, True),
-    "wf_automerge_enable": ({"pull_requests": "write"}, True),
-    "wf_automerge_disable": ({"pull_requests": "write"}, True),
+    "wf_pr_close": ({"pull_requests": "write"}, True),
+    "wf_pr_reopen": ({"pull_requests": "write"}, True),
+    "wf_automerge_enable": ({"pull_requests": "write", "contents": "write"}, True),
+    "wf_automerge_disable": ({"pull_requests": "write", "contents": "write"}, True),
     "wf_review_threads": ({"pull_requests": "read"}, False),
     "wf_assignees_add": ({"issues": "write"}, True),
     "wf_assignees_remove": ({"issues": "write"}, True),
@@ -3330,7 +3332,8 @@ class WorkflowVerbs:
         result = self._fixed_graph(query, {"id": node}, "dequeuePullRequest")
         return {"entry": self._queue_receipt(result.get("mergeQueueEntry"), node)}
 
-    def _pr_node(self, repo, number):
+    def _pr_read(self, repo, number):
+        """The PR and its checked node id, read before any write."""
         try:
             data = _obj(self._get(f"/repos/{repo}/pulls/{number}"))
         except RelayGitHubError as exc:
@@ -3340,7 +3343,21 @@ class WorkflowVerbs:
         node = data.get("node_id")
         if not isinstance(node, str) or not re.fullmatch(r"[A-Za-z0-9_/=+-]{1,200}", node):
             raise Refused("PR node unavailable")
-        return node
+        # These fields decide whether a write happens, so a wrong type stops it rather than slipping past a guard.
+        head = data.get("head")
+        if (
+            any(key in data and not isinstance(data[key], bool) for key in ("draft", "merged"))
+            or ("state" in data and data["state"] not in ("open", "closed"))
+            or (
+                head is not None
+                and not (isinstance(head, dict) and _SHA.fullmatch(str(head.get("sha"))))
+            )
+        ):
+            raise PreReadUnavailable("PR pre-read has an unexpected shape; no write attempted")
+        return data, node
+
+    def _pr_node(self, repo, number):
+        return self._pr_read(repo, number)[1]
 
     def _fixed_graph(self, query, variables, field, write=True):
         try:
@@ -3377,7 +3394,10 @@ class WorkflowVerbs:
 
     def wf_pr_draft(self, repo, args):
         _only(args, ("repo", "number"))
-        node = self._pr_node(repo, _int(args, "number"))
+        data, node = self._pr_read(repo, _int(args, "number"))
+        # GitHub answers a transition to the state a PR already has with an error, which reads as an unknown outcome.
+        if data.get("draft") is True:
+            return {"pull": {"id": node, "isDraft": True}}
         query = "mutation($id: ID!) { convertPullRequestToDraft(input:{pullRequestId:$id}) { pullRequest { id isDraft } } }"
         result = self._fixed_graph(query, {"id": node}, "convertPullRequestToDraft")
         pull = _sub(result, "pullRequest")
@@ -3387,13 +3407,50 @@ class WorkflowVerbs:
 
     def wf_pr_ready(self, repo, args):
         _only(args, ("repo", "number"))
-        node = self._pr_node(repo, _int(args, "number"))
+        data, node = self._pr_read(repo, _int(args, "number"))
+        if data.get("draft") is False:
+            return {"pull": {"id": node, "isDraft": False}}
         query = "mutation($id: ID!) { markPullRequestReadyForReview(input:{pullRequestId:$id}) { pullRequest { id isDraft } } }"
         result = self._fixed_graph(query, {"id": node}, "markPullRequestReadyForReview")
         pull = _sub(result, "pullRequest")
         if pull.get("id") != node or pull.get("isDraft") is not False:
             raise RelayGitHubError(502, "PR mutation outcome unverifiable")
         return {"pull": pull}
+
+    def _pr_set_state(self, repo, args, mutation, wanted):
+        # Checked before any read, so a malformed value costs no token and no outcome row.
+        expected = _sha(args, "expected_head_sha") if "expected_head_sha" in args else None
+        data, node = self._pr_read(repo, _int(args, "number"))
+        if data.get("merged") is True:
+            raise Refused("a merged PR cannot change state")
+        if expected is not None:
+            head = data.get("head")
+            if not isinstance(head, dict) or head.get("sha") != expected:
+                raise Refused("PR head moved")
+        # The fleet's other PR tools report state in lower case, as GitHub's REST API does.
+        if data.get("state") == wanted.lower():
+            return {"pull": {"id": node, "state": wanted.lower()}}
+        query = (
+            "mutation($id: ID!) { %s(input:{pullRequestId:$id}) { pullRequest { id state } } }"
+            % mutation
+        )
+        pull = _sub(self._fixed_graph(query, {"id": node}, mutation), "pullRequest")
+        if pull.get("id") != node or pull.get("state") != wanted:
+            raise RelayGitHubError(502, "PR mutation outcome unverifiable")
+        return {"pull": {"id": node, "state": wanted.lower()}}
+
+    def wf_pr_close(self, repo, args):
+        """Close without merging.  GitHub refuses a merged PR.  Who may close whose PR is fleet policy, in AGENTS.md.
+
+        expected_head_sha, when given, is checked against a read just before the write.  It narrows the race and does not
+        close it:  the write names the PR, not its head, so a push between the read and the write still loses to the close.
+        """
+        _only(args, ("repo", "number", "expected_head_sha"))
+        return self._pr_set_state(repo, args, "closePullRequest", "CLOSED")
+
+    def wf_pr_reopen(self, repo, args):
+        _only(args, ("repo", "number", "expected_head_sha"))
+        return self._pr_set_state(repo, args, "reopenPullRequest", "OPEN")
 
     def wf_automerge_disable(self, repo, args):
         _only(args, ("repo", "number"))

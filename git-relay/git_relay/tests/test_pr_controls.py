@@ -8,7 +8,7 @@ try:
 except ImportError:
     from test_workflow_verbs import REPO, Client, Policy
 from git_relay.github_client import RelayGitHubError
-from git_relay.workflow_verbs import Refused, WorkflowVerbs
+from git_relay.workflow_verbs import PreReadUnavailable, Refused, WorkflowVerbs
 
 
 class PrControls(unittest.TestCase):
@@ -40,6 +40,111 @@ class PrControls(unittest.TestCase):
             self.assertEqual(c.calls[1][3], "private")
             with self.assertRaises(Refused):
                 WorkflowVerbs.check_shape(action, {**args, "query": "arbitrary"}, REPO)
+
+    def test_close_and_reopen_use_a_fixed_mutation_and_check_the_result(self):
+        for action, field, wanted in (
+            ("wf_pr_close", "closePullRequest", "CLOSED"),
+            ("wf_pr_reopen", "reopenPullRequest", "OPEN"),
+        ):
+            pull = {"id": "PR_abc", "state": wanted}
+            c = Client({"node_id": "PR_abc"}, {"data": {field: {"pullRequest": pull}}})
+            h = WorkflowVerbs(c, Policy(), "swu-wise", "private", "swu-wise", action, REPO)
+            args = {"repo": REPO, "number": 1}
+            self.assertEqual(
+                h.run(action, args), {"pull": {"id": "PR_abc", "state": wanted.lower()}}
+            )
+            self.assertEqual(c.calls[0][1], "/repos/" + REPO + "/pulls/1")
+            self.assertEqual(c.calls[1][1], "/graphql")
+            self.assertIn(field, c.calls[1][2]["query"])
+            self.assertEqual(c.calls[1][2]["variables"], {"id": "PR_abc"})
+            with self.assertRaises(Refused):
+                WorkflowVerbs.check_shape(action, {**args, "query": "arbitrary"}, REPO)
+
+    def test_a_pr_already_in_that_state_writes_nothing(self):
+        cases = (
+            ("wf_pr_draft", {"draft": True}, {"id": "PR_abc", "isDraft": True}),
+            ("wf_pr_ready", {"draft": False}, {"id": "PR_abc", "isDraft": False}),
+            ("wf_pr_close", {"state": "closed"}, {"id": "PR_abc", "state": "closed"}),
+            ("wf_pr_reopen", {"state": "open"}, {"id": "PR_abc", "state": "open"}),
+        )
+        for action, fields, pull in cases:
+            c = Client({"node_id": "PR_abc", **fields})
+            h = WorkflowVerbs(c, Policy(), "swu-wise", "private", "swu-wise", action, REPO)
+            self.assertEqual(h.run(action, {"repo": REPO, "number": 1}), {"pull": pull}, action)
+            self.assertEqual(len(c.calls), 1, action)
+
+    def test_a_merged_pr_is_refused_before_any_write(self):
+        for action in ("wf_pr_close", "wf_pr_reopen"):
+            c = Client({"node_id": "PR_abc", "merged": True, "state": "closed"})
+            h = WorkflowVerbs(c, Policy(), "swu-wise", "private", "swu-wise", action, REPO)
+            with self.assertRaises(Refused):
+                h.run(action, {"repo": REPO, "number": 1})
+            self.assertEqual(len(c.calls), 1, action)
+
+    def test_graphql_pr_mutations_mint_contents_write(self):
+        from git_relay.workflow_verbs import SPECS
+
+        for action in (
+            "wf_pr_draft",
+            "wf_pr_ready",
+            "wf_automerge_enable",
+            "wf_automerge_disable",
+        ):
+            self.assertEqual(
+                SPECS[action][0], {"pull_requests": "write", "contents": "write"}, action
+            )
+        # GitHub documents closing and reopening under pull requests:  write alone, until a live run shows otherwise.
+        for action in ("wf_pr_close", "wf_pr_reopen"):
+            self.assertEqual(SPECS[action][0], {"pull_requests": "write"}, action)
+
+    def test_close_is_fenced_on_the_head_when_asked(self):
+        good, bad = "a" * 40, "b" * 40
+        pull = {"id": "PR_abc", "state": "CLOSED"}
+        read = {"node_id": "PR_abc", "state": "open", "head": {"sha": good}}
+        c = Client(read, {"data": {"closePullRequest": {"pullRequest": pull}}})
+        h = WorkflowVerbs(c, Policy(), "swu-wise", "private", "swu-wise", "wf_pr_close", REPO)
+        self.assertEqual(
+            h.run("wf_pr_close", {"repo": REPO, "number": 1, "expected_head_sha": good}),
+            {"pull": {"id": "PR_abc", "state": "closed"}},
+        )
+        c = Client(read)
+        h = WorkflowVerbs(c, Policy(), "swu-wise", "private", "swu-wise", "wf_pr_close", REPO)
+        with self.assertRaises(Refused):
+            h.run("wf_pr_close", {"repo": REPO, "number": 1, "expected_head_sha": bad})
+        self.assertEqual(len(c.calls), 1, "no write after a refused fence")
+
+    def test_a_malformed_head_is_refused_before_any_read(self):
+        c = Client({"node_id": "PR_abc", "state": "open"})
+        h = WorkflowVerbs(c, Policy(), "swu-wise", "private", "swu-wise", "wf_pr_close", REPO)
+        args = {"repo": REPO, "number": 1, "expected_head_sha": "not-a-sha"}
+        with self.assertRaises(Refused):
+            h.run("wf_pr_close", args)
+        self.assertEqual(c.calls, [])
+        with self.assertRaises(Refused):
+            WorkflowVerbs.check_shape("wf_pr_close", args, REPO)
+
+    def test_an_unexpected_pre_read_writes_nothing(self):
+        for fields in (
+            {"merged": "true", "state": "closed"},
+            {"draft": 1},
+            {"state": "merged"},
+            {"state": "CLOSED"},
+            {"head": {"sha": "short"}},
+            {"head": "abc"},
+        ):
+            c = Client({"node_id": "PR_abc", **fields})
+            h = WorkflowVerbs(c, Policy(), "swu-wise", "private", "swu-wise", "wf_pr_close", REPO)
+            with self.assertRaises(PreReadUnavailable):
+                h.run("wf_pr_close", {"repo": REPO, "number": 1})
+            self.assertEqual(len(c.calls), 1, fields)
+
+    def test_close_is_unknown_when_the_state_did_not_change(self):
+        for pull in ({"id": "PR_abc", "state": "OPEN"}, {"id": "PR_other", "state": "CLOSED"}):
+            c = Client({"node_id": "PR_abc"}, {"data": {"closePullRequest": {"pullRequest": pull}}})
+            h = WorkflowVerbs(c, Policy(), "swu-wise", "private", "swu-wise", "wf_pr_close", REPO)
+            with self.assertRaises(RelayGitHubError) as error:
+                h.run("wf_pr_close", {"repo": REPO, "number": 1})
+            self.assertEqual(error.exception.status, 502)
 
     def test_graphql_errors_are_unknown_not_definitely_unsent(self):
         c = Client({"node_id": "PR_abc"}, {"data": {}, "errors": [{"message": "private"}]})
