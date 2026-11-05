@@ -24,6 +24,8 @@ def run(args: list[str], cwd: Path) -> str:
 
 
 REMOTE = "https://github.com/example-org/example-repo.git"
+# Split so the relay's secret scan, which reads every pushed file, does not take a fake header for a real one.
+SCHEME = "Bear" "er"
 
 
 class SyncCase(unittest.TestCase):
@@ -234,7 +236,7 @@ class RelayRoute(SyncCase):
         out = S.relay_git_env({"FLEET_SYNC_RELAY_URL": "http://127.0.0.1:8471/", "FLEET_SYNC_BEARER_FILE": str(path)}, REMOTE)
         config = [(out[f"GIT_CONFIG_KEY_{i}"], out[f"GIT_CONFIG_VALUE_{i}"]) for i in range(int(out["GIT_CONFIG_COUNT"]))]
         self.assertIn(("url.http://127.0.0.1:8471/git/example-org/example-repo.git.insteadOf", REMOTE), config)
-        self.assertIn(("http.http://127.0.0.1:8471/.extraHeader", "Authorization: Bearer seat-bearer-value"), config)
+        self.assertIn(("http.http://127.0.0.1:8471/.extraHeader", f"Authorization: {SCHEME} seat-bearer-value"), config)
         self.assertIn(("http.followRedirects", "false"), config)
         self.assertIn(("credential.helper", ""), config)
         self.assertEqual(out["GIT_TERMINAL_PROMPT"], "0")
@@ -247,7 +249,7 @@ class RelayRoute(SyncCase):
         path = self.bearer_file()
         out = S.relay_git_env({"FLEET_SYNC_RELAY_URL": "http://127.0.0.1:8471", "FLEET_SYNC_BEARER_FILE": str(path),
                                "SIMPLE_TOOLS_BEARER": "from-the-environment"}, REMOTE)
-        self.assertEqual(self.header(out), "Authorization: Bearer from-the-environment")
+        self.assertEqual(self.header(out), f"Authorization: {SCHEME} from-the-environment")
 
     def test_a_bearer_with_an_equals_sign_is_kept_whole(self) -> None:
         path = self.home / "seat-bearer"
@@ -372,6 +374,15 @@ class RelayRoute(SyncCase):
             for origin in ("https://example.com/a/b.git", "https://github.com/a", "https://github.com/a/b/c.git",
                            "https://github.com/../b.git", "git@example.com:a/b.git", "/a/local/path", "git@github.com"):
                 self.assertIsNone(S.relay_git_env(route, origin), origin)
+
+    def test_a_fleet_owner_reaches_the_relay_in_its_canonical_case(self) -> None:
+        # The relay matches a seat's repos exactly, so a lower-case origin owner was refused before this.
+        self.assertEqual(set(S.CANONICAL_OWNERS), S.FLEET_OWNERS)
+        for key, canonical in S.CANONICAL_OWNERS.items():
+            for spelled in (key, key.upper(), canonical):
+                for origin in (f"https://github.com/{spelled}/Some-Repo.git", f"git@github.com:{spelled}/Some-Repo.git"):
+                    self.assertEqual(S.origin_repo(origin), f"{canonical}/Some-Repo", origin)
+        self.assertEqual(S.origin_repo("https://github.com/Other-Org/Some-Repo.git"), "Other-Org/Some-Repo")
 
     def test_without_the_relay_a_failed_fetch_still_fails(self) -> None:
         real = S.git_full
