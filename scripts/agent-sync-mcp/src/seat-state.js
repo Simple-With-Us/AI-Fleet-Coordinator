@@ -846,6 +846,18 @@ export const WAKE_LEASE_MS = 15 * 1000;
 // the seat past it and the charge is atomic with the claim.
 export const WAKE_RATE_LIMIT = 6;
 export const WAKE_RATE_WINDOW_MS = 60 * MINUTE_MS;
+// Ordinary wake_seen entries must outlive the shared hourly budget window:
+// the old 15-minute GC erased the window's accounting (six claims at T, then
+// a 7th admitted at T+16m against an empty-looking ledger).  UNKNOWN custody
+// - a claimed entry marked dispatched (crash fence) or a settled "uncertain"
+// tombstone - is retained far longer and is never the first cap eviction, so
+// a replayed wake_id after a GC or a cap trim can never silently re-arm.
+export const WAKE_SEEN_WINDOW_MS = WAKE_RATE_WINDOW_MS + MINUTE_MS;
+export const WAKE_UNKNOWN_RETENTION_MS = 24 * 60 * MINUTE_MS;
+function wakeRetentionMs(entry) {
+  if (entry && ((entry.s === "claimed" && entry.dispatched === true) || (entry.s === "settled" && entry.outcome === "uncertain"))) return WAKE_UNKNOWN_RETENTION_MS;
+  return WAKE_SEEN_WINDOW_MS;
+}
 const WAKE_SEEN_CAP = 500;
 // Every way a claim can end (eventSettleWake).  "retry" forgets the wake;  the rest settle it.
 // "uncertain" is the webhook wake's tombstone (src/webhook-wake.js):  a
@@ -1004,19 +1016,24 @@ function wakeEntry(value) {
   return value.s === "claimed" || value.s === "settled" ? value : null;
 }
 
-/** The claims of the last WAKE_SEEN_MS, oldest first. */
+/** The claims still inside their retention class, oldest first. */
 async function wakeSeen(store, now) {
   const seen = (await store.get("wake_seen")) ?? {};
   for (const [k, value] of Object.entries(seen)) {
     const entry = wakeEntry(value);
-    if (!entry || !(entry.at > now - WAKE_SEEN_MS && entry.at <= now + MINUTE_MS)) delete seen[k];
+    if (!entry || !(entry.at > now - wakeRetentionMs(entry) && entry.at <= now + MINUTE_MS)) delete seen[k];
   }
   return seen;
 }
 
 async function putWakeSeen(store, seen) {
-  const keys = Object.keys(seen);
-  while (keys.length > WAKE_SEEN_CAP) delete seen[keys.shift()];
+  const keys = Object.keys(seen).sort((a, b) => (wakeEntry(seen[a])?.at ?? 0) - (wakeEntry(seen[b])?.at ?? 0));
+  while (keys.length > WAKE_SEEN_CAP) {
+    // UNKNOWN custody is never the first evicted:  ordinary entries go first.
+    const i = keys.findIndex((k) => wakeRetentionMs(wakeEntry(seen[k])) < WAKE_UNKNOWN_RETENTION_MS);
+    if (i === -1) delete seen[keys.shift()];
+    else delete seen[keys.splice(i, 1)[0]];
+  }
   await store.put("wake_seen", seen);
 }
 

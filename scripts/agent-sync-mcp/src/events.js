@@ -783,9 +783,27 @@ export async function deliverWake({ gate, wake, claim, channels = async () => nu
       outcome = "channel_refused";
       streamId = Number.isSafeInteger(wake.stream_id) ? wake.stream_id : null;
     } else {
-      const results = await fanOut({ gate, wake, subs: claim.subs, allowed, fetchFn, now, sleep, deadline });
-      outcome = wakeOutcome(results);
-      delivered = results.filter((r) => r.outcome === "delivered").length;
+      // UNKNOWN fence (the webhook path's contract, applied to the listener
+      // too):  mark the claim before the first dispatch, so a crash between
+      // a callback POST and the settle is never re-armed by lease expiry
+      // (seat-state eventClaimWake), on EITHER path.  No mark, no dispatch:
+      // provably no remote effect, so the claim releases as "retry" and the
+      // SAME wake may come back.
+      let marked = { ok: true };
+      if (claim.subs.length > 0) {
+        try {
+          marked = await gate.eventMarkDispatched({ wakeId: wake.wake_id, token: claim.token });
+        } catch {
+          marked = { ok: false };
+        }
+      }
+      if (!marked.ok) {
+        outcome = "retry";
+      } else {
+        const results = await fanOut({ gate, wake, subs: claim.subs, allowed, fetchFn, now, sleep, deadline });
+        outcome = wakeOutcome(results);
+        delivered = results.filter((r) => r.outcome === "delivered").length;
+      }
     }
   } catch {
     console.log(JSON.stringify({ event: "wake_fanout_failed" }));

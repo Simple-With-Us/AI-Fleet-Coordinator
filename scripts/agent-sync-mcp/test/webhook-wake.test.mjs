@@ -466,3 +466,33 @@ test("listener wakeReply maps rate_limited to 429", async () => {
   assert.equal(reply.retryAfterS, 42);
 });
 
+test("the hourly envelope survives the ledger GC: 16 minutes on, a 7th wake is still refused", async () => {
+  const store = state.memoryStore();
+  for (let i = 0; i < WEBHOOK_WAKE_RATE_LIMIT; i++) {
+    assert.equal((await state.webhookWakeClaim(store, { wakeId: `gc-${i}` }, NOW_MS)).verdict, "go");
+  }
+  const at16 = NOW_MS + 16 * 60 * 1000;
+  assert.equal((await state.webhookWakeClaim(store, { wakeId: "gc-7" }, at16)).verdict, "rate_limited", "the 15-minute GC must not erase the window's accounting");
+  assert.equal((await state.eventClaimWake(store, { wakeId: "gc-7b", messageId: null, name: EVENT_NAME, budget: { max: WEBHOOK_WAKE_RATE_LIMIT, windowMs: WEBHOOK_WAKE_RATE_WINDOW_MS } }, at16)).verdict, "rate_limited", "listener path agrees");
+  const at61 = NOW_MS + 61 * 60 * 1000 + 1000;
+  assert.equal((await state.webhookWakeClaim(store, { wakeId: "gc-7" }, at61)).verdict, "go", "the window itself still rolls");
+});
+
+test("a tombstoned webhook wake survives the GC: a fresh signed retry of the same id is a duplicate", async () => {
+  const store = state.memoryStore();
+  const gate = memoryGate(store);
+  await upsertSub(store);
+  const wake = { wake_id: "w-gc-tomb", sent_at: NOW_S };
+  const claim = await gate.webhookWakeClaim({ wakeId: wake.wake_id });
+  const r = await deliverWebhookWake({ gate, wake, claim, fetchFn: fetchWith(500), sleep: async () => {} });
+  assert.equal(r.outcome, "uncertain");
+  const at16 = NOW_MS + 16 * 60 * 1000;
+  // A FRESH request (new HMAC, same wake_id) after the old GC horizon.
+  assert.equal((await state.webhookWakeClaim(store, { wakeId: "w-gc-tomb" }, at16)).verdict, "duplicate", "tombstone outlives the GC");
+  // Crash fence too: claimed + marked dispatched, settle never happened.
+  const store2 = state.memoryStore();
+  const c2 = await state.webhookWakeClaim(store2, { wakeId: "w-gc-crash" }, NOW_MS);
+  assert.equal(c2.verdict, "go");
+  await state.eventMarkDispatched(store2, { wakeId: "w-gc-crash", token: c2.token }, NOW_MS);
+  assert.equal((await state.webhookWakeClaim(store2, { wakeId: "w-gc-crash" }, at16)).verdict, "duplicate", "crash fence outlives the GC");
+});

@@ -64,7 +64,7 @@ const channels = async () => allowed;
 function memoryGate(now = () => Date.now()) {
   const store = state.memoryStore();
   const gate = { store };
-  for (const name of ["eventSubRoom", "eventSubUpsert", "eventSubDelete", "eventVerifiedGet", "eventVerifiedSet", "eventClaimWake", "eventSettleWake", "eventSubLive", "eventDeliveryResult", "eventSubsSummary", "audit", "tail", "bumpEpoch", "setPaused"]) {
+  for (const name of ["eventSubRoom", "eventSubUpsert", "eventSubDelete", "eventVerifiedGet", "eventVerifiedSet", "eventClaimWake", "eventSettleWake", "eventMarkDispatched", "eventSubLive", "eventDeliveryResult", "eventSubsSummary", "audit", "tail", "bumpEpoch", "setPaused"]) {
     gate[name] = (opts) => state[name](store, opts, now());
   }
   return gate;
@@ -495,13 +495,16 @@ test("a wake_id is claimed once;  a repeat is in flight until it settles, then a
   assert.equal((await gate.eventClaimWake({ wakeId: "w-2" })).verdict, "go");
 });
 
-test("the dedupe forgets after WAKE_SEEN_MS (longer than the sent_at window)", async () => {
+test("the dedupe outlives the shared budget window, then forgets", async () => {
   let now = Date.now();
   const gate = memoryGate(() => now);
-  await gate.eventClaimWake({ wakeId: "w-1" });
+  const claim = await gate.eventClaimWake({ wakeId: "w-1" });
+  await gate.eventSettleWake({ wakeId: "w-1", token: claim.token, outcome: "delivered" });
   now += state.WAKE_SEEN_MS + 1;
-  assert.equal((await gate.eventClaimWake({ wakeId: "w-1" })).verdict, "go");
-  assert.ok(state.WAKE_SEEN_MS > 6 * 60 * 1000);
+  assert.equal((await gate.eventClaimWake({ wakeId: "w-1" })).verdict, "duplicate", "a settled wake outlives the old 15-minute GC:  the budget window needs the history");
+  now += state.WAKE_SEEN_WINDOW_MS + 1;
+  assert.equal((await gate.eventClaimWake({ wakeId: "w-1" })).verdict, "go", "forgotten past the window");
+  assert.ok(state.WAKE_SEEN_WINDOW_MS > state.WAKE_RATE_WINDOW_MS);
 });
 
 test("expired subscriptions and ones from a bumped epoch are dropped at delivery", async () => {
@@ -656,6 +659,34 @@ test("finding 1:  a wholly failed delivery is forgotten and answered 503;  the r
   assert.equal(deliveries.length, 3);
   const events = (await gate.tail(20)).map((r) => r.event);
   for (const name of ["event_wake_captured", "event_delivery", "event_wake_released", "event_wake_settled"]) assert.ok(events.includes(name), name);
+});
+
+test("the listener fences a claim before dispatch: a crash after dispatch never re-arms", async () => {
+  // The mark lands, then the Worker "crashes": no settle. Lease expiry must
+  // NOT reclaim it - on this path or the webhook path.
+  const { gate } = await wakeSetup({ statuses: [200] });
+  const w = wake({ wake_id: "w-fence" });
+  const claim = await gate.eventClaimWake({ wakeId: w.wake_id, messageId: w.message_id });
+  assert.equal(claim.verdict, "go");
+  assert.equal((await gate.eventMarkDispatched({ wakeId: w.wake_id, token: claim.token })).ok, true);
+  const later = Date.now() + 60 * 1000;
+  assert.equal((await state.eventClaimWake(gate.store, { wakeId: w.wake_id }, later)).verdict, "duplicate", "fenced: an expired dispatched claim stays spent");
+  assert.equal((await state.webhookWakeClaim(gate.store, { wakeId: w.wake_id }, later)).verdict, "duplicate", "and the webhook path cannot reclaim it either");
+});
+
+test("the listener dispatches nothing when its dispatch fence fails", async () => {
+  const { gate, deliveries, fetchFn } = await wakeSetup({ statuses: [200] });
+  const realMark = gate.eventMarkDispatched;
+  gate.eventMarkDispatched = async () => ({ ok: false });
+  const w = wake({ wake_id: "w-fence-fail" });
+  const first = await listenerPost(gate, w, fetchFn);
+  assert.equal(deliveries.length, 0, "no fence, no dispatch");
+  assert.equal(first.result.outcome, "retry");
+  assert.equal(first.reply.status, 503);
+  gate.eventMarkDispatched = realMark;
+  const second = await listenerPost(gate, w, fetchFn);
+  assert.equal(second.reply.status, 202, "released: the SAME wake may come back");
+  assert.equal(deliveries.length, 1);
 });
 
 test("finding 1:  a 4xx or a 410 is a permanent drop (202, delivered 0), never a retry", async () => {

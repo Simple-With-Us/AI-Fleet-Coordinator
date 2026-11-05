@@ -70,7 +70,7 @@ const GOLDEN = Object.freeze({
 function memoryGate(now = () => Date.now()) {
   const store = state.memoryStore();
   const gate = { store };
-  for (const name of ["eventSubRoom", "eventSubUpsert", "eventSubDelete", "eventVerifiedGet", "eventVerifiedSet", "eventClaimWake", "eventSettleWake", "eventSubLive", "eventDeliveryResult", "eventSubsSummary", "spikeClaim", "audit", "tail", "setPaused"]) {
+  for (const name of ["eventSubRoom", "eventSubUpsert", "eventSubDelete", "eventVerifiedGet", "eventVerifiedSet", "eventClaimWake", "eventSettleWake", "eventMarkDispatched", "eventSubLive", "eventDeliveryResult", "eventSubsSummary", "spikeClaim", "audit", "tail", "setPaused"]) {
     gate[name] = (opts) => state[name](store, opts, now());
   }
   return gate;
