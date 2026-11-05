@@ -28,9 +28,9 @@ def _default_embed(cfg: dict[str, str], texts: list[str]) -> list[list[float]]:
 
 
 def contribution_filter() -> dict:
-    """source=agent-contribution plus the ingest-sentinel must_not, built by recall_api."""
+    """source=agent-contribution, including retracted rows so they still block a duplicate."""
     from . import recall_api  # lazy, see above
-    return recall_api.build_filter(source=CONTRIB_SOURCE)
+    return recall_api.build_filter(source=CONTRIB_SOURCE, include_retracted=True)
 
 
 def _excerpt(text: str, n: int = EXCERPT) -> str:

@@ -128,8 +128,18 @@ def meta_exclude() -> dict:
 
 
 def retracted_exclude() -> dict:
-    """Fresh must_not condition for a retracted contribution."""
-    return {"key": RETRACTED_FIELD, "match": {"value": True}}
+    """Fresh must_not condition for a retracted contribution, including numeric JSON flags."""
+    return {
+        "should": [
+            {"key": RETRACTED_FIELD, "match": {"value": True}},
+            {"key": RETRACTED_FIELD, "match": {"value": 1}},
+        ]
+    }
+
+
+def _is_retracted(payload: dict) -> bool:
+    """Qdrant payloads are untyped JSON: supported writes use True, old/manual rows may use 1."""
+    return payload.get(RETRACTED_FIELD) is True or payload.get(RETRACTED_FIELD) == 1
 
 
 # Retracted contributions stay in the corpus for provenance and audit, but every normal search
@@ -269,13 +279,16 @@ def _hit(raw: dict) -> dict:
         out[f] = p.get(f, 0 if f in ("chunk_index", "created_at") else "")
     for f in AUDIT_HIT_FIELDS:
         default = (
-            0
-            if f in ("revision", "corrected_at", "retracted_at")
+            1
+            if f == "revision"
+            else 0
+            if f in ("corrected_at", "retracted_at")
             else False
             if f == "retracted"
             else ""
         )
         out[f] = p.get(f, default)
+    out["retracted"] = _is_retracted(p)
     return out
 
 
@@ -618,7 +631,7 @@ def recall_contribute(
                 "id": str(existing.get("id") or point["id"]),
                 "doc_id": str(old.get("doc_id") or doc_id),
                 "seat": str(old.get("seat") or ""),
-                "retracted": old.get(RETRACTED_FIELD) is True,
+                "retracted": _is_retracted(old),
             },
         }
     point["vector"] = embed(cfg, [clean])[0]
@@ -640,11 +653,9 @@ def _safe_audit_text(name: str, value: str, maximum: int = REASON_MAX) -> str:
         raise FleetRagError(
             f"{name} must be at most {maximum} characters once trimmed ({len(value)})"
         )
-    clean, _ = scrub(value)
-    if gitleaks_available() and _still_secret(clean):
-        raise FleetRagError(
-            f"refusing: {name} still looks like it contains a secret after scrubbing"
-        )
+    clean, kinds = scrub(value)
+    if kinds or (gitleaks_available() and _still_secret(clean)):
+        raise FleetRagError(f"refusing: {name} looks like it contains a secret")
     return clean
 
 
@@ -777,7 +788,7 @@ def recall_correct(
         old = old_point.get("payload") or {}
         owner = _authorize_change(old, actor)
         revision = _check_revision(old, expected)
-        if old.get(RETRACTED_FIELD) is True:
+        if _is_retracted(old):
             raise FleetRagError(
                 f"{doc_id} is retracted; correction would resurrect it, so it was refused"
             )
@@ -894,7 +905,7 @@ def recall_retract(
         payload = point.get("payload") or {}
         owner = _authorize_change(payload, actor)
         revision = _check_revision(payload, expected)
-        if payload.get(RETRACTED_FIELD) is True:
+        if _is_retracted(payload):
             return {
                 "id": str(point.get("id") or ""),
                 "doc_id": doc_id,

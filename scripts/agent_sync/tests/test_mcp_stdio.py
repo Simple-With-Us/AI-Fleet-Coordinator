@@ -114,6 +114,8 @@ WRITE_TOOLS = {
     "notes_pin",
     "notes_unpin",
     "recall_contribute",
+    "recall_correct",
+    "recall_retract",
     "fleetlink_create_share",
     "fleetlink_create_link",
     "fleetlink_share_to_team",

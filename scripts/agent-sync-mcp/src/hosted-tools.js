@@ -1488,11 +1488,11 @@ export class HostedTools {
   async tool_gr_resolve_thread(args) { return this.grCall("resolve_thread", args); }
 
   /** One recall call, its failure as a ToolError (never a response body but a 400's own message). */
-  async recallCall(fn, { write = false } = {}) {
+  async recallCall(fn, { write = false, retrySafe = false } = {}) {
     try {
       return await fn();
     } catch (error) {
-      throw mapRecallError(error, { write, known: this.known });
+      throw mapRecallError(error, { write, retrySafe, known: this.known });
     }
   }
 
@@ -1571,7 +1571,7 @@ export class HostedTools {
     if (url) body.url = url;
     let data;
     try {
-      data = await this.recallCall(() => recall.contribute(body), { write: true });
+      data = await this.recallCall(() => recall.contribute(body), { write: true, retrySafe: true });
     } catch (error) {
       await this.safely(() => this.gate.idemDrop({ key }));
       throw error;
@@ -1608,10 +1608,15 @@ export class HostedTools {
     const key = await this.recallMutationKey(name, args, fields);
     audit.idem_ref = (await sha256Hex(key)).slice(0, 12);
     const prior = await this.gate.idemPeek({ key });
+    if (prior?.state === "unknown") throw new ToolError("outcome_unknown", "an earlier identical mutation was cut off, so the result is unknown.  Search recall before retrying.", { retryable: false });
     if (prior) return { key, prior };
     const begun = await this.gate.idemBegin({ key, ttlMs: args.idempotency_key ? IDEM_EXPLICIT_TTL_MS : RECALL_IDEM_TTL_MS, fields: { kind: "recall" } });
     if (begun.verdict === "busy") throw new ToolError("rate_limited", `the same ${name} operation is already in flight in another chat of this seat`, { retryable: true, retryAfterS: 30 });
-    if (begun.verdict === "duplicate") return { key, prior: begun.row };
+    if (begun.verdict === "reconcile") throw new ToolError("outcome_unknown", "an earlier identical mutation was cut off, so the result is unknown.  Search recall before retrying.", { retryable: false });
+    if (begun.verdict === "duplicate") {
+      if (begun.row?.state === "unknown") throw new ToolError("outcome_unknown", "an earlier identical mutation was cut off, so the result is unknown.  Search recall before retrying.", { retryable: false });
+      return { key, prior: begun.row };
+    }
     return { key, prior: null };
   }
 
@@ -1643,7 +1648,8 @@ export class HostedTools {
     try {
       data = await this.recallCall(() => recall.correct(body), { write: true });
     } catch (error) {
-      await this.safely(() => this.gate.idemDrop({ key }));
+      if (error?.code === "outcome_unknown") await this.safely(() => this.gate.idemSet({ key, changes: { state: "unknown" } }));
+      else await this.safely(() => this.gate.idemDrop({ key }));
       throw error;
     }
     const integer = (v) => Number.isSafeInteger(v) ? v : 0;
@@ -1701,7 +1707,8 @@ export class HostedTools {
     try {
       data = await this.recallCall(() => recall.retract(body), { write: true });
     } catch (error) {
-      await this.safely(() => this.gate.idemDrop({ key }));
+      if (error?.code === "outcome_unknown") await this.safely(() => this.gate.idemSet({ key, changes: { state: "unknown" } }));
+      else await this.safely(() => this.gate.idemDrop({ key }));
       throw error;
     }
     const integer = (v) => Number.isSafeInteger(v) ? v : 0;

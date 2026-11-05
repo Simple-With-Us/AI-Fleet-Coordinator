@@ -300,6 +300,21 @@ test("correct and retract are always the grant's seat:  a client seat is dropped
   });
 });
 
+test("a hosted mutation cut off mid-write stays unknown and is not resent", async () => {
+  const { tools, upstream } = harness({ respond: () => ({ status: 502, json: { ok: false } }) });
+  const args = { doc_id: "contrib/GROK-WEB/2026-11-05/abcd1234", reason: "obsolete" };
+  const first = toolError(await tools.call("recall_retract", args), "outcome_unknown");
+  assert.match(first.message, /may or may not have landed/);
+  const retry = toolError(await tools.call("recall_retract", args), "outcome_unknown");
+  assert.match(retry.message, /result is unknown/);
+  assert.equal(upstream.requests.length, 1);
+
+  const network = harness({ respond: () => new Error("network down") });
+  const error = toolError(await network.tools.call("recall_correct", { ...args, text: LESSON }), "outcome_unknown");
+  assert.equal(error.retryable, false);
+  assert.equal(network.upstream.requests.length, 1);
+});
+
 test("mutation idempotency:  a retry returns the first result;  a reason secret never leaves", async () => {
   const doc_id = "contrib/GROK-WEB/2026-11-05/abcd1234";
   const { tools, upstream } = harness();
@@ -308,8 +323,9 @@ test("mutation idempotency:  a retry returns the first result;  a reason secret 
   assert.equal(second.duplicate, true);
   assert.equal(upstream.requests.length, 1);
   assert.deepEqual({ ...first, duplicate: true }, second);
+  const syntheticGithubToken = ["ghp", "a".repeat(36)].join("_"); // Synthetic scanner fixture, never a credential.
   const secret = toolError(await tools.call("recall_correct", {
-    doc_id, text: LESSON, reason: "token ghp_" + "a".repeat(36),
+    doc_id, text: LESSON, reason: `token ${syntheticGithubToken}`,
   }), "refused_secret");
   assert.match(secret.message, /reason/);
   assert.equal(upstream.requests.length, 1);

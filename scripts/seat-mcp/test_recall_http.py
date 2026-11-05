@@ -9,7 +9,8 @@ from http.server import ThreadingHTTPServer
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from seat_mcp import server
+from seat_mcp import recall_bridge, server
+from seat_mcp.seats import SeatError
 
 
 class FakeHandler(server.SeatHandler):
@@ -81,6 +82,22 @@ class RecallHttpTest(unittest.TestCase):
             "POST", "/recall/retract", {"doc_id": "d", "reason": "obsolete", "seat": "GROK"}
         )
         self.assertEqual((code, payload["retracted"]), (200, True))
+
+    def test_mutation_expected_revision_is_a_strict_integer(self) -> None:
+        original = recall_bridge._call
+        recall_bridge._call = lambda fn_name, **kwargs: kwargs  # type: ignore[attr-defined]
+        try:
+            for expected_revision in (1.5, "1", True, 0, 1000001):
+                with self.assertRaisesRegex(SeatError, "expected_revision", msg=repr(expected_revision)):
+                    recall_bridge.recall_retract(
+                        {"doc_id": "d", "reason": "obsolete", "seat": "GROK", "expected_revision": expected_revision}
+                    )
+            result = recall_bridge.recall_retract(
+                {"doc_id": "d", "reason": "obsolete", "seat": "GROK", "expected_revision": 2}
+            )
+            self.assertEqual(result["expected_revision"], 2)
+        finally:
+            recall_bridge._call = original  # type: ignore[attr-defined]
 
     def test_stats_and_search(self) -> None:
         code, payload = self._json("GET", "/recall/stats")

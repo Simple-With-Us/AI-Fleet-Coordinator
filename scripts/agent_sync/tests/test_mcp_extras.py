@@ -739,6 +739,19 @@ class RecallToolTests(FakePrograms):
         self.assertIn("may or may not have landed", retry["message"])
         self.assertEqual(self.calls(self.recall_out), [], "the retry did not send the mutation again")
 
+    def test_mutation_arguments_are_checked_before_the_cli_runs(self):
+        session = self.session(self.env())
+        for args in (
+            {"doc_id": 123, "reason": "obsolete"},
+            {"doc_id": "", "reason": "obsolete"},
+            {"doc_id": "-bad", "reason": "obsolete"},
+            {"doc_id": "contrib/CLAUDE/2026-11-05/472fc36e", "reason": "obsolete", "expected_revision": "1"},
+            {"doc_id": "contrib/CLAUDE/2026-11-05/472fc36e", "reason": "obsolete", "expected_revision": 1.5},
+            {"doc_id": "contrib/CLAUDE/2026-11-05/472fc36e", "reason": "obsolete", "expected_revision": True},
+        ):
+            self.assert_tool_error(session.call("recall_retract", args), "invalid_argument")
+        self.assertEqual(self.calls(self.recall_out), [])
+
     def test_mutation_reason_is_scanned_before_the_cli_runs(self):
         session = self.session(self.env())
         leak = "token ghp_" + "EXAMPLE0" * 5

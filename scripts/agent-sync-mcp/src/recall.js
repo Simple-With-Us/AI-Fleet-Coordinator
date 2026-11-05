@@ -382,15 +382,17 @@ export class RecallError extends Error {
 }
 
 /** A RecallError as the ToolError the caller sees.  Never echoes a response body but a 400's own message. */
-export function mapRecallError(error, { write = false, known = [] } = {}) {
+export function mapRecallError(error, { write = false, retrySafe = false, known = [] } = {}) {
   if (error instanceof ToolError) return error;
   if (!(error instanceof RecallError)) return new ToolError("internal", "internal error");
   const status = error.status;
   switch (error.kind) {
     case "timeout":
-      return new ToolError("unavailable", "could not reach fleet recall (timed out)", { retryable: true });
     case "network":
-      return new ToolError("unavailable", "could not reach fleet recall", { retryable: true });
+      if (write && !retrySafe) {
+        return new ToolError("outcome_unknown", `fleet recall ${error.kind === "timeout" ? "timed out" : "lost the connection"}, so the write may or may not have landed.  Search recall before retrying.`, { retryable: false });
+      }
+      return new ToolError("unavailable", error.kind === "timeout" ? "could not reach fleet recall (timed out)" : "could not reach fleet recall", { retryable: true });
     case "redirect":
       return new ToolError("not_authorized", `fleet recall refused this server's service credentials (HTTP ${status} redirect).  The owner checks the Access service token (DEPLOY.md).`, {
         extra: { status },
@@ -413,7 +415,9 @@ export function mapRecallError(error, { write = false, known = [] } = {}) {
     return new ToolError("invalid_argument", said ? `fleet recall refused the request:  ${said}` : "fleet recall refused the request (HTTP 400)", { extra: { status } });
   }
   if (status >= 500) {
-    // A contribution upserts by content hash, so resending one is safe too.
+    if (write && !retrySafe) {
+      return new ToolError("outcome_unknown", `fleet recall failed (HTTP ${status}), so the write may or may not have landed.  Search recall before retrying.`, { retryable: false, extra: { status } });
+    }
     return new ToolError("unavailable", `fleet recall failed (HTTP ${status})`, { retryable: true, extra: { status } });
   }
   return new ToolError("upstream_error", `fleet recall answered HTTP ${status}`, { retryable: !write, extra: { status } });

@@ -27,7 +27,7 @@ own store and never go in Infisical.
 | `SETTINGS_REFRESH_SECONDS` | tunable knob | set in prod (controls the background refresh cadence) |
 | `HOST`, `PORT` | env config | managed keys; currently supplied by the container env |
 
-Secret values are NEVER invented, guessed, or copied from anywhere: the five secret keys above are not yet created in the project and are documented here as "to be filled by admin".  (The Infisical CLI rejects empty values, so they cannot exist as empty placeholders.)
+Secret values are NEVER invented, guessed, or copied from anywhere: the six secret keys above are not yet created in the project and are documented here as "to be filled by admin".  (The Infisical CLI rejects empty values, so they cannot exist as empty placeholders.)
 
 ## Muster Server Resource Policy
 

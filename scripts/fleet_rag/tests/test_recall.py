@@ -25,7 +25,10 @@ from fleet_rag.recall_api import FakeQdrant
 SEAMS = ("load_config", "embed", "embedder_healthy", "rerank_healthy", "Qdrant", "gitleaks_flagged",
          "gitleaks_available")
 META_EXCLUDE = {"key": "source", "match": {"value": "meta"}}
-RETRACTED_EXCLUDE = {"key": "retracted", "match": {"value": True}}
+RETRACTED_EXCLUDE = {"should": [
+    {"key": "retracted", "match": {"value": True}},
+    {"key": "retracted", "match": {"value": 1}},
+]}
 DEFAULT_MUST_NOT = [META_EXCLUDE, RETRACTED_EXCLUDE]
 
 
@@ -483,9 +486,31 @@ class CorrectRetractTests(RecallBase):
             recall_api.recall_retract("contrib/CLAUDE/2026-11-05/472fc36e", "no", seat="CLAUDE")
         recall_api.gitleaks_available = lambda: True
         recall_api.gitleaks_flagged = lambda path, timeout=300: {1}
-        with self.assertRaisesRegex(FleetRagError, "still looks"):
+        with self.assertRaisesRegex(FleetRagError, "looks like it contains a secret"):
             recall_api.recall_retract("contrib/CLAUDE/2026-11-05/472fc36e", "safe reason", seat="CLAUDE")
+        with self.assertRaisesRegex(FleetRagError, "looks like it contains a secret"):
+            recall_api.recall_correct(
+                "contrib/CLAUDE/2026-11-05/472fc36e", "x" * 50, "token ghp_" + "a" * 36, seat="CLAUDE"
+            )
         self.assertEqual(FakeQdrant.scrolls, [])
+
+    def test_numeric_retracted_flags_and_initial_revision_are_supported(self):
+        original = self.contribute()
+        point = next(p for p in FakeQdrant.points if p["payload"].get("doc_id") == original["doc_id"])
+        point["payload"]["retracted"] = 1
+        hits = recall_api.recall_search("pm2 ecosystem env", source="agent-contribution")["hits"]
+        self.assertNotIn(original["doc_id"], [h["doc_id"] for h in hits])
+        audit = recall_api.recall_search("pm2 ecosystem env", source="agent-contribution", include_retracted=True)["hits"]
+        hit = next(h for h in audit if h["doc_id"] == original["doc_id"])
+        self.assertTrue(hit["retracted"])
+        with self.assertRaisesRegex(FleetRagError, "retracted"):
+            recall_api.recall_correct(original["doc_id"], "z" * 50, "do not resurrect", seat="CLAUDE")
+
+        FakeQdrant.reset()
+        original = self.contribute()
+        audit = recall_api.recall_search("pm2 ecosystem env", source="agent-contribution")["hits"]
+        hit = next(h for h in audit if h["doc_id"] == original["doc_id"])
+        self.assertEqual(hit["revision"], 1)
 
 
 

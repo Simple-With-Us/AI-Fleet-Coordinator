@@ -246,6 +246,17 @@ def _required_seat(arguments: JsonDict, operation: str) -> str:
     return seat
 
 
+def _expected_revision(arguments: JsonDict) -> int | None:
+    val = arguments.get("expected_revision")
+    if val is None:
+        val = arguments.get("expectedRevision")
+    if val is None or val == "":
+        return None
+    if isinstance(val, bool) or not isinstance(val, int) or not 1 <= val <= 1000000:
+        raise SeatError("expected_revision must be an integer between 1 and 1000000")
+    return val
+
+
 def _mutation_base(arguments: JsonDict, operation: str) -> JsonDict:
     doc_id = _opt_str(arguments, "doc_id") or _opt_str(arguments, "docId")
     if not doc_id:
@@ -258,9 +269,7 @@ def _mutation_base(arguments: JsonDict, operation: str) -> JsonDict:
         "reason": reason,
         "seat": _required_seat(arguments, operation),
     }
-    expected = _opt_int(arguments, "expected_revision", 1, 1000000)
-    if expected is None:
-        expected = _opt_int(arguments, "expectedRevision", 1, 1000000)
+    expected = _expected_revision(arguments)
     if expected is not None:
         kwargs["expected_revision"] = expected
     return kwargs

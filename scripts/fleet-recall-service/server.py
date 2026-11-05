@@ -693,7 +693,11 @@ class RecallHandler(BaseHTTPRequestHandler):
         )
 
     def _auth_ok(self) -> bool:
-        return bearer_ok(self.headers.get("Authorization"), self.token) or self._owner_auth_ok()
+        return bearer_ok(self.headers.get("Authorization"), self.token)
+
+    def _mutation_auth_ok(self) -> bool:
+        """The shared seat bearer, or the distinct owner bearer on a mutation route."""
+        return self._auth_ok() or self._owner_auth_ok()
 
     def _owner_auth_ok(self) -> bool:
         owner = (infisical_settings.get("RECALL_OWNER_TOKEN") or "").strip()
@@ -906,7 +910,8 @@ class RecallHandler(BaseHTTPRequestHandler):
             self._admin_reload()
             return
         if path in RECALL_PATHS:
-            if not self._auth_ok():
+            mutation_route = path in ("/recall/correct", "/recall/retract")
+            if not (self._mutation_auth_ok() if mutation_route else self._auth_ok()):
                 self._unauthorized()
                 return
             msg = self._read_json_object()

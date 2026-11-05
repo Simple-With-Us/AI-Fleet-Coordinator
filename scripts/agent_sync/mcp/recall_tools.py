@@ -146,8 +146,9 @@ def failure(code: int, err: str) -> RecallUnavailable:
             "not_authorized"
             if "credential" in lower
             or "key" in lower
-            or "may correct" in lower
-            or "may retract" in lower
+            or "owning seat" in lower
+            or "runs under your own seat" in lower
+            or "owner identity" in lower
             else "invalid_argument",
             "fleet recall refused the request:  %s" % (err or "usage or credential error"),
         )
@@ -211,7 +212,7 @@ def hit_item(hit: Mapping[str, Any]) -> dict[str, Any]:
         "corrected": hit.get("corrected_at") if isinstance(hit.get("corrected_at"), int) else None,
         "corrected_by": field("corrected_by", HIT_FIELD_LIMIT),
         "correction_reason": field("correction_reason", HIT_FIELD_LIMIT),
-        "retracted": hit.get("retracted") is True,
+        "retracted": hit.get("retracted") is True or hit.get("retracted") == 1,
         "retracted_at": hit.get("retracted_at")
         if isinstance(hit.get("retracted_at"), int)
         else None,
@@ -387,6 +388,23 @@ def _integer(value: Any) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
+def _doc_id_arg(value: Any) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise RecallUnavailable("invalid_argument", "argument 'doc_id' must be a non-empty string")
+    doc_id = value.strip()
+    if doc_id.startswith("-"):
+        raise RecallUnavailable("invalid_argument", "argument 'doc_id' must not begin with '-'")
+    return doc_id
+
+
+def _expected_revision_arg(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise RecallUnavailable("invalid_argument", "argument 'expected_revision' must be a positive integer")
+    return value
+
+
 def correct(
     args: Mapping[str, Any],
     identity: str,
@@ -397,9 +415,11 @@ def correct(
 ) -> tuple[str, dict[str, Any]]:
     text, title, url = contribute_fields(args, scan)
     reason = _reason_field(args, scan)
+    doc_id = _doc_id_arg(args.get("doc_id"))
+    expected_revision = _expected_revision_arg(args.get("expected_revision"))
     argv = [
         "correct",
-        str(args["doc_id"]),
+        doc_id,
         "-",
         "--reason",
         reason,
@@ -411,8 +431,8 @@ def correct(
         argv += ["--title", title]
     if url:
         argv += ["--url", url]
-    if args.get("expected_revision") is not None:
-        argv += ["--expected-revision", str(args["expected_revision"])]
+    if expected_revision is not None:
+        argv += ["--expected-revision", str(expected_revision)]
     code, data, err = run(argv, stdin=text.encode("utf-8"), env=env, runner=runner)
     if data is None or code != 0 or "doc_id" not in data:
         raise failure(code, err)
@@ -442,17 +462,19 @@ def retract(
     scan: Callable[[str, str], None] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     reason = _reason_field(args, scan)
+    doc_id = _doc_id_arg(args.get("doc_id"))
+    expected_revision = _expected_revision_arg(args.get("expected_revision"))
     argv = [
         "retract",
-        str(args["doc_id"]),
+        doc_id,
         "--reason",
         reason,
         "--seat",
         identity,
         "--json",
     ]
-    if args.get("expected_revision") is not None:
-        argv += ["--expected-revision", str(args["expected_revision"])]
+    if expected_revision is not None:
+        argv += ["--expected-revision", str(expected_revision)]
     code, data, err = run(argv, stdin=b"", env=env, runner=runner)
     if data is None or code != 0 or "doc_id" not in data:
         raise failure(code, err)
@@ -462,7 +484,7 @@ def retract(
         "seat": identity,
         "status": clean(data.get("status"), 40)[0] if isinstance(data.get("status"), str) else "",
         "revision": _integer(data.get("revision")),
-        "retracted": data.get("retracted") is True,
+        "retracted": data.get("retracted") is True or data.get("retracted") == 1,
         "retracted_at": _integer(data.get("retracted_at")),
         "retracted_by": clean(data.get("retracted_by"), 60)[0],
         "retraction_reason": clean(data.get("retraction_reason"), 500)[0],
