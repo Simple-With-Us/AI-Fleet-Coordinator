@@ -14,8 +14,8 @@ Two faults kept the old job failing on every run for days:
     as failed.  Removing the lock file loses nothing: git writes the new index there and renames it only on success.
   * git's stderr was thrown away, so `fast-forward exit=1` was all the log said.  It now carries git's first line.
 
-A fetch that fails with no local credential retries through the relay's read-only `/git/` route when FLEET_SYNC_RELAY_URL and
-FLEET_SYNC_BEARER_FILE are set, as that bearer's seat.  This job holds no GitHub token.
+When FLEET_SYNC_RELAY_URL is set, every fetch goes through the relay's read-only `/git/` route as the seat that the bearer names,
+and a route that cannot be used fails the clone.  This job then holds and uses no GitHub credential.
 
 A folder that is not a repo (such as `Docs`) is passed over without a skip count, and a clone with a row in
 placement-exceptions.json (such as a service-pinned clone) is left alone with its reason logged.  Those rows use class
@@ -304,19 +304,16 @@ def process_repo(repo: Path, dry_run: bool, counters: dict[str, int], *, env: Ma
             log(f"dry-run {repo.name}: main is ahead of or diverged from local origin/main")
         return
     fetch_args = ("fetch", "--quiet", "--no-tags", "origin", "refs/heads/main:refs/remotes/origin/main")
-    # With the relay route set, the plain fetch is anonymous:  git's own helper could otherwise hand it a login on this host.
-    plain_env = {"GIT_TERMINAL_PROMPT": "0"}
-    if (env.get("FLEET_SYNC_RELAY_URL") or "").strip():
-        plain_env.update({"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "credential.helper", "GIT_CONFIG_VALUE_0": ""})
-    code, _, err = git_full(repo, *fetch_args, extra_env=plain_env)
     relay_env = None
-    if code != 0:
-        # A private repo with no local credential:  the relay fetches it as this job's seat, with no GitHub token here.
+    if (env.get("FLEET_SYNC_RELAY_URL") or "").strip():
+        # The configured route is the only route:  every fetch runs as this job's seat, so nothing on this host (a login in
+        # git's helper, an SSH key, a URL credential) can serve one.  If the route cannot be set up, the clone fails.
         relay_env = relay_git_env(env)
-        if relay_env is not None:
-            code, _, err = git_full(repo, *fetch_args, extra_env=relay_env)
-            if code == 0:
-                log(f"relay route {repo.name}: fetched as this job's seat")
+        if relay_env is None:
+            counters["failed"] += 1
+            log(f"fail {repo.name}: the relay route is configured but not usable")
+            return
+    code, _, err = git_full(repo, *fetch_args, extra_env=relay_env or {"GIT_TERMINAL_PROMPT": "0"})
     if code != 0:
         counters["failed"] += 1
         log(f"fail {repo.name}: fetch exit={code}: {_first_line(err)}")

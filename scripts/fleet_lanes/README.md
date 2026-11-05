@@ -541,7 +541,7 @@ muse plugins list      # disable integration-lane-guard if its command is gone: 
 #      Environment=FLEET_SYNC_BEARER_FILE=<home>/.secrets/fleet-tools/<seat>
 #      ExecStart=/usr/bin/python3 -I <home>/.local/share/fleet-cli/repo/scripts/fleet_lanes/code_main_sync.py
 #    `install_tools` does not copy this script, so run it from the fleet CLI clone, which follows main.
-#    A fetch that fails with no local credential retries through the relay's read-only /git/ route as that seat, so the unit holds no GitHub token.
+#    Every fetch then goes through the relay's read-only /git/ route as that seat, so the unit uses no GitHub credential, and a route it cannot use fails the clone.
 sudo systemctl start code-main-sync.service && journalctl -u code-main-sync.service -n 25 --no-pager
 # 3. Watcher, then shim in detect.
 # /etc/fleet/placement-watch.conf holds SIMPLE_BOARD_BEARER_LOCATOR=FOLDER:KEY_NAME and FLEET_APPS_JSON=<stable>/fleet-apps.json.
