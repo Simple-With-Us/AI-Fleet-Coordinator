@@ -170,23 +170,30 @@ struct FleetGridView: View {
     }
 
     private var filterBar: some View {
-        HStack(spacing: 12) {
-            Picker("Seats", selection: $gridFilter) {
-                ForEach(GridStateFilter.allCases) { item in
-                    Text(item.rawValue).tag(item)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 12) {
+                Picker("Seats", selection: $gridFilter) {
+                    ForEach(GridStateFilter.allCases) { item in
+                        Text(item.rawValue).tag(item)
+                    }
                 }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(maxWidth: 560)
+                TextField("Filter seats by tag…", text: $searchText)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 11, design: .monospaced))
+                    .frame(maxWidth: 200)
+                Spacer()
+                Text("\(visibleRoster.count) of \(store.roster.count) seat(s)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(maxWidth: 560)
-            TextField("Filter seats by tag…", text: $searchText)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(size: 11, design: .monospaced))
-                .frame(maxWidth: 200)
-            Spacer()
-            Text("\(visibleRoster.count) of \(store.roster.count) seat(s)")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            if let note = gridFilter.cannotNarrowNote(commonCheckedAt: store.commonCheckedAt) {
+                Text(note)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 

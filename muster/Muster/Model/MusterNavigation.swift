@@ -424,11 +424,18 @@ enum GridStateFilter: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
+    /// What the grid says when the filter cannot narrow anything, or nil when it can.
+    func cannotNarrowNote(commonCheckedAt: Date?) -> String? {
+        guard self == .checkedEarlier, commonCheckedAt == nil else { return nil }
+        return "This check has no shared time, so which results are earlier is not known.\(ServerStatusCopy.sentenceGap)Every seat is shown."
+    }
+
     /// True when a seat with these cells belongs under the filter.
     ///
     /// Checked Earlier uses the Overview's own rule, so the card's count and the seats it
-    /// opens on are the same cells.  With no shared check time nothing is checked earlier,
-    /// as the card's count is then unknown.
+    /// opens on are the same cells.  With no shared check time which results are earlier is
+    /// not known, as the card's count is then unknown, so every seat stays in view:  an
+    /// empty grid would be a zero the Overview does not claim.
     func includes(_ cells: [GridCell], commonCheckedAt: Date?) -> Bool {
         let states = cells.map(\.state)
         switch self {
@@ -439,7 +446,7 @@ enum GridStateFilter: String, CaseIterable, Identifiable {
         case .drift: return states.contains(.drift)
         case .unproven: return states.contains(.unproven)
         case .checkedEarlier:
-            guard let commonCheckedAt else { return false }
+            guard let commonCheckedAt else { return true }
             return cells.contains { OverviewCounts.isCheckedEarlier($0, commonCheckedAt: commonCheckedAt) }
         }
     }

@@ -306,7 +306,12 @@ final class MusterNavigationTests: XCTestCase {
         let same = checkedCell("2026-10-21T08:59:30Z")
         XCTAssertTrue(GridStateFilter.checkedEarlier.includes([same, earlier], commonCheckedAt: common))
         XCTAssertFalse(GridStateFilter.checkedEarlier.includes([same], commonCheckedAt: common))
-        XCTAssertFalse(GridStateFilter.checkedEarlier.includes([earlier], commonCheckedAt: nil))
+        // With no shared time the count is unknown, so the grid keeps every seat and says
+        // why, never an empty grid that reads as zero.
+        XCTAssertTrue(GridStateFilter.checkedEarlier.includes([same], commonCheckedAt: nil))
+        XCTAssertNotNil(GridStateFilter.checkedEarlier.cannotNarrowNote(commonCheckedAt: nil))
+        XCTAssertNil(GridStateFilter.checkedEarlier.cannotNarrowNote(commonCheckedAt: common))
+        XCTAssertNil(GridStateFilter.red.cannotNarrowNote(commonCheckedAt: nil))
         let counts = OverviewCounts.make(cells: [same, earlier], trusted: true, commonCheckedAt: common)
         XCTAssertEqual(counts.stale, 1)
     }
