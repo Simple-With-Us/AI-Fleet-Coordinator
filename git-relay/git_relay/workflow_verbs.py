@@ -3343,6 +3343,17 @@ class WorkflowVerbs:
         node = data.get("node_id")
         if not isinstance(node, str) or not re.fullmatch(r"[A-Za-z0-9_/=+-]{1,200}", node):
             raise Refused("PR node unavailable")
+        # These fields decide whether a write happens, so a wrong type stops it rather than slipping past a guard.
+        head = data.get("head")
+        if (
+            any(key in data and not isinstance(data[key], bool) for key in ("draft", "merged"))
+            or ("state" in data and data["state"] not in ("open", "closed"))
+            or (
+                head is not None
+                and not (isinstance(head, dict) and _SHA.fullmatch(str(head.get("sha"))))
+            )
+        ):
+            raise PreReadUnavailable("PR pre-read has an unexpected shape; no write attempted")
         return data, node
 
     def _pr_node(self, repo, number):
@@ -3407,18 +3418,18 @@ class WorkflowVerbs:
         return {"pull": pull}
 
     def _pr_set_state(self, repo, args, mutation, wanted):
+        # Checked before any read, so a malformed value costs no token and no outcome row.
+        expected = _sha(args, "expected_head_sha") if "expected_head_sha" in args else None
         data, node = self._pr_read(repo, _int(args, "number"))
         if data.get("merged") is True:
             raise Refused("a merged PR cannot change state")
-        if "expected_head_sha" in args:
-            expected = args["expected_head_sha"]
-            if not isinstance(expected, str) or not _SHA.fullmatch(expected):
-                raise Refused("invalid expected_head_sha")
+        if expected is not None:
             head = data.get("head")
             if not isinstance(head, dict) or head.get("sha") != expected:
                 raise Refused("PR head moved")
-        if str(data.get("state")).upper() == wanted:
-            return {"pull": {"id": node, "state": wanted}}
+        # The fleet's other PR tools report state in lower case, as GitHub's REST API does.
+        if data.get("state") == wanted.lower():
+            return {"pull": {"id": node, "state": wanted.lower()}}
         query = (
             "mutation($id: ID!) { %s(input:{pullRequestId:$id}) { pullRequest { id state } } }"
             % mutation
@@ -3426,7 +3437,7 @@ class WorkflowVerbs:
         pull = _sub(self._fixed_graph(query, {"id": node}, mutation), "pullRequest")
         if pull.get("id") != node or pull.get("state") != wanted:
             raise RelayGitHubError(502, "PR mutation outcome unverifiable")
-        return {"pull": pull}
+        return {"pull": {"id": node, "state": wanted.lower()}}
 
     def wf_pr_close(self, repo, args):
         """Close without merging.  GitHub refuses a merged PR.  Who may close whose PR is fleet policy, in AGENTS.md.
