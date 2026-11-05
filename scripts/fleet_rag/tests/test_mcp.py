@@ -16,7 +16,7 @@ import unittest
 from unittest import mock
 
 from fleet_rag import recall_api
-from fleet_rag.core import build_point
+from fleet_rag.core import FleetRagError, build_point
 
 SERVER = pathlib.Path(__file__).resolve().parents[2] / "fleet-recall-mcp.py"
 
@@ -497,6 +497,33 @@ class DuplicateGuardTests(unittest.TestCase):
         self.assertTrue(res["isError"])
         self.assertIn("too short", res["content"][0]["text"])
         self.assertEqual(recall_api.FakeQdrant.calls, [])                 # guard never searched
+
+
+class MutationResponseValidationTests(unittest.TestCase):
+    def load(self):
+        loader = importlib.machinery.SourceFileLoader("fleet_recall_mcp_validation_test", str(SERVER))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        mod = importlib.util.module_from_spec(spec)
+        loader.exec_module(mod)
+        return mod
+
+    def test_returned_doc_id_must_be_canonical(self):
+        mod = self.load()
+        result = {
+            "id": "point-1",
+            "doc_id": "contrib/CLAUDE/2026-11-05/472fc36e",
+            "seat": "CLAUDE",
+            "status": "completed",
+            "revision": 2,
+            "retracted": True,
+            "retracted_at": 1,
+            "retracted_by": "CLAUDE",
+            "retraction_reason": "obsolete",
+        }
+        self.assertEqual(mod._validate_mutation_result("recall_retract", dict(result)), result)
+        result["doc_id"] = "lesson:1"
+        with self.assertRaisesRegex(FleetRagError, "doc_id"):
+            mod._validate_mutation_result("recall_retract", result)
 
 
 if __name__ == "__main__":

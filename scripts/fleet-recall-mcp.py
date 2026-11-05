@@ -263,7 +263,9 @@ def _validate_mutation_result(name: str, result: dict) -> dict:
         return value
 
     string("id")
-    string("doc_id")
+    doc_id = string("doc_id")
+    if not recall_api._DOC_ID_RE.fullmatch(doc_id):
+        raise FleetRagError("fleet recall returned an invalid response field: doc_id")
     string("seat")
     string("status")
     integer("revision")

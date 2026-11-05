@@ -104,6 +104,35 @@ class Http408RetryTests(unittest.TestCase):
         self.assertEqual(calls["n"], 1)
 
 
+class QdrantRetrieveValidationTests(unittest.TestCase):
+    def qdrant(self):
+        return core.Qdrant({
+            "QDRANT_URL": "https://qdrant.example.test",
+            "QDRANT_API_KEY": "key",
+            "QDRANT_FLEET_COLLECTION": "fleet",
+        })
+
+    def test_retrieve_validates_the_third_party_envelope(self):
+        q = self.qdrant()
+        point = {"id": "point-1", "payload": {"doc_id": "x"}, "vector": [0.1, 0.2]}
+        with mock.patch.object(core.Qdrant, "_call", return_value={"result": point}):
+            self.assertEqual(q.retrieve("point-1"), point)
+
+    def test_retrieve_fails_closed_on_malformed_third_party_shapes(self):
+        q = self.qdrant()
+        cases = [
+            ("malformed response", []),
+            ("malformed point", {"result": None}),
+            ("valid id", {"result": {"id": "", "payload": {}}}),
+            ("invalid payload", {"result": {"id": "point-1", "payload": []}}),
+            ("invalid vector", {"result": {"id": "point-1", "payload": {}, "vector": "bad"}}),
+        ]
+        for message, response in cases:
+            with self.subTest(message=message), mock.patch.object(core.Qdrant, "_call", return_value=response):
+                with self.assertRaisesRegex(FleetRagError, message):
+                    q.retrieve("point-1")
+
+
 class RetryEnvOverrideTests(unittest.TestCase):
     def setUp(self) -> None:
         self.env = mock.patch.dict(os.environ, {}, clear=False)

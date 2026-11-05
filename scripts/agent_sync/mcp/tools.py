@@ -2685,6 +2685,14 @@ class Tools:
                 % ("correction" if correcting else "retraction"),
             ) from None
         except RECALL.RecallUnavailable as exc:
+            if exc.code == "invalid_response":
+                self._idem_set(key, state="unknown")
+                raise ToolError(
+                    "outcome_unknown",
+                    "fleet recall answered the %s in a shape this server could not verify, so the "
+                    "write may or may not have landed.  Search recall before retrying; a retry with "
+                    "the same key is refused." % ("correction" if correcting else "retraction"),
+                ) from None
             self._idem_drop(key)
             raise ToolError(exc.code, exc.message, retryable=exc.retryable) from None
         except BaseException as exc:

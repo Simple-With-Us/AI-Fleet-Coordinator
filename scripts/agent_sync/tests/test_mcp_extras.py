@@ -639,7 +639,7 @@ class RecallToolTests(FakePrograms):
         call = self.calls(self.recall_out)[0]
         self.assertEqual(call["stdin"], text)
         self.assertNotIn(text, " ".join(call["argv"]))
-        self.assertEqual(call["argv"][call["argv"].index("--seat") + 1], "CLAUDE")
+        self.assertIn("--seat=CLAUDE", call["argv"])
         self.assertEqual(call["argv"][:2], ["contribute", "-"])
 
     LESSON = "Always restart pm2 with --update-env after changing the ecosystem file, or the old env stays cached."
@@ -671,12 +671,10 @@ class RecallToolTests(FakePrograms):
         self.assertEqual(call["stdin"], self.LESSON)
         self.assertEqual(
             call["argv"][:4],
-            ["correct", args["doc_id"], "-", "--reason"],
+            ["correct", args["doc_id"], "-", "--reason=" + args["reason"]],
         )
-        self.assertEqual(call["argv"][call["argv"].index("--seat") + 1], "CLAUDE")
-        self.assertEqual(
-            call["argv"][call["argv"].index("--expected-revision") + 1], "1"
-        )
+        self.assertIn("--seat=CLAUDE", call["argv"])
+        self.assertIn("--expected-revision=1", call["argv"])
 
         retracted = json.dumps(
             {
@@ -706,13 +704,10 @@ class RecallToolTests(FakePrograms):
             [
                 "retract",
                 args["doc_id"],
-                "--reason",
-                "obsolete",
-                "--seat",
-                "CLAUDE",
+                "--reason=obsolete",
+                "--seat=CLAUDE",
                 "--json",
-                "--expected-revision",
-                "2",
+                "--expected-revision=2",
             ],
         )
 
@@ -766,7 +761,23 @@ class RecallToolTests(FakePrograms):
         )
         self.assertEqual(self.calls(self.recall_out), [])
 
-    def test_a_malformed_mutation_response_is_not_cached_as_success(self):
+    def test_an_unconfigured_owner_token_is_an_authorization_failure(self):
+        session = self.session(
+            self.env(
+                RECALL_TEST_EXIT="2",
+                RECALL_TEST_ERR="owner mutation token not configured; set RECALL_OWNER_TOKEN in Infisical",
+                RECALL_TEST_REPLY="{}",
+            )
+        )
+        self.assert_tool_error(
+            session.call(
+                "recall_retract",
+                {"doc_id": "contrib/CLAUDE/2026-11-05/472fc36e", "reason": "obsolete"},
+            ),
+            "not_authorized",
+        )
+
+    def test_a_malformed_mutation_response_is_unknown_and_not_resent(self):
         args = {
             "doc_id": "contrib/CLAUDE/2026-11-05/472fc36e",
             "reason": "obsolete",
@@ -778,18 +789,13 @@ class RecallToolTests(FakePrograms):
              "retracted_by": "CLAUDE", "retraction_reason": "obsolete"}
         )
         session = self.session(self.env(RECALL_TEST_REPLY=malformed))
-        self.assert_tool_error(session.call("recall_retract", args), "invalid_response")
+        first = self.assert_tool_error(session.call("recall_retract", args), "outcome_unknown")
+        self.assertIn("may or may not have landed", first["message"])
         self.assertEqual(len(self.calls(self.recall_out)), 1)
 
-        good = json.dumps(
-            {"id": "point-1", "doc_id": args["doc_id"], "status": "completed",
-             "revision": 2, "retracted": True, "retracted_at": 1,
-             "retracted_by": "CLAUDE", "retraction_reason": "obsolete"}
-        )
-        session = self.session(self.env(RECALL_TEST_REPLY=good))
-        data = self.assert_structured("recall_retract", session.call("recall_retract", args))
-        self.assertTrue(data["retracted"])
-        self.assertEqual(len(self.calls(self.recall_out)), 2)
+        retry = self.assert_tool_error(session.call("recall_retract", args), "outcome_unknown")
+        self.assertIn("may or may not have landed", retry["message"])
+        self.assertEqual(len(self.calls(self.recall_out)), 1)
 
     def test_mutation_reason_is_scanned_before_the_cli_runs(self):
         session = self.session(self.env())

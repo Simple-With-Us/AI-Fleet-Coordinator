@@ -256,6 +256,14 @@ def cmd_contribute(a: argparse.Namespace) -> int:
     res = public_fallback.call_with_fallback(
         "recall_contribute", kwargs, lambda: recall_api.recall_contribute(**kwargs)
     )
+    if res.get("status") == "duplicate":
+        existing = res.get("existing") if isinstance(res.get("existing"), dict) else {}
+        message = contribute_guard.duplicate_message(existing)
+        if a.json:
+            print(json.dumps({**res, "message": message}, indent=2))
+        else:
+            print(message, file=sys.stderr)
+        return 1
     if guard and guard["candidates"]:
         res["nearest"] = guard["candidates"][0]
     if a.json:

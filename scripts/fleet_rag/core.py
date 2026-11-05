@@ -668,11 +668,23 @@ class Qdrant:
                 {"with_payload": str(with_payload).lower(), "with_vector": str(with_vector).lower()}
             )
         try:
-            return self._call(path, method="GET")["result"]
+            response = self._call(path, method="GET")
         except FleetRagError as e:
             if "HTTP 404" in str(e):
                 return None
             raise
+        if not isinstance(response, dict):
+            raise FleetRagError("Qdrant retrieve returned a malformed response")
+        point = response.get("result")
+        if not isinstance(point, dict):
+            raise FleetRagError("Qdrant retrieve returned a malformed point")
+        if not isinstance(point.get("id"), str) or not point["id"]:
+            raise FleetRagError("Qdrant retrieve returned a point without a valid id")
+        if point.get("payload") is not None and not isinstance(point["payload"], dict):
+            raise FleetRagError("Qdrant retrieve returned an invalid payload")
+        if "vector" in point and not isinstance(point["vector"], (list, dict)):
+            raise FleetRagError("Qdrant retrieve returned an invalid vector")
+        return point
 
     def scroll(
         self,

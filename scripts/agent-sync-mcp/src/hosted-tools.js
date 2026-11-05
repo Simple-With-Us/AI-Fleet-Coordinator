@@ -267,7 +267,7 @@ const RECALL_CORRECT_RESPONSE = z
   .object({
     ok: z.literal(true),
     id: z.string(),
-    doc_id: z.string(),
+    doc_id: RECALL_DOC_ID,
     seat: z.string(),
     status: z.string(),
     revision: z.number().int().nonnegative(),
@@ -282,7 +282,7 @@ const RECALL_RETRACT_RESPONSE = z
   .object({
     ok: z.literal(true),
     id: z.string(),
-    doc_id: z.string(),
+    doc_id: RECALL_DOC_ID,
     seat: z.string(),
     status: z.string(),
     revision: z.number().int().nonnegative(),
@@ -1714,8 +1714,10 @@ export class HostedTools {
       const raw = await this.recallCall(() => recall.correct(body), { write: true });
       data = parseRecallMutationResponse(RECALL_CORRECT_RESPONSE, raw, "recall_correct");
     } catch (error) {
-      if (error?.code === "outcome_unknown") await this.safely(() => this.gate.idemSet({ key, changes: { state: "unknown" } }));
-      else await this.safely(() => this.gate.idemDrop({ key }));
+      if (error?.code === "outcome_unknown" || error?.code === "invalid_response") {
+        await this.safely(() => this.gate.idemSet({ key, changes: { state: "unknown" } }));
+        if (error?.code === "invalid_response") throw new ToolError("outcome_unknown", "fleet recall answered the mutation in a shape this server could not verify, so the write may or may not have landed.  Search recall before retrying.", { retryable: false });
+      } else await this.safely(() => this.gate.idemDrop({ key }));
       throw error;
     }
     const row = {
@@ -1774,8 +1776,10 @@ export class HostedTools {
       const raw = await this.recallCall(() => recall.retract(body), { write: true });
       data = parseRecallMutationResponse(RECALL_RETRACT_RESPONSE, raw, "recall_retract");
     } catch (error) {
-      if (error?.code === "outcome_unknown") await this.safely(() => this.gate.idemSet({ key, changes: { state: "unknown" } }));
-      else await this.safely(() => this.gate.idemDrop({ key }));
+      if (error?.code === "outcome_unknown" || error?.code === "invalid_response") {
+        await this.safely(() => this.gate.idemSet({ key, changes: { state: "unknown" } }));
+        if (error?.code === "invalid_response") throw new ToolError("outcome_unknown", "fleet recall answered the mutation in a shape this server could not verify, so the write may or may not have landed.  Search recall before retrying.", { retryable: false });
+      } else await this.safely(() => this.gate.idemDrop({ key }));
       throw error;
     }
     const row = {

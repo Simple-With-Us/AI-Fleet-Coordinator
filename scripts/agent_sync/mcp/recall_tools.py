@@ -150,6 +150,7 @@ def failure(code: int, err: str) -> RecallUnavailable:
             or "owning seat" in lower
             or "runs under your own seat" in lower
             or "owner identity" in lower
+            or "owner mutation token not configured" in lower
             else "invalid_argument",
             "fleet recall refused the request:  %s" % (err or "usage or credential error"),
         )
@@ -333,18 +334,15 @@ def contribute(
     argv = [
         "contribute",
         "-",
-        "--category",
-        str(args["category"]),
-        "--app",
-        str(args.get("app") or "fleet"),
-        "--seat",
-        identity,
+        "--category=" + str(args["category"]),
+        "--app=" + str(args.get("app") or "fleet"),
+        "--seat=" + identity,
         "--json",
     ]
     if title:
-        argv += ["--title", title]
+        argv += ["--title=" + title]
     if url:
-        argv += ["--url", url]
+        argv += ["--url=" + url]
     code, data, err = run(argv, stdin=text.encode("utf-8"), env=env, runner=runner)
     if data is None:
         raise failure(code, err)
@@ -463,18 +461,16 @@ def correct(
         "correct",
         doc_id,
         "-",
-        "--reason",
-        reason,
-        "--seat",
-        identity,
+        "--reason=" + reason,
+        "--seat=" + identity,
         "--json",
     ]
     if title:
-        argv += ["--title", title]
+        argv += ["--title=" + title]
     if url:
-        argv += ["--url", url]
+        argv += ["--url=" + url]
     if expected_revision is not None:
-        argv += ["--expected-revision", str(expected_revision)]
+        argv += ["--expected-revision=" + str(expected_revision)]
     code, data, err = run(argv, stdin=text.encode("utf-8"), env=env, runner=runner)
     if data is None or code != 0 or "doc_id" not in data:
         raise failure(code, err)
@@ -508,14 +504,12 @@ def retract(
     argv = [
         "retract",
         doc_id,
-        "--reason",
-        reason,
-        "--seat",
-        identity,
+        "--reason=" + reason,
+        "--seat=" + identity,
         "--json",
     ]
     if expected_revision is not None:
-        argv += ["--expected-revision", str(expected_revision)]
+        argv += ["--expected-revision=" + str(expected_revision)]
     code, data, err = run(argv, stdin=b"", env=env, runner=runner)
     if data is None or code != 0 or "doc_id" not in data:
         raise failure(code, err)

@@ -314,7 +314,7 @@ test("correct and retract are always the grant's seat:  a client seat is dropped
   });
 });
 
-test("a malformed hosted mutation response is invalid_response and is not cached", async () => {
+test("a malformed hosted mutation response is unknown and is not resent", async () => {
   const doc_id = "contrib/GROK-WEB/2026-11-05/abcd1234";
   let malformed = true;
   const { tools, upstream } = harness({
@@ -323,12 +323,23 @@ test("a malformed hosted mutation response is invalid_response and is not cached
       : defaultRespond(req),
   });
   const args = { doc_id, reason: "obsolete" };
-  toolError(await tools.call("recall_retract", args), "invalid_response");
+  const first = toolError(await tools.call("recall_retract", args), "outcome_unknown");
+  assert.match(first.message, /may or may not have landed/);
   assert.equal(upstream.requests.length, 1);
   malformed = false;
-  const retried = ok(await tools.call("recall_retract", args), "recall_retract");
-  assert.equal(retried.retracted, true);
-  assert.equal(upstream.requests.length, 2);
+  const retry = toolError(await tools.call("recall_retract", args), "outcome_unknown");
+  assert.match(retry.message, /result is unknown/);
+  assert.equal(upstream.requests.length, 1);
+});
+
+test("a hosted mutation response doc_id must be canonical", async () => {
+  const doc_id = "contrib/GROK-WEB/2026-11-05/abcd1234";
+  const { tools, upstream } = harness({
+    respond: (req) => ({ json: { ok: true, id: "5f0c-uuid", doc_id: "lesson:1", seat: req.body.seat, revision: 2, retracted: true, retracted_at: 1, retracted_by: req.body.seat, retraction_reason: req.body.reason, status: "completed" } }),
+  });
+  const first = toolError(await tools.call("recall_retract", { doc_id, reason: "obsolete" }), "outcome_unknown");
+  assert.match(first.message, /could not verify/);
+  assert.equal(upstream.requests.length, 1);
 });
 
 test("a hosted mutation cut off mid-write stays unknown and is not resent", async () => {

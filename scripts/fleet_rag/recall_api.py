@@ -128,18 +128,13 @@ def meta_exclude() -> dict:
 
 
 def retracted_exclude() -> dict:
-    """Fresh must_not condition for a retracted contribution, including numeric JSON flags."""
-    return {
-        "should": [
-            {"key": RETRACTED_FIELD, "match": {"value": True}},
-            {"key": RETRACTED_FIELD, "match": {"value": 1}},
-        ]
-    }
+    """Fresh must_not condition matching the service's bool payload index."""
+    return {"key": RETRACTED_FIELD, "match": {"value": True}}
 
 
 def _is_retracted(payload: dict) -> bool:
-    """Qdrant payloads are untyped JSON: supported writes use True, old/manual rows may use 1."""
-    return payload.get(RETRACTED_FIELD) is True or payload.get(RETRACTED_FIELD) == 1
+    """Supported writes and the service's payload index use one bool representation."""
+    return payload.get(RETRACTED_FIELD) is True
 
 
 # Retracted contributions stay in the corpus for provenance and audit, but every normal search
@@ -622,45 +617,46 @@ def recall_contribute(
     if kinds:
         payload["scrubbed"] = kinds
     point = build_point(clean, payload)
+    point["vector"] = embed(cfg, [clean])[0]
     q = Qdrant(cfg)
-    existing = q.retrieve(point["id"], with_payload=True, with_vector=False)
-    if existing is None:
-        # A correction keeps the original point id while its payload's content_hash moves to
-        # the replacement.  The deterministic-id retrieve alone would miss that corrected
-        # point and let the same replacement be contributed a second time.
-        matches = list(
-            q.scroll(
-                {
-                    "must": [
-                        {
-                            "key": "content_hash",
-                            "match": {"value": point["payload"]["content_hash"]},
-                        }
-                    ]
-                },
-                limit=2,
-                with_payload=True,
-                with_vector=False,
+    with _MUTATION_LOCK:
+        existing = q.retrieve(point["id"], with_payload=True, with_vector=False)
+        if existing is None:
+            # A correction keeps the original point id while its payload's content_hash moves to
+            # the replacement.  The deterministic-id retrieve alone would miss that corrected
+            # point and let the same replacement be contributed a second time.
+            matches = list(
+                q.scroll(
+                    {
+                        "must": [
+                            {
+                                "key": "content_hash",
+                                "match": {"value": point["payload"]["content_hash"]},
+                            }
+                        ]
+                    },
+                    limit=2,
+                    with_payload=True,
+                    with_vector=False,
+                )
             )
-        )
-        if matches:
-            existing = matches[0]
-    if existing is not None:
-        old = existing.get("payload") or {}
-        return {
-            "id": str(existing.get("id") or point["id"]),
-            "doc_id": str(old.get("doc_id") or doc_id),
-            "scrubbed": reported,
-            "status": "duplicate",
-            "existing": {
+            if matches:
+                existing = matches[0]
+        if existing is not None:
+            old = existing.get("payload") or {}
+            return {
                 "id": str(existing.get("id") or point["id"]),
                 "doc_id": str(old.get("doc_id") or doc_id),
-                "seat": str(old.get("seat") or ""),
-                "retracted": _is_retracted(old),
-            },
-        }
-    point["vector"] = embed(cfg, [clean])[0]
-    status = q.upsert([point])
+                "scrubbed": reported,
+                "status": "duplicate",
+                "existing": {
+                    "id": str(existing.get("id") or point["id"]),
+                    "doc_id": str(old.get("doc_id") or doc_id),
+                    "seat": str(old.get("seat") or ""),
+                    "retracted": _is_retracted(old),
+                },
+            }
+        status = q.upsert([point])
     return {"id": point["id"], "doc_id": doc_id, "scrubbed": reported, "status": status}
 
 
@@ -839,18 +835,19 @@ def _correction_plan(
             "retract and re-contribute it instead of growing one point without bound"
         )
     history = list(history)
-    history.append(
-        {
-            "revision": revision,
-            "text": old_text,
-            "content_hash": old_hash,
-            "title": old_title,
-            "url": old_url,
-            "replaced_at": ts,
-            "replaced_by": actor,
-            "reason": reason,
-        }
-    )
+    archived = {
+        "revision": revision,
+        "text": old_text,
+        "content_hash": old_hash,
+        "title": old_title,
+        "url": old_url,
+        "replaced_at": ts,
+        "replaced_by": actor,
+        "reason": reason,
+    }
+    if "scrubbed" in old:
+        archived["scrubbed"] = old["scrubbed"]
+    history.append(archived)
     fields = {
         "title": new_title,
         "url": new_url,
