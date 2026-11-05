@@ -8,6 +8,8 @@ import unittest
 from fleet_view import SCHEMA_VERSION, contract
 from fleet_view.types import ClaimRecord, FleetReport, LaneRecord, PullRequestRecord, Section
 
+PR_URL = "https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/757"
+
 
 def ok_report() -> FleetReport:
     return FleetReport(
@@ -16,7 +18,18 @@ def ok_report() -> FleetReport:
             state="OK",
             reason="1 lane(s)",
             items=(
-                LaneRecord("AI-Fleet-Coordinator", "muse-code-x", "MC", "muse-code/x", 0, 60, "OK"),
+                LaneRecord(
+                    "AI-Fleet-Coordinator",
+                    "muse-code-x",
+                    "MC",
+                    "muse-code/x",
+                    0,
+                    60,
+                    "OK",
+                    host="mac",
+                    head="0123456",
+                    last_commit_seconds=3600,
+                ),
             ),
         ),
         pull_requests=Section(
@@ -31,6 +44,8 @@ def ok_report() -> FleetReport:
                     "OPENCODE",
                     "ready",
                     "OK",
+                    severity="ready",
+                    url=PR_URL,
                 ),
             ),
         ),
@@ -55,6 +70,46 @@ class ContractTests(unittest.TestCase):
         envelope = contract.build_envelope(report)
         self.assertEqual(envelope["summary"]["overallVerdict"], "UNKNOWN")
         self.assertEqual(contract.overall_verdict(report), "UNKNOWN")
+
+    def test_every_key_an_older_muster_requires_is_still_written(self):
+        # An installed Muster can be older than the checkout it runs, and its decoder
+        # requires each of these keys.  Fields may be added at version 1, never removed.
+        envelope = contract.build_envelope(ok_report())
+        for key in ("schemaVersion", "generatedAt", "summary", "requestCounts", "sections"):
+            self.assertIn(key, envelope)
+        self.assertIn("notes", envelope)
+        sections = envelope["sections"]
+        lane = sections["lanes"]["items"][0]
+        for key in ("repo", "lane", "seat", "branch", "dirtyFiles", "ageSeconds", "state"):
+            self.assertIn(key, lane)
+        pr = sections["pullRequests"]["items"][0]
+        for key in ("repo", "number", "title", "branch", "seat", "blocker", "state"):
+            self.assertIn(key, pr)
+        claim = sections["claims"]["items"][0]
+        for key in ("identifier", "title", "seat", "ageSeconds", "expired"):
+            self.assertIn(key, claim)
+
+    def test_the_added_fields_name_the_machine_the_links_and_what_was_not_read(self):
+        report = ok_report()
+        report.host = "mac"
+        report.claim_expiry_hours = 72
+        report.duration_seconds = 4.2
+        report.pull_requests.unread = ("Simple-With-Us/Other",)
+        envelope = contract.build_envelope(report)
+        self.assertEqual(envelope["host"], "mac")
+        self.assertEqual(envelope["claimExpiryHours"], 72)
+        self.assertEqual(envelope["durationSeconds"], 4.2)
+        sections = envelope["sections"]
+        self.assertEqual(sections["pullRequests"]["unread"], ["Simple-With-Us/Other"])
+        self.assertEqual(sections["lanes"]["unread"], [])
+        lane = sections["lanes"]["items"][0]
+        self.assertEqual(lane["host"], "mac")
+        self.assertEqual(lane["lastCommitSeconds"], 3600)
+        self.assertFalse(lane["detached"])
+        pr = sections["pullRequests"]["items"][0]
+        self.assertEqual(pr["severity"], "ready")
+        self.assertEqual(pr["url"], PR_URL)
+        self.assertEqual(sections["claims"]["items"][0]["url"], "")
 
     def test_envelope_carries_counts_and_no_secret_shaped_field(self):
         envelope = contract.build_envelope(ok_report())
