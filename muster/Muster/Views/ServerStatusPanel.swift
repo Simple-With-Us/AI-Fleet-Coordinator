@@ -41,7 +41,7 @@ struct ServerStatusPanel: View {
                         if reading.hostMetrics != nil {
                             hostSection(reading)
                         }
-                        if !reading.services.isEmpty {
+                        if reading.hasServicesHalf {
                             servicesSection(reading)
                         }
                         coolifySection(reading)
@@ -79,7 +79,7 @@ struct ServerStatusPanel: View {
                 }
                 .disabled(loading)
             }
-            Text("What the server's own report says about the host, its services, Coolify, its processes, and the fleet's config files.")
+            Text("What the server's own report says about the host, the units it watches, its containers, its processes, and the fleet's config files.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
         }
@@ -142,15 +142,33 @@ struct ServerStatusPanel: View {
     // MARK: The sections
 
     /// The title of a section,  with the state of that half of the report.
-    private func sectionHeader(_ title: String, _ state: CellState, _ detail: String) -> some View {
+    private func sectionHeader(_ title: String, _ state: CellState?, _ detail: String) -> some View {
         HStack(spacing: 10) {
             Text(title)
                 .font(.headline)
-            FleetToolsStateBadge(state: state, width: 92)
+            if let state {
+                FleetToolsStateBadge(state: state, width: 92)
+            }
             Spacer()
             Text(detail)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    /// A note under a section header,  in words.
+    private func sectionNote(_ text: String) -> some View {
+        Text(text)
+            .font(.caption)
+            .foregroundStyle(.orange)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// Why a half was not read whole,  when the collector says.
+    @ViewBuilder
+    private func collectionNote(_ entry: ServerCollectionEntry?) -> some View {
+        if let text = entry?.problemText {
+            sectionNote(text)
         }
     }
 
@@ -159,6 +177,12 @@ struct ServerStatusPanel: View {
         let uptime = metrics?.uptimeText.map { "up \($0)" } ?? "uptime not read"
         return VStack(alignment: .leading, spacing: 8) {
             sectionHeader("Host", reading.hostState, uptime)
+            if let note = metrics?.restartNote {
+                sectionNote(note)
+            }
+            if let note = metrics?.rebootNote {
+                sectionNote(note)
+            }
             if let metrics {
                 if let load = metrics.loadText {
                     let cpus = metrics.cpuCount.map { " on \($0) \($0 == 1 ? "cpu" : "cpus")" } ?? ""
@@ -253,15 +277,48 @@ struct ServerStatusPanel: View {
 
     private func servicesSection(_ reading: ServerStatusReading) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            sectionHeader(
-                "Services",
-                reading.servicesState,
-                "\(reading.services.count) \(reading.services.count == 1 ? "unit" : "units")"
-            )
+            sectionHeader("Fleet Units", reading.servicesState, unitsDetail(reading))
+            collectionNote(reading.collection?.services)
+            collectionNote(reading.collection?.failedUnits)
+            ForEach(reading.failedUnits ?? []) { unit in
+                failedUnitRow(unit)
+            }
             ForEach(reading.services) { service in
                 serviceRow(service)
             }
         }
+    }
+
+    /// How many units are listed and how many of them Muster can act on,  so a short list
+    /// never reads as every service on the server.
+    private func unitsDetail(_ reading: ServerStatusReading) -> String {
+        let count = reading.services.count
+        let controllable = reading.services.filter(\.controllable).count
+        return "\(count) \(count == 1 ? "unit" : "units"), \(controllable) can be controlled"
+    }
+
+    /// A unit systemd says has failed,  whether or not anything else names it.
+    private func failedUnitRow(_ unit: ServerFailedUnit) -> some View {
+        HStack(spacing: 8) {
+            Text(unit.unit)
+                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Text(unit.scope ?? "system")
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+                .font(.system(size: 9, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 1)
+                .background(Color.secondary.opacity(0.12), in: Capsule())
+            Spacer(minLength: 0)
+            Text(unit.detailText())
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.secondary)
+            FleetToolsStateBadge(state: .missing, width: 92)
+        }
+        .padding(.vertical, 2)
     }
 
     private func serviceRow(_ service: ServerService) -> some View {
@@ -287,6 +344,12 @@ struct ServerStatusPanel: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
+                if let run = service.runText {
+                    Text(run)
+                        .font(.system(size: 10))
+                        .foregroundStyle(service.lastRunFailed ? Color.red : Color.secondary)
+                        .lineLimit(1)
+                }
             }
             Spacer(minLength: 0)
             Text(service.stateText)
@@ -309,49 +372,65 @@ struct ServerStatusPanel: View {
                     }
                     .controlSize(.small)
                     .disabled(controller.isPresenting)
+                    .help(verb == .stop ? (service.stopConsequence ?? verb.title) : verb.title)
                 }
-                Button("Logs") {
-                    controller.plan(.logs(unit: service.unit))
+                if service.offersLogs {
+                    Button("Logs") {
+                        controller.plan(.logs(unit: service.unit))
+                    }
+                    .controlSize(.small)
+                    .disabled(controller.isPresenting)
+                    .help("Plan reading this unit's last journal lines.")
                 }
-                .controlSize(.small)
-                .disabled(controller.isPresenting)
-                .help("Plan reading this unit's last journal lines.")
             }
             FleetToolsStateBadge(state: service.state, width: 92)
         }
         .padding(.vertical, 2)
     }
 
-    /// The verbs a controllable unit gets:  the ones this Mac's allowlist names for it,  or
+    /// The verbs a controllable unit gets:  the ones the report lists,  because the collector
+    /// asked the helper on the server.  A report that lists none gets the ones this Mac's
+    /// allowlist names for it,  or
     /// all three when this checkout has no entry for it.  The server checks its own
     /// allowlist again either way.
     private func verbs(for service: ServerService) -> [OpsVerb] {
+        if let listed = service.listedVerbs { return listed }
         let named = allowlist?.verbs(forServerUnit: service.unit) ?? []
         return named.isEmpty ? OpsVerb.allCases : named
     }
 
     private func coolifySection(_ reading: ServerStatusReading) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            sectionHeader("Coolify", reading.coolifyState, "\(reading.coolify.count) \(reading.coolify.count == 1 ? "resource" : "resources")")
+            sectionHeader("Containers", reading.coolifyState, containersDetail(reading))
+            collectionNote(reading.collection?.coolify)
             if reading.coolify.isEmpty {
-                Text("The report names no Coolify resources.")
+                Text("The report names no containers.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             } else {
-                ForEach(reading.coolify) { resource in
-                    coolifyRow(resource, offersRedeploy: reading.offersRedeploy(resource))
+                ForEach(reading.coolifyProblemsFirst) { resource in
+                    coolifyRow(resource, reading: reading)
                 }
             }
         }
     }
 
-    private func coolifyRow(_ resource: CoolifyResource, offersRedeploy: Bool) -> some View {
-        HStack(spacing: 8) {
+    /// How many containers the report lists and how many of them are running.
+    private func containersDetail(_ reading: ServerStatusReading) -> String {
+        let count = reading.coolify.count
+        let running = reading.coolify.filter { $0.resourceStatus == .running }.count
+        return "\(count) \(count == 1 ? "container" : "containers"), \(running) running"
+    }
+
+    private func coolifyRow(_ resource: CoolifyResource, reading: ServerStatusReading) -> some View {
+        let offersRedeploy = reading.offersRedeploy(resource)
+        return HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 1) {
                 Text(resource.name.isEmpty ? "unnamed" : resource.name)
                     .font(.system(size: 12, weight: .semibold, design: .monospaced))
                     .lineLimit(1)
                     .truncationMode(.middle)
+                    .help(resource.container ?? resource.name)
                 HStack(spacing: 6) {
                     Text(resource.resourceType.rawValue)
                         .lineLimit(1)
@@ -369,6 +448,18 @@ struct ServerStatusPanel: View {
                             .truncationMode(.middle)
                     }
                 }
+                if let signal = resource.signalText() {
+                    Text(signal)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                if !offersRedeploy, let blocked = resource.redeployBlockedText {
+                    Text(blocked)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
             Spacer(minLength: 0)
             if let cpu = resource.cpuText {
@@ -381,7 +472,7 @@ struct ServerStatusPanel: View {
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(.secondary)
             }
-            if let updated = resource.updatedText {
+            if let updated = resource.updatedLabel {
                 Text(updated)
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(.secondary)
@@ -393,12 +484,12 @@ struct ServerStatusPanel: View {
                 Button("Redeploy") {
                     controller.plan(.coolifyRedeploy(
                         uuid: resource.uuid,
-                        name: resource.name.isEmpty ? "this resource" : resource.name
+                        name: reading.redeployName(of: resource)
                     ))
                 }
                 .controlSize(.small)
                 .disabled(controller.isPresenting)
-                .help("Plan a Coolify redeploy of this resource.")
+                .help(reading.redeployHelp(of: resource))
             }
             FleetToolsStateBadge(state: resource.state, width: 92)
         }
@@ -407,7 +498,9 @@ struct ServerStatusPanel: View {
 
     private func processesSection(_ reading: ServerStatusReading) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            sectionHeader("Top Processes", reading.processState, "\(reading.processes.count) \(reading.processes.count == 1 ? "process" : "processes")")
+            // No badge:  a list of busy processes checks nothing,  so it cannot pass.
+            sectionHeader("Top Processes", nil, processesDetail(reading))
+            collectionNote(reading.collection?.processes)
             if reading.processes.isEmpty {
                 Text("The report names no processes.")
                     .font(.callout)
@@ -418,6 +511,13 @@ struct ServerStatusPanel: View {
                 }
             }
         }
+    }
+
+    /// How many processes are listed,  and how long their cpu was measured over.
+    private func processesDetail(_ reading: ServerStatusReading) -> String {
+        let count = "\(reading.processes.count) \(reading.processes.count == 1 ? "process" : "processes")"
+        guard let seconds = reading.processSampleSeconds else { return count }
+        return "\(count), measured over \(String(format: "%g", seconds))s"
     }
 
     private func processRow(_ process: ServerProcess) -> some View {
@@ -433,8 +533,15 @@ struct ServerStatusPanel: View {
             Text(process.owner ?? "unknown")
                 .font(.system(size: 10, design: .monospaced))
                 .foregroundStyle(.secondary)
+            if let home = process.belongsTo {
+                Text(home)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
             Spacer(minLength: 0)
-            if let cpu = process.cpuText {
+            if let cpu = process.coresText {
                 Text("cpu \(cpu)")
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(.secondary)
@@ -451,14 +558,19 @@ struct ServerStatusPanel: View {
     private func configSection(_ reading: ServerStatusReading) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             sectionHeader(
-                "Config Drift",
+                "Changed Since The Last Report",
                 reading.configState,
-                "\(reading.driftedFiles.count) of \(reading.files.count) \(reading.files.count == 1 ? "file" : "files") drifted"
+                "\(reading.driftedFiles.count) of \(reading.files.count) \(reading.files.count == 1 ? "file" : "files") changed"
             )
             if reading.filesTruncated {
-                Text(partialListText(reading.filesSummary))
+                sectionNote(partialListText(reading.filesSummary))
+            } else {
+                collectionNote(reading.collection?.files)
+            }
+            ForEach(reading.removedCheckouts) { checkout in
+                Text(checkout.text)
                     .font(.caption)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if reading.files.isEmpty {
@@ -467,8 +579,8 @@ struct ServerStatusPanel: View {
                     .foregroundStyle(.secondary)
             } else if reading.driftedFiles.isEmpty {
                 Text(reading.noticedFiles.isEmpty
-                    ? "Every watched file is unchanged."
-                    : "No watched file has drifted.")
+                    ? "No watched file changed since the last report."
+                    : "Only files kept for information changed since the last report.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             } else {
@@ -490,10 +602,14 @@ struct ServerStatusPanel: View {
 
     /// The note for a file list the collector cut short.
     private func partialListText(_ summary: ServerFilesSummary?) -> String {
+        let cut = summary?.cutCheckouts ?? []
+        let ending = cut.isEmpty
+            ? ""
+            : "\(ServerStatusCopy.sentenceGap)Cut short: \(cut.joined(separator: ", "))."
         if let found = summary?.found, let limit = summary?.limit {
-            return "Partial list: the collector found \(found) files and read the first \(limit)."
+            return "Partial list: the collector found \(found) files and read \(limit).\(ending)"
         }
-        return "Partial list: the collector stopped at its limit."
+        return "Partial list: the collector stopped at its limit.\(ending)"
     }
 
     private func fileRow(_ file: WatchedFile) -> some View {
@@ -508,6 +624,11 @@ struct ServerStatusPanel: View {
                     .truncationMode(.middle)
             }
             Spacer(minLength: 0)
+            if let when = file.whenText() {
+                Text(when)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            }
             if let size = file.sizeText {
                 Text(size)
                     .font(.system(size: 10, design: .monospaced))

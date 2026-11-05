@@ -1023,6 +1023,10 @@ def coolify_resource(ctx, uuid):
                 raise Refused("only a Coolify application can be redeployed")
             if not uuid_from_label(row):
                 raise Refused("the report has no Coolify uuid for that resource")
+            # The collector puts live rows first, so a first row that is not live says that
+            # nothing with this uuid is on the host now.
+            if row.get("status") in ("absent", "unknown"):
+                raise Refused("that application is not running on the server")
             return row
     raise Refused("the uuid is not in the latest server status report")
 
@@ -1220,6 +1224,10 @@ def plan_request(ctx, config, scope, action, target):
         row = coolify_resource(ctx, target)
         query = urllib.parse.urlencode({"uuid": target})
         name = row.get("name") if isinstance(row.get("name"), str) else "coolify resource"
+        # A redeploy covers the whole application, so the audit names it and not one service.
+        service = row.get("service")
+        if isinstance(service, str) and name.endswith(f" ({service})"):
+            name = name[: -len(f" ({service})")]
         return [["coolify", "GET", f"/api/v1/deploy?{query}"]], "redeploy", name[:120]
     raise Refused("unknown server verb")
 

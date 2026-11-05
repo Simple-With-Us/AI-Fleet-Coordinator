@@ -401,8 +401,10 @@ def container_status(state, health, exit_code="", restart_policy=""):
     """The status of a container,  in the vocabulary the report uses.
 
     A state this collector does not know is `unknown`:  an unreadable state is never
-    a running one.  A crash loop is `restarting`.  A clean exit that nothing would restart
-    is `finished`,  which is a one-shot job that did its work and not a failure.
+    a running one.  A crash loop is `restarting`.  A clean exit from a container nothing was
+    asked to keep alive is `finished`,  which is a one-shot job that did its work and not a
+    failure.  `on-failure` does ask docker to keep it alive,  so its clean exit stays `exited`:
+    that service is down,  and nothing here says it was ever a one-shot job.
     """
     if state == "running":
         if health == "unhealthy":
@@ -410,7 +412,7 @@ def container_status(state, health, exit_code="", restart_policy=""):
         return "running"
     if state == "restarting":
         return "restarting"
-    if state == "exited" and exit_code == "0" and restart_policy in ("no", "on-failure"):
+    if state == "exited" and exit_code == "0" and restart_policy == "no":
         return "finished"
     if state in ("exited", "dead"):
         return "exited"
@@ -1721,12 +1723,19 @@ def leftover_resource(key, before, live, complete, moment):
     return gone
 
 
-def add_redeploy_action(row, allowed, seen_now):
+def helper_would_take(row):
+    """Whether the helper's checks of the row it picks pass:  a labelled Coolify application."""
+    return row.get("type") == "application" and row.get("uuidSource") == UUID_SOURCE_LABEL
+
+
+def add_redeploy_action(row, allowed, seen_now, first_row=None):
     """Say on a row whether the helper would redeploy it,  and if not,  why not.
 
-    The helper redeploys a live Coolify application whose uuid came from a Coolify uuid
-    label.  `redeployBlockedReason` is a fixed code,  and only an application row has one,
-    because nothing else on the host could be redeployed in the first place.
+    The helper reads the first row of the report with a uuid,  and redeploys a live Coolify
+    application whose uuid came from a Coolify uuid label.  So `first_row`,  the first row with
+    this one's uuid,  decides too.  `redeployBlockedReason` is a fixed code,  and only an
+    application row has one,  because nothing else on the host could be redeployed in the first
+    place.
     """
     if row.get("type") != "application":
         row["actions"] = []
@@ -1736,6 +1745,8 @@ def add_redeploy_action(row, allowed, seen_now):
         reason = "not_seen"
     elif row.get("uuidSource") != UUID_SOURCE_LABEL:
         reason = "no_uuid_label"
+    elif first_row is not None and not helper_would_take(first_row):
+        reason = "first_row_refused"
     elif not allowed:
         reason = "not_allowed"
     row["actions"] = [] if reason else ["redeploy"]
@@ -1808,8 +1819,11 @@ def build_report(
         if gone:
             leftovers.append(gone)
     if can_redeploy is not None:
+        first_rows = {}
         for row in live_rows:
-            add_redeploy_action(row, can_redeploy, True)
+            first_rows.setdefault(row["uuid"], row)
+        for row in live_rows:
+            add_redeploy_action(row, can_redeploy, True, first_rows[row["uuid"]])
         for row in leftovers:
             add_redeploy_action(row, can_redeploy, False)
     document = {

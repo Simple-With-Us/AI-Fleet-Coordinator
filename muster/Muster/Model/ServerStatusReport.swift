@@ -225,6 +225,37 @@ struct CoolifyResource: Decodable, Identifiable, Equatable {
         return name != uuid && !name.hasPrefix(uuid + " (")
     }
 
+    /// What a badge alone cannot say,  in words:  the state when it is not plain running,  a
+    /// crash loop's restarts,  a missing health check and how it exited.  Nil adds nothing.
+    func signalText(now: Date = Date()) -> String? {
+        var parts: [String] = []
+        if resourceStatus == .absent, let since = absentSince.flatMap(FleetTime.parse) {
+            parts.append("gone for \(FleetTime.ageText(since: since, now: now))")
+        } else if resourceStatus != .running {
+            parts.append(resourceStatus.rawValue)
+        }
+        if let restartCount, restartCount > 0 {
+            parts.append(restartCount == 1 ? "1 restart" : "\(restartCount) restarts")
+        }
+        if resourceStatus == .running, health == "none" { parts.append("no health check") }
+        if resourceStatus == .running, health == "starting" { parts.append("health check starting") }
+        if let exitCode, resourceStatus != .running { parts.append("exit \(exitCode)") }
+        if oomKilled == true { parts.append("out of memory") }
+        return parts.isEmpty ? nil : parts.joined(separator: ", ")
+    }
+
+    /// Why this row offers no Redeploy,  in words,  when the collector asked the helper.
+    var redeployBlockedText: String? {
+        guard let reason = redeployBlockedReason else { return nil }
+        switch reason {
+        case "no_uuid_label": return "No Redeploy: the container does not say which application it is."
+        case "not_seen": return "No Redeploy: it is not on the server now."
+        case "not_allowed": return "No Redeploy: the server's allowlist does not allow it."
+        case "first_row_refused": return "No Redeploy: the server would refuse it, because a row that is not an application holds the same id."
+        default: return "No Redeploy."
+        }
+    }
+
     /// The cpu,  when the collector could measure it.
     ///
     /// A measurement that was not taken is not shown as a zero.
@@ -240,6 +271,14 @@ struct CoolifyResource: Decodable, Identifiable, Equatable {
     var updatedText: String? {
         guard let updatedAt = updatedAt, let date = FleetTime.parse(updatedAt) else { return nil }
         return FleetTime.ageText(since: date)
+    }
+
+    /// The same time,  saying what happened then.
+    var updatedLabel: String? {
+        updatedText.map { age in
+            let isUp = resourceStatus == .running || resourceStatus == .unhealthy
+            return "\(isUp ? "started" : "stopped") \(age) ago"
+        }
     }
 }
 
@@ -269,6 +308,12 @@ struct ServerProcess: Decodable, Identifiable, Equatable {
     }
 
     var id: Int { pid }
+
+    /// The cpu as a count of cores,  because a share of one core reads past 100 percent.
+    var coresText: String? {
+        guard let cpuPercent = cpuPercent else { return nil }
+        return String(format: "%.1f cores", cpuPercent / 100)
+    }
 
     /// The name of the executable,  or the pid when the collector could not read it.
     var displayName: String {
@@ -312,6 +357,14 @@ struct WatchedFile: Decodable, Identifiable, Equatable {
     }
 
     var id: String { path }
+
+    /// How long ago this file went or last changed,  when the report says.
+    func whenText(now: Date = Date()) -> String? {
+        if let since = missingSince.flatMap(FleetTime.parse) {
+            return "gone for \(FleetTime.ageText(since: since, now: now))"
+        }
+        return modifiedAt.flatMap(FleetTime.parse).map { "modified \(FleetTime.ageText(since: $0, now: now)) ago" }
+    }
 
     /// The drift of the file,  in this app's vocabulary.
     var fileDrift: ServerStatusDrift { ServerStatusDrift(reportValue: drift) }
@@ -464,9 +517,12 @@ struct HostMetrics: Decodable, Equatable {
     let bootedAt: String?
     /// True only when the host's flag file says a reboot is needed.  Nil claims nothing.
     let rebootRequired: Bool?
+    /// Whole-machine CPU use,  0 to 100.  Only a collector with a tick baseline writes it
+    /// (Hog Hunter's Mac report does;  the server's does not).
+    let cpuPercent: Double?
 
     enum CodingKeys: String, CodingKey {
-        case loadAverage, cpuCount, memory, swap, uptimeSeconds, disks, bootedAt, rebootRequired
+        case loadAverage, cpuCount, memory, swap, uptimeSeconds, disks, bootedAt, rebootRequired, cpuPercent
     }
 
     init(from decoder: Decoder) throws {
@@ -479,6 +535,25 @@ struct HostMetrics: Decodable, Equatable {
         disks = (try? container.decodeIfPresent([HostDisk].self, forKey: .disks)) ?? []
         bootedAt = try? container.decodeIfPresent(String.self, forKey: .bootedAt)
         rebootRequired = try? container.decodeIfPresent(Bool.self, forKey: .rebootRequired)
+        cpuPercent = try? container.decodeIfPresent(Double.self, forKey: .cpuPercent)
+    }
+
+    /// The machine's CPU use,  when the collector measured it.
+    var cpuText: String? {
+        guard let cpuPercent, cpuPercent >= 0, cpuPercent.isFinite else { return nil }
+        return String(format: "%.0f%%", cpuPercent)
+    }
+
+    /// A restart in the last hour explains a lot,  so it is said in words.
+    var restartNote: String? {
+        guard let uptimeSeconds, uptimeSeconds < 3600,
+              let booted = bootedAt.flatMap(FleetTime.parse) else { return nil }
+        return "The server restarted at \(FleetTime.clock(booted))."
+    }
+
+    /// The host's own flag,  in words.  Nil claims nothing either way.
+    var rebootNote: String? {
+        rebootRequired == true ? "The server says it needs a reboot." : nil
     }
 
     /// The one-minute load over the cpu count, from 0 up.
@@ -609,7 +684,45 @@ struct ServerService: Decodable, Identifiable, Equatable {
     /// a failure either.
     var lastRunFailed: Bool {
         guard let result = lastResult else { return false }
-        return !["success", "exec-condition", "skipped"].contains(result)
+        return !ServerService.resultsThatAreNotFailures.contains(result)
+    }
+
+    /// systemd's words for a job that worked,  or that a condition skipped and so never ran.
+    private static let resultsThatAreNotFailures: Set<String> = [
+        "success", "exec-condition", "skipped", "condition",
+        "skip-pre-start", "skip-pre-stop", "skip-post-stop",
+    ]
+
+    /// The verbs the collector says the helper would run,  or nil when the report does not say.
+    var listedVerbs: [OpsVerb]? {
+        actions.map { listed in OpsVerb.allCases.filter { listed.contains($0.rawValue) } }
+    }
+
+    /// True unless the report lists this unit's actions and Logs is not among them.
+    var offersLogs: Bool { actions?.contains("logs") ?? true }
+
+    /// A timer's job,  in words:  how it last went and when it runs next.  Nil for a unit
+    /// that says neither.
+    var runText: String? {
+        var sentences: [String] = []
+        let finished = (lastFinishedAt ?? lastRunAt).flatMap(FleetTime.parse)
+        let when: String = finished.map { " at " + FleetTime.clock($0) } ?? ""
+        if jobRunning {
+            sentences.append("Its job is running now.")
+        } else if lastRunFailed {
+            let code: String = lastExitCode.map { " with exit \($0)" } ?? ""
+            sentences.append("Last run failed\(when)\(code).")
+        } else if lastResult == "success" {
+            sentences.append("Last run succeeded\(when).")
+        } else if lastResult != nil {
+            sentences.append("Last run was skipped\(when).")
+        } else if let started = lastRunAt.flatMap(FleetTime.parse) {
+            sentences.append("Last started at \(FleetTime.clock(started)).")
+        }
+        if let next = nextRunAt.flatMap(FleetTime.parse) {
+            sentences.append("Next run \(FleetTime.clock(next)).")
+        }
+        return sentences.isEmpty ? nil : sentences.joined(separator: ServerStatusCopy.sentenceGap)
     }
 
     /// The state the unit reads as.
@@ -665,6 +778,17 @@ struct ServerFailedUnit: Decodable, Identifiable, Equatable {
     }
 
     var id: String { "\(scope ?? "system")/\(unit)" }
+
+    /// How it failed,  in words.
+    func detailText(now: Date = Date()) -> String {
+        var parts = ["failed"]
+        if let date = since.flatMap(FleetTime.parse) {
+            parts[0] = "failed for \(FleetTime.ageText(since: date, now: now))"
+        }
+        if let result, !result.isEmpty { parts.append(result) }
+        if let exitCode { parts.append("exit \(exitCode)") }
+        return parts.joined(separator: ", ")
+    }
 }
 
 /// One checkout removed from the server in the last seven days.  This is information:  it
@@ -686,6 +810,12 @@ struct ServerRemovedCheckout: Decodable, Identifiable, Equatable {
     }
 
     var id: String { repo }
+
+    /// The line the panel shows.
+    var text: String {
+        guard let files else { return "\(repo) was removed from the server." }
+        return "\(repo) was removed from the server, with \(files) watched \(files == 1 ? "file" : "files")."
+    }
 }
 
 /// One live Coolify application and what a redeploy of it restarts.
@@ -727,6 +857,28 @@ struct ServerCollectionEntry: Decodable, Equatable {
         ok = try? container.decodeIfPresent(Bool.self, forKey: .ok)
         partial = (try? container.decodeIfPresent(Bool.self, forKey: .partial)) == true
         errorCode = try? container.decodeIfPresent(String.self, forKey: .errorCode)
+    }
+
+    /// True when the collector says this half was not read whole,  so it may not read as a pass.
+    var isIncomplete: Bool { ok == false || partial || errorCode != nil }
+
+    /// Why,  in owner copy.  The collector writes fixed codes,  and this is where they get words.
+    var problemText: String? {
+        guard isIncomplete else { return nil }
+        switch errorCode ?? "" {
+        case "docker_unreadable": return "The collector could not read Docker, so the containers are not known."
+        case "docker_inspect_failed": return "Docker listed containers but would not describe them, so they are not known."
+        case "docker_inspect_partial": return "Docker would not describe every container, so this list may be short."
+        case "docker_stats_unreadable": return "Docker did not give cpu and memory, so those are not shown."
+        case "allowlist_unreadable": return "The collector could not read the allowlist, so these units are not known."
+        case "allowlist_refused": return "The control helper refused the allowlist, so no unit can be controlled."
+        case "systemctl_unreadable": return "The collector could not ask systemd what has failed, so that is not known."
+        case "systemctl_scope_unreadable": return "One part of systemd did not answer, so this list may be short."
+        case "proc_unreadable": return "The collector could not read the process list."
+        case "code_root_unreadable": return "The collector could not read the code folder, so the files are not known."
+        case "files_truncated": return "The collector stopped at its file limit, so some files were not checked."
+        default: return "The collector could not read all of this."
+        }
     }
 }
 
@@ -884,9 +1036,55 @@ struct ServerStatusReading {
     /// is gone is never offered,  and a row that lists its actions is offered only what it
     /// lists,  because the collector asked the helper.
     func offersRedeploy(_ resource: CoolifyResource) -> Bool {
-        guard resource.isRedeployable, resource.resourceStatus != .absent else { return false }
+        guard resource.isRedeployable, resource.resourceStatus != .absent,
+              resource.resourceStatus != .unknown else { return false }
         if let actions = resource.actions, !actions.contains("redeploy") { return false }
         return coolify.first(where: { $0.uuid == resource.uuid })?.isRedeployable == true
+    }
+
+    /// The application a row belongs to,  when the report lists it.
+    private func application(of resource: CoolifyResource) -> ServerApplication? {
+        applications.first { $0.uuid == resource.uuid }
+    }
+
+    /// The name a redeploy of this row acts on,  which is the application and not one service.
+    func redeployName(of resource: CoolifyResource) -> String {
+        let name = application(of: resource)?.name ?? resource.name
+        return name.isEmpty ? "this resource" : name
+    }
+
+    /// What a redeploy of this row restarts,  in words.
+    func redeployHelp(of resource: CoolifyResource) -> String {
+        let plan = "Plan a redeploy of this application on the server."
+        guard let count = application(of: resource)?.containers, count > 1 else { return plan }
+        return "\(plan)\(ServerStatusCopy.sentenceGap)It restarts all \(count) of its containers."
+    }
+
+    /// The rows with the worst first,  and otherwise in the report's own order.
+    var coolifyProblemsFirst: [CoolifyResource] {
+        coolify.enumerated().sorted { left, right in
+            let leftRank = GridBuilder.severityIndex(of: left.element.state)
+            let rightRank = GridBuilder.severityIndex(of: right.element.state)
+            return leftRank == rightRank ? left.offset < right.offset : leftRank < rightRank
+        }.map { $0.element }
+    }
+
+    /// True when the report has something to say about units:  rows,  a failed unit,  or the
+    /// collector saying it could not read them.  A collector that predates all three does not.
+    var hasServicesHalf: Bool {
+        !services.isEmpty
+            || failedUnits?.isEmpty == false
+            || collection?.services?.isIncomplete == true
+            || collection?.failedUnits?.isIncomplete == true
+    }
+
+    /// A half the collector did not read whole may not read as a pass,  however good its rows
+    /// look.  A worse state stands,  and a report with no `collection` says nothing here.
+    private func provenState(_ state: CellState, _ entries: ServerCollectionEntry?...) -> CellState {
+        guard state == .passed, entries.contains(where: { $0?.isIncomplete == true }) else {
+            return state
+        }
+        return .unproven
     }
 
     /// The files whose drift is neither `unchanged` nor `info`:  the ones worth looking at.
@@ -909,7 +1107,7 @@ struct ServerStatusReading {
         guard isCurrent else { return .unproven }
         var states = services.map(\.state)
         if failedUnits?.isEmpty == false { states.append(.missing) }
-        return worst(of: states, empty: .unproven)
+        return provenState(worst(of: states, empty: .unproven), collection?.services, collection?.failedUnits)
     }
 
     /// The host half's own state.
@@ -925,19 +1123,19 @@ struct ServerStatusReading {
     /// window proves nothing either,  so the half reads as unproven and not as a pass.
     var coolifyState: CellState {
         guard isCurrent else { return .unproven }
-        return worst(of: coolify.map(\.state), empty: .unproven)
+        return provenState(worst(of: coolify.map(\.state), empty: .unproven), collection?.coolify)
     }
 
     /// The processes half's own state.
     var processState: CellState {
         guard isCurrent else { return .unproven }
-        return processes.isEmpty ? .unproven : .passed
+        return provenState(processes.isEmpty ? .unproven : .passed, collection?.processes)
     }
 
     /// The config half's own state.
     var configState: CellState {
         guard isCurrent else { return .unproven }
-        return worst(of: files.map(\.state), empty: .unproven)
+        return provenState(worst(of: files.map(\.state), empty: .unproven), collection?.files)
     }
 
     /// The worst of a set of states.
@@ -1059,7 +1257,7 @@ enum ServerStatusReportReader {
         var halves = [reading.coolifyState, reading.processState, reading.configState]
         // The services half counts only when the report carries one:  a collector that
         // predates it is not a server whose services are unproven.
-        if !reading.services.isEmpty || reading.failedUnits?.isEmpty == false {
+        if reading.hasServicesHalf {
             halves.append(reading.servicesState)
         }
         var worst = CellState.passed

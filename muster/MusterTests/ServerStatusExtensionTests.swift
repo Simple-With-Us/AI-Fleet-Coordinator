@@ -79,7 +79,9 @@ final class ServerStatusExtensionTests: XCTestCase {
         XCTAssertTrue(reading.driftedFiles.isEmpty)
         XCTAssertEqual(reading.noticedFiles.first?.fileDrift, .info)
         XCTAssertEqual(reading.noticedFiles.first?.state, .passed)
-        XCTAssertEqual(reading.configState, .passed)
+        // Every row it read is fine,  and the collector says it stopped at its limit.
+        XCTAssertEqual(reading.collection?.files?.errorCode, "files_truncated")
+        XCTAssertEqual(reading.configState, .unproven)
     }
 
     // MARK: - The old shape
@@ -345,11 +347,46 @@ final class ServerStatusExtensionTests: XCTestCase {
     }
 
     func test_an_active_timer_with_no_result_or_a_skipped_job_is_not_a_failure() throws {
-        for fields in [#""#, #", "lastResult": "success""#, #", "lastResult": "exec-condition""#, #", "lastResult": 7"#] {
+        var cases = [#""#, #", "lastResult": 7"#]
+        for word in ["success", "exec-condition", "skipped", "condition", "skip-pre-start", "skip-pre-stop", "skip-post-stop"] {
+            cases.append(", \"lastResult\": \"\(word)\"")
+        }
+        for fields in cases {
             let timer = try decode(ServerService.self, #"{"unit": "a.timer", "activeState": "active""# + fields + "}")
             XCTAssertFalse(timer.lastRunFailed, fields)
             XCTAssertEqual(timer.state, .passed, fields)
         }
+    }
+
+    func test_a_timer_says_how_its_job_went_in_words() throws {
+        let finished = "2026-10-28T14:45:07Z"
+        let next = "2026-10-28T15:15:00Z"
+        let finishedClock = FleetTime.clock(try XCTUnwrap(FleetTime.parse(finished)))
+        let nextClock = FleetTime.clock(try XCTUnwrap(FleetTime.parse(next)))
+        let gap = ServerStatusCopy.sentenceGap
+        let good = try decode(ServerService.self, #"{"unit": "a.timer", "lastResult": "success", "lastFinishedAt": "\#(finished)", "nextRunAt": "\#(next)"}"#)
+        XCTAssertEqual(good.runText, "Last run succeeded at \(finishedClock).\(gap)Next run \(nextClock).")
+        let bad = try decode(ServerService.self, #"{"unit": "a.timer", "lastResult": "exit-code", "lastExitCode": 1, "lastFinishedAt": "\#(finished)"}"#)
+        XCTAssertEqual(bad.runText, "Last run failed at \(finishedClock) with exit 1.")
+        let skipped = try decode(ServerService.self, #"{"unit": "a.timer", "lastResult": "condition"}"#)
+        XCTAssertEqual(skipped.runText, "Last run was skipped.")
+        let running = try decode(ServerService.self, #"{"unit": "a.timer", "jobRunning": true, "lastRunAt": "\#(finished)"}"#)
+        XCTAssertEqual(running.runText, "Its job is running now.")
+        let unknown = try decode(ServerService.self, #"{"unit": "a.timer", "lastRunAt": "\#(finished)"}"#)
+        XCTAssertEqual(unknown.runText, "Last started at \(finishedClock).")
+        XCTAssertNil(try decode(ServerService.self, #"{"unit": "a.service"}"#).runText)
+    }
+
+    func test_a_row_offers_only_the_verbs_the_report_lists() throws {
+        let listed = try decode(ServerService.self, #"{"unit": "a.timer", "controllable": true, "actions": ["restart", "logs"]}"#)
+        XCTAssertEqual(listed.listedVerbs, [OpsVerb.restart])
+        XCTAssertTrue(listed.offersLogs)
+        let noLogs = try decode(ServerService.self, #"{"unit": "a.timer", "actions": ["start"]}"#)
+        XCTAssertEqual(noLogs.listedVerbs, [OpsVerb.start])
+        XCTAssertFalse(noLogs.offersLogs)
+        let silent = try decode(ServerService.self, #"{"unit": "a.timer"}"#)
+        XCTAssertNil(silent.listedVerbs)
+        XCTAssertTrue(silent.offersLogs)
     }
 
     func test_a_stopped_timer_stays_drift_whatever_its_job_last_did() throws {
@@ -384,6 +421,186 @@ final class ServerStatusExtensionTests: XCTestCase {
         let reading = try readFixture("server_status_current", minutesAfter: 46)
         XCTAssertEqual(reading.servicesState, .unproven)
         XCTAssertEqual(reading.state, .unknown)
+    }
+
+    // MARK: - What the collector could not read
+
+    /// A report where every row is fine,  with one half's collection entry added.
+    private func reportJSON(collection: String, services: String = "") -> String {
+        """
+        {"schemaVersion": 1, "tool": "fleet-server-status", "generatedAt": "2026-10-28T15:00:00Z", "coolify": [{"uuid": "u", "name": "a", "status": "running"}], "processes": [{"pid": 1}], "files": [{"path": "/srv/a/AGENTS.md", "drift": "unchanged"}], "failedUnits": []\(services), "collection": \(collection)}
+        """
+    }
+
+    func test_a_whole_collection_changes_nothing() throws {
+        let reading = try readText(reportJSON(collection: #"{"coolify": {"ok": true, "partial": false}, "services": {"ok": true, "partial": false}, "failedUnits": {"ok": true, "partial": false}, "processes": {"ok": true, "partial": false}, "files": {"ok": true, "partial": false}}"#))
+        XCTAssertEqual(reading.coolifyState, .passed)
+        XCTAssertEqual(reading.processState, .passed)
+        XCTAssertEqual(reading.configState, .passed)
+        XCTAssertFalse(reading.hasServicesHalf)
+        XCTAssertEqual(reading.state, .passed)
+    }
+
+    func test_a_half_that_was_not_read_never_reads_as_a_pass() throws {
+        let unread = #"{"ok": false, "partial": false, "errorCode": "x"}"#
+        let partial = #"{"ok": true, "partial": true, "errorCode": "x"}"#
+        for entry in [unread, partial] {
+            let coolify = try readText(reportJSON(collection: #"{"coolify": "# + entry + "}"))
+            XCTAssertEqual(coolify.coolifyState, .unproven)
+            XCTAssertEqual(coolify.state, .unproven)
+            let processes = try readText(reportJSON(collection: #"{"processes": "# + entry + "}"))
+            XCTAssertEqual(processes.processState, .unproven)
+            XCTAssertEqual(processes.state, .unproven)
+            let files = try readText(reportJSON(collection: #"{"files": "# + entry + "}"))
+            XCTAssertEqual(files.configState, .unproven)
+            XCTAssertEqual(files.state, .unproven)
+        }
+    }
+
+    func test_an_unreadable_allowlist_with_no_units_is_not_a_pass() throws {
+        // The allowlist could not be read,  so there are no rows and nothing failed.
+        let reading = try readText(reportJSON(collection: #"{"services": {"ok": false, "partial": false, "errorCode": "allowlist_unreadable"}}"#, services: #", "services": []"#))
+        XCTAssertTrue(reading.services.isEmpty)
+        XCTAssertTrue(reading.hasServicesHalf)
+        XCTAssertEqual(reading.servicesState, .unproven)
+        XCTAssertEqual(reading.state, .unproven)
+    }
+
+    func test_failed_units_that_were_not_read_keep_the_services_from_passing() throws {
+        let row = #", "services": [{"unit": "a.timer", "activeState": "active"}]"#
+        let reading = try readText(reportJSON(collection: #"{"failedUnits": {"ok": false, "partial": false, "errorCode": "systemctl_unreadable"}}"#, services: row))
+        XCTAssertEqual(reading.servicesState, .unproven)
+        XCTAssertEqual(reading.state, .unproven)
+    }
+
+    func test_a_real_failure_stays_a_failure_when_the_half_was_not_read_whole() throws {
+        let json = """
+        {"schemaVersion": 1, "tool": "fleet-server-status", "generatedAt": "2026-10-28T15:00:00Z", "coolify": [{"uuid": "u", "name": "a", "status": "exited"}], "processes": [{"pid": 1}], "files": [{"path": "/srv/a/AGENTS.md", "drift": "unchanged"}], "collection": {"coolify": {"ok": true, "partial": true, "errorCode": "docker_inspect_partial"}}}
+        """
+        let reading = try readText(json)
+        XCTAssertEqual(reading.coolifyState, .missing)
+        XCTAssertEqual(reading.state, .missing)
+    }
+
+    func test_a_collection_entry_of_the_wrong_shape_claims_nothing() throws {
+        let reading = try readText(reportJSON(collection: #"{"coolify": {"ok": "no"}, "files": 7}"#))
+        XCTAssertEqual(reading.coolifyState, .passed)
+        XCTAssertEqual(reading.configState, .passed)
+    }
+
+    func test_every_collector_code_has_its_own_words() throws {
+        let codes = [
+            "docker_unreadable", "docker_inspect_failed", "docker_inspect_partial", "docker_stats_unreadable",
+            "allowlist_unreadable", "allowlist_refused", "systemctl_unreadable", "systemctl_scope_unreadable",
+            "proc_unreadable", "code_root_unreadable", "files_truncated",
+        ]
+        var seen = Set<String>()
+        let fallback = "The collector could not read all of this."
+        for code in codes {
+            let entry = try decode(ServerCollectionEntry.self, #"{"ok": false, "errorCode": ""# + code + #""}"#)
+            let text = try XCTUnwrap(entry.problemText, code)
+            XCTAssertNotEqual(text, fallback, code)
+            seen.insert(text)
+        }
+        XCTAssertEqual(seen.count, codes.count)
+        XCTAssertEqual(try decode(ServerCollectionEntry.self, #"{"ok": false, "errorCode": "new_code"}"#).problemText, fallback)
+        XCTAssertNil(try decode(ServerCollectionEntry.self, #"{"ok": true, "partial": false}"#).problemText)
+    }
+
+    // MARK: - The words a row carries
+
+    func test_a_container_says_what_a_badge_cannot() throws {
+        let now = try XCTUnwrap(FleetTime.parse("2026-10-28T15:00:00Z"))
+        let plain = try decode(CoolifyResource.self, #"{"uuid": "u", "name": "a", "status": "running", "health": "healthy"}"#)
+        XCTAssertNil(plain.signalText(now: now))
+        let unchecked = try decode(CoolifyResource.self, #"{"uuid": "u", "name": "a", "status": "running", "health": "none"}"#)
+        XCTAssertEqual(unchecked.signalText(now: now), "no health check")
+        let looping = try decode(CoolifyResource.self, #"{"uuid": "u", "name": "a", "status": "restarting", "restartCount": 12, "exitCode": 1}"#)
+        XCTAssertEqual(looping.signalText(now: now), "restarting, 12 restarts, exit 1")
+        let killed = try decode(CoolifyResource.self, #"{"uuid": "u", "name": "a", "status": "exited", "exitCode": 137, "oomKilled": true}"#)
+        XCTAssertEqual(killed.signalText(now: now), "exited, exit 137, out of memory")
+        let gone = try decode(CoolifyResource.self, #"{"uuid": "u", "name": "a", "status": "absent", "absentSince": "2026-10-28T13:00:00Z"}"#)
+        XCTAssertEqual(gone.signalText(now: now), "gone for 2h")
+    }
+
+    func test_a_row_with_no_redeploy_says_why() throws {
+        for (code, words) in [
+            ("no_uuid_label", "No Redeploy: the container does not say which application it is."),
+            ("not_seen", "No Redeploy: it is not on the server now."),
+            ("not_allowed", "No Redeploy: the server's allowlist does not allow it."),
+            ("wobble", "No Redeploy."),
+        ] {
+            let row = try decode(CoolifyResource.self, #"{"uuid": "u", "name": "a", "redeployBlockedReason": ""# + code + #""}"#)
+            XCTAssertEqual(row.redeployBlockedText, words)
+        }
+        let first = try decode(CoolifyResource.self, #"{"uuid": "u", "name": "a", "redeployBlockedReason": "first_row_refused"}"#)
+        XCTAssertTrue(try XCTUnwrap(first.redeployBlockedText).hasPrefix("No Redeploy: the server would refuse it"))
+        XCTAssertNil(try decode(CoolifyResource.self, #"{"uuid": "u", "name": "a"}"#).redeployBlockedText)
+    }
+
+    func test_a_row_nobody_could_read_is_not_offered_a_redeploy() throws {
+        let json = """
+        {"schemaVersion": 1, "tool": "fleet-server-status", "generatedAt": "2026-10-28T15:00:00Z", "coolify": [{"uuid": "u1", "name": "a", "type": "application", "uuidSource": "label", "status": "unknown"}], "processes": [{"pid": 1}], "files": []}
+        """
+        let reading = try readText(json)
+        let row = try XCTUnwrap(reading.coolify.first)
+        XCTAssertTrue(row.isRedeployable)
+        XCTAssertFalse(reading.offersRedeploy(row))
+    }
+
+    func test_a_redeploy_names_the_application_and_what_it_restarts() throws {
+        let json = """
+        {"schemaVersion": 1, "tool": "fleet-server-status", "generatedAt": "2026-10-28T15:00:00Z", "coolify": [{"uuid": "u1", "name": "app (web)", "service": "web", "type": "application", "status": "running"}, {"uuid": "u2", "name": "solo", "type": "application", "status": "running"}, {"uuid": "u3", "name": "unlisted (web)", "type": "application", "status": "running"}], "applications": [{"uuid": "u1", "name": "app", "containers": 2, "services": ["web", "worker"]}, {"uuid": "u2", "name": "solo", "containers": 1, "services": []}], "processes": [], "files": []}
+        """
+        let reading = try readText(json)
+        let plan = "Plan a redeploy of this application on the server."
+        XCTAssertEqual(reading.redeployName(of: reading.coolify[0]), "app")
+        XCTAssertEqual(reading.redeployHelp(of: reading.coolify[0]), "\(plan)\(ServerStatusCopy.sentenceGap)It restarts all 2 of its containers.")
+        XCTAssertEqual(reading.redeployHelp(of: reading.coolify[1]), plan)
+        XCTAssertEqual(reading.redeployName(of: reading.coolify[2]), "unlisted (web)")
+        XCTAssertEqual(reading.redeployHelp(of: reading.coolify[2]), plan)
+    }
+
+    func test_the_rows_with_problems_come_first_and_the_rest_keep_their_order() throws {
+        let json = """
+        {"schemaVersion": 1, "tool": "fleet-server-status", "generatedAt": "2026-10-28T15:00:00Z", "coolify": [{"uuid": "a", "name": "a", "status": "running"}, {"uuid": "b", "name": "b", "status": "absent"}, {"uuid": "c", "name": "c", "status": "running"}, {"uuid": "d", "name": "d", "status": "exited"}], "processes": [], "files": []}
+        """
+        let reading = try readText(json)
+        XCTAssertEqual(reading.coolifyProblemsFirst.map(\.name), ["d", "b", "a", "c"])
+    }
+
+    func test_a_failed_unit_a_removed_checkout_and_a_process_say_what_they_are() throws {
+        let now = try XCTUnwrap(FleetTime.parse("2026-10-28T15:00:00Z"))
+        let failed = try decode(ServerFailedUnit.self, #"{"unit": "a.service", "since": "2026-10-28T13:00:00Z", "result": "timeout", "exitCode": 15}"#)
+        XCTAssertEqual(failed.detailText(now: now), "failed for 2h, timeout, exit 15")
+        XCTAssertEqual(try decode(ServerFailedUnit.self, #"{"unit": "a.service"}"#).detailText(now: now), "failed")
+        let checkout = try decode(ServerRemovedCheckout.self, #"{"repo": "Gone", "files": 15}"#)
+        XCTAssertEqual(checkout.text, "Gone was removed from the server, with 15 watched files.")
+        XCTAssertEqual(try decode(ServerRemovedCheckout.self, #"{"repo": "Gone", "files": 1}"#).text, "Gone was removed from the server, with 1 watched file.")
+        XCTAssertEqual(try decode(ServerRemovedCheckout.self, #"{"repo": "Gone"}"#).text, "Gone was removed from the server.")
+        let process = try decode(ServerProcess.self, #"{"pid": 1, "cpuPercent": 130.0}"#)
+        XCTAssertEqual(process.coresText, "1.3 cores")
+        XCTAssertNil(try decode(ServerProcess.self, #"{"pid": 1}"#).coresText)
+    }
+
+    func test_a_file_says_how_long_it_has_been_gone_or_when_it_changed() throws {
+        let now = try XCTUnwrap(FleetTime.parse("2026-10-28T15:00:00Z"))
+        let gone = try decode(WatchedFile.self, #"{"path": "/a", "drift": "missing", "missingSince": "2026-10-28T13:00:00Z"}"#)
+        XCTAssertEqual(gone.whenText(now: now), "gone for 2h")
+        let there = try decode(WatchedFile.self, #"{"path": "/a", "drift": "changed", "modifiedAt": "2026-10-28T14:50:00Z"}"#)
+        XCTAssertEqual(there.whenText(now: now), "modified 10m ago")
+        XCTAssertNil(try decode(WatchedFile.self, #"{"path": "/a"}"#).whenText(now: now))
+    }
+
+    func test_a_recent_restart_and_a_reboot_flag_are_said_in_words() throws {
+        let booted = "2026-11-04T19:26:31Z"
+        let clock = FleetTime.clock(try XCTUnwrap(FleetTime.parse(booted)))
+        let fresh = try decode(HostMetrics.self, #"{"uptimeSeconds": 216, "bootedAt": "\#(booted)", "rebootRequired": true, "disks": []}"#)
+        XCTAssertEqual(fresh.restartNote, "The server restarted at \(clock).")
+        XCTAssertEqual(fresh.rebootNote, "The server says it needs a reboot.")
+        let settled = try decode(HostMetrics.self, #"{"uptimeSeconds": 7200, "bootedAt": "\#(booted)", "disks": []}"#)
+        XCTAssertNil(settled.restartNote)
+        XCTAssertNil(settled.rebootNote)
     }
 
     // MARK: - The other additions

@@ -30,6 +30,143 @@ GENERIC_FILE_NAMES = (
 )
 HOST = "example-server"
 
+# Every section a report may carry,  and what it must be.  The sanitizer copies what it is not
+# told to replace,  so a section or a row field it has not been told about could carry a real
+# name into a committed file:  such a report is refused rather than sanitized in part.
+REPORT_SECTIONS = {
+    "schemaVersion": int,
+    "tool": str,
+    "generatedAt": str,
+    "host": str,
+    "hostRole": str,
+    "coolify": list,
+    "applications": list,
+    "processes": list,
+    "processSampleSeconds": (int, float),
+    "files": list,
+    "filesSummary": dict,
+    "removedCheckouts": list,
+    "services": list,
+    "failedUnits": list,
+    "hostMetrics": dict,
+    "resourcePolicy": dict,
+    "collection": dict,
+}
+REQUIRED_SECTIONS = ("schemaVersion", "tool", "host", "coolify", "processes", "files")
+# The fields each row may carry.  The ones that hold a string to replace are named on their own.
+ROW_FIELDS = {
+    "coolify": (
+        "uuid",
+        "uuidSource",
+        "name",
+        "type",
+        "status",
+        "container",
+        "service",
+        "image",
+        "updatedAt",
+        "absentSince",
+        "health",
+        "restartCount",
+        "exitCode",
+        "oomKilled",
+        "cpuPercent",
+        "memoryBytes",
+        "actions",
+        "redeployBlockedReason",
+    ),
+    "applications": ("uuid", "name", "containers", "services"),
+    "processes": ("pid", "owner", "name", "cpuPercent", "memoryBytes", "belongsTo"),
+    "files": ("path", "bytes", "modifiedAt", "sha256", "drift", "missingSince"),
+    "removedCheckouts": ("repo", "files", "noticedAt"),
+    "services": (
+        "unit",
+        "scope",
+        "description",
+        "activeState",
+        "subState",
+        "since",
+        "enabled",
+        "controllable",
+        "actions",
+        "watched",
+        "selfObserved",
+        "job",
+        "jobRunning",
+        "lastRunAt",
+        "lastResult",
+        "lastExitCode",
+        "lastFinishedAt",
+        "nextRunAt",
+        "role",
+        "stopConsequence",
+    ),
+    "failedUnits": ("unit", "scope", "description", "since", "result", "exitCode"),
+}
+STRING_FIELDS = {
+    "coolify": ("uuid", "name", "service", "container", "image"),
+    "applications": ("uuid", "name"),
+    "processes": ("owner", "name", "belongsTo"),
+    "files": ("path",),
+    "removedCheckouts": ("repo",),
+    "services": ("unit", "job", "description"),
+    "failedUnits": ("unit", "description"),
+}
+
+
+def require_strings(value, path):
+    """Refuse anything but a list of strings at `path`."""
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ValueError("%s must be a list of strings" % path)
+
+
+def validate_rows(section, rows):
+    """Refuse a row that is not an object,  or that carries a field this script does not know."""
+    for index, row in enumerate(rows):
+        where = "%s[%d]" % (section, index)
+        if not isinstance(row, dict):
+            raise ValueError("%s must be an object" % where)
+        for field in sorted(set(row) - set(ROW_FIELDS[section])):
+            raise ValueError("%s.%s is not a field this script knows" % (where, field))
+        for field in STRING_FIELDS[section]:
+            if field in row and not isinstance(row[field], str):
+                raise ValueError("%s.%s must be a string" % (where, field))
+        if "services" in row and section == "applications":
+            require_strings(row["services"], where + ".services")
+
+
+def validate_report(report):
+    """Refuse a report whose shape is not the collector's,  naming the path that is wrong.
+
+    This runs before anything reads the report,  so a report that fails is never sanitized in
+    part and never written.
+    """
+    if not isinstance(report, dict):
+        raise ValueError("the report must be an object")
+    for section in sorted(set(report) - set(REPORT_SECTIONS)):
+        raise ValueError("%s is not a section this script knows" % section)
+    for section in REQUIRED_SECTIONS:
+        if section not in report:
+            raise ValueError("%s is missing from the report" % section)
+    for section, kind in REPORT_SECTIONS.items():
+        value = report.get(section)
+        if value is not None and (not isinstance(value, kind) or isinstance(value, bool)):
+            raise ValueError("%s is not the type the collector writes" % section)
+    for section in ROW_FIELDS:
+        validate_rows(section, report.get(section) or [])
+    summary = report.get("filesSummary") or {}
+    if "cutCheckouts" in summary:
+        require_strings(summary["cutCheckouts"], "filesSummary.cutCheckouts")
+    disks = (report.get("hostMetrics") or {}).get("disks") or []
+    if not isinstance(disks, list):
+        raise ValueError("hostMetrics.disks must be a list")
+    for index, disk in enumerate(disks):
+        if not isinstance(disk, dict) or not isinstance(disk.get("mount", ""), str):
+            raise ValueError("hostMetrics.disks[%d].mount must be a string" % index)
+    revision = (report.get("resourcePolicy") or {}).get("policyRevision")
+    if revision is not None and not isinstance(revision, str):
+        raise ValueError("resourcePolicy.policyRevision must be a string")
+
 
 class Tokens:
     """One stable made-up token for each real string,  counted per kind."""
@@ -196,7 +333,12 @@ def main(argv=None):
     if len(arguments) != 2:
         print("usage: make-server-status-fixture.py REPORT.json FIXTURE.json", file=sys.stderr)
         return 2
-    report = json.loads(Path(arguments[0]).read_text())
+    try:
+        report = json.loads(Path(arguments[0]).read_text())
+        validate_report(report)
+    except (OSError, ValueError) as error:
+        print("the report was refused: %s" % error, file=sys.stderr)
+        return 1
     Path(arguments[1]).write_text(json.dumps(sanitize_report(report), indent=1) + "\n")
     return 0
 

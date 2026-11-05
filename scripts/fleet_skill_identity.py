@@ -1013,6 +1013,13 @@ def _rewrite_reader_voice(text: str, seat: Seat) -> str:
 def _rewrite_universal_voice(text: str) -> str:
     swaps = [
         (
+            #  The universal pack must not hand one tool's trailer to every seat:
+            #  each tool signs with its own trailer, and the one already in the
+            #  history is the one that goes in.
+            "Co-Authored-By: Claude <noreply@anthropic.com>",
+            "Co-Authored-By: <peer's existing trailer>",
+        ),
+        (
             "Load `~/.claude/skills/secret-safety/SKILL.md` as well when that file exists.",
             "Load `<YOUR_SKILLS_DIR>/secret-safety/SKILL.md` as well when that file exists.",
         ),

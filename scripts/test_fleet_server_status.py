@@ -407,10 +407,10 @@ class CoolifyTests(unittest.TestCase):
         self.assertEqual(rows[0]["type"], "application")
 
     def test_a_container_without_a_coolify_label_is_standalone(self):
-        docker = FakeDocker(containers=[inspect_line(container="botfleet-vps-shared")])
+        docker = FakeDocker(containers=[inspect_line(container="example-shared-box")])
         rows = collector.collect_coolify(run_command=docker)
         self.assertEqual(rows[0]["type"], "standalone")
-        self.assertEqual(rows[0]["uuid"], "botfleet-vps-shared")
+        self.assertEqual(rows[0]["uuid"], "example-shared-box")
 
     def test_a_type_this_collector_does_not_know_is_standalone(self):
         self.assertEqual(collector.coolify_type("something-new"), "standalone")
@@ -465,13 +465,13 @@ class CoolifyTests(unittest.TestCase):
                     resource_name="Example",
                 ),
                 # No Coolify label at all:  the container name stands in.
-                inspect_line(identifier="def456", container="botfleet-vps-shared"),
+                inspect_line(identifier="def456", container="example-shared-box"),
             ]
         )
         rows = collector.collect_coolify(run_command=docker)
         by_uuid = {row["uuid"]: row for row in rows}
         self.assertEqual(by_uuid["Example"]["uuidSource"], "name")
-        self.assertEqual(by_uuid["botfleet-vps-shared"]["uuidSource"], "name")
+        self.assertEqual(by_uuid["example-shared-box"]["uuidSource"], "name")
 
     def test_resource_identity_names_the_source_of_the_uuid(self):
         fields = {
@@ -1405,15 +1405,15 @@ class LeftoverResourceTests(unittest.TestCase):
         ]
         old += [
             {
-                "uuid": "07j6rsdtrhcfd6zx5tgdroyg",
-                "name": "07j6rsdtrhcfd6zx5tgdroyg",
+                "uuid": "abcdefghijklmnopqrstuvwx",
+                "name": "abcdefghijklmnopqrstuvwx",
                 "type": "standalone",
                 "uuidSource": "name",
                 "status": "absent",
             },
             {
-                "uuid": "confident_morse",
-                "name": "confident_morse",
+                "uuid": "happy_example",
+                "name": "happy_example",
                 "type": "standalone",
                 "uuidSource": "name",
                 "status": "absent",
@@ -1424,7 +1424,7 @@ class LeftoverResourceTests(unittest.TestCase):
         self.assertEqual([row["name"] for row in report["coolify"]], ["listener"])
 
     def test_a_throwaway_container_leaves_no_row(self):
-        for name in ("confident_morse", "07j6rsdtrhcfd6zx5tgdroyg"):
+        for name in ("happy_example", "abcdefghijklmnopqrstuvwx"):
             row = {
                 "uuid": name,
                 "name": name,
@@ -1438,18 +1438,18 @@ class LeftoverResourceTests(unittest.TestCase):
 
     def test_a_named_container_that_vanished_is_still_reported(self):
         row = {
-            "uuid": "botfleet-vps-shared",
-            "name": "botfleet-vps-shared",
+            "uuid": "example-shared-box",
+            "name": "example-shared-box",
             "type": "standalone",
             "uuidSource": "name",
             "status": "running",
-            "container": "botfleet-vps-shared",
+            "container": "example-shared-box",
         }
         report = collector.build_report([], [], [], previous_map([row]), now=NOW)
         self.assertEqual(report["coolify"][0]["status"], "absent")
         # A labelled application is never a throwaway, whatever its uuid looks like.
         labelled = {
-            "uuid": "07j6rsdtrhcfd6zx5tgdroyg",
+            "uuid": "abcdefghijklmnopqrstuvwx",
             "name": "App",
             "type": "standalone",
             "uuidSource": "label",
@@ -1583,6 +1583,37 @@ class RealActionsTests(unittest.TestCase):
         self.assertEqual(rows["Example (web)"]["actions"], [])
         self.assertEqual(rows["Example (web)"]["redeployBlockedReason"], "not_allowed")
 
+    def test_the_first_row_with_a_uuid_decides_like_the_helper(self):
+        # The helper reads the first row with a uuid and refuses when that row is not a labelled
+        # application, so a labelled application behind it must not claim a redeploy.
+        first = {"uuid": "uuid1", "uuidSource": "label", "name": "Shared (db)", "type": "service"}
+        second = {
+            "uuid": "uuid1",
+            "uuidSource": "label",
+            "name": "Shared (web)",
+            "type": "application",
+        }
+        report = collector.build_report([first, second], [], [], {}, now=NOW, can_redeploy=True)
+        rows = {row["name"]: row for row in report["coolify"]}
+        self.assertEqual(rows["Shared (db)"]["actions"], [])
+        self.assertNotIn("redeployBlockedReason", rows["Shared (db)"])
+        self.assertEqual(rows["Shared (web)"]["actions"], [])
+        self.assertEqual(rows["Shared (web)"]["redeployBlockedReason"], "first_row_refused")
+
+    def test_a_refused_first_row_agrees_with_the_real_helper(self):
+        # Every row the collector calls redeployable passes the helper's own first-row check.
+        rows = self.rows()
+        report = collector.build_report(rows, [], [], {}, now=NOW, can_redeploy=True)
+        spec = importlib.util.spec_from_file_location(
+            "fleet_ops_control_for_test", HERE / "fleet-ops-control.py"
+        )
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
+        for row in report["coolify"]:
+            first = next(r for r in report["coolify"] if r["uuid"] == row["uuid"])
+            accepted = first["type"] in helper.REDEPLOYABLE_TYPES and helper.uuid_from_label(first)
+            self.assertEqual("redeploy" in row["actions"], accepted, row["name"])
+
     def test_one_application_says_how_many_containers_a_redeploy_restarts(self):
         report = collector.build_report(self.rows(), [], [], {}, now=NOW, can_redeploy=True)
         self.assertEqual(
@@ -1620,14 +1651,21 @@ class ContainerSignalTests(unittest.TestCase):
         self.assertEqual(row["status"], "restarting")
         self.assertEqual(row["restartCount"], 12)
 
-    def test_a_clean_exit_that_nothing_restarts_is_finished(self):
-        for policy in ("no", "on-failure"):
-            row = self.row(state="exited", health="", exit_code="0", restart_policy=policy)
-            self.assertEqual(row["status"], "finished", policy)
-            self.assertEqual(row["exitCode"], 0)
+    def test_a_clean_exit_nothing_was_asked_to_restart_is_finished(self):
+        row = self.row(state="exited", health="", exit_code="0", restart_policy="no")
+        self.assertEqual(row["status"], "finished")
+        self.assertEqual(row["exitCode"], 0)
 
     def test_every_other_exit_is_exited(self):
-        for code, policy in (("1", "no"), ("0", "always"), ("137", "no"), ("0", "")):
+        # `on-failure` asks docker to keep it alive through a failure, so a clean exit leaves a
+        # service down and nothing in the report says it was a one-shot job.
+        for code, policy in (
+            ("1", "no"),
+            ("0", "always"),
+            ("137", "no"),
+            ("0", ""),
+            ("0", "on-failure"),
+        ):
             row = self.row(state="exited", health="", exit_code=code, restart_policy=policy)
             self.assertEqual(row["status"], "exited", (code, policy))
             self.assertEqual(row["exitCode"], int(code))
@@ -1925,13 +1963,13 @@ class TimerTests(unittest.TestCase):
 
     def timer(self, **extra):
         values = dict(
-            Id="code-main-sync.timer",
+            Id="example-sync.timer",
             LoadState="loaded",
             ActiveState="active",
             SubState="waiting",
             StateChangeTimestamp="@1793826224",
             ActiveEnterTimestamp="@1793820403",
-            Triggers="code-main-sync.service",
+            Triggers="example-sync.service",
             LastTriggerUSec="@1793826219",
             NextElapseUSecRealtime="",
             NextElapseUSecMonotonic="1h 47min 34.737538s",
@@ -1941,7 +1979,7 @@ class TimerTests(unittest.TestCase):
 
     def job(self, **extra):
         values = dict(
-            Id="code-main-sync.service",
+            Id="example-sync.service",
             ActiveState="failed",
             SubState="failed",
             Result="exit-code",
@@ -1952,13 +1990,13 @@ class TimerTests(unittest.TestCase):
         values.update(extra)
         return properties(**values)
 
-    def collect(self, timer=None, job=None, unit="code-main-sync.timer", scope="system"):
+    def collect(self, timer=None, job=None, unit="example-sync.timer", scope="system"):
         with tempfile.TemporaryDirectory() as tmp:
             control = self.control(tmp, [{"unit": unit, "scope": scope, "actions": ["restart"]}])
             systemctl = ScriptedSystemctl(
                 {
                     (scope, unit): timer or self.timer(Id=unit),
-                    (scope, "code-main-sync.service"): job or self.job(),
+                    (scope, "example-sync.service"): job or self.job(),
                 }
             )
             rows = collector.collect_services(control, run_command=systemctl, clock=FROZEN)
@@ -1968,7 +2006,7 @@ class TimerTests(unittest.TestCase):
         row, _ = self.collect()
         self.assertEqual(row["activeState"], "active")
         self.assertEqual(row["subState"], "waiting")
-        self.assertEqual(row["job"], "code-main-sync.service")
+        self.assertEqual(row["job"], "example-sync.service")
         self.assertEqual(row["lastRunAt"], stamp(1793826219))
         self.assertEqual(row["lastResult"], "exit-code")
         self.assertEqual(row["lastExitCode"], 1)
@@ -2064,7 +2102,7 @@ class TimerTests(unittest.TestCase):
         _row, systemctl = self.collect()
         self.assertEqual(len(systemctl.calls), 2)
         job_call = systemctl.calls[1]
-        self.assertEqual(job_call[-1], "code-main-sync.service")
+        self.assertEqual(job_call[-1], "example-sync.service")
         self.assertIn("--property=" + ",".join(collector.JOB_PROPERTIES), job_call)
 
     def test_a_job_that_cannot_be_read_leaves_no_result(self):
@@ -2076,19 +2114,19 @@ class TimerTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             control = self.control(
-                tmp, [{"unit": "code-main-sync.timer", "scope": "system", "actions": ["start"]}]
+                tmp, [{"unit": "example-sync.timer", "scope": "system", "actions": ["start"]}]
             )
             rows = collector.collect_services(
                 control,
-                run_command=Refuses({("system", "code-main-sync.timer"): self.timer()}),
+                run_command=Refuses({("system", "example-sync.timer"): self.timer()}),
                 clock=FROZEN,
             )
         self.assertNotIn("lastResult", rows[0])
-        self.assertEqual(rows[0]["job"], "code-main-sync.service")
+        self.assertEqual(rows[0]["job"], "example-sync.service")
 
     def test_the_collectors_own_timer_does_not_report_this_run(self):
         running = self.timer(
-            Id=collector.SELF_TIMER, SubState="running", Triggers="code-main-sync.service"
+            Id=collector.SELF_TIMER, SubState="running", Triggers="example-sync.service"
         )
         row, _ = self.collect(
             timer=running,
@@ -2243,12 +2281,13 @@ class WatchTests(unittest.TestCase):
         self.assertNotIn("role", by_unit["b.timer"])
         self.assertNotIn("stopConsequence", by_unit["b.timer"])
 
-    def test_the_repo_allowlist_keeps_the_report_timer_controllable_and_watches_the_sync(self):
+    def test_the_repo_allowlist_keeps_the_report_timer_and_grants_a_watch_nothing(self):
         control = HERE / "fleet-ops-control.json"
         accepted = collector.accepted_units(control)
         self.assertEqual(accepted["fleet-server-status.timer"], "user")
         watched = [unit for unit, _scope in collector.watched_units(control)]
-        self.assertIn("code-main-sync.timer", watched)
+        self.assertTrue(any(unit.endswith(".timer") for unit in watched))
+        self.assertTrue(any(unit.endswith(".service") for unit in watched))
         for unit in watched:
             self.assertNotIn(unit, accepted, unit)
         notes = collector.unit_notes(control)
@@ -2276,10 +2315,10 @@ class FailedUnitTests(unittest.TestCase):
     def test_a_failed_unit_in_either_scope_appears(self):
         systemctl = ScriptedSystemctl(
             {
-                ("system", "code-main-sync.service"): self.block("code-main-sync.service"),
+                ("system", "example-sync.service"): self.block("example-sync.service"),
                 ("user", "other.service"): self.block("other.service", "timeout", "0"),
             },
-            failed={"system": ["code-main-sync.service"], "user": ["other.service"]},
+            failed={"system": ["example-sync.service"], "user": ["other.service"]},
         )
         rows, answered = collector.collect_failed_units(systemctl)
         self.assertEqual(answered, ["system", "user"])
@@ -2287,9 +2326,9 @@ class FailedUnitTests(unittest.TestCase):
             rows,
             [
                 {
-                    "unit": "code-main-sync.service",
+                    "unit": "example-sync.service",
                     "scope": "system",
-                    "description": "The code-main-sync.service unit",
+                    "description": "The example-sync.service unit",
                     "since": stamp(1793826224),
                     "result": "exit-code",
                     "exitCode": 1,
@@ -2468,7 +2507,7 @@ class ProcessHomeTests(unittest.TestCase):
         identifier = "a" * 64
         text = "0::/system.slice/docker-%s.scope\n" % identifier
         self.assertEqual(
-            self.home(text, {identifier: "congress-trade (web)"}), "congress-trade (web)"
+            self.home(text, {identifier: "example-app (web)"}), "example-app (web)"
         )
         # A container this run did not name is still a container, and not a name it made up.
         self.assertEqual(self.home(text), "a container")
@@ -2586,7 +2625,7 @@ class WholeRunTests(unittest.TestCase):
             if command[0] == "docker":
                 return docker(command, timeout)
             if "list-units" in command:
-                return "code-main-sync.service loaded failed failed sync\n"
+                return "example-sync.service loaded failed failed sync\n"
             if "show" in command:
                 names = [
                     part for part in command[1:] if not part.startswith("-") and part != "show"
@@ -2667,7 +2706,7 @@ class WholeRunTests(unittest.TestCase):
                 [("Removed", 1)],
             )
             self.assertEqual([row["drift"] for row in document["files"]], ["new"])
-            self.assertEqual(document["failedUnits"][0]["unit"], "code-main-sync.service")
+            self.assertEqual(document["failedUnits"][0]["unit"], "example-sync.service")
             self.assertEqual(
                 [row["unit"] for row in document["services"]], ["docker.service", "a.timer"]
             )
@@ -2855,9 +2894,65 @@ class FixtureScriptTests(unittest.TestCase):
         document = json.loads(path.read_text())
         self.assertEqual(document["host"], "example-server")
         self.assertEqual(document["schemaVersion"], 1)
-        text = path.read_text()
-        for word in ("/mnt/fleet", "congress", "coolify-", "code-main-sync", "botfleet", "jay"):
-            self.assertNotIn(word, text, word)
+        self.module().validate_report(document)
+        # The rule is what a name must look like, so the test itself names nothing real.
+        self.assertNotRegex(path.read_text(), r"/(?:Users|home|root)/|\.ts\.net\b")
+        for row in document["coolify"]:
+            self.assertRegex(row["uuid"], r"\A(?:app|uuid)-\d+\Z")
+            self.assertRegex(row["name"], r"\Aapp-\d+(?: \(service-\d+\))?\Z")
+            self.assertRegex(row.get("container", "container-1"), r"\Acontainer-\d+\Z")
+            self.assertRegex(row.get("image", "image-1"), r"\Aimage-\d+\Z")
+        for row in document["files"]:
+            self.assertTrue(row["path"].startswith("/srv/example/checkout-"), row["path"])
+        for row in document["services"] + document["failedUnits"]:
+            self.assertRegex(row["unit"], r"\Aunit-\d+\.[a-z]+\Z")
+            self.assertNotIn("description", row)
+        for row in document["processes"]:
+            self.assertRegex(row.get("name", "process-1"), r"\Aprocess-\d+\Z")
+            self.assertRegex(row.get("owner", "owner-1"), r"\Aowner-\d+\Z")
+
+    def test_a_section_it_does_not_know_is_refused_before_anything_is_written(self):
+        # A section the sanitizer does not know would be copied through with its names in it.
+        for change, named in (
+            ({"newSection": []}, "newSection"),
+            ({"coolify": {}}, "coolify"),
+            ({"coolify": ["row"]}, "coolify[0]"),
+            ({"coolify": [{"uuid": "u", "name": "n", "newField": 1}]}, "coolify[0].newField"),
+            ({"coolify": [{"uuid": 7, "name": "n"}]}, "coolify[0].uuid"),
+            ({"files": [{"path": 1}]}, "files[0].path"),
+            ({"applications": [{"uuid": "u", "name": "n", "services": "web"}]}, "services"),
+            ({"filesSummary": {"cutCheckouts": "all"}}, "filesSummary.cutCheckouts"),
+            ({"hostMetrics": {"disks": [{"mount": 1}]}}, "hostMetrics.disks[0].mount"),
+            ({"resourcePolicy": {"policyRevision": 1}}, "resourcePolicy.policyRevision"),
+            ({"schemaVersion": "1"}, "schemaVersion"),
+            ({"host": 1}, "host"),
+        ):
+            with self.assertRaises(ValueError) as caught:
+                self.module().validate_report(dict(self.report(), **change))
+            self.assertIn(named, str(caught.exception))
+        for missing in ("schemaVersion", "tool", "host", "coolify", "processes", "files"):
+            report = self.report()
+            del report[missing]
+            with self.assertRaises(ValueError) as caught:
+                self.module().validate_report(report)
+            self.assertIn(missing, str(caught.exception))
+        with self.assertRaises(ValueError):
+            self.module().validate_report(["not", "an", "object"])
+
+    def test_a_good_report_passes_and_a_bad_one_writes_nothing(self):
+        self.module().validate_report(self.report())
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "report.json"
+            target = Path(tmp) / "fixture.json"
+            source.write_text(json.dumps(self.report()))
+            self.assertEqual(self.module().main([str(source), str(target)]), 0)
+            self.assertTrue(target.exists())
+            target.unlink()
+            source.write_text(json.dumps(dict(self.report(), newSection=[])))
+            with contextlib.redirect_stderr(io.StringIO()) as errors:
+                self.assertEqual(self.module().main([str(source), str(target)]), 1)
+            self.assertIn("newSection", errors.getvalue())
+            self.assertFalse(target.exists())
 
 
 if __name__ == "__main__":
