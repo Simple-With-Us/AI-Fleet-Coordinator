@@ -37,7 +37,11 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from agent_sync.identity import GROK_ALIAS_PATTERN, SeatRegistryError, parse_seat_registry
+from agent_sync.identity import (
+    GROK_ALIAS_PATTERN,
+    SeatRegistryError,
+    parse_seat_registry,
+)
 from agent_sync.zulip import DEFAULT_CHANNEL, REALM, credential_file_name
 from public_activity_repos import PUBLIC_REPOS
 
@@ -144,7 +148,7 @@ def seat_apps_errors(data: dict) -> list[str]:
     listener seats.  Checked:  the key parses the way scripts/agent_sync/identity.py reads it;  every live
     `seats` row has an app in `bySeat`, and `bySeat` names no other tag;  `extraSeats` holds only tags with no
     `seats` row;  no `seats` row (live or retired) also matches a `patterns` row;  tags are written upper case;
-    each pattern's `zulipEmail` is a bot email on the realm with one <role> in it."""
+    each pattern's `zulipEmail` is a bot email on the realm with one <role> in it;  a pattern's `lane` block renders role folders and branch prefixes that collide with no seat row and no other pattern."""
     try:
         parsed = parse_seat_registry(data, "fleet-apps.json")
     except SeatRegistryError as exc:
@@ -186,6 +190,48 @@ def seat_apps_errors(data: dict) -> list[str]:
                     f"seat {tag} has a row in seats but also matches seatApps.patterns {pattern.match};  "
                     "a pattern is for tags that have no row"
                 )
+    # Lane blocks (AFC-620):  rendered role folders and branch prefixes must be unique across
+    # patterns and must not collide with any seat row's worktreeSuffix or branchPrefixes, or a
+    # role lane would open in (or sign branches as) an existing seat.
+    # Lower-cased, mirroring layout.parse_registry's normalization and Registry.seats_by_suffix,
+    # so a mixed-case worktreeSuffix/branchPrefix cannot escape the collision check.
+    seat_suffixes = {str(s.get("worktreeSuffix") or "").lower() for s in seats}
+    seat_prefixes = {
+        str(bp).lower()
+        for s in seats
+        for bp in (s.get("branchPrefixes") or [])
+        if isinstance(bp, str)
+    }
+    seen_folders: dict[str, str] = {}
+    seen_prefixes: dict[str, str] = {}
+    for pattern in parsed.patterns:
+        if not pattern.roles:
+            continue
+        for role in pattern.roles:
+            low = role.lower()
+            folder = pattern.folder_template.replace("<role>", low)
+            prefix = pattern.branch_template.replace("<role>", low)
+            if folder in seat_suffixes:
+                errors.append(
+                    f"seatApps.patterns {pattern.match} role {role} folder {folder!r} is a seat worktreeSuffix"
+                )
+            if prefix in seat_prefixes:
+                errors.append(
+                    f"seatApps.patterns {pattern.match} role {role} branch prefix {prefix!r} is a seat branchPrefix"
+                )
+            label = f"{pattern.match} role {role}"
+            if folder in seen_folders:
+                errors.append(
+                    f"role folder {folder!r} is rendered by both {seen_folders[folder]} and {label}"
+                )
+            else:
+                seen_folders[folder] = label
+            if prefix in seen_prefixes:
+                errors.append(
+                    f"role branch prefix {prefix!r} is rendered by both {seen_prefixes[prefix]} and {label}"
+                )
+            else:
+                seen_prefixes[prefix] = label
     host = urlparse(REALM).hostname or ""
     for item in apps["patterns"]:
         email = item.get("zulipEmail")
