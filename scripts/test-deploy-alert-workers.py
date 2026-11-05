@@ -17,7 +17,7 @@ class Tests(unittest.TestCase):
         import re
 
         workflow = m.pathlib.Path(".github/workflows/worker-deploy.yml").read_text()
-        matrix = json.loads(re.search(r"^\s*worker:\s*(\[.*\])\s*$", workflow, re.M).group(1))
+        matrix = json.loads(re.search(r"^\s*worker:\s*(\[.*\])\s*$", workflow, re.MULTILINE).group(1))
         self.assertFalse(set(matrix) & set(m.TARGETS))
 
     def test_tripped_target_is_refused_and_the_other_still_runs(self):
@@ -94,7 +94,9 @@ class Tests(unittest.TestCase):
             patch.object(m, "cutover_receipt", return_value=False),
             patch.object(m, "cloudflare", return_value={}),
             patch.object(m, "preflight_config"),
-            patch.object(m, "deployed_tag", side_effect=lambda name: checked.append(name) or "a" * 40),
+            patch.object(
+                m, "deployed_tag", side_effect=lambda name: checked.append(name) or "a" * 40
+            ),
             patch.object(m, "probe"),
         ):
             m.qualify_credentials()
@@ -423,7 +425,12 @@ class Tests(unittest.TestCase):
             current.assert_not_called()
 
     def receipt_fixture(self, **changes):
-        receipt = {"run_id": 123, "source_sha": "a" * 40, "nondeployment": True, "gate": m.RECEIPT_GATE}
+        receipt = {
+            "run_id": 123,
+            "source_sha": "a" * 40,
+            "nondeployment": True,
+            "gate": m.RECEIPT_GATE,
+        }
         receipt.update(changes)
         run = {
             "event": "workflow_dispatch",
@@ -496,7 +503,8 @@ jobs:
     def test_credential_unrelated_workflow_edit_keeps_the_receipt(self):
         bumped = self.WORKFLOW.replace("setup-python@v7", "setup-python@v8")
         bumped = bumped.replace(
-            "run: python3 scripts/deploy-alert-workers.py\n", "run: python3 scripts/deploy-alert-workers.py # x\n"
+            "run: python3 scripts/deploy-alert-workers.py\n",
+            "run: python3 scripts/deploy-alert-workers.py # x\n",
         )
         self.assertTrue(self.check_receipt(*self.receipt_fixture(), workflow=bumped))
 

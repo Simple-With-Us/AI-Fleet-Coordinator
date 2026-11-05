@@ -139,7 +139,7 @@ def config_limits(path):
         return tomllib.loads(text).get("limits") or {}
     # A full JSONC parser is not needed: whole-line comments are the only thing that
     # could fake a match, and a block that will not parse fails closed by raising.
-    uncommented = re.sub(r"^\s*//.*$", "", text, flags=re.M)
+    uncommented = re.sub(r"^\s*//.*$", "", text, flags=re.MULTILINE)
     found = re.search(r'"limits"\s*:\s*(\{[^{}]*\})', uncommented)
     return json.loads(found.group(1)) if found else {}
 
@@ -154,7 +154,7 @@ def seconds_since_last_deploy(name, read=None, now=None):
     if not deployment:
         return None
     created = datetime.datetime.fromisoformat(deployment["created_on"].replace("Z", "+00:00"))
-    now = now or datetime.datetime.now(datetime.timezone.utc)
+    now = now or datetime.datetime.now(datetime.UTC)
     return (now - created).total_seconds()
 
 

@@ -131,7 +131,9 @@ class Checks(unittest.TestCase):
         self.assertIsNone(self.walk([upload, tagged]))
 
     def test_live_untagged_upload_is_not_walked_past(self):
-        self.assertIsNone(self.walk([], {"number": 5, "annotations": {"workers/triggered_by": "upload"}}))
+        self.assertIsNone(
+            self.walk([], {"number": 5, "annotations": {"workers/triggered_by": "upload"}})
+        )
 
     def test_walk_with_only_secret_versions_is_unknown(self):
         self.assertIsNone(self.walk([{"number": 1, "annotations": SECRET}]))
@@ -259,7 +261,7 @@ class Checks(unittest.TestCase):
                 }
             }
         )
-        now = datetime.datetime(2026, 11, 5, 2, 42, 19, 784562, tzinfo=datetime.timezone.utc)
+        now = datetime.datetime(2026, 11, 5, 2, 42, 19, 784562, tzinfo=datetime.UTC)
         self.assertEqual(m.seconds_since_last_deploy("x", read, now), 3600)
 
     def test_unarmed_per_worker_gate_skips_without_reading(self):
@@ -305,7 +307,9 @@ class Checks(unittest.TestCase):
 
     def test_dropped_limits_compares_keys_only(self):
         self.assertEqual(m.dropped_limits({"cpu_ms": 50}, {"cpu_ms": 100}), [])
-        self.assertEqual(m.dropped_limits({"cpu_ms": 50, "subrequests": 20}, {"cpu_ms": 50}), ["subrequests"])
+        self.assertEqual(
+            m.dropped_limits({"cpu_ms": 50, "subrequests": 20}, {"cpu_ms": 50}), ["subrequests"]
+        )
         self.assertEqual(m.dropped_limits(None, None), [])
 
     def test_config_limits_reads_each_format(self):
@@ -316,7 +320,9 @@ class Checks(unittest.TestCase):
             jsonc = pathlib.Path(root, "w.jsonc")
             jsonc.write_text('{\n  // "limits": {"cpu_ms": 1},\n  "name": "x"\n}\n')
             self.assertEqual(m.config_limits(str(jsonc)), {})
-            jsonc.write_text('{\n  // comment\n  "limits": { "cpu_ms": 300, "subrequests": 200 }\n}\n')
+            jsonc.write_text(
+                '{\n  // comment\n  "limits": { "cpu_ms": 300, "subrequests": 200 }\n}\n'
+            )
             self.assertEqual(m.config_limits(str(jsonc)), {"cpu_ms": 300, "subrequests": 200})
 
     def repo(self, root):
@@ -329,7 +335,9 @@ class Checks(unittest.TestCase):
             file.write_text(message)
             git("add", ".")
             git("commit", "-qm", message)
-            return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+            return subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], cwd=root, text=True
+            ).strip()
 
         git("init", "-q")
         git("config", "user.email", "test@example.invalid")
@@ -359,7 +367,7 @@ class Checks(unittest.TestCase):
                 self.assertTrue(m.worker_changed(live, head, target, cwd=root))
 
     def test_every_target_path_runs_the_workflow_or_is_released_elsewhere(self):
-        listed = set(re.findall(r"^\s+-\s+'([^']+)'", workflow_text(), re.M))
+        listed = set(re.findall(r"^\s+-\s+'([^']+)'", workflow_text(), re.MULTILINE))
         for path in m.TARGETS["simple-tools-mcp"]["paths"]:
             covered = any(m.fnmatch.fnmatchcase(path, glob) for glob in listed)
             self.assertTrue(covered, path + " is outside the workflow's push filter")
@@ -371,7 +379,7 @@ class Checks(unittest.TestCase):
         self.assertEqual(missing, [])
 
     def test_matrix_holds_only_this_pipeline_and_has_probes(self):
-        found = re.search(r"^\s*worker:\s*(\[.*\])\s*$", workflow_text(), re.M)
+        found = re.search(r"^\s*worker:\s*(\[.*\])\s*$", workflow_text(), re.MULTILINE)
         workers = json.loads(found.group(1))
         self.assertEqual(workers, ["simple-tools-mcp"])
         for name in workers:
@@ -410,7 +418,13 @@ class Checks(unittest.TestCase):
         return post
 
     def mcp_target(self):
-        return {"canary": {"url": "https://example.invalid/mcp", "bearer_env": "X_BEARER", "tool": "identities"}}
+        return {
+            "canary": {
+                "url": "https://example.invalid/mcp",
+                "bearer_env": "X_BEARER",
+                "tool": "identities",
+            }
+        }
 
     def run_canary(self, *replies):
         with (
@@ -431,7 +445,11 @@ class Checks(unittest.TestCase):
         {"Content-Type": "text/event-stream"},
         b'event: message\ndata: {"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"identities"}]}}\n\n',
     )
-    CALL = (200, {"Content-Type": "application/json"}, b'{"jsonrpc":"2.0","id":3,"result":{"content":[]}}')
+    CALL = (
+        200,
+        {"Content-Type": "application/json"},
+        b'{"jsonrpc":"2.0","id":3,"result":{"content":[]}}',
+    )
 
     def test_canary_passes_on_the_real_sequence(self):
         self.run_canary(self.UNAUTH, self.INIT, self.NOTIFIED, self.LIST, self.CALL)
@@ -453,10 +471,11 @@ class Checks(unittest.TestCase):
     def test_canary_failure_text_never_holds_the_bearer(self):
         with (
             patch.dict(os.environ, {"X_BEARER": "super-secret"}),
-            patch.object(m, "mcp_post", side_effect=self.canary_replies(self.UNAUTH, (500, {}, b"boom"))),
+            patch.object(
+                m, "mcp_post", side_effect=self.canary_replies(self.UNAUTH, (500, {}, b"boom"))
+            ),self.assertRaises(RuntimeError) as caught
         ):
-            with self.assertRaises(RuntimeError) as caught:
-                m.mcp_canary(self.mcp_target())
+            m.mcp_canary(self.mcp_target())
         self.assertNotIn("super-secret", str(caught.exception))
         self.assertNotIn("boom", str(caught.exception))
 
