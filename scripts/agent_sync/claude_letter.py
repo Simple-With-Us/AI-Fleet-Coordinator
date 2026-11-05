@@ -1175,7 +1175,9 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], stdout: TextIO) -> int:
             if note["label"] != held or int(note.get("generation") or 1) != held_generation:
                 # A different pair, or the same one as a later generation:  the model was told how this chat is
                 # addressed at the start, so it is told how now.
-                context = _reissued(registered) + reminder(note) + _title_check(registered, note["label"])
+                context = (
+                    _reissued(registered) + reminder(note) + _title_check(registered, note["label"])
+                )
         else:
             title = bare(current, held) if held and current.startswith("%s: " % held) else None
             if held:
