@@ -256,7 +256,7 @@ struct CoolifyResource: Decodable, Identifiable, Equatable {
         case "not_seen": return "No Redeploy: it is not on the server now."
         case "state_unknown": return "No Redeploy: the collector could not read its state."
         case "not_allowed": return "No Redeploy: the server's allowlist does not allow it."
-        case "first_row_refused": return "No Redeploy: the server would refuse it, because a row that is not an application holds the same id."
+        case "first_row_refused": return "No Redeploy: the server acts on the first row with this id, and that row cannot be redeployed."
         default: return "No Redeploy."
         }
     }
@@ -281,8 +281,10 @@ struct CoolifyResource: Decodable, Identifiable, Equatable {
     /// The same time,  saying what happened then.
     var updatedLabel: String? {
         updatedText.map { age in
-            let isUp = resourceStatus == .running || resourceStatus == .unhealthy
-            return "\(isUp ? "started" : "stopped") \(age) ago"
+            // The collector writes the finish time only for a container that has stopped,
+            // and the start time for every other state,  a crash loop and a pause included.
+            let isDown = resourceStatus == .exited || resourceStatus == .finished
+            return "\(isDown ? "stopped" : "started") \(age) ago"
         }
     }
 }
@@ -708,10 +710,10 @@ struct ServerService: Decodable, Identifiable, Equatable {
 
     /// A timer's job,  in words:  how it last went and when it runs next.  Nil for a unit
     /// that says neither.
-    var runText: String? {
+    func runText(now: Date = Date()) -> String? {
         var sentences: [String] = []
         let finished = (lastFinishedAt ?? lastRunAt).flatMap(FleetTime.parse)
-        let when: String = finished.map { " at " + FleetTime.clock($0) } ?? ""
+        let when: String = finished.map { " " + ServerStatusFormat.moment($0, now: now) } ?? ""
         if jobRunning {
             sentences.append("Its job is running now.")
         } else if lastRunFailed {
@@ -722,10 +724,10 @@ struct ServerService: Decodable, Identifiable, Equatable {
         } else if lastResult != nil {
             sentences.append("Last run was skipped\(when).")
         } else if let started = lastRunAt.flatMap(FleetTime.parse) {
-            sentences.append("Last started at \(FleetTime.clock(started)).")
+            sentences.append("Last started \(ServerStatusFormat.moment(started, now: now)).")
         }
         if let next = nextRunAt.flatMap(FleetTime.parse) {
-            sentences.append("Next run \(FleetTime.clock(next)).")
+            sentences.append("Next run \(ServerStatusFormat.moment(next, now: now)).")
         }
         return sentences.isEmpty ? nil : sentences.joined(separator: ServerStatusCopy.sentenceGap)
     }
@@ -783,6 +785,12 @@ struct ServerFailedUnit: Decodable, Identifiable, Equatable {
     }
 
     var id: String { "\(scope ?? "system")/\(unit)" }
+
+    /// The whole name and what the unit is,  for a row that clips the name.
+    var helpText: String {
+        guard let description, !description.isEmpty else { return unit }
+        return "\(unit): \(description)"
+    }
 
     /// How it failed,  in words.
     func detailText(now: Date = Date()) -> String {
@@ -1277,7 +1285,7 @@ enum ServerStatusReportReader {
 
 // MARK: - The format
 
-/// The sizes the panel shows.
+/// The sizes and times the panel shows.
 enum ServerStatusFormat {
     /// A size in bytes,  in the units the fleet reads.
     static func bytes(_ count: Int) -> String {
@@ -1290,5 +1298,21 @@ enum ServerStatusFormat {
         }
         if index == 0 { return "\(count) B" }
         return String(format: "%.1f %@", value, units[index])
+    }
+
+    /// When something happened or will happen,  to follow a verb:  `at 4:52am` today,  and
+    /// `Nov 3 at 4:52am` on any other day,  so a run from days ago never reads as today's.
+    static func moment(_ date: Date, now: Date) -> String {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        let clock = FleetTime.clock(date)
+        if calendar.isDate(date, inSameDayAs: now) { return "at \(clock)" }
+        let formatter = DateFormatter()
+        formatter.calendar = calendar
+        formatter.timeZone = calendar.timeZone
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        let sameYear = calendar.component(.year, from: date) == calendar.component(.year, from: now)
+        formatter.dateFormat = sameYear ? "MMM d" : "MMM d, yyyy"
+        return "\(formatter.string(from: date)) at \(clock)"
     }
 }

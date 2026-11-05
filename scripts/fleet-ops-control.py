@@ -1019,16 +1019,24 @@ def coolify_resource(ctx, uuid):
         raise Refused("the server status report is stale")
     for row in doc.get("coolify") or []:
         if isinstance(row, dict) and row.get("uuid") == uuid:
-            if row.get("type") not in REDEPLOYABLE_TYPES:
-                raise Refused("only a Coolify application can be redeployed")
-            if not uuid_from_label(row):
-                raise Refused("the report has no Coolify uuid for that resource")
-            # The collector puts live rows first, so a first row that is not live says that
-            # nothing with this uuid is on the host now.
-            if row.get("status") in ("absent", "unknown"):
-                raise Refused("that application is not running on the server")
+            refusal = redeploy_refusal(row)
+            if refusal:
+                raise Refused(refusal)
             return row
     raise Refused("the uuid is not in the latest server status report")
+
+
+def redeploy_refusal(row):
+    """Why the first report row with a uuid cannot be redeployed, or None when it can."""
+    if row.get("type") not in REDEPLOYABLE_TYPES:
+        return "only a Coolify application can be redeployed"
+    if not uuid_from_label(row):
+        return "the report has no Coolify uuid for that resource"
+    # The collector puts live rows first, so a first row that is not live says that
+    # nothing with this uuid is on the host now.
+    if row.get("status") in ("absent", "unknown"):
+        return "that application is not running on the server"
+    return None
 
 
 def uuid_from_label(row):

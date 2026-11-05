@@ -359,22 +359,35 @@ final class ServerStatusExtensionTests: XCTestCase {
     }
 
     func test_a_timer_says_how_its_job_went_in_words() throws {
-        let finished = "2026-10-28T14:45:07Z"
-        let next = "2026-10-28T15:15:00Z"
+        // All three times are near noon UTC,  so they share a calendar day on the clocks that
+        // run these tests.
+        let finished = "2026-10-28T12:00:07Z"
+        let next = "2026-10-28T12:30:00Z"
+        let now = try XCTUnwrap(FleetTime.parse("2026-10-28T12:15:00Z"))
         let finishedClock = FleetTime.clock(try XCTUnwrap(FleetTime.parse(finished)))
         let nextClock = FleetTime.clock(try XCTUnwrap(FleetTime.parse(next)))
         let gap = ServerStatusCopy.sentenceGap
         let good = try decode(ServerService.self, #"{"unit": "a.timer", "lastResult": "success", "lastFinishedAt": "\#(finished)", "nextRunAt": "\#(next)"}"#)
-        XCTAssertEqual(good.runText, "Last run succeeded at \(finishedClock).\(gap)Next run \(nextClock).")
+        XCTAssertEqual(good.runText(now: now), "Last run succeeded at \(finishedClock).\(gap)Next run at \(nextClock).")
         let bad = try decode(ServerService.self, #"{"unit": "a.timer", "lastResult": "exit-code", "lastExitCode": 1, "lastFinishedAt": "\#(finished)"}"#)
-        XCTAssertEqual(bad.runText, "Last run failed at \(finishedClock) with exit 1.")
+        XCTAssertEqual(bad.runText(now: now), "Last run failed at \(finishedClock) with exit 1.")
         let skipped = try decode(ServerService.self, #"{"unit": "a.timer", "lastResult": "condition"}"#)
-        XCTAssertEqual(skipped.runText, "Last run was skipped.")
+        XCTAssertEqual(skipped.runText(now: now), "Last run was skipped.")
         let running = try decode(ServerService.self, #"{"unit": "a.timer", "jobRunning": true, "lastRunAt": "\#(finished)"}"#)
-        XCTAssertEqual(running.runText, "Its job is running now.")
+        XCTAssertEqual(running.runText(now: now), "Its job is running now.")
         let unknown = try decode(ServerService.self, #"{"unit": "a.timer", "lastRunAt": "\#(finished)"}"#)
-        XCTAssertEqual(unknown.runText, "Last started at \(finishedClock).")
-        XCTAssertNil(try decode(ServerService.self, #"{"unit": "a.service"}"#).runText)
+        XCTAssertEqual(unknown.runText(now: now), "Last started at \(finishedClock).")
+        XCTAssertNil(try decode(ServerService.self, #"{"unit": "a.service"}"#).runText(now: now))
+
+        // A run from another day says which day,  so it cannot read as today's.
+        let later = try XCTUnwrap(FleetTime.parse("2026-11-03T12:15:00Z"))
+        XCTAssertEqual(good.runText(now: later), "Last run succeeded Oct 28 at \(finishedClock).\(gap)Next run Oct 28 at \(nextClock).")
+        XCTAssertEqual(bad.runText(now: later), "Last run failed Oct 28 at \(finishedClock) with exit 1.")
+        XCTAssertEqual(unknown.runText(now: later), "Last started Oct 28 at \(finishedClock).")
+        let earlier = try XCTUnwrap(FleetTime.parse("2026-10-26T12:15:00Z"))
+        XCTAssertEqual(good.runText(now: earlier), "Last run succeeded Oct 28 at \(finishedClock).\(gap)Next run Oct 28 at \(nextClock).")
+        let nextYear = try XCTUnwrap(FleetTime.parse("2027-06-15T12:15:00Z"))
+        XCTAssertEqual(bad.runText(now: nextYear), "Last run failed Oct 28, 2026 at \(finishedClock) with exit 1.")
     }
 
     func test_a_row_offers_only_the_verbs_the_report_lists() throws {
@@ -535,8 +548,26 @@ final class ServerStatusExtensionTests: XCTestCase {
             XCTAssertEqual(row.redeployBlockedText, words)
         }
         let first = try decode(CoolifyResource.self, #"{"uuid": "u", "name": "a", "redeployBlockedReason": "first_row_refused"}"#)
-        XCTAssertTrue(try XCTUnwrap(first.redeployBlockedText).hasPrefix("No Redeploy: the server would refuse it"))
+        XCTAssertEqual(first.redeployBlockedText, "No Redeploy: the server acts on the first row with this id, and that row cannot be redeployed.")
         XCTAssertNil(try decode(CoolifyResource.self, #"{"uuid": "u", "name": "a"}"#).redeployBlockedText)
+    }
+
+    func test_only_a_container_that_stopped_says_stopped() throws {
+        // The collector writes the start time as `updatedAt` for every state but a stopped one,
+        // so a crash loop's time is its last start.
+        let at = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-7200))
+        for (status, verb) in [
+            ("running", "started"),
+            ("unhealthy", "started"),
+            ("restarting", "started"),
+            ("unknown", "started"),
+            ("exited", "stopped"),
+            ("finished", "stopped"),
+        ] {
+            let row = try decode(CoolifyResource.self, #"{"uuid": "u", "name": "a", "status": "\#(status)", "updatedAt": "\#(at)"}"#)
+            XCTAssertEqual(row.updatedLabel, "\(verb) 2h ago", status)
+        }
+        XCTAssertNil(try decode(CoolifyResource.self, #"{"uuid": "u", "name": "a", "status": "running"}"#).updatedLabel)
     }
 
     func test_a_row_nobody_could_read_is_not_offered_a_redeploy() throws {
@@ -583,9 +614,14 @@ final class ServerStatusExtensionTests: XCTestCase {
 
     func test_a_failed_unit_a_removed_checkout_and_a_process_say_what_they_are() throws {
         let now = try XCTUnwrap(FleetTime.parse("2026-10-28T15:00:00Z"))
-        let failed = try decode(ServerFailedUnit.self, #"{"unit": "a.service", "since": "2026-10-28T13:00:00Z", "result": "timeout", "exitCode": 15}"#)
-        XCTAssertEqual(failed.detailText(now: now), "failed for 2h, timeout, exit 15")
+        let failed = try decode(ServerFailedUnit.self, #"{"unit": "a.service", "since": "2026-10-28T13:00:00Z", "result": "exit-code", "exitCode": 3}"#)
+        XCTAssertEqual(failed.detailText(now: now), "failed for 2h, exit-code, exit 3")
+        let killed = try decode(ServerFailedUnit.self, #"{"unit": "a.service", "since": "2026-10-28T13:00:00Z", "result": "timeout"}"#)
+        XCTAssertEqual(killed.detailText(now: now), "failed for 2h, timeout")
         XCTAssertEqual(try decode(ServerFailedUnit.self, #"{"unit": "a.service"}"#).detailText(now: now), "failed")
+        XCTAssertEqual(try decode(ServerFailedUnit.self, #"{"unit": "a.service", "description": "Sync the code"}"#).helpText, "a.service: Sync the code")
+        XCTAssertEqual(try decode(ServerFailedUnit.self, #"{"unit": "a.service", "description": ""}"#).helpText, "a.service")
+        XCTAssertEqual(try decode(ServerFailedUnit.self, #"{"unit": "a.service"}"#).helpText, "a.service")
         let checkout = try decode(ServerRemovedCheckout.self, #"{"repo": "Gone", "files": 15}"#)
         XCTAssertEqual(checkout.text, "Gone was removed from the server, with 15 watched files.")
         XCTAssertEqual(try decode(ServerRemovedCheckout.self, #"{"repo": "Gone", "files": 1}"#).text, "Gone was removed from the server, with 1 watched file.")

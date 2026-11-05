@@ -193,6 +193,7 @@ JOB_PROPERTIES = (
     "ActiveState",
     "SubState",
     "Result",
+    "ExecMainCode",
     "ExecMainStatus",
     "ExecMainStartTimestamp",
     "ExecMainExitTimestamp",
@@ -202,9 +203,13 @@ FAILED_PROPERTIES = (
     "Id",
     "Description",
     "Result",
+    "ExecMainCode",
     "ExecMainStatus",
     "StateChangeTimestamp",
 )
+# systemd's `ExecMainCode` for a process that exited on its own (`CLD_EXITED`);  2 is killed by
+# a signal and 3 is a core dump.
+CLD_EXITED = "1"
 # The timer that starts this collector.  While the collector runs that timer always reads
 # `running`,  which says only that the collector is running.
 SELF_TIMER = "fleet-server-status.timer"
@@ -1139,13 +1144,27 @@ def job_of(props):
     return None
 
 
+def exit_code_of(props):
+    """The exit code a unit's main process really returned,  or None.
+
+    `ExecMainStatus` holds an exit code only when `ExecMainCode` says the process exited.  When
+    the process was killed the same field holds the signal number,  so a stop that timed out
+    has 15 there,  which is SIGTERM and not an exit 15.
+    """
+    status = props.get("ExecMainStatus") or ""
+    if props.get("ExecMainCode") == CLD_EXITED and status.isdigit() and status != "0":
+        return int(status)
+    return None
+
+
 def timer_fields(props, job, clock=time):
     """What a timer's row adds:  when it last ran,  how that ended and when it runs next.
 
     A timer stays `active` while its job fails,  so the timer alone proves only that the
     schedule exists.  `lastResult` is the job's own,  and it is left out when the job has not
     run since boot or is running now:  systemd then still says `success`,  which is a default
-    and not an outcome.
+    and not an outcome.  `lastRunAt` is the later of the timer's trigger and the job's own
+    start,  because something other than the timer can start the job.
     """
     fields = {}
     last = iso_from_systemd(props.get("LastTriggerUSec"))
@@ -1159,6 +1178,10 @@ def timer_fields(props, job, clock=time):
         fields["job"] = name
     if not job:
         return fields
+    started = iso_from_systemd(job.get("ExecMainStartTimestamp"))
+    # Both are whole-second UTC in one spelling,  so they compare as text.
+    if started and started > fields.get("lastRunAt", ""):
+        fields["lastRunAt"] = started
     state, sub = job.get("ActiveState"), job.get("SubState")
     if state in ("activating", "deactivating", "reloading") or (
         state == "active" and sub != "exited"
@@ -1166,15 +1189,14 @@ def timer_fields(props, job, clock=time):
         fields["jobRunning"] = True
         return fields
     result = job.get("Result")
-    started = iso_from_systemd(job.get("ExecMainStartTimestamp"))
     if result and (started or result != "success"):
         fields["lastResult"] = result
         finished = iso_from_systemd(job.get("ExecMainExitTimestamp"))
         if finished:
             fields["lastFinishedAt"] = finished
-        status = job.get("ExecMainStatus") or ""
-        if result != "success" and status.isdigit() and status != "0":
-            fields["lastExitCode"] = int(status)
+        code = exit_code_of(job)
+        if result != "success" and code is not None:
+            fields["lastExitCode"] = code
     return fields
 
 
@@ -1341,9 +1363,9 @@ def collect_failed_units(run_command=run):
                 row["since"] = since
             if props.get("Result"):
                 row["result"] = props["Result"]
-            status = props.get("ExecMainStatus") or ""
-            if status.isdigit() and status != "0":
-                row["exitCode"] = int(status)
+            code = exit_code_of(props)
+            if code is not None:
+                row["exitCode"] = code
             rows.append(row)
     return (rows if answered else None), answered
 

@@ -2467,8 +2467,7 @@
    "unit": "unit-09.service",
    "scope": "system",
    "since": "2026-11-04T19:28:13Z",
-   "result": "timeout",
-   "exitCode": 15
+   "result": "timeout"
   }
  ],
  "removedCheckouts": [

@@ -1641,22 +1641,47 @@ class RealActionsTests(unittest.TestCase):
         self.assertEqual(rows["Shared (worker)"]["redeployBlockedReason"], "first_row_refused")
 
     def test_a_refused_first_row_agrees_with_the_real_helper(self):
-        # Every row the collector calls redeployable passes the helper's own first-row check.
-        rows = self.rows()
-        report = collector.build_report(rows, [], [], {}, now=NOW, can_redeploy=True)
+        # Every row offers a redeploy exactly when the helper's own check takes the first row
+        # with its uuid, so changing that check turns this test red.
+        unknown = {
+            "uuid": "uuid-unknown",
+            "uuidSource": "label",
+            "name": "Unread (web)",
+            "type": "application",
+            "status": "unknown",
+        }
+        behind = dict(unknown, name="Unread (worker)", status="running")
+        gone = {
+            "uuid": "uuid-gone",
+            "uuidSource": "label",
+            "name": "Gone",
+            "type": "application",
+            "status": "absent",
+            "absentSince": stamp(NOW),
+        }
+        report = collector.build_report(
+            self.rows() + [unknown, behind],
+            [],
+            [],
+            previous_map([gone]),
+            now=NOW,
+            can_redeploy=True,
+        )
         spec = importlib.util.spec_from_file_location(
             "fleet_ops_control_for_test", HERE / "fleet-ops-control.py"
         )
         helper = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(helper)
+        names = set()
         for row in report["coolify"]:
+            names.add(row["name"])
             first = next(r for r in report["coolify"] if r["uuid"] == row["uuid"])
-            accepted = (
-                first["type"] in helper.REDEPLOYABLE_TYPES
-                and helper.uuid_from_label(first)
-                and first["status"] not in ("absent", "unknown")
-            )
+            accepted = helper.redeploy_refusal(first) is None
             self.assertEqual("redeploy" in row["actions"], accepted, row["name"])
+        # The rows the rule is about really were in the loop.
+        self.assertLessEqual({"Unread (web)", "Unread (worker)", "Gone"}, names)
+        self.assertIn("not running", helper.redeploy_refusal(unknown))
+        self.assertIn("not running", helper.redeploy_refusal(gone))
 
     def test_one_application_says_how_many_containers_a_redeploy_restarts(self):
         report = collector.build_report(self.rows(), [], [], {}, now=NOW, can_redeploy=True)
@@ -2030,6 +2055,7 @@ class TimerTests(unittest.TestCase):
             ActiveState="failed",
             SubState="failed",
             Result="exit-code",
+            ExecMainCode="1",
             ExecMainStatus="1",
             ExecMainStartTimestamp="@1793826219",
             ExecMainExitTimestamp="@1793826224",
@@ -2058,6 +2084,28 @@ class TimerTests(unittest.TestCase):
         self.assertEqual(row["lastResult"], "exit-code")
         self.assertEqual(row["lastExitCode"], 1)
         self.assertEqual(row["lastFinishedAt"], stamp(1793826224))
+
+    def test_a_job_killed_by_a_signal_has_no_exit_code(self):
+        # systemd puts the signal number in ExecMainStatus, so 15 here is SIGTERM.
+        for code in ("2", "3", ""):
+            row, _ = self.collect(
+                job=self.job(Result="timeout", ExecMainCode=code, ExecMainStatus="15")
+            )
+            self.assertEqual(row["lastResult"], "timeout", code)
+            self.assertNotIn("lastExitCode", row, code)
+
+    def test_a_job_started_after_its_timer_last_fired_ran_then(self):
+        # Something other than the timer can start the job.
+        row, _ = self.collect(job=self.job(ExecMainStartTimestamp="@1793826300"))
+        self.assertEqual(row["lastRunAt"], stamp(1793826300))
+
+    def test_a_job_start_older_than_the_trigger_does_not_move_the_last_run_back(self):
+        row, _ = self.collect(job=self.job(ExecMainStartTimestamp="@1793826000"))
+        self.assertEqual(row["lastRunAt"], stamp(1793826219))
+
+    def test_a_job_start_alone_gives_the_last_run(self):
+        row, _ = self.collect(timer=self.timer(LastTriggerUSec=""))
+        self.assertEqual(row["lastRunAt"], stamp(1793826219))
 
     def test_a_job_that_worked_says_so(self):
         row, _ = self.collect(
@@ -2350,11 +2398,12 @@ class WatchTests(unittest.TestCase):
 class FailedUnitTests(unittest.TestCase):
     """A failed unit shows, whether or not anything names it."""
 
-    def block(self, unit, result="exit-code", status="1"):
+    def block(self, unit, result="exit-code", status="1", code="1"):
         return properties(
             Id=unit,
             Description="The %s unit" % unit,
             Result=result,
+            ExecMainCode=code,
             ExecMainStatus=status,
             StateChangeTimestamp="@1793826224",
         )
@@ -2363,7 +2412,8 @@ class FailedUnitTests(unittest.TestCase):
         systemctl = ScriptedSystemctl(
             {
                 ("system", "example-sync.service"): self.block("example-sync.service"),
-                ("user", "other.service"): self.block("other.service", "timeout", "0"),
+                # A timed out stop is killed by SIGTERM, which is a signal and not an exit 15.
+                ("user", "other.service"): self.block("other.service", "timeout", "15", "2"),
             },
             failed={"system": ["example-sync.service"], "user": ["other.service"]},
         )
@@ -2389,6 +2439,16 @@ class FailedUnitTests(unittest.TestCase):
                 },
             ],
         )
+
+    def test_a_status_with_no_exit_behind_it_is_not_an_exit_code(self):
+        for code in ("2", "3", "", "0"):
+            systemctl = ScriptedSystemctl(
+                {("system", "killed.service"): self.block("killed.service", "signal", "9", code)},
+                failed={"system": ["killed.service"]},
+            )
+            rows, _ = collector.collect_failed_units(systemctl)
+            self.assertEqual(rows[0]["result"], "signal", code)
+            self.assertNotIn("exitCode", rows[0], code)
 
     def test_nothing_failed_is_an_empty_list(self):
         self.assertEqual(

@@ -119,6 +119,7 @@ struct ServerStatusPanel: View {
                 .textSelection(.enabled)
                 .lineLimit(1)
                 .truncationMode(.middle)
+                .help(reading.path)
         }
     }
 
@@ -238,6 +239,7 @@ struct ServerStatusPanel: View {
                 .font(.system(size: 11, weight: .semibold, design: .monospaced))
                 .lineLimit(1)
                 .truncationMode(.middle)
+                .help(label)
                 .frame(width: 140, alignment: .leading)
             usageBar(fraction)
             if let fraction {
@@ -250,6 +252,7 @@ struct ServerStatusPanel: View {
                 .font(.system(size: 10, design: .monospaced))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
+                .help(text)
             Spacer(minLength: 0)
         }
         .padding(.vertical, 1)
@@ -304,6 +307,7 @@ struct ServerStatusPanel: View {
                 .font(.system(size: 12, weight: .semibold, design: .monospaced))
                 .lineLimit(1)
                 .truncationMode(.middle)
+                .help(unit.helpText)
             Text(unit.scope ?? "system")
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
@@ -329,6 +333,7 @@ struct ServerStatusPanel: View {
                         .font(.system(size: 12, weight: .semibold, design: .monospaced))
                         .lineLimit(1)
                         .truncationMode(.middle)
+                        .help(service.unit)
                     Text(service.scope ?? "system")
                         .lineLimit(1)
                         .fixedSize(horizontal: true, vertical: false)
@@ -343,12 +348,14 @@ struct ServerStatusPanel: View {
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                        .help(description)
                 }
-                if let run = service.runText {
+                if let run = service.runText() {
                     Text(run)
                         .font(.system(size: 10))
                         .foregroundStyle(service.lastRunFailed ? Color.red : Color.secondary)
                         .lineLimit(1)
+                        .help(run)
                 }
             }
             Spacer(minLength: 0)
@@ -446,6 +453,7 @@ struct ServerStatusPanel: View {
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                             .truncationMode(.middle)
+                            .help(image)
                     }
                 }
                 if let signal = resource.signalText() {
@@ -453,12 +461,14 @@ struct ServerStatusPanel: View {
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                        .help(signal)
                 }
                 if !offersRedeploy, let blocked = resource.redeployBlockedText {
                     Text(blocked)
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                        .help(blocked)
                 }
             }
             Spacer(minLength: 0)
@@ -530,6 +540,7 @@ struct ServerStatusPanel: View {
                 .font(.system(size: 12, weight: .semibold, design: .monospaced))
                 .lineLimit(1)
                 .truncationMode(.middle)
+                .help(process.displayName)
             Text(process.owner ?? "unknown")
                 .font(.system(size: 10, design: .monospaced))
                 .foregroundStyle(.secondary)
@@ -539,6 +550,7 @@ struct ServerStatusPanel: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                    .help(home)
             }
             Spacer(minLength: 0)
             if let cpu = process.coresText {
@@ -622,6 +634,7 @@ struct ServerStatusPanel: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                    .help(file.path)
             }
             Spacer(minLength: 0)
             if let when = file.whenText() {
