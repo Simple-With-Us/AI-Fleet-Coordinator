@@ -4,7 +4,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { BudgetExceeded } from "../src/budget-guard.mjs";
-import { INVOCATION_CAPS, MINUTE_CAPS, countedFetch, countedStub, diagnosticRowAllowed, runInvocation, spend } from "../src/invocation.js";
+import { INVOCATION_CAPS, MINUTE_CAPS, countedFetch, countedStub, diagnosticRowAllowed, logLimited, runInvocation, spend, withinLimit } from "../src/invocation.js";
 import { wranglerConfig } from "./helpers.mjs";
 
 const quietly = async (fn) => {
@@ -62,6 +62,36 @@ test("diagnostic rows are capped per isolate minute, across invocations", async 
     }
     assert.ok(refused >= MINUTE_CAPS.diagnosticRow);
   });
+});
+
+test("a missing or failing limiter allows the request, and the log names which guard is not running", async () => {
+  const real = console.log;
+  const lines = [];
+  console.log = (line) => lines.push(JSON.parse(line));
+  try {
+    assert.equal(await withinLimit({}, "MCP_RATE_LIMITER", "k"), true);
+    assert.equal(await withinLimit({}, "AUTH_FAIL_RATE_LIMITER", "k"), true);
+    // A second line for the same binding in one minute is suppressed;  another binding's is not.
+    const minute = Math.floor(Date.now() / 60_000);
+    assert.equal(await withinLimit({}, "MCP_RATE_LIMITER", "k"), true);
+    if (Math.floor(Date.now() / 60_000) === minute) assert.equal(lines.length, 2);
+    assert.deepEqual(lines.slice(0, 2), [
+      { event: "rate_limiter_missing", binding: "MCP_RATE_LIMITER" },
+      { event: "rate_limiter_missing", binding: "AUTH_FAIL_RATE_LIMITER" },
+    ]);
+    lines.length = 0;
+    const failing = { limit: async () => { throw new Error("down"); } };
+    assert.equal(await withinLimit({ CUSTOM_LIMITER: failing }, "CUSTOM_LIMITER", "k"), true);
+    assert.deepEqual(lines, [{ event: "rate_limiter_unavailable", binding: "CUSTOM_LIMITER" }]);
+    // A working limiter's refusal is its own answer, and an event with no binding logs only the event.
+    const over = { limit: async () => ({ success: false }) };
+    assert.equal(await withinLimit({ OVER_LIMITER: over }, "OVER_LIMITER", "k"), false);
+    lines.length = 0;
+    logLimited("guard_test_event");
+    assert.deepEqual(lines, [{ event: "guard_test_event" }]);
+  } finally {
+    console.log = real;
+  }
 });
 
 test("wrangler.jsonc declares both guards with documented periods and account-unique namespaces", () => {

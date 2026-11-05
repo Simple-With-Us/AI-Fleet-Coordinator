@@ -93,7 +93,7 @@ import { AuditBatcher, AUDIT_FLUSH_MS } from "./audit-batch.js";
 import { IdentityCache } from "./identity-cache.js";
 import { answerLifecycle } from "./mcp-lifecycle.js";
 import { BudgetExceeded, guardOff, guardOffResponse } from "./budget-guard.mjs";
-import { countedFetch, diagnosticRowAllowed, runInvocation, spend } from "./invocation.js";
+import { countedFetch, diagnosticRowAllowed, logLimited, runInvocation, spend, withinLimit } from "./invocation.js";
 
 export { SeatGate };
 
@@ -132,10 +132,8 @@ function auditSinkFor(ctx) {
 // window does and does not enforce is stated in src/identity-cache.js.
 const IDENTITY_CACHE = new IdentityCache();
 
-// Git callback windows (AFC-617, stated in src/identity-cache.js).  60 seconds is
-// the cap the relay itself puts on a positive verify cache
-// (git-relay/git_relay/shared_bearer.py).
-const GR_VERIFY_CACHE_MS = 60_000;
+// The OAuth Git callback's live-grant window (AFC-617, stated in
+// src/identity-cache.js).  The bearer verify window is config.grVerifyCacheMs.
 const GRANT_EXISTS_CACHE_MS = 5 * 60_000;
 
 // Request guards (AFC-617).  Both limits are per Cloudflare location and
@@ -146,15 +144,6 @@ const LIMIT_RETRY_AFTER_S = 60;
 // holds a live verification for.
 const REFUSALS = new IdentityCache({ max: 2048 });
 const REFUSAL_WINDOW_MS = 60_000;
-const limitLoggedMinute = new Map();
-
-// One line per event per minute, so a quiet event never hides a runaway's.
-function logLimited(event) {
-  const minute = Math.floor(Date.now() / 60_000);
-  if (limitLoggedMinute.get(event) === minute) return;
-  limitLoggedMinute.set(event, minute);
-  console.log(JSON.stringify({ event }));
-}
 
 function mcpRateLimited() {
   return new Response(JSON.stringify({ jsonrpc: "2.0", error: { code: -32000, message: "Too many requests for this credential.  Retry after the Retry-After seconds." }, id: null }), {
@@ -171,30 +160,12 @@ async function credentialHash(request) {
 }
 
 /**
- * A limiter's answer.  A missing or failing limiter never takes the MCP down with
- * it, and says so in the log.  test/invocation.test.mjs pins the bindings in
- * wrangler.jsonc, and the account watchdog is the stop if this guard is ever absent.
- */
-async function withinLimit(limiter, key) {
-  if (!limiter) {
-    logLimited("rate_limiter_missing");
-    return true;
-  }
-  try {
-    return (await limiter.limit({ key })).success;
-  } catch {
-    logLimited("rate_limiter_unavailable");
-    return true;
-  }
-}
-
-/**
  * The /mcp request guard, before any Durable Object, secret or SDK work:  every
  * authenticated request counts, handshakes and notifications too.
  */
 async function guardMcpRequest(request, env, credential) {
   if (!credential) return null;
-  if (!(await withinLimit(env.MCP_RATE_LIMITER, `mcp:${credential}`))) {
+  if (!(await withinLimit(env, "MCP_RATE_LIMITER", `mcp:${credential}`))) {
     logLimited("mcp_rate_limited");
     return mcpRateLimited();
   }
@@ -219,7 +190,7 @@ async function noteAuthFailure(request, env, credential) {
   if (REFUSALS.get(`failed:${credential}`)) return false;
   REFUSALS.set(`failed:${credential}`, { seat: "refused" }, REFUSAL_WINDOW_MS);
   const ip = request.headers.get("cf-connecting-ip") ?? "unknown";
-  if (await withinLimit(env.AUTH_FAIL_RATE_LIMITER, `authfail:${ip}`)) return true;
+  if (await withinLimit(env, "AUTH_FAIL_RATE_LIMITER", `authfail:${ip}`)) return true;
   REFUSALS.set(`ip:${ip}`, { seat: "refused" }, REFUSAL_WINDOW_MS);
   logLimited("mcp_auth_blocked");
   return false;
@@ -667,8 +638,9 @@ async function serveGbBearerMcp(request, env, token, ctx) {
  * choice (mcp_accept, shown with its disclosure in /admin):  a bearer that
  * bypasses the consent flow is never inferred.  The connection acts only as
  * that seat (no createIdentity, whatever shared group it is in).  Every refusal
- * is the same generic 401.  A paused seat, an unhosted seat, a missing key and
- * an expired bearer all refuse.
+ * is the same generic 401.  A paused seat and an expired bearer refuse at once.
+ * An unhosted seat or a missing key can still answer lifecycle frames, which use
+ * no credential, and refuses at its first tool call.
  */
 async function serveSbtBearerMcp(request, env, token, ctx) {
   const config = configFor(env);
@@ -1697,7 +1669,7 @@ async function serveRequest(request, env, ctx) {
       return response;
     }
     // Neither verify route is rate limited:  the relay reads any non-200 as a refusal.
-    if (route === "gr_verify") return serveGrBearerVerify(request, env, gate, { eventsOnlySeats: config.eventsOnlySeats, identityCache: IDENTITY_CACHE, cacheMs: Math.min(GR_VERIFY_CACHE_MS, config.gateIdentityCacheMs) });
+    if (route === "gr_verify") return serveGrBearerVerify(request, env, gate, { eventsOnlySeats: config.eventsOnlySeats, identityCache: IDENTITY_CACHE, cacheMs: config.grVerifyCacheMs });
     // Enter through the provider so its request-local OAuth helpers exist.
     if (route === "gr_assert_verify") return fetchProvider(request, env, ctx);
     const credential = route === "mcp" ? await credentialHash(request) : null;

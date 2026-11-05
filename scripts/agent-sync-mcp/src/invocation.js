@@ -50,6 +50,37 @@ export function diagnosticRowAllowed() {
   }
 }
 
+const limitLoggedMinute = new Map();
+
+/** One line per event and binding per minute, so a quiet event never hides a runaway's. */
+export function logLimited(event, binding) {
+  const minute = Math.floor(Date.now() / 60_000);
+  const key = binding ? `${event}:${binding}` : event;
+  if (limitLoggedMinute.get(key) === minute) return;
+  limitLoggedMinute.set(key, minute);
+  console.log(JSON.stringify({ event, binding }));
+}
+
+/**
+ * A Rate Limiting binding's answer, read from `env` by name so the log can say which
+ * guard is not running.  A missing or failing limiter never takes the MCP down with
+ * it:  test/invocation.test.mjs pins the bindings in wrangler.jsonc, and the account
+ * watchdog is the stop if a guard is ever absent.
+ */
+export async function withinLimit(env, binding, key) {
+  const limiter = env[binding];
+  if (!limiter) {
+    logLimited("rate_limiter_missing", binding);
+    return true;
+  }
+  try {
+    return (await limiter.limit({ key })).success;
+  } catch {
+    logLimited("rate_limiter_unavailable", binding);
+    return true;
+  }
+}
+
 /** A stub whose every method call spends one doRpc.  Counts calls, changes nothing else. */
 export function countedStub(stub) {
   if (!storage.getStore()) return stub;

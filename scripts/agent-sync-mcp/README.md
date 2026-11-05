@@ -20,15 +20,18 @@ Hard limits so a code bug or a looping client cannot burn a capped metric (AFC-6
 - **`AUTH_FAIL_RATE_LIMITER`.**  60 distinct credentials failing `/mcp` authentication a minute per IP.  Past it, this isolate answers 429 to that IP for 60 seconds and writes nothing.  A credential the isolate has already verified is never blocked, because seats on one host share an IP.  A credential the gate refused for good (wrong, expired or a stale grant) is refused from memory for 60 seconds, so a client looping on one writes one refusal row a minute per isolate.
 - **Refusals write nothing.**  A rate-limited `/oauth/token` writes no row, and diagnostic and refusal rows are capped at 60 a minute per isolate.
 - **Per-invocation budget** (`src/invocation.js`).  50 outbound fetches and 256 gate RPCs a request, and 30 grant listings a minute per isolate.
-- **Not limited.**  `/internal/gr-bearer-verify` and `/internal/gr-assert-verify`, because the relay reads any non-200 as a refusal, and caches a bearer refusal for 30 seconds.
+- **Not traffic limited.**  `/internal/gr-bearer-verify` and `/internal/gr-assert-verify`, because the relay reads any non-200 as a refusal, and caches a bearer refusal for 30 seconds.  The grant-listing cap above still applies, so `/internal/gr-assert-verify` answers 503 when a minute's listings run out.
+- **Git bearer verify cache.**  Off by default, so every `/internal/gr-bearer-verify` call asks the gate and a pause or revocation reaches Git calls at once.  `GR_VERIFY_CACHE_MS`, from 0 to 60000, makes one isolate reuse a positive answer for that long, which saves a gate call per hit but delays a pause or revocation on Git calls, writes included, by up to that long.  Turning it on is the owner's decision.  It is separate from `GATE_IDENTITY_CACHE_MS`, which does not reach this route.
 
 Both limits are per Cloudflare location and eventually consistent, so they stop a runaway rather than meter exactly.  A daily account ceiling is the watchdog's job, not this Worker's.
+
+A missing or failing limiter allows the request:  a limiter fault must not take down every seat's MCP.  If `rate_limiter_missing` or `rate_limiter_unavailable` appears in the log, its `binding` field names the guard that is not running.  Restore the binding, or set `GUARD_MODE=off` if traffic is running away meanwhile.
 
 ## Lifecycle frames
 
 `initialize`, `ping`, `notifications/*` and `tools/list` are answered before any secret is resolved or any SDK server is built (`src/mcp-lifecycle.js`), after the same authentication and seat checks.  `tools/list` is serialized once per isolate.  The answers are byte-identical to the SDK's, which `test/mcp-lifecycle.test.mjs` pins.  Any other frame goes to the SDK, and so does any request a seat with MCP Events makes over OAuth, because its capabilities depend on its wake key.
 
-So a seat whose credentials cannot be resolved can now connect and list tools, and is refused at its first tool call.
+So a seat whose credentials cannot be resolved, or an unhosted seat holding a valid bearer, can now connect and list tools, and is refused at its first tool call.
 
 ## Tools
 

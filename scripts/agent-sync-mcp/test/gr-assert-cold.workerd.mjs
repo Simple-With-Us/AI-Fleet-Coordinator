@@ -126,3 +126,34 @@ try {
 } finally {
   await mf.dispose();
 }
+
+// The Git bearer verify cache through the real route.  The default, with
+// GATE_IDENTITY_CACHE_MS at its compiled hour, verifies live;  only
+// GR_VERIFY_CACHE_MS turns the window on, even with the identity cache off.
+for (const [overrides, cached] of [[{}, false], [{ GR_VERIFY_CACHE_MS: "60000", GATE_IDENTITY_CACHE_MS: "0" }, true]]) {
+  mf = start(overrides);
+  try {
+    const hash = await sha256HexText("fixture-bearer");
+    const ns = await mf.getDurableObjectNamespace("SEAT_GATE");
+    const gate = ns.get(ns.idFromName("CODEX"));
+    await gate.gbBearerMint({ hash, by: "fixture", expiresAt: Date.now() + 600_000 });
+    const verify = async () => {
+      const body = JSON.stringify({ contract: "gr-bearer-verify/1", identity: "CODEX", hash, sent_at: Math.floor(Date.now() / 1000) });
+      const response = await mf.dispatchFetch(origin + "/internal/gr-bearer-verify", {
+        method: "POST",
+        headers: { Host: "mcp-fixture.example", "Content-Type": "application/json", "X-Agent-Sync-Signature": await wakeSignature(channelKey, new TextEncoder().encode(body)) },
+        body,
+      });
+      assert.equal(response.status, 200, await response.clone().text());
+      return response.json();
+    };
+    assert.equal((await verify()).ok, true);
+    await gate.setPaused({ paused: true, by: "fixture" });
+    const paused = await verify();
+    if (cached) assert.equal(paused.ok, true, "the window holds the positive answer");
+    else assert.deepEqual(paused, { ok: false, reason: "paused" }, "off by default:  a pause bites on the next call");
+  } finally {
+    await mf.dispose();
+  }
+}
+console.log("Git bearer verify: live by default, cached only by GR_VERIFY_CACHE_MS.");

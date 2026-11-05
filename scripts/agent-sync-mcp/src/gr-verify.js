@@ -125,6 +125,8 @@ export async function serveGrBearerVerify(request, env, gates, { resolveKey = re
   if (!checked.ok) return jsonResponse({ ok: false, reason: checked.reason }, checked.status);
 
   const { identity, hash } = checked.query;
+  // Off unless the GR_VERIFY_CACHE_MS var sets `cacheMs`:  with 0 nothing is stored,
+  // so this lookup always misses and every call verifies live.
   // The route's own key space in the identity cache:  an entry here says only
   // "this bearer verifies for Git" (a GR-only bearer can earn one), so /mcp must
   // never read it, and this route never reads /mcp's.  The seat is the entry's,

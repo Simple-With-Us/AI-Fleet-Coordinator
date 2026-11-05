@@ -9,6 +9,8 @@ import { wakeSignature, WAKE_SIGNATURE_HEADER } from "../src/wake.js";
 import { newGbBearer, sha256Hex, GB_BEARER_TTL_MS } from "../src/gb-bearer.js";
 import * as S from "../src/seat-state.js";
 import { IdentityCache } from "../src/identity-cache.js";
+import { loadConfig } from "../src/config.js";
+import { testEnv } from "./helpers.mjs";
 
 globalThis.crypto ??= webcrypto;
 
@@ -229,6 +231,19 @@ test("a live bearer costs one RPC, and its answer carries the bearer's own expir
   const live = await verifyCall(ID, hash, gates);
   assert.equal(live.body.expires_at, expiresAt);
   assert.deepEqual(rpc, { check: 1, status: 0 });
+});
+
+test("with the default window of 0 every verify asks the gate, so a pause bites on the next call", async () => {
+  const { hash } = await newGbBearer(ID);
+  const store = memStore();
+  await S.gbBearerMint(store, { hash, by: "fixture@example.test", expiresAt: Date.now() + GB_BEARER_TTL_MS });
+  const identityCache = new IdentityCache();
+  const options = { identityCache, cacheMs: loadConfig(testEnv()).grVerifyCacheMs };
+  const state = { paused: false };
+  assert.equal((await verifyCall(ID, hash, fakeGates(store, state), options)).body.ok, true);
+  assert.equal(identityCache.get(`gr-verify:${hash}`), null, "nothing is stored");
+  state.paused = true;
+  assert.equal((await verifyCall(ID, hash, fakeGates(store, state), options)).body.reason, "paused");
 });
 
 test("the identity cache answers a repeat verify with no RPC, under its own key", async () => {

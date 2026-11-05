@@ -672,6 +672,96 @@ test("fallback mode:  a 404 outside a listing is one subrequest per TTL and one 
   }
 });
 
+test("fallback mode:  a miss is fetched again only once its TTL passes, and logs no second line", async () => {
+  _resetInfisicalForTests();
+  let calls = 0;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => { calls += 1; return new Response("{}", { status: 404 }); };
+  const realNow = Date.now;
+  const lines = await warnings(async () => {
+    try {
+      const env = { ...ENV, INFISICAL_MODE: "fallback", LEGACY: "v0" };
+      const read = () => resolveSecret(env, { name: "S", path: "/linear", envName: "LEGACY" });
+      await read();
+      await read();
+      assert.equal(calls, 1);
+      const start = realNow();
+      Date.now = () => start + 61_000;
+      await read();
+      await read();
+      assert.equal(calls, 2, "one subrequest per minute per isolate, so a rotation that adds the name is seen");
+    } finally {
+      Date.now = realNow;
+      globalThis.fetch = realFetch;
+    }
+  });
+  assert.equal(lines.length, 1);
+  _resetInfisicalForTests();
+});
+
+test("fallback mode:  a folder whose listing keeps failing costs one listing a minute, no per-name reads and one log line per isolate", async () => {
+  _resetInfisicalForTests();
+  const { prefetchFolder } = await import("../src/infisical.js");
+  let calls = 0;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => { calls += 1; return new Response("{}", { status: 403 }); };
+  const realNow = Date.now;
+  const lines = await warnings(async () => {
+    try {
+      const env = { ...ENV, INFISICAL_MODE: "fallback", LEGACY: "v0" };
+      const request = async () => {
+        await prefetchFolder(env, "/gr-front");
+        assert.equal(await resolveSecret(env, { name: "A", path: "/gr-front", envName: "LEGACY", optional: true }), "v0");
+        assert.equal(await resolveSecret(env, { name: "B", path: "/gr-front", envName: "LEGACY", optional: true }), "v0");
+      };
+      for (let i = 0; i < 5; i++) await request();
+      assert.equal(calls, 1, "five requests, one failed listing, no per-name read");
+      const start = realNow();
+      Date.now = () => start + 61_000;
+      for (let i = 0; i < 5; i++) await request();
+      assert.equal(calls, 2, "retried once past the TTL");
+    } finally {
+      Date.now = realNow;
+      globalThis.fetch = realFetch;
+    }
+  });
+  const events = lines.map((line) => JSON.parse(line).event);
+  assert.deepEqual(events.filter((event) => event === "infisical_listing_failed").length, 1);
+  assert.deepEqual(events.filter((event) => event === "infisical_fallback").length, 2, "one per name, across ten requests");
+  assert.equal(infisicalStats().fallbacks, 20, "every read still counts");
+  _resetInfisicalForTests();
+});
+
+test("an isolated read's 404 is one subrequest per TTL, and an outage is retried on the next call", async () => {
+  _resetInfisicalForTests();
+  const { resolveSecretIsolated } = await import("../src/infisical.js");
+  const env = { ...ENV, INFISICAL_MODE: "fallback", NARROW_TOKEN: "narrow" };
+  const read = () => resolveSecretIsolated(env, { name: "SIGN", path: "/signing", tokenBinding: "NARROW_TOKEN" });
+  let calls = 0;
+  let status = 404;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => { calls += 1; return new Response("{}", { status }); };
+  const realNow = Date.now;
+  const lines = await warnings(async () => {
+    try {
+      assert.equal(await read(), "");
+      assert.equal(await read(), "");
+      assert.equal(calls, 1, "the 404 is remembered");
+      const start = realNow();
+      Date.now = () => start + 61_000;
+      status = 500;
+      assert.equal(await read(), "");
+      assert.equal(await read(), "");
+      assert.equal(calls, 3, "an outage holds nothing, so the next mint retries");
+    } finally {
+      Date.now = realNow;
+      globalThis.fetch = realFetch;
+    }
+  });
+  assert.equal(lines.length, 1, "one line for the outage across its retries");
+  _resetInfisicalForTests();
+});
+
 test("required mode:  a cached miss still throws for a declared secret", async () => {
   _resetInfisicalForTests();
   let calls = 0;

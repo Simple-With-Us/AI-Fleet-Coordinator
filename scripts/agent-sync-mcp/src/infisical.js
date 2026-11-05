@@ -108,8 +108,15 @@ const folderFailed = new Map();
 // a fresh 404, only without the subrequest.
 const missed = new Map();
 // One infisical_fallback line per isolate per name and code (AFC-617:  13,000
-// lines a day for the same names).  stats.fallbacks still counts every read.
+// lines a day for the same names), and the same for a failed listing per folder
+// and code.  stats.fallbacks still counts every read.
 const fallbackLogged = new Set();
+
+function logOnce(key, event, fields) {
+  if (fallbackLogged.has(key)) return;
+  fallbackLogged.add(key);
+  logEvent(event, fields);
+}
 
 export function infisicalStats() {
   return { ...stats };
@@ -222,7 +229,7 @@ export async function prefetchFolder(env, path) {
   } catch (error) {
     if (m === "required") throw error instanceof InfisicalError ? error : new InfisicalError(String(error));
     folderFailed.set(path, Date.now());
-    logEvent("infisical_listing_failed", { path, code: errorCode(error), status: error?.status ?? null, bindings_serve_s: CACHE_TTL_MS / 1000 });
+    logOnce(`listing\u0001${path}\u0001${errorCode(error)}`, "infisical_listing_failed", { path, code: errorCode(error), status: error?.status ?? null, bindings_serve_s: CACHE_TTL_MS / 1000 });
   }
 }
 
@@ -285,11 +292,7 @@ export async function resolveSecret(env, { name, path, envName, optional = false
       return "";
     }
     stats.fallbacks++;
-    const logKey = `${cacheKey}\u0001${errorCode(error)}`;
-    if (!fallbackLogged.has(logKey)) {
-      fallbackLogged.add(logKey);
-      logEvent("infisical_fallback", { path, name, binding: envName, served: Boolean(value), code: errorCode(error), status: error?.status ?? null });
-    }
+    logOnce(`${cacheKey}\u0001${errorCode(error)}`, "infisical_fallback", { path, name, binding: envName, served: Boolean(value), code: errorCode(error), status: error?.status ?? null });
     return value;
   }
 }
@@ -322,6 +325,9 @@ export async function resolveWakeKeys(env, names) {
 //   - fail closed:  no binding answers "" in off/fallback mode and throws in
 //     required mode;  a genuine 404 answers "" (capability off) while an
 //     outage or a scope denial throws in required mode, as elsewhere.
+//   - a 404 is remembered for the TTL, so an absent key costs one subrequest a
+//     minute, not one per Git call (AFC-617).  Only a success and a 404 are held:
+//     an outage is retried on the next call, as a mint needs.
 
 const isolatedCache = new Map();
 
@@ -345,9 +351,12 @@ export async function resolveSecretIsolated(env, { name, path, tokenBinding }) {
     stats.fetched++;
     return value;
   } catch (error) {
-    if (error instanceof InfisicalError && error.code === "not_found") return "";
+    if (error instanceof InfisicalError && error.code === "not_found") {
+      isolatedCache.set(cacheKey, { value: "", at: Date.now() });
+      return "";
+    }
     if (m === "required") throw error instanceof InfisicalError ? error : new InfisicalError(String(error));
-    logEvent("infisical_isolated_failed", { path, name, binding: tokenBinding, code: errorCode(error), status: error?.status ?? null });
+    logOnce(`isolated\u0001${cacheKey}\u0001${errorCode(error)}`, "infisical_isolated_failed", { path, name, binding: tokenBinding, code: errorCode(error), status: error?.status ?? null });
     return "";
   }
 }
