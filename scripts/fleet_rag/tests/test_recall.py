@@ -560,6 +560,8 @@ class MutationConcurrencyTests(RecallBase):
         original = recall_api.recall_contribute(GOOD, "lesson", seat="CLAUDE")
         recall_api.gitleaks_available = lambda: False
         state = {"inside": 0, "overlap": False}
+        embedding_started = threading.Event()
+        allow_embedding = threading.Event()
 
         class SlowQdrant(FakeQdrant):
             def scroll(self, *args, **kwargs):
@@ -571,25 +573,49 @@ class MutationConcurrencyTests(RecallBase):
                 finally:
                     state["inside"] -= 1
 
+        def slow_embed(cfg, texts):
+            embedding_started.set()
+            if not allow_embedding.wait(timeout=5):
+                raise AssertionError("test did not release the embedding seam")
+            return [[0.0] * 4 for _ in texts]
+
         recall_api.Qdrant = SlowQdrant
+        recall_api.embed = slow_embed
         replacement = GOOD + " Check pm2 describe after the restart."
         errors = []
-        threads = [
-            threading.Thread(target=lambda: recall_api.recall_correct(
-                original["doc_id"], replacement, "add verification", seat="CLAUDE")),
-            threading.Thread(target=lambda: recall_api.recall_retract(
-                original["doc_id"], "obsolete in test", seat="CLAUDE")),
-        ]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join()
-        self.assertEqual(errors, [])
+
+        def correct():
+            try:
+                recall_api.recall_correct(
+                    original["doc_id"], replacement, "add verification", seat="CLAUDE"
+                )
+            except FleetRagError as exc:
+                errors.append(str(exc))
+
+        def retract():
+            try:
+                recall_api.recall_retract(original["doc_id"], "obsolete in test", seat="CLAUDE")
+            except FleetRagError as exc:
+                errors.append(str(exc))
+
+        correction = threading.Thread(target=correct)
+        correction.start()
+        self.assertTrue(embedding_started.wait(timeout=5))
+        retraction = threading.Thread(target=retract)
+        retraction.start()
+        retraction.join(timeout=5)
+        self.assertFalse(retraction.is_alive())
+        allow_embedding.set()
+        correction.join(timeout=5)
+        self.assertFalse(correction.is_alive())
         self.assertFalse(state["overlap"])
+        self.assertEqual(len(errors), 1)
+        self.assertIn("retracted", errors[0])
         point = next(p for p in FakeQdrant.points if p["payload"].get("doc_id") == original["doc_id"])
-        self.assertEqual(point["payload"]["revision"], 2)
+        self.assertEqual(point["payload"].get("revision", 1), 1)
         self.assertTrue(point["payload"]["retracted"])
-        self.assertEqual(len(point["payload"]["revisions"]), 1)
+        self.assertEqual(point["payload"]["text"], GOOD)
+        self.assertNotIn("revisions", point["payload"])
 
     def test_concurrent_stale_revision_loses_after_the_first_commit(self):
         original = recall_api.recall_contribute(GOOD, "lesson", seat="CLAUDE")
