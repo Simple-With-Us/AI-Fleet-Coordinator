@@ -582,4 +582,3 @@ class ChatNudges:
                         "why": item["hold_reason"],
                     }
         return {"status": "busy" if saw_busy else "held" if saw_held else "idle"}
-
