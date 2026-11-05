@@ -132,7 +132,7 @@ struct ServerStatusPanel: View {
                     Text(row.lastState)
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundStyle(.secondary)
-                    ForEach(ServerLastKnown.actions(unit: row.unit, allowlist: allowlist), id: \.title) { action in
+                    ForEach(ServerLastKnown.actions(unit: row.unit, scope: row.scope, allowlist: allowlist), id: \.title) { action in
                         Button(Self.verbWord(action)) {
                             controller.plan(action)
                         }

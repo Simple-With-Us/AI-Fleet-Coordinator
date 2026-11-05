@@ -1379,6 +1379,9 @@ struct OpsAllowlist: Equatable {
     struct Entry: Equatable {
         let name: String
         let actions: [String]
+        /// The scope a server unit is run in,  `user` or `system`,  when the allowlist says.
+        /// The helper acts on a unit in this scope only,  whatever a row says.
+        var scope: String? = nil
     }
 
     struct Update: Equatable, Identifiable {
@@ -1408,6 +1411,12 @@ struct OpsAllowlist: Equatable {
     /// The verbs the allowlist names for a unit,  in the app's order.
     func verbs(forServerUnit unit: String) -> [OpsVerb] {
         verbs(in: serverUnits, named: unit)
+    }
+
+    /// The scope the allowlist runs a unit in,  or nil when it does not name the unit or
+    /// gives no scope.
+    func scope(forServerUnit unit: String) -> String? {
+        serverUnits.first(where: { $0.name == unit })?.scope
     }
 
     private func verbs(in entries: [Entry], named name: String) -> [OpsVerb] {
@@ -1446,7 +1455,8 @@ struct OpsAllowlist: Equatable {
         }
         for item in (server?["units"] as? [[String: Any]]) ?? [] {
             guard let unit = item["unit"] as? String else { continue }
-            list.serverUnits.append(Entry(name: unit, actions: (item["actions"] as? [String]) ?? []))
+            list.serverUnits.append(Entry(name: unit, actions: (item["actions"] as? [String]) ?? [],
+                                          scope: item["scope"] as? String))
         }
         for item in (server?["updates"] as? [[String: Any]]) ?? [] {
             guard let name = item["name"] as? String else { continue }

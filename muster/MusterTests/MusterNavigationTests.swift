@@ -343,16 +343,42 @@ final class MusterNavigationTests: XCTestCase {
     /// The repairs come from the allowlist only, and never Start or Stop on an old state.
     func test_last_known_offers_only_the_allowlists_restart_and_logs() {
         let unit = OpsNames.reportTimerUnit
-        let full = OpsAllowlist(serverUnits: [OpsAllowlist.Entry(name: unit, actions: ["start", "stop", "restart"])])
-        XCTAssertEqual(ServerLastKnown.actions(unit: unit, allowlist: full),
+        let full = OpsAllowlist(serverUnits: [
+            OpsAllowlist.Entry(name: unit, actions: ["start", "stop", "restart"], scope: "user"),
+        ])
+        XCTAssertEqual(ServerLastKnown.actions(unit: unit, scope: "user", allowlist: full),
                        [.serverUnit(verb: .restart, unit: unit), .logs(unit: unit)])
-        let startOnly = OpsAllowlist(serverUnits: [OpsAllowlist.Entry(name: unit, actions: ["start"])])
-        XCTAssertEqual(ServerLastKnown.actions(unit: unit, allowlist: startOnly), [.logs(unit: unit)])
-        XCTAssertEqual(ServerLastKnown.actions(unit: unit, allowlist: OpsAllowlist()), [])
-        XCTAssertEqual(ServerLastKnown.actions(unit: unit, allowlist: nil), [])
-        for action in ServerLastKnown.actions(unit: unit, allowlist: full) {
+        let startOnly = OpsAllowlist(serverUnits: [OpsAllowlist.Entry(name: unit, actions: ["start"], scope: "user")])
+        XCTAssertEqual(ServerLastKnown.actions(unit: unit, scope: "user", allowlist: startOnly), [.logs(unit: unit)])
+        XCTAssertEqual(ServerLastKnown.actions(unit: unit, scope: "user", allowlist: OpsAllowlist()), [])
+        XCTAssertEqual(ServerLastKnown.actions(unit: unit, scope: "user", allowlist: nil), [])
+        for action in ServerLastKnown.actions(unit: unit, scope: "user", allowlist: full) {
             XCTAssertEqual(action.runsOn, .server)
         }
+    }
+
+    /// An action names the unit and not its scope, and the server acts in the allowlist's
+    /// scope.  A row in the other scope gets no button, because it would act on a unit the
+    /// row does not show.  A row the report did not name runs in the allowlist's scope.
+    func test_last_known_offers_nothing_on_a_row_in_another_scope() {
+        let unit = OpsNames.reportTimerUnit
+        let allowlist = OpsAllowlist(serverUnits: [
+            OpsAllowlist.Entry(name: unit, actions: ["restart"], scope: "user"),
+        ])
+        XCTAssertEqual(ServerLastKnown.actions(unit: unit, scope: "system", allowlist: allowlist), [])
+        XCTAssertEqual(ServerLastKnown.actions(unit: unit, scope: nil, allowlist: allowlist),
+                       [.serverUnit(verb: .restart, unit: unit), .logs(unit: unit)])
+        let noScope = OpsAllowlist(serverUnits: [OpsAllowlist.Entry(name: unit, actions: ["restart"])])
+        XCTAssertEqual(ServerLastKnown.actions(unit: unit, scope: "user", allowlist: noScope), [])
+    }
+
+    /// The allowlist's scope for a unit comes from the file the helper reads.
+    func test_the_allowlist_carries_each_units_scope() throws {
+        let json = #"{"schemaVersion":1,"server":{"units":[{"unit":"a.timer","scope":"user","actions":["restart"]},{"unit":"b.timer","scope":"system","actions":["restart"]}]}}"#
+        let list = try XCTUnwrap(OpsAllowlist.parse(Data(json.utf8)))
+        XCTAssertEqual(list.scope(forServerUnit: "a.timer"), "user")
+        XCTAssertEqual(list.scope(forServerUnit: "b.timer"), "system")
+        XCTAssertNil(list.scope(forServerUnit: "c.timer"))
     }
 
     // MARK: Overview counts

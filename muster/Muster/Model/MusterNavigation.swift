@@ -331,11 +331,20 @@ enum ServerLastKnown {
         return rows
     }
 
-    /// The actions one unit gets:  Restart when the allowlist names it, and Logs when the
+    /// The actions one row gets:  Restart when the allowlist names it, and Logs when the
     /// allowlist names the unit at all.  No Start or Stop:  an old state is no reason for
     /// either.
-    static func actions(unit: String, allowlist: OpsAllowlist?) -> [OpsAction] {
-        guard let verbs = allowlist?.verbs(forServerUnit: unit), !verbs.isEmpty else { return [] }
+    ///
+    /// An action names the unit and not its scope, and the server acts on the unit in the
+    /// scope its allowlist gives.  So a row from the report gets actions only when its scope
+    /// is that one:  a same-named unit in the other scope gets none, because the button
+    /// would act on a unit the row does not show.  A row the report did not name has no
+    /// scope of its own, and its actions run in the allowlist's.
+    static func actions(unit: String, scope: String?, allowlist: OpsAllowlist?) -> [OpsAction] {
+        guard let allowlist else { return [] }
+        if let scope, allowlist.scope(forServerUnit: unit) != scope { return [] }
+        let verbs = allowlist.verbs(forServerUnit: unit)
+        guard !verbs.isEmpty else { return [] }
         var actions: [OpsAction] = []
         if verbs.contains(.restart) { actions.append(.serverUnit(verb: .restart, unit: unit)) }
         actions.append(.logs(unit: unit))
