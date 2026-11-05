@@ -25,9 +25,12 @@ struct MusterApp: App {
         _store = StateObject(wrappedValue: store)
         _monitor = StateObject(wrappedValue: monitor)
         _admin = StateObject(wrappedValue: admin)
-        _router = StateObject(wrappedValue: ServiceActionRouter(admin: admin, confirm: { request in
+        let router = ServiceActionRouter(admin: admin, confirm: { request in
             confirmFleetAction(request)
-        }))
+        })
+        _router = StateObject(wrappedValue: router)
+        // Updates arrive through Sparkle,  and the install waits while any action runs.
+        AppUpdater.shared.start(router: router, admin: admin)
         _watch = StateObject(wrappedValue: PlaceWatch(onWake: {
             Task { await admin.refresh() }
         }))
@@ -46,6 +49,7 @@ struct MusterApp: App {
         // plan sheet twice.
         .commands {
             CommandGroup(replacing: .newItem) {}
+            CommandGroup(after: .appInfo) { CheckForUpdatesButton() }
         }
 
         Settings {
@@ -128,6 +132,7 @@ struct MusterSettingsView: View {
                 Text("Reads M OK \u{00B7} S ? in place of Mac OK \u{00B7} Server ?, for a crowded menu bar.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            BuildIdentitySettingsSection()
         }
         .formStyle(.grouped)
         // The Settings window follows the same stored theme as the main

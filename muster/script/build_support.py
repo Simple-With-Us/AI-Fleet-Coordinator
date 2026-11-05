@@ -1,6 +1,8 @@
 """Filesystem and keychain operations for the local Muster builder.  Never launches an app."""
 
+import datetime
 import os
+import plistlib
 import re
 import shutil
 import signal
@@ -273,16 +275,141 @@ def check_keychain_search_list():
     raise BuildFailure(KEYCHAIN_SEARCH_LIST_MESSAGE, 3)
 
 
+GIT = "git"
+GIT_TIMEOUT = 30
+BUILD_NUMBER_PATTERN = re.compile(r"^[0-9]{12}$")
+COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
+CHANNELS = ("release", "main", "lane", "development")
+
+
+def run_git(directory, arguments):
+    """Run one read-only git command in the Muster folder and return its output."""
+    try:
+        result = subprocess.run(
+            [GIT, "-C", str(directory)] + list(arguments),
+            capture_output=True,
+            text=True,
+            timeout=GIT_TIMEOUT,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        raise BuildFailure(
+            "git could not be run to read the commit this build is made from, so the build "
+            "number and the commit stamp are unknown and the build refuses to continue.",
+            2,
+        ) from None
+    return result
+
+
+def build_number_for(commit_seconds):
+    """The 12-digit build number:  the commit's time in UTC, YYYYMMDDHHMM.
+
+    UTC and not the Mac's zone, because a zone that falls back an hour in November would
+    give a later merge a smaller number, and Sparkle offers only a larger one.  A copy built
+    under the earlier America/Chicago numbering always reads as older than the UTC number
+    for the same moment, so the change never strands an installed copy.
+    """
+    moment = datetime.datetime.fromtimestamp(commit_seconds, tz=datetime.timezone.utc)
+    return moment.strftime("%Y%m%d%H%M"), moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def build_identity(directory, configuration, channel=None, override=None):
+    """What this build is made from:  build number, commit, commit time and channel.
+
+    `directory` is the Muster folder.  The channel is `development` for the Debug
+    configuration, `main` for a clean tree whose HEAD is on origin/main as last fetched,
+    and `lane` otherwise.  The release workflow names its channel itself.
+    """
+    head = run_git(directory, ["rev-parse", "HEAD"])
+    commit = head.stdout.strip().lower()
+    if head.returncode or not COMMIT_PATTERN.match(commit):
+        raise BuildFailure(
+            "git did not name the commit this build is made from, so the build refuses to "
+            "continue.  Run the script from a checkout of AI-Fleet-Coordinator.",
+            2,
+        )
+    shown = run_git(directory, ["show", "-s", "--format=%ct", "HEAD"])
+    seconds = shown.stdout.strip()
+    if shown.returncode or not seconds.isdecimal():
+        raise BuildFailure(
+            "git did not give the commit's time, so the build number is unknown.", 2
+        )
+    number, commit_time = build_number_for(int(seconds))
+    if override:
+        if not BUILD_NUMBER_PATTERN.match(override):
+            raise BuildFailure(
+                "MUSTER_BUILD_NUMBER must be the 12-digit merge-time build number (YYYYMMDDHHMM).",
+                2,
+            )
+        number = override
+    if channel:
+        if channel not in CHANNELS:
+            raise BuildFailure("The build channel must be one of: %s." % ", ".join(CHANNELS), 2)
+    elif configuration == "Debug":
+        channel = "development"
+    else:
+        dirty = run_git(directory, ["status", "--porcelain", "--", "."])
+        on_main = run_git(directory, ["merge-base", "--is-ancestor", "HEAD", "origin/main"])
+        clean = dirty.returncode == 0 and not dirty.stdout.strip()
+        channel = "main" if clean and on_main.returncode == 0 else "lane"
+    return {
+        "BUILD_NUMBER": number,
+        "COMMIT": commit,
+        "COMMIT_TIME": commit_time,
+        "CHANNEL": channel,
+    }
+
+
+def installed_build_number(app):
+    """The installed copy's CFBundleVersion, or None when there is no readable copy."""
+    try:
+        with (Path(app) / "Contents/Info.plist").open("rb") as stream:
+            info = plistlib.load(stream)
+    except (OSError, plistlib.InvalidFileException, ValueError):
+        return None
+    value = info.get("CFBundleVersion") if isinstance(info, dict) else None
+    return value if isinstance(value, str) and BUILD_NUMBER_PATTERN.match(value) else None
+
+
+def refuse_older(app, number, allow_older):
+    """Refuse to install a build numbered below the installed one, unless asked to."""
+    installed = installed_build_number(app)
+    if installed is None or allow_older or int(number) >= int(installed):
+        return
+    raise BuildFailure(
+        "The installed Muster is build %s, newer than this build %s.  Installing it would "
+        "go backward, and Sparkle would then offer the newer release again.  Pass "
+        "--allow-older to install it anyway." % (installed, number),
+        4,
+    )
+
+
 def main(argv):
-    """Run one builder step: signing-identity or keychain-preflight."""
-    commands = ("signing-identity", "keychain-preflight")
-    if len(argv) != 2 or argv[1] not in commands:
+    """Run one builder step: signing-identity, keychain-preflight or build-identity.
+
+    build-identity CONFIGURATION [INSTALLED_APP ALLOW_OLDER] prints KEY=VALUE lines.
+    MUSTER_BUILD_NUMBER overrides the number and MUSTER_BUILD_CHANNEL names the channel.
+    """
+    commands = ("signing-identity", "keychain-preflight", "build-identity")
+    valid = len(argv) == 2 and argv[1] in commands[:2]
+    valid = valid or (len(argv) in (3, 5) and argv[1] == "build-identity")
+    if not valid:
         print("Usage: build_support.py [%s]" % "|".join(commands), file=sys.stderr)
         return 2
     try:
         if argv[1] == "signing-identity":
             fingerprint, team = select_signing_identity(os.environ.get("MUSTER_SIGNING_IDENTITY"))
             print(fingerprint, team)
+        elif argv[1] == "build-identity":
+            identity = build_identity(
+                Path(__file__).resolve().parent.parent,
+                argv[2],
+                channel=os.environ.get("MUSTER_BUILD_CHANNEL"),
+                override=os.environ.get("MUSTER_BUILD_NUMBER"),
+            )
+            if len(argv) == 5:
+                refuse_older(argv[3], identity["BUILD_NUMBER"], argv[4] == "1")
+            for key, value in identity.items():
+                print("%s=%s" % (key, value))
         else:
             check_keychain_search_list()
     except BuildFailure as failure:
