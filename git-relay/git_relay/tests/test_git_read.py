@@ -134,29 +134,47 @@ class GitReadTest(unittest.TestCase):
         self.assertEqual(resp.status, 200)
         self.assertEqual(data, b"pack-data")
         self.assertEqual(resp.getheader("Content-Type"), git_read._ADVERTISE)
-        self.assertEqual(self.relay.app_minter.calls, [("swu-claude", "Simple-With-Us/Fleet-OPS", {"contents": "read"})])
+        self.assertEqual(
+            self.relay.app_minter.calls,
+            [("swu-claude", "Simple-With-Us/Fleet-OPS", {"contents": "read"})],
+        )
         method, path, _body, headers = self.upstream.requests[0]
-        self.assertEqual((method, path), ("GET", "/Simple-With-Us/Fleet-OPS.git/info/refs?service=git-upload-pack"))
+        self.assertEqual(
+            (method, path),
+            ("GET", "/Simple-With-Us/Fleet-OPS.git/info/refs?service=git-upload-pack"),
+        )
         expected = base64.b64encode(f"x-access-token:{APP_TOKEN}".encode()).decode()
         self.assertEqual(headers["Authorization"], "Basic " + expected)
         self.assertEqual(headers["Git-Protocol"], "version=2")
         self.assertNotIn(BEARER, json.dumps(headers))
         self.assertNotIn(APP_TOKEN.encode(), data)
-        self.assertEqual(self.relay.audit.rows[0][:4], ("CLAUDE", "git_read", "Simple-With-Us/Fleet-OPS", "ok"))
+        self.assertEqual(
+            self.relay.audit.rows[0][:4], ("CLAUDE", "git_read", "Simple-With-Us/Fleet-OPS", "ok")
+        )
         self.assertNotIn(APP_TOKEN, json.dumps(self.relay.audit.rows))
 
     def test_a_remote_written_without_dot_git_reaches_the_same_repo(self):
         port = self.serve(Relay())
-        resp, _ = self.call(port, "GET", "/git/Simple-With-Us/Fleet-OPS/info/refs?service=git-upload-pack")
+        resp, _ = self.call(
+            port, "GET", "/git/Simple-With-Us/Fleet-OPS/info/refs?service=git-upload-pack"
+        )
         self.assertEqual(resp.status, 200)
-        self.assertEqual(self.upstream.requests[0][1], "/Simple-With-Us/Fleet-OPS.git/info/refs?service=git-upload-pack")
+        self.assertEqual(
+            self.upstream.requests[0][1],
+            "/Simple-With-Us/Fleet-OPS.git/info/refs?service=git-upload-pack",
+        )
 
     def test_upload_pack_forwards_the_body(self):
         upstream = FakeUpstream(content_type=git_read._RESULT, body=b"PACK")
         port = self.serve(Relay(), upstream)
-        resp, data = self.call(port, "POST", self.PACK, body=b"0000", headers={"Content-Type": git_read._REQUEST})
+        resp, data = self.call(
+            port, "POST", self.PACK, body=b"0000", headers={"Content-Type": git_read._REQUEST}
+        )
         self.assertEqual((resp.status, data), (200, b"PACK"))
-        self.assertEqual(upstream.requests[0][:3], ("POST", "/Simple-With-Us/Fleet-OPS.git/git-upload-pack", b"0000"))
+        self.assertEqual(
+            upstream.requests[0][:3],
+            ("POST", "/Simple-With-Us/Fleet-OPS.git/git-upload-pack", b"0000"),
+        )
 
     def test_push_is_refused_on_every_shape(self):
         port = self.serve(Relay())
@@ -229,10 +247,16 @@ class GitReadTest(unittest.TestCase):
 
     def test_upload_needs_its_content_type_and_a_length(self):
         port = self.serve(Relay())
-        resp, _ = self.call(port, "POST", self.PACK, body=b"0000", headers={"Content-Type": "text/plain"})
+        resp, _ = self.call(
+            port, "POST", self.PACK, body=b"0000", headers={"Content-Type": "text/plain"}
+        )
         self.assertEqual(resp.status, 415)
         resp, _ = self.call(
-            port, "POST", self.PACK, body=b"", headers={"Content-Type": git_read._REQUEST, "Content-Length": "0"}
+            port,
+            "POST",
+            self.PACK,
+            body=b"",
+            headers={"Content-Type": git_read._REQUEST, "Content-Length": "0"},
         )
         self.assertEqual(resp.status, 411)
 
