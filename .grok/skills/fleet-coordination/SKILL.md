@@ -10,7 +10,7 @@ description: Comprehensive master skill for multi-agent fleet operations across 
 > **Runtime fork (Grok).**  Mac Grok TUI / CLI is `[GROK]`, and so is Grok Build: one seat (owner 2026-10-08), and everything is signed `GROK`.  Its Zulip display name is `Grok`.  GROK followed by BUILD, any letter case, with any non-letter, non-digit symbols between or after (GROK-BUILD, Grok (Build), grok_build), is an alias for GROK (owner 2026-10-10): the tools accept it as a seat name and sign GROK, so do not write it as a tag, a branch prefix or a lane folder.  Old `grok-build/` branches stay readable.  Grok Bot (Cursor cloud) uses `[GB-<NAME>]` role tags, not this pack and not `[GROK-BOT]`.  Never `[MONET]`.
 
 
-Canonical reference: `/Users/jay/apps/FLEET-PROTOCOL.md`.  Linear is the system of record (owner 2026-10-10) and the effort logs are archived (`/Users/jay/apps/EFFORT-LOG-PROTOCOL.md` is a retired stub).  
+Canonical reference: `~/apps/FLEET-PROTOCOL.md`.  Linear is the system of record (owner 2026-10-10) and the effort logs are archived (`~/apps/EFFORT-LOG-PROTOCOL.md` is a retired stub).  
 Chat mechanics: `docs/protocols/zulip-fleet-guide.md` in AI-Fleet-Coordinator.  Slack is retired (hard cut, owner 2026-10-07); Zulip realm `https://simplewithus.zulipchat.com` is the only agent chat.  Coordination channel: Zulip `#Work-In-Progress`, where a topic is the thread.
 
 This skill governs how autonomous AI agents collaborate across the entire application fleet (Socratic.Trade, Congress.Trade, Usage-Monitor, congress-trading-shared, DealDex, Personal-Site, Autorotate, ContactLogo, and AI-Fleet-Coordinator).
@@ -93,7 +93,7 @@ Every agent session must start with systematic orientation before touching code:
 
 ## 2. Lanes (Where You Work)
 
-**Strict Rule:** NEVER work directly in `/Users/jay/Code/<Repo>` root checkouts.  The root checkouts in `~/Code/` are shared review bases and must remain clean on `main`.
+**Strict Rule:** NEVER work directly in `~/Code/<Repo>` root checkouts.  The root checkouts in `~/Code/` are shared review bases and must remain clean on `main`.
 
 Never clone a fleet repo, or add a worktree of one, in `/tmp`, `/private/tmp`, `/var/tmp`, `$TMPDIR`, or `/var/folders`.
 
@@ -133,7 +133,7 @@ Before starting substantial work, reserve your lane on two durable surfaces:
 
 ## 4. Secret Safety & The Secrets-File Grep Trap
 
-**Fleet keys:** read with `fleet-secrets` (Infisical Fleet-OPS).  The flat file `/Users/jay/.secrets/global-api-keys` is retired in favor of `fleet-secrets` and nothing may read it.
+**Fleet keys:** read with `fleet-secrets` (Infisical Fleet-OPS).  The flat file `~/.secrets/global-api-keys` is retired in favor of `fleet-secrets` and nothing may read it.
 **Sole Runtime Truth:** **Infisical** is the source of truth for all deployed app runtime secrets.
 
 ### Strict Grep Trap Ban (2026-08-14):
@@ -183,9 +183,9 @@ All plans, design docs, rollouts, audits, and completion notes for owner review 
 3. **Second Line:** Timestamp `Day, Mon D, h:mmam|pm · PR #<num>`.
 4. **Helper Script:**
    ```bash
-   /Users/jay/apps/apple-notes-coding.sh "Title" "HTML or markdown body"
+   ~/apps/apple-notes-coding.sh "Title" "HTML or markdown body"
    # To update in place:
-   /Users/jay/apps/apple-notes-coding.sh --update "Title" "Updated body"
+   ~/apps/apple-notes-coding.sh --update "Title" "Updated body"
    ```
 5. **Session id:** `apple-notes-coding.sh` and the `notes_create` / `notes_update` tools refuse without one.  Pass your session id (section 3) with `--session <id>`, or let the helper read `AGENT_SESSION` or your platform's variable.
 
@@ -206,7 +206,7 @@ Follow the "Always Commit + Land Finished Work" discipline:
    git push -u origin HEAD
    gh pr create --fill
    ```
-   The relay tools `open_pr` and `edit_pr` cover this once git-relay is live (section 1, item 5); until the owner decides the cutover, `gh` is the path that works.
+   The relay tools `gr_open_pr` and `gr_edit_pr` cover this (section 1, item 5); they are live (verified Nov 4 2026), and a personal `gh` credential is not the fleet's route.
 3. **Review Before Auto-Merge:**
    - Request Codex review for the current PR head.  Triage every review thread against that head, fixing real findings or replying with a specific reason before resolving threads.  A reply on a thread is `reply_thread` and a resolved thread is `resolve_thread` on the relay; today they are the `gh` GraphQL calls in `codex-triage`.
    - Never ask Codex to fix a PR or push code unless Jay approves that specific request.
@@ -238,5 +238,5 @@ Once PR merges to `main`:
 ## 9. Mac Local Processes Registry
 
 If you create, change, load, bootout, or retire a LaunchAgent, cron job, pm2 process, or shared helper script:
-- Update `/Users/jay/apps/MAC-LOCAL-PROCESSES.md`.
+- Update `~/apps/MAC-LOCAL-PROCESSES.md`.
 - Update Apple Note: `apple-notes-coding.sh --update "⭐️ Background Jobs Master List"`.

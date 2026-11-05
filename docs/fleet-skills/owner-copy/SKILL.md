@@ -5,7 +5,7 @@ description: Fleet human-facing prose — two spaces between sentences (a real U
 
 # Owner-facing copy (MONET)
 
-Canonical detail: `/Users/jay/apps/FLEET-UI-COPY.md`.  Policy: `/Users/jay/apps/FLEET-PROTOCOL.md` § Two spaces, timestamps, TestFlight metadata.
+Canonical detail: `~/apps/FLEET-UI-COPY.md`.  Policy: `~/apps/FLEET-PROTOCOL.md` § Two spaces, timestamps, TestFlight metadata.
 
 ## Two spaces between sentences
 
@@ -98,6 +98,6 @@ Product UI times are the **viewer's** timezone except market-day accounting (Chi
 
 ## Canon
 
-- `/Users/jay/apps/FLEET-UI-COPY.md`
-- `/Users/jay/apps/FLEET-PROTOCOL.md` § Two spaces; Theme via FLEET-UI-COPY; TestFlight template
+- `~/apps/FLEET-UI-COPY.md`
+- `~/apps/FLEET-PROTOCOL.md` § Two spaces; Theme via FLEET-UI-COPY; TestFlight template
 - Skills: `apple-notes`, `sentence-gap`, `closeout`

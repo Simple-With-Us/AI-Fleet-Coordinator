@@ -42,12 +42,12 @@ Write the reference the way you would say it and the helper links it (owner 2026
 ## Helper (the Mac)
 
 ```bash
-/Users/jay/apps/apple-notes-coding.sh "Title" "plain body"
-/Users/jay/apps/apple-notes-coding.sh "Title" --html /path/to/body.html
-/Users/jay/apps/apple-notes-coding.sh --update "Title" "body"
-/Users/jay/apps/apple-notes-coding.sh --update "Title" --html /path/to/body.html
-/Users/jay/apps/apple-notes-coding.sh --pin-only "Exact Title"
-/Users/jay/apps/apple-notes-coding.sh --unpin-only "Exact Title"
+~/apps/apple-notes-coding.sh "Title" "plain body"
+~/apps/apple-notes-coding.sh "Title" --html /path/to/body.html
+~/apps/apple-notes-coding.sh --update "Title" "body"
+~/apps/apple-notes-coding.sh --update "Title" --html /path/to/body.html
+~/apps/apple-notes-coding.sh --pin-only "Exact Title"
+~/apps/apple-notes-coding.sh --unpin-only "Exact Title"
 ```
 
 Also: `--notify` / `--pushover`, `--needs-owner` / `--action-required`, `--summary "one sentence"`, `--pr "18"`.
@@ -124,7 +124,7 @@ Background-jobs inventory note is `⭐️ Background Jobs Master List` — refre
 
 ## Canon
 
-- `/Users/jay/apps/FLEET-PROTOCOL.md` § Apple Notes
+- `~/apps/FLEET-PROTOCOL.md` § Apple Notes
 - Skills: `closeout`, `owner-copy`
 
 ### Handoff Reports (Immediate & Living)
