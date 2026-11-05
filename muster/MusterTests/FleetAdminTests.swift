@@ -187,6 +187,51 @@ final class FleetAdminTests: XCTestCase {
         XCTAssertEqual(admin.lastResult?.reason, "nothing answers on its port on the Mac yet")
     }
 
+    /// A probe that could not tell is not a port that answered,  and not one still held.
+    func testARestartWhosePortCannotBeReadIsNotKnown() async {
+        let commands = FleetAdminCommands()
+        commands.serverWrapperRuns = true
+        let server = FleetAdminServer()
+        let admin = makeAdmin(commands: commands, server: server, wrapperInstalled: true,
+                              startWait: ServerPortWait(attempts: 2, interval: 0))
+        await waitForTheFleet(admin)
+        server.portCannotBeRead()
+
+        await admin.perform(.restart, serviceID: FleetServiceRegistry.server.id)
+
+        XCTAssertEqual(admin.lastResult?.succeeded, false)
+        XCTAssertEqual(admin.lastResult?.notKnown, true)
+        XCTAssertEqual(admin.problem,
+                       "Whether BotFleet Server restarted on the Mac is not known:  its port on the Mac could not be read")
+    }
+
+    func testAStopWhosePortCannotBeReadIsNotKnown() async {
+        let server = FleetAdminServer()
+        let admin = makeAdmin(commands: FleetAdminCommands(), server: server,
+                              stopWait: ServerPortWait(attempts: 2, interval: 0))
+        await waitForTheFleet(admin)
+        server.portCannotBeRead()
+
+        await admin.perform(.stop, serviceID: FleetServiceRegistry.server.id)
+
+        XCTAssertEqual(admin.lastResult?.notKnown, true)
+        XCTAssertEqual(admin.lastResult?.reason, "its port on the Mac could not be read")
+    }
+
+    /// A port still held is known,  so it stays a stop that did not land.
+    func testAStopWhosePortStaysOpenDidNotLand() async {
+        let server = FleetAdminServer()
+        let admin = makeAdmin(commands: FleetAdminCommands(), server: server,
+                              stopWait: ServerPortWait(attempts: 2, interval: 0))
+        await waitForTheFleet(admin)
+        server.closePort(forLooks: 0) // Answers on every look,  even after the stop.
+
+        await admin.perform(.stop, serviceID: FleetServiceRegistry.server.id)
+
+        XCTAssertEqual(admin.lastResult?.notKnown, false)
+        XCTAssertEqual(admin.problem, "BotFleet Server did not stop on the Mac:  its port on the Mac is still answering")
+    }
+
     func testAStartWaitsAsLongAsAnyOtherServiceAndLongerThanAStop() {
         XCTAssertEqual(Double(ServerPortWait.start.attempts) * ServerPortWait.start.interval, 20)
         XCTAssertLessThan(Double(ServerPortWait.stop.attempts) * ServerPortWait.stop.interval, 20)
@@ -414,6 +459,8 @@ final class FleetAdminServer {
     private var work: String?
     /// How many more looks find the port closed.  Nil when the port follows the server.
     private var closedLooks: Int?
+    /// True when the probe cannot tell.
+    private var unreadable = false
 
     /// The `blockingWork` value the server's status carries,  as JSON,  or nil for none.
     var blockingWorkJSON: String? {
@@ -472,6 +519,13 @@ final class FleetAdminServer {
         state.unlock()
     }
 
+    /// Every look from now on cannot tell.
+    func portCannotBeRead() {
+        state.lock()
+        unreadable = true
+        state.unlock()
+    }
+
     /// What the port says.
     ///
     /// The server is up until it is asked to stop,  and it lets go of the port a
@@ -480,6 +534,7 @@ final class FleetAdminServer {
     func presence() -> ServerPresence {
         state.lock()
         defer { state.unlock() }
+        if unreadable { return .unknown }
         if let closed = closedLooks {
             guard closed > 0 else { return .present }
             closedLooks = closed - 1

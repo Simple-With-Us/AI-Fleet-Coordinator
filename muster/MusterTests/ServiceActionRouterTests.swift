@@ -256,6 +256,8 @@ final class ServiceActionRouterTests: XCTestCase {
                                startup: startup,
                                presence: ServerPresenceProbe(port: server.port, connect: { _ in server.presence() }),
                                api: api,
+                               stopWait: ServerPortWait(attempts: 8, interval: 0),
+                               startWait: ServerPortWait(attempts: 8, interval: 0),
                                refreshInterval: nil)
         let runner = RouterRunner(yes: yes, exit: exit)
         let controller = OpsController(
@@ -573,6 +575,18 @@ final class ServiceActionRouterTests: XCTestCase {
         }
         try await waitUntil { !rig.notices.posts.isEmpty }
         XCTAssertTrue(rig.notices.posts.first?.contains("BotFleet Server stopped on the Mac at") == true)
+    }
+
+    func testADirectStopWhosePortCannotBeReadIsNotKnownAndReadsOnce() async throws {
+        let rig = await makeRig()
+        rig.server.portCannotBeRead()
+        let stop = try action(.stop, FleetServiceRegistry.server.id, on: rig)
+        rig.router.start(stop)
+        try await waitUntil { !rig.router.isBusy && rig.router.actionState != nil }
+        XCTAssertEqual(rig.router.actionState,
+                       .notKnown(stop.subject, reason: "its port on the Mac could not be read"))
+        XCTAssertEqual(panelProblem(rig),
+                       "Whether BotFleet Server stopped on the Mac is not known:  its port on the Mac could not be read")
     }
 
     func testADeclinedAlertRunsNothing() async throws {

@@ -480,7 +480,7 @@ final class OpsResultParserTests: XCTestCase {
 
     func test_ssh_errors_are_put_in_fixed_words() {
         let unresolved = OpsResultParser.parse(
-            result("", exit: 255, stderr: "ssh: Could not resolve hostname fleet-ops-ctl: nodename nor servname provided"),
+            result("", exit: 255, stderr: "ssh: Could not resolve hostname server.test: nodename nor servname provided"),
             mode: .plan, action: unit, timeout: 90
         )
         XCTAssertEqual(unresolved.kind, .failed)

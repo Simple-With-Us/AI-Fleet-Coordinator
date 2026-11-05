@@ -38,6 +38,9 @@ struct FleetActionResult: Equatable {
     let succeeded: Bool
     /// Why it did not,  in the owner's words.
     let reason: String?
+    /// True when the Mac could not tell where the service ended,  which is not the same as
+    /// the action not landing.
+    let notKnown: Bool
     /// When it ended.
     let at: Date
 }
@@ -296,6 +299,8 @@ final class FleetAdmin: ObservableObject {
         let previous = ownerStops.ids
         ownerStops.record(action, id: serviceID)
         var reason: String?
+        var notKnown = false
+        let portUnread = "its port on the Mac could not be read"
         do {
             let observed = try await control.perform(action, serviceID: serviceID)
             if serviceID == FleetServiceRegistry.server.id {
@@ -305,12 +310,23 @@ final class FleetAdmin: ObservableObject {
                 // The port can say it,  so a stop waits for the port to close,  a start
                 // or a restart waits for it to answer,  and the read that follows reports
                 // the server as it really is.
+                // A probe that could not tell is not evidence either way.
                 if action == .stop {
-                    let gone = await Self.waitForTheServerToGo(presence: presence, wait: stopWait)
-                    if !gone { reason = "its port on the Mac is still answering" }
+                    switch await Self.watchThePort(until: .absent, presence: presence, wait: stopWait) {
+                    case .absent: break
+                    case .present: reason = "its port on the Mac is still answering"
+                    case .unknown:
+                        reason = portUnread
+                        notKnown = true
+                    }
                 } else if action == .start || action == .restart {
-                    let there = await Self.waitForTheServerToAnswer(presence: presence, wait: startWait)
-                    if !there { reason = "nothing answers on its port on the Mac yet" }
+                    switch await Self.watchThePort(until: .present, presence: presence, wait: startWait) {
+                    case .present: break
+                    case .absent: reason = "nothing answers on its port on the Mac yet"
+                    case .unknown:
+                        reason = portUnread
+                        notKnown = true
+                    }
                 }
                 // The state the manager reported is the launchd view of a wrapper,
                 // so it is not what the owner is shown.
@@ -325,10 +341,15 @@ final class FleetAdmin: ObservableObject {
         }
         if let reason {
             ownerStops.restore(previous)
-            problem = "\(FleetActionWords.didNot(action, title: service.title, host: service.host)):  \(reason)"
+            if notKnown {
+                let subject = ServiceActionSubject(title: service.title, host: service.host, action: action)
+                problem = FleetActionWords.line(for: .notKnown(subject, reason: reason))
+            } else {
+                problem = "\(FleetActionWords.didNot(action, title: service.title, host: service.host)):  \(reason)"
+            }
         }
         lastResult = FleetActionResult(serviceID: serviceID, title: service.title, action: action,
-                                       succeeded: reason == nil, reason: reason, at: Date())
+                                       succeeded: reason == nil, reason: reason, notKnown: notKnown, at: Date())
         await refresh()
     }
 
@@ -374,30 +395,20 @@ final class FleetAdmin: ObservableObject {
         }
     }
 
-    /// Waits for the BotFleet Server's port to close.
+    /// Watches the BotFleet Server's port until it reads as wanted,  or the budget runs out,
+    /// and says what the last look found.
     ///
-    /// The server's own stop is asynchronous,  and launchd does not own the process,
-    /// so the port is the only honest witness that the server has gone.  A server
-    /// that is still there when the budget runs out is left as it is:  the read that
-    /// follows reports it as unknown rather than as stopped.
-    @discardableResult
-    nonisolated static func waitForTheServerToGo(presence: ServerPresenceProbe,
-                                                 wait: ServerPortWait) async -> Bool {
+    /// The server's own stop and start are asynchronous,  and launchd does not own the
+    /// process,  so the port is the only honest witness.  A server that has not got there
+    /// when the budget runs out is left as it is,  and the read that follows reports it.
+    nonisolated static func watchThePort(until wanted: ServerPresence,
+                                         presence: ServerPresenceProbe,
+                                         wait: ServerPortWait) async -> ServerPresence {
         for _ in 0..<wait.attempts {
-            if presence.presence() == .absent { return true }
+            if presence.presence() == wanted { return wanted }
             try? await Task.sleep(nanoseconds: UInt64(wait.interval * 1_000_000_000))
         }
-        return presence.presence() == .absent
-    }
-
-    /// Waits for something to answer on the BotFleet Server's port after a start or a restart.
-    nonisolated static func waitForTheServerToAnswer(presence: ServerPresenceProbe,
-                                                     wait: ServerPortWait) async -> Bool {
-        for _ in 0..<wait.attempts {
-            if presence.presence() != .absent { return true }
-            try? await Task.sleep(nanoseconds: UInt64(wait.interval * 1_000_000_000))
-        }
-        return presence.presence() != .absent
+        return presence.presence()
     }
 
     /// Records whether the server should start at login.

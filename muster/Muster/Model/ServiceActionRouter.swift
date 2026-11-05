@@ -415,9 +415,15 @@ final class ServiceActionRouter: ObservableObject {
             actionState = nil
             return
         }
-        let state: ServiceActionState = result.succeeded
-            ? .done(action.subject, at: result.at)
-            : .failed(action.subject, reason: result.reason ?? "no reason was given.")
+        let reason = result.reason ?? "no reason was given."
+        let state: ServiceActionState
+        if result.succeeded {
+            state = .done(action.subject, at: result.at)
+        } else if result.notKnown {
+            state = .notKnown(action.subject, reason: reason)
+        } else {
+            state = .failed(action.subject, reason: reason)
+        }
         actionState = state
         // The menu closed on the click,  so a notice is how the owner hears how it went.
         let notifier = self.notifier
