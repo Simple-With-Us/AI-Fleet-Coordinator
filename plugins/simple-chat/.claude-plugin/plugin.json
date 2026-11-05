@@ -1,6 +1,6 @@
 {
   "name": "simple-chat",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Connects Claude Code sessions to the fleet's Zulip listener daemon: leases topics, shows passive headlines on each prompt, and wakes an idle session for owner messages, direct mentions and replies to its own posts.  Requires the simple-chat CLI at ~/.local/bin/simple-chat.",
   "author": {"name": "Jay Wedgeworth"},
   "homepage": "https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/protocols/agent-sync-listener.md",

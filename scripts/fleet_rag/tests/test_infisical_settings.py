@@ -28,6 +28,7 @@ SECRETS = ("API_TOKEN",)
 # A well-shaped Infisical service token:  the st. prefix, no whitespace, 20 to 2048
 # characters.  It is a fixture, not a credential.
 SERVICE_TOKEN = "st." + "s3rv1c3t0k3nf1gurat10n"
+WRITER_TOKEN = "st." + "separatewr1tert0k3nf1gurat10n"
 
 
 class _FakeHTTPResponse:
@@ -41,7 +42,7 @@ class _FakeHTTPResponse:
     def __exit__(self, *exc):
         return False
 
-    def read(self):
+    def read(self, limit=None):
         return json.dumps(self._payload).encode()
 
 
@@ -78,6 +79,9 @@ class _HttpWorld:
             if self.login_tokens:
                 return _FakeHTTPResponse(200, {"accessToken": self.login_tokens.pop(0)})
             return _FakeHTTPResponse(200, {"accessToken": "tok-1"})
+        if path == "/api/v2/service-token":
+            return _FakeHTTPResponse(200, {"workspace": PROJECT, "permissions": ["read", "write"] if auth == "Bearer " + WRITER_TOKEN else ["read"],
+                "scopes": [{"environment": "prod", "secretPath": "/"}], "expiresAt": None})
         if path.startswith("/api/v3/secrets/raw"):
             if method == "GET":
                 if self.fail_fetch:
@@ -86,7 +90,7 @@ class _HttpWorld:
                         raise item
                     return _FakeHTTPResponse(item, {})
                 return _FakeHTTPResponse(200, {
-                    "secrets": [{"secretKey": k, "secretValue": v}
+                    "secrets": [{"secretKey": k, "secretValue": v, "type": "shared"}
                                 for k, v in self.secrets.items()]})
             # Writes go to PATCH|POST /api/v3/secrets/raw/<key> with secretValue in the body
             # (mirrors the fleet TypeScript pilot: PATCH first, POST on 404).
@@ -118,18 +122,19 @@ class _SettingsCase(unittest.TestCase):
         self.world = _HttpWorld()
         self._urlopen = mock.patch("urllib.request.urlopen", self.world)
         self._urlopen.start()
+        from types import SimpleNamespace
+        self._opener = mock.patch("fleet_secrets.core._opener", side_effect=lambda: SimpleNamespace(open=lambda *a, **kw: urllib.request.urlopen(*a, **kw)))
+        self._opener.start()
         self._env = mock.patch.dict(os.environ, {
-            "INFISICAL_AUTOMATION_CLIENT_ID": "cid",
-            "INFISICAL_AUTOMATION_CLIENT_SECRET": "csec",
+            "INFISICAL_TOKEN": SERVICE_TOKEN,
+            "INFISICAL_WRITE_TOKEN": WRITER_TOKEN,
         }, clear=False)
         self._env.start()
-        # The ambient environment must not carry a service token in, or every case
-        # below would run on the token path instead of the one it means to test.
-        os.environ.pop("INFISICAL_TOKEN", None)
 
     def tearDown(self):
         mod.stop_refresh()
         self._urlopen.stop()
+        self._opener.stop()
         self._env.stop()
         mod.reset_for_tests()
 
@@ -171,14 +176,9 @@ class InitTests(_SettingsCase):
         self.assertIn("INFISICAL.md", str(ctx.exception))
 
     def test_no_identity_falls_back_to_env_without_network(self):
-        with mock.patch.object(mod, "IDENTITY_FILE_DEFAULT",
-                               pathlib.Path("/nonexistent-identity-file.json")), \
-             mock.patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("INFISICAL_AUTOMATION_CLIENT_ID", None)
-            os.environ.pop("INFISICAL_AUTOMATION_CLIENT_SECRET", None)
-            os.environ.pop("INFISICAL_SHARED_CLIENT_ID", None)
-            os.environ.pop("INFISICAL_SHARED_CLIENT_SECRET", None)
-            os.environ.pop("INFISICAL_MACHINE_IDENTITY", None)
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("INFISICAL_TOKEN", None)
+            os.environ.pop("INFISICAL_WRITE_TOKEN", None)
             self.world.secrets = {"API_TOKEN": "should-not-be-read"}
             s = self.make()
             with mock.patch.dict(os.environ, {"API_TOKEN": "env-tok", "TIMEOUT_S": "3"}):
@@ -202,6 +202,48 @@ class InitTests(_SettingsCase):
         s = self.make()
         s.init()
         self.assertIsNone(s.get("SOME_RANDOM_KEY"))
+
+    def test_unmanaged_reference_template_does_not_block_managed_settings(self):
+        self.world.secrets = {"API_TOKEN": "tok", "SOME_RANDOM_KEY": "prefix-${prod.other.SECRET}"}
+        s = self.make()
+        s.init()
+        self.assertEqual(s.get("API_TOKEN"), "tok")
+        self.assertIsNone(s.get("SOME_RANDOM_KEY"))
+        self.assertEqual([call[1].split("?")[0] for call in self.world.calls],
+                         ["/api/v2/service-token", "/api/v3/secrets/raw"])
+
+    def test_managed_reference_is_refused_without_environment_fallback(self):
+        for value in ("${prod.other.SECRET}", "prefix-${prod.other.SECRET}-suffix"):
+            with self.subTest(value=value):
+                self.world.secrets = {"API_TOKEN": value}
+                s = self.make()
+                with mock.patch.dict(os.environ, {"API_TOKEN": "env-must-not-win"}):
+                    with self.assertRaisesRegex(mod.SettingsError, "scope validation"):
+                        s.init()
+
+    def test_unmanaged_record_still_requires_valid_provenance(self):
+        s = self.make()
+        with mock.patch.object(s, "_request", side_effect=[
+            (200, {"workspace": PROJECT, "permissions": ["read"],
+                   "scopes": [{"environment": "prod", "secretPath": "/"}], "expiresAt": None}),
+            (200, {"secrets": [{"secretKey": "SOME_RANDOM_KEY", "secretValue": "ignored",
+                                "type": "shared", "workspace": "wrong-project"}]}),
+        ]):
+            with self.assertRaisesRegex(mod.SettingsError, "scope validation"):
+                s.init()
+
+    def test_duplicate_managed_or_unmanaged_records_are_refused(self):
+        for key in ("API_TOKEN", "SOME_RANDOM_KEY"):
+            with self.subTest(key=key):
+                s = self.make()
+                record = {"secretKey": key, "secretValue": "synthetic", "type": "shared"}
+                with mock.patch.object(s, "_request", side_effect=[
+                    (200, {"workspace": PROJECT, "permissions": ["read"],
+                           "scopes": [{"environment": "prod", "secretPath": "/"}], "expiresAt": None}),
+                    (200, {"secrets": [record, dict(record)]}),
+                ]):
+                    with self.assertRaisesRegex(mod.SettingsError, "scope validation"):
+                        s.init()
 
 
 class WriteThroughTests(_SettingsCase):
@@ -243,17 +285,15 @@ class WriteThroughTests(_SettingsCase):
         methods = [c[0] for c in self.world.calls if c[1].endswith("/TIMEOUT_S")]
         self.assertEqual(methods, ["PATCH"])   # no POST when the key exists
 
-    def test_set_relogins_once_on_401_mid_write(self):
+    def test_set_does_not_retry_401_with_another_credential(self):
         self.world.secrets = {"API_TOKEN": "tok", "TIMEOUT_S": "9"}
         s = self.make()
         s.init()
-        logins_before = sum(1 for c in self.world.calls if c[1].endswith("/login"))
         self.world.patch_statuses.append(401)
-        s.set("TIMEOUT_S", "42")
-        self.assertEqual(s.get("TIMEOUT_S"), "42")
-        self.assertEqual(self.world.secrets["TIMEOUT_S"], "42")
-        logins_after = sum(1 for c in self.world.calls if c[1].endswith("/login"))
-        self.assertEqual(logins_after, logins_before + 1)
+        with self.assertRaises(mod.SettingsError):
+            s.set("TIMEOUT_S", "42")
+        self.assertEqual(s.get("TIMEOUT_S"), "9")
+        self.assertEqual(self.world.login_calls, 0)
 
     def test_failed_write_rejects_and_leaves_cache(self):
         self.world.secrets = {"API_TOKEN": "tok", "TIMEOUT_S": "9"}
@@ -271,15 +311,10 @@ class WriteThroughTests(_SettingsCase):
         with self.assertRaises(mod.SettingsError):
             s.set("NOT_MANAGED", "x")
 
-    def test_set_requires_identity(self):
+    def test_set_requires_explicit_writer_token(self):
         s = self.make()
-        with mock.patch.object(mod, "IDENTITY_FILE_DEFAULT",
-                               pathlib.Path("/nonexistent-identity-file.json")), \
-             mock.patch.dict(os.environ, {}, clear=False):
-            for v in ("INFISICAL_AUTOMATION_CLIENT_ID", "INFISICAL_AUTOMATION_CLIENT_SECRET",
-                      "INFISICAL_SHARED_CLIENT_ID", "INFISICAL_SHARED_CLIENT_SECRET",
-                      "INFISICAL_MACHINE_IDENTITY"):
-                os.environ.pop(v, None)
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("INFISICAL_WRITE_TOKEN", None)
             with self.assertRaises(mod.SettingsError):
                 s.set("TIMEOUT_S", "1")
 
@@ -339,15 +374,14 @@ class RefreshTests(_SettingsCase):
         self.assertEqual(s.get("TIMEOUT_S"), "9")
         self.assertEqual(s.get("API_TOKEN"), "tok")
 
-    def test_refresh_relogins_once_on_401(self):
+    def test_refresh_401_keeps_cache_without_login(self):
         self.world.secrets = {"API_TOKEN": "tok"}
         s = self.make()
         s.init()
         calls_before = self.world.network_calls
         self.world.fail_fetch.append(401)          # first GET -> 401
-        self.assertTrue(s.refresh())
-        # 401, re-login, retry: three more calls.
-        self.assertEqual(self.world.network_calls, calls_before + 3)
+        self.assertFalse(s.refresh())
+        self.assertEqual(self.world.network_calls, calls_before + 2)
         self.assertEqual(s.get("API_TOKEN"), "tok")
 
     def test_background_thread_refreshes_and_stops(self):
@@ -386,7 +420,7 @@ class ServiceTokenTests(_SettingsCase):
 
     def _with_token(self, token):
         """The service token in the environment, with the automation pair still set."""
-        return mock.patch.dict(os.environ, {"INFISICAL_TOKEN": token}, clear=False)
+        return mock.patch.dict(os.environ, {"INFISICAL_TOKEN": token, "INFISICAL_WRITE_TOKEN": WRITER_TOKEN}, clear=False)
 
     def _logins(self):
         return [c for c in self.world.calls if c[1].endswith("/login")]
@@ -398,7 +432,7 @@ class ServiceTokenTests(_SettingsCase):
             s.init()
         self.assertEqual(s.get("API_TOKEN"), "tok")
         # One call, and it is the secrets fetch:  the pair was never logged in with.
-        self.assertEqual(self.world.network_calls, 1)
+        self.assertEqual(self.world.network_calls, 2)
         self.assertEqual(self.world.calls[0][0], "GET")
         self.assertEqual(self.world.calls[0][3], "Bearer " + SERVICE_TOKEN)
 
@@ -419,8 +453,8 @@ class ServiceTokenTests(_SettingsCase):
             with self.assertRaises(mod.SettingsError) as ctx:
                 s.init()
         self.assertIn("INFISICAL_TOKEN", str(ctx.exception))
-        # One call:  the 401 was not retried and no login was attempted.
-        self.assertEqual(self.world.network_calls, 1)
+        # Metadata verification plus one rejected read; no login or retry.
+        self.assertEqual(self.world.network_calls, 2)
         self.assertEqual(self._logins(), [])
 
     def test_401_on_the_token_path_names_what_to_check(self):
@@ -457,7 +491,7 @@ class ServiceTokenTests(_SettingsCase):
         writes = [c for c in self.world.calls if c[0] in ("PATCH", "POST")]
         self.assertTrue(writes)
         for _method, _path, _body, auth in writes:
-            self.assertEqual(auth, "Bearer " + SERVICE_TOKEN)
+            self.assertEqual(auth, "Bearer " + WRITER_TOKEN)
 
     def test_the_token_never_appears_in_an_exception_message(self):
         s = self.make()
@@ -510,12 +544,10 @@ class ServiceTokenTests(_SettingsCase):
 
     def test_no_credential_at_all_fails_closed(self):
         s = self.make()
-        with mock.patch.object(mod, "IDENTITY_FILE_DEFAULT",
-                               pathlib.Path("/nonexistent-identity-file.json")), \
-             mock.patch.dict(os.environ, {}, clear=False):
-            for var in ("INFISICAL_TOKEN", "INFISICAL_AUTOMATION_CLIENT_ID",
-                        "INFISICAL_AUTOMATION_CLIENT_SECRET", "INFISICAL_SHARED_CLIENT_ID",
-                        "INFISICAL_SHARED_CLIENT_SECRET", "INFISICAL_MACHINE_IDENTITY"):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            for var in ("INFISICAL_TOKEN", "INFISICAL_WRITE_TOKEN", "TEST_APP_CLIENT_ID",
+                        "TEST_APP_CLIENT_SECRET", "TEST_OTHER_APP_CLIENT_ID",
+                        "TEST_OTHER_APP_CLIENT_SECRET", "INFISICAL_MACHINE_IDENTITY"):
                 os.environ.pop(var, None)
             with mock.patch.dict(os.environ, {"API_TOKEN": "env-tok"}):
                 s.init()
@@ -576,15 +608,16 @@ class ServiceTokenTests(_SettingsCase):
         s = self.make()
         with self._with_token(SERVICE_TOKEN):
             s.init()
-        self.assertIsNone(s._access_token)
-        self.assertIsNone(s._credential_source)
+        self.assertFalse(hasattr(s, "_access_token"))
+        self.assertFalse(hasattr(s, "_credential_source"))
 
-    def test_the_machine_identity_caches_its_own_session_token(self):
+    def test_machine_identity_is_not_an_authentication_fallback(self):
         self.world.secrets = {"API_TOKEN": "tok"}
         s = self.make()
-        s.init()
-        self.assertEqual(s._access_token, "tok-1")
-        self.assertEqual(s._credential_source, mod.SOURCE_MACHINE_IDENTITY)
+        with mock.patch.dict(os.environ, {"INFISICAL_TOKEN": "", "INFISICAL_WRITE_TOKEN": "",
+                                         "TEST_APP_CLIENT_ID": "cid", "TEST_APP_CLIENT_SECRET": "secret"}):
+            self.assertEqual(s._credential(), (None, ""))
+        self.assertEqual(self.world.login_calls, 0)
 
     def test_a_reader_never_sees_a_token_paired_with_the_wrong_source(self):
         # The token and the source are one fact.  A reader that sees the
@@ -600,24 +633,20 @@ class ServiceTokenTests(_SettingsCase):
             while not stop.is_set():
                 seen.append(s._credential())
 
-        t = threading.Thread(target=reader, daemon=True)
-        t.start()
-        try:
-            for _ in range(50):
-                with self._with_token(SERVICE_TOKEN):
+        with self._with_token(SERVICE_TOKEN):
+            t = threading.Thread(target=reader, daemon=True)
+            t.start()
+            try:
+                for _ in range(50):
                     s.refresh()
-                s.refresh()
-        finally:
-            stop.set()
-            t.join(timeout=5)
+            finally:
+                stop.set()
+                t.join(timeout=5)
         self.assertFalse(t.is_alive())
         self.assertTrue(seen)
         for token, source in seen:
-            if source == mod.SOURCE_MACHINE_IDENTITY:
-                self.assertEqual(token, "tok-1")
-            else:
-                self.assertEqual(source, mod.SOURCE_SERVICE_TOKEN)
-                self.assertEqual(token, SERVICE_TOKEN)
+            self.assertEqual(source, mod.SOURCE_SERVICE_TOKEN)
+            self.assertEqual(token, SERVICE_TOKEN)
 
     def test_a_401_on_the_post_path_raises_the_service_token_message(self):
         # PATCH answers 404 for a key that is not there yet, so the write
@@ -635,106 +664,30 @@ class ServiceTokenTests(_SettingsCase):
         self.assertIn("check that the token is current", message)
         self.assertEqual(self._logins(), [])
 
-    def test_the_machine_identity_is_still_the_second_leg(self):
+    def test_the_machine_identity_is_ignored_without_a_service_token(self):
+        self.world.secrets = {"API_TOKEN": "tok"}
+        s = self.make()
+        with mock.patch.dict(os.environ, {"INFISICAL_TOKEN": "", "INFISICAL_WRITE_TOKEN": "",
+                                         "TEST_APP_CLIENT_ID": "cid", "TEST_APP_CLIENT_SECRET": "secret"}):
+            with self.assertRaises(mod.SettingsError):
+                s.set("TIMEOUT_S", "42")
+        self.assertEqual(self.world.login_calls, 0)
+
+
+class ConcurrentServiceTokenTests(_SettingsCase):
+    def test_concurrent_readers_use_only_the_bound_read_token(self):
         self.world.secrets = {"API_TOKEN": "tok"}
         s = self.make()
         s.init()
-        # No service token in the environment:  the pair is logged in with, as before.
-        self.assertEqual(len(self._logins()), 1)
-        fetch = [c for c in self.world.calls if c[0] == "GET"][0]
-        self.assertEqual(fetch[3], "Bear" + "er tok-1")
-
-
-class ConcurrentLoginTests(_SettingsCase):
-    """Concurrent callers share one universal-auth login.
-
-    A cold start with N callers used to fire N logins:  the cache check and
-    the login were not atomic, so every thread that missed the cache logged
-    in on its own.  That is latency and a rate-limit risk for no benefit,
-    because every one of them ends up holding the same token.
-    """
-
-    def _run_concurrently(self, fn, count=8):
-        """Run fn in count threads released together; return (results, errors)."""
-        results = []
-        errors = []
-        barrier = threading.Barrier(count)
-
-        def worker():
-            try:
-                barrier.wait(timeout=10)
-                results.append(fn())
-            except Exception as exc:  # noqa: BLE001 - the test wants the failure
-                errors.append(exc)
-
-        threads = [threading.Thread(target=worker) for _ in range(count)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=30)
-        self.assertFalse([t for t in threads if t.is_alive()], "a worker thread hung")
-        return results, errors
-
-    def test_concurrent_cold_start_callers_share_one_login(self):
-        self.world.login_delay = 0.05
-        self.world.login_tokens = ["tok-a"]
-        s = self.make()
-        results, errors = self._run_concurrently(lambda: s._credential())
-        self.assertEqual(errors, [])
-        self.assertEqual(len(results), 8)
-        self.assertEqual(self.world.login_calls, 1)
-        for token, source in results:
-            self.assertEqual(token, "tok-a")
-            self.assertEqual(source, mod.SOURCE_MACHINE_IDENTITY)
-
-    def test_concurrent_callers_that_share_a_stale_token_share_one_refresh(self):
-        # Every caller holds the same token and every one of them has been told
-        # it is stale.  They must still cost one login between them.
-        self.world.login_delay = 0.05
-        self.world.login_tokens = ["tok-a", "tok-b"]
-        s = self.make()
-        s._credential()
-        self.assertEqual(self.world.login_calls, 1)
-        results, errors = self._run_concurrently(
-            lambda: s._machine_session_token(stale_token="tok-a")
-        )
-        self.assertEqual(errors, [])
-        self.assertEqual(len(results), 8)
-        self.assertEqual(self.world.login_calls, 2)
-        for token in results:
-            self.assertEqual(token, "tok-b")
-
-    def test_a_stale_token_is_never_served_to_a_caller_that_asked_for_a_new_one(self):
-        self.world.login_tokens = ["tok-a", "tok-b"]
-        s = self.make()
-        s._credential()
-        self.assertEqual(s._access_token, "tok-a")
-        fresh = s._machine_session_token(stale_token="tok-a")
-        self.assertEqual(fresh, "tok-b")
-        self.assertEqual(s._access_token, "tok-b")
-
-    def test_a_slow_login_does_not_hold_the_cache_lock(self):
-        # The login runs under its own lock, so a reader that only wants the
-        # settings cache is never stuck behind a slow network call.
-        self.world.login_delay = 0.4
-        self.world.login_tokens = ["tok-a", "tok-b"]
-        self.world.secrets = {"API_TOKEN": "tok"}
-        s = self.make()
-        s.init()
-        started = threading.Event()
-
-        def slow_login():
-            started.set()
-            s._machine_session_token(stale_token="tok-a")
-
-        t = threading.Thread(target=slow_login)
-        t.start()
-        try:
-            self.assertTrue(started.wait(timeout=5))
-            self.assertEqual(s.get("API_TOKEN"), "tok")
-        finally:
-            t.join(timeout=30)
-        self.assertFalse(t.is_alive())
+        with mock.patch.dict(os.environ, {"INFISICAL_TOKEN": SERVICE_TOKEN}):
+            threads = [threading.Thread(target=s.refresh) for _ in range(8)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=10)
+        self.assertTrue(all(not thread.is_alive() for thread in threads))
+        self.assertEqual(self.world.login_calls, 0)
+        self.assertTrue(all(call[3] == "Bearer " + SERVICE_TOKEN for call in self.world.calls))
 
 
 class AdminListingTests(_SettingsCase):
@@ -784,7 +737,7 @@ class ModuleDefaultTests(_SettingsCase):
 
     def test_configure_init_set_roundtrip(self):
         self.world.secrets = {"API_TOKEN": "tok"}
-        mod.configure(project_id=PROJECT, environment=ENV, managed_keys=MANAGED,
+        mod.configure(project_id=PROJECT, identity_prefixes=("TEST_APP",), environment=ENV, managed_keys=MANAGED,
                       required_keys=REQUIRED, secret_keys=SECRETS)
         mod.init_settings()
         self.assertEqual(mod.get("API_TOKEN"), "tok")
@@ -797,12 +750,12 @@ class ProdOnlyTests(_SettingsCase):
     refused before any network call, while the last-known-good cache is kept."""
 
     def test_default_environment_is_prod(self):
-        s = mod.InfisicalSettings(project_id=PROJECT, managed_keys=MANAGED, required_keys=REQUIRED)
+        s = mod.InfisicalSettings(project_id=PROJECT, managed_keys=MANAGED, required_keys=REQUIRED, identity_prefixes=("TEST_APP",))
         self.assertEqual(s.environment, "prod")
         self.assertEqual(mod.PROD_ENVIRONMENT, "prod")
         self.world.secrets = {"API_TOKEN": "tok"}
         s.init()
-        fetch = [c for c in self.world.calls if c[0] == "GET"][0]
+        fetch = [c for c in self.world.calls if c[1].startswith("/api/v3/secrets/raw")][0]
         self.assertIn("environment=prod", fetch[1])
         self.assertNotIn("environment=dev", fetch[1])
 
@@ -821,12 +774,8 @@ class ProdOnlyTests(_SettingsCase):
         self.assertEqual(self.world.network_calls, 0)
 
     def test_refused_even_with_no_identity(self):
-        with mock.patch.dict(os.environ, {"INFISICAL_AUTOMATION_CLIENT_ID": "",
-                                          "INFISICAL_AUTOMATION_CLIENT_SECRET": ""}):
-            with mock.patch.object(mod.InfisicalSettings, "_identity_from_file",
-                                   return_value=(None, None)):
-                with self.assertRaises(mod.SettingsError):
-                    self.make(environment="dev").init()
+        with self.assertRaises(mod.SettingsError):
+            self.make(environment="dev").init()
         self.assertEqual(self.world.network_calls, 0)
 
     def test_set_refuses_non_prod_and_writes_nothing(self):

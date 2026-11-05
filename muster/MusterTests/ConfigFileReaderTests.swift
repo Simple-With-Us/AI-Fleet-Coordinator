@@ -193,4 +193,21 @@ final class ConfigFileReaderTests: XCTestCase {
             ConfigFileReader.looksLikeSecretValue("/Users/jay/apps/lane-tools/fleet-guard-hook")
         )
     }
+
+    /// A config file larger than the panel's limit is shown truncated, and only
+    /// the first slice of it is ever in memory.
+    func test_a_file_past_the_limit_reads_as_truncated() throws {
+        let home = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("muster-cfg-big-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let big = String(repeating: "a", count: ConfigFileReader.byteLimit + 4096)
+        try big.write(to: home.appendingPathComponent("big.md"), atomically: true, encoding: .utf8)
+        let view = ConfigFileReader.read(target: "~/big.md", checkType: "marked_block_hash", home: home)
+        guard case .file(_, let text, let truncated, _) = view else {
+            return XCTFail("the file should have been read")
+        }
+        XCTAssertTrue(truncated)
+        XCTAssertEqual(text.count, ConfigFileReader.byteLimit)
+    }
 }

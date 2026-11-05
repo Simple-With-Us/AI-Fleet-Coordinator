@@ -16,7 +16,7 @@ import json
 import pathlib
 import subprocess
 from collections.abc import Callable, Sequence
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 from .types import (
     ClaimRecord,
@@ -72,7 +72,7 @@ def parse_iso(raw: str) -> datetime:
         text = text[:-1] + "+00:00"
     parsed = datetime.fromisoformat(text)
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
+        parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed
 
 

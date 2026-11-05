@@ -22,7 +22,7 @@ import json
 import os
 import pathlib
 import sys
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import TextIO
 
 from . import collectors, contract
@@ -128,7 +128,7 @@ def _status(args, out: TextIO, err: TextIO) -> int:
     lanes_root = (
         pathlib.Path(args.lanes_root) if args.lanes_root else pathlib.Path.home() / "apps" / "lanes"
     )
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     budget = RequestBudget(github_max=args.github_max, linear_max=args.linear_max)
     runner = collectors.make_runner()
     expiry = _expiry_hours(args)

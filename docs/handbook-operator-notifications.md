@@ -1,6 +1,6 @@
 # Handbook checker notifications as Operator
 
-Source preparation only.  This does not deploy the listener or change the ordinary agent roster.
+Source preparation only.  This does not deploy the eavesdropper or change the ordinary agent roster.
 
 The Mac checker uses `simple-chat handbook-service post|read`, not `--as OPERATOR`.  Operator is an existing administrator service bot, not an agent seat.  The adapter reads its named credential from Fleet-OPS `/zulip_operator`, checks the stored realm before authentication, then verifies authenticated bot ID, email and owner.  It refuses launched seats and remote mode.  No admin API, DM, subscription or privilege operation is exposed.
 
@@ -12,7 +12,7 @@ Read returns only messages in that same stream/topic.  The former Claude-author
 
 1. Review and merge the adapter and checker source.  Install the simple-chat runtime from its qualified source before selecting the checker transport.
 2. Set checker `notification_service: operator`, `operator_user_id`, `operator_email`, `owner_user_id` and `zulip_site` from verified live service metadata.  No key belongs in checker config.  Missing pins fail closed, with no Claude fallback.
-3. Use the existing reviewed merged-source checker installer.  Preserve state.json and its notice records, message IDs and timestamps.  Do not reset historical records, patch the installed manifest, or redeploy the Operator listener for this change.
+3. Use the existing reviewed merged-source checker installer.  Preserve state.json and its notice records, message IDs and timestamps.  Do not reset historical records, patch the installed manifest, or redeploy the Operator eavesdropper for this change.
 4. Verify the next naturally required notice's actual sender and that it is posted to the fixed topic.  Do not manufacture a production notice for a test.
 
 The explicit `legacy-seat` checker transport exists for migration/regression coverage, not as an automatic fallback.  Pending historical direct-message notices cannot be read by the topic-only Operator adapter; preserve and reconcile their records during cutover, but do not treat their missing owner reactions as an approval gate.  Existing state, message IDs and timestamps remain intact.

@@ -1,13 +1,13 @@
-// The server listener's records for a hosted seat (AFC-330 part B):  eavesdropper_status,
+// The server eavesdropper's records for a hosted seat (AFC-330 part B):  eavesdropper_status,
 // eavesdropper_inbox, eavesdropper_owner_queue, eavesdropper_wakes and eavesdropper_held_back.  The specs are
 // scripts/agent_sync/mcp/eavesdropper-tools.json (shared with the stdio server);  the hosted server
-// lists every one of them except eavesdropper_ack, because the listener's read API is read-only.
+// lists every one of them except eavesdropper_ack, because the eavesdropper's read API is read-only.
 //
-// The Worker reads them from the server listener's signed GET API
+// The Worker reads them from the server eavesdropper's signed GET API
 // (scripts/agent_sync/listener_api.py):  GET <LISTENER_API_URL>/listener/v1/<SEAT>/<record>?<query>
 // with X-Agent-Sync-Timestamp and X-Agent-Sync-Signature, the lowercase hex HMAC-SHA256 of
 // "agent-sync-read/1\nGET\n<path>\n<query>\n<timestamp>" keyed with the seat's wake key
-// (WAKE_HMAC_KEY_<SEAT>, the same secret the listener signs that seat's wakes with).  The seat
+// (WAKE_HMAC_KEY_<SEAT>, the same secret the eavesdropper signs that seat's wakes with).  The seat
 // comes only from the grant, and only WAKE_SECRETS turns it into a key, so a grant reads its own
 // seat's records and never another's.  With LISTENER_API_URL unset (or not https), or no wake key
 // for the seat, the tools answer not_configured and everything else works as before.
@@ -77,7 +77,7 @@ async function hmacHex(key, text) {
   return [...new Uint8Array(signature)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-/** The string the listener verifies (listener_api.py signing_string). */
+/** The string the eavesdropper verifies (listener_api.py signing_string). */
 export function listenerSigningString(path, query, timestamp) {
   return `${LISTENER_CONTRACT_NAME}\nGET\n${path}\n${query}\n${timestamp}`;
 }
@@ -115,14 +115,14 @@ export class ListenerClient {
       });
     } catch (error) {
       const timeout = error?.name === "TimeoutError" || error?.name === "AbortError";
-      throw new ToolError("unavailable", `could not reach the listener${timeout ? " (timed out)" : ""}`, { retryable: true });
+      throw new ToolError("unavailable", `could not reach the eavesdropper${timeout ? " (timed out)" : ""}`, { retryable: true });
     }
-    if (response.status >= 300 && response.status < 400) throw new ToolError("not_authorized", "the listener answered with a redirect, which this client never follows");
-    if (response.status === 401 || response.status === 403) throw new ToolError("not_authorized", "the listener refused this seat's signature (the wake key differs, or the clocks are more than five minutes apart)");
-    if (response.status === 404) throw new ToolError("not_configured", "the listener has no read API for this seat (no key for it there, or the API is off)");
-    if (response.status === 400) throw new ToolError("invalid_argument", "the listener refused the parameters");
-    if (response.status === 409) throw new ToolError("unavailable", "the listener cannot read this seat's records right now (check their file modes)");
-    if (response.status >= 500) throw new ToolError("unavailable", `the listener answered HTTP ${response.status}`, { retryable: true, extra: { status: response.status } });
+    if (response.status >= 300 && response.status < 400) throw new ToolError("not_authorized", "the eavesdropper answered with a redirect, which this client never follows");
+    if (response.status === 401 || response.status === 403) throw new ToolError("not_authorized", "the eavesdropper refused this seat's signature (the wake key differs, or the clocks are more than five minutes apart)");
+    if (response.status === 404) throw new ToolError("not_configured", "the eavesdropper has no read API for this seat (no key for it there, or the API is off)");
+    if (response.status === 400) throw new ToolError("invalid_argument", "the eavesdropper refused the parameters");
+    if (response.status === 409) throw new ToolError("unavailable", "the eavesdropper cannot read this seat's records right now (check their file modes)");
+    if (response.status >= 500) throw new ToolError("unavailable", `the eavesdropper answered HTTP ${response.status}`, { retryable: true, extra: { status: response.status } });
     let body = null;
     try {
       body = await response.json();
@@ -131,7 +131,7 @@ export class ListenerClient {
     }
     const parsed = response.ok ? ListenerEnvelope.safeParse(body) : null;
     if (!parsed?.success || parsed.data.seat !== this.seat || parsed.data.record !== record) {
-      throw new ToolError("upstream_error", "the listener's answer was not a read-API view");
+      throw new ToolError("upstream_error", "the eavesdropper's answer was not a read-API view");
     }
     return ListenerView.parse(parsed.data.view);
   }
@@ -142,7 +142,7 @@ export function listenerClientFromEnv(env, seat, { fetch: fetchImpl = globalThis
   const baseUrl = listenerBaseUrl(env?.LISTENER_API_URL);
   const name = Object.hasOwn(WAKE_SECRETS, seat) ? WAKE_SECRETS[seat] : null;
   // wakeKey: an already-resolved key (src/infisical.js resolveSecret), so the
-  // listener honors required mode; without it the legacy env binding is read.
+  // eavesdropper honors required mode; without it the legacy env binding is read.
   const key = wakeKey !== undefined ? String(wakeKey).trim() : name && typeof env?.[name] === "string" ? env[name].trim() : "";
   if (!baseUrl || key.length < LISTENER_MIN_KEY_LEN || typeof fetchImpl !== "function") return null;
   return new ListenerClient({ baseUrl, seat, key, fetch: fetchImpl, now });
@@ -167,7 +167,7 @@ export const EAVESDROPPER_METHODS = {
     if (this.listener) return this.listener;
     throw new ToolError(
       "not_configured",
-      "The listener's records are not reachable from this server for this seat.  The owner sets LISTENER_API_URL and the seat's WAKE_HMAC_KEY_<SEAT>, and enables [listener_api] on the server listener (scripts/agent-sync-mcp/DEPLOY.md).  The Zulip tools still work.",
+      "The eavesdropper's records are not reachable from this server for this seat.  The owner sets LISTENER_API_URL and the seat's WAKE_HMAC_KEY_<SEAT>, and enables [listener_api] on the server eavesdropper (scripts/agent-sync-mcp/DEPLOY.md).  The Zulip tools still work.",
     );
   },
 

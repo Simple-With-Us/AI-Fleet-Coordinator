@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from fleet_knobs.tests._fake import ScopedReadAPI
 
 from .world import SCRIPTS, World
 
@@ -77,6 +78,8 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in (self.dest / "fleet_knobs").iterdir() if p.suffix == ".py"), source)
         self.assertFalse((self.dest / "fleet_knobs" / "tests").exists())
         self.assertIn("knobs.py", source)
+        self.assertEqual(sorted(p.name for p in (self.dest / "fleet_secrets").iterdir()), ["__init__.py", "core.py"])
+        self.assertFalse((self.dest / "fleet-secrets").exists())
         # Under python3 -I, with nothing of the checkout on the path, `notify` finds fleet_knobs next to the package.
         # A refused Infisical environment stops it before any fetch, so no real CLI runs:  exit 1 and the reason.
         ran = self.isolated("notify", "--dry-run", env={"INFISICAL_ENV": "staging"})
@@ -84,6 +87,27 @@ class InstallTests(unittest.TestCase):
         self.assertIn("the knobs cannot be read", ran.stderr)
         self.assertNotIn("fleet_knobs is missing", ran.stderr)
         self.assertNotIn("Traceback", ran.stderr)
+
+    def test_installed_real_scoped_reader_accepts_only_its_grant_under_python_dash_I(self) -> None:
+        self.assertEqual(self.install("--apply").returncode, 0)
+        boot = ("import json, sys; sys.path.insert(0, %r); from fleet_knobs import source; "
+                "print(json.dumps(source.fetch({'FLEET_FACTS_PUBLISH_FULL_COPY'})))" % str(self.dest))
+        with ScopedReadAPI({"FLEET_FACTS_PUBLISH_FULL_COPY": "false"}) as api:
+            env = {"HOME": str(self.home), "PATH": "/usr/bin:/bin", **api.env}
+            ran = subprocess.run([sys.executable, "-I", "-c", boot], env=env, cwd=self.home,
+                                 capture_output=True, text=True, timeout=60)
+            self.assertEqual(ran.returncode, 0, ran.stderr)
+            self.assertEqual(json.loads(ran.stdout), {"FLEET_FACTS_PUBLISH_FULL_COPY": "false"})
+            self.assertEqual(len(api.requests), 2)
+            self.assertEqual(api.requests[0], "/api/v2/service-token")
+            self.assertTrue(api.requests[1].startswith("/api/v3/secrets/raw/FLEET_FACTS_PUBLISH_FULL_COPY?"))
+            api.requests.clear()
+            api.metadata_override["permissions"] = ["read", "write"]
+            denied = subprocess.run([sys.executable, "-I", "-c", boot], env=env, cwd=self.home,
+                                    capture_output=True, text=True, timeout=60)
+        self.assertNotEqual(denied.returncode, 0)
+        self.assertIn("scoped-read-failed", denied.stderr)
+        self.assertEqual(api.requests, ["/api/v2/service-token"])
 
     def test_a_copy_without_the_knob_reader_still_files_but_cannot_notify(self) -> None:
         self.assertEqual(self.install("--apply").returncode, 0)
@@ -144,6 +168,7 @@ class InstallTests(unittest.TestCase):
     def test_an_update_replaces_a_changed_file_and_removes_a_stale_one(self) -> None:
         self.assertEqual(self.install("--apply").returncode, 0)
         (self.dest / "needs_owner" / "old_module.py").write_text("# gone from the source\n")
+        (self.dest / "fleet_secrets" / "cli.py").write_text("# must not ship\n")
         (self.dest / "needs_owner" / "text.py").write_text("# an old version\n")
         (self.dest / "state").mkdir()
         plan = self.install()
@@ -153,6 +178,7 @@ class InstallTests(unittest.TestCase):
         applied = self.install("--apply")
         self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
         self.assertFalse((self.dest / "needs_owner" / "old_module.py").exists())
+        self.assertFalse((self.dest / "fleet_secrets" / "cli.py").exists())
         self.assertGreater((self.dest / "needs_owner" / "text.py").stat().st_size, 100)
         self.assertTrue((self.dest / "state").is_dir())
         self.assertEqual(self.isolated("--version").returncode, 0)

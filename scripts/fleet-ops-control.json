@@ -39,8 +39,16 @@
   "server": {
     "resourcePolicy": true,
     "units": [
-      {"unit": "fleet-server-status.timer", "scope": "user", "actions": ["start", "stop", "restart"]},
-      {"unit": "fleet-cli-git-update.timer", "scope": "system", "actions": ["start", "stop", "restart"]}
+      {"unit": "fleet-server-status.timer", "scope": "user", "actions": ["start", "stop", "restart"], "role": "reporting", "stopConsequence": "Stopping this stops the server's report, so Muster goes out of date within 45 minutes and every Redeploy is refused."},
+      {"unit": "fleet-cli-git-update.timer", "scope": "system", "actions": ["start", "stop", "restart"], "role": "updater", "stopConsequence": "Stopping this ends the hourly safety net that keeps the fleet tools on the server current."}
+    ],
+    "watch": [
+      {"unit": "code-main-sync.timer", "scope": "system"},
+      {"unit": "fleet-tools-doctor.timer", "scope": "system"},
+      {"unit": "fleet-housekeep.timer", "scope": "system"},
+      {"unit": "box-disk-hygiene.timer", "scope": "system"},
+      {"unit": "docker.service", "scope": "system"},
+      {"unit": "tailscaled.service", "scope": "system"}
     ],
     "updates": [
       {"name": "fleet-cli", "unit": "fleet-cli-git-update.service", "scope": "system"}

@@ -68,7 +68,7 @@ No secret value is ever written to this repo, to a log, or to a pull request.
 
 ### The config step comes first
 
-Merging main does not deploy this Worker today:  `.github/workflows/worker-deploy.yml` builds only `agent-sync-mcp`, and `scripts/worker-targets.json` gives `pr-conflict-watch` no health probe, so the mapped deploy refuses it.  The deploy is the manual `wrangler deploy` below, and the Infisical folder and the service token must exist **before** it:  a live Worker without them answers `503` and posts nothing.
+Merging main does not deploy this Worker today:  `scripts/worker-targets.json` gives it to `.github/workflows/alert-workers-deploy.yml`, which skips it until `docs/releases/pr-conflict-zulip-verified.json` records a verified first real Zulip delivery.  That pipeline releases from `workers/pr-conflict-watch/zulip-cutover/`.  Until then the deploy is the manual `wrangler deploy` below, and the Infisical folder and the service token must exist **before** it:  a live Worker without them answers `503` and posts nothing.
 
 The Zulip bot is the fleet alerts bot that already posts to `#Alerts`, so it needs no new bot and no new stream subscription.  The same bot reads the fleet's alert topics, so the conflict alerts land beside the other fleet alerts.
 
