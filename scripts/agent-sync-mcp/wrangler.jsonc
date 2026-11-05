@@ -220,8 +220,8 @@
     // Set it only after DEPLOY.md "Listener read API" step 3 passes.  The same
     // origin serves the Operator's /notes/v1/ API for the notes_* tools (AFC-486):
     // operator.simplewithus.com, the Operator's own domain (owner rename,
-    // Nov 4, 2026), which carries only
-    // /listener/v1/ and /notes/v1/ to the listener's port 8788.
+    // Nov 4, 2026), carries /listener/v1/, /notes/v1/, /linear/v1/,
+    // and /registry/v1/ to the listener's port 8788.
     "LISTENER_API_URL": "https://operator.simplewithus.com",
     // The git-relay upstream the gr_* tools call.  GR_WORKFLOW_TOOLS "on"
     // lists and enables the gr_wf_ workflow verb tools (src/config.js);
