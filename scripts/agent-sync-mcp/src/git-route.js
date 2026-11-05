@@ -42,9 +42,15 @@ export async function serveGit(request, env, { fetchImpl = globalThis.fetch?.bin
       return refuse(411, "a Content-Length within the byte bound is required");
     }
   }
+  // Name exactly what is missing:  a generic not_configured leaves operators
+  // guessing which variable to fix.  Names only, never values.
   const base = grUpstreamUrl(env.GR_UPSTREAM_URL);
   const { accessId, accessSecret } = await secrets(env);
-  if (!base || !accessId || !accessSecret) return refuse(503, "not_configured");
+  const missing = [];
+  if (!base) missing.push("GR_UPSTREAM_URL");
+  if (!accessId) missing.push("accessId");
+  if (!accessSecret) missing.push("accessSecret");
+  if (missing.length) return refuse(503, `not_configured: missing ${missing.join(", ")}`);
   const headers = new Headers({
     "CF-Access-Client-Id": accessId,
     "CF-Access-Client-Secret": accessSecret,
@@ -67,6 +73,10 @@ export async function serveGit(request, env, { fetchImpl = globalThis.fetch?.bin
   } catch {
     return refuse(502, "upstream_unavailable");
   }
+  // A redirect must never be relayed:  the caller would either follow it with
+  // the Access pair attached or see a foreign location.  Normalize to a plain
+  // server error instead.
+  if (upstream.status >= 300 && upstream.status < 400) return refuse(502, "upstream_redirect_refused");
   const out = new Headers();
   for (const name of RESPONSE_HEADERS) {
     const value = upstream.headers.get(name);

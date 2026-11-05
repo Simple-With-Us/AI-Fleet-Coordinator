@@ -6,8 +6,8 @@ import { isGitPath, serveGit } from "../src/git-route.js";
 
 const ENV = { GR_UPSTREAM_URL: "https://relay.example" };
 const SECRETS = async () => ({ accessId: "access-id", accessSecret: "access-secret" });
-const ADV = "https://agents.example/git/Simple-With-Us/Fleet-OPS.git/info/refs?service=git-upload-pack";
-const PACK = "https://agents.example/git/Simple-With-Us/Fleet-OPS.git/git-upload-pack";
+const ADV = "https://agents.example/git/Fixture-Repo/example.git/info/refs?service=git-upload-pack";
+const PACK = "https://agents.example/git/Fixture-Repo/example.git/git-upload-pack";
 const AUTH = { Authorization: "Bearer seat-bearer" };
 
 function upstream(status = 200, headers = { "Content-Type": "application/x-git-upload-pack-advertisement" }, body = "refs") {
@@ -24,7 +24,7 @@ test("the advertisement passes the bearer and adds the Access pair", async () =>
   const resp = await serveGit(new Request(ADV, { headers: { ...AUTH, "Git-Protocol": "version=2", Cookie: "x=y" } }), ENV, { fetchImpl, secrets: SECRETS });
   assert.equal(resp.status, 200);
   assert.equal(await resp.text(), "refs");
-  assert.equal(calls[0].url, "https://relay.example/git/Simple-With-Us/Fleet-OPS.git/info/refs?service=git-upload-pack");
+  assert.equal(calls[0].url, "https://relay.example/git/Fixture-Repo/example.git/info/refs?service=git-upload-pack");
   const sent = calls[0].init.headers;
   assert.equal(sent.get("Authorization"), "Bearer seat-bearer");
   assert.equal(sent.get("CF-Access-Client-Id"), "access-id");
@@ -76,6 +76,35 @@ test("no bearer, an oversized body and an unset relay are refused before any ups
   const noPair = async () => ({ accessId: "", accessSecret: "" });
   assert.equal((await serveGit(new Request(ADV, { headers: AUTH }), ENV, { fetchImpl, secrets: noPair })).status, 503);
   assert.equal(calls.length, 0);
+});
+
+test("a missing setting is named, never valued", async () => {
+  const { fetchImpl } = upstream();
+  const noUrl = await serveGit(new Request(ADV, { headers: AUTH }), {}, { fetchImpl, secrets: SECRETS });
+  assert.equal(noUrl.status, 503);
+  const noUrlText = await noUrl.text();
+  assert.match(noUrlText, /GR_UPSTREAM_URL/);
+  assert.doesNotMatch(noUrlText, /accessId|accessSecret/);
+  const noPair = async () => ({ accessId: "", accessSecret: "" });
+  const noPairResp = await serveGit(new Request(ADV, { headers: AUTH }), ENV, { fetchImpl, secrets: noPair });
+  const noPairText = await noPairResp.text();
+  assert.match(noPairText, /accessId/);
+  assert.match(noPairText, /accessSecret/);
+  const halfPair = async () => ({ accessId: "access-id", accessSecret: "" });
+  const halfText = await (await serveGit(new Request(ADV, { headers: AUTH }), ENV, { fetchImpl, secrets: halfPair })).text();
+  assert.match(halfText, /accessSecret/);
+  assert.doesNotMatch(halfText, /access-id/);
+});
+
+test("an upstream redirect is refused, never relayed", async () => {
+  for (const status of [301, 302, 307, 308]) {
+    const { calls, fetchImpl } = upstream(status, { Location: "https://elsewhere.example/git" });
+    const resp = await serveGit(new Request(ADV, { headers: AUTH }), ENV, { fetchImpl, secrets: SECRETS });
+    assert.equal(resp.status, 502);
+    assert.equal(await resp.json().then((b) => b.error), "upstream_redirect_refused");
+    assert.equal(resp.headers.get("Location"), null);
+    assert.equal(calls.length, 1);
+  }
 });
 
 test("an upstream failure says nothing about the Access pair", async () => {

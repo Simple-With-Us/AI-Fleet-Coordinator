@@ -27,6 +27,33 @@ class ScanDecodedContent(unittest.TestCase):
         with self.assertRaises(SecretInputError):
             scan_args({"content_b64": {"nested": TOKEN}}, _decoded_elsewhere=True)
 
+    def test_non_canonical_nested_content_b64_is_scanned(self):
+        for args in (
+            {"meta": {"content_b64": TOKEN}},
+            {"files": [{"path": "a", "nested": {"content_b64": TOKEN}}]},
+            {"data": [{"content_b64": TOKEN}]},
+            {"files": [{"path": "a", "content_b64": "QQ=="}], "extra": {"content_b64": TOKEN}},
+        ):
+            with self.assertRaises(SecretInputError):
+                scan_args(args, _decoded_elsewhere=True)
+
+    def test_only_the_canonical_paths_skip(self):
+        scan_args({"content_b64": TOKEN}, _decoded_elsewhere=True)
+        scan_args(
+            {"files": [{"path": "a", "content_b64": TOKEN}, {"path": "b", "content_b64": TOKEN}]},
+            _decoded_elsewhere=True,
+        )
+
+    def test_skipped_content_counts_against_the_node_bound(self):
+        with self.assertRaises(InputTooComplexError):
+            scan_args({"content_b64": "QQ=="}, _budget=[1, 100], _decoded_elsewhere=True)
+        scan_args({"content_b64": "QQ=="}, _budget=[2, 100], _decoded_elsewhere=True)
+
+    def test_skipped_content_is_charged_in_utf8_bytes(self):
+        with self.assertRaises(InputTooComplexError):
+            scan_args({"content_b64": "\u00e9" * 6}, _budget=[10, 11], _decoded_elsewhere=True)
+        scan_args({"content_b64": "\u00e9" * 6}, _budget=[10, 12], _decoded_elsewhere=True)
+
     def test_skipped_content_still_counts_against_the_byte_bound(self):
         with self.assertRaises(InputTooComplexError):
             scan_args({"content_b64": "A" * 100}, _budget=[100, 10], _decoded_elsewhere=True)

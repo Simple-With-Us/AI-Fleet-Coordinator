@@ -36,9 +36,11 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+import contextlib
 import getpass
 import hashlib
 import http.client
+import io
 import importlib.util
 import json
 import os
@@ -76,6 +78,8 @@ REPO_PATTERN = re.compile(r"[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}")
 # The server's limits on gr_wf_files_put (git_relay/workflow_verbs.py).
 PUBLISH_MAX_FILE_BYTES = 2 * 1024 * 1024
 PUBLISH_MAX_COMMIT_BYTES = 4 * 1024 * 1024
+PUBLISH_MAX_FILES = 200  # one publish run, all batches together
+PUBLISH_MAX_TOTAL_BYTES = 64 * 1024 * 1024  # one publish run, all batches together
 PUBLISH_MAX_COMMIT_FILES = 20
 REMOTE_BEARER_ENV = "SIMPLE_TOOLS_BEARER"
 REMOTE_TIMEOUT_S = 40
@@ -1392,25 +1396,48 @@ def _transport_env(bearer: str) -> dict:
 
 
 def _run_git(args: list[str], bearer: str, cwd: str | None = None) -> int:
-    """Run one git command through the route.  Its stderr reaches the terminal only after the bearer is taken out of it."""
+    """Run one git command through the route.  git's stderr never reaches the terminal:  a remote failure can put
+    response bodies, headers or request details there, and redacting the bearer does not make the stream safe, so
+    only the exit status is reported.  An interrupted wait terminates and reaps the child, so a runner SIGTERM
+    cannot leave an orphan git behind."""
+    previous = signal.getsignal(signal.SIGTERM)
+
+    def _interrupted(signum, frame):
+        raise InterruptedError(f"interrupted by signal {signum}")
+
+    signal.signal(signal.SIGTERM, _interrupted)
     try:
-        proc = subprocess.run(
-            [_git_binary(), *args],
-            env=_transport_env(bearer),
-            cwd=cwd,
-            stdin=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
-            errors="replace",
-            timeout=GIT_TIMEOUT_S,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        die(f"git timed out after {GIT_TIMEOUT_S} seconds", EXIT_ERROR)
-    except OSError as exc:
-        die(f"git could not start ({type(exc).__name__})", EXIT_ERROR)
-    if proc.stderr:
-        sys.stderr.write(proc.stderr.replace(bearer, "[bearer]"))
+        try:
+            proc = subprocess.Popen(
+                [_git_binary(), *args],
+                env=_transport_env(bearer),
+                cwd=cwd,
+                stdin=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError as exc:
+            die(f"git could not start ({type(exc).__name__})", EXIT_ERROR)
+        try:
+            proc.wait(timeout=GIT_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            die(f"git timed out after {GIT_TIMEOUT_S} seconds", EXIT_ERROR)
+        except BaseException:
+            try:
+                proc.terminate()
+            except ProcessLookupError:
+                pass
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+            raise
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+    if proc.returncode:
+        sys.stderr.write(f"git exited with status {proc.returncode}\n")
     return proc.returncode
 
 
@@ -1427,6 +1454,26 @@ def _plain_arg(value: str, what: str) -> str:
     return value
 
 
+def _clone_destination(a) -> str:
+    """The clone folder, made mode 0700 when this command creates it;  a symlink or a non-directory is refused,
+    and an existing directory keeps its own permissions."""
+    raw = a.dir if a.dir else a.repo.rsplit("/", 1)[-1]
+    _plain_arg(raw, "the folder")
+    target = os.path.abspath(raw)
+    if os.path.islink(target):
+        die("the clone folder must not be a symlink", EXIT_USAGE)
+    if os.path.lexists(target):
+        if not os.path.isdir(target):
+            die("the clone folder must be a directory", EXIT_USAGE)
+        return target
+    try:
+        os.makedirs(target, mode=0o700)
+        os.chmod(target, 0o700)
+    except OSError as exc:
+        die(f"cannot create the clone folder ({type(exc).__name__})", EXIT_ERROR)
+    return target
+
+
 def cmd_clone(a, bearer: str) -> int:
     args = ["clone"]
     if a.depth is not None:
@@ -1437,9 +1484,9 @@ def cmd_clone(a, bearer: str) -> int:
         args += ["--branch", _plain_arg(a.branch, "--branch")]
     if a.partial:
         args.append("--filter=blob:none")
-    args += ["--", _repo_url(a.repo)]
-    if a.dir:
-        args.append(_plain_arg(a.dir, "the folder"))
+    url = _repo_url(a.repo)  # before any destination filesystem work:  a bad repo changes nothing on disk
+    destination = _clone_destination(a)
+    args += ["--", url, destination]
     return _run_git(args, bearer)
 
 
@@ -1507,9 +1554,13 @@ def _publish_files(specs: list[str]) -> list[tuple[str, bytes]]:
     """Each LOCAL or LOCAL=REPO_PATH read and checked before anything is sent."""
     files: list[tuple[str, bytes]] = []
     seen: set[str] = set()
+    total = 0
     for spec in specs:
-        local, separator, repo_path = spec.partition("=")
-        repo_path = repo_path if separator else local
+        # Split on the LAST "=" only when its left side is an existing, non-symlink file;  a local path may
+        # itself contain "=", and truncating it at the first one would read the wrong file or fail outright.
+        local, separator, repo_path = spec.rpartition("=")
+        if not separator or os.path.islink(local) or not os.path.isfile(local):
+            local, repo_path = spec, spec
         if not local or not repo_path or repo_path in seen:
             die(f"--file {spec!r} is empty or repeats a repo path", EXIT_USAGE)
         seen.add(repo_path)
@@ -1520,6 +1571,12 @@ def _publish_files(specs: list[str]) -> list[tuple[str, bytes]]:
             die(f"{local!r} is empty;  the server takes no empty file", EXIT_USAGE)
         if size > PUBLISH_MAX_FILE_BYTES:
             die(f"{local!r} is {size} bytes;  one file may be {PUBLISH_MAX_FILE_BYTES} at most", EXIT_USAGE)
+        total += size
+        if len(seen) > PUBLISH_MAX_FILES or total > PUBLISH_MAX_TOTAL_BYTES:
+            die(
+                f"a publish may be {PUBLISH_MAX_FILES} files and {PUBLISH_MAX_TOTAL_BYTES} bytes at most",
+                EXIT_USAGE,
+            )
         try:
             with open(local, "rb") as handle:
                 files.append((repo_path, handle.read(PUBLISH_MAX_FILE_BYTES + 1)))
@@ -1562,6 +1619,99 @@ def _tool_call(tools: dict, name: str, args: dict, bearer: str, seat: str, deadl
     return remote_call(name, args, not entry["read"], bearer, deadline)
 
 
+# ----------------------------------------------------------------- publish outcome store
+#
+# A publish is several commits fenced on each other.  The store makes a RERUN safe:  each batch's outcome is
+# durable (ok / unknown / refused) under one stable key for the whole operation, a batch recorded unknown is
+# never replayed by this client, and batches already visible on the remote branch are skipped by content.
+
+
+def _publish_store_path() -> Path:
+    base = os.environ.get("SIMPLE_GIT_STATE_DIR") or os.path.join(os.path.expanduser("~"), ".simple-tools")
+    return Path(base) / "publish-outcomes.json"
+
+
+def _publish_key(repo: str, branch: str, base, message: str, files) -> str:
+    """One stable key for the whole publish operation:  same goal, same content, same key."""
+    canonical = json.dumps(
+        {
+            "repo": repo,
+            "branch": branch,
+            "base": base,
+            "message": message,
+            "files": [[path, hashlib.sha256(data).hexdigest()] for path, data in files],
+        },
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def _publish_store_load() -> dict:
+    try:
+        with open(_publish_store_path()) as handle:
+            store = json.load(handle)
+        return store if isinstance(store, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _publish_store_save(store: dict) -> None:
+    path = _publish_store_path()
+    try:
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        with open(tmp, "w") as handle:
+            json.dump(store, handle)
+        os.replace(tmp, path)
+    except OSError as exc:
+        die(f"the publish outcome store cannot be written ({type(exc).__name__})", EXIT_ERROR)
+
+
+def _publish_state(store: dict, key: str) -> dict:
+    return store.setdefault(key, {"batches": {}})
+
+
+def _outcome_of(fn) -> tuple[str, dict | None]:
+    """("ok", result) / ("refused", None) / ("unknown", None) for one write call, by its own printed verdict."""
+    err = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(err):
+            return "ok", fn()
+    except SystemExit:
+        text = err.getvalue()
+        sys.stderr.write(text)  # the verdict is the caller's to see;  only its CLASS is consumed here
+        unknown = "outcome_unknown" in text or "did not answer" in text or "was cut off" in text
+        return ("unknown" if unknown else "refused"), None
+
+
+def _git_blob_sha(data: bytes) -> str:
+    return hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data, usedforsecurity=False).hexdigest()
+
+
+_PUBLISH_PATH = re.compile(r"^(?!/)(?!.*//)(?!.*(?:^|/)[.]{1,2}(?:/|$))(?!.*[/]$)[A-Za-z0-9._/+@~-]{1,1024}$")
+
+
+def _publish_path_check(path: str) -> None:
+    """The relay's own per-file write rules, mirrored so a bad path in a LATER batch is refused before the first
+    commit is sent, never after earlier batches have landed.  The default-branch guard needs no mirror:  it
+    refuses the first batch like the last, so it cannot leave a partial chain."""
+    if _PUBLISH_PATH.fullmatch(path) is None:
+        die(f"{path!r} is not a repo path the relay accepts", EXIT_USAGE)
+    if path in (".github", ".github/workflows") or path.startswith(".github/workflows/"):
+        die(f"{path!r} is a workflow path;  publish cannot write it", EXIT_USAGE)
+
+
+def _publish_payload(repo: str, branch: str, message: str, number: int, count: int, batch) -> dict:
+    return {
+        "repo": repo,
+        "branch": branch,
+        "message": message if count == 1 else f"{message} (part {number} of {count})",
+        "files": [
+            {"path": path, "content_b64": base64.b64encode(data).decode("ascii")} for path, data in batch
+        ],
+    }
+
+
 def cmd_publish(tools: dict, a, bearer: str, seat: str, deadline: float) -> int:
     """Commit local files to a branch as this bot, with no base64 for the caller to pass by hand.
 
@@ -1573,39 +1723,112 @@ def cmd_publish(tools: dict, a, bearer: str, seat: str, deadline: float) -> int:
         die("name at least one --file", EXIT_USAGE)
     _repo_url(a.repo)
     batches = _publish_batches(files)
-    payloads = [
-        {
-            "repo": a.repo,
-            "branch": a.branch,
-            "message": a.message if len(batches) == 1 else f"{a.message} (part {number} of {len(batches)})",
-            "files": [{"path": path, "content_b64": base64.b64encode(data).decode("ascii")} for path, data in batch],
-        }
-        for number, batch in enumerate(batches, 1)
-    ]
     # Every commit is checked before the first is sent, so a bad path or a flagged file in a later batch cannot leave a
-    # partial publish on the branch.
+    # partial publish on the branch.  One batch's base64 payload exists at a time, so a large publish does not
+    # hold the whole encoded set in memory.
     entry = tools.get("gr_wf_files_put")
     if entry is None:
         die("the server does not offer gr_wf_files_put to this bearer", EXIT_ERROR)
-    for payload in payloads:
+    for number, batch in enumerate(batches, 1):
+        for path, _data in batch:
+            _publish_path_check(path)
+        payload = _publish_payload(a.repo, a.branch, a.message, number, len(batches), batch)
         validate_arguments(entry, {**payload, "expected_head_sha": "0" * 40}, deadline)
         hit = _scan_arguments(payload, bearer)
         if hit is not None:
             die(f"refused before sending:  {hit}", EXIT_USAGE)
+        del payload
+    store = _publish_store_load()
+    state = _publish_state(store, _publish_key(a.repo, a.branch, a.base, a.message, files))
     if a.base:
         base = _branch_head(_tool_call(tools, "gr_wf_branch_get", {"repo": a.repo, "branch": a.base}, bearer, seat, deadline))
-        _tool_call(tools, "gr_wf_branch_create", {"repo": a.repo, "branch": a.branch, "sha": base}, bearer, seat, deadline)
+        branch_state = state["batches"].get("branch")
+        if branch_state == "unknown":
+            die(
+                "an earlier branch creation's outcome is unknown;  check the branch before running this again",
+                EXIT_ERROR,
+            )
+        if branch_state != "ok":
+            outcome, _ = _outcome_of(
+                lambda: _tool_call(
+                    tools, "gr_wf_branch_create", {"repo": a.repo, "branch": a.branch, "sha": base}, bearer, seat, deadline
+                )
+            )
+            if outcome == "unknown":
+                state["batches"]["branch"] = "unknown"
+                _publish_store_save(store)
+                die("the branch creation's outcome is unknown;  check the branch before running this again", EXIT_ERROR)
+            if outcome == "ok":
+                state["batches"]["branch"] = "ok"
+                _publish_store_save(store)
+            # A definite refusal releases the key:  nothing was created, a corrected rerun may try again.
         head = base
     else:
         head = _branch_head(_tool_call(tools, "gr_wf_branch_get", {"repo": a.repo, "branch": a.branch}, bearer, seat, deadline))
-    for payload in payloads:
-        out = _tool_call(tools, "gr_wf_files_put", {**payload, "expected_head_sha": head}, bearer, seat, deadline)
+    remote = _remote_tree_shas(tools, a.repo, head, bearer, seat, deadline)
+    for number, batch in enumerate(batches, 1):
+        prior = state["batches"].get(str(number))
+        if prior == "unknown":
+            _publish_store_save(store)
+            die(
+                f"batch {number}'s earlier outcome is unknown;  check the branch before running this again",
+                EXIT_ERROR,
+            )
+        if prior == "ok":
+            print(f"batch {number} already committed by an earlier run")
+            continue
+        pending = [(path, data) for path, data in batch if remote.get(path) != _git_blob_sha(data)]
+        if not pending:
+            state["batches"][str(number)] = "ok"
+            _publish_store_save(store)
+            print(f"batch {number} already on the branch")
+            continue
+        payload = _publish_payload(a.repo, a.branch, a.message, number, len(batches), pending)
+        outcome, out = _outcome_of(
+            lambda: _tool_call(tools, "gr_wf_files_put", {**payload, "expected_head_sha": head}, bearer, seat, deadline)
+        )
+        if outcome == "unknown":
+            state["batches"][str(number)] = "unknown"
+            _publish_store_save(store)
+            die(
+                f"batch {number}'s outcome is unknown;  check the branch before running this again",
+                EXIT_ERROR,
+            )
+        if outcome == "refused":
+            raise SystemExit(EXIT_ERROR)  # definite: nothing was written, a corrected rerun may try again
         commit = (out.get("structured") or {}).get("commit")
         if not isinstance(commit, str) or re.fullmatch(r"[0-9a-f]{40}", commit) is None:
             die("the server did not report the new commit;  check the branch before trying again", EXIT_ERROR)
         head = commit
+        for path, data in pending:
+            remote[path] = _git_blob_sha(data)
+        state["batches"][str(number)] = "ok"
+        _publish_store_save(store)
         print(f"{commit}  {len(payload['files'])} file(s)")
     return 0
+
+
+def _remote_tree_shas(tools: dict, repo: str, head: str, bearer: str, seat: str, deadline: float) -> dict:
+    """path -> blob sha for the branch head's tree, for skip-what-already-matches;  empty when unreadable."""
+    if tools.get("gr_wf_tree") is None:
+        return {}
+    try:
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            out = _tool_call(tools, "gr_wf_tree", {"repo": repo, "sha": head, "recursive": True}, bearer, seat, deadline)
+    except SystemExit:
+        return {}
+    tree = (out.get("structured") or {}).get("tree")
+    if not isinstance(tree, list):
+        return {}
+    return {
+        item["path"]: item["sha"]
+        for item in tree
+        if isinstance(item, dict)
+        and item.get("type") == "blob"
+        and isinstance(item.get("path"), str)
+        and isinstance(item.get("sha"), str)
+    }
 
 
 # ----------------------------------------------------------------- parser / main

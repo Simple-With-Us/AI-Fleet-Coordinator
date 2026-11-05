@@ -118,6 +118,13 @@ class InputTooComplexError(ValueError):
     """
 
 
+_CANONICAL_CONTENT_B64 = re.compile(r"^args\.content_b64$|^args\.files\[\d+\]\.content_b64$")
+
+
+def _canonical_content_b64(path: str) -> bool:
+    return _CANONICAL_CONTENT_B64.match(path) is not None
+
+
 def scan_args(
     value: object,
     path: str = "args",
@@ -155,12 +162,25 @@ def scan_args(
                 f"{path}: more than {MAX_SCAN_ENTRIES_PER_LEVEL} entries at one level"
             )
         for key, item in value.items():
-            if _decoded_elsewhere and key == "content_b64" and isinstance(item, str):
-                _budget[1] -= len(item)
-                if _budget[1] < 0:
-                    raise InputTooComplexError(f"{path}: request exceeds the text byte bound")
+            child = f"{path}.{key}"
+            if (
+                _decoded_elsewhere
+                and key == "content_b64"
+                and isinstance(item, str)
+                and _canonical_content_b64(child)
+            ):
+                # Only the verb-decoded canonical fields skip the text scan
+                # (args.content_b64 for wf_file_put, args.files[N].content_b64
+                # for wf_files_put).  Any other nested content_b64 is scanned
+                # like any other string, so it cannot smuggle a credential
+                # past the decoded-bytes scan.  The skipped node and its
+                # UTF-8 bytes still count against both bounds.
+                _budget[0] -= 1
+                _budget[1] -= len(item.encode("utf-8", "replace"))
+                if _budget[0] < 0 or _budget[1] < 0:
+                    raise InputTooComplexError(f"{path}: request exceeds the scan bounds")
                 continue
-            scan_args(item, f"{path}.{key}", _depth + 1, _budget, _decoded_elsewhere)
+            scan_args(item, child, _depth + 1, _budget, _decoded_elsewhere)
         return
     if isinstance(value, (list, tuple)):
         if len(value) > MAX_SCAN_ENTRIES_PER_LEVEL:
