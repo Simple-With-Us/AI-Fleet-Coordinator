@@ -475,7 +475,13 @@ class DiskCacheTests(unittest.TestCase):
         os.symlink(decoy, path)
         self.adapter().call(frame("tools/list", 3))
         self.assertEqual(len(self.upstream.methods), 3)
-        for corrupt in (b"not json", b"[]", b'{"at":"x","result":{}}', b'{"at":1}'):
+        for corrupt in (
+            b"not json",
+            b"[]",
+            b'{"at":"x","result":{}}',
+            b'{"at":1}',
+            b'{"at":1' + b"0" * 400 + b',"result":{}}',  # Too large to subtract from a float.
+        ):
             os.unlink(path)
             Path(path).write_bytes(corrupt)
             os.chmod(path, 0o600)
@@ -538,6 +544,26 @@ class BearerRefusalTests(unittest.TestCase):
             self.assertIsNone(mod.DiskCache(temp, TOKEN).load(mod.initialize_key(INITIALIZE)))
             self.assertEqual(other.load("tools"), TOOLS_RESULT)
 
+    def test_clearing_continues_past_a_file_another_adapter_already_removed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            cache = mod.DiskCache(temp, TOKEN)
+            cache.store("tools", TOOLS_RESULT)
+            cache.store("init-a", INIT_RESULT)
+            real_unlink = os.unlink
+            calls = []
+
+            def racing_unlink(path):
+                calls.append(path)
+                if len(calls) == 1:
+                    real_unlink(path)
+                    raise FileNotFoundError(path)
+                real_unlink(path)
+
+            with mock.patch.object(mod.os, "unlink", racing_unlink):
+                cache.clear()
+            self.assertEqual(os.listdir(temp), [])
+            self.assertEqual(len(calls), 2)
+
     def test_a_real_initialize_also_names_the_refusal(self):
         reply = mod.Adapter(TOKEN, self.refusing()).call(INITIALIZE)
         self.assertEqual(reply["error"]["code"], -32000)
@@ -554,6 +580,39 @@ class BearerRefusalTests(unittest.TestCase):
             reply = mod.Adapter(TOKEN, self.refusing(body, code)).call(TOOL_CALL)
             error = json.loads(reply["result"]["content"][0]["text"])
             self.assertEqual(error["code"], "outcome_unknown")
+
+
+class MainLoopTests(unittest.TestCase):
+    """The stdio loop as launchers run it: the cache folder comes from HOME."""
+
+    def run_main(self, home, frames):
+        upstream = Upstream()
+        raw = b"".join(json.dumps(f).encode() + b"\n" for f in frames)
+        fake_stdin = type("Input", (), {"buffer": io.BytesIO(raw)})()
+        out = io.StringIO()
+        env = {k: v for k, v in os.environ.items() if k != "XDG_CACHE_HOME"}
+        env.update({"HOME": home, "ASSIGNED_MCP_BEARER": TOKEN})
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            mock.patch.object(mod.sys, "stdin", fake_stdin),
+            mock.patch.object(mod.sys, "stdout", out),
+            mock.patch.object(
+                mod.urllib.request, "build_opener", return_value=mock.Mock(open=upstream)
+            ),
+        ):
+            self.assertEqual(mod.main(), 0)
+        return upstream.methods, [json.loads(line) for line in out.getvalue().splitlines()]
+
+    def test_second_process_reaches_the_server_only_for_the_tool_call(self):
+        frames = [INITIALIZE, INITIALIZED, frame("tools/list", 2), frame("tools/call", 3, name="w")]
+        with tempfile.TemporaryDirectory() as home:
+            methods, replies = self.run_main(home, frames)
+            self.assertEqual(methods, ["initialize", "tools/list", "tools/call"])
+            self.assertEqual([r["id"] for r in replies], [1, 2, 3])  # No reply to the notification.
+            self.assertEqual(len(os.listdir(os.path.join(home, ".cache/assigned-hosted-stdio"))), 2)
+            methods, second = self.run_main(home, frames)
+            self.assertEqual(methods, ["tools/call"])
+            self.assertEqual(second, replies)
 
 
 class FileFrameTests(unittest.TestCase):

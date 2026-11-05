@@ -49,9 +49,12 @@ REQUEST_TIMEOUT_S = 10
 DEFAULT_POSITIVE_CACHE_S = "60"
 POSITIVE_CACHE_CAP_S = 60
 NEGATIVE_CACHE_S = 30  # a wrong guess must not hammer the Worker
-# Answers about the Worker, not the bearer (error 1027, the daily limit, is sent as a
-# 429 or names itself in the body).
-TRANSIENT_STATUSES = frozenset({408, 425, 429})
+# The verify route answers a bearer's verdict as a 200, so the only non-200s that can be
+# remembered as refusals are its own 400 (an identity it does not know) and 401, and a
+# 403.  Anything else says nothing about the bearer:  a 404 is the route's not_configured,
+# which is how a missing or unreadable verify key looks, and 5xx, 429 and redirects are
+# about the Worker.  Error 1027, the daily limit, is sent as a 429 or names itself.
+REFUSAL_STATUSES = frozenset({400, 401, 403})
 WORKER_LIMIT_RE = re.compile(rb"error(?: code:)?\s*1027\b", re.IGNORECASE)
 # The cache key is attacker-controlled (any string hashes), so the map is
 # bounded:  oldest entries are evicted past the cap.
@@ -188,7 +191,7 @@ class SharedBearerVerifier:
             REQUEST_TIMEOUT_S,
         )
         if status != 200:
-            if status >= 500 or status in TRANSIENT_STATUSES or WORKER_LIMIT_RE.search(payload):
+            if status not in REFUSAL_STATUSES or WORKER_LIMIT_RE.search(payload):
                 raise _VerifyUnavailable
             return None
         if not payload or len(payload) > MAX_RESPONSE_BYTES:

@@ -53,7 +53,7 @@ server's own 401 `invalid_token` answer gets this code; any other failure stays
 `outcome_unknown`.
 
 Qualification must include actual initialize/tools/list against an empty cache, own whoami
-and a denied cross-seat read using the assigned credential, plus expected family names. Source
+and a denied cross-seat read using the assigned credential, plus expected family names.  Source
 synthetic tests do not prove a host's vault binding, actual tool inventory, all
 verbs or all-seat readiness. Host installation and supported custody belong to
 the host owner, not this code-only change.

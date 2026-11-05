@@ -104,7 +104,7 @@ class DiskCache:
             age = time.time() - entry["at"]
             result = entry["result"]
             return result if 0 <= age < CACHE_TTL_S and isinstance(result, dict) else None
-        except (OSError, ValueError, KeyError, TypeError, RecursionError):
+        except (OSError, ValueError, KeyError, TypeError, ArithmeticError, RecursionError):
             return None
 
     def store(self, name, result):
@@ -131,11 +131,15 @@ class DiskCache:
 
     def clear(self):
         try:
-            for name in os.listdir(self.root):
-                if name.startswith(self.prefix + "."):
-                    os.unlink(os.path.join(self.root, name))
+            names = os.listdir(self.root)
         except OSError:
-            pass
+            return
+        for name in names:
+            if name.startswith(self.prefix + "."):
+                try:  # A second adapter refused at the same moment may have got there first.
+                    os.unlink(os.path.join(self.root, name))
+                except OSError:
+                    pass
 
 
 def initialize_key(message):

@@ -225,6 +225,10 @@ class VerifierTest(unittest.TestCase):
             (429, b"error code: 1027"),
             (403, b"<title>Error 1027</title>"),
             (408, b""),
+            (404, b'{"ok":false,"reason":"not_configured"}'),  # The verify key is unreadable.
+            (302, b""),
+            (405, b""),
+            (413, b""),
             (200, b"not json"),
             (200, b""),
             (200, b"[]"),
@@ -239,6 +243,7 @@ class VerifierTest(unittest.TestCase):
 
     def test_real_refusals_still_cache_for_thirty_seconds(self):
         for refusal in (
+            (400, b'{"ok":false,"reason":"bad_identity"}'),
             (401, b'{"ok":false,"reason":"bad_signature"}'),
             (403, b"forbidden"),
             (200, json.dumps({"ok": False, "reason": "mismatch"}).encode()),
