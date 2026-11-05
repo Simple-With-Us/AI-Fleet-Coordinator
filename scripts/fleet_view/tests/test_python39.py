@@ -115,7 +115,10 @@ class EndToEndTests(unittest.TestCase):
     def _run(self, home, search_path):
         home = pathlib.Path(home)
         lanes = home / "lanes"
-        (lanes / "Fixture-Repo" / "claude-x").mkdir(parents=True)
+        lane = lanes / "Fixture-Repo" / "claude-x"
+        lane.mkdir(parents=True)
+        # A real checkout, so the real git's output is what the collector parses.
+        subprocess.run(["git", "init", "-q", str(lane)], check=True, capture_output=True)
         registry = home / "registry.json"
         registry.write_text(json.dumps(REGISTRY), encoding="utf-8")
         return subprocess.run(
@@ -150,7 +153,13 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(envelope["schemaVersion"], 1)
         self.assertEqual(envelope["summary"]["overallVerdict"], "PASS")
         self.assertRegex(envelope["generatedAt"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
-        self.assertEqual(envelope["sections"]["lanes"]["items"][0]["seat"], "CLAUDE")
+        lane = envelope["sections"]["lanes"]["items"][0]
+        self.assertEqual(lane["seat"], "CLAUDE")
+        self.assertEqual(lane["state"], "OK", lane)
+        self.assertTrue(lane["branch"], lane)
+        self.assertEqual(lane["lastCommitSeconds"], -1, "a checkout with no commit has no age")
+        self.assertIn(envelope["host"], ("mac", "server"))
+        self.assertEqual(lane["host"], envelope["host"])
         self.assertEqual(envelope["sections"]["pullRequests"]["items"][0]["number"], 7)
         claim = envelope["sections"]["claims"]["items"][0]
         self.assertEqual(claim["identifier"], "FIX-1")

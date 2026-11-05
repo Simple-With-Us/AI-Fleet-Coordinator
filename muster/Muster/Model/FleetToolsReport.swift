@@ -454,9 +454,10 @@ enum FleetToolsReportReader {
     /// check it would have made,  and counting them would report observations that
     /// were never made.
     ///
-    /// The host's own age is information and not a verdict:  the server's doctor runs
-    /// on an hourly timer,  so its half is routinely older than the Mac's report and
-    /// that is the server working as it should.
+    /// The host's own age is information and not a verdict.  The Mac's doctor asks the
+    /// server's doctor for its half live,  over the read-only ssh route,  on every Mac run,
+    /// so the two halves are normally minutes apart;  a server half much older than the
+    /// report is the server's own time and not a fault in itself.
     private static func verdict(
         for host: FleetToolsHostDocument,
         reportIsCurrent: Bool,
