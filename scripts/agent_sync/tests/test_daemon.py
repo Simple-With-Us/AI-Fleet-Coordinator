@@ -2010,7 +2010,7 @@ class SecurityTests(DaemonHarness):
         self.assertFalse(info["running"])
         self.assertTrue(info["status"]["seats"]["CLAUDE"]["connected"])
         self.assertTrue(info["status"]["seats"]["CLAUDE"]["pinned"])
-        self.assertEqual(info["plugin"]["repo"], "1.0.0")
+        self.assertEqual(info["plugin"]["repo"], "1.0.1")
         human = self.run_cli("status")
         self.assertIn("CLAUDE", human.out)
         self.assertIn("(pinned)", human.out)

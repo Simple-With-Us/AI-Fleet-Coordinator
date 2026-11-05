@@ -1059,7 +1059,7 @@ def _build_seats() -> dict[str, dict[str, object]]:
     seats["GROK-WEB"] = _hosted_seat(
         "GROK-WEB",
         "Grok Web runs in the web app and the iOS app",
-        "Grok Web's credential is held by the server listener's secret store, not by "
+        "Grok Web's credential is held by the server eavesdropper's secret store, not by "
         "a Mac file of its own.",
     )
     seats["GROK-BOT"] = _hosted_seat(
@@ -1072,14 +1072,14 @@ def _build_seats() -> dict[str, dict[str, object]]:
         "ECHO",
         "Echo runs on the Instinct app's own computer and reaches the fleet through "
         "the hosted ST-MCP bridge",
-        "Echo's credential is held by the hosted listener's secret store, not by a Mac "
+        "Echo's credential is held by the hosted eavesdropper's secret store, not by a Mac "
         "file of its own.",
     )
     seats["WISE"] = _hosted_seat(
         "WISE",
         "Wise runs on the Instinct app's own computer and reaches the fleet through "
         "the hosted ST-MCP bridge",
-        "Wise's credential is held by the hosted listener's secret store, not by a Mac "
+        "Wise's credential is held by the hosted eavesdropper's secret store, not by a Mac "
         "file of its own.",
     )
     return seats

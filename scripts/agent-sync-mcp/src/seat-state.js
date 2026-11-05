@@ -276,34 +276,6 @@ export async function reserve(store, { kind, policy }, now = Date.now()) {
   return { ok: true, waitMs };
 }
 
-/**
- * The grant check and one call's slot reservation as ONE decision (R1, DO
- * burn reduction;  the same composition claimGrAssert already makes for its
- * check-and-claim).  Runs `check`, and only when the check passes runs
- * `reserve`, inside a single storage transaction, so the pair costs one
- * Durable Object invocation instead of two and no state change can land
- * between them:  a grant refused by the check never takes a slot, a paused
- * seat never takes a slot (check reports the pause, as it does standalone),
- * and a slot is taken only for the grant state that was just validated.
- *
- * Returns { code } with check's code when the check does not pass, or
- * { code: "ok", slot } with reserve's full result - including its own
- * refusals (rate_limited, budget_exhausted), which surface exactly as they
- * do when reserve follows a passed check today.  Callers that must refuse
- * BEFORE any tool machinery runs (serveMcp's HTTP 401 for a stale grant)
- * keep calling check on its own;  this composition is for call sites that
- * run the check and a reserve back to back for one call.
- */
-export async function checkAndReserve(store, { epoch, approvedAt, phase, kind, policy }, now = Date.now()) {
-  if (typeof store.transaction !== "function") throw new TypeError("transactional store required");
-  return store.transaction(async (txn) => {
-    const gate = await check(txn, { epoch, approvedAt, phase }, now);
-    if (gate.code !== "ok") return { code: gate.code };
-    const slot = await reserve(txn, { kind, policy }, now);
-    return { code: "ok", slot };
-  });
-}
-
 // ---- shared provider quota (a separate Durable Object name per provider identity, never a seat)
 //
 // The Linear API limits requests per user or app user (5,000 an hour, plus a complexity budget), so the
@@ -671,17 +643,19 @@ async function auditCallInner(store, row, now) {
   }
   const day = dayKey(now);
   const days = ((await store.get("call_days")) ?? []).filter((d) => typeof d === "string");
-  if (!days.includes(day)) days.push(day);
+  let daysChanged = !days.includes(day);
+  if (daysChanged) days.push(day);
   const cutoff = dayKey(now - CALL_RETENTION_DAYS * DAY_MS);
   const keep = [];
   for (const d of days.sort()) {
     if (d < cutoff) {
-      await store.put(`calls:${d}`, null);
-      await store.put(`calls_bytes:${d}`, null);
+      await store.delete([`calls:${d}`, `calls_bytes:${d}`]);
+      daysChanged = true;
     }
     else keep.push(d);
   }
-  await store.put("call_days", keep);
+  // Written only when the list changes:  a row a call on a list that changes once a day.
+  if (daysChanged) await store.put("call_days", keep);
   const bucket = (await store.get(`calls:${day}`)) ?? [];
   const meta = await store.get(`calls_bytes:${day}`);
   let encodedBytes = meta && meta.count === bucket.length && Number.isSafeInteger(meta.bytes) && meta.bytes >= 0
@@ -720,13 +694,52 @@ async function auditCallInner(store, row, now) {
       geoChanged = true;
       await audit(store, { event: "geo_change", grant_ref: clean.grant_ref, from_asn: prior.asn, to_asn: clean.asn ?? null, from_country: prior.country, to_country: clean.country ?? null }, now);
     }
-    delete geo[clean.grant_ref];
-    geo[clean.grant_ref] = { asn: clean.asn ?? null, country: clean.country ?? null };
-    const refs = Object.keys(geo);
-    while (refs.length > GEO_CAP) delete geo[refs.shift()];
-    await store.put("grant_geo", geo);
+    // The newest grant last, same place same values:  nothing to write.
+    const current = prior && !geoChanged && Object.keys(geo).at(-1) === clean.grant_ref;
+    if (!current) {
+      delete geo[clean.grant_ref];
+      geo[clean.grant_ref] = { asn: clean.asn ?? null, country: clean.country ?? null };
+      const refs = Object.keys(geo);
+      while (refs.length > GEO_CAP) delete geo[refs.shift()];
+      await store.put("grant_geo", geo);
+    }
   }
   return { geoChanged };
+}
+
+/**
+ * One transaction's reads and writes held in memory, each key written once at
+ * the end (AFC-617):  a Durable Object bills every put as a row, so a batch of N
+ * audit rows costs its changed keys once instead of 2N to 4N rows.  Reads see
+ * this transaction's own writes;  values are not cloned, because auditCallInner
+ * puts back whatever it changes.
+ */
+function coalescedStore(txn) {
+  const memo = new Map();
+  const dirty = new Set();
+  return {
+    async get(key) {
+      if (!memo.has(key)) memo.set(key, await txn.get(key));
+      return memo.get(key);
+    },
+    async put(key, value) {
+      memo.set(key, value);
+      dirty.add(key);
+    },
+    async delete(keys) {
+      for (const key of Array.isArray(keys) ? keys : [keys]) {
+        memo.set(key, undefined);
+        dirty.add(key);
+      }
+    },
+    async commit() {
+      for (const key of dirty) {
+        const value = memo.get(key);
+        if (value === undefined) await txn.delete(key);
+        else await txn.put(key, value);
+      }
+    },
+  };
 }
 
 /** Serialize the full audit read/modify/write sequence across concurrent RPCs. */
@@ -751,10 +764,12 @@ export async function auditCallBatch(store, entries, now = Date.now()) {
   if (typeof store.transaction !== "function") throw new TypeError("transactional store required");
   if (!Array.isArray(entries)) throw new TypeError("audit batch entries must be an array");
   return store.transaction(async (txn) => {
+    const coalesced = coalescedStore(txn);
     for (const entry of entries) {
       const at = Number.isFinite(entry?.at) ? entry.at : now;
-      await auditCallInner(txn, entry?.row ?? {}, at);
+      await auditCallInner(coalesced, entry?.row ?? {}, at);
     }
+    await coalesced.commit();
     return { written: entries.length };
   });
 }
@@ -837,8 +852,8 @@ export const WAKE_SEEN_MS = 15 * MINUTE_MS; // > the wake's 5-minute sent_at win
 // How long one request holds a wake it claimed.  Longer than the Worker's
 // inline delivery (WAKE_BUDGET_MS in events.js, 10 seconds from the request's
 // arrival), so a live delivery is never claimed twice.  Shorter than the
-// listener's retry span (2, 5 and 10 seconds of backoff after its first
-// failure), so the listener's last retry claims again a wake whose isolate died
+// eavesdropper's retry span (2, 5 and 10 seconds of backoff after its first
+// failure), so the eavesdropper's last retry claims again a wake whose isolate died
 // mid-delivery.
 export const WAKE_LEASE_MS = 15 * 1000;
 const WAKE_SEEN_CAP = 500;
@@ -1011,9 +1026,9 @@ async function putWakeSeen(store, seen) {
 }
 
 /**
- * Claim one wake for delivery.  A settled wake_id (the listener retrying after
+ * Claim one wake for delivery.  A settled wake_id (the eavesdropper retrying after
  * a lost response) is "duplicate".  A claim whose lease is still running is
- * "in_flight":  another request is delivering it, and the listener retries
+ * "in_flight":  another request is delivering it, and the eavesdropper retries
  * later.  A claim whose lease ran out (that request died mid-delivery) is
  * claimed again.  The claim holds until eventSettleWake, which only its
  * `token` may call, so a wake is remembered once it was delivered or dropped,
@@ -1057,7 +1072,7 @@ export async function eventClaimWake(store, { wakeId, messageId = null, name = E
  * End a claim (WAKE_OUTCOMES).  Only the request that holds it (`token`) may:
  * one whose lease ran out and was claimed again changes nothing.
  * "retry" (no delivery, and one failed in a way worth retrying) forgets the
- * wake, so the listener's retry claims it again.  Every other outcome settles
+ * wake, so the eavesdropper's retry claims it again.  Every other outcome settles
  * it, and a repeat is "duplicate" from then on.  "channel_refused" is audited
  * with the stream's numeric id only.
  * Returns {ok: true}, or {ok: false} when the claim is no longer this one's.
@@ -1595,7 +1610,9 @@ export async function gbBearerCheck(store, hash, now = Date.now()) {
   // one boolean, which this instance already holds.  It is reported ONLY on
   // the ok shape - a wrong or expired bearer learns nothing about the seat,
   // exactly as before.
-  return { ok: true, mcp_accept: row.mcp_accept === true, paused: (await store.get("paused")) === true };
+  // expires_at rides it too, for /internal/gr-bearer-verify (the relay refuses
+  // an answer without a future one), so that route needs no gbBearerStatus RPC.
+  return { ok: true, mcp_accept: row.mcp_accept === true, paused: (await store.get("paused")) === true, expires_at: Number(row.expires_at) };
 }
 
 /** For /admin:  times and counts only, no hash. */
