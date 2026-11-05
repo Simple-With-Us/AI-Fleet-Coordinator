@@ -196,7 +196,7 @@ public final class FleetServiceControl {
                     return startup.state(ofAgent: label).managedState
                 }
                 guard let stopServer else {
-                    throw FleetServiceError.refused("The BotFleet Server has to stop itself, and the Control app could not ask it to.")
+                    throw FleetServiceError.refused("The BotFleet Server has to stop itself, and Muster could not ask it to.")
                 }
                 try await stopServer()
                 // The server's own shutdown is asynchronous, so what is

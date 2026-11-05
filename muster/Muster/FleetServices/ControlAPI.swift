@@ -14,6 +14,12 @@ public struct LocalVM: Decodable, Equatable, Sendable {
     }
 }
 
+/// The server's answer to `/api/system/control`.
+///
+/// Muster reads only the active-bot count and the blocking work.  The Local
+/// VM list and the persist-on-exit flag are still decoded, because they are
+/// part of the answer's shape and an answer without them is not the
+/// BotFleet Server's;  nothing in Muster acts on them.
 public struct ControlStatus: Decodable, Equatable, Sendable {
     public let activeBotCount: Int
     public let localVms: [LocalVM]
@@ -38,12 +44,6 @@ public struct ControlStatus: Decodable, Equatable, Sendable {
         self.persistOnExit = persistOnExit
         self.blockingWork = blockingWork
     }
-
-    public var runningVMCount: Int { localVms.filter(\.running).count }
-    public var sharedVM: LocalVM? { localVms.first { $0.key == "shared" } }
-    public var isSharedVMRunning: Bool { sharedVM?.running == true }
-    public var canStartSharedVM: Bool { ["missing", "created"].contains(sharedVM?.state ?? "") }
-    public var canStopSharedVM: Bool { sharedVM?.running == true }
 
     /// The blocking work as a sentence, or nil when nothing is in flight.
     public var blockingWorkSummary: String? {
@@ -90,40 +90,35 @@ public enum ControlAPIError: LocalizedError, Equatable {
     }
 }
 
+/// The BotFleet Server on this Mac, asked over plain http on loopback.
+///
+/// This client talks to that one server and no other:  a base URL that is
+/// not loopback http is refused before anything is sent, and no request
+/// carries a credential, so Muster holds none.  The remote-host, token and
+/// VM power paths it was ported with had no caller and were removed.
 public final class ControlAPI {
+    /// Where the BotFleet Server listens on this Mac.
+    public static let defaultBaseURL = URL(string: "http://127.0.0.1:8799")!
+
     private let session: URLSession
-    public let host: ServerHost
     private let baseURL: URL
     private let decoder = JSONDecoder()
-    /// Where the host's bearer token is read from, when it names one.
-    private let secrets: SecretResolving
 
-    public init(session: URLSession = .shared, host: ServerHost = .defaultLocal,
-                secrets: SecretResolving = FleetSecrets()) {
+    public init(session: URLSession = .shared, baseURL: URL = ControlAPI.defaultBaseURL) {
         self.session = session
-        self.host = host
-        self.baseURL = host.baseURL
-        self.secrets = secrets
+        self.baseURL = baseURL
     }
 
-    public convenience init(session: URLSession, baseURL: URL) {
-        let isLocal = (baseURL.host == "127.0.0.1" || baseURL.host == "localhost")
-        let host = ServerHost(name: isLocal ? "Local Mac" : "Custom Server", baseURL: baseURL, isLocal: isLocal)
-        self.init(session: session, host: host)
-    }
-
-    public convenience init(baseURL: URL) {
-        let isLocal = (baseURL.host == "127.0.0.1" || baseURL.host == "localhost")
-        let host = ServerHost(name: isLocal ? "Local Mac" : "Custom Server", baseURL: baseURL, isLocal: isLocal)
-        self.init(session: .shared, host: host)
+    /// True for the loopback names the BotFleet Server answers on.
+    static func isLoopback(_ host: String?) -> Bool {
+        host == "127.0.0.1" || host == "localhost"
     }
 
     /// How long the status probe waits for the server's own answer.
     ///
     /// The route reads the state of every Local VM target, so on a busy Mac
     /// it takes a while.  Fifteen seconds was close enough to what the route
-    /// actually cost under load that a slow server read as a stopped one,
-    /// which greyed out Start Local VM on a server that was running fine.
+    /// actually cost under load that a slow server read as a stopped one.
     public static let statusTimeout: TimeInterval = 30
 
     public func status(timeout: TimeInterval = ControlAPI.statusTimeout) async throws -> ControlStatus {
@@ -156,19 +151,7 @@ public final class ControlAPI {
         return pid
     }
 
-    public func setPersistOnExit(_ value: Bool) async throws {
-        try await verifyIdentity()
-        let body = try JSONSerialization.data(withJSONObject: ["server": ["persistOnExit": value]])
-        _ = try await send("/api/config", method: "PATCH", body: body, timeout: 10)
-        guard try await status().persistOnExit == value else { throw ControlAPIError.invalidResponse }
-    }
-
     public func stopServer() async throws { try await post("/api/system/control/stop") }
-    public func startVM() async throws { try await post("/api/system/control/vms/start") }
-    public func stopVMs() async throws { try await post("/api/system/control/vms/stop") }
-
-    public func startSharedVM() async throws { try await startVM() }
-    public func stopSharedVM() async throws { try await stopVMs() }
 
     private func post(_ path: String) async throws {
         try await verifyIdentity()
@@ -182,17 +165,16 @@ public final class ControlAPI {
         let data = try await send("/api/health", method: "GET")
         guard let value = try? decoder.decode(Health.self, from: data),
               value.app == "botfleet",
-              (!host.isLocal || (value.pid ?? 0) > 0),
+              (value.pid ?? 0) > 0,
               value.ready == true else {
             throw ControlAPIError.foreignService
         }
     }
 
     private func send(_ path: String, method: String, body: Data? = nil, timeout: TimeInterval = 3) async throws -> Data {
-        let isLocalLoopback = (baseURL.host == "127.0.0.1" || baseURL.host == "localhost")
-        let validScheme = host.isLocal ? (baseURL.scheme == "http") : (baseURL.scheme == "http" || baseURL.scheme == "https")
-        let validHost = host.isLocal ? isLocalLoopback : (baseURL.host != nil && !baseURL.host!.isEmpty)
-        guard validScheme, validHost,
+        // Only the BotFleet Server on this Mac is ever asked, so anything but
+        // loopback http is refused here, before a request exists.
+        guard baseURL.scheme == "http", Self.isLoopback(baseURL.host),
               let url = URL(string: path, relativeTo: baseURL)?.absoluteURL else {
             throw ControlAPIError.invalidResponse
         }
@@ -201,18 +183,6 @@ public final class ControlAPI {
         request.timeoutInterval = timeout
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        if let secretName = host.authTokenSecret, !secretName.isEmpty {
-            if !host.isLocal && !isLocalLoopback && baseURL.scheme != "https" {
-                throw ControlAPIError.refused("Remote servers configured with authentication tokens must use HTTPS.")
-            }
-            // The token is read from Infisical for this request only, and the
-            // error names the secret, never its value.
-            let token: String
-            do { token = try await awaitOffThePool { [secrets] in try secrets.secret(named: secretName) } }
-            catch { throw ControlAPIError.refused(error.localizedDescription) }
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-            request.setValue(token, forHTTPHeaderField: "x-botfleet-gate-token")
-        }
         if let body {
             request.httpBody = body
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -232,11 +202,9 @@ public final class ControlAPI {
             throw method == "GET" ? ControlAPIError.unavailable : ControlAPIError.outcomeUnknown
         }
         guard let http = response as? HTTPURLResponse else { throw ControlAPIError.invalidResponse }
-        if host.isLocal {
-            guard http.url?.scheme == "http",
-                  (http.url?.host == "127.0.0.1" || http.url?.host == "localhost"),
-                  http.url?.port == baseURL.port else { throw ControlAPIError.foreignService }
-        }
+        guard http.url?.scheme == "http",
+              Self.isLoopback(http.url?.host),
+              http.url?.port == baseURL.port else { throw ControlAPIError.foreignService }
         if !(200..<300).contains(http.statusCode) {
             if path == "/api/health" { throw ControlAPIError.foreignService }
             let message = (try? decoder.decode(ErrorResponse.self, from: data))?.message
@@ -257,8 +225,8 @@ private struct Health: Decodable {
 
 private struct ActionResult: Decodable { let ok: Bool }
 
-/// Refuses every redirect, so a bearer token is never forwarded to another
-/// origin.  The 3xx answer itself comes back to the caller, which treats any
+/// Refuses every redirect, so a request never leaves the server it was sent
+/// to.  The 3xx answer itself comes back to the caller, which treats any
 /// status outside 2xx as a refusal.
 final class NoRedirects: NSObject, URLSessionTaskDelegate {
     func urlSession(_ session: URLSession, task: URLSessionTask,
