@@ -2304,7 +2304,7 @@ class Daemon:
 
     def _not_run(self, runner: SeatRunner, pending: W.Pending, reason: str, now: float) -> None:
         """A wake that will not run now:  held back when its budget (or a full FIFO) refused it, else
-        dropped.  The table is in docs/protocols/agent-sync-server.md (Cloud Seats)."""
+        dropped.  The table is in docs/protocols/eavesdropper-server.md (Cloud Seats)."""
         if reason in HELD.HOLD_REASONS:
             self._hold(runner, pending, reason, now)
         else:
