@@ -1133,6 +1133,53 @@ final class SeatActivityStoreTests: XCTestCase {
         XCTAssertEqual(store.readsStarted, 2)
     }
 
+    /// A read that never ends on its own,  until it is stopped:  it counts its start and
+    /// whether it saw the stop.
+    private func stoppableStore(started: Counter, stopped: Counter) -> SeatActivityStore {
+        SeatActivityStore(reader: { _ in
+            await started.bump()
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 10_000_000)
+            }
+            await stopped.bump()
+            return SeatActivityModel(readAt: Date(timeIntervalSince1970: 2000), problems: ["partial"])
+        })
+    }
+
+    /// Leaving the panel stops the read in flight:  the stop reaches the reader,  and the
+    /// partial answer is dropped (Sentry on #1378).
+    func test_stopping_a_read_reaches_the_reader_and_drops_its_answer() async {
+        let started = Counter()
+        let stopped = Counter()
+        let store = stoppableStore(started: started, stopped: stopped)
+        async let read: Void = store.refresh(roster: ["CLAUDE"])
+        while await started.value == 0 {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        store.stopReading()
+        await read
+        let sawStop = await stopped.value
+        XCTAssertEqual(sawStop, 1)
+        XCTAssertNil(store.model)
+        XCTAssertFalse(store.loading)
+    }
+
+    /// Going to the background stops the read in flight too.
+    func test_going_to_the_background_stops_the_read() async {
+        let started = Counter()
+        let stopped = Counter()
+        let store = stoppableStore(started: started, stopped: stopped)
+        async let read: Void = store.refresh(roster: ["CLAUDE"])
+        while await started.value == 0 {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        store.setActive(false)
+        await read
+        let sawStop = await stopped.value
+        XCTAssertEqual(sawStop, 1)
+        XCTAssertNil(store.model)
+    }
+
     /// The timer reads nothing while the app is not in front.
     func test_the_timer_reads_nothing_in_the_background() async {
         let store = SeatActivityStore(reader: { _ in SeatActivityModel(readAt: Date(timeIntervalSince1970: 0)) })

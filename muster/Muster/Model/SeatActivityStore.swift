@@ -40,15 +40,32 @@ final class SeatActivityStore: ObservableObject {
         self.now = now
     }
 
-    /// Record whether the app is in front.
+    /// Record whether the app is in front.  Going to the background stops a read that is
+    /// still running,  because nobody is looking at what it would show.
     func setActive(_ active: Bool) {
         isActive = active
+        if !active { stopReading() }
+    }
+
+    /// Stop the read in flight,  when there is one.
+    ///
+    /// The read runs in a task of its own,  so it does not see the panel's own task end:
+    /// this is how the panel stops it.  Cancellation reaches the reader,  which starts no more
+    /// processes,  and a stopped read's partial answer is dropped:  the reading on screen
+    /// stays the last whole one.
+    func stopReading() {
+        inFlight?.cancel()
     }
 
     /// Read now,  unless a read is already running,  in which case wait for that one.
     func refresh(roster: [String]) async {
-        if let inFlight {
-            _ = await inFlight.value
+        if let running = inFlight {
+            _ = await running.value
+            // A whole read answered this request too.  A stopped one did not,  so a caller
+            // that came back while it was stopping gets a read of its own.
+            guard running.isCancelled else { return }
+            if inFlight == running { finish(running) }
+            await refresh(roster: roster)
             return
         }
         loading = true
@@ -59,9 +76,17 @@ final class SeatActivityStore: ObservableObject {
         }
         inFlight = task
         let result = await task.value
+        if !task.isCancelled {
+            model = result
+        }
+        if inFlight == task { finish(task) }
+    }
+
+    /// Clear the read in flight,  once it has ended.
+    private func finish(_ task: Task<SeatActivityModel, Never>) {
+        guard inFlight == task else { return }
         inFlight = nil
         loading = false
-        model = result
     }
 
     /// Read unless the reading on hand is younger than `maximumAge`.

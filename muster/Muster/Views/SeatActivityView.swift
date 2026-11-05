@@ -77,6 +77,10 @@ struct SeatActivityView: View {
         .onAppear {
             activity.setActive(scenePhase == .active)
         }
+        .onDisappear {
+            // Leaving the panel stops a read still running:  nobody is looking at it.
+            activity.stopReading()
+        }
         .task {
             await activity.refreshIfOlder(than: SeatActivityView.foregroundMinimumSeconds, roster: store.roster)
             // The slow timer:  it reads only while the app is in front,  and a read that is
