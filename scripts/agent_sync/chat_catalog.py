@@ -22,6 +22,12 @@ from typing import Any
 from urllib.parse import quote
 
 MAX_FILES_PER_SOURCE = 160
+
+
+class _StoreHeavy(Exception):
+    """The OpenCode store could not be read inside the work budget."""
+
+
 # Chats a by-id lookup found outside the discovery window, kept so the wake that found one can read it.
 MAX_FOUND_RECORDS = 64
 MAX_FILE_BYTES = 2 * 1024 * 1024
@@ -30,7 +36,15 @@ MAX_EXCERPT_CHARS = 2400
 # OpenCode SQLite excerpt budgets:  bounded rows and bytes before any JSON
 # parse, per session and across one whole scan.
 OPENCODE_EXCERPT_ROWS = 40
+# Combined per-row byte cap (UTF-8 bytes via length(CAST .. AS BLOB), not
+# characters) applied to m.data + p.data together, before any parse.
 OPENCODE_EXCERPT_ROW_BYTES = 64 * 1024
+# SQLite VM work budget for one store scan:  the progress handler aborts any
+# query (and then the whole read) once this many VM instruction groups ran,
+# so no query plan can turn a bounded row count into unbounded work.
+OPENCODE_SQLITE_WORK_STEPS = 500_000
+# Granularity:  the handler runs once per this many VM instructions.
+OPENCODE_SQLITE_PROGRESS_STEPS = 1000
 OPENCODE_EXCERPT_SESSION_BYTES = 256 * 1024
 OPENCODE_EXCERPT_TOTAL_BYTES = 4 * 1024 * 1024
 # Legacy tree enumeration is bounded too:  at most this many project dirs.
@@ -922,29 +936,42 @@ class ChatCatalog:
         root = self._opencode_root()
         db = root / "opencode.db"
         if db.is_file() and _within(db, self.home):
-            rows = self._opencode_rows_db(db)
+            try:
+                rows = self._opencode_rows_db(db)
+            except _StoreHeavy:
+                return [
+                    self._unavailable("opencode", "OPENCODE", "OpenCode store exceeds read budget")
+                ]
             if rows is None:
                 return [self._unavailable("opencode", "OPENCODE", "unrecognized OpenCode database")]
             return rows or [self._unavailable("opencode", "OPENCODE", "no OpenCode sessions")]
         base = root / "storage" / "session"
         files: list[Path] = []
         if base.is_dir() and _within(base, self.home):
-            # storage/session/<project>/ses_*.json.  Enumeration is bounded before
-            # any sort:  sorted() over an unbounded directory would materialize the
-            # whole tree, and an OSError here must degrade this platform, not the
-            # whole scan.
+            # storage/session/<project>/ses_*.json.  Enumeration is bounded
+            # before any sort or filter:  os.scandir is lazy, and islice counts
+            # every directory ENTRY inspected (matching or not), so a huge tree
+            # can never be materialized the way sorted() or Path.glob would
+            # (glob scans and collects matches before yielding).  An OSError
+            # here degrades this platform, not the whole scan.
             try:
-                projects = [
-                    p
-                    for p in itertools.islice(base.iterdir(), OPENCODE_LEGACY_PROJECTS + 1)
-                    if p.is_dir() and not p.is_symlink()
-                ][:OPENCODE_LEGACY_PROJECTS]
+                with os.scandir(base) as entries:
+                    projects = [
+                        entry.path
+                        for entry in itertools.islice(entries, OPENCODE_LEGACY_PROJECTS + 1)
+                        if entry.is_dir(follow_symlinks=False)
+                    ][:OPENCODE_LEGACY_PROJECTS]
                 for project in sorted(projects):
-                    for path in itertools.islice(project.glob("ses_*.json"), MAX_FILES_PER_SOURCE):
-                        if path.is_file() and not path.is_symlink() and _within(path, base):
-                            files.append(path)
-                            if len(files) >= MAX_FILES_PER_SOURCE:
-                                break
+                    with os.scandir(project) as entries:
+                        for entry in itertools.islice(entries, MAX_FILES_PER_SOURCE):
+                            name = entry.name
+                            if not (name.startswith("ses_") and name.endswith(".json")):
+                                continue
+                            path = Path(project) / name
+                            if entry.is_file(follow_symlinks=False) and _within(path, base):
+                                files.append(path)
+                                if len(files) >= MAX_FILES_PER_SOURCE:
+                                    break
                     if len(files) >= MAX_FILES_PER_SOURCE:
                         break
             except OSError:
@@ -979,11 +1006,25 @@ class ChatCatalog:
         #   "available" never describes an archived chat.
         # - Fail-closed:  a store whose session shape does not match returns
         #   None so the catalog says "unrecognized", never guessed rows.
+        # One VM-step work budget across every query on this connection.  LIMIT
+        # bounds returned rows, never work:  without a usable index a GROUP BY or
+        # ORDER BY still scans the whole table, so the progress handler is the
+        # actual bound.  Tripping it raises _StoreHeavy, not "unrecognized".
+        work = {"left": OPENCODE_SQLITE_WORK_STEPS, "tripped": False}
+
+        def _progress() -> int:
+            work["left"] -= 1
+            if work["left"] <= 0:
+                work["tripped"] = True
+                return 1
+            return 0
+
         try:
-            conn = sqlite3.connect("file:%s?mode=ro" % db, uri=True)
+            conn = sqlite3.connect("file:%s?mode=ro" % db, uri=True, timeout=2.0)
         except sqlite3.Error:
             return None
         try:
+            conn.set_progress_handler(_progress, OPENCODE_SQLITE_PROGRESS_STEPS)
             conn.execute("PRAGMA query_only = ON")
             tables = {
                 r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
@@ -994,6 +1035,22 @@ class ChatCatalog:
             if not {"id", "directory", "title", "time_created"} <= session_cols:
                 return None
             newer_content = bool({"session_message", "session_input"} & tables)
+            if not newer_content:
+                # Legacy content path.  Both tables absent entirely:  sessions are
+                # registry rows only, excerpts stay empty (documented, tested).
+                # Exactly one present, or either missing the columns this reader
+                # parses:  shape drift, fail closed, never a degraded guess.
+                for table, required in (
+                    ("message", {"id", "session_id", "time_created", "data"}),
+                    ("part", {"message_id", "session_id", "time_created", "data"}),
+                ):
+                    if table not in tables:
+                        if ("message" in tables) or ("part" in tables):
+                            return None
+                        continue
+                    cols = {r[1] for r in conn.execute("PRAGMA table_info(" + table + ")")}
+                    if not required <= cols:
+                        return None
             where = " WHERE time_archived IS NULL" if "time_archived" in session_cols else ""
             sessions = conn.execute(
                 "SELECT id, directory, title, time_created FROM session"
@@ -1038,7 +1095,7 @@ class ChatCatalog:
                     excerpts: list[dict[str, str]] = []
                     status = "metadata-only"
                 else:
-                    excerpts = self._opencode_excerpts_db(conn, sid, tables, budget)
+                    excerpts = self._opencode_excerpts_db(conn, sid, tables, budget, work)
                     status = "available"
                 rows.append(
                     self._row(
@@ -1058,6 +1115,8 @@ class ChatCatalog:
             rows.sort(key=lambda row: (row.get("updated_at") or 0, row["id"]), reverse=True)
             return rows
         except sqlite3.Error:
+            if work["tripped"]:
+                raise _StoreHeavy(str(db))
             return None
         finally:
             conn.close()
@@ -1068,43 +1127,49 @@ class ChatCatalog:
         sid: str,
         tables: set[str],
         budget: list[int],
+        work: dict[str, Any],
     ) -> list[dict[str, str]]:
-        # Best-effort within explicit budgets:  at most OPENCODE_EXCERPT_ROWS
-        # candidate rows, each pre-filtered in SQL to OPENCODE_EXCERPT_ROW_BYTES
-        # so a giant payload is skipped before any parse, capped at
-        # OPENCODE_EXCERPT_SESSION_BYTES per session and at the shared scan-wide
-        # `budget` across sessions.  Malformed or non-text payloads are skipped.
-        # Empty excerpts on an available row therefore means "no qualifying text
-        # parts within budget", never a claim about the chat's content;  the
-        # fail-closed contract applies to store shape only.
+        # Best-effort within explicit budgets.  The per-row cap counts UTF-8
+        # BYTES (length(CAST .. AS BLOB)), on m.data + p.data COMBINED, in SQL,
+        # before any parse.  Rows are consumed from the cursor one at a time:
+        # no fetchall, so at most one capped row (<= OPENCODE_EXCERPT_ROW_BYTES)
+        # is materialized on top of the per-session and scan-wide byte budgets
+        # (which therefore truly bound allocation, not just returned rows).
+        # Malformed or non-text payloads are skipped.  Empty excerpts on an
+        # available row therefore means "no qualifying text parts within
+        # budget", never a claim about the chat's content;  the fail-closed
+        # contract applies to store shape only.  A VM-work-budget trip
+        # propagates as _StoreHeavy, never as a silent empty excerpt.
         if "message" not in tables or "part" not in tables:
             return []
         if budget[0] <= 0:
             return []
         excerpts: list[dict[str, str]] = []
         try:
-            rows = conn.execute(
+            cursor = conn.execute(
                 "SELECT m.data, p.data,"
-                " COALESCE(length(m.data), 0) + COALESCE(length(p.data), 0)"
+                " length(CAST(m.data AS BLOB)) + length(CAST(p.data AS BLOB))"
                 " FROM part p JOIN message m ON m.id = p.message_id"
-                " WHERE p.session_id = ? AND length(p.data) <= ? AND length(m.data) <= ?"
+                " WHERE p.session_id = ?"
+                " AND length(CAST(p.data AS BLOB)) + length(CAST(m.data AS BLOB)) <= ?"
                 " ORDER BY p.time_created DESC LIMIT ?",
-                (
-                    sid,
-                    OPENCODE_EXCERPT_ROW_BYTES,
-                    OPENCODE_EXCERPT_ROW_BYTES,
-                    OPENCODE_EXCERPT_ROWS,
-                ),
-            ).fetchall()
+                (sid, OPENCODE_EXCERPT_ROW_BYTES, OPENCODE_EXCERPT_ROWS),
+            )
+            collected: list[tuple[Any, Any]] = []
+            spent = 0
+            for mdata, pdata, nbytes in cursor:
+                nbytes = nbytes if isinstance(nbytes, int) else 0
+                if spent + nbytes > OPENCODE_EXCERPT_SESSION_BYTES or budget[0] - nbytes <= 0:
+                    break
+                spent += nbytes
+                budget[0] -= nbytes
+                collected.append((mdata, pdata))
+            cursor.close()
         except sqlite3.Error:
+            if work["tripped"]:
+                raise _StoreHeavy(sid)
             return []
-        spent = 0
-        for mdata, pdata, nbytes in reversed(rows):
-            nbytes = nbytes if isinstance(nbytes, int) else 0
-            if spent + nbytes > OPENCODE_EXCERPT_SESSION_BYTES or budget[0] - nbytes <= 0:
-                break
-            spent += nbytes
-            budget[0] -= nbytes
+        for mdata, pdata in reversed(collected):
             try:
                 msg = json.loads(mdata) if isinstance(mdata, str) else None
                 part = json.loads(pdata) if isinstance(pdata, str) else None

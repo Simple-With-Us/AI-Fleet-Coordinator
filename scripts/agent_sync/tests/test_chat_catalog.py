@@ -985,6 +985,10 @@ class OpenCodeCatalogTests(unittest.TestCase):
             conn.execute(
                 "CREATE TABLE message (id TEXT, session_id TEXT, time_created INTEGER, data TEXT)"
             )
+            conn.execute(
+                "CREATE TABLE part (id TEXT, message_id TEXT, session_id TEXT,"
+                " time_created INTEGER, data TEXT)"
+            )
             total = MAX_FILES_PER_SOURCE + 5
             for i in range(total):
                 conn.execute(
@@ -1080,7 +1084,7 @@ class OpenCodeCatalogTests(unittest.TestCase):
     def test_legacy_tree_read_error_reports_unavailable(self):
         base = self.home / ".local" / "share" / "opencode" / "storage" / "session"
         base.mkdir(parents=True)
-        with mock.patch.object(Path, "iterdir", side_effect=OSError("denied")):
+        with mock.patch("agent_sync.chat_catalog.os.scandir", side_effect=OSError("denied")):
             rows = self.catalog().discover()
         row = next(r for r in rows if r["platform"] == "opencode")
         self.assertEqual(row["status"], "unavailable")
@@ -1098,3 +1102,100 @@ class OpenCodeCatalogTests(unittest.TestCase):
         muse = next(r for r in rows if r["platform"] == "muse")
         self.assertEqual(muse["status"], "unavailable")
         self.assertIn("scan error", muse["error"])
+
+    def test_malformed_part_table_fails_closed(self):
+        # Reviewer repro: valid session/message tables but a part table missing
+        # the columns this reader parses is shape drift:  fail closed as
+        # "unrecognized", never an available session with silently empty
+        # excerpts.
+        db = self.home / ".local" / "share" / "opencode" / "opencode.db"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(db)
+        try:
+            conn.execute(
+                "CREATE TABLE session (id TEXT, directory TEXT, title TEXT, time_created INTEGER)"
+            )
+            conn.execute(
+                "CREATE TABLE message (id TEXT, session_id TEXT, time_created INTEGER, data TEXT)"
+            )
+            conn.execute("CREATE TABLE part (id TEXT, wrong TEXT)")
+            conn.execute("INSERT INTO session VALUES ('ses_1', '/a', 'Chat', 1000)")
+            conn.commit()
+        finally:
+            conn.close()
+        rows = self.catalog().discover()
+        row = next(r for r in rows if r["platform"] == "opencode")
+        self.assertEqual(row["status"], "unavailable")
+        self.assertIn("unrecognized", row["error"])
+        self.assertFalse(row["capabilities"]["read"])
+
+    def test_partial_content_shape_fails_closed(self):
+        # Exactly one of the legacy content tables present is drift too.
+        db = self.home / ".local" / "share" / "opencode" / "opencode.db"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(db)
+        try:
+            conn.execute(
+                "CREATE TABLE session (id TEXT, directory TEXT, title TEXT, time_created INTEGER)"
+            )
+            conn.execute(
+                "CREATE TABLE message (id TEXT, session_id TEXT, time_created INTEGER, data TEXT)"
+            )
+            conn.execute("INSERT INTO session VALUES ('ses_1', '/a', 'Chat', 1000)")
+            conn.commit()
+        finally:
+            conn.close()
+        rows = self.catalog().discover()
+        row = next(r for r in rows if r["platform"] == "opencode")
+        self.assertEqual(row["status"], "unavailable")
+        self.assertIn("unrecognized", row["error"])
+
+    def test_byte_cap_counts_utf8_bytes_not_characters(self):
+        # 40k four-byte characters = 160KB of UTF-8:  above the 64KB byte cap
+        # even though it is below 64k characters.
+        db = self._db()
+        big = '{"type": "text", "text": "' + "\U0001F600" * 40000 + '"}'
+        conn = sqlite3.connect(db)
+        try:
+            conn.execute("INSERT INTO part VALUES ('prt_mb', 'msg_1', 'ses_1', 2002, ?)", (big,))
+            conn.commit()
+        finally:
+            conn.close()
+        catalog = self.catalog()
+        rows = catalog.discover()
+        row = next(r for r in rows if r["platform"] == "opencode")
+        self.assertEqual(row["status"], "available")
+        self.assertEqual(
+            catalog.excerpt(row["id"]), [{"role": "user", "text": "hello fleet"}]
+        )
+
+    def test_work_budget_trip_reports_store_heavy(self):
+        # A tripped VM work budget is "store exceeds read budget", never
+        # "unrecognized" and never silently empty.
+        self._db()
+        catalog = self.catalog()
+        with mock.patch("agent_sync.chat_catalog.OPENCODE_SQLITE_WORK_STEPS", 1), mock.patch(
+            "agent_sync.chat_catalog.OPENCODE_SQLITE_PROGRESS_STEPS", 1
+        ):
+            rows = catalog.discover()
+        row = next(r for r in rows if r["platform"] == "opencode")
+        self.assertEqual(row["status"], "unavailable")
+        self.assertIn("exceeds read budget", row["error"])
+
+    def test_legacy_enumeration_is_bounded(self):
+        # More ses_*.json files than the cap in one project:  exactly the cap is
+        # enumerated, no error, no unbounded walk.
+        base = self.home / ".local" / "share" / "opencode" / "storage" / "session" / "proj"
+        base.mkdir(parents=True)
+        for i in range(MAX_FILES_PER_SOURCE + 40):
+            (base / ("ses_%03d.json" % i)).write_text(
+                json.dumps({"id": "ses_%03d" % i, "title": "Chat %d" % i,
+                            "time": {"created": 1000 + i}}),
+                encoding="utf-8",
+            )
+        rows = [
+            r
+            for r in self.catalog(max_records=1000).discover()
+            if r["platform"] == "opencode" and r["status"] == "available"
+        ]
+        self.assertEqual(len(rows), MAX_FILES_PER_SOURCE)
