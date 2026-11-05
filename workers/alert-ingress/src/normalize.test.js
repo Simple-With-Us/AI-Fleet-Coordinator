@@ -2,8 +2,78 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { normalize, fromDatadog, fromBetterStack, fromGeneric } from "./normalize.js";
+import { normalize, redactCredentials, fromDatadog, fromBetterStack, fromGeneric } from "./normalize.js";
 import { normalizeSeverity, decide, initialState } from "./state.js";
+
+// Obviously fake shapes, assembled at runtime for the scanner.  Never credentials.
+const FAKE_BODY = "FAKEKEYBODY".repeat(4);
+const FAKE_BEGIN = "-----BEGIN " + "EC PRIVATE KEY-----";
+const FAKE_END = "-----END EC " + "PRIVATE KEY-----";
+const FAKE_TOKEN = "ghp_" + "a".repeat(36);
+
+test("a private key is redacted through its END marker, with what surrounds it kept", () => {
+  const pem = [FAKE_BEGIN, FAKE_BODY, FAKE_BODY, FAKE_END].join("\n");
+  assert.equal(redactCredentials(`before ${pem} after`), "before [redacted] after");
+  // As oneLine leaves it, and with two keys in one value.
+  assert.equal(redactCredentials(`${FAKE_BEGIN} ${FAKE_BODY} ${FAKE_END}`), "[redacted]");
+  assert.equal(redactCredentials(`${pem} and ${pem}`), "[redacted] and [redacted]");
+});
+
+test("a private key with no END marker is redacted to the end of the value", () => {
+  assert.equal(redactCredentials(`before ${FAKE_BEGIN}\n${FAKE_BODY}\n${FAKE_BODY}`), "before [redacted]");
+  assert.equal(redactCredentials(`${FAKE_BEGIN} ${FAKE_BODY} -----END EC PRIV`), "[redacted]");
+});
+
+test("the redactor and the key scan agree on case", () => {
+  for (const token of [FAKE_TOKEN.toUpperCase(), `G${FAKE_TOKEN.slice(1)}`]) {
+    const event = normalize("generic", { id: "one", service: "svc", status: "down", summary: `down ${token}` });
+    assert.equal(event.text, "down [redacted]");
+    assert.equal(event.identityRedacted, undefined);
+  }
+  const lowered = [FAKE_BEGIN, FAKE_BODY, FAKE_END].join("\n").toLowerCase();
+  assert.equal(redactCredentials(`before ${lowered} after`), "before [redacted] after");
+  assert.equal(redactCredentials("an ordinary line stays as it is"), "an ordinary line stays as it is");
+});
+
+test("no part of a private key reaches a normalized event", () => {
+  const pem = [FAKE_BEGIN, FAKE_BODY, FAKE_BODY, FAKE_END].join("\n");
+  const event = normalize("generic", { service: "svc", status: "down", summary: `down ${pem}`, link: `https://x.test/${pem}` });
+  assert.equal(event.text, "down [redacted]");
+  assert.equal(event.link, "https://x.test/[redacted]");
+  const named = normalize("generic", { service: `svc ${pem}`, status: "down" });
+  assert.doesNotMatch(JSON.stringify(named), /FAKEKEYBODY/i);
+  assert.equal(named.identityRedacted, true);
+});
+
+test("a token the 128-character scope cut would shorten leaves no prefix in the key", () => {
+  // The cut falls inside the token, so what is left is too short to match its shape.
+  const cutInside = `host:${"h".repeat(110)},${FAKE_TOKEN}`;
+  // The cut removes the token whole, and the key still may not depend on luck.
+  const pastCut = `host:${"h".repeat(140)},${FAKE_TOKEN}`;
+  for (const scope of [cutInside, pastCut]) {
+    const event = normalize("datadog", { monitor_id: 7, alert_type: "error", scope });
+    assert.match(event.key, /^datadog:7:redacted-[0-9a-z]+$/);
+    assert.equal(event.identityRedacted, true);
+    assert.doesNotMatch(JSON.stringify(event), /ghp_/);
+    // The same group keeps its row.
+    assert.equal(normalize("datadog", { monitor_id: 7, alert_type: "recovered", scope }).key, event.key);
+  }
+  // Two groups of one monitor stay two incidents.
+  assert.notEqual(
+    normalize("datadog", { monitor_id: 7, alert_type: "error", scope: cutInside }).key,
+    normalize("datadog", { monitor_id: 7, alert_type: "error", scope: `${cutInside}b` }).key,
+  );
+  // A token within the first 128 characters, and in capitals, takes the same path.
+  const short = normalize("datadog", { monitor_id: 7, alert_type: "error", scope: `AKIA${"Z".repeat(16)}` });
+  assert.match(short.key, /^datadog:7:redacted-/);
+});
+
+test("an ordinary long scope is still cut to 128 characters and flagged as nothing", () => {
+  const scope = `host:${"h".repeat(200)}`;
+  const event = normalize("datadog", { monitor_id: 7, alert_type: "error", scope });
+  assert.equal(event.key, `datadog:7:${scope.slice(0, 128)}`);
+  assert.equal(event.identityRedacted, undefined);
+});
 
 test("datadog triggered and recovered are distinguishable", () => {
   const triggered = fromDatadog({

@@ -39,6 +39,8 @@ jobs:
       - run: npm ci --ignore-scripts
         working-directory: scripts/agent-sync-mcp
       - run: python3 scripts/test-deploy-alert-workers.py
+      # The release imports its tag, guard and change logic from this script.
+      - run: python3 scripts/test-deploy-mapped-worker.py
       - name: Load existing scoped release credential
         env:
           INFISICAL_PROJECT_ID: ${{ secrets.INFISICAL_FLEET_OPS_PROJECT_ID }}

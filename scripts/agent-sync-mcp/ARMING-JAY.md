@@ -204,9 +204,9 @@ Issue text comes back fenced as untrusted data, the same as a channel post, beca
 
 ## Wake Jet
 
-Jet can now be woken when someone @-mentions it (or DMs openai-dot-bot) in Zulip.  The server listener tells the Agent-Sync server, which sends a signed **MCP Event** (`zulip.mention`) to every ChatGPT chat or dot that subscribed.  No polling loop, and nothing to install.  Design:  `docs/protocols/agent-sync-mcp.md` section 3.12.
+Jet can now be woken when someone @-mentions it (or DMs openai-dot-bot) in Zulip.  The server eavesdropper tells the Agent-Sync server, which sends a signed **MCP Event** (`zulip.mention`) to every ChatGPT chat or dot that subscribed.  No polling loop, and nothing to install.  Design:  `docs/protocols/agent-sync-mcp.md` section 3.12.
 
-**1. Turn on the listener's half (Coolify, once).**  Three parts, then one restart.
+**1. Turn on the eavesdropper's half (Coolify, once).**  Three parts, then one restart.
 
 a.  In the simple-chat listener app on Coolify, under Environment Variables (runtime only), add:
 
@@ -252,9 +252,9 @@ To limit it to one channel, add "for the sandbox channel" (or any public channel
 
 **If ChatGPT says the subscription failed** (callback refused or verification failed):  open `/admin`, look under **Refused Authorize Requests** for a row with reason `callback_host_not_allowed`, and tell Claude the host shown.  ChatGPT's callback host is not documented, and the server accepts only `chatgpt.com` and `openai.com` hosts until that host is added.
 
-Each wake starts a ChatGPT task, so the listener limits Jet to 6 wakes an hour, 40 a day and 2 an hour per topic or DM thread (your own messages:  30 a day, 6 an hour per topic).  **A message over those limits is held back, not lost.**  The next wake that reaches Jet lists it (who sent it, where, a link and which limit, never its text), and once the limits have room again the listener sends one catch-up wake for the newest one, inside the same limits.  Every held message stays on that list, oldest first, until a wake that reached Jet has listed it (only past 1,200 held messages is one dropped, and then it is counted and you get a note), and Jet can also find it with `inbox` or `read_topic`.  The hourly summary for you goes to an owner queue that nothing on the server reads yet.  Mentions in any public channel openai-dot-bot is subscribed to reach ChatGPT.  A mention of Jet in a private channel, or in one on `CHANNELS_DENY`, is captured but never forwarded.
+Each wake starts a ChatGPT task, so the eavesdropper limits Jet to 6 wakes an hour, 40 a day and 2 an hour per topic or DM thread (your own messages:  30 a day, 6 an hour per topic).  **A message over those limits is held back, not lost.**  The next wake that reaches Jet lists it (who sent it, where, a link and which limit, never its text), and once the limits have room again the eavesdropper sends one catch-up wake for the newest one, inside the same limits.  Every held message stays on that list, oldest first, until a wake that reached Jet has listed it (only past 1,200 held messages is one dropped, and then it is counted and you get a note), and Jet can also find it with `inbox` or `read_topic`.  The hourly summary for you goes to an owner queue that nothing on the server reads yet.  Mentions in any public channel openai-dot-bot is subscribed to reach ChatGPT.  A mention of Jet in a private channel, or in one on `CHANNELS_DENY`, is captured but never forwarded.
 
-**To see a wake go through,** open `/admin` → **Audit**:  `event_wake_captured` means the server got the wake, and `event_wake_settled` with outcome `delivered` means ChatGPT accepted the event.  Whether the Jet task then ran shows only in its tool calls (**Tool Calls**) and its `[JET]` reply.  If ChatGPT is briefly down, the server says so and the listener tries the same wake again a few seconds later.
+**To see a wake go through,** open `/admin` → **Audit**:  `event_wake_captured` means the server got the wake, and `event_wake_settled` with outcome `delivered` means ChatGPT accepted the event.  Whether the Jet task then ran shows only in its tool calls (**Tool Calls**) and its `[JET]` reply.  If ChatGPT is briefly down, the server says so and the eavesdropper tries the same wake again a few seconds later.
 
 Only one chat can hold the subscription at a time.  A second chat that asks is refused, and the refusal says when the first lapses (24 hours after its last refresh, unless ChatGPT refreshes it).  A DM to Jet wakes the chat with who sent it, a link and the message text, marked as untrusted like a channel mention.  Jet can read the whole conversation with `dm_read`.
 
