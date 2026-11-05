@@ -63,6 +63,12 @@ const defaultRespond = (req) => {
   if (req.url.endsWith("/recall/contribute")) {
     return { json: { ok: true, id: "5f0c-uuid", doc_id: `contrib/${req.body.seat}/2026-10-09/abcd1234`, scrubbed: [], status: "completed" } };
   }
+  if (req.url.endsWith("/recall/correct")) {
+    return { json: { ok: true, id: "5f0c-uuid", doc_id: req.body.doc_id, revision: 2, status: "completed", corrected_at: 1760000000000, corrected_by: req.body.seat, previous_content_hash: "a".repeat(64), content_hash: "b".repeat(64), scrubbed: [] } };
+  }
+  if (req.url.endsWith("/recall/retract")) {
+    return { json: { ok: true, id: "5f0c-uuid", doc_id: req.body.doc_id, revision: 2, retracted: true, retracted_at: 1760000000100, retracted_by: req.body.seat, retraction_reason: req.body.reason, status: "completed" } };
+  }
   return { status: 404, json: { ok: false, error: "not found" } };
 };
 
@@ -133,7 +139,7 @@ test("the hosted list is the ten original Zulip tools, then recall, then the Lin
   const full = TOOLS.tools.slice(12).map((t) => t.name);  // after whoami, identities, guide and the original nine (AFC-331)
   assert.deepEqual(
     HOSTED_TOOL_LIST.map((t) => t.name),
-    ["whoami", "zulip_topics", "zulip_read_topic", "zulip_inbox", "zulip_post", "zulip_reply", "zulip_react", "zulip_dm_list", "zulip_dm_read", "zulip_dm_send", "recall_search", "recall_stats", "recall_contribute", "linear_whoami", "linear_list", "linear_show", "linear_file", "linear_claim", "linear_comment", "linear_status", "linear_schema", "linear_query", "linear_mutation", ...LINEAR_NAMED_TOOLS.map((t) => t.name), ...LINEAR_MCP_TOOLS.map((t) => t.name), ...FLEETLINK_TOOLS.map((t) => t.name), ...full, "eavesdropper_status", "eavesdropper_inbox", "eavesdropper_owner_queue", "eavesdropper_wakes", "eavesdropper_held_back", ...NOTES_TOOLS.map((t) => t.name), "whatsapp_read", "whatsapp_reply", "whatsapp_send_status", ...GR_TOOLS.map((t) => t.name), ...TYPED_V1_TOOLS.map((t) => t.name), ...WF_V1_TOOLS.map((t) => t.name)],
+    ["whoami", "zulip_topics", "zulip_read_topic", "zulip_inbox", "zulip_post", "zulip_reply", "zulip_react", "zulip_dm_list", "zulip_dm_read", "zulip_dm_send", "recall_search", "recall_stats", "recall_contribute", "recall_correct", "recall_retract", "linear_whoami", "linear_list", "linear_show", "linear_file", "linear_claim", "linear_comment", "linear_status", "linear_schema", "linear_query", "linear_mutation", ...LINEAR_NAMED_TOOLS.map((t) => t.name), ...LINEAR_MCP_TOOLS.map((t) => t.name), ...FLEETLINK_TOOLS.map((t) => t.name), ...full, "eavesdropper_status", "eavesdropper_inbox", "eavesdropper_owner_queue", "eavesdropper_wakes", "eavesdropper_held_back", ...NOTES_TOOLS.map((t) => t.name), "whatsapp_read", "whatsapp_reply", "whatsapp_send_status", ...GR_TOOLS.map((t) => t.name), ...TYPED_V1_TOOLS.map((t) => t.name), ...WF_V1_TOOLS.map((t) => t.name)],
   );
   // tools.json, the stdio contract, is untouched:  the Linear tools are hosted-only,
   // the way recall and dm are, because the Python stdio server cannot run them.
@@ -150,7 +156,7 @@ test("the hosted list is the ten original Zulip tools, then recall, then the Lin
     assert.ok(HOSTED_WRITE_TOOLS.has(tool.name) && !HOSTED_READ_TOOLS.has(tool.name), tool.name);
   }
   assert.ok(HOSTED_READ_TOOLS.has("recall_search") && HOSTED_READ_TOOLS.has("recall_stats"));
-  assert.ok(HOSTED_WRITE_TOOLS.has("recall_contribute") && !HOSTED_READ_TOOLS.has("recall_contribute"));
+  for (const name of ["recall_contribute", "recall_correct", "recall_retract"]) assert.ok(HOSTED_WRITE_TOOLS.has(name) && !HOSTED_READ_TOOLS.has(name), name);
   assert.match(hostedInstructions("JET"), /BEGIN_UNTRUSTED_RECALL and END_UNTRUSTED_RECALL/);
   assert.match(hostedInstructions("JET"), /BEGIN_UNTRUSTED_ZULIP and END_UNTRUSTED_ZULIP/);
 });
@@ -183,7 +189,7 @@ test("scopes:  a write-only grant cannot search", async () => {
 
 test("not configured:  every recall tool says not_configured, and whoami still works", async () => {
   const { tools } = harness({ recall: false });
-  for (const [name, args] of [["recall_search", { query: "x" }], ["recall_stats", {}], ["recall_contribute", { text: LESSON, category: "lesson" }]]) {
+  for (const [name, args] of [["recall_search", { query: "x" }], ["recall_stats", {}], ["recall_contribute", { text: LESSON, category: "lesson" }], ["recall_correct", { doc_id: "contrib/GROK-WEB/2026-11-05/abcd1234", text: LESSON, reason: "make it current" }], ["recall_retract", { doc_id: "contrib/GROK-WEB/2026-11-05/abcd1234", reason: "obsolete" }]]) {
     const error = toolError(await tools.call(name, args), "not_configured");
     assert.match(error.message, /RECALL_API_TOKEN/);
   }
@@ -224,6 +230,8 @@ test("search sends the three auth headers, a real User-Agent, no redirects and o
   assert.equal(req.headers["CF-Access-Client-Secret"], ACCESS_SECRET);
   assert.equal(req.headers["User-Agent"], RECALL_USER_AGENT);
   assert.deepEqual(req.body, { query: "agent-sync bridge", limit: 3, app: "fleet", category: "lesson" });
+  ok(await tools.call("recall_search", { query: "old lesson", include_retracted: true }), "recall_search");
+  assert.deepEqual(upstream.requests[1].body, { query: "old lesson", limit: 5, include_retracted: true });
 });
 
 test("stats is a GET to /recall/stats and passes back only counts", async () => {
@@ -249,10 +257,62 @@ test("contribute is always the grant's seat:  a client seat is dropped, never se
   }
 });
 
+test("an OWNER mutation uses the distinct owner bearer; other mutations use the shared recall bearer", async () => {
+  const upstream = fakeRecall(defaultRespond);
+  const client = new RecallClient({
+    baseUrl: "https://recall.jays.services", token: TOKEN, accessId: ACCESS_ID, accessSecret: ACCESS_SECRET,
+    ownerToken: "rot_" + "O".repeat(40), fetch: upstream.fetch,
+  });
+  const doc_id = "contrib/CLAUDE/2026-11-05/abcd1234";
+  await client.retract({ doc_id, reason: "obsolete", seat: "OWNER" });
+  await client.retract({ doc_id, reason: "obsolete", seat: "CLAUDE" });
+  assert.equal(upstream.requests[0].headers.Authorization, `Bearer rot_${"O".repeat(40)}`);
+  assert.equal(upstream.requests[1].headers.Authorization, `Bearer ${TOKEN}`);
+  noSecrets(JSON.stringify(client));
+});
+
 test("contribute sends title, url and app when given, and trims the text", async () => {
   const { tools, upstream } = harness();
   ok(await tools.call("recall_contribute", { text: `  ${LESSON}  `, category: "runbook", title: " Refresh tools ", app: "botfleet", url: "https://github.com/x/y/pull/1" }), "recall_contribute");
   assert.deepEqual(upstream.requests[0].body, { text: LESSON, category: "runbook", app: "botfleet", seat: "GROK-WEB", title: "Refresh tools", url: "https://github.com/x/y/pull/1" });
+});
+
+test("correct and retract are always the grant's seat:  a client seat is dropped, never sent", async () => {
+  const doc_id = "contrib/GROK-WEB/2026-11-05/abcd1234";
+  const { tools, upstream } = harness({ seat: "JET" });
+  const corrected = ok(await tools.call("recall_correct", {
+    doc_id, text: LESSON, reason: "make it current", title: "Refresh tools",
+    url: "https://github.com/x/y/pull/1", expected_revision: 1, seat: "CLAUDE",
+  }), "recall_correct");
+  assert.equal(corrected.seat, "JET");
+  assert.equal(corrected.revision, 2);
+  assert.deepEqual(upstream.requests[0].body, {
+    doc_id, text: LESSON, reason: "make it current", title: "Refresh tools",
+    url: "https://github.com/x/y/pull/1", expected_revision: 1, seat: "JET",
+  });
+  const retracted = ok(await tools.call("recall_retract", {
+    doc_id, reason: "obsolete after the bridge rewrite", expected_revision: 2, seat: "CLAUDE",
+  }), "recall_retract");
+  assert.equal(retracted.seat, "JET");
+  assert.equal(retracted.retracted, true);
+  assert.deepEqual(upstream.requests[1].body, {
+    doc_id, reason: "obsolete after the bridge rewrite", expected_revision: 2, seat: "JET",
+  });
+});
+
+test("mutation idempotency:  a retry returns the first result;  a reason secret never leaves", async () => {
+  const doc_id = "contrib/GROK-WEB/2026-11-05/abcd1234";
+  const { tools, upstream } = harness();
+  const first = ok(await tools.call("recall_retract", { doc_id, reason: "obsolete" }), "recall_retract");
+  const second = ok(await tools.call("recall_retract", { doc_id, reason: "obsolete" }), "recall_retract");
+  assert.equal(second.duplicate, true);
+  assert.equal(upstream.requests.length, 1);
+  assert.deepEqual({ ...first, duplicate: true }, second);
+  const secret = toolError(await tools.call("recall_correct", {
+    doc_id, text: LESSON, reason: "token ghp_" + "a".repeat(36),
+  }), "refused_secret");
+  assert.match(secret.message, /reason/);
+  assert.equal(upstream.requests.length, 1);
 });
 
 test("seat stays a refused argument on every other tool", async () => {

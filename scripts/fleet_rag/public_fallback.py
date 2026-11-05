@@ -44,7 +44,8 @@ This module gives those two surfaces a fast, actionable alternative:
      the public path too (a rejected bearer, Access rejecting the service token, the box itself
      down), produces one plain-English, actionable line -- never a second opaque exception.
 
-Only recall_search / recall_stats / recall_contribute are covered (the shared tool contract).
+Only recall_search / recall_stats / recall_contribute / recall_correct / recall_retract are covered
+(the shared tool contract).
 The public service's recall_search route now accepts every recall_search() keyword, including
 `per_doc`, `rerank`, and `prefer_lessons` (see `scripts/fleet-recall-service/server.py` TOOLS).
 The CLI-only `--force` dedup-guard override is accepted and ignored by the public service
@@ -93,6 +94,7 @@ ROUTE_TIMEOUT = 2.0
 
 PUBLIC_BASE = "https://recall.jays.services"
 PUBLIC_ENV_KEYS = ("RECALL_API_TOKEN", "CF_ACCESS_CLIENT_ID", "CF_ACCESS_CLIENT_SECRET")
+PUBLIC_OPTIONAL_ENV_KEYS = ("RECALL_OWNER_TOKEN",)
 PUBLIC_TIMEOUT = 15
 PUBLIC_RETRIES = 1
 # `urllib.request`'s default User-Agent ("Python-urllib/3.x") trips Cloudflare's bot management
@@ -116,6 +118,7 @@ PUBLIC_INFISICAL_NAMES = {
     "RECALL_API_TOKEN": "RECALL_API_TOKEN",
     "CF_ACCESS_CLIENT_ID": "AGENTS_JAYS_SERVICES_ACCESS_SERVICE_TOKEN_CF_ACCESS_CLIENT_ID",
     "CF_ACCESS_CLIENT_SECRET": "AGENTS_JAYS_SERVICES_ACCESS_SERVICE_TOKEN_CF_ACCESS_CLIENT_SECRET",
+    "RECALL_OWNER_TOKEN": "RECALL_OWNER_TOKEN",
 }
 
 
@@ -123,8 +126,16 @@ REST_PATH = {
     "recall_search": "/recall/search",
     "recall_stats": "/recall/stats",
     "recall_contribute": "/recall/contribute",
+    "recall_correct": "/recall/correct",
+    "recall_retract": "/recall/retract",
 }
-REST_METHOD = {"recall_search": "POST", "recall_stats": "GET", "recall_contribute": "POST"}
+REST_METHOD = {
+    "recall_search": "POST",
+    "recall_stats": "GET",
+    "recall_contribute": "POST",
+    "recall_correct": "POST",
+    "recall_retract": "POST",
+}
 # The public tool contract mirrors the local one (scripts/fleet-recall-service/server.py TOOLS)
 # for recall_search -- every recall_search() keyword argument has a public route.  recall_
 # contribute stays a deliberate subset: `force` is a local-only dedup-guard nicety (see the
@@ -142,9 +153,20 @@ PUBLIC_ALLOWED_ARGS = {
         "per_doc",
         "rerank",
         "prefer_lessons",
+        "include_retracted",
     },
     "recall_stats": set(),
     "recall_contribute": {"text", "category", "app", "seat", "title", "url"},
+    "recall_correct": {
+        "doc_id",
+        "text",
+        "reason",
+        "seat",
+        "title",
+        "url",
+        "expected_revision",
+    },
+    "recall_retract": {"doc_id", "reason", "seat", "expected_revision"},
 }
 
 RunLocal = Callable[[], dict]
@@ -376,24 +398,32 @@ def public_credentials() -> dict[str, str] | None:
     and no change to any client's MCP config.
     """
     vals = _resolve_public_env()
-    return vals if all(vals.values()) else None
+    return vals if all(vals[k] for k in PUBLIC_ENV_KEYS) else None
 
 
 def _resolve_public_env() -> dict[str, str]:
-    """Every PUBLIC_ENV_KEYS name resolved env-then-Infisical; a name found nowhere maps to "" so
-    the caller can still tell which one(s) are missing."""
+    """Every required PUBLIC_ENV_KEYS name resolved env-then-Infisical; a name found nowhere maps
+    to "" so the caller can still tell which one(s) are missing.  RECALL_OWNER_TOKEN is resolved
+    lazily for OWNER mutations only, so ordinary calls do not need an owner credential."""
     vals = {}
     for k in PUBLIC_ENV_KEYS:
-        v = (os.environ.get(k) or "").strip()
-        if not v:
-            v = (core.fleet_secret(PUBLIC_INFISICAL_NAMES.get(k, k)) or "").strip()
-        vals[k] = v
+        vals[k] = _resolve_public_env_key(k)
     return vals
 
 
-def _public_headers(creds: dict[str, str]) -> dict[str, str]:
+def _resolve_public_env_key(key: str) -> str:
+    v = (os.environ.get(key) or "").strip()
+    if not v:
+        v = (core.fleet_secret(PUBLIC_INFISICAL_NAMES.get(key, key)) or "").strip()
+    return v
+
+
+def _public_headers(
+    creds: dict[str, str], *, owner_mutation: bool = False, owner_token: str = ""
+) -> dict[str, str]:
+    token = owner_token if owner_mutation else creds["RECALL_API_TOKEN"]
     return {
-        "Authorization": f"Bearer {creds['RECALL_API_TOKEN']}",
+        "Authorization": f"Bearer {token}",
         "CF-Access-Client-Id": creds["CF_ACCESS_CLIENT_ID"],
         "CF-Access-Client-Secret": creds["CF_ACCESS_CLIENT_SECRET"],
         "User-Agent": USER_AGENT,
@@ -416,13 +446,23 @@ def call_public(name: str, kwargs: dict) -> dict:
             + " -- set them in the environment, or see docs/RECALL-ACCESS-CHECK.md for the"
             " credential sources that normally supply them"
         )
+    owner_mutation = (
+        name in ("recall_correct", "recall_retract")
+        and str(kwargs.get("seat") or "").strip().upper() == "OWNER"
+    )
+    owner_token = _resolve_public_env_key("RECALL_OWNER_TOKEN") if owner_mutation else ""
+    if owner_mutation and not owner_token:
+        raise FleetRagError(
+            "public fallback needs RECALL_OWNER_TOKEN for an OWNER recall mutation; "
+            "the shared recall bearer does not prove the owner identity"
+        )
     url = PUBLIC_BASE + REST_PATH[name]
     method = REST_METHOD[name]
     body = dict(kwargs) if method == "POST" else None
     res = core.http_json(
         url,
         body,
-        _public_headers(creds),
+        _public_headers(creds, owner_mutation=owner_mutation, owner_token=owner_token),
         method=method,
         timeout=PUBLIC_TIMEOUT,
         retries=PUBLIC_RETRIES,
@@ -434,6 +474,27 @@ def call_public(name: str, kwargs: dict) -> dict:
     if isinstance(res, dict):
         res = {k: v for k, v in res.items() if k != "ok"}
     return res
+
+
+# --------------------------------------------------------------------------- mutation routing
+
+
+def call_mutation(name: str, kwargs: dict, run_local: RunLocal) -> dict:
+    """Run one correction / retraction through its supported mutation path.
+
+    The stock fleet path goes straight to recall.jays.services:  that single service process owns
+    the mutation lock in recall_api, so concurrent correction and retraction requests cannot race
+    a read-modify-write from several Macs.  An explicit Run your own override still runs locally,
+    because that operator's Qdrant/TEI pair is not the public fleet corpus.  Tests with the fake
+    backend run locally and never touch the network.
+    """
+    if name not in ("recall_correct", "recall_retract"):
+        raise FleetRagError(f"no mutation route for {name!r}")
+    if using_fake_backend() or local_override_active():
+        return run_local()
+    allowed = PUBLIC_ALLOWED_ARGS.get(name, set())
+    public_kwargs = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
+    return call_public(name, public_kwargs)
 
 
 # --------------------------------------------------------------------------- orchestration

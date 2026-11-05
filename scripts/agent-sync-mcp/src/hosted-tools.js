@@ -478,8 +478,8 @@ export class HostedTools {
     try {
       let args = rawArgs === undefined || rawArgs === null ? {} : rawArgs;
       if (typeof args !== "object" || Array.isArray(args)) throw new ToolError("invalid_argument", "arguments must be an object");
-      if (name === "recall_contribute" && Object.hasOwn(args, "seat")) {
-        // The contributing seat is always the grant's.  A client-supplied seat
+      if (RECALL_WRITE_TOOLS.has(name) && Object.hasOwn(args, "seat")) {
+        // The acting recall seat is always the grant's.  A client-supplied seat
         // (the recall service's own tools ask for one) is dropped, never used.
         args = { ...args };
         delete args.seat;
@@ -1504,6 +1504,7 @@ export class HostedTools {
     const body = { query, limit: args.limit };
     if (args.app) body.app = args.app;
     if (args.category) body.category = args.category;
+    if (args.include_retracted) body.include_retracted = true;
     const data = await this.recallCall(() => recall.search(body));
     const hits = (Array.isArray(data.hits) ? data.hits : []).slice(0, args.limit).map(hitItem);
     const mode = recallClean(typeof data.mode === "string" ? data.mode : "", 40)[0];
@@ -1592,6 +1593,144 @@ export class HostedTools {
       seat: this.seat,
       status: String(row.status ?? ""),
       scrubbed: Array.isArray(row.scrubbed) ? row.scrubbed.map(String) : [],
+      duplicate,
+    };
+    return okResult(JSON.stringify(result), result);
+  }
+
+  async recallMutationKey(name, args, fields) {
+    return args.idempotency_key
+      ? `rk:${name}:${args.idempotency_key}`
+      : `ri:${await sha256Hex(stableJson([name, this.seat, ...fields]))}`;
+  }
+
+  async beginRecallMutation(name, args, audit, fields) {
+    const key = await this.recallMutationKey(name, args, fields);
+    audit.idem_ref = (await sha256Hex(key)).slice(0, 12);
+    const prior = await this.gate.idemPeek({ key });
+    if (prior) return { key, prior };
+    const begun = await this.gate.idemBegin({ key, ttlMs: args.idempotency_key ? IDEM_EXPLICIT_TTL_MS : RECALL_IDEM_TTL_MS, fields: { kind: "recall" } });
+    if (begun.verdict === "busy") throw new ToolError("rate_limited", `the same ${name} operation is already in flight in another chat of this seat`, { retryable: true, retryAfterS: 30 });
+    if (begun.verdict === "duplicate") return { key, prior: begun.row };
+    return { key, prior: null };
+  }
+
+  async tool_recall_correct(args, audit) {
+    const recall = this.requireRecall();
+    const text = args.text.trim();
+    const reason = args.reason.trim();
+    const title = (args.title ?? "").trim();
+    const url = (args.url ?? "").trim();
+    for (const [field, value] of Object.entries({ text, reason, title, url })) {
+      const kind = value ? scanSecret(value, this.known) : null;
+      if (kind) throw new ToolError("refused_secret", `refusing to correct:  the ${field} looks like it contains ${kind}`);
+    }
+    audit.body_len = [...text].length;
+    const fields = [args.doc_id, text, reason, title, url, args.expected_revision ?? null];
+    const { key, prior } = await this.beginRecallMutation("recall_correct", args, audit, fields);
+    if (prior) return this.correctResult(prior, true);
+    try {
+      await this.reserve("recall");
+    } catch (error) {
+      await this.gate.idemDrop({ key });
+      throw error;
+    }
+    const body = { doc_id: args.doc_id, text, reason, seat: this.seat };
+    if (title) body.title = title;
+    if (url) body.url = url;
+    if (args.expected_revision !== undefined) body.expected_revision = args.expected_revision;
+    let data;
+    try {
+      data = await this.recallCall(() => recall.correct(body), { write: true });
+    } catch (error) {
+      await this.safely(() => this.gate.idemDrop({ key }));
+      throw error;
+    }
+    const integer = (v) => Number.isSafeInteger(v) ? v : 0;
+    const row = {
+      id: recallClean(String(data.id ?? ""), 80)[0],
+      doc_id: recallClean(String(data.doc_id ?? ""), 200)[0],
+      status: typeof data.status === "string" ? recallClean(data.status, 40)[0] : "",
+      revision: integer(data.revision),
+      corrected_at: integer(data.corrected_at),
+      corrected_by: recallClean(String(data.corrected_by ?? ""), 60)[0],
+      previous_content_hash: recallClean(String(data.previous_content_hash ?? ""), 80)[0],
+      content_hash: recallClean(String(data.content_hash ?? ""), 80)[0],
+      scrubbed: (Array.isArray(data.scrubbed) ? data.scrubbed : []).slice(0, RECALL_SCRUBBED_LIMIT).map((s) => recallClean(String(s), 60)[0]),
+    };
+    await this.safely(() => this.gate.idemSet({ key, changes: { state: "sent", ...row } }));
+    return this.correctResult(row, false);
+  }
+
+  correctResult(row, duplicate) {
+    const integer = (v) => Number.isSafeInteger(v) ? v : 0;
+    const result = {
+      id: String(row.id ?? ""),
+      doc_id: String(row.doc_id ?? ""),
+      seat: this.seat,
+      status: String(row.status ?? ""),
+      revision: integer(row.revision),
+      corrected_at: integer(row.corrected_at),
+      corrected_by: String(row.corrected_by ?? ""),
+      previous_content_hash: String(row.previous_content_hash ?? ""),
+      content_hash: String(row.content_hash ?? ""),
+      scrubbed: Array.isArray(row.scrubbed) ? row.scrubbed.map(String) : [],
+      duplicate,
+    };
+    return okResult(JSON.stringify(result), result);
+  }
+
+  async tool_recall_retract(args, audit) {
+    const recall = this.requireRecall();
+    const reason = args.reason.trim();
+    const kind = scanSecret(reason, this.known);
+    if (kind) throw new ToolError("refused_secret", `refusing to retract:  the reason looks like it contains ${kind}`);
+    audit.body_len = [...reason].length;
+    const fields = [args.doc_id, reason, args.expected_revision ?? null];
+    const { key, prior } = await this.beginRecallMutation("recall_retract", args, audit, fields);
+    if (prior) return this.retractResult(prior, true);
+    try {
+      await this.reserve("recall");
+    } catch (error) {
+      await this.gate.idemDrop({ key });
+      throw error;
+    }
+    const body = { doc_id: args.doc_id, reason, seat: this.seat };
+    if (args.expected_revision !== undefined) body.expected_revision = args.expected_revision;
+    let data;
+    try {
+      data = await this.recallCall(() => recall.retract(body), { write: true });
+    } catch (error) {
+      await this.safely(() => this.gate.idemDrop({ key }));
+      throw error;
+    }
+    const integer = (v) => Number.isSafeInteger(v) ? v : 0;
+    const row = {
+      id: recallClean(String(data.id ?? ""), 80)[0],
+      doc_id: recallClean(String(data.doc_id ?? ""), 200)[0],
+      status: typeof data.status === "string" ? recallClean(data.status, 40)[0] : "",
+      revision: integer(data.revision),
+      retracted: data.retracted === true,
+      retracted_at: integer(data.retracted_at),
+      retracted_by: recallClean(String(data.retracted_by ?? ""), 60)[0],
+      retraction_reason: recallClean(String(data.retraction_reason ?? ""), 500)[0],
+    };
+    await this.safely(() => this.gate.idemSet({ key, changes: { state: "sent", ...row } }));
+    return this.retractResult(row, false);
+  }
+
+  retractResult(row, duplicate) {
+    const integer = (v) => Number.isSafeInteger(v) ? v : 0;
+    const result = {
+      id: String(row.id ?? ""),
+      doc_id: String(row.doc_id ?? ""),
+      seat: this.seat,
+      status: String(row.status ?? ""),
+      revision: integer(row.revision),
+      retracted: row.retracted === true,
+      retracted_at: integer(row.retracted_at),
+      retracted_by: String(row.retracted_by ?? ""),
+      retraction_reason: String(row.retraction_reason ?? ""),
       duplicate,
     };
     return okResult(JSON.stringify(result), result);

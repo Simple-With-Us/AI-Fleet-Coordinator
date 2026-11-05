@@ -125,6 +125,8 @@ WRITE_TOOLS = (
             "notes_pin",
             "notes_unpin",
             "recall_contribute",
+            "recall_correct",
+            "recall_retract",
         }
     )
     | LINEAR.write_names()
@@ -242,6 +244,8 @@ EXTERNAL_CLI: dict[str, str] = {
     "recall_search": "recall search",
     "recall_stats": "recall stats",
     "recall_contribute": "recall contribute",
+    "recall_correct": "recall correct",
+    "recall_retract": "recall retract",
     "fleetlink_create_share": "fleetlink upload",
     "fleetlink_create_link": "fleetlink link",
     "fleetlink_list_shares": "fleetlink list",
@@ -2614,6 +2618,113 @@ class Tools:
             "seat": self.seat,
             "status": str(result.get("status") or ""),
             "scrubbed": list(result.get("scrubbed") or []),
+            "duplicate": duplicate,
+        }
+        return self.ok(json.dumps(shown), shown)
+
+    def _recall_mutation(self, name: str, args: Mapping[str, Any]) -> dict[str, Any]:
+        """Correction and retraction follow the hosted write rules:  scan before the row is claimed,
+        explicit keys last 24 hours, and an identical retry gets the first result.  The service itself also
+        makes a repeat retraction or same-text correction idempotent.  On timeout the service may have
+        committed its single-point mutation, so the key stays unknown and search/audit is the way to tell."""
+
+        def scan(field: str, value: str) -> None:
+            self._scan(**{field: value})
+
+        correcting = name == "recall_correct"
+        try:
+            if correcting:
+                text, title, url = RECALL.contribute_fields(args, scan)
+                reason = RECALL._reason_field(args, scan)
+                fingerprint = [self.seat, args["doc_id"], text, reason, title, url, args.get("expected_revision")]
+            else:
+                reason = RECALL._reason_field(args, scan)
+                fingerprint = [self.seat, args["doc_id"], reason, args.get("expected_revision")]
+        except RECALL.RecallUnavailable as exc:
+            raise ToolError(exc.code, exc.message, retryable=exc.retryable) from None
+        explicit = args.get("idempotency_key")
+        if explicit:
+            key, ttl = "k:recall:%s:%s" % (name, explicit), IDEM_EXPLICIT_TTL
+        else:
+            key, ttl = "i:recall:%s" % _sha(json.dumps(fingerprint, ensure_ascii=False)), IDEM_IMPLICIT_TTL
+        prior = self._idem_peek(key)
+        result_name = "_correct_result" if correcting else "_retract_result"
+        if prior is not None:
+            return getattr(self, result_name)(prior.get("result") or {}, duplicate=True)
+        verdict, row = self._idem_begin(key, ttl, {"tool": name})
+        if verdict == "duplicate" and row is not None:
+            return getattr(self, result_name)(row.get("result") or {}, duplicate=True)
+        if verdict == "reconcile":
+            self._idem_set(key, state="unknown")
+            raise ToolError(
+                "outcome_unknown",
+                "an earlier %s with this key may or may not have landed.  Search recall (with "
+                "include_retracted for a retraction) before retrying, or use a new idempotency_key." % name,
+            )
+        call = RECALL.correct if correcting else RECALL.retract
+        try:
+            _, structured = call(args, self.seat, env=self.agent.rt.env, scan=scan)
+        except RECALL.RecallTimeout:
+            self._idem_set(key, state="unknown")
+            raise ToolError(
+                "outcome_unknown",
+                "fleet recall did not answer in time, so the %s may or may not have landed.  Search recall "
+                "(with include_retracted for a retraction) before retrying; a retry with the same key is refused."
+                % ("correction" if correcting else "retraction"),
+            ) from None
+        except RECALL.RecallUnavailable as exc:
+            self._idem_drop(key)
+            raise ToolError(exc.code, exc.message, retryable=exc.retryable) from None
+        except BaseException as exc:
+            if is_interrupt(exc):
+                self._idem_set(key, state="unknown")  # the mutation may have landed
+            else:
+                self._idem_drop(key)
+            raise
+        self._idem_set(key, state="sent", id=0, result=structured)
+        return getattr(self, result_name)(structured, duplicate=bool(structured.get("duplicate")))
+
+    def _tool_recall_correct(self, args: Mapping[str, Any]) -> dict[str, Any]:
+        return self._recall_mutation("recall_correct", args)
+
+    def _tool_recall_retract(self, args: Mapping[str, Any]) -> dict[str, Any]:
+        return self._recall_mutation("recall_retract", args)
+
+    def _correct_result(self, result: Mapping[str, Any], *, duplicate: bool) -> dict[str, Any]:
+        def integer(key: str) -> int:
+            value = result.get(key)
+            return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+        shown = {
+            "id": str(result.get("id") or ""),
+            "doc_id": str(result.get("doc_id") or ""),
+            "seat": self.seat,
+            "status": str(result.get("status") or ""),
+            "revision": integer("revision"),
+            "corrected_at": integer("corrected_at"),
+            "corrected_by": str(result.get("corrected_by") or ""),
+            "previous_content_hash": str(result.get("previous_content_hash") or ""),
+            "content_hash": str(result.get("content_hash") or ""),
+            "scrubbed": list(result.get("scrubbed") or []),
+            "duplicate": duplicate,
+        }
+        return self.ok(json.dumps(shown), shown)
+
+    def _retract_result(self, result: Mapping[str, Any], *, duplicate: bool) -> dict[str, Any]:
+        def integer(key: str) -> int:
+            value = result.get(key)
+            return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+        shown = {
+            "id": str(result.get("id") or ""),
+            "doc_id": str(result.get("doc_id") or ""),
+            "seat": self.seat,
+            "status": str(result.get("status") or ""),
+            "revision": integer("revision"),
+            "retracted": result.get("retracted") is True,
+            "retracted_at": integer("retracted_at"),
+            "retracted_by": str(result.get("retracted_by") or ""),
+            "retraction_reason": str(result.get("retraction_reason") or ""),
             "duplicate": duplicate,
         }
         return self.ok(json.dumps(shown), shown)

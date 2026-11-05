@@ -119,7 +119,7 @@ class NearDuplicateTests(GuardBase):
         vector, terms, limit, flt = FakeQdrant.calls[-1]
         self.assertEqual(limit, contribute_guard.LIMIT)
         self.assertIn({"key": "source", "match": {"value": "agent-contribution"}}, flt["must"])
-        self.assertEqual(flt["must_not"], [recall_api.meta_exclude()])
+        self.assertEqual(flt["must_not"], [recall_api.meta_exclude(), recall_api.retracted_exclude()])
 
     def test_excerpt_is_capped_at_200_chars_and_whitespace_collapsed(self):
         long = "word " * 100 + "\n\nend"

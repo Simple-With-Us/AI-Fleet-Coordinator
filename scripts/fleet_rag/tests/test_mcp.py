@@ -69,7 +69,7 @@ class McpServerTests(unittest.TestCase):
         self.assertEqual(by_id[2]["result"], {})
 
         tools = by_id[3]["result"]["tools"]
-        self.assertEqual([t["name"] for t in tools], ["recall_search", "recall_stats", "recall_contribute"])
+        self.assertEqual([t["name"] for t in tools], ["recall_search", "recall_stats", "recall_contribute", "recall_correct", "recall_retract"])
         for t in tools:
             self.assertEqual(t["inputSchema"]["type"], "object")
             self.assertIn("description", t)
@@ -127,7 +127,7 @@ class McpServerTests(unittest.TestCase):
                               env=env, timeout=60)
         out = [json.loads(line) for line in proc.stdout.splitlines() if line.strip()]
         self.assertEqual(out[0]["result"]["protocolVersion"], "2025-06-18")
-        self.assertEqual(len(out[1]["result"]["tools"]), 3)
+        self.assertEqual(len(out[1]["result"]["tools"]), 5)
 
     def test_missing_seat_is_tool_error_not_crash(self):
         msgs = [
@@ -175,7 +175,7 @@ class McpRobustnessTests(unittest.TestCase):
         self.assertTrue(by_id[5]["result"]["isError"])
         self.assertIn("source must be one of", by_id[5]["result"]["content"][0]["text"])
         self.assertEqual(by_id[6]["error"]["code"], -32602)
-        self.assertEqual(len(by_id[7]["result"]["tools"]), 3)                 # loop still alive
+        self.assertEqual(len(by_id[7]["result"]["tools"]), 5)                 # loop still alive
         stats = json.loads(by_id[8]["result"]["content"][0]["text"])
         self.assertEqual(stats["points"], 3)
         self.assertEqual(stats["by_app"], {"fleet": 3, "other": 0})
@@ -250,7 +250,7 @@ class McpRobustnessTests(unittest.TestCase):
         batch = [ln for ln in lines if isinstance(ln, list)]
         self.assertEqual(len(batch), 1)
         self.assertEqual([m["id"] for m in batch[0]], [5, 3])
-        self.assertEqual(len(by_id[6]["result"]["tools"]), 3)                 # still serving
+        self.assertEqual(len(by_id[6]["result"]["tools"]), 5)                 # still serving
         self.assertEqual(len(flat), 7)
         err = stderr.getvalue()
         self.assertIn("RuntimeError", err)

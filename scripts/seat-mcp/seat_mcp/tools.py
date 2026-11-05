@@ -253,6 +253,8 @@ TOOL_IMPL = {
     "recall_search": recall_bridge.recall_search,
     "recall_stats": recall_bridge.recall_stats,
     "recall_contribute": recall_bridge.recall_contribute,
+    "recall_correct": recall_bridge.recall_correct,
+    "recall_retract": recall_bridge.recall_retract,
 }
 
 

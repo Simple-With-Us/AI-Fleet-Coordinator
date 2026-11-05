@@ -1,7 +1,7 @@
 """Bridge the fleet-recall tools into seat-mcp.
 
 seat-mcp is the HTTP MCP behind https://agents.jays.services/mcp, so cloud seats (Grok Bot,
-Cursor cloud, Claude Code Cloud) reach the fleet-agents corpus through these three tools.  The
+Cursor cloud, Claude Code Cloud) reach the fleet-agents corpus through these five tools.  The
 logic lives in the installed fleet_rag package (/Users/jay/apps/fleet-rag, put there by
 scripts/install-fleet-rag.sh); this module only validates arguments, imports
 fleet_rag.recall_api by name, and maps its errors onto SeatError.  It never reimplements the
@@ -11,9 +11,13 @@ Contract (shared with scripts/recall and fleet-recall-mcp.py):
   recall_search(query, limit=5, category?, app?, source?, seat?, since_days?) -> {hits, mode}
   recall_stats() -> {collection, status, points, embedder_healthy, by_source, by_app}
   recall_contribute(text, category, app="fleet", seat, title?, url?) -> {id, doc_id, scrubbed, status}
+  recall_correct(doc_id, text, reason, seat, title?, url?, expected_revision?)
+  recall_retract(doc_id, reason, seat, expected_revision?)
 
-On this surface `seat` is REQUIRED for recall_contribute: a cloud caller has no AGENT_SEAT in
-its environment, and the seat-mcp process's own AGENT_SEAT must never be attributed to it.
+On this surface `seat` is REQUIRED for the three mutations: a cloud caller has no AGENT_SEAT in
+its environment, and the seat-mcp process's own AGENT_SEAT must never be attributed to it.  A seat
+may correct or retract its own contributions;  OWNER may mutate any contribution.  Retracted
+contributions are excluded from normal search and visible only with include_retracted=true.
 """
 
 from __future__ import annotations
@@ -69,9 +73,15 @@ def _load_api() -> ModuleType:
         mod = importlib.import_module("fleet_rag.recall_api")
     except ImportError as exc:
         raise SeatError("fleet_rag.recall_api failed to import from %s:  %s" % (home, exc)) from exc
-    for name in ("recall_search", "recall_stats", "recall_contribute"):
+    for name in ("recall_search", "recall_stats", "recall_contribute", "recall_correct", "recall_retract"):
         if not callable(getattr(mod, name, None)):
             raise SeatError("fleet_rag.recall_api at %s lacks %s; reinstall with scripts/install-fleet-rag.sh" % (home, name))
+    try:
+        fallback = importlib.import_module("fleet_rag.public_fallback")
+    except ImportError as exc:
+        raise SeatError("fleet_rag.public_fallback failed to import from %s:  %s" % (home, exc)) from exc
+    if not callable(getattr(fallback, "call_mutation", None)):
+        raise SeatError("fleet_rag.public_fallback at %s lacks call_mutation; reinstall with scripts/install-fleet-rag.sh" % home)
     _api = mod
     return mod
 
@@ -98,7 +108,13 @@ def _call(fn_name: str, **kwargs: Any) -> JsonDict:
     api = _load_api()
     fn = getattr(api, fn_name)
     try:
-        out = fn(**kwargs)
+        if fn_name in ("recall_correct", "recall_retract"):
+            import importlib
+
+            fallback = importlib.import_module("fleet_rag.public_fallback")
+            out = fallback.call_mutation(fn_name, kwargs, lambda: fn(**kwargs))
+        else:
+            out = fn(**kwargs)
     except SeatError:
         raise
     except _user_errors() as exc:
@@ -158,6 +174,8 @@ def recall_search(arguments: JsonDict) -> JsonDict:
         since = _opt_int(arguments, "sinceDays", 1, 3650)
     if since is not None:
         kwargs["since_days"] = since
+    if arguments.get("include_retracted") is True or arguments.get("includeRetracted") is True:
+        kwargs["include_retracted"] = True
     return _call("recall_search", **kwargs)
 
 
@@ -196,10 +214,63 @@ def recall_contribute(arguments: JsonDict) -> JsonDict:
     return _call("recall_contribute", **kwargs)
 
 
+def _required_seat(arguments: JsonDict, operation: str) -> str:
+    seat = _opt_str(arguments, "seat")
+    if not seat:
+        raise SeatError(
+            "seat is required on seat-mcp for %s (cloud callers have no AGENT_SEAT).  "
+            "Pass your uppercase seat tag, e.g. GROK, CURSOR, CLAUDE." % operation
+        )
+    seat = seat.upper()
+    if seat == "OWNER":
+        raise SeatError(
+            "OWNER recall mutations are refused on seat-mcp:  this shared bearer does not "
+            "prove the owner identity.  Use the recall service's owner-token route."
+        )
+    return seat
+
+
+def _mutation_base(arguments: JsonDict, operation: str) -> JsonDict:
+    doc_id = _opt_str(arguments, "doc_id") or _opt_str(arguments, "docId")
+    if not doc_id:
+        raise SeatError("doc_id is required")
+    reason = _opt_str(arguments, "reason")
+    if not reason:
+        raise SeatError("reason is required")
+    kwargs: JsonDict = {"doc_id": doc_id, "reason": reason, "seat": _required_seat(arguments, operation)}
+    expected = _opt_int(arguments, "expected_revision", 1, 1000000)
+    if expected is None:
+        expected = _opt_int(arguments, "expectedRevision", 1, 1000000)
+    if expected is not None:
+        kwargs["expected_revision"] = expected
+    return kwargs
+
+
+def recall_correct(arguments: JsonDict) -> JsonDict:
+    text = arguments.get("text")
+    if not isinstance(text, str) or not text.strip():
+        raise SeatError("replacement text is required")
+    kwargs = _mutation_base(arguments, "recall_correct")
+    kwargs["text"] = text
+    title = _opt_str(arguments, "title")
+    if title:
+        kwargs["title"] = title
+    url = _opt_str(arguments, "url")
+    if url:
+        kwargs["url"] = url
+    return _call("recall_correct", **kwargs)
+
+
+def recall_retract(arguments: JsonDict) -> JsonDict:
+    return _call("recall_retract", **_mutation_base(arguments, "recall_retract"))
+
+
 RECALL_TOOL_IMPL = {
     "recall_search": recall_search,
     "recall_stats": recall_stats,
     "recall_contribute": recall_contribute,
+    "recall_correct": recall_correct,
+    "recall_retract": recall_retract,
 }
 
 
@@ -235,6 +306,11 @@ def recall_tool_schemas() -> list[JsonDict]:
                     "query": {"type": "string", "description": "Natural-language question or keywords."},
                     "limit": {"type": "integer", "minimum": 1, "maximum": MAX_LIMIT, "description": "Default 5."},
                     **filter_props,
+                    "include_retracted": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Include retracted contributions for audit; normal search hides them.",
+                    },
                 },
                 "required": ["query"],
             },
@@ -266,6 +342,46 @@ def recall_tool_schemas() -> list[JsonDict]:
                     "url": {"type": "string", "description": "Optional link (PR, issue, board item)."},
                 },
                 "required": ["text", "category", "seat"],
+            },
+        },
+        {
+            "name": "recall_correct",
+            "description": (
+                "Correct one contribution by exact doc_id.  The same point and doc_id stay in use, the old "
+                "text remains in the revision audit, and search sees only the replacement.  A seat may "
+                "correct its own contributions;  OWNER may correct any.  A retracted contribution is not "
+                "resurrected.  Text and metadata are secret-scrubbed and gitleaks-gated."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "doc_id": {"type": "string", "description": "Exact contrib/... lesson id."},
+                    "text": {"type": "string", "description": "Replacement lesson text (40..4000 chars)."},
+                    "reason": {"type": "string", "description": "Why the correction is being made (3..500 chars)."},
+                    "seat": {"type": "string", "description": "Your uppercase seat tag (required)."},
+                    "title": {"type": "string", "description": "Optional replacement title."},
+                    "url": {"type": "string", "description": "Optional replacement link."},
+                    "expected_revision": {"type": "integer", "minimum": 1},
+                },
+                "required": ["doc_id", "text", "reason", "seat"],
+            },
+        },
+        {
+            "name": "recall_retract",
+            "description": (
+                "Retract (take back) one contribution by exact doc_id.  The point stays as audit metadata "
+                "with actor, time and reason, but normal search excludes it.  A seat may retract its own "
+                "contributions;  OWNER may retract any.  Repeating a retraction is idempotent."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "doc_id": {"type": "string", "description": "Exact contrib/... lesson id."},
+                    "reason": {"type": "string", "description": "Why the contribution is being retracted (3..500 chars)."},
+                    "seat": {"type": "string", "description": "Your uppercase seat tag (required)."},
+                    "expected_revision": {"type": "integer", "minimum": 1},
+                },
+                "required": ["doc_id", "reason", "seat"],
             },
         },
     ]

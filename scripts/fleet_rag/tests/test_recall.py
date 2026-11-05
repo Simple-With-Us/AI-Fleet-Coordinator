@@ -12,6 +12,8 @@ import json
 import os
 import pathlib
 import tempfile
+import threading
+import time
 import unittest
 from unittest import mock
 
@@ -23,6 +25,8 @@ from fleet_rag.recall_api import FakeQdrant
 SEAMS = ("load_config", "embed", "embedder_healthy", "rerank_healthy", "Qdrant", "gitleaks_flagged",
          "gitleaks_available")
 META_EXCLUDE = {"key": "source", "match": {"value": "meta"}}
+RETRACTED_EXCLUDE = {"key": "retracted", "match": {"value": True}}
+DEFAULT_MUST_NOT = [META_EXCLUDE, RETRACTED_EXCLUDE]
 
 
 def add_fake_point(text: str, **payload) -> dict:
@@ -52,11 +56,11 @@ class RecallBase(unittest.TestCase):
 
 class BuildFilterTests(RecallBase):
     def test_no_filters_still_excludes_meta(self):
-        self.assertEqual(recall_api.build_filter(), {"must_not": [META_EXCLUDE]})
+        self.assertEqual(recall_api.build_filter(), {"must_not": DEFAULT_MUST_NOT})
 
     def test_match_fields(self):
         flt = recall_api.build_filter(category="lesson", app="fleet", source="doc", seat="CLAUDE")
-        self.assertEqual(flt, {"must_not": [META_EXCLUDE], "must": [
+        self.assertEqual(flt, {"must_not": DEFAULT_MUST_NOT, "must": [
             {"key": "category", "match": {"value": "lesson"}},
             {"key": "app", "match": {"value": "fleet"}},
             {"key": "source", "match": {"value": "doc"}},
@@ -65,7 +69,7 @@ class BuildFilterTests(RecallBase):
 
     def test_since_days_range_alone(self):
         flt = recall_api.build_filter(since_days=7, now=10_000_000_000)
-        self.assertEqual(flt, {"must_not": [META_EXCLUDE],
+        self.assertEqual(flt, {"must_not": DEFAULT_MUST_NOT,
                                "must": [{"key": "created_at",
                                          "range": {"gte": 10_000_000_000 - 7 * 86_400_000}}]})
 
@@ -73,7 +77,7 @@ class BuildFilterTests(RecallBase):
         flt = recall_api.build_filter(app="fleet", since_days=1, now=5_000_000_000)
         self.assertEqual(flt["must"][0], {"key": "app", "match": {"value": "fleet"}})
         self.assertEqual(flt["must"][1], {"key": "created_at", "range": {"gte": 5_000_000_000 - 86_400_000}})
-        self.assertEqual(flt["must_not"], [META_EXCLUDE])
+        self.assertEqual(flt["must_not"], DEFAULT_MUST_NOT)
 
     def test_since_days_must_be_positive_int(self):
         for bad in (0, -3, "7", 1.5, True):
@@ -83,7 +87,7 @@ class BuildFilterTests(RecallBase):
     def test_meta_exclude_is_a_fresh_dict_each_call(self):
         a = recall_api.build_filter()
         a["must_not"][0]["match"]["value"] = "tampered"
-        self.assertEqual(recall_api.build_filter()["must_not"], [META_EXCLUDE])
+        self.assertEqual(recall_api.build_filter()["must_not"], DEFAULT_MUST_NOT)
 
 
 class SearchTests(RecallBase):
@@ -96,7 +100,7 @@ class SearchTests(RecallBase):
             self.assertIn(f, hit)
         self.assertIn("List names only", hit["text"])
         vector, terms, limit, flt = FakeQdrant.calls[-1]
-        self.assertEqual(flt, {"must_not": [META_EXCLUDE]})
+        self.assertEqual(flt, {"must_not": DEFAULT_MUST_NOT})
         self.assertIn("credentials", terms)
         # Without a rerank endpoint the window is `limit` docs * GROUP_DEPTH points, one fused
         # query, grouped in-process (the server-side groups query is opt-in).
@@ -115,13 +119,13 @@ class SearchTests(RecallBase):
         self.assertEqual(flt["must"][2]["match"]["value"], "CLAUDE")   # seat uppercased
         gte = flt["must"][3]["range"]["gte"]
         self.assertTrue(before - 30 * 86_400_000 - 5000 <= gte <= before - 30 * 86_400_000 + 5000)
-        self.assertEqual(flt["must_not"], [META_EXCLUDE])
+        self.assertEqual(flt["must_not"], DEFAULT_MUST_NOT)
 
     def test_stopword_only_query_falls_back_to_dense(self):
         res = recall_api.recall_search("is it", limit=2)
         self.assertEqual(res["mode"], "dense")
         self.assertEqual(FakeQdrant.calls[-1][1], [])
-        self.assertEqual(FakeQdrant.calls[-1][3], {"must_not": [META_EXCLUDE]})
+        self.assertEqual(FakeQdrant.calls[-1][3], {"must_not": DEFAULT_MUST_NOT})
 
     def test_ingest_sentinel_never_returned(self):
         # A source="meta" point whose text matches the query better than anything else.
@@ -132,7 +136,7 @@ class SearchTests(RecallBase):
             self.assertTrue(res["hits"], kwargs)
             self.assertNotIn("meta", [h["source"] for h in res["hits"]], kwargs)
             self.assertNotIn("meta/ingest-run", [h["doc_id"] for h in res["hits"]], kwargs)
-            self.assertEqual(FakeQdrant.calls[-1][3]["must_not"], [META_EXCLUDE], kwargs)
+            self.assertEqual(FakeQdrant.calls[-1][3]["must_not"], DEFAULT_MUST_NOT, kwargs)
         # Even asking for it by source is refused (meta is not a searchable source).
         with self.assertRaisesRegex(FleetRagError, "source must be one of"):
             recall_api.recall_search("anything", source="meta")
@@ -165,7 +169,7 @@ class SearchTests(RecallBase):
         for s in recall_api.SOURCES:
             recall_api.recall_search("x", source=s)
         recall_api.recall_search("x", category="", source="  ", app="", seat=None)
-        self.assertEqual(FakeQdrant.calls[-1][3], {"must_not": [META_EXCLUDE]})
+        self.assertEqual(FakeQdrant.calls[-1][3], {"must_not": DEFAULT_MUST_NOT})
 
 
 class StatsTests(RecallBase):
@@ -355,6 +359,181 @@ class ContributeTests(RecallBase):
         with self.assertRaisesRegex(FleetRagError, "QDRANT_API_KEY"):
             recall_api.recall_contribute(GOOD, "lesson", seat="CLAUDE")
         self.assertEqual(calls, [True])
+
+
+class CorrectRetractTests(RecallBase):
+    def contribute(self, text: str = GOOD, seat: str = "CLAUDE") -> dict:
+        recall_api.gitleaks_available = lambda: False
+        return recall_api.recall_contribute(text, "lesson", seat=seat)
+
+    def test_correction_preserves_id_doc_and_revision_audit(self):
+        original = self.contribute()
+        replacement = (
+            "pm2 start only applies a new ecosystem env after restart --update-env; "
+            "check pm2 describe for the process env before debugging PATH."
+        )
+        res = recall_api.recall_correct(
+            original["doc_id"], replacement, "make the restart command exact", seat="CLAUDE",
+            title="pm2 env refresh", url="https://example.com/pr/2", expected_revision=1,
+        )
+        self.assertEqual(res["status"], "completed")
+        self.assertEqual(res["id"], original["id"])
+        self.assertEqual(res["doc_id"], original["doc_id"])
+        self.assertEqual(res["revision"], 2)
+        self.assertEqual(len(FakeQdrant.upserts), 2)
+        payload = FakeQdrant.upserts[-1][0]["payload"]
+        self.assertEqual(payload["text"], replacement)
+        self.assertEqual(payload["title"], "pm2 env refresh")
+        self.assertEqual(payload["revision"], 2)
+        self.assertEqual(payload["corrected_by"], "CLAUDE")
+        self.assertEqual(payload["correction_reason"], "make the restart command exact")
+        self.assertEqual(len(payload["revisions"]), 1)
+        self.assertEqual(payload["revisions"][0]["text"], GOOD)
+        self.assertEqual(payload["revisions"][0]["replaced_by"], "CLAUDE")
+
+    def test_same_text_correction_is_unchanged_and_authority_is_enforced(self):
+        original = self.contribute()
+        res = recall_api.recall_correct(
+            original["doc_id"], GOOD, "retry after a timeout", seat="CLAUDE",
+        )
+        self.assertEqual(res["status"], "unchanged")
+        self.assertEqual(len(FakeQdrant.upserts), 1)
+        with self.assertRaisesRegex(FleetRagError, "owning seat"):
+            recall_api.recall_correct(original["doc_id"], "x" * 50, "not mine", seat="GROK")
+        with self.assertRaisesRegex(FleetRagError, "expected_revision"):
+            recall_api.recall_correct(original["doc_id"], "y" * 50, "stale read", seat="CLAUDE", expected_revision=2)
+        self.assertEqual(len(FakeQdrant.upserts), 1)
+
+    def test_retraction_keeps_audit_excludes_default_search_and_is_idempotent(self):
+        original = self.contribute()
+        res = recall_api.recall_retract(original["doc_id"], "obsolete instruction", seat="OWNER")
+        self.assertEqual(res["status"], "completed")
+        self.assertTrue(res["retracted"])
+        self.assertEqual(res["retracted_by"], "OWNER")
+        point = next(p for p in FakeQdrant.points if p["payload"].get("doc_id") == original["doc_id"])
+        self.assertTrue(point["payload"]["retracted"])
+        self.assertEqual(point["payload"]["retraction_reason"], "obsolete instruction")
+        hits = recall_api.recall_search("pm2 ecosystem env", source="agent-contribution", include_retracted=False)["hits"]
+        self.assertNotIn(original["doc_id"], [h["doc_id"] for h in hits])
+        audit = recall_api.recall_search("pm2 ecosystem env", source="agent-contribution", include_retracted=True)["hits"]
+        hit = next(h for h in audit if h["doc_id"] == original["doc_id"])
+        self.assertTrue(hit["retracted"])
+        self.assertEqual(hit["retracted_by"], "OWNER")
+        again = recall_api.recall_retract(original["doc_id"], "duplicate retry", seat="OWNER")
+        self.assertEqual(again["status"], "already_retracted")
+        self.assertEqual(again["retraction_reason"], "obsolete instruction")
+
+    def test_retracted_contribution_cannot_be_corrected(self):
+        original = self.contribute()
+        recall_api.recall_retract(original["doc_id"], "wrong for the current service", seat="CLAUDE")
+        with self.assertRaisesRegex(FleetRagError, "retracted"):
+            recall_api.recall_correct(original["doc_id"], "z" * 50, "do not resurrect", seat="CLAUDE")
+
+    def test_mutation_input_and_gate_fail_before_lookup(self):
+        with self.assertRaisesRegex(FleetRagError, "doc_id must"):
+            recall_api.recall_correct("docs/x", GOOD, "reason", seat="CLAUDE")
+        with self.assertRaisesRegex(FleetRagError, "reason"):
+            recall_api.recall_retract("contrib/CLAUDE/2026-11-05/472fc36e", "no", seat="CLAUDE")
+        recall_api.gitleaks_available = lambda: True
+        recall_api.gitleaks_flagged = lambda path, timeout=300: {1}
+        with self.assertRaisesRegex(FleetRagError, "still looks"):
+            recall_api.recall_retract("contrib/CLAUDE/2026-11-05/472fc36e", "safe reason", seat="CLAUDE")
+        self.assertEqual(FakeQdrant.scrolls, [])
+
+
+
+class MutationConcurrencyTests(RecallBase):
+    def test_one_process_lock_serializes_concurrent_correct_and_retract(self):
+        original = recall_api.recall_contribute(GOOD, "lesson", seat="CLAUDE")
+        recall_api.gitleaks_available = lambda: False
+        state = {"inside": 0, "overlap": False}
+
+        class SlowQdrant(FakeQdrant):
+            def scroll(self, *args, **kwargs):
+                state["inside"] += 1
+                state["overlap"] = state["overlap"] or state["inside"] > 1
+                try:
+                    time.sleep(0.03)
+                    yield from super().scroll(*args, **kwargs)
+                finally:
+                    state["inside"] -= 1
+
+        recall_api.Qdrant = SlowQdrant
+        replacement = GOOD + " Check pm2 describe after the restart."
+        errors = []
+        threads = [
+            threading.Thread(target=lambda: recall_api.recall_correct(
+                original["doc_id"], replacement, "add verification", seat="CLAUDE")),
+            threading.Thread(target=lambda: recall_api.recall_retract(
+                original["doc_id"], "obsolete in test", seat="CLAUDE")),
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(errors, [])
+        self.assertFalse(state["overlap"])
+        point = next(p for p in FakeQdrant.points if p["payload"].get("doc_id") == original["doc_id"])
+        self.assertEqual(point["payload"]["revision"], 2)
+        self.assertTrue(point["payload"]["retracted"])
+        self.assertEqual(len(point["payload"]["revisions"]), 1)
+
+    def test_concurrent_stale_revision_loses_after_the_first_commit(self):
+        original = recall_api.recall_contribute(GOOD, "lesson", seat="CLAUDE")
+        recall_api.gitleaks_available = lambda: False
+        results = []
+
+        def change(marker):
+            try:
+                results.append(("ok", recall_api.recall_correct(
+                    original["doc_id"], GOOD + " " + marker, "concurrent " + marker,
+                    seat="CLAUDE", expected_revision=1)))
+            except FleetRagError as exc:
+                results.append(("error", str(exc)))
+
+        threads = [threading.Thread(target=change, args=("first correction",)),
+                   threading.Thread(target=change, args=("second correction",))]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(sorted(kind for kind, _ in results), ["error", "ok"])
+        error = next(text for kind, text in results if kind == "error")
+        self.assertIn("now at revision 2", error)
+        point = next(p for p in FakeQdrant.points if p["payload"].get("doc_id") == original["doc_id"])
+        self.assertEqual(point["payload"]["revision"], 2)
+        self.assertEqual(len(point["payload"]["revisions"]), 1)
+
+
+class PublicMutationAuthTests(RecallBase):
+    def test_owner_mutation_uses_the_distinct_owner_bearer(self):
+        calls = []
+
+        def http(url, body, headers, method, timeout, retries):
+            calls.append((url, body, headers, method))
+            return {"ok": True, "doc_id": (body or {}).get("doc_id"), "status": "completed"}
+
+        env = {
+            "RECALL_API_TOKEN": "shared",
+            "RECALL_OWNER_TOKEN": "owner",
+            "CF_ACCESS_CLIENT_ID": "cf-id",
+            "CF_ACCESS_CLIENT_SECRET": "cf-secret",
+        }
+        with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(public_fallback.core, "http_json", http):
+            public_fallback.call_public("recall_retract", {
+                "doc_id": "contrib/CLAUDE/2026-11-05/472fc36e", "reason": "obsolete", "seat": "OWNER"})
+            public_fallback.call_public("recall_stats", {})
+        self.assertEqual(calls[0][2]["Authorization"], "Bearer owner")
+        self.assertEqual(calls[1][2]["Authorization"], "Bearer shared")
+
+    def test_owner_mutation_without_owner_bearer_fails_before_http(self):
+        env = {"RECALL_API_TOKEN": "shared", "CF_ACCESS_CLIENT_ID": "cf-id", "CF_ACCESS_CLIENT_SECRET": "cf-secret"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            with self.assertRaisesRegex(FleetRagError, "RECALL_OWNER_TOKEN"):
+                public_fallback.call_public("recall_correct", {
+                    "doc_id": "contrib/CLAUDE/2026-11-05/472fc36e", "text": GOOD,
+                    "reason": "make current", "seat": "OWNER"})
+
 
 
 class ConfigCacheTests(RecallBase):

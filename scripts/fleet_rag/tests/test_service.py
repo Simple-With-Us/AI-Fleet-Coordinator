@@ -36,6 +36,7 @@ SERVICE_DIR = pathlib.Path(__file__).resolve().parents[2] / "fleet-recall-servic
 SERVER_PY = SERVICE_DIR / "server.py"
 BOOTSTRAP_SH = SERVICE_DIR / "bootstrap.sh"
 TOKEN = "test-token-0123456789"
+OWNER_TOKEN = "owner-token-0123456789"
 GOOD_TEXT = ("pm2 start does not re-read env from the ecosystem file; restart with --update-env "
              "so the cached PATH is replaced.")
 
@@ -73,6 +74,17 @@ class _ServiceCase(unittest.TestCase):
         recall_api.install_fake_backend()
         server.reset_health_cache()
         os.environ.pop("AGENT_SEAT", None)
+
+    def owner_settings(self):
+        return (
+            mock.patch.object(
+                server.infisical_settings, "get",
+                lambda key, default=None: OWNER_TOKEN if key == "RECALL_OWNER_TOKEN" else default,
+            ),
+            mock.patch.object(
+                server.infisical_settings, "present", lambda key: key == "RECALL_OWNER_TOKEN"
+            ),
+        )
 
     def request(self, method: str, path: str, body=None, token: str | None = TOKEN,
                 headers: dict | None = None, raw: bytes | None = None):
@@ -588,6 +600,54 @@ class RestTests(_ServiceCase):
         self.assertEqual(len(again["hits"]), 1)
         self.assertEqual(again["hits"][0]["seat"], "CURSOR")
 
+    def test_correct_retract_round_trip_and_authority(self):
+        status, _, body = self.request("POST", "/recall/contribute",
+                                       {"text": GOOD_TEXT, "category": "lesson", "seat": "cursor"})
+        self.assertEqual(status, 200)
+        doc_id = body["doc_id"]
+        status, _, body = self.request("POST", "/recall/correct",
+                                       {"doc_id": doc_id, "text": GOOD_TEXT + " Then check pm2 describe.",
+                                        "reason": "add the verification step", "seat": "grok"})
+        self.assertEqual(status, 400)
+        self.assertIn("owning seat", body["error"])
+        self.assertEqual(len(FakeQdrant.upserts), 1)
+        status, _, body = self.request("POST", "/recall/correct",
+                                       {"doc_id": doc_id, "text": GOOD_TEXT + " Then check pm2 describe.",
+                                        "reason": "add the verification step", "seat": "cursor",
+                                        "expected_revision": 1})
+        self.assertEqual(status, 200)
+        self.assertEqual(body["revision"], 2)
+        self.assertEqual(len(FakeQdrant.upserts), 2)
+        status, _, body = self.request("POST", "/recall/retract",
+                                       {"doc_id": doc_id, "reason": "obsolete for the service", "seat": "OWNER"})
+        self.assertEqual(status, 403)
+        self.assertIn("owner mutation token not configured", body["error"])
+        get_patch, present_patch = self.owner_settings()
+        with get_patch, present_patch:
+            status, _, body = self.request("POST", "/recall/retract",
+                                           {"doc_id": doc_id, "reason": "obsolete for the service", "seat": "OWNER"})
+            self.assertEqual(status, 401)
+            status, _, body = self.request("POST", "/recall/retract",
+                                           {"doc_id": doc_id, "reason": "obsolete for the service", "seat": "OWNER"},
+                                           token=OWNER_TOKEN)
+        self.assertEqual(status, 200)
+        self.assertTrue(body["retracted"])
+        self.assertEqual(body["retracted_by"], "OWNER")
+        get_patch, present_patch = self.owner_settings()
+        with get_patch, present_patch:
+            _, _, rpc_body = self.rpc("tools/call", {"name": "recall_retract",
+                                                     "arguments": {"doc_id": doc_id, "reason": "duplicate", "seat": "OWNER"}}, rid=10)
+            self.assertTrue(rpc_body["result"]["isError"])
+            _, _, rpc_body = self.rpc("tools/call", {"name": "recall_retract",
+                                                     "arguments": {"doc_id": doc_id, "reason": "duplicate", "seat": "OWNER"}}, rid=11, token=OWNER_TOKEN)
+        self.assertFalse(rpc_body["result"]["isError"])
+        self.assertEqual(rpc_body["result"]["structuredContent"]["status"], "already_retracted")
+        status, _, body = self.request("POST", "/recall/search", {"query": "update-env", "source": "agent-contribution"})
+        self.assertEqual(body["hits"], [])
+        status, _, body = self.request("POST", "/recall/search", {"query": "update-env", "source": "agent-contribution",
+                                                                   "include_retracted": True})
+        self.assertEqual(body["hits"][0]["retraction_reason"], "obsolete for the service")
+
     def test_contribute_validation(self):
         status, _, body = self.request("POST", "/recall/contribute", {"text": "too short", "category": "lesson", "seat": "X"})
         self.assertEqual(status, 400)
@@ -660,15 +720,17 @@ class McpTests(_ServiceCase):
         self.assertEqual(body, {"jsonrpc": "2.0", "id": 7, "result": {}})
         _, _, body = self.rpc("tools/list", rid=8)
         tools = body["result"]["tools"]
-        self.assertEqual([t["name"] for t in tools], ["recall_search", "recall_stats", "recall_contribute"])
+        self.assertEqual([t["name"] for t in tools], ["recall_search", "recall_stats", "recall_contribute", "recall_correct", "recall_retract"])
         for t in tools:
             self.assertEqual(t["inputSchema"]["type"], "object")
             self.assertTrue(t["description"])
         self.assertEqual(tools[0]["inputSchema"]["required"], ["query"])
         self.assertEqual(tools[2]["inputSchema"]["required"], ["text", "category", "seat"])
+        self.assertEqual(tools[3]["inputSchema"]["required"], ["doc_id", "text", "reason", "seat"])
+        self.assertEqual(tools[4]["inputSchema"]["required"], ["doc_id", "reason", "seat"])
         _, _, body = self.rpc("server/discover", rid=9)
         self.assertEqual(body["result"]["protocolVersions"], list(server.PROTOCOL_VERSIONS))
-        self.assertEqual(len(body["result"]["tools"]), 3)
+        self.assertEqual(len(body["result"]["tools"]), 5)
 
     def test_tools_call_stats_search_contribute(self):
         _, _, body = self.rpc("tools/call", {"name": "recall_stats"}, rid=2)
@@ -693,6 +755,23 @@ class McpTests(_ServiceCase):
         _, _, body = self.rpc("tools/call", {"name": "recall_search",
                                              "arguments": {"query": "update-env", "source": "agent-contribution"}}, rid=5)
         self.assertEqual(body["result"]["structuredContent"]["hits"][0]["seat"], "GROK")
+
+        _, _, body = self.rpc("tools/call", {"name": "recall_search",
+                                             "arguments": {"query": "update-env", "source": "agent-contribution"}}, rid=6)
+        doc_id = body["result"]["structuredContent"]["hits"][0]["doc_id"]
+        _, _, body = self.rpc("tools/call", {"name": "recall_correct",
+                                             "arguments": {"doc_id": doc_id, "text": GOOD_TEXT + " Check pm2 describe.",
+                                                            "reason": "add the verification command", "seat": "GROK"}}, rid=7)
+        self.assertFalse(body["result"]["isError"])
+        self.assertEqual(body["result"]["structuredContent"]["revision"], 2)
+        _, _, body = self.rpc("tools/call", {"name": "recall_retract",
+                                             "arguments": {"doc_id": doc_id, "reason": "obsolete for this test", "seat": "GROK"}}, rid=8)
+        self.assertFalse(body["result"]["isError"])
+        self.assertTrue(body["result"]["structuredContent"]["retracted"])
+        _, _, body = self.rpc("tools/call", {"name": "recall_search",
+                                             "arguments": {"query": "update-env", "source": "agent-contribution",
+                                                            "include_retracted": True}}, rid=9)
+        self.assertTrue(body["result"]["structuredContent"]["hits"][0]["retracted"])
 
     def test_tools_call_errors(self):
         _, _, body = self.rpc("tools/call", {"name": "recall_contribute",

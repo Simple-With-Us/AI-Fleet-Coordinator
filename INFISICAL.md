@@ -22,6 +22,7 @@ own store and never go in Infisical.
 | `TEI_EMBED_MODEL` | env config | set in prod |
 | `RECALL_API_TOKEN` | secret | **to be filled by admin** (required; the service refuses to start without it) |
 | `RECALL_ADMIN_TOKEN` | secret | **to be filled by admin** (the admin settings surface answers 403 until it is set) |
+| `RECALL_OWNER_TOKEN` | secret | **to be filled by admin** (OWNER recall mutations answer 403 until it is set; the shared seat bearer never proves OWNER) |
 | `RECALL_SOCKET_TIMEOUT` | tunable knob | set in prod |
 | `SETTINGS_REFRESH_SECONDS` | tunable knob | set in prod (controls the background refresh cadence) |
 | `HOST`, `PORT` | env config | managed keys; currently supplied by the container env |
@@ -203,7 +204,7 @@ One read-only service token, `pr-conflict-watch-read`, is scoped to exactly `pro
 
 ## Admin gating
 
-`GET /admin/settings` (key inventory; secret values masked as `set`/`empty`, never returned), `POST /admin/settings` (write-through save), and `POST /admin/reload-settings` require `Authorization: Bearer <RECALL_ADMIN_TOKEN>`.  The seat bearer (`RECALL_API_TOKEN`) gets 401 on these routes; with `RECALL_ADMIN_TOKEN` unset the routes answer 403.  "Admin" is whoever holds the admin token — the fleet operator, not the seats.
+`GET /admin/settings` (key inventory; secret values masked as `set`/`empty`, never returned), `POST /admin/settings` (write-through save), and `POST /admin/reload-settings` require `Authorization: Bearer <RECALL_ADMIN_TOKEN>`.  The seat bearer (`RECALL_API_TOKEN`) gets 401 on these routes; with `RECALL_ADMIN_TOKEN` unset the routes answer 403.  "Admin" is whoever holds the admin token — the fleet operator, not the seats.  OWNER correction/retraction of recall lessons is a separate authority: it requires `Authorization: Bearer <RECALL_OWNER_TOKEN>`, and with that key unset the service refuses the mutation 403.  A client-supplied `seat: "OWNER"` is only a claim, never proof.
 
 ## Per-user boundary (out of scope by design)
 

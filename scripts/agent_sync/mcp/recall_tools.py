@@ -40,6 +40,7 @@ HIT_TEXT_LIMIT, HIT_TITLE_LIMIT, HIT_URL_LIMIT, HIT_FIELD_LIMIT = 1200, 200, 300
 SCRUBBED_LIMIT = 20
 STATS_KEYS_LIMIT = 50
 CONTRIBUTE_MIN = 40
+REASON_MIN = 3
 CHILD_ENV_KEYS = (
     "PATH",
     "HOME",
@@ -140,9 +141,10 @@ def run(
 
 def failure(code: int, err: str) -> RecallUnavailable:
     if code == 2:
+        lower = err.lower()
         return RecallUnavailable(
             "not_authorized"
-            if "credential" in err.lower() or "key" in err.lower()
+            if "credential" in lower or "key" in lower or "may correct" in lower or "may retract" in lower
             else "invalid_argument",
             "fleet recall refused the request:  %s" % (err or "usage or credential error"),
         )
@@ -202,6 +204,14 @@ def hit_item(hit: Mapping[str, Any]) -> dict[str, Any]:
         )
         if created > 0
         else None,
+        "revision": hit.get("revision") if isinstance(hit.get("revision"), int) else None,
+        "corrected": hit.get("corrected_at") if isinstance(hit.get("corrected_at"), int) else None,
+        "corrected_by": field("corrected_by", HIT_FIELD_LIMIT),
+        "correction_reason": field("correction_reason", HIT_FIELD_LIMIT),
+        "retracted": hit.get("retracted") is True,
+        "retracted_at": hit.get("retracted_at") if isinstance(hit.get("retracted_at"), int) else None,
+        "retracted_by": field("retracted_by", HIT_FIELD_LIMIT),
+        "retraction_reason": field("retraction_reason", HIT_FIELD_LIMIT),
         "text": text,
         "truncated": truncated,
     }
@@ -218,7 +228,7 @@ def envelope(header: str, summary: str, items: list[Mapping[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-# ---- the three tools ----------------------------------------------------------------------------
+# ---- the five tools -----------------------------------------------------------------------------
 
 
 def search(
@@ -232,6 +242,8 @@ def search(
         argv += ["--app", str(args["app"])]
     if args.get("category"):
         argv += ["--category", str(args["category"])]
+    if args.get("include_retracted"):
+        argv += ["--include-retracted"]
     code, data, err = run(argv, stdin=b"", env=env, runner=runner)
     if data is None or "hits" not in data:
         raise failure(code, err)
@@ -349,6 +361,106 @@ def contribute(
         "seat": identity,
         "status": clean(data.get("status"), 40)[0] if isinstance(data.get("status"), str) else "",
         "scrubbed": scrubbed,
+        "duplicate": False,
+    }
+    return json.dumps(result), result
+
+
+def _reason_field(args: Mapping[str, Any], scan: Callable[[str, str], None] | None) -> str:
+    reason = str(args.get("reason") or "").strip()
+    if len(reason) < REASON_MIN:
+        raise RecallUnavailable(
+            "invalid_argument",
+            "argument 'reason' must say why, in at least %d characters" % REASON_MIN,
+        )
+    if scan is not None:
+        scan("reason", reason)
+    return reason
+
+
+def _integer(value: Any) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def correct(
+    args: Mapping[str, Any],
+    identity: str,
+    *,
+    env: Mapping[str, str],
+    runner: Runner | None = None,
+    scan: Callable[[str, str], None] | None = None,
+) -> tuple[str, dict[str, Any]]:
+    text, title, url = contribute_fields(args, scan)
+    reason = _reason_field(args, scan)
+    argv = [
+        "correct",
+        str(args["doc_id"]),
+        "-",
+        "--reason",
+        reason,
+        "--seat",
+        identity,
+        "--json",
+    ]
+    if title:
+        argv += ["--title", title]
+    if url:
+        argv += ["--url", url]
+    if args.get("expected_revision") is not None:
+        argv += ["--expected-revision", str(args["expected_revision"])]
+    code, data, err = run(argv, stdin=text.encode("utf-8"), env=env, runner=runner)
+    if data is None or code != 0 or "doc_id" not in data:
+        raise failure(code, err)
+    scrubbed = [clean(s, 60)[0] for s in (data.get("scrubbed") or [])[:SCRUBBED_LIMIT]]
+    result = {
+        "id": clean(data.get("id"), 80)[0],
+        "doc_id": clean(data.get("doc_id"), 200)[0],
+        "seat": identity,
+        "status": clean(data.get("status"), 40)[0] if isinstance(data.get("status"), str) else "",
+        "revision": _integer(data.get("revision")),
+        "corrected_at": _integer(data.get("corrected_at")),
+        "corrected_by": clean(data.get("corrected_by"), 60)[0],
+        "previous_content_hash": clean(data.get("previous_content_hash"), 80)[0],
+        "content_hash": clean(data.get("content_hash"), 80)[0],
+        "scrubbed": scrubbed,
+        "duplicate": False,
+    }
+    return json.dumps(result), result
+
+
+def retract(
+    args: Mapping[str, Any],
+    identity: str,
+    *,
+    env: Mapping[str, str],
+    runner: Runner | None = None,
+    scan: Callable[[str, str], None] | None = None,
+) -> tuple[str, dict[str, Any]]:
+    reason = _reason_field(args, scan)
+    argv = [
+        "retract",
+        str(args["doc_id"]),
+        "--reason",
+        reason,
+        "--seat",
+        identity,
+        "--json",
+    ]
+    if args.get("expected_revision") is not None:
+        argv += ["--expected-revision", str(args["expected_revision"])]
+    code, data, err = run(argv, stdin=b"", env=env, runner=runner)
+    if data is None or code != 0 or "doc_id" not in data:
+        raise failure(code, err)
+    result = {
+        "id": clean(data.get("id"), 80)[0],
+        "doc_id": clean(data.get("doc_id"), 200)[0],
+        "seat": identity,
+        "status": clean(data.get("status"), 40)[0] if isinstance(data.get("status"), str) else "",
+        "revision": _integer(data.get("revision")),
+        "retracted": data.get("retracted") is True,
+        "retracted_at": _integer(data.get("retracted_at")),
+        "retracted_by": clean(data.get("retracted_by"), 60)[0],
+        "retraction_reason": clean(data.get("retraction_reason"), 500)[0],
         "duplicate": False,
     }
     return json.dumps(result), result
