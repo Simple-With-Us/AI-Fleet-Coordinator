@@ -12,20 +12,20 @@ import re
 import threading
 import unittest
 
-from agent_sync import config as C
-from agent_sync import heldalert as HELDALERT
-from agent_sync import heldback as HELD
-from agent_sync import live as L
-from agent_sync import router as R
-from agent_sync import operator_post as OPV
-from agent_sync import zulip as Z
-from agent_sync.tests.listener_harness import OPERATOR_USER_ID
-from agent_sync.tests.test_heldback import HeldBackRoutineTests, HeldMixin
-from agent_sync.tests.test_router import ctx as router_ctx
-from agent_sync.tests.test_router import lease as router_lease
-from agent_sync.tests.test_router import msg as router_msg
-from agent_sync.tests.test_server import CLOUD_SEATS, GB_EMAIL, SEAT, CloudSeatHarness
-from agent_sync.tests.test_server import SERVER_DIR
+from simple_tools import config as C
+from simple_tools import heldalert as HELDALERT
+from simple_tools import heldback as HELD
+from simple_tools import live as L
+from simple_tools import router as R
+from simple_tools import operator_post as OPV
+from simple_tools import zulip as Z
+from simple_tools.tests.listener_harness import OPERATOR_USER_ID
+from simple_tools.tests.test_heldback import HeldBackRoutineTests, HeldMixin
+from simple_tools.tests.test_router import ctx as router_ctx
+from simple_tools.tests.test_router import lease as router_lease
+from simple_tools.tests.test_router import msg as router_msg
+from simple_tools.tests.test_server import CLOUD_SEATS, GB_EMAIL, SEAT, CloudSeatHarness
+from simple_tools.tests.test_server import SERVER_DIR
 SAMPLE_CONFIG = SERVER_DIR / "listener.toml"
 
 
@@ -470,7 +470,7 @@ class HeldAlertTests(HeldBackRoutineTests):
                 def attempt() -> None:
                     state["n"] += 1
                     if state["fail"]:
-                        raise state["error"] or Z.AgentSyncError("fake refused the post")
+                        raise state["error"] or Z.SimpleToolsError("fake refused the post")
 
                 def guarded_post(path, params=None, **kw):
                     if path == "messages" and (params or {}).get("type") == "stream":

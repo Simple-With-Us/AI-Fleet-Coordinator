@@ -20,7 +20,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from agent_sync import identity as I
+from simple_tools import identity as I
 
 REPO = Path(__file__).resolve().parents[3]
 REGISTRY_PATH = REPO / "fleet-apps.json"
@@ -887,7 +887,7 @@ class OnboardScriptTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, True)
         (self.tmp / "scripts").mkdir()
         shutil.copy(ONBOARD, self.tmp / "scripts" / "onboard-new-agent.sh")
-        os.symlink(REPO / "scripts" / "agent_sync", self.tmp / "scripts" / "agent_sync")
+        os.symlink(REPO / "scripts" / "simple_tools", self.tmp / "scripts" / "simple_tools")
         self.registry = self.tmp / "fleet-apps.json"
         shutil.copy(REGISTRY_PATH, self.registry)
 

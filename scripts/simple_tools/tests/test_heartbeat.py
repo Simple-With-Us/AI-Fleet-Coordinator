@@ -13,8 +13,8 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from agent_sync import heartbeat as HB
-from agent_sync.tests.listener_harness import FakeClock, ListenerHarness
+from simple_tools import heartbeat as HB
+from simple_tools.tests.listener_harness import FakeClock, ListenerHarness
 
 KEY = secrets.token_hex(16)  # made up per run
 PROJECT = "4511678688854016"
@@ -98,7 +98,7 @@ class PureTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
-            path = home / "agent-sync.env"
+            path = home / "simple-tools.env"
             path.write_text('SENTRY_FLEET_DSN="https://k@h/1"\n')
             # The environment wins over the approved store.
             self.assertEqual(
@@ -115,14 +115,14 @@ class PureTests(unittest.TestCase):
                 self.assertEqual(HB.resolve_dsn({}, str(home)), "https://i@h/4")
             self.assertEqual(path.read_text(), 'SENTRY_FLEET_DSN="https://k@h/1"\n')
 
-    def test_resolve_dsn_reads_infisical_agent_sync_and_never_a_default_file(self) -> None:
+    def test_resolve_dsn_reads_infisical_simple_tools_and_never_a_default_file(self) -> None:
         import tempfile
 
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
             old_default = home / ".secrets"
             old_default.mkdir()
-            (old_default / "agent-sync.env").write_text("SENTRY_FLEET_DSN=https://old@h/9\n")
+            (old_default / "simple-tools.env").write_text("SENTRY_FLEET_DSN=https://old@h/9\n")
             asked: list = []
             with mock.patch.object(
                 HB, "_default_dsn_fetch", lambda env, h: asked.append(h) or "https://i@h/4"
@@ -133,7 +133,7 @@ class PureTests(unittest.TestCase):
             with mock.patch.object(HB, "_default_dsn_fetch", lambda env, h: ""):
                 self.assertEqual(HB.resolve_dsn({}, str(home)), "")  # the old file is never read
 
-    def test_the_default_dsn_fetch_asks_fleet_secrets_for_one_name_in_agent_sync(self) -> None:
+    def test_the_default_dsn_fetch_asks_fleet_secrets_for_one_name_in_simple_tools(self) -> None:
         import json
         import os
         import tempfile
@@ -142,7 +142,7 @@ class PureTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             data = Path(tmp) / "f.json"
             data.write_text(
-                json.dumps({"/agent-sync": {"SENTRY_FLEET_DSN": "https://a@h/5", "OTHER": "x"}})
+                json.dumps({"/simple-tools": {"SENTRY_FLEET_DSN": "https://a@h/5", "OTHER": "x"}})
             )
             env = {
                 "FLEET_SECRETS_BIN": str(fake),
@@ -150,7 +150,7 @@ class PureTests(unittest.TestCase):
                 "PATH": os.environ["PATH"],
             }
             self.assertEqual(HB._fleet_secrets_dsn(env, tmp), "https://a@h/5")
-            data.write_text(json.dumps({"/agent-sync": {}}))
+            data.write_text(json.dumps({"/simple-tools": {}}))
             self.assertEqual(HB._fleet_secrets_dsn(env, tmp), "")
 
     def test_monitor_slug_per_instance(self) -> None:

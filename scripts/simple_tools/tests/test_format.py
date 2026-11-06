@@ -5,7 +5,7 @@ import datetime as dt
 import unittest
 from unittest import mock
 
-from agent_sync import cli
+from simple_tools import cli
 
 
 def utc(year: int, month: int, day: int, hour: int = 0, minute: int = 0) -> float:

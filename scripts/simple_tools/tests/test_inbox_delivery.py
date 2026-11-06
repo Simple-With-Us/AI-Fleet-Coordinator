@@ -16,11 +16,11 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from agent_sync import inbox_delivery as IDEL
-from agent_sync import subscribe_all as SUB
-from agent_sync import zulip as Z
-from agent_sync.tests.test_chat_fanout import FakeCatalog
-from agent_sync.tests.test_daemon import DaemonHarness
+from simple_tools import inbox_delivery as IDEL
+from simple_tools import subscribe_all as SUB
+from simple_tools import zulip as Z
+from simple_tools.tests.test_chat_fanout import FakeCatalog
+from simple_tools.tests.test_daemon import DaemonHarness
 
 CHANNEL = "work-in-progress"
 OWNER_EMAIL = "jay@zulip.test"
@@ -645,7 +645,7 @@ class OwnerInboxDeliveryTests(DaemonHarness):
         )
 
     def log_rows(self, daemon) -> list[dict[str, Any]]:
-        from agent_sync import live as L
+        from simple_tools import live as L
 
         return L.read_jsonl(daemon.log.path)
 
@@ -1067,7 +1067,7 @@ class OwnerInboxDeliveryTests(DaemonHarness):
         self.assertEqual(incomplete[0].get("outcomes"), {"CLAUDE": "terminal"})
 
     def test_missing_credentials_event_is_not_repeated_on_retry(self) -> None:
-        from agent_sync.daemon import InboxPending
+        from simple_tools.daemon import InboxPending
 
         daemon = self.started()
         msg = message()
@@ -1091,7 +1091,7 @@ class OwnerInboxDeliveryTests(DaemonHarness):
         self.assertEqual(rows[0].get("seats"), {"CODEX": "CODEX_ZULIP_KEY"})
 
     def test_whole_retry_pending_event_lists_no_delivered_seat(self) -> None:
-        from agent_sync.daemon import InboxPending
+        from simple_tools.daemon import InboxPending
 
         daemon = self.started()
         daemon._inbox_pending[4242] = InboxPending(
@@ -1104,7 +1104,7 @@ class OwnerInboxDeliveryTests(DaemonHarness):
         self.assertEqual(rows[0].get("seats"), [])
 
     def test_inbox_finish_logs_after_releasing_fanout_lock(self) -> None:
-        from agent_sync.daemon import InboxPending
+        from simple_tools.daemon import InboxPending
 
         daemon = self.started()
         daemon._inbox_pending[4242] = InboxPending(
@@ -1147,7 +1147,7 @@ class OwnerInboxDeliveryTests(DaemonHarness):
 
 def _classes():
     """A classified owner `@**everyone**` message:  the gate the daemon uses."""
-    from agent_sync import router as R
+    from simple_tools import router as R
 
     c = R.Classes()
     c.owner, c.everyone_inert, c.eligible = True, True, True

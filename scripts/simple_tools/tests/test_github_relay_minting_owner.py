@@ -16,19 +16,19 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from agent_sync.github_token_router import (
+from simple_tools.github_token_router import (
     MINTING_OWNER,
     RoutingError,
     TokenRouter,
     refuse_minting,
 )
-from agent_sync.operator_github import Broker, CallerPolicy, Refused, signature
-from agent_sync.operator_github_policy import (
+from simple_tools.operator_github import Broker, CallerPolicy, Refused, signature
+from simple_tools.operator_github_policy import (
     app_credentials_loader,
     caller_key_loader,
     load_policy,
 )
-from agent_sync.operator_github_state import NonceLedger
+from simple_tools.operator_github_state import NonceLedger
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 # The GitHub endpoint that mints an App installation token.  Exactly one module
@@ -44,7 +44,7 @@ MINT_ENDPOINT = "access_" + "tokens"
 GUARD_CALL = "refuse_minting"
 OWNER_MODULE = "git-relay/git_relay/app_tokens.py"
 # This module, by path, for the assertion that it stays out of its own scan.
-SCAN_MODULE = "scripts/agent_sync/tests/test_github_relay_minting_owner.py"
+SCAN_MODULE = "scripts/simple_tools/tests/test_github_relay_minting_owner.py"
 # Synthetic owner/repository for the broker fixture.  A committed test fixture
 # must not carry a real private org/repo name (Kody rule: synthetic hostnames
 # and paths in test fixtures).  The policy below is synthetic to match, so the
@@ -393,7 +393,7 @@ class OperatorMintPrimitivesRefuse(unittest.TestCase):
             loader_calls.append(slug)
             raise AssertionError("credentials must never be read once the guard fires")
 
-        router = self._router(importlib.import_module("agent_sync.github_token_router"), loader)
+        router = self._router(importlib.import_module("simple_tools.github_token_router"), loader)
         with self.assertRaises(RoutingError) as ctx:
             router.token_for("swu-echo", "a/b", {"contents": "read"})
         self.assertIn(MINTING_OWNER, str(ctx.exception))
@@ -468,7 +468,7 @@ class OperatorBrokerCannotMint(unittest.TestCase):
                 return ("123", "pem")
 
         secrets = FakeSecrets()
-        router = importlib.import_module("agent_sync.github_token_router")
+        router = importlib.import_module("simple_tools.github_token_router")
         broker = Broker(
             key_for=caller_key_loader(secrets),
             policy_for=lambda seat: SYNTHETIC_POLICY,
@@ -505,7 +505,7 @@ class OperatorBrokerCannotMint(unittest.TestCase):
         # The synthetic policy authorizes SYNTHETIC_REPO, so the only thing that
         # can refuse this call is the mint guard.  Without this the fixture
         # could pass while the guard never ran.
-        module = importlib.import_module("agent_sync.operator_github")
+        module = importlib.import_module("simple_tools.operator_github")
 
         seen = []
 
@@ -542,7 +542,7 @@ class OperatorBrokerCannotMint(unittest.TestCase):
     def test_policy_loaders_still_exist_but_never_reach_a_mint(self):
         # The reviewed OPS-966 code is retained, not deleted:  its policy table
         # and loaders still answer, they simply no longer lead to a token.
-        module = importlib.import_module("agent_sync.operator_github_policy")
+        module = importlib.import_module("simple_tools.operator_github_policy")
 
         class FakeSecrets:
             def caller_key(self, seat):

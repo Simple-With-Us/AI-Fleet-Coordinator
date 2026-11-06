@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import unittest
 
-from agent_sync import host_load as HL
+from simple_tools import host_load as HL
 
 
 class HostLoadTests(unittest.TestCase):

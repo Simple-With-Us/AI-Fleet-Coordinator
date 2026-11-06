@@ -4,8 +4,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from agent_sync import handbook_service as H
-from agent_sync import zulip as Z
+from simple_tools import handbook_service as H
+from simple_tools import zulip as Z
 
 
 class Client:
