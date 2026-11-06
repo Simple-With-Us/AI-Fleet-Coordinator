@@ -179,8 +179,7 @@ test("operator_inbox_pending seat scoping: a client built for one seat reads onl
   const ma = listenerClientFromEnv(env, "MA", { fetch });
   assert.ok(ma, "MA resolves a listener client from WAKE_HMAC_KEY_MA");
   assert.equal(ma.seat, "MA");
-  // A GROK-WEB client signed with its own key gets 401 from a listener that holds MA's key for
-  // that path: the fake listener below only accepts the GROK-WEB key on the GROK-WEB path.
+  // The fake listener below holds GROK-WEB's key and answers only correctly signed requests.
   let api;
   const { tools } = harness({ listener: (clock) => {
     api = fakeListener({ views: { "pending-inbox": { after_seq: 0, count: 0, latest_seq: 0, items: [] } }, now: () => clock.now });
@@ -188,6 +187,13 @@ test("operator_inbox_pending seat scoping: a client built for one seat reads onl
   } });
   assert.deepEqual(ok(await tools.call("operator_inbox_pending", { mode: "check" }), "operator_inbox_pending"), { mode: "check", count: 0, latest_seq: 0, after_seq: 0 });
   assert.ok(api.requests.every((r) => r.url.includes("/listener/v1/GROK-WEB/")), "every request names the grant's own seat");
+  // The refusal half, asserted rather than claimed:  a client that asks for JET's path but signs
+  // with GROK-WEB's key is refused (401) by a listener holding JET's own key for that path, and
+  // the tool surfaces the refusal — none of JET's pending items come back.
+  const jetApi = fakeListener({ seat: "JET", key: "j".repeat(40), views: { "pending-inbox": { after_seq: 0, count: 9, latest_seq: 9, items: [] } }, now: () => clock.now });
+  const foreign = harness({ listener: (clock) => new ListenerClient({ baseUrl: BASE, seat: "JET", key: KEY, fetch: jetApi.fetch, now: () => clock.now }) });
+  toolError(await foreign.tools.call("operator_inbox_pending", { mode: "check" }), "not_authorized");
+  assert.ok(jetApi.requests.length > 0 && jetApi.requests.every((r) => r.url.includes("/listener/v1/JET/")), "the refused attempt really named JET's path");
 });
 
 test("errors map to short tool errors and never echo the eavesdropper's body or the key", async () => {
