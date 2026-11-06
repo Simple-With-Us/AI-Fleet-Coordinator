@@ -136,8 +136,12 @@ struct WakeSettingsView: View {
         case .testWake, .removeSection, .resume: needsOwner = false
         }
         if needsOwner {
-            let answer = await OwnerCheck.ask(reason: action.ownerReason)
-            if case .declined(let why) = answer {
+            // Anything but a yes runs nothing:  a cancel, a refused approval and a Mac that
+            // cannot ask all stop here with their own words.
+            switch await OwnerCheck.ask(reason: action.ownerReason) {
+            case .approved:
+                break
+            case .notApproved(let why), .unavailable(let why):
                 store.noteRefusal(why)
                 return
             }
