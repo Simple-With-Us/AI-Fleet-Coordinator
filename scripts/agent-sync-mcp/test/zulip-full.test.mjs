@@ -172,6 +172,10 @@ test("own intros preserve recipient semantics on named post, reply and edit entr
   assert.equal(fake.messages.find((m) => m.id === reply).content, "[GROK-WEB 📁OPS →MA,CODEX] @**Codex** reply");
   ok(await tools.call("zulip_edit_message", { message_id: id, text: "[GROK-WEB 📁OPS →CODEX] edited @**Codex**", to: ["CODEX"] }), "zulip_edit_message");
   assert.equal(fake.messages.find((m) => m.id === id).content, "[GROK-WEB 📁OPS →CODEX] @**Codex** edited @_**Codex**");
+  const session = ok(await tools.call("zulip_post", { topic: "t", text: "[GROK-WEB: HH.1.M 📁OPS] correlated", session: "abcd-1234-9999" }), "zulip_post").id;
+  assert.equal(fake.messages.find((m) => m.id === session).content, "[GROK-WEB·abcd1234: HH.1.M 📁OPS] correlated");
+  const stale = ok(await tools.call("zulip_post", { topic: "t", text: "[GROK-WEB·old12345 📁OPS] refreshed", session: "abcd-1234-9999" }), "zulip_post").id;
+  assert.equal(fake.messages.find((m) => m.id === stale).content, "[GROK-WEB·abcd1234 📁OPS] refreshed");
   const foreign = ok(await tools.call("zulip_post", { topic: "t", text: "[MA 📁OPS] quoted", to: ["CODEX"] }), "zulip_post").id;
   assert.equal(fake.messages.find((m) => m.id === foreign).content, "[GROK-WEB→CODEX] @**Codex** [MA 📁OPS] quoted");
   for (const text of ["[GROK-WEB missing close", "[GROK-WEB\n] malformed", "[GROK-WEB-OTHER] not own"]) {

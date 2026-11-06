@@ -460,6 +460,11 @@ export function composeBody(prefix, text, { labels = [], mentions = [] } = {}) {
   let parts;
   if (own) {
     let intro = own.intro;
+    const seatEnd = intro.indexOf("[") + 1 + prefix.slice(1).split("·", 1)[0].length;
+    const suffix = intro.slice(seatEnd).replace(/^·[^\s:→\]]*/u, "");
+    const session = prefix.includes("·") ? prefix.slice(prefix.indexOf("·")) : "";
+    // Supplied session is operational attribution and overrides a stale text session.
+    if (session) intro = intro.slice(0, seatEnd) + session + suffix;
     const arrow = intro.indexOf("→");
     const existing = arrow < 0 ? [] : intro.slice(arrow + 1).split(",").map((v) => v.trim());
     const added = [...new Set(labels)].filter((label) => !existing.includes(label));
