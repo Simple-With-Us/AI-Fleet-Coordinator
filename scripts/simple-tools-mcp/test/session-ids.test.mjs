@@ -1,4 +1,4 @@
-// AFC-361:  the session id rule for the hosted Worker (src/session-ids.js), twin of scripts/agent_sync/session_ids.py.
+// AFC-361:  the session id rule for the hosted Worker (src/session-ids.js), twin of scripts/simple_tools/session_ids.py.
 // No dependencies:  plain `node --test`.  The registry copy is checked against fleet-apps.json here too.
 
 import test from "node:test";

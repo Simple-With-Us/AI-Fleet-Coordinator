@@ -80,7 +80,7 @@ test("host check:  only agents.simplewithus.com on https and the default port", 
   const ok = new Request("https://agents.simplewithus.com/mcp");
   assert.equal(hostAllowed(ok, config.host), true);
   for (const url of [
-    "https://agent-sync-mcp.example.workers.dev/mcp",
+    "https://simple-tools-mcp.example.workers.dev/mcp",
     "https://evil.example/mcp",
     "https://agents.simplewithus.com:8443/mcp",
     "http://agents.simplewithus.com/mcp",

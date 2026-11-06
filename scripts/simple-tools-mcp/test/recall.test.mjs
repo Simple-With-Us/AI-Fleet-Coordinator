@@ -55,7 +55,7 @@ const defaultRespond = (req) => {
         ok: true,
         mode: "hybrid",
         hits: [
-          { score: 0.91, text: "Agent-Sync bridge lesson.", title: "Agent-Sync bridge", source: "doc", app: "fleet", category: "doc", seat: "CLAUDE", doc_id: "docs/protocols/agent-sync-mcp.md", url: "", path: "docs/protocols/agent-sync-mcp.md", created_at: 1760000000000 },
+          { score: 0.91, text: "Simple-Tools bridge lesson.", title: "Simple-Tools bridge", source: "doc", app: "fleet", category: "doc", seat: "CLAUDE", doc_id: "docs/protocols/simple-tools-mcp.md", url: "", path: "docs/protocols/simple-tools-mcp.md", created_at: 1760000000000 },
         ],
       },
     };
@@ -143,7 +143,7 @@ test("the hosted list is the ten original Zulip tools, then recall, then the Lin
   );
   // tools.json, the stdio contract, is untouched:  the Linear tools are hosted-only,
   // the way recall and dm are, because the Python stdio server cannot run them.
-  const file = JSON.parse(readFileSync(path.join(ROOT, "../agent_sync/mcp/tools.json"), "utf8"));
+  const file = JSON.parse(readFileSync(path.join(ROOT, "../simple_tools/mcp/tools.json"), "utf8"));
   assert.deepEqual(TOOLS, file);
   for (const tool of RECALL_TOOLS) {
     assert.equal(tool.inputSchema.additionalProperties, false, tool.name);
@@ -171,7 +171,7 @@ test("wrangler.jsonc pins RECALL_BASE_URL and holds no recall secret", () => {
 
 test("scopes:  a read-only grant searches and reads stats;  contribute needs zulip:write", async () => {
   const { tools, upstream } = harness({ scopes: ["zulip:read"] });
-  ok(await tools.call("recall_search", { query: "agent-sync bridge" }), "recall_search");
+  ok(await tools.call("recall_search", { query: "simple-tools bridge" }), "recall_search");
   ok(await tools.call("recall_stats", {}), "recall_stats");
   const result = await tools.call("recall_contribute", { text: LESSON, category: "lesson" });
   const error = toolError(result, "not_authorized");
@@ -219,7 +219,7 @@ test("recallClientFromEnv:  null unless all three secrets and the exact base URL
 
 test("search sends the three auth headers, a real User-Agent, no redirects and only the documented fields", async () => {
   const { tools, upstream } = harness();
-  ok(await tools.call("recall_search", { query: "  agent-sync bridge ", limit: 3, app: "fleet", category: "lesson" }), "recall_search");
+  ok(await tools.call("recall_search", { query: "  simple-tools bridge ", limit: 3, app: "fleet", category: "lesson" }), "recall_search");
   const [req] = upstream.requests;
   assert.equal(req.url, "https://recall.jays.services/recall/search");
   assert.equal(req.method, "POST");
@@ -229,7 +229,7 @@ test("search sends the three auth headers, a real User-Agent, no redirects and o
   assert.equal(req.headers["CF-Access-Client-Id"], ACCESS_ID);
   assert.equal(req.headers["CF-Access-Client-Secret"], ACCESS_SECRET);
   assert.equal(req.headers["User-Agent"], RECALL_USER_AGENT);
-  assert.deepEqual(req.body, { query: "agent-sync bridge", limit: 3, app: "fleet", category: "lesson" });
+  assert.deepEqual(req.body, { query: "simple-tools bridge", limit: 3, app: "fleet", category: "lesson" });
   ok(await tools.call("recall_search", { query: "old lesson", include_retracted: true }), "recall_search");
   assert.deepEqual(upstream.requests[1].body, { query: "old lesson", limit: 5, include_retracted: true });
 });
@@ -605,7 +605,7 @@ test("audit:  one row per call, no query text, contribute keeps only its length 
   noSecrets(everything);
 });
 
-test("scripts/agent_sync/mcp/recall-tools.json (the stdio server's recall_* specs) equals RECALL_TOOLS", async () => {
+test("scripts/simple_tools/mcp/recall-tools.json (the stdio server's recall_* specs) equals RECALL_TOOLS", async () => {
   const { recallToolsText, RECALL_TOOLS_JSON } = await import("../scripts/export-recall-tools.mjs");
-  assert.equal(readFileSync(RECALL_TOOLS_JSON, "utf8"), recallToolsText(), "recall-tools.json is stale.  Run:  cd scripts/agent-sync-mcp && node scripts/export-recall-tools.mjs");
+  assert.equal(readFileSync(RECALL_TOOLS_JSON, "utf8"), recallToolsText(), "recall-tools.json is stale.  Run:  cd scripts/simple-tools-mcp && node scripts/export-recall-tools.mjs");
 });

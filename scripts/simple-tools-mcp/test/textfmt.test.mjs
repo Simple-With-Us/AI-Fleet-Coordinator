@@ -1,5 +1,5 @@
 // The outbound text fixes:  the JS port (src/textfmt.js) against the Python
-// suite's own tables (scripts/agent_sync/tests/test_textfmt.py), so the two
+// suite's own tables (scripts/simple_tools/tests/test_textfmt.py), so the two
 // transports post the same text.  Skips itself where python3 is missing.
 
 import test from "node:test";
@@ -14,7 +14,7 @@ const dump = spawnSync(
   "python3",
   [
     "-c",
-    "import json\nfrom agent_sync.tests import test_textfmt as t\nprint(json.dumps({'converted': t.CONVERTED, 'unchanged': t.UNCHANGED, 'now': t.NOW_ISO, 'single_gapped': t.SINGLE_GAPPED, 'single_unchanged': t.SINGLE_UNCHANGED, 'fleet_dates': t.FLEET_DATES, 'fleet_dates_kept': t.FLEET_DATES_KEPT, 'fleet_offsets': t.FLEET_OFFSET_FORMS}))",
+    "import json\nfrom simple_tools.tests import test_textfmt as t\nprint(json.dumps({'converted': t.CONVERTED, 'unchanged': t.UNCHANGED, 'now': t.NOW_ISO, 'single_gapped': t.SINGLE_GAPPED, 'single_unchanged': t.SINGLE_UNCHANGED, 'fleet_dates': t.FLEET_DATES, 'fleet_dates_kept': t.FLEET_DATES_KEPT, 'fleet_offsets': t.FLEET_OFFSET_FORMS}))",
   ],
   // A hung python must not hold the test runner:  124 is the timeout convention, and it is a failure here
   // rather than a skip, because a suite that imported cleanly a moment ago should not now hang.

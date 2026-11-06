@@ -59,7 +59,7 @@ const GOLDEN = Object.freeze({
   definitionSha: "890dbe50c353fb94832e7b9e6f521accb45a955d959adb98abb9f0ecf7ca289a",
   listSha: "9aacbec1e49d3bf510a0282def4310e43144f311a2daa93918fc8a3562ae8d8f",
   sub: '{"id":"sub_0127e860dc74c489dc41e43cda5a53e5","refreshBefore":"2026-10-15T17:46:40Z","cursor":null,"truncated":false}',
-  second: "-32600 Agent-Sync already sends zulip.mention for this seat to another chat.  Stop monitoring there first, or wait until it lapses at 2026-10-15T17:46:40Z unless refreshed.",
+  second: "-32600 Simple-Tools already sends zulip.mention for this seat to another chat.  Stop monitoring there first, or wait until it lapses at 2026-10-15T17:46:40Z unless refreshed.",
   reply: '{"status":202,"body":{"ok":true,"subscribers":1,"delivered":1,"outcome":"delivered"}}',
   body: '{"eventId":"evt_6f0bc10ec9c7eb441629f4808f96c7bc","name":"zulip.mention","timestamp":"2026-10-14T17:46:40Z","data":{"message_id":77,"dm":false,"channel":"work-in-progress","topic":"t","sender_full_name":"Jay","sender_user_id":1211974,"sender_is_bot":false,"owner_hint":true,"excerpt":"<<<x>>>","zulip_link":"https://simplewithus.zulipchat.com/#narrow/near/77","reply_to":{"type":"stream","channel":"work-in-progress","topic":"t"}},"cursor":null}',
   signature: "v1,nlGlzJ2O2/nfaV943+wFg3u8dgnYbRyTEVvkYINj8i8=",
@@ -202,8 +202,8 @@ test("the cap is one per event name:  both events in one chat, and a second chat
   assert.notEqual(zulip.id, spike.id);
   assert.equal(spike.id, await subscriptionId("JET", CALLBACK, SPIKE_EVENT_NAME, {}));
   assert.equal(cb.calls.filter((c) => c.body.type === "verification").length, 1, "the same callback is verified once");
-  await assert.rejects(ev.subscribe(SUB(EVENT_NAME, `${CALLBACK}_other`)), (e) => e.code === -32600 && e.message.startsWith("Agent-Sync already sends zulip.mention for this seat to another chat."));
-  await assert.rejects(ev.subscribe(SUB(SPIKE_EVENT_NAME, `${CALLBACK}_other`)), (e) => e.code === -32600 && e.message.startsWith("Agent-Sync already sends fleet.spike.ping for this seat to another chat."));
+  await assert.rejects(ev.subscribe(SUB(EVENT_NAME, `${CALLBACK}_other`)), (e) => e.code === -32600 && e.message.startsWith("Simple-Tools already sends zulip.mention for this seat to another chat."));
+  await assert.rejects(ev.subscribe(SUB(SPIKE_EVENT_NAME, `${CALLBACK}_other`)), (e) => e.code === -32600 && e.message.startsWith("Simple-Tools already sends fleet.spike.ping for this seat to another chat."));
   // Refreshes of both still work.
   assert.equal((await ev.subscribe(SUB())).id, zulip.id);
   assert.equal((await ev.subscribe(SUB(SPIKE_EVENT_NAME))).id, spike.id);
