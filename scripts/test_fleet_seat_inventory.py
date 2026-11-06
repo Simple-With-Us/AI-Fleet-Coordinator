@@ -11,7 +11,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import fleet_seat_inventory as inv
 
-SECRET = "sk-live-0123456789abcdefSECRET"
+# A made-up value that must never reach an answer, assembled at runtime so no token-shaped
+# literal sits in the file.
+SENTINEL = "-".join(["not", "a", "real", "value", "must", "not", "appear"])
 
 
 def write(home, relative, text):
@@ -53,10 +55,10 @@ class InventoryTests(unittest.TestCase):
             ".claude/settings.json",
             json.dumps(
                 {
-                    "env": {"API_TOKEN": SECRET},
+                    "env": {"API_TOKEN": SENTINEL},
                     "permissions": {"allow": ["Bash(ls:*)", "Read"], "deny": ["Bash(rm:*)"]},
                     "hooks": {
-                        "PreToolUse": [{"matcher": "Bash", "hooks": [{"command": "/x/" + SECRET}]}],
+                        "PreToolUse": [{"matcher": "Bash", "hooks": [{"command": "/x/" + SENTINEL}]}],
                         "Stop": [{}, {}],
                     },
                 }
@@ -95,10 +97,10 @@ class InventoryTests(unittest.TestCase):
             ".claude/settings.json",
             json.dumps(
                 {
-                    "env": {"API_TOKEN": SECRET},
+                    "env": {"API_TOKEN": SENTINEL},
                     "hooks": {
                         "PreToolUse": [
-                            {"hooks": [{"command": "curl -H 'Authorization: " + SECRET + "'"}]}
+                            {"hooks": [{"command": "curl -H 'Authorization: " + SENTINEL + "'"}]}
                         ]
                     },
                 }
@@ -112,21 +114,21 @@ class InventoryTests(unittest.TestCase):
                     "mcpServers": {
                         "fleet-tools": {
                             "command": "/bin/run",
-                            "args": [SECRET],
-                            "env": {"T": SECRET},
+                            "args": [SENTINEL],
+                            "env": {"T": SENTINEL},
                         },
                         "remote-one": {
-                            "url": "https://example.invalid/" + SECRET,
-                            "headers": {"A": SECRET},
+                            "url": "https://example.invalid/" + SENTINEL,
+                            "headers": {"A": SENTINEL},
                         },
                     }
                 }
             ),
         )
-        write(self.home, ".grok/config.toml", '[mcp_servers.pagerduty]\ntoken = "%s"\n' % SECRET)
+        write(self.home, ".grok/config.toml", '[mcp_servers.pagerduty]\ntoken = "%s"\n' % SENTINEL)
         for platform in ("claude", "cursor", "grok"):
             text = json.dumps(inv.inventory(platform, self.home))
-            self.assertNotIn(SECRET, text, platform)
+            self.assertNotIn(SENTINEL, text, platform)
 
     def test_cursor_mcp_servers_say_how_they_run_and_nothing_more(self):
         write(
@@ -271,7 +273,7 @@ class InventoryTests(unittest.TestCase):
                     "[mcp_servers.fleet-tools]",
                     'command = "x"',
                     "[mcp_servers.fleet-tools.env]",
-                    'T = "%s"' % SECRET,
+                    'T = "%s"' % SENTINEL,
                     '[plugins."documents@openai"]',
                     '[plugins."cloudflare@curated".mcp_servers.cloudflare-api.tools.search]',
                     '[plugins."cloudflare@curated"]',
