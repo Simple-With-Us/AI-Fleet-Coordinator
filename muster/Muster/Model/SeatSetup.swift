@@ -52,12 +52,13 @@ enum SeatSetup {
     /// The cells of a seat that need a look, in the grid's column order.
     ///
     /// `answered` is whether the engine has finished a run.  Until it has, the grid holds an
-    /// empty UNKNOWN cell for every seat and kind, which is silence and not a missing rule,
-    /// so nothing is raised and the panel says the engine has not answered.
+    /// empty UNKNOWN cell for every seat and kind, which is silence and not a missing rule, so
+    /// those placeholders are never raised.  A cell that carries rules is a real observation
+    /// from an earlier run and is raised either way, so a run in flight does not hide it.
     static func attention(for cells: [GridCell], answered: Bool = true) -> [Attention] {
-        guard answered else { return [] }
-        return ConfigKind.columnOrder.compactMap { kind -> Attention? in
+        ConfigKind.columnOrder.compactMap { kind -> Attention? in
             guard let cell = cells.first(where: { $0.kind == kind }), needsALook(cell) else { return nil }
+            if !answered && cell.rules.isEmpty { return nil }
             // The rules are worst first, so the first one is the reason the cell is not green.
             // A cell with no rule at all is a hole in the coverage:  the grid counts it as
             // unknown, and the panel says why instead of showing a blank.

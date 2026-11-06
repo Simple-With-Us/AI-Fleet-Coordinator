@@ -337,6 +337,31 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(names(rules), ["fleet-lane-map.mdc", "fleet-policy.mdc"])
         self.assertEqual(rules["note"], "1 backup copy is not listed.")
 
+    def test_real_backup_names_are_backups_and_names_that_only_contain_the_letters_are_not(self):
+        # Names seen beside live files on the owner's Mac.
+        for backup in (
+            "settings.json.bak",
+            "config.toml.bak-fleet-rag-20260901203618",
+            "hooks.json.bak-lane-guard-20261007-223357",
+            "opencode.json.before-own-tools-20261029-2012",
+            "worktree-create.sh.disabled-20260705",
+            "fleet-lane-map.mdc.bak-lane-map-20261102-033041",
+            "x.orig",
+            "download.tmp",
+        ):
+            with self.subTest(backup=backup):
+                self.assertTrue(inv.is_backup(backup))
+        for kept in (
+            "template.tmpl",
+            "foo.bakery",
+            "origin.md",
+            "board-ops",
+            "disabled-notes",
+            "bak",
+        ):
+            with self.subTest(kept=kept):
+                self.assertFalse(inv.is_backup(kept))
+
     def test_a_long_list_is_cut_and_says_how_many_there_were(self):
         mkdirs(self.home, ".fx/skills")
         for number in range(inv.MAX_NAMES + 5):

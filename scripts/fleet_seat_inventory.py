@@ -37,8 +37,11 @@ MAX_FILE_BYTES = 2_000_000
 MAX_NAMES = 300
 MAX_NAME_LENGTH = 100
 
-# Markers of a saved copy of another file, which a listing leaves out and counts.
-BACKUP_MARKERS = (".bak", ".before-", ".disabled", ".orig", ".tmp")
+# A saved copy of another file, which a listing leaves out and counts.  The marker is a whole
+# dot-separated word that ends the name or is followed by more text after a `-`, `.` or `_`
+# (`settings.json.bak`, `config.toml.bak-fleet-rag-20260901`, `hooks.json.before-lane-guard`),
+# so a name that only contains the letters (`template.tmpl`, `foo.bakery`, `origin.md`) is kept.
+BACKUP_RE = re.compile(r"\.(?:bak|before|disabled|orig|tmp)(?:$|[-._])")
 
 
 # MARK: - what each platform keeps
@@ -237,7 +240,7 @@ def _mcp_transport(entry):
 
 
 def is_backup(name):
-    return any(marker in name for marker in BACKUP_MARKERS)
+    return BACKUP_RE.search(name) is not None
 
 
 def toml_headers(text, arrays=False):

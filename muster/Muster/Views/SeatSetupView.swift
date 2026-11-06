@@ -120,9 +120,10 @@ struct SeatSetupView: View {
         let items = SeatSetup.attention(for: cells, answered: answered)
         return SectionPanel(title: "What Needs A Look", subtitle: "Seat \(seat), on the Mac") {
             VStack(alignment: .leading, spacing: 8) {
-                if !answered {
+                if !answered && !cells.contains(where: { !$0.rules.isEmpty }) {
                     // Until a run finishes, the grid holds an empty UNKNOWN cell for every kind.
-                    // That is silence and not a missing rule, so nothing is raised.
+                    // That is silence and not a missing rule, so nothing is raised.  Cells that
+                    // carry rules from an earlier run are still shown below.
                     Text("The engine has not answered for this seat yet.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
