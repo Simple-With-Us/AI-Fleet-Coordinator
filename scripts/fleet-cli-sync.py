@@ -39,7 +39,9 @@ RECEIVER_PATH = "scripts/fleet-cli-release.py"
 # serves over the listener HTTPS API (Path B, operator.simplewithus.com).
 # The 151st is agent_sync/registry_api.py, the signed client the package's own registry callers
 # (the operator-registry CLI, the platform-letter registry side) use to reach that API.
-MAX_FILES = 152
+# The 153rd is agent_sync/operator_sheets_google.mjs;  must equal the receiver cap in
+# fleet-cli-release.py or build_bundle() rejects the newly included adapter.
+MAX_FILES = 153
 MAX_BYTES = 8 * 1024 * 1024
 OVERALL_SECONDS = 90
 SSH_SECONDS = 65

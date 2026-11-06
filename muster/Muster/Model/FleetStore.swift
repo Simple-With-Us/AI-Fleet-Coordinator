@@ -233,20 +233,28 @@ final class FleetStore: ObservableObject {
     /// A hook rule proves the hook it registered, by the hook's own name, so the
     /// MiniMax panel can say when that hook was last seen to deny.
     func hookProofs(seat: String) -> [MiniMaxSurface.HookProof] {
+        Self.hookProofs(in: results, seat: seat)
+    }
+
+    /// The proofs a run's results carry for one seat's hooks, one per hook a rule names.
+    ///
+    /// A rule may name more than one hook, and each of them is proved by that rule:
+    /// taking only the first name would leave every other hook the rule covers reading
+    /// "not proved" while the engine had proved it.
+    static func hookProofs(in results: [CheckResult], seat: String) -> [MiniMaxSurface.HookProof] {
         results
             .filter { $0.seat == seat && $0.kind == ConfigKind.hooks.rawValue }
-            .compactMap { result in
-                guard
-                    let names = result.expected["names"]?.stringArray,
-                    let name = names.first
-                else { return nil }
-                return MiniMaxSurface.HookProof(
-                    hookName: name,
-                    required: result.proofLevelRequired ?? "L0",
-                    achieved: result.proofLevelAchieved,
-                    checkedAt: FleetTime.parse(result.checkedAt),
-                    state: result.state
-                )
+            .flatMap { result -> [MiniMaxSurface.HookProof] in
+                let names = result.expected["names"]?.stringArray ?? []
+                return names.map { name in
+                    MiniMaxSurface.HookProof(
+                        hookName: name,
+                        required: result.proofLevelRequired ?? "L0",
+                        achieved: result.proofLevelAchieved,
+                        checkedAt: FleetTime.parse(result.checkedAt),
+                        state: result.state
+                    )
+                }
             }
     }
 
