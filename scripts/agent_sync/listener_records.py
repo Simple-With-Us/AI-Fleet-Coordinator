@@ -156,13 +156,24 @@ def pending_inbox_view(
     """Wake-worthy seat-inbox items after `after_seq`, oldest first (the pending read a hosted
     seat polls:  OPS-1047).  An item is pending when its seq is past `after_seq`, its stored row
     carries the router prefilter's `wake_worthy` verdict (daemon.make_item, from router.prefilter)
-    and it was not delivered to a lease.  `count` is every pending item after `after_seq`, not
+    and it was not delivered to a lease.  Both the active inbox file and its rotated `.1` copy are
+    read (a row the daemon rotated before the seat polled is still pending).  `count` is every pending item after `after_seq`, not
     just the page shown;  `latest_seq` is the newest seq in the inbox file, pending or not, so a
     check with no pending items still learns how far the inbox has run.  Read-only like every
     view here:  neither the acknowledged cursor (seat-inbox.cursor.json) nor the daemon's own
     cursor.json or seat-inbox.meta.json is read for a floor or ever moved."""
     paths = seat_paths(root, seat)
-    rows = [r for r in _rows(paths.seat_inbox, "seat inbox") if _int(r.get("seq")) is not None]
+    # Both inbox files, reconciled like the daemon's _seat_inbox_rows:  rotation moves the whole
+    # file to seat-inbox.jsonl.1 and starts a fresh one, so a wake-worthy row still waiting for a
+    # poll can live only in the rotated copy.  Keyed by seq, the current file's row wins over the
+    # rotated copy's, and a later line wins within a file.
+    by_seq: dict[int, dict[str, Any]] = {}
+    for path in (paths.seat_inbox + ".1", paths.seat_inbox):
+        for row in _rows(path, "seat inbox"):
+            seq = _int(row.get("seq"))
+            if seq is not None:
+                by_seq[seq] = row
+    rows = [by_seq[seq] for seq in sorted(by_seq)]
     latest_seq = max((r["seq"] for r in rows), default=0)
     pending = [
         r

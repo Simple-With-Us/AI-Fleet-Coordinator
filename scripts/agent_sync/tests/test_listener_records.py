@@ -241,6 +241,31 @@ class PendingInboxTests(Harness):
         counted = LR.pending_inbox_view(self.root, "CLAUDE", after_seq=0, limit=0)
         self.assertEqual((counted["count"], counted["items"], counted["latest_seq"]), (1, [], 3))
 
+    def test_pending_reads_the_rotated_inbox_too_and_the_current_file_wins(self) -> None:
+        paths = L.SeatPaths(self.root, "ROT")
+        L.append_jsonl(
+            paths.seat_inbox + ".1",
+            [
+                {"seq": 1, "id": 601, "type": "stream", "sender": "Jet", "content": "rotated one",
+                 "classes": ["eligible", "direct"], "wake_worthy": True},
+                {"seq": 2, "id": 602, "type": "stream", "sender": "Jet", "content": "rotated two",
+                 "classes": ["eligible", "direct"], "wake_worthy": True},
+            ],
+        )
+        L.append_jsonl(
+            paths.seat_inbox,
+            [
+                {"seq": 2, "id": 602, "type": "stream", "sender": "Jet", "content": "rotated two",
+                 "classes": ["eligible", "direct"], "wake_worthy": True, "delivered_to": "lease-1"},
+                {"seq": 3, "id": 603, "type": "stream", "sender": "Jet", "content": "current three",
+                 "classes": ["eligible", "direct"], "wake_worthy": True},
+            ],
+        )
+        view = LR.pending_inbox_view(self.root, "ROT", after_seq=0)
+        # seq 1 survives only in the rotated copy;  seq 2's current row says delivered, and wins.
+        self.assertEqual([i["seq"] for i in view["items"]], [1, 3])
+        self.assertEqual((view["count"], view["latest_seq"]), (2, 3))
+
     def test_pending_read_moves_no_cursor_and_no_meta(self) -> None:
         watched = [self.paths.seat_inbox, self.paths.seat_inbox_meta, self.paths.local_cursor, self.paths.cursor]
 

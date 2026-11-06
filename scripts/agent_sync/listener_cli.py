@@ -1460,6 +1460,19 @@ def cmd_listener(rt: Any, args: argparse.Namespace) -> int:
         if as_json:
             return emit(view)
         if not view["items"]:
+            if view["count"]:
+                rt.out(
+                    "simple-chat: %d wake-worthy item%s pending for %s after seq %d "
+                    "(latest_seq %d;  --limit 0 shows none)\n"
+                    % (
+                        view["count"],
+                        "" if view["count"] == 1 else "s",
+                        seat,
+                        view["after_seq"],
+                        view["latest_seq"],
+                    )
+                )
+                return 0
             rt.err(
                 "simple-chat: no wake-worthy items pending for %s after seq %d (latest_seq %d)"
                 % (seat, view["after_seq"], view["latest_seq"])
