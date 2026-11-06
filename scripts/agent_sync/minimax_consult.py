@@ -23,7 +23,6 @@ MAX_PROMPT_BYTES = 150_000
 MAX_RESPONSE_BYTES = 1_000_000
 # Integer nano-dollars avoid floating-point under-reservations.
 RESERVE_NANO_USD = CONTEXT_TOKENS * 150 + OUTPUT_TOKENS * 600
-DAILY_NANO_USD = 2_000_000_000
 ZONE = ZoneInfo("America/Chicago")
 
 
@@ -57,7 +56,9 @@ class SpendLedger:
     """All bridge processes share this private SQLite ledger, outside disposable wake dirs.
 
     Full reservations are permanent. A request ID is single-use even across restarts.
-    Both Chicago calendar-day and rolling-24h limits bind, including ambiguous outcomes.
+    This ledger is durable accounting and idempotency, not a budget gate: it records
+    every reservation (including ambiguous outcomes) and enforces no dollar ceiling.
+    Spend authority for live calls is an external owner decision.
     """
 
     def __init__(self, path):
@@ -95,12 +96,6 @@ class SpendLedger:
                 raise ConsultUnavailable("clock moved backward")
             if self.db.execute("SELECT 1 FROM spends WHERE request=?", (request,)).fetchone():
                 raise ConsultCharged("attempt already reserved; outcome retained")
-            daily, rolling = self.db.execute(
-                "SELECT COALESCE(SUM(CASE WHEN day=? THEN nano ELSE 0 END),0), COALESCE(SUM(CASE WHEN at>? THEN nano ELSE 0 END),0) FROM spends",
-                (day, now - 86400),
-            ).fetchone()
-            if max(daily, rolling) + RESERVE_NANO_USD > DAILY_NANO_USD:
-                raise ConsultUnavailable("daily spend limit")
             self.db.execute(
                 "INSERT INTO spends VALUES(?,?,?,?)", (request, now, day, RESERVE_NANO_USD)
             )

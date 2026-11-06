@@ -21,12 +21,13 @@ class Opener:
 class Tests(unittest.TestCase):
  def setUp(self):self.tmp=tempfile.TemporaryDirectory();self.path=Path(self.tmp.name)/'budget.sqlite';self.now=1793990000
  def tearDown(self):self.tmp.cleanup()
- def test_durable_limit_and_replay(self):
+ def test_durable_accounting_and_replay(self):
   ledger=SpendLedger(self.path)
-  for n in range(13):ledger.reserve(request(n),self.now)
-  with self.assertRaisesRegex(ConsultUnavailable,'daily'):ledger.reserve(request(14),self.now)
+  for n in range(14):ledger.reserve(request(n),self.now)
   ledger.db.close();ledger=SpendLedger(self.path)
   with self.assertRaisesRegex(ConsultUnavailable,'already'):ledger.reserve(request(0),self.now)
+  rows=ledger.db.execute('select count(*),sum(nano) from spends').fetchone()
+  self.assertEqual(rows,(14,14*RESERVE_NANO_USD))
  def test_concurrency(self):
   SpendLedger(self.path).db.close()
   def reserve(n):
@@ -34,13 +35,15 @@ class Tests(unittest.TestCase):
    try:ledger.reserve(request(n),self.now);return True
    except ConsultUnavailable:return False
    finally:ledger.db.close()
-  with ThreadPoolExecutor(8) as pool:self.assertEqual(sum(pool.map(reserve,range(40))),13)
+  with ThreadPoolExecutor(8) as pool:self.assertEqual(sum(pool.map(reserve,range(40))),40)
  def test_clock_and_day_boundary(self):
   ledger=SpendLedger(self.path);t=datetime(2026,11,6,23,59,tzinfo=ZONE).timestamp()
   for n in range(13):ledger.reserve(request(n),t)
-  with self.assertRaisesRegex(ConsultUnavailable,'daily'):ledger.reserve(request(20),t+120)
+  ledger.reserve(request(20),t+120)
   with self.assertRaisesRegex(ConsultUnavailable,'backward'):ledger.reserve(request(21),t-1)
   ledger.reserve(request(22),t+86401)
+  days=[r[0] for r in ledger.db.execute('select distinct day from spends order by 1')]
+  self.assertEqual(len(days),2)
  def test_request_is_single_toolless_bounded(self):
   op=Opener();ledger=SpendLedger(self.path);runner=MiniMaxConsult(ledger,lambda:'fixture',opener=op,clock=lambda:self.now)
   self.assertEqual(runner.run('untrusted inbox',request(1)),{'action':'none'})
@@ -109,13 +112,15 @@ def process_reserve(path,n,now):
  except ConsultUnavailable:return False
  finally:ledger.db.close()
 class DurabilityTests(unittest.TestCase):
- def test_independent_processes_share_limit(self):
+ def test_independent_processes_share_ledger(self):
   from concurrent.futures import ProcessPoolExecutor
   with tempfile.TemporaryDirectory() as tmp:
    path=str(Path(tmp)/'budget.sqlite');SpendLedger(path).db.close()
    with ProcessPoolExecutor(4) as pool:
     jobs=[pool.submit(process_reserve,path,n,1793990000) for n in range(30)]
-    self.assertEqual(sum(job.result() for job in jobs),13)
+    self.assertEqual(sum(job.result() for job in jobs),30)
+   ledger=SpendLedger(path)
+   self.assertEqual(ledger.db.execute('select count(*) from spends').fetchone()[0],30)
  def test_corrupt_database_and_bad_clock_fail_closed(self):
   with tempfile.TemporaryDirectory() as tmp:
    path=Path(tmp)/'budget.sqlite';path.write_bytes(b'not a database');path.chmod(0o600)
@@ -123,13 +128,15 @@ class DurabilityTests(unittest.TestCase):
    path.unlink();ledger=SpendLedger(path)
    for now in [float('nan'),float('inf'),-1,True]:
     with self.assertRaises(ConsultUnavailable):ledger.reserve(request(0),now)
- def test_dst_fallback_does_not_reset_spend(self):
+ def test_dst_fallback_keeps_single_day_accounting(self):
   with tempfile.TemporaryDirectory() as tmp:
    ledger=SpendLedger(Path(tmp)/'budget.sqlite')
    start=datetime(2026,11,1,1,30,tzinfo=ZONE,fold=0).timestamp()
    after=datetime(2026,11,1,1,30,tzinfo=ZONE,fold=1).timestamp()
    for n in range(13):ledger.reserve(request(n),start)
-   with self.assertRaises(ConsultUnavailable):ledger.reserve(request(20),after)
+   ledger.reserve(request(20),after)
+   days=[r[0] for r in ledger.db.execute('select distinct day from spends')]
+   self.assertEqual(days,['2026-11-01'])
 
 class ChargedDistinctionTests(unittest.TestCase):
  """A pre-charge failure keeps the row pending; a charged one settles it, never retried."""
@@ -149,11 +156,11 @@ class ChargedDistinctionTests(unittest.TestCase):
   with self.assertRaises(ConsultUnavailable) as ctx:runner.run('x',request(1))
   self.assertNotIsInstance(ctx.exception,ConsultCharged)
   self.assertEqual(ledger.db.execute('select count(*) from spends').fetchone()[0],0)
- def test_over_limit_is_not_charged(self):
+ def test_invalid_reservation_key_is_not_charged(self):
   ledger=SpendLedger(self.path)
-  for n in range(13):ledger.reserve(request(n),self.now)
-  with self.assertRaises(ConsultUnavailable) as ctx:ledger.reserve(request(99),self.now)
+  with self.assertRaises(ConsultUnavailable) as ctx:ledger.reserve('not-a-key',self.now)
   self.assertNotIsInstance(ctx.exception,ConsultCharged)
+  self.assertEqual(ledger.db.execute('select count(*) from spends').fetchone()[0],0)
 
 class ScopedPathTests(unittest.TestCase):
  def setUp(self):

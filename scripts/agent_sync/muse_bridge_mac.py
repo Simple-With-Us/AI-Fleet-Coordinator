@@ -1,4 +1,4 @@
-"""Default-off Mac Muse bridge for local and server Agent-Sync inboxes.
+"""Default-off Muse inbox bridge of the simple-chat listener, for local and server seat inboxes.
 
 This worker owns one decision ledger and the tested tool-less Muse runtime.  Server inboxes are
 pulled through the existing ``coolify`` SSH alias; decisions return through a fixed server-local
