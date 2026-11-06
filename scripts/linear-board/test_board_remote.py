@@ -51,7 +51,7 @@ class Remote(unittest.TestCase):
             return reply
 
         out, err = io.StringIO(), io.StringIO()
-        full = {"SIMPLE_BOARD_REMOTE": "1", "SIMPLE_TOOLS_BEARER": BEARER}
+        full = {"SIMPLE_BOARD_REMOTE": "1", "AGENT_SYNC_BEARER": BEARER}
         full.update(env or {})
         code = 0
         with (
@@ -83,9 +83,9 @@ class Remote(unittest.TestCase):
         self.assertIn("seat: CODEX", out)
         self.assertNotIn(BEARER, out + err + json.dumps(msg))
 
-    LIST_TEXT = "agent-sync linear_list\nAFC-12 | Fix the thing | In Progress | P1\nAFC-13 | Other | Todo | P2"
+    LIST_TEXT = "simple-chat linear_list\nAFC-12 | Fix the thing | In Progress | P1\nAFC-13 | Other | Todo | P2"
     SHOW_TEXT = (
-        "agent-sync linear_show: AFC-12\ndescription: the full body\nlabels: Kind/bug\n"
+        "simple-chat linear_show: AFC-12\ndescription: the full body\nlabels: Kind/bug\n"
         "comment by CODEX: the comment body\nduplicate_of: AFC-9"
     )
 
@@ -168,7 +168,7 @@ class Remote(unittest.TestCase):
             return next(it)
 
         out, err = io.StringIO(), io.StringIO()
-        full = {"SIMPLE_BOARD_REMOTE": "1", "SIMPLE_TOOLS_BEARER": BEARER, **self.W, **(env or {})}
+        full = {"SIMPLE_BOARD_REMOTE": "1", "AGENT_SYNC_BEARER": BEARER, **self.W, **(env or {})}
         with (
             unittest.mock.patch.dict(os.environ, full, clear=True),
             unittest.mock.patch.object(board, "_remote_post", fake),
@@ -383,9 +383,9 @@ class Remote(unittest.TestCase):
     def test_missing_or_malformed_bearer_dies_with_no_call_and_no_direct_fallback(self):
         for bearer in (None, "short", "has space " + "A" * 30):
             with self.subTest(bearer=bearer):
-                env = {"SIMPLE_TOOLS_BEARER": bearer} if bearer else {}
+                env = {"AGENT_SYNC_BEARER": bearer} if bearer else {}
                 code, _, err, calls = self.run_cli(
-                    ["whoami"], rpc({}), env=env if bearer else {"SIMPLE_TOOLS_BEARER": ""}
+                    ["whoami"], rpc({}), env=env if bearer else {"AGENT_SYNC_BEARER": ""}
                 )
                 self.assertEqual(code, board.EXIT_NO_CREDS)
                 self.assertEqual(calls, [])
@@ -402,7 +402,7 @@ class Remote(unittest.TestCase):
 
     def test_the_endpoint_has_no_environment_override_and_is_https(self):
         self.assertTrue(board.REMOTE_MCP_URL.startswith("https://agents.simplewithus.com/"))
-        for name in ("LINEAR_BOARD_MCP_URL", "SIMPLE_BOARD_REMOTE_URL", "SIMPLE_TOOLS_URL"):
+        for name in ("LINEAR_BOARD_MCP_URL", "SIMPLE_BOARD_REMOTE_URL", "AGENT_SYNC_URL"):
             code, _, _, calls = self.run_cli(
                 ["whoami"], rpc({"seat": "X"}), env={name: "http://127.0.0.1:1/mcp"}
             )
@@ -425,7 +425,7 @@ class NativeEcho(unittest.TestCase):
         with (
             unittest.mock.patch.dict(
                 os.environ,
-                {"SIMPLE_BOARD_NATIVE_ECHO": "1", "SIMPLE_TOOLS_BEARER": "must-not-export"},
+                {"SIMPLE_BOARD_NATIVE_ECHO": "1", "AGENT_SYNC_BEARER": "must-not-export"},
                 clear=True,
             ),
             unittest.mock.patch.object(board.os, "geteuid", return_value=0),

@@ -14,7 +14,7 @@ The store is MiniMax Code's own session table; the letter lives in the Operator
 registry, which is one file for the fleet.  This host reads that file locally when the
 deployment points at the shared store, and when it keeps no copy it asks the host that
 holds the registry through the transport command, the same hop the Claude path makes.
-When SIMPLE_TOOLS_OPERATOR_REGISTRY_URL names the Operator's registry API, the call
+When AGENT_SYNC_OPERATOR_REGISTRY_URL names the Operator's registry API, the call
 goes to that API instead, signed per principal:  the explicit URL is the cutover, and
 it wins over both the local file and the transport command.
 The transport is host configuration:  the helper names the command
@@ -55,8 +55,8 @@ import urllib.parse
 import urllib.request
 from collections.abc import Iterator
 
-from agent_sync import secretscan
-from agent_sync.operator_registry import (
+from simple_tools import secretscan
+from simple_tools.operator_registry import (
     letter_space_of,
     pairs_after,
     registry_db_path,
@@ -185,7 +185,7 @@ def repo_scripts_dir() -> str:
     )
     for candidate in candidates:
         if os.path.isdir(candidate) and os.path.isfile(
-            os.path.join(candidate, "agent_sync", "operator_registry.py")
+            os.path.join(candidate, "simple_tools", "operator_registry.py")
         ):
             return candidate
     return ""
@@ -308,7 +308,7 @@ def _terminate_process_group(proc: subprocess.Popen) -> None:
 #
 # registry_call reaches the Operator's registry three ways, in this order:
 #
-#   1. HTTPS, when SIMPLE_TOOLS_OPERATOR_REGISTRY_URL names the Operator's registry API
+#   1. HTTPS, when AGENT_SYNC_OPERATOR_REGISTRY_URL names the Operator's registry API
 #      (the listener at operator.simplewithus.com, served under /registry/v1/):  the call
 #      is signed per principal with the key the key ref names (see _registry_https_call).
 #      The explicit URL is the cutover, and it wins over both routes below.
@@ -368,12 +368,12 @@ def _registry_params(args: list[str]) -> dict:
 def _registry_https_call(args: list[str], base_url: str, *, timeout: int) -> dict:
     """One registry call over the Operator's HTTPS registry API, answered as its JSON.
 
-    The principal is SIMPLE_TOOLS_OPERATOR_REGISTRY_PRINCIPAL, else this seat.  The key
-    is read from the environment variable the key ref SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY_ENV
-    names (default SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY itself):  the `key_env` pattern the
+    The principal is AGENT_SYNC_OPERATOR_REGISTRY_PRINCIPAL, else this seat.  The key
+    is read from the environment variable the key ref AGENT_SYNC_OPERATOR_REGISTRY_KEY_ENV
+    names (default AGENT_SYNC_OPERATOR_REGISTRY_KEY itself):  the `key_env` pattern the
     listener already uses, so the key is named, never carried in this file, and never
     logged.  The URL must be https, except for a loopback stub in a test."""
-    from agent_sync import listener_registry as RG
+    from simple_tools import listener_registry as RG
 
     op = args[0] if args else ""
     if op not in RG.OPS:
@@ -386,10 +386,10 @@ def _registry_https_call(args: list[str], base_url: str, *, timeout: int) -> dic
             "code": "not_configured",
         }
     env = os.environ
-    principal = (env.get("SIMPLE_TOOLS_OPERATOR_REGISTRY_PRINCIPAL") or "").strip().upper() or SEAT
+    principal = (env.get("AGENT_SYNC_OPERATOR_REGISTRY_PRINCIPAL") or "").strip().upper() or SEAT
     key_env = (
-        env.get("SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY_ENV") or ""
-    ).strip() or "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY"
+        env.get("AGENT_SYNC_OPERATOR_REGISTRY_KEY_ENV") or ""
+    ).strip() or "AGENT_SYNC_OPERATOR_REGISTRY_KEY"
     key = (env.get(key_env) or "").strip()
     if not key:
         return {
@@ -555,10 +555,10 @@ def remote_registry_call(args: list[str], *, timeout: int = REMOTE_TIMEOUT) -> d
 def registry_call(args: list[str], *, timeout: int = 25) -> dict:
     """Run the Operator's registry CLI and return its JSON answer.
 
-    The HTTPS registry API comes first when SIMPLE_TOOLS_OPERATOR_REGISTRY_URL names
+    The HTTPS registry API comes first when AGENT_SYNC_OPERATOR_REGISTRY_URL names
     it:  that explicit transport is the cutover, and it wins over the local file and
     the transport command alike.  With no URL set, the routes below are unchanged."""
-    url = (os.environ.get("SIMPLE_TOOLS_OPERATOR_REGISTRY_URL") or "").strip()
+    url = (os.environ.get("AGENT_SYNC_OPERATOR_REGISTRY_URL") or "").strip()
     if url:
         return _registry_https_call(args, url, timeout=timeout)
     local_db = registry_db()
@@ -570,7 +570,7 @@ def registry_call(args: list[str], *, timeout: int = 25) -> dict:
         # The hop has its own bound:  it has to finish inside the hook's timeout, not
         # inside the timeout the local call would use.
         return remote_registry_call(args)
-    cmd = [sys.executable, "-m", "agent_sync.operator_registry"] + args + ["--db", local_db]
+    cmd = [sys.executable, "-m", "simple_tools.operator_registry"] + args + ["--db", local_db]
     previous = _install_signal_handlers()
     proc = None
     try:
@@ -990,7 +990,7 @@ def held_letters(session_id: str) -> tuple[str, ...]:
     db = registry_db()
     if not db:
         return ()
-    from agent_sync import operator_registry as OR
+    from simple_tools import operator_registry as OR
 
     # The read-only handle:  it never writes, never creates the file, and never takes
     # a write lock against the Operator's registration writes.
