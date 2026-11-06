@@ -4471,7 +4471,9 @@ class TokenBlobTests(BoardTest):
             "a run never lists the whole /linear folder"
         )
         return [
-            r for r in self.vault.requests if r[0] == "GET" and r[1].startswith("/api/v3/secrets/raw/LINEAR_")
+            r
+            for r in self.vault.requests
+            if r[0] == "GET" and r[1].startswith("/api/v3/secrets/raw/LINEAR_")
         ]
 
     def test_a_fresh_blob_means_zero_mints_zero_writes_and_one_folder_read_per_run(self):
