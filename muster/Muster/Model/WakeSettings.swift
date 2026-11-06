@@ -353,7 +353,8 @@ enum WakeSettingKey: String, CaseIterable, Identifiable {
         case .mcodePath:
             return ["claude", "muse"].contains(wake)
         case .fallback:
-            return ["claude", "muse", "openrouter"].contains(wake)
+            // `WORKER_WAKES` in `agent_sync/config.py`:  every wake that runs a turn, HTTP included.
+            return ["claude", "http", "muse", "openrouter"].contains(wake)
         case .fallbackUncontained:
             return fallback == "mcode"
         case .hostLoadGate:

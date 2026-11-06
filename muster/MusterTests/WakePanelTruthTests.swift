@@ -357,6 +357,9 @@ final class WakePanelTruthTests: XCTestCase {
         XCTAssertFalse(WakeSettingKey.wakesPerHour.applies(toWake: nil, fallback: nil))
         XCTAssertTrue(WakeSettingKey.wakesPerHour.applies(toWake: "http", fallback: nil))
         XCTAssertTrue(WakeSettingKey.wakeType.applies(toWake: nil, fallback: nil))
+        // `WORKER_WAKES` lets an HTTP wake name a fallback, and an inbox wake never does.
+        XCTAssertTrue(WakeSettingKey.fallback.applies(toWake: "http", fallback: nil))
+        XCTAssertFalse(WakeSettingKey.fallback.applies(toWake: "inbox", fallback: nil))
     }
 
     // MARK: The ledger

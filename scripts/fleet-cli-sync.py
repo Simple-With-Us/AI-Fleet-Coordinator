@@ -313,7 +313,9 @@ def ssh_argv(receiver_text: str, *, install: bool = False) -> list[str]:
 
 def receipt(result: subprocess.CompletedProcess, bundle: dict) -> dict:
     if result.returncode:
-        raise SyncError("ssh_failed")
+        # The receiver names its refusal as `fleet-cli: <code>`;  carry it, so the Mac's state shows why.
+        said = re.fullmatch(rb"fleet-cli: ([a-z0-9_]{1,64})\n?", result.stderr or b"")
+        raise SyncError("receiver_" + said.group(1).decode("ascii") if said else "ssh_failed")
     if len(result.stdout) > 8192:
         raise SyncError("receipt_invalid")
     try:
