@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { errorPage, noConnectionPage, gbBearerRevealPage } from '../../scripts/agent-sync-mcp/src/pages.js';
+import { errorPage, noConnectionPage, gbBearerRevealPage } from '../../scripts/simple-tools-mcp/src/pages.js';
 
 // The Fleet MCP pages whose copy sends the owner back to Fleet MCP Admin (kody 4363358439,
 // "also found in"):  the shared errorPage template with one of the OAuth refusals that
@@ -37,7 +37,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await page.goto('/page');
       await expect(page.getByRole('heading', { name: c.heading, exact: true })).toBeVisible();
       await expect(page.getByText(c.copy, { exact: false })).toBeVisible();
-      await expect(page.locator('body')).toHaveScreenshot(`agent-sync-${c.name}-${viewport.width}.png`, { animations: 'disabled', fullPage: true });
+      await expect(page.locator('body')).toHaveScreenshot(`simple-tools-${c.name}-${viewport.width}.png`, { animations: 'disabled', fullPage: true });
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     });
   }

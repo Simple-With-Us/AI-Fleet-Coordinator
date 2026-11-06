@@ -8,8 +8,8 @@ on:
     # scripts/worker-targets.json on every trigger; a test keeps those inside this
     # list.  The deploy files are here only so a change to them runs their tests.
     paths:
-      - 'scripts/agent-sync-mcp/**'
-      - 'scripts/agent_sync/mcp/*.json'
+      - 'scripts/simple-tools-mcp/**'
+      - 'scripts/simple_tools/mcp/*.json'
       - 'fleet-apps.json'
       - 'scripts/deploy-mapped-worker.py'
       - 'scripts/test-deploy-mapped-worker.py'
@@ -26,9 +26,9 @@ concurrency:
   cancel-in-progress: false
 jobs:
   deploy:
-    # Two gates, both off until the owner arms them.  SIMPLE_TOOLS_MCP_DEPLOY_ENABLED
+    # Two gates, both off until the owner arms them.  AGENT_SYNC_MCP_DEPLOY_ENABLED
     # is this Worker's own: DEPLOY.md still says it is deployed by hand, never from CI.
-    if: vars.WORKER_DEPLOY_ENABLED == 'true' && vars.SIMPLE_TOOLS_MCP_DEPLOY_ENABLED == 'true'
+    if: vars.WORKER_DEPLOY_ENABLED == 'true' && vars.AGENT_SYNC_MCP_DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -48,10 +48,10 @@ jobs:
         with:
           node-version: 26
       - run: npm ci --ignore-scripts
-        working-directory: scripts/agent-sync-mcp
-      - run: echo "$GITHUB_WORKSPACE/scripts/agent-sync-mcp/node_modules/.bin" >> "$GITHUB_PATH"
+        working-directory: scripts/simple-tools-mcp
+      - run: echo "$GITHUB_WORKSPACE/scripts/simple-tools-mcp/node_modules/.bin" >> "$GITHUB_PATH"
       - run: npm test
-        working-directory: scripts/agent-sync-mcp
+        working-directory: scripts/simple-tools-mcp
       - run: python3 scripts/test-deploy-mapped-worker.py
       - name: Load scoped deploy credential from Fleet-OPS
         env:
@@ -69,7 +69,7 @@ jobs:
           WORKER_HEALTH_ACCESS_CLIENT_ID: ${{ secrets.WORKER_HEALTH_ACCESS_CLIENT_ID }}
           WORKER_HEALTH_ACCESS_CLIENT_SECRET: ${{ secrets.WORKER_HEALTH_ACCESS_CLIENT_SECRET }}
           MCP_CANARY_BEARER: ${{ secrets.MCP_CANARY_BEARER }}
-          SIMPLE_TOOLS_MCP_DEPLOY_ENABLED: ${{ vars.SIMPLE_TOOLS_MCP_DEPLOY_ENABLED }}
+          AGENT_SYNC_MCP_DEPLOY_ENABLED: ${{ vars.AGENT_SYNC_MCP_DEPLOY_ENABLED }}
           CLOUDFLARE_ACCOUNT_ID: 3a9368057468d0909cafaa85df12d1b7
           TARGET: ${{ matrix.worker }}
         run: python3 scripts/deploy-mapped-worker.py "$TARGET"
