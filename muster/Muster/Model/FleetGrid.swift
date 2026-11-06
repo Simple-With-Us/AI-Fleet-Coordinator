@@ -214,7 +214,8 @@ enum PassMeaning {
         switch verdict {
         case "PASS": return "Every check every rule asks for was proven."
         case "FAIL": return "At least one check failed or could not be completed."
-        default: return "Nothing failed, but not every check was proven."
+        case "UNKNOWN": return "Nothing failed, but not every check was proven."
+        default: return "No verdict was returned, so nothing is claimed."
         }
     }
 

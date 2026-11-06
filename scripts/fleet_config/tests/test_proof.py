@@ -507,6 +507,36 @@ class RealGuardTests(FakeHookCase):
         self.assertIs(outcome.state, CheckState.PASS, outcome.reason)
         self.assertIs(outcome.achieved, ProofLevel.L1)
 
+    def test_zcode_carries_file_tools_so_its_file_rule_is_unproven_not_not_applicable(self):
+        """Z Code's hook is Claude-shaped,  so Write and Edit reach it and the rule applies."""
+        self.assertEqual(
+            proof.NATIVE_FILE_TOOLS["zcode"], (("Write", "file_path"), ("Edit", "file_path"))
+        )
+        shell = proof.run_l1_probe("zcode", self.ctx, hook_command=self.real, guards=("shell",))
+        self.assertIs(shell.state, CheckState.PASS, shell.reason)
+        file = proof.run_l1_probe("zcode", self.ctx, hook_command=self.real, guards=("file",))
+        self.assertIs(file.state, CheckState.UNPROVEN, file.reason)
+        self.assertIsNot(file.reason_code, ReasonCode.NOT_APPLICABLE)
+
+    def test_the_seed_gives_zcode_a_shell_rule_and_a_file_rule(self):
+        from fleet_config import seed_manifest
+
+        seat = seed_manifest.build_manifest()["seats"]["ZC"]
+        ids = {rule["id"] for rule in seat["rules"]}
+        self.assertIn("zc-hooks-lane-guard", ids)
+        self.assertIn("zc-hooks-file-guard", ids)
+
+    def test_a_passing_detail_only_says_the_deny_named_the_sentinel_for_the_shell_scope(self):
+        shell = proof.run_l1_probe("claude", self.ctx, hook_command=self.real, guards=("shell",))
+        self.assertIn("deny named the sentinel", shell.detail)
+        self.assertNotIn("file payload", shell.detail)
+        both = proof._l1_pass_detail(("shell", "file"), "claude")
+        self.assertIn("shell deny named the sentinel", both)
+        self.assertIn("the hook denied the file payload", both)
+        self.assertIn("not required to name the path", both)
+        only_file = proof._l1_pass_detail(("file",), "claude")
+        self.assertNotIn("named the sentinel", only_file)
+
     def test_a_real_shell_guard_asked_for_the_file_scope_is_unproven_not_failing(self):
         outcome = proof.run_l1_probe(
             "claude", self.ctx, hook_command=self.real, guards=("file",)

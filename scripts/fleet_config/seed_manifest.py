@@ -79,12 +79,6 @@ PACK_SKILLS_DIR = "docs/fleet-skills"
 # MINIMAX_HOOK_NAME), so the seed cannot name a hook the installer never writes.
 NAMED_GROUP_HOOK = "lane-guard"  # the antigravity group, and the muse plugin hook
 
-# The platforms with a guard hook and no file-guard rule yet.  Z Code's hook is
-# Claude-shaped, but no file tool name is pinned for it, so there is no file payload a
-# rule could send and no tool name it could check the matcher against.  The shell rule
-# says what it covers, and the file rule lands with the tool names.
-NO_FILE_GUARD_RULE = ("zcode",)
-
 # The seat to platform mapping.  Nothing in the registry maps a seat tag to a
 # platform id:  fleet-apps.json seatApps.bySeat uses app slugs (claude-code,
 # grok-terminal), which are not platform ids, so the mapping is pinned here, once per
@@ -890,8 +884,7 @@ def _harness_seat(
                 "and the timeout is the one the installer writes.",
             )
         )
-        if platform not in NO_FILE_GUARD_RULE:
-            rules.append(_file_guard_rule(seat, platform, target, event, [hook_id], timeout))
+        rules.append(_file_guard_rule(seat, platform, target, event, [hook_id], timeout))
     else:
         rules.append(_no_hooks_rule(seat, platform, hook_absent_target, hook_absent_description))
     if skip_mcp_reason is None:

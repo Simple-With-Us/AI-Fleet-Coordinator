@@ -3006,6 +3006,36 @@
         {
           "autofixAllowed": false,
           "check": {
+            "detail": "PreToolUse",
+            "target": "~/.zcode/cli/config.json",
+            "type": "hook_registered"
+          },
+          "collector": "mac",
+          "description": "Shell guarding has its own rule.  This one asks the same hook to police file writes too, which needs a matcher that delivers the file tools to it.",
+          "expected": {
+            "description": "The fleet guard hook is registered for PreToolUse in ~/.zcode/cli/config.json with a matcher that delivers the file tools to it, and it denies a file write into a forbidden tree",
+            "guards": [
+              "file"
+            ],
+            "names": [
+              "lane-guard-hook"
+            ],
+            "present": true,
+            "timeoutSeconds": 5
+          },
+          "id": "zc-hooks-file-guard",
+          "kind": "hooks",
+          "ownerSeat": "ZC",
+          "platforms": [
+            "zcode"
+          ],
+          "proofLevel": "L1",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
             "detail": "",
             "target": "~/.zcode/cli/config.json",
             "type": "mcp_servers_registered"

@@ -174,6 +174,33 @@ final class FleetGridTests: XCTestCase {
         XCTAssertFalse(cell.proofDescription.contains("Reached L1"))
     }
 
+    /// Z Code's hook is Claude-shaped, so it carries a file rule like the other guarded
+    /// seats:  a passing shell rule beside an unproven file rule reads UNPRV with 1/2,
+    /// never a bare PASS.
+    func test_zcode_with_a_passing_shell_rule_is_partly_proven_not_pass() throws {
+        func zc(_ id: String, state: String, reasonCode: String, achieved: String?, guards: [String]) -> CheckResult {
+            CheckResult(
+                ruleId: id, seat: "ZC", platform: "zcode", kind: "hooks",
+                state: state, reason: "because", reasonCode: reasonCode,
+                expected: ["guards": .array(guards.map { .string($0) })],
+                observed: [:],
+                proofLevelRequired: "L1", proofLevelAchieved: achieved,
+                collector: "mac", checkType: "hook_registered",
+                checkedAt: "2026-10-21T09:00:00Z", expiresAt: nil, ttlSeconds: 900,
+                stale: false, failing: false)
+        }
+        let cells = GridBuilder.build(roster: ["ZC"], manifest: nil, results: [
+            zc("zc-hooks-lane-guard", state: "PASS", reasonCode: "ok", achieved: "L1", guards: ["shell"]),
+            zc("zc-hooks-file-guard", state: "UNPROVEN", reasonCode: "proof-not-run", achieved: nil, guards: ["file"]),
+        ])
+        let cell = try XCTUnwrap(cells.first { $0.kind == .hooks })
+        XCTAssertEqual(cell.state, .unproven)
+        XCTAssertNotEqual(cell.state, .passed)
+        XCTAssertTrue(cell.isPartlyProven)
+        XCTAssertEqual(cell.proofBadgeText, "L1 1/2")
+        XCTAssertTrue(cell.proofDescription.contains("file guarding"))
+    }
+
     /// A rule that does not apply asks for nothing:  a shell guard on a harness whose hook
     /// carries no file tool is a PASS for what the cell asks, and the tooltip says the file
     /// rule does not apply.
@@ -220,7 +247,11 @@ final class FleetGridTests: XCTestCase {
         XCTAssertTrue(PassMeaning.everywhere.contains("every check the rule asks for was proven"))
         XCTAssertTrue(PassMeaning.verdict("PASS").contains("Every check every rule asks for was proven"))
         XCTAssertTrue(PassMeaning.verdict("UNKNOWN").contains("not every check was proven"))
-        XCTAssertTrue(PassMeaning.verdict(nil).contains("not every check was proven"))
+        // A missing or unrecognised verdict is never a soft OK:  it claims nothing.
+        for unknown in [nil, "", "pass", "MAYBE", "ERROR"] as [String?] {
+            XCTAssertEqual(PassMeaning.verdict(unknown), "No verdict was returned, so nothing is claimed.")
+            XCTAssertFalse(PassMeaning.verdict(unknown).contains("Nothing failed"))
+        }
         XCTAssertTrue(PassMeaning.appRow.contains("Nothing else about the app was checked"))
         // A badge with no sentence of its own never claims a config rule was proven.
         XCTAssertTrue(PassMeaning.panelRow.contains("this panel makes"))

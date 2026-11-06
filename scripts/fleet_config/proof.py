@@ -166,10 +166,11 @@ NATIVE_FILE_TOOLS: dict[str, tuple[tuple[str, str], ...]] = {
     # says so instead of reporting a bare pass.
     "cursor": (),
     "antigravity": (),
-    # Z Code's hook is Claude-shaped (matcher ``Bash``, a Claude-style deny).  No file
-    # tool name is pinned for it, so its file surface is not probed and the seed holds
-    # no file-guard rule for it yet.
-    "zcode": (),
+    # Z Code's hook is Claude-shaped (matcher ``Bash``, a Claude-style deny), so the
+    # Claude file tools (``Write`` and ``Edit``, both carrying ``file_path``) do reach
+    # it.  It is not the cursor or antigravity case, whose payload shape has no file
+    # tool, and an empty tuple would turn its file rule into not applicable.
+    "zcode": (("Write", "file_path"), ("Edit", "file_path")),
 }
 
 
@@ -1241,7 +1242,14 @@ def _interpret_l1(
         state=CheckState.PASS,
         reason="the installed hook denied the sentinel write at L1",
         reason_code=ReasonCode.OK,
-        detail="exit %s, the %s deny named the sentinel" % (run.returncode, fmt),
+        detail="exit %s, the %s deny %s"
+        % (
+            run.returncode,
+            fmt,
+            "named the sentinel"
+            if marker in reason
+            else "did not name the sentinel (not required for this payload)",
+        ),
         achieved=ProofLevel.L1,
     )
 
@@ -1266,6 +1274,24 @@ def _run_one_payload(
     return _interpret_l1(
         run, fmt, sentinel.marker, budget, _guard_disabled(env), require_marker
     )
+
+
+def _l1_pass_detail(scopes: tuple[str, ...], fmt: str) -> str:
+    """What a passing L1 probe actually showed,  built from the scopes that ran.
+
+    Only the shell scope requires the deny to name the sentinel.  The file scope runs
+    with ``require_marker=False``,  so a file deny of any readable reason passes,  and
+    the detail must not say the deny named the path.
+    """
+    parts = []
+    if "shell" in scopes:
+        parts.append("the shell deny named the sentinel")
+    if "file" in scopes:
+        parts.append(
+            "the hook denied the file payload (the %s reason is not required to name the path)"
+            % fmt
+        )
+    return "exit 0, " + ";  ".join(parts)
 
 
 def run_l1_probe(
@@ -1448,7 +1474,7 @@ def run_l1_probe(
         state=CheckState.PASS,
         reason="the installed hook denied the sentinel write at L1",
         reason_code=ReasonCode.OK,
-        detail="exit 0, the %s deny named the sentinel" % fmt,
+        detail=_l1_pass_detail(scopes, fmt),
         achieved=ProofLevel.L1,
     )
 

@@ -27,6 +27,9 @@
 // resume that drain until the outstanding request is settled or safely reconciled.
 // This exporter does not persist a general ok/unknown/refused mutation ledger.
 
+// The exporter owns credential rejection before invoking the adapter (OPERATOR-SHEETS-ADAPTER.md).
+import { scanCellText } from "./operator_sheets_google.mjs";
+
 export const SESSIONS_HEADERS = [
   "Record ID", "Label", "Seat", "Platform", "Host", "Native Session ID", "Title", "Project",
   "Thread Link", "Apple Note Link", "State", "Wake Capability", "Registered At", "Last Seen At",
@@ -141,6 +144,15 @@ export async function drainOutbox({
     try {
       const payload = typeof row.payload === "string" ? JSON.parse(row.payload) : row.payload;
       const cells = formatCellsForDisplay(row.kind, payload.cells);
+      // A credential-shaped cell is a permanent per-row refusal: count and log it, leave the row
+      // pending for the Operator, and keep draining - one refused row must not wedge later rows.
+      const headers = row.kind === "session_upsert" ? SESSIONS_HEADERS : EVENTS_HEADERS;
+      const refusedIndex = cells.findIndex((cell) => scanCellText(cell) !== null);
+      if (refusedIndex >= 0) {
+        failed += 1;
+        log(`outbox ${row.outbox_id}: credential-shaped cell refused (${headers[refusedIndex]}); left pending`);
+        continue;
+      }
       if (row.kind === "session_upsert") {
         await upsertSession(adapter, cells);
       } else if (row.kind === "event_append") {
@@ -153,6 +165,13 @@ export async function drainOutbox({
     } catch (err) {
       failed += 1;
       log(`outbox ${row.outbox_id}: ${err.message}`);
+      // A deterministic local validation refusal (invalid_row, credential_in_cell) means nothing
+      // was sent and a retry can never succeed: skip past the poison row instead of wedging the
+      // drain behind it. Anything else may be uncertain or transient, so stop the drain: later
+      // snapshots must not overtake an unexported earlier one.
+      if (err && (err.code === "invalid_row" || err.code === "credential_in_cell")) {
+        continue;
+      }
       break; // stop the drain: later snapshots must not overtake an unexported earlier one
     }
   }

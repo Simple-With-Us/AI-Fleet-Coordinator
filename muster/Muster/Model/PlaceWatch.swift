@@ -141,6 +141,7 @@ extension MachineMenuInputs {
             lastReadAt: admin.lastReadAt,
             redCells: monitor.redCount == nil ? nil : monitor.redCells,
             driftCells: monitor.driftCells,
+            unprovenCells: monitor.unprovenCells,
             lastRunWasTrusted: monitor.lastRunWasTrusted,
             transitions: monitor.transitions,
             status: watch.status,

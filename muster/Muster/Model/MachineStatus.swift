@@ -130,6 +130,8 @@ struct MachineMenuInputs {
     /// The red cells,  when the last run could be trusted.
     var redCells: [DriftRedCell]?
     var driftCells: [DriftRedCell] = []
+    /// The cells that read not proven:  neither red nor drifted,  and not a pass either.
+    var unprovenCells: [DriftRedCell] = []
     /// Whether the last run could be trusted,  or nil before any run has landed.
     var lastRunWasTrusted: Bool?
     var transitions: [DriftTransition] = []
@@ -262,6 +264,8 @@ enum MachineMenuCopy {
         if !pm2Answered {
             return count == 0 ? .notKnown : .attention(count, someUnread: true)
         }
+        // A Mac with a cell not yet proven is not known to be fine,  so it is never OK.
+        if count == 0, !inputs.unprovenCells.isEmpty { return .notKnown }
         return count == 0 ? .ok : .attention(count, someUnread: false)
     }
 
@@ -270,14 +274,16 @@ enum MachineMenuCopy {
         return false
     }
 
+    /// A failure,  a state nobody can read,  or a service Muster tried to start and gave up on.
     private static func isProblem(_ entry: FleetServiceEntry) -> Bool {
-        entry.state == .failed || entry.state == .unknown
+        entry.needsAttention
     }
 
     private static func serviceCounts(_ entries: [FleetServiceEntry]) -> String {
         let order: [(ManagedServiceState, String)] = [
             (.running, "running"), (.failed, "failed"), (.stopped, "stopped"),
-            (.notInstalled, "not installed"), (.unknown, "not known"),
+            (.notInstalled, "not installed"), (.notInPM2, "not in this Mac's pm2"),
+            (.unknown, "not known"),
         ]
         let parts = order.compactMap { state, word -> String? in
             let count = entries.filter { $0.state == state }.count
@@ -291,6 +297,8 @@ enum MachineMenuCopy {
     /// One service's row:  its title,  its state and the actions it offers.
     static func serviceRow(_ entry: FleetServiceEntry, allowlist: OpsAllowlist?, pm2Answered: Bool) -> MenuRow {
         var title = "\(entry.menuRowTitle):  \(entry.summary)"
+        // The owner's stop,  or what Muster did about it,  so the menu says who stopped it.
+        if let note = entry.menuNote { title += " (\(note))" }
         guard pm2Answered || !isPM2Row(entry) else {
             return MenuRow(title: title, actions: [])
         }
@@ -326,12 +334,18 @@ enum MachineMenuCopy {
             return .line("Seat Setup:  checking\u{2026}")
         }
         let drifted = inputs.driftCells
+        let unproven = inputs.unprovenCells.count
         if reds.isEmpty, drifted.isEmpty {
+            // Unproven cells are not red,  and the line must not read as a clean bill.
+            if unproven > 0 {
+                return .line("Seat Setup:  no red or drifted cells, \(unproven) not proven")
+            }
             return .line("Seat Setup:  no red or drifted cells")
         }
         var parts: [String] = []
         if !reds.isEmpty { parts.append(reds.count == 1 ? "1 red cell" : "\(reds.count) red cells") }
         if !drifted.isEmpty { parts.append(drifted.count == 1 ? "1 drifted cell" : "\(drifted.count) drifted cells") }
+        if unproven > 0 { parts.append("\(unproven) not proven") }
 
         var rows: [MenuItem] = []
         for cell in (reds + drifted).prefix(cellRowLimit) {
