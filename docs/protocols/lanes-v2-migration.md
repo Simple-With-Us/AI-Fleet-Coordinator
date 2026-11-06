@@ -78,13 +78,13 @@ A skip is never a failure: it is printed with its reason, nothing is changed, an
 | Git refuses | `worktree move` refuses a worktree with submodules, for example.  The message is shown. |
 | Cannot place it | A full clone with no GitHub `origin`, or a repo outside `~/Code` that is not a clone. |
 | A symlink or a non-checkout | A symlink (already migrated, or not ours) is not followed.  A folder that is not a checkout and is not empty is left alone. |
-| `agent-sync-runtime` | Always: see the next section. |
+| `simple-tools-runtime` | Always: see the next section. |
 
 The only git commands the script can run are the read-only ones it needs plus `worktree move OLD NEW` and `worktree repair PATH...`.  There is no `--force`, no `remove`, no `prune`, no `reset`, no `push`, and no `rm -rf`; a unit test pins that list.
 
 ### The Runtime Checkout Is Not Moved
 
-`~/apps/lanes/_managed/fleet/agent-sync-runtime` is a locked, detached worktree of this repo that the always-on Zulip listener runs from.  The `~/.local/bin/simple-chat` symlink, the `RUNTIME` default in `~/apps/agent-sync-runtime-sync.sh` (the `com.jay.agent-sync-runtime-sync` LaunchAgent, every 120 seconds), `~/.claude/settings.json` (the `afc` marketplace path), `scripts/agent_sync/install.sh` and its test, and the process list rows all hard-code that path.  Moving it breaks the listener for every Mac seat, and v2 names no new home for it.  The script skips it by name even if the lock is gone.  **Owner decision pending:** pick its path (outside the lanes tree, or `~/apps/lanes/AI-Fleet-Coordinator/agent-sync-runtime`, which makes it a lane-like object the doctor and the cleaners can see), then change all the couplings together and restart `com.jay.agent-sync-listener` and `com.jay.agent-sync-runtime-sync`.  Until then `_managed` keeps that one folder.
+`~/apps/lanes/_managed/fleet/agent-sync-runtime` is a locked, detached worktree of this repo that the always-on Zulip listener runs from.  The `~/.local/bin/simple-chat` symlink, the `RUNTIME` default in `~/apps/agent-sync-runtime-sync.sh` (the `com.jay.agent-sync-runtime-sync` LaunchAgent, every 120 seconds), `~/.claude/settings.json` (the `afc` marketplace path), `scripts/simple_tools/install.sh` and its test, and the process list rows all hard-code that path.  Moving it breaks the listener for every Mac seat, and v2 names no new home for it.  The script skips it by name even if the lock is gone.  **Owner decision pending:** pick its path (outside the lanes tree, or `~/apps/lanes/AI-Fleet-Coordinator/agent-sync-runtime`, which makes it a lane-like object the doctor and the cleaners can see), then change all the couplings together and restart `com.jay.agent-sync-listener` and `com.jay.agent-sync-runtime-sync`.  Until then `_managed` keeps that one folder.
 
 ## An Example Plan
 

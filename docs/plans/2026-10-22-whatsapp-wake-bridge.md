@@ -1,5 +1,7 @@
 # AFC-477 WhatsApp Wake Bridge For Jet:  Proposal (pending approval)
 
+Historical identifiers have been redacted. These records do not certify current deployment state.
+
 Thu, Oct 22, 2026, 6:35am.  Linear AFC-477.  Owner:  CLAUDE (session 75771c43).  Status:  proposal pending approval.  Nothing in this document is built, deployed or holding standing access.  The only live work approved so far is the second-event spike, and its exact scope is in section 13.
 
 Every component, route, key and tool name below is a working name.  Section 12 explains why, and lists the names that Jay and Jet choose.
@@ -43,9 +45,9 @@ The event is only a doorbell.  The text never rides in the event and never touch
 
 ## 3. How A Wake Reaches Jet Today
 
-Zulip mention, then the server listener (being renamed the Operator in #851), then a signed `agent-sync-wake/1` POST to `/internal/wake/JET`, then the Worker verifies it (`scripts/agent-sync-mcp/src/wake.js:132`), claims the `wake_id` and POSTs a signed `zulip.mention` event to the callback of the live subscription (`src/events.js:598-622`), and ChatGPT runs a turn in the subscribed conversation.  PR #428 built this, merged Oct 10.  Jet confirmed the route live at 5:55am today (https://simplewithus.zulipchat.com/#narrow/near/633924850).
+Zulip mention, then the server listener (being renamed the Operator in #851), then a signed `[retired identifier]` POST to `/internal/wake/JET`, then the Worker verifies it (`scripts/simple-tools-mcp/src/wake.js:132`), claims the `wake_id` and POSTs a signed `zulip.mention` event to the callback of the live subscription (`src/events.js:598-622`), and ChatGPT runs a turn in the subscribed conversation.  PR #428 built this, merged Oct 10.  Jet confirmed the route live at 5:55am today (https://simplewithus.zulipchat.com/#narrow/near/633924850).
 
-Properties that shape this design, all in `scripts/agent-sync-mcp/src/events.js` at `2af99bec`:
+Properties that shape this design, all in `scripts/simple-tools-mcp/src/events.js` at `2af99bec`:
 
 - There is one event name, `zulip.mention` (line 51), and any other name is refused (line 752).
 - There is one live subscription per seat, counted across every event name (line 55, enforced by `eventSubRoom` in `seat-state.js:709-729`).
@@ -104,7 +106,7 @@ The bridge checks each `GET /agent/v1/updates` answer before it forwards anythin
 
 ### The Worker module (store, event and tools)
 
-- One self-contained module in the hosted MCP Worker (today ST-MCP, Worker script `agent-sync-mcp`), registered through a small interface (section 12).
+- One self-contained module in the hosted MCP Worker (today ST-MCP, Worker script `[retired identifier]`), registered through a small interface (section 12).
 - Signed routes, working paths:  `POST /internal/wa-ingest/JET`, `GET /internal/wa-outbox/JET` (held open up to 25 seconds), `POST /internal/wa-outbox/JET/result` and `POST /internal/wa-heartbeat/JET`.
 - It stores messages, the binding, the dedupe ledger and the send ledger in `wa_`-prefixed tables (section 7).
 - Ingest decides each message in this order, and records the outcome in the 35-day dedupe ledger (section 7) whatever it is:
@@ -130,11 +132,11 @@ The bridge checks each `GET /agent/v1/updates` answer before it forwards anythin
   - `client_ref` is a non-empty string of 1 to 128 characters from `A-Z`, `a-z`, `0-9`, `.`, `_`, `:` and `-`.  A number, a blank string or anything else is refused.
   - `since_seq`, `ack_through` and `reply_to_seq` are non-empty strings of decimal digits with no leading zero and at most 16 digits, so `"42"` is valid while `42`, `""` and `"042"` are not.  The Worker compares them as integers.
   - `text` is a string of 1 to 4,096 characters (p. 4, L138).  `limit` is an integer from 1 to 50, `include_surfaced` is a boolean, `action` is `release` or `cancel`, and `intent_id` is a string in the Worker's own intent-id format.
-- The binding controls, the switches and a content-free health view are on `/admin`, which sits behind the path-scoped Cloudflare Access app that the Worker re-verifies (`scripts/agent-sync-mcp/README.md:42`).
+- The binding controls, the switches and a content-free health view are on `/admin`, which sits behind the path-scoped Cloudflare Access app that the Worker re-verifies (`scripts/simple-tools-mcp/README.md:42`).
 
 ### Unchanged
 
-The listener and Operator, `daemon.py`, `[seat.JET]`, `agent-sync-wake/1`, `/internal/wake/<SEAT>`, `WAKE_HMAC_KEY_JET`, `JET_ROUTINE_KEY`, the `zulip.mention` schema, its subscription ids, and its tests, including `test_a_jet_mention_wakes_the_hosted_worker_with_an_hmac_signed_body` (`scripts/agent_sync/tests/test_server.py:1433`) and "one live destination per seat" (`scripts/agent-sync-mcp/test/events.test.mjs:433`).
+The listener and Operator, `daemon.py`, `[seat.JET]`, `[retired identifier]`, `/internal/wake/<SEAT>`, `WAKE_HMAC_KEY_JET`, `JET_ROUTINE_KEY`, the `zulip.mention` schema, its subscription ids, and its tests, including `test_a_jet_mention_wakes_the_hosted_worker_with_an_hmac_signed_body` (`scripts/simple_tools/tests/test_server.py:1433`) and "one live destination per seat" (`scripts/simple-tools-mcp/test/events.test.mjs:433`).
 
 Two existing Worker behaviours change, each with regression tests, and the spike exercises both first:  delivery filters by event name, and the cap becomes one conversation per seat with one subscription per event name, so a second conversation is still refused.
 
@@ -237,7 +239,7 @@ Two different things are kept, for different reasons:
 
 ### The point-in-time recovery caveat
 
-SeatGate is a SQLite-backed Durable Object (`scripts/agent-sync-mcp/wrangler.jsonc:66`).  Cloudflare documents point-in-time recovery for those, to any point in the past 30 days (Cloudflare docs, Durable Objects, "SQLite Storage API", section "PITR (Point In Time Recovery) API").  So someone who can deploy code to the Worker could restore a deleted body for up to 30 days.  Two options for Jay:
+SeatGate is a SQLite-backed Durable Object (`scripts/simple-tools-mcp/wrangler.jsonc:66`).  Cloudflare documents point-in-time recovery for those, to any point in the past 30 days (Cloudflare docs, Durable Objects, "SQLite Storage API", section "PITR (Point In Time Recovery) API").  So someone who can deploy code to the Worker could restore a deleted body for up to 30 days.  Two options for Jay:
 
 - **Accept it.**  "Deleted" then means unreadable through every tool at once, and restorable by a Worker deployer for 30 days.
 - **Crypto-shred it (recommended).**  Each body is encrypted with AES-GCM under a per-day data key kept in Workers KV, with an expiry equal to the 7-day cap.  Once that key expires, a restored copy is unreadable, so 7 days becomes a hard bound.  This rests on assumption A10 (section 11).
@@ -384,19 +386,19 @@ Also:
 
 | PR | State | What it means here |
 |---|---|---|
-| #844, the Worker host move (Echo) | Closed.  Superseded by #849, which merged at 6:04am. | The hosted Worker is ST-MCP and answers only at `agents.simplewithus.com`.  The old host gets a 404, with no alias or redirect.  The Worker script name stays `agent-sync-mcp` so that the `agent-sync-mcp.SeatGate` Durable Object namespace keeps its state (`wrangler.jsonc:15-24`).  Remote clients must reconnect and re-authorize.  #849 says it was not deployed. |
+| #844, the Worker host move (Echo) | Closed.  Superseded by #849, which merged at 6:04am. | The hosted Worker is ST-MCP and answers only at `agents.simplewithus.com`.  The old host gets a 404, with no alias or redirect.  The Worker script name stays `[retired identifier]` so that the `[retired identifier]` Durable Object namespace keeps its state (`wrangler.jsonc:15-24`).  Remote clients must reconnect and re-authorize.  #849 says it was not deployed. |
 | #851, Operator rename (MM) | Open, conflicting, changes requested | The listener becomes the Operator (`com.jay.operator`, `operator.service`).  `listener_*` tools become `eavesdropper_*` with no aliases.  Seats may not open DMs (`dm_policy.py`).  Python module names, the `/listener/v1/` read API, the hosted host and CLI binary names are left for later. |
 | #837, hosted listener on Hetzner | Open, preparation only | Moves the listener daemon and its signed read API to a Coolify app on Hetzner.  It says "Nothing about the bridge changes;  seats keep using the Worker MCP as today."  Its layout is "Operator decides, GHR and ST-MCP execute".  GHR is now git-relay and GR-MCP (#848). |
 | #846, Muster Wake Settings (MM) | Open | Reads `~/.agent-sync/listener.toml` and the wake ledgers, and edits seat wake settings and the Operator options. |
 
-What is being renamed or retired:  the agent-sync listener and daemon naming (now the Operator), the `listener_*` tools, the `agent-sync.jays.services` host, `[seat.JET]` in `listener.toml`, and probably in time the listener-to-Worker wake path (`agent-sync-wake/1`, `/internal/wake/<SEAT>`, `WAKE_HMAC_KEY_JET` and `JET_ROUTINE_KEY`).
+What is being renamed or retired:  the [retired identifier] listener and daemon naming (now the Operator), the `listener_*` tools, the `[retired identifier]` host, `[seat.JET]` in `listener.toml`, and probably in time the listener-to-Worker wake path (`[retired identifier]`, `/internal/wake/<SEAT>`, `WAKE_HMAC_KEY_JET` and `JET_ROUTINE_KEY`).
 
 What persists for now:  a hosted MCP Worker as the service plane (ST-MCP today), its SeatGate namespace, and MCP Events delivery into Jet's subscription.
 
 ### Rules this design follows
 
-1. **No dependency on retiring surfaces.**  The bridge uses none of these:  `daemon.py`, `listener.toml` or `[seat.JET]`, `agent-sync-wake/1`, `/internal/wake/<SEAT>`, `WAKE_HMAC_KEY_JET`, `JET_ROUTINE_KEY`, the `listener_*` or `eavesdropper_*` tools, the `/listener/v1/` read API, or the Operator's wake ledger and budgets.  Renaming or retiring any of them does not touch the bridge, and the bridge does not block the Operator.
-2. **One module behind one interface.**  Everything WhatsApp-related in the Worker lives in one directory (working path `scripts/agent-sync-mcp/src/wa/`) and is registered through one call that adds an event definition, three tool specs, the internal routes and its storage tables.  Existing files change only at the registration points (the event registry, route dispatch, policy classification and the tool list) plus the subscription grouping in `src/seat-state.js`, the new `redactSecret` in `src/contract.js` and the owner pin in `src/config.js` and `src/access.js`, as section 5 lists, and tests cover each one.  If ST-MCP is renamed, split or replaced, the module moves as a unit.  If it moves to a different Worker, the bridge changes only its configured base URL and key.
+1. **No dependency on retiring surfaces.**  The bridge uses none of these:  `daemon.py`, `listener.toml` or `[seat.JET]`, `[retired identifier]`, `/internal/wake/<SEAT>`, `WAKE_HMAC_KEY_JET`, `JET_ROUTINE_KEY`, the `listener_*` or `eavesdropper_*` tools, the `/listener/v1/` read API, or the Operator's wake ledger and budgets.  Renaming or retiring any of them does not touch the bridge, and the bridge does not block the Operator.
+2. **One module behind one interface.**  Everything WhatsApp-related in the Worker lives in one directory (working path `scripts/simple-tools-mcp/src/wa/`) and is registered through one call that adds an event definition, three tool specs, the internal routes and its storage tables.  Existing files change only at the registration points (the event registry, route dispatch, policy classification and the tool list) plus the subscription grouping in `src/seat-state.js`, the new `redactSecret` in `src/contract.js` and the owner pin in `src/config.js` and `src/access.js`, as section 5 lists, and tests cover each one.  If ST-MCP is renamed, split or replaced, the module moves as a unit.  If it moves to a different Worker, the bridge changes only its configured base URL and key.
 3. **Storage that can move.**  The tables carry a `wa_` prefix.  A Durable Object namespace cannot be renamed without orphaning its state (`wrangler.jsonc:15-24`), so a move is planned as a drain:  SEND off, let bodies be acknowledged or expire, then export the binding and the ledger hashes to the successor.  Short body retention keeps that move cheap.  Whether the tables sit in SeatGate or in their own Durable Object class is part of the placement choice below.
 4. **No host in code.**  The bridge reads its base URL from configuration, today `https://agents.simplewithus.com`.
 5. **Neutral working names.**  Nothing is named after the retired product name, the listener or the Operator.  The names in this document are placeholders until Jay and Jet choose:  `wa-bridge` (the poller), `wa-bridge/1` (the ingest contract), `/internal/wa-*/JET` (the routes), `WA_BRIDGE_HMAC_KEY_JET` (the signing key), `whatsapp.message` (the event), `whatsapp_read`, `whatsapp_reply` and `whatsapp_send_status` (the tools), and `WHATSAPP_BRIDGE_*` (the knobs).
@@ -482,7 +484,7 @@ The service is Meta's own WhatsApp Agent Platform, which carries the lowest ban 
    - Jay decides whether the failing units already on the host are cleared first.
 2. **Egress from the bridge host:**  `api.whatsapp.com:443`, the Worker host (`agents.simplewithus.com`), Infisical and Sentry ingest.  No inbound port, no DNS record, no tunnel, and no media host.
 3. **Infisical:**  the bridge identity and the signing key in `/jet`.  Jay rotates the WhatsApp key in WhatsApp (Settings > Agents > the agent > API key) and saves the new value.
-4. **Cloudflare:**  a hand deploy per `scripts/agent-sync-mcp/DEPLOY.md` (merging does not deploy), `wrangler secret put` for the signing key, the new tables, and the KV namespace if crypto-shredding is chosen.  A cron trigger only if Jay wants re-rings while the bridge is down (section 8).
+4. **Cloudflare:**  a hand deploy per `scripts/simple-tools-mcp/DEPLOY.md` (merging does not deploy), `wrangler secret put` for the signing key, the new tables, and the KV namespace if crypto-shredding is chosen.  A cron trigger only if Jay wants re-rings while the bridge is down (section 8).
 5. **OAuth:**  either a scope only JET can hold, which needs one re-consent best bundled with the #849 reconnect, or a JET-only allowlist in `config.js` with no re-consent.
 6. **Knobs:**  `WHATSAPP_BRIDGE_ENABLED=false`, `WHATSAPP_BRIDGE_WAKE_ENABLED=false`, `WHATSAPP_BRIDGE_SEND_ENABLED=false`, `WHATSAPP_BRIDGE_WAKES_PER_HOUR=20` and `WHATSAPP_BRIDGE_WAKES_PER_DAY=100`, with registry entries and a regenerated `INFISICAL.md`.  The Worker gets its own admin switches.
 7. **Sentry:**  one Crons monitor for the bridge.

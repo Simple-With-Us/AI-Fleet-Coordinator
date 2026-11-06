@@ -3,7 +3,7 @@
 The relay mirrors a Zulip conversation onto the Linear issue it is about.  It is one way only:
 nothing in the relay ever posts to Zulip, and Linear stays the record.
 
-Implementation: `scripts/agent_sync/linear_relay.py`, tests: `scripts/agent_sync/tests/test_linear_relay.py`.
+Implementation: `scripts/simple_tools/linear_relay.py`, tests: `scripts/simple_tools/tests/test_linear_relay.py`.
 Owner decisions are Jay's, from Oct 21 and Oct 23, 2026.
 
 ## What it does
@@ -70,7 +70,7 @@ a comment, never as a substring, so the marker of message 100 cannot match the c
 
 Copied Zulip text is untrusted.  Every field (the topic, the message, the sender's name, the stream
 name) is scanned for credential-shaped text before it is stored, logged or relayed: the fleet's own
-scanner (`scripts/agent_sync/secretscan.py`, which knows the Linear, Sentry, Infisical, Cloudflare
+scanner (`scripts/simple_tools/secretscan.py`, which knows the Linear, Sentry, Infisical, Cloudflare
 and other service prefixes, and Zulip-shaped API keys of 32 mixed-case letters and digits) and the
 relay's wider rows (long hex and base64 runs, and a keyword such as `password` or `token` followed
 by `:` or `=` and a value).  The Zulip-shaped row also withholds an opaque 32-character id, a cost
@@ -111,8 +111,8 @@ both variables.
 
 Commands:
 
-    python3 -m agent_sync.linear_relay run        # the long-running loop
-    python3 -m agent_sync.linear_relay check      # credentials, public streams, Linear auth; no writes
+    python3 -m simple_tools.linear_relay run        # the long-running loop
+    python3 -m simple_tools.linear_relay check      # credentials, public streams, Linear auth; no writes
 
 `check` proves the Zulip bot is a member and not an admin, that the public-stream set loads, and
 that the Linear token works.  A set that cannot load fails `check`, because `run` relays nothing
@@ -243,12 +243,12 @@ The relay writes nothing to Linear and holds no credential until Jay approves ea
    the file the live run will use.
 
    The image is built for the daemon, so the relay service changes three things.  The image's
-   Infisical loader (`scripts/agent_sync/server/infisical_env.py`) copies only the names on its
+   Infisical loader (`scripts/simple_tools/server/infisical_env.py`) copies only the names on its
    allow-list, and the relay's three are not on it, so the service gets them as its own runtime
    environment; adding them to the shared loader would hand the relay's keys to the daemon as well.
    The image's entrypoint always runs `simple-chat` and its command is `daemon run --wait-lock`, so
    the service replaces both: the entrypoint becomes `python3` and the command
-   `-m agent_sync.linear_relay run`, with `PYTHONPATH` set to the image's `scripts` folder.  And the
+   `-m simple_tools.linear_relay run`, with `PYTHONPATH` set to the image's `scripts` folder.  And the
    image's healthcheck watches the daemon's status file, which the relay never writes, so the relay
    service must have that healthcheck disabled, which the compose file described below does;
    restart always still brings the relay back if it exits.
@@ -271,11 +271,11 @@ Cloudflare Worker is involved.
 
 ## Why there is no RELAY row in the seat partition
 
-The handoff suggested a `RELAY = "server"` row in `docs/protocols/agent-sync-partition.toml`.  That
+The handoff suggested a `RELAY = "server"` row in `docs/protocols/simple-tools-partition.toml`.  That
 row is deliberately absent.  `config.py`'s `fleet_tags` treats every seat named in the partition as
 an eligible sender, so a RELAY row would make the relay a wake target and a tag it could wake, and
 the relay holds no agent.  The relay is a service, not a seat, so it takes no row.  Echo's reviewer
-confirmed this twice from the source, and `scripts/agent_sync/config.py` was read again for this
+confirmed this twice from the source, and `scripts/simple_tools/config.py` was read again for this
 build.
 
 ## Live verification
