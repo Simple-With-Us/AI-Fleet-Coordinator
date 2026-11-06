@@ -355,7 +355,9 @@ enum WakeSettingState: String, Equatable {
 
     var label: String {
         switch self {
-        case .match: return "PASS"
+        // Not "PASS":  that word means every check a rule asks for was proven, and this
+        // state means one thing only, that the eavesdropper is using the value the file holds.
+        case .match: return "MATCHES"
         case .drift: return "DRIFT"
         case .unproven: return "UNPROVEN"
         case .notOwned: return "NOT OWNED"

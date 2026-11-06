@@ -23,7 +23,15 @@ struct OverviewView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                verdictRow
+                VStack(alignment: .leading, spacing: 4) {
+                    verdictRow
+                    if let meaning = verdictMeaning {
+                        Text(meaning)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 12)], spacing: 12) {
                     countCard(
                         title: "Red Cells",
@@ -114,6 +122,15 @@ struct OverviewView: View {
         case .loaded: return store.summary?.overallVerdict ?? "UNKNOWN"
         case .failed: return "UNKNOWN"
         }
+    }
+
+    /// What the verdict above means,  said once so a PASS here is the grid's PASS.
+    ///
+    /// Only a verdict the engine returned has a meaning to state:  an idle, running or
+    /// failed run has none.
+    private var verdictMeaning: String? {
+        guard store.phase == .loaded, let verdict = store.summary?.overallVerdict else { return nil }
+        return "\(PassMeaning.verdict(verdict))\u{00A0} \(PassMeaning.everywhere)"
     }
 
     private var verdictColor: Color {
