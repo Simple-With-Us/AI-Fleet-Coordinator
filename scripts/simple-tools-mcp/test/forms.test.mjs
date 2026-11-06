@@ -1,6 +1,6 @@
 // The zod form schemas need `zod` installed.  ci.yml runs the unit suites
 // without npm install, so these cases skip there and run in the
-// agent-sync-mcp.yml workflow (npm ci --ignore-scripts, then npm test).
+// simple-tools-mcp.yml workflow (npm ci --ignore-scripts, then npm test).
 import test from "node:test";
 import assert from "node:assert/strict";
 

@@ -69,7 +69,7 @@ try {
     const response = await mf.dispatchFetch(origin + "/internal/gr-assert-verify", {
       method: "POST", headers: {
         Host: "mcp-fixture.example", "Content-Type": "application/json",
-        "X-Agent-Sync-Signature": await wakeSignature(channelKey, new TextEncoder().encode(body)),
+        "X-Simple-Tools-Signature": await wakeSignature(channelKey, new TextEncoder().encode(body)),
       }, body,
     });
     assert.equal(response.status, 200, await response.clone().text());
@@ -111,7 +111,7 @@ try {
     const body = JSON.stringify({ contract: "gr-assert-verify/1", token, action: "wf_repo_get", body_sha256: bodyHash, sent_at: Math.floor(Date.now() / 1000) });
     const response = await mf.dispatchFetch(origin + "/internal/gr-assert-verify", {
       method: "POST",
-      headers: { Host: "mcp-fixture.example", "Content-Type": "application/json", "X-Agent-Sync-Signature": await wakeSignature(channelKey, new TextEncoder().encode(body)) },
+      headers: { Host: "mcp-fixture.example", "Content-Type": "application/json", "X-Simple-Tools-Signature": await wakeSignature(channelKey, new TextEncoder().encode(body)) },
       body,
     });
     assert.equal(response.status, 200, await response.clone().text());
@@ -151,7 +151,7 @@ try {
     const body = JSON.stringify({ contract: "gr-assert-verify/1", token, action: "wf_repo_get", body_sha256: bodyHash, sent_at: Math.floor(Date.now() / 1000) });
     const response = await mf.dispatchFetch(origin + "/internal/gr-assert-verify", {
       method: "POST",
-      headers: { Host: "mcp-fixture.example", "Content-Type": "application/json", "X-Agent-Sync-Signature": await wakeSignature(channelKey, new TextEncoder().encode(body)) },
+      headers: { Host: "mcp-fixture.example", "Content-Type": "application/json", "X-Simple-Tools-Signature": await wakeSignature(channelKey, new TextEncoder().encode(body)) },
       body,
     });
     if (response.status === 200) assert.equal((await response.json()).ok, true);
@@ -180,7 +180,7 @@ for (const [overrides, cached] of [[{}, false], [{ GR_VERIFY_CACHE_MS: "60000", 
       const body = JSON.stringify({ contract: "gr-bearer-verify/1", identity: "CODEX", hash, sent_at: Math.floor(Date.now() / 1000) });
       const response = await mf.dispatchFetch(origin + "/internal/gr-bearer-verify", {
         method: "POST",
-        headers: { Host: "mcp-fixture.example", "Content-Type": "application/json", "X-Agent-Sync-Signature": await wakeSignature(channelKey, new TextEncoder().encode(body)) },
+        headers: { Host: "mcp-fixture.example", "Content-Type": "application/json", "X-Simple-Tools-Signature": await wakeSignature(channelKey, new TextEncoder().encode(body)) },
         body,
       });
       assert.equal(response.status, 200, await response.clone().text());

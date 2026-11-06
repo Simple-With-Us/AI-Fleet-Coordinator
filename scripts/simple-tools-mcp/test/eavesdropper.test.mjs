@@ -1,5 +1,5 @@
 // AFC-330 part B:  the hosted eavesdropper_* tools.  They read the server eavesdropper's signed read API
-// (scripts/agent_sync/listener_api.py) with the seat's wake key, fence what comes back, keep
+// (scripts/simple_tools/listener_api.py) with the seat's wake key, fence what comes back, keep
 // structuredContent to integers, and answer not_configured when the API is not set up.
 // No dependencies:  CI runs this with plain `node --test`.
 
@@ -34,8 +34,8 @@ function fakeListener({ views = {}, status = null, seat = "GROK-WEB", key = KEY,
     const url = new URL(String(input));
     requests.push({ url: url.toString(), init });
     if (status) return new Response(JSON.stringify({ error: "no", leaked: key }), { status });
-    const ts = init.headers["X-Agent-Sync-Timestamp"];
-    const sig = init.headers["X-Agent-Sync-Signature"];
+    const ts = init.headers["X-Simple-Tools-Timestamp"];
+    const sig = init.headers["X-Simple-Tools-Signature"];
     const expected = await hmacHex(key, listenerSigningString(url.pathname, url.search.slice(1), ts));
     if (sig !== expected || Math.abs(now() / 1000 - Number(ts)) > 300) return new Response("{}", { status: 401 });
     const record = url.pathname.split("/").pop();
@@ -75,7 +75,7 @@ function ok(result, tool) {
 }
 
 test("the hosted list carries the five read-only eavesdropper tools from eavesdropper-tools.json, never eavesdropper_ack", () => {
-  const file = JSON.parse(readFileSync(path.join(ROOT, "../agent_sync/mcp/eavesdropper-tools.json"), "utf8"));
+  const file = JSON.parse(readFileSync(path.join(ROOT, "../simple_tools/mcp/eavesdropper-tools.json"), "utf8"));
   assert.deepEqual(EAVESDROPPER_TOOLS, file.tools.filter((t) => t.name !== "eavesdropper_ack"));
   assert.equal(HOSTED_TOOLS_BY_NAME.eavesdropper_ack, undefined);
   for (const tool of EAVESDROPPER_TOOLS) {

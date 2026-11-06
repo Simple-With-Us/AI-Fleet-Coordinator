@@ -3,7 +3,7 @@
 // flow's outbound service.  It implements only what the seven tools call:
 // users/me, users, users/me/subscriptions, users/me/<stream>/topics, messages
 // (GET with narrow and anchor, POST), messages/<id> and
-// messages/<id>/reactions.  Streams:  agent-sync, sandbox and design are
+// messages/<id>/reactions.  Streams:  simple-tools, sandbox and design are
 // public;  other (999001) is private, and every bot is subscribed to all four,
 // so "other" stands for a private stream a bot is in.  Direct messages
 // are real-Zulip shaped:  `display_recipient` lists every person in the
@@ -243,14 +243,14 @@ export class FakeZulip {
       }
       const to = Array.isArray(ids) ? ids.map((id) => this.users.find((u) => u.user_id === id && u.is_active)) : [];
       if (!to.length || to.some((u) => !u)) return this.error(400, "BAD_REQUEST");
-      const msg = this.addDm(caller, to, params.content, { client: "agent-sync-mcp" });
+      const msg = this.addDm(caller, to, params.content, { client: "simple-tools-mcp" });
       return this.ok({ id: msg.id });
     }
     if (method === "POST" && path === "messages") {
       const sid = Number(params.to);
       const name = this.streams.find((s) => s.stream_id === sid)?.name;
       if (params.type !== "stream" || !name) return this.error(400, "STREAM_DOES_NOT_EXIST");
-      const msg = this.addMessage(caller, name, params.topic, params.content, { client: "agent-sync-mcp" });
+      const msg = this.addMessage(caller, name, params.topic, params.content, { client: "simple-tools-mcp" });
       return this.ok({ id: msg.id });
     }
     m = /^messages\/(\d+)\/reactions$/.exec(path);

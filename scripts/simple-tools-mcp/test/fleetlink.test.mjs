@@ -319,10 +319,10 @@ test("the FleetLink tools mirror FleetLink's own served list (fleetlink-tools.js
   }
 });
 
-test("scripts/agent_sync/mcp/fleetlink-tools.json (the stdio server's fleetlink_* specs) equals FLEETLINK_TOOLS", async () => {
+test("scripts/simple_tools/mcp/fleetlink-tools.json (the stdio server's fleetlink_* specs) equals FLEETLINK_TOOLS", async () => {
   const { readFileSync } = await import("node:fs");
   const { fleetlinkToolsText, FLEETLINK_TOOLS_JSON } = await import("../scripts/export-fleetlink-tools.mjs");
-  assert.equal(readFileSync(FLEETLINK_TOOLS_JSON, "utf8"), fleetlinkToolsText(), "fleetlink-tools.json is stale.  Run:  cd scripts/agent-sync-mcp && node scripts/export-fleetlink-tools.mjs");
+  assert.equal(readFileSync(FLEETLINK_TOOLS_JSON, "utf8"), fleetlinkToolsText(), "fleetlink-tools.json is stale.  Run:  cd scripts/simple-tools-mcp && node scripts/export-fleetlink-tools.mjs");
 });
 
 test("one malformed share field is dropped on its own, never the whole share summary", async () => {
