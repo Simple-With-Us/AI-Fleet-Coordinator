@@ -2210,6 +2210,9 @@ def openrouter_request_body(model: str, system: str, user: str, schema: str) -> 
         "stream": False,
     }
     if model.startswith("@preset/"):
+        # Request tools UNION with preset tools (documented OpenRouter preset semantics), so this
+        # cannot disarm a tooled preset; enforcement is the preset's own zero-tool configuration
+        # plus the authenticated readback before activation.  This only keeps the request tool-free.
         body["tools"] = []
     return body
 
