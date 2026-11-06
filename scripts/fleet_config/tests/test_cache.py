@@ -184,9 +184,8 @@ class CacheTests(FleetTestCase):
     def test_a_guard_scope_that_is_not_a_list_of_text_is_refused_not_coerced(self):
         """A string would become one scope per character,  and a number its own scope."""
         for bad in ("shell", 7, [1], ["shell", None], {"shell": True}):
-            with self.subTest(guards=bad):
-                with self.assertRaises(ValueError):
-                    cache._expected_from_dict({"description": "d", "guards": bad})
+            with self.subTest(guards=bad), self.assertRaises(ValueError):
+                cache._expected_from_dict({"description": "d", "guards": bad})
 
     def test_a_copy_with_malformed_guard_scopes_is_refused(self):
         cache.save_report(a_report())
