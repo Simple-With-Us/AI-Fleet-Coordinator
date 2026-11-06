@@ -540,8 +540,8 @@ enum MiniMaxReader {
         }
     }
 
-    /// The hook manifest as a flat list of registrations, or nil when it is not JSON in
-    /// the hook shape.
+    /// The hook manifest as a flat list of registrations, or nil when it is not JSON or
+    /// its root is not an object.
     ///
     /// The shape is `hooks` keyed by event, each holding matcher groups, each holding
     /// the commands themselves, so the panel can say what runs, for what, and through
@@ -550,9 +550,11 @@ enum MiniMaxReader {
         guard
             let data = try? Data(contentsOf: url),
             let object = try? JSONSerialization.jsonObject(with: data),
-            let root = object as? [String: Any],
-            let events = root["hooks"] as? [String: Any]
+            let root = object as? [String: Any]
         else { return nil }
+        // JSON that is an object with no `hooks` key registers no hooks:  that is empty,
+        // not unreadable.
+        let events = root["hooks"] as? [String: Any] ?? [:]
         let enabled = (root["enabled"] as? Bool) ?? true
         var hooks: [RawHook] = []
         for event in events.keys.sorted() {
@@ -951,7 +953,7 @@ enum MiniMaxReader {
     ) -> (state: MiniMaxSurface.FileState, agents: [MiniMaxSurface.Agent]) {
         let listing = listFolder(
             root.appendingPathComponent("agents", isDirectory: true),
-            keys: [.contentModificationDateKey]
+            keys: [.isDirectoryKey]
         )
         if listing.state == .unreadable {
             problems.append("~/.minimax/agents is there but could not be listed, so no agent is shown.")
@@ -960,6 +962,8 @@ enum MiniMaxReader {
         for entry in listing.entries.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
             let name = entry.lastPathComponent
             guard name.hasPrefix(".") == false else { continue }
+            // A stray file (a README, say) is not an agent folder and is not a read problem.
+            guard (try? entry.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true else { continue }
             var files: [String] = []
             var newest: Date?
             // The definition's own files are the ones at the top of the directory.  The
@@ -1068,7 +1072,7 @@ enum MiniMaxCopy {
     /// "protecting" are different states.
     static func proofText(_ proof: MiniMaxSurface.HookProof?, now: Date = Date()) -> String {
         guard let proof else {
-            return "Not proved:  the engine has no rule for this hook."
+            return "Not proved: the engine has no rule for this hook."
         }
         let checked: String
         if let checkedAt = proof.checkedAt {
@@ -1129,11 +1133,22 @@ enum MiniMaxCopy {
         case .running:
             return ApplyCopy.join("The engine is checking now.", "Its answers appear when it finishes.")
         case .failed(let why):
-            return "The engine run failed:  \(ApplyCopy.normalize(why))"
+            return "The engine run failed: \(ApplyCopy.normalize(why))"
         case .loaded:
             guard let generatedAt else { return "The engine answered, and its answer carries no time." }
             return "The engine's answers are from its run at \(FleetTime.clock(generatedAt))."
         }
+    }
+
+    /// What the engine's-answers section says when it has no cell for the seat.
+    ///
+    /// The store clears its cells while the engine is idle, running or failed, so "no
+    /// row for the seat" is only true once the engine has answered.
+    static func verdictsEmptyText(phase: FleetStore.Phase, seat: String) -> String {
+        if phase == .loaded {
+            return "The engine has no row for seat \(seat), so there is no answer to show."
+        }
+        return "The engine has not answered yet, so there is no answer to show."
     }
 
     /// Where the panel's own reading came from, and how old it is.
@@ -1214,12 +1229,14 @@ enum MiniMaxAttention {
     ) -> [String] {
         var items: [String] = []
         if !surface.installFound {
-            items.append("MiniMax is not installed on the Mac:  there is no ~/.minimax folder.")
+            items.append("MiniMax is not installed on the Mac: there is no ~/.minimax folder.")
         }
-        if engine.isEmpty {
-            items.append("The engine has no row for seat \(seat), so nothing on this panel is proved.")
-        } else if !engineAnswered {
+        // The store clears its cells while the engine is idle, running or failed, so an
+        // empty list only means "no row for the seat" once the engine has answered.
+        if !engineAnswered {
             items.append("The engine has not answered, so nothing on this panel is proved.")
+        } else if engine.isEmpty {
+            items.append("The engine has no row for seat \(seat), so nothing on this panel is proved.")
         } else {
             let failingStates: [CellState] = [.missing, .drift, .unproven]
             let failing = engine.filter { failingStates.contains($0.state) }
@@ -1251,7 +1268,7 @@ enum MiniMaxAttention {
             } else {
                 // No proof is "installed" without "protecting", never fine.
                 items.append(
-                    "The \(hook.event) hook \(hook.hookId) is not proved:  the engine has no rule for it."
+                    "The \(hook.event) hook \(hook.hookId) is not proved: the engine has no rule for it."
                 )
             }
             if !hook.enabled {

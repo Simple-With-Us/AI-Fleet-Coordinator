@@ -263,7 +263,7 @@ final class MiniMaxSurfaceTests: XCTestCase {
         XCTAssertTrue(MiniMaxCopy.needsLook(surface.hooks.first?.proof))
         XCTAssertEqual(
             MiniMaxCopy.proofText(nil),
-            "Not proved:  the engine has no rule for this hook."
+            "Not proved: the engine has no rule for this hook."
         )
     }
 
@@ -551,7 +551,7 @@ final class MiniMaxSurfaceTests: XCTestCase {
         XCTAssertEqual(surface.settingsFile, .absent)
         XCTAssertEqual(surface.problems, [])
         let items = MiniMaxAttention.items(surface: surface, seat: "MM", engine: allPassing(), engineAnswered: true)
-        XCTAssertEqual(items.first, "MiniMax is not installed on the Mac:  there is no ~/.minimax folder.")
+        XCTAssertEqual(items.first, "MiniMax is not installed on the Mac: there is no ~/.minimax folder.")
     }
 
     /// An unreadable plugins folder is a problem the panel shows, and the empty notes
@@ -760,7 +760,7 @@ final class MiniMaxSurfaceTests: XCTestCase {
         let surface = MiniMaxReader.read(home: home, rosterSeats: ["MM"], proofs: [])
         let items = MiniMaxAttention.items(surface: surface, seat: "MM", engine: allPassing(), engineAnswered: true)
         XCTAssertTrue(
-            items.contains("The PreToolUse hook fleet-guard-hook is not proved:  the engine has no rule for it.")
+            items.contains("The PreToolUse hook fleet-guard-hook is not proved: the engine has no rule for it.")
         )
     }
 
@@ -770,5 +770,79 @@ final class MiniMaxSurfaceTests: XCTestCase {
         XCTAssertEqual(MiniMaxReader.commandId("MODE=strict /opt/bin/guard"), "guard")
         XCTAssertEqual(MiniMaxReader.commandId("A=1 B=2 python3 /opt/x/hook.py"), "hook")
         XCTAssertEqual(MiniMaxReader.commandId("MODE=strict"), "")
+    }
+
+    /// An engine that has not answered is never reported as having no row for the seat:
+    /// the store clears its cells while idle, running or failed.
+    func test_an_engine_that_has_not_answered_is_not_a_missing_row() throws {
+        let home = try makeHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let surface = MiniMaxReader.read(home: home, rosterSeats: ["MM"])
+        let items = MiniMaxAttention.items(surface: surface, seat: "MM", engine: [], engineAnswered: false)
+        XCTAssertTrue(items.contains("The engine has not answered, so nothing on this panel is proved."))
+        XCTAssertFalse(items.contains { $0.contains("no row for seat") })
+
+        XCTAssertEqual(
+            MiniMaxCopy.verdictsEmptyText(phase: .running, seat: "MM"),
+            "The engine has not answered yet, so there is no answer to show."
+        )
+        XCTAssertEqual(
+            MiniMaxCopy.verdictsEmptyText(phase: .failed("down"), seat: "MM"),
+            "The engine has not answered yet, so there is no answer to show."
+        )
+        XCTAssertEqual(
+            MiniMaxCopy.verdictsEmptyText(phase: .loaded, seat: "MM"),
+            "The engine has no row for seat MM, so there is no answer to show."
+        )
+    }
+
+    /// Visible strings keep one plain space after a colon or a semicolon.
+    func test_copy_has_one_space_after_a_colon() throws {
+        XCTAssertFalse(MiniMaxCopy.proofText(nil).contains(":  "))
+        XCTAssertFalse(MiniMaxCopy.engineLine(phase: .failed("down"), generatedAt: nil).contains(":  "))
+        let empty = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("muster-mm-empty-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: empty, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: empty) }
+        let surface = MiniMaxReader.read(home: empty, rosterSeats: ["MM"])
+        let items = MiniMaxAttention.items(surface: surface, seat: "MM", engine: [], engineAnswered: true)
+        XCTAssertTrue(items.contains("MiniMax is not installed on the Mac: there is no ~/.minimax folder."))
+    }
+
+    /// A stray file in the agents folder is not an agent and not a read problem.
+    func test_a_stray_file_in_the_agents_folder_is_not_an_agent() throws {
+        let home = try makeHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        try "notes\n".write(
+            to: root(home).appendingPathComponent("agents/README.md"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let surface = MiniMaxReader.read(home: home, rosterSeats: ["MM"])
+        XCTAssertFalse(surface.agents.contains { $0.name == "README.md" })
+        XCTAssertFalse(surface.problems.contains { $0.contains("README.md") })
+        XCTAssertTrue(surface.agents.contains { $0.name == "worker" })
+    }
+
+    /// Valid JSON with no `hooks` object registers no hooks:  it is empty, not unreadable.
+    func test_a_manifest_with_no_hooks_object_is_empty_not_unreadable() throws {
+        let home = try makeHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        try "{\"enabled\": false}".write(
+            to: root(home).appendingPathComponent("hooks.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let surface = MiniMaxReader.read(home: home, rosterSeats: ["MM"])
+        XCTAssertEqual(surface.userHooksFile, .read)
+        XCTAssertFalse(surface.problems.contains { $0.contains("hooks.json") })
+
+        try "[1, 2]".write(
+            to: root(home).appendingPathComponent("hooks.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let broken = MiniMaxReader.read(home: home, rosterSeats: ["MM"])
+        XCTAssertEqual(broken.userHooksFile, .unreadable)
     }
 }

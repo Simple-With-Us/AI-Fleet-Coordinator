@@ -163,7 +163,7 @@ struct MiniMaxDetailView: View {
         SectionPanel(title: "The Engine's Answers", subtitle: "Seat \(seat) on the Mac, one badge per config kind") {
             let cells = ConfigKind.columnOrder.compactMap { store.cell(seat: seat, kind: $0) }
             if cells.isEmpty {
-                EmptyNote(text: "The engine has no row for seat \(seat), so there is no answer to show.")
+                EmptyNote(text: MiniMaxCopy.verdictsEmptyText(phase: store.phase, seat: seat))
             } else {
                 HStack(spacing: 10) {
                     ForEach(cells) { cell in
@@ -238,7 +238,7 @@ struct MiniMaxDetailView: View {
     private func settings(_ surface: MiniMaxSurface) -> some View {
         let summary = surface.settings.isEmpty
             ? MiniMaxCopy.settingsEmptyText(surface.settingsFile)
-            : "\(surface.settings.count) allowed keys shown;  the credential in the file is never read onto the screen"
+            : "\(surface.settings.count) allowed keys shown; the credential in the file is never read onto the screen"
         return FoldedPanel(title: "config.yaml", summary: summary, expanded: $showSettings) {
             if surface.settings.isEmpty {
                 EmptyNote(text: MiniMaxCopy.settingsEmptyText(surface.settingsFile))
@@ -346,7 +346,7 @@ private struct HookRow: View {
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
             if !hook.enabled {
-                ProofLine(label: "Turned on", value: "no:  the file sets enabled to false")
+                ProofLine(label: "Turned on", value: "no: the file sets enabled to false")
             }
             ProofLine(label: "Hook id", value: hook.hookId.isEmpty ? "none" : hook.hookId)
             ProofLine(label: "Script", value: MiniMaxCopy.scriptText(hook))
