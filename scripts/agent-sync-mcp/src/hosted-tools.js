@@ -56,7 +56,12 @@ import {
   RECALL_WRITE_TOOLS,
   RECALL_SECRETS,
   CONTRIBUTE_MIN,
+  CONTRIBUTE_MAX,
+  REASON_MIN,
+  REASON_MAX,
+  DOC_ID_PATTERN,
   mapRecallError,
+  boundedRecallInput,
   hitItem,
   recallClean,
   recallEnvelope,
@@ -237,6 +242,62 @@ export function hostedInstructions(seat) {
 }
 export const RECALL_SCRUBBED_LIMIT = 20;
 export const RECALL_STATS_KEYS_LIMIT = 50;
+
+const RECALL_DOC_ID = z.string().regex(new RegExp(DOC_ID_PATTERN));
+const RECALL_CORRECT_REQUEST = z
+  .object({
+    doc_id: RECALL_DOC_ID,
+    text: z.string().min(CONTRIBUTE_MIN).max(CONTRIBUTE_MAX),
+    reason: z.string().min(REASON_MIN).max(REASON_MAX),
+    seat: z.string().min(1).max(32),
+    title: z.string().max(200).optional(),
+    url: z.string().max(500).regex(/^https?:\/\/\S+$/).optional(),
+    expected_revision: z.number().int().min(1).optional(),
+  })
+  .strict();
+const RECALL_RETRACT_REQUEST = z
+  .object({
+    doc_id: RECALL_DOC_ID,
+    reason: z.string().min(REASON_MIN).max(REASON_MAX),
+    seat: z.string().min(1).max(32),
+    expected_revision: z.number().int().min(1).optional(),
+  })
+  .strict();
+const RECALL_CORRECT_RESPONSE = z
+  .object({
+    ok: z.literal(true),
+    id: z.string(),
+    doc_id: RECALL_DOC_ID,
+    seat: z.string(),
+    status: z.string(),
+    revision: z.number().int().nonnegative(),
+    corrected_at: z.number().int().nonnegative().default(0),
+    corrected_by: z.string().default(""),
+    previous_content_hash: z.string(),
+    content_hash: z.string(),
+    scrubbed: z.array(z.string()),
+  })
+  .strict();
+const RECALL_RETRACT_RESPONSE = z
+  .object({
+    ok: z.literal(true),
+    id: z.string(),
+    doc_id: RECALL_DOC_ID,
+    seat: z.string(),
+    status: z.string(),
+    revision: z.number().int().nonnegative(),
+    retracted: z.boolean(),
+    retracted_at: z.number().int().nonnegative(),
+    retracted_by: z.string(),
+    retraction_reason: z.string(),
+  })
+  .strict();
+
+function parseRecallMutationResponse(schema, data, name) {
+  const parsed = schema.safeParse(data);
+  if (!parsed.success) throw new ToolError("invalid_response", `${name} returned an invalid response`);
+  return parsed.data;
+}
 
 // Linear, when this seat has it.  The seat is named by the grant, never by an
 // argument, so this text tells the seat which app it acts as.
@@ -478,13 +539,16 @@ export class HostedTools {
     try {
       let args = rawArgs === undefined || rawArgs === null ? {} : rawArgs;
       if (typeof args !== "object" || Array.isArray(args)) throw new ToolError("invalid_argument", "arguments must be an object");
-      if (name === "recall_contribute" && Object.hasOwn(args, "seat")) {
-        // The contributing seat is always the grant's.  A client-supplied seat
+      if (RECALL_WRITE_TOOLS.has(name) && Object.hasOwn(args, "seat")) {
+        // The acting recall seat is always the grant's.  A client-supplied seat
         // (the recall service's own tools ask for one) is dropped, never used.
         args = { ...args };
         delete args.seat;
       }
       requestArgs = args;
+      if ((RECALL_READ_TOOLS.has(publicName) || RECALL_WRITE_TOOLS.has(publicName)) && !boundedRecallInput(args)) {
+        throw new ToolError("invalid_argument", "Recall arguments exceed structural limits.");
+      }
       if (publicName.startsWith("gr_wf_") && !boundedWorkflowInput(args, {maxBytes:workflowInputLimit(publicName.slice(3)),maxString:workflowInputLimit(publicName.slice(3))})) throw new ToolError("invalid_argument", "Workflow input exceeds structural limits.");
       const problem = schemaProblem(spec.inputSchema, args);
       if (problem) throw new ToolError("invalid_argument", problem);
@@ -1488,11 +1552,11 @@ export class HostedTools {
   async tool_gr_resolve_thread(args) { return this.grCall("resolve_thread", args); }
 
   /** One recall call, its failure as a ToolError (never a response body but a 400's own message). */
-  async recallCall(fn, { write = false } = {}) {
+  async recallCall(fn, { write = false, retrySafe = false } = {}) {
     try {
       return await fn();
     } catch (error) {
-      throw mapRecallError(error, { write, known: this.known });
+      throw mapRecallError(error, { write, retrySafe, known: this.known });
     }
   }
 
@@ -1504,6 +1568,7 @@ export class HostedTools {
     const body = { query, limit: args.limit };
     if (args.app) body.app = args.app;
     if (args.category) body.category = args.category;
+    if (args.include_retracted) body.include_retracted = true;
     const data = await this.recallCall(() => recall.search(body));
     const hits = (Array.isArray(data.hits) ? data.hits : []).slice(0, args.limit).map(hitItem);
     const mode = recallClean(typeof data.mode === "string" ? data.mode : "", 40)[0];
@@ -1570,7 +1635,7 @@ export class HostedTools {
     if (url) body.url = url;
     let data;
     try {
-      data = await this.recallCall(() => recall.contribute(body), { write: true });
+      data = await this.recallCall(() => recall.contribute(body), { write: true, retrySafe: true });
     } catch (error) {
       await this.safely(() => this.gate.idemDrop({ key }));
       throw error;
@@ -1592,6 +1657,157 @@ export class HostedTools {
       seat: this.seat,
       status: String(row.status ?? ""),
       scrubbed: Array.isArray(row.scrubbed) ? row.scrubbed.map(String) : [],
+      duplicate,
+    };
+    return okResult(JSON.stringify(result), result);
+  }
+
+  async recallMutationKey(name, args, fields) {
+    return args.idempotency_key
+      ? `rk:${name}:${args.idempotency_key}`
+      : `ri:${await sha256Hex(stableJson([name, this.seat, ...fields]))}`;
+  }
+
+  async beginRecallMutation(name, args, audit, fields) {
+    const key = await this.recallMutationKey(name, args, fields);
+    audit.idem_ref = (await sha256Hex(key)).slice(0, 12);
+    const prior = await this.gate.idemPeek({ key });
+    if (prior?.state === "unknown") throw new ToolError("outcome_unknown", "an earlier identical mutation was cut off, so the result is unknown.  Search recall before retrying.", { retryable: false });
+    if (prior) return { key, prior };
+    const begun = await this.gate.idemBegin({ key, ttlMs: args.idempotency_key ? IDEM_EXPLICIT_TTL_MS : RECALL_IDEM_TTL_MS, fields: { kind: "recall" } });
+    if (begun.verdict === "busy") throw new ToolError("rate_limited", `the same ${name} operation is already in flight in another chat of this seat`, { retryable: true, retryAfterS: 30 });
+    if (begun.verdict === "reconcile") throw new ToolError("outcome_unknown", "an earlier identical mutation was cut off, so the result is unknown.  Search recall before retrying.", { retryable: false });
+    if (begun.verdict === "duplicate") {
+      if (begun.row?.state === "unknown") throw new ToolError("outcome_unknown", "an earlier identical mutation was cut off, so the result is unknown.  Search recall before retrying.", { retryable: false });
+      return { key, prior: begun.row };
+    }
+    return { key, prior: null };
+  }
+
+  async tool_recall_correct(args, audit) {
+    const recall = this.requireRecall();
+    const text = args.text.trim();
+    const reason = args.reason.trim();
+    const title = (args.title ?? "").trim();
+    const url = (args.url ?? "").trim();
+    for (const [field, value] of Object.entries({ text, reason, title, url })) {
+      const kind = value ? scanSecret(value, this.known) : null;
+      if (kind) throw new ToolError("refused_secret", `refusing to correct:  the ${field} looks like it contains ${kind}`);
+    }
+    audit.body_len = [...text].length;
+    const fields = [args.doc_id, text, reason, title, url, args.expected_revision ?? null];
+    const request = { doc_id: args.doc_id, text, reason, seat: this.seat };
+    if (title) request.title = title;
+    if (url) request.url = url;
+    if (args.expected_revision !== undefined) request.expected_revision = args.expected_revision;
+    const body = parseArgs(RECALL_CORRECT_REQUEST, request);
+    const { key, prior } = await this.beginRecallMutation("recall_correct", args, audit, fields);
+    if (prior) return this.correctResult(prior, true);
+    try {
+      await this.reserve("recall");
+    } catch (error) {
+      await this.gate.idemDrop({ key });
+      throw error;
+    }
+    let data;
+    try {
+      const raw = await this.recallCall(() => recall.correct(body), { write: true });
+      data = parseRecallMutationResponse(RECALL_CORRECT_RESPONSE, raw, "recall_correct");
+    } catch (error) {
+      if (error?.code === "outcome_unknown" || error?.code === "invalid_response") {
+        await this.safely(() => this.gate.idemSet({ key, changes: { state: "unknown" } }));
+        if (error?.code === "invalid_response") throw new ToolError("outcome_unknown", "fleet recall answered the mutation in a shape this server could not verify, so the write may or may not have landed.  Search recall before retrying.", { retryable: false });
+      } else await this.safely(() => this.gate.idemDrop({ key }));
+      throw error;
+    }
+    const row = {
+      id: recallClean(data.id, 80)[0],
+      doc_id: recallClean(data.doc_id, 200)[0],
+      status: recallClean(data.status, 40)[0],
+      revision: data.revision,
+      corrected_at: data.corrected_at,
+      corrected_by: recallClean(data.corrected_by, 60)[0],
+      previous_content_hash: recallClean(data.previous_content_hash, 80)[0],
+      content_hash: recallClean(data.content_hash, 80)[0],
+      scrubbed: data.scrubbed.slice(0, RECALL_SCRUBBED_LIMIT).map((s) => recallClean(s, 60)[0]),
+    };
+    await this.safely(() => this.gate.idemSet({ key, changes: { state: "sent", ...row } }));
+    return this.correctResult(row, false);
+  }
+
+  correctResult(row, duplicate) {
+    const integer = (v) => Number.isSafeInteger(v) ? v : 0;
+    const result = {
+      id: String(row.id ?? ""),
+      doc_id: String(row.doc_id ?? ""),
+      seat: this.seat,
+      status: String(row.status ?? ""),
+      revision: integer(row.revision),
+      corrected_at: integer(row.corrected_at),
+      corrected_by: String(row.corrected_by ?? ""),
+      previous_content_hash: String(row.previous_content_hash ?? ""),
+      content_hash: String(row.content_hash ?? ""),
+      scrubbed: Array.isArray(row.scrubbed) ? row.scrubbed.map(String) : [],
+      duplicate,
+    };
+    return okResult(JSON.stringify(result), result);
+  }
+
+  async tool_recall_retract(args, audit) {
+    const recall = this.requireRecall();
+    const reason = args.reason.trim();
+    const kind = scanSecret(reason, this.known);
+    if (kind) throw new ToolError("refused_secret", `refusing to retract:  the reason looks like it contains ${kind}`);
+    audit.body_len = [...reason].length;
+    const fields = [args.doc_id, reason, args.expected_revision ?? null];
+    const request = { doc_id: args.doc_id, reason, seat: this.seat };
+    if (args.expected_revision !== undefined) request.expected_revision = args.expected_revision;
+    const body = parseArgs(RECALL_RETRACT_REQUEST, request);
+    const { key, prior } = await this.beginRecallMutation("recall_retract", args, audit, fields);
+    if (prior) return this.retractResult(prior, true);
+    try {
+      await this.reserve("recall");
+    } catch (error) {
+      await this.gate.idemDrop({ key });
+      throw error;
+    }
+    let data;
+    try {
+      const raw = await this.recallCall(() => recall.retract(body), { write: true });
+      data = parseRecallMutationResponse(RECALL_RETRACT_RESPONSE, raw, "recall_retract");
+    } catch (error) {
+      if (error?.code === "outcome_unknown" || error?.code === "invalid_response") {
+        await this.safely(() => this.gate.idemSet({ key, changes: { state: "unknown" } }));
+        if (error?.code === "invalid_response") throw new ToolError("outcome_unknown", "fleet recall answered the mutation in a shape this server could not verify, so the write may or may not have landed.  Search recall before retrying.", { retryable: false });
+      } else await this.safely(() => this.gate.idemDrop({ key }));
+      throw error;
+    }
+    const row = {
+      id: recallClean(data.id, 80)[0],
+      doc_id: recallClean(data.doc_id, 200)[0],
+      status: recallClean(data.status, 40)[0],
+      revision: data.revision,
+      retracted: data.retracted,
+      retracted_at: data.retracted_at,
+      retracted_by: recallClean(data.retracted_by, 60)[0],
+      retraction_reason: recallClean(data.retraction_reason, 500)[0],
+    };
+    await this.safely(() => this.gate.idemSet({ key, changes: { state: "sent", ...row } }));
+    return this.retractResult(row, false);
+  }
+
+  retractResult(row, duplicate) {
+    const integer = (v) => Number.isSafeInteger(v) ? v : 0;
+    const result = {
+      id: String(row.id ?? ""),
+      doc_id: String(row.doc_id ?? ""),
+      seat: this.seat,
+      status: String(row.status ?? ""),
+      revision: integer(row.revision),
+      retracted: row.retracted === true,
+      retracted_at: integer(row.retracted_at),
+      retracted_by: String(row.retracted_by ?? ""),
+      retraction_reason: String(row.retraction_reason ?? ""),
       duplicate,
     };
     return okResult(JSON.stringify(result), result);
