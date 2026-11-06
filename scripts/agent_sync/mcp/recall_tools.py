@@ -140,7 +140,13 @@ def run(
     return proc.returncode, data, err
 
 
-UNKNOWN_WRITE = re.compile(r"(?:\bHTTP (?:5\d\d|408)\b|\b(?:timed out|timeout)\b)", re.IGNORECASE)
+UNKNOWN_WRITE = re.compile(
+    r"(?:\bHTTP (?:5\d\d|408)\b|\b(?:timed out|timeout)\b|"
+    r"\b(?:TimeoutError|RemoteDisconnected|Connection(?:Aborted|Refused|Reset)?Error|"
+    r"BrokenPipeError|socket\.timeout)\b|connection reset by peer|"
+    r"remote end closed connection without response)",
+    re.IGNORECASE,
+)
 RATE_LIMITED = re.compile(r"\bHTTP 429\b", re.IGNORECASE)
 
 

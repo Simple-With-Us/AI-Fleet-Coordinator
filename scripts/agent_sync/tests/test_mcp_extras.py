@@ -768,6 +768,9 @@ class RecallToolTests(FakePrograms):
             "recall: HTTP 408 from recall.example.test",
             "recall: timeout reaching recall.example.test",
             "recall: timed out waiting for recall.example.test",
+            "recall: TimeoutError reaching recall.example.test",
+            "recall: RemoteDisconnected reaching recall.example.test",
+            "recall: ConnectionResetError reaching recall.example.test",
         ):
             with self.subTest(err=err):
                 exc = RT.failure(2, err, write=True)
@@ -787,6 +790,8 @@ class RecallToolTests(FakePrograms):
         for err in (
             "recall: HTTP 500 from qdrant",
             "recall: timeout reaching recall.example.test",
+            "recall: TimeoutError reaching recall.example.test",
+            "recall: RemoteDisconnected reaching recall.example.test",
         ):
             with self.subTest(err=err):
                 exc = RT.failure(2, err)

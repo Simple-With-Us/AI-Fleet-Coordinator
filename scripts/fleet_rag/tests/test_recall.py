@@ -1391,6 +1391,16 @@ class CliTests(RecallBase):
         self.assertEqual(n(["stats", "--json"]), ["stats", "--json"])
         self.assertEqual(n(["--json", "stats"]), ["--json", "stats"])            # subcommand later in argv
         self.assertEqual(n(["contribute", "-", "--category", "lesson"]), ["contribute", "-", "--category", "lesson"])
+        self.assertEqual(n(["correct"]), ["search", "correct"])
+        self.assertEqual(n(["retract"]), ["search", "retract"])
+        self.assertEqual(
+            n(["correct", "contrib/CLAUDE/2026-11-05/472fc36e", "--reason", "stale"]),
+            ["correct", "contrib/CLAUDE/2026-11-05/472fc36e", "--reason", "stale"],
+        )
+        self.assertEqual(
+            n(["retract", "contrib/CLAUDE/2026-11-05/472fc36e", "--reason", "obsolete"]),
+            ["retract", "contrib/CLAUDE/2026-11-05/472fc36e", "--reason", "obsolete"],
+        )
         self.assertEqual(n(["ingest", "--all"]), ["ingest", "--all"])
         self.assertEqual(n(["ingest", "--source", "doc", "--dry-run"]),
                          ["ingest", "--source", "doc", "--dry-run"])

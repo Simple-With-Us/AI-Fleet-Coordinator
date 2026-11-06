@@ -1132,6 +1132,8 @@ def normalize_argv(argv: list[str]) -> list[str]:
     if not argv:
         return argv
     head = argv[: argv.index("--")] if "--" in argv else argv
+    if len(head) == 1 and head[0] in ("correct", "retract"):
+        return ["search"] + argv
     if any(x in SUBCOMMANDS or x in ("-h", "--help") for x in head):
         return argv
     return ["search"] + argv
