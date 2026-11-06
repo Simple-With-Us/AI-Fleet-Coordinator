@@ -21,13 +21,15 @@ public enum FleetServiceKind: Equatable {
 
 /// How the wanted state of a fleet service is decided.
 ///
+/// The wanted state is a fact about what a service is for, shown in the row's words
+/// ("stopped, should be running").  It does not start anything.  What Muster does about a
+/// service that is not running is the policy in `ServicePolicyTable`.
+///
 /// The BotFleet MCP Server proxies every tool call to the BotFleet Server,
 /// so it is wanted exactly while that server is running.
 ///
-/// Every other fleet service is wanted on its own.  It is wanted unless
-/// something explicitly says otherwise, and the only thing that says
-/// otherwise is the service itself: one that was stopped on purpose stays
-/// stopped, and one that failed is brought back up.
+/// Every other fleet service reads from its own state:  one that is running or that
+/// failed should be running, and one that is stopped is not asking to be anything else.
 public enum FleetServiceWantedPolicy: Equatable {
     case whileServerRuns
     case alwaysOn
@@ -111,26 +113,33 @@ public enum FleetServiceRegistry {
 
 /// The services the owner stopped on purpose, and how that record changes.
 ///
-/// A stop the owner asked for is not one the Control app undoes.  The record
-/// belongs to the app, so it lasts as long as the app does, and a relaunch
-/// hands the fleet back to its own rules.
+/// A stop the owner asked for always wins:  Muster never starts a service that is on this
+/// record, until the owner starts it again.  The record is kept in a small file
+/// (`OwnerStopFile`) when the app is given one, so a relaunch of Muster does not forget it.
 public struct OwnerStops: Equatable {
     /// The services the owner stopped on purpose, by service id.
     public private(set) var ids: Set<String>
+    /// When the owner stopped each one,  when that is known.
+    public private(set) var stoppedAt: [String: Date]
 
-    public init(ids: Set<String> = []) {
+    public init(ids: Set<String> = [], stoppedAt: [String: Date] = [:]) {
         self.ids = ids
+        self.stoppedAt = stoppedAt.filter { ids.contains($0.key) }
     }
 
     /// Records what the owner asked for, before the change is made.
     ///
-    /// The reconciler runs as soon as the change is done, so the intent has
-    /// to be recorded first.  A restart is a start as far as the record is
+    /// The intent is recorded first, so nothing that reads the record while the change is
+    /// running can start the service again.  A restart is a start as far as the record is
     /// concerned: the owner asked for the service to be running.
-    public mutating func record(_ action: ManagedServiceAction, id: String) {
+    public mutating func record(_ action: ManagedServiceAction, id: String, at date: Date = Date()) {
         switch action {
-        case .stop: ids.insert(id)
-        case .start, .restart: ids.remove(id)
+        case .stop:
+            ids.insert(id)
+            stoppedAt[id] = date
+        case .start, .restart:
+            ids.remove(id)
+            stoppedAt[id] = nil
         case .none: break
         }
     }
@@ -142,6 +151,12 @@ public struct OwnerStops: Equatable {
     /// made of it.
     public mutating func restore(_ previous: Set<String>) {
         ids = previous
+        stoppedAt = stoppedAt.filter { previous.contains($0.key) }
+    }
+
+    /// Puts the whole record back the way it was,  times included.
+    public mutating func restore(_ previous: OwnerStops) {
+        self = previous
     }
 }
 
@@ -155,20 +170,76 @@ public struct FleetServiceEntry: Equatable {
     public let state: ManagedServiceState
     /// True when the owner stopped this service on purpose.
     public let stoppedByOwner: Bool
+    /// When the owner stopped it,  when that is known.
+    public let stoppedAt: Date?
     /// False when the service's start and restart would change a startup
     /// policy the installed wrapper does not carry.
     public let canChangeStartupPolicy: Bool
+    /// What Muster did about this service when it was not running,  if it did anything.
+    public let reconcileNote: ReconcileNote?
 
     public init(descriptor: FleetServiceDescriptor,
                 wanted: Bool?,
                 state: ManagedServiceState,
                 stoppedByOwner: Bool = false,
-                canChangeStartupPolicy: Bool = true) {
+                stoppedAt: Date? = nil,
+                canChangeStartupPolicy: Bool = true,
+                reconcileNote: ReconcileNote? = nil) {
         self.descriptor = descriptor
         self.wanted = wanted
         self.state = state
         self.stoppedByOwner = stoppedByOwner
+        self.stoppedAt = stoppedAt
         self.canChangeStartupPolicy = canChangeStartupPolicy
+        self.reconcileNote = reconcileNote
+    }
+
+    /// What Muster does when this service is not running.
+    public var reconcilePolicy: ServiceReconcilePolicy { ServicePolicyTable.policy(for: id) }
+
+    /// The one line that says what Muster does about this service,  for the Services panel.
+    public var reconcilePolicyLine: String {
+        switch reconcilePolicy {
+        case .keepRunning, .startAtLoginOnly:
+            return "\(reconcilePolicy.title):  \(reconcilePolicy.sentence)"
+        case .leaveAlone:
+            return "\(reconcilePolicy.title):  \(ServicePolicyTable.reason(for: id))"
+        }
+    }
+
+    /// The line on a row the owner stopped on purpose,  or nil when the owner did not.
+    ///
+    /// A stop that did not read as landed is still on the record,  so the line says what the
+    /// owner asked for and not what happened.
+    public var ownerStopLine: String? {
+        guard stoppedByOwner else { return nil }
+        return FleetActionWords.ownerStopLine(for: state, at: stoppedAt)
+    }
+
+    /// What the row says about the service's state,  beyond the state itself:  the owner's
+    /// stop first,  then what Muster did.  Nil when there is nothing to add.
+    public var stateNote: String? {
+        if let line = ownerStopLine { return line }
+        return reconcileNote?.line
+    }
+
+    /// The same note in a few words,  for a menu row.
+    public var menuNote: String? {
+        if stoppedByOwner {
+            switch state {
+            case .running, .unknown: return "you asked for it to stop"
+            case .stopped, .failed, .notInstalled, .notInPM2:
+                return stoppedAt.map { "stopped by you at \(FleetTime.clock($0))" } ?? "stopped by you"
+            }
+        }
+        return reconcileNote?.shortLine
+    }
+
+    /// True when the row is something to look at:  a failure,  a state nobody can read,  or
+    /// a service Muster gave up on.
+    public var needsAttention: Bool {
+        if state == .failed || state == .unknown { return true }
+        return reconcileNote?.isProblem == true
     }
 
     public var id: String { descriptor.id }
@@ -185,8 +256,9 @@ public struct FleetServiceEntry: Equatable {
     public var whyNoActions: String? {
         guard availableActions.isEmpty else { return nil }
         if state == .notInstalled { return nil }
+        if state == .notInPM2 { return "pm2 on the Mac has no record of it, so it is not started from here" }
         if !canChangeStartupPolicy { return "BotFleet on the Mac is too old to start it from here" }
-        if policy == .whileServerRuns { return "it follows BotFleet Server" }
+        if policy == .whileServerRuns { return "it starts when BotFleet Server is running" }
         return nil
     }
 
@@ -242,25 +314,31 @@ public struct FleetServices: Equatable {
     public let states: [String: ManagedServiceState]
     /// The services the owner stopped on purpose, by service id.
     ///
-    /// A stop the owner asked for is not one the Control app undoes.  The
-    /// set belongs to the app, so it lasts as long as the app does, and a
-    /// relaunch hands the fleet back to its own rules.
+    /// A stop the owner asked for is one Muster never undoes.
     public let stoppedByOwner: Set<String>
+    /// When the owner stopped each of them,  when that is known.
+    public let stoppedAt: [String: Date]
     /// True when the installed wrapper carries the startup policy contract.
     ///
     /// The BotFleet Server's start and restart change that policy, so an
     /// older wrapper is offered nothing at all rather than an action that
     /// would always fail.
     public let startupPolicySupported: Bool
+    /// What Muster did about each service it started,  by service id.
+    public let reconcileNotes: [String: ReconcileNote]
 
     public init(serverState: ManagedServices.ServerState,
                 states: [String: ManagedServiceState],
                 stoppedByOwner: Set<String> = [],
-                startupPolicySupported: Bool = true) {
+                stoppedAt: [String: Date] = [:],
+                startupPolicySupported: Bool = true,
+                reconcileNotes: [String: ReconcileNote] = [:]) {
         self.serverState = serverState
         self.states = states
         self.stoppedByOwner = stoppedByOwner
+        self.stoppedAt = stoppedAt
         self.startupPolicySupported = startupPolicySupported
+        self.reconcileNotes = reconcileNotes
     }
 
     /// The wanted state of one service.
@@ -285,6 +363,7 @@ public struct FleetServices: Equatable {
             case .some(.failed): return true
             case .some(.stopped): return false
             case .some(.notInstalled): return false
+            case .some(.notInPM2): return false
             default: return nil
             }
         }
@@ -298,7 +377,9 @@ public struct FleetServices: Equatable {
                                      wanted: wanted(for: descriptor),
                                      state: states[descriptor.id] ?? .unknown,
                                      stoppedByOwner: stoppedByOwner.contains(descriptor.id),
-                                     canChangeStartupPolicy: startupPolicySupported || !isServer)
+                                     stoppedAt: stoppedAt[descriptor.id],
+                                     canChangeStartupPolicy: startupPolicySupported || !isServer,
+                                     reconcileNote: reconcileNotes[descriptor.id])
         }
     }
 
@@ -331,9 +412,9 @@ public struct FleetServices: Equatable {
 
     /// True when pm2 answered the last read.
     ///
-    /// Any pm2 application with a state of its own means pm2 answered,  because an
-    /// application it has no record of reads as stopped.  Every one of them unknown means
-    /// it did not,  which says nothing about whether those applications run.
+    /// Any pm2 application with a state of its own means pm2 answered,  and so does one pm2
+    /// says it has no record of.  Every one of them unknown means it did not,  which says
+    /// nothing about whether those applications run.
     public var pm2Answered: Bool {
         FleetServiceRegistry.all.contains { descriptor in
             guard case .pm2 = descriptor.kind, descriptor.policy == .alwaysOn else { return false }
@@ -358,7 +439,7 @@ public struct FleetServices: Equatable {
         if id == FleetServiceRegistry.server.id {
             let common = "BotFleet Server stops itself on the Mac, and its Local VMs go down with it.\u{00A0} It refuses while work is in flight.\u{00A0} It stays down after a login until it is started again"
             guard startupPolicySupported else {
-                return common + ".\u{00A0} This version of BotFleet cannot restart it from here, so remove ~/.botfleet/stopped.marker on the Mac yourself to bring it back."
+                return common + ".\u{00A0} This version of BotFleet cannot restart it from here, so to bring it back, delete the file ~/.botfleet/stopped.marker on the Mac."
             }
             return common + "; Restart brings it back."
         }
@@ -376,45 +457,27 @@ public struct FleetServices: Equatable {
 
     /// What stopping a LaunchAgent does.
     public static let launchAgentStopBody =
-        "It stops right away on the Mac.\u{00A0} macOS does not bring it back until the LaunchAgent is loaded again."
+        "It stops right away on the Mac.\u{00A0} It stays stopped until you start it here, and macOS may start it again the next time you log in."
 
     /// What stopping a pm2 application does.
     public static let pm2StopBody =
-        "It stops right away on the Mac, and pm2 leaves it stopped until you start it again."
-
-    /// The action the Control app takes on its own to bring one service in
-    /// line with its wanted state.
-    ///
-    /// The rule is the same for every service: the wanted state says whether
-    /// the service should be running, and a service that is not running the
-    /// way it should be is brought back.  A service that was stopped on
-    /// purpose is not one of those, because nothing asks it to stop.
-    public static func automaticAction(for entry: FleetServiceEntry) -> ManagedServiceAction {
-        // A service the owner stopped on purpose is left alone whatever
-        // state it reads as now.  A service that was stopped can read as
-        // failed, and a failed service is wanted, so without this the
-        // reconciler would take the owner's stop back.
-        if entry.stoppedByOwner { return .none }
-        return ManagedServices.action(wanted: entry.wanted, state: entry.state)
-    }
+        "It stops right away on the Mac.\u{00A0} pm2 and Muster both leave it stopped until you start it here."
 
     /// The actions the owner may pick for a service in this state.
     ///
     /// An action is offered only when the observed state supports it: a
     /// service that is running can be stopped and restarted, one that is
-    /// stopped can be started, and one that is not installed cannot be
-    /// started at all.  A service the Control app cannot see is never
+    /// stopped can be started, one that is not installed cannot be
+    /// started at all, and one pm2 has never heard of is not started from here,
+    /// because a start could make a second copy of a job that belongs to another
+    /// machine.  A service the Control app cannot see is never
     /// stopped, but it can be restarted, because a restart only asks for a
     /// fresh copy of it.
     ///
-    /// The wanted policy and the owner's own stops are part of the answer as
-    /// well, because an action the Control app would take straight back is
-    /// not an action worth offering.  A service the owner stopped on
-    /// purpose can always be started again, and a service that cannot be
-    /// wanted yet - the BotFleet MCP Server while the BotFleet Server is
-    /// down - offers nothing:  the reconciler stops it when it runs
-    /// (`action(wanted: false, state: .running)` is `.stop`), and it would
-    /// undo a start or a restart at once.
+    /// A service that follows another one,  the BotFleet MCP Server,  has nothing to
+    /// serve while the one it follows is down,  so a stopped one is not offered a start then.
+    /// A running one can always be stopped.  A service the owner stopped on purpose can
+    /// always be started again.  `FleetServiceEntry.whyNoActions` says why a row is empty.
     public static func availableActions(for state: ManagedServiceState,
                                         wanted: Bool?,
                                         policy: FleetServiceWantedPolicy,
@@ -425,20 +488,63 @@ public struct FleetServices: Equatable {
             if stoppedByOwner {
                 return state == .running ? [.stop, .restart] : [.start, .restart]
             }
-            // A service that follows another one is wanted exactly while the
-            // one it follows runs.  While it is not wanted the reconciler
-            // decides what happens to it, so no action is offered that the
-            // reconciler would take straight back.
-            if wanted == false { return [] }
+            // The server it follows is down:  it can be stopped if it is up,  and there is
+            // nothing to start it for.
+            if wanted == false { return state == .running ? [.stop] : [] }
         }
         switch state {
         case .running: return [.stop, .restart]
-        case .stopped:
-            if stoppedByOwner { return [.start, .restart] }
-            return [.start, .restart]
-        case .failed: return [.start, .restart]
-        case .notInstalled: return []
+        case .stopped, .failed: return [.start, .restart]
+        case .notInstalled, .notInPM2: return []
         case .unknown: return [.restart]
         }
+    }
+}
+
+/// The marker on a service row:  a word,  a symbol and a tone,  so the state is never carried
+/// by colour alone.
+public struct ServiceStateMarker: Equatable {
+    public enum Tone: Equatable {
+        case good
+        case bad
+        case warning
+        case neutral
+    }
+
+    /// The word,  in Title Case.
+    public let word: String
+    /// The SF Symbol that goes with it.
+    public let symbol: String
+    public let tone: Tone
+
+    /// The marker for a state.  A service the owner stopped on purpose says so in its word.
+    public static func make(state: ManagedServiceState, stoppedByOwner: Bool = false) -> ServiceStateMarker {
+        switch state {
+        case .running:
+            // A stop the owner asked for that does not read as landed is not a running service
+            // to be pleased about.
+            if stoppedByOwner {
+                return ServiceStateMarker(word: "Running", symbol: "exclamationmark.triangle.fill", tone: .warning)
+            }
+            return ServiceStateMarker(word: "Running", symbol: "checkmark.circle.fill", tone: .good)
+        case .stopped:
+            return ServiceStateMarker(word: stoppedByOwner ? "Stopped By You" : "Stopped",
+                                      symbol: "pause.circle.fill", tone: .neutral)
+        case .failed:
+            return ServiceStateMarker(word: "Failed", symbol: "xmark.octagon.fill", tone: .bad)
+        case .notInstalled:
+            return ServiceStateMarker(word: "Not Installed", symbol: "minus.circle", tone: .neutral)
+        case .notInPM2:
+            return ServiceStateMarker(word: "Not In pm2", symbol: "minus.circle", tone: .neutral)
+        case .unknown:
+            return ServiceStateMarker(word: "Not Known", symbol: "questionmark.circle.fill", tone: .warning)
+        }
+    }
+}
+
+extension FleetServiceEntry {
+    /// The marker for this row.
+    public var marker: ServiceStateMarker {
+        ServiceStateMarker.make(state: state, stoppedByOwner: stoppedByOwner)
     }
 }

@@ -18,16 +18,89 @@ public protocol CommandRunning {
 }
 
 public struct CommandExitError: LocalizedError {
+    /// What the command printed on standard output.
     public let output: String
     /// The exit status, when the runner knows it.  Callers that must tell a
     /// refused command from an absent one (fleet-secrets exit 3) read this;
     /// a fake that only knows the command failed leaves it 0.
     public let status: Int32
-    public init(output: String, status: Int32 = 0) {
+    /// What the command printed on standard error,  as it printed it.  The runner keeps it
+    /// apart from `output`,  because callers read `output` as the command's answer.
+    public let errorOutput: String
+    public init(output: String, status: Int32 = 0, errorOutput: String = "") {
         self.output = output
         self.status = status
+        self.errorOutput = errorOutput
     }
-    public var errorDescription: String? { "The system command failed." }
+
+    /// Why the command failed,  in a few clean words:  what it said on standard error,  or
+    /// on standard output when it said nothing there.  Empty when it said nothing at all.
+    public var reason: String { CommandText.reason(errorOutput: errorOutput, output: output) }
+
+    public var errorDescription: String? {
+        let why = reason
+        return why.isEmpty ? "The system command failed." : "The system command failed:  \(why)"
+    }
+}
+
+/// A command that did not finish in its time.
+///
+/// It names the command,  so a slow `launchctl` is never reported as a problem with some
+/// other service.
+public struct CommandTimedOutError: LocalizedError, Equatable {
+    public let executable: String
+    public let arguments: [String]
+
+    public init(executable: String, arguments: [String]) {
+        self.executable = executable
+        self.arguments = arguments
+    }
+
+    /// The command's name:  `launchctl`,  or `pm2` for a script a node or python runs.
+    public var commandName: String {
+        let base = (executable as NSString).lastPathComponent
+        guard ["node", "python3", "python", "bash", "sh"].contains(base),
+              let script = arguments.first(where: { !$0.hasPrefix("-") }) else { return base }
+        return (script as NSString).lastPathComponent
+    }
+
+    public var errorDescription: String? { "\(commandName) did not finish in time." }
+}
+
+/// Makes what a command printed fit for a menu row or a panel.
+public enum CommandText {
+    /// The most characters a reason keeps.
+    public static let reasonLimit = 300
+
+    /// A reason from what a command printed,  preferring standard error.
+    public static func reason(errorOutput: String, output: String) -> String {
+        let fromError = clean(errorOutput)
+        return fromError.isEmpty ? clean(output) : fromError
+    }
+
+    /// Cleans what a command printed.
+    ///
+    /// Colour codes and other control characters go,  and so does a table pm2 draws with
+    /// box characters.  The last few lines are kept,  because the reason comes last,  and
+    /// the whole is cut to `reasonLimit` characters.
+    public static func clean(_ text: String) -> String {
+        let withoutColour = text.replacingOccurrences(of: "\u{1B}\\[[0-9;?]*[ -/]*[@-~]",
+                                                      with: "",
+                                                      options: .regularExpression)
+        let box = CharacterSet(charactersIn: "│┌┐└┘├┤┬┴┼─═║╔╗╚╝╠╣╦╩╬")
+        let lines = withoutColour.split(whereSeparator: \.isNewline)
+            .map { line -> String in
+                var printable = String.UnicodeScalarView()
+                printable.append(contentsOf: line.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) })
+                return String(printable).trimmingCharacters(in: .whitespaces)
+            }
+            .filter { line in
+                !line.isEmpty && line.unicodeScalars.allSatisfy { !box.contains($0) }
+            }
+        let tail = lines.suffix(4).joined(separator: " ")
+        guard tail.count > reasonLimit else { return tail }
+        return "\u{2026}" + String(tail.suffix(reasonLimit))
+    }
 }
 
 public extension CommandRunning {
@@ -61,8 +134,8 @@ public struct ProcessCommandRunner: CommandRunning {
         try run(executable, arguments, environment: ProcessInfo.processInfo.environment, timeout: timeout)
     }
     public func run(_ executable: String, _ arguments: [String], environment: [String: String], timeout: TimeInterval) throws -> String {
-        let (result, status) = try execute(executable, arguments, environment: environment, timeout: timeout)
-        guard status == 0 else { throw CommandExitError(output: result, status: status) }
+        let (result, errors, status) = try execute(executable, arguments, environment: environment, timeout: timeout)
+        guard status == 0 else { throw CommandExitError(output: result, status: status, errorOutput: errors) }
         return result
     }
     public func runKeepingOutput(_ executable: String, _ arguments: [String]) -> String {
@@ -71,34 +144,56 @@ public struct ProcessCommandRunner: CommandRunning {
     public func runKeepingOutput(_ executable: String, _ arguments: [String], environment: [String: String], timeout: TimeInterval) -> String {
         (try? execute(executable, arguments, environment: environment, timeout: timeout)).map { $0.0 } ?? ""
     }
-    /// Runs a command and reports what it printed and how it ended.
-    private func execute(_ executable: String, _ arguments: [String], environment: [String: String], timeout: TimeInterval) throws -> (String, Int32) {
+    /// The most standard error a command is kept for.  A command that writes more than this
+    /// has its last part kept,  which is where the reason is.
+    private static let errorLimit = 16 * 1024
+
+    /// Runs a command and reports what it printed on each stream and how it ended.
+    ///
+    /// Standard error is read on a pipe of its own,  so a failure carries its reason and
+    /// standard output stays the command's answer.  A command that does not finish in its
+    /// time is reported as the one that timed out.
+    private func execute(_ executable: String, _ arguments: [String], environment: [String: String], timeout: TimeInterval) throws -> (String, String, Int32) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
         process.environment = environment
         let output = Pipe()
+        let errors = Pipe()
         process.standardOutput = output
-        process.standardError = FileHandle.nullDevice
+        process.standardError = errors
         let readerDone = DispatchSemaphore(value: 0)
+        let errorReaderDone = DispatchSemaphore(value: 0)
         let finished = DispatchSemaphore(value: 0)
         var data = Data()
+        var errorData = Data()
         process.terminationHandler = { _ in finished.signal() }
         try process.run()
         DispatchQueue.global(qos: .utility).async {
             data = output.fileHandleForReading.readDataToEndOfFile()
             readerDone.signal()
         }
+        DispatchQueue.global(qos: .utility).async {
+            // Read it all so the command never blocks on a full pipe,  and keep the end,
+            // where the reason is.
+            let all = errors.fileHandleForReading.readDataToEndOfFile()
+            errorData = all.suffix(Self.errorLimit)
+            errorReaderDone.signal()
+        }
         if finished.wait(timeout: .now() + timeout) == .timedOut {
             if process.isRunning { process.terminate() }
             if finished.wait(timeout: .now() + 2) == .timedOut && process.isRunning {
                 Darwin.kill(process.processIdentifier, SIGKILL)
             }
-            throw StartupPolicyError.commandFailed
+            throw CommandTimedOutError(executable: executable, arguments: arguments)
         }
-        guard readerDone.wait(timeout: .now() + 2) == .success else { throw StartupPolicyError.commandFailed }
+        guard readerDone.wait(timeout: .now() + 2) == .success,
+              errorReaderDone.wait(timeout: .now() + 2) == .success else {
+            throw CommandTimedOutError(executable: executable, arguments: arguments)
+        }
         let result = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        return (result, process.terminationStatus)
+        let errorText = String(decoding: errorData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        return (result, errorText, process.terminationStatus)
     }
 }
 
@@ -114,7 +209,9 @@ public enum StartupPolicyError: LocalizedError {
         case .updateRequired: return "Update BotFleet before changing server startup settings."
         case .bootIdentityUnavailable: return "Could not identify the current Mac boot session."
         case .launchAgentMissing: return "The BotFleet Server LaunchAgent is not installed.  Reinstall BotFleet."
-        case .commandFailed: return "macOS could not change the BotFleet Server LaunchAgent.  Check its installation."
+        // It names no service:  the caller that knows which LaunchAgent it was changing
+        // says so (`StartupPolicy.launchctl`),  and a timeout is `CommandTimedOutError`.
+        case .commandFailed: return "A system command did not work."
         case .refused(let message): return message
         }
     }
@@ -320,11 +417,11 @@ public final class StartupPolicy {
         }
         let domain = "gui/\(uid)"
         let full = "\(domain)/\(label)"
-        _ = try commands.run("/bin/launchctl", ["enable", full])
+        try launchctl(["enable", full], doing: "start", label: label)
         if (try? commands.run("/bin/launchctl", ["print", full])) == nil {
-            _ = try commands.run("/bin/launchctl", ["bootstrap", domain, plist.path])
+            try launchctl(["bootstrap", domain, plist.path], doing: "start", label: label)
         }
-        _ = try commands.run("/bin/launchctl", ["kickstart", full])
+        try launchctl(["kickstart", full], doing: "start", label: label)
     }
 
     /// Stops a launchd agent and leaves it stopped.
@@ -333,13 +430,7 @@ public final class StartupPolicy {
     /// bring it back on its own afterwards.
     public func stopAgent(label: String) throws {
         let full = "gui/\(uid)/\(label)"
-        do {
-            _ = try commands.run("/bin/launchctl", ["bootout", full])
-        } catch let error as CommandExitError {
-            throw StartupPolicyError.refused(error.output.isEmpty
-                ? "macOS could not stop the \(label) LaunchAgent."
-                : error.output)
-        }
+        try launchctl(["bootout", full], doing: "stop", label: label)
     }
 
     /// Restarts a launchd agent.
@@ -353,7 +444,24 @@ public final class StartupPolicy {
             try startAgent(label: label)
             return
         }
-        _ = try commands.run("/bin/launchctl", ["kickstart", "-k", full])
+        try launchctl(["kickstart", "-k", full], doing: "restart", label: label)
+    }
+
+    /// Runs one launchctl command for one agent,  and says which agent and what it was
+    /// doing when the command did not work,  with the reason launchctl gave.
+    @discardableResult
+    private func launchctl(_ arguments: [String], doing verb: String, label: String) throws -> String {
+        let subject = "the \(label) LaunchAgent on the Mac"
+        do {
+            return try commands.run("/bin/launchctl", arguments)
+        } catch let error as CommandExitError {
+            let why = error.reason
+            throw StartupPolicyError.refused("macOS could not \(verb) \(subject)" + (why.isEmpty ? "." : ":  \(why)"))
+        } catch let error as CommandTimedOutError {
+            throw StartupPolicyError.refused("\(error.commandName) did not finish in time, so macOS did not \(verb) \(subject).")
+        } catch {
+            throw StartupPolicyError.refused("macOS could not \(verb) \(subject).")
+        }
     }
 
     private func bootID() throws -> String {

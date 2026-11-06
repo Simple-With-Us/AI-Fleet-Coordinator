@@ -73,6 +73,10 @@ public final class FleetServiceControl {
         self.agentSettleInterval = agentSettleInterval
     }
 
+    /// True when pm2 and the node that runs it are on this Mac.  A pm2 that is there and did
+    /// not answer is a different problem from one that is not installed.
+    public var pm2IsInstalled: Bool { pm2.isAvailable }
+
     /// A service's state once it reached the wanted one,  or once the budget
     /// ran out,  so a change that landed is not read as one that did not.
     ///
@@ -119,8 +123,9 @@ public final class FleetServiceControl {
                     // pm2 only changes it.
                     states[descriptor.id] = await mcpServer?.state() ?? .unknown
                 } else if let pm2States {
-                    // An application pm2 has no record of is not running.
-                    states[descriptor.id] = pm2States[appName] ?? .stopped
+                    // pm2 answered.  An application it has no record of is not stopped,
+                    // it is not in this Mac's pm2,  and it is not offered a start.
+                    states[descriptor.id] = pm2States[appName] ?? .notInPM2
                 } else {
                     states[descriptor.id] = .unknown
                 }
@@ -304,10 +309,9 @@ public final class FleetServiceControl {
             if case .managerMissing = failure { return .managerMissing }
             return .refused(failure.errorDescription ?? "pm2 could not \(action) \(appName).")
         case let failure as CommandExitError:
-            return .refused(failure.output.isEmpty
-                ? "pm2 could not \(action) \(appName)."
-                : failure.output)
-        case StartupPolicyError.commandFailed:
+            let why = failure.reason
+            return .refused(why.isEmpty ? "pm2 could not \(action) \(appName)." : why)
+        case is CommandTimedOutError, StartupPolicyError.commandFailed:
             return .refused("pm2 timed out before it could \(action) \(appName).")
         default:
             return .refused("pm2 could not \(action) \(appName).")
