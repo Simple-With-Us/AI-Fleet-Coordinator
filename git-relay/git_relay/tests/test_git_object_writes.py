@@ -74,7 +74,9 @@ class Writes(unittest.TestCase):
             [{"path": "x", "sha": "zz", "mode": "100644"}],
         ]:
             with self.assertRaises(Refused):
-                WorkflowVerbs.check_shape(a, {"repo": REPO, "base_tree": SHA, "files": bad_files}, REPO)
+                WorkflowVerbs.check_shape(
+                    a, {"repo": REPO, "base_tree": SHA, "files": bad_files}, REPO
+                )
 
     def test_tree_blob_reference_never_bypasses_scan(self):
         import base64

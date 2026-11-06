@@ -5474,9 +5474,7 @@ class WorkflowVerbs:
                 # the raw work budget (MAX_FILES_RAW), not the transport cap.
                 if not isinstance(sha, str) or not _SHA.fullmatch(sha):
                     raise Refused("invalid file content or path")
-                blob = _obj(
-                    self._get(f"/repos/{repo}/git/blobs/{sha}")
-                )
+                blob = _obj(self._get(f"/repos/{repo}/git/blobs/{sha}"))
                 raw = blob.get("content")
                 if (
                     blob.get("encoding") != "base64"
@@ -5503,11 +5501,7 @@ class WorkflowVerbs:
                 seen.add(path)
                 entries.append({"path": path, "mode": mode, "type": "blob", "sha": sha})
                 continue
-            if (
-                not isinstance(text, str)
-                or find_secret(text)
-                or self._provider_token_text(text)
-            ):
+            if not isinstance(text, str) or find_secret(text) or self._provider_token_text(text):
                 raise Refused("invalid file content or path")
             try:
                 total += len(text.encode("utf-8"))
