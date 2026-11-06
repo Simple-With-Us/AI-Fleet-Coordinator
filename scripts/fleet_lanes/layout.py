@@ -415,7 +415,7 @@ EXTRA_APPS: tuple[App, ...] = (
 class RoleLane:
     """A lane-eligible role from a seatApps.patterns `lane` block (AFC-620):  the role tag, its lane
     folder and its branch prefix.  Parsed tolerantly here (a malformed block is skipped);
-    scripts/agent_sync/identity.py and check-fleet-registry.py own the strict validation."""
+    scripts/simple_tools/identity.py and check-fleet-registry.py own the strict validation."""
 
     tag: str  # BF-FIXER
     role: str  # FIXER

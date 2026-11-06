@@ -53,7 +53,7 @@ Checks:
   seat:<S>    per seat:  Zulip bot, Linear app and FleetLink token key NAMES in Infisical
               (Fleet-OPS /zulip and /linear, AI Fleet Coordinator /fleetlink;  AFC-359:  no credential file is read)
   mcp:codex   Codex registers the fleet's stdio server (simple-chat) and FleetLink when a
-              token exists;  a host that still carries the retired agent-sync name still
+              token exists;  a host that still carries the retired simple-tools name still
               serves the seat, and is reported as the drift it is
   mcp:claude  Claude Code registers the same two (the stdio server, FleetLink)
   tool:<T>    each fleet tool's currency (simple-chat, simple-notes, simple-board, recall, lane, fleet-mode,
@@ -129,10 +129,10 @@ SHIPPED = (
     # The git tools CLI entry wrapper and implementation (mirrors the release policy).
     "scripts/simple-git",
     "scripts/git-tools/",
-    "scripts/agent_sync/",
+    "scripts/simple_tools/",
     "scripts/linear-board/",
     "fleet-apps.json",
-    "docs/protocols/agent-sync-partition.toml",
+    "docs/protocols/simple-tools-partition.toml",
     "scripts/fleet-cli-release.py",
     "scripts/recall",
     "scripts/fleet_rag/",
@@ -160,27 +160,27 @@ SHIPPED_EXACT = frozenset(
         "scripts/linear-board/board",
         "scripts/linear-board/board-ids.txt",
         "fleet-apps.json",
-        "docs/protocols/agent-sync-partition.toml",
+        "docs/protocols/simple-tools-partition.toml",
         "scripts/fleet-cli-release.py",
-        "scripts/agent_sync/mcp/tools.json",
-        "scripts/agent_sync/mcp/fixtures.jsonl",
-        "scripts/agent_sync/mcp/eavesdropper-tools.json",
-        "scripts/agent_sync/mcp/renamed-tools.json",
-        "scripts/agent_sync/mcp/gb-identities.json",
-        "scripts/agent_sync/mcp/notes-tools.json",
-        "scripts/agent_sync/mcp/recall-tools.json",
+        "scripts/simple_tools/mcp/tools.json",
+        "scripts/simple_tools/mcp/fixtures.jsonl",
+        "scripts/simple_tools/mcp/eavesdropper-tools.json",
+        "scripts/simple_tools/mcp/renamed-tools.json",
+        "scripts/simple_tools/mcp/gb-identities.json",
+        "scripts/simple_tools/mcp/notes-tools.json",
+        "scripts/simple_tools/mcp/recall-tools.json",
         "scripts/linear-board/catalog/core-tools.json",
-        "scripts/agent_sync/mcp/fleetlink-tools.json",
+        "scripts/simple_tools/mcp/fleetlink-tools.json",
         # AFC-412 PR2:  mirrors the release EXACT entry for the operator registry outbox exporter.
-        "scripts/agent_sync/operator_sheets_export.mjs",
+        "scripts/simple_tools/operator_sheets_export.mjs",
         # AFC-564:  mirrors the release EXACT entry for the OpenCode letter plugin.
-        "scripts/agent_sync/opencode_letter_plugin/index.js",
+        "scripts/simple_tools/opencode_letter_plugin/index.js",
         # The scoped verifier library the new knobs and recall bundles depend on.  The generic
         # secrets CLI does not ship, so only these two modules are listed.
         "scripts/fleet_secrets/__init__.py",
         "scripts/fleet_secrets/core.py",
         "docs/protocols/simple-tools-guide.md",
-        "scripts/agent_sync/wake/wake-schema.json",
+        "scripts/simple_tools/wake/wake-schema.json",
         "scripts/linear-board/catalog/named-commands.json",
         "scripts/linear-board/catalog/official-mcp-tools.json",
         "scripts/linear-board/catalog/public-inputs.json",
@@ -217,7 +217,7 @@ SHIPPED_EXACT = frozenset(
 )
 STATE = HOME / ".local/state/fleet-tools-doctor.json"
 CATALOGS = (
-    ("scripts/agent_sync/mcp/tools.json", True),
+    ("scripts/simple_tools/mcp/tools.json", True),
     ("scripts/linear-board/catalog/named-commands.json", False),
     ("scripts/linear-board/catalog/official-mcp-tools.json", False),
 )
@@ -494,8 +494,8 @@ def is_shipped(path: str) -> bool:
     if policy is not None and callable(getattr(policy, "allowed_path", None)):
         return bool(policy.allowed_path(path))
     return path in SHIPPED_EXACT or bool(
-        re.fullmatch(r"scripts/agent_sync/(?:mcp/)?[a-z][a-z0-9_]*\.py", path)
-        or path in ("scripts/agent_sync/__init__.py", "scripts/agent_sync/mcp/__init__.py")
+        re.fullmatch(r"scripts/simple_tools/(?:mcp/)?[a-z][a-z0-9_]*\.py", path)
+        or path in ("scripts/simple_tools/__init__.py", "scripts/simple_tools/mcp/__init__.py")
     )
 
 
@@ -1448,7 +1448,7 @@ def check_fleet_mode_doc(report: Report, rt: dict | None = None) -> None:
         )
 
 
-# The Zulip key prefix where it differs from the seat (agent_sync/zulip.py SEAT_FILE_OVERRIDES).
+# The Zulip key prefix where it differs from the seat (simple_tools/zulip.py SEAT_FILE_OVERRIDES).
 ZULIP_PREFIX_OVERRIDES = {"GROK": "GROK_BUILD"}
 _names_cache: dict[str, frozenset[str] | None] = {}
 _UNSET = object()
@@ -1611,12 +1611,12 @@ def client_servers(seat: str, home: Path = HOME) -> dict:
     return servers
 
 
-# The stdio MCP server the seats register is the fleet's own local Agent-Sync server.  The name
+# The stdio MCP server the seats register is the fleet's own local Simple-Tools server.  The name
 # the fleet writes is "simple-chat":  fleet-cli-release.py writes that key into a host's Codex
-# config and install_mcp.py installs the server under it.  "agent-sync" is the retired
+# config and install_mcp.py installs the server under it.  "simple-tools" is the retired
 # pre-rename registration key;  a host installed before the rename may still carry it and it
 # still serves the seat, but it is not the name to write, and the next apply retires it.
-MCP_STDIO_NAMES = ("simple-chat", "agent-sync")
+MCP_STDIO_NAMES = ("simple-chat", "simple-tools")
 MCP_CANONICAL_NAME = "simple-chat"
 
 
@@ -2646,7 +2646,7 @@ NOTES_POLL_STALE_S = (
 NOTES_QUEUE_STALE_S = 600  # a request waiting ten minutes means the runner is not taking work
 NOTES_LOG_STALE_S = 1800  # unsent log lines older than this mean the runner stopped sending them
 NOTES_LOG_ROTATIONS = (
-    5  # apple-notes-coding.sh keeps .1 to .5 (agent_sync.notes.ACTION_LOG_ROTATIONS)
+    5  # apple-notes-coding.sh keeps .1 to .5 (simple_tools.notes.ACTION_LOG_ROTATIONS)
 )
 
 
@@ -2726,7 +2726,7 @@ def notes_health(env: dict[str, str]) -> dict:
     scripts = str(Path(__file__).resolve().parent)
     if scripts not in sys.path:
         sys.path.insert(0, scripts)
-    from agent_sync import (
+    from simple_tools import (
         notes_client as NC,
     )  # the shipped runtime carries it;  imported only on the server
 

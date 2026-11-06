@@ -28,8 +28,8 @@ import time
 import urllib.error
 import urllib.request
 
-CONTRACT = "agent-sync-health/1"
-SIGNATURE_HEADER = "x-agent-sync-health-signature"
+CONTRACT = "simple-tools-health/1"
+SIGNATURE_HEADER = "x-simple-tools-health-signature"
 USER_AGENT = "fleet-worker-health/1 (AI-Fleet-Coordinator)"
 DEFAULT_URL = "https://agents.simplewithus.com/internal/health/linear"
 DEFAULT_PATH = os.path.expanduser("~/.local/state/fleet-tools/worker-health.json")

@@ -35,9 +35,9 @@ RECEIVER_PATH = "scripts/fleet-cli-release.py"
 # and its implementation;  tests and the offline catalog fixture stay repo-only).
 # The 146th is fleet_rag/recall_presentation.py, the lossless agent-facing recall boundary.
 # Files 147 and 148 are the existing low-level scoped verifier library; no secrets CLI ships.
-# The 149th is agent_sync/listener_registry.py, the Operator session-registry service the daemon
+# The 149th is simple_tools/listener_registry.py, the Operator session-registry service the daemon
 # serves over the listener HTTPS API (Path B, operator.simplewithus.com).
-# The 151st is agent_sync/registry_api.py, the signed client the package's own registry callers
+# The 151st is simple_tools/registry_api.py, the signed client the package's own registry callers
 # (the operator-registry CLI, the platform-letter registry side) use to reach that API.
 MAX_FILES = 152
 MAX_BYTES = 8 * 1024 * 1024
