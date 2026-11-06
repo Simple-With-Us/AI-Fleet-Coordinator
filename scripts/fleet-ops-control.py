@@ -1441,6 +1441,31 @@ def handle(ctx, scope, action, target, mode):
             receipt, code = update_status(ctx, config, target, mode)
             answer.update(receipt)
             return answer, code
+        if scope == "server" and action == "seat-inventory":
+            # A read of names and counts under this account's home, so it takes no lock, asks
+            # for no sudo and writes no audit row.  Only `--plan` is accepted:  there is
+            # nothing to confirm and nothing to run.
+            if mode != "plan":
+                raise Refused("seat-inventory only reads:  pass --plan")
+            # -I omits the script directory. Only this reviewed sibling directory is
+            # added; neither the request nor the environment selects an import path.
+            scripts = str(Path(__file__).resolve().parent)
+            if scripts not in sys.path:
+                sys.path.insert(0, scripts)
+            import fleet_seat_inventory
+
+            if not fleet_seat_inventory.PLATFORM_RE.fullmatch(target or "") or (
+                target not in fleet_seat_inventory.PLATFORMS
+            ):
+                raise Refused("that platform has no seat inventory")
+            document = fleet_seat_inventory.inventory(target, str(ctx.home), host="server")
+            answer.update(
+                ok=True,
+                result="planned",
+                detail="read-only inventory of what the platform has installed",
+                inventory=document,
+            )
+            return answer, 0
         if scope == "server" and action in ("resource-status", "resource-policy"):
             if not config["resourcePolicy"]:
                 raise Refused("coding resource controls are not in the allowlist")
@@ -1577,6 +1602,7 @@ def parse_ssh_command(text):
         "logs",
         "resource-status",
         "resource-policy",
+        "seat-inventory",
     ):
         raise Refused("unknown server verb")
     if words[:3] != plain:

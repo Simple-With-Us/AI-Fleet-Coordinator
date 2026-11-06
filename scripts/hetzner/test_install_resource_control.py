@@ -51,6 +51,7 @@ class InstallerTests(unittest.TestCase):
             "fleet-ops-control.py",
             "fleet-ops-control.json",
             "fleet_resource_control.py",
+            "fleet_seat_inventory.py",
             "hetzner/__init__.py",
             "hetzner/fleet_coding_memory.py",
             "hetzner/coding_resources.py",
@@ -81,7 +82,7 @@ class InstallerTests(unittest.TestCase):
         (trap / "fleet_resource_control.py").write_text("raise RuntimeError('untrusted import')")
         code = (
             "import sys,runpy;sys.path.insert(0,sys.argv[1]);"
-            "import fleet_resource_control,fleet_secrets.core,hetzner.fleet_coding_memory;"
+            "import fleet_resource_control,fleet_seat_inventory,fleet_secrets.core,hetzner.fleet_coding_memory;"
             "runpy.run_path(sys.argv[1]+'/fleet-ops-control.py');print('imports-ok')"
         )
         result = subprocess.run(
@@ -126,7 +127,7 @@ class InstallerTests(unittest.TestCase):
     def test_symlink_source_package_refused_before_destination_created(self):
         source = self.root / "source"
         source.mkdir()
-        for name in ("fleet-ops-control.py", "fleet_resource_control.py"):
+        for name in ("fleet-ops-control.py", "fleet_resource_control.py", "fleet_seat_inventory.py"):
             (source / name).write_text("pass\n")
         (source / "fleet-ops-control.json").write_text(json.dumps({"schemaVersion": 1}))
         (source / "fleet_secrets").symlink_to(SCRIPTS / "fleet_secrets", target_is_directory=True)

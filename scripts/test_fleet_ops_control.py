@@ -1661,6 +1661,91 @@ class ResourceDispatchTests(Base):
                 foc.parse_ssh_command("server resource-policy " + target + suffix)
 
 
+class SeatInventoryDispatchTests(Base):
+    """`server seat-inventory PLATFORM --plan`:  a read of what a platform has installed."""
+
+    # Made up and assembled here so no token-shaped literal sits in the file.
+    VALUE = "-".join(["not", "a", "real", "value", "must", "not", "appear"])
+
+    def write_cursor_mcp(self):
+        path = self.home / ".cursor" / "mcp.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "fleet-tools": {"command": "/bin/run", "env": {"T": self.VALUE}},
+                        "hosted": {"url": "https://example.invalid/" + self.VALUE},
+                    }
+                }
+            )
+        )
+
+    def test_the_plan_answers_with_names_and_counts_from_this_accounts_home(self):
+        self.write_cursor_mcp()
+        code, answer = self.run_main(
+            ["server", "seat-inventory", "cursor", "--plan", "--json"], self.ctx()
+        )
+        self.assertEqual((code, answer["ok"], answer["result"]), (0, True, "planned"))
+        self.assertEqual(answer["inventory"]["platform"], "cursor")
+        mcp = [s for s in answer["inventory"]["sections"] if s["title"] == "MCP Servers"][0]
+        self.assertEqual(
+            [(i["name"], i["detail"]) for i in mcp["items"]],
+            [("fleet-tools", "local command"), ("hosted", "remote")],
+        )
+
+    def test_no_value_from_a_config_file_reaches_the_answer(self):
+        self.write_cursor_mcp()
+        out = io.StringIO()
+        foc.main(["server", "seat-inventory", "cursor", "--plan", "--json"], ctx=self.ctx(), out=out)
+        self.assertNotIn(self.VALUE, out.getvalue())
+
+    def test_it_runs_no_command_takes_no_lock_and_writes_no_audit_row(self):
+        code, _ = self.run_main(["server", "seat-inventory", "claude", "--plan", "--json"], self.ctx())
+        self.assertEqual(code, 0)
+        self.assertEqual(self.runner.calls, [])
+        self.assertEqual(self.audit_rows(), [])
+
+    def test_it_needs_no_allowlist_entry(self):
+        config = json.loads(self.config_path.read_text())
+        config["server"] = {key: type(value)() for key, value in config["server"].items()}
+        self.config_path.write_text(json.dumps(config))
+        code, answer = self.run_main(["server", "seat-inventory", "fx", "--plan", "--json"], self.ctx())
+        self.assertEqual((code, answer["result"]), (0, "planned"))
+
+    def test_yes_is_refused_because_there_is_nothing_to_run(self):
+        code, answer = self.run_main(["server", "seat-inventory", "claude", "--yes", "--json"], self.ctx())
+        self.assertEqual((code, answer["result"]), (2, "refused"))
+        self.assertEqual(self.runner.calls, [])
+        # Like every refused `--yes`, the attempt is audited, and nothing else is.
+        rows = self.audit_rows()
+        self.assertEqual([(r["verb"], r["result"]) for r in rows], [("server seat-inventory", "refused")])
+
+    def test_a_platform_that_is_not_known_is_refused(self):
+        for target in ("nope", "CLAUDE", "..", "claude.x", "a" * 40):
+            with self.subTest(target=target):
+                code, answer = self.run_main(
+                    ["server", "seat-inventory", target, "--plan", "--json"], self.ctx()
+                )
+                self.assertEqual((code, answer["result"]), (2, "refused"))
+
+    def test_ssh_accepts_the_verb_and_rejects_shell_or_extra_arguments(self):
+        words = foc.parse_ssh_command("server seat-inventory claude --plan --json")
+        self.assertEqual(words[:3], ["server", "seat-inventory", "claude"])
+        for suffix in (" --plan;id", " --plan --json extra", " --plan --yes", " --plan --home=/x"):
+            with self.subTest(suffix=suffix), self.assertRaises(foc.Refused):
+                foc.parse_ssh_command("server seat-inventory claude" + suffix)
+
+    def test_over_ssh_the_answer_is_json_and_reads_the_account_home(self):
+        self.write_cursor_mcp()
+        context = self.ctx(
+            environ={"SSH_ORIGINAL_COMMAND": "server seat-inventory cursor --plan --json"}
+        )
+        code, answer = self.run_main(["--from-ssh"], context)
+        self.assertEqual((code, answer["result"]), (0, "planned"))
+        self.assertEqual(answer["inventory"]["host"], "server")
+
+
 class LogsAndPm2Tests(Base):
     def test_logs_plan_refuses_non_allowlisted_unit_and_carries_no_log_text(self):
         code, ans = self.run_main(
