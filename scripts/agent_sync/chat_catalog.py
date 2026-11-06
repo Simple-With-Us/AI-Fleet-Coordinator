@@ -8,6 +8,7 @@ never returned by the public projection.
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import os
 import re
@@ -21,11 +22,44 @@ from typing import Any
 from urllib.parse import quote
 
 MAX_FILES_PER_SOURCE = 160
+
+
+class _StoreHeavy(Exception):
+    """The OpenCode store could not be read inside the work budget."""
+
+
+class _StoreOperational(Exception):
+    """The OpenCode store failed operationally (locked, corrupt, unreadable) -
+    distinct from schema drift, which returns None, and from a budget trip."""
+
+
 # Chats a by-id lookup found outside the discovery window, kept so the wake that found one can read it.
 MAX_FOUND_RECORDS = 64
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MAX_TAIL_BYTES = 192 * 1024
 MAX_EXCERPT_CHARS = 2400
+# OpenCode SQLite excerpt budgets:  bounded rows and bytes before any JSON
+# parse, per session and across one whole scan.
+OPENCODE_EXCERPT_ROWS = 40
+# Combined per-row byte cap (UTF-8 bytes via length(CAST .. AS BLOB), not
+# characters) applied to m.data + p.data together, before any parse.
+OPENCODE_EXCERPT_ROW_BYTES = 64 * 1024
+# SQLite VM work budget for one store scan, in ACTUAL instructions:  the
+# progress handler runs once per OPENCODE_SQLITE_PROGRESS_STEPS instructions
+# and spends that many from the budget, so no query plan can turn a bounded
+# row count into unbounded work.  A monotonic wall-clock deadline covers the
+# paths instruction counting cannot see (page cache stalls, IO);  whichever
+# trips first aborts the read as _StoreHeavy.  The clock is checked between
+# instruction groups, so this bounds ACTIVE VM work;  it cannot interrupt one
+# blocking filesystem IO operation and is not a hard wall-clock IO deadline.
+OPENCODE_SQLITE_WORK_STEPS = 5_000_000
+# Granularity:  the handler runs once per this many VM instructions.
+OPENCODE_SQLITE_PROGRESS_STEPS = 1000
+OPENCODE_SQLITE_DEADLINE_SECONDS = 10.0
+OPENCODE_EXCERPT_SESSION_BYTES = 256 * 1024
+OPENCODE_EXCERPT_TOTAL_BYTES = 4 * 1024 * 1024
+# Legacy tree enumeration is bounded too:  at most this many project dirs.
+OPENCODE_LEGACY_PROJECTS = 40
 DEFAULT_TTL = 30.0
 STALE_TTL = 300.0
 
@@ -902,6 +936,516 @@ class ChatCatalog:
                 rows.append(row)
         return rows or [self._unavailable("fx", "FX", "no Fx sessions")]
 
+    # ------------------------------------------------------------------ OpenCode
+
+    def _opencode_root(self) -> Path:
+        # The default data home.  An XDG_DATA_HOME outside the scanned home is
+        # out of scope:  the _within guard would reject it anyway.
+        return self.home / ".local" / "share" / "opencode"
+
+    def _scan_opencode(self) -> list[dict[str, Any]]:
+        root = self._opencode_root()
+        db = root / "opencode.db"
+        # Gate on os.path.lexists, not is_file():  a db path that EXISTS
+        # (plain file, dangling or escaping symlink, unreadable file) but
+        # cannot be used is an explicit "unusable" result, never a silent
+        # fallthrough to the legacy tree while a real store is present.  The
+        # legacy scan runs only when the db path is ABSENT.
+        if os.path.lexists(db):
+            try:
+                usable = db.is_file() and _within(db, self.home) and os.access(db, os.R_OK)
+            except OSError:
+                usable = False
+            if not usable:
+                return [self._unavailable("opencode", "OPENCODE", "unusable OpenCode database")]
+            try:
+                rows = self._opencode_rows_db(db)
+            except _StoreHeavy:
+                return [
+                    self._unavailable("opencode", "OPENCODE", "OpenCode store exceeds read budget")
+                ]
+            except _StoreOperational:
+                return [
+                    self._unavailable("opencode", "OPENCODE", "OpenCode database operational error")
+                ]
+            if rows is None:
+                return [self._unavailable("opencode", "OPENCODE", "unrecognized OpenCode database")]
+            return rows or [self._unavailable("opencode", "OPENCODE", "no OpenCode sessions")]
+        base = root / "storage" / "session"
+        files: list[Path] = []
+        if base.is_dir() and _within(base, self.home):
+            # storage/session/<project>/ses_*.json.  Enumeration is bounded
+            # before any sort or filter:  os.scandir is lazy, and islice counts
+            # every directory ENTRY inspected (matching or not), so a huge tree
+            # can never be materialized the way sorted() or Path.glob would
+            # (glob scans and collects matches before yielding).  An OSError
+            # here degrades this platform, not the whole scan.
+            try:
+                with os.scandir(base) as entries:
+                    projects = [
+                        entry.path
+                        for entry in itertools.islice(entries, OPENCODE_LEGACY_PROJECTS + 1)
+                        if entry.is_dir(follow_symlinks=False)
+                    ][:OPENCODE_LEGACY_PROJECTS]
+            except OSError:
+                return [
+                    self._unavailable("opencode", "OPENCODE", "unreadable OpenCode session store")
+                ]
+            for project in sorted(projects):
+                try:
+                    with os.scandir(project) as entries:
+                        for entry in itertools.islice(entries, MAX_FILES_PER_SOURCE):
+                            name = entry.name
+                            if not (name.startswith("ses_") and name.endswith(".json")):
+                                continue
+                            path = Path(project) / name
+                            if entry.is_file(follow_symlinks=False) and _within(path, base):
+                                files.append(path)
+                                if len(files) >= MAX_FILES_PER_SOURCE:
+                                    break
+                except OSError:
+                    # One unreadable or concurrently removed project skips only
+                    # itself;  the sessions already collected from the other
+                    # projects still publish.
+                    continue
+                if len(files) >= MAX_FILES_PER_SOURCE:
+                    break
+        files.sort()
+        rows = []
+        for path in files:
+            try:
+                row = self._opencode_row_json(path)
+            except ValueError:
+                # Malformed session identity:  fail the platform closed, never
+                # substitute path.stem or skip silently.
+                return [
+                    self._unavailable("opencode", "OPENCODE", "malformed OpenCode session metadata")
+                ]
+            if row is not None:
+                rows.append(row)
+        return rows or [self._unavailable("opencode", "OPENCODE", "no OpenCode session store")]
+
+    def _opencode_rows_db(self, db: Path) -> list[dict[str, Any]] | None:
+        # Current opencode keeps one SQLite store (WAL, possibly held open by the
+        # CLI):  open strictly read-only.  Contracts, all tested, none claiming
+        # installed compatibility:
+        # - Source authority:  session rows come from the session table only
+        #   (qualified columns id / directory / title / time_created, optional
+        #   time_archived, against anomalyco/opencode packages/core/src/session/
+        #   sql.ts @411eff73).  The same pinned revision also defines the newer
+        #   session_message / session_input content tables;  when either is
+        #   present the authoritative content layout is unqualified, so rows
+        #   become metadata-only (registry facts, no content) and no message,
+        #   part, or newer-table payload is read.
+        # - Selection:  a bounded discovery window of the MAX_FILES_PER_SOURCE
+        #   most recently created non-archived sessions, activity-ordered inside
+        #   the window.  An old but recently active chat outside the window is
+        #   omitted by design of the bound, never silently misfiled.
+        # - Archive:  when time_archived exists, archived sessions are excluded;
+        #   "available" never describes an archived chat.
+        # - Fail-closed:  a store whose session shape does not match returns
+        #   None so the catalog says "unrecognized", never guessed rows.
+        # One VM-step work budget across every query on this connection.  LIMIT
+        # bounds returned rows, never work:  without a usable index a GROUP BY or
+        # ORDER BY still scans the whole table, so the progress handler is the
+        # actual bound.  Tripping it raises _StoreHeavy, not "unrecognized".
+        work = {"left": OPENCODE_SQLITE_WORK_STEPS, "tripped": False}
+        deadline = time.monotonic() + OPENCODE_SQLITE_DEADLINE_SECONDS
+
+        def _progress() -> int:
+            work["left"] -= OPENCODE_SQLITE_PROGRESS_STEPS
+            if work["left"] <= 0 or time.monotonic() > deadline:
+                work["tripped"] = True
+                return 1
+            return 0
+
+        try:
+            conn = sqlite3.connect(f"file:{quote(str(db))}?mode=ro", uri=True, timeout=2.0)
+        except sqlite3.Error:
+            raise _StoreOperational(str(db))
+        try:
+            conn.set_progress_handler(_progress, OPENCODE_SQLITE_PROGRESS_STEPS)
+            conn.execute("PRAGMA query_only = ON")
+            tables = {
+                r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+            }
+            # The pinned upstream revision names the table `session`;  the live
+            # store this repository documents (opencode_letter_plugin README)
+            # names it `session_v2`.  Resolve the permitted table once and use
+            # that identifier for the schema check and both reads.
+            session_table = next((t for t in ("session", "session_v2") if t in tables), None)
+            if session_table is None:
+                return None
+            session_cols = {r[1] for r in conn.execute("PRAGMA table_info(" + session_table + ")")}
+            if not {"id", "directory", "title", "time_created"} <= session_cols:
+                return None
+            newer_content = bool({"session_message", "session_input"} & tables)
+            if not newer_content:
+                # Legacy content path.  Both tables absent entirely:  sessions are
+                # registry rows only, excerpts stay empty (documented, tested).
+                # Exactly one present, or either missing the columns this reader
+                # parses:  shape drift, fail closed, never a degraded guess.
+                for table, required in (
+                    ("message", {"id", "session_id", "time_created", "data"}),
+                    ("part", {"message_id", "session_id", "time_created", "data"}),
+                ):
+                    if table not in tables:
+                        if ("message" in tables) or ("part" in tables):
+                            return None
+                        continue
+                    cols = {r[1] for r in conn.execute("PRAGMA table_info(" + table + ")")}
+                    if not required <= cols:
+                        return None
+            where = " WHERE time_archived IS NULL" if "time_archived" in session_cols else ""
+            # Allocation guards:  title is clipped (display-only), but identity
+            # and workspace path are never truncated - a truncated id can collide
+            # with another session's prefix, and a truncated directory is a wrong
+            # workspace for preflight.  Sessions whose id or directory exceeds
+            # the guard, or whose columns are not TEXT, are DROPPED from the
+            # window instead (bounded-subset contract, documented and tested).
+            sessions = conn.execute(
+                "SELECT id, directory, substr(title, 1, 4096), time_created FROM "
+                + session_table
+                + where
+                + (" AND" if where else " WHERE")
+                + " typeof(id) = 'text' AND length(id) <= 128"
+                + " AND (directory IS NULL OR (typeof(directory) = 'text'"
+                + " AND length(directory) <= 1024))"
+                + " ORDER BY time_created DESC LIMIT ?",
+                (MAX_FILES_PER_SOURCE,),
+            ).fetchall()
+            # Activity stamps, bounded to the same discovery window:  no
+            # all-store aggregation.  Every candidate table is whitelisted from
+            # sqlite_master and re-qualified for the columns the query needs.
+            updated: dict[str, float] = {}
+            activity_tables = (
+                [t for t in ("session_message", "message") if t in tables]
+                if newer_content
+                else ["message"]
+                if "message" in tables
+                else []
+            )
+            for table in activity_tables:
+                cols = {r[1] for r in conn.execute("PRAGMA table_info(" + table + ")")}
+                if not {"session_id", "time_created"} <= cols:
+                    continue
+                for sid, stamp in conn.execute(
+                    "SELECT session_id, MAX(time_created) FROM "
+                    + table
+                    + " WHERE typeof(session_id) = 'text' AND length(session_id) <= 128"
+                    + " AND session_id IN (SELECT id FROM "
+                    + session_table
+                    + where
+                    + (" AND" if where else " WHERE")
+                    + " typeof(id) = 'text' AND length(id) <= 128"
+                    + " AND (directory IS NULL OR (typeof(directory) = 'text'"
+                    + " AND length(directory) <= 1024))"
+                    + " ORDER BY time_created DESC LIMIT ?) GROUP BY session_id",
+                    (MAX_FILES_PER_SOURCE,),
+                ):
+                    if isinstance(sid, str) and isinstance(stamp, (int, float)):
+                        updated[sid] = max(updated.get(sid, 0.0), stamp / 1000.0)
+            budget = [OPENCODE_EXCERPT_TOTAL_BYTES]
+            # One set-based excerpt pass for the whole discovery window:  the
+            # per-session JOIN form issued up to MAX_FILES_PER_SOURCE queries,
+            # each able to scan the whole part table without a usable index
+            # (O(sessions x parts) under one VM budget).  A single
+            # session_id IN (...) query scans part at most once.  An
+            # operational failure marks every session metadata-only (explicit),
+            # never "available" with content that was never read.
+            excerpts_map: dict[str, list[dict[str, str]]] = {}
+            excerpts_ok = True
+            if not newer_content and "message" in tables and "part" in tables:
+                try:
+                    excerpts_map = self._opencode_excerpts_db_bulk(
+                        conn,
+                        [sid for sid, _, _, _ in sessions if isinstance(sid, str) and sid],
+                        tables,
+                        budget,
+                        work,
+                    )
+                except _StoreOperational:
+                    excerpts_ok = False
+            rows = []
+            for sid, cwd, title, created in sessions:
+                if not isinstance(sid, str) or not sid:
+                    continue
+                stamp = updated.get(sid) or (
+                    created / 1000.0 if isinstance(created, (int, float)) else 0.0
+                )
+                excerpts = excerpts_map.get(sid, [])
+                # Registry-only rows (no legacy content tables at all) can never
+                # be read, so they are metadata-only like the newer shape:  never
+                # "available" with an empty excerpt list and a read capability
+                # the store cannot deliver.
+                has_legacy_content = "message" in tables and "part" in tables
+                status = (
+                    "available"
+                    if not newer_content and has_legacy_content and excerpts_ok
+                    else "metadata-only"
+                )
+                rows.append(
+                    self._row(
+                        "opencode",
+                        "OPENCODE",
+                        sid,
+                        cwd=cwd if isinstance(cwd, str) else None,
+                        title=title
+                        if isinstance(title, str) and title.strip()
+                        else "OpenCode chat " + sid[:12],
+                        updated_at=stamp,
+                        status=status,
+                        source=str(db),
+                        excerpts=excerpts,
+                    )
+                )
+            rows.sort(key=lambda row: (row.get("updated_at") or 0, row["id"]), reverse=True)
+            return rows
+        except sqlite3.Error:
+            if work["tripped"]:
+                raise _StoreHeavy(str(db))
+            raise _StoreOperational(str(db))
+        finally:
+            conn.close()
+
+    def _opencode_excerpts_db_bulk(
+        self,
+        conn: sqlite3.Connection,
+        sids: list[str],
+        tables: set[str],
+        budget: list[int],
+        work: dict[str, Any],
+    ) -> dict[str, list[dict[str, str]]]:
+        # One set-based pass for every session in the discovery window:  the
+        # per-session JOIN form issued up to MAX_FILES_PER_SOURCE queries,
+        # each of which could scan the whole part table without a usable
+        # index, so the VM budget alone had to absorb O(sessions x parts).
+        # A single session_id IN (...) query scans part at most once and the
+        # per-session grouping happens in Python.
+        # Best-effort within explicit budgets, unchanged from the per-session
+        # form:  the per-row cap counts UTF-8 BYTES (length(CAST .. AS BLOB)),
+        # on m.data + p.data COMBINED, in SQL, before any parse.  Rows stream
+        # from the cursor one at a time (no fetchall), so at most one capped
+        # row (<= OPENCODE_EXCERPT_ROW_BYTES) is materialized on top of the
+        # per-session and scan-wide byte budgets (which therefore truly bound
+        # allocation, not just returned rows).  Malformed or non-text payloads
+        # are skipped.  Empty excerpts on an available row therefore means "no
+        # qualifying text parts within budget", never a claim about the chat's
+        # content;  the fail-closed contract applies to store shape only.  A
+        # VM-work-budget trip propagates as _StoreHeavy, and an operational
+        # sqlite failure as _StoreOperational - never a silent empty excerpt
+        # that misreports an unread chat as read.
+        if "message" not in tables or "part" not in tables or not sids:
+            return {}
+        if budget[0] <= 0:
+            return {}
+        placeholders = ",".join("?" for _ in sids)
+        collected: dict[str, list[tuple[Any, Any]]] = {}
+        spent: dict[str, int] = {}
+        try:
+            cursor = conn.execute(
+                "SELECT p.session_id, m.data, p.data,"
+                " length(CAST(m.data AS BLOB)) + length(CAST(p.data AS BLOB))"
+                " FROM part p JOIN message m ON m.id = p.message_id"
+                " WHERE p.session_id IN (" + placeholders + ")"
+                " AND length(CAST(p.data AS BLOB)) + length(CAST(m.data AS BLOB)) <= ?"
+                " ORDER BY p.session_id, p.time_created DESC",
+                (*sids, OPENCODE_EXCERPT_ROW_BYTES),
+            )
+            for sid, mdata, pdata, nbytes in cursor:
+                nbytes = nbytes if isinstance(nbytes, int) else 0
+                got = spent.get(sid, 0)
+                keep = collected.setdefault(sid, [])
+                if (
+                    got + nbytes > OPENCODE_EXCERPT_SESSION_BYTES
+                    or budget[0] - nbytes <= 0
+                    or len(keep) >= OPENCODE_EXCERPT_ROWS
+                ):
+                    continue
+                spent[sid] = got + nbytes
+                budget[0] -= nbytes
+                keep.append((mdata, pdata))
+                if budget[0] <= 0:
+                    break
+            cursor.close()
+        except sqlite3.Error:
+            if work["tripped"]:
+                raise _StoreHeavy("excerpts")
+            raise _StoreOperational("excerpts")
+        out: dict[str, list[dict[str, str]]] = {}
+        for sid, pairs in collected.items():
+            excerpts: list[dict[str, str]] = []
+            for mdata, pdata in reversed(pairs):
+                try:
+                    msg = json.loads(mdata) if isinstance(mdata, str) else None
+                    part = json.loads(pdata) if isinstance(pdata, str) else None
+                except ValueError:
+                    continue
+                if not isinstance(msg, dict) or not isinstance(part, dict):
+                    continue
+                role = msg.get("role")
+                if role not in {"user", "assistant"} or part.get("type") != "text":
+                    continue
+                text = self.scrub(_safe_text(part.get("text")))
+                if text:
+                    excerpts.append({"role": role, "text": text})
+            out[sid] = excerpts[-8:]
+        return out
+
+    def _opencode_row_json(self, path: Path) -> dict[str, Any] | None:
+        # Legacy (pre-SQLite) tree:  storage/session/<project>/ses_*.json.
+        info = self._read_json(path)
+        if not info:
+            return None
+        sid = info.get("id")
+        if not isinstance(sid, str) or not sid.strip():
+            raise ValueError("malformed OpenCode session metadata: missing id")
+        time_info = info.get("time") if isinstance(info.get("time"), dict) else {}
+        stamp = time_info.get("updated") or time_info.get("created") or info.get("time_created")
+        stamp = stamp / 1000.0 if isinstance(stamp, (int, float)) else 0.0
+        return self._row(
+            "opencode",
+            "OPENCODE",
+            sid,
+            cwd=info.get("directory") if isinstance(info.get("directory"), str) else None,
+            title=info.get("title")
+            if isinstance(info.get("title"), str) and info.get("title", "").strip()
+            else "OpenCode chat " + sid[:12],
+            updated_at=stamp,
+            source=str(path),
+        )
+
+    def _find_opencode(self, sid: str) -> dict[str, Any] | None:
+        # The by-id lookup for a tagged OpenCode chat, outside the discovery
+        # window.  Same store preference and fail-closed rules as _scan_opencode:
+        # a usable database is the store of record (no legacy fallthrough), a
+        # miss or a read failure is None, never an exception.
+        root = self.home / ".local" / "share" / "opencode"
+        db = root / "opencode.db"
+        try:
+            usable = db.is_file() and _within(db, self.home) and os.access(db, os.R_OK)
+        except OSError:
+            usable = False
+        if usable:
+            return self._find_opencode_db(db, sid)
+        base = root / "storage" / "session"
+        try:
+            if not (base.is_dir() and _within(base, self.home)):
+                return None
+            with os.scandir(base) as entries:
+                projects = [
+                    entry.path
+                    for entry in itertools.islice(entries, OPENCODE_LEGACY_PROJECTS + 1)
+                    if entry.is_dir(follow_symlinks=False)
+                ][:OPENCODE_LEGACY_PROJECTS]
+        except OSError:
+            return None
+        seen = 0
+        for project in sorted(projects):
+            try:
+                with os.scandir(project) as entries:
+                    for entry in itertools.islice(entries, MAX_FILES_PER_SOURCE):
+                        if seen >= MAX_FILES_PER_SOURCE:
+                            return None
+                        name = entry.name
+                        if not (name.startswith("ses_") and name.endswith(".json")):
+                            continue
+                        path = Path(project) / name
+                        if not (entry.is_file(follow_symlinks=False) and _within(path, base)):
+                            continue
+                        seen += 1
+                        try:
+                            row = self._opencode_row_json(path)
+                        except ValueError:
+                            continue
+                        if row is not None and row.get("session_id") == sid:
+                            return row
+            except OSError:
+                continue
+        return None
+
+    def _find_opencode_db(self, db: Path, sid: str) -> dict[str, Any] | None:
+        try:
+            conn = sqlite3.connect(f"file:{quote(str(db))}?mode=ro", uri=True, timeout=2.0)
+        except sqlite3.Error:
+            return None
+        try:
+            conn.execute("PRAGMA query_only = ON")
+            tables = {
+                r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+            }
+            session_table = next((t for t in ("session", "session_v2") if t in tables), None)
+            if session_table is None:
+                return None
+            session_cols = {r[1] for r in conn.execute("PRAGMA table_info(" + session_table + ")")}
+            if not {"id", "directory", "title", "time_created"} <= session_cols:
+                return None
+            newer_content = bool({"session_message", "session_input"} & tables)
+            archived_clause = (
+                " AND time_archived IS NULL" if "time_archived" in session_cols else ""
+            )
+            # Same allocation guards as discovery:  identity and workspace path
+            # are bounded in SQL, never materialized oversized (a 20 MB directory
+            # BLOB must not load before the row is classified).
+            found = conn.execute(
+                "SELECT id, directory, substr(title, 1, 4096), time_created FROM "
+                + session_table
+                + " WHERE id = ? AND typeof(id) = 'text' AND length(id) <= 128"
+                + " AND (directory IS NULL OR (typeof(directory) = 'text'"
+                + " AND length(directory) <= 1024))"
+                + archived_clause,
+                (sid,),
+            ).fetchone()
+            if found is None:
+                return None
+            fsid, cwd, title, created = found
+            stamp = created / 1000.0 if isinstance(created, (int, float)) else 0.0
+            excerpts: list[dict[str, str]] = []
+            status = "available"
+            if newer_content:
+                status = "metadata-only"
+            elif ("message" in tables) != ("part" in tables):
+                # Exactly one legacy content table:  shape drift, fail closed
+                # with discovery, never a degraded row.
+                return None
+            elif "message" not in tables:
+                # Registry rows only:  nothing readable, so the row is
+                # metadata-only, never available.
+                status = "metadata-only"
+            else:
+                activity = conn.execute(
+                    "SELECT MAX(time_created) FROM message WHERE session_id = ?"
+                    " AND typeof(session_id) = 'text'",
+                    (sid,),
+                ).fetchone()
+                if activity and isinstance(activity[0], (int, float)):
+                    stamp = max(stamp, activity[0] / 1000.0)
+                work = {"left": OPENCODE_SQLITE_WORK_STEPS, "tripped": False}
+                budget = [OPENCODE_EXCERPT_TOTAL_BYTES]
+                try:
+                    excerpts = self._opencode_excerpts_db_bulk(
+                        conn, [sid], tables, budget, work
+                    ).get(sid, [])
+                except _StoreOperational:
+                    status = "metadata-only"
+            return self._row(
+                "opencode",
+                "OPENCODE",
+                fsid,
+                cwd=cwd if isinstance(cwd, str) else None,
+                title=title
+                if isinstance(title, str) and title.strip()
+                else "OpenCode chat " + fsid[:12],
+                updated_at=stamp,
+                status=status,
+                source=str(db),
+                excerpts=excerpts,
+            )
+        except sqlite3.Error:
+            return None
+        finally:
+            conn.close()
+
     def _scan(
         self,
         *,
@@ -910,17 +1454,30 @@ class ChatCatalog:
         grok_timeout: float | None = None,
     ) -> None:
         self._availability = {}
-        groups = [
-            self._scan_claude(),
-            self._scan_codex(),
-            self._scan_grok(wait=wait_grok, force=force_grok, timeout=grok_timeout),
-            self._scan_cursor(),
-            self._scan_muse(),
-            self._scan_minimax(),
-            self._scan_fx(),
+        scanners: list[tuple[Callable[[], list[dict[str, Any]]], str, str]] = [
+            (self._scan_claude, "claude", "CLAUDE"),
+            (self._scan_codex, "codex", "CODEX"),
+            (
+                lambda: self._scan_grok(wait=wait_grok, force=force_grok, timeout=grok_timeout),
+                "grok-leader",
+                "GROK",
+            ),
+            (self._scan_cursor, "cursor-cloud", "CURSOR"),
+            (self._scan_muse, "muse", "MC"),
+            (self._scan_minimax, "minimax", "MM"),
+            (self._scan_fx, "fx", "FX"),
+            (self._scan_opencode, "opencode", "OPENCODE"),
+            (self._scan_cursor_local, "cursor-local", "CURSOR"),
         ]
-        # Explicit availability rows ensure unsupported/empty stores remain visible.
-        groups.append(self._scan_cursor_local())
+        # Failure isolation:  one platform's scanner raising must degrade that
+        # platform to an unavailable row, never take down the whole scan (or die
+        # holding the scan lock with every other platform unread).
+        groups = []
+        for scan, platform, seat in scanners:
+            try:
+                groups.append(scan())
+            except Exception:
+                groups.append([self._unavailable(platform, seat, "scan error")])
         rows = [row for group in groups for row in group]
         for platform, seat in (("antigravity", "AG"),):
             rows.append(self._unavailable(platform, seat, "adapter not available"))
@@ -1067,6 +1624,8 @@ class ChatCatalog:
                 row = self._find_cursor(name, sid)
             elif name in {"grok", "grok-leader"}:
                 row = self._find_grok(sid)
+            elif name == "opencode":
+                row = self._find_opencode(sid)
             else:
                 # Follow-up:  platforms with no local store here (antigravity) have no
                 # by-id lookup yet, so a tagged chat on one stays unfound.

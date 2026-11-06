@@ -212,6 +212,12 @@ class ExpectedState:
     ``names`` carries identifiers only (MCP server names, skill names, hook ids, secret
     store key names), and a credential expectation is a mode and a presence flag, never
     contents or a hash of contents.
+
+    ``guards`` says what a hook rule asks the guard to cover:  ``shell`` for the shell
+    tools and ``file`` for the file tools.  A rule that asks for ``shell`` reads PASS
+    when the shell tools are proven and says nothing about file tools,  and the file
+    tools have a rule of their own.  Empty means the rule asks for both,  which is how
+    a rule written before the scopes existed reads.
     """
 
     description: str
@@ -220,6 +226,7 @@ class ExpectedState:
     names: tuple[str, ...] = ()
     mode: str | None = None
     timeout_seconds: int | None = None
+    guards: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

@@ -88,7 +88,7 @@ struct FleetHostsView: View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 8) {
                 if reading.problem == nil && reading.isCurrent {
-                    FleetToolsStateBadge(state: reading.verdict, width: 92)
+                    FleetToolsStateBadge(state: reading.verdict, width: 92, checked: PassMeaning.toolsHost)
                 }
                 if let age = reading.age {
                     Text("Report read \(age) ago")
@@ -212,7 +212,7 @@ struct FleetHostsView: View {
                     Text(host.reachable ? "\(host.current)" : "—")
                         .frame(width: countWidth, alignment: .leading)
 
-                    FleetToolsStateBadge(state: host.state, width: stateWidth)
+                    FleetToolsStateBadge(state: host.state, width: stateWidth, checked: PassMeaning.toolsHost)
                 }
                 .contentShape(Rectangle())
             }
@@ -434,6 +434,12 @@ struct FleetHostsView: View {
 struct FleetToolsStateBadge: View {
     let state: CellState
     var width: CGFloat = 108
+    /// What this badge's check covered,  said in the tooltip.
+    ///
+    /// PASS means every check the badge's own rule asks for was proven,  and a panel
+    /// whose badge checks something narrower than a config rule says what,  so the word
+    /// does not mean one thing here and another in the grid.
+    var checked: String?
 
     var body: some View {
         HStack(spacing: 5) {
@@ -452,6 +458,15 @@ struct FleetToolsStateBadge: View {
                 .strokeBorder(state.border, lineWidth: 1)
         }
         .contentShape(Rectangle())
+        .help(helpText)
+    }
+
+    /// The tooltip:  what the badge checked when its panel says,  and otherwise that PASS
+    /// covers this panel's own check and nothing else,  so no PASS in the app is a bare
+    /// word and none of them claims a config rule was proven.
+    private var helpText: String {
+        if let checked { return "\(state.rawValue):  \(checked)" }
+        return state == .passed ? PassMeaning.panelRow : ""
     }
 }
 

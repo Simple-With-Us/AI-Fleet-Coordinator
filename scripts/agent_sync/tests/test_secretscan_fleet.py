@@ -88,6 +88,14 @@ class EveryKindIsFlaggedTests(unittest.TestCase):
     def test_the_older_kinds_still_answer_as_before(self) -> None:
         self.assertEqual(scan("AK" + "IA" + "ABCDEFGHIJ012345"), "AWS access key")
         self.assertEqual(scan("api_key=" + alnum(24)), "assigned secret")
+
+    def test_member_call_shaped_values_still_flag(self) -> None:
+        # Adversarial evidence (no real secrets):  a value shaped like a member call, quoted or not,
+        # lowercase or mixed case, still flags.  This pins the original protection after a proposal to
+        # exempt member-call expressions was rejected as a security regression.
+        self.assertEqual(scan("token = " + "auth" + "." + "removeprefix" + alnum(6) + '("x")'), "assigned secret")
+        self.assertEqual(scan('token = "' + "Auth" + "." + "RemovePrefix" + alnum(6) + '("'), "assigned secret")
+        self.assertEqual(scan("password: " + "os" + "." + "getenv" + alnum(10) + "("), "assigned secret")
         self.assertEqual(scan("sk-" + "ant-" + b64(40)), "Anthropic or OpenAI key")
 
 
