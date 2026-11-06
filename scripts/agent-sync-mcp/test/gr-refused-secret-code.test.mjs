@@ -121,6 +121,7 @@ test("every fixed workflow credential refusal surfaces as refused_secret through
     "credential-shaped file path refused",
     "credential-shaped repository metadata name refused",
     "args.files[0].content_b64 looks like it contains a credential (github_token); refusing to relay it",
+    "environment name contains credential pattern",
   ]) {
     const tools = grHarness(clientWith({ error }, 400), { ...config, grWorkflowEnabled: true });
     const out = await tools.call("gr_wf_files_put", {
@@ -152,6 +153,24 @@ test("the ambiguous secrets-API variable refusal stays relay_refused", async () 
       : await tools.call("gr_comment_pr", { repo: "a/b", number: 1, body: "x" });
     assert.equal(out.isError, true);
     assert.equal(codeOf(out), "relay_refused", `grWorkflowEnabled=${enabled}`);
+  }
+});
+
+test("ambiguous and post-write refusals stay relay_refused through the workflow", async () => {
+  // "invalid asset content" also fires for non-string, oversized and NUL-carrying content
+  // (workflow_verbs.py 1756-1806), and the commit-message refusal is post-write:  the commit
+  // already exists on GitHub, so refused_secret's "Nothing was written" guidance would be false.
+  for (const error of [
+    "invalid asset content",
+    "credential-shaped commit message refused",
+  ]) {
+    const tools = grHarness(clientWith({ error }, 400), { ...config, grWorkflowEnabled: true });
+    const out = await tools.call("gr_wf_files_put", {
+      repo: "a/b", branch: "jet/x", message: "m",
+      expected_head_sha: "a".repeat(40), files: [{ path: "x.txt", content_b64: "eA==" }],
+    });
+    assert.equal(out.isError, true);
+    assert.equal(codeOf(out), "relay_refused", error);
   }
 });
 
