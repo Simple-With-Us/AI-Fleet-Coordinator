@@ -6435,6 +6435,54 @@ class MinimaxBundleTests(World):
         hooks.unlink()
         self.assertFails(self.verify_mm(), "hooks.json")
 
+    def test_a_hook_path_in_another_users_home_is_refused_and_fails_verify(self) -> None:
+        # The server incident:  the installer ran as root for jay's home and wrote
+        # /root/apps/lane-tools/minimax-guard-hook into jay's hooks.json.  Root's own probes ran it
+        # fine, but jay's MiniMax got Permission denied and so let every tool call through.
+        self.assertEqual(self.apply().status, "added")
+        healthy = self.verify_mm()
+        self.assertTrue(
+            any(c.name == "hook runnable by home owner" and c.status == "PASS" for c in healthy),
+            healthy,
+        )
+        other_home = str(Path(self.paths.stable).parent)
+        root_like = mock.Mock(pw_name="root", pw_uid=0, pw_dir=other_home)
+        with mock.patch.object(T, "_login_users", return_value=[root_like]):
+            checks = self.verify_mm()
+            r = self.apply()
+        failed = [c for c in checks if c.name == "hook runnable by home owner"]
+        self.assertEqual([c.status for c in failed], ["FAIL"], checks)
+        self.assertIn("inside root's home", failed[0].detail)
+        self.assertEqual(r.status, "refused", r)
+        self.assertIn("inside root's home", r.detail)
+
+    def test_a_hook_the_home_owner_cannot_execute_is_refused(self) -> None:
+        self.assertEqual(self.apply().status, "added")
+        shim = Path(self.paths.stable) / T.MINIMAX_HOOK_NAME
+        mode = shim.stat().st_mode
+        shim.chmod(0o644)
+        self.addCleanup(shim.chmod, mode)
+        problem = T.hook_home_problem(str(shim), str(self.home))
+        self.assertIsNotNone(problem)
+        self.assertIn("not executable", problem)
+
+    def test_the_mode_bit_check_answers_for_the_target_user_not_the_caller(self) -> None:
+        # Root's os.access says yes to almost anything, so a check for another user reads the mode bits.
+        me = os.getuid()
+        gids = {os.getgid()}
+        inner = self.tmp / "inner"
+        inner.mkdir()
+        hook = inner / "hook"
+        hook.write_text("#!/bin/sh\n")
+        hook.chmod(0o700)
+        self.assertIsNone(T._runnable_by(str(hook), me, gids))
+        hook.chmod(0o070)  # group can run it, the owner cannot:  owner bits decide for the owner
+        self.assertIn("not executable", T._runnable_by(str(hook), me, gids) or "")
+        hook.chmod(0o700)
+        inner.chmod(0o600)  # the owner cannot search the directory on the way
+        self.addCleanup(inner.chmod, 0o700)
+        self.assertIn(str(inner), T._runnable_by(str(hook), me, gids) or "")
+
     def test_an_unwired_bundle_is_a_skip_unless_the_platform_is_named(self) -> None:
         checks = self.verify_mm()
         self.assertEqual([(c.name, c.status) for c in checks], [("bundle", "SKIP")])
