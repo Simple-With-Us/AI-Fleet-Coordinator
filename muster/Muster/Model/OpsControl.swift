@@ -1784,6 +1784,10 @@ final class OpsController: ObservableObject {
     /// True while there is an action in hand,  shown or not.
     var isPresenting: Bool { phase != .idle }
 
+    /// True while a new plan would be refused:  an action is in hand,  or Muster is running
+    /// a start of its own.  The buttons that ask for a plan hold while this is true.
+    var refusesNewPlan: Bool { isPresenting || isRunningUnattended }
+
     /// True while the sheet should be on screen.
     var isSheetShown: Bool { phase != .idle && !isSheetHidden }
 
@@ -1864,10 +1868,9 @@ final class OpsController: ObservableObject {
             if !abandonPlan { isSheetHidden = false }
             return false
         }
-        guard !isRunningUnattended else {
-            notice = OpsControlError.busy.errorDescription
-            return false
-        }
+        // No sheet is up to show a refusal here,  so none is noted:  it would only surface
+        // later,  under some other plan.  The buttons hold on `refusesNewPlan` instead.
+        guard !isRunningUnattended else { return false }
         guard task == nil else { return false }
         notice = nil
         abandonPlan = false

@@ -2004,6 +2004,11 @@ final class OpsControllerUnattendedTests: XCTestCase {
         XCTAssertNotNil(ops.stageStartedAt)
         XCTAssertTrue(ops.quitWarning?.contains("has no row for it until it ends") == true, ops.quitWarning ?? "")
         XCTAssertEqual(ops.phase, .idle, "it never shows a sheet")
+        // The plan buttons hold,  and a plan asked for anyway is refused with no notice,
+        // because no sheet is up to show one.
+        XCTAssertTrue(ops.refusesNewPlan)
+        XCTAssertFalse(ops.plan(.pm2App(verb: .stop, name: "shellular")))
+        XCTAssertNil(ops.notice)
         await gate.release()
         let outcome = await run.value
         XCTAssertEqual(outcome?.isSuccess(for: .yes), true)
@@ -2011,6 +2016,7 @@ final class OpsControllerUnattendedTests: XCTestCase {
         XCTAssertNil(ops.runStage)
         XCTAssertNil(ops.stageStartedAt)
         XCTAssertNil(ops.quitWarning)
+        XCTAssertFalse(ops.refusesNewPlan)
         XCTAssertEqual(ops.completedRuns, 1)
     }
 }

@@ -196,7 +196,7 @@ struct OperationsView: View {
                             controller.plan(.macAgent(verb: verb, label: agent.label))
                         }
                         .controlSize(.small)
-                        .disabled(controller.isPresenting)
+                        .disabled(controller.refusesNewPlan)
                     }
                 } else {
                     Text("not in the allowlist")
@@ -245,7 +245,7 @@ struct OperationsView: View {
                                 controller.plan(.serverUpdate(name: update.name))
                             }
                             .controlSize(.small)
-                            .disabled(controller.isPresenting)
+                            .disabled(controller.refusesNewPlan)
                         }
                         .padding(.vertical, 2)
                     }
