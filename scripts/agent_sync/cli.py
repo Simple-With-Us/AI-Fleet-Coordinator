@@ -369,14 +369,10 @@ class Agent:
         if self.tag and self.sent_by_this_bot(message):
             # The prefix has no closing bracket, so a bare startswith would take a sibling whose tag
             # merely begins with ours (session ids shorter than 8 characters) for this session.
-            content = str(message.get("content") or "")
-            return (
-                content.startswith(self.tag_prefix + "]")
-                or content.startswith(self.tag_prefix + "->")
-                or content.startswith(self.tag_prefix + "\u2192")
-                # Policy 2026-11-05 folder intro: "[SEAT 📁repos]" / "[SEAT: LL.1.M 📁repos]"
-                or content.startswith(self.tag_prefix + " ")
-                or content.startswith(self.tag_prefix + ":")
+            # A compact intro counts only when it carries this same session id.  A bare
+            # `[SEAT 📁repos]` is not this session, so siblings stay visible.
+            return ROUTER.content_matches_session_prefix(
+                str(message.get("content") or ""), self.tag_prefix
             )
         return False
 
@@ -1615,6 +1611,43 @@ def _resolve_peers(agent: Agent, names: Sequence[str]) -> tuple[list[str], list[
     return mentions, labels
 
 
+def _compose_intro_lead(
+    text: str,
+    *,
+    labels: Sequence[str],
+    mentions: Sequence[str],
+    quiet: bool,
+) -> str | None:
+    """When `text` already opens with a compact intro, that intro stays line 1.
+
+    `--to` labels are merged inside the closing bracket.  @-mentions follow the
+    bracket on the same line.  A quiet post keeps one no-wake marker immediately
+    before `[`.  None when the text does not open with a valid intro, so the
+    caller keeps the legacy session tag.
+    """
+    intro = ROUTER.parse_leading_compact_intro(text)
+    if not intro:
+        return None
+    peers = list(intro["peers"])
+    for label in labels:
+        if label not in peers:
+            peers.append(label)
+    arrow = (" \u2192" + ",".join(peers)) if peers else ""
+    bracket = "[%s%s 📁%s%s]" % (intro["seat"], intro["thread"], intro["repos"], arrow)
+    marker = intro["marker"]
+    if quiet and not marker:
+        marker = ROUTER.NO_WAKE_MARKER + " "
+    rest = intro["rest"]
+    mention_blob = " ".join(m for m in mentions if m and m not in rest)
+    if mention_blob:
+        if rest.startswith("\n") or not rest.strip():
+            return "%s%s %s%s" % (marker, bracket, mention_blob, rest)
+        return "%s%s %s %s" % (marker, bracket, mention_blob, rest.lstrip())
+    if rest.startswith("\n") or not rest or rest[0].isspace():
+        return "%s%s%s" % (marker, bracket, rest)
+    return "%s%s %s" % (marker, bracket, rest)
+
+
 def _compose(
     agent: Agent,
     text: str,
@@ -1624,6 +1657,17 @@ def _compose(
     no_tag: bool,
     quiet: bool = False,
 ) -> str:
+    if not no_tag:
+        # A seat that already wrote the folder intro keeps it as the first line.
+        # Raw text with no intro still gets the legacy [SEAT·session→…] tag.
+        led = _compose_intro_lead(text, labels=labels, mentions=mentions, quiet=quiet)
+        if led is not None:
+            if len(led) > MAX_CONTENT_LENGTH:
+                raise UsageError(
+                    "the message is %d characters; Zulip allows at most %d"
+                    % (len(led), MAX_CONTENT_LENGTH)
+                )
+            return led
     parts: list[str] = []
     if quiet:
         # The owner's per-message no-wake signal:  the message stays readable in Zulip and wakes

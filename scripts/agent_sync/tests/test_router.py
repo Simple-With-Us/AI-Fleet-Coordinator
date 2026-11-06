@@ -378,6 +378,30 @@ class LeaseRoutingTests(unittest.TestCase):
         c, d = R.route(msg(sender=10, content="@**Claude** talking to myself", flags=["mentioned"]), ME, ctx(), [])
         self.assertEqual((d.seat_inbox, d.drop_reason), (False, "own"))
 
+    def test_session_prefix_or_embedded_intro_marks_only_that_lease(self) -> None:
+        tagged = lease("B", topics=[("agent-sync", "t")], prefix="[CLAUDE·aaaa1111")
+        sibling = lease("C", topics=[("agent-sync", "t")], prefix="[CLAUDE·bbbb2222")
+        cases = (
+            "[CLAUDE·aaaa1111] working",
+            "[CLAUDE·aaaa1111 📁AFC] working",
+            "[CLAUDE·aaaa1111: HH.1.M 📁AFC] working",
+            "👀 [CLAUDE·aaaa1111] working",
+        )
+        for content in cases:
+            with self.subTest(content=content):
+                message = msg(sender=10, content=content, mid=901)
+                self.assertTrue(tagged.posted_this(message))
+                self.assertFalse(sibling.posted_this(message))
+                if not content.startswith("👀"):
+                    d = R.route(message, ME, ctx(), [tagged, sibling])[1]
+                    self.assertEqual(d.lease_items, [("C", "passive", "sibling")])
+        # A compact intro with no session id does not collapse every session into "own".
+        bare = msg(sender=10, content="[CLAUDE 📁AFC,OPS] working", mid=902)
+        self.assertFalse(tagged.posted_this(bare))
+        self.assertFalse(sibling.posted_this(bare))
+        d = R.route(bare, ME, ctx(), [tagged, sibling])[1]
+        self.assertEqual(sorted(item[0] for item in d.lease_items), ["B", "C"])
+
     def test_one_mention_lease_is_chosen_latest_prompt_then_newest(self) -> None:
         old = lease("old", last_prompt=50.0, created=1.0)
         recent = lease("recent", last_prompt=90.0, created=2.0)
@@ -568,12 +592,13 @@ class NoWakeTests(unittest.TestCase):
         return R.route(message, me, ctx(**kw), list(leases))
 
     def test_a_leading_marker_stops_a_direct_mention(self) -> None:
+        # Policy 2026-11-05:  👀 suppresses the wake.  The addressed seat still gets the post.
         c, d = self.route(msg(content="%s @**Claude** please look" % MARKER, flags=["mentioned"]))
         self.assertTrue(c.no_wake)
         self.assertIn("no_wake", c.labels())
-        self.assertEqual(d.drop_reason, "no_wake")
-        self.assertEqual((d.seat_inbox, d.wake, d.lease_items), (False, None, []),
-                         "a marker message reaches no seat at all")
+        self.assertIsNone(d.drop_reason)
+        self.assertEqual((d.seat_inbox, d.wake, d.wake_block, d.lease_items),
+                         (True, None, "no_wake", []))
 
     def test_the_same_mention_without_the_marker_still_wakes(self) -> None:
         c, d = self.route(msg(content="@**Claude** please look", flags=["mentioned"]))
@@ -595,15 +620,17 @@ class NoWakeTests(unittest.TestCase):
         self.assertEqual(d.drop_reason, "no_wake")
 
     def test_a_dm_from_an_eligible_bot_is_suppressed(self) -> None:
+        # A DM is addressed.  The marker blocks the wake and the message still reaches the inbox.
         c, d = self.route(msg(content="%s Claude, are you there?" % MARKER, dm=True))
         self.assertTrue(c.no_wake)
-        self.assertEqual(d.drop_reason, "no_wake")
-        self.assertFalse(d.seat_inbox)
+        self.assertIsNone(d.drop_reason)
+        self.assertEqual((d.seat_inbox, d.wake, d.wake_block), (True, None, "no_wake"))
 
     def test_an_owner_dm_is_suppressed(self) -> None:
         c, d = self.route(msg(content="%s Claude, are you there?" % MARKER, dm=True, sender=OWNER, client="website"))
         self.assertTrue(c.no_wake)
-        self.assertEqual(d.drop_reason, "no_wake")
+        self.assertIsNone(d.drop_reason)
+        self.assertEqual((d.seat_inbox, d.wake), (True, None))
 
     def test_an_owner_at_all_is_suppressed(self) -> None:
         c, d = self.route(msg(content="%s @**all**" % MARKER, channel="work-in-progress", topic="fleet",
@@ -617,8 +644,9 @@ class NoWakeTests(unittest.TestCase):
         message = msg(content="%s @**Claude** please look" % MARKER, flags=["mentioned"])
         first = self.route(message)
         second = self.route(message)
-        self.assertEqual(first[1].drop_reason, "no_wake")
-        self.assertEqual(second[1].drop_reason, "no_wake")
+        self.assertIsNone(first[1].wake)
+        self.assertIsNone(second[1].wake)
+        self.assertTrue(first[1].seat_inbox and second[1].seat_inbox)
 
     def test_a_quoted_code_or_mid_sentence_marker_still_wakes(self) -> None:
         # Each of these carries a real mention, so the only thing under test is whether the
@@ -635,15 +663,15 @@ class NoWakeTests(unittest.TestCase):
 
     def test_a_marker_after_the_seat_tag_suppresses(self) -> None:
         # `simple-chat post` prepends the seat tag to whatever the agent wrote, so the marker lands
-        # after it.
+        # after it.  The wake is suppressed.  The @-mention still reaches the inbox.
         c, d = self.route(msg(content="%s%s@**Claude** please look" % (SEAT_TAG, MARKER), flags=["mentioned"]))
         self.assertTrue(c.no_wake)
-        self.assertEqual(d.drop_reason, "no_wake")
+        self.assertEqual((d.seat_inbox, d.wake, d.drop_reason), (True, None, None))
 
     def test_a_marker_before_the_seat_tag_suppresses(self) -> None:
         c, d = self.route(msg(content="%s%s@**Claude** please look" % (MARKER, SEAT_TAG), flags=["mentioned"]))
         self.assertTrue(c.no_wake)
-        self.assertEqual(d.drop_reason, "no_wake")
+        self.assertEqual((d.seat_inbox, d.wake, d.drop_reason), (True, None, None))
 
     def test_a_sessionless_seat_tag_suppresses(self) -> None:
         # A seat with no session tag writes `[CLAUDE] `, and the marker still has to be read
@@ -651,13 +679,13 @@ class NoWakeTests(unittest.TestCase):
         c, d = self.route(msg(content="[CLAUDE] %s@**Claude** please look" % MARKER,
                                flags=["mentioned"], email="claude-bot@zulip.test"))
         self.assertTrue(c.no_wake)
-        self.assertEqual(d.drop_reason, "no_wake")
+        self.assertEqual((d.seat_inbox, d.wake, d.drop_reason), (True, None, None))
 
     def test_a_labelled_seat_tag_suppresses(self) -> None:
         c, d = self.route(msg(content="[CLAUDE→MM] %s@**Claude** please look" % MARKER,
                                flags=["mentioned"], email="claude-bot@zulip.test"))
         self.assertTrue(c.no_wake)
-        self.assertEqual(d.drop_reason, "no_wake")
+        self.assertEqual((d.seat_inbox, d.wake, d.drop_reason), (True, None, None))
 
     def test_an_ordinary_bracket_word_is_not_a_seat_tag(self) -> None:
         # `[TODO]` is a word, not a seat tag, so the marker after it is mid-sentence and the
@@ -677,11 +705,11 @@ class NoWakeTests(unittest.TestCase):
 
     def test_a_session_separator_is_a_seat_tag_on_its_own(self) -> None:
         # The `·` separator is the fleet's own, so a tag that carries it is a seat tag whatever
-        # the sender is, and the marker after it is read.
+        # the sender is, and the marker after it is read.  The mention still reaches the inbox.
         c, d = self.route(msg(content="[CLAUDE·mvs36f02] %s@**Claude** please look" % MARKER,
                                flags=["mentioned"], email="codex-bot@zulip.test"))
         self.assertTrue(c.no_wake)
-        self.assertEqual(d.drop_reason, "no_wake")
+        self.assertEqual((d.seat_inbox, d.wake, d.drop_reason), (True, None, None))
 
     def test_the_wake_tag_still_counts_with_a_marker(self) -> None:
         # The loop guard counts wake replies, so a marker must not hide a wake tag from it.
@@ -698,4 +726,48 @@ class NoWakeTests(unittest.TestCase):
     def test_the_pasted_character_works_too(self) -> None:
         c, d = self.route(msg(content="\U0001f440 @**Claude** please look", flags=["mentioned"]))
         self.assertTrue(c.no_wake)
+        self.assertEqual((d.seat_inbox, d.wake, d.drop_reason), (True, None, None))
+
+    def test_an_undirected_compact_intro_with_eyes_still_drops(self) -> None:
+        c, d = self.route(msg(content="👀 [GB-DIRECTOR 📁AFC] visibility only", sender=JET,
+                               email="gb-director-bot@zulip.test"))
+        self.assertTrue(c.no_wake)
         self.assertEqual(d.drop_reason, "no_wake")
+        self.assertFalse(d.seat_inbox)
+        self.assertIsNone(d.wake)
+
+    def test_a_directed_compact_intro_with_eyes_reaches_the_addressed_seat(self) -> None:
+        codex = R.SeatIdentity("CODEX", CODEX, "Codex", "codex-bot@zulip.test")
+        content = "👀 [GB-PLUMBER 📁AFC →CODEX] @**Codex** please review"
+        c, d = self.route(msg(content=content, flags=["mentioned"], sender=JET,
+                               email="gb-plumber-bot@zulip.test"), me=codex)
+        self.assertTrue(c.no_wake and c.direct)
+        self.assertTrue(d.seat_inbox, "the addressed seat still gets the post")
+        self.assertIsNone(d.wake, "Operator wake stays suppressed")
+        self.assertIsNone(d.drop_reason)
+        self.assertEqual(d.lease_items, [])
+
+    def test_a_bracket_arrow_without_a_mention_is_not_delivery(self) -> None:
+        # The bracket label wakes nobody.  Delivery follows the @-mention or the DM.
+        codex = R.SeatIdentity("CODEX", CODEX, "Codex", "codex-bot@zulip.test")
+        c, d = self.route(msg(content="👀 [GB-PLUMBER 📁AFC →CODEX] quiet note", sender=JET), me=codex)
+        self.assertTrue(c.no_wake)
+        self.assertFalse(c.direct)
+        self.assertEqual(d.drop_reason, "no_wake")
+        self.assertFalse(d.seat_inbox)
+
+    def test_a_marker_after_a_compact_intro_is_the_signal(self) -> None:
+        stripped, suppressed = R.strip_no_wake("[JET 📁AFC] :eyes: hello", "JET")
+        self.assertTrue(suppressed)
+        self.assertTrue(stripped.startswith("[JET 📁AFC]"))
+        self.assertNotIn(":eyes:", stripped)
+        _, other = R.strip_no_wake("[JET 📁AFC] :eyes: hello", "CODEX")
+        self.assertFalse(other, "another seat's compact intro is not a tag for this sender")
+        _, threaded = R.strip_no_wake("[MM: HH.1.M 📁AFC,OPS] :eyes: hello", "CODEX")
+        self.assertTrue(threaded, "a multi-thread id is a seat tag on its own")
+
+    def test_the_seats_own_quiet_mention_still_drops(self) -> None:
+        c, d = self.route(msg(sender=10, content="%s @**Claude** please look" % MARKER, flags=["mentioned"]))
+        self.assertTrue(c.no_wake and c.own)
+        self.assertEqual(d.drop_reason, "no_wake")
+        self.assertFalse(d.seat_inbox)

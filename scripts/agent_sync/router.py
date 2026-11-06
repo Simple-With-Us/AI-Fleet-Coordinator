@@ -105,18 +105,36 @@ _NOTE_TAG_RE = re.compile(r"^\s*\[CLAUDE\u00b7needsown(?:\u2192|->)")
 #: eyes emoji on a message means "never wake anyone".  The message stays readable in Zulip, and
 #: native human Zulip notifications are a separate system that this does not touch.  Both
 #: spellings are accepted, because Zulip's own emoji picker writes the shortcode and a pasted
-#: character arrives as itself.
+#: character arrives as itself.  Policy 2026-11-05:  the marker suppresses Operator and peer
+#: wakes.  An @-mentioned or DM'd seat still gets the post in its inbox.
 NO_WAKE_MARKER = ":eyes:"
 NO_WAKE_MARKERS = (":eyes:", "\U0001f440")
 _NO_WAKE_RE = re.compile(r"^\s*(?:%s)" % "|".join(re.escape(m) for m in NO_WAKE_MARKERS))
-#: One leading bracket seat tag (`[MM\u00b7session8] `, `[CLAUDE\u00b7needsown\u2192SEAT] `).  The
-#: marker may follow it, because `simple-chat post` prepends that tag to whatever the agent wrote.
-#: The session part is optional:  a seat with no session tag writes `[MM] `, and a labelled post
-#: writes `[MM\u2192CODEX] `, so the tag is the seat name, then optionally a `\u00b7` session, then
-#: optionally a `\u2192` label list, then the closing bracket.
+#: One leading bracket seat tag.  Legacy: `[MM\u00b7session8] `, `[MM] `, `[MM\u2192CODEX] `.
+#: Compact post intro (Policy 2026-11-05): `[JET 📁AFC]`, `[MM: HH.1.M 📁AFC,OPS]`,
+#: `[GB-PLUMBER 📁AFC →CODEX]`.  The marker may sit before the bracket or just after it.
 _SEAT_TAG_PREFIX_RE = re.compile(
-    r"^\s*\[(?P<seat>[A-Z0-9][A-Z0-9_-]*)(?P<session>(?:\u00b7[^\]]*)?)(?:\u2192[^\]]*)?\]\s*"
+    r"^\s*\["
+    r"(?P<seat>[A-Z0-9][A-Z0-9_-]*)"
+    r"(?:"
+    r"(?P<session>\u00b7[^\]]*?)(?:\u2192[^\]]*)?\]"
+    r"|"
+    r"(?:\u2192[^\]]*)?\]"
+    r"|"
+    r"(?P<thread>\s*:\s*[A-Za-z0-9]+(?:[.-]\d+[.-][MSC]))?\s+📁[^\]]*\]"
+    r")"
+    r"\s*"
 )
+# A compact intro on the first content line.  Space before 📁, repos after it, optional
+# multi-thread `: LL.#.H` (periods or the legacy hyphen form), optional `→` recipients.
+_COMPACT_INTRO_RE = re.compile(
+    r"^(?P<marker>(?:👀|:eyes:)\s*)?"
+    r"\[(?P<seat>[A-Z0-9][A-Z0-9_-]*)"
+    r"(?P<thread>\s*:\s*[A-Za-z0-9]+(?:[.-]\d+[.-][MSC]))?"
+    r"\s+📁(?P<after>[^\]]*)\]"
+)
+_FOLDER_TOKEN_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
+_SESSION_TAG_ENDS = ("]", "\u2192", "->", " ", ":")
 
 
 def _sender_seat_tag(message: Mapping[str, Any]) -> str | None:
@@ -128,6 +146,98 @@ def _sender_seat_tag(message: Mapping[str, Any]) -> str | None:
     return seat_tag_for({"is_bot": True, "email": email})
 
 
+def _real_repo_codes(blob: str) -> list[str]:
+    """Repo codes in a 📁 list.  Empty when the list is empty or malformed.
+
+    FLEET is not a folder code.  OPS is Fleet-OPS and counts.  One bad segment
+    rejects the whole list, so a trailing comma or a `→` left in the repo side fails.
+    """
+    text = str(blob or "").strip()
+    if not text:
+        return []
+    real: list[str] = []
+    for part in (piece.strip() for piece in text.split(",")):
+        if not _FOLDER_TOKEN_RE.match(part):
+            return []
+        if part.upper() == "FLEET":
+            continue
+        real.append(part)
+    return real
+
+
+def parse_leading_compact_intro(content: str) -> dict[str, Any] | None:
+    """The compact post intro when `content` opens with one, else None.
+
+    Keys: marker, seat, thread, repos, peers, rest.  `repos` keeps the seat's
+    spelling (`ST, CTS` stays).  `peers` is the `→` / `->` list.  A 📁 list that
+    is empty, malformed, or only FLEET is not an intro.
+    """
+    text = str(content or "").lstrip()
+    match = _COMPACT_INTRO_RE.match(text)
+    if not match:
+        return None
+    after = match.group("after") or ""
+    pieces = re.split(r"\s*(?:→|->)\s*", after, maxsplit=1)
+    repos = pieces[0].strip()
+    if not _real_repo_codes(repos):
+        return None
+    peers = []
+    if len(pieces) > 1:
+        peers = [p.strip() for p in re.split(r"\s*,\s*", pieces[1]) if p.strip()]
+    return {
+        "marker": match.group("marker") or "",
+        "seat": match.group("seat"),
+        "thread": match.group("thread") or "",
+        "repos": repos,
+        "peers": peers,
+        "rest": text[match.end() :],
+    }
+
+
+def _without_leading_no_wake(content: str) -> str:
+    """Content with one leading no-wake marker removed, then left-stripped."""
+    text = str(content or "").lstrip()
+    match = _NO_WAKE_RE.match(text)
+    if not match:
+        return text
+    return text[match.end() :].lstrip()
+
+
+def _seat_of_prefix(prefix: str) -> str:
+    """Seat name from a session prefix `[SEAT` or `[SEAT·tag`."""
+    body = prefix[1:] if prefix.startswith("[") else prefix
+    for sep in ("\u00b7", ":", " ", "\u2192", "->"):
+        if sep in body:
+            body = body.split(sep, 1)[0]
+            break
+    return body
+
+
+def content_matches_session_prefix(content: str, prefix: str | None) -> bool:
+    """True when `content` leads with this session's tag or with its compact intro.
+
+    `[SEAT·session` followed by `]`, `→`, `->`, a space, or `:` still matches, so
+    a sibling whose tag merely begins the same way does not.  A leading 👀 does
+    not hide the tag.  A compact intro matches a session prefix only when the
+    bracket also carries that session id, so one seat's sessions stay distinct.
+    A prefix with no session id (`[SEAT`) matches a compact intro for that seat.
+    """
+    if not prefix:
+        return False
+    text = _without_leading_no_wake(content)
+    if any(text.startswith(prefix + end) for end in _SESSION_TAG_ENDS):
+        return True
+    intro = parse_leading_compact_intro(text)
+    if not intro or intro["seat"] != _seat_of_prefix(prefix):
+        return False
+    if "\u00b7" not in prefix:
+        return True
+    session = prefix.split("\u00b7", 1)[1]
+    bracket_end = text.find("]")
+    bracket = text[: bracket_end + 1] if bracket_end >= 0 else text
+    return bool(session) and session in bracket
+
+
 def strip_no_wake(content: str, seat: str | None = None) -> tuple[str, bool]:
     """(the content without a leading no-wake marker, whether the marker was there).
 
@@ -137,9 +247,10 @@ def strip_no_wake(content: str, seat: str | None = None) -> tuple[str, bool]:
     comes back unchanged, so the anchored tag regexes still match where they did.
 
     `seat` is the sender's own seat tag (`MM`, `CLAUDE`).  A bracket after which the marker is
-    read must be a seat tag:  either it carries the `\u00b7` session separator, which no ordinary
-    word has, or its seat name is the sender's own.  So `[TODO] :eyes: hi` stays a normal
-    message, while `[MM] :eyes: hi` from MM is the signal.
+    read must be a seat tag:  either it carries the `\u00b7` session separator or a multi-thread
+    `: LL.#.H` id, which no ordinary word has, or its seat name is the sender's own, including
+    a compact intro (`[JET 📁AFC]`, `[MM: HH.1.M 📁AFC]`).  So `[TODO] :eyes: hi` stays a
+    normal message, while `[MM] :eyes: hi` from MM is the signal.
     """
     text = str(content or "")
     lead = len(text) - len(text.lstrip())
@@ -148,7 +259,11 @@ def strip_no_wake(content: str, seat: str | None = None) -> tuple[str, bool]:
     if match:
         return text[:lead] + rest[match.end() :], True
     tag = _SEAT_TAG_PREFIX_RE.match(rest)
-    if tag and (tag.group("session") or (seat and tag.group("seat") == seat)):
+    if tag and (
+        tag.group("session")
+        or tag.group("thread")
+        or (seat and tag.group("seat") == seat)
+    ):
         after = rest[tag.end() :]
         match = _NO_WAKE_RE.match(after)
         if match:
@@ -350,10 +465,9 @@ class LeaseView:
     def posted_this(self, message: Mapping[str, Any]) -> bool:
         if message.get("id") in self.posted:
             return True
-        content = str(message.get("content") or "")
-        return bool(self.prefix) and any(
-            content.startswith(self.prefix + end) for end in ("]", "→", "->")
-        )
+        # Session prefix `[SEAT·tag` or a compact intro that carries that same
+        # tag.  A bare `[SEAT 📁repos]` does not claim every session of the seat.
+        return content_matches_session_prefix(str(message.get("content") or ""), self.prefix)
 
 
 class Classes:
@@ -549,9 +663,17 @@ def route(
     d.wake_worthy = kind is not None
     d.wake_owner = kind == "owner"
     if c.no_wake:
-        # The owner's per-message signal:  the message stays readable in Zulip and no seat is
-        # woken by it.  The gate is before the lease, the seat inbox and the wake branch, so a
-        # marker message never reaches a seat.
+        # 👀 suppresses Operator and peer wakes.  An undirected visibility post still
+        # reaches no seat.  A directed ask (an @-mention or a DM) still lands in the
+        # addressed seat's inbox, and it does not interrupt a lease.  The seat's own
+        # quiet post stays dropped, the same as an undirected one.
+        d.wake_worthy = False
+        d.wake_owner = False
+        if (c.direct or c.dm) and not c.own:
+            d.seat_inbox = True
+            d.wake = None
+            d.wake_block = "no_wake"
+            return c, d
         d.drop_reason = "no_wake"
         return c, d
     if not c.dm and c.key in ctx.muted and not c.direct:
