@@ -222,6 +222,9 @@ final class FleetGridTests: XCTestCase {
         XCTAssertTrue(PassMeaning.verdict("UNKNOWN").contains("not every check was proven"))
         XCTAssertTrue(PassMeaning.verdict(nil).contains("not every check was proven"))
         XCTAssertTrue(PassMeaning.appRow.contains("Nothing else about the app was checked"))
+        // A badge with no sentence of its own never claims a config rule was proven.
+        XCTAssertTrue(PassMeaning.panelRow.contains("this panel makes"))
+        XCTAssertFalse(PassMeaning.panelRow.contains("the rule"))
     }
 
     /// The wake panel's matching state is not called PASS.
