@@ -166,13 +166,22 @@ class InfisicalStore:
         finally:
             body.clear()
         if status not in (200, 201):
-            if not isinstance(status, int) or status == 0 or status >= 500:
+            if not isinstance(status, int) or status in (0, 408) or status >= 500:
                 # Status 0 is how the secrets client reports a transport error, a
                 # timeout or an oversized body, so the request may have gone out;
-                # a 5xx may also have been applied before it failed.
+                # a 5xx may also have been applied before it failed, and a 408 from a
+                # proxy can arrive after the request was passed on.
                 raise WriteUncertain(
                     "The server could not confirm whether the new value was saved, "
                     "and the write was not retried."
+                )
+            if status == 429:
+                # Rate limited:  refused before it was applied, so nothing was saved.
+                # One click is one write, so the owner retries, never this broker.
+                raise Failed(
+                    "The secrets service is busy and did not save the new value."
+                    + GAP
+                    + "Wait a minute and review the change again."
                 )
             raise Failed("The server did not accept the new value, and the write was not retried.")
 

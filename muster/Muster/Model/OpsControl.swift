@@ -25,6 +25,10 @@ enum FleetServiceActionRouting {
 // view asks for Touch ID,  then Muster plans again,  refuses when the plan changed,  and only
 // then runs `--yes`.  One action runs at a time,  app-wide.
 //
+// The one exception to Touch ID is `OpsController.runUnattended`:  a start that Muster takes on
+// its own for a service whose policy says to keep it running (`ServiceReconciler`).  It plans,
+// runs and audits exactly as above,  with nobody at a sheet,  and it accepts only a start.
+//
 // `ServiceActionRouter` is the one way in for a service row,  from the menu or the panel.
 // BotFleet Server and any LaunchAgent the allowlist does not name stay on `FleetAdmin`'s
 // direct route,  with no plan,  no Touch ID and no audit row:  an allowlist argv cannot say
@@ -1488,6 +1492,8 @@ final class OpsController: ObservableObject {
     /// Counts every `--yes` run that ended,  so a view can read its data again.
     @Published private(set) var completedRuns = 0
     @Published private(set) var isRechecking = false
+    /// True while Muster runs a start of its own (`runUnattended`),  with nobody at a sheet.
+    @Published private(set) var isRunningUnattended = false
 
     private let runner: OpsRunning
     private let makeBuilder: () -> OpsCommandBuilder
@@ -1511,7 +1517,7 @@ final class OpsController: ObservableObject {
 
     /// True while a helper is running.
     var isBusy: Bool {
-        if isRechecking { return true }
+        if isRechecking || isRunningUnattended { return true }
         switch phase {
         case .planning, .running: return true
         default: return false
@@ -1559,6 +1565,10 @@ final class OpsController: ObservableObject {
             notice = OpsControlError.busy.errorDescription
             return false
         }
+        guard !isRunningUnattended else {
+            notice = OpsControlError.busy.errorDescription
+            return false
+        }
         guard task == nil else { return false }
         notice = nil
         phase = .planning(action)
@@ -1575,6 +1585,48 @@ final class OpsController: ObservableObject {
         phase = .running(action, reviewed)
         task = Task { [weak self] in
             await self?.runConfirmed(action, reviewed: reviewed)
+        }
+    }
+
+    /// Runs one start that Muster takes on its own (`ServiceReconciler`),  through the same
+    /// helper,  the same plan,  the same `--yes` run and the same audit row as a start the owner
+    /// confirmed,  but with no sheet and no Touch ID,  because nobody is there to answer.
+    ///
+    /// Only a start of a pm2 application or a LaunchAgent is accepted here,  and the helper
+    /// still checks its own allowlist.  The plan is read first and must succeed.  Nil when
+    /// another action is in the way or the action is not a start,  and then nothing ran.
+    func runUnattended(_ action: OpsAction) async -> OpsOutcome? {
+        switch action {
+        case .pm2App(let verb, _), .macAgent(let verb, _):
+            guard verb == .start else { return nil }
+        case .serverUnit, .serverUpdate, .coolifyRedeploy, .knobSet, .knobUnset, .logs,
+             .serverResource, .resourceStatus:
+            return nil
+        }
+        guard !isBusy, !isPresenting, task == nil else { return nil }
+        isRunningUnattended = true
+        defer { isRunningUnattended = false }
+        // True once the `--yes` helper may have started:  only then can anything have run.
+        var started = false
+        do {
+            let planned = try await execute(action, mode: .plan)
+            guard planned.isSuccess(for: .plan) else { return planned }
+            let invocation = try prepare(action, mode: .yes)
+            started = true
+            let outcome = try await launch(invocation, action: action, mode: .yes)
+            record(action, result: outcome.kind.rawValue)
+            completedRuns += 1
+            return outcome
+        } catch {
+            // A helper that could not be started ran nothing.
+            if let control = error as? OpsControlError, case .launchFailed = control { started = false }
+            if started {
+                record(action, result: OpsResultKind.failed.rawValue)
+                completedRuns += 1
+            }
+            return OpsOutcome(kind: started ? .unknown : .failed, ok: false, commands: [],
+                              detail: error.localizedDescription, exitCode: -1,
+                              runNotKnown: started)
         }
     }
 

@@ -2930,6 +2930,7 @@ REMOTE_MAX_NODES = 100_000
 _REMOTE_CODES = frozenset(
     (
         "invalid_argument",
+        "invalid_response",
         "unavailable",
         "upstream_error",
         "not_authorized",

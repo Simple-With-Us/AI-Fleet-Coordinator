@@ -452,7 +452,8 @@ enum ResourceLimitsCopy {
     /// normal operation and the limit only under pressure.
     /// `borrowing` is the owner's draft of Borrow Idle Memory when there is one,  so the words
     /// follow the control as it is moved.  The live "up to" figure is the controller's own
-    /// measurement,  so it is quoted only while the draft still matches the saved setting.
+    /// measurement,  so it is quoted only while the saved setting is on,  including while a
+    /// draft turns borrowing off and the server is still borrowing until that change is saved.
     static func pressureHelp(_ s: ResourcePolicySnapshot, pressure: Double, borrowing: Bool? = nil) -> String {
         let held = "Under memory pressure coding is held to \(gib(pressure)), and in critical mode to \(gib(s.desired.ramCriticalGiB))."
         let lead: String
@@ -463,6 +464,15 @@ enum ResourceLimitsCopy {
             } else {
                 lead = "With Borrow Idle Memory on, coding may use more than this while the server has memory to spare."
             }
+        } else if s.desired.allowBorrowing {
+            // The draft turns borrowing off,  but the server still borrows until it is saved.
+            let until: String
+            if let o = s.observed, o.mode == "normal", o.codingGroups > 0, o.ramTargetBytes > 0 {
+                until = "Until then coding may still use up to \(gib(bytes: o.ramTargetBytes))."
+            } else {
+                until = "Until then coding may still use more than this while the server has memory to spare."
+            }
+            lead = "Borrow Idle Memory turns off once this change is saved, and then coding is held to \(gib(pressure)) in normal operation too." + gap + until
         } else {
             lead = "Borrow Idle Memory is off, so coding is held to \(gib(pressure)) in normal operation too."
         }
@@ -865,8 +875,9 @@ struct ResourcePolicyReading: Equatable {
         ]
         guard counters.compactMap({ $0 }).allSatisfy({ $0 >= 0 }) else { return false }
         // An unavailable report may say no CPU is online (reason no-online-cpus):  that is a
-        // measurement to show with the saved values,  not a corrupt report.
-        if s.status != "unavailable" {
+        // measurement to show with the saved values,  not a corrupt report.  Only that reason
+        // is exempt:  an unavailable report for any other reason must still measure sanely.
+        if s.status != "unavailable" || !s.reasons.contains("no-online-cpus") {
             if observed.cpuOnline < 3 { return false }
             if let cores = s.desired.cpuCores, cores > observed.cpuOnline - 2 { return false }
         }

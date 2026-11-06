@@ -415,7 +415,7 @@ class BrokerTests(unittest.TestCase):
     def test_transport_error_or_timeout_on_the_real_store_answers_unknown(self):
         # The secrets client reports a transport error, a timeout or an oversized
         # body as status 0, without raising, so the write may have landed.
-        for outcome in ((0, None), OSError("timed out"), (503, None), (502, {})):
+        for outcome in ((0, None), OSError("timed out"), (503, None), (502, {}), (408, None)):
             answer, code = self.answer_through_real_store(outcome)
             self.assertEqual((code, answer["result"], answer["ok"]), (1, "unknown", False), outcome)
 
@@ -423,6 +423,14 @@ class BrokerTests(unittest.TestCase):
         for status in (400, 403, 404):
             answer, code = self.answer_through_real_store((status, {"message": "no"}))
             self.assertEqual((code, answer["result"]), (1, "failed"), status)
+
+    def test_a_rate_limited_write_is_failed_and_says_to_try_again(self):
+        # 429 is refused before it is applied:  failed, not unknown, and never retried here.
+        answer, code = self.answer_through_real_store((429, {"message": "slow down"}))
+        self.assertEqual((code, answer["result"]), (1, "failed"))
+        self.assertIn("busy and did not save", answer["detail"])
+        self.assertIn("Wait a minute", answer["detail"])
+        self.assertNotIn("slow down", answer["detail"])
 
     def test_lock_serializes_processes_and_refuses_symlink(self):
         with r.broker_lock(self.ctx), self.assertRaises(r.Refused), r.broker_lock(self.ctx):

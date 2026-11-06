@@ -23,7 +23,7 @@ import uuid
 from pathlib import Path, PurePosixPath
 
 MAX_BUNDLE_BYTES = 8 * 1024 * 1024
-# The reviewed allowlisted runtime contains 152 files.  Keep the exact minimum
+# The reviewed allowlisted runtime contains 153 files.  Keep the exact minimum
 # ceiling in sender and receiver: a new file still needs an explicit policy review.
 # The 132nd file is storage_guard.py (from main);  the 133rd is platform_letter.py (AFC-564, the shared session-letter
 # library);  the 134th is platform_letter_codex.py (the Codex adapter);  the 135th and 136th are
@@ -37,9 +37,16 @@ MAX_BUNDLE_BYTES = 8 * 1024 * 1024
 # serves over the listener HTTPS API (Path B, operator.simplewithus.com).
 # The 151st is agent_sync/registry_api.py, the signed client the package's own registry callers
 # (the operator-registry CLI, the platform-letter registry side) use to reach that API.
-MAX_FILES = 152
+# The 153rd is agent_sync/operator_sheets_google.mjs, the Google Sheets operator adapter shipped beside the
+# AFC-412 PR2 exporter as a data file (AFC-412 PR3, this PR).
+MAX_FILES = 153
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MARKER = "# fleet-cli managed wrapper v1"
+# Retention:  a receive keeps the newest KEEP_RELEASES releases and deletes older ones, but never `current`,
+# `previous`, or a release a live process still runs from.  RELEASE_LIMIT is the backstop when everything is protected.
+KEEP_RELEASES = 10
+RELEASE_LIMIT = 32
+RELEASE_NAME = re.compile(r"[0-9a-f]{64}")
 # The Agent-Sync Linear catalogs `board commands`, `board run` and `board mcp` read from beside board
 # (exported from scripts/agent-sync-mcp by scripts/export-linear-catalog.mjs).
 LINEAR_CATALOG = ("named-commands.json", "official-mcp-tools.json", "public-inputs.json")
@@ -109,6 +116,7 @@ EXACT = frozenset(
         "scripts/agent_sync/mcp/fleetlink-tools.json",
         # AFC-412 PR2:  the operator registry outbox exporter, shipped as a data file beside the Python modules.
         "scripts/agent_sync/operator_sheets_export.mjs",
+        "scripts/agent_sync/operator_sheets_google.mjs",
         # AFC-564:  the OpenCode letter plugin, a data file beside the Python modules (OpenCode loads it from the path
         # `platform-letter install --platform opencode` writes).  Its node test lives under tests/ and is not shipped.
         "scripts/agent_sync/opencode_letter_plugin/index.js",
@@ -289,6 +297,92 @@ def point(base: Path, name: str, release: Path) -> None:
         os.replace(temporary, base / name)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def releases_in_use(releases: Path, proc: Path = Path("/proc")) -> set[str]:
+    """Names of the releases a live process runs from:  its cwd, executable, command line (the wrappers exec the
+    resolved release path), mapped files and open files.  Linux /proc only;  elsewhere it finds none, and
+    `current` and `previous` stay protected anyway."""
+    prefixes = {str(releases) + os.sep, str(releases.resolve()) + os.sep}
+    found: set[str] = set()
+
+    def note(text: str) -> None:
+        for prefix in prefixes:
+            start = 0
+            while (at := text.find(prefix, start)) >= 0:
+                start = at + len(prefix)
+                name = text[start : start + 64]
+                if RELEASE_NAME.fullmatch(name):
+                    found.add(name)
+
+    try:
+        pids = [entry for entry in proc.iterdir() if entry.name.isdigit()]
+    except OSError:
+        return found
+    for pid in pids:
+        for link in ("cwd", "exe"):
+            try:
+                note(os.readlink(pid / link))
+            except OSError:
+                pass
+        try:
+            cmdline = (pid / "cmdline").read_bytes().replace(b"\0", b" ").decode("utf-8", "replace")
+        except OSError:
+            cmdline = ""
+        note(cmdline)
+        # The expensive reads (full maps and every open descriptor) run only for a process
+        # whose command line already mentions a release prefix;  the wrappers exec the
+        # resolved release path, so a process using a release names it there.
+        if not any(prefix in cmdline for prefix in prefixes):
+            continue
+        try:
+            note((pid / "maps").read_bytes().replace(b"\0", b" ").decode("utf-8", "replace"))
+        except OSError:
+            pass
+        try:
+            fds = list((pid / "fd").iterdir())
+        except OSError:
+            fds = []
+        for fd in fds:
+            try:
+                note(os.readlink(fd))
+            except OSError:
+                pass
+    return found
+
+
+def prune(base: Path, keep: int, proc: Path = Path("/proc")) -> list[str]:
+    """Delete all but the newest `keep` releases, oldest first.  `current`, `previous` and any release a live
+    process runs from are never deleted (they still count toward `keep`).  Only real directories with a release
+    name are touched;  anything else in releases/ is left alone.  Returns the names deleted.  Call under the lock."""
+    releases = base / "releases"
+    protected = set()
+    for pointer in ("current", "previous"):
+        try:
+            path = release_at(base, pointer)
+        except Refused:
+            # A dangling or replaced pointer protects nothing:  its target is gone or
+            # it is not a release link at all, and a broken pointer must not abort pruning.
+            path = None
+        if path:
+            protected.add(path.name)
+    protected |= releases_in_use(releases, proc)
+    rows = []
+    for entry in releases.iterdir():
+        if RELEASE_NAME.fullmatch(entry.name) and entry.is_dir() and not entry.is_symlink():
+            rows.append((entry.stat().st_mtime, entry.name, entry))
+    rows.sort(reverse=True)
+    removed = []
+    retained = 0
+    for _mtime, name, entry in rows:
+        if retained < keep or name in protected:
+            # Protected releases still consume retention budget, so the total stays at `keep`.
+            retained += 1
+            continue
+        shutil.rmtree(entry, ignore_errors=True)
+        if not entry.exists():
+            removed.append(name)
+    return removed
 
 
 def smoke(release: Path, home: Path) -> None:
@@ -754,14 +848,18 @@ def receive(raw: bytes, home: Path, install: bool = False) -> dict:
             verify_retained(new)
             verify_existing(new, bundle["files"])
         else:
-            if len(list((base / "releases").iterdir())) >= 32:
-                raise Refused("release_retention_limit")
             stage = Path(tempfile.mkdtemp(prefix=".stage-", dir=base))
             try:
                 for name, data in decoded.items():
                     atomic_write(stage / name, data, bundle["files"][name]["mode"])
                 with tempfile.TemporaryDirectory(prefix=".smoke-", dir=base) as empty:
                     smoke(stage, Path(empty))
+                # Room for the new one, only now that the bundle passed smoke:  a refused
+                # bundle leaves retention unchanged.  Keep the newest KEEP_RELEASES - 1,
+                # so at most KEEP_RELEASES after activation.
+                prune(base, KEEP_RELEASES - 1)
+                if len(list((base / "releases").iterdir())) >= RELEASE_LIMIT:
+                    raise Refused("release_retention_limit")
                 json_write(
                     stage / "release.json",
                     {
@@ -852,6 +950,9 @@ def control(home: Path, command: str) -> dict:
             atomic_write(base / "paused", b"paused by operator\n")
         elif command == "resume":
             (base / "paused").unlink(missing_ok=True)
+        elif command == "prune":
+            removed = prune(base, KEEP_RELEASES)
+            return {**control(home, "status"), "removed": len(removed)}
         elif command == "rollback":
             previous, current = release_at(base, "previous"), release_at(base, "current")
             if not previous or not current:
@@ -867,7 +968,9 @@ def control(home: Path, command: str) -> dict:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["receive", "status", "pause", "resume", "rollback"])
+    parser.add_argument(
+        "command", choices=["receive", "status", "pause", "resume", "rollback", "prune"]
+    )
     parser.add_argument("--home", type=Path, default=Path.home())
     parser.add_argument("--install", action="store_true")
     args = parser.parse_args(argv)

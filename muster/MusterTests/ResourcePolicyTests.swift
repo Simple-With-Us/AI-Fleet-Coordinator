@@ -233,6 +233,17 @@ final class ResourcePolicyTests: XCTestCase {
         XCTAssertEqual(decode(try json(status: "applied", cpuOnline: 0)).state, .invalid)
     }
 
+    func test_an_unavailable_report_for_another_reason_with_no_online_cpus_is_invalid() throws {
+        // Only the no-online-cpus reason makes zero online cores a measurement to show.
+        for reasons in [["policy-stale"], ["receipt-incomplete"], ["cpu-values-differ"]] {
+            var root = try XCTUnwrap(JSONSerialization.jsonObject(with: try json(status: "unavailable", cpuOnline: 0)) as? [String: Any])
+            var report = try XCTUnwrap(root["resourcePolicy"] as? [String: Any])
+            report["reasons"] = reasons
+            root["resourcePolicy"] = report
+            XCTAssertEqual(decode(try JSONSerialization.data(withJSONObject: root)).state, .invalid, "\(reasons)")
+        }
+    }
+
     func test_malformed_revision_is_unknown() throws {
         let data = try json()
         var root = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
@@ -395,8 +406,11 @@ final class ResourcePolicyTests: XCTestCase {
 
     func test_pressure_limit_help_follows_the_borrowing_draft() throws {
         let applied = try loadContract().snapshot("applied")
+        // Saved on,  draft off:  the server still borrows until the change is saved.
         let off = ResourceLimitsCopy.pressureHelp(applied, pressure: 8, borrowing: false)
-        XCTAssertTrue(off.hasPrefix("Borrow Idle Memory is off"), off)
+        XCTAssertTrue(off.hasPrefix("Borrow Idle Memory turns off once this change is saved, and then coding is held to 8 GiB in normal operation too."), off)
+        XCTAssertTrue(off.contains("Until then coding may still use up to 8 GiB."), off)
+        XCTAssertFalse(off.contains("Borrow Idle Memory is off"), off)
         let saved = try decode(try json()).snapshot.map { ResourceLimitsCopy.pressureHelp($0, pressure: 8, borrowing: true) }
         XCTAssertTrue(saved?.hasPrefix("With Borrow Idle Memory on") == true, saved ?? "")
     }

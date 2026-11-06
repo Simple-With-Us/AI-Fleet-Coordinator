@@ -91,3 +91,6 @@ c3917b4bf6b2b045fa4089ab3ae8f725922d4396:scripts/agent-sync-mcp/test/gr-assert.t
 # the Muster overhaul PR (#1239). The value is made up to prove the audit log hashes
 # credential-shaped strings; assembled at runtime from the next commit on.
 49c3d7345030419da934356240448c7ac9c45622:git-relay/git_relay/tests/test_b9_hardening.py:generic-api-key:112
+# Made-up assignment in a Muster unit test (PR #1377) that proves a hook id never starts at a
+# NAME=value assignment. The next commit replaces it with a plain value.
+f4a3c683da987f3f3cd5afbe669988a67d79ecd7:muster/MusterTests/MiniMaxSurfaceTests.swift:generic-api-key:770
