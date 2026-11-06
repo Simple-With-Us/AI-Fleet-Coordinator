@@ -138,6 +138,8 @@ SHIPPED = (
     "scripts/fleet_rag/",
     "scripts/fleet_lanes/",
     "scripts/fleet_knobs/",
+    "scripts/fleet_secrets/__init__.py",
+    "scripts/fleet_secrets/core.py",
     "scripts/fleet-mode",
     "docs/FLEET-MODE.md",
     "docs/protocols/simple-tools-guide.md",
@@ -171,8 +173,13 @@ SHIPPED_EXACT = frozenset(
         "scripts/agent_sync/mcp/fleetlink-tools.json",
         # AFC-412 PR2:  mirrors the release EXACT entry for the operator registry outbox exporter.
         "scripts/agent_sync/operator_sheets_export.mjs",
+        "scripts/agent_sync/operator_sheets_google.mjs",
         # AFC-564:  mirrors the release EXACT entry for the OpenCode letter plugin.
         "scripts/agent_sync/opencode_letter_plugin/index.js",
+        # The scoped verifier library the new knobs and recall bundles depend on.  The generic
+        # secrets CLI does not ship, so only these two modules are listed.
+        "scripts/fleet_secrets/__init__.py",
+        "scripts/fleet_secrets/core.py",
         "docs/protocols/simple-tools-guide.md",
         "scripts/agent_sync/wake/wake-schema.json",
         "scripts/linear-board/catalog/named-commands.json",
@@ -2067,7 +2074,8 @@ PLACEMENT_WATCH_MAX_AGE_S = 3 * 3600
 def check_placement_watch(
     report: Report, *, status_path: Path | None = None, now: float | None = None
 ) -> None:
-    """A watcher that has gone quiet or cannot file.  No row until it is installed:  its first run writes the file."""
+    """A watcher that has gone quiet, cannot file, saw only part of the machine, or is held in dry run.  No row until it is installed:
+    its first run writes the file."""
     path = PLACEMENT_WATCH_STATUS if status_path is None else status_path
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -2083,10 +2091,30 @@ def check_placement_watch(
     if age > PLACEMENT_WATCH_MAX_AGE_S:
         why = f"last ran {int(age / 3600)} hours ago"
         report.add("placement-watch", "FAIL", why, state="stale", category="fleet-tool", reason=why)
-    elif not data.get("ok"):
+    elif data.get("errors") or (
+        not data.get("ok") and data.get("coverage") != "external-unreadable"
+    ):
         why = "; ".join(str(e) for e in data.get("errors", ()))[:200] or "its inputs were stale"
         report.add(
             "placement-watch", "FAIL", why, state="failing", category="fleet-tool", reason=why
+        )
+    elif data.get("coverage") == "external-unreadable":
+        held = "held in dry run, " if data.get("held") else ""
+        why = (
+            f"{held}could not read an external root, so {data.get('findings', 0)} findings is partial, "
+            "not clean;  nothing on that root was forgotten"
+        )
+        report.add(
+            "placement-watch", "WARN", why, state="unknown", category="fleet-tool", reason=why
+        )
+    elif data.get("held"):
+        last = f", last acting run {data['last_acting_run']}" if data.get("last_acting_run") else ""
+        why = (
+            f"held in dry run, nothing filed:  {data.get('findings', 0)} findings, "
+            f"{data.get('new', 0)} new{last}"
+        )
+        report.add(
+            "placement-watch", "WARN", why, state="unknown", category="fleet-tool", reason=why
         )
     else:
         detail = f"{data.get('findings', 0)} findings, {data.get('new', 0)} new"

@@ -250,6 +250,103 @@ class BridgeTests(unittest.TestCase):
         self.assertFalse((Path(self.tmp.name) / "state.json").exists())
         self.assertTrue(any("DRY" in line for line in self.logs))
 
+    def test_native_mention_recipient_mirrors_and_advances_cursor(self):
+        """Fake e2e: native @**SEAT** recipient is mirrored; cursor advances; no replay."""
+        msgs = [
+            {
+                "id": 10,
+                "content": "[JET 📁AFC] unrelated peer chatter\nrepo: AFC",
+                "sender_email": "jet-bot@simplewithus.zulipchat.com",
+            },
+            {
+                "id": 11,
+                "content": "[JET 📁AFC → @**INSTINCT**] please review\nrepo: AFC",
+                "sender_email": "jet-bot@simplewithus.zulipchat.com",
+            },
+            {
+                "id": 12,
+                "content": "[GROK] still unrelated\nrepo: DealDex",
+                "sender_email": "grok-build-bot@simplewithus.zulipchat.com",
+            },
+        ]
+        issue = FakeIssue()
+        zulip = FakeZulip(msgs)
+        summary = self.make(issue, FakePoster(), zulip).run_once()
+        self.assertEqual(summary["mirrored"], 1)
+        self.assertEqual(self.state.data["zulip_cursor"], "12")
+        self.assertEqual(len(issue.posted), 1)
+        self.assertIn("@**INSTINCT**", issue.posted[0])
+        self.assertIn(bridge.BRIDGE_MARKER + "zulip id=11 -->", issue.posted[0])
+        # Second tick must not replay; cursor stays put with no new matches.
+        summary2 = self.make(issue, FakePoster(), FakeZulip(msgs)).run_once()
+        self.assertEqual(summary2["mirrored"], 0)
+        self.assertEqual(len(issue.posted), 1)
+        self.assertEqual(self.state.data["zulip_cursor"], "12")
+
+    def test_multi_recipient_native_mention_mirrors_for_configured_seat(self):
+        """Fake e2e: `[… → @**MC**, CLAUDE]` mirrors when this bridge seat is MC or CLAUDE."""
+        content = "[JET 📁AFC → @**MC**, CLAUDE] dual wake\nrepo: AFC"
+        msgs = [
+            {
+                "id": 21,
+                "content": content,
+                "sender_email": "jet-bot@simplewithus.zulipchat.com",
+            }
+        ]
+        for seat in ("MC", "CLAUDE"):
+            with self.subTest(seat=seat):
+                tmp = tempfile.TemporaryDirectory()
+                try:
+                    state = bridge.State(Path(tmp.name) / "state.json")
+                    issue = FakeIssue()
+                    b = bridge.Bridge(
+                        seat,
+                        issue,
+                        FakePoster(),
+                        FakeZulip(msgs),
+                        state,
+                        topic="outbox test",
+                        logger=self.logs.append,
+                    )
+                    summary = b.run_once()
+                    self.assertEqual(summary["mirrored"], 1, seat)
+                    self.assertEqual(state.data["zulip_cursor"], "21")
+                    self.assertIn("@**MC**, CLAUDE", issue.posted[0])
+                    # No replay on second tick.
+                    summary2 = bridge.Bridge(
+                        seat,
+                        issue,
+                        FakePoster(),
+                        FakeZulip(msgs),
+                        state,
+                        topic="outbox test",
+                        logger=self.logs.append,
+                    ).run_once()
+                    self.assertEqual(summary2["mirrored"], 0, seat)
+                    self.assertEqual(len(issue.posted), 1, seat)
+                finally:
+                    tmp.cleanup()
+        # A non-recipient seat must not mirror.
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            state = bridge.State(Path(tmp.name) / "state.json")
+            issue = FakeIssue()
+            summary = bridge.Bridge(
+                "INSTINCT",
+                issue,
+                FakePoster(),
+                FakeZulip(msgs),
+                state,
+                topic="outbox test",
+                logger=self.logs.append,
+            ).run_once()
+            self.assertEqual(summary["mirrored"], 0)
+            self.assertEqual(issue.posted, [])
+            # Cursor still advances past scanned messages.
+            self.assertEqual(state.data["zulip_cursor"], "21")
+        finally:
+            tmp.cleanup()
+
 
 class RuleTests(unittest.TestCase):
     def test_skim_match(self):
@@ -260,6 +357,186 @@ class RuleTests(unittest.TestCase):
         self.assertFalse(bridge.skim_match("[GROK] repo: DealDex\nstate: WIP", SEAT))
         self.assertTrue(bridge.is_own_post("  [INSTINCT->CLAUDE] x", SEAT))
         self.assertFalse(bridge.is_own_post("[CLAUDE->INSTINCT] x", SEAT))
+        # Folder-tag intros (Policy 2026-11-05 FINAL): 📁 repos (no space after), optional 👀 / multi-thread periods or legacy hyphens.
+        self.assertTrue(bridge.skim_match("[ INSTINCT 📁 AFC ] hello", SEAT))
+        self.assertTrue(bridge.skim_match("👀 [ INSTINCT 📁 AFC, OPS ] quiet", SEAT))
+        self.assertTrue(bridge.skim_match("[ INSTINCT: AB-1-M 📁 AFC ] multi", SEAT))
+        self.assertTrue(bridge.skim_match("[INSTINCT 📁AFC] tight", SEAT))
+        self.assertTrue(bridge.skim_match("👀[INSTINCT 📁AFC, OPS] quiet-tight", SEAT))
+        self.assertTrue(bridge.skim_match("[ INSTINCT: AB.1.M 📁AFC ] period-multi", SEAT))
+        self.assertFalse(bridge.skim_match("[ CLAUDE 📁 AFC ] unrelated", SEAT))
+        self.assertTrue(bridge.skim_match("[ CLAUDE 📁 AFC → INSTINCT ] to-me", SEAT))
+        self.assertTrue(bridge.skim_match("[CLAUDE 📁AFC → INSTINCT] tight-arrow", SEAT))
+        self.assertTrue(bridge.is_own_post("[ INSTINCT 📁 AFC ]\nclaim: x", SEAT))
+        self.assertTrue(bridge.is_own_post("👀 [ INSTINCT 📁 AFC ]\nclaim: x", SEAT))
+        self.assertTrue(bridge.is_own_post("[ INSTINCT: ZZ-2-S 📁 AFC, OPS ]\nx", SEAT))
+        self.assertTrue(bridge.is_own_post("[INSTINCT 📁AFC]\nx", SEAT))
+        self.assertTrue(bridge.is_own_post("[ INSTINCT: ZZ.2.S 📁AFC, OPS ]\nx", SEAT))
+        self.assertFalse(bridge.is_own_post("[ CLAUDE 📁 AFC ]\nx", SEAT))
+
+    def test_multi_recipient_arrow_and_boundaries(self):
+        """Jet OPS-1035 / #1391: every → recipient wakes; precise seat-token boundaries."""
+        multi = "[JET 📁AFC, OPS → MC, CLAUDE]"
+        self.assertTrue(bridge.skim_match(multi, "MC"))
+        self.assertTrue(bridge.skim_match(multi, "CLAUDE"))
+        self.assertFalse(bridge.skim_match(multi, "INSTINCT"))
+        self.assertFalse(bridge.skim_match(multi, SEAT))
+        # ASCII -> recipient lists (envelope treats → and -> the same).
+        ascii_multi = "[JET 📁AFC, OPS -> MC, CLAUDE]"
+        self.assertTrue(bridge.skim_match(ascii_multi, "MC"))
+        self.assertTrue(bridge.skim_match(ascii_multi, "CLAUDE"))
+        self.assertFalse(bridge.skim_match(ascii_multi, "INSTINCT"))
+        # Directed envelope multi-peer (guide: [SEAT→PEER1,PEER2]).
+        self.assertTrue(bridge.skim_match("[CLAUDE·1a2b3c4d→CODEX,CURSOR] x", "CODEX"))
+        self.assertTrue(bridge.skim_match("[CLAUDE·1a2b3c4d→CODEX,CURSOR] x", "CURSOR"))
+        self.assertFalse(bridge.skim_match("[CLAUDE·1a2b3c4d→CODEX,CURSOR] x", "INSTINCT"))
+        # Raw @SEAT mention still wakes; partial seat token does not.
+        self.assertTrue(bridge.skim_match("[GROK] ping @INSTINCT please", SEAT))
+        self.assertFalse(bridge.skim_match("[GROK] ping @INSTINCTIVE please", SEAT))
+        self.assertFalse(bridge.skim_match("[GROK] ping @INST please", SEAT))
+        # Unicode →FLEET wake (same as ->FLEET per envelope arrow rule).
+        self.assertTrue(bridge.skim_match("[GROK→FLEET] x", SEAT))
+        self.assertTrue(bridge.skim_match("[GROK 📁AFC → FLEET] x", SEAT))
+        self.assertTrue(bridge.skim_match("[GROK 📁AFC → MC, FLEET] x", SEAT))
+        # Precise boundaries: INSTINCT is not a substring hit inside another token.
+        self.assertFalse(bridge.skim_match("[JET 📁AFC → INSTINCTIVE]", SEAT))
+        self.assertFalse(bridge.skim_match("[JET 📁AFC → MMC, CLAUDE]", "MC"))
+        self.assertTrue(bridge.skim_match("[JET 📁AFC → INSTINCT, CLAUDE]", SEAT))
+        # Own-post suppression still works for folder tags (and optional 👀).
+        self.assertTrue(bridge.is_own_post("[INSTINCT 📁AFC → MC, CLAUDE]\nclaim: x", SEAT))
+        self.assertTrue(bridge.is_own_post("👀[INSTINCT 📁AFC → MC]\nx", SEAT))
+        self.assertFalse(bridge.is_own_post("[JET 📁AFC → INSTINCT]\nx", SEAT))
+        # Dotted multi-thread + legacy hyphen still skim / own-post.
+        self.assertTrue(bridge.skim_match("[ INSTINCT: HH.1.M 📁AFC ] multi", SEAT))
+        self.assertTrue(bridge.skim_match("[ INSTINCT: HH-1-M 📁AFC ] legacy", SEAT))
+        self.assertTrue(bridge.is_own_post("[ INSTINCT: HH.1.M 📁AFC, OPS → MC ]\nx", SEAT))
+        # Closed/nonempty folder headers accepted even with a repo: body line; empty 📁 rejected.
+        self.assertIsNone(
+            bridge.header_error("[INSTINCT 📁AFC, OPS → MC]\nrepo: AFC\nstate: WIP", SEAT)
+        )
+        self.assertIsNone(bridge.header_error("[INSTINCT 📁AFC]\nclaim: no-repo-line", SEAT))
+        self.assertEqual(
+            bridge.header_error("[INSTINCT 📁]\nclaim: empty", SEAT),
+            "repo: <project> must be the first body line",
+        )
+        # Legacy non-folder intros still require repo:.
+        self.assertEqual(
+            bridge.header_error("[INSTINCT] hello\nstate: WIP", SEAT),
+            "repo: <project> must be the first body line",
+        )
+        self.assertIsNone(bridge.header_error("[INSTINCT->CLAUDE] x\nrepo: fleet-infra", SEAT))
+
+    def test_folder_tag_header_accepted(self):
+        self.assertIsNone(bridge.header_error("[ INSTINCT 📁 AFC ]\nclaim: ship it", SEAT))
+        self.assertIsNone(bridge.header_error("👀 [ INSTINCT 📁 AFC, OPS ]\nclaim: quiet", SEAT))
+        self.assertIsNone(bridge.header_error("[ INSTINCT: AB-1-C 📁 AFC ]\nclaim: cloud", SEAT))
+        self.assertIsNone(bridge.header_error("[INSTINCT 📁AFC]\nclaim: tight", SEAT))
+        self.assertIsNone(
+            bridge.header_error("[ INSTINCT: AB.1.C 📁AFC ]\nclaim: period-cloud", SEAT)
+        )
+        # Folder-tag may still carry a legacy repo: body line.
+        self.assertIsNone(bridge.header_error("[ INSTINCT 📁 AFC ]\nrepo: AFC\nstate: WIP", SEAT))
+        # Legacy session middle-dot tag still counts as own intro.
+        self.assertIsNone(bridge.header_error("[INSTINCT·session8]\nrepo: AFC\nx", SEAT))
+        self.assertIn(
+            "folder-tag",
+            bridge.header_error("[ CLAUDE 📁 AFC ]\nclaim: x", SEAT) or "",
+        )
+        # Empty 📁 list is not a project name — still need repo: or a real repo after 📁.
+        self.assertEqual(
+            bridge.header_error("[ INSTINCT 📁]\nclaim: empty", SEAT),
+            "repo: <project> must be the first body line",
+        )
+        self.assertEqual(
+            bridge.header_error("[ INSTINCT 📁 ]\nclaim: space-empty", SEAT),
+            "repo: <project> must be the first body line",
+        )
+
+    def test_native_zulip_mention_skim(self):
+        """Bug 1 / OPS-1035: Zulip @**Name** mentions wake the seat (inbound skim, tolerant)."""
+        self.assertTrue(bridge.skim_match("@**Claude** please look", "CLAUDE"))
+        self.assertTrue(bridge.skim_match("@**CLAUDE** please look", "CLAUDE"))
+        self.assertTrue(bridge.skim_match("@**claude** please look", "CLAUDE"))
+        self.assertTrue(bridge.skim_match("[GROK] ping @**MC**", "MC"))
+        self.assertTrue(bridge.skim_match("[GROK] ping @MC", "MC"))
+        # Multi-recipient list with a native mention before a plain token wakes both.
+        native_multi = "[JET 📁AFC → @**MC**, CLAUDE]"
+        self.assertTrue(bridge.skim_match(native_multi, "MC"))
+        self.assertTrue(bridge.skim_match(native_multi, "CLAUDE"))
+        self.assertFalse(bridge.skim_match(native_multi, "INSTINCT"))
+        # Boundaries still hold with bold wrappers.
+        self.assertFalse(bridge.skim_match("[JET 📁AFC → @**INSTINCTIVE**]", SEAT))
+        self.assertFalse(bridge.skim_match("[JET 📁AFC → @**MMC**, CLAUDE]", "MC"))
+        self.assertTrue(bridge.skim_match("[JET 📁AFC → @**INSTINCT**, CLAUDE]", SEAT))
+
+    def test_empty_folder_and_unclosed_intro_rejected(self):
+        """Bugs 2+3 / OPS-1035: empty 📁 / unclosed [ must not pass header_error."""
+        for bad in (
+            "[JET 📁 → MC]\nclaim: work below",
+            "[JET 📁,]\nclaim: work below",
+            "[JET 📁]\nclaim: empty",
+            "[ INSTINCT 📁 → MC ]\nclaim: empty-arrow",
+            "[ INSTINCT 📁, ]\nclaim: empty-comma",
+        ):
+            self.assertEqual(
+                bridge.header_error(bad, "JET" if bad.startswith("[JET") else SEAT),
+                "repo: <project> must be the first body line",
+                msg=repr(bad),
+            )
+        unclosed = "[JET 📁AFC\nrepo: AFC\nstate: WIP"
+        self.assertEqual(
+            bridge.header_error(unclosed, "JET"),
+            "folder-tag intro must close with ] on the first line",
+        )
+        # Closed with real repos + claim still OK; body repo: does not salvage unclosed.
+        self.assertIsNone(bridge.header_error("[JET 📁AFC]\nclaim: ok", "JET"))
+        self.assertIsNone(bridge.header_error("[JET 📁AFC]\nrepo: AFC\nstate: WIP", "JET"))
+
+    def test_status_body_requires_repo_even_with_folder(self):
+        """Bug 4 / OPS-1035: status blocks still need repo:; claim/closeout may rely on 📁."""
+        self.assertEqual(
+            bridge.header_error("[JET 📁AFC] sync-1\nstate: WIP", "JET"),
+            "repo: <project> must be the first body line",
+        )
+        self.assertEqual(
+            bridge.header_error("[INSTINCT 📁AFC]\nstate: WIP", SEAT),
+            "repo: <project> must be the first body line",
+        )
+        self.assertEqual(
+            bridge.header_error("[INSTINCT 📁AFC] CLAIMED\nissue AFC-1", SEAT),
+            "repo: <project> must be the first body line",
+        )
+        self.assertEqual(
+            bridge.header_error("[INSTINCT 📁AFC] IN PROGRESS\nx", SEAT),
+            "repo: <project> must be the first body line",
+        )
+        # claim/closeout waive repo: when 📁 lists real repos.
+        self.assertIsNone(bridge.header_error("[JET 📁AFC]\nclaim: work below", "JET"))
+        self.assertIsNone(bridge.header_error("[INSTINCT 📁AFC]\ncloseout: done", SEAT))
+        # Status with an explicit repo: body line is fine.
+        self.assertIsNone(bridge.header_error("[JET 📁AFC] sync-1\nrepo: AFC\nstate: WIP", "JET"))
+        # Legacy non-folder intros still always require repo:.
+        self.assertEqual(
+            bridge.header_error("[JET] sync-1\nstate: WIP", "JET"),
+            "repo: <project> must be the first body line",
+        )
+
+    def test_reject_guidance_mentions_folder_tag(self):
+        """Rejection reply text names folder-tag form and status/repo rules."""
+        issue = FakeIssue([comment(42, "[INSTINCT] hello\nstate: WIP")])
+        poster = FakePoster()
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            state = bridge.State(Path(tmp.name) / "state.json")
+            b = bridge.Bridge(SEAT, issue, poster, None, state, topic="t", logger=lambda *_: None)
+            b.run_once()
+        finally:
+            tmp.cleanup()
+        self.assertEqual(len(issue.posted), 1)
+        body = issue.posted[0]
+        self.assertIn("📁repos", body)
+        self.assertIn("claim/closeout", body)
+        self.assertIn("status bodies still need", body)
 
     def test_central_stamp_shape(self):
         # 2026-09-17T21:10:00Z is 4:10 PM CDT

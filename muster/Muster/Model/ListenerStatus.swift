@@ -30,6 +30,28 @@ struct ListenerStatus: Decodable, Equatable {
         var overflow: Int?
         var reasons: [String: Int]?
         var totals: HeldBackTotals?
+        /// How old the oldest held wake is, in seconds.
+        var oldest_age: Double?
+    }
+
+    /// The fallback an OpenRouter-backed seat publishes:  its model, its own pin, and whether it
+    /// would answer right now.  An eavesdropper publishes this only for `fallback = "openrouter"`.
+    struct Fallback: Decodable, Equatable {
+        var runtime: String?
+        var model: String?
+        var pinned: Bool?
+        var pin: Pin?
+        var ready: Bool?
+        var stands_in: Bool?
+        var primary_hold: String?
+    }
+
+    /// Whether an http seat's routine can be reached.
+    struct Routine: Decodable, Equatable {
+        var ready: Bool?
+        var why: String?
+        var detail: String?
+        var host: String?
     }
 
     /// Chat nudge queue counters published by the Operator for a seat.
@@ -89,6 +111,14 @@ struct ListenerStatus: Decodable, Equatable {
         var chatNudges: ChatNudges?
         /// Quota reading for this seat.
         var quota: Quota?
+        /// The model an OpenRouter wake runs.  An eavesdropper publishes it for that wake only.
+        var model: String?
+        /// The OpenRouter fallback, when the seat has one.
+        var fallback: Fallback?
+        /// Whether an http seat's routine can be reached.
+        var routine: Routine?
+        /// Whether the seat may route a wake to another seat.
+        var routeEnabled: Bool?
 
         enum CodingKeys: String, CodingKey {
             case bot, wake, muse, claude, provider, creds, connected, paused
@@ -97,19 +127,32 @@ struct ListenerStatus: Decodable, Equatable {
             case budget, live, pin, red
             case heldBack = "held_back"
             case chatNudges = "chat_nudges"
-            case quota
+            case quota, model, fallback, routine
+            case routeEnabled = "route_enabled"
         }
     }
 
-    /// The pin that proves a seat's binary works.
+    /// The pin that proves a seat's binary works, as the eavesdropper judges it on every publish:
+    /// the pin file against the binary (or the model and request) the seat runs now.
     struct Pin: Decodable, Equatable {
-        /// Whether the listener holds the pin.
+        /// Whether the eavesdropper holds the pin.
         var pinned: Bool?
         /// The pinned muse binary.
         var pinned_muse: String?
         /// The pinned claude binary.
         var pinned_claude: String?
-        /// The listener's own reason,  when the pin is not what it should be.
+        /// The pinned OpenRouter model.
+        var pinned_model: String?
+        /// The claude binary on disk now.
+        var claude: String?
+        /// The muse binary on disk now.
+        var muse: String?
+        /// The OpenRouter model the seat runs now.
+        var model: String?
+        /// The OpenRouter role the pin is for.
+        var role: String?
+        /// The eavesdropper's own reason,  when the pin is not what it should be:  `not_pinned`,
+        /// `pin_stale`, `pin_unverified`, `pin_unreadable`, `no_claude` or `no_muse`.
         var why: String?
     }
 
@@ -123,32 +166,57 @@ struct ListenerStatus: Decodable, Equatable {
         var ts: Double?
     }
 
-    /// The listener's own state.
+    /// The eavesdropper's own state.
     struct State: Decodable, Equatable {
         /// The seats,  by tag.
         var seats: [String: Seat]?
         /// The kill switch,  by scope.
         var pause: [String: PauseEntry]?
-        /// When the listener last published.
+        /// When the eavesdropper last published.
         var updated: Double?
-        /// When the listener started.
+        /// When the eavesdropper started.
         var started: Double?
-        /// The listener's version.
+        /// The eavesdropper's version.
         var version: String?
+        /// Which instance this eavesdropper says it is:  "mac" or "server".
+        var instance: String?
+        /// The seats the file turns off.
+        var disabled: [String]?
+        /// The seats the eavesdropper would not run, and why.
+        var skipped_seats: [String: [String]]?
+        /// Everything wrong with the configuration the eavesdropper read, a refused reload included.
+        var config_errors: [String]?
+        /// Why the eavesdropper refused its last reload, or empty when it did not.  An eavesdropper from
+        /// before this field publishes the same text in `config_errors` only.
+        var reload_refused: [String]?
+        /// When the eavesdropper last ran a reload, accepted or refused.
+        var reload_at: Double?
+        /// The seat partition file this eavesdropper reads.  An eavesdropper from before this field does
+        /// not say.
+        var partition_file: String?
+
+        enum CodingKeys: String, CodingKey {
+            case seats, pause, updated, started, version, instance, disabled, skipped_seats
+            case config_errors, reload_refused, reload_at, partition_file
+        }
     }
 
-    /// Whether the listener is running.
+    /// Whether the eavesdropper is running.
     var running: Bool?
     /// Its pid.
     var pid: Int?
     /// The state itself.
     var status: State?
-    /// The plugin the listener runs,  when it runs one.
+    /// The plugin the eavesdropper runs,  when it runs one.
     var plugin: JSONValue?
-    /// The launch agent that keeps the listener alive.
+    /// The launch agent that keeps the eavesdropper alive.
     var launch_agent: JSONValue?
 
-    /// The seat's state,  when the listener has one.
+    enum CodingKeys: String, CodingKey {
+        case running, pid, status, plugin, launch_agent
+    }
+
+    /// The seat's state,  when the eavesdropper has one.
     func seat(_ tag: String) -> Seat? {
         status?.seats?[tag]
     }
@@ -158,14 +226,180 @@ struct ListenerStatus: Decodable, Equatable {
         status?.pause ?? [:]
     }
 
-    /// When the listener last published its state.
+    /// When the eavesdropper last published its state.
     var updated: Date? {
         status?.updated.map { Date(timeIntervalSince1970: $0) }
     }
 
-    /// The seats the listener knows.
+    /// The seats the eavesdropper knows.
     var seatTags: [String] {
         (status?.seats ?? [:]).keys.sorted()
+    }
+}
+
+// MARK: - Reading the status field by field
+
+// The status is read one field at a time, the way Seat Activity reads its own:  one field an
+// eavesdropper writes in a shape Muster does not expect costs that field, and never the whole
+// status.  A strict read made one mistyped number blank every seat and say the eavesdropper was
+// not running.  The decoders live in extensions so the memberwise initializers stay.
+
+private extension KeyedDecodingContainer {
+    /// A field, or nil when it is missing, null or not of this type.
+    func lenient<T: Decodable>(_ type: T.Type, _ key: Key) -> T? {
+        guard let value = try? decodeIfPresent(type, forKey: key) else { return nil }
+        return value
+    }
+}
+
+extension ListenerStatus {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        running = container.lenient(Bool.self, .running)
+        pid = container.lenient(Int.self, .pid)
+        status = container.lenient(State.self, .status)
+        plugin = container.lenient(JSONValue.self, .plugin)
+        launch_agent = container.lenient(JSONValue.self, .launch_agent)
+    }
+}
+
+extension ListenerStatus.State {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        seats = container.lenient([String: ListenerStatus.Seat].self, .seats)
+        pause = container.lenient([String: ListenerStatus.PauseEntry].self, .pause)
+        updated = container.lenient(Double.self, .updated)
+        started = container.lenient(Double.self, .started)
+        version = container.lenient(String.self, .version)
+        instance = container.lenient(String.self, .instance)
+        disabled = container.lenient([String].self, .disabled)
+        skipped_seats = container.lenient([String: [String]].self, .skipped_seats)
+        config_errors = container.lenient([String].self, .config_errors)
+        reload_refused = container.lenient([String].self, .reload_refused)
+        reload_at = container.lenient(Double.self, .reload_at)
+        partition_file = container.lenient(String.self, .partition_file)
+    }
+}
+
+extension ListenerStatus.Seat {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        bot = container.lenient(String.self, .bot)
+        wake = container.lenient(String.self, .wake)
+        muse = container.lenient(String.self, .muse)
+        claude = container.lenient(String.self, .claude)
+        provider = container.lenient(String.self, .provider)
+        creds = container.lenient(String.self, .creds)
+        connected = container.lenient(Bool.self, .connected)
+        paused = container.lenient(Bool.self, .paused)
+        wakesPaused = container.lenient(Bool.self, .wakesPaused)
+        wakes24h = container.lenient(Int.self, .wakes24h)
+        budget = container.lenient([String: JSONValue].self, .budget)
+        live = container.lenient([String: JSONValue].self, .live)
+        pin = container.lenient(ListenerStatus.Pin.self, .pin)
+        red = container.lenient([String].self, .red)
+        heldBack = container.lenient(ListenerStatus.HeldBack.self, .heldBack)
+        chatNudges = container.lenient(ListenerStatus.ChatNudges.self, .chatNudges)
+        quota = container.lenient(ListenerStatus.Quota.self, .quota)
+        model = container.lenient(String.self, .model)
+        fallback = container.lenient(ListenerStatus.Fallback.self, .fallback)
+        routine = container.lenient(ListenerStatus.Routine.self, .routine)
+        routeEnabled = container.lenient(Bool.self, .routeEnabled)
+    }
+}
+
+// MARK: - What a reload did
+
+/// What the eavesdropper did when it was asked to re-read the file.
+///
+/// `daemon reload` only sends a signal and exits 0, so its exit code says nothing about whether
+/// the eavesdropper took the file.  The answer is in the status the eavesdropper publishes afterwards.
+enum ListenerReloadOutcome: Equatable {
+    /// The eavesdropper read the file and is running on it.  `otherProblems` are soft errors it
+    /// reports, which do not stop the reload.
+    case accepted(otherProblems: [String])
+    /// The eavesdropper refused the file and kept its old settings.
+    case refused([String])
+    /// An eavesdropper too old to say which:  it re-read the file and reports these errors, which may
+    /// include a refusal, so Muster cannot call it accepted.
+    case reportsProblems([String])
+    /// An eavesdropper too old to say which, reporting nothing wrong.  It publishes on every tick, so a
+    /// status newer than the signal does not show it has read the file, or that it took it.
+    case cannotTell
+    /// The eavesdropper published nothing newer in time.
+    case noAnswer(seconds: Int)
+    /// The signal could not be sent.
+    case notAsked(String)
+
+    /// Whether the panel shows this as a failure.
+    var isFailure: Bool {
+        if case .accepted = self { return false }
+        return true
+    }
+
+    /// What the panel says.
+    var report: String {
+        switch self {
+        case .accepted(let others):
+            guard !others.isEmpty else { return "The eavesdropper accepted it." }
+            return "The eavesdropper accepted it, and reports these problems:\n" + others.joined(separator: "\n")
+        case .refused(let reasons):
+            return "The eavesdropper refused it and kept running on its old settings.\u{00A0} It will refuse to start until this is fixed:\n"
+                + reasons.joined(separator: "\n")
+        case .reportsProblems(let problems):
+            return "The eavesdropper re-read it and reports these problems, so Muster cannot say it accepted the change:\n"
+                + problems.joined(separator: "\n")
+        case .cannotTell:
+            return "This eavesdropper is too old to say whether it took the change, so Muster cannot say it is in effect.\u{00A0} An eavesdropper restart loads the current settings and gives Muster an answer next time."
+        case .noAnswer(let seconds):
+            return "No answer from the eavesdropper after \(seconds) seconds, so Muster cannot say the change is in effect."
+        case .notAsked(let reason):
+            let detail = reason.isEmpty ? "" : "\u{00A0} \(reason)"
+            return "The eavesdropper could not be asked to re-read it, so the change is not in effect yet.\(detail)"
+        }
+    }
+
+    /// The answer a published status gives to a reload sent at a time, or nil when that status
+    /// could have been written before the eavesdropper acted on it.
+    static func answer(toReloadSentAt sentAt: Double, in status: ListenerStatus) -> ListenerReloadOutcome? {
+        guard let state = status.status else { return nil }
+        if let refused = state.reload_refused {
+            guard let reloadAt = state.reload_at, reloadAt >= sentAt else { return nil }
+            if !refused.isEmpty { return .refused(refused) }
+            return .accepted(otherProblems: state.config_errors ?? [])
+        }
+        guard let updated = state.updated, updated >= sentAt else { return nil }
+        let problems = state.config_errors ?? []
+        return problems.isEmpty ? .cannotTell : .reportsProblems(problems)
+    }
+}
+
+// MARK: - What the eavesdropper thinks of a candidate file
+
+/// The answer of `daemon check-config`:  the eavesdropper's own rules run on a candidate file.
+struct ListenerConfigCheck: Decodable, Equatable {
+    var ok: Bool
+    /// Why the candidate is not TOML the eavesdropper can read.
+    var parse_error: String?
+    /// Errors the candidate has and the current file does not.
+    var new_errors: [String]?
+    /// What the seat partition refuses in the candidate.
+    var refused: [String]?
+
+    /// What stops an ordinary edit:  anything new, and any refusal at all, because the eavesdropper
+    /// would refuse every reload of a file that holds one.
+    var problems: [String] {
+        var found: [String] = parse_error.map { [$0] } ?? []
+        for problem in (refused ?? []) + (new_errors ?? []) where !found.contains(problem) {
+            found.append(problem)
+        }
+        return found
+    }
+
+    /// What stops a repair:  only something new, because a repair of one refused section may leave
+    /// another one the file already had.
+    var problemsForARepair: [String] {
+        (parse_error.map { [$0] } ?? []) + (new_errors ?? [])
     }
 }
 
@@ -185,7 +419,7 @@ struct AgentSyncInvocation: Equatable {
         self.timeout = timeout
     }
 
-    /// `daemon status --json`:  the listener's own published state.
+    /// `daemon status --json`:  the eavesdropper's own published state.
     static func status() -> AgentSyncInvocation {
         AgentSyncInvocation(["daemon", "status", "--json"])
     }
@@ -203,11 +437,19 @@ struct AgentSyncInvocation: Equatable {
     }
 
     /// `daemon reload`:  re-read the configuration file.
-    ///
-    /// A reload does not re-read a seat's budget,  so a changed budget needs a listener
-    /// restart.  The panel says so instead of pretending the reload was enough.
     static func reload() -> AgentSyncInvocation {
         AgentSyncInvocation(["daemon", "reload"])
+    }
+
+    /// `daemon check-config --file F [--partition P] --json`:  would the eavesdropper take this
+    /// candidate file?
+    ///
+    /// The command line runs from Muster's checkout and the eavesdropper can run from another, so
+    /// `partition` names the copy to judge by.  A checkout too old for the flag exits 2 with no
+    /// answer, and that stops the write.
+    static func checkConfig(file: String, partition: String?) -> AgentSyncInvocation {
+        let copy = partition.map { ["--partition", $0] } ?? []
+        return AgentSyncInvocation(["daemon", "check-config", "--file", file] + copy + ["--json"])
     }
 
     /// `daemon test-wake --seat S --runtime R --run`:  run the seat's wake for real.
@@ -261,7 +503,20 @@ struct AgentSyncCLIResult: Equatable {
 
     /// The last few non-empty stderr lines,  bounded,  for showing a refusal.
     var stderrTail: String {
-        let lines = stderr.split(whereSeparator: \.isNewline)
+        Self.tail(of: stderr)
+    }
+
+    /// The reason to show for a run that failed.  The eavesdropper's own command line prints its
+    /// refusals (`FAIL: …`, `NOT PINNED: …`) on stdout and leaves stderr empty, so an empty stderr
+    /// falls back to the last lines of stdout rather than to nothing.
+    var failureTail: String {
+        let errors = stderrTail
+        return errors.isEmpty ? Self.tail(of: stdout) : errors
+    }
+
+    /// The last few non-empty lines of a text,  bounded.
+    static func tail(of text: String) -> String {
+        let lines = text.split(whereSeparator: \.isNewline)
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
         let tail = lines.suffix(6).joined(separator: "\n")
@@ -327,7 +582,7 @@ struct AgentSyncCLI: AgentSyncRunning {
 
     /// The child environment.
     ///
-    /// HOME stays,  because the listener's state lives under it.  PYTHON* and FLEET_* go,
+    /// HOME stays,  because the eavesdropper's state lives under it.  PYTHON* and FLEET_* go,
     /// so nothing in the app's environment can point the command line at another checkout.
     static func sanitizedEnvironment(_ environment: [String: String]) -> [String: String] {
         var result = environment.filter { key, _ in

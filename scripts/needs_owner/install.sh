@@ -9,6 +9,7 @@
 #     needs_owner/              the package, without its tests
 #     agent_sync/               only identity.py, secretscan.py and textsafe.py (the F3 helpers it loads by path)
 #     fleet_knobs/              the K1 knob reader the fallback notifier (`notify`) uses, without its tests
+#     fleet_secrets/            only the low-level scoped verifier library; no CLI entrypoint
 #     state/                    untouched here (the fallback notifier keeps its files there)
 # and ~/.local/bin/needs-owner is a symbolic link to ~/apps/needs-owner/needs-owner.
 #
@@ -46,6 +47,9 @@ for f in $f3_files; do
   [ -f "$scripts/agent_sync/$f" ] || { echo "install.sh: $scripts/agent_sync/$f is missing" >&2; exit 1; }
 done
 [ -f "$scripts/fleet_knobs/knobs.py" ] || { echo "install.sh: $scripts/fleet_knobs/knobs.py is missing" >&2; exit 1; }
+for f in __init__.py core.py; do
+  [ -f "$scripts/fleet_secrets/$f" ] || { echo "install.sh: $scripts/fleet_secrets/$f is missing" >&2; exit 1; }
+done
 
 say() { if [ "$apply" -eq 1 ]; then echo "$*"; else echo "would: $*"; fi; }
 
@@ -55,6 +59,7 @@ manifest() {
   for f in "$here"/*.py; do echo "$f|needs_owner/$(basename "$f")"; done
   for f in $f3_files; do echo "$scripts/agent_sync/$f|agent_sync/$f"; done
   for f in "$scripts"/fleet_knobs/*.py; do echo "$f|fleet_knobs/$(basename "$f")"; done
+  for f in __init__.py core.py; do echo "$scripts/fleet_secrets/$f|fleet_secrets/$f"; done
 }
 
 changed=0
@@ -69,7 +74,7 @@ done < <(manifest)
 # Files in the stable copy that the source no longer has (a renamed module must not linger and shadow nothing).
 stale=""
 if [ -d "$dest" ]; then
-  for sub in needs_owner agent_sync fleet_knobs; do
+  for sub in needs_owner agent_sync fleet_knobs fleet_secrets; do
     [ -d "$dest/$sub" ] || continue
     for f in "$dest/$sub"/*.py; do
       [ -e "$f" ] || continue
@@ -102,13 +107,13 @@ if [ "$changed" -eq 1 ]; then
   mkdir -p "$HOME/apps"
   stage="$(mktemp -d "$HOME/apps/.needs-owner-stage.XXXXXX")"
   trap 'rm -rf "$stage"' EXIT
-  mkdir -p "$stage/needs_owner" "$stage/agent_sync" "$stage/fleet_knobs"
+  mkdir -p "$stage/needs_owner" "$stage/agent_sync" "$stage/fleet_knobs" "$stage/fleet_secrets"
   while IFS='|' read -r src rel; do
     cp "$src" "$stage/$rel"
     if [ "$rel" = "needs-owner" ]; then chmod 755 "$stage/$rel"; else chmod 644 "$stage/$rel"; fi
   done < <(manifest)
   mkdir -p "$dest"
-  for name in needs_owner agent_sync fleet_knobs; do
+  for name in needs_owner agent_sync fleet_knobs fleet_secrets; do
     rm -rf "$dest/$name.old"
     [ -e "$dest/$name" ] && mv "$dest/$name" "$dest/$name.old"
     mv "$stage/$name" "$dest/$name"

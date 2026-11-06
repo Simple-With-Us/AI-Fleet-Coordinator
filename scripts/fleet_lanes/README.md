@@ -487,11 +487,31 @@ The class says what a row excuses, because a pattern says only where, and a tool
 
 ### Placement watcher
 
-`python3 -m fleet_lanes.placement_watch` prints what it would file.  `--apply` files issues, posts, and remembers, under `~/.local/state/fleet/`:  `placement-watch.json` (what it has reported), `placement-watch-status.json` (read by `fleet-tools-doctor`) and `placement-report.json` (its last sweep, for reading;  it never reads that back).  It exits 3 on stale inputs and 4 when filing failed.  It files as CLAUDE until the owner chooses otherwise.  `simple-board` needs the seat bearer, so the job's environment must carry `SIMPLE_BOARD_BEARER_LOCATOR`, the non-secret `FOLDER:KEY_NAME` of that bearer.  With no locator it sends nothing and says so in the status file.
+`python3 -m fleet_lanes.placement_watch` prints what it would file.  `--apply` files issues, posts, and remembers, under `~/.local/state/fleet/`:  `placement-watch.json` (what it has reported), `placement-watch-status.json` (read by `fleet-tools-doctor` and Muster) and `placement-report.json` (its last sweep, for reading;  it never reads that back).  It exits 3 on stale inputs, 4 when filing failed, and 5 when it ran but an external root refused to be read.  A run without `--apply` changes nothing else but does write the status file, with `held` true, so a watcher held in dry run shows on the doctor and Muster as held rather than leaving no row.  A dry run leaves the status of a run that was meant to act alone for three hours, failed or not, so running one by hand neither calls that watcher held nor hides its errors.  After that it takes over and carries `last_acting_run`, so a watcher that stopped still reads as stopped.  It files as CLAUDE until the owner chooses otherwise.  `simple-board` needs the seat bearer, so the job's environment must carry `SIMPLE_BOARD_BEARER_LOCATOR`, the non-secret `FOLDER:KEY_NAME` of that bearer.  With no locator it sends nothing and says so in the status file.
 
-It holds its sends in two cases, and each says why in the status file.  More than 25 new findings in one run looks like a renamed mount or a wrong root, so it waits for one run with `--accept-burst`.  A lost or corrupt state file would make everything look new, so it waits for one run with `--reset-state`, which keeps the old file beside the new one.  A send whose outcome is unknown (a timeout, an unexpected exit, a Zulip network error that may have delivered) counts as sent and is never repeated.  A proven non-send is tried again next run:  no credential, a refused identity, a rate limit that outlasted its wait, or a network error from before the request left.  A filing always retries, since the board dedupes it on its uid, and a filing the board deduped goes in as a comment, because the board keeps the old text.  A growing leak reaches the owner at most once a day.  A clone in the Code root with commits on another branch or a stash is one issue for all such clones and one message per clone, and fails no check, because old squash-merged branches look the same.
+It holds its sends in two cases, and each says why in the status file.  More than 25 new findings in one run looks like a renamed mount or a wrong root, so it waits for one run with `--accept-burst`.  A lost or corrupt state file would make everything look new, so it waits for one run with `--reset-state`, which keeps the old file beside the new one.  A send whose outcome is unknown (a timeout, an unexpected exit, a Zulip network error that may have delivered) counts as sent and is never repeated.  A proven non-send is tried again next run:  no credential, a refused identity, a rate limit that outlasted its wait, or a network error from before the request left.  A filing always retries, since the board dedupes it on its uid, and a filing the board deduped goes in as a comment, because the board keeps the old text.  There is one rolling issue per rule class per host (misplaced checkouts, main clones, Code clones holding work, exceptions, the exceptions file, the mode file, hook coverage), not one per creator and repo, so a dry run that found 34 findings in 16 groups is a handful of issues.  A filing's body holds every row of that batch and names the creator and repo in each misplaced row;  a later batch goes in comments on the same issue, because the board keeps the old text.
+
+The owner gets one message for each new set of rows, however many, and at most one a day:  rows that arrive after it wait for the next, and that limit outlives `--reset-state`.  A message too long for Zulip counts the rows it cut, and they are all in the issues.  Two things reach it.  One is a clone in the Code root with a stash or with recent commits no remote has.  A clone whose only such work is local branches with nothing newer than 30 days is not urgent, because old squash-merged branches look the same, so it stays in the issue with the age in its row;  an age or a stash that could not be read counts as recent.  The other is a creator's leak in one repo still growing seven days after that leak first reached an issue, which counts per creator and repo even though the issue does not.
 
 A missing or broken exceptions file holds every placement finding and exits 3 until it is repaired, because each excused checkout would otherwise look misplaced.  So does an `install_tools verify` that could not run.  A path on a disk that is not mounted stays remembered, and the status file counts those as `out_of_sight`.
+
+launchd has no permission for `/Volumes/External` unless the owner grants it, and macOS answers with Operation not permitted, which a sweep would otherwise read as nothing there.  The doctor names such a root in `unreadable_roots` and in its warnings, and the watcher then writes `coverage: external-unreadable` in the status file, exits 5, and keeps every remembered finding on that root, including a path that reaches it through a lanes symlink.  An unmounted disk is the older case above, and it reads as `full`.
+
+`install_tools verify` under load, such as a doctor sweep alongside, can fail a good hook that misses its five seconds.  With `--verify-hooks` each platform with a failure is probed again, one at a time, and only a row that fails both times is reported:  `VERIFY-TIMEOUT` for `probe timed out`, and `VERIFY-FAIL` for `hook missing` or `hook failed its probe`.  A retry that cannot run leaves the first answer standing.
+
+### How far the shim reaches
+
+The shim only sees a process that finds it first on PATH.  `lane ls --strict-placement` (or `--shim-reach`) starts each common shell shape from launchd's default PATH, asks it `command -v git`, and prints a `SHIM REACH` section, also in the JSON as `shim_reach`.  It fails no check, and a plain `lane ls` starts no shells.  The server's reviewed CLI bundle carries the doctor without this module, so there it warns and skips the section.  `unknown` means a shape could not be asked, such as a dotfile that took over 15 seconds, and is not a no.
+
+On the owner's Mac `~/bin` is first on PATH only through `~/.zshrc`, so only `zsh -ic` starts at the shim.  One line reaches the shape agents use most, and it is the owner's to approve, because nothing here edits a dotfile.  Add it as the last line of `~/.zprofile`:
+
+```sh
+export PATH="$HOME/bin:$PATH"
+```
+
+That reaches `zsh -lc`.  It has to be `~/.zprofile` and not `~/.zshenv`, because macOS runs `path_helper` from `/etc/zprofile` after `.zshenv` and moves what that file added behind `/usr/bin`.  The same line in `~/.bash_profile` reaches `bash -lc`, or in `~/.profile` when there is no `~/.bash_profile`, and in `~/.zshenv` it reaches plain `zsh -c`.  `bash -c` and a launchd job read no dotfile at all, so no such line reaches them:  they keep whatever PATH their parent or plist gave them.
+
+For every shape the shim misses, the watcher is the backstop.  It finds the checkout on its next sweep and files it, so a miss means reported afterwards rather than stopped at the moment of the command.  That holds for a block as well, so turning on `block` protects only the shapes this section says the shim reaches.
 
 ### code_main_sync
 
@@ -537,8 +557,11 @@ muse plugins list      # disable integration-lane-guard if its command is gone: 
 #      [Service]
 #      EnvironmentFile=/etc/fleet/lanes.conf
 #      ExecStart=
-#      ExecStart=/usr/bin/python3 -I <stable>/fleet_lanes/code_main_sync.py
-#    The two stale locks clear themselves on the next run, since no process holds them.
+#      Environment=FLEET_SYNC_RELAY_URL=http://127.0.0.1:8471
+#      Environment=FLEET_SYNC_BEARER_FILE=<home>/.secrets/fleet-tools/<seat>
+#      ExecStart=/usr/bin/python3 -I <home>/.local/share/fleet-cli/repo/scripts/fleet_lanes/code_main_sync.py
+#    `install_tools` does not copy this script, so run it from the fleet CLI clone, which follows main.
+#    Every fetch then goes through the relay's read-only /git/ route as that seat, so the unit uses no GitHub credential, and a route it cannot use fails the clone.
 sudo systemctl start code-main-sync.service && journalctl -u code-main-sync.service -n 25 --no-pager
 # 3. Watcher, then shim in detect.
 # /etc/fleet/placement-watch.conf holds SIMPLE_BOARD_BEARER_LOCATOR=FOLDER:KEY_NAME and FLEET_APPS_JSON=<stable>/fleet-apps.json.
@@ -579,6 +602,9 @@ python3 -m unittest fleet_lanes.tests.test_fleet_guard_hook -v
 python3 -m unittest fleet_lanes.tests.test_dsh_check -v
 python3 -m unittest fleet_lanes.tests.test_placement fleet_lanes.tests.test_guard_placement fleet_lanes.tests.test_git_shim -v
 python3 -m unittest fleet_lanes.tests.test_doctor_placement fleet_lanes.tests.test_placement_watch fleet_lanes.tests.test_code_main_sync -v
+python3 -m unittest fleet_lanes.tests.test_shim_reach -v
 ```
+
+A test run cannot write the account's real event log:  `fleet_lanes/__init__.py` marks every child of a test process with `FLEET_LANES_TEST_RUN`, and `placement.log_event` and the shim's two fail-open writers refuse the real log when that marker or `unittest` is present, whatever `HOME` says.  The fixture home is `/Users/fixture-home`, so a fixture row no longer names the owner's real home.
 
 The tests build real throwaway git repos with a hermetic git config, fake `gh` and `lsof`, and never scan the real `/tmp`.  They take minutes rather than seconds because every report or lane creation runs real git, and `/usr/bin/git` on macOS costs 60 to 100 milliseconds per call, more on a loaded machine (`test_lane` took 100 to 230 seconds at a load average near 900).  The installers are tested against temp fake homes only; never run `apply` against the real home from a test or a demo.  `test_guard` has a timing assertion on the allowed-command path that can fail once on a very loaded machine; rerun before treating it as a regression.

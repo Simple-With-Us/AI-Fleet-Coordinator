@@ -67,6 +67,8 @@ struct OpsAuditEntry: Decodable, Identifiable, Equatable {
         case "done": return .passed
         case "planned": return .passed
         case "refused": return .drift
+        // Muster's own row for a run whose helper could not be started:  nothing ran.
+        case "not-run": return .drift
         case "failed": return .missing
         default: return .unproven
         }

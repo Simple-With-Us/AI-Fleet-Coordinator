@@ -80,7 +80,7 @@ class WatchCase(unittest.TestCase):
 
 
 class Grouping(WatchCase):
-    def test_one_issue_per_creator_and_repo_never_per_path(self) -> None:
+    def test_one_issue_per_rule_class_never_per_path_or_creator(self) -> None:
         wt = os.path.join(self.code, "BotFleet/.muse/worktrees")
         paths = [f"{wt}/a", f"{wt}/b", f"{wt}/c"]
         cos = [{"path": p, "owner_repo": "Simple-With-Us/BotFleet"} for p in paths]
@@ -88,8 +88,39 @@ class Grouping(WatchCase):
         run = FakeRun()
         rc = self.run_watch(self.report([anomaly(c["path"]) for c in cos], cos), run)
         self.assertEqual(rc, W.EXIT_OK)
-        self.assertEqual(len(run.named("simple-board", "file")), 2)
-        self.assertEqual(len(run.named("simple-chat", "post")), 2)
+        self.assertEqual(len(run.named("simple-board", "file")), 1)
+        self.assertEqual(len(run.named("simple-chat", "post")), 1)
+        body = run.bodies[0]
+        for row in ("a", "b", "c", "d"):
+            self.assertIn(f"/worktrees/{row}`", body)
+        self.assertIn("muse in BotFleet", body)
+        self.assertIn("muse in DealDex", body)
+
+    def test_the_dry_run_volume_is_a_handful_of_issues(self) -> None:
+        """What the Mac's first dry run gave as 34 findings in 16 groups:  several creators and repos under each rule."""
+        cos, rows = [], []
+        for i in range(10):
+            path = os.path.join(self.home, f"leak{i}")
+            cos.append({"path": path, "owner_repo": f"Simple-With-Us/Repo{i % 5}", "branch": f"{('claude', 'codex', 'cursor')[i % 3]}/x"})
+            rows.append(anomaly(path))
+        rows += [anomaly(os.path.join(self.code, f"M{i}"), "MAIN-CLONE", "off-default-branch") for i in range(4)]
+        report = self.report(rows, cos)
+        report["placement_warnings"] = [{"type": "CODE-WORK", "path": os.path.join(self.code, f"C{i}"), "detail": "a stash"} for i in range(11)]
+        run = FakeRun()
+        self.run_watch(report, run)
+        titles = sorted(c[c.index("--title") + 1] for c in run.named("simple-board", "file"))
+        self.assertEqual(titles, ["Code Clones Holding Work No Remote Has (Mac)", "Main Clones Off Their Default Branch (Mac)", "Misplaced Checkouts (Mac)"])
+
+    def test_a_rows_of_the_first_filing_are_all_in_the_body(self) -> None:
+        paths = [os.path.join(self.home, f"m{i:03d}") for i in range(W.LINES_PER_BODY + 5)]
+        cos = [{"path": p, "owner_repo": "Simple-With-Us/BotFleet"} for p in paths]
+        run = FakeRun()
+        filer = W.Filer("CLAUDE", "s", "Mac", run=run)
+        W.run_once(home=self.home, env=self.vars, apply=False, seat="CLAUDE", session="s", report_path=None, verify_hooks=False, stable=None,
+                   now=NOW, build_report=lambda *a, **k: self.report([anomaly(p) for p in paths], cos), filer=filer, out=io.StringIO(), accept_burst=True)
+        for i in range(len(paths)):
+            self.assertIn(f"m{i:03d}", run.bodies[0])
+        self.assertEqual(run.named("simple-board", "comment"), [])
 
     def test_a_topic_names_the_issue_and_fits(self) -> None:
         p = os.path.join(self.home, "tmp-x")
@@ -158,7 +189,7 @@ class Dedupe(WatchCase):
         run = FakeRun()
         self.run_watch(self.report([anomaly(p)], [self.co(p)]), run)
         call = run.named("simple-board", "file")[0]
-        self.assertEqual(call[call.index("--uid") + 1], "placement-watch:mac:claude|BotFleet")
+        self.assertEqual(call[call.index("--uid") + 1], "placement-watch:mac:misplaced")
 
 
 class Owner(WatchCase):
@@ -238,20 +269,20 @@ class Inputs(WatchCase):
         self.run_watch(self.report([]), run)
         self.assertEqual(len(run.named("simple-board", "file")), 1)
         call = run.named("simple-board", "file")[0]
-        self.assertEqual(call[call.index("--uid") + 1], "placement-watch:mac:minimax|BotFleet")
+        self.assertEqual(call[call.index("--uid") + 1], "placement-watch:mac:misplaced")
         self.run_watch(self.report([]), run)
         self.assertEqual(len(run.named("simple-board", "file")), 1)
 
 
 class ReportOnly(WatchCase):
-    def test_without_apply_nothing_is_called_or_written(self) -> None:
+    def test_without_apply_nothing_is_called_and_only_the_status_is_written(self) -> None:
         p = os.path.join(self.home, "x1")
         out = io.StringIO()
         rc = W.run_once(home=self.home, env=self.vars, apply=False, seat="CLAUDE", session="s", report_path=None, verify_hooks=False,
                         stable=None, now=NOW, build_report=lambda *a, **k: self.report([anomaly(p)], [{"path": p}]), out=out)
         self.assertEqual(rc, W.EXIT_OK)
         self.assertIn("1 new", out.getvalue())
-        self.assertFalse(os.path.exists(self.state))
+        self.assertEqual(os.listdir(self.state), [W.STATUS_NAME])
 
     def test_the_source_never_removes_or_moves_a_checkout_or_lists_processes(self) -> None:
         text = Path(W.__file__).read_text(encoding="utf-8")

@@ -38,7 +38,8 @@ from agent_sync.tests.test_notes import (
     FakeRun,
     read_answer,
 )
-from agent_sync.tests.test_notes_client import FakeOperator, record
+from agent_sync import fleet_bearer as F
+from agent_sync.tests.test_notes_client import FakeFleet, FakeOperator, record
 
 FAKE_PROGRAM = textwrap.dedent("""\
     #!{python}
@@ -151,8 +152,8 @@ class GuideToolTests(McpHarness):
 
 class NotesToolTests(McpHarness):
     """The notes_* tools (AFC-486):  on a "Mac" (notes.direct_available patched to a path, the helper to FakeRun) they
-    run the script directly;  off one (the default here, on every host) they go to a fake Operator through a patched
-    notes_client.operator_client.  No Zulip message is involved either way."""
+    run the script directly;  off one (the default here, on every host) they go to the hosted gateway as this seat's
+    own fleet bearer through a fake fleet client.  No bearer file is read;  no Zulip message is involved either way."""
 
     SCRIPT = Path("/fake/apple-notes-coding.sh")
     MASTER = "⭐️ Background Jobs Master List"
@@ -176,11 +177,27 @@ class NotesToolTests(McpHarness):
             mock.patch.object(N, "_run_helper", run),
         )
 
-    def operator(self, op=None):
-        op = op or FakeOperator()
+    def gateway(self, gw=None):
+        """Off a Mac, through the hosted gateway as this seat's own fleet bearer (FakeFleet, no file is read).
+        Returns (gw, the sleeps the wait took, the patchers):  the fleet client, a fake sleep and a fake clock
+        advanced by it, so a wait's deadline is exact."""
+        gw = gw or FakeFleet()
+        now = [1000.0]
         sleeps: list[float] = []
-        client = op.client(sleeps)
-        return op, sleeps, mock.patch.object(NC, "operator_client", lambda env, principal=W.SERVER, **kw: client)
+
+        def fake_sleep(seconds):
+            sleeps.append(seconds)
+            now[0] += seconds
+
+        return (
+            gw,
+            sleeps,
+            (
+                mock.patch("agent_sync.fleet_bearer.Client", gw.factory),
+                mock.patch.object(NC.time, "sleep", fake_sleep),
+                mock.patch.object(NC.time, "monotonic", lambda: now[0]),
+            ),
+        )
 
     def assert_notes_fence(self, result):
         """The header line, the untrusted note, then exactly one BEGIN and one END line with the same nonce around
@@ -407,14 +424,12 @@ class NotesToolTests(McpHarness):
         self.assertEqual(fenced, entries)
         self.assertEqual(len(run.calls), 1, "the log is read from the file, not the script")
 
-    # ---- through the Operator -------------------------------------------------------------------
-    def test_off_a_mac_a_write_goes_through_the_operator_and_waits_for_the_runner(self):
-        op, sleeps, patch = self.operator()
-        op.records[("CLAUDE", "op-create-0001")] = [
-            record("running", "op-create-0001"),
-            record("done", "op-create-0001", title="[AFC, Claude] Through", result={"note_id": "x-coredata://n7"}),
-        ]
-        with patch:
+    # ---- through the gateway, as this seat's own fleet bearer ----------------------------------------
+    def test_off_a_mac_a_write_goes_through_the_gateway_and_waits_for_the_runner(self):
+        gw, sleeps, patches = self.gateway()
+        gw.queue("notes_create", {"request_id": "op-create-0001", "action": "create", "status": "running", "transport": "operator"})
+        gw.queue("notes_status", {"request_id": "op-create-0001", "action": "create", "status": "done", "transport": "operator", "title": "[AFC, Claude] Through", "note_id": "x-coredata://n7"})
+        with patches[0], patches[1], patches[2]:
             result = self.session().call(
                 "notes_create",
                 {"title": "[AFC, Claude] Through", "markdown": "body", "request_id": "op-create-0001", "summary": "short"},
@@ -429,32 +444,33 @@ class NotesToolTests(McpHarness):
                 "transport": "operator",
                 "title": "[AFC, Claude] Through",
                 "note_id": "x-coredata://n7",
-                "duplicate": False,
             },
         )
-        self.assertEqual(sleeps, [1.0, 1.0])
-        sent = op.calls[0]["payload"]
-        self.assertEqual(sent["seat"], "CLAUDE")
-        self.assertEqual(
-            {k: sent["request"][k] for k in ("action", "identity", "title", "markdown", "session")},
-            {"action": "create", "identity": "CLAUDE", "title": "[AFC, Claude] Through", "markdown": "body", "session": SESSION},
-        )
-        self.assertEqual(sent["request"]["flags"]["summary"], "short")
+        self.assertEqual(sleeps, [2.0])
+        name, sent, write = gw.calls[0]
+        self.assertEqual((name, write), ("notes_create", True))
+        self.assertEqual(sent["title"], "[AFC, Claude] Through")
+        self.assertEqual(sent["markdown"], "body")
+        self.assertEqual(sent["session"], SESSION)
+        self.assertEqual(sent["summary"], "short")
+        self.assertNotIn("identity", sent, "the gateway derives the seat from this bot's own bearer")
+        self.assertEqual(gw.constructed, [(str(self.home / ".secrets" / "fleet-tools" / "claude"), "CLAUDE")])
         self.assertEqual(self.fake.messages, [], "no Zulip message")
-
     def test_the_wait_is_25_seconds_by_default_capped_at_ninety_and_zero_answers_queued(self):
         cases = (({}, 25), ({"wait_seconds": 60}, 60), ({"wait_seconds": 300}, 90), ({"wait_seconds": 7}, 7), ({"wait_seconds": 0}, 0))
         for args, total in cases:
             with self.subTest(args):
-                op, sleeps, patch = self.operator()
-                with patch:
+                gw, sleeps, patches = self.gateway()
+                running = {"request_id": "op-wait-00001", "action": "pin", "status": "running", "transport": "operator"}
+                gw.queue("notes_pin", dict(running, status="queued"))
+                gw.queue("notes_status", *([dict(running)] * 60))
+                with patches[0], patches[1], patches[2]:
                     result = self.session().call("notes_pin", dict(args, title=self.MASTER, request_id="op-wait-00001"))
                 data = self.assert_structured("notes_pin", result)
-                self.assertEqual((data["status"], data["transport"], data["request_id"]), ("queued", "operator", "op-wait-00001"))
+                self.assertEqual((data["status"], data["request_id"]), ("queued" if total == 0 else "running", "op-wait-00001"))
                 self.assertAlmostEqual(sum(sleeps), total)
         self.assertTrue(self.session().call("notes_pin", {"title": self.MASTER, "wait_seconds": 301}).get("isError"))
-
-    def test_the_operators_refusals_and_unknown_outcomes_are_tool_errors(self):
+    def test_the_gateways_refusals_and_unknown_outcomes_are_tool_errors(self):
         for state, error, code in (
             ("refused", {"code": "not_found", "message": "no note with that title in the Coding folder"}, "not_found"),
             ("refused", {"code": "invalid_argument", "message": "the title names agent"}, "invalid_argument"),
@@ -462,42 +478,47 @@ class NotesToolTests(McpHarness):
             ("expired", None, "unavailable"),
         ):
             with self.subTest(state=state, code=code):
-                op, _, patch = self.operator()
-                op.records[("CLAUDE", "op-error-00001")] = [record(state, "op-error-00001", action="pin", **({"error": error} if error else {}))]
-                with patch:
+                gw, _, patches = self.gateway()
+                gw.queue("notes_pin", {"request_id": "op-error-00001", "action": "pin", "status": state, **({"error": error} if error else {})})
+                with patches[0]:
                     result = self.session().call("notes_pin", {"title": self.MASTER, "request_id": "op-error-00001"})
                 obj = self.assert_tool_error(result, code)
-                if error:
-                    self.assertEqual(obj["message"], error["message"])
-
-    def test_a_repeat_through_the_operator_is_a_duplicate_and_a_conflict_is_refused(self):
-        op, _, patch = self.operator()
-        op.records[("CLAUDE", "op-twice-00001")] = [record("done", "op-twice-00001", action="pin", title=self.MASTER, result={"note_id": "n1"})]
+                self.assertIn("op-error-00001", obj["message"], "the recovery check names the same request id")
+    def test_a_repeat_through_the_gateway_keeps_the_gateways_own_answer(self):
+        gw, _, patches = self.gateway()
+        gw.queue(
+            "notes_pin",
+            {"request_id": "op-twice-00001", "action": "pin", "status": "done", "transport": "operator", "note_id": "n1"},
+            {"request_id": "op-twice-00001", "action": "pin", "status": "done", "transport": "operator", "note_id": "n1", "duplicate": True},
+            {"request_id": "op-twice-00001", "action": "pin", "status": "refused", "error": {"code": "invalid_argument", "message": "this request_id was already used for a different request"}},
+        )
         session = self.session()
-        with patch:
+        with patches[0]:
             first = self.assert_structured("notes_pin", session.call("notes_pin", {"title": self.MASTER, "request_id": "op-twice-00001"}))
             again = self.assert_structured("notes_pin", session.call("notes_pin", {"title": self.MASTER, "request_id": "op-twice-00001"}))
-            op.answers[("POST", "/notes/v1/requests")] = (409, {"error": "conflict"})
             conflict = session.call("notes_pin", {"title": "Another Note", "request_id": "op-twice-00001"})
-        self.assertEqual((first["duplicate"], again["duplicate"]), (False, True))
-        self.assertIn("already used for a different request", self.assert_tool_error(conflict, "invalid_argument")["message"])
-
-    def test_reads_status_and_the_log_through_the_operator(self):
-        op, sleeps, patch = self.operator()
+        self.assertEqual((first.get("duplicate"), again["duplicate"]), (None, True))
+        self.assertEqual(self.assert_tool_error(conflict, "invalid_argument")["message"].split(";")[0], "notes request was refused")
+    def test_reads_status_and_the_log_through_the_gateway(self):
+        gw, _, patches = self.gateway()
         note = {"title": self.MASTER, "id": "x-coredata://m1", "created": "", "modified": "", "format": "html", "body": "<div>Jobs</div>", "bytes": 15, "truncated": False}
-        op.records[("CLAUDE", "op-read-000001")] = [record("done", "op-read-000001", action="read", title=self.MASTER, result={"note": note})]
-        op.records[("CLAUDE", "op-status-0001")] = [record("done", "op-status-0001", action="read", title=self.MASTER, result={"note": note})]
-        op.records[("CLAUDE", "op-status-0002")] = [record("refused", "op-status-0002", error={"code": "not_found", "message": "no note"})]
-        op.log_entries = [{"id": "e1", "ts": "2026-10-22T22:03:00Z", "mode": "update", "seat": "CODEX"}]
+        gw.queue("notes_read", {"request_id": "op-read-000001", "action": "read", "status": "done", "transport": "operator", "note": note})
+        gw.queue(
+            "notes_status",
+            {"request_id": "op-status-0001", "action": "read", "status": "done", "note": note},
+            {"request_id": "op-status-0002", "status": "refused", "error": {"code": "not_found", "message": "no note"}},
+            F.FleetError("not_found", "no request nobody-asked-01"),
+        )
+        gw.queue("notes_log", {"entries": [{"id": "e1", "ts": "2026-10-22T22:03:00Z", "mode": "update", "seat": "CODEX"}], "source": "operator", "count": 1})
         session = self.session()
-        with patch:
+        with patches[0]:
             read = session.call("notes_read", {"title": self.MASTER, "request_id": "op-read-000001"})
             status = session.call("notes_status", {"request_id": "op-status-0001"})
             refused = session.call("notes_status", {"request_id": "op-status-0002"})
             logged = session.call("notes_log", {"since_hours": 48, "action": "update"})
             gone = session.call("notes_status", {"request_id": "nobody-asked-01"})
         data = self.assert_structured("notes_read", read)
-        self.assertEqual((data["note"], data["transport"]), (note, "operator"))
+        self.assertEqual(data["note"], note)
         self.assertEqual(self.assert_notes_fence(read)[1], data)
         self.assertEqual(self.assert_structured("notes_status", status)["note"], note)
         self.assertEqual(self.assert_notes_fence(status)[0], "notes_status:  done")
@@ -506,13 +527,12 @@ class NotesToolTests(McpHarness):
         self.assertEqual(json.loads(refused["content"][0]["text"]), plain, "no note text:  no fence")
         entries = self.assert_structured("notes_log", logged)
         self.assertEqual((entries["source"], entries["count"]), ("operator", 1))
-        self.assertEqual(op.calls[-2]["query"], "since_hours=48&limit=50&action=update")
+        self.assertIn(("notes_log", {"since_hours": 48, "action": "update", "limit": 50}, False), gw.calls)
         self.assert_tool_error(gone, "not_found")
-
     def test_bad_titles_flags_secrets_and_missing_sessions_send_nothing(self):
-        op, _, patch = self.operator()
+        gw, _, patches = self.gateway()
         session = self.session()
-        with patch:
+        with patches[0]:
             for args in (
                 {"title": ""},
                 {"title": "no bracket"},
@@ -526,22 +546,22 @@ class NotesToolTests(McpHarness):
             no_session = self.session(self.mcp_env(CLAUDE_CODE_SESSION_ID=None))
             self.assert_tool_error(no_session.call("notes_update", {"title": self.MASTER, "markdown": "x"}), "session_required")
             self.assertNotIn("isError", no_session.call("notes_pin", {"title": self.MASTER, "wait_seconds": 0}))
-        self.assertEqual([c["payload"]["request"]["action"] for c in op.calls], ["pin"], "only the pin was sent")
-
-    def test_off_a_mac_with_no_operator_configured_is_not_configured(self):
+        self.assertEqual([c[0] for c in gw.calls], ["notes_pin"], "only the pin was sent")
+    def test_off_a_mac_without_the_seats_own_bearer_is_not_configured(self):
         result = self.session().call("notes_pin", {"title": self.MASTER})
-        self.assertIn("OPERATOR_API_URL", self.assert_tool_error(result, "not_configured")["message"])
-        network = FakeOperator()
-        network.fail = urllib.error.URLError(ConnectionResetError(104, "reset"))  # may have been sent
-        op, _, patch = self.operator(network)
-        with patch:
-            down = self.session().call("notes_read", {"title": self.MASTER})
-        # The connection was reset after the send, so the request may or may not be queued:  never retryable, same
-        # request_id only.  (A refused connection sent nothing, so it stays a plain unavailable.)
+        error = self.assert_tool_error(result, "not_configured")
+        self.assertIn("fleet bearer file", error["message"])
+        self.assertIn("no fallback", error["message"])
+        gw, _, patches = self.gateway()
+        gw.queue("notes_pin", F.FleetError("outcome_unknown", "gateway transport or response failed"))
+        gw.queue("notes_read", F.FleetError("unavailable", "gateway transport or response failed"))
+        with patches[0]:
+            down = self.session().call("notes_pin", {"title": self.MASTER, "request_id": "op-down-000001"})
+            read = self.session().call("notes_read", {"title": self.MASTER})
         error = self.assert_tool_error(down, "outcome_unknown")
-        self.assertIn("could not be reached", error["message"])
-        self.assertIn("never a new one", error["message"])
+        self.assertIn("never repeat with a new request id", error["message"])
         self.assertFalse(error["retryable"])
+        self.assert_tool_error(read, "unavailable")
 
 
 class RecallToolTests(FakePrograms):
@@ -550,9 +570,12 @@ class RecallToolTests(FakePrograms):
         shared = json.loads((Path(T.__file__).parent / "recall-tools.json").read_text())["tools"]
         self.assertEqual([served[t["name"]] for t in shared], shared)
         self.assertEqual(
-            {t["name"] for t in shared}, {"recall_search", "recall_stats", "recall_contribute"}
+            {t["name"] for t in shared},
+            {"recall_search", "recall_stats", "recall_contribute", "recall_correct", "recall_retract"},
         )
-        self.assertIn("recall_contribute", T.WRITE_TOOLS)
+        self.assertLessEqual(
+            {"recall_contribute", "recall_correct", "recall_retract"}, T.WRITE_TOOLS
+        )
         self.assertLessEqual({"recall_search", "recall_stats"}, T.READ_TOOLS)
 
     def test_search_runs_the_recall_cli_and_fences_the_hits(self):
@@ -589,6 +612,13 @@ class RecallToolTests(FakePrograms):
         self.assertEqual(
             call["argv"], ["search", "pm2 env", "--limit", "3", "--json", "--app", "fleet"]
         )
+        audit = self.session(self.env(RECALL_TEST_REPLY=reply)).call(
+            "recall_search", {"query": "pm2 env", "include_retracted": True}
+        )
+        self.assertEqual(audit["structuredContent"]["doc_ids"], ["doc-1"])
+        self.assertEqual(
+            self.calls(self.recall_out)[-1]["argv"][-1], "--include-retracted"
+        )
         self.assertFalse(
             [k for k in call["env"] if k.startswith("ZULIP")], "no Zulip variable reaches recall"
         )
@@ -609,10 +639,323 @@ class RecallToolTests(FakePrograms):
         call = self.calls(self.recall_out)[0]
         self.assertEqual(call["stdin"], text)
         self.assertNotIn(text, " ".join(call["argv"]))
-        self.assertEqual(call["argv"][call["argv"].index("--seat") + 1], "CLAUDE")
+        self.assertIn("--seat=CLAUDE", call["argv"])
         self.assertEqual(call["argv"][:2], ["contribute", "-"])
 
     LESSON = "Always restart pm2 with --update-env after changing the ecosystem file, or the old env stays cached."
+
+    def test_correct_and_retract_run_the_cli_as_the_claimed_identity(self):
+        corrected = json.dumps(
+            {
+                "id": "point-1",
+                "doc_id": "contrib/CLAUDE/2026-11-05/472fc36e",
+                "status": "corrected",
+                "revision": 2,
+                "corrected_at": 1762396800000,
+                "corrected_by": "CLAUDE",
+                "previous_content_hash": "old",
+                "content_hash": "new",
+                "scrubbed": [],
+            }
+        )
+        session = self.session(self.env(RECALL_TEST_REPLY=corrected))
+        args = {
+            "doc_id": "contrib/CLAUDE/2026-11-05/472fc36e",
+            "text": self.LESSON,
+            "reason": "fix the sentence gap",
+            "expected_revision": 1,
+        }
+        data = self.assert_structured("recall_correct", session.call("recall_correct", args))
+        self.assertEqual((data["revision"], data["status"], data["seat"]), (2, "corrected", "CLAUDE"))
+        call = self.calls(self.recall_out)[0]
+        self.assertEqual(call["stdin"], self.LESSON)
+        self.assertEqual(
+            call["argv"][:4],
+            ["correct", args["doc_id"], "-", "--reason=" + args["reason"]],
+        )
+        self.assertIn("--seat=CLAUDE", call["argv"])
+        self.assertIn("--expected-revision=1", call["argv"])
+
+        retracted = json.dumps(
+            {
+                "id": "point-1",
+                "doc_id": args["doc_id"],
+                "status": "retracted",
+                "revision": 2,
+                "retracted": True,
+                "retracted_at": 1762396801000,
+                "retracted_by": "CLAUDE",
+                "retraction_reason": "obsolete",
+            }
+        )
+        session = self.session(self.env(RECALL_TEST_REPLY=retracted))
+        data = self.assert_structured(
+            "recall_retract",
+            session.call(
+                "recall_retract",
+                {"doc_id": args["doc_id"], "reason": "obsolete", "expected_revision": 2},
+            ),
+        )
+        self.assertEqual((data["retracted"], data["status"], data["seat"]), (True, "retracted", "CLAUDE"))
+        call = self.calls(self.recall_out)[-1]
+        self.assertEqual(call["stdin"], "")
+        self.assertEqual(
+            call["argv"],
+            [
+                "retract",
+                args["doc_id"],
+                "--reason=obsolete",
+                "--seat=CLAUDE",
+                "--json",
+                "--expected-revision=2",
+            ],
+        )
+
+    def test_a_mutation_that_times_out_is_unknown_and_the_retry_is_not_resent(self):
+        args = {
+            "doc_id": "contrib/CLAUDE/2026-11-05/472fc36e",
+            "reason": "obsolete",
+            "idempotency_key": "aaaaaaaa-8",
+        }
+
+        def hang(argv, **kwargs):
+            raise subprocess.TimeoutExpired(argv, 1)
+
+        env = self.env(
+            RECALL_TEST_REPLY=json.dumps(
+                {"doc_id": args["doc_id"], "status": "retracted", "retracted": True}
+            )
+        )
+        session = self.session(env)
+        with mock.patch.object(RT.subprocess, "run", hang):
+            first = self.assert_tool_error(session.call("recall_retract", args), "outcome_unknown")
+        self.assertIn("may or may not have landed", first["message"])
+        retry = self.assert_tool_error(session.call("recall_retract", args), "outcome_unknown")
+        self.assertIn("may or may not have landed", retry["message"])
+        self.assertEqual(self.calls(self.recall_out), [], "the retry did not send the mutation again")
+
+    def test_mutation_arguments_are_checked_before_the_cli_runs(self):
+        session = self.session(self.env())
+        for args in (
+            {"doc_id": 123, "reason": "obsolete"},
+            {"doc_id": "", "reason": "obsolete"},
+            {"doc_id": "-bad", "reason": "obsolete"},
+            {"doc_id": "contrib/CLAUDE/2026-11-05/472fc36e", "reason": "obsolete", "expected_revision": "1"},
+            {"doc_id": "contrib/CLAUDE/2026-11-05/472fc36e", "reason": "obsolete", "expected_revision": 1.5},
+            {"doc_id": "contrib/CLAUDE/2026-11-05/472fc36e", "reason": "obsolete", "expected_revision": True},
+        ):
+            self.assert_tool_error(session.call("recall_retract", args), "invalid_argument")
+        self.assertEqual(self.calls(self.recall_out), [])
+
+    def test_mutation_reason_max_is_checked_before_the_cli_runs(self):
+        session = self.session(self.env())
+        self.assert_tool_error(
+            session.call(
+                "recall_retract",
+                {
+                    "doc_id": "contrib/CLAUDE/2026-11-05/472fc36e",
+                    "reason": "x" * (RT.REASON_MAX + 1),
+                },
+            ),
+            "invalid_argument",
+        )
+        self.assertEqual(self.calls(self.recall_out), [])
+
+    def test_failure_classifies_write_outages_as_unknown(self):
+        for err in (
+            "recall: HTTP 500 from qdrant",
+            "recall: HTTP 502 from recall.example.test",
+            "recall: HTTP 408 from recall.example.test",
+            "recall: timeout reaching recall.example.test",
+            "recall: timed out waiting for recall.example.test",
+            "recall: TimeoutError reaching recall.example.test",
+            "recall: RemoteDisconnected reaching recall.example.test",
+            "recall: ConnectionResetError reaching recall.example.test",
+        ):
+            with self.subTest(err=err):
+                exc = RT.failure(2, err, write=True)
+                self.assertEqual(exc.code, "outcome_unknown")
+                self.assertFalse(exc.retryable)
+        self.assertEqual(
+            RT.failure(2, "recall: HTTP 400 bad request", write=True).code,
+            "invalid_argument",
+        )
+
+    def test_failure_classifies_429_as_a_retryable_write_refusal(self):
+        exc = RT.failure(2, "recall: HTTP 429 from recall.example.test", write=True)
+        self.assertEqual(exc.code, "rate_limited")
+        self.assertTrue(exc.retryable)
+
+    def test_failure_classifies_read_outages_as_retryable_unavailability(self):
+        for err in (
+            "recall: HTTP 500 from qdrant",
+            "recall: timeout reaching recall.example.test",
+            "recall: TimeoutError reaching recall.example.test",
+            "recall: RemoteDisconnected reaching recall.example.test",
+        ):
+            with self.subTest(err=err):
+                exc = RT.failure(2, err)
+                self.assertEqual(exc.code, "unavailable")
+                self.assertTrue(exc.retryable)
+
+    def test_failure_classifies_a_rate_limited_read_as_rate_limited(self):
+        exc = RT.failure(2, "recall: HTTP 429 from recall.example.test")
+        self.assertEqual(exc.code, "rate_limited")
+        self.assertTrue(exc.retryable)
+
+    def test_an_unconfigured_owner_token_is_an_authorization_failure(self):
+        session = self.session(
+            self.env(
+                RECALL_TEST_EXIT="2",
+                RECALL_TEST_ERR="owner mutation token not configured; set RECALL_OWNER_TOKEN in Infisical",
+                RECALL_TEST_REPLY="{}",
+            )
+        )
+        self.assert_tool_error(
+            session.call(
+                "recall_retract",
+                {"doc_id": "contrib/CLAUDE/2026-11-05/472fc36e", "reason": "obsolete"},
+            ),
+            "not_authorized",
+        )
+
+    def test_a_malformed_mutation_response_is_unknown_and_not_resent(self):
+        args = {
+            "doc_id": "contrib/CLAUDE/2026-11-05/472fc36e",
+            "reason": "obsolete",
+            "idempotency_key": "aaaaaaaa-9",
+        }
+        malformed = json.dumps(
+            {"id": "point-1", "doc_id": args["doc_id"], "status": "completed",
+             "revision": "2", "retracted": True, "retracted_at": 1,
+             "retracted_by": "CLAUDE", "retraction_reason": "obsolete"}
+        )
+        session = self.session(self.env(RECALL_TEST_REPLY=malformed))
+        first = self.assert_tool_error(session.call("recall_retract", args), "outcome_unknown")
+        self.assertIn("may or may not have landed", first["message"])
+        self.assertEqual(len(self.calls(self.recall_out)), 1)
+
+        retry = self.assert_tool_error(session.call("recall_retract", args), "outcome_unknown")
+        self.assertIn("may or may not have landed", retry["message"])
+        self.assertEqual(len(self.calls(self.recall_out)), 1)
+
+    def test_an_upstream_mutation_error_is_unknown_and_not_resent(self):
+        args = {
+            "doc_id": "contrib/CLAUDE/2026-11-05/472fc36e",
+            "reason": "obsolete",
+        }
+        session = self.session(
+            self.env(
+                RECALL_TEST_EXIT="2",
+                RECALL_TEST_ERR="recall: HTTP 500 from recall.example.test",
+                RECALL_TEST_REPLY="{}",
+            )
+        )
+        first = self.assert_tool_error(session.call("recall_retract", args), "outcome_unknown")
+        self.assertIn("may or may not have landed", first["message"])
+        retry = self.assert_tool_error(session.call("recall_retract", args), "outcome_unknown")
+        self.assertIn("may or may not have landed", retry["message"])
+        self.assertEqual(len(self.calls(self.recall_out)), 1)
+
+    def test_disconnected_writes_keep_their_rows_and_retries_are_not_resent(self):
+        cases = [
+            (
+                "recall_contribute",
+                {"text": self.LESSON, "category": "lesson", "idempotency_key": "disconnect-contribute"},
+                "recall: TimeoutError reaching recall.example.test",
+            ),
+            (
+                "recall_correct",
+                {
+                    "doc_id": "contrib/CLAUDE/2026-11-05/472fc36e",
+                    "text": self.LESSON,
+                    "reason": "make the lesson current",
+                    "idempotency_key": "disconnect-correct",
+                },
+                "recall: RemoteDisconnected reaching recall.example.test",
+            ),
+            (
+                "recall_retract",
+                {
+                    "doc_id": "contrib/CLAUDE/2026-11-05/472fc36e",
+                    "reason": "obsolete",
+                    "idempotency_key": "disconnect-retract",
+                },
+                "recall: ConnectionResetError reaching recall.example.test",
+            ),
+        ]
+        for name, args, err in cases:
+            with self.subTest(name=name):
+                before = len(self.calls(self.recall_out))
+                session = self.session(
+                    self.env(RECALL_TEST_EXIT="2", RECALL_TEST_ERR=err, RECALL_TEST_REPLY="{}")
+                )
+                first = self.assert_tool_error(session.call(name, args), "outcome_unknown")
+                retry = self.assert_tool_error(session.call(name, args), "outcome_unknown")
+                self.assertIn("may or may not", first["message"])
+                self.assertIn("may or may not", retry["message"])
+                self.assertEqual(
+                    len(self.calls(self.recall_out)) - before,
+                    1,
+                    "the retained unknown row refused the retry without another write attempt",
+                )
+
+    def test_a_rate_limited_mutation_releases_its_idempotency_key(self):
+        args = {
+            "doc_id": "contrib/CLAUDE/2026-11-05/472fc36e",
+            "reason": "obsolete",
+            "idempotency_key": "aaaaaaaa-429",
+        }
+        session = self.session(
+            self.env(
+                RECALL_TEST_EXIT="2",
+                RECALL_TEST_ERR="recall: HTTP 429 from recall.example.test",
+                RECALL_TEST_REPLY="{}",
+            )
+        )
+        first = self.assert_tool_error(session.call("recall_retract", args), "rate_limited")
+        self.assertIs(first["retryable"], True)
+        second = self.assert_tool_error(session.call("recall_retract", args), "rate_limited")
+        self.assertIs(second["retryable"], True)
+        self.assertEqual(len(self.calls(self.recall_out)), 2)
+
+    def test_a_read_outage_is_retryable_unavailable_not_an_unknown_write(self):
+        session = self.session(
+            self.env(
+                RECALL_TEST_EXIT="2",
+                RECALL_TEST_ERR="recall: HTTP 500 from recall.example.test",
+                RECALL_TEST_REPLY="{}",
+            )
+        )
+        error = self.assert_tool_error(
+            session.call("recall_search", {"query": "pm2 env"}), "unavailable"
+        )
+        self.assertIs(error["retryable"], True)
+
+    def test_a_rate_limited_read_is_rate_limited_not_an_outage(self):
+        session = self.session(
+            self.env(
+                RECALL_TEST_EXIT="2",
+                RECALL_TEST_ERR="recall: HTTP 429 from recall.example.test",
+                RECALL_TEST_REPLY="{}",
+            )
+        )
+        error = self.assert_tool_error(
+            session.call("recall_search", {"query": "pm2 env"}), "rate_limited"
+        )
+        self.assertIs(error["retryable"], True)
+
+    def test_mutation_reason_is_scanned_before_the_cli_runs(self):
+        session = self.session(self.env())
+        leak = "token ghp_" + "EXAMPLE0" * 5
+        self.assert_tool_error(
+            session.call(
+                "recall_retract",
+                {"doc_id": "contrib/CLAUDE/2026-11-05/472fc36e", "reason": leak},
+            ),
+            "refused_secret",
+        )
+        self.assertEqual(self.calls(self.recall_out), [])
 
     def test_an_idempotency_key_contributes_once_even_when_the_retry_alters_the_text(self):
         reply = json.dumps(

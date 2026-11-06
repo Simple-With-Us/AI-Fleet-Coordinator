@@ -1,0 +1,297 @@
+name: Muster Release (Sparkle)
+
+# Every merge to main that changes Muster becomes a signed, notarized and stapled build that
+# installed copies pick up on their own through Sparkle within the hour.  A pull request that
+# touches Muster is built and verified the same way and never published.
+# muster/docs/AUTO-UPDATE.md describes the whole route:  the feed, the keys, the gate that
+# holds an install while Muster is busy, and rollback.  The pattern is the fleet's
+# (CodeCaps' docs/AUTO-UPDATE.md is canonical;  Hog Hunter's mac-release.yml is the copy this
+# follows).
+#
+# Credentials (names only;  no value is ever printed):
+#   MAC_CERT_P12_BASE64, MAC_CERT_PASSWORD   Fleet-OPS prod /mac-certs,
+#       read with INFISICAL_MAC_CERTS_READ_TOKEN and INFISICAL_FLEET_OPS_PROJECT_ID.
+#   ASC_KEY_ID, ASC_ISSUER_ID, ASC_KEY_P8     Fleet-OPS prod /asc,  read with
+#       INFISICAL_ASC_READ_TOKEN;  notarytool signs in with it.
+#   MUSTER_SPARKLE_ED_PRIVATE_KEY             AI Fleet Coordinator prod /muster-sparkle,
+#       read with INFISICAL_MUSTER_SPARKLE_READ_TOKEN;  signs each update archive.
+# With any of them missing, or with no public key in muster/project.yml, the job still
+# builds the bundle and verifies its signature, then names what is missing and publishes
+# nothing.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'muster/**'
+      - 'scripts/infisical-fetch.mjs'
+      - '.github/workflows/muster-release.yml'
+  pull_request:
+    paths:
+      - 'muster/**'
+      - 'scripts/infisical-fetch.mjs'
+      - '.github/workflows/muster-release.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One release at a time per ref, in merge order.  On main a queued run is replaced by a newer
+# one, which is fine:  the newer commit carries the larger build number.  Pull requests and
+# branch dispatches get their own group, so they never replace a queued main release.
+concurrency:
+  group: muster-release-${{ github.event_name == 'pull_request' && github.head_ref || github.ref_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # A pull request builds and verifies with a read-only token and reads no credential.  The
+  # job that can write releases never runs for a pull request.
+  verify:
+    name: Muster release build check
+    if: github.event_name == 'pull_request' && github.event.repository.fork == false
+    runs-on: macos-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install XcodeGen
+        run: |
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+          xcodegen --version
+
+      - name: Build and verify the bundle (not publishing)
+        env:
+          MUSTER_BUILD_CHANNEL: lane
+        run: MUSTER_ALLOW_ADHOC_VALIDATION=1 bash muster/script/release_build.sh --build-only
+
+  release:
+    name: Muster release
+    if: github.event_name != 'pull_request' && github.event.repository.fork == false
+    runs-on: macos-latest
+    timeout-minutes: 60
+    permissions:
+      # Only the publish steps use the token, and only on main.
+      contents: write
+    env:
+      FEED_TAG: muster-feed
+      # Sparkle-2.10.1.tar.xz, as the digest on Sparkle's own 2.10.1 release lists it.
+      SPARKLE_TOOLS_VERSION: "2.10.1"
+      SPARKLE_TOOLS_SHA256: "1a856d2a9edb8e628de88121d7be04cf0e2167f8641650b78fca00b14244cf27"
+    steps:
+      - uses: actions/checkout@v7
+
+      # Booleans only:  which of the names this repository's Actions can read.  This is how
+      # the route's state is known without anyone printing a value.
+      - name: Report which release credentials this repository holds
+        env:
+          INFISICAL_FLEET_OPS_PROJECT_ID: ${{ secrets.INFISICAL_FLEET_OPS_PROJECT_ID }}
+          INFISICAL_MAC_CERTS_READ_TOKEN: ${{ secrets.INFISICAL_MAC_CERTS_READ_TOKEN }}
+          INFISICAL_ASC_READ_TOKEN: ${{ secrets.INFISICAL_ASC_READ_TOKEN }}
+          INFISICAL_MUSTER_SPARKLE_READ_TOKEN: ${{ secrets.INFISICAL_MUSTER_SPARKLE_READ_TOKEN }}
+        run: |
+          for name in INFISICAL_FLEET_OPS_PROJECT_ID INFISICAL_MAC_CERTS_READ_TOKEN INFISICAL_ASC_READ_TOKEN INFISICAL_MUSTER_SPARKLE_READ_TOKEN; do
+            if [ -n "${!name:-}" ]; then echo "$name: set"; else echo "$name: missing"; fi
+          done
+          key="$(awk '/MUSTER_SPARKLE_PUBLIC_KEY:/ { value = $2 } END { gsub(/"/, "", value); print value }' muster/project.yml)"
+          if [ -n "$key" ]; then echo "MUSTER_SPARKLE_PUBLIC_KEY (muster/project.yml): set"; else echo "MUSTER_SPARKLE_PUBLIC_KEY (muster/project.yml): missing"; fi
+
+      - name: Load release credentials (scoped Infisical tokens)
+        id: credentials
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          INFISICAL_FLEET_OPS_PROJECT_ID: ${{ secrets.INFISICAL_FLEET_OPS_PROJECT_ID }}
+          INFISICAL_MAC_CERTS_READ_TOKEN: ${{ secrets.INFISICAL_MAC_CERTS_READ_TOKEN }}
+          INFISICAL_ASC_READ_TOKEN: ${{ secrets.INFISICAL_ASC_READ_TOKEN }}
+          INFISICAL_MUSTER_SPARKLE_READ_TOKEN: ${{ secrets.INFISICAL_MUSTER_SPARKLE_READ_TOKEN }}
+        run: node muster/script/load_release_secrets.mjs
+
+      - name: Decide whether this run can publish
+        id: gate
+        env:
+          MISSING: ${{ steps.credentials.outputs.missing }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ] || [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Not published::Built and verified only.  Muster releases are published from main."
+            exit 0
+          fi
+          missing="$MISSING"
+          for name in MUSTER_CERT_P12_PATH MAC_CERT_PASSWORD ASC_KEY_PATH ASC_KEY_ID ASC_ISSUER_ID MUSTER_SPARKLE_KEY_PATH; do
+            if [ -z "${!name:-}" ] && [[ " $missing " != *" $name "* ]]; then missing="$missing $name"; fi
+          done
+          key="$(awk '/MUSTER_SPARKLE_PUBLIC_KEY:/ { value = $2 } END { gsub(/"/, "", value); print value }' muster/project.yml)"
+          [ -n "$key" ] || missing="$missing MUSTER_SPARKLE_PUBLIC_KEY(muster/project.yml)"
+          missing="$(echo $missing)"
+          if [ -z "$missing" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Muster release not published::Missing: $missing.  The bundle is still built and its signature verified.  See muster/docs/AUTO-UPDATE.md, Secrets."
+          fi
+
+      - name: Install XcodeGen
+        run: |
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+          xcodegen --version
+
+      # Without the certificate there is nothing to publish, but the bundle can still be
+      # proven:  built universal, stamped, Sparkle.framework embedded, and the whole nesting
+      # passing codesign --verify --deep --strict.  The ad-hoc signature proves no team.
+      - name: Build and verify the bundle (not publishing)
+        if: steps.gate.outputs.publish != 'true'
+        env:
+          # Only main is stamped release;  a run dispatched on any other branch is a lane.
+          MUSTER_BUILD_CHANNEL: ${{ github.ref == 'refs/heads/main' && 'release' || 'lane' }}
+        run: MUSTER_ALLOW_ADHOC_VALIDATION=1 bash muster/script/release_build.sh --build-only
+
+      - name: Import the Developer ID certificate into a throwaway keychain
+        if: steps.gate.outputs.publish == 'true'
+        run: |
+          set -euo pipefail
+          kc="$RUNNER_TEMP/muster-signing.keychain-db"
+          kc_pass="$(openssl rand -base64 24)"
+          echo "::add-mask::$kc_pass"
+          security create-keychain -p "$kc_pass" "$kc"
+          security set-keychain-settings -lut 21600 "$kc"
+          security unlock-keychain -p "$kc_pass" "$kc"
+          security import "$MUSTER_CERT_P12_PATH" -k "$kc" -P "$MAC_CERT_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security >/dev/null
+          rm -f "$MUSTER_CERT_P12_PATH"
+          # The Developer ID G2 intermediate, in case the export carried only the leaf.
+          curl -fsSL https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer -o "$RUNNER_TEMP/DeveloperIDG2CA.cer"
+          security import "$RUNNER_TEMP/DeveloperIDG2CA.cer" -k "$kc" >/dev/null 2>&1 || true
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$kc_pass" "$kc" >/dev/null
+          security list-keychains -d user -s "$kc" login.keychain-db
+          identity="$(security find-identity -v -p codesigning "$kc" | sed -n 's/^.*"\(Developer ID Application:[^"]*\)".*$/\1/p' | head -n 1)"
+          if [ -z "$identity" ]; then
+            echo "::error::The imported certificate holds no valid Developer ID Application identity."
+            exit 1
+          fi
+          echo "MUSTER_CODESIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
+
+      - name: Download Sparkle tools
+        if: steps.gate.outputs.publish == 'true'
+        run: |
+          set -euo pipefail
+          version="$(awk '/url: https:\/\/github.com\/sparkle-project\/Sparkle/ { found = 1 } found && /from:/ { gsub(/"/, "", $2); print $2; exit }' muster/project.yml)"
+          [ -n "$version" ] || { echo "::error::Sparkle version not found in muster/project.yml"; exit 1; }
+          # The tool that signs every update runs only after its archive matches the digest
+          # pinned here, which is the one Sparkle's own release lists for this version.
+          # Bump both together when muster/project.yml moves to a new Sparkle.
+          if [ "$version" != "$SPARKLE_TOOLS_VERSION" ]; then
+            echo "::error::muster/project.yml asks for Sparkle $version, and the pinned tools digest is for $SPARKLE_TOOLS_VERSION."
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/sparkle-tools"
+          curl -fsSL "https://github.com/sparkle-project/Sparkle/releases/download/${version}/Sparkle-${version}.tar.xz" -o "$RUNNER_TEMP/sparkle.tar.xz"
+          echo "$SPARKLE_TOOLS_SHA256  $RUNNER_TEMP/sparkle.tar.xz" | shasum -a 256 -c -
+          tar -xf "$RUNNER_TEMP/sparkle.tar.xz" -C "$RUNNER_TEMP/sparkle-tools"
+          tool="$(find "$RUNNER_TEMP/sparkle-tools" -path '*/bin/generate_appcast' -type f | head -n 1)"
+          [ -x "$tool" ] || { echo "::error::generate_appcast not found in the Sparkle distribution"; exit 1; }
+          echo "SPARKLE_TOOLS_DIR=$(dirname "$tool")" >> "$GITHUB_ENV"
+
+      - name: Build, sign, notarize and staple
+        if: steps.gate.outputs.publish == 'true'
+        env:
+          MUSTER_BUILD_CHANNEL: release
+          NOTARY_KEY_PATH: ${{ env.ASC_KEY_PATH }}
+          NOTARY_KEY_ID: ${{ env.ASC_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ env.ASC_ISSUER_ID }}
+        run: bash muster/script/release_build.sh --release
+
+      - name: Name the release
+        if: steps.gate.outputs.publish == 'true'
+        id: version
+        run: |
+          plist=muster/dist/Muster.app/Contents/Info.plist
+          short="$(plutil -extract CFBundleShortVersionString raw -o - "$plist")"
+          build="$(plutil -extract CFBundleVersion raw -o - "$plist")"
+          feed="$(plutil -extract SUFeedURL raw -o - "$plist")"
+          {
+            echo "short=$short"
+            echo "build=$build"
+            echo "tag=muster-v$short-build.$build"
+            echo "feed=$feed"
+          } >> "$GITHUB_OUTPUT"
+          echo "Muster $short (build $build), feed $feed"
+
+      # Sparkle offers only a larger build, so a build that is not larger than the one the
+      # feed names would reach nobody.  It is refused here rather than published.
+      - name: Check the build is newer than the live feed
+        if: steps.gate.outputs.publish == 'true'
+        env:
+          FEED: ${{ steps.version.outputs.feed }}
+          BUILD: ${{ steps.version.outputs.build }}
+        run: |
+          live="$(curl -fsSL "$FEED" 2>/dev/null | sed -n 's:.*<sparkle\:version>\([0-9]*\)</sparkle\:version>.*:\1:p' | head -n 1 || true)"
+          if [ -n "$live" ] && [ "$BUILD" -le "$live" ]; then
+            echo "::error::Build $BUILD is not newer than build $live, which the feed already names."
+            exit 1
+          fi
+          echo "live feed: ${live:-none yet};  this build: $BUILD"
+
+      - name: Write the signed appcast
+        if: steps.gate.outputs.publish == 'true'
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          BUILD: ${{ steps.version.outputs.build }}
+        run: |
+          # The notes name the build and link its commit, and carry no free text from the
+          # commit itself, so nothing a commit message held is copied into the feed.
+          notes="$RUNNER_TEMP/release-notes.md"
+          echo "Build $BUILD, from commit [${GITHUB_SHA:0:7}](https://github.com/$GITHUB_REPOSITORY/commit/$GITHUB_SHA)." > "$notes"
+          bash muster/script/make_appcast.sh muster/dist/Muster.zip "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/" muster/dist "$notes"
+          cp "$notes" muster/dist/release-notes.md
+
+      # The build's own release holds its archives and is never marked latest, so Muster
+      # never becomes this repository's latest release.  The feed is a fixed tag that only
+      # this workflow writes, and its one asset is replaced after the archives are up, so the
+      # feed never names an archive that is not there yet.
+      - name: Publish the release and move the feed
+        if: steps.gate.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          TITLE: Muster ${{ steps.version.outputs.short }} (Build ${{ steps.version.outputs.build }})
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::Release $TAG already exists;  published assets are never replaced."
+            exit 1
+          fi
+          gh release create "$TAG" muster/dist/Muster.zip muster/dist/Muster.zip.sha256 muster/dist/Muster.dmg muster/dist/Muster.dmg.sha256 \
+            --title "$TITLE" --notes-file muster/dist/release-notes.md --target "$GITHUB_SHA" --latest=false
+          if gh release view "$FEED_TAG" >/dev/null 2>&1; then
+            gh release upload "$FEED_TAG" muster/dist/appcast.xml --clobber
+          else
+            gh release create "$FEED_TAG" muster/dist/appcast.xml --title "Muster Update Feed" \
+              --notes "Muster's Sparkle feed.  Only .github/workflows/muster-release.yml writes this release." \
+              --target "$GITHUB_SHA" --latest=false
+          fi
+
+      - name: Confirm the live feed serves this build
+        if: steps.gate.outputs.publish == 'true'
+        env:
+          FEED: ${{ steps.version.outputs.feed }}
+          BUILD: ${{ steps.version.outputs.build }}
+        run: |
+          for _ in 1 2 3 4 5 6 7 8 9 10; do
+            if curl -fsSL "$FEED" | grep -q "<sparkle:version>$BUILD</sparkle:version>"; then
+              echo "live feed names build $BUILD: $FEED"
+              exit 0
+            fi
+            sleep 6
+          done
+          echo "::error::$FEED does not name build $BUILD after a minute."
+          exit 1
+
+      - name: Remove the signing keychain and keys
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/muster-signing.keychain-db" >/dev/null 2>&1 || true
+          rm -rf "$RUNNER_TEMP/muster-release"

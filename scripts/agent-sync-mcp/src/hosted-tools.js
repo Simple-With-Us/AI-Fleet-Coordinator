@@ -56,7 +56,12 @@ import {
   RECALL_WRITE_TOOLS,
   RECALL_SECRETS,
   CONTRIBUTE_MIN,
+  CONTRIBUTE_MAX,
+  REASON_MIN,
+  REASON_MAX,
+  DOC_ID_PATTERN,
   mapRecallError,
+  boundedRecallInput,
   hitItem,
   recallClean,
   recallEnvelope,
@@ -164,7 +169,7 @@ export const RESOURCE_SCOPES = Object.freeze({ read: "zulip:read", write: "zulip
 // description only.
 //
 // AFC-328 appends the FleetLink tools after the Linear ones.  AFC-330 appends the rest of Zulip
-// (every tools.json tool after the first ten, as zulip_<name>) and the read-only listener tools
+// (every tools.json tool after the first ten, as zulip_<name>) and the read-only eavesdropper tools
 // after those, so every earlier tool keeps its place.
 export const HOSTED_TOOL_LIST = Object.freeze([...ZULIP_PUBLIC_TOOLS, ...RECALL_TOOLS, ...LINEAR_TOOLS, ...FLEETLINK_TOOLS, ...ZULIP_FULL_PUBLIC_TOOLS, ...EAVESDROPPER_TOOLS, ...NOTES_TOOLS, ...WA_TOOLS, ...GR_TOOLS, ...TYPED_V1_TOOLS, ...WF_V1_TOOLS].map(withServiceTitle));
 const FLEETLINK_BY_NAME = Object.freeze(Object.fromEntries(FLEETLINK_TOOLS.map((tool) => [tool.name, tool])));
@@ -179,7 +184,7 @@ const ZULIP_WRITE_NAMES = [...WRITE_TOOLS, ...DM_WRITE_TOOLS].map(publicZulip);
 const FULL_NAMES = Object.keys(ZULIP_FULL_NAMES);
 const FULL_READ_NAMES = FULL_NAMES.filter((name) => !Object.hasOwn(FULL_WRITE_KIND, ZULIP_LEGACY_NAMES[name]));
 const FULL_WRITE_NAMES = FULL_NAMES.filter((name) => Object.hasOwn(FULL_WRITE_KIND, ZULIP_LEGACY_NAMES[name]));
-export const HOSTED_READ_TOOLS = Object.freeze(new Set(["identities", "guide", ...ZULIP_READ_NAMES, ...RECALL_READ_TOOLS, ...LINEAR_READ_TOOLS, ...FLEETLINK_READ_TOOLS, ...FULL_READ_NAMES, ...EAVESDROPPER_READ_TOOLS, ...NOTES_READ_TOOLS, "whatsapp_read", "gr_v1_pr_state", "gr_v1_pr_hold_state", ...WF_V1_TOOLS.filter((t) => WF_V1_READ_ACTIONS.includes(t.name.slice(3))).map((t) => t.name)]));
+export const HOSTED_READ_TOOLS = Object.freeze(new Set(["identities", "guide", "catalog", ...ZULIP_READ_NAMES, ...RECALL_READ_TOOLS, ...LINEAR_READ_TOOLS, ...FLEETLINK_READ_TOOLS, ...FULL_READ_NAMES, ...EAVESDROPPER_READ_TOOLS, ...NOTES_READ_TOOLS, "whatsapp_read", "gr_v1_pr_state", "gr_v1_pr_hold_state", ...WF_V1_TOOLS.filter((t) => WF_V1_READ_ACTIONS.includes(t.name.slice(3))).map((t) => t.name)]));
 export const HOSTED_WRITE_TOOLS = Object.freeze(new Set([...ZULIP_WRITE_NAMES, ...RECALL_WRITE_TOOLS, ...LINEAR_WRITE_TOOLS, ...FLEETLINK_WRITE_TOOLS, ...FULL_WRITE_NAMES, ...NOTES_WRITE_TOOLS, ...GR_TOOL_NAMES, "whatsapp_reply", "whatsapp_send_status", "gr_v1_pr_automerge_disable", ...WF_V1_TOOLS.filter((t) => !WF_V1_READ_ACTIONS.includes(t.name.slice(3))).map((t) => t.name)]));
 export const RECALL_IDEM_TTL_MS = 10 * 60 * 1000;
 // Team and state ids are cached per isolate for an hour:  long enough to keep
@@ -237,6 +242,62 @@ export function hostedInstructions(seat) {
 }
 export const RECALL_SCRUBBED_LIMIT = 20;
 export const RECALL_STATS_KEYS_LIMIT = 50;
+
+const RECALL_DOC_ID = z.string().regex(new RegExp(DOC_ID_PATTERN));
+const RECALL_CORRECT_REQUEST = z
+  .object({
+    doc_id: RECALL_DOC_ID,
+    text: z.string().min(CONTRIBUTE_MIN).max(CONTRIBUTE_MAX),
+    reason: z.string().min(REASON_MIN).max(REASON_MAX),
+    seat: z.string().min(1).max(32),
+    title: z.string().max(200).optional(),
+    url: z.string().max(500).regex(/^https?:\/\/\S+$/).optional(),
+    expected_revision: z.number().int().min(1).optional(),
+  })
+  .strict();
+const RECALL_RETRACT_REQUEST = z
+  .object({
+    doc_id: RECALL_DOC_ID,
+    reason: z.string().min(REASON_MIN).max(REASON_MAX),
+    seat: z.string().min(1).max(32),
+    expected_revision: z.number().int().min(1).optional(),
+  })
+  .strict();
+const RECALL_CORRECT_RESPONSE = z
+  .object({
+    ok: z.literal(true),
+    id: z.string(),
+    doc_id: RECALL_DOC_ID,
+    seat: z.string(),
+    status: z.string(),
+    revision: z.number().int().nonnegative(),
+    corrected_at: z.number().int().nonnegative().default(0),
+    corrected_by: z.string().default(""),
+    previous_content_hash: z.string(),
+    content_hash: z.string(),
+    scrubbed: z.array(z.string()),
+  })
+  .strict();
+const RECALL_RETRACT_RESPONSE = z
+  .object({
+    ok: z.literal(true),
+    id: z.string(),
+    doc_id: RECALL_DOC_ID,
+    seat: z.string(),
+    status: z.string(),
+    revision: z.number().int().nonnegative(),
+    retracted: z.boolean(),
+    retracted_at: z.number().int().nonnegative(),
+    retracted_by: z.string(),
+    retraction_reason: z.string(),
+  })
+  .strict();
+
+function parseRecallMutationResponse(schema, data, name) {
+  const parsed = schema.safeParse(data);
+  if (!parsed.success) throw new ToolError("invalid_response", `${name} returned an invalid response`);
+  return parsed.data;
+}
 
 // Linear, when this seat has it.  The seat is named by the grant, never by an
 // argument, so this text tells the seat which app it acts as.
@@ -359,7 +420,7 @@ export class HostedTools {
     if (this.fleetlink) this.known.push(...this.fleetlink.secrets().filter(Boolean));
     // The Linear client credentials join the scrub list for the same reason.
     if (this.linear) this.known.push(...this.linear.secrets().filter(Boolean));
-    // The listener read key (the seat's wake key) joins the scrub list too.
+    // The eavesdropper read key (the seat's wake key) joins the scrub list too.
     this.listener = listener ?? null;
     if (this.listener) this.known.push(...this.listener.secrets().filter(Boolean));
     // The Operator notes key (OPERATOR_NOTES_KEY) joins the scrub list too.
@@ -478,13 +539,16 @@ export class HostedTools {
     try {
       let args = rawArgs === undefined || rawArgs === null ? {} : rawArgs;
       if (typeof args !== "object" || Array.isArray(args)) throw new ToolError("invalid_argument", "arguments must be an object");
-      if (name === "recall_contribute" && Object.hasOwn(args, "seat")) {
-        // The contributing seat is always the grant's.  A client-supplied seat
+      if (RECALL_WRITE_TOOLS.has(name) && Object.hasOwn(args, "seat")) {
+        // The acting recall seat is always the grant's.  A client-supplied seat
         // (the recall service's own tools ask for one) is dropped, never used.
         args = { ...args };
         delete args.seat;
       }
       requestArgs = args;
+      if ((RECALL_READ_TOOLS.has(publicName) || RECALL_WRITE_TOOLS.has(publicName)) && !boundedRecallInput(args)) {
+        throw new ToolError("invalid_argument", "Recall arguments exceed structural limits.");
+      }
       if (publicName.startsWith("gr_wf_") && !boundedWorkflowInput(args, {maxBytes:workflowInputLimit(publicName.slice(3)),maxString:workflowInputLimit(publicName.slice(3))})) throw new ToolError("invalid_argument", "Workflow input exceeds structural limits.");
       const problem = schemaProblem(spec.inputSchema, args);
       if (problem) throw new ToolError("invalid_argument", problem);
@@ -506,6 +570,9 @@ export class HostedTools {
       const mapped = mapException(error, { write: HOSTED_WRITE_TOOLS.has(publicName) });
       if (mapped.code === "rate_limited" && error instanceof ApiError) {
         await this.safely(() => this.gate.noteRateLimited({ retryAfterS: mapped.retryAfterS }));
+        // A cached identity takes no read slot, and only a slot reads the
+        // cooldown just stored:  back to live checks until the cooldown passes.
+        this._evictIdentity();
       }
       if (!(error instanceof ToolError) && mapped.code === "internal") {
         this.log({ event: "tool_internal_error", seat: this.seat, tool: publicName, name: String(error?.name ?? "Error").slice(0, 40) });
@@ -1463,7 +1530,37 @@ export class HostedTools {
     // relay's deliberate verdicts (allowlist, replay refusals, terminal
     // GitHub refusals) - definite, no hidden side effect.
     if (status === 429 && body?.retryable === true) throw new ToolError("rate_limited", "git-relay quota is exhausted.  Retry after the quota window.", {retryable:true});
-    if (status >= 400) throw new ToolError("relay_refused", typeof body?.error === "string" ? body.error.slice(0, 300) : "refused");
+    if (status >= 400) {
+      // Validate the refusal body's shape before reading any field of it:  an
+      // unvalidated relay body is untrusted data, and only schema-parsed
+      // fields may drive the classification.  An unparseable body keeps the
+      // generic code.
+      const refusalShape = z.object({
+        error: z.string().max(1000).optional(),
+        reason: z.enum(["credential_scan"]).optional(),
+      }).safeParse(body);
+      if (!refusalShape.success) throw new ToolError("relay_refused", "refused");
+      const refusalError = refusalShape.data.error;
+      // The relay's credential-scan verdicts map to the dedicated safe code:
+      // CLI callers print codes, not messages, and "relay_refused" alone hid
+      // why the write was refused.  Three vouched forms, never reflected prose:
+      // the workflow verbs' fixed credential refusals, their machine-readable
+      // marker after callWorkflow collapses the workflow body, and the
+      // pre-dispatch scanner's family from the seven-action path - anchored on
+      // the fixed refusal tail, with no whitelist on the field path it names
+      // (real field paths carry spaces and parens too).  The secrets-API
+      // variable refusal is excluded:  it also fires for over-limit or
+      // non-string values, so it is not a credential verdict.
+      const credentialRefusal =
+        refusalShape.data.reason === "credential_scan"
+        || refusalError === "credential-shaped content refused"
+        || (typeof refusalError === "string"
+          && /^[^\n]{1,200} looks like it contains a credential \([A-Za-z0-9_]{1,60}\); refusing to relay it$/.test(refusalError));
+      if (credentialRefusal) {
+        throw new ToolError("refused_secret", "git-relay refused the write:  the content looks like it contains a credential.  Remove or reword the credential-shaped content and send it again.  Nothing was written.");
+      }
+      throw new ToolError("relay_refused", typeof refusalError === "string" ? refusalError.slice(0, 300) : "refused");
+    }
     // A successful call still must answer with a plain JSON object;  anything
     // else is a mis-answering upstream, not a result.
     if (!body || typeof body !== "object" || Array.isArray(body)) {
@@ -1485,11 +1582,11 @@ export class HostedTools {
   async tool_gr_resolve_thread(args) { return this.grCall("resolve_thread", args); }
 
   /** One recall call, its failure as a ToolError (never a response body but a 400's own message). */
-  async recallCall(fn, { write = false } = {}) {
+  async recallCall(fn, { write = false, retrySafe = false } = {}) {
     try {
       return await fn();
     } catch (error) {
-      throw mapRecallError(error, { write, known: this.known });
+      throw mapRecallError(error, { write, retrySafe, known: this.known });
     }
   }
 
@@ -1501,6 +1598,7 @@ export class HostedTools {
     const body = { query, limit: args.limit };
     if (args.app) body.app = args.app;
     if (args.category) body.category = args.category;
+    if (args.include_retracted) body.include_retracted = true;
     const data = await this.recallCall(() => recall.search(body));
     const hits = (Array.isArray(data.hits) ? data.hits : []).slice(0, args.limit).map(hitItem);
     const mode = recallClean(typeof data.mode === "string" ? data.mode : "", 40)[0];
@@ -1567,7 +1665,7 @@ export class HostedTools {
     if (url) body.url = url;
     let data;
     try {
-      data = await this.recallCall(() => recall.contribute(body), { write: true });
+      data = await this.recallCall(() => recall.contribute(body), { write: true, retrySafe: true });
     } catch (error) {
       await this.safely(() => this.gate.idemDrop({ key }));
       throw error;
@@ -1589,6 +1687,157 @@ export class HostedTools {
       seat: this.seat,
       status: String(row.status ?? ""),
       scrubbed: Array.isArray(row.scrubbed) ? row.scrubbed.map(String) : [],
+      duplicate,
+    };
+    return okResult(JSON.stringify(result), result);
+  }
+
+  async recallMutationKey(name, args, fields) {
+    return args.idempotency_key
+      ? `rk:${name}:${args.idempotency_key}`
+      : `ri:${await sha256Hex(stableJson([name, this.seat, ...fields]))}`;
+  }
+
+  async beginRecallMutation(name, args, audit, fields) {
+    const key = await this.recallMutationKey(name, args, fields);
+    audit.idem_ref = (await sha256Hex(key)).slice(0, 12);
+    const prior = await this.gate.idemPeek({ key });
+    if (prior?.state === "unknown") throw new ToolError("outcome_unknown", "an earlier identical mutation was cut off, so the result is unknown.  Search recall before retrying.", { retryable: false });
+    if (prior) return { key, prior };
+    const begun = await this.gate.idemBegin({ key, ttlMs: args.idempotency_key ? IDEM_EXPLICIT_TTL_MS : RECALL_IDEM_TTL_MS, fields: { kind: "recall" } });
+    if (begun.verdict === "busy") throw new ToolError("rate_limited", `the same ${name} operation is already in flight in another chat of this seat`, { retryable: true, retryAfterS: 30 });
+    if (begun.verdict === "reconcile") throw new ToolError("outcome_unknown", "an earlier identical mutation was cut off, so the result is unknown.  Search recall before retrying.", { retryable: false });
+    if (begun.verdict === "duplicate") {
+      if (begun.row?.state === "unknown") throw new ToolError("outcome_unknown", "an earlier identical mutation was cut off, so the result is unknown.  Search recall before retrying.", { retryable: false });
+      return { key, prior: begun.row };
+    }
+    return { key, prior: null };
+  }
+
+  async tool_recall_correct(args, audit) {
+    const recall = this.requireRecall();
+    const text = args.text.trim();
+    const reason = args.reason.trim();
+    const title = (args.title ?? "").trim();
+    const url = (args.url ?? "").trim();
+    for (const [field, value] of Object.entries({ text, reason, title, url })) {
+      const kind = value ? scanSecret(value, this.known) : null;
+      if (kind) throw new ToolError("refused_secret", `refusing to correct:  the ${field} looks like it contains ${kind}`);
+    }
+    audit.body_len = [...text].length;
+    const fields = [args.doc_id, text, reason, title, url, args.expected_revision ?? null];
+    const request = { doc_id: args.doc_id, text, reason, seat: this.seat };
+    if (title) request.title = title;
+    if (url) request.url = url;
+    if (args.expected_revision !== undefined) request.expected_revision = args.expected_revision;
+    const body = parseArgs(RECALL_CORRECT_REQUEST, request);
+    const { key, prior } = await this.beginRecallMutation("recall_correct", args, audit, fields);
+    if (prior) return this.correctResult(prior, true);
+    try {
+      await this.reserve("recall");
+    } catch (error) {
+      await this.gate.idemDrop({ key });
+      throw error;
+    }
+    let data;
+    try {
+      const raw = await this.recallCall(() => recall.correct(body), { write: true });
+      data = parseRecallMutationResponse(RECALL_CORRECT_RESPONSE, raw, "recall_correct");
+    } catch (error) {
+      if (error?.code === "outcome_unknown" || error?.code === "invalid_response") {
+        await this.safely(() => this.gate.idemSet({ key, changes: { state: "unknown" } }));
+        if (error?.code === "invalid_response") throw new ToolError("outcome_unknown", "fleet recall answered the mutation in a shape this server could not verify, so the write may or may not have landed.  Search recall before retrying.", { retryable: false });
+      } else await this.safely(() => this.gate.idemDrop({ key }));
+      throw error;
+    }
+    const row = {
+      id: recallClean(data.id, 80)[0],
+      doc_id: recallClean(data.doc_id, 200)[0],
+      status: recallClean(data.status, 40)[0],
+      revision: data.revision,
+      corrected_at: data.corrected_at,
+      corrected_by: recallClean(data.corrected_by, 60)[0],
+      previous_content_hash: recallClean(data.previous_content_hash, 80)[0],
+      content_hash: recallClean(data.content_hash, 80)[0],
+      scrubbed: data.scrubbed.slice(0, RECALL_SCRUBBED_LIMIT).map((s) => recallClean(s, 60)[0]),
+    };
+    await this.safely(() => this.gate.idemSet({ key, changes: { state: "sent", ...row } }));
+    return this.correctResult(row, false);
+  }
+
+  correctResult(row, duplicate) {
+    const integer = (v) => Number.isSafeInteger(v) ? v : 0;
+    const result = {
+      id: String(row.id ?? ""),
+      doc_id: String(row.doc_id ?? ""),
+      seat: this.seat,
+      status: String(row.status ?? ""),
+      revision: integer(row.revision),
+      corrected_at: integer(row.corrected_at),
+      corrected_by: String(row.corrected_by ?? ""),
+      previous_content_hash: String(row.previous_content_hash ?? ""),
+      content_hash: String(row.content_hash ?? ""),
+      scrubbed: Array.isArray(row.scrubbed) ? row.scrubbed.map(String) : [],
+      duplicate,
+    };
+    return okResult(JSON.stringify(result), result);
+  }
+
+  async tool_recall_retract(args, audit) {
+    const recall = this.requireRecall();
+    const reason = args.reason.trim();
+    const kind = scanSecret(reason, this.known);
+    if (kind) throw new ToolError("refused_secret", `refusing to retract:  the reason looks like it contains ${kind}`);
+    audit.body_len = [...reason].length;
+    const fields = [args.doc_id, reason, args.expected_revision ?? null];
+    const request = { doc_id: args.doc_id, reason, seat: this.seat };
+    if (args.expected_revision !== undefined) request.expected_revision = args.expected_revision;
+    const body = parseArgs(RECALL_RETRACT_REQUEST, request);
+    const { key, prior } = await this.beginRecallMutation("recall_retract", args, audit, fields);
+    if (prior) return this.retractResult(prior, true);
+    try {
+      await this.reserve("recall");
+    } catch (error) {
+      await this.gate.idemDrop({ key });
+      throw error;
+    }
+    let data;
+    try {
+      const raw = await this.recallCall(() => recall.retract(body), { write: true });
+      data = parseRecallMutationResponse(RECALL_RETRACT_RESPONSE, raw, "recall_retract");
+    } catch (error) {
+      if (error?.code === "outcome_unknown" || error?.code === "invalid_response") {
+        await this.safely(() => this.gate.idemSet({ key, changes: { state: "unknown" } }));
+        if (error?.code === "invalid_response") throw new ToolError("outcome_unknown", "fleet recall answered the mutation in a shape this server could not verify, so the write may or may not have landed.  Search recall before retrying.", { retryable: false });
+      } else await this.safely(() => this.gate.idemDrop({ key }));
+      throw error;
+    }
+    const row = {
+      id: recallClean(data.id, 80)[0],
+      doc_id: recallClean(data.doc_id, 200)[0],
+      status: recallClean(data.status, 40)[0],
+      revision: data.revision,
+      retracted: data.retracted,
+      retracted_at: data.retracted_at,
+      retracted_by: recallClean(data.retracted_by, 60)[0],
+      retraction_reason: recallClean(data.retraction_reason, 500)[0],
+    };
+    await this.safely(() => this.gate.idemSet({ key, changes: { state: "sent", ...row } }));
+    return this.retractResult(row, false);
+  }
+
+  retractResult(row, duplicate) {
+    const integer = (v) => Number.isSafeInteger(v) ? v : 0;
+    const result = {
+      id: String(row.id ?? ""),
+      doc_id: String(row.doc_id ?? ""),
+      seat: this.seat,
+      status: String(row.status ?? ""),
+      revision: integer(row.revision),
+      retracted: row.retracted === true,
+      retracted_at: integer(row.retracted_at),
+      retracted_by: String(row.retracted_by ?? ""),
+      retraction_reason: String(row.retraction_reason ?? ""),
       duplicate,
     };
     return okResult(JSON.stringify(result), result);
@@ -2079,7 +2328,7 @@ export class HostedTools {
   }
 }
 
-// AFC-330:  the rest of Zulip (src/zulip-full.js) and the listener's records (src/listener.js).
+// AFC-330:  the rest of Zulip (src/zulip-full.js) and the eavesdropper's records (src/listener.js).
 Object.assign(HostedTools.prototype, ZULIP_FULL_METHODS, EAVESDROPPER_METHODS, NOTES_METHODS);
 
 /** Why `me` cannot serve `seat`, or null (spec 3.6). */

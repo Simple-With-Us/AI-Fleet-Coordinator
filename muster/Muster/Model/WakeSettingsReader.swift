@@ -1,15 +1,15 @@
 import Foundation
 
-// Reading the wake settings:  the configuration file,  the listener's own status,  the pins
+// Reading the wake settings:  the configuration file,  the eavesdropper's own status,  the pins
 // that prove a binary works,  and the ledger that says how much of the budget is used.
 //
 // Nothing here decides anything.  It reads,  and hands what it read to the builder.
 
 // MARK: - Where the state lives
 
-/// Where the listener keeps its state on this Mac.
+/// Where the eavesdropper keeps its state on this Mac.
 struct ListenerStateLocation: Equatable {
-    /// The listener's state directory:  `~/.agent-sync`.
+    /// The eavesdropper's state directory:  `~/.agent-sync`.
     var root: URL
 
     init(home: URL = FileManager.default.homeDirectoryForCurrentUser) {
@@ -21,7 +21,7 @@ struct ListenerStateLocation: Equatable {
         root.appendingPathComponent("listener.toml")
     }
 
-    /// The listener's own published state.
+    /// The eavesdropper's own published state.
     var statusURL: URL {
         root.appendingPathComponent("listener/status.json")
     }
@@ -42,9 +42,87 @@ struct ListenerStateLocation: Equatable {
         return seatDirectory(seat).appendingPathComponent(name)
     }
 
+    /// The candidate a passing `test-wake --run` leaves for a runtime, waiting to be pinned.
+    func candidateURL(seat: String, runtime: String) -> URL {
+        let name = runtime == "claude" ? "wake-pin-candidate.json" : "wake-pin-candidate-\(runtime).json"
+        return seatDirectory(seat).appendingPathComponent(name)
+    }
+
     /// The seat's wake ledger.
     func ledgerURL(seat: String) -> URL {
         seatDirectory(seat).appendingPathComponent("wakes.jsonl")
+    }
+}
+
+// MARK: - The ledger cache
+
+/// Wake ledgers already parsed, by path, so an unchanged ledger is not decoded on every read.
+///
+/// It is shared by the reads one store starts, which run off the main thread, so it holds a
+/// lock.  An entry is used only while the ledger's size and modification time are the ones it
+/// was parsed at, and for no longer than `maximumAge`.
+final class LedgerParseCache: @unchecked Sendable {
+    /// How long a parse is reused at most.  Torn rows are judged against the last day at parse
+    /// time, so they are judged again at least this often.
+    static let maximumAge: TimeInterval = 600
+
+    /// What identifies one version of a ledger.
+    struct Stamp: Equatable {
+        let size: UInt64
+        let modified: Date
+    }
+
+    private struct Entry {
+        let stamp: Stamp
+        let parsedAt: Date
+        let parsed: WakeLedger.Parsed
+        let truncated: Bool
+    }
+
+    private let lock = NSLock()
+    private var entries: [String: Entry] = [:]
+    private var hitCount = 0
+
+    init() {}
+
+    /// How many reads reused a parse.
+    var hits: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return hitCount
+    }
+
+    /// The ledger's size and modification time, or nil when they cannot be read.
+    static func stamp(of url: URL) -> Stamp? {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let size = (attributes[.size] as? NSNumber)?.uint64Value,
+              let modified = attributes[.modificationDate] as? Date else { return nil }
+        return Stamp(size: size, modified: modified)
+    }
+
+    /// The parse kept for this version of the ledger, if it is young enough.
+    func parsed(for path: String, stamp: Stamp, at now: Date) -> (parsed: WakeLedger.Parsed, truncated: Bool)? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let entry = entries[path], entry.stamp == stamp else { return nil }
+        let age = now.timeIntervalSince(entry.parsedAt)
+        guard age >= 0, age < Self.maximumAge else { return nil }
+        hitCount += 1
+        return (entry.parsed, entry.truncated)
+    }
+
+    /// Keeps a parse of this version of the ledger.
+    func keep(_ parsed: WakeLedger.Parsed, truncated: Bool, for path: String, stamp: Stamp, at now: Date) {
+        lock.lock()
+        defer { lock.unlock() }
+        entries[path] = Entry(stamp: stamp, parsedAt: now, parsed: parsed, truncated: truncated)
+    }
+
+    /// Drops what is kept for a ledger that is gone or cannot be read.
+    func forget(_ path: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        entries[path] = nil
     }
 }
 
@@ -54,107 +132,210 @@ struct ListenerStateLocation: Equatable {
 struct WakeSettingsReader {
     /// Where the state lives.
     var location: ListenerStateLocation
-    /// The command line,  for the listener's own account of itself.
+    /// The command line,  for the eavesdropper's own account of itself.
     var runner: AgentSyncRunning
     /// The seats to show.
     var roster: [String]
+    /// Where the seat partition is,  or nil when the checkout could not be found.
+    var partitionURL: URL?
     /// The clock.
     var now: () -> Date
+    /// Ledgers already parsed, so a read that finds a ledger unchanged does not decode it again.
+    /// Nil parses every ledger on every read.
+    var ledgerCache: LedgerParseCache?
 
     init(
         location: ListenerStateLocation = ListenerStateLocation(),
         runner: AgentSyncRunning = AgentSyncCLI(),
         roster: [String] = [],
-        now: @escaping () -> Date = { Date() }
+        partitionURL: URL? = ListenerPartition.defaultURL(),
+        now: @escaping () -> Date = { Date() },
+        ledgerCache: LedgerParseCache? = nil
     ) {
         self.location = location
         self.runner = runner
         self.roster = roster
+        self.partitionURL = partitionURL
         self.now = now
+        self.ledgerCache = ledgerCache
     }
 
-    /// The maximum size of the files this reads.
+    /// The maximum size of the configuration and pin files this reads.
     static let maximumFileBytes = 32 * 1024 * 1024
+    /// The most of a wake ledger this reads, from its end.  The counters cover one day and the
+    /// list shows eight wakes, while the ledger grows for the life of the seat, so only its tail
+    /// is read, and the panel says when that tail does not reach back a day.
+    static let maximumLedgerTailBytes = 4 * 1024 * 1024
+
+    /// What reading one file found.
+    enum FileRead: Equatable {
+        /// The file is not there.
+        case missing
+        /// The file's text, and whether it is only the file's end.
+        case text(String, truncated: Bool)
+        /// The file is there and could not be read.  The text says why.
+        case unreadable(String)
+    }
 
     /// Reads everything,  and hands it to the builder.
     func read() async -> WakeSettingsSources {
         var sources = WakeSettingsSources()
         var problems: [String] = []
+        let readAt = now()
+        sources.readAt = readAt
 
-        // The configuration file.
-        let configText = readText(location.configURL)
-        guard let configText else {
-            sources.config = ListenerConfigDocument(text: "")
-            sources.problems = ["The configuration file at \(location.configURL.path) could not be read."]
-            sources.configPath = location.configURL.path
-            sources.seats = roster
-            return sources
-        }
-        sources.config = ListenerConfigDocument(text: configText)
+        // Who holds each seat.  The eavesdropper refuses a section it is not given,  so this comes
+        // first:  every seat's row depends on it.
+        sources.partition = ListenerPartition.load(from: partitionURL)
+        sources.partitionURL = partitionURL
+
+        // The configuration file.  A file that is not there yet and one that cannot be read are
+        // told apart, and neither stops the status read:  the eavesdropper can be running either way.
         sources.configPath = location.configURL.path
+        switch readFile(location.configURL, limit: Self.maximumFileBytes) {
+        case .text(let text, _):
+            sources.config = ListenerConfigDocument(text: text)
+            sources.configReadable = true
+        case .missing:
+            sources.config = ListenerConfigDocument(text: "")
+            let problem = "No eavesdropper configuration file exists at \(location.configURL.path) yet."
+            sources.configProblem = problem
+            problems.append(problem)
+        case .unreadable(let why):
+            sources.config = ListenerConfigDocument(text: "")
+            let problem = "The configuration file at \(location.configURL.path) could not be read:  \(why)"
+            sources.configProblem = problem
+            problems.append(problem)
+        }
 
-        // The listener's own account of itself.
+        // The eavesdropper's own account of itself.
         var status: ListenerStatus?
         do {
             let result = try await runner.run(AgentSyncInvocation.status())
             if result.exitCode == 0, let data = result.stdout.data(using: .utf8) {
                 status = try? JSONDecoder().decode(ListenerStatus.self, from: data)
                 if status == nil {
-                    problems.append("The listener's status could not be read,  so nothing is known about the running listener.")
+                    sources.statusProblem = "The eavesdropper's status could not be read,  so nothing is known about the running eavesdropper."
                 }
             } else {
-                problems.append("The listener's status command failed:  \(result.stderrTail)")
+                sources.statusProblem = "The eavesdropper's status command failed:  \(result.failureTail)"
             }
         } catch {
-            problems.append("The listener's status could not be run:  \(error.localizedDescription)")
+            sources.statusProblem = "The eavesdropper's status could not be run:  \(error.localizedDescription)"
         }
+        if let problem = sources.statusProblem { problems.append(problem) }
         sources.status = status
 
-        // The seats to show:  the roster,  then every seat the file or the listener knows.
+        // The eavesdropper says which partition it reads,  and that copy is the one that can stop it,
+        // so it decides over the copy in Muster's own checkout.  If it cannot be read,  no seat is
+        // held here.
+        if let path = status?.status?.partition_file, !path.isEmpty {
+            let url = URL(fileURLWithPath: path)
+            sources.partition = ListenerPartition.load(from: url)
+            sources.partitionURL = url
+        }
+
+        // The seats to show:  the roster,  then every seat the file or the eavesdropper knows.
         var tags = roster
-        for section in sources.config.sections where section.name.hasPrefix("seat.") {
-            let tag = String(section.name.dropFirst("seat.".count))
-            if !tag.isEmpty, !tags.contains(tag) { tags.append(tag) }
+        for tag in sources.config.seatTags where !tags.contains(tag) {
+            tags.append(tag)
         }
         for tag in status?.seatTags ?? [] where !tags.contains(tag) {
             tags.append(tag)
         }
         sources.seats = tags
 
-        // The pins,  and the ledgers.
+        // The pins,  the pin candidates,  and the ledgers.
         var pins: [String: [String: PinEvidence]] = [:]
+        var unreadablePins: [String: [String: String]] = [:]
+        var candidates: [String: [String: Date]] = [:]
+        var unreadableCandidates: [String: [String: String]] = [:]
         var usage: [String: WakeUsage] = [:]
         var recent: [String: [WakeLedger.Outcome]] = [:]
-        for tag in tags {
+        var usageProblems: [String: String] = [:]
+        var tornRows: [String: Int] = [:]
+        // The builder's own answer decides which seats have them,  so a seat it shows live data for
+        // never shows zero usage or no pins for want of a read.
+        for tag in tags where !WakeSettingsBuilder.host(of: tag, sources: sources).isElsewhere {
+            // The eavesdropper keeps a seat's files under its upper-cased name.
+            let directoryName = tag.uppercased()
             var seatPins: [String: PinEvidence] = [:]
-            for runtime in ["claude", "muse", "mcode"] {
-                if let evidence = readPin(seat: tag, runtime: runtime) {
-                    seatPins[runtime] = evidence
+            var seatUnreadable: [String: String] = [:]
+            var seatCandidates: [String: Date] = [:]
+            var seatUnreadableCandidates: [String: String] = [:]
+            for runtime in WakeType.pinKeys {
+                switch readPin(seat: directoryName, runtime: runtime) {
+                case .found(let evidence): seatPins[runtime] = evidence
+                case .unreadable(let why): seatUnreadable[runtime] = why
+                case .missing: break
+                }
+                switch readCandidate(seat: directoryName, runtime: runtime) {
+                case .found(let at): seatCandidates[runtime] = at
+                case .unreadable(let why): seatUnreadableCandidates[runtime] = why
+                case .missing: break
                 }
             }
             pins[tag] = seatPins
-            if let ledger = readText(location.ledgerURL(seat: tag)) {
+            if !seatUnreadable.isEmpty { unreadablePins[tag] = seatUnreadable }
+            if !seatCandidates.isEmpty { candidates[tag] = seatCandidates }
+            if !seatUnreadableCandidates.isEmpty { unreadableCandidates[tag] = seatUnreadableCandidates }
+
+            let ledgerURL = location.ledgerURL(seat: directoryName)
+            switch readLedger(ledgerURL, at: readAt) {
+            case .missing:
+                // No ledger is a seat that has never woken:  zero is the truth.
+                break
+            case .unreadable(let why):
+                usageProblems[tag] = "The wake ledger at \(ledgerURL.path) could not be read, so this seat's use is not known:  \(why)"
+                problems.append("\(tag):  the wake ledger could not be read, so its use is not known.")
+            case .parsed(let parsed, let truncated):
                 // One read and one parse for both views:  the ledger was not decoded once
-                // per question.
-                let parsed = WakeLedger.parse(ledger)
-                usage[tag] = WakeLedger.usage(from: parsed, now: now())
-                recent[tag] = parsed.outcomes
-                if parsed.malformed > 0 {
-                    problems.append("\(tag): \(parsed.malformed) wake ledger row(s) could not be read,  so its counters may be low.")
+                // per question.  The counts are always worked out again for this read's time.
+                var counted = WakeLedger.usage(from: parsed, now: readAt)
+                // The end of a large ledger that does not reach back a day leaves rows out of the
+                // window, so the counts are a floor.
+                if truncated, (parsed.oldest.map { readAt.timeIntervalSince($0) < 86_400 } ?? true) {
+                    counted.atLeast = true
                 }
+                if parsed.malformedRecent > 0 {
+                    counted.atLeast = true
+                    tornRows[tag] = parsed.malformedRecent
+                    problems.append("\(tag): \(parsed.malformedRecent) wake ledger row(s) from the last day could not be read,  so its counts are at least what is shown.")
+                }
+                usage[tag] = counted
+                recent[tag] = parsed.outcomes
             }
         }
         sources.pins = pins
+        sources.unreadablePins = unreadablePins
+        sources.candidates = candidates
+        sources.unreadableCandidates = unreadableCandidates
         sources.usage = usage
         sources.recentWakes = recent
+        sources.usageProblems = usageProblems
+        sources.tornRows = tornRows
         sources.operatorOptions = OperatorOptions.build(from: sources.config)
         sources.problems = problems
         return sources
     }
 
-    /// The pin that proves a seat's binary works.
-    private func readPin(seat: String, runtime: String) -> PinEvidence? {
-        guard let text = readText(location.pinURL(seat: seat, runtime: runtime)) else { return nil }
+    /// What reading a pin file found.
+    enum PinRead: Equatable {
+        case missing
+        case found(PinEvidence)
+        case unreadable(String)
+    }
+
+    /// The pin that proves a seat's binary works.  A Claude, muse or mcode pin names a binary;  an
+    /// OpenRouter pin names a model and a request, and no binary.
+    private func readPin(seat: String, runtime: String) -> PinRead {
+        let url = location.pinURL(seat: seat, runtime: runtime)
+        let text: String
+        switch readFile(url, limit: Self.maximumFileBytes) {
+        case .missing: return .missing
+        case .unreadable(let why): return .unreadable(why)
+        case .text(let read, _): text = read
+        }
         struct PinFile: Decodable {
             var at: Double?
             var model: String?
@@ -163,23 +344,117 @@ struct WakeSettingsReader {
             var mcode: String?
         }
         guard let data = text.data(using: .utf8),
-              let file = try? JSONDecoder().decode(PinFile.self, from: data) else { return nil }
+              let file = try? JSONDecoder().decode(PinFile.self, from: data) else {
+            return .unreadable("The pin file at \(url.path) is not a pin this app can read.")
+        }
         let binary = file.claude ?? file.muse ?? file.mcode
-        guard binary != nil else { return nil }
-        return PinEvidence(
+        let isOpenRouter = runtime.hasPrefix("openrouter")
+        guard binary != nil || (isOpenRouter && file.model != nil) else {
+            return .unreadable("The pin file at \(url.path) names no binary or model.")
+        }
+        return .found(PinEvidence(
             runtime: runtime,
             binary: binary,
             model: file.model,
             verifiedAt: file.at.map { Date(timeIntervalSince1970: $0) },
             pinned: true,
             why: nil
-        )
+        ))
     }
 
-    /// A file's text,  or nil when it cannot be read.
-    private func readText(_ url: URL) -> String? {
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        guard data.count <= Self.maximumFileBytes else { return nil }
-        return String(decoding: data, as: UTF8.self)
+    /// What reading a pin candidate found.
+    enum CandidateRead: Equatable {
+        case missing
+        /// When the passing test wake left it.
+        case found(Date)
+        /// The file is there and is not a candidate this app can read.  The text says why.
+        case unreadable(String)
+    }
+
+    /// When a passing test wake of a runtime left its candidate.  A file that is there and cannot
+    /// be read, or holds no usable time, is unreadable and never the same as no candidate.
+    func readCandidate(seat: String, runtime: String) -> CandidateRead {
+        let url = location.candidateURL(seat: seat, runtime: runtime)
+        let text: String
+        switch readFile(url, limit: Self.maximumFileBytes) {
+        case .missing: return .missing
+        case .unreadable(let why): return .unreadable(why)
+        case .text(let read, _): text = read
+        }
+        guard let data = text.data(using: .utf8),
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            return .unreadable("The pin candidate at \(url.path) is not a JSON object.")
+        }
+        guard let at = object["at"] as? Double, at.isFinite, at > 0 else {
+            return .unreadable("The pin candidate at \(url.path) holds no time it was made.")
+        }
+        return .found(Date(timeIntervalSince1970: at))
+    }
+
+    /// What reading a wake ledger found.
+    enum LedgerRead {
+        case missing
+        /// The ledger's rows, and whether only its end was read.
+        case parsed(WakeLedger.Parsed, truncated: Bool)
+        case unreadable(String)
+    }
+
+    /// A seat's wake ledger, parsed.  An open panel reads every minute, and decoding a 4 MB tail
+    /// for every seat each time is work for nothing when the ledger has not changed, so a ledger
+    /// whose size and modification time match the last parse reuses it.  It is parsed again at
+    /// least every `LedgerParseCache.maximumAge`, because which torn rows fall inside the last
+    /// day moves with the clock.  The counts are worked out from the rows on every read.
+    func readLedger(_ url: URL, at readAt: Date) -> LedgerRead {
+        let stamp = LedgerParseCache.stamp(of: url)
+        if let stamp, let cached = ledgerCache?.parsed(for: url.path, stamp: stamp, at: readAt) {
+            return .parsed(cached.parsed, truncated: cached.truncated)
+        }
+        switch readFile(url, limit: Self.maximumLedgerTailBytes, tail: true) {
+        case .missing:
+            ledgerCache?.forget(url.path)
+            return .missing
+        case .unreadable(let why):
+            ledgerCache?.forget(url.path)
+            return .unreadable(why)
+        case .text(let text, let truncated):
+            let parsed = WakeLedger.parse(text, now: readAt)
+            if let stamp {
+                ledgerCache?.keep(parsed, truncated: truncated, for: url.path, stamp: stamp, at: readAt)
+            }
+            return .parsed(parsed, truncated: truncated)
+        }
+    }
+
+    /// A file's text.  A file larger than the limit is refused, or, for a tail read, read from
+    /// the end with its first partial line dropped.
+    func readFile(_ url: URL, limit: Int, tail: Bool = false) -> FileRead {
+        guard FileManager.default.fileExists(atPath: url.path) else { return .missing }
+        do {
+            let handle = try FileHandle(forReadingFrom: url)
+            defer { try? handle.close() }
+            let size = try handle.seekToEnd()
+            let cap = UInt64(limit)
+            guard size > cap else {
+                try handle.seek(toOffset: 0)
+                let data = try handle.readToEnd() ?? Data()
+                return .text(String(decoding: data, as: UTF8.self), truncated: false)
+            }
+            guard tail else {
+                return .unreadable("It is \(size / 1_048_576) MB, over the \(limit / 1_048_576) MB this app reads.")
+            }
+            // Start one byte early, so a tail that begins exactly at a row keeps that row:  the
+            // byte before it is the line feed that ends the row before.
+            let start = size - cap - 1
+            try handle.seek(toOffset: start)
+            var data = try handle.readToEnd() ?? Data()
+            if let newline = data.firstIndex(of: 0x0A) {
+                data = Data(data[data.index(after: newline)...])
+            } else {
+                data = Data()
+            }
+            return .text(String(decoding: data, as: UTF8.self), truncated: true)
+        } catch {
+            return .unreadable(error.localizedDescription)
+        }
     }
 }

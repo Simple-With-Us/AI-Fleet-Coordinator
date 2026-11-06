@@ -102,7 +102,7 @@ Measured figures are from the audit of Nov 3-4, 2026.  CPU figures are a 14-day
 - **Triggers:** fetch, and a cron every 15 minutes that re-reads the ledger.
 - **Consumers:** the owner's browser.
 - **Source and deploy:** Usage-Monitor `workers/expenses-site`, `worker-deploy.yml` in that repository, with its gate variable off, so deploys are by hand.  Status `auto`.
-- **Limits:** 100 ms CPU, 200 subrequests, sampling 1.  CPU p99 29 ms.  Each sync rewrites every row today, 73,824 rows written a day, and the fix belongs in that repository.
+- **Limits:** 100 ms CPU, 60 subrequests, sampling 1.  CPU p99 29 ms before the sync fix.  Each sync used to rewrite every row, 73,824 rows written a day.  Usage-Monitor PR 1902 went live at about 11:47 PM on Nov 4, 2026, and D1 rows written fell from about 3,185 an hour to 7 in the first hour on the new code.
 
 ### usage-monitor-receipt-inbox
 

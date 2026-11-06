@@ -125,6 +125,8 @@ WRITE_TOOLS = (
             "notes_pin",
             "notes_unpin",
             "recall_contribute",
+            "recall_correct",
+            "recall_retract",
         }
     )
     | LINEAR.write_names()
@@ -242,6 +244,8 @@ EXTERNAL_CLI: dict[str, str] = {
     "recall_search": "recall search",
     "recall_stats": "recall stats",
     "recall_contribute": "recall contribute",
+    "recall_correct": "recall correct",
+    "recall_retract": "recall retract",
     "fleetlink_create_share": "fleetlink upload",
     "fleetlink_create_link": "fleetlink link",
     "fleetlink_list_shares": "fleetlink list",
@@ -2393,7 +2397,12 @@ class Tools:
         if self._notes_host_cache is None:
             rt = self.agent.rt
             self._notes_host_cache = NOTES_CLIENT.Host(
-                rt.env, Path(rt.home) if rt.home else Path.home(), self._idem_store, caller="mcp"
+                rt.env,
+                Path(rt.home) if rt.home else Path.home(),
+                self._idem_store,
+                caller="mcp",
+                # Off a Mac this session's notes run as this seat's own fleet bearer, never the shared key.
+                own_seat=self.seat,
             )
         return self._notes_host_cache
 
@@ -2422,7 +2431,8 @@ class Tools:
 
     def _notes_call(self, action: str, args: Mapping[str, Any]) -> dict[str, Any]:
         """One notes_* tool:  the same code simple-notes runs (notes_client.call), as the identity the call acts as.
-        Directly on a Mac, through the Operator's notes queue elsewhere;  never through Zulip."""
+        Directly on a Mac, as this seat's own fleet bearer through the hosted gateway elsewhere;  never through
+        Zulip, never the shared service credential."""
         session = self._notes_session(action, args)
         try:
             request = NOTES.make_request(
@@ -2590,6 +2600,14 @@ class Tools:
                 "the same key is refused.",
             ) from None
         except RECALL.RecallUnavailable as exc:
+            if exc.code == "outcome_unknown":
+                self._idem_set(key, state="unknown")
+                raise ToolError(
+                    "outcome_unknown",
+                    "fleet recall failed before the contribution could be verified, so it may or may "
+                    "not have been stored.  Search recall before contributing again; a retry with the "
+                    "same key is refused.",
+                ) from None
             self._idem_drop(key)
             raise ToolError(exc.code, exc.message, retryable=exc.retryable) from None
         except BaseException as exc:
@@ -2608,6 +2626,160 @@ class Tools:
             "seat": self.seat,
             "status": str(result.get("status") or ""),
             "scrubbed": list(result.get("scrubbed") or []),
+            "duplicate": duplicate,
+        }
+        return self.ok(json.dumps(shown), shown)
+
+    def _recall_mutation(self, name: str, args: Mapping[str, Any]) -> dict[str, Any]:
+        """Correction and retraction follow the hosted write rules:  scan before the row is claimed,
+        explicit keys last 24 hours, and an identical retry gets the first result.  The service itself also
+        makes a repeat retraction or same-text correction idempotent.  On timeout the service may have
+        committed its single-point mutation, so the key stays unknown and search/audit is the way to tell."""
+
+        def scan(field: str, value: str) -> None:
+            self._scan(**{field: value})
+
+        correcting = name == "recall_correct"
+        try:
+            if correcting:
+                text, title, url = RECALL.contribute_fields(args, scan)
+                reason = RECALL._reason_field(args, scan)
+                fingerprint = [
+                    self.seat,
+                    args["doc_id"],
+                    text,
+                    reason,
+                    title,
+                    url,
+                    args.get("expected_revision"),
+                ]
+            else:
+                reason = RECALL._reason_field(args, scan)
+                fingerprint = [self.seat, args["doc_id"], reason, args.get("expected_revision")]
+        except RECALL.RecallUnavailable as exc:
+            raise ToolError(exc.code, exc.message, retryable=exc.retryable) from None
+        explicit = args.get("idempotency_key")
+        if explicit:
+            key, ttl = "k:recall:%s:%s" % (name, explicit), IDEM_EXPLICIT_TTL
+        else:
+            key, ttl = (
+                "i:recall:%s" % _sha(json.dumps(fingerprint, ensure_ascii=False)),
+                IDEM_IMPLICIT_TTL,
+            )
+        prior = self._idem_peek(key)
+        result_name = "_correct_result" if correcting else "_retract_result"
+        if prior is not None:
+            return getattr(self, result_name)(prior.get("result") or {}, duplicate=True)
+        verdict, row = self._idem_begin(key, ttl, {"tool": name})
+        if verdict == "duplicate" and row is not None:
+            return getattr(self, result_name)(row.get("result") or {}, duplicate=True)
+        if verdict == "reconcile":
+            self._idem_set(key, state="unknown")
+            raise ToolError(
+                "outcome_unknown",
+                "an earlier %s with this key may or may not have landed.  Search recall (with "
+                "include_retracted for a retraction) before retrying, or use a new idempotency_key."
+                % name,
+            )
+        call = RECALL.correct if correcting else RECALL.retract
+        try:
+            _, structured = call(args, self.seat, env=self.agent.rt.env, scan=scan)
+        except RECALL.RecallTimeout:
+            self._idem_set(key, state="unknown")
+            raise ToolError(
+                "outcome_unknown",
+                "fleet recall did not answer in time, so the %s may or may not have landed.  Search recall "
+                "(with include_retracted for a retraction) before retrying; a retry with the same key is refused."
+                % ("correction" if correcting else "retraction"),
+            ) from None
+        except RECALL.RecallUnavailable as exc:
+            if exc.code in ("invalid_response", "outcome_unknown"):
+                self._idem_set(key, state="unknown")
+                raise ToolError(
+                    "outcome_unknown",
+                    "fleet recall failed or answered the %s in a shape this server could not verify, so "
+                    "the write may or may not have landed.  Search recall before retrying; a retry "
+                    "with the same key is refused."
+                    % ("correction" if correcting else "retraction"),
+                ) from None
+            self._idem_drop(key)
+            raise ToolError(exc.code, exc.message, retryable=exc.retryable) from None
+        except BaseException as exc:
+            if is_interrupt(exc):
+                self._idem_set(key, state="unknown")  # the mutation may have landed
+            else:
+                self._idem_drop(key)
+            raise
+        self._idem_set(key, state="sent", id=0, result=structured)
+        return getattr(self, result_name)(structured, duplicate=bool(structured.get("duplicate")))
+
+    def _tool_recall_correct(self, args: Mapping[str, Any]) -> dict[str, Any]:
+        return self._recall_mutation("recall_correct", args)
+
+    def _tool_recall_retract(self, args: Mapping[str, Any]) -> dict[str, Any]:
+        return self._recall_mutation("recall_retract", args)
+
+    def _recall_mutation_string(
+        self, result: Mapping[str, Any], key: str, *, required: bool = True
+    ) -> str:
+        value = result.get(key)
+        if value is None and not required:
+            return ""
+        if not isinstance(value, str):
+            raise ToolError(
+                "invalid_response", "fleet recall returned an invalid response field: %s" % key
+            )
+        return value
+
+    def _recall_mutation_int(
+        self, result: Mapping[str, Any], key: str, *, required: bool = True
+    ) -> int:
+        value = result.get(key)
+        if value is None and not required:
+            return 0
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ToolError(
+                "invalid_response", "fleet recall returned an invalid response field: %s" % key
+            )
+        return value
+
+    def _correct_result(self, result: Mapping[str, Any], *, duplicate: bool) -> dict[str, Any]:
+        scrubbed = result.get("scrubbed")
+        if not isinstance(scrubbed, list) or any(not isinstance(item, str) for item in scrubbed):
+            raise ToolError(
+                "invalid_response", "fleet recall returned an invalid response field: scrubbed"
+            )
+        shown = {
+            "id": self._recall_mutation_string(result, "id"),
+            "doc_id": self._recall_mutation_string(result, "doc_id"),
+            "seat": self.seat,
+            "status": self._recall_mutation_string(result, "status"),
+            "revision": self._recall_mutation_int(result, "revision"),
+            "corrected_at": self._recall_mutation_int(result, "corrected_at", required=False),
+            "corrected_by": self._recall_mutation_string(result, "corrected_by", required=False),
+            "previous_content_hash": self._recall_mutation_string(result, "previous_content_hash"),
+            "content_hash": self._recall_mutation_string(result, "content_hash"),
+            "scrubbed": scrubbed,
+            "duplicate": duplicate,
+        }
+        return self.ok(json.dumps(shown), shown)
+
+    def _retract_result(self, result: Mapping[str, Any], *, duplicate: bool) -> dict[str, Any]:
+        retracted = result.get("retracted")
+        if not isinstance(retracted, bool):
+            raise ToolError(
+                "invalid_response", "fleet recall returned an invalid response field: retracted"
+            )
+        shown = {
+            "id": self._recall_mutation_string(result, "id"),
+            "doc_id": self._recall_mutation_string(result, "doc_id"),
+            "seat": self.seat,
+            "status": self._recall_mutation_string(result, "status"),
+            "revision": self._recall_mutation_int(result, "revision"),
+            "retracted": retracted,
+            "retracted_at": self._recall_mutation_int(result, "retracted_at"),
+            "retracted_by": self._recall_mutation_string(result, "retracted_by"),
+            "retraction_reason": self._recall_mutation_string(result, "retraction_reason"),
             "duplicate": duplicate,
         }
         return self.ok(json.dumps(shown), shown)

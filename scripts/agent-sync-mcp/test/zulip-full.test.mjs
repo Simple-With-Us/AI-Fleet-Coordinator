@@ -155,7 +155,7 @@ test("get, edit, history and delete:  edits own messages only, deletes as Zulip 
   const mine = ok(await tools.call("zulip_post", { topic: "t", text: "one" }), "zulip_post").id;
   assert.deepEqual(ok(await tools.call("zulip_edit_message", { message_id: mine, text: "two @**Codex**" }), "zulip_edit_message"), { id: mine, edited: true });
   assert.equal(fake.messages.find((m) => m.id === mine).content, "[GROK-WEB] two @_**Codex**");
-  // `to` tags a peer on an edit as on a post:  the listener wakes the seat the edit newly tags.
+  // `to` tags a peer on an edit as on a post:  the eavesdropper wakes the seat the edit newly tags.
   ok(await tools.call("zulip_edit_message", { message_id: mine, text: "three", to: ["CODEX"] }), "zulip_edit_message");
   assert.match(fake.messages.find((m) => m.id === mine).content, /@\*\*Codex\*\*/);
   toolError(await tools.call("zulip_edit_message", { message_id: mine, text: "x", to: ["nobody-at-all"] }), "invalid_argument");

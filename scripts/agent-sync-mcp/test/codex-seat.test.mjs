@@ -132,62 +132,89 @@ test("install_seat_key --delete (the kill switch) never resolves the Fleet-OPS p
   }
 });
 
-test("install_seat_key refuses malformed Infisical responses instead of reading partial data (kody 4363264042)", () => {
-  // Each case is (login response, secrets response).  Every secrets list also
-  // holds both requested secrets (E and K), so a case is refused only by the
-  // check it targets:  without that check it would succeed or crash with an
-  // error other than SystemExit.  The program reports each refusal's own
-  // message, so the test pins which check refused it.
+test("install_seat_key requires its scoped token and refuses malformed Infisical responses (kody 4363264042)", () => {
   const program = [
     "import json, sys",
     "sys.path.insert(0, sys.argv[1])",
     "import install_seat_key as m",
-    "ok = {'accessToken': 't'}",
-    "good = [{'secretKey': 'E', 'secretValue': 'e'}, {'secretKey': 'K', 'secretValue': 'k'}]",
+    "import os",
+    "good = {name: {'secretKey': name, 'secretValue': name.lower(), 'type': 'shared'} for name in ('E', 'K')}",
+    "metadata = {'workspace': m.INFISICAL_PROJECT, 'permissions': ['read'], 'scopes': [{'environment': 'prod', 'secretPath': '/zulip'}], 'expiresAt': None}",
+    "grant = metadata",
+    "calls = []",
+    "def api(method, path, token, body, env, **kwargs):",
+    "    calls.append(path.split('?', 1)[0])",
+    "    if path == '/v2/service-token': return 200, grant",
+    "    if path.startswith('/v3/secrets/raw/E?'): return 200, payload",
+    "    if path.startswith('/v3/secrets/raw/K?'): return 200, {'secret': good['K']}",
+    "    raise AssertionError('unexpected request')",
+    "m.scoped_secrets._api_json = api",
     "cases = [",
-    "  (['not-a-dict'], {'secrets': good}),                 # login not an object",
-    "  ({'accessToken': 7}, {'secrets': good}),             # token not a string",
-    "  (ok, ['not-a-dict']),                                # secrets response not an object",
-    "  (ok, {'secrets': None}),                             # missing secrets list",
-    "  (ok, {'secrets': ['not-a-dict'] + good}),            # entry not an object",
-    "  (ok, {'secrets': [{'secretKey': 7, 'secretValue': 'v'}] + good}),  # non-string key",
-    "  (ok, {'secrets': [{'secretKey': 'E', 'secretValue': 3}, good[1]]}),  # non-string value",
-    "  (ok, {'secrets': [{'secretKey': 'E'}, good[1]]}),    # missing value reads as empty, no KeyError",
-    "  (ok, {'secrets': good}),                             # well formed",
+    "  ['not-a-dict'],                                      # response not an object",
+    "  {'secret': None},                                   # missing named secret",
+    "  {'secret': 'not-a-dict'},                            # entry not an object",
+    "  {'secret': {'secretKey': 7, 'secretValue': 'v', 'type': 'shared'}},  # non-string key",
+    "  {'secret': {'secretKey': 'E', 'secretValue': 3, 'type': 'shared'}},  # non-string value",
+    "  {'secret': {'secretKey': 'E', 'type': 'shared'}},       # missing value",
+    "  {'secret': good['E']},                               # well formed",
     "]",
     "results = []",
-    "for login, secrets in cases:",
-    "    calls = iter([login, secrets])",
-    "    m.http_json = lambda *a, **k: next(calls)",
+    "secret_calls = []",
+    "token_name = m.INFISICAL_TOKEN_ENVS[m.INFISICAL_PROJECT]",
+    "m.http_json = lambda *a, **k: (_ for _ in ()).throw(AssertionError('unexpected request'))",
+    "os.environ.pop(token_name, None)",
+    "try: m.infisical_pair('E', 'K', m.INFISICAL_PROJECT)",
+    "except SystemExit as exc: results.append(['missing', str(exc)])",
+    "os.environ[token_name] = 'automation.client-secret'",
+    "try: m.infisical_pair('E', 'K', m.INFISICAL_PROJECT)",
+    "except SystemExit as exc: results.append(['malformed', str(exc)])",
+    "os.environ[token_name] = 'st.seat-key-read-token-fixture'",
+    "assert calls == [], 'missing and malformed tokens must make no request'",
+    "for payload in cases:",
+    "    calls.clear()",
     "    try:",
-    "        results.append(['ok', list(m.infisical_pair('E', 'K', 'p'))])",
+    "        results.append(['ok', list(m.infisical_pair('E', 'K', m.INFISICAL_PROJECT))])",
     "    except SystemExit as exc:",
     "        results.append(['refused', str(exc)])",
     "    except Exception as exc:",
     "        results.append(['crashed', type(exc).__name__])",
-    "print(json.dumps(results))",
+    "    secret_calls.append(list(calls))",
+    "grant_results = []",
+    "for grant in [dict(metadata, workspace='wrong-project'), dict(metadata, scopes=[{'environment': 'prod', 'secretPath': '/other'}]), dict(metadata, expiresAt='2000-01-01T00:00:00Z')]:",
+    "    calls.clear()",
+    "    try: m.infisical_pair('E', 'K', m.INFISICAL_PROJECT); grant_results.append(['accepted', list(calls)])",
+    "    except SystemExit: grant_results.append(['refused', list(calls)])",
+    "print(json.dumps({'results': results, 'secret_calls': secret_calls, 'grant_results': grant_results}))",
   ].join("\n");
-  const out = JSON.parse(execFileSync("python3", ["-c", program, ROOT], {
-    env: { ...process.env, INFISICAL_AUTOMATION_CLIENT_ID: "x", INFISICAL_AUTOMATION_CLIENT_SECRET: "y" },
+  const observed = JSON.parse(execFileSync("python3", ["-c", program, ROOT], {
+    env: { ...process.env },
     encoding: "utf8",
   }));
-  const login = "install_seat_key: Infisical login returned a malformed response (not an object)";
-  const token = "install_seat_key: Infisical login returned no access token";
-  const list = "install_seat_key: Infisical secrets response is malformed (missing secrets list)";
-  const entry = "install_seat_key: Infisical secrets response has a malformed entry - refusing to continue on partial data";
-  assert.deepEqual(out.slice(0, 7), [
-    ["refused", login],
-    ["refused", token],
-    ["refused", list],
-    ["refused", list],
-    ["refused", entry],
-    ["refused", entry],
-    ["refused", entry],
+  const out = observed.results;
+  const refused = (reason) => ["refused", `install_seat_key: Infisical scoped read failed (${reason})`];
+  assert.deepEqual(out.slice(0, 2), [
+    ["missing", "install_seat_key: " + "AGENT_SYNC_MCP_SEAT_KEY_AFC_INFISICAL_READ_TOKEN is missing or is not a valid service token"],
+    ["malformed", "install_seat_key: " + "AGENT_SYNC_MCP_SEAT_KEY_AFC_INFISICAL_READ_TOKEN is missing or is not a valid service token"],
   ]);
-  // A missing secretValue is read as empty (not a KeyError), so the empty
-  // email is refused by the missing-secret check rather than a crash.
-  assert.equal(out[7][0], "refused");
-  assert.match(out[7][1], /E or K is missing or empty in Infisical/);
-  // The well-formed response passes every check.
+  assert.deepEqual(out.slice(2, 8), [
+    refused("fetch-failed"),
+    refused("unverified-source"),
+    refused("unverified-source"),
+    refused("fetch-failed: bad-output"),
+    refused("fetch-failed: bad-output"),
+    refused("fetch-failed: bad-output"),
+  ]);
+  // Valid grant metadata must precede the malformed named-secret boundary.  Named reads run side by
+  // side, so K's read may already be in flight when E's malformed answer fails the fetch;  its
+  // answer is never used, and every case above is still refused.
+  for (const calls of observed.secret_calls.slice(0, 6)) {
+    assert.deepEqual(calls.slice(0, 1), ["/v2/service-token"]);
+    assert.ok(calls.includes("/v3/secrets/raw/E"));
+    assert.ok(calls.slice(1).every((path) => ["/v3/secrets/raw/E", "/v3/secrets/raw/K"].includes(path)));
+  }
   assert.deepEqual(out[8], ["ok", ["e", "k"]]);
+  assert.deepEqual(observed.secret_calls[6].slice(0, 1), ["/v2/service-token"]);
+  assert.deepEqual(observed.secret_calls[6].slice(1).sort(), ["/v3/secrets/raw/E", "/v3/secrets/raw/K"]);
+  // Wrong project, wrong folder and expired metadata stop before any secret read.
+  assert.deepEqual(observed.grant_results, Array.from({ length: 3 }, () => ["refused", ["/v2/service-token"]]));
 });

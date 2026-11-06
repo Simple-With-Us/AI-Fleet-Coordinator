@@ -45,6 +45,7 @@ import fcntl
 import fnmatch
 import json
 import os
+import pwd
 import sys
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -56,6 +57,7 @@ ENV_MODE_FILE = "FLEET_LANE_GUARD_MODE_FILE"
 ENV_STATE_DIR = "FLEET_LANE_GUARD_STATE_DIR"
 ENV_HOST_KIND = "FLEET_HOST_KIND"
 ENV_GUARD = "FLEET_LANE_GUARD"
+ENV_TEST_RUN = "FLEET_LANES_TEST_RUN"
 MODE_FILE_REL = os.path.join(".config", "fleet", "lane-guard-mode")
 STATE_DIR_REL = os.path.join(".local", "state", "fleet")
 EVENT_LOG_NAME = "lane-guard-events.jsonl"
@@ -415,6 +417,28 @@ def event_log_path(home: str | os.PathLike[str], env: Mapping[str, str] | None =
     return os.path.join(state_dir(home, env), EVENT_LOG_NAME)
 
 
+def _account_home() -> str:
+    """The account's real home, which no `HOME` a test sets can change."""
+    return pwd.getpwuid(os.getuid()).pw_dir
+
+
+def _test_run(env: Mapping[str, str]) -> bool:
+    return "unittest" in sys.modules or "pytest" in sys.modules or bool(env.get(ENV_TEST_RUN))
+
+
+def writes_real_log_in_a_test(path: str, env: Mapping[str, str] | None = None) -> bool:
+    """Whether this is a test run about to write the account's own event log.  That log is the input to the seven-day clean-detect gate,
+    and a run of the suite once put 114 fixture paths in it, so a test run never reaches it, whatever its `HOME` says.  A test that
+    means to read the log it wrote points `FLEET_LANE_GUARD_STATE_DIR` or `HOME` somewhere else, and that still works."""
+    if not _test_run(os.environ if env is None else env):
+        return False
+    try:
+        real = os.path.join(_account_home(), STATE_DIR_REL, EVENT_LOG_NAME)
+    except (KeyError, OSError):
+        return True  # no way to tell, and a test loses nothing by not logging
+    return os.path.realpath(path) == os.path.realpath(real)
+
+
 def _rotate_if_large(path: str) -> None:
     """Rotate under a lock, checking the size again once it is held.  Two writers that both saw a full log would otherwise
     rename twice, and the second rename puts a one-line file over the generation the watcher has not read."""
@@ -439,6 +463,8 @@ def log_event(home: str | os.PathLike[str], event: Mapping[str, Any],
     """Append one JSON line.  Never raises: a full disk must not change what a guard decides."""
     try:
         path = event_log_path(home, env)
+        if writes_real_log_in_a_test(path, env):
+            return
         os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
         _rotate_if_large(path)
         record = {"at": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"), **event}

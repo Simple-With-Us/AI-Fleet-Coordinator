@@ -215,6 +215,22 @@ jobs:
     - name: fleet_view tests
       run: |
         cd scripts && python3 -m unittest discover -s fleet_view/tests -t . -v
+    # The same suite on a real Python 3.9 (AFC-616).  Muster runs this collector under the Mac's
+    # /usr/bin/python3, which is 3.9, and a 3.11-only import once broke the whole Apps & Work page
+    # there while the run above stayed green.  update-environment is off so every later step keeps
+    # the job's own Python.
+    - name: Set up Python 3.9 for fleet_view
+      id: fleet-view-py39
+      uses: actions/setup-python@v7
+      with:
+        python-version: '3.9'
+        update-environment: false
+    - name: fleet_view tests on Python 3.9
+      env:
+        PY39: ${{ steps.fleet-view-py39.outputs.python-path }}
+      run: |
+        "$PY39" -c 'import sys; assert sys.version_info[:2] == (3, 9), sys.version; print(sys.version)'
+        cd scripts && "$PY39" -m unittest discover -s fleet_view/tests -t . -v
     # fleet-secrets (OPS-818):  fake infisical and Keychain at subprocess.run;  get, run, --only, exit 3, the
     # unresolved-reference guard, auth selection, and no secret in argv or error text.
     - name: fleet_secrets tests
@@ -257,6 +273,10 @@ jobs:
     # it starts no MiniMax session and reads no installed plugin.
     - name: Muster install transaction tests
       run: python3 -m unittest discover -s muster/script -t muster/script -v
+    # The Muster release's credential loader (muster/docs/AUTO-UPDATE.md):  names reported,
+    # keys only as 0600 files, a wrong-scope token failing rather than reading as missing.
+    - name: Muster release credential loader tests
+      run: node --test muster/script/load_release_secrets.test.mjs
     - name: Muster guard live proof tests
       run: python3 scripts/test_muster_guard_live_proof.py
     # Fleet skills pack: canonical pin-or-fail identity block, every rendered
@@ -354,6 +374,8 @@ jobs:
       run: sudo apt-get update -qq && sudo apt-get install -y -qq restic
     - name: Fleet work backup tests
       run: python3 scripts/fleet-work-backup/test_fleet_work_backup.py
+    - name: Cloudflare usage watchdog tests
+      run: python3 scripts/cf-usage-watchdog/test_watchdog.py
     - name: Verify public activity boundary
       run: python3 scripts/test-public-activity.py
     - name: Verify fleet registry
@@ -478,6 +500,20 @@ jobs:
     # file, which left this gate vacuous.
     - name: Alert ingress unit tests
       run: node --test workers/alert-ingress/src/*.test.js
+    # pr-conflict-watch, both trees: this directory and the zulip-cutover tree the alert
+    # pipeline releases, whose index.js needs its pinned dependencies.  Test files are
+    # named explicitly, for the reason above.
+    - name: PR conflict watch unit tests
+      run: |
+        node --test workers/pr-conflict-watch/*.test.js
+        npm ci --ignore-scripts --prefix workers/pr-conflict-watch/zulip-cutover
+        node --test workers/pr-conflict-watch/zulip-cutover/*.test.js
+    # The Worker deploy scripts.  worker-deploy.yml is gated off and the alert workflow
+    # runs only on main, so without this a broken deploy script would merge unnoticed.
+    - name: Worker deploy script tests
+      run: |
+        python3 scripts/test-deploy-mapped-worker.py
+        python3 scripts/test-deploy-alert-workers.py
     # Hosted ST-MCP Worker unit tests (including GraphQL document
     # parsing).  Install its pinned dependencies before running the suites.
     - name: ST-MCP Worker unit tests
@@ -571,15 +607,40 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
+      # The interpreter FleetViewService runs, on the machine shape that has it.  The version is
+      # printed and not asserted, because the image decides it;  the 3.9 proof is the test job's.
+      # FleetViewCollectorTests below runs the whole command through the app's own decoder.
+      - name: Collector imports under the app's Python
+        working-directory: scripts
+        run: |
+          /usr/bin/python3 --version
+          /usr/bin/python3 -c 'import fleet_view.__main__'
       - name: Install XcodeGen
         run: brew install xcodegen
       - name: Generate and compile unsigned scaffold
         working-directory: muster
         run: |
           xcodegen generate --spec project.yml
+          # The checked-out commit's own time, in the same UTC form the build scripts write.
+          commit_time="$(date -u -r "$(git show -s --format=%ct HEAD)" +%Y-%m-%dT%H:%M:%SZ)"
           xcodebuild -project Muster.xcodeproj -scheme Muster -configuration Debug \
             -destination 'platform=macOS' -derivedDataPath .build/CI \
-            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= build
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= \
+            "MUSTER_COMMIT=$GITHUB_SHA" "MUSTER_COMMIT_TIME=$commit_time" MUSTER_BUILD_CHANNEL=development \
+            build
+      # The build stamp travels through Support/Info.plist into the generated one, which is
+      # what Settings and the menu read.  The Debug build carries no update feed, so Sparkle
+      # stays off in it.
+      - name: Check the built app carries its build stamp
+        working-directory: muster
+        run: |
+          plist=.build/CI/Build/Products/Debug/Muster.app/Contents/Info.plist
+          test "$(/usr/libexec/PlistBuddy -c 'Print :MusterCommit' "$plist")" = "$GITHUB_SHA"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :MusterBuildChannel' "$plist")" = development
+          test -z "$(/usr/libexec/PlistBuddy -c 'Print :SUFeedURL' "$plist")"
+          test -d .build/CI/Build/Products/Debug/Muster.app/Contents/Frameworks/Sparkle.framework
+          MUSTER_BUILT_APP="$PWD/.build/CI/Build/Products/Debug/Muster.app" \
+            python3 -m unittest discover -s script -t script -p 'test_no_external_entry_points.py' -v
       # The Swift names the image sets by string, so only the built bundle proves that
       # both modes' artwork and the bundle's own icon came out of the asset compiler.
       - name: Check the built app carries its icons

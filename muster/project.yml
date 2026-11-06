@@ -6,6 +6,12 @@ options:
 configs:
   Debug: debug
   Release: release
+packages:
+  # Sparkle 2:  every merge to main that changes Muster ships a signed release, and installed
+  # copies update themselves (muster/docs/AUTO-UPDATE.md, the fleet pattern piloted by CodeCaps).
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    from: 2.10.1
 settings:
   base:
     SWIFT_VERSION: "5.0"
@@ -24,18 +30,39 @@ targets:
     platform: macOS
     sources:
       - Muster
+    dependencies:
+      # Xcode embeds the framework in Contents/Frameworks;  script/release_build.sh checks it.
+      - package: Sparkle
+        product: Sparkle
     settings:
       base:
         PRODUCT_NAME: Muster
         PRODUCT_BUNDLE_IDENTIFIER: services.jays.Muster
         GENERATE_INFOPLIST_FILE: YES
+        # Merged into the generated Info.plist.  It carries the build stamp and the Sparkle
+        # keys, and nothing else:  script/test_no_external_entry_points.py holds it to that list.
+        INFOPLIST_FILE: Support/Info.plist
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_KEY_CFBundleDisplayName: Muster
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
         INFOPLIST_KEY_NSPrincipalClass: NSApplication
+        # The build stamp.  The release workflow and build_and_run.sh pass these;  a build that
+        # passes none reads as not recorded in Settings and the menu.
+        MUSTER_COMMIT: ""
+        MUSTER_COMMIT_TIME: ""
+        MUSTER_BUILD_CHANNEL: ""
+        MUSTER_SPARKLE_FEED_URL: ""
+        MUSTER_SPARKLE_PUBLIC_KEY: ""
       configs:
         Debug:
           PRODUCT_BUNDLE_IDENTIFIER: services.jays.Muster.dev
+        Release:
+          # Muster's own feed:  a fixed release tag that only the Muster release workflow
+          # writes, so no other release in this repository can stand in for it.
+          MUSTER_SPARKLE_FEED_URL: https://github.com/Simple-With-Us/AI-Fleet-Coordinator/releases/download/muster-feed/appcast.xml
+          # The public half of Muster's own Sparkle EdDSA key.  Empty until the key is made
+          # (muster/docs/AUTO-UPDATE.md, Keys);  until then updates read Off and nothing publishes.
+          MUSTER_SPARKLE_PUBLIC_KEY: ""
     scheme:
       gatherCoverageData: false
       buildImplicitDependencies: true
@@ -51,7 +78,7 @@ targets:
     # the store, the surface reader and the contract all compile in a plain test bundle.
     #
     # The `FleetServices/` sources are the ported BotFleet Control core:  the fleet
-    # services, the server control API, the process monitor and the remote VM providers.
+    # services and the control API for the BotFleet Server on this Mac.
     # They carry no SwiftUI either and import only Foundation, so they compile in a plain
     # test bundle as well.  Their tests live in `MusterTests/FleetServices/`, which the
     # `MusterTests` directory below already picks up.
@@ -87,6 +114,12 @@ targets:
       - path: Muster/Model/OpsAuditLog.swift
       - path: Muster/Model/OpsControl.swift
       - path: Muster/Model/KnobRegistry.swift
+      - path: Muster/Model/MachineStatus.swift
+      - path: Muster/Model/PlaceWatch.swift
+      - path: Muster/Model/ServiceActionRouter.swift
+      - path: Muster/Model/BuildIdentity.swift
+      - path: Muster/Model/AutoUpdatePolicy.swift
+      - path: Muster/Model/ServiceReconciler.swift
       - path: Muster/Model/MiniMaxSurface.swift
       - path: Muster/Model/SeatManifest.swift
       - path: Muster/Model/ThemeChoice.swift
@@ -95,6 +128,7 @@ targets:
       - path: Muster/Model/OperatorOptions.swift
       - path: Muster/Model/SeatActivity.swift
       - path: Muster/Model/SeatActivityReader.swift
+      - path: Muster/Model/SeatActivityStore.swift
       - path: Muster/Model/WakeLedger.swift
       - path: Muster/Model/WakeSettings.swift
       - path: Muster/Model/WakeSettingsReader.swift
@@ -102,19 +136,16 @@ targets:
       - path: Muster/Model/WakeSettingsWriter.swift
       - path: Muster/FleetServices/ControlAPI.swift
       - path: Muster/FleetServices/FleetServiceControl.swift
+      - path: Muster/FleetServices/FleetHost.swift
       - path: Muster/FleetServices/FleetServices.swift
       - path: Muster/FleetServices/FleetSecrets.swift
       - path: Muster/FleetServices/FleetSnapshotSequencer.swift
       - path: Muster/FleetServices/ManagedServices.swift
       - path: Muster/FleetServices/McpServerControl.swift
-      - path: Muster/FleetServices/OfflineDockerVM.swift
-      - path: Muster/FleetServices/OfflineVMHelper.swift
-      - path: Muster/FleetServices/PersistencePolicy.swift
-      - path: Muster/FleetServices/ProcessMonitor.swift
-      - path: Muster/FleetServices/ServerHost.swift
+      - path: Muster/FleetServices/OwnerStopStore.swift
+      - path: Muster/FleetServices/ServiceReconcilePolicy.swift
       - path: Muster/FleetServices/ServerPresence.swift
       - path: Muster/FleetServices/StartupPolicy.swift
-      - path: Muster/FleetServices/VMProvider.swift
     settings:
       base:
         PRODUCT_NAME: MusterTests
