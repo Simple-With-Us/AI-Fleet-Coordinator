@@ -10,8 +10,12 @@ Type=oneshot
 User=jay
 Group=jay
 EnvironmentFile=/etc/fleet/lanes.conf
-# Sets SIMPLE_BOARD_BEARER_FILE, the absolute path of the seat's private bearer file, and FLEET_APPS_JSON.  The board refuses to write
-# without the locator, and the watcher then files nothing and says so in its status file.
+# Sets SIMPLE_BOARD_BEARER_FILE (the absolute path of the seat's private bearer file), FLEET_APPS_JSON,
+# SIMPLE_BOARD_TOOLS_TOKEN_FILE with SIMPLE_BOARD_TOOLS_PROJECT_ID (the bearer verify key's scoped token
+# and its Fleet-OPS project), and LINEAR_BOARD_INFISICAL_READ_TOKEN_FILE with
+# LINEAR_BOARD_INFISICAL_PROJECT_ID (the Linear credential folder read).  The board refuses to write
+# without them:  no verify token is exit 6, no Linear pair is exit 4, and the watcher then files
+# nothing and says so in its status file.
 EnvironmentFile=/etc/fleet/placement-watch.conf
 Environment=HOME=/home/jay
 Environment=AGENT_SEAT=CLAUDE

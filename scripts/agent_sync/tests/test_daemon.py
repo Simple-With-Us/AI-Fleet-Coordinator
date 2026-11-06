@@ -1057,7 +1057,9 @@ class WakeTests(DaemonHarness):
                                            "board": {"title": "Fix it", "severity": "P2", "desc": "details"}})
         daemon = self.started(board_runner=board_runner, board_bin="/fake/board",
                               env=self.env(SIMPLE_BOARD_TOOLS_TOKEN="st.tools-read",
-                                           SIMPLE_BOARD_TOOLS_PROJECT_ID="proj-tools"))
+                                           SIMPLE_BOARD_TOOLS_PROJECT_ID="proj-tools",
+                                           LINEAR_BOARD_INFISICAL_READ_TOKEN_FILE="/run/afc-linear-read",
+                                           LINEAR_BOARD_INFISICAL_PROJECT_ID="proj-afc"))
         self.fake.add_message("Codex", "agent-sync", "CT#2316 sentry", MENTION)
         self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
         self.wake_cycle(daemon)
@@ -1088,6 +1090,10 @@ class WakeTests(DaemonHarness):
         # claude_env is a fixed allowlist, so the daemon forwards the verify-token names itself.
         self.assertEqual(board_envs[0].get("SIMPLE_BOARD_TOOLS_TOKEN"), "st.tools-read")
         self.assertEqual(board_envs[0].get("SIMPLE_BOARD_TOOLS_PROJECT_ID"), "proj-tools")
+        # The Linear credential config reaches the child too, or resolve_identity finds no pair
+        # and the filing fails closed with EXIT_NO_CREDS (mirrors PASS_PREFIXES in linear_tools.py).
+        self.assertEqual(board_envs[0].get("LINEAR_BOARD_INFISICAL_READ_TOKEN_FILE"), "/run/afc-linear-read")
+        self.assertEqual(board_envs[0].get("LINEAR_BOARD_INFISICAL_PROJECT_ID"), "proj-afc")
 
     def test_board_filing_without_a_bearer_file_files_nothing_and_offers_no_seat(self) -> None:
         board_calls = []

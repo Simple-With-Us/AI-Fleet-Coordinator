@@ -6842,6 +6842,14 @@ class Daemon:
         for key in BOARD_VERIFY_ENV:
             if self.env.get(key):
                 board_env[key] = self.env[key]
+        # The Linear credential config board reads (the Infisical token files and project, or a
+        # cloud host's exported client pair) plus the project fallback name:  claude_env drops
+        # them, so the daemon passes them through itself, mirroring PASS_PREFIXES in
+        # scripts/agent_sync/mcp/linear_tools.py.  With none, resolve_identity finds no pair and
+        # the filing fails closed with EXIT_NO_CREDS.
+        for key, value in self.env.items():
+            if (key.startswith("LINEAR_") or key == "INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID") and value:
+                board_env[key] = value
         ok, detail = A.run_board(
             argv,
             board_env,
