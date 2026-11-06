@@ -3,7 +3,7 @@
 
 Every step is a dry run unless --apply is given.  The Cloudflare Global key is
 read inside this process from the environment or `fleet-secrets get` and never printed, logged or
-put on a command line.  Run from scripts/agent-sync-mcp/ (see DEPLOY-PHASE0.md).
+put on a command line.  Run from scripts/simple-tools-mcp/ (see DEPLOY-PHASE0.md).
 
     python3 -I infra_phase0.py status            # read-only inventory
     python3 -I infra_phase0.py access [--apply]  # path-scoped Access app
@@ -59,7 +59,7 @@ ACCESS_PATHS = [f"{HOST}/authorize", f"{HOST}/admin"]
 # Spec 3.3:  mail@jays.services only.  The identity provider is One-time PIN, so every
 # address on this list is an admin credential for the server;  keep it to one.
 OWNER_EMAILS = ["mail@jays.services"]
-KV_TITLE = "agent-sync-mcp-OAUTH_KV"
+KV_TITLE = "simple-tools-mcp-OAUTH_KV"
 WORKER_NAME = "simple-tools-mcp"
 HERE = pathlib.Path(__file__).resolve().parent
 WRANGLER = HERE / "wrangler.jsonc"
@@ -682,7 +682,7 @@ def _http(method: str, url: str, body: bytes | None = None, headers: dict | None
         url,
         data=body,
         method=method,
-        headers={"User-Agent": "agent-sync-phase0-check", **(headers or {})},
+        headers={"User-Agent": "simple-tools-phase0-check", **(headers or {})},
     )
     try:
         with opener.open(req, timeout=20) as resp:

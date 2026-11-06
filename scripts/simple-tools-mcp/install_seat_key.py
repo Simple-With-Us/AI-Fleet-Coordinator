@@ -24,7 +24,7 @@ an administrator or owner.  So an admin key (openai-dot-bot until Fri, Oct 9) is
 Seat keys come only from Infisical:  `--zuliprc` is gone, so nothing is read from
 any local credential file (owner 2026-10-18, AFC-347).
 
-Standard library only.  Python 3.11+.  Run from scripts/agent-sync-mcp/.
+Standard library only.  Python 3.11+.  Run from scripts/simple-tools-mcp/.
 """
 
 from __future__ import annotations
@@ -223,7 +223,7 @@ def http_json(
     data = None if body is None else json.dumps(body).encode()
     req = urllib.request.Request(url, data=data, method=method)
     req.add_header("Content-Type", "application/json")
-    req.add_header("User-Agent", "agent-sync-mcp install_seat_key")
+    req.add_header("User-Agent", "simple-tools-mcp install_seat_key")
     for k, v in (headers or {}).items():
         req.add_header(k, v)
     try:

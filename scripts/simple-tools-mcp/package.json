@@ -1,8 +1,8 @@
 {
-  "name": "agent-sync-mcp",
+  "name": "simple-tools-mcp",
   "version": "2.0.0-phase2",
   "private": true,
-  "description": "Hosted agent-sync MCP server for cloud seats: OAuth 2.1, arming and consent, and the seven agent-sync tools, each seat posting as its own Zulip bot.",
+  "description": "Hosted simple-tools MCP server for cloud seats: OAuth 2.1, arming and consent, and the seven simple-tools tools, each seat posting as its own Zulip bot.",
   "type": "module",
   "engines": {
     "node": ">=22"

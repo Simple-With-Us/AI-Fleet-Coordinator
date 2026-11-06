@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Export the hosted Agent-Sync Linear catalogs for the `board` CLI.
+// Export the hosted Simple-Tools Linear catalogs for the `board` CLI.
 //
 // The hosted server's named Linear commands, its proxied official Linear MCP
 // tools and its public-input allowlist live in JavaScript (src/).  The board
@@ -8,12 +8,12 @@
 // writer of those files, and test/linear-catalog-parity.test.mjs fails when the
 // committed JSON differs from a fresh export, so the two sides change together.
 //
-// It also writes scripts/linear-board/testdata/agent-sync-fixtures.json:  the
+// It also writes scripts/linear-board/testdata/simple-tools-fixtures.json:  the
 // documents the hosted server builds for every named command, and its verdicts
 // on a set of GraphQL guard and public-input cases.  The board tests replay
 // them against the Python ports.
 //
-// Run from scripts/agent-sync-mcp:
+// Run from scripts/simple-tools-mcp:
 //   node scripts/export-linear-catalog.mjs          write the files
 //   node scripts/export-linear-catalog.mjs --check  exit 1 when a file is stale
 //
@@ -37,8 +37,8 @@ import { withDefaults, schemaProblem } from "../src/contract.js";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PACKAGE = path.dirname(HERE);
 const BOARD_DIR = path.resolve(PACKAGE, "../linear-board");
-const GENERATOR = "scripts/agent-sync-mcp/scripts/export-linear-catalog.mjs";
-const REGENERATE = "cd scripts/agent-sync-mcp && node scripts/export-linear-catalog.mjs";
+const GENERATOR = "scripts/simple-tools-mcp/scripts/export-linear-catalog.mjs";
+const REGENERATE = "cd scripts/simple-tools-mcp && node scripts/export-linear-catalog.mjs";
 
 /** JSON with every object's keys sorted, so the bytes depend only on the data. */
 export function stableStringify(value) {
@@ -93,7 +93,7 @@ function namedCatalog() {
 
 // The ten Linear tools that are neither named commands nor proxied official tools:  the seven the
 // server served first (linear_whoami, list, show, file, claim, comment, status) and the three general
-// GraphQL tools (linear_schema, query, mutation).  The stdio server (scripts/agent_sync/mcp/linear_tools.py)
+// GraphQL tools (linear_schema, query, mutation).  The stdio server (scripts/simple_tools/mcp/linear_tools.py)
 // serves them under the same names and schemas, through `board`.
 const CORE_NAMES = ["linear_whoami", "linear_list", "linear_show", "linear_file", "linear_claim", "linear_comment",
   "linear_status", "linear_schema", "linear_query", "linear_mutation"];
@@ -334,7 +334,7 @@ export function buildCatalogFiles() {
     "catalog/official-mcp-tools.json": stableStringify(officialCatalog()),
     "catalog/core-tools.json": stableStringify(coreCatalog()),
     "catalog/public-inputs.json": stableStringify(publicInputs()),
-    "testdata/agent-sync-fixtures.json": stableStringify(fixtures()),
+    "testdata/simple-tools-fixtures.json": stableStringify(fixtures()),
   };
 }
 

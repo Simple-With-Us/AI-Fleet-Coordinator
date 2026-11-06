@@ -13,7 +13,7 @@ export const GUIDE_MODULE = path.resolve(HERE, "../src/guide-text.js");
 
 export function guideModuleText() {
   const md = readFileSync(GUIDE_MD, "utf8");
-  return `// GENERATED from docs/protocols/simple-tools-guide.md by scripts/export-guide.mjs;  do not edit.\n// Regenerate with:  cd scripts/agent-sync-mcp && node scripts/export-guide.mjs\nexport const GUIDE_TEXT = ${JSON.stringify(md)};\n`;
+  return `// GENERATED from docs/protocols/simple-tools-guide.md by scripts/export-guide.mjs;  do not edit.\n// Regenerate with:  cd scripts/simple-tools-mcp && node scripts/export-guide.mjs\nexport const GUIDE_TEXT = ${JSON.stringify(md)};\n`;
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
@@ -21,7 +21,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   let current = null;
   try { current = readFileSync(GUIDE_MODULE, "utf8"); } catch { current = null; }
   if (process.argv.includes("--check")) {
-    if (current !== text) { console.error("src/guide-text.js is stale.  Run:  cd scripts/agent-sync-mcp && node scripts/export-guide.mjs"); process.exit(1); }
+    if (current !== text) { console.error("src/guide-text.js is stale.  Run:  cd scripts/simple-tools-mcp && node scripts/export-guide.mjs"); process.exit(1); }
   } else if (current !== text) {
     writeFileSync(GUIDE_MODULE, text);
     console.log("wrote src/guide-text.js");
