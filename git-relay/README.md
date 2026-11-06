@@ -178,13 +178,19 @@ Changing one byte or destination invalidates the attestation; any credential sha
 then fails closed. The ordinary scanner and the rejection tests are unchanged.
 PR text, messages, binary assets and all unattested files have no exemption.
 
-All thirteen rows were re-verified byte-exact against the complete rename checkpoint
-`4977e6a7970dc0a25638181600137fe06167dcec` (tree
-`92afd59247897e44befb30a66a496d2dad2c9dfc`, built on main
-`dcb3b89765062454f70ed6ee1a506e00cdef925a`). Three rows carry digests unchanged from
-the original `c8c2a471fac215957cc81ec3b2e5e765e5908443` attestation set; ten rows are
-added or refreshed from the checkpoint (3 + 10 = the 13 rows in the registry and the
-table below). The rename-affected destinations are FUTURE targets: they do not exist
+All thirteen rows were re-verified byte-exact against the corrected rename checkpoint
+`81d8bb0cd4f5a63d3dc330b8f42be4a3e93e87a3` (tree
+`b548e1a81d4fd18d72206f8c1f22cb41a6d19bcf`, built on main
+`ac6d5d44500937274aeddfc794a05fb427158f8c`). The first checkpoint
+`4977e6a7970dc0a25638181600137fe06167dcec` is retained as original evidence only,
+never as a shipping target: semantic review found out-of-scope changes in it, so the
+corrected checkpoint restores the current retirement behavior and wire-protocol
+surfaces and drops the bundled seat-policy and cleanup changes. Ten rows carry
+digests unchanged from the first re-attestation; three rows
+(`scripts/fleet_lanes/tests/test_install_mcp.py`,
+`scripts/simple-tools-mcp/test/integration.workerd.mjs`,
+`scripts/simple_tools/tests/test_infisical_api_route.py`) are refreshed from the
+corrected checkpoint (10 + 3 = the 13 rows in the registry and the table below). The rename-affected destinations are FUTURE targets: they do not exist
 on main yet, match nothing, and fail closed until the exact attested bytes land with
 the rename; the published rename branch currently omits these ten files, which is the
 gap this attestation exists to close:
@@ -200,10 +206,10 @@ gap this attestation exists to close:
 | `scripts/simple-tools-mcp/test/gr-assert.test.mjs` | `80f27a413e461e9adfc8924c881e29d4d9e2d21c` | `ecfa713b33754e1331a8fee0e07c67271fc186908a52830839f1b530a246dad8` |
 | `scripts/simple-tools-mcp/test/gr-front.test.mjs` | `b46549565f659d145f30d6ff1ede3af6515de64d` | `9de759b53f8cb987b16ade0a9cf99ff69d999659519a620b292f4aa748eee3b9` |
 | `scripts/simple-tools-mcp/test/gr-workflow-v1.test.mjs` | `9a36132edd4b6614209c2f6dd12a9df13a939c05` | `1caec47629a7a4592051b25efcfd229cfe662471027c13eb3c5d812952816e95` |
-| `scripts/simple-tools-mcp/test/integration.workerd.mjs` | `6ee7c2dcc2361dcc4f56b6cded05c0efec190dab` | `74dbfe38beea28766c7ba48dca57b8e3b599baaba155f8e97f3ddd87fadf425e` |
-| `scripts/simple_tools/tests/test_infisical_api_route.py` | `03f2ca24e1de1a47fd7aa1bb031e1e68f064c76e` | `87925403c1a4e91a1f4447ebd76d8fa7f28aaf266043c0ef244f75b4e93c99e4` |
+| `scripts/simple-tools-mcp/test/integration.workerd.mjs` | `f122a279489d871d7fc3f71c97acd5e2ec9dcfaf` | `2b76ceeed6f6fdf66f6e04523d05cc9652e00377e82bcb55268ceaf143e10f8c` |
+| `scripts/simple_tools/tests/test_infisical_api_route.py` | `7f962a62b00f7db6660168db818735142d897278` | `34041aaa826e24b919621c7d5ed6703c2b602beda05449dd9801a13e02d67090` |
 | `scripts/simple_tools/tests/test_mcp_extras.py` | `eaf0c913742de23ef19e5c655a01dc3e5ef071c7` | `d31c6f0a7f84f17dd0d480714a5d0be9f05fad97d3a3ef5d519da68b304bc95a` |
-| `scripts/fleet_lanes/tests/test_install_mcp.py` | `dc00b61c50740ce10ecc796cdfadc9df6d6de7cf` | `e59b1610dde3808e1924433de8c80513662a6c60767d85aeafd40b6674c3b6c7` |
+| `scripts/fleet_lanes/tests/test_install_mcp.py` | `6b2392ff3238806f7ad251b347e424b8bb99b57d` | `a0b944f012a3fa8c27dfe52cab1c53ef8893ec4f945e6b62eb6c297f42e8853b` |
 
 Every attestation addition/change requires normal source review of the complete
 fixture contents and its provenance, evidence that values are synthetic and

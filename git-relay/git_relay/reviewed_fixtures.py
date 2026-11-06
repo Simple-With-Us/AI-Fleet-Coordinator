@@ -9,12 +9,16 @@ from hashlib import sha256
 
 from .secret_scan import find_secret
 
-# Source of truth: the complete rename checkpoint
-# 4977e6a7970dc0a25638181600137fe06167dcec (tree
-# 92afd59247897e44befb30a66a496d2dad2c9dfc, on main
-# dcb3b89765062454f70ed6ee1a506e00cdef925a); all 13 triples verify byte-exact
-# against that tree. Three digests are unchanged from the original
-# c8c2a471fac215957cc81ec3b2e5e765e5908443 attestation set. The
+# Source of truth: the corrected rename checkpoint
+# 81d8bb0cd4f5a63d3dc330b8f42be4a3e93e87a3 (tree
+# b548e1a81d4fd18d72206f8c1f22cb41a6d19bcf, built on main
+# ac6d5d44500937274aeddfc794a05fb427158f8c); all 13 triples verify byte-exact
+# against that tree. The first checkpoint
+# 4977e6a7970dc0a25638181600137fe06167dcec is retained as original evidence
+# only, never as a shipping target. Ten rows are unchanged from that first
+# re-attestation; three rows (test_install_mcp.py, integration.workerd.mjs,
+# test_infisical_api_route.py) are refreshed from the corrected checkpoint.
+# The
 # rename-affected destinations are future targets: absent on main, matching
 # nothing and failing closed until the exact attested bytes land.
 # Only these exact bytes at these exact repository destinations are attested
@@ -25,7 +29,7 @@ _REVIEWED_FIXTURES = frozenset(
         (
             "Simple-With-Us/AI-Fleet-Coordinator",
             "scripts/fleet_lanes/tests/test_install_mcp.py",
-            "e59b1610dde3808e1924433de8c80513662a6c60767d85aeafd40b6674c3b6c7",
+            "a0b944f012a3fa8c27dfe52cab1c53ef8893ec4f945e6b62eb6c297f42e8853b",
         ),
         (
             "Simple-With-Us/AI-Fleet-Coordinator",
@@ -50,7 +54,7 @@ _REVIEWED_FIXTURES = frozenset(
         (
             "Simple-With-Us/AI-Fleet-Coordinator",
             "scripts/simple-tools-mcp/test/integration.workerd.mjs",
-            "74dbfe38beea28766c7ba48dca57b8e3b599baaba155f8e97f3ddd87fadf425e",
+            "2b76ceeed6f6fdf66f6e04523d05cc9652e00377e82bcb55268ceaf143e10f8c",
         ),
         (
             "Simple-With-Us/AI-Fleet-Coordinator",
@@ -60,7 +64,7 @@ _REVIEWED_FIXTURES = frozenset(
         (
             "Simple-With-Us/AI-Fleet-Coordinator",
             "scripts/simple_tools/tests/test_infisical_api_route.py",
-            "87925403c1a4e91a1f4447ebd76d8fa7f28aaf266043c0ef244f75b4e93c99e4",
+            "34041aaa826e24b919621c7d5ed6703c2b602beda05449dd9801a13e02d67090",
         ),
         (
             "Simple-With-Us/AI-Fleet-Coordinator",
