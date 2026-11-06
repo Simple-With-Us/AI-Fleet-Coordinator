@@ -1797,19 +1797,24 @@ class TestReview1199(unittest.TestCase):
             with self.assertRaises(git._TransportError):
                 git._remote_post(git.REMOTE_MCP_URL, {}, b"{}", 5)
 
-    def _remote_post_with_response(self, chunks, headers, eof_error=None):
+    def _remote_post_with_response(
+        self, chunks, headers, eof_error=None, chunked=False, close_after_body=False
+    ):
         calls = []
         chunks = list(chunks)
 
         class FakeSock:
             def settimeout(self, value):
                 self.value = value
+                if close_after_body and not chunks:
+                    raise OSError(9, "Bad file descriptor")
 
         class Response:
             status = 200
 
             def __init__(self):
                 self.headers = headers
+                self.chunked = chunked
                 self.fp = types.SimpleNamespace(raw=types.SimpleNamespace(_sock=FakeSock()))
 
             def __enter__(self):
@@ -1859,6 +1864,20 @@ class TestReview1199(unittest.TestCase):
                 OSError(9, "Bad file descriptor"),
             )
 
+    def test_transfer_coding_ignores_a_misleading_content_length(self):
+        body = b'event: message\ndata: {"jsonrpc":"2.0","id":1,"result":{}}\n\n'
+        (status, ctype, raw), calls = self._remote_post_with_response(
+            [body, b""],
+            {
+                "Content-Type": "text/event-stream",
+                "Content-Length": "1",
+                "Transfer-Encoding": "chunked",
+            },
+            chunked=True,
+        )
+        self.assertEqual((status, ctype, raw), (200, "text/event-stream", body))
+        self.assertEqual(len(calls), 2)
+
     def test_unknown_content_length_still_reads_to_eof(self):
         (status, ctype, raw), calls = self._remote_post_with_response(
             [b"abc", b""], {"Content-Type": "application/json"}
@@ -1866,11 +1885,39 @@ class TestReview1199(unittest.TestCase):
         self.assertEqual((status, ctype, raw), (200, "application/json", b"abc"))
         self.assertEqual(len(calls), 2)
 
-    def test_unknown_content_length_socket_close_is_a_transport_failure(self):
+    def test_unknown_content_length_closed_after_body_completes_the_body(self):
+        (status, ctype, raw), calls = self._remote_post_with_response(
+            [b"abc"],
+            {"Content-Type": "application/json"},
+            OSError(9, "Bad file descriptor"),
+        )
+        self.assertEqual((status, ctype, raw), (200, "application/json", b"abc"))
+        self.assertEqual(len(calls), 2)
+
+    def test_unknown_content_length_post_body_settimeout_close_completes_the_body(self):
+        (status, ctype, raw), calls = self._remote_post_with_response(
+            [b"abc"],
+            {"Content-Type": "application/json"},
+            close_after_body=True,
+        )
+        self.assertEqual((status, ctype, raw), (200, "application/json", b"abc"))
+        self.assertEqual(len(calls), 1)
+
+    def test_unknown_content_length_timeout_after_body_is_a_transport_failure(self):
         with self.assertRaises(git._TransportError):
             self._remote_post_with_response(
-                [b"abc"], {"Content-Type": "application/json"}, OSError(9, "Bad file descriptor")
+                [b"abc"],
+                {"Content-Type": "application/json"},
+                TimeoutError("timed out"),
             )
+
+    def test_truncated_body_failure_says_the_answer_was_cut_short(self):
+        exc = git._TransportError(True, "truncated response")
+        self.assertEqual(
+            git._failure(exc, False),
+            "the hosted endpoint closed the answer before its declared length (no direct fallback)",
+        )
+        self.assertIn(git._REMOTE_UNKNOWN, git._failure(exc, True))
 
     # 5. The program name cannot carry newline/tab into stderr lines.
     def test_prog_escapes_newline_and_tab(self):
