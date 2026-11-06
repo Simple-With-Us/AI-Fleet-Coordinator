@@ -5,7 +5,7 @@ Every OpenCode chat, on the Mac (OpenCode.app and its CLI) and on the server, ta
 ## The Parts
 
 - `index.js` is the OpenCode plugin.  It runs inside OpenCode, watches the chat's events and puts the title on the chat.
-- `../tests/opencode_letter_plugin.test.mjs` is its node test (`node --test scripts/agent_sync/tests/opencode_letter_plugin.test.mjs`, also run by `agent_sync/tests/test_platform_letter_opencode.py`).  It is under `tests/` so it is not part of the shipped runtime.
+- `../tests/opencode_letter_plugin.test.mjs` is its node test (`node --test scripts/simple_tools/tests/opencode_letter_plugin.test.mjs`, also run by `simple_tools/tests/test_platform_letter_opencode.py`).  It is under `tests/` so it is not part of the shipped runtime.
 - `../platform_letter_opencode.py` is the adapter on the shared library `../platform_letter.py` (the spec, and the installer for the `plugins` array of `opencode.json`).
 - `scripts/platform-letter` is the command the plugin runs: `platform-letter hook --platform opencode`, with the event as JSON on stdin, and one JSON line back.  Everything about letters (the registry, the note, the retries, the secret scan of a title) is in the library.
 
@@ -66,8 +66,8 @@ OpenCode with a Claude model is still OpenCode.  The string `CLAUDE_CODE_ENTRYP
 
 - The plugin cannot tell an `opencode run` one-shot from a chat in the app: both create the session and send the prompt within milliseconds.  A one-shot takes a letter and a title unless it is marked (`--title "[no-letter] ..."`), because the shared service outlives the client and finishes the registration and the title; the hook is started detached, so it also finishes when a private server (`--standalone`) exits first.  The sweep's workers are marked.  Anything else that runs `opencode run` unattended (cron, a wake path) must be too, or use `--standalone` with `SESSION_LETTER=0`.
 - A launcher's environment cannot reach the shared service, so a launcher that starts the OpenCode chats of its bots there (not through ACP) is not recognised; its chats take a letter under OpenCode, besides any BotFleet takes for them, unless they carry the mark or the metadata.
-- The runtime sync moves the Mac's checkout to origin/main and never runs `install.sh`, so the Mac gets `~/.local/bin/platform-letter` only when someone reruns `scripts/agent_sync/install.sh` there (see the Platform Session Letters section of `../README.md`).
-- Shipping: the plugin is `index.js` in this directory.  The managed checkouts (the Mac's runtime, the server's `fleet-cli` `current` link) hold the whole repository, so it is there once a merge lands.  The paused bundle path of `scripts/fleet-cli-release.py` allows only `scripts/agent_sync/*.py` and the files in `EXACT`; if that path is ever turned back on, `scripts/agent_sync/opencode_letter_plugin/index.js` has to be added to `EXACT` (and counts one file against `MAX_FILES`).
+- The runtime sync moves the Mac's checkout to origin/main and never runs `install.sh`, so the Mac gets `~/.local/bin/platform-letter` only when someone reruns `scripts/simple_tools/install.sh` there (see the Platform Session Letters section of `../README.md`).
+- Shipping: the plugin is `index.js` in this directory.  The managed checkouts (the Mac's runtime, the server's `fleet-cli` `current` link) hold the whole repository, so it is there once a merge lands.  The paused bundle path of `scripts/fleet-cli-release.py` allows only `scripts/simple_tools/*.py` and the files in `EXACT`; if that path is ever turned back on, `scripts/simple_tools/opencode_letter_plugin/index.js` has to be added to `EXACT` (and counts one file against `MAX_FILES`).
 
 ## Verified
 

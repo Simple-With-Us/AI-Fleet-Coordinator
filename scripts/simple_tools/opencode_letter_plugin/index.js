@@ -1,6 +1,6 @@
 // OpenCode plugin: an Operator session letter, and the title "XX: Title", on every OpenCode chat (AFC-564, owner
 // request Oct 29, 2026).  The Python side is `platform-letter hook --platform opencode`
-// (agent_sync/platform_letter_opencode.py on the shared library platform_letter.py); this file is the part that has
+// (simple_tools/platform_letter_opencode.py on the shared library platform_letter.py); this file is the part that has
 // to run inside OpenCode: it watches the chat's events, runs that hook with them, and puts the title the hook answers
 // with on the chat.
 //

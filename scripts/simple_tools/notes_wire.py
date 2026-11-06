@@ -3,10 +3,10 @@
 Shared by the Operator (notes_queue.py), the Python clients (notes_client.py) and the Mac runner
 (notes_runner.py);  the hosted Worker's src/notes.js signs the same string.  Three headers:
 
-    X-Agent-Sync-Principal:  WORKER, SERVER or RUNNER
-    X-Agent-Sync-Timestamp:  unix seconds
-    X-Agent-Sync-Signature:  lowercase hex HMAC-SHA256, keyed with the principal's key, over
-        "agent-sync-notes/1\\n<METHOD>\\n<path>\\n<raw query>\\n<timestamp>\\n<principal>\\n<sha256 hex of the body>"
+    X-Simple-Tools-Principal:  WORKER, SERVER or RUNNER
+    X-Simple-Tools-Timestamp:  unix seconds
+    X-Simple-Tools-Signature:  lowercase hex HMAC-SHA256, keyed with the principal's key, over
+        "simple-tools-notes/1\\n<METHOD>\\n<path>\\n<raw query>\\n<timestamp>\\n<principal>\\n<sha256 hex of the body>"
 
 A signature names one principal, one method, one path, one exact query, one body and one moment;  it is good
 for five minutes either side of the Operator's clock.
@@ -19,11 +19,11 @@ from __future__ import annotations
 import hashlib
 import hmac
 
-CONTRACT = "agent-sync-notes/1"
+CONTRACT = "simple-tools-notes/1"
 PREFIX = "/notes/v1/"
-PRINCIPAL_HEADER = "X-Agent-Sync-Principal"
-TIMESTAMP_HEADER = "X-Agent-Sync-Timestamp"
-SIGNATURE_HEADER = "X-Agent-Sync-Signature"
+PRINCIPAL_HEADER = "X-Simple-Tools-Principal"
+TIMESTAMP_HEADER = "X-Simple-Tools-Timestamp"
+SIGNATURE_HEADER = "X-Simple-Tools-Signature"
 MAX_SKEW_S = 300
 MIN_KEY_LEN = 32
 MAX_BODY = 4 * 1024 * 1024

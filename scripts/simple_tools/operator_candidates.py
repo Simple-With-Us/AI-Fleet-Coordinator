@@ -534,7 +534,7 @@ def _send_candidate_list(
         return _outcome("refused", "the owner is not pinned, so the Operator bot cannot be checked")
     try:
         me = client.get("users/me")
-    except Z.AgentSyncError as exc:
+    except Z.SimpleToolsError as exc:
         # A rejected credential is named by a masked preview only, never by any
         # part of the key a caller could not otherwise see.  The identity check
         # is the FIRST call the credential makes, so this is where a bad key is
@@ -566,7 +566,7 @@ def _send_candidate_list(
 
     try:
         raw_members = client.get("users")
-    except Z.AgentSyncError as exc:
+    except Z.SimpleToolsError as exc:
         return _outcome("refused", "the recipient could not be looked up: %s" % exc)
     except Exception as exc:
         return _outcome("refused", "the recipient could not be looked up: %s" % type(exc).__name__)
@@ -664,7 +664,7 @@ def _send_candidate_list(
             recipient=recipient_id,
             body=body,
         )
-    except Z.AgentSyncError as exc:
+    except Z.SimpleToolsError as exc:
         # Zulip answered and refused:  the message definitely did not go out, so the key is
         # released and the refusal is terminal.  A rejected credential is named by a masked
         # preview only, never by any part of the key a caller could not otherwise see.
