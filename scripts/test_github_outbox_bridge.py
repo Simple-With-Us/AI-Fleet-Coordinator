@@ -471,12 +471,8 @@ class RuleTests(unittest.TestCase):
 
     def test_legacy_intro_folder_emoji_in_subject_ok(self):
         """Sentry #1404: 📁 outside a legacy intro tag must not false-reject with repo:."""
-        self.assertIsNone(
-            bridge.header_error("[INSTINCT] Subject with 📁 emoji\nrepo: AFC", SEAT)
-        )
-        self.assertIsNone(
-            bridge.header_error("[INSTINCT->JET] note 📁 later\nrepo: AFC", SEAT)
-        )
+        self.assertIsNone(bridge.header_error("[INSTINCT] Subject with 📁 emoji\nrepo: AFC", SEAT))
+        self.assertIsNone(bridge.header_error("[INSTINCT->JET] note 📁 later\nrepo: AFC", SEAT))
         # Still reject a real empty folder-tag intro.
         self.assertEqual(
             bridge.header_error("[INSTINCT 📁]\nclaim: empty", SEAT),
