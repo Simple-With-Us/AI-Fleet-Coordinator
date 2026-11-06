@@ -378,6 +378,7 @@ struct FleetView: View {
             Text("Open PRs").frame(width: 110, alignment: .trailing)
             Text("Claims").frame(width: 90, alignment: .trailing)
             Text("Work").frame(width: 140, alignment: .leading)
+            Text("Check").frame(width: 92, alignment: .leading)
         }
         .font(.caption.weight(.semibold))
         .foregroundStyle(.secondary)
@@ -408,6 +409,7 @@ struct FleetView: View {
             countCell(app.claims, extra: app.expiredClaims > 0 ? "\(app.expiredClaims) expired" : nil, problem: true, width: 90)
             workBadge(app.state)
                 .frame(width: 140, alignment: .leading)
+            FleetToolsStateBadge(state: app.checkState, width: 92, checked: PassMeaning.appRow)
         }
         .help(app.reasons.joined(separator: "\n"))
     }

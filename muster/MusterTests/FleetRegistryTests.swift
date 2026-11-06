@@ -217,6 +217,24 @@ final class FleetRegistryTests: XCTestCase {
         }
     }
 
+    /// The check badge from #1387 sits beside the work state and never reads PASS for an app
+    /// whose sections were not all read.
+    func test_the_check_badge_is_never_pass_when_a_section_could_not_look() throws {
+        for unknownSection in ["lanes", "pullRequests", "claims"] {
+            let summary = FleetRegistryReader.build(
+                from: Data(sampleRegistry.utf8),
+                viewOutput: try envelopeWithUnknownSection(unknownSection),
+                toolsReading: nil,
+                pathExists: { _ in false }
+            )
+            XCTAssertEqual(summary.apps[0].checkState, .unproven, "\(unknownSection) was not read")
+        }
+        let none = FleetRegistryReader.build(
+            from: Data(sampleRegistry.utf8), viewOutput: nil, toolsReading: nil, pathExists: { _ in false }
+        )
+        XCTAssertEqual(none.apps[0].checkState, .unproven)
+    }
+
     /// FLEETVIEW-4:  a section that could not look has no count, and rows never print a zero
     /// that reads as measured.
     func test_a_count_from_a_section_that_could_not_look_is_not_known_never_zero() throws {
