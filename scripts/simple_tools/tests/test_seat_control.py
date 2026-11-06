@@ -7,8 +7,8 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
-from agent_sync.idem import IdemStore
-from agent_sync.seat_control import (
+from simple_tools.idem import IdemStore
+from simple_tools.seat_control import (
     CAPABILITY_MATRIX,
     MAX_ARGUMENT_DEPTH,
     MAX_ARGUMENT_NODES,
@@ -787,7 +787,7 @@ class SeatControlTests(unittest.TestCase):
         for kind, arguments in cases:
             with self.subTest(kind=kind):
                 with patch(
-                    "agent_sync.seat_control.json.dumps",
+                    "simple_tools.seat_control.json.dumps",
                     side_effect=AssertionError("oversized input reached serializer"),
                 ) as dump:
                     self.assertFalse(self.service._arguments_within_bounds(arguments))

@@ -7,11 +7,11 @@ import os
 import tomllib
 import unittest
 
-from agent_sync import config as C
-from agent_sync import live as L
-from agent_sync.tests.listener_harness import fake_watcher
-from agent_sync.tests.test_attach import LEASE, AttachHarness, message_item
-from agent_sync.tests.test_daemon import MENTION, DaemonHarness
+from simple_tools import config as C
+from simple_tools import live as L
+from simple_tools.tests.listener_harness import fake_watcher
+from simple_tools.tests.test_attach import LEASE, AttachHarness, message_item
+from simple_tools.tests.test_daemon import MENTION, DaemonHarness
 
 BARE = "[platform.claude-code]\n%s\n"
 

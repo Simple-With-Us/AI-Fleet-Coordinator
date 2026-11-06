@@ -9,8 +9,8 @@ import os
 import time
 from unittest import mock
 
-from agent_sync import live as L
-from agent_sync.tests.test_attach import LEASE, AttachHarness
+from simple_tools import live as L
+from simple_tools.tests.test_attach import LEASE, AttachHarness
 
 SECRET = "SECRET BODY TEXT"
 
@@ -178,7 +178,7 @@ class StopContinuationTests(SeatInboxHarness):
         self.assertTrue(self.stop(), "alone again, this session continues")
 
     def test_a_dead_session_does_not_hold_the_continuation_back(self) -> None:
-        from agent_sync.tests.test_daemon import dead_pid
+        from simple_tools.tests.test_daemon import dead_pid
 
         self.write_lease(
             "ghost", pid=dead_pid(), last_prompt=time.time() + 1000, created=time.time() + 1000

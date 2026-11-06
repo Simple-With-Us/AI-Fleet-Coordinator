@@ -11,13 +11,13 @@ import json
 import os
 import secrets
 
-from agent_sync import adapters as A
-from agent_sync import identity as I
-from agent_sync import live as L
-from agent_sync.tests.fake_zulip import BOT_EMAIL
-from agent_sync.tests.harness import TAG, Harness, write_rc
-from agent_sync.tests.mcp_harness import McpHarness
-from agent_sync.tests.test_attach import LEASE, AttachHarness
+from simple_tools import adapters as A
+from simple_tools import identity as I
+from simple_tools import live as L
+from simple_tools.tests.fake_zulip import BOT_EMAIL
+from simple_tools.tests.harness import TAG, Harness, write_rc
+from simple_tools.tests.mcp_harness import McpHarness
+from simple_tools.tests.test_attach import LEASE, AttachHarness
 
 CODEX_EMAIL = "codex-bot@zulip.test"
 PLUMBER_EMAIL = "bf-plumber-bot@zulip.test"
@@ -427,7 +427,7 @@ class WakeLauncherTests(Harness):
                 if k.startswith(("AGENT", "ZULIP", "CLAUDE_CODE_SESSION"))
             },
             {
-                "AGENT_LAUNCHER": "agent-sync-wake",
+                "AGENT_LAUNCHER": "simple-tools-wake",
                 "AGENT_LAUNCH_SEAT": "CLAUDE",
                 "AGENT_SEAT": "CLAUDE",
                 "AGENT_SYNC_ATTACH": "0",

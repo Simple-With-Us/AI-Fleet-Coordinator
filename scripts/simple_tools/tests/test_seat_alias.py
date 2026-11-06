@@ -15,9 +15,9 @@ import secrets
 import unittest
 from pathlib import Path
 
-from agent_sync import identity as I
-from agent_sync import zulip as Z
-from agent_sync.tests.harness import TAG, Harness, write_rc
+from simple_tools import identity as I
+from simple_tools import zulip as Z
+from simple_tools.tests.harness import TAG, Harness, write_rc
 
 REPO = Path(__file__).resolve().parents[3]
 GROK_EMAIL = "grok-build-bot@zulip.test"

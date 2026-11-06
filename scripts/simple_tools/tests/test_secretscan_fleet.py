@@ -13,8 +13,8 @@ import sys
 import unittest
 from pathlib import Path
 
-from agent_sync import secretscan
-from agent_sync.secretscan import WITHHELD, redact_fields, scan
+from simple_tools import secretscan
+from simple_tools.secretscan import WITHHELD, redact_fields, scan
 
 SCRIPTS = Path(__file__).resolve().parents[2]
 
@@ -93,7 +93,7 @@ class EveryKindIsFlaggedTests(unittest.TestCase):
 
 def clean_texts() -> list[str]:
     """Text that only looks a little like a token and must not be flagged (the Worker's scanner is run over
-    these too:  scripts/agent-sync-mcp/test/secretscan-parity.test.mjs)."""
+    these too:  scripts/simple-tools-mcp/test/secretscan-parity.test.mjs)."""
     return [
         "git sha " + hexs(40), "uuid 9f1c2b3a-4d5e-6f70-8192-a3b4c5d6e7f8", "lin_api_ is the prefix of a Linear key",
         "lin_api_short", "xai-grok-bot-routines", "xai-" + "ab", "sntrys_ tokens start like that", "sntrys_abc",
@@ -102,7 +102,7 @@ def clean_texts() -> list[str]:
         "Infisical token rotation happens monthly", "see ~/.secrets/Zulip/Claude-zuliprc", "FLEET_AUTOPUSH_MODE=snapshot",
         "NEEDS_OWNER_CAPS=5", "OWNER_LINEAR_USER_ID=0b1c2d3e", "GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}",
         "the Cloudflare token is stored in Infisical", "Linear client secret is in Infisical",
-        "eyJ is how a JWT header starts", "eyJhbGciOi.short", "AFC-280 F3 agent-sync safety helpers",
+        "eyJ is how a JWT header starts", "eyJhbGciOi.short", "AFC-280 F3 simple-tools safety helpers",
     ]
 
 
@@ -151,16 +151,16 @@ class RoutineCheckerParityTests(unittest.TestCase):
         # the hook fast path imports this module on every tool call, so its top level stays small
         import ast
 
-        tree = ast.parse((SCRIPTS / "agent_sync" / "secretscan.py").read_text(encoding="utf-8"))
+        tree = ast.parse((SCRIPTS / "simple_tools" / "secretscan.py").read_text(encoding="utf-8"))
         top = {alias.name for node in tree.body if isinstance(node, ast.Import) for alias in node.names}
         self.assertNotIn("json", top)
         self.assertEqual(top, {"base64", "re"})
 
     def test_the_module_has_no_import_from_this_package(self) -> None:
         # the checker executes secretscan.py as a bare file, so a relative import would break it
-        source = (SCRIPTS / "agent_sync" / "secretscan.py").read_text(encoding="utf-8")
+        source = (SCRIPTS / "simple_tools" / "secretscan.py").read_text(encoding="utf-8")
         self.assertNotIn("from .", source)
-        self.assertNotIn("import agent_sync", source)
+        self.assertNotIn("import simple_tools", source)
 
 
 class ScanIsFastTests(unittest.TestCase):

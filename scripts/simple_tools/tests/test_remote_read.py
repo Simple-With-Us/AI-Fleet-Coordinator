@@ -1,7 +1,7 @@
 """Tests for the opt-in remote read transport of `simple-chat` (SIMPLE_CHAT_REMOTE=1).
 
 Hermetic: the one network function is replaced in process, HOME is a temp dir, and no Zulip key, rc file or
-network is read.  Run:  cd scripts && python3 -m unittest agent_sync.tests.test_remote_read
+network is read.  Run:  cd scripts && python3 -m unittest simple_tools.tests.test_remote_read
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from agent_sync import cli
+from simple_tools import cli
 
 BEARER = "sbt_codex_" + "C" * 43
 
@@ -39,7 +39,7 @@ class RemoteRead(unittest.TestCase):
             calls.append((url, headers, json.loads(body)))
             return answer(calls[-1]) if callable(answer) else answer
 
-        full = {"SIMPLE_CHAT_REMOTE": "1", "SIMPLE_TOOLS_BEARER": BEARER}
+        full = {"SIMPLE_CHAT_REMOTE": "1", "AGENT_SYNC_BEARER": BEARER}
         full.update(env or {})
         out, err = io.StringIO(), io.StringIO()
         with tempfile.TemporaryDirectory() as home, mock.patch.object(cli, "_remote_post", fake):
@@ -316,7 +316,7 @@ class RemoteRead(unittest.TestCase):
                 self.assertEqual((code, calls), (2, []))
 
     def test_listener_hook_verbs_do_not_run_locally_in_remote_mode(self):
-        with mock.patch("agent_sync.attach.main") as hook:
+        with mock.patch("simple_tools.attach.main") as hook:
             code, _, err, calls = self.run_cli(["attach"], reply({}))
         hook.assert_not_called()
         self.assertEqual((code, calls), (2, []))
@@ -335,14 +335,14 @@ class RemoteRead(unittest.TestCase):
             ["detach", "--hook", "session-end"],
         ):
             with self.subTest(argv=argv):
-                with mock.patch("agent_sync.attach.main") as hook:
+                with mock.patch("simple_tools.attach.main") as hook:
                     code, out, err, calls = self.run_cli(argv, reply({}))
                 hook.assert_not_called()
                 self.assertEqual((code, calls), (0, []))
                 self.assertEqual((out, err), ("", ""))
 
     def test_bearer_problems_and_refusals_never_fall_back(self):
-        for env in ({"SIMPLE_TOOLS_BEARER": ""}, {"SIMPLE_TOOLS_BEARER": "short"}):
+        for env in ({"AGENT_SYNC_BEARER": ""}, {"AGENT_SYNC_BEARER": "short"}):
             code, _, err, calls = self.run_cli(["whoami"], reply({}), env=env)
             self.assertEqual(code, 2)
             self.assertEqual(calls, [])
@@ -386,7 +386,7 @@ class EntrypointTrap(unittest.TestCase):
 
     SCRIPT = Path(__file__).resolve().parents[2] / "simple-chat"
 
-    def run_entry(self, verb, remote, module="agent_sync.attach", extra=()):
+    def run_entry(self, verb, remote, module="simple_tools.attach", extra=()):
         import os
         import subprocess
         import sys
@@ -440,7 +440,7 @@ class EntrypointTrap(unittest.TestCase):
         # A seat host's managed wrapper turns remote mode on for every seat.  The letter hook needs no hosted server,
         # and refused here it would fall to the argument parser and exit 2, which blocks the prompt.
         for remote in (True, False):
-            code, err, imported = self.run_entry("letter", remote=remote, module="agent_sync.claude_letter")
+            code, err, imported = self.run_entry("letter", remote=remote, module="simple_tools.claude_letter")
             self.assertTrue(imported, "remote=%s: %s" % (remote, err))
             self.assertNotIn("invalid choice", err)
 

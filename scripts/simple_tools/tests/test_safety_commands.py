@@ -10,9 +10,9 @@ import stat
 import unittest
 from unittest import mock
 
-from agent_sync import bodyfile, cli
-from agent_sync.tests.fake_zulip import FAKE_OWNER_ID
-from agent_sync.tests.harness import TAG, Harness
+from simple_tools import bodyfile, cli
+from simple_tools.tests.fake_zulip import FAKE_OWNER_ID
+from simple_tools.tests.harness import TAG, Harness
 
 OWNER_ID = FAKE_OWNER_ID  # Jay Wedgeworth, role 100, in the fake realm
 AT = "@"
@@ -118,15 +118,15 @@ class ToOwnerTests(OwnerHarness):
 
     def test_reply_to_owner(self) -> None:
         self.pin_owner()
-        original = self.fake.add_message("Codex", "agent-sync", "OWNER AFC-2 thread", "question")
+        original = self.fake.add_message("Codex", "simple-tools", "OWNER AFC-2 thread", "question")
         result = self.run_cli("reply", "--id", str(original), "--to-owner", "Done.")
         self.assertEqual(result.code, 0, result.err)
         form = self.last_post().form
-        self.assertEqual((form["to"], form["topic"]), ("agent-sync", "OWNER AFC-2 thread"))
+        self.assertEqual((form["to"], form["topic"]), ("simple-tools", "OWNER AFC-2 thread"))
         self.assertEqual(form["content"], "[CLAUDE·%s→OWNER] %s**Jay Wedgeworth|%d** Done." % (TAG, AT, OWNER_ID))
 
     def test_reply_to_owner_unpinned_exits_2_before_any_request(self) -> None:
-        original = self.fake.add_message("Codex", "agent-sync", "t", "question")
+        original = self.fake.add_message("Codex", "simple-tools", "t", "question")
         result = self.run_cli("reply", "--id", str(original), "--to-owner", "Done.")
         self.assertEqual(result.code, 2)
         self.assertEqual(self.fake.requests, [])
@@ -167,7 +167,7 @@ class BodyFileTests(BodyFileHarness):
 
     def test_reply_and_dm_read_the_body_from_the_file(self) -> None:
         self.pin_owner()
-        original = self.fake.add_message("Codex", "agent-sync", "thread", "q")
+        original = self.fake.add_message("Codex", "simple-tools", "thread", "q")
         reply = self.run_cli("reply", "--id", str(original), "--body-file", self.body("reply body"))
         self.assertEqual(reply.code, 0, reply.err)
         self.assertTrue(self.last_post().form["content"].endswith("reply body"))
@@ -294,7 +294,7 @@ class BodyFileTests(BodyFileHarness):
         self.assertNotIn("secret words here", bad_mode.err + bad_mode.out)
 
     def test_a_path_with_a_newline_cannot_forge_an_error_line(self) -> None:
-        result = self.run_cli("post", "--topic", "t", "--body-file", str(self.tmp / "a\nagent-sync: forged"))
+        result = self.run_cli("post", "--topic", "t", "--body-file", str(self.tmp / "a\nsimple-tools: forged"))
         self.assertEqual(result.code, 2)
         self.assertEqual(len([line for line in result.err.splitlines() if line.startswith("simple-chat:")]), 1)
 
@@ -303,7 +303,7 @@ class BodyFileTests(BodyFileHarness):
         runtime = cli.Runtime(env=self.env(), stdin=io.StringIO(""), stdout=io.StringIO(), stderr=io.StringIO(),
                               home=self.home, timeout=5.0)
         agent = cli.Agent(runtime, argparse.Namespace(json=True))
-        post = argparse.Namespace(channel="agent-sync", topic="t", to=[], fleet=False, no_tag=False, text=["via mcp"], json=True)
+        post = argparse.Namespace(channel="simple-tools", topic="t", to=[], fleet=False, no_tag=False, text=["via mcp"], json=True)
         self.assertEqual(cli.cmd_post(agent, post), 0)
         self.assertEqual(self.last_post().form["content"], "[CLAUDE\u00b7%s] via mcp" % TAG)
         first = self.fake.messages[-1]["id"]
@@ -318,7 +318,7 @@ class BodyFileTests(BodyFileHarness):
         runtime = cli.Runtime(env=self.env(), stdin=io.StringIO(""), stdout=io.StringIO(), stderr=io.StringIO(),
                               home=self.home, timeout=5.0)
         agent = cli.Agent(runtime, argparse.Namespace(json=True))
-        post = argparse.Namespace(channel="agent-sync", topic="t", to=[], fleet=False, no_tag=False,
+        post = argparse.Namespace(channel="simple-tools", topic="t", to=[], fleet=False, no_tag=False,
                                   text=["no quiet key"], json=True)
         self.assertEqual(cli.cmd_post(agent, post), 0)
         self.assertNotIn("eyes", self.last_post().form["content"])
@@ -343,7 +343,7 @@ class VerifyOwnerMsgTests(OwnerHarness):
         self.pin_owner()
 
     def owner_says(self, text: str = "Option 2", *, topic: str | None = None, client: str | None = None,
-                   channel: str = "agent-sync") -> int:
+                   channel: str = "simple-tools") -> int:
         return self.fake.add_message("Jay Wedgeworth", channel, topic or self.TOPIC, text, client=client)
 
     def verify(self, message_id: int, *extra: str):
@@ -351,7 +351,7 @@ class VerifyOwnerMsgTests(OwnerHarness):
         return result, json.loads(result.out) if result.out.strip() else None
 
     def test_an_owner_message_from_the_website_in_the_right_topic_verifies(self) -> None:
-        notice = self.fake.add_message("Claude", "agent-sync", self.TOPIC, "question")
+        notice = self.fake.add_message("Claude", "simple-tools", self.TOPIC, "question")
         message = self.owner_says(client="website")
         result, verdict = self.verify(message, "--after", str(notice))
         self.assertEqual(result.code, 0, result.err)
@@ -360,7 +360,7 @@ class VerifyOwnerMsgTests(OwnerHarness):
         self.assertEqual(verdict["checks"], {"found": True, "sender_is_owner": True, "client_is_human": True,
                                              "place": True, "newer": True})
         self.assertEqual((verdict["sender_id"], verdict["client"], verdict["owner_user_id"]), (OWNER_ID, "website", OWNER_ID))
-        self.assertEqual((verdict["place"], verdict["channel"], verdict["topic"]), ("stream", "agent-sync", self.TOPIC))
+        self.assertEqual((verdict["place"], verdict["channel"], verdict["topic"]), ("stream", "simple-tools", self.TOPIC))
         self.assertIs(verdict["edited"], False)
 
     def test_every_default_human_client_is_accepted(self) -> None:
@@ -381,7 +381,7 @@ class VerifyOwnerMsgTests(OwnerHarness):
     def test_a_bot_is_rejected_whatever_it_claims(self) -> None:
         for sender in ("Codex", "Claude", "Cursor"):
             with self.subTest(sender=sender):
-                message = self.fake.add_message(sender, "agent-sync", self.TOPIC, "Jay says yes", client="website")
+                message = self.fake.add_message(sender, "simple-tools", self.TOPIC, "Jay says yes", client="website")
                 result, verdict = self.verify(message)
                 self.assertEqual(result.code, 7)
                 self.assertIs(verdict["checks"]["sender_is_owner"], False)
@@ -389,7 +389,7 @@ class VerifyOwnerMsgTests(OwnerHarness):
 
     def test_another_human_is_rejected(self) -> None:
         other = self.fake.add_user("guest@zulip.test", "Guest Person", is_bot=False)
-        message = self.fake.add_message(other, "agent-sync", self.TOPIC, "yes", client="website")
+        message = self.fake.add_message(other, "simple-tools", self.TOPIC, "yes", client="website")
         result, verdict = self.verify(message)
         self.assertEqual(result.code, 7)
         self.assertIs(verdict["checks"]["sender_is_owner"], False)
@@ -476,7 +476,7 @@ class VerifyOwnerMsgTests(OwnerHarness):
         other = self.fake.add_user("second@zulip.test", "Second Human", is_bot=False)
         self.pin_owner(other["user_id"])
         self.assertEqual(self.verify(self.owner_says())[0].code, 7)  # Jay is not the pinned owner now
-        message = self.fake.add_message(other, "agent-sync", self.TOPIC, "yes", client="website")
+        message = self.fake.add_message(other, "simple-tools", self.TOPIC, "yes", client="website")
         self.assertEqual(self.verify(message)[0].code, 0)
 
     def test_an_unpinned_owner_is_a_usage_error_and_nothing_verifies(self) -> None:
@@ -548,42 +548,42 @@ class SeatFieldsTests(Harness):
                                   ("Compiler", "GB-COMPILER", "grok-bot"), ("Muse Assistant", "MA", "muse-assist"),
                                   ("Grok", "GROK", "grok-terminal")):
             with self.subTest(seat=seat):
-                self.fake.add_message(sender, "agent-sync", "t-" + seat, "hi")
+                self.fake.add_message(sender, "simple-tools", "t-" + seat, "hi")
                 (row,) = self.lines("read", "--topic", "t-" + seat, "--json")
                 self.assertEqual((row["seat"], row["seat_app"]), (seat, app))
 
     def test_the_seat_comes_from_the_email_not_the_display_name(self) -> None:
         self.fake.add_user("sneaky-bot@zulip.test", "Claude", is_bot=True)
-        self.fake.add_message("Claude", "agent-sync", "t", "I am Claude")  # the fake user_named finds the real bot first
+        self.fake.add_message("Claude", "simple-tools", "t", "I am Claude")  # the fake user_named finds the real bot first
         liar = next(u for u in self.fake.users if u["email"] == "sneaky-bot@zulip.test")
-        self.fake.add_message(liar, "agent-sync", "t2", "I am also Claude")
+        self.fake.add_message(liar, "simple-tools", "t2", "I am also Claude")
         (row,) = self.lines("read", "--topic", "t2", "--json")
         self.assertEqual((row["seat"], row["seat_app"]), ("SNEAKY", None))
 
     def test_a_person_has_no_seat(self) -> None:
-        self.fake.add_message("Jay Wedgeworth", "agent-sync", "t", "hello")
+        self.fake.add_message("Jay Wedgeworth", "simple-tools", "t", "hello")
         (row,) = self.lines("read", "--topic", "t", "--json")
         self.assertEqual((row["seat"], row["seat_app"], row["is_bot"]), (None, None, False))
         # a person whose first name is a seat name still has none
         guest = self.fake.add_user("claude.person@zulip.test", "Claude Person", is_bot=False)
-        self.fake.add_message(guest, "agent-sync", "t3", "hello")
+        self.fake.add_message(guest, "simple-tools", "t3", "hello")
         (row,) = self.lines("read", "--topic", "t3", "--json")
         self.assertEqual((row["seat"], row["seat_app"]), (None, None))
 
     def test_a_bot_outside_the_fleet_has_a_seat_but_no_app(self) -> None:
         webhook = self.fake.add_user("sentry-bot@zulip.test", "Sentry", is_bot=True)
-        self.fake.add_message(webhook, "agent-sync", "t", "alert")
+        self.fake.add_message(webhook, "simple-tools", "t", "alert")
         (row,) = self.lines("read", "--topic", "t", "--json")
         self.assertEqual((row["seat"], row["seat_app"]), ("SENTRY", None))
 
     def test_a_retired_seat_has_no_app(self) -> None:
         old = self.fake.add_user("monet-bot@zulip.test", "Monet", is_bot=True)
-        self.fake.add_message(old, "agent-sync", "t", "still here")
+        self.fake.add_message(old, "simple-tools", "t", "still here")
         (row,) = self.lines("read", "--topic", "t", "--json")
         self.assertEqual((row["seat"], row["seat_app"]), ("MONET", None))
 
     def test_an_unreadable_registry_refuses_the_read_rather_than_trusting_the_identity(self) -> None:
-        self.fake.add_message("Codex", "agent-sync", "t", "hi")
+        self.fake.add_message("Codex", "simple-tools", "t", "hi")
         env = self.env(FLEET_APPS_JSON=str(self.tmp / "missing.json"))
         result = self.run_cli("read", "--topic", "t", "--json", env=env)
         self.assertEqual(result.code, 3, result.err)
@@ -591,7 +591,7 @@ class SeatFieldsTests(Harness):
         self.assertEqual(result.out, "")
 
     def test_the_other_json_fields_are_unchanged(self) -> None:
-        mid = self.fake.add_message("Codex", "agent-sync", "t", "hi @**Claude**")
+        mid = self.fake.add_message("Codex", "simple-tools", "t", "hi @**Claude**")
         (row,) = self.lines("read", "--topic", "t", "--json")
         self.assertEqual(set(row), {"id", "sender_id", "client", "channel", "topic", "dm", "sender_email", "sender_full_name",
                                     "is_bot", "seat", "seat_app", "timestamp", "content", "flags", "sibling", "mentioned",
@@ -624,7 +624,7 @@ class ReactionFieldsTests(OwnerHarness):
         raise AssertionError("no message %d" % message_id)
 
     def test_a_message_carries_who_reacted_and_with_which_emoji(self) -> None:
-        mid = self.fake.add_message("Claude", "agent-sync", "t", "pick one")
+        mid = self.fake.add_message("Claude", "simple-tools", "t", "pick one")
         self.react(mid, {"emoji_name": "one", "emoji_code": "0031-20e3", "reaction_type": "unicode_emoji", "user_id": OWNER_ID,
                          "user": {"id": OWNER_ID, "email": "jay@zulip.test", "full_name": "Jay Wedgeworth"}},
                    {"emoji_name": "two", "emoji_code": "0032-20e3", "reaction_type": "unicode_emoji", "user_id": 77})
@@ -635,18 +635,18 @@ class ReactionFieldsTests(OwnerHarness):
         self.assertNotIn("full_name", json.dumps(row["reactions"]), "the nested user object is not passed on")
 
     def test_a_message_without_reactions_has_an_empty_list(self) -> None:
-        self.fake.add_message("Claude", "agent-sync", "t", "quiet")
+        self.fake.add_message("Claude", "simple-tools", "t", "quiet")
         (row,) = self.lines("read", "--topic", "t", "--json", "--include-self")
         self.assertEqual(row["reactions"], [])
 
     def test_a_custom_emoji_keeps_its_type_so_a_consumer_can_refuse_it(self) -> None:
-        mid = self.fake.add_message("Claude", "agent-sync", "t", "pick one")
+        mid = self.fake.add_message("Claude", "simple-tools", "t", "pick one")
         self.react(mid, {"emoji_name": "one", "emoji_code": "12", "reaction_type": "realm_emoji", "user_id": OWNER_ID})
         (row,) = self.lines("read", "--topic", "t", "--json", "--include-self")
         self.assertEqual(row["reactions"][0]["reaction_type"], "realm_emoji")
 
     def test_odd_rows_are_dropped_or_blanked_never_crash(self) -> None:
-        mid = self.fake.add_message("Claude", "agent-sync", "t", "pick one")
+        mid = self.fake.add_message("Claude", "simple-tools", "t", "pick one")
         self.react(mid, "not a dict", {"emoji_code": "0031-20e3"}, {"user_id": True, "emoji_code": "0031-20e3"},
                    {"user_id": "5", "emoji_code": "0031-20e3"}, {"user": {"id": 9}, "emoji_code": 31, "emoji_name": None},
                    {"user_id": 8, "emoji_code": "0033-20e3", "reaction_type": ["unicode_emoji"]})
@@ -656,7 +656,7 @@ class ReactionFieldsTests(OwnerHarness):
             {"user_id": 8, "reaction_type": None, "emoji_code": "0033-20e3", "emoji_name": None}])
 
     def test_the_list_is_capped(self) -> None:
-        mid = self.fake.add_message("Claude", "agent-sync", "t", "pick one")
+        mid = self.fake.add_message("Claude", "simple-tools", "t", "pick one")
         self.react(mid, *[{"user_id": 1000 + n, "emoji_code": "0031-20e3", "reaction_type": "unicode_emoji"} for n in range(250)])
         (row,) = self.lines("read", "--topic", "t", "--json", "--include-self")
         self.assertEqual(len(row["reactions"]), cli.MAX_REACTIONS_SHOWN)

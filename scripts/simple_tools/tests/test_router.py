@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import unittest
 
-from agent_sync import config as C
-from agent_sync import router as R
-from agent_sync.live import topic_key
+from simple_tools import config as C
+from simple_tools import router as R
+from simple_tools.live import topic_key
 
 ME = R.SeatIdentity("CLAUDE", 10, "Claude", "claude-bot@zulip.test")
 OWNER, CODEX, CURSOR, SENTRY, NEW_BOT, JET = 12, 11, 13, 40, 41, 42
@@ -16,12 +16,12 @@ NOW = 10_000.0
 def ctx(**kw):
     options = dict(owner_user_id=OWNER, owner_clients=["website", "ZulipMobile"], eligible_user_ids=[10, CODEX, CURSOR],
                    is_bot={10: True, CODEX: True, CURSOR: True, OWNER: False, SENTRY: True, NEW_BOT: True, JET: True},
-                   now=NOW, stale_after=7200.0, presence=[("agent-sync", "roll call"), ("alerts", "*")])
+                   now=NOW, stale_after=7200.0, presence=[("simple-tools", "roll call"), ("alerts", "*")])
     options.update(kw)
     return R.Context(**options)
 
 
-def msg(sender=CODEX, content="hello", *, topic="t", channel="agent-sync", flags=(), client=None, mid=500,
+def msg(sender=CODEX, content="hello", *, topic="t", channel="simple-tools", flags=(), client=None, mid=500,
         ts=NOW - 10, dm=False, email=None):
     message = {"id": mid, "sender_id": sender, "content": content, "flags": list(flags), "timestamp": ts,
                "client": client or ("website" if sender == OWNER else "ZulipPython"), "sender_full_name": "x"}
@@ -81,7 +81,7 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual(R.classify(msg(content="[CLAUDE·ab] hi re=5"), ME, ctx()).reply_to, 5)
         self.assertIsNone(R.classify(msg(content="hi\nre=5 on line two"), ME, ctx()).reply_to)
 
-    def test_at_all_in_agent_sync_fleet_is_the_fleet_wake(self) -> None:
+    def test_at_all_in_simple_tools_fleet_is_the_fleet_wake(self) -> None:
         for name, kw in {
             "flags and literal": dict(content="@**all** HALT", **FLEET_KW),
             "stream flag only still needs a token": dict(content="HALT", topic="fleet", channel="work-in-progress",
@@ -289,7 +289,7 @@ class PrefilterTests(unittest.TestCase):
     def test_a_jet_interrupt_in_a_leased_topic_counts_against_the_peer_budget(self) -> None:
         pinned = ctx(eligible_user_ids=[10, CODEX, CURSOR, JET])
         direct = msg(sender=JET, content=DIRECT[0], flags=DIRECT[1])
-        open_room = lease("A", topics=[("agent-sync", "t")])
+        open_room = lease("A", topics=[("simple-tools", "t")])
         self.assertEqual(R.route(direct, ME, pinned, [open_room])[1].lease_items, [("A", "interrupt", "message")])
         asked = []
 
@@ -297,7 +297,7 @@ class PrefilterTests(unittest.TestCase):
             asked.append(owner)
             return "per_hour"
 
-        d = R.route(direct, ME, pinned, [lease("A", topics=[("agent-sync", "t")], room=full)])[1]
+        d = R.route(direct, ME, pinned, [lease("A", topics=[("simple-tools", "t")], room=full)])[1]
         self.assertEqual(d.lease_items[0][1], "passive")
         self.assertEqual(d.throttled, [("A", "per_hour")])
         self.assertEqual(asked, [False], "the room check runs as a non-owner turn, never the owner's")
@@ -308,7 +308,7 @@ class PrefilterTests(unittest.TestCase):
         self.assertEqual(self.wake(msg(content="@**all** standup", **FLEET_KW)), (True, "peer", None))
         self.assertEqual(self.wake(msg(content="@**all** heads up", flags=["stream_wildcard_mentioned"])),
                          (True, "peer", None))
-        self.assertEqual(self.wake(msg(content="chatter"), followed=[topic_key("agent-sync", "t")]),
+        self.assertEqual(self.wake(msg(content="chatter"), followed=[topic_key("simple-tools", "t")]),
                          (True, None, "not_a_mention"))
 
     def test_wake_tag_and_stale_peer_direct_do_not_wake(self) -> None:
@@ -341,14 +341,14 @@ class PrefilterTests(unittest.TestCase):
 
 class LeaseRoutingTests(unittest.TestCase):
     def test_leased_topic_goes_to_every_lease_and_never_to_the_inbox(self) -> None:
-        a, b = lease("A", topics=[("agent-sync", "T")]), lease("B", topics=[("Agent-Sync", "t")], platform="codex")
+        a, b = lease("A", topics=[("simple-tools", "T")]), lease("B", topics=[("Simple-Tools", "t")], platform="codex")
         c, d = R.route(msg(content=DIRECT[0], flags=DIRECT[1]), ME, ctx(), [a, b])
         self.assertEqual(d.lease_items, [("A", "interrupt", "message"), ("B", "interrupt", "message")])
         self.assertFalse(d.seat_inbox)
         self.assertTrue(d.wake_worthy, "the grace release uses this later")
 
     def test_interrupt_versus_passive(self) -> None:
-        a = lease("A", topics=[("agent-sync", "t")], posted=[400])
+        a = lease("A", topics=[("simple-tools", "t")], posted=[400])
         cases = [(msg(sender=OWNER), "interrupt"), (msg(content=DIRECT[0], flags=DIRECT[1]), "interrupt"),
                  (msg(content="[CODEX] re=400 done"), "interrupt"), (msg(content="[CODEX] re=401 done"), "passive"),
                  (msg(content="peer chatter"), "passive"), (msg(sender=SENTRY, content=DIRECT[0], flags=DIRECT[1]), "passive"),
@@ -358,18 +358,18 @@ class LeaseRoutingTests(unittest.TestCase):
                 self.assertEqual(R.route(message, ME, ctx(), [a])[1].lease_items[0][1], klass)
 
     def test_presence_topics_are_passive_and_budget_turns_interrupts_passive(self) -> None:
-        roll = lease("A", topics=[("agent-sync", "roll call")])
+        roll = lease("A", topics=[("simple-tools", "roll call")])
         d = R.route(msg(sender=OWNER, topic="roll call"), ME, ctx(), [roll])[1]
         self.assertEqual(d.lease_items[0][1], "passive")
-        full = lease("A", topics=[("agent-sync", "t")], room=lambda key, owner: "per_hour")
+        full = lease("A", topics=[("simple-tools", "t")], room=lambda key, owner: "per_hour")
         d = R.route(msg(content=DIRECT[0], flags=DIRECT[1]), ME, ctx(), [full])[1]
         self.assertEqual(d.lease_items[0][1], "passive")
         self.assertEqual(d.throttled, [("A", "per_hour")])
 
     def test_own_posts_go_to_sibling_leases_only(self) -> None:
-        poster = lease("A", topics=[("agent-sync", "t")], posted=[500])
-        tagged = lease("B", topics=[("agent-sync", "t")], prefix="[CLAUDE·aaaa1111")
-        sibling = lease("C", topics=[("agent-sync", "t")], prefix="[CLAUDE·bbbb2222")
+        poster = lease("A", topics=[("simple-tools", "t")], posted=[500])
+        tagged = lease("B", topics=[("simple-tools", "t")], prefix="[CLAUDE·aaaa1111")
+        sibling = lease("C", topics=[("simple-tools", "t")], prefix="[CLAUDE·bbbb2222")
         own = msg(sender=10, content="[CLAUDE·aaaa1111] working", mid=500)
         c, d = R.route(own, ME, ctx(), [poster, tagged, sibling])
         self.assertEqual(d.lease_items, [("C", "passive", "sibling")])
@@ -433,7 +433,7 @@ class LeaseRoutingTests(unittest.TestCase):
         self.assertEqual((d.seat_inbox, d.wake), (True, "peer"))
 
     def test_muted_topics_drop_unless_direct_or_dm(self) -> None:
-        muted = ctx(muted=[topic_key("agent-sync", "t")])
+        muted = ctx(muted=[topic_key("simple-tools", "t")])
         self.assertEqual(R.route(msg(content="@**all** x", **FLEET_KW), ME,
                                  ctx(muted=[topic_key("work-in-progress", "fleet")]), [])[1].drop_reason, "muted")
         self.assertEqual(R.route(msg(content="@**all** x", flags=["stream_wildcard_mentioned"]), ME, muted, [])[1].drop_reason,
@@ -441,7 +441,7 @@ class LeaseRoutingTests(unittest.TestCase):
         self.assertTrue(R.route(msg(content=DIRECT[0], flags=DIRECT[1]), ME, muted, [])[1].seat_inbox)
 
     def test_topics_match_without_case(self) -> None:
-        a = lease("A", topics=[("AGENT-SYNC", "AFC Work")])
+        a = lease("A", topics=[("SIMPLE-TOOLS", "AFC Work")])
         self.assertEqual(R.route(msg(topic="afc work"), ME, ctx(), [a])[1].lease_items, [("A", "passive", "message")])
 
 
@@ -493,7 +493,7 @@ class OwnerTopicTests(unittest.TestCase):
                     d = self.route(message)[1]
                     self.assertIsNone(d.wake)
                     self.assertFalse(d.delivered_to)
-                a = lease("A", topics=[("agent-sync", topic)], posted=[400])
+                a = lease("A", topics=[("simple-tools", topic)], posted=[400])
                 for message in (msg(content="@**Claude** go", flags=["mentioned"], topic=topic),
                                 msg(content="[CODEX] re=400 done", topic=topic), msg(content="chatter", topic=topic)):
                     self.assertEqual(self.route(message, leases=[a])[1].lease_items, [("A", "passive", "message")])
@@ -506,7 +506,7 @@ class OwnerTopicTests(unittest.TestCase):
         c, d = self.route(note, me=CODEX_ME)
         self.assertTrue(c.owner_note and c.eligible and not c.owner_topic_peer)
         self.assertEqual((d.seat_inbox, d.wake, d.wake_block), (True, "peer", None))
-        self.assertEqual(self.route(note, me=CODEX_ME, leases=[lease("A", topics=[("agent-sync", OWNER_TOPIC)])])[1].lease_items,
+        self.assertEqual(self.route(note, me=CODEX_ME, leases=[lease("A", topics=[("simple-tools", OWNER_TOPIC)])])[1].lease_items,
                          [("A", "interrupt", "message")])
         stale = msg(sender=10, content=NOTE, flags=MENTION_CODEX, topic=OWNER_TOPIC, email="claude-bot@zulip.test", ts=NOW - 9000)
         self.assertEqual(self.route(stale, me=CODEX_ME)[1].wake_block, "stale", "the stale rule and the budgets still apply")
@@ -549,7 +549,7 @@ class OwnerTopicTests(unittest.TestCase):
         self.assertEqual(self.route(api)[1].wake_block, "owner_api")
 
     def test_a_filer_with_the_topic_leased_still_gets_the_owners_answer(self) -> None:
-        mine = lease("F", topics=[("agent-sync", OWNER_TOPIC)])
+        mine = lease("F", topics=[("simple-tools", OWNER_TOPIC)])
         answer = msg(sender=OWNER, content="option 1", topic=OWNER_TOPIC)
         self.assertEqual(self.route(answer, leases=[mine])[1].lease_items, [("F", "interrupt", "message")])
 
