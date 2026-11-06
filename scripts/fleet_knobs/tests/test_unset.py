@@ -34,7 +34,10 @@ class UnsetTests(KnobTestCase):
 
     def test_plan_shows_delete_and_writes_nothing(self):
         answer, code = self.run_unset(
-            "FLEET_AUTOPUSH_MODE", "plan", reader=lambda n: ("off", "infisical")
+            "FLEET_AUTOPUSH_MODE",
+            "plan",
+            {setter.ENV_WRITE_TOKEN: WRITE_TOKEN},
+            reader=lambda n: ("off", "infisical"),
         )
         self.assertEqual((code, answer["result"], answer["verb"]), (0, "planned", "unset"))
         self.assertEqual(answer["commands"][0][:3], ["infisical", "secrets", "delete"])
@@ -85,6 +88,7 @@ class UnsetTests(KnobTestCase):
 
     def test_cli_unset_plan_json(self):
         out = io.StringIO()
-        code = cli.main(["unset", "FLEET_AUTOPUSH_MODE", "--plan", "--json"], out=out)
+        with mock.patch.dict(os.environ, {setter.ENV_WRITE_TOKEN: WRITE_TOKEN}):
+            code = cli.main(["unset", "FLEET_AUTOPUSH_MODE", "--plan", "--json"], out=out)
         answer = json.loads(out.getvalue())
         self.assertEqual((code, answer["verb"], answer["result"]), (0, "unset", "planned"))
