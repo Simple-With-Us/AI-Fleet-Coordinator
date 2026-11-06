@@ -47,7 +47,8 @@ class Transfer(unittest.TestCase):
             mock.patch.object(G.subprocess, "Popen", popen),
             mock.patch.object(G, "_git_binary", return_value="git"),
             mock.patch.object(G.os, "makedirs"),
-            mock.patch.object(G.os, "chmod"),contextlib.redirect_stdout(io.StringIO())
+            mock.patch.object(G.os, "chmod"),
+            contextlib.redirect_stdout(io.StringIO()),
         ):
             self.assertEqual(fn(a, BEARER), 0)
         return calls
