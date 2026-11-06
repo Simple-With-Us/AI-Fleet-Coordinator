@@ -219,3 +219,18 @@ test("drainOutbox writes display-formatted timestamps to the adapter", async () 
   const row = page.rows[0].cells ?? page.rows[0];
   assert.equal(row[12], "11/04/2026, 9:05:31 AM");
 });
+
+test("a credential-shaped cell fails its row without wedging the drain", async () => {
+  const adapter = fakeAdapter();
+  const poison = sessionCells("r-poison");
+  poison[6] = "see gh" + "p_" + "x".repeat(36); // built in parts: no credential literal in the fixture
+  const outbox = fakeOutbox([
+    { outbox_id: "o1", kind: "session_upsert", payload: JSON.stringify({ cells: poison }) },
+    { outbox_id: "o2", kind: "session_upsert", payload: JSON.stringify({ cells: sessionCells("r2") }) },
+  ]);
+  const logs = [];
+  const res = await drainOutbox({ outbox, adapter, log: (m) => logs.push(m) });
+  assert.deepEqual(res, { exported: 1, failed: 1 });
+  assert.deepEqual(outbox.marked, ["o2"]); // the refused row stays pending, the healthy row exports
+  assert.ok(logs.some((m) => m.includes("o1") && m.includes("Title")));
+});

@@ -36,7 +36,7 @@ const CELL_CREDENTIAL_PATTERNS = Object.freeze([
   [/\b(api[_-]?key|secret|token|password)\s*[=:]\s*['"]?[A-Za-z0-9+/=._-]{16,}/i, 'assigned secret'],
 ]);
 
-function scanCellText(text) {
+export function scanCellText(text) {
   for (const [pattern, label] of CELL_CREDENTIAL_PATTERNS) {
     if (pattern.test(text)) return label;
   }
@@ -146,11 +146,14 @@ async function requestJSON(fetchImpl, url, init, timeoutMs, mutation = false, va
         retryAfterSeconds: retryAfter(response),
       });
     }
+    // A read failure (timeout, reset mid-body) is a transport error: let it propagate to the
+    // outer catch as transport_or_response_error.  Only a JSON.parse failure means the
+    // response shape itself was invalid.
+    const text = await readCappedBody(response, mutation);
     let body;
     try {
-      body = JSON.parse(await readCappedBody(response, mutation));
-    } catch (error) {
-      if (error instanceof OperatorSheetsError) throw error;
+      body = JSON.parse(text);
+    } catch {
       fail('invalid_response', { uncertain: mutation });
     }
     if (!body || typeof body !== 'object' || Array.isArray(body) ||

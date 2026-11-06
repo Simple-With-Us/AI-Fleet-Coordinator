@@ -424,3 +424,18 @@ test("oversized, deep or malformed responses fail closed", async () => {
   const wrongShape = sheetsWith({ fetch: async () => jsonResponse({ values: "not-an-array" }), requests: [] });
   await assert.rejects(wrongShape.readRows("sessions", { startRow: 2, limit: 1 }), { code: "invalid_response" });
 });
+
+test("the header contract's three copies stay equal (registry, exporter, adapter)", async () => {
+  const { readFileSync } = await import("node:fs");
+  const exporter = await import("./agent_sync/operator_sheets_export.mjs");
+  const registry = readFileSync(new URL("./agent_sync/operator_registry.py", import.meta.url), "utf8");
+  const tuple = (name) => {
+    const block = registry.match(new RegExp(name + " = \\((.*?)\\)", "s"));
+    assert.ok(block, name + " tuple present in operator_registry.py");
+    return [...block[1].matchAll(/"([^"]*)"/g)].map((m) => m[1]);
+  };
+  assert.deepEqual([...SESSION_HEADERS], [...exporter.SESSIONS_HEADERS]);
+  assert.deepEqual([...EVENT_HEADERS], [...exporter.EVENTS_HEADERS]);
+  assert.deepEqual([...SESSION_HEADERS], tuple("SESSIONS_HEADERS"));
+  assert.deepEqual([...EVENT_HEADERS], tuple("EVENTS_HEADERS"));
+});
