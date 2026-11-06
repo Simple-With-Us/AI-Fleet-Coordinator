@@ -703,6 +703,10 @@ jobs:
         run: |
           /usr/bin/python3 --version
           /usr/bin/python3 -c 'import fleet_view.__main__'
+      # The release job compares this derived key with the app's SUPublicEDKey before it signs
+      # an update;  swift is only here, so this is where the derivation is proved.
+      - name: Sparkle public key derivation
+        run: python3 muster/script/test_sparkle_public_key.py -v
       - name: Install XcodeGen
         run: brew install xcodegen
       - name: Generate and compile unsigned scaffold
