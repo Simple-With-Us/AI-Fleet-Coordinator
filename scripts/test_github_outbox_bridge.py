@@ -493,7 +493,7 @@ class RuleTests(unittest.TestCase):
         self.assertIsNone(bridge.header_error("[JET 📁AFC]\nrepo: AFC\nstate: WIP", "JET"))
 
     def test_status_body_requires_repo_even_with_folder(self):
-        """Bug 4 / OPS-1035: status blocks still need repo:; claim/closeout may rely on 📁."""
+        """Bug 4 / OPS-1035: status blocks always need repo:; claim/closeout only without status."""
         self.assertEqual(
             bridge.header_error("[JET 📁AFC] sync-1\nstate: WIP", "JET"),
             "repo: <project> must be the first body line",
@@ -521,7 +521,41 @@ class RuleTests(unittest.TestCase):
             "repo: <project> must be the first body line",
         )
 
+    def test_malformed_folder_not_salvaged_by_body_repo(self):
+        """Jet remaining #1: body repo: must not salvage empty/malformed 📁 lists."""
+        for bad in (
+            "[JET 📁]\nrepo: AFC",
+            "[JET 📁 → MC]\nrepo: AFC",
+            "[JET 📁,]\nrepo: AFC",
+        ):
+            self.assertEqual(
+                bridge.header_error(bad, "JET"),
+                "repo: <project> must be the first body line",
+                msg=repr(bad),
+            )
+        # Well-formed folder + body repo: still OK.
+        self.assertIsNone(bridge.header_error("[JET 📁AFC]\nrepo: AFC", "JET"))
+        self.assertIsNone(bridge.header_error("[JET 📁AFC → MC]\nrepo: AFC", "JET"))
+
+    def test_status_plus_claim_still_requires_repo(self):
+        """Jet remaining #1: status block always needs repo: even with claim/closeout."""
+        self.assertEqual(
+            bridge.header_error(
+                "[JET 📁AFC] sync-1\nclaim: work\nstate: WIP", "JET"
+            ),
+            "repo: <project> must be the first body line",
+        )
+        # Same fields with an explicit repo: line are fine.
+        self.assertIsNone(
+            bridge.header_error(
+                "[JET 📁AFC] sync-1\nrepo: AFC\nclaim: work\nstate: WIP", "JET"
+            )
+        )
+        # Non-status claim/closeout may still omit repo: when 📁 lists real repos.
+        self.assertIsNone(bridge.header_error("[JET 📁AFC]\nclaim: work", "JET"))
+
     def test_reject_guidance_mentions_folder_tag(self):
+
         """Rejection reply text names folder-tag form and status/repo rules."""
         issue = FakeIssue([comment(42, "[INSTINCT] hello\nstate: WIP")])
         poster = FakePoster()
