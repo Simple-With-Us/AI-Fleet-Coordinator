@@ -97,7 +97,7 @@ test("the wrangler file carries no Access aud, and infra_phase0.py provisions on
 });
 
 test("the Operator user id is pinned, and a malformed override fails closed", () => {
-  // Unset:  the pinned fleet identity (the same constant as scripts/agent_sync/zulip.py), never a guess.
+  // Unset:  the pinned fleet identity (the same constant as scripts/simple_tools/zulip.py), never a guess.
   assert.equal(loadConfig(testEnv()).operatorUserId, PINNED_OPERATOR_USER_ID);
   // Set to a real id:  that id is used.
   assert.equal(loadConfig(testEnv({ OPERATOR_ZULIP_USER_ID: "43210" })).operatorUserId, 43210);

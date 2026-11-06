@@ -1,6 +1,6 @@
 // The DM rule on the hosted transport (owner decision, Oct 22 2026, hard cutover).
 // A seat may not open a new direct message here either:  the refusal, its guidance and the fact
-// that nothing was sent all match the stdio rule in scripts/agent_sync/dm_policy.py.
+// that nothing was sent all match the stdio rule in scripts/simple_tools/dm_policy.py.
 //
 //   (f2)  a seat-initiated DM is refused and names Side-Chats
 //   (f3)  a seat-to-seat attempt is refused and no message of any kind is sent
@@ -23,7 +23,7 @@ import { testEnv } from "./helpers.mjs";
 // A synthetic Operator id, never the production one:  the fake operator user below is given this
 // id and the harness pins OPERATOR_ZULIP_USER_ID to the same value, so `config.operatorUserId` and
 // the conversation opener stay the same id without either being a live user (mirrors
-// SYNTHETIC_OPERATOR_ID in scripts/agent_sync/tests/test_dm_rule.py).
+// SYNTHETIC_OPERATOR_ID in scripts/simple_tools/tests/test_dm_rule.py).
 const OPERATOR_USER_ID = 999000001;
 const SIDE_CHATS_STREAM_ID = 646987;
 
@@ -163,7 +163,7 @@ test("a conversation the seat opened itself is still refused after 50 messages",
 
 // Operator is deliberately NOT in KNOWN_SEATS:  it is the server-side admin seat, not an OAuth
 // connector seat, so no hosted grant may act as it.  The one-DM-it-may-open rule is therefore
-// unreachable from here and is proven in scripts/agent_sync/tests/test_dm_rule.py instead;  what
+// unreachable from here and is proven in scripts/simple_tools/tests/test_dm_rule.py instead;  what
 // this transport must prove is that no hosted seat can open a DM at all.
 test("no hosted seat can act as Operator to reach the clarifying-question allowance", async () => {
   const { tools, codex } = harness();

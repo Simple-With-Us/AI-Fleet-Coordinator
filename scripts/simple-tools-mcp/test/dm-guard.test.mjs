@@ -1,5 +1,5 @@
 // The owner-in-the-conversation guard on the hosted transport (AFC-469).  Parity with the Python
-// guard in scripts/agent_sync/zulip.py:  a bot may send a direct message only when Jay is an
+// guard in scripts/simple_tools/zulip.py:  a bot may send a direct message only when Jay is an
 // actual participant in the conversation, and participation is the authenticated Zulip user id.
 // A display name that looks like the owner is not participation, and mentioning Jay in the message
 // text is not participation either.

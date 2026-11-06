@@ -114,7 +114,7 @@ test("the DM tools:  closed inputs, output schemas, no identity arguments, read 
   assert.ok(HOSTED_WRITE_TOOLS.has("zulip_dm_send") && !HOSTED_READ_TOOLS.has("zulip_dm_send"));
   assert.match(hostedInstructions("JET"), /Direct messages \(zulip_dm_list, zulip_dm_read, zulip_dm_send/);
   // The stdio contract is untouched; the hosted inbox changes naming and descriptive metadata.
-  const file = JSON.parse(readFileSync(path.join(ROOT, "../agent_sync/mcp/tools.json"), "utf8"));
+  const file = JSON.parse(readFileSync(path.join(ROOT, "../simple_tools/mcp/tools.json"), "utf8"));
   assert.deepEqual(TOOLS, file);
   const hostedInbox = HOSTED_TOOLS_BY_NAME.zulip_inbox;
   assert.equal(HOSTED_TOOLS_BY_NAME.inbox, undefined, "the old name is gone (AFC-331)");

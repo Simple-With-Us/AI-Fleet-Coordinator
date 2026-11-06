@@ -77,8 +77,8 @@ test("unprovisioned CLAUDE key fails closed for identity and writes", async () =
   for (const [name, args] of [["whoami", {}], ["zulip_post", { topic: "sandbox", text: "probe" }]]) {
     const result = await tools.call(name, args);
     assert.equal(result.isError, true);
-    assert.equal(result._meta["agent-sync/error"].code, "not_authorized");
-    assert.match(result._meta["agent-sync/error"].message, /No Zulip key is installed for CLAUDE/);
+    assert.equal(result._meta["simple-tools/error"].code, "not_authorized");
+    assert.match(result._meta["simple-tools/error"].message, /No Zulip key is installed for CLAUDE/);
     assert.equal(result.structuredContent, undefined);
   }
 });
