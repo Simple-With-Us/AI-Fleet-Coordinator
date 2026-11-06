@@ -136,10 +136,6 @@ struct FleetAppStatus: Identifiable, Equatable {
     let claims: WorkCount
     let expiredClaims: Int
     let state: AppWorkState
-    /// The grid's check on this app (#1387):  PASS only when no lane is dirty, no pull
-    /// request is failing or blocked, and no claim has expired, and nothing else.  It is
-    /// shown beside `state`, never instead of it.
-    let checkState: CellState
     /// Why the state is what it is, in the owner's words.
     let reasons: [String]
 
@@ -563,19 +559,6 @@ enum FleetRegistryReader {
                 state = .quiet
             }
 
-            // The check badge keeps main's rule:  an app whose lanes, pull requests or claims
-            // were not all read proves nothing, so it is never PASS.
-            let checkState: CellState
-            if notKnown {
-                checkState = .unproven
-            } else if actionPRs > 0 || expired > 0 {
-                checkState = .missing
-            } else if repoPRs.contains(where: { $0.blocker != "ready" }) || dirty > 0 {
-                checkState = .drift
-            } else {
-                checkState = .passed
-            }
-
             return FleetAppStatus(
                 acronym: app.acronym,
                 repo: app.repo,
@@ -591,7 +574,6 @@ enum FleetRegistryReader {
                 claims: claimCount,
                 expiredClaims: expired,
                 state: state,
-                checkState: checkState,
                 reasons: reasons
             )
         }
