@@ -1841,7 +1841,9 @@ class TestReview1199(unittest.TestCase):
             chunks, headers, OSError(9, "Bad file descriptor")
         )
         self.assertEqual((status, ctype, raw), (200, "text/event-stream", body))
-        self.assertEqual(len(calls), len(chunks), "the closed socket was read after the declared body")
+        self.assertEqual(
+            len(calls), len(chunks), "the closed socket was read after the declared body"
+        )
 
     def test_declared_content_length_truncated_at_eof_is_a_transport_failure(self):
         with self.assertRaises(git._TransportError):
