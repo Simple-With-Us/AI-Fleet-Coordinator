@@ -136,14 +136,15 @@ class ExportAttemptCliTests(unittest.TestCase):
                         "session_upsert",
                         "--outcome",
                         "exported",
-                    ]
+                    ],
+                    env={},  # hermetic: never the host's registry-API cutover env
                 )
             self.assertEqual(rc, 0)
             recorded = json.loads(out.getvalue())
             self.assertTrue(recorded["attempt_id"])
             out = io.StringIO()
             with redirect_stdout(out):
-                rc = R.main(["export-attempts", "--db", db, "--outbox-id", oid])
+                rc = R.main(["export-attempts", "--db", db, "--outbox-id", oid], env={})
             self.assertEqual(rc, 0)
             rows = json.loads(out.getvalue())
             self.assertEqual(len(rows), 1)

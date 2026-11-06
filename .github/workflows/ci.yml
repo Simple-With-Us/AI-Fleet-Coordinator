@@ -219,7 +219,7 @@ jobs:
     - name: Operator session registry and letter hook tests
       timeout-minutes: 10
       run: |
-        cd scripts && python3 -m unittest test_operator_registry test_mm_session_letter -v
+        cd scripts && python3 -m unittest test_operator_registry test_mm_session_letter test_operator_export_attempts -v
     # Infisical knobs for the open-loops jobs:  fake-CLI fetch, last-known-good, secrets fail
     # closed, local files only narrow, and INFISICAL.md equal to the registry.
     - name: fleet_knobs tests
