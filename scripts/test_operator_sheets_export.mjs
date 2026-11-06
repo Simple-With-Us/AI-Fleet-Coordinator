@@ -382,3 +382,34 @@ test("an append without a confirmed row number rescans before the next lookup", 
   assert.deepEqual(res, { exported: 2, failed: 0 });
   assert.equal(adapter.calls.filter((c) => c === "appendEvent").length, 1); // second reconciled, not duplicated
 });
+
+test("superseded snapshots stay pending when the winning snapshot is refused", async () => {
+  const adapter = fakeAdapter();
+  const winner = sessionCells("r1", "B");
+  winner[6] = "see gh" + "p_" + "x".repeat(36); // Title is scanned: the winner can never export
+  const attempts = fakeAttempts();
+  const outbox = fakeOutbox([
+    { outbox_id: "w1", kind: "session_upsert", payload: JSON.stringify({ cells: sessionCells("r1", "A") }) },
+    { outbox_id: "w2", kind: "session_upsert", payload: JSON.stringify({ cells: winner }) },
+  ]);
+  const res = await drainOutbox({ outbox, adapter, attempts, destination: "wb-1" });
+  assert.deepEqual(res, { exported: 0, failed: 1 });
+  assert.deepEqual(outbox.marked, []); // the loser is NOT marked exported over a refused winner
+  assert.ok(!attempts.records.some((r) => r.outboxId === "w1" && r.outcome === "exported"));
+});
+
+test("recordBatch attempts receive one batched call per flush", async () => {
+  const adapter = fakeAdapter();
+  const batches = [];
+  const attempts = { recordBatch: async (records) => { batches.push(records); } };
+  const outbox = fakeOutbox([
+    { outbox_id: "b1", kind: "session_upsert", payload: JSON.stringify({ cells: sessionCells("r1") }) },
+    { outbox_id: "b2", kind: "event_append", payload: JSON.stringify({ cells: eventCells("e1", "r1") }) },
+    { outbox_id: "b3", kind: "event_append", payload: JSON.stringify({ cells: eventCells("e2", "r1") }) },
+  ]);
+  const res = await drainOutbox({ outbox, adapter, attempts, destination: "wb-1" });
+  assert.deepEqual(res, { exported: 3, failed: 0 });
+  assert.equal(batches.length, 1);
+  assert.deepEqual(batches[0].map((r) => r.outboxId), ["b1", "b2", "b3"]);
+  assert.deepEqual(outbox.marked, ["b1", "b2", "b3"]);
+});
