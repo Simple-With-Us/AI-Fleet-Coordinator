@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install the simple-tools CLIs for the current user.  Idempotent.
 #
-#   scripts/agent_sync/install.sh [--dry-run] [CHECKOUT]
+#   scripts/simple_tools/install.sh [--dry-run] [CHECKOUT]
 #
 # Symlinks ~/.local/bin/simple-chat, ~/.local/bin/simple-notes and ~/.local/bin/simple-board to
 # CHECKOUT/scripts/, and creates ~/.agent-sync (mode 700, the state directory).  CHECKOUT defaults

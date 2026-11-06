@@ -50,10 +50,10 @@ ENV_PARTITION = "AGENT_SYNC_PARTITION"
 ENV_INSTANCE = "AGENT_SYNC_INSTANCE"
 # The launchers the fleet runs (FLEET-PROTOCOL § Identity Rules › Launcher Contract).  Any non-empty
 # AGENT_LAUNCHER counts as a launcher; these are the documented values.
-LAUNCHERS = ("botfleet", "grok-bot", "agent-sync-wake")
-WAKE_LAUNCHER = "agent-sync-wake"
+LAUNCHERS = ("botfleet", "grok-bot", "simple-tools-wake")
+WAKE_LAUNCHER = "simple-tools-wake"
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-PARTITION_RELPATH = os.path.join("docs", "protocols", "agent-sync-partition.toml")
+PARTITION_RELPATH = os.path.join("docs", "protocols", "simple-tools-partition.toml")
 _SEAT_RE = re.compile(r"[A-Z0-9][A-Z0-9_-]{0,31}")
 
 # Seat aliases (owner 2026-10-10):  "GROK followed by BUILD, any letter case, with any non-letter,

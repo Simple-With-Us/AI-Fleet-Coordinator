@@ -68,7 +68,7 @@ def agent_identity_problem(name: str, *, registry: I.SeatRegistry | None = None)
         return "the seat registry cannot be read:  %s" % exc
     if seat.startswith("GB-") and seat not in gb_identities():
         return (
-            "%s is not an enabled Grok Bot persona (scripts/agent_sync/mcp/gb-identities.json)"
+            "%s is not an enabled Grok Bot persona (scripts/simple_tools/mcp/gb-identities.json)"
             % seat
         )
     return None

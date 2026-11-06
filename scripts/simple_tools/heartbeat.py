@@ -16,7 +16,7 @@ single blip (a queue that failed one poll) sends an `error` check-in and no even
 
 Secrets:  the DSN comes from `AGENT_SYNC_SENTRY_DSN` or `SENTRY_FLEET_DSN` in the environment (the server:
 Infisical `prod` `/zulip`, loaded at start by `server/infisical_env.py`), else (the Mac)
-`fleet-secrets get SENTRY_FLEET_DSN --path /agent-sync` from Infisical Fleet-OPS.  Those two sources are
+`fleet-secrets get SENTRY_FLEET_DSN --path /simple-tools` from Infisical Fleet-OPS.  Those two sources are
 the only ones:  a caller-named file is not a secret source, because a file path picks the secret rather
 than the approved store (owner ruling, Oct 22 2026, Kody review on AFC-473).
 No credential file is read (AFC-359).  The DSN
@@ -55,7 +55,7 @@ ENV_ENVIRONMENT = "AGENT_SYNC_SENTRY_ENVIRONMENT"
 DEFAULT_ENVIRONMENT = (
     "production"  # the fleet's one Sentry environment tag (sentry-fleet-integration plan)
 )
-INFISICAL_DSN_PATH = "/agent-sync"  # Fleet-OPS folder that holds SENTRY_FLEET_DSN (AFC-359)
+INFISICAL_DSN_PATH = "/simple-tools"  # Fleet-OPS folder that holds SENTRY_FLEET_DSN (AFC-359)
 DSN_FETCH_TIMEOUT = 15.0
 DSN_RETRY_SECONDS = (
     600.0  # after a failed Infisical read, the heartbeat stays off this long before asking again
@@ -108,7 +108,7 @@ def parse_dsn(text: str) -> Dsn | None:
 
 
 def _fleet_secrets_dsn(env: Mapping[str, str], home: str) -> str:
-    """SENTRY_FLEET_DSN from Infisical Fleet-OPS /agent-sync through fleet-secrets, or '' (absent, not
+    """SENTRY_FLEET_DSN from Infisical Fleet-OPS /simple-tools through fleet-secrets, or '' (absent, not
     installed, or a failure:  the heartbeat is then off and says so;  no output is ever read out)."""
     import subprocess
     from pathlib import Path
@@ -138,14 +138,14 @@ def _fleet_secrets_dsn(env: Mapping[str, str], home: str) -> str:
         return ""
 
 
-# The name tests replace (agent_sync/tests/__init__.py), so none can reach the real fleet-secrets.
+# The name tests replace (simple_tools/tests/__init__.py), so none can reach the real fleet-secrets.
 _default_dsn_fetch = _fleet_secrets_dsn
 
 
 def resolve_dsn(
     env: Mapping[str, str], home: str, fetch: Callable[[Mapping[str, str], str], str] | None = None
 ) -> str:
-    """The DSN text, or ''.  Environment first, then Infisical Fleet-OPS /agent-sync SENTRY_FLEET_DSN
+    """The DSN text, or ''.  Environment first, then Infisical Fleet-OPS /simple-tools SENTRY_FLEET_DSN
     (unless AGENT_SYNC_INFISICAL turns Infisical off), through `fetch` (the Heartbeat passes its
     cached one) or the default fetch.
 
@@ -245,11 +245,11 @@ def build_envelope(
                     "timestamp": _iso(now),
                     "platform": "python",
                     "level": "warning",
-                    "logger": "agent-sync.listener",
+                    "logger": "simple-tools.listener",
                     "message": "simple-chat listener (%s) degraded: %s%s"
                     % (instance, "; ".join(shown), "; +%d more" % more if more else ""),
                     "environment": environment,
-                    "release": "agent-sync@%s" % version,
+                    "release": "simple-tools@%s" % version,
                     "tags": {"app": "operator", "instance": instance},
                     "fingerprint": ["operator", instance, "degraded"],
                 },
