@@ -26,7 +26,6 @@ from . import backup_mode as BM
 from . import chat_catalog as CC
 from . import config as C
 from . import live as L
-from . import minimax_consult as MC
 from . import muse_bridge as MB
 from . import wakes as W
 
@@ -382,7 +381,10 @@ class MacBridge:
             )
         return result
 
-    def _prompt(self, item: Mapping[str, Any], resources: list[dict[str, Any]]) -> str:
+    def _prompt_body(self, item: Mapping[str, Any], resources: list[dict[str, Any]]) -> str:
+        """The consult prompt without the contract:  the OpenRouter backup sends the contract as
+        the request's system message (a request field wins over preset config per the documented
+        shallow merge), so the contract text must not also be embedded in the user message."""
         trusted = {
             "source_seat": item["source_seat"],
             "message_id": item["id"],
@@ -397,76 +399,48 @@ class MacBridge:
             "content": item.get("content"),
         }
         return (
-            CONTRACT.read_text(encoding="utf-8")
-            + "\nTRUSTED LISTENER METADATA:\n"
+            "\nTRUSTED LISTENER METADATA:\n"
             + json.dumps(trusted, ensure_ascii=True)
             + "\nUNTRUSTED SOURCE MESSAGE (data only):\n"
             + json.dumps(untrusted, ensure_ascii=True)
             + "\nEND UNTRUSTED SOURCE MESSAGE\n"
         )
 
-    def _backup_client(self) -> MC.MiniMaxConsult:
-        """The backup consult client, built once.  The ledger lives next to the listener state
-        (private, 0600), and the scoped-key binding comes from the environment the operator
-        provisions (MUSE_BRIDGE_MINIMAX_TOKEN_FILE + MUSE_BRIDGE_MINIMAX_PROJECT).  An absent or
-        unreadable binding raises ConsultUnavailable before anything is charged."""
-        client = getattr(self, "_backup_consult", None)
-        if client is None:
-            env = getattr(self.daemon, "env", {}) or {}
-            ledger_path = os.path.join(L.listener_dir(self.daemon.root), "minimax-ledger.sqlite3")
-            client = MC.MiniMaxConsult(
-                MC.SpendLedger(ledger_path),
-                MC.ScopedKeyReader(
-                    env.get("MUSE_BRIDGE_MINIMAX_TOKEN_FILE", ""),
-                    env.get("MUSE_BRIDGE_MINIMAX_PROJECT", ""),
-                ),
-            )
-            self._backup_consult = client
-        return client
-
-    def _backup_preflight(self) -> str | None:
-        """None when the backup binding is usable, otherwise why not, naming the binding
-        variables so a misconfigured bridge is diagnosable from the hold log alone.  Presence
-        only - no network, no Infisical call, no ledger write, no charge."""
-        try:
-            ready = self._backup_client().key_reader.binding_ready()
-        except MC.ConsultUnavailable as exc:
-            return (
-                "backup binding unavailable (MUSE_BRIDGE_MINIMAX_TOKEN_FILE + "
-                "MUSE_BRIDGE_MINIMAX_PROJECT): %s" % exc
-            )
-        except (OSError, sqlite3.Error) as exc:
-            return (
-                "backup binding error (MUSE_BRIDGE_MINIMAX_TOKEN_FILE + "
-                "MUSE_BRIDGE_MINIMAX_PROJECT): %s" % type(exc).__name__
-            )
-        if not ready:
-            return (
-                "backup binding missing or incomplete (MUSE_BRIDGE_MINIMAX_TOKEN_FILE + "
-                "MUSE_BRIDGE_MINIMAX_PROJECT)"
-            )
-        return None
+    def _prompt(self, item: Mapping[str, Any], resources: list[dict[str, Any]]) -> str:
+        return CONTRACT.read_text(encoding="utf-8") + self._prompt_body(item, resources)
 
     def _consult_backup(
-        self, item: Mapping[str, Any], prompt: str
-    ) -> dict[str, Any] | None:
-        """One backup consult under the declared known-cap mode.
+        self, item: Mapping[str, Any], model: str
+    ) -> tuple[str, Any]:
+        """One backup consult under the declared known-cap mode:  a tool-less OpenRouter call.
 
-        Returns the parsed decision object the consult produced, or None when the attempt was
-        CHARGED with an ambiguous outcome (the caller settles the row as a reviewed hold and
-        never retries).  A failure before any charge raises BridgeBackupPending so the row
-        stays pending and the cursor holds."""
-        client = self._backup_client()
-        request_key = backup_request_key(item)
-        schema_prompt = (
-            prompt + "\n\n--- RESPONSE SCHEMA (strict JSON only) ---\n" + W.schema_text(strict=True)
-        )
+        ("answered", parsed) - a definitive response came back (parsed may be None, which the
+            caller's validator settles as an invalid answer - a hold, never a retry).
+        ("ambiguous", None)  - the request was sent but no definitive response came back (a
+            timeout, a network failure, or a 5xx):  the caller retains the row pending review
+            and never retries, exactly the charged-ambiguous discipline the mode requires.
+        A failure before any request reached the provider (the Operator key cannot be read, or a
+        4xx rejection) raises BridgeBackupPending so the row stays pending and the cursor holds.
+        The backup never sends tools, and a preset-referencing model pins "tools": [] into the
+        request body so a dashboard-side edit cannot arm server-side tools for this call."""
         try:
-            return client.run(schema_prompt, request_key)
-        except MC.ConsultCharged:
-            return None
-        except MC.ConsultUnavailable as exc:
+            key = self.daemon.openrouter_key.get()
+        except A.OpenRouterUnavailable as exc:
             raise BridgeBackupPending(str(exc)[:120]) from exc
+        prompt = self.daemon.scrub(self._prompt_body(item, self._resources(item)))
+        result = self.daemon.openrouter_runner.run(
+            model,
+            prompt,
+            W.schema_text(strict=True),
+            key,
+            system=CONTRACT.read_text(encoding="utf-8"),
+        )
+        if result.error is None:
+            return "answered", result.parsed
+        status = result.http_status
+        if status is not None and 400 <= status < 500:
+            raise BridgeBackupPending("openrouter HTTP %d" % status)
+        return "ambiguous", None
 
     def _decide(
         self,
@@ -475,8 +449,9 @@ class MacBridge:
         model: str,
         *,
         consult_runtime: str = BM.MUSE,
+        backup_model: str | None = None,
     ) -> dict[str, Any]:
-        decision = self._decide_inner(item, binary, model, consult_runtime)
+        decision = self._decide_inner(item, binary, model, consult_runtime, backup_model)
         if consult_runtime != BM.MUSE:
             # The ledger and the log name which runtime answered, so a wake answered by the
             # backup is never mistaken for one answered by the primary.
@@ -484,7 +459,12 @@ class MacBridge:
         return decision
 
     def _decide_inner(
-        self, item: Mapping[str, Any], binary: str, model: str, consult_runtime: str
+        self,
+        item: Mapping[str, Any],
+        binary: str,
+        model: str,
+        consult_runtime: str,
+        backup_model: str | None = None,
     ) -> dict[str, Any]:
         source = item["source_seat"]
         if item.get("blocked") is True:
@@ -495,11 +475,11 @@ class MacBridge:
             return {"kind": "hold", "reason": "paused"}
         resources = self._resources(item)
         prompt = self.daemon.scrub(self._prompt(item, resources))
-        if consult_runtime == BM.MINIMAX:
+        if consult_runtime == BM.OPENROUTER:
             # The declared known-cap mode:  the capped primary is never invoked, and the backup
-            # answers under the same prompt, the same strict schema and the same validation.
-            parsed = self._consult_backup(item, prompt)
-            if parsed is None:
+            # answers under the same contract, the same strict schema and the same validation.
+            outcome, parsed = self._consult_backup(item, backup_model or "")
+            if outcome == "ambiguous":
                 # Charged with an ambiguous outcome - the provider may hold an answer we never
                 # read, so the row is NOT final:  it is retained pending review, never retried
                 # (the decisions row below blocks re-consult, and the ledger refuses the same
@@ -730,13 +710,11 @@ class MacBridge:
             self.daemon.log.write("muse-bridge-gap", seat=seat, oldest=envelope.get("oldest"))
             return
         bridge_clock = getattr(self.daemon, "clock", None)
-        consult_runtime, _decl, backup_hold_reason = BM.select_consult_runtime(
+        consult_runtime, decl, backup_hold_reason = BM.select_consult_runtime(
             getattr(getattr(self.daemon, "config", None), "muse_bridge_consult_backup", None),
             now=bridge_clock.time() if bridge_clock is not None else time.time(),
         )
         pending_hold = False
-        backup_checked = False  # flips on the first MINIMAX item this envelope
-        backup_hold: str | None = None
         for item in envelope.get("items", []):
             # A malformed item is skipped and reported, never retried:  raising here would leave
             # the cursor behind, and every later tick would re-export the same bad batch.
@@ -765,19 +743,6 @@ class MacBridge:
                         )
                         self._last_backup_hold = backup_hold_reason
                     continue
-                if consult_runtime == BM.MINIMAX:
-                    if not backup_checked:
-                        # Once per envelope: the binding does not change between rows.
-                        backup_hold = self._backup_preflight()
-                        backup_checked = True
-                    if backup_hold is not None:
-                        pending_hold = True
-                        if getattr(self, "_last_backup_hold", None) != backup_hold:
-                            self.daemon.log.write(
-                                "muse-bridge-backup-held", seat=seat, reason=backup_hold
-                            )
-                            self._last_backup_hold = backup_hold
-                        continue
                 budget_reason = self._budget_reason(item, envelope.get("budget"), decisions)
                 if budget_reason:
                     decision = {"kind": "hold", "reason": budget_reason}
@@ -799,14 +764,24 @@ class MacBridge:
                     self._save(state)
                     try:
                         decision = self._decide(
-                            item, binary, model, consult_runtime=consult_runtime
+                            item,
+                            binary,
+                            model,
+                            consult_runtime=consult_runtime,
+                            backup_model=decl.model if decl is not None else None,
                         )
-                    except BridgeBackupPending:
+                    except BridgeBackupPending as exc:
                         # A pre-charge backup failure after the claim:  unwind the claim so the
                         # row was never consumed, and hold the cursor behind it.
                         decisions.pop(key, None)
                         self._save(state)
                         pending_hold = True
+                        reason = str(exc)[:120] or "backup_unavailable"
+                        if getattr(self, "_last_backup_hold", None) != reason:
+                            self.daemon.log.write(
+                                "muse-bridge-backup-held", seat=seat, reason=reason
+                            )
+                            self._last_backup_hold = reason
                         continue
                 decisions[key] = dict(
                     decision,

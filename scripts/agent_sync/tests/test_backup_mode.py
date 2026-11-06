@@ -3,8 +3,8 @@ import unittest
 
 from agent_sync.backup_mode import (
     HOLD,
-    MINIMAX,
     MUSE,
+    OPENROUTER,
     MISCONFIGURED,
     REVIEW_DUE,
     BackupDeclaration,
@@ -14,8 +14,9 @@ from agent_sync.backup_mode import (
 
 NOW = 1_760_000_000.0
 GOOD = {
-    "runtime": "minimax",
-    "reason": "owner declared Muse at cap 2026-11-06, backup requested",
+    "runtime": "openrouter",
+    "model": "@preset/operator-inbox-router",
+    "reason": "owner declared Muse at cap 2026-11-06, OpenRouter backup directed",
     "declared_at": NOW - 60,
     "review_by": NOW + 3600,
 }
@@ -25,15 +26,24 @@ class ParseTest(unittest.TestCase):
     def test_good_declaration_parses(self):
         decl = parse_declaration(GOOD)
         self.assertIsInstance(decl, BackupDeclaration)
-        self.assertEqual(decl.runtime, "minimax")
+        self.assertEqual(decl.runtime, "openrouter")
+        self.assertEqual(decl.model, "@preset/operator-inbox-router")
+
+    def test_a_plain_model_id_is_accepted(self):
+        decl = parse_declaration({**GOOD, "model": "~deepseek/deepseek-flash-latest"})
+        self.assertIsNotNone(decl)
 
     def test_missing_keys_rejected(self):
         for key in GOOD:
             broken = {k: v for k, v in GOOD.items() if k != key}
             self.assertIsNone(parse_declaration(broken), key)
 
-    def test_unknown_runtime_rejected(self):
-        self.assertIsNone(parse_declaration({**GOOD, "runtime": "openrouter"}))
+    def test_the_retired_minimax_runtime_is_rejected(self):
+        self.assertIsNone(parse_declaration({**GOOD, "runtime": "minimax"}))
+
+    def test_bad_models_rejected(self):
+        for bad in ("muse", "@preset/", "@preset/ x", "meta/", "$(id)/x", "", 5):
+            self.assertIsNone(parse_declaration({**GOOD, "model": bad}), bad)
 
     def test_blank_reason_rejected(self):
         self.assertIsNone(parse_declaration({**GOOD, "reason": "   "}))
@@ -46,7 +56,7 @@ class ParseTest(unittest.TestCase):
         self.assertIsNone(parse_declaration({**GOOD, "review_by": GOOD["declared_at"]}))
 
     def test_non_mapping_rejected(self):
-        for raw in (None, "minimax", ["minimax"], 42):
+        for raw in (None, "openrouter", ["openrouter"], 42):
             self.assertIsNone(parse_declaration(raw))
 
     def test_extra_fields_tolerated(self):
@@ -61,7 +71,7 @@ class SelectTest(unittest.TestCase):
     def test_configured_but_malformed_fails_closed(self):
         # A configured declaration that is partial or malformed HOLDS:  it never silently
         # reverts to the capped primary and never consumes rows.
-        for raw in ({}, {"runtime": "minimax"}, {"runtime": "openrouter"}, "minimax", 42):
+        for raw in ({}, {"runtime": "openrouter"}, {"runtime": "minimax"}, "openrouter", 42):
             runtime, decl, hold = select_consult_runtime(raw, now=NOW)
             self.assertEqual(runtime, HOLD, raw)
             self.assertIsNone(decl)
@@ -69,7 +79,7 @@ class SelectTest(unittest.TestCase):
 
     def test_active_window_selects_backup(self):
         runtime, decl, hold = select_consult_runtime(GOOD, now=NOW)
-        self.assertEqual(runtime, MINIMAX)
+        self.assertEqual(runtime, OPENROUTER)
         self.assertIsNotNone(decl)
         self.assertIsNone(hold)
 
@@ -84,7 +94,7 @@ class SelectTest(unittest.TestCase):
         runtime, _, hold = select_consult_runtime(
             {**GOOD, "declared_at": time.time() - 1, "review_by": time.time() + 3600}
         )
-        self.assertEqual(runtime, MINIMAX)
+        self.assertEqual(runtime, OPENROUTER)
         self.assertIsNone(hold)
 
 
