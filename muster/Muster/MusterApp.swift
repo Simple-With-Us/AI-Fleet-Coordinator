@@ -6,16 +6,31 @@ struct MusterApp: App {
     @StateObject private var store: FleetStore
     @StateObject private var monitor: DriftMonitor
     @StateObject private var admin: FleetAdmin
+    @StateObject private var router: ServiceActionRouter
+    @StateObject private var watch: PlaceWatch
 
+    @MainActor
     init() {
         // The owner is asked once,  here,  whether this app may notify them.  An
         // apply that asked on its own path would hold its result until the
         // prompt was answered.
         SystemApplyNotifier.requestPermissionOnce()
         let store = FleetStore()
+        // The monitor starts here and not with a window:  the menu bar item has to know the
+        // Mac before any window has appeared,  and the store's first run is still in flight
+        // at this point,  so the monitor hears it land.
+        let monitor = DriftMonitor(grid: store)
+        monitor.start()
+        let admin = FleetAdmin()
         _store = StateObject(wrappedValue: store)
-        _monitor = StateObject(wrappedValue: DriftMonitor(grid: store))
-        _admin = StateObject(wrappedValue: FleetAdmin())
+        _monitor = StateObject(wrappedValue: monitor)
+        _admin = StateObject(wrappedValue: admin)
+        _router = StateObject(wrappedValue: ServiceActionRouter(admin: admin, confirm: { request in
+            confirmFleetAction(request)
+        }))
+        _watch = StateObject(wrappedValue: PlaceWatch(onWake: {
+            Task { await admin.refresh() }
+        }))
     }
 
     var body: some Scene {
@@ -24,9 +39,14 @@ struct MusterApp: App {
                 .environmentObject(store)
                 .environmentObject(monitor)
                 .environmentObject(admin)
-                .task { monitor.start() }
+                .environmentObject(router)
         }
         .defaultSize(width: 1080, height: 820)
+        // One window:  the menu brings it forward,  and a second copy would show every
+        // plan sheet twice.
+        .commands {
+            CommandGroup(replacing: .newItem) {}
+        }
 
         Settings {
             MusterSettingsView()
@@ -34,16 +54,21 @@ struct MusterApp: App {
         }
         .windowResizability(.contentMinSize)
 
-        // The menubar item carries the red count,  so the owner sees how many cells
-        // are red without opening the window.
+        // The menu bar item names both places,  so the owner sees what needs attention and
+        // where without opening the window.
         MenuBarExtra {
             DriftMenuBarContent()
                 .environmentObject(store)
                 .environmentObject(monitor)
                 .environmentObject(admin)
+                .environmentObject(watch)
+                .environmentObject(router)
         } label: {
             DriftMenuBarLabel()
                 .environmentObject(monitor)
+                .environmentObject(admin)
+                .environmentObject(watch)
+                .environmentObject(router)
         }
     }
 }
@@ -55,6 +80,7 @@ struct MusterSettingsView: View {
     @AppStorage(MusterSettings.scriptsDirectoryDefaultsKey) private var scriptsDir = ""
     @AppStorage(MusterSettings.zulipSeatDefaultsKey) private var zulipSeat = MusterSettings.defaultZulipSeat
     @AppStorage(MusterSettings.themeDefaultsKey) private var theme: ThemeChoice = .system
+    @AppStorage(MusterSettings.shortMenuBarTextDefaultsKey) private var shortMenuBarText = false
     @State private var pickingRepoRoot = false
     @State private var pickingScriptsDir = false
 
@@ -98,6 +124,9 @@ struct MusterSettingsView: View {
                     ForEach(ThemeChoice.allCases) { choice in Text(choice.title).tag(choice) }
                 }
                 .pickerStyle(.segmented)
+                Toggle("Short Menu Bar Text", isOn: $shortMenuBarText)
+                Text("Reads M OK \u{00B7} S ? in place of Mac OK \u{00B7} Server ?, for a crowded menu bar.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)

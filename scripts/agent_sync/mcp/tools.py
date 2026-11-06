@@ -2393,7 +2393,12 @@ class Tools:
         if self._notes_host_cache is None:
             rt = self.agent.rt
             self._notes_host_cache = NOTES_CLIENT.Host(
-                rt.env, Path(rt.home) if rt.home else Path.home(), self._idem_store, caller="mcp"
+                rt.env,
+                Path(rt.home) if rt.home else Path.home(),
+                self._idem_store,
+                caller="mcp",
+                # Off a Mac this session's notes run as this seat's own fleet bearer, never the shared key.
+                own_seat=self.seat,
             )
         return self._notes_host_cache
 
@@ -2422,7 +2427,8 @@ class Tools:
 
     def _notes_call(self, action: str, args: Mapping[str, Any]) -> dict[str, Any]:
         """One notes_* tool:  the same code simple-notes runs (notes_client.call), as the identity the call acts as.
-        Directly on a Mac, through the Operator's notes queue elsewhere;  never through Zulip."""
+        Directly on a Mac, as this seat's own fleet bearer through the hosted gateway elsewhere;  never through
+        Zulip, never the shared service credential."""
         session = self._notes_session(action, args)
         try:
             request = NOTES.make_request(

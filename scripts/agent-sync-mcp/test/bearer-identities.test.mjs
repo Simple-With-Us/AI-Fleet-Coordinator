@@ -28,7 +28,7 @@ test("all active ordinary registry bots have canonical bearer identities without
   for (const row of ordinary) assert.ok(BEARER_SEATS.includes(row.tag), row.tag);
   for (const [identity, row] of Object.entries(BEARER_ONLY_SEATS)) {
     // AMP is hosted-bearer only. The registry's extraSeats model deliberately
-    // avoids ordinary-seat lane/listener rollout. Its exact own records and
+    // avoids ordinary-seat lane/eavesdropper rollout. Its exact own records and
     // extra-seat registration are pinned below, not accepted by a wildcard.
     if (identity === "AMP") {
       assert.equal(registry.seatApps.extraSeats.AMP, "amp");

@@ -28,6 +28,8 @@ cp "$INSTALLER" "$FAKE_REPO/scripts/install-fleet-rag.sh"
 cp -R "$SCRIPTS/fleet_rag" "$FAKE_REPO/scripts/fleet_rag"
 cp -R "$SCRIPTS/fleet_lanes" "$FAKE_REPO/scripts/fleet_lanes"
 cp -R "$SCRIPTS/fleet_config" "$FAKE_REPO/scripts/fleet_config"
+mkdir -p "$FAKE_REPO/scripts/fleet_secrets"
+cp "$SCRIPTS/fleet_secrets/__init__.py" "$SCRIPTS/fleet_secrets/core.py" "$FAKE_REPO/scripts/fleet_secrets/"
 mkdir -p "$FAKE_REPO/scripts/fleet_rag/__pycache__"
 touch "$FAKE_REPO/scripts/fleet_rag/__pycache__/junk.pyc"
 for f in recall recall-tunnel fleet-recall-mcp.py fleet-rag.py; do

@@ -2150,6 +2150,50 @@ class PlacementWatchTests(unittest.TestCase):
     def test_garbage_is_a_warning(self) -> None:
         self.assertEqual(self.run_check("{nope")[0]["status"], "WARN")
 
+    def test_a_watcher_held_in_dry_run_has_a_row_that_says_so(self) -> None:
+        rows = self.run_check(json.dumps({"ok": True, "held": True, "findings": 34, "new": 34}))
+        self.assertEqual((rows[0]["check"], rows[0]["status"]), ("placement-watch", "WARN"))
+        self.assertIn("held in dry run", rows[0]["detail"])
+        self.assertIn("34 findings", rows[0]["detail"])
+
+    def test_a_held_row_says_when_the_watcher_last_acted(self) -> None:
+        rows = self.run_check(
+            json.dumps({"ok": True, "held": True, "last_acting_run": "2026-11-04T20:00:00+00:00"})
+        )
+        self.assertIn("last acting run 2026-11-04", rows[0]["detail"])
+
+    def test_a_held_watcher_that_has_stopped_is_still_stale(self) -> None:
+        rows = self.run_check(json.dumps({"ok": True, "held": True}), age=4 * 3600)
+        self.assertEqual(rows[0]["status"], "FAIL")
+
+    def test_an_unreadable_external_root_is_partial_not_clean_and_not_a_failure(self) -> None:
+        rows = self.run_check(
+            json.dumps(
+                {
+                    "ok": False,
+                    "coverage": "external-unreadable",
+                    "errors": [],
+                    "findings": 9,
+                    "held": True,
+                }
+            )
+        )
+        self.assertEqual(rows[0]["status"], "WARN")
+        self.assertIn("partial", rows[0]["detail"])
+        self.assertIn("held in dry run", rows[0]["detail"])
+
+    def test_a_filing_error_outranks_an_unreadable_root(self) -> None:
+        rows = self.run_check(
+            json.dumps(
+                {
+                    "ok": False,
+                    "coverage": "external-unreadable",
+                    "errors": ["simple-board file: exit 1"],
+                }
+            )
+        )
+        self.assertEqual(rows[0]["status"], "FAIL")
+
 
 if __name__ == "__main__":
     unittest.main()

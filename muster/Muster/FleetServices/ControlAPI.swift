@@ -85,7 +85,7 @@ public enum ControlAPIError: LocalizedError, Equatable {
         case .invalidResponse: return "BotFleet Server returned an invalid response.  Update BotFleet and try again."
         case .refused(let message): return message
         case .outcomeUnknown:
-            return "BotFleet Server did not answer, so the change may or may not have been made.  Refresh before trying again."
+            return "BotFleet Server did not answer, so the change may or may not have been made.\u{00A0} Refresh before trying again."
         }
     }
 }
@@ -142,6 +142,18 @@ public final class ControlAPI {
             throw ControlAPIError.invalidResponse
         }
         return status
+    }
+
+    /// The process behind the server's port,  or nil when nothing there said who it is.
+    ///
+    /// A listener proves something holds the port.  This says which process does,  so a
+    /// restart can tell a new server from the one that was already there.
+    public func serverPID() async -> Int? {
+        guard let data = try? await send("/api/health", method: "GET"),
+              let health = try? decoder.decode(Health.self, from: data),
+              health.app == "botfleet",
+              let pid = health.pid, pid > 0 else { return nil }
+        return pid
     }
 
     public func setPersistOnExit(_ value: Bool) async throws {

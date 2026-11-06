@@ -228,8 +228,10 @@ public struct ManagedServices: Equatable {
         while true {
             let next = await observe()
             if next == wanted { return next }
-            if Date() >= deadline { return next }
-            try? await Task.sleep(nanoseconds: UInt64(step * 1_000_000_000))
+            let remaining = deadline.timeIntervalSinceNow
+            if remaining <= 0 { return next }
+            // The last sleep is only what is left,  so a long step does not run past the budget.
+            try? await Task.sleep(nanoseconds: UInt64(min(step, remaining) * 1_000_000_000))
         }
     }
 }

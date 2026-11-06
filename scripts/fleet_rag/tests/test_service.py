@@ -29,6 +29,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from fleet_rag import recall_api
+from fleet_knobs.tests._fake import ScopedReadAPI
 from fleet_rag.recall_api import FakeQdrant
 
 SERVICE_DIR = pathlib.Path(__file__).resolve().parents[2] / "fleet-recall-service"
@@ -787,6 +788,10 @@ class BootstrapTests(unittest.TestCase):
         _tgz(cls.www / "src.tgz", {
             "AI-Fleet-Coordinator-main/scripts/fleet_rag/__init__.py": b"__version__ = 'test'\n",
             "AI-Fleet-Coordinator-main/scripts/fleet-recall-service/server.py": b"# stub\n",
+            **{"AI-Fleet-Coordinator-main/scripts/fleet_secrets/" + name:
+               (SERVICE_DIR.parent / "fleet_secrets" / name).read_bytes()
+               for name in ("__init__.py", "core.py")},
+            "AI-Fleet-Coordinator-main/scripts/fleet_secrets/cli.py": b"raise AssertionError('must not ship')\n",
             "AI-Fleet-Coordinator-main/README.md": b"not extracted\n",
         })
         _tgz(cls.www / "gitleaks_8.30.1_linux_arm64.tar.gz",
@@ -833,7 +838,8 @@ class BootstrapTests(unittest.TestCase):
     def test_installs_gitleaks_from_release_tarball(self):
         proc, work = self.run_bootstrap(self.base + "/gitleaks_8.30.1_linux_arm64.tar.gz")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-        self.assertIn("bootstrap: extracted 2 files", proc.stdout)
+        self.assertIn("bootstrap: extracted 4 files", proc.stdout)
+        self.assertEqual(sorted(p.name for p in (work / "app/fleet_secrets").iterdir()), ["__init__.py", "core.py"])
         self.assertTrue((work / "app" / "fleet-recall-service" / "server.py").is_file())
         self.assertTrue((work / "app" / "fleet_rag" / "__init__.py").is_file())
         self.assertFalse((work / "app" / "README.md").exists())
@@ -859,6 +865,64 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
         self.assertIn("aborting", proc.stdout)
         self.assert_no_binary(work)
+
+    def test_extracted_real_settings_verify_scoped_access_without_a_secrets_cli(self):
+        source = self.www / "real-settings.tgz"
+        prefix = "AI-Fleet-Coordinator-main/scripts/"
+        _tgz(source, {
+            prefix + "fleet_rag/__init__.py": b"",
+            prefix + "fleet_rag/infisical_settings.py": (SERVICE_DIR.parent / "fleet_rag/infisical_settings.py").read_bytes(),
+            prefix + "fleet-recall-service/server.py": b"# bootstrap fixture\n",
+            **{prefix + "fleet_secrets/" + name: (SERVICE_DIR.parent / "fleet_secrets" / name).read_bytes()
+               for name in ("__init__.py", "core.py")},
+            prefix + "fleet_secrets/cli.py": b"raise AssertionError('must not ship')\n",
+            prefix + "fleet_secrets/__main__.py": b"raise AssertionError('must not ship')\n",
+            prefix + "fleet-secrets": b"must not ship\n",
+        })
+        proc, work = self.run_bootstrap(None, RECALL_GITLEAKS_SKIP="1", RECALL_TARBALL=str(source))
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        app = work / "app"
+        self.assertEqual(sorted(p.name for p in (app / "fleet_secrets").iterdir()), ["__init__.py", "core.py"])
+        self.assertFalse((app / "fleet-secrets").exists())
+        boot = (
+            "import os,sys;sys.path.insert(0,sys.argv[1]);"
+            "from fleet_rag import infisical_settings as settings;import fleet_secrets.core as verifier;"
+            "assert os.path.commonpath([sys.argv[1],verifier.__file__])==sys.argv[1];"
+            "settings.configure(project_id=sys.argv[2],environment='prod',managed_keys=('RECALL_API_TOKEN',),"
+            "required_keys=('RECALL_API_TOKEN',),secret_keys=('RECALL_API_TOKEN',));"
+            "settings.init_settings();assert settings.get('RECALL_API_TOKEN');print('ready')"
+        )
+        with ScopedReadAPI({"RECALL_API_TOKEN": "synthetic-server-value"}, allow_bulk=True) as api:
+            env = {"HOME": str(work), "PATH": "/usr/bin:/bin", "INFISICAL_TOKEN": api.token,
+                   "INFISICAL_API_BASE": api.env["FLEET_SECRETS_API"].removesuffix("/api")}
+            ran = subprocess.run([sys.executable, "-I", "-B", "-c", boot, str(app), api.project],
+                                 env=env, cwd=work, capture_output=True, text=True, timeout=15)
+            self.assertEqual(ran.returncode, 0, ran.stderr)
+            self.assertEqual(ran.stdout.strip(), "ready")
+            self.assertEqual(len(api.requests), 2)
+            self.assertEqual(api.requests[0], "/api/v2/service-token")
+            self.assertTrue(api.requests[1].startswith("/api/v3/secrets/raw?"))
+            api.requests.clear()
+            api.metadata_override["permissions"] = ["read", "write"]
+            denied = subprocess.run([sys.executable, "-I", "-B", "-c", boot, str(app), api.project],
+                                    env=env, cwd=work, capture_output=True, text=True, timeout=15)
+            self.assertNotEqual(denied.returncode, 0)
+            self.assertEqual(api.requests, ["/api/v2/service-token"])
+
+    def test_missing_library_fails_even_when_old_files_exist_and_docker_copies_only_library(self):
+        source = self.www / "missing-verifier.tgz"
+        _tgz(source, {"fixture/scripts/fleet-recall-service/server.py": b"# stub\n"})
+        work = pathlib.Path(tempfile.mkdtemp(prefix="missing-", dir=self.tmp.name))
+        package = work / "app/fleet_secrets"
+        package.mkdir(parents=True)
+        (package / "core.py").write_text("# stale\n")
+        (package / "__init__.py").write_text("")
+        proc, _ = self.run_bootstrap(None, RECALL_GITLEAKS_SKIP="1", RECALL_TARBALL=str(source), RECALL_APP_DIR=str(work / "app"))
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("scoped verifier library missing from source", proc.stdout)
+        docker = (SERVICE_DIR / "Dockerfile").read_text()
+        copies = [line for line in docker.splitlines() if line.startswith("COPY ") and "fleet_secrets" in line]
+        self.assertEqual(copies, ["COPY fleet_secrets/__init__.py fleet_secrets/core.py /app/fleet_secrets/"])
 
     def test_download_failure_continues_only_with_explicit_opt_out(self):
         proc, work = self.run_bootstrap(self.base + "/missing.tgz", RECALL_GITLEAKS_REQUIRED="0")

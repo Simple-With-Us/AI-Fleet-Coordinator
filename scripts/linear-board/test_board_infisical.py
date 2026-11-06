@@ -10,6 +10,7 @@ A mock Infisical runs beside test_board.py's mock Linear;  nothing reaches the n
 from __future__ import annotations
 
 import json
+import secrets
 import sys
 import threading
 import unittest
@@ -28,7 +29,11 @@ class MockInfisical:
         self.lock = threading.Lock()
         self.secrets: dict = {}
         self.requests: list = []
+        self.authorizations: list = []
         self.down = False
+        self.metadata_override = None
+        self.read_token = "st." + secrets.token_urlsafe(32)
+        self.write_token = "st." + secrets.token_urlsafe(32)
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
@@ -58,23 +63,41 @@ class MockInfisical:
                 path = urllib.parse.urlsplit(self.path).path
                 with mock.lock:
                     mock.requests.append((method, path))
+                    mock.authorizations.append((method, path, self.headers.get("Authorization")))
                     if mock.down:
                         return self._send(503, {"message": "down"})
-                    if path == "/api/v1/auth/universal-auth/login":
-                        ok = (
-                            data.get("clientId") == "inf-id"
-                            and data.get("clientSecret") == "inf-secret"
+                    is_metadata = path == "/api/v2/service-token"
+                    expected_token = (
+                        mock.write_token
+                        if method in ("PATCH", "POST")
+                        or (
+                            is_metadata
+                            and self.headers.get("Authorization") == "Bearer " + mock.write_token
                         )
-                        return (
-                            self._send(200, {"accessToken": "inf-token"})
-                            if ok
-                            else self._send(401, {})
-                        )
-                    if self.headers.get("Authorization") != "Bearer inf-token":
+                        else mock.read_token
+                    )
+                    if self.headers.get("Authorization") != "Bearer " + expected_token:
                         return self._send(401, {})
-                    if path == "/api/v1/projects/slug/ai-fleet-coordinator":
+                    if path == "/api/v2/service-token":
+                        permissions = (
+                            ["read", "write"]
+                            if method == "GET" and expected_token == mock.write_token
+                            else ["read"]
+                        )
+                        if mock.metadata_override is not None:
+                            metadata = dict(mock.metadata_override)
+                            if expected_token == mock.write_token:
+                                metadata["permissions"] = permissions
+                            return self._send(200, metadata)
                         return self._send(
-                            200, {"project": {"id": "proj-afc", "slug": "ai-fleet-coordinator"}}
+                            200,
+                            {
+                                "projectId": "proj-afc",
+                                "workspace": "proj-afc",
+                                "permissions": permissions,
+                                "scopes": [{"environment": "prod", "secretPath": "/linear"}],
+                                "expiresAt": None,
+                            },
                         )
                     if path == "/api/v3/secrets/raw" and method == "GET":
                         return self._send(
@@ -112,8 +135,7 @@ class MockInfisical:
 
 
 class InfisicalTests(T.BoardTest):
-    """Credentials from the environment first and from `fleet-secrets get` second, and one shared token
-    per app through LINEAR_<SEAT>_CACHE_TOKEN."""
+    """Reads and writes use separate scoped service tokens; no Universal Auth login is available."""
 
     seat_app = T.SeatAppTests.seat_app
     cache = T.SeatAppTests.cache
@@ -125,8 +147,9 @@ class InfisicalTests(T.BoardTest):
         self.addCleanup(self.vault.close)
         self.env.update(
             {
-                "INFISICAL_AUTOMATION_CLIENT_ID": "inf-id",
-                "INFISICAL_AUTOMATION_CLIENT_SECRET": "inf-secret",
+                "LINEAR_BOARD_INFISICAL_READ_TOKEN": self.vault.read_token,
+                "LINEAR_BOARD_INFISICAL_WRITE_TOKEN": self.vault.write_token,
+                "LINEAR_BOARD_INFISICAL_PROJECT_ID": "proj-afc",
                 "LINEAR_BOARD_INFISICAL_API": self.vault.url,
             }
         )
@@ -145,7 +168,7 @@ class InfisicalTests(T.BoardTest):
             "LINEAR_FLEET_CLIENT_SECRET": T.CLIENT_SECRET,
         }
 
-    def test_a_host_without_fleet_secrets_takes_the_pair_from_the_environment(self):
+    def test_a_host_without_fleet_secrets_uses_separate_read_and_write_tokens(self):
         p = self.board("whoami", drop=("AGENT_SEAT",), extra=self.legacy_host(**self.fleet_env()))
         self.assertIn("viewer:      Fleet (app user)", p.stdout)
         self.assertIn(
@@ -159,6 +182,29 @@ class InfisicalTests(T.BoardTest):
         shared = json.loads(self.vault.secrets["LINEAR_FLEET_CACHE_TOKEN"])
         self.assertIn(shared["access_token"], self.mock.tokens)
         self.assertEqual(shared["viewer"]["name"], "Fleet")  # the viewer is kept too
+        self.assertTrue(self.vault.authorizations)
+        self.assertFalse(any("universal-auth/login" in path for _, path in self.vault.requests))
+        self.assertTrue(
+            all(
+                authorization == "Bearer " + self.vault.read_token
+                for method, path, authorization in self.vault.authorizations
+                if method == "GET" and path != "/api/v2/service-token"
+            )
+        )
+        metadata_auth = [
+            authorization
+            for method, path, authorization in self.vault.authorizations
+            if method == "GET" and path == "/api/v2/service-token"
+        ]
+        self.assertIn("Bearer " + self.vault.read_token, metadata_auth)
+        self.assertIn("Bearer " + self.vault.write_token, metadata_auth)
+        self.assertTrue(
+            all(
+                authorization == "Bearer " + self.vault.write_token
+                for method, _path, authorization in self.vault.authorizations
+                if method in ("PATCH", "POST")
+            )
+        )
         # a second process on the same host (or another host) reads the shared copy and mints nothing
         self.board("whoami", drop=("AGENT_SEAT",), extra=self.legacy_host(**self.fleet_env()))
         self.assertEqual(self.mock.mints, 1)
@@ -177,14 +223,73 @@ class InfisicalTests(T.BoardTest):
         second = json.loads(self.vault.secrets["LINEAR_FLEET_CACHE_TOKEN"])
         self.assertNotEqual(second["access_token"], first["access_token"])
 
-    def test_a_host_without_fleet_secrets_and_without_a_pair_fails_closed_naming_the_variables(
-        self,
-    ):
-        p = self.board("whoami", drop=("AGENT_SEAT",), extra=self.legacy_host(), code=4)
-        self.assertIn("FLEET_LINEAR_CLIENT_ID", p.stderr)
-        self.assertIn("LINEAR_FLEET_CLIENT_ID", p.stderr)
-        self.assertIn("LINEAR_CLIENT_ID", p.stderr)
+    def test_no_scoped_read_token_does_not_call_infisical(self):
+        p = self.board(
+            "whoami",
+            drop=("AGENT_SEAT", "LINEAR_BOARD_INFISICAL_READ_TOKEN"),
+            extra=self.legacy_host(),
+            code=4,
+        )
+        self.assertIn("no Fleet credentials", p.stderr)
+        self.assertEqual(self.vault.requests, [])
         self.assertEqual(self.mock.mints, 0)
+
+    def test_malformed_permission_metadata_fails_closed(self):
+        self.vault.metadata_override = {
+            "projectId": "proj-afc",
+            "workspace": "proj-afc",
+            "permissions": [{"read": True}],
+            "scopes": [{"environment": "prod", "secretPath": "/linear"}],
+            "expiresAt": None,
+        }
+        p = self.board(
+            "whoami", drop=("AGENT_SEAT",), extra=self.legacy_host(**self.fleet_env()), code=0
+        )
+        self.assertNotIn("LINEAR_FLEET_CACHE_TOKEN", self.vault.secrets)
+        self.assertTrue(
+            any(path == "/api/v2/service-token" for _method, path in self.vault.requests)
+        )
+        self.assertFalse(
+            any(path == "/api/v3/secrets/raw" for _method, path in self.vault.requests)
+        )
+
+    def test_workspace_only_metadata_supports_read_and_write_grants(self):
+        self.vault.metadata_override = {
+            "workspace": "proj-afc",
+            "permissions": ["read"],
+            "scopes": [{"environment": "prod", "secretPath": "/linear"}],
+            "expiresAt": None,
+        }
+        self.board("whoami", drop=("AGENT_SEAT",), extra=self.legacy_host(**self.fleet_env()))
+        self.assertIn("LINEAR_FLEET_CACHE_TOKEN", self.vault.secrets)
+        self.assertTrue(any(method == "POST" for method, _ in self.vault.requests))
+
+    def test_contradictory_project_or_expiry_metadata_stops_before_secret_read(self):
+        valid = {
+            "workspace": "proj-afc",
+            "permissions": ["read"],
+            "scopes": [{"environment": "prod", "secretPath": "/linear"}],
+            "expiresAt": None,
+        }
+        for patch in (
+            {"projectId": "wrong-project"},
+            {"projectId": None},
+            {"workspace": "wrong-project"},
+            {"expiresAt": "2000-01-01T00:00:00Z"},
+            {"expiresAt": "2099-01-01T00:00:00"},
+            {"expiresAt": "invalid"},
+            {"expiresAt": 123},
+        ):
+            with self.subTest(patch=patch):
+                self.vault.requests.clear()
+                self.vault.metadata_override = dict(valid, **patch)
+                self.board(
+                    "whoami", drop=("AGENT_SEAT",), extra=self.legacy_host(**self.fleet_env())
+                )
+                self.assertTrue(self.vault.requests)
+                self.assertTrue(
+                    all(path == "/api/v2/service-token" for _, path in self.vault.requests)
+                )
 
     def test_the_ai_fleet_pair_is_read_through_fleet_secrets_and_not_through_infisical(self):
         cid, secret = self.seat_app("CLAUDE", "Claude", file=False)
@@ -229,7 +334,6 @@ class InfisicalTests(T.BoardTest):
         p = self.as_seat(
             "CLAUDE",
             "whoami",
-            drop=("INFISICAL_AUTOMATION_CLIENT_ID", "INFISICAL_AUTOMATION_CLIENT_SECRET"),
         )
         self.assertIn(
             "credentials: Infisical AI Fleet Coordinator prod /linear (LINEAR_CLAUDE_CLIENT_ID",
@@ -245,14 +349,17 @@ class InfisicalTests(T.BoardTest):
         )
         self.assertIn("viewer:      Claude (app user)", p.stdout)
 
-    def test_no_identity_means_no_infisical_calls(self):
+    def test_missing_scoped_tokens_skip_the_shared_store(self):
         cid, secret = self.seat_app(
             "CLAUDE", "Claude", file=False
         )  # the pair comes from the environment
         self.as_seat(
             "CLAUDE",
             "whoami",
-            drop=("INFISICAL_AUTOMATION_CLIENT_ID", "INFISICAL_AUTOMATION_CLIENT_SECRET"),
+            drop=(
+                "LINEAR_BOARD_INFISICAL_READ_TOKEN",
+                "LINEAR_BOARD_INFISICAL_WRITE_TOKEN",
+            ),
             extra={
                 "LINEAR_CLAUDE_CLIENT_ID": cid,
                 "LINEAR_CLAUDE_CLIENT_SECRET": secret,

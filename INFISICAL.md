@@ -264,6 +264,8 @@ Until a key is set in Infisical, a job runs on the Default column, which is the 
 | `FLEET_SHEET_INGEST_TIMEOUT_MS` | S1 | int 60000 to 21600000 | `5400000` | no | only lower it | milliseconds the Fleet RAG ingest may run before fleet-apps-sheet-sync.mjs gives up on it;  a full corpus walk took about 43 minutes, so the default is 90;  a local file may only lower it |
 | `COMPLIANCE_CERT_EXPIRY_DAYS` | C8 | int 1 to 365 | `30` | no | only lower it | days before an Apple signing certificate expires that the fleet-config compliance rule calls a finding;  the rule reads the value only once it is set in Infisical,  so the default is the value to set rather than one the rule may use |
 | `COMPLIANCE_SECRETS_FINDINGS_MAX` | C8 | int 0 to 10 | `0` | no | only lower it | how many secrets-hygiene findings the fleet-config compliance rule tolerates;  the rule reads the value only once it is set in Infisical,  so the default is the value to set rather than one the rule may use |
+| `CF_USAGE_WATCHDOG_MODE` | W1 | enum: observe < enforce | `observe` | no | only move toward `observe` | observe only alerts;  enforce also stops the Worker behind a breach.  A STOP file in the watchdog's state directory forces observe |
+| `CF_USAGE_WATCHDOG_PROFILE` | W1 | enum: paid < free | `paid` | no | nothing | which threshold profile in config.json applies:  paid catches runaways, free is 80% of the Free caps |
 
 <!-- fleet-knobs:end -->
 

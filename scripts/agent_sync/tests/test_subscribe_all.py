@@ -4,8 +4,14 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import secrets
+import shutil
+import subprocess
+import sys
+import tempfile
 import unittest
+from pathlib import Path
 
 from agent_sync import subscribe_all as S
 from agent_sync import zulip as Z
@@ -55,6 +61,136 @@ class SubscribeAllTests(unittest.TestCase):
         again = io.StringIO()
         S.run(self.all_creds(), self.fake.url, apply=True, out=again)
         self.assertIn("joined nothing", again.getvalue(), "a second run is a no-op")
+
+    def test_infisical_uses_scoped_service_token_and_never_logs_in(self) -> None:
+        from unittest import mock
+        import os
+        from fleet_secrets import core as scoped_secrets
+
+        token_name = S.INFISICAL_TOKEN_ENV
+        previous = os.environ.get(token_name)
+        scoped_token = "st." + secrets.token_urlsafe(32)
+        os.environ[token_name] = scoped_token
+        calls = []
+        def request(method, path, request_token, body, env, **kwargs):
+            calls.append((method, path, request_token, env))
+            if path == "/v2/service-token":
+                return 200, {
+                    "workspace": S.INFISICAL_PROJECT,
+                    "projectId": S.INFISICAL_PROJECT,
+                    "permissions": ["read"],
+                    "scopes": [{"environment": "prod", "secretPath": "/zulip"}],
+                    "expiresAt": None,
+                }
+            return 200, {"secrets": []}
+        original = scoped_secrets._api_json
+        scoped_secrets._api_json = request
+        try:
+            self.assertEqual(S.infisical_credentials(self.fake.url), [])
+        finally:
+            scoped_secrets._api_json = original
+            if previous is None:
+                os.environ.pop(token_name, None)
+            else:
+                os.environ[token_name] = previous
+        self.assertEqual(calls[0][1], "/v2/service-token")
+        self.assertTrue(calls[1][1].startswith("/v3/secrets/raw?"))
+        self.assertTrue(all(call[2] == scoped_token for call in calls))
+        self.assertEqual(calls[1][3][scoped_secrets.ENV_READ_PATHS], "/zulip")
+
+    def test_infisical_wrong_scope_fails_before_secret_fetch(self) -> None:
+        import os
+        from unittest import mock
+        from fleet_secrets import core as scoped_secrets
+
+        scoped_token = "st." + secrets.token_urlsafe(32)
+        calls = []
+        def request(method, path, request_token, body, env, **kwargs):
+            calls.append(path)
+            return 200, {
+                "workspace": S.INFISICAL_PROJECT,
+                "projectId": S.INFISICAL_PROJECT,
+                "permissions": ["read"],
+                "scopes": [{"environment": "prod", "secretPath": "/other"}],
+                "expiresAt": None,
+            }
+        with mock.patch.dict(os.environ, {S.INFISICAL_TOKEN_ENV: scoped_token}):
+            with mock.patch.object(scoped_secrets, "_api_json", request):
+                with self.assertRaises(S.Failure):
+                    S.infisical_credentials(self.fake.url)
+        self.assertEqual(calls, ["/v2/service-token"])
+
+    def test_infisical_missing_or_malformed_token_fails_before_request(self) -> None:
+        import os
+
+        token_name = S.INFISICAL_TOKEN_ENV
+        previous = os.environ.pop(token_name, None)
+        original = S._http_json
+        S._http_json = lambda *args, **kwargs: self.fail("unexpected network request")
+        try:
+            with self.assertRaisesRegex(S.Failure, token_name):
+                S.infisical_credentials(self.fake.url)
+            os.environ[token_name] = "automation.client-secret"
+            with self.assertRaisesRegex(S.Failure, token_name):
+                S.infisical_credentials(self.fake.url)
+        finally:
+            S._http_json = original
+            os.environ.pop(token_name, None)
+            if previous is not None:
+                os.environ[token_name] = previous
+
+    def test_listener_daemon_imports_without_the_fleet_secrets_package(self) -> None:
+        repo = Path(__file__).resolve().parents[3]
+        with tempfile.TemporaryDirectory() as empty_image:
+            scripts = Path(empty_image) / "scripts"
+            scripts.mkdir()
+            shutil.copytree(
+                repo / "scripts" / "agent_sync",
+                scripts / "agent_sync",
+                ignore=shutil.ignore_patterns("tests", "__pycache__"),
+            )
+            shutil.copy2(repo / "scripts" / "simple-chat", scripts / "simple-chat")
+            env = {
+                "PATH": os.environ.get("PATH", ""),
+                "PYTHONPATH": str(scripts),
+                "PYTHONDONTWRITEBYTECODE": "1",
+            }
+            result = subprocess.run(
+                [sys.executable, "-c", "from agent_sync.daemon import Daemon"],
+                cwd=empty_image,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_infisical_cli_reports_missing_host_helper_without_traceback(self) -> None:
+        repo = Path(__file__).resolve().parents[3]
+        with tempfile.TemporaryDirectory() as empty_image:
+            scripts = Path(empty_image) / "scripts"
+            scripts.mkdir()
+            shutil.copytree(
+                repo / "scripts" / "agent_sync",
+                scripts / "agent_sync",
+                ignore=shutil.ignore_patterns("tests", "__pycache__"),
+            )
+            env = {
+                "PATH": os.environ.get("PATH", ""),
+                "PYTHONPATH": str(scripts),
+                "PYTHONDONTWRITEBYTECODE": "1",
+            }
+            result = subprocess.run(
+                [sys.executable, "-m", "agent_sync.subscribe_all", "--source", "infisical"],
+                cwd=empty_image,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("Infisical source unavailable", result.stderr)
+        self.assertNotIn("ModuleNotFoundError", result.stderr)
 
 
 if __name__ == "__main__":

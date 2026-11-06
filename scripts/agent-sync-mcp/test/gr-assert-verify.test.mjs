@@ -3,6 +3,8 @@
 // holds no mint-capable key, so the HMAC, the live gate check and the one-use
 // jti claim all happen here.
 
+import { cachedGrantExists } from "../src/gr-assert-verify.js";
+import { IdentityCache } from "../src/identity-cache.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { webcrypto } from "node:crypto";
@@ -221,4 +223,27 @@ test("the checker validates the signed payload shape with fixed reasons", async 
   assert.equal((await verifyGrAssertRequest({ bytes: badAction.bytes, signature: badAction.signature, key: KEY })).reason, "bad_action");
   const extra = await mk({ contract: GR_ASSERT_VERIFY_CONTRACT, token: "gra2_x", action: "open_pr", body_sha256: "0".repeat(64), sent_at: nowS, sneaky: 1 });
   assert.equal((await verifyGrAssertRequest({ bytes: extra.bytes, signature: extra.signature, key: KEY })).reason, "bad_json");
+});
+
+test("cachedGrantExists:  one listing per window, no negative caching, and an admin eviction reaches it", async () => {
+  const cache = new IdentityCache();
+  let listings = 0;
+  let live = false;
+  const check = () => cachedGrantExists(cache, { seat: "CODEX", grantRef: "abc", ttlMs: 300_000, lookup: async () => { listings += 1; return live; } });
+  assert.equal(await check(), false);
+  assert.equal(await check(), false);
+  assert.equal(listings, 2, "a miss stays retryable");
+  live = true;
+  assert.equal(await check(), true);
+  assert.equal(await check(), true);
+  assert.equal(listings, 3);
+  cache.evictSeat("CODEX");
+  assert.equal(await check(), true);
+  assert.equal(listings, 4);
+  const off = new IdentityCache();
+  let offListings = 0;
+  const offCheck = () => cachedGrantExists(off, { seat: "CODEX", grantRef: "abc", ttlMs: 0, lookup: async () => { offListings += 1; return true; } });
+  await offCheck();
+  await offCheck();
+  assert.equal(offListings, 2, "GATE_IDENTITY_CACHE_MS=0 turns it off");
 });
