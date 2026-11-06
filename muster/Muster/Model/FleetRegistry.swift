@@ -82,7 +82,7 @@ struct WorkCount: Equatable {
         return observed == 0 ? "not known" : "at least \(observed)"
     }
 
-    /// The count with its noun:  `3 lanes`, `at least 2 PRs` or `PRs not known`.
+    /// The count with its noun:  `3 lanes`, `at least 2 pull requests` or `pull requests not known`.
     func phrase(_ singular: String, _ plural: String) -> String {
         if complete { return FleetWords.count(observed, singular, plural) }
         return observed == 0 ? "\(plural) not known" : "at least \(FleetWords.count(observed, singular, plural))"

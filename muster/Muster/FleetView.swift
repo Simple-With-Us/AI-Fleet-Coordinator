@@ -73,7 +73,7 @@ struct FleetView: View {
                 // accessibility label.
                 .labelsHidden()
                 .frame(maxWidth: 460)
-                TextField("Filter apps, coding harnesses, seats, lanes, PRs, or claims…", text: $filter.query)
+                TextField("Filter apps, tools, seats, lanes, pull requests, or claims…", text: $filter.query)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 11, design: .monospaced))
                     .frame(maxWidth: 340)
@@ -375,7 +375,9 @@ struct FleetView: View {
         HStack(spacing: 10) {
             Text("App").frame(maxWidth: .infinity, alignment: .leading)
             Text(lanesColumnTitle).frame(width: 120, alignment: .trailing)
-            Text("Open PRs").frame(width: 110, alignment: .trailing)
+            Text("Pull Requests")
+                .frame(width: 110, alignment: .trailing)
+                .help("Open pull requests for each app")
             Text("Claims").frame(width: 90, alignment: .trailing)
             Text("Work").frame(width: 140, alignment: .leading)
         }
@@ -439,7 +441,7 @@ struct FleetView: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            Text("\(codingApp.lanes.phrase("lane", "lanes")) · \(codingApp.pullRequests.phrase("PR", "PRs")) · \(codingApp.claims.phrase("claim", "claims"))")
+            Text("\(codingApp.lanes.phrase("lane", "lanes")) · \(codingApp.pullRequests.phrase("pull request", "pull requests")) · \(codingApp.claims.phrase("claim", "claims"))")
                 .font(.caption.monospaced())
                 .foregroundStyle(
                     codingApp.lanes.complete && codingApp.pullRequests.complete && codingApp.claims.complete

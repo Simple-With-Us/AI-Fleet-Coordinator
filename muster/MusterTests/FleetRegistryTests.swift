@@ -236,8 +236,8 @@ final class FleetRegistryTests: XCTestCase {
         XCTAssertEqual(ag.lanes.phrase("lane", "lanes"), "0 lanes")
 
         XCTAssertEqual(WorkCount(observed: 2, complete: false).text, "at least 2")
-        XCTAssertEqual(WorkCount(observed: 1, complete: false).phrase("PR", "PRs"), "at least 1 PR")
-        XCTAssertEqual(WorkCount(observed: 1, complete: true).phrase("PR", "PRs"), "1 PR")
+        XCTAssertEqual(WorkCount(observed: 1, complete: false).phrase("pull request", "pull requests"), "at least 1 pull request")
+        XCTAssertEqual(WorkCount(observed: 1, complete: true).phrase("pull request", "pull requests"), "1 pull request")
     }
 
     /// A lane git could not read, and whose seat could not be told, may belong to any coding app,
