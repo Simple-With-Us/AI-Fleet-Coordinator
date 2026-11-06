@@ -2149,9 +2149,7 @@ class Daemon:
                         if edited or not self._wake_already_recorded(runner, message["id"]):
                             self.offer_wake(runner, row, owner=d.wake == "owner")
                         else:
-                            self.log.write(
-                                "wake-offer-fenced", seat=runner.seat, id=message["id"]
-                            )
+                            self.log.write("wake-offer-fenced", seat=runner.seat, id=message["id"])
                     done.add("wake")
 
     def _append_seat_inbox(self, runner: SeatRunner, rows: list[dict[str, Any]]) -> None:
@@ -4144,9 +4142,7 @@ class Daemon:
     def _deferred_broadcasts_path(self) -> str:
         return os.path.join(L.listener_dir(self.root), "deferred_broadcasts.json")
 
-    def _defer_broadcast_effect(
-        self, message: Mapping[str, Any], c: R.Classes, kind: str
-    ) -> None:
+    def _defer_broadcast_effect(self, message: Mapping[str, Any], c: R.Classes, kind: str) -> None:
         message_id = message.get("id")
         if not isinstance(message_id, int):
             return
@@ -4210,7 +4206,7 @@ class Daemon:
 
     def _fetch_deferred_message(
         self, mid: str
-    ) -> tuple[str, "SeatRunner | None", Mapping[str, Any] | None]:
+    ) -> tuple[str, SeatRunner | None, Mapping[str, Any] | None]:
         """("ok", runner, message) | ("gone", None, None) | ("unknown", None, None) for a parked
         broadcast's payload, re-fetched by id through the same REST read the spool drain uses."""
         runner = next(

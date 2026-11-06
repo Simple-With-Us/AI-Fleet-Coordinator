@@ -302,7 +302,9 @@ def cmd_daemon(rt: Any, args: argparse.Namespace) -> int:
         from .daemon import set_pause
 
         seat = Z.normalise_seat(args.seat) if args.seat else None
-        set_pause(root, seat, wakes_only=args.wakes_only, by="cli", now=time.time(), defer=args.defer)
+        set_pause(
+            root, seat, wakes_only=args.wakes_only, by="cli", now=time.time(), defer=args.defer
+        )
         rt.out(
             "paused %s%s; resume with: simple-chat daemon resume%s\n"
             % (
