@@ -186,6 +186,10 @@ final class DriftMonitor: ObservableObject {
     /// The cells that drifted,  which the grid does not paint red and the menu still has
     /// to count:  a calm bar over drifted cells would not be true.
     @Published private(set) var driftCells: [DriftRedCell] = []
+    /// The cells that read not proven,  which are neither red nor drifted and which the
+    /// menu still has to count:  a calm bar over unproven cells would claim a proof
+    /// nobody reached.
+    @Published private(set) var unprovenCells: [DriftRedCell] = []
     /// The turns,  newest first.
     @Published private(set) var transitions: [DriftTransition] = []
     /// How many paths the manifest named and the app is watching.
@@ -359,6 +363,14 @@ final class DriftMonitor: ObservableObject {
                 state: cell.state
             )
         }
+        unprovenCells = cells.filter { $0.state == .unproven }.map { cell in
+            DriftRedCell(
+                seat: cell.seat,
+                kind: cell.kind.rawValue,
+                ruleID: cell.rules.first?.ruleId,
+                state: cell.state
+            )
+        }
 
         guard hasBaseline else {
             // The first run that could be trusted is a reading and not a change:
@@ -387,6 +399,7 @@ final class DriftMonitor: ObservableObject {
         redCount = nil
         redCells = []
         driftCells = []
+        unprovenCells = []
     }
 
     // MARK: Recording

@@ -180,7 +180,8 @@ extension MusterDestination {
         case .appsAndWork:
             return "The fleet's app list, with each seat's lanes, pull requests and claims."
         case .seats:
-            return "Presence and posts come from Zulip.\(gap)Open sessions shown are on the Mac only."
+            // Zulip refuses presence for bot users,  so the panel no longer reads it.
+            return "Sessions and quota come from the Mac's listener, and the last post from Zulip.\(gap)Sessions shown are on the Mac only."
         case .controls:
             return "Shared values in the fleet's secret store, as the Mac's copy shows them."
         case .hosts:
@@ -462,6 +463,17 @@ struct RunVerdict: Equatable {
             default: return RunVerdict(words: "Not Known", tone: .notKnown)
             }
         }
+    }
+
+    /// What the verdict means,  in `PassMeaning`'s words,  so "All Passing" here is the
+    /// grid's PASS.  The Overview shows it under the verdict and the grid's footer as its
+    /// tooltip.
+    ///
+    /// Only a verdict the engine returned has a meaning to state:  an idle, running or
+    /// failed run has none.
+    static func meaning(phase: FleetStore.Phase, verdict: String?) -> String? {
+        guard phase == .loaded, let verdict else { return nil }
+        return "\(PassMeaning.verdict(verdict))\u{00A0} \(PassMeaning.everywhere)"
     }
 
     /// The failing count with its noun:  the engine counts checks, not cells.

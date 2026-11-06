@@ -43,7 +43,15 @@ struct OverviewView: View {
                 Divider()
                 Label("Seat Setup \(FleetHost.mac.onTitle)", systemImage: "square.grid.3x3")
                     .font(.title3.weight(.semibold))
-                verdictRow
+                VStack(alignment: .leading, spacing: 4) {
+                    verdictRow
+                    if let meaning = RunVerdict.meaning(phase: store.phase, verdict: store.summary?.overallVerdict) {
+                        Text(meaning)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 12)], spacing: 12) {
                     countCard(
                         title: "Red Cells",

@@ -215,6 +215,9 @@ struct FleetOverviewView: View {
             Divider()
             HStack(spacing: 14) {
                 RunVerdictLabel(verdict: verdict, font: .system(size: 11, weight: .semibold))
+                    // The footer's verdict is the grid's PASS,  and the tooltip says what that is.
+                    // Only a verdict the engine returned has a meaning to state,  as the overview says.
+                    .help(RunVerdict.meaning(phase: store.phase, verdict: store.summary?.overallVerdict) ?? "")
                 if let failing = RunVerdict.failingText(store.summary) {
                     Text(failing)
                         .font(.system(size: 10))

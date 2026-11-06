@@ -307,6 +307,22 @@ final class MusterNavigationTests: XCTestCase {
         XCTAssertEqual(RunVerdict.make(phase: .loaded, verdict: nil).tone, .notKnown)
     }
 
+    /// The verdict's meaning is PassMeaning's sentence,  and only for a verdict the engine returned.
+    func test_verdict_meaning_is_the_grids_pass() {
+        XCTAssertEqual(
+            RunVerdict.meaning(phase: .loaded, verdict: "PASS"),
+            "\(PassMeaning.verdict("PASS"))\u{00A0} \(PassMeaning.everywhere)"
+        )
+        XCTAssertEqual(
+            RunVerdict.meaning(phase: .loaded, verdict: "UNKNOWN"),
+            "Nothing failed, but not every check was proven.\u{00A0} \(PassMeaning.everywhere)"
+        )
+        XCTAssertNil(RunVerdict.meaning(phase: .idle, verdict: nil))
+        XCTAssertNil(RunVerdict.meaning(phase: .running, verdict: "PASS"))
+        XCTAssertNil(RunVerdict.meaning(phase: .failed("x"), verdict: "PASS"))
+        XCTAssertNil(RunVerdict.meaning(phase: .loaded, verdict: nil))
+    }
+
     func test_failing_count_has_its_noun() {
         let summary = EnvelopeSummary(total: 120, byState: [:], overallVerdict: "FAIL", failing: 12)
         XCTAssertEqual(RunVerdict.failingText(summary), "12 of 120 checks failing")
