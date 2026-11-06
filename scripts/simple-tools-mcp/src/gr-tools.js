@@ -104,7 +104,7 @@ export class GrRelayClient {
       "CF-Access-Client-Secret": accessSecret,
       ...(this.#bearer ? { "Authorization": `Bearer ${this.#bearer}` } : {}),
       "Content-Type": "application/json",
-      "User-Agent": "agent-sync-mcp/2.0",
+      "User-Agent": "simple-tools-mcp/2.0",
     };
     this.#secrets = [accessId, accessSecret, ...(this.#bearer ? [this.#bearer] : [])];
     this.fetch = fetchImpl;

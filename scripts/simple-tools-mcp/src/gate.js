@@ -7,7 +7,7 @@ import { countedStub } from "./invocation.js";
 
 /**
  * The SeatGate of a seat, an enabled Grok Bot persona, or the refusal log.  GB_IDENTITIES is the one list of
- * personas (delegated-identities.js, scripts/agent_sync/mcp/gb-identities.json):  a persona has its own gate for
+ * personas (delegated-identities.js, scripts/simple_tools/mcp/gb-identities.json):  a persona has its own gate for
  * its spacing, idempotency rows and budget, so createIdentity must be able to open it.  Any other name throws.
  */
 export function gate(env, name) {

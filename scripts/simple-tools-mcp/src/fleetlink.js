@@ -30,7 +30,7 @@ const SeatTokens = z.record(z.string().regex(/^[A-Z][A-Z0-9-]{0,22}[A-Z0-9]$/), 
 export const FLEETLINK_TIMEOUT_MS = 30_000;
 export const FLEETLINK_RESPONSE_LIMIT = 4_000_000; // bytes;  read_file returns up to 1 MB of text
 export const FLEETLINK_PROTOCOL = "2025-06-18";
-export const FLEETLINK_USER_AGENT = "agent-sync-mcp/2.0";
+export const FLEETLINK_USER_AGENT = "simple-tools-mcp/2.0";
 export const FLEETLINK_MESSAGE_LIMIT = 300;
 // Base64 through a tool call is for small files;  fleetlink_upload_url takes the rest.
 export const FLEETLINK_BASE64_MAX = 8_000_000;

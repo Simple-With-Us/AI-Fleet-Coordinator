@@ -1,11 +1,11 @@
 // The server eavesdropper's records for a hosted seat (AFC-330 part B):  eavesdropper_status,
 // eavesdropper_inbox, eavesdropper_owner_queue, eavesdropper_wakes and eavesdropper_held_back.  The specs are
-// scripts/agent_sync/mcp/eavesdropper-tools.json (shared with the stdio server);  the hosted server
+// scripts/simple_tools/mcp/eavesdropper-tools.json (shared with the stdio server);  the hosted server
 // lists every one of them except eavesdropper_ack, because the eavesdropper's read API is read-only.
 //
 // The Worker reads them from the server eavesdropper's signed GET API
-// (scripts/agent_sync/listener_api.py):  GET <LISTENER_API_URL>/listener/v1/<SEAT>/<record>?<query>
-// with X-Agent-Sync-Timestamp and X-Agent-Sync-Signature, the lowercase hex HMAC-SHA256 of
+// (scripts/simple_tools/listener_api.py):  GET <LISTENER_API_URL>/listener/v1/<SEAT>/<record>?<query>
+// with X-Simple-Tools-Timestamp and X-Simple-Tools-Signature, the lowercase hex HMAC-SHA256 of
 // "agent-sync-read/1\nGET\n<path>\n<query>\n<timestamp>" keyed with the seat's wake key
 // (WAKE_HMAC_KEY_<SEAT>, the same secret the eavesdropper signs that seat's wakes with).  The seat
 // comes only from the grant, and only WAKE_SECRETS turns it into a key, so a grant reads its own
@@ -14,7 +14,7 @@
 //
 // Pure module:  WebCrypto and fetch only, so `node --test` loads it.
 
-import EAVESDROPPER_CONTRACT from "../../agent_sync/mcp/eavesdropper-tools.json" with { type: "json" };
+import EAVESDROPPER_CONTRACT from "../../simple_tools/mcp/eavesdropper-tools.json" with { type: "json" };
 import { z } from "zod";
 import { ToolError, clean, envelope, okResult, BODY_LIMIT, NAME_LIMIT } from "./contract.js";
 import { WAKE_SECRETS } from "./config.js";
@@ -43,7 +43,7 @@ const ListenerEnvelope = z.looseObject({
 });
 export const LISTENER_TIMEOUT_MS = 10_000;
 export const LISTENER_MIN_KEY_LEN = 32;
-export const LISTENER_USER_AGENT = "agent-sync-mcp (hosted listener reader)";
+export const LISTENER_USER_AGENT = "simple-tools-mcp (hosted listener reader)";
 export const LISTENER_RECORDS = Object.freeze({
   eavesdropper_status: "status",
   eavesdropper_inbox: "inbox",
@@ -111,7 +111,7 @@ export class ListenerClient {
         method: "GET",
         redirect: "manual",
         signal: AbortSignal.timeout(this.timeoutMs),
-        headers: { "X-Agent-Sync-Timestamp": timestamp, "X-Agent-Sync-Signature": signature, "User-Agent": LISTENER_USER_AGENT, Accept: "application/json" },
+        headers: { "X-Simple-Tools-Timestamp": timestamp, "X-Simple-Tools-Signature": signature, "User-Agent": LISTENER_USER_AGENT, Accept: "application/json" },
       });
     } catch (error) {
       const timeout = error?.name === "TimeoutError" || error?.name === "AbortError";
@@ -167,7 +167,7 @@ export const EAVESDROPPER_METHODS = {
     if (this.listener) return this.listener;
     throw new ToolError(
       "not_configured",
-      "The eavesdropper's records are not reachable from this server for this seat.  The owner sets LISTENER_API_URL and the seat's WAKE_HMAC_KEY_<SEAT>, and enables [listener_api] on the server eavesdropper (scripts/agent-sync-mcp/DEPLOY.md).  The Zulip tools still work.",
+      "The eavesdropper's records are not reachable from this server for this seat.  The owner sets LISTENER_API_URL and the seat's WAKE_HMAC_KEY_<SEAT>, and enables [listener_api] on the server eavesdropper (scripts/simple-tools-mcp/DEPLOY.md).  The Zulip tools still work.",
     );
   },
 

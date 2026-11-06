@@ -5,7 +5,7 @@
 //
 // OpenAI's guide:  https://developers.openai.com/plugins/build/mcp-events
 // Draft:  modelcontextprotocol/experimental-ext-triggers-events, design sketch.
-// Spec here:  docs/protocols/agent-sync-mcp.md, "MCP Events (Wake Jet)".
+// Spec here:  docs/protocols/simple-tools-mcp.md, "MCP Events (Wake Jet)".
 //
 // What this module does, and where it departs from the guide:
 //   - Webhook delivery only, no replay:  `cursor` is always null and
@@ -553,7 +553,7 @@ async function signedPost(fetchFn, { url, subId, secrets, webhookId, body, timeo
     "webhook-timestamp": String(timestampS),
     "webhook-signature": await webhookSignature(secrets, webhookId, timestampS, body),
     "X-MCP-Subscription-Id": subId,
-    "User-Agent": "agent-sync-mcp (MCP Events)",
+    "User-Agent": "simple-tools-mcp (MCP Events)",
   };
   try {
     const response = await fetchFn(url, { method: "POST", headers, body, redirect: "manual", signal: AbortSignal.timeout(timeoutMs) });
@@ -790,7 +790,7 @@ export function wakeReply(result) {
 
 function oneDestination(name, until) {
   return (
-    `Agent-Sync already sends ${name} for this seat to another chat.  Stop monitoring there first` +
+    `Simple-Tools already sends ${name} for this seat to another chat.  Stop monitoring there first` +
     (Number.isFinite(until) ? `, or wait until it lapses at ${iso(until)} unless refreshed.` : ".")
   );
 }

@@ -10,7 +10,7 @@
 //
 // Auth on the route itself reuses the wake scheme exactly as
 // /internal/gr-bearer-verify does (src/gr-verify.js):  the
-// X-Agent-Sync-Signature header is the lowercase hex HMAC-SHA256 of the raw
+// X-Simple-Tools-Signature header is the lowercase hex HMAC-SHA256 of the raw
 // body bytes keyed with GR_BEARER_VERIFY_KEY, checked before any JSON parse,
 // with the same sent_at freshness window.
 //
