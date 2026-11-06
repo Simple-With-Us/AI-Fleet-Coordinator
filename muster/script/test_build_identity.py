@@ -202,7 +202,8 @@ class RefuseOlderTests(unittest.TestCase):
         support.refuse_older(self.app, "202611041200", False)
 
     def test_an_installed_copy_with_an_unreadable_info_plist_refuses(self):
-        for content in (None, b"not a plist"):
+        truncated_xml = b'<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleVersion'
+        for content in (None, b"not a plist", truncated_xml):
             with self.subTest(content=content):
                 plist = self.app / "Contents/Info.plist"
                 if plist.exists():

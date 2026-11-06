@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from xml.parsers.expat import ExpatError
 
 
 def acquire_lock(path):
@@ -382,7 +383,7 @@ def installed_build_number(app):
     try:
         with (Path(app) / "Contents/Info.plist").open("rb") as stream:
             info = plistlib.load(stream)
-    except (OSError, plistlib.InvalidFileException, ValueError):
+    except (OSError, plistlib.InvalidFileException, ValueError, ExpatError):
         raise BuildFailure(
             "The installed Muster at %s has no readable Info.plist, so this build cannot "
             "tell whether it is older.  Inspect that copy before installing over it." % app,
