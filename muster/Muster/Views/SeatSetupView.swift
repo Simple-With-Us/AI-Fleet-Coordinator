@@ -227,11 +227,11 @@ struct SeatSetupView: View {
             artifactsSeat = nil
             return
         }
-        let wanted = ConfigKind.columnOrder.compactMap { store.cell(seat: seat, kind: $0) }
-        let store = store
+        let fleetStore = store
+        let wanted = ConfigKind.columnOrder.compactMap { fleetStore.cell(seat: seat, kind: $0) }
         let loaded = await Task.detached(priority: .userInitiated) {
             var byKind: [ConfigKind: FleetStore.CellArtifacts] = [:]
-            for cell in wanted { byKind[cell.kind] = store.artifacts(for: cell) }
+            for cell in wanted { byKind[cell.kind] = fleetStore.artifacts(for: cell) }
             return byKind
         }.value
         guard !Task.isCancelled else { return }
