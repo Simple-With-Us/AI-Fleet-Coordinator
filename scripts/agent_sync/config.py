@@ -205,8 +205,6 @@ def env_code(seat: str) -> str:
     return re.sub(r"[^A-Z0-9]", "_", seat.upper())
 
 
-
-
 class RoutineConfig:
     """Where a remote `http` wake goes:  the names of the environment variables that hold the
     routine URL and its sender key (never the values), the method, the header and auth mode."""
