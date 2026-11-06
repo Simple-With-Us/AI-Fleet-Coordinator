@@ -25,6 +25,7 @@ import { z } from "zod";
 import { GUIDE_TEXT } from "./guide-text.js";
 
 const GuideCall = GuideArgs.extend({ identity: z.unknown().optional() });
+const CatalogCall = z.strictObject({ identity: z.unknown().optional(), cursor: z.string().max(24).optional() });
 
 export const GB_IDENTITIES = GB_ENABLED_IDENTITIES;
 const GB_SET = new Set(GB_IDENTITIES);
@@ -188,12 +189,45 @@ export function toolListCacheKey(seat, config = {}) {
 /** The identity rule for the MCP `instructions`. */
 export function identityInstructions(seat, allowed) {
   return `  Each call names the bot it acts as in its identity argument:  writes must name it;  reads without it act as ${seat}.  ` +
-    `This connection may act as ${allowed.join(", ")};  identities lists them with their status.  Tools are named by family:  ` +
+    `This connection may act as ${allowed.join(", ")};  identities lists them with their status.  catalog pages this connection's tool catalog (names and descriptions);  tools/list accepts a cursor for paged schemas.  Tools are named by family:  ` +
     "zulip_*, linear_*, recall_*, notes_*, fleetlink_* and eavesdropper_*;  whoami, identities and guide stand alone.  " +
     `Call guide for the full tools guide (or one section), also at ${GUIDE_URL}.`;
 }
 
 const EMPTY_TOOL_SET = Object.freeze({ list: Object.freeze([]), byName: Object.freeze({}) });
+
+// tools/list is one oversized event per response (AFC-641:  an intermittent cut of the
+// ~470 KB event cost seats their catalog).  The full no-cursor response is unchanged for
+// compatibility;  a cursor opts into bounded pages, and the catalog tool gives the same
+// paging over names and descriptions through an ordinary tools/call.
+export const TOOLS_LIST_PAGE = 100;
+export const CATALOG_PAGE = 200;
+
+const CURSOR_PATTERN = /^\d{1,12}$/;
+
+/** A cursor is an opaque decimal offset the server issued;  anything else is an invalid argument. */
+export function parseCursor(raw, length) {
+  if (raw === undefined) return 0;
+  if (typeof raw !== "string" || !CURSOR_PATTERN.test(raw)) throw new ToolError("invalid_argument", "invalid cursor:  pass the nextCursor value unchanged");
+  const offset = Number(raw);
+  if (!Number.isSafeInteger(offset) || offset >= Math.max(length, 1)) throw new ToolError("invalid_argument", "invalid cursor:  pass the nextCursor value unchanged");
+  return offset;
+}
+
+/** One bounded page of a frozen tool list;  nextCursor appears only when more follows. */
+export function pageOf(list, cursor, size) {
+  const start = parseCursor(cursor, list.length);
+  const tools = list.slice(start, start + size);
+  const end = start + size;
+  return end < list.length ? { tools, nextCursor: String(end) } : { tools };
+}
+
+/** The catalog tool:  paged names and one-line descriptions, schemas stay with tools/list. */
+export const CATALOG_SPEC = Object.freeze({
+  name: "catalog",
+  description: "This connection's own tool catalog in bounded pages:  names and one-line descriptions only (full schemas come from tools/list, which accepts the same cursor).  Call with no arguments for the first page;  pass the returned nextCursor as cursor for the next page.",
+  inputSchema: Object.freeze({ type: "object", properties: Object.freeze({ cursor: Object.freeze({ type: "string", maxLength: 24 }) }), additionalProperties: false }),
+});
 
 /** The tools/list a grant for `seat` gets:  every hosted tool with its identity enum, then identities after whoami. */
 export function toolListFor(seat, config = {}) {
@@ -208,7 +242,7 @@ export function toolListFor(seat, config = {}) {
   const allowed = allowedIdentities(seat);
   const decorated = HOSTED_TOOL_LIST.filter(spec => (!spec.name.startsWith("whatsapp_") || (seat === "JET-CHAT" && config.whatsappEnabled === true)) && (!spec.name.startsWith("gr_v1_pr_") || config.grTypedEnabled === true) && (!spec.name.startsWith("gr_wf_") || config.grWorkflowEnabled === true)).map((spec) => decorate(spec, allowed, seat));
   const at = decorated.findIndex((spec) => spec.name === "whoami") + 1;
-  const list = Object.freeze([...decorated.slice(0, at), IDENTITIES_SPEC, decorate(GUIDE_SPEC, allowed, seat), ...decorated.slice(at)]);
+  const list = Object.freeze([...decorated.slice(0, at), IDENTITIES_SPEC, decorate(GUIDE_SPEC, allowed, seat), decorate(CATALOG_SPEC, allowed, seat), ...decorated.slice(at)]);
   const byName = Object.freeze(Object.fromEntries(list.map((spec) => [spec.name, spec])));
   const entry = Object.freeze({ list, byName });
   LIST_CACHE.set(cacheKey, entry);
@@ -286,6 +320,7 @@ export class IdentityRouter {
     }
     if (name === "identities") return this.identities(rawArgs);
     if (name === "guide") return this.guide(rawArgs);
+    if (name === "catalog") return this.catalog(rawArgs);
     // Unknown names stay protocol errors, audited by the grant's own tools.
     if (!Object.hasOwn(HOSTED_TOOLS_BY_NAME, name)) return this.callerTools.call(name, rawArgs);
     // The grant's scope comes first:  a read-only grant learns it cannot write before it learns how to
@@ -351,6 +386,22 @@ export class IdentityRouter {
       return guideResult(this.guideText, inner);
     } catch (error) {
       const mapped = error instanceof ToolError ? error : new ToolError("unavailable", "The guide is unavailable.");
+      await this.audit({ acting_identity: this.seat, tool: name, error_code: mapped.code, error_message: mapped.message.slice(0, 120) });
+      return errorResult(mapped);
+    }
+  }
+
+  async catalog(rawArgs) {
+    const name = "catalog";
+    try {
+      const { identity: _ignored, ...inner } = parseArgs(CatalogCall, rawArgs);
+      this.callerTools.requireScope(name);
+      if (this.callerTools.paused) throw new ToolError("paused", `The ${this.seat} seat is paused.`);
+      const page = pageOf(this.toolList, inner.cursor, CATALOG_PAGE);
+      const result = { tools: page.tools.map((spec) => ({ name: spec.name, description: spec.description ?? "" })), ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}) };
+      return okResult(JSON.stringify(result), result);
+    } catch (error) {
+      const mapped = error instanceof ToolError ? error : new ToolError("unavailable", "The catalog is unavailable.");
       await this.audit({ acting_identity: this.seat, tool: name, error_code: mapped.code, error_message: mapped.message.slice(0, 120) });
       return errorResult(mapped);
     }
