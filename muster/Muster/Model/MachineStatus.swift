@@ -273,14 +273,17 @@ enum MachineMenuCopy {
         return false
     }
 
+    /// A failure,  a state nobody can read,  or a service Muster tried to start and gave up on.
+    /// The sidebar's Services badge uses this rule too.
     static func isProblem(_ entry: FleetServiceEntry) -> Bool {
-        entry.state == .failed || entry.state == .unknown
+        entry.needsAttention
     }
 
     private static func serviceCounts(_ entries: [FleetServiceEntry]) -> String {
         let order: [(ManagedServiceState, String)] = [
             (.running, "running"), (.failed, "failed"), (.stopped, "stopped"),
-            (.notInstalled, "not installed"), (.unknown, "not known"),
+            (.notInstalled, "not installed"), (.notInPM2, "not in this Mac's pm2"),
+            (.unknown, "not known"),
         ]
         let parts = order.compactMap { state, word -> String? in
             let count = entries.filter { $0.state == state }.count
@@ -294,6 +297,8 @@ enum MachineMenuCopy {
     /// One service's row:  its title,  its state and the actions it offers.
     static func serviceRow(_ entry: FleetServiceEntry, allowlist: OpsAllowlist?, pm2Answered: Bool) -> MenuRow {
         var title = "\(entry.menuRowTitle):  \(entry.summary)"
+        // The owner's stop,  or what Muster did about it,  so the menu says who stopped it.
+        if let note = entry.menuNote { title += " (\(note))" }
         guard pm2Answered || !isPM2Row(entry) else {
             return MenuRow(title: title, actions: [])
         }

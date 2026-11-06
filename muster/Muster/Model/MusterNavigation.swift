@@ -286,7 +286,8 @@ enum PlaceHealthWords {
 // MARK: - The sidebar's badges
 
 enum SidebarBadges {
-    /// The Services row's badge:  how many services on the Mac failed or could not be read.
+    /// The Services row's badge:  how many services on the Mac need attention, by the menu's
+    /// rule:  failed, could not be read, or started and given up on.
     ///
     /// Before the first read, or once the read is older than the menu's own window, it is
     /// `?`:  an old or absent read is never a clean list.

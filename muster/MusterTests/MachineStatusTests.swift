@@ -244,7 +244,7 @@ final class MachineStatusTests: XCTestCase {
         XCTAssertEqual(top, [
             "The Mac",
             "Checked at 2:46 PM",
-            "Shellular:  failed \u{2014} wanted running",
+            "Shellular:  failed, should be running",
             "    Start On The Mac\u{2026}",
             "    Restart On The Mac\u{2026}",
             "Seat Setup:  1 red cell",
@@ -568,7 +568,47 @@ final class MachineStatusTests: XCTestCase {
         let entry = try XCTUnwrap(unwanted.entries.first { $0.id == "botfleet-mcp" })
         let row = MachineMenuCopy.serviceRow(entry, allowlist: Self.allowlist, pm2Answered: true)
         XCTAssertTrue(row.actions.isEmpty)
-        XCTAssertEqual(row.title, "BotFleet MCP Server (On The Mac):  stopped, it follows BotFleet Server")
+        XCTAssertEqual(row.title, "BotFleet MCP Server (On The Mac):  stopped, it starts when BotFleet Server is running")
+    }
+
+    func testAnApplicationPM2NeverHeardOfIsNotCalledStoppedAndHasNoStart() throws {
+        let services = Self.macServices(changing: ["seat-mcp": .notInPM2])
+        let entry = try XCTUnwrap(services.entries.first { $0.id == "seat-mcp" })
+        let row = MachineMenuCopy.serviceRow(entry, allowlist: Self.allowlist, pm2Answered: true)
+        XCTAssertTrue(row.actions.isEmpty)
+        XCTAssertEqual(row.title, "Seat MCP:  not in this Mac's pm2, pm2 on the Mac has no record of it, so it is not started from here")
+    }
+
+    func testAServiceTheOwnerStoppedSaysSoInTheMenuRow() throws {
+        let when = Date(timeIntervalSince1970: 1_800_000_000)
+        let services = FleetServices(serverState: .running,
+                                     states: ["shellular": .stopped],
+                                     stoppedByOwner: ["shellular"],
+                                     stoppedAt: ["shellular": when])
+        let entry = try XCTUnwrap(services.entries.first { $0.id == "shellular" })
+        let row = MachineMenuCopy.serviceRow(entry, allowlist: Self.allowlist, pm2Answered: true)
+        XCTAssertEqual(row.title, "Shellular:  stopped (stopped by you at \(FleetTime.clock(when)))")
+    }
+
+    func testWhatMusterDidAboutAServiceIsInTheMenuRow() throws {
+        let at = Date(timeIntervalSince1970: 1_800_000_000)
+        let note = ReconcileNote(.restarted(at: at))
+        let services = FleetServices(serverState: .running,
+                                     states: ["shellular": .running],
+                                     reconcileNotes: ["shellular": note])
+        let entry = try XCTUnwrap(services.entries.first { $0.id == "shellular" })
+        let row = MachineMenuCopy.serviceRow(entry, allowlist: Self.allowlist, pm2Answered: true)
+        XCTAssertEqual(row.title, "Shellular:  running (Restarted by Muster at \(FleetTime.clock(at)))")
+    }
+
+    func testAServiceMusterGaveUpOnCountsAsAProblemInTheMenu() throws {
+        let note = ReconcileNote(.gaveUp(tries: 3))
+        let services = FleetServices(serverState: .running,
+                                     states: ["shellular": .stopped],
+                                     reconcileNotes: ["shellular": note])
+        let entry = try XCTUnwrap(services.entries.first { $0.id == "shellular" })
+        XCTAssertTrue(entry.needsAttention)
+        XCTAssertEqual(entry.menuNote, "Muster stopped retrying after 3 tries")
     }
 
     func testAnUnreadableAllowlistOffersNoDirectRouteAndSaysWhy() throws {

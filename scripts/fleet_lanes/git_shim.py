@@ -232,6 +232,11 @@ def _alarm(_signum, _frame):
     try:
         home = os.environ.get("HOME") or os.path.expanduser("~")
         folder = os.environ.get("FLEET_LANE_GUARD_STATE_DIR") or os.path.join(home, ".local", "state", "fleet")
+        if os.environ.get("FLEET_LANES_TEST_RUN"):
+            import pwd  # only in a test run:  it must not reach the real log (placement.writes_real_log_in_a_test)
+
+            if os.path.realpath(folder) == os.path.realpath(os.path.join(pwd.getpwuid(os.getuid()).pw_dir, ".local", "state", "fleet")):
+                os._exit(0)
         os.makedirs(folder, mode=0o700, exist_ok=True)
         at = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime())
         fd = os.open(os.path.join(folder, "lane-guard-events.jsonl"), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
