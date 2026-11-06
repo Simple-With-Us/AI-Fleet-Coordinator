@@ -1445,6 +1445,9 @@ def handle(ctx, scope, action, target, mode):
             # A read of names and counts under this account's home, so it takes no lock, asks
             # for no sudo and writes no audit row.  Only `--plan` is accepted:  there is
             # nothing to confirm and nothing to run.
+            # Like every server verb, it runs on the server only:  off it the module would read
+            # another machine's home and still label the answer as the server's.
+            _server_only(ctx)
             if mode != "plan":
                 raise Refused("seat-inventory only reads:  pass --plan")
             # -I omits the script directory. Only this reviewed sibling directory is

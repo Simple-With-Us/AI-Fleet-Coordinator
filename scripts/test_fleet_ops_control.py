@@ -1731,6 +1731,14 @@ class SeatInventoryDispatchTests(Base):
             [(r["verb"], r["result"]) for r in rows], [("server seat-inventory", "refused")]
         )
 
+    def test_it_runs_on_the_server_only_like_every_server_verb(self):
+        self.write_cursor_mcp()
+        code, answer = self.run_main(
+            ["server", "seat-inventory", "cursor", "--plan", "--json"], self.ctx(platform="darwin")
+        )
+        self.assertEqual((code, answer["result"]), (2, "refused"))
+        self.assertNotIn("inventory", answer)
+
     def test_a_platform_that_is_not_known_is_refused(self):
         for target in ("nope", "CLAUDE", "..", "claude.x", "a" * 40):
             with self.subTest(target=target):

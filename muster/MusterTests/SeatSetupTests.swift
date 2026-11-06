@@ -126,6 +126,36 @@ final class SeatSetupTests: XCTestCase {
         XCTAssertEqual(raised.first?.text, "The engine has no rule for this kind on this seat, so nothing was checked.")
     }
 
+    // MARK: - before the engine has answered
+
+    /// Before a run finishes the grid holds an empty UNKNOWN cell for every seat and kind.  That
+    /// is silence and not a missing rule, so nothing is raised.
+    func test_nothing_is_raised_before_the_engine_has_answered() {
+        let placeholders = GridBuilder.build(roster: ["CLAUDE"], manifest: nil, results: [])
+        XCTAssertEqual(placeholders.count, ConfigKind.columnOrder.count)
+        XCTAssertTrue(placeholders.allSatisfy { $0.rules.isEmpty && $0.state == .unknown })
+        // Once answered, the same cells are holes in the coverage, which is raised.
+        XCTAssertEqual(SeatSetup.attention(for: placeholders, answered: true).count, placeholders.count)
+        XCTAssertEqual(SeatSetup.attention(for: placeholders, answered: false), [])
+    }
+
+    func test_a_kind_with_no_answer_yet_says_it_is_waiting_not_that_no_rule_exists() throws {
+        let placeholders = GridBuilder.build(roster: ["CLAUDE"], manifest: nil, results: [])
+        let hooks = try cell(placeholders, .hooks)
+        XCTAssertEqual(SeatSetup.summary(for: hooks, answered: false), "Waiting for the engine to answer.")
+        XCTAssertEqual(SeatSetup.summary(for: nil, answered: false), "Waiting for the engine to answer.")
+        XCTAssertEqual(SeatSetup.summary(for: hooks, answered: true), "No rule covers this seat and kind.")
+    }
+
+    func test_a_kind_with_rules_reads_the_same_whether_or_not_a_run_is_in_flight() throws {
+        let proven = cells(seat: "CODEX", platform: "codex")
+        let skills = try cell(proven, .skills)
+        XCTAssertEqual(
+            SeatSetup.summary(for: skills, answered: false),
+            SeatSetup.summary(for: skills, answered: true)
+        )
+    }
+
     // MARK: - the platform and the one-line summary
 
     func test_the_platform_is_the_one_the_rules_name() {

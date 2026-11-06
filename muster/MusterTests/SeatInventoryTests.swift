@@ -200,6 +200,20 @@ final class SeatInventoryTests: XCTestCase {
         XCTAssertEqual(refused, .unavailable(OpsControlError.invalidArgument("seat inventory platform").localizedDescription))
     }
 
+    // MARK: - rows with the same name
+
+    /// Two entries in one section can share a name (a skill folder and a `.md` file of the same
+    /// stem both read as one name), so the rows are told apart by position and not by name.
+    func test_rows_are_told_apart_by_position_because_names_can_repeat() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(
+            contentsOf: root.appendingPathComponent("Muster/Views/SeatSetupView.swift"), encoding: .utf8
+        )
+        XCTAssertTrue(source.contains("ForEach(Array(section.items.enumerated()), id: \\.offset)"))
+        XCTAssertFalse(source.contains("ForEach(section.items)"))
+    }
+
     // MARK: - reading on the Mac
 
     private func withReader(_ result: OpsProcessResult?, _ body: (MacSeatInventoryReader) async throws -> Void) async throws {

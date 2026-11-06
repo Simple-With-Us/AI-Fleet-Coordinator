@@ -142,12 +142,6 @@ SOURCES = {
         ("folder", "Skills", ".minimax/skills", False),
         ("folder", "Agents", ".minimax/agents", False),
     ],
-    "minimax": [
-        ("mcp", ".minimax/mcp.json", ("mcpServers",)),
-        ("folder", "Plugins", ".minimax/plugins", False),
-        ("folder", "Skills", ".minimax/skills", False),
-        ("folder", "Agents", ".minimax/agents", False),
-    ],
     "clutch": [
         (
             "not_read",
