@@ -55,7 +55,7 @@ struct WakeSettingsReader {
     /// Where the state lives.
     var location: ListenerStateLocation
     /// The command line,  for the eavesdropper's own account of itself.
-    var runner: AgentSyncRunning
+    var runner: SimpleToolsRunning
     /// The seats to show.
     var roster: [String]
     /// Where the seat partition is,  or nil when the checkout could not be found.
@@ -65,7 +65,7 @@ struct WakeSettingsReader {
 
     init(
         location: ListenerStateLocation = ListenerStateLocation(),
-        runner: AgentSyncRunning = AgentSyncCLI(),
+        runner: SimpleToolsRunning = SimpleToolsCLI(),
         roster: [String] = [],
         partitionURL: URL? = ListenerPartition.defaultURL(),
         now: @escaping () -> Date = { Date() }
@@ -106,7 +106,7 @@ struct WakeSettingsReader {
         // The eavesdropper's own account of itself.
         var status: ListenerStatus?
         do {
-            let result = try await runner.run(AgentSyncInvocation.status())
+            let result = try await runner.run(SimpleToolsInvocation.status())
             if result.exitCode == 0, let data = result.stdout.data(using: .utf8) {
                 status = try? JSONDecoder().decode(ListenerStatus.self, from: data)
                 if status == nil {

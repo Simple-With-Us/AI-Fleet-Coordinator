@@ -6,7 +6,7 @@ The daemon's status output (listener/status.json) now carries the session letter
 
 ## Why
 
-The Operator SQLite registry (scripts/agent_sync/operator_registry.py) is the sole letter allocator, and the daemon already joined catalog rows to letters internally for the wake path.  The published status rows named only a lease id and a platform, so no reader outside the daemon could say which letter a live session holds.  The signed listener read API does not expose leases either, so status.json is the publication surface.
+The Operator SQLite registry (scripts/simple_tools/operator_registry.py) is the sole letter allocator, and the daemon already joined catalog rows to letters internally for the wake path.  The published status rows named only a lease id and a platform, so no reader outside the daemon could say which letter a live session holds.  The signed listener read API does not expose leases either, so status.json is the publication surface.
 
 ## What changed
 
@@ -20,9 +20,9 @@ listener_records.leases_view is unchanged on purpose.  Status rows are built in
 
 ## Files
 
-- scripts/agent_sync/daemon.py (session_letter_details, the session_labels view of it, and the status() lease rows).
-- scripts/agent_sync/operator_registry.py (lookup_many keeps the title).
-- scripts/agent_sync/tests/test_daemon.py (two status tests: a registered lease publishes its letter, title, and verified host while an unregistered one omits them; a missing registry file degrades and is never created by the read).
+- scripts/simple_tools/daemon.py (session_letter_details, the session_labels view of it, and the status() lease rows).
+- scripts/simple_tools/operator_registry.py (lookup_many keeps the title).
+- scripts/simple_tools/tests/test_daemon.py (two status tests: a registered lease publishes its letter, title, and verified host while an unregistered one omits them; a missing registry file degrades and is never created by the read).
 
 ## Verification
 

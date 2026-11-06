@@ -283,7 +283,7 @@ struct ListenerConfigCheck: Decodable, Equatable {
 // MARK: - The command line
 
 /// A run of the fleet's `simple-chat` command line.
-struct AgentSyncInvocation: Equatable {
+struct SimpleToolsInvocation: Equatable {
     var arguments: [String]
     var timeout: TimeInterval
 
@@ -291,31 +291,31 @@ struct AgentSyncInvocation: Equatable {
     /// A test wake runs a real agent,  so it gets the engine's own long timeout.
     static let testWakeTimeout: TimeInterval = 900
 
-    init(_ arguments: [String], timeout: TimeInterval = AgentSyncInvocation.defaultTimeout) {
+    init(_ arguments: [String], timeout: TimeInterval = SimpleToolsInvocation.defaultTimeout) {
         self.arguments = arguments
         self.timeout = timeout
     }
 
     /// `daemon status --json`:  the eavesdropper's own published state.
-    static func status() -> AgentSyncInvocation {
-        AgentSyncInvocation(["daemon", "status", "--json"])
+    static func status() -> SimpleToolsInvocation {
+        SimpleToolsInvocation(["daemon", "status", "--json"])
     }
 
     /// `daemon pause --seat S --wakes-only`:  the kill switch,  for wakes only.
-    static func pause(seat: String) throws -> AgentSyncInvocation {
-        AgentSyncInvocation([
+    static func pause(seat: String) throws -> SimpleToolsInvocation {
+        SimpleToolsInvocation([
             "daemon", "pause", "--seat", try checked(seat), "--wakes-only",
         ])
     }
 
     /// `daemon resume --seat S`:  lift the kill switch.
-    static func resume(seat: String) throws -> AgentSyncInvocation {
-        AgentSyncInvocation(["daemon", "resume", "--seat", try checked(seat)])
+    static func resume(seat: String) throws -> SimpleToolsInvocation {
+        SimpleToolsInvocation(["daemon", "resume", "--seat", try checked(seat)])
     }
 
     /// `daemon reload`:  re-read the configuration file.
-    static func reload() -> AgentSyncInvocation {
-        AgentSyncInvocation(["daemon", "reload"])
+    static func reload() -> SimpleToolsInvocation {
+        SimpleToolsInvocation(["daemon", "reload"])
     }
 
     /// `daemon check-config --file F [--partition P] --json`:  would the eavesdropper take this
@@ -324,9 +324,9 @@ struct AgentSyncInvocation: Equatable {
     /// The command line runs from Muster's checkout and the eavesdropper can run from another, so
     /// `partition` names the copy to judge by.  A checkout too old for the flag exits 2 with no
     /// answer, and that stops the write.
-    static func checkConfig(file: String, partition: String?) -> AgentSyncInvocation {
+    static func checkConfig(file: String, partition: String?) -> SimpleToolsInvocation {
         let copy = partition.map { ["--partition", $0] } ?? []
-        return AgentSyncInvocation(["daemon", "check-config", "--file", file] + copy + ["--json"])
+        return SimpleToolsInvocation(["daemon", "check-config", "--file", file] + copy + ["--json"])
     }
 
     /// `daemon test-wake --seat S --runtime R --run`:  run the seat's wake for real.
@@ -335,15 +335,15 @@ struct AgentSyncInvocation: Equatable {
     /// (`claude`, `muse`, `mcode`, `fallback`).  Passing a wake type the CLI does not know
     /// -- `inbox` or `http` -- makes argparse exit 2 with "invalid choice",  so the flag is
     /// left off and the CLI's own default (`auto`) decides instead.
-    static func testWakeRun(seat: String, runtime: String?) throws -> AgentSyncInvocation {
-        AgentSyncInvocation([
+    static func testWakeRun(seat: String, runtime: String?) throws -> SimpleToolsInvocation {
+        SimpleToolsInvocation([
             "daemon", "test-wake", "--seat", try checked(seat),
         ] + runtimeArgument(runtime) + ["--run"], timeout: testWakeTimeout)
     }
 
     /// `daemon test-wake --seat S --runtime R --pin`:  pin the binary that passed.
-    static func testWakePin(seat: String, runtime: String?) throws -> AgentSyncInvocation {
-        AgentSyncInvocation([
+    static func testWakePin(seat: String, runtime: String?) throws -> SimpleToolsInvocation {
+        SimpleToolsInvocation([
             "daemon", "test-wake", "--seat", try checked(seat),
         ] + runtimeArgument(runtime) + ["--pin"], timeout: testWakeTimeout)
     }
@@ -364,7 +364,7 @@ struct AgentSyncInvocation: Equatable {
     /// process exists.
     private static func checked(_ value: String) throws -> String {
         guard FleetConfigInvocation.isSafeToken(value) else {
-            throw AgentSyncError.invalidArgument(value)
+            throw SimpleToolsError.invalidArgument(value)
         }
         return value
     }
@@ -372,7 +372,7 @@ struct AgentSyncInvocation: Equatable {
 
 // MARK: - Results and errors
 
-struct AgentSyncCLIResult: Equatable {
+struct SimpleToolsCLIResult: Equatable {
     var exitCode: Int32
     var stdout: String
     var stderr: String
@@ -388,7 +388,7 @@ struct AgentSyncCLIResult: Equatable {
     }
 }
 
-enum AgentSyncError: Error, Equatable, LocalizedError {
+enum SimpleToolsError: Error, Equatable, LocalizedError {
     case invalidArgument(String)
     case commandNotFound(String)
     case launchFailed(String)
@@ -420,8 +420,8 @@ enum AgentSyncError: Error, Equatable, LocalizedError {
 
 // MARK: - The runner
 
-protocol AgentSyncRunning: Sendable {
-    func run(_ invocation: AgentSyncInvocation) async throws -> AgentSyncCLIResult
+protocol SimpleToolsRunning: Sendable {
+    func run(_ invocation: SimpleToolsInvocation) async throws -> SimpleToolsCLIResult
 }
 
 /// Runs the fleet's `simple-chat` command line from the repository checkout.
@@ -429,7 +429,7 @@ protocol AgentSyncRunning: Sendable {
 /// The command line is the Operator's own,  at `scripts/simple-chat`,  so the app asks the
 /// same tool a person would ask.  The child environment keeps HOME and PATH,  and drops the
 /// variables that could point the command line at a stand-in.
-struct AgentSyncCLI: AgentSyncRunning {
+struct SimpleToolsCLI: SimpleToolsRunning {
     static let maximumOutputBytes = 8 * 1024 * 1024
 
     /// Where the checkout is.
@@ -456,17 +456,17 @@ struct AgentSyncCLI: AgentSyncRunning {
         return result
     }
 
-    static func processArguments(at location: EngineLocation, for invocation: AgentSyncInvocation) -> [String] {
+    static func processArguments(at location: EngineLocation, for invocation: SimpleToolsInvocation) -> [String] {
         [commandURL(at: location).path] + invocation.arguments
     }
 
-    func run(_ invocation: AgentSyncInvocation) async throws -> AgentSyncCLIResult {
+    func run(_ invocation: SimpleToolsInvocation) async throws -> SimpleToolsCLIResult {
         guard let resolved = location() else {
-            throw AgentSyncError.commandNotFound("the repository checkout")
+            throw SimpleToolsError.commandNotFound("the repository checkout")
         }
         let command = Self.commandURL(at: resolved)
         guard FileManager.default.isExecutableFile(atPath: command.path) else {
-            throw AgentSyncError.commandNotFound(command.path)
+            throw SimpleToolsError.commandNotFound(command.path)
         }
         return try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
@@ -492,10 +492,10 @@ struct AgentSyncCLI: AgentSyncRunning {
     }
 
     private static func runBlocking(
-        _ invocation: AgentSyncInvocation,
+        _ invocation: SimpleToolsInvocation,
         at location: EngineLocation,
         command: URL
-    ) throws -> AgentSyncCLIResult {
+    ) throws -> SimpleToolsCLIResult {
         let fileManager = FileManager.default
         // Output goes to files,  not pipes:  nothing can deadlock on a full pipe,  and a
         // child that outlives the app never takes a SIGPIPE when it prints its last line.
@@ -526,7 +526,7 @@ struct AgentSyncCLI: AgentSyncRunning {
         } catch {
             try? stdoutHandle.close()
             try? stderrHandle.close()
-            throw AgentSyncError.launchFailed(error.localizedDescription)
+            throw SimpleToolsError.launchFailed(error.localizedDescription)
         }
 
         let flag = TimeoutFlag()
@@ -542,7 +542,7 @@ struct AgentSyncCLI: AgentSyncRunning {
         try? stdoutHandle.close()
         try? stderrHandle.close()
 
-        return AgentSyncCLIResult(
+        return SimpleToolsCLIResult(
             exitCode: process.terminationStatus,
             stdout: try read(stdoutURL),
             stderr: try read(stderrURL),
@@ -554,7 +554,7 @@ struct AgentSyncCLI: AgentSyncRunning {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         let data = try handle.read(upToCount: maximumOutputBytes + 1) ?? Data()
-        if data.count > maximumOutputBytes { throw AgentSyncError.outputTooLarge }
+        if data.count > maximumOutputBytes { throw SimpleToolsError.outputTooLarge }
         return String(decoding: data, as: UTF8.self)
     }
 }

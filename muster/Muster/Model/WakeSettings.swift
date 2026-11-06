@@ -35,7 +35,7 @@ enum WakeType: String, CaseIterable {
 
 /// Who holds a seat, according to the seat partition.
 ///
-/// The partition (`docs/protocols/agent-sync-partition.toml`) gives each seat to one eavesdropper.  A
+/// The partition (`docs/protocols/simple-tools-partition.toml`) gives each seat to one eavesdropper.  A
 /// eavesdropper refuses to run with a `[seat.X]` section the partition does not give to it, enabled or
 /// not, and it fails closed:  a seat it does not list is refused, and a file it cannot read
 /// refuses every seat (`agent_sync/config.py` `partition_errors`).  Muster runs on the Mac and
@@ -110,7 +110,7 @@ enum ListenerSeatHost: Equatable {
 struct ListenerPartition: Equatable {
     /// Where the file sits in a checkout.  The Mac's eavesdropper reads its own checkout's copy, and
     /// says which one in its status (`partition_file`), so that copy decides once it has said.
-    static let relativePath = "docs/protocols/agent-sync-partition.toml"
+    static let relativePath = "docs/protocols/simple-tools-partition.toml"
     /// The instance name Muster's own machine has in the partition.
     static let thisInstance = "mac"
 

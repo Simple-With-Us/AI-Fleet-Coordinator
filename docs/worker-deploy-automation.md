@@ -47,7 +47,7 @@ To record a receipt:
 
 ## Arming `simple-tools-mcp`
 
-`scripts/agent-sync-mcp/DEPLOY.md` still says this Worker is deployed by hand and never from CI.  That is an open owner decision, and nothing here changes it.  The automation is prepared and stays off until the owner answers.  To arm it after that answer:
+`scripts/simple-tools-mcp/DEPLOY.md` still says this Worker is deployed by hand and never from CI.  That is an open owner decision, and nothing here changes it.  The automation is prepared and stays off until the owner answers.  To arm it after that answer:
 
 1. Update the never-from-CI wording in `DEPLOY.md`, `wrangler.jsonc`, `package.json` and `agent-sync-mcp.yml`.
 2. Declare the live limits in `wrangler.jsonc`.

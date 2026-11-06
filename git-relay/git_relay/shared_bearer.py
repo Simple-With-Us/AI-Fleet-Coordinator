@@ -4,7 +4,7 @@ one credential per identity, shared between ST-MCP and GR-MCP, minted in the adm
 A seat presents its admin-minted bearer (today the gbb_<role>_<secret> family).  This
 module resolves the bearer to its identity by asking the Worker's HMAC-authed internal
 verify route.  The raw bearer NEVER leaves this process:  only its SHA-256 hex travels,
-inside a body signed with the same X-Agent-Sync-Signature scheme as the wake listener
+inside a body signed with the same X-Simple-Tools-Signature scheme as the wake listener
 (HMAC-SHA256 over the raw bytes, freshness window on sent_at).  The verify key itself
 is read through the fleet-secrets CLI only, like every other credential this service
 touches - never from the process environment.
@@ -31,7 +31,7 @@ import urllib.error
 import urllib.request
 
 VERIFY_CONTRACT = "gr-bearer-verify/1"
-SIGNATURE_HEADER = "X-Agent-Sync-Signature"
+SIGNATURE_HEADER = "X-Simple-Tools-Signature"
 
 # The bearer families this resolver understands, both admin-minted:
 #   gbb_<role>_<43>      a Grok Bot persona (identity GB-<ROLE>)

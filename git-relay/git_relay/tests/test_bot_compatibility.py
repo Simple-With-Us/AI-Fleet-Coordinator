@@ -47,6 +47,8 @@ BOT_IDENTITIES = (
     "GB-ORACLE",
     "GB-TRADER",
     "GB-ENGINEER",
+    "ZC",
+    "KIMI",
 )
 
 
