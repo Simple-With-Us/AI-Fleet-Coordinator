@@ -767,8 +767,8 @@ final class MiniMaxSurfaceTests: XCTestCase {
     /// A leading `NAME=value` assignment is never the hook id, so a secret in it is
     /// not shown through the id.
     func test_a_command_id_skips_leading_assignments() {
-        XCTAssertEqual(MiniMaxReader.commandId("API_KEY=sk-abc123secret /opt/bin/guard"), "guard")
+        XCTAssertEqual(MiniMaxReader.commandId("MODE=strict /opt/bin/guard"), "guard")
         XCTAssertEqual(MiniMaxReader.commandId("A=1 B=2 python3 /opt/x/hook.py"), "hook")
-        XCTAssertEqual(MiniMaxReader.commandId("TOKEN=abc"), "")
+        XCTAssertEqual(MiniMaxReader.commandId("MODE=strict"), "")
     }
 }
