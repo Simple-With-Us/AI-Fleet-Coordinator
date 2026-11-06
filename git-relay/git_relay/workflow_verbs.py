@@ -5449,24 +5449,77 @@ class WorkflowVerbs:
         files = args.get("files")
         if not isinstance(files, list) or not 1 <= len(files) <= 20:
             raise Refused("invalid files")
-        entries, seen, total = [], set(), 0
+        entries, seen, total, referenced_total = [], set(), 0, 0
         for value in files:
             if not isinstance(value, dict):
                 raise Refused("invalid file")
-            _only(value, ("path", "text", "mode"))
+            _only(value, ("path", "text", "sha", "mode"))
             path = _path(value)
             if find_secret(path) or self._provider_token_text(path):
                 raise Refused("credential-shaped file path refused")
             mode = _enum(value, "mode", ("100644", "100755"))
-            text = value.get("text")
+            text, sha = value.get("text"), value.get("sha")
             if (
                 _workflow_path(path)
                 or path in seen
                 or any(path.startswith(x + "/") or x.startswith(path + "/") for x in seen)
-                or not isinstance(text, str)
-                or find_secret(text)
-                or self._provider_token_text(text)
+                or (text is None) == (sha is None)
             ):
+                raise Refused("invalid file content or path")
+            if sha is not None:
+                # An existing-blob reference still carries the attestation: the
+                # blob is fetched and scanned exactly like supplied text, so a
+                # sha entry can never smuggle unscanned content into a tree.
+                # Referenced bytes never cross the MCP body, so they draw from
+                # the raw work budget (MAX_FILES_RAW), not the transport cap.
+                if not isinstance(sha, str) or not _SHA.fullmatch(sha):
+                    raise Refused("invalid file content or path")
+                # The pre-read runs before any dispatch:  a transient upstream
+                # failure here means NO write was attempted, so it releases the
+                # idempotency key as retryable instead of locking it unknown.
+                try:
+                    blob = _obj(self._get(f"/repos/{repo}/git/blobs/{sha}"))
+                except RelayGitHubError as exc:
+                    if exc.code == "response_too_large":
+                        raise Refused("referenced blob exceeds supported response size") from None
+                    if exc.status in (0, 408) or exc.status >= 500:
+                        raise PreReadUnavailable(
+                            "blob pre-read unavailable; no write attempted"
+                        ) from None
+                    raise
+                raw = blob.get("content")
+                if (
+                    blob.get("encoding") != "base64"
+                    or not isinstance(blob.get("size"), int)
+                    or not isinstance(raw, str)
+                ):
+                    raise Refused("referenced blob unavailable or unsupported")
+                try:
+                    # GitHub wraps blob content base64 at 60 columns; strip the
+                    # whitespace before validating, as the other blob reads do.
+                    decoded_raw = base64.b64decode("".join(raw.split()), validate=True)
+                except (binascii.Error, ValueError):
+                    raise Refused("referenced blob unavailable or unsupported") from None
+                # Budgets measure the decoded bytes, never the receipt's declared
+                # size:  a receipt that understates blob["size"] cannot smuggle
+                # content past the raw work budget.
+                if len(decoded_raw) > MAX_FILE_RAW:
+                    raise Refused("referenced blob exceeds the per-file raw budget")
+                if unreviewed_file_secret(repo, path, decoded_raw):
+                    raise Refused("credential-shaped content refused")
+                try:
+                    decoded = decoded_raw.decode("utf-8")
+                except UnicodeDecodeError:
+                    raise Refused("referenced blob is not utf-8 text") from None
+                if self._provider_token_text(decoded):
+                    raise Refused("credential-shaped content refused")
+                referenced_total += len(decoded_raw)
+                if referenced_total > MAX_FILES_RAW:
+                    raise Refused("file content budget exceeded")
+                seen.add(path)
+                entries.append({"path": path, "mode": mode, "type": "blob", "sha": sha})
+                continue
+            if not isinstance(text, str) or find_secret(text) or self._provider_token_text(text):
                 raise Refused("invalid file content or path")
             try:
                 total += len(text.encode("utf-8"))

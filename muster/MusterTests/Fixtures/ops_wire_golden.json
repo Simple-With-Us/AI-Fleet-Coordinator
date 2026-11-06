@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "about": "The one contract between Muster and fleet-ops-control.py over ssh.  OpsControlTests checks that Muster sends each accepted line and decodes each answer.  scripts/test_fleet_ops_control.py feeds every line through the server's forced-command gate and checks that the server still gives these answers.  ssh drops the `--` that ends its own options, so the line is the arguments after it, joined by spaces.",
+  "accepted": [
+    {"action": "serverUnit", "verb": "restart", "target": "fleet-server-status.timer", "mode": "plan", "line": "server restart fleet-server-status.timer --plan --json"},
+    {"action": "serverUnit", "verb": "stop", "target": "fleet-server-status.timer", "mode": "yes", "line": "server stop fleet-server-status.timer --yes --json"},
+    {"action": "logs", "target": "fleet-server-status.timer", "mode": "yes", "line": "server logs fleet-server-status.timer --yes --json"},
+    {"action": "serverUpdate", "target": "fleet-cli", "mode": "plan", "line": "server update fleet-cli --plan --json"},
+    {"action": "coolifyRedeploy", "target": "abc123def456", "mode": "yes", "line": "server redeploy abc123def456 --yes --json"},
+    {"action": "resourceStatus", "target": "coding", "mode": "plan", "line": "server resource-status coding --plan --json"}
+  ],
+  "refusedAtGate": [
+    "-- server restart fleet-server-status.timer --plan --json",
+    "server restart fleet-server-status.timer --plan --yes --json",
+    "server restart fleet-server-status.timer;reboot --plan --json",
+    "server restart a/b.service --plan --json",
+    "mac restart com.example.fixture-doctor --plan --json",
+    "server restart fleet-server-status.timer --plan --json --verbose"
+  ],
+  "refusedByHelper": [
+    "server restart fleet-worker@CLAUDE.service --plan --json",
+    "server restart sshd.service --plan --json"
+  ],
+  "answers": {
+    "planned": {"ok": true, "verb": "server restart", "target": "fleet-server-status.timer", "commands": [["/usr/bin/systemctl", "--user", "restart", "fleet-server-status.timer"]], "result": "planned", "detail": "user unit"},
+    "notListed": {"ok": false, "verb": "server restart", "target": "sshd.service", "commands": [], "result": "refused", "detail": "the unit is not in the allowlist"},
+    "busy": {"ok": false, "verb": "server stop", "target": "fleet-server-status.timer", "commands": [], "result": "refused", "detail": "another action is still running on this machine", "errorCode": "action_busy", "auditID": "0123456789ab", "auditTarget": "fleet-server-status.timer"},
+    "done": {"ok": true, "verb": "server stop", "target": "fleet-server-status.timer", "commands": [["/usr/bin/systemctl", "--user", "stop", "fleet-server-status.timer"]], "result": "done", "detail": "done", "completedCommands": 1, "auditID": "0123456789ab", "auditTarget": "fleet-server-status.timer"}
+  }
+}

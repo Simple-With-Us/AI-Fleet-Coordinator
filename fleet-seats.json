@@ -286,7 +286,10 @@
           "collector": "mac",
           "description": "The hook id is the one the check derives from the installed config, and the timeout is the one the installer writes.",
           "expected": {
-            "description": "The fleet guard hook is registered for PreToolUse in ~/.gemini/config/hooks.json",
+            "description": "The fleet guard hook is registered for PreToolUse in ~/.gemini/config/hooks.json and denies a shell command that writes into a forbidden tree",
+            "guards": [
+              "shell"
+            ],
             "names": [
               "lane-guard"
             ],
@@ -294,6 +297,36 @@
             "timeoutSeconds": 5
           },
           "id": "ag-hooks-lane-guard",
+          "kind": "hooks",
+          "ownerSeat": "AG",
+          "platforms": [
+            "antigravity"
+          ],
+          "proofLevel": "L1",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "PreToolUse",
+            "target": "~/.gemini/config/hooks.json",
+            "type": "hook_registered"
+          },
+          "collector": "mac",
+          "description": "Shell guarding has its own rule.  This one asks the same hook to police file writes too, which needs a matcher that delivers the file tools to it.",
+          "expected": {
+            "description": "The fleet guard hook is registered for PreToolUse in ~/.gemini/config/hooks.json with a matcher that delivers the file tools to it, and it denies a file write into a forbidden tree",
+            "guards": [
+              "file"
+            ],
+            "names": [
+              "lane-guard"
+            ],
+            "present": true,
+            "timeoutSeconds": 5
+          },
+          "id": "ag-hooks-file-guard",
           "kind": "hooks",
           "ownerSeat": "AG",
           "platforms": [
@@ -472,7 +505,10 @@
           "collector": "mac",
           "description": "The hook id is the one the check derives from the installed config, and the timeout is the one the installer writes.",
           "expected": {
-            "description": "The fleet guard hook is registered for PreToolUse in ~/.claude/settings.json",
+            "description": "The fleet guard hook is registered for PreToolUse in ~/.claude/settings.json and denies a shell command that writes into a forbidden tree",
+            "guards": [
+              "shell"
+            ],
             "names": [
               "lane-guard-hook"
             ],
@@ -480,6 +516,36 @@
             "timeoutSeconds": 5
           },
           "id": "claude-hooks-lane-guard",
+          "kind": "hooks",
+          "ownerSeat": "CLAUDE",
+          "platforms": [
+            "claude"
+          ],
+          "proofLevel": "L1",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "PreToolUse",
+            "target": "~/.claude/settings.json",
+            "type": "hook_registered"
+          },
+          "collector": "mac",
+          "description": "Shell guarding has its own rule.  This one asks the same hook to police file writes too, which needs a matcher that delivers the file tools to it.",
+          "expected": {
+            "description": "The fleet guard hook is registered for PreToolUse in ~/.claude/settings.json with a matcher that delivers the file tools to it, and it denies a file write into a forbidden tree",
+            "guards": [
+              "file"
+            ],
+            "names": [
+              "lane-guard-hook"
+            ],
+            "present": true,
+            "timeoutSeconds": 5
+          },
+          "id": "claude-hooks-file-guard",
           "kind": "hooks",
           "ownerSeat": "CLAUDE",
           "platforms": [
@@ -700,7 +766,10 @@
           "collector": "mac",
           "description": "The hook id is the one the check derives from the installed config, and the timeout is the one the installer writes.",
           "expected": {
-            "description": "The fleet guard hook is registered for PreToolUse in ~/apps/lane-tools/clutch/hooks.json",
+            "description": "The fleet guard hook is registered for PreToolUse in ~/apps/lane-tools/clutch/hooks.json and denies a shell command that writes into a forbidden tree",
+            "guards": [
+              "shell"
+            ],
             "names": [
               "fleet-guard-hook"
             ],
@@ -708,6 +777,36 @@
             "timeoutSeconds": 5
           },
           "id": "clutch-hooks-lane-guard",
+          "kind": "hooks",
+          "ownerSeat": "CLUTCH",
+          "platforms": [
+            "clutch"
+          ],
+          "proofLevel": "L1",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "PreToolUse",
+            "target": "~/apps/lane-tools/clutch/hooks.json",
+            "type": "hook_registered"
+          },
+          "collector": "mac",
+          "description": "Shell guarding has its own rule.  This one asks the same hook to police file writes too, which needs a matcher that delivers the file tools to it.",
+          "expected": {
+            "description": "The fleet guard hook is registered for PreToolUse in ~/apps/lane-tools/clutch/hooks.json with a matcher that delivers the file tools to it, and it denies a file write into a forbidden tree",
+            "guards": [
+              "file"
+            ],
+            "names": [
+              "fleet-guard-hook"
+            ],
+            "present": true,
+            "timeoutSeconds": 5
+          },
+          "id": "clutch-hooks-file-guard",
           "kind": "hooks",
           "ownerSeat": "CLUTCH",
           "platforms": [
@@ -860,7 +959,10 @@
           "collector": "mac",
           "description": "The hook id is the one the check derives from the installed config, and the timeout is the one the installer writes.",
           "expected": {
-            "description": "The fleet guard hook is registered for PreToolUse in ~/.codex/hooks.json",
+            "description": "The fleet guard hook is registered for PreToolUse in ~/.codex/hooks.json and denies a shell command that writes into a forbidden tree",
+            "guards": [
+              "shell"
+            ],
             "names": [
               "lane-guard-hook"
             ],
@@ -868,6 +970,36 @@
             "timeoutSeconds": 5
           },
           "id": "codex-hooks-lane-guard",
+          "kind": "hooks",
+          "ownerSeat": "CODEX",
+          "platforms": [
+            "codex"
+          ],
+          "proofLevel": "L1",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "PreToolUse",
+            "target": "~/.codex/hooks.json",
+            "type": "hook_registered"
+          },
+          "collector": "mac",
+          "description": "Shell guarding has its own rule.  This one asks the same hook to police file writes too, which needs a matcher that delivers the file tools to it.",
+          "expected": {
+            "description": "The fleet guard hook is registered for PreToolUse in ~/.codex/hooks.json with a matcher that delivers the file tools to it, and it denies a file write into a forbidden tree",
+            "guards": [
+              "file"
+            ],
+            "names": [
+              "lane-guard-hook"
+            ],
+            "present": true,
+            "timeoutSeconds": 5
+          },
+          "id": "codex-hooks-file-guard",
           "kind": "hooks",
           "ownerSeat": "CODEX",
           "platforms": [
@@ -1081,7 +1213,10 @@
           "collector": "mac",
           "description": "The hook id is the one the check derives from the installed config, and the timeout is the one the installer writes.",
           "expected": {
-            "description": "The fleet guard hook is registered for beforeShellExecution in ~/.cursor/hooks.json",
+            "description": "The fleet guard hook is registered for beforeShellExecution in ~/.cursor/hooks.json and denies a shell command that writes into a forbidden tree",
+            "guards": [
+              "shell"
+            ],
             "names": [
               "lane-guard-hook"
             ],
@@ -1089,6 +1224,36 @@
             "timeoutSeconds": 5
           },
           "id": "cursor-hooks-lane-guard",
+          "kind": "hooks",
+          "ownerSeat": "CURSOR",
+          "platforms": [
+            "cursor"
+          ],
+          "proofLevel": "L1",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "beforeShellExecution",
+            "target": "~/.cursor/hooks.json",
+            "type": "hook_registered"
+          },
+          "collector": "mac",
+          "description": "Shell guarding has its own rule.  This one asks the same hook to police file writes too, which needs a matcher that delivers the file tools to it.",
+          "expected": {
+            "description": "The fleet guard hook is registered for beforeShellExecution in ~/.cursor/hooks.json with a matcher that delivers the file tools to it, and it denies a file write into a forbidden tree",
+            "guards": [
+              "file"
+            ],
+            "names": [
+              "lane-guard-hook"
+            ],
+            "present": true,
+            "timeoutSeconds": 5
+          },
+          "id": "cursor-hooks-file-guard",
           "kind": "hooks",
           "ownerSeat": "CURSOR",
           "platforms": [
@@ -1533,7 +1698,10 @@
           "collector": "mac",
           "description": "The hook id is the one the check derives from the installed config, and the timeout is the one the installer writes.",
           "expected": {
-            "description": "The fleet guard hook is registered for PreToolUse in ~/.grok/hooks/lane-guard.json",
+            "description": "The fleet guard hook is registered for PreToolUse in ~/.grok/hooks/lane-guard.json and denies a shell command that writes into a forbidden tree",
+            "guards": [
+              "shell"
+            ],
             "names": [
               "lane-guard-hook"
             ],
@@ -1541,6 +1709,36 @@
             "timeoutSeconds": 5
           },
           "id": "grok-hooks-lane-guard",
+          "kind": "hooks",
+          "ownerSeat": "GROK",
+          "platforms": [
+            "grok"
+          ],
+          "proofLevel": "L1",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "PreToolUse",
+            "target": "~/.grok/hooks/lane-guard.json",
+            "type": "hook_registered"
+          },
+          "collector": "mac",
+          "description": "Shell guarding has its own rule.  This one asks the same hook to police file writes too, which needs a matcher that delivers the file tools to it.",
+          "expected": {
+            "description": "The fleet guard hook is registered for PreToolUse in ~/.grok/hooks/lane-guard.json with a matcher that delivers the file tools to it, and it denies a file write into a forbidden tree",
+            "guards": [
+              "file"
+            ],
+            "names": [
+              "lane-guard-hook"
+            ],
+            "present": true,
+            "timeoutSeconds": 5
+          },
+          "id": "grok-hooks-file-guard",
           "kind": "hooks",
           "ownerSeat": "GROK",
           "platforms": [
@@ -1799,7 +1997,10 @@
           "collector": "mac",
           "description": "The hook id is the one the check derives from the installed config, and the timeout is the one the installer writes.",
           "expected": {
-            "description": "The fleet guard hook is registered for PreToolUse in ~/.kimi-code/config.toml",
+            "description": "The fleet guard hook is registered for PreToolUse in ~/.kimi-code/config.toml and denies a shell command that writes into a forbidden tree",
+            "guards": [
+              "shell"
+            ],
             "names": [
               "fleet-guard-hook"
             ],
@@ -1807,6 +2008,36 @@
             "timeoutSeconds": 5
           },
           "id": "kimi-hooks-lane-guard",
+          "kind": "hooks",
+          "ownerSeat": "KIMI",
+          "platforms": [
+            "kimi"
+          ],
+          "proofLevel": "L1",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "PreToolUse",
+            "target": "~/.kimi-code/config.toml",
+            "type": "hook_registered"
+          },
+          "collector": "mac",
+          "description": "Shell guarding has its own rule.  This one asks the same hook to police file writes too, which needs a matcher that delivers the file tools to it.",
+          "expected": {
+            "description": "The fleet guard hook is registered for PreToolUse in ~/.kimi-code/config.toml with a matcher that delivers the file tools to it, and it denies a file write into a forbidden tree",
+            "guards": [
+              "file"
+            ],
+            "names": [
+              "fleet-guard-hook"
+            ],
+            "present": true,
+            "timeoutSeconds": 5
+          },
+          "id": "kimi-hooks-file-guard",
           "kind": "hooks",
           "ownerSeat": "KIMI",
           "platforms": [
@@ -2300,14 +2531,47 @@
           "collector": "mac",
           "description": "The hook id is the one the check derives from the installed config, and the timeout is the one the installer writes.",
           "expected": {
-            "description": "The fleet guard hook is registered for PreToolUse in ~/.minimax/plugins/fleet-guard/hooks/hooks.json",
+            "description": "The fleet guard hook is registered for PreToolUse in ~/.minimax/plugins/fleet-guard/hooks/hooks.json and denies a shell command that writes into a forbidden tree",
+            "guards": [
+              "shell"
+            ],
             "names": [
-              "fleet-guard-hook"
+              "minimax-guard-hook"
             ],
             "present": true,
             "timeoutSeconds": 10
           },
           "id": "mm-hooks-lane-guard",
+          "kind": "hooks",
+          "ownerSeat": "MM",
+          "platforms": [
+            "minimax"
+          ],
+          "proofLevel": "L1",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "PreToolUse",
+            "target": "~/.minimax/plugins/fleet-guard/hooks/hooks.json",
+            "type": "hook_registered"
+          },
+          "collector": "mac",
+          "description": "Shell guarding has its own rule.  This one asks the same hook to police file writes too, which needs a matcher that delivers the file tools to it.",
+          "expected": {
+            "description": "The fleet guard hook is registered for PreToolUse in ~/.minimax/plugins/fleet-guard/hooks/hooks.json with a matcher that delivers the file tools to it, and it denies a file write into a forbidden tree",
+            "guards": [
+              "file"
+            ],
+            "names": [
+              "minimax-guard-hook"
+            ],
+            "present": true,
+            "timeoutSeconds": 10
+          },
+          "id": "mm-hooks-file-guard",
           "kind": "hooks",
           "ownerSeat": "MM",
           "platforms": [
@@ -2719,7 +2983,10 @@
           "collector": "mac",
           "description": "The hook id is the one the check derives from the installed config, and the timeout is the one the installer writes.",
           "expected": {
-            "description": "The fleet guard hook is registered for PreToolUse in ~/.zcode/cli/config.json",
+            "description": "The fleet guard hook is registered for PreToolUse in ~/.zcode/cli/config.json and denies a shell command that writes into a forbidden tree",
+            "guards": [
+              "shell"
+            ],
             "names": [
               "lane-guard-hook"
             ],
@@ -2727,6 +2994,36 @@
             "timeoutSeconds": 5
           },
           "id": "zc-hooks-lane-guard",
+          "kind": "hooks",
+          "ownerSeat": "ZC",
+          "platforms": [
+            "zcode"
+          ],
+          "proofLevel": "L1",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "PreToolUse",
+            "target": "~/.zcode/cli/config.json",
+            "type": "hook_registered"
+          },
+          "collector": "mac",
+          "description": "Shell guarding has its own rule.  This one asks the same hook to police file writes too, which needs a matcher that delivers the file tools to it.",
+          "expected": {
+            "description": "The fleet guard hook is registered for PreToolUse in ~/.zcode/cli/config.json with a matcher that delivers the file tools to it, and it denies a file write into a forbidden tree",
+            "guards": [
+              "file"
+            ],
+            "names": [
+              "lane-guard-hook"
+            ],
+            "present": true,
+            "timeoutSeconds": 5
+          },
+          "id": "zc-hooks-file-guard",
           "kind": "hooks",
           "ownerSeat": "ZC",
           "platforms": [

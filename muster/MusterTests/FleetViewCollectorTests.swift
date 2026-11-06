@@ -424,6 +424,15 @@ final class FleetViewCollectorTests: XCTestCase {
         )
         let lanes = home.appendingPathComponent("lanes/Fixture-Repo/claude-smoke", isDirectory: true)
         try FileManager.default.createDirectory(at: lanes, withIntermediateDirectories: true)
+        // The collector reads only folders that are git checkouts, so the lane is a real one.
+        let git = Process()
+        git.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        git.arguments = ["init", "-q", lanes.path]
+        git.standardOutput = FileHandle.nullDevice
+        git.standardError = FileHandle.nullDevice
+        try git.run()
+        git.waitUntilExit()
+        XCTAssertEqual(git.terminationStatus, 0, "git init failed for the fixture lane")
         return try FleetViewService.fetch(
             executable: URL(fileURLWithPath: FleetViewService.interpreterPath),
             arguments: [
@@ -455,6 +464,13 @@ final class FleetViewCollectorTests: XCTestCase {
         XCTAssertTrue(envelope.sections.pullRequests.isKnown)
         XCTAssertTrue(envelope.sections.claims.isKnown)
         XCTAssertEqual(envelope.sections.lanes.items.first?.seat, "CLAUDE")
+        XCTAssertEqual(envelope.sections.lanes.items.first?.state, "OK")
+        // The collector names the machine from the platform, and this job runs on macOS.
+        XCTAssertEqual(envelope.host, .mac)
+        XCTAssertEqual(envelope.sections.lanes.items.first?.host, .mac)
+        XCTAssertEqual(envelope.lanesHeading, "Lanes On The Mac")
+        XCTAssertEqual(envelope.sections.pullRequests.unread, [])
+        XCTAssertEqual(envelope.claimExpiryHours, 72)
         XCTAssertEqual(envelope.sections.claims.items.first?.identifier, "FIX-1")
         XCTAssertGreaterThan(envelope.sections.claims.items.first?.ageSeconds ?? -1, 0)
     }

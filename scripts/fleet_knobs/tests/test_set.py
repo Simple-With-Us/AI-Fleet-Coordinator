@@ -84,7 +84,9 @@ class ValidationTests(SetTestCase):
 
 class PlanTests(SetTestCase):
     def test_plan_shows_old_new_and_argv_and_writes_nothing(self):
-        answer, code = self.run_set("FLEET_AUTOPUSH_MODE", "report", "plan")
+        answer, code = self.run_set(
+            "FLEET_AUTOPUSH_MODE", "report", "plan", {setter.ENV_WRITE_TOKEN: WRITE_TOKEN}
+        )
         self.assertEqual((code, answer["result"]), (0, "planned"))
         self.assertEqual((answer["old"], answer["new"]), ("off", "report"))
         self.assertEqual(
@@ -237,9 +239,14 @@ class WriteTests(SetTestCase):
 
 class LastKnownGoodTests(SetTestCase):
     def test_live_reread_refreshes_the_copy(self):
-        # The fake answers the new value after the write, as Infisical would.
+        # The fake answers the new value after the write, as Infisical would:  the first read
+        # is the old value the plan shows, and the second is the re-read after the write.
+        reads = []
+
         def reader(name):
-            self.fake.set(secrets=dict(LIVE, FLEET_AUTOPUSH_MODE="report"))
+            reads.append(name)
+            if len(reads) > 1:
+                self.fake.set(secrets=dict(LIVE, FLEET_AUTOPUSH_MODE="report"))
             return setter.current(name)
 
         answer, code = self.run_set(
@@ -284,10 +291,14 @@ class LastKnownGoodTests(SetTestCase):
 class CliTests(SetTestCase):
     def test_set_plan_json(self):
         out = io.StringIO()
-        code = cli.main(["set", "CLAIM_EXPIRY_MODE", "ping-only", "--plan", "--json"], out=out)
+        with mock.patch.dict(os.environ, {setter.ENV_WRITE_TOKEN: WRITE_TOKEN}):
+            code = cli.main(["set", "CLAIM_EXPIRY_MODE", "ping-only", "--plan", "--json"], out=out)
         answer = json.loads(out.getvalue())
         self.assertEqual((code, answer["result"], answer["new"]), (0, "planned", "ping-only"))
         self.assertEqual(self.set_calls(), [])
+
+    def test_fixtures_are_never_option_like(self):
+        self.assertFalse(SIGNING.startswith("-"))
 
     def test_set_refuses_secret_text(self):
         out = io.StringIO()

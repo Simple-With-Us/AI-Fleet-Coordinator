@@ -44,7 +44,13 @@ What it promises:
     `--json`.  Anything more is refused.
   * Every `--yes` run appends one JSON line to `~/.local/state/fleet-tools/ops-audit.jsonl`
     (0600): time, host role, verb, target and result.  No command output is recorded, and a
-    redeploy is recorded by its resource name, never its uuid.
+    redeploy is recorded by its resource name, never its uuid.  Each row also has a short
+    `id`, and the `--yes` answer carries it (`auditID`) with the row's target (`auditTarget`),
+    so the caller's own log can name the row this run wrote.
+  * One `--yes` runs at a time on a machine:  a second one while another holds
+    `~/.local/state/fleet-tools/ops-control.lock` is refused with `errorCode` `action_busy`.
+    Plans, update-status reads and journal reads take no lock.  A chain of commands that
+    stops at a failure says how many finished first (`completedCommands`).
 
 An update is submitted until a new successful service invocation is observed; API acceptance
 of a redeploy is also submitted.  Neither is called completed from submission alone.
@@ -55,10 +61,13 @@ Exit status: 0 planned, submitted or done, 1 a command failed, 2 refused.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime
+import fcntl
 import json
 import os
 import re
+import secrets
 import selectors
 import shlex
 import stat
@@ -189,11 +198,15 @@ class Refused(Exception):
 
 
 class Failed(Exception):
-    """An allowed command ran and did not succeed."""
+    """An allowed command ran and did not succeed.
 
-    def __init__(self, message, *, error_code=None):
+    `completed` is how many commands of the plan finished before this one, when the run
+    was a chain;  None when it was not."""
+
+    def __init__(self, message, *, error_code=None, completed=None):
         super().__init__(message)
         self.error_code = error_code
+        self.completed = completed
 
 
 # MARK: - The allowlist
@@ -1283,12 +1296,53 @@ def execute(ctx, scope, action, target, commands):
             raise Failed(f"Coolify answered HTTP {status}" if status else "Coolify did not answer")
         return f"Coolify accepted the redeploy (HTTP {status})"
     env = ctx.pm2_env() if scope == "pm2" else ctx.child_env()
+    finished = 0
     for argv in commands:
         status, _ = ctx.runner(argv, timeout=COMMAND_TIMEOUT, env=env)
         if status != 0:
             verb = next((a for a in argv[1:] if not a.startswith("-") and "/" not in a), action)
-            raise Failed(f"{os.path.basename(argv[0])} {verb} exited {status}")
+            raise Failed(f"{os.path.basename(argv[0])} {verb} exited {status}", completed=finished)
+        finished += 1
     return "done" if commands else "nothing to do"
+
+
+@contextlib.contextmanager
+def action_lock(ctx):
+    """Hold the one `--yes` lock on this machine, or refuse at once.
+
+    A second caller, such as a second Muster or a shell, gets a fixed refusal instead of
+    racing the first one on the same unit.  The lock is released when the process exits,
+    however it exits."""
+    directory = ctx.home / ".local" / "state" / "fleet-tools"
+    try:
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        info = directory.lstat()
+        fd = os.open(
+            directory / "ops-control.lock",
+            os.O_RDWR | os.O_CREAT | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+    except OSError:
+        raise Refused(
+            "the action lock is unavailable", error_code="action_lock_unavailable"
+        ) from None
+    try:
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
+            raise Refused(
+                "the action lock directory is untrusted", error_code="action_lock_unavailable"
+            )
+        lock_info = os.fstat(fd)
+        if not stat.S_ISREG(lock_info.st_mode) or lock_info.st_uid != os.getuid():
+            raise Refused("the action lock is untrusted", error_code="action_lock_unavailable")
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise Refused(
+                "another action is still running on this machine", error_code="action_busy"
+            ) from None
+        yield
+    finally:
+        os.close(fd)
 
 
 def execute_logs(ctx, commands):
@@ -1319,6 +1373,7 @@ def audit(
     invocation_id=None,
     verified=None,
     baseline=None,
+    row_id=None,
 ):
     """One JSON line, 0600, appended.  Never command output, never a uuid or a hostname.
     A finished logs run adds its line count and nothing of the text."""
@@ -1329,6 +1384,10 @@ def audit(
         "target": target,
         "result": result,
     }
+    # A short id the caller's own log can store, so the two rows of one action link up.
+    # The function answers True only when the row was written.
+    if isinstance(row_id, str) and re.fullmatch(r"[0-9a-f]{12}", row_id):
+        row["id"] = row_id
     if lines is not None:
         row["lines"] = lines
     if route in ("sudo-system-update", "root-system-update"):
@@ -1392,34 +1451,43 @@ def handle(ctx, scope, action, target, mode):
                 sys.path.insert(0, scripts)
             from fleet_resource_control import handle as handle_resource
 
+            if mode == "yes" and action == "resource-policy":
+                # A write holds the same one-action lock as every other `--yes` write.
+                with action_lock(ctx):
+                    return handle_resource(ctx, action, target, mode)
             return handle_resource(ctx, action, target, mode)
-        commands, note, audit_target = plan_request(ctx, config, scope, action, target)
-        answer["commands"] = commands
-        if mode == "plan":
-            answer.update(ok=True, result="planned", detail=note)
-            code = 0
-        elif scope == "server" and action == "logs":
-            detail, text, log_lines = execute_logs(ctx, commands)
-            answer.update(ok=True, result="done", detail=detail, output=text, lines=log_lines)
-            code = 0
-        elif scope == "server" and action == "update":
-            receipt, code = execute_update(ctx, config, target, commands)
-            answer.update(receipt)
-        elif scope == "server" and action == "redeploy":
-            detail = execute(ctx, scope, action, target, commands)
-            answer.update(
-                ok=True,
-                result="submitted",
-                detail=detail,
-                executionState="submitted",
-                verified=False,
-            )
-            code = 0
-        else:
-            answer.update(
-                ok=True, result="done", detail=execute(ctx, scope, action, target, commands)
-            )
-            code = 0
+        with contextlib.ExitStack() as held:
+            # A logs run only reads the journal, so it takes no write lock.
+            if mode == "yes" and not (scope == "server" and action == "logs"):
+                held.enter_context(action_lock(ctx))
+            commands, note, audit_target = plan_request(ctx, config, scope, action, target)
+            answer["commands"] = commands
+            if mode == "plan":
+                answer.update(ok=True, result="planned", detail=note)
+                code = 0
+            elif scope == "server" and action == "logs":
+                detail, text, log_lines = execute_logs(ctx, commands)
+                answer.update(ok=True, result="done", detail=detail, output=text, lines=log_lines)
+                code = 0
+            elif scope == "server" and action == "update":
+                receipt, code = execute_update(ctx, config, target, commands)
+                answer.update(receipt)
+            elif scope == "server" and action == "redeploy":
+                detail = execute(ctx, scope, action, target, commands)
+                answer.update(
+                    ok=True,
+                    result="submitted",
+                    detail=detail,
+                    executionState="submitted",
+                    verified=False,
+                )
+                code = 0
+            else:
+                answer.update(
+                    ok=True, result="done", detail=execute(ctx, scope, action, target, commands)
+                )
+                answer["completedCommands"] = len(commands)
+                code = 0
     except Refused as exc:
         answer.update(ok=False, result="refused", detail=str(exc))
         if exc.error_code:
@@ -1429,6 +1497,8 @@ def handle(ctx, scope, action, target, mode):
         answer.update(ok=False, result="failed", detail=str(exc))
         if exc.error_code:
             answer["errorCode"] = exc.error_code
+        if exc.completed is not None:
+            answer["completedCommands"] = exc.completed
         code = 1
     if mode == "yes" and not (scope == "server" and action == "update-status"):
         if scope == "server" and action == "redeploy" and audit_target == target:
@@ -1440,18 +1510,24 @@ def handle(ctx, scope, action, target, mode):
                 route = "sudo-system-update"
             elif ctx.uid == 0 and answer["commands"] == [direct]:
                 route = "root-system-update"
-        audit(
+        row_id = secrets.token_hex(6)
+        written_target = (audit_target or "")[:120]
+        if audit(
             ctx,
             scope,
             action,
-            (audit_target or "")[:120],
+            written_target,
             answer["result"],
             lines=log_lines if answer["result"] == "done" else None,
             route=route,
             invocation_id=answer.get("invocationID"),
             verified=answer.get("verified"),
             baseline=answer.get("baselineStartMonotonic"),
-        )
+            row_id=row_id,
+        ):
+            # Only a row that was written is named, so the caller never links to nothing.
+            answer["auditID"] = row_id
+            answer["auditTarget"] = written_target
     return answer, code
 
 

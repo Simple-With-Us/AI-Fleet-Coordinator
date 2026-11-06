@@ -20,26 +20,42 @@ public enum FleetSecretError: LocalizedError, Equatable {
     /// calling a refusal "in time" sent the owner hunting a slow read that
     /// never happened (AFC-592).
     case refused(String)
+    /// The `fleet-secrets` command is not where Muster looks for it.  Kept apart from
+    /// `unavailable`, so a missing command never reads as a slow one.
+    case notInstalled
 
     public var errorDescription: String? {
         switch self {
         case .invalidName:
             return "A secret name is capital letters, digits and underscores."
         case .missing(let name):
-            return "\(name) is not in Infisical.  Add it there:  Muster keeps no copy of it."
+            return "\(name) is not in Infisical.\u{00A0} Add it there:  Muster keeps no copy of it."
         case .unavailable(let name):
             return "fleet-secrets could not read \(name) in time."
         case .refused(let name):
-            return "fleet-secrets refused to read \(name), so nothing is shown."
+            return "fleet-secrets stopped with an error while reading \(name), so nothing is shown.\u{00A0} That can be a refusal or no network;  the doctor below says which when it can."
+        case .notInstalled:
+            return "fleet-secrets is not installed on this Mac:  Muster looks for it in ~/.local/bin."
         }
     }
 
+    /// True when a command could not start because its file is not there.
+    static func isMissingCommand(_ error: Error) -> Bool {
+        let ns = error as NSError
+        if ns.domain == NSCocoaErrorDomain {
+            return ns.code == NSFileNoSuchFileError || ns.code == NSFileReadNoSuchFileError
+        }
+        return ns.domain == NSPOSIXErrorDomain && ns.code == Int(ENOENT)
+    }
+
     /// Map a key-read failure:  fleet-secrets exit 3 is "absent", any other
-    /// exit is a refusal, and anything else is the no-answer case.
+    /// exit is a refusal, a command that is not there is not installed, and
+    /// anything else is the no-answer case.
     static func from(_ error: Error, name: String) -> FleetSecretError {
         if let exit = error as? CommandExitError {
             return exit.status == 3 ? .missing(name) : .refused(name)
         }
+        if isMissingCommand(error) { return .notInstalled }
         return .unavailable(name)
     }
 
@@ -47,6 +63,7 @@ public enum FleetSecretError: LocalizedError, Equatable {
     /// an exit is a refusal, never "absent" — there is no key to be absent.
     static func fromNonKeyRead(_ error: Error, name: String) -> FleetSecretError {
         if error is CommandExitError { return .refused(name) }
+        if isMissingCommand(error) { return .notInstalled }
         return .unavailable(name)
     }
 }
@@ -118,6 +135,13 @@ func isCancellation(_ error: Error) -> Bool {
 }
 
 // MARK: - Secret names and doctor (names and booleans only)
+
+/// One doctor check, as the panel words it:  a plain label and a short value.
+public struct SecretsDoctorRow: Equatable, Identifiable {
+    public let label: String
+    public let value: String
+    public var id: String { label }
+}
 
 /// One path's secret names.  Names only:  this type cannot hold a value.
 public struct SecretNameGroup: Equatable {
@@ -193,8 +217,43 @@ public extension FleetSecrets {
         } catch { throw FleetSecretError.fromNonKeyRead(error, name: path) }
     }
 
-    /// Parse `doctor --json`:  only booleans, counts and short token strings
-    /// under keys that cannot name a credential survive.  Anything else is dropped.
+    /// The doctor keys the panel shows, with their plain labels, in the order shown.
+    ///
+    /// An allowlist, not a word filter:  a key the doctor adds later is dropped until
+    /// it is named here, so nothing new can reach the screen by accident.
+    static let doctorLabels: [(key: String, label: String)] = [
+        ("ok", "Overall"),
+        ("environment_ok", "Environment Is Prod"),
+        ("cli_present", "Infisical CLI Installed"),
+        ("cli_version", "Infisical CLI Version"),
+        ("project_id_resolvable", "Project Found"),
+        ("auth_mode", "Sign-In Mode"),
+        ("reader_configured", "Reader Token Present"),
+        ("writer_configured", "Writer Token Present"),
+        ("fetch_names_ok", "Names Read"),
+        ("names_count", "Names Found"),
+        ("unresolved_reference_count", "Unresolved References"),
+        ("failure_reason", "Why The Read Failed"),
+    ]
+
+    /// The label for a doctor key, including the per-project pair the doctor adds for each
+    /// extra project (`<project>_project_id_resolvable`, `<project>_fetch_ok`), or nil when
+    /// the key is not one the panel shows.
+    static func doctorLabel(_ key: String) -> String? {
+        if let known = doctorLabels.first(where: { $0.key == key }) { return known.label }
+        for (suffix, words) in [("_project_id_resolvable", "Project Found"), ("_fetch_ok", "Read")] {
+            guard key.hasSuffix(suffix) else { continue }
+            let slug = String(key.dropLast(suffix.count))
+            guard !slug.isEmpty, slug.range(of: "[^a-z_]", options: .regularExpression) == nil else { return nil }
+            let name = slug.split(separator: "_").map { $0.prefix(1).uppercased() + $0.dropFirst() }
+                .joined(separator: " ")
+            return "\(name) \(words)"
+        }
+        return nil
+    }
+
+    /// Parse `doctor --json`:  only the keys `doctorLabel` names survive, as booleans,
+    /// counts and short words.  Anything else is dropped.
     static func parseDoctor(_ text: String) throws -> [String: String] {
         guard let data = text.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -202,27 +261,59 @@ public extension FleetSecrets {
         }
         var out: [String: String] = [:]
         for (key, value) in object {
-            let lowered = key.lowercased()
-            if lowered.contains("secret") || lowered.contains("token")
-                || lowered.contains("password") || lowered.contains("value") { continue }
-            switch value {
-            case let bool as Bool: out[key] = bool ? "true" : "false"
-            case let number as NSNumber: out[key] = number.stringValue
-            case let string as String
-                where string.count <= 40 && string.range(of: "[^A-Za-z0-9._-]", options: .regularExpression) == nil:
+            guard doctorLabel(key) != nil else { continue }
+            if let number = value as? NSNumber {
+                // JSON true and false arrive as NSNumber too, and a count of 0 or 1 would
+                // read as a boolean if it were asked first, so the type is checked.
+                if CFGetTypeID(number) == CFBooleanGetTypeID() {
+                    out[key] = number.boolValue ? "true" : "false"
+                } else if key.hasSuffix("_count") {
+                    out[key] = number.stringValue
+                }
+                continue
+            }
+            guard let string = value as? String else { continue }
+            let allowed = key == "failure_reason" ? "[^A-Za-z0-9 ._,'()/-]" : "[^A-Za-z0-9._-]"
+            let limit = key == "failure_reason" ? 60 : 40
+            if !string.isEmpty, string.count <= limit,
+               string.range(of: allowed, options: .regularExpression) == nil {
                 out[key] = string
-            default: continue
             }
         }
         return out
     }
 
+    /// The doctor rows, as the panel words them, in the order shown.
+    static func doctorRows(_ report: [String: String]) -> [SecretsDoctorRow] {
+        let extra = report.keys.filter { key in !doctorLabels.contains { $0.key == key } }.sorted()
+        let order = doctorLabels.map { $0.key } + extra
+        return order.compactMap { key -> SecretsDoctorRow? in
+            guard let value = report[key], let label = doctorLabel(key) else { return nil }
+            let shown: String
+            switch (key, value) {
+            case ("ok", "true"): shown = "Working"
+            case ("ok", "false"): shown = "Problem Found"
+            case (_, "true"): shown = "Yes"
+            case (_, "false"): shown = "No"
+            default: shown = value
+            }
+            return SecretsDoctorRow(label: label, value: shown)
+        }
+    }
+
     /// The doctor report as display rows (key to rendered boolean/count/token).
+    ///
+    /// The doctor exits 1 when it finds a problem and still prints its report, so a failed
+    /// exit with a readable report is that report:  the panel shows what is wrong rather
+    /// than hiding the doctor exactly when it matters.
     func doctorReport() throws -> [String: String] {
         let text: String
         do {
             text = try commands.run(secretsExecutable, ["doctor", "--json"],
                                     environment: secretsEnvironment, timeout: 20)
+        } catch let exit as CommandExitError {
+            if let report = try? Self.parseDoctor(exit.output), !report.isEmpty { return report }
+            throw FleetSecretError.fromNonKeyRead(exit, name: "doctor")
         } catch { throw FleetSecretError.fromNonKeyRead(error, name: "doctor") }
         return try Self.parseDoctor(text)
     }
@@ -291,9 +382,11 @@ public enum RecallSettingsClient {
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         return URLSession(configuration: configuration, delegate: RecallRedirectBlocker(), delegateQueue: nil)
     }()
-    /// Build the admin request.  The token goes only in the Authorization
-    /// header, in memory:  never in the URL, never logged, never persisted.
-    public static func buildRequest(config: RecallSettingsConfig, token: String) throws -> URLRequest {
+    /// The admin endpoint for a config, or the reason the config cannot be used.
+    ///
+    /// It is checked before any token is read, so a blank or wrong address says so and
+    /// never costs a secret read first.
+    public static func endpoint(for config: RecallSettingsConfig) throws -> URL {
         guard FleetSecrets.isValidName(config.tokenKeyName) else { throw RecallSettingsError.invalidTokenKeyName }
         let trimmed = config.baseURLString.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let url = URL(string: trimmed), url.scheme == "https", let host = url.host, !host.isEmpty,
@@ -303,7 +396,13 @@ public enum RecallSettingsClient {
         guard let endpoint = URL(string: "/admin/settings", relativeTo: url)?.absoluteURL else {
             throw RecallSettingsError.invalidBaseURL
         }
-        var request = URLRequest(url: endpoint)
+        return endpoint
+    }
+
+    /// Build the admin request.  The token goes only in the Authorization
+    /// header, in memory:  never in the URL, never logged, never persisted.
+    public static func buildRequest(config: RecallSettingsConfig, token: String) throws -> URLRequest {
+        var request = URLRequest(url: try endpoint(for: config))
         request.httpMethod = "GET"
         request.timeoutInterval = 20
         request.setValue("application/json", forHTTPHeaderField: "Accept")
@@ -332,6 +431,7 @@ public enum RecallSettingsClient {
     /// one request and released with it.
     public static func fetch(config: RecallSettingsConfig, secrets: SecretResolving,
                              session: URLSession = RecallSettingsClient.blockingSession) async throws -> [RecallSettingRow] {
+        _ = try endpoint(for: config)
         let token = try await awaitOffThePool { try secrets.secret(named: config.tokenKeyName) }
         let request = try buildRequest(config: config, token: token)
         let (data, response) = try await session.data(for: request)

@@ -374,6 +374,9 @@ class Agent:
                 content.startswith(self.tag_prefix + "]")
                 or content.startswith(self.tag_prefix + "->")
                 or content.startswith(self.tag_prefix + "\u2192")
+                # Policy 2026-11-05 folder intro: "[SEAT 📁repos]" / "[SEAT: LL.1.M 📁repos]"
+                or content.startswith(self.tag_prefix + " ")
+                or content.startswith(self.tag_prefix + ":")
             )
         return False
 
@@ -2930,6 +2933,7 @@ REMOTE_MAX_NODES = 100_000
 _REMOTE_CODES = frozenset(
     (
         "invalid_argument",
+        "invalid_response",
         "unavailable",
         "upstream_error",
         "not_authorized",
