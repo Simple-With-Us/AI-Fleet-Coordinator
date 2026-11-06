@@ -1632,21 +1632,21 @@ def _compose(
     own = (
         not no_tag
         and text.startswith("[" + agent.seat, start)
-        and text[seat_end:seat_end + 1] in ("]", " ", ":", "·", "→", "\t")
+        and text[seat_end : seat_end + 1] in ("]", " ", ":", "·", "→", "\t")
         and end >= 0
-        and not re.search(r"[\r\n\[]", text[start + 1:end])
+        and not re.search(r"[\r\n\[]", text[start + 1 : end])
     )
     if own:
         intro = text[:end]
         if "·" in agent.tag_prefix:
             suffix = re.sub(r"^·[^\s:→\]]*", "", intro[seat_end:])
-            intro = intro[:seat_end] + agent.tag_prefix[agent.tag_prefix.index("·"):] + suffix
+            intro = intro[:seat_end] + agent.tag_prefix[agent.tag_prefix.index("·") :] + suffix
         arrow = intro.find("→")
-        existing = [] if arrow < 0 else [v.strip() for v in intro[arrow + 1:].split(",")]
+        existing = [] if arrow < 0 else [v.strip() for v in intro[arrow + 1 :].split(",")]
         added = list(dict.fromkeys(label for label in labels if label not in existing))
         if added:
             intro += (" →" if arrow < 0 else ",") + ",".join(added)
-        tail = text[end + 1:]
+        tail = text[end + 1 :]
         if tail and not tail[0].isspace():
             tail = " " + tail
         body = intro + "]" + (" " + " ".join(mentions) if mentions else "") + tail
