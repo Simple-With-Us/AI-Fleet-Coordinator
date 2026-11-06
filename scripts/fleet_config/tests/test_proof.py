@@ -14,8 +14,10 @@ import os
 import shlex
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from datetime import datetime, timezone
 from unittest import mock
 
@@ -64,10 +66,23 @@ if isinstance(tool_input, dict):
     command = str(tool_input.get("command") or "")
 if not command:
     command = str(payload.get("command") or "")
+is_file = False
+if isinstance(tool_input, dict):
+    for key in ("file_path", "path"):
+        if tool_input.get(key):
+            is_file = True
+            if not command:
+                command = str(tool_input[key])
 destination = command.split()[-1] if command else ""
 reason = "Blocked: fleet-repo checkouts are not allowed in temp directories; " \\
          "this command would put a clone at %s." % destination
 
+if mode == "shell-only" and is_file:
+    sys.exit(0)
+if mode == "files-only" and not is_file:
+    sys.exit(0)
+if mode in ("shell-only", "files-only"):
+    mode = "deny"
 if mode == "deny":
     print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse",
                                              "permissionDecision": "deny",
@@ -351,6 +366,181 @@ class L1SafetyTests(FakeHookCase):
         self.assertFalse(outcome.passed)
         self.assertIs(outcome.state, CheckState.UNPROVEN)
         self.assertIn("not probed", outcome.reason)
+
+
+class L1ScopeTests(FakeHookCase):
+    """PASS means every check the rule asks for was proven,  and a rule names its scope."""
+
+    def test_a_shell_only_guard_passes_a_shell_rule_and_says_it_proved_shell_only(self):
+        outcome = proof.run_l1_probe(
+            "claude", self.ctx, hook_command=self.hook("shell-only"), guards=("shell",)
+        )
+        self.assertTrue(outcome.passed)
+        self.assertIs(outcome.state, CheckState.PASS)
+        self.assertIs(outcome.achieved, ProofLevel.L1)
+        self.assertIn("shell guarding only", outcome.reason)
+
+    def test_a_shell_rule_never_sends_a_file_payload(self):
+        proof.run_l1_probe(
+            "claude", self.ctx, hook_command=self.hook("shell-only"), guards=("shell",)
+        )
+        self.assertEqual(self.recorded_payload()["tool_name"], "Bash")
+
+    def test_a_shell_only_guard_asked_for_both_is_partly_proven_not_a_pass(self):
+        outcome = proof.run_l1_probe(
+            "claude", self.ctx, hook_command=self.hook("shell-only"), guards=("shell", "file")
+        )
+        self.assertFalse(outcome.passed)
+        self.assertIs(outcome.state, CheckState.UNPROVEN)
+        self.assertIs(outcome.reason_code, ReasonCode.PROOF_NOT_RUN)
+        self.assertIn("file guarding is not proven", outcome.reason)
+
+    def test_a_file_rule_alone_passes_when_the_hook_denies_the_file_tools(self):
+        outcome = proof.run_l1_probe(
+            "claude", self.ctx, hook_command=self.hook("files-only"), guards=("file",)
+        )
+        self.assertTrue(outcome.passed)
+        self.assertIn(self.recorded_payload()["tool_name"], ("Write", "Edit"))
+
+    def test_a_file_rule_alone_never_sends_a_shell_payload(self):
+        proof.run_l1_probe(
+            "claude", self.ctx, hook_command=self.hook("files-only"), guards=("file",)
+        )
+        self.assertNotIn("command", self.recorded_payload()["tool_input"])
+
+    def test_a_file_deny_need_not_echo_the_sentinel(self):
+        """A file guard names the rule it applied and not the path,  and it still denied."""
+        outcome = proof.run_l1_probe(
+            "claude", self.ctx, hook_command=self.hook("wrong-reason"), guards=("file",)
+        )
+        self.assertTrue(outcome.passed)
+
+    def test_a_file_allow_is_unproven_and_says_what_the_probe_cannot_tell(self):
+        outcome = proof.run_l1_probe(
+            "claude", self.ctx, hook_command=self.hook("allow"), guards=("file",)
+        )
+        self.assertIs(outcome.state, CheckState.UNPROVEN)
+        self.assertIs(outcome.reason_code, ReasonCode.PROOF_NOT_RUN)
+        self.assertIn("temporary path", outcome.reason)
+
+    def test_a_crash_on_a_file_probe_keeps_its_own_reason(self):
+        """A hook that crashed is not a hook that declined to deny."""
+        outcome = proof.run_l1_probe(
+            "claude", self.ctx, hook_command=self.hook("crash"), guards=("file",)
+        )
+        self.assertIs(outcome.state, CheckState.UNKNOWN)
+        self.assertIs(outcome.reason_code, ReasonCode.ERROR)
+        self.assertIn("exited", outcome.reason)
+        self.assertNotIn("did not deny", outcome.reason)
+
+    def test_a_file_rule_is_unsupported_where_the_payload_has_no_file_tool(self):
+        command = self.hook("deny") + " --format claude"
+        outcome = proof.run_l1_probe("cursor", self.ctx, hook_command=command, guards=("file",))
+        self.assertIs(outcome.state, CheckState.UNSUPPORTED)
+        self.assertIs(outcome.reason_code, ReasonCode.UNSUPPORTED)
+
+    def test_a_shell_rule_passes_on_a_platform_with_no_file_tool(self):
+        command = self.hook("deny") + " --format claude"
+        outcome = proof.run_l1_probe("cursor", self.ctx, hook_command=command, guards=("shell",))
+        self.assertIs(outcome.state, CheckState.PASS)
+
+    def test_the_rule_decides_the_scope_through_prove_rule(self):
+        rule = make_rule()
+        shell_rule = replace(
+            rule, expected=replace(rule.expected, guards=("shell",)), seat="CLAUDE"
+        )
+        with mock.patch.object(proof, "resolve_hook_command", return_value=self.hook("shell-only")):
+            shell = proof.prove_rule(shell_rule, "claude", self.ctx)
+            file_rule = replace(shell_rule, expected=replace(rule.expected, guards=("file",)))
+            file = proof.prove_rule(file_rule, "claude", self.ctx)
+        self.assertIs(shell.state, CheckState.PASS)
+        self.assertIs(shell.level, ProofLevel.L1)
+        self.assertIs(file.state, CheckState.UNPROVEN)
+        self.assertIsNone(file.level)
+
+    def test_clutch_is_probed_on_the_shell_tool_its_engine_delivers(self):
+        self.assertEqual(proof.NATIVE_SHELL_TOOL_NAMES["clutch"], ("bash",))
+
+
+class RealGuardTests(FakeHookCase):
+    """The probe against the real guard,  not only against a fake that denies everything."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        scripts = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        hook = os.path.join(scripts, "fleet_lanes", "lane_guard_hook.py")
+        self.real = "%s %s --format claude" % (shlex.quote(sys.executable), shlex.quote(hook))
+
+    def test_a_real_shell_guard_reaches_pass_for_the_shell_rule(self):
+        """A correctly installed guard that only watches the shell must be able to read PASS."""
+        outcome = proof.run_l1_probe(
+            "claude", self.ctx, hook_command=self.real, guards=("shell",)
+        )
+        self.assertIs(outcome.state, CheckState.PASS, outcome.reason)
+        self.assertIs(outcome.achieved, ProofLevel.L1)
+
+    def test_a_real_shell_guard_asked_for_the_file_scope_is_unproven_not_failing(self):
+        outcome = proof.run_l1_probe(
+            "claude", self.ctx, hook_command=self.real, guards=("file",)
+        )
+        self.assertIs(outcome.state, CheckState.UNPROVEN, outcome.reason)
+        self.assertIs(outcome.reason_code, ReasonCode.PROOF_NOT_RUN)
+
+
+class TargetCommandTests(FakeHookCase):
+    """The command proved is the one the rule's own config file runs."""
+
+    def _install(self, name: str, platform_file: str, doc_for) -> str:
+        """A fake hook named `name`,  and a hooks file under the home that runs it."""
+        path = os.path.join(self.home, name)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(FAKE_HOOK)
+        os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR)
+        target = os.path.join(self.home, platform_file)
+        with open(target, "w", encoding="utf-8") as handle:
+            json.dump(doc_for("%s deny %s" % (shlex.quote(path), shlex.quote(self.record))), handle)
+        return "~/" + platform_file
+
+    @staticmethod
+    def _event_map(command: str) -> dict:
+        return {
+            "hooks": {
+                "PreToolUse": [
+                    {
+                        "matcher": "Bash|bash|Write|write|Edit|edit",
+                        "hooks": [{"type": "command", "command": command}],
+                    }
+                ]
+            }
+        }
+
+    def test_the_minimax_probe_runs_the_command_its_hooks_file_names(self):
+        target = self._install("minimax-guard-hook", "mm-hooks.json", self._event_map)
+        outcome = proof.run_l1_probe("minimax", self.ctx, config_target=target, guards=("shell",))
+        self.assertIs(outcome.state, CheckState.PASS, outcome.reason)
+        # The fake hook wrote the payload it received,  so the file's command ran.
+        self.assertTrue(os.path.exists(self.record))
+
+    def test_a_target_that_names_no_guard_hook_fails_closed(self):
+        target = self._install("some-other-hook", "mm-hooks.json", self._event_map)
+        with self.assertRaises(CheckError) as caught:
+            proof.run_l1_probe("minimax", self.ctx, config_target=target, guards=("shell",))
+        self.assertIs(caught.exception.reason_code, ReasonCode.PROOF_FAILED)
+        self.assertFalse(os.path.exists(self.record))
+
+    def test_a_target_naming_a_hook_that_does_not_exist_is_unknown(self):
+        doc = self._event_map(
+            "%s --format claude" % shlex.quote(os.path.join(self.home, "gone", "minimax-guard-hook"))
+        )
+        with open(os.path.join(self.home, "mm-hooks.json"), "w", encoding="utf-8") as handle:
+            json.dump(doc, handle)
+        outcome = proof.run_l1_probe(
+            "minimax", self.ctx, config_target="~/mm-hooks.json", guards=("shell",)
+        )
+        self.assertIs(outcome.state, CheckState.UNKNOWN)
+
+    def test_a_platform_with_its_own_adapter_file_ignores_the_target(self):
+        self.assertIsNone(proof.resolve_target_command("claude", "~/x.json", self.ctx))
 
 
 class HookResolutionTests(FakeHookCase):

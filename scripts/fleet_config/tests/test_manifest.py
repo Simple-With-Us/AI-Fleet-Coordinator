@@ -590,6 +590,81 @@ class SeededManifestTests(unittest.TestCase):
                 checked += 1
         self.assertGreaterEqual(checked, 8)
 
+    def _installed_hook_commands(self) -> dict:
+        """The hook command the installer writes for each platform with a hook file."""
+        if str(SCRIPTS) not in sys.path:
+            sys.path.insert(0, str(SCRIPTS))
+        from fleet_lanes import install_tools
+
+        paths = install_tools.Paths(home="/h", stable="/h/apps/lane-tools")
+
+        def first_command(text: str) -> str:
+            doc = json.loads(text)
+            return doc["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+
+        return {
+            "claude": install_tools.hook_command(paths, "claude"),
+            "codex": install_tools.hook_command(paths, "codex"),
+            "grok": install_tools.hook_command(paths, "grok"),
+            "cursor": install_tools.hook_command(paths, "cursor"),
+            "kimi": install_tools.fleet_hook_command(paths, "kimi"),
+            "clutch": first_command(install_tools.render_clutch_hooks(paths.stable)),
+            "minimax": first_command(install_tools.render_minimax_hooks(paths)),
+        }
+
+    def test_every_seeded_hook_id_is_the_one_the_installer_writes(self) -> None:
+        """A seed that names a hook the installer never writes reads every install as drift.
+
+        The MiniMax rule once expected `fleet-guard-hook` while the installer wrote
+        `minimax-guard-hook`,  so a correct install read as a hook that was not
+        registered.
+        """
+        from fleet_config.checks_hooks import command_id, hook_key
+
+        commands = self._installed_hook_commands()
+        checked = set()
+        for seat in self.manifest.seats:
+            for rule in seat.rules:
+                if rule.kind.value != "hooks" or not rule.expected.names:
+                    continue
+                platform = rule.platforms[0]
+                if platform not in commands:
+                    continue
+                written = command_id(commands[platform])
+                for name in rule.expected.names:
+                    self.assertEqual(
+                        hook_key(name),
+                        hook_key(written),
+                        "rule %s expects %r but the installer writes %r" % (rule.id, name, written),
+                    )
+                checked.add(platform)
+        self.assertEqual(checked, set(commands))
+
+    def test_the_minimax_rule_expects_minimax_guard_hook(self) -> None:
+        rules = {rule.id: rule for seat in self.manifest.seats for rule in seat.rules}
+        self.assertEqual(rules["mm-hooks-lane-guard"].expected.names, ("minimax-guard-hook",))
+        self.assertEqual(rules["mm-hooks-file-guard"].expected.names, ("minimax-guard-hook",))
+
+    def test_every_guarded_seat_has_a_shell_rule_and_a_file_rule(self) -> None:
+        """PASS has one meaning,  so shell guarding and file guarding are two rules."""
+        for seat in self.manifest.seats:
+            ids = {rule.id: rule for rule in seat.rules if rule.kind.value == "hooks"}
+            tag = seat.seat.lower()
+            if "%s-hooks-none" % tag in ids:
+                self.assertEqual(len(ids), 1, seat.seat)
+                self.assertEqual(ids["%s-hooks-none" % tag].expected.guards, ())
+                continue
+            if not ids:
+                continue
+            shell = ids["%s-hooks-lane-guard" % tag]
+            file = ids["%s-hooks-file-guard" % tag]
+            self.assertEqual(shell.expected.guards, ("shell",), seat.seat)
+            self.assertEqual(file.expected.guards, ("file",), seat.seat)
+            self.assertEqual(shell.proof_level.value, "L1")
+            self.assertEqual(file.proof_level.value, "L1")
+            self.assertEqual(shell.expected.names, file.expected.names)
+            self.assertEqual(shell.check.target, file.check.target)
+
     def test_every_rule_id_is_unique_and_well_formed(self) -> None:
         seen = set()
         for seat in self.manifest.seats:
