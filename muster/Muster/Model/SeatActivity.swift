@@ -793,11 +793,14 @@ struct SeatActivityModel: Equatable, Sendable {
             if read.isEmpty {
                 sentences.append("Whether the \(seats) held by the Mac \(mac.count == 1 ? "is" : "are") connected is not known.")
             } else {
+                let unread = mac.count - read.count
+                // A seat whose state could not be read may be connected,  so with any unread
+                // the count says only what is known and is never a flat "0 of N".
+                let connectedWords = unread > 0 ? "known to be connected" : "connected"
                 sentences.append(
-                    "\(connected) of \(seats) held by the Mac \(connected == 1 ? "is" : "are") connected,  "
+                    "\(connected) of \(seats) held by the Mac \(connected == 1 ? "is" : "are") \(connectedWords),  "
                         + "and \(working) \(working == 1 ? "is" : "are") working on the Mac."
                 )
-                let unread = mac.count - read.count
                 if unread > 0 {
                     sentences.append(unread == 1
                         ? "The state of 1 of them could not be read."
@@ -843,6 +846,8 @@ enum SeatActivityBuilder {
         var partition: ListenerPartition?
         /// The Mac eavesdropper's configuration file,  when it could be read.
         var config: ListenerConfigDocument?
+        /// Why the configuration file is there but could not be read.
+        var configProblem: String?
         /// Where the partition came from.
         var partitionPath: String = ""
         /// The bots the realm knows,  by seat tag.
@@ -883,6 +888,7 @@ enum SeatActivityBuilder {
         if let problem = sources.partition?.problem {
             problems.append("The seat partition could not be read,  so Muster cannot say which machine holds each seat.  \(problem)")
         }
+        if let problem = sources.configProblem { problems.append(problem) }
         if let problem = sources.userProblem { problems.append(problem) }
         model.problems = problems
 

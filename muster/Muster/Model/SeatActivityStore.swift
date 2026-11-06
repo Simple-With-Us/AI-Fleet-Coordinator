@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 
 /// The Seat Activity panel's reading,  held for the whole app.
@@ -65,6 +66,9 @@ final class SeatActivityStore: ObservableObject {
             // that came back while it was stopping gets a read of its own.
             guard running.isCancelled else { return }
             if inFlight == running { finish(running) }
+            // A read stopped because the app went to the background is not started again
+            // for a caller that was waiting on it:  nobody is looking.
+            guard isActive else { return }
             await refresh(roster: roster)
             return
         }
@@ -91,6 +95,8 @@ final class SeatActivityStore: ObservableObject {
 
     /// Read unless the reading on hand is younger than `maximumAge`.
     func refreshIfOlder(than maximumAge: TimeInterval, roster: [String]) async {
+        // Nothing reads while the app is in the background;  coming to the front reads again.
+        guard isActive else { return }
         if let readAt = model?.readAt, now().timeIntervalSince(readAt) < maximumAge {
             return
         }

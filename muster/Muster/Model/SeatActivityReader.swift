@@ -691,11 +691,25 @@ struct SeatActivityReader {
         if let named = sources.listener?.partitionFile, !named.isEmpty {
             url = URL(fileURLWithPath: named)
         }
-        sources.partition = ListenerPartition.load(from: url)
+        // A file named by another file is not read whole when it is far larger than any real one.
+        if let url,
+           let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+           let size = attributes[.size] as? Int,
+           size > WakeSettingsReader.maximumFileBytes {
+            sources.partition = ListenerPartition(unreadable: "The file at \(url.path) is larger than Muster reads.")
+        } else {
+            sources.partition = ListenerPartition.load(from: url)
+        }
         sources.partitionPath = url?.path ?? ""
+        let configPath = location.configURL.path
         if let data = try? Data(contentsOf: location.configURL),
            data.count <= WakeSettingsReader.maximumFileBytes {
             sources.config = ListenerConfigDocument(text: String(decoding: data, as: UTF8.self))
+        } else if FileManager.default.fileExists(atPath: configPath) {
+            // No file is normal:  the eavesdropper then has no seat sections to refuse.  A
+            // file that is there and cannot be read could hide a seat the Mac refuses.
+            sources.configProblem = "The Mac eavesdropper's configuration at \(configPath) could not be read,  "
+                + "so a seat it refuses because its section names the server may show under the Mac."
         }
     }
 

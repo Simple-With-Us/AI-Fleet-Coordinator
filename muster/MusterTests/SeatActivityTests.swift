@@ -534,6 +534,54 @@ final class SeatActivityTests: XCTestCase {
         XCTAssertFalse(model.headline.contains("0 of"))
     }
 
+    /// With one Mac seat unread,  the count says only what is known:  never a flat "of 2 are connected".
+    func test_the_headline_says_known_to_be_connected_when_a_seat_is_unread() async throws {
+        let model = try await read(roster: ["CLAUDE", "CODEX"], runner: healthyRunner(), listener: listenerJSON)
+        XCTAssertTrue(
+            model.headline.contains("1 of 2 seats held by the Mac is known to be connected"),
+            model.headline
+        )
+        XCTAssertTrue(model.headline.contains("The state of 1 of them could not be read."), model.headline)
+    }
+
+    /// A configuration file that is there but cannot be read is said to be a problem,  because
+    /// it could hide a seat the Mac refuses.  A missing one is normal and says nothing.
+    func test_an_unreadable_configuration_is_a_problem_and_a_missing_one_is_not() async throws {
+        let location = try listenerLocation(state: listenerJSON)
+        try FileManager.default.createDirectory(at: location.configURL, withIntermediateDirectories: true)
+        let reader = SeatActivityReader(
+            location: location,
+            runner: healthyRunner(),
+            now: { Date(timeIntervalSince1970: 1792821067) },
+            partitionURL: try partitionFile(partitionTOML)
+        )
+        let model = await reader.read(roster: ["CLAUDE"])
+        XCTAssertTrue(
+            model.problems.contains { $0.contains("configuration") && $0.contains("could not be read") },
+            "\(model.problems)"
+        )
+        let missing = try await read(runner: healthyRunner(), listener: listenerJSON)
+        XCTAssertEqual(missing.problems, [])
+    }
+
+    /// A partition file far larger than any real one is not read whole.
+    func test_a_partition_file_far_larger_than_any_real_one_is_not_read() async throws {
+        let url = try partitionFile(nil)
+        XCTAssertTrue(FileManager.default.createFile(atPath: url.path, contents: nil))
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.truncate(atOffset: UInt64(WakeSettingsReader.maximumFileBytes + 1))
+        try handle.close()
+        let reader = SeatActivityReader(
+            location: try listenerLocation(state: listenerJSON),
+            runner: healthyRunner(),
+            now: { Date(timeIntervalSince1970: 1792821067) },
+            partitionURL: url
+        )
+        let model = await reader.read(roster: ["CLAUDE"])
+        XCTAssertTrue(model.problems.contains { $0.contains("larger than Muster reads") }, "\(model.problems)")
+        XCTAssertEqual(model.rows.first?.place.group, .notKnown)
+    }
+
     /// The seats with a live session are counted on the Mac only.
     func test_seats_with_sessions_counts_live_mac_leases() async throws {
         let model = try await read(roster: ["CLAUDE", "MA"], runner: healthyRunner(), listener: listenerJSON)
@@ -1184,6 +1232,15 @@ final class SeatActivityStoreTests: XCTestCase {
         await read
         let sawStop = await stopped.value
         XCTAssertEqual(sawStop, 1)
+        XCTAssertNil(store.model)
+    }
+
+    /// Returning to the panel while the app is in the background reads nothing either.
+    func test_returning_to_the_panel_in_the_background_reads_nothing() async {
+        let store = SeatActivityStore(reader: { _ in SeatActivityModel(readAt: Date(timeIntervalSince1970: 0)) })
+        store.setActive(false)
+        await store.refreshIfOlder(than: 60, roster: ["CLAUDE"])
+        XCTAssertEqual(store.readsStarted, 0)
         XCTAssertNil(store.model)
     }
 
