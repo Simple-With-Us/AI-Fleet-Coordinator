@@ -93,6 +93,17 @@ What "current" means for a vendor CLI is one constant, `VENDOR_CURRENCY_POLICY`,
 
 Each host document carries `schemaVersion` 1, `host`, `generatedAt`, `doctorCommit`, `expected` (the tip and how it was read) and its rows.  A reader treats a report older than 45 minutes, a missing or malformed file, or any other `schemaVersion` as unknown, and leaves `harness`, `human-tree` and `presence` rows out of its verdict.  A `presence` row (`command:`, `tool-file:`, and `catalog:` on the server) only says a command or file exists, so its `current` means present;  every fleet tool's currency, a missing one included, is on its `tool:` row.
 
+### Changing A Report's Format
+
+Muster and the collectors it reads update on different tracks.  A collector moves within minutes of a merge:  the Mac's LaunchAgents run the managed runtime, which follows main every 120 seconds, and the server follows main on merge.  Muster moves when its release reaches the Mac through Sparkle (`muster/docs/AUTO-UPDATE.md`), up to an hour after the release is published and only once nothing in Muster is running.  A reader that accepts one version alone goes dark for that whole gap.  So a format change goes in this order, and never in one pull request:
+
+1. Teach Muster's reader to accept both the current version and the next one, and change nothing in the collector.
+2. Wait until that Muster is installed on the Mac:  Settings ▸ This Build, or the foot of the menu, shows its commit.
+3. Then bump the collector to the next version.
+4. A later change may drop the old version from the reader.
+
+The readers today accept exactly one version each, so step 1 is a change to the reader as well as to its tests.
+
 ### The server route (installed)
 
 The server half is read over a key that can do one thing:  run this doctor with `--json`.  Nothing is written on the server and Infisical is not touched.  The doctor treats a missing alias as "no read-only route to the server", so the Mac half works without it.  The route is installed on this Mac and on the server, so the server half of the report is real and the server's rows are read, not `unknown`.

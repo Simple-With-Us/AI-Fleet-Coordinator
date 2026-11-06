@@ -63,7 +63,7 @@ struct ConfigFilePanel: View {
                 Circle()
                     .fill(cell.state.tint)
                     .frame(width: 8, height: 8)
-                Text(cell.state.rawValue)
+                Text(cell.stateFullName)
                     .font(.system(size: 11, weight: .semibold, design: .monospaced))
             }
             .foregroundStyle(cell.state.tint)
@@ -101,6 +101,12 @@ struct ConfigFilePanel: View {
                 Text(rule.platform)
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(.secondary)
+                if let scope = rule.guardScope {
+                    // What this rule asks the guard to cover,  so a PASS here reads as
+                    // exactly that and not as a guard that covers everything.
+                    Text(scope)
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                }
                 Text(rule.checkType)
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(.secondary)

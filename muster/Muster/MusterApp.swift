@@ -32,6 +32,8 @@ struct MusterApp: App {
             confirmFleetAction(request)
         })
         _router = StateObject(wrappedValue: router)
+        // Updates arrive through Sparkle,  and the install waits while any action runs.
+        AppUpdater.shared.start(router: router, admin: admin)
         // Muster starts the Mac's services again when they stop,  only while it runs,  and the
         // setting above turns it off.
         let reconciler = ServiceReconciler.live(admin: admin, router: router, controller: OpsController.shared)
@@ -54,6 +56,7 @@ struct MusterApp: App {
         // plan sheet twice.
         .commands {
             CommandGroup(replacing: .newItem) {}
+            CommandGroup(after: .appInfo) { CheckForUpdatesButton() }
         }
 
         Settings {
@@ -142,6 +145,7 @@ struct MusterSettingsView: View {
                 Text("Reads M OK \u{00B7} S ? in place of Mac OK \u{00B7} Server ?, for a crowded menu bar.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            BuildIdentitySettingsSection()
         }
         .formStyle(.grouped)
         // The Settings window follows the same stored theme as the main
