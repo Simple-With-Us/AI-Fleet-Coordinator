@@ -140,9 +140,7 @@ def run(
     return proc.returncode, data, err
 
 
-UNKNOWN_WRITE = re.compile(
-    r"(?:\bHTTP (?:5\d\d|408)\b|\b(?:timed out|timeout)\b)", re.IGNORECASE
-)
+UNKNOWN_WRITE = re.compile(r"(?:\bHTTP (?:5\d\d|408)\b|\b(?:timed out|timeout)\b)", re.IGNORECASE)
 RATE_LIMITED = re.compile(r"\bHTTP 429\b", re.IGNORECASE)
 
 
@@ -151,7 +149,8 @@ def failure(code: int, err: str, *, write: bool = False) -> RecallUnavailable:
         if write and RATE_LIMITED.search(err):
             return RecallUnavailable(
                 "rate_limited",
-                "fleet recall refused the write because it was rate limited:  %s" % (err or "unknown"),
+                "fleet recall refused the write because it was rate limited:  %s"
+                % (err or "unknown"),
                 retryable=True,
             )
         if UNKNOWN_WRITE.search(err) or (not write and RATE_LIMITED.search(err)):
