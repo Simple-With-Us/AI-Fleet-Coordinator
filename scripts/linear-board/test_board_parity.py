@@ -483,7 +483,14 @@ class CommandsCliTests(ParityCliTest):
 
 class RunCliTests(ParityCliTest):
     def test_run_read_sends_the_named_document(self):
-        p = self.board("run", "get_issue", "--arg", "id=123", drop=("AGENT_SEAT",), extra={"LINEAR_CLIENT_ID": CLIENT_ID, "LINEAR_CLIENT_SECRET": CLIENT_SECRET})
+        p = self.board(
+            "run",
+            "get_issue",
+            "--arg",
+            "id=123",
+            drop=("AGENT_SEAT",),
+            extra={"LINEAR_CLIENT_ID": CLIENT_ID, "LINEAR_CLIENT_SECRET": CLIENT_SECRET},
+        )
         ((op, q, v),) = self.mock.api_requests
         self.assertEqual(op, "AgentSyncNamed")
         doc, variables = CLI.build_named_operation(CLI.named_command("get_issue"), {"id": "123"})
@@ -583,7 +590,9 @@ class RunCliTests(ParityCliTest):
         )
         self.assertIn("belongs to a different request", p.stderr)
         self.assertEqual(len(self.mock.api_requests), 1)
-        record = self.tmp / "cache" / "CLAUDE.linear-api.json"  # the idempotency file is named for the acting seat app now, not the retired shared "Fleet" app
+        record = (
+            self.tmp / "cache" / "CLAUDE.linear-api.json"
+        )  # the idempotency file is named for the acting seat app now, not the retired shared "Fleet" app
         self.assertEqual(oct(record.stat().st_mode & 0o777), "0o600")
 
     def test_an_unknown_outcome_is_never_replayed(self):
@@ -729,7 +738,13 @@ class ApiCliTests(ParityCliTest):
         self.assertIn('body: "[CLAUDE\\u00b75e55105a] inline \\"quoted\\""', sent)
 
     def test_api_schema(self):
-        p = self.board("api", "schema", "Issue", drop=("AGENT_SEAT",), extra={"LINEAR_CLIENT_ID": CLIENT_ID, "LINEAR_CLIENT_SECRET": CLIENT_SECRET})
+        p = self.board(
+            "api",
+            "schema",
+            "Issue",
+            drop=("AGENT_SEAT",),
+            extra={"LINEAR_CLIENT_ID": CLIENT_ID, "LINEAR_CLIENT_SECRET": CLIENT_SECRET},
+        )
         self.assertIn("Issue  (OBJECT)  4 fields", p.stdout)
         self.assertIn("  id: ID!", p.stdout)
         self.assertIn("  comments(first: Int): CommentConnection", p.stdout)
