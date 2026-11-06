@@ -89,3 +89,48 @@ class ReviewedFixturesTests(TestCase):
         with patch("git_relay.reviewed_fixtures._REVIEWED_FIXTURES", frozenset({self.entry})):
             out = Multi(c).run("wf_files_put", self.args())
         self.assertEqual(out["commit"], "1" * 40)
+
+
+class RepoTreeConsistencyTests(TestCase):
+    """Registry vs the checked-out tree: future targets stay attested, drift gates."""
+
+    repo_root = __import__("pathlib").Path(__file__).resolve().parents[3]
+
+    # Same-path files whose current main bytes legitimately differ from the
+    # attested (post-rename) bytes: the rename edits their content in place.
+    # Empties when the rename lands; then every existing path must digest-match.
+    KNOWN_PRE_RENAME_DRIFT = frozenset(
+        {
+            "scripts/fleet_lanes/tests/test_install_mcp.py",
+            "scripts/test-lark-mm-bridge.py",
+            "scripts/test_operator_provenance.py",
+        }
+    )
+
+    def test_existing_attested_paths_carry_exactly_the_attested_bytes(self):
+        for _repo, path, digest in sorted(_REVIEWED_FIXTURES):
+            target = self.repo_root / path
+            if not target.is_file():
+                continue  # future rename target: absent on main is expected
+            actual = sha256(target.read_bytes()).hexdigest()
+            if actual == digest:
+                self.assertIsNone(
+                    unreviewed_file_secret(REPO, path, target.read_bytes())
+                )  # the real registry accepts the live bytes
+                continue
+            self.assertIn(
+                path,
+                self.KNOWN_PRE_RENAME_DRIFT,
+                f"{path} exists with bytes matching neither the attested "
+                "digest nor a declared pre-rename drift",
+            )
+
+    def test_absent_future_targets_still_refuse_changed_bytes(self):
+        for _repo, path, _digest in sorted(_REVIEWED_FIXTURES):
+            if (self.repo_root / path).is_file():
+                continue  # live-path acceptance is covered above
+            self.assertIsNotNone(
+                unreviewed_file_secret(
+                    REPO, path, ("fixture = 'gh" + "p_" + "A" * 30 + "'\n").encode()
+                )
+            )  # no registry entry may excuse bytes other than the exact attested ones

@@ -9,9 +9,14 @@ from hashlib import sha256
 
 from .secret_scan import find_secret
 
-# Three unchanged rows source from c8c2a471fac215957cc81ec3b2e5e765e5908443;
-# the ten added or refreshed rows were reviewed on the
-# rename/simple-tools-mcp-2026-11-05 build at 31dab6c1bd5012ade1bc5babd0ea5cefeb7e8a80.
+# Source of truth: the complete rename checkpoint
+# 4977e6a7970dc0a25638181600137fe06167dcec (tree
+# 92afd59247897e44befb30a66a496d2dad2c9dfc, on main
+# dcb3b89765062454f70ed6ee1a506e00cdef925a); all 13 triples verify byte-exact
+# against that tree. Three digests are unchanged from the original
+# c8c2a471fac215957cc81ec3b2e5e765e5908443 attestation set. The
+# rename-affected destinations are future targets: absent on main, matching
+# nothing and failing closed until the exact attested bytes land.
 # Only these exact bytes at these exact repository destinations are attested
 # synthetic fixtures.
 # The source Git blob ids and review procedure are recorded in the README.

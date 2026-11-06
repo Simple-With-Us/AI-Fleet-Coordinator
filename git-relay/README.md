@@ -178,10 +178,16 @@ Changing one byte or destination invalidates the attestation; any credential sha
 then fails closed. The ordinary scanner and the rejection tests are unchanged.
 PR text, messages, binary assets and all unattested files have no exemption.
 
-Three unchanged rows remain attested from `c8c2a471fac215957cc81ec3b2e5e765e5908443`;
-the ten added or refreshed rows (the rename-affected fixtures) were re-reviewed on
-the `rename/simple-tools-mcp-2026-11-05` build, head `31dab6c1bd5012ade1bc5babd0ea5cefeb7e8a80`
-(3 unchanged + 10 added or refreshed = the 13 rows in the registry and the table below):
+All thirteen rows were re-verified byte-exact against the complete rename checkpoint
+`4977e6a7970dc0a25638181600137fe06167dcec` (tree
+`92afd59247897e44befb30a66a496d2dad2c9dfc`, built on main
+`dcb3b89765062454f70ed6ee1a506e00cdef925a`). Three rows carry digests unchanged from
+the original `c8c2a471fac215957cc81ec3b2e5e765e5908443` attestation set; ten rows are
+added or refreshed from the checkpoint (3 + 10 = the 13 rows in the registry and the
+table below). The rename-affected destinations are FUTURE targets: they do not exist
+on main yet, match nothing, and fail closed until the exact attested bytes land with
+the rename; the published rename branch currently omits these ten files, which is the
+gap this attestation exists to close:
 
 | Destination | Source Git blob | Whole-file SHA-256 |
 | --- | --- | --- |
