@@ -145,8 +145,22 @@ test("a body longer than its Content-Length claimed is refused, never forwarded 
 test("tools/list with a cursor serves bounded pages, byte-identical to the SDK", async () => {
   for (const seat of ["GROK-WEB", "CLAUDE", "CODEX"]) {
     for (const header of [{ "mcp-protocol-version": "2025-03-26" }, {}]) {
-      await assertParity(seat, { jsonrpc: "2.0", id: 9, method: "tools/list", params: { cursor: "0" } }, header);
-      await assertParity(seat, { jsonrpc: "2.0", id: 10, method: "tools/list", params: { cursor: "100" } }, header);
+      // Cursors are server-issued (offset.list-tag).  The bare "0" entry point pages
+      // like the SDK (no page precedes it, so no walk can be shifted);  a hand-composed
+      // nonzero offset fails closed on our side even where the SDK would page it -
+      // intentional, so a stale tool list can never silently shift a walk.
+      {
+        const res = await answerLifecycle(request({ jsonrpc: "2.0", id: 9, method: "tools/list", params: { cursor: "0" } }), { seat, config });
+        const text = await res.response.text();
+        const first = JSON.parse(text.slice(text.indexOf("data: ") + 6).trim()).result;
+        assert.ok(first.tools.length > 0 && first.tools.length <= 100);
+        assert.match(first.nextCursor, /^100\.[0-9a-f]{8}$/);
+      }
+      {
+        const res = await answerLifecycle(request({ jsonrpc: "2.0", id: 10, method: "tools/list", params: { cursor: "100" } }), { seat, config });
+        const text = await res.response.text();
+        assert.match(text, /invalid cursor/);
+      }
     }
   }
 });
@@ -171,6 +185,8 @@ test("tools/list pages concatenate to the full list, in order, with no overlap",
 test("tools/list rejects a malformed or out-of-range cursor exactly like the SDK", async () => {
   await assertParity("CODEX", { jsonrpc: "2.0", id: 11, method: "tools/list", params: { cursor: "x" } }, {});
   await assertParity("CODEX", { jsonrpc: "2.0", id: 12, method: "tools/list", params: { cursor: "999999999999" } }, {});
+  const empty = await answerLifecycle(request({ jsonrpc: "2.0", id: 13, method: "tools/list", params: { cursor: "" } }), { seat: "CODEX", config });
+  assert.match(JSON.stringify(empty.response ? await empty.response.text() : empty), /invalid cursor/, "an empty-string cursor is rejected, never forwarded");
 });
 
 test("catalog pages every tool name and description, terminating without a nextCursor", async () => {
@@ -215,8 +231,9 @@ test("catalog refuses a cursor tagged for a different tool list", async () => {
   const stale = await router.call("catalog", { identity: "CODEX", cursor: `${offset}.${staleTag}` });
   assert.ok(stale.isError);
   assert.match(JSON.stringify(stale), /invalid cursor/);
-  const legacy = await router.call("catalog", { identity: "CODEX", cursor: offset });
-  assert.ok(!legacy.isError, "an untagged offset still pages for compatibility");
+  const bare = await router.call("catalog", { identity: "CODEX", cursor: offset });
+  assert.ok(bare.isError, "a bare hand-composed offset is refused");
+  assert.match(JSON.stringify(bare), /invalid cursor/);
 });
 
 test("catalog audits exactly one row per execution, success and failure", async () => {

@@ -216,12 +216,12 @@ function listTag(list) {
   return hash.toString(16).padStart(8, "0");
 }
 
-/** A cursor is an opaque decimal offset the server issued, optionally carrying the list tag it was issued against;  anything else is an invalid argument. */
+/** A cursor is the opaque offset.list-tag value this server issued;  anything else is an invalid argument, so a stale list can never shift a page walk.  The one bare entry point is "0":  no page precedes it, so there is nothing a changed list could shift, and page one's nextCursor carries the tag. */
 export function parseCursor(raw, length, tag) {
   if (raw === undefined) return 0;
   if (typeof raw !== "string" || !CURSOR_PATTERN.test(raw)) throw new ToolError("invalid_argument", "invalid cursor:  pass the nextCursor value unchanged");
   const [offsetText, cursorTag] = raw.split(".");
-  if (cursorTag !== undefined && cursorTag !== tag) throw new ToolError("invalid_argument", "invalid cursor:  pass the nextCursor value unchanged");
+  if (cursorTag !== tag && !(cursorTag === undefined && offsetText === "0")) throw new ToolError("invalid_argument", "invalid cursor:  pass the nextCursor value unchanged");
   const offset = Number(offsetText);
   if (!Number.isSafeInteger(offset) || offset >= Math.max(length, 1)) throw new ToolError("invalid_argument", "invalid cursor:  pass the nextCursor value unchanged");
   return offset;
