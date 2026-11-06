@@ -17,8 +17,8 @@ from __future__ import annotations
 import time
 import unittest
 
-from agent_sync import typing_signal as TYPING
-from agent_sync.tests.test_daemon import DaemonHarness
+from simple_tools import typing_signal as TYPING
+from simple_tools.tests.test_daemon import DaemonHarness
 
 MENTION = "@**Claude** can you check the AFC cutover?"
 
@@ -57,7 +57,7 @@ class FakeClient:
 class Pending:
     """The wake's conversation, as the daemon hands it over."""
 
-    def __init__(self, kind: str = "stream", *, channel: str = "agent-sync", topic: str = "t",
+    def __init__(self, kind: str = "stream", *, channel: str = "simple-tools", topic: str = "t",
                  recipients: list[int] | None = None, stream_id: int | None = 101) -> None:
         self.type = kind
         self.channel = channel
@@ -211,7 +211,7 @@ class DaemonTypingTests(DaemonHarness):
             )
         )
         daemon = self.started()
-        self.fake.add_message("Codex", "agent-sync", "t", MENTION)
+        self.fake.add_message("Codex", "simple-tools", "t", MENTION)
         self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
         self.clock.advance(19)
         daemon.tick()
@@ -222,12 +222,12 @@ class DaemonTypingTests(DaemonHarness):
         first = posts[0]
         self.assertEqual(first["type"], "stream")
         self.assertEqual(first["topic"], "t")
-        self.assertEqual(first["stream_id"], str(self.fake.streams["agent-sync"]))
+        self.assertEqual(first["stream_id"], str(self.fake.streams["simple-tools"]))
         self.assertEqual([r["state"] for r in self.ledger()][-1], "done")
 
     def test_a_seat_with_the_indicator_off_says_nothing(self) -> None:
         daemon = self.started()
-        self.fake.add_message("Codex", "agent-sync", "t", MENTION)
+        self.fake.add_message("Codex", "simple-tools", "t", MENTION)
         self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
         self.clock.advance(19)
         daemon.tick()
@@ -271,7 +271,7 @@ class DaemonTypingTests(DaemonHarness):
         daemon._typing_signal = capture_signal
         daemon.run_fallback = watch_fallback
         daemon.claude_runner.run = failing_run
-        self.fake.add_message("Codex", "agent-sync", "t", MENTION)
+        self.fake.add_message("Codex", "simple-tools", "t", MENTION)
         self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
         self.clock.advance(19)
         daemon.tick()

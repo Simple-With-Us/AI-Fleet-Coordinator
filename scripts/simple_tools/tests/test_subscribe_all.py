@@ -13,9 +13,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from agent_sync import subscribe_all as S
-from agent_sync import zulip as Z
-from agent_sync.tests.fake_zulip import FakeZulip
+from simple_tools import subscribe_all as S
+from simple_tools import zulip as Z
+from simple_tools.tests.fake_zulip import FakeZulip
 
 
 class SubscribeAllTests(unittest.TestCase):
@@ -145,8 +145,8 @@ class SubscribeAllTests(unittest.TestCase):
             scripts = Path(empty_image) / "scripts"
             scripts.mkdir()
             shutil.copytree(
-                repo / "scripts" / "agent_sync",
-                scripts / "agent_sync",
+                repo / "scripts" / "simple_tools",
+                scripts / "simple_tools",
                 ignore=shutil.ignore_patterns("tests", "__pycache__"),
             )
             shutil.copy2(repo / "scripts" / "simple-chat", scripts / "simple-chat")
@@ -156,7 +156,7 @@ class SubscribeAllTests(unittest.TestCase):
                 "PYTHONDONTWRITEBYTECODE": "1",
             }
             result = subprocess.run(
-                [sys.executable, "-c", "from agent_sync.daemon import Daemon"],
+                [sys.executable, "-c", "from simple_tools.daemon import Daemon"],
                 cwd=empty_image,
                 env=env,
                 text=True,
@@ -171,8 +171,8 @@ class SubscribeAllTests(unittest.TestCase):
             scripts = Path(empty_image) / "scripts"
             scripts.mkdir()
             shutil.copytree(
-                repo / "scripts" / "agent_sync",
-                scripts / "agent_sync",
+                repo / "scripts" / "simple_tools",
+                scripts / "simple_tools",
                 ignore=shutil.ignore_patterns("tests", "__pycache__"),
             )
             env = {
@@ -181,7 +181,7 @@ class SubscribeAllTests(unittest.TestCase):
                 "PYTHONDONTWRITEBYTECODE": "1",
             }
             result = subprocess.run(
-                [sys.executable, "-m", "agent_sync.subscribe_all", "--source", "infisical"],
+                [sys.executable, "-m", "simple_tools.subscribe_all", "--source", "infisical"],
                 cwd=empty_image,
                 env=env,
                 text=True,

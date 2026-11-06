@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import io
 
-from agent_sync import attach
-from agent_sync import wakes as W
-from agent_sync.tests.test_daemon import MENTION, DaemonHarness
+from simple_tools import attach
+from simple_tools import wakes as W
+from simple_tools.tests.test_daemon import MENTION, DaemonHarness
 
 
 class ServerSessionRoutingTests(DaemonHarness):
@@ -29,13 +29,13 @@ class ServerSessionRoutingTests(DaemonHarness):
         daemon = self.started()
         self.write_lease(
             "session-A",
-            topics=[("agent-sync", "owned")],
+            topics=[("simple-tools", "owned")],
             session_id="aaaa1111",
             posted=[400],
             last_prompt=1,
         )
         self.write_lease("session-B", session_id="bbbb2222", last_prompt=100)
-        mid = self.fake.add_message("Codex", "agent-sync", "owned", MENTION)
+        mid = self.fake.add_message("Codex", "simple-tools", "owned", MENTION)
         sibling = self.env(CLAUDE_CODE_SESSION_ID="bbbb2222", AGENT_LEASE="session-B")
         if read_before_route:
             self.assertEqual(self.run_cli("inbox", env=sibling).code, 0)
@@ -50,7 +50,7 @@ class ServerSessionRoutingTests(DaemonHarness):
         self.assertIn("nothing pending", self.drain("session-B"))
         self.assertIn(str(mid), self.drain("session-A"))
         self.assertIn("nothing pending", self.drain("session-A"), "at-most-once claim")
-        reply = self.fake.add_message("Codex", "agent-sync", "owned", "re=400 reply to A")
+        reply = self.fake.add_message("Codex", "simple-tools", "owned", "re=400 reply to A")
         self.pump_until(daemon, lambda: len(self.live_items("session-A")) == 2)
         self.assertEqual(self.live_items("session-A")[-1]["id"], reply)
         self.assertEqual(self.live_items("session-A")[-1]["class"], "interrupt")
@@ -67,7 +67,7 @@ class ServerSessionRoutingTests(DaemonHarness):
         daemon = self.started()
         self.write_lease(
             "session-A",
-            topics=[("agent-sync", "owned")],
+            topics=[("simple-tools", "owned")],
             session_id="aaaa1111",
             posted=[400],
             last_prompt=1,
@@ -77,13 +77,13 @@ class ServerSessionRoutingTests(DaemonHarness):
         pending = W.Pending(
             "wake-1",
             "CLAUDE",
-            {"type": "stream", "channel": "agent-sync", "topic": "owned"},
+            {"type": "stream", "channel": "simple-tools", "topic": "owned"},
             owner=False,
             now=now,
             due=now,
         )
         self.assertEqual(daemon.takeover(daemon.seats["CLAUDE"], pending), "session-A")
-        mid = self.fake.add_message("Codex", "agent-sync", "owned", MENTION)
+        mid = self.fake.add_message("Codex", "simple-tools", "owned", MENTION)
         self.pump_until(daemon, lambda: len(self.live_items("session-A")) == 1)
         self.assertEqual(self.live_items("session-A")[0]["id"], mid)
         self.assertEqual(self.live_items("session-B"), [])

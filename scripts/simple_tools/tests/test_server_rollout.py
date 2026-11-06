@@ -19,10 +19,10 @@ import unittest
 import urllib.parse
 from pathlib import Path
 
-from agent_sync import config as C
+from simple_tools import config as C
 
 REPO = Path(__file__).resolve().parents[3]
-SERVER_DIR = REPO / "scripts" / "agent_sync" / "server"
+SERVER_DIR = REPO / "scripts" / "simple_tools" / "server"
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "server-listener-live-oct9.toml"
 TARGETS = ["JET"] + ["GB-" + r for r in ("DIRECTOR", "FIXER", "DESIGNER", "COMPILER", "HOUSEKEEPER", "PUBLISHER",
                                           "DEPLOYER", "MONITOR", "PLUMBER", "ORACLE", "TRADER", "ENGINEER")]
@@ -31,7 +31,7 @@ INFISICAL_PROJECT_ID = "00000000-0000-4000-8000-000000000042"
 
 
 def _load(name: str):
-    spec = importlib.util.spec_from_file_location("agent_sync_server_" + name, SERVER_DIR / (name + ".py"))
+    spec = importlib.util.spec_from_file_location("simple_tools_server_" + name, SERVER_DIR / (name + ".py"))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -133,7 +133,7 @@ class FakeInfisical:
 
 class InfisicalEnvTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.tmp = Path(tempfile.mkdtemp(prefix="agent-sync-infisical-"))
+        self.tmp = Path(tempfile.mkdtemp(prefix="simple-tools-infisical-"))
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.cid, self.csecret = "cid-" + secrets.token_hex(8), "cs-" + secrets.token_hex(16)
         self.values = {
@@ -326,7 +326,7 @@ class InfisicalEnvTests(unittest.TestCase):
 
 class ApplyLiveConfigTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.tmp = Path(tempfile.mkdtemp(prefix="agent-sync-apply-"))
+        self.tmp = Path(tempfile.mkdtemp(prefix="simple-tools-apply-"))
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.live = self.tmp / "listener.toml"
         self.live.write_text(FIXTURE.read_text())

@@ -10,12 +10,12 @@ import threading
 import unittest
 from pathlib import Path
 
-from agent_sync import state as S
+from simple_tools import state as S
 
 
 class StateTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.tmp = Path(tempfile.mkdtemp(prefix="agent-sync-state-"))
+        self.tmp = Path(tempfile.mkdtemp(prefix="simple-tools-state-"))
         self.addCleanup(lambda: __import__("shutil").rmtree(self.tmp, ignore_errors=True))
         self.root = self.tmp / "root"
 
@@ -26,7 +26,7 @@ class StateTests(unittest.TestCase):
         old = os.umask(0)
         try:
             state = S.State(self.root, "CLAUDE", "abcd1234")
-            state.advance_cursor("agent-sync", "topic", 5)
+            state.advance_cursor("simple-tools", "topic", 5)
             state.record_posted(6)
             state.advance_inbox(7)
         finally:
@@ -37,7 +37,7 @@ class StateTests(unittest.TestCase):
         for file in (state.path, self.root / "CLAUDE" / "inbox.json"):
             self.assertEqual(self.mode(file), 0o600, file)
         data = json.loads(state.path.read_text())
-        self.assertEqual(data["cursors"], {"agent-sync\u0000topic": 5})
+        self.assertEqual(data["cursors"], {"simple-tools\u0000topic": 5})
         self.assertEqual(data["posted"], [6])
 
     def test_existing_loose_directories_of_ours_are_tightened_but_the_root_is_not(self) -> None:
@@ -73,31 +73,31 @@ class StateTests(unittest.TestCase):
 
     def test_cursors_never_move_backwards_and_keys_ignore_case(self) -> None:
         state = S.State(self.root, "CLAUDE", "t")
-        state.advance_cursor("Agent-Sync", "Roll Call", 10)
-        state.advance_cursor("agent-sync", "roll call", 4)
-        self.assertEqual(state.cursor("AGENT-SYNC", "ROLL CALL"), 10)
-        self.assertIsNone(state.cursor("agent-sync", "other"))
+        state.advance_cursor("Simple-Tools", "Roll Call", 10)
+        state.advance_cursor("simple-tools", "roll call", 4)
+        self.assertEqual(state.cursor("SIMPLE-TOOLS", "ROLL CALL"), 10)
+        self.assertIsNone(state.cursor("simple-tools", "other"))
 
     def test_cursor_falls_back_to_legacy_channel_name(self) -> None:
         state = S.State(self.root, "CLAUDE", "t")
-        state.advance_cursor("agent-sync", "Roll Call", 10)
+        state.advance_cursor("simple-tools", "Roll Call", 10)
         self.assertEqual(state.cursor("Work-In-Progress", "roll call"), 10)
-        self.assertEqual(state.cursor("agent-sync", "Roll Call"), 10)
+        self.assertEqual(state.cursor("simple-tools", "Roll Call"), 10)
 
     def test_advance_rekeys_legacy_cursor_under_the_new_channel(self) -> None:
         state = S.State(self.root, "CLAUDE", "t")
-        state.advance_cursor("agent-sync", "Roll Call", 10)
+        state.advance_cursor("simple-tools", "Roll Call", 10)
         state.advance_cursor("Work-In-Progress", "Roll Call", 12)
         data = json.loads(state.path.read_text())
         self.assertEqual(
             list(data["cursors"]), [S.cursor_key("Work-In-Progress", "Roll Call")]
         )
         self.assertEqual(state.cursor("Work-In-Progress", "Roll Call"), 12)
-        self.assertIsNone(state.cursor("agent-sync", "Roll Call"))
+        self.assertIsNone(state.cursor("simple-tools", "Roll Call"))
 
     def test_advance_with_lower_id_keeps_the_legacy_position(self) -> None:
         state = S.State(self.root, "CLAUDE", "t")
-        state.advance_cursor("agent-sync", "Roll Call", 10)
+        state.advance_cursor("simple-tools", "Roll Call", 10)
         state.advance_cursor("Work-In-Progress", "Roll Call", 4)
         self.assertEqual(state.cursor("Work-In-Progress", "Roll Call"), 10)
         data = json.loads(state.path.read_text())
@@ -109,7 +109,7 @@ class StateTests(unittest.TestCase):
 
     def test_advance_after_rekey_never_moves_back(self) -> None:
         state = S.State(self.root, "CLAUDE", "t")
-        state.advance_cursor("agent-sync", "Roll Call", 10)
+        state.advance_cursor("simple-tools", "Roll Call", 10)
         state.advance_cursor("Work-In-Progress", "Roll Call", 12)
         state.advance_cursor("Work-In-Progress", "Roll Call", 4)
         self.assertEqual(state.cursor("Work-In-Progress", "Roll Call"), 12)

@@ -16,10 +16,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from agent_sync import notes as N
-from agent_sync import session_ids as S
-from agent_sync.tests import test_mcp_identity as TI
-from agent_sync.tests.harness import SESSION, Harness
+from simple_tools import notes as N
+from simple_tools import session_ids as S
+from simple_tools.tests import test_mcp_identity as TI
+from simple_tools.tests.harness import SESSION, Harness
 
 EXEMPT = ("GROK-BOT", "GB-FIXER", "MA", "JET", "WISE", "ECHO")
 SID = "thread-id-0001"

@@ -27,18 +27,18 @@ import tomllib
 import unittest
 from pathlib import Path
 
-from agent_sync import adapters as A
-from agent_sync import config as C
-from agent_sync import launchd
-from agent_sync import live as L
-from agent_sync import service_identity as S
-from agent_sync.tests.fake_routine import FakeRoutine
-from agent_sync.tests.harness import write_rc
-from agent_sync.tests.listener_harness import ListenerHarness
+from simple_tools import adapters as A
+from simple_tools import config as C
+from simple_tools import launchd
+from simple_tools import live as L
+from simple_tools import service_identity as S
+from simple_tools.tests.fake_routine import FakeRoutine
+from simple_tools.tests.harness import write_rc
+from simple_tools.tests.listener_harness import ListenerHarness
 
 REPO = Path(__file__).resolve().parents[3]
-SERVER_DIR = REPO / "scripts" / "agent_sync" / "server"
-PARTITION = REPO / "docs" / "protocols" / "agent-sync-partition.toml"
+SERVER_DIR = REPO / "scripts" / "simple_tools" / "server"
+PARTITION = REPO / "docs" / "protocols" / "simple-tools-partition.toml"
 GB_EMAIL = "compiler-grok-bot@zulip.test"
 DIRECTOR_EMAIL = "director-grok-bot@zulip.test"
 SEAT = "GB-COMPILER"
@@ -372,7 +372,7 @@ class AdminRefusalTests(ServerHarness):
             "only the member persona holds a queue",
         )
         self.fake.add_message(
-            "Codex", "agent-sync", "t", "@**GB-Director** and @**GB-Compiler** look"
+            "Codex", "simple-tools", "t", "@**GB-Director** and @**GB-Compiler** look"
         )
         self.pump_until(daemon, lambda: len(self.ledger(SEAT)) >= 1, seat=SEAT)
         self.wake_cycle(daemon)
@@ -457,7 +457,7 @@ class DmTests(ServerHarness):
     def test_a_bf_bot_mention_wakes_the_gb_routine(self) -> None:
         bf = self.fake.add_user("bf-builder-bot@zulip.test", "BF Builder", is_bot=True, user_id=31)
         daemon = self.started()
-        mid = self.fake.add_message(bf, "agent-sync", "CT build red", MENTION)
+        mid = self.fake.add_message(bf, "simple-tools", "CT build red", MENTION)
         self.pump_until(daemon, lambda: len(self.ledger(SEAT)) >= 1, seat=SEAT)
         self.wake_cycle(daemon)
         body = self.routine.received[0].json()
@@ -478,8 +478,8 @@ class DmTests(ServerHarness):
 
     def test_a_channel_mention_wakes_with_dm_false(self) -> None:
         daemon = self.started()
-        mid = self.fake.add_message("Codex", "agent-sync", "CT build red", MENTION)
-        self.fake.add_message("Codex", "agent-sync", "CT build red", "plain chatter")
+        mid = self.fake.add_message("Codex", "simple-tools", "CT build red", MENTION)
+        self.fake.add_message("Codex", "simple-tools", "CT build red", "plain chatter")
         self.pump_until(daemon, lambda: len(self.ledger(SEAT)) >= 1, seat=SEAT)
         self.wake_cycle(daemon, 19)
         self.assertEqual(self.routine.received, [], "still inside the quiet window")
@@ -488,16 +488,16 @@ class DmTests(ServerHarness):
         self.assertFalse(body["dm"])
         self.assertEqual(
             (body["channel"], body["topic"], body["dm_recipient_ids"]),
-            ("agent-sync", "CT build red", []),
+            ("simple-tools", "CT build red", []),
         )
-        self.assertEqual(body["stream_id"], self.fake.streams["agent-sync"])
+        self.assertEqual(body["stream_id"], self.fake.streams["simple-tools"])
         self.assertEqual(
-            body["reply_to"], {"type": "stream", "channel": "agent-sync", "topic": "CT build red"}
+            body["reply_to"], {"type": "stream", "channel": "simple-tools", "topic": "CT build red"}
         )
         self.assertEqual((body["sender_user_id"], body["is_bot"], body["owner"]), (11, True, False))
         self.assertEqual(
             body["zulip_link"],
-            "%s/#narrow/channel/7-agent-sync/topic/CT.20build.20red/near/%d" % (self.fake.url, mid),
+            "%s/#narrow/channel/7-simple-tools/topic/CT.20build.20red/near/%d" % (self.fake.url, mid),
         )
         self.assertEqual(body["contract"], "agent-sync-wake/1")
         self.assertEqual(body["seat"], SEAT)
@@ -602,7 +602,7 @@ class RoutineBodyTests(unittest.TestCase):
             base = {
                 "id": 9,
                 "type": "stream",
-                "channel": "agent-sync",
+                "channel": "simple-tools",
                 "topic": "t",
                 "sender_id": 11,
                 "content": "x",
@@ -854,7 +854,7 @@ class LedgerAndSecrecyTests(ServerHarness):
         self.assertIn("wake-failed", kinds)
         self.assertEqual(self.banners, [], "no banners on the server instance")
         self.routine.script = [500, 500, 500, 500]
-        self.fake.add_message("Codex", "agent-sync", "t", MENTION)
+        self.fake.add_message("Codex", "simple-tools", "t", MENTION)
         self.pump_until(daemon, lambda: len(self.ledger(SEAT)) >= 5, seat=SEAT)
         self.wake_cycle(daemon)
         last = self.ledger(SEAT)[-1]
@@ -893,7 +893,7 @@ class LedgerAndSecrecyTests(ServerHarness):
         self.write_server_config(budget="wakes_per_hour = 2, usd_per_day = 0.01")
         daemon = self.started()
         for topic in ("a", "b", "c"):
-            self.fake.add_message("Codex", "agent-sync", topic, MENTION)
+            self.fake.add_message("Codex", "simple-tools", topic, MENTION)
             self.pump_until(
                 daemon,
                 lambda: (
@@ -1004,7 +1004,7 @@ class LedgerAndSecrecyTests(ServerHarness):
     def test_an_unready_routine_drops_the_wake_and_names_the_variable(self) -> None:
         daemon = self.server_daemon(env=self.server_env(GB_COMPILER_ROUTINE_KEY=None))
         self.assertTrue(daemon.connect_seat(SEAT))
-        self.fake.add_message("Codex", "agent-sync", "t", MENTION)
+        self.fake.add_message("Codex", "simple-tools", "t", MENTION)
         self.pump_until(daemon, lambda: len(self.ledger(SEAT)) >= 1, seat=SEAT)
         self.wake_cycle(daemon)
         self.assertEqual(self.ledger(SEAT)[-1]["reason"], "routine_not_configured")
@@ -1058,7 +1058,7 @@ class PartitionTests(ServerHarness):
             "seat CLAUDE is configured here (the 'server' listener), but it belongs to the 'mac' instance",
             err,
         )
-        self.assertIn("agent-sync-partition.toml", err)
+        self.assertIn("simple-tools-partition.toml", err)
         self.write_config(
             seats='[seat.CLAUDE]\nbot = "Claude"\n\n[seat.GB-COMPILER]\nenabled = false\nbot = "GB-Compiler"\n'
         )
@@ -1280,7 +1280,7 @@ class PartitionTests(ServerHarness):
             seat_cfg = server.seats[seat]
             code = C.env_code(seat)
             if seat == "JET":
-                # JET is woken through the hosted MCP Worker's MCP Events (agent-sync-mcp, "Wake Jet").
+                # JET is woken through the hosted MCP Worker's MCP Events (simple-tools-mcp, "Wake Jet").
                 r = seat_cfg.routine
                 self.assertEqual(
                     (seat_cfg.wake, seat_cfg.creds, seat_cfg.instance), ("http", "env", "server")
@@ -1292,7 +1292,7 @@ class PartitionTests(ServerHarness):
                         "JET_ROUTINE_KEY",
                         "POST",
                         "hmac-sha256",
-                        "X-Agent-Sync-Signature",
+                        "X-Simple-Tools-Signature",
                         "",
                     ),
                 )
@@ -1404,7 +1404,7 @@ class CloudSeatTests(CloudSeatHarness):
             self.assertTrue(daemon.connect_seat(seat), daemon.seats[seat].error)
         sent = {
             seat: self.fake.add_message(
-                "Codex", "agent-sync", "cloud %s" % seat, "@**%s** please look" % name
+                "Codex", "simple-tools", "cloud %s" % seat, "@**%s** please look" % name
             )
             for seat, (_, name) in CLOUD_SEATS.items()
         }
@@ -1439,7 +1439,7 @@ class CloudSeatTests(CloudSeatHarness):
         self.assertTrue(daemon.connect_seat("JET"), daemon.seats["JET"].error)
         self.assertIn(jet_key, daemon.hidden)
         self.fake.add_message(
-            "Codex", "agent-sync", "jet wake", "@**%s** please look" % CLOUD_SEATS["JET"][1]
+            "Codex", "simple-tools", "jet wake", "@**%s** please look" % CLOUD_SEATS["JET"][1]
         )
         self.pump_until(daemon, lambda: len(self.ledger("JET")) >= 1, seat="JET")
         self.clock.advance(25.0)
@@ -1449,7 +1449,7 @@ class CloudSeatTests(CloudSeatHarness):
         got = self.routine.received[0]
         self.assertEqual(got.path, "/internal/wake/JET")
         expected = hmac.new(jet_key.encode("utf-8"), got.body, hashlib.sha256).hexdigest()
-        self.assertTrue(hmac.compare_digest(got.header("X-Agent-Sync-Signature"), expected))
+        self.assertTrue(hmac.compare_digest(got.header("X-Simple-Tools-Signature"), expected))
         self.assertNotIn(jet_key, json.dumps(got.headers), "hmac mode never sends the key itself")
         body = got.json()
         self.assertEqual(
@@ -1458,7 +1458,7 @@ class CloudSeatTests(CloudSeatHarness):
         )
         self.assertEqual(got.header("Idempotency-Key"), body["wake_id"])
         # The Worker delivers a channel wake only from an allowlisted stream id, so the listener sends it.
-        self.assertEqual(body["stream_id"], self.fake.streams["agent-sync"])
+        self.assertEqual(body["stream_id"], self.fake.streams["simple-tools"])
 
     def test_a_gb_persona_from_the_sample_wakes_its_routine_with_the_infisical_webhook_names(
         self,
@@ -1481,7 +1481,7 @@ class CloudSeatTests(CloudSeatHarness):
         self.assertTrue(daemon.connect_seat("GB-FIXER"), daemon.seats["GB-FIXER"].error)
         self.assertIn(hook_key, daemon.hidden, "the routine key is scrubbed like a bot key")
         self.fake.add_message(
-            "Codex", "agent-sync", "fixer wake", "@**GB-Fixer** main is red, please look"
+            "Codex", "simple-tools", "fixer wake", "@**GB-Fixer** main is red, please look"
         )
         self.pump_until(daemon, lambda: len(self.ledger("GB-FIXER")) >= 1, seat="GB-FIXER")
         self.clock.advance(25.0)
@@ -1754,7 +1754,7 @@ class ServerInitCredentialSourceTests(ServerHarness):
 
 def _load_healthcheck():
     spec = importlib.util.spec_from_file_location(
-        "agent_sync_healthcheck", SERVER_DIR / "healthcheck.py"
+        "simple_tools_healthcheck", SERVER_DIR / "healthcheck.py"
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -1765,7 +1765,7 @@ class ContainerTests(unittest.TestCase):
     def setUp(self) -> None:
         import tempfile
 
-        self.tmp = Path(tempfile.mkdtemp(prefix="agent-sync-server-"))
+        self.tmp = Path(tempfile.mkdtemp(prefix="simple-tools-server-"))
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
 
     def test_the_dockerfile(self) -> None:
@@ -1776,10 +1776,10 @@ class ContainerTests(unittest.TestCase):
         self.assertEqual(lines[0], "FROM python:3.14-slim")
         users = [l.split()[1] for l in lines if l.startswith("USER ")]
         self.assertEqual(users, ["agentsync"], "the daemon runs as a non-root user")
-        self.assertIn("COPY scripts/agent_sync /app/scripts/agent_sync", lines)
+        self.assertIn("COPY scripts/simple_tools /app/scripts/simple_tools", lines)
         self.assertIn("COPY scripts/simple-chat /app/scripts/simple-chat", lines)
         self.assertIn(
-            "COPY docs/protocols/agent-sync-partition.toml /app/docs/protocols/agent-sync-partition.toml",
+            "COPY docs/protocols/simple-tools-partition.toml /app/docs/protocols/simple-tools-partition.toml",
             lines,
         )
         self.assertIn(
@@ -1787,11 +1787,11 @@ class ContainerTests(unittest.TestCase):
             lines,
             "strict_seat and seat_app read the registry",
         )
-        self.assertIn('ENTRYPOINT ["/app/scripts/agent_sync/server/entrypoint.sh"]', lines)
+        self.assertIn('ENTRYPOINT ["/app/scripts/simple_tools/server/entrypoint.sh"]', lines)
         self.assertIn('CMD ["daemon", "run", "--wait-lock"]', lines)
         self.assertRegex(
             text,
-            r'HEALTHCHECK [^\n]*\\\n\s+CMD \["python3", "/app/scripts/agent_sync/server/healthcheck.py"\]',
+            r'HEALTHCHECK [^\n]*\\\n\s+CMD \["python3", "/app/scripts/simple_tools/server/healthcheck.py"\]',
         )
         for name in (
             "AGENT_SYNC_INSTANCE=server",
@@ -1809,23 +1809,23 @@ class ContainerTests(unittest.TestCase):
         self.assertEqual(ignore[[i for i, l in enumerate(ignore) if not l.startswith("#")][0]], "*")
         for keep in (
             "!scripts/simple-chat",
-            "!scripts/agent_sync/",
-            "!docs/protocols/agent-sync-partition.toml",
+            "!scripts/simple_tools/",
+            "!docs/protocols/simple-tools-partition.toml",
             "!fleet-apps.json",
-            "scripts/agent_sync/tests/",
+            "scripts/simple_tools/tests/",
         ):
             self.assertIn(keep, ignore)
 
     def test_the_container_paths_resolve_like_the_image(self) -> None:
         # The image keeps the repo layout under /app:  the default partition path is the copy it carries.
         self.assertEqual(
-            C.partition_path({}, "/app"), "/app/docs/protocols/agent-sync-partition.toml"
+            C.partition_path({}, "/app"), "/app/docs/protocols/simple-tools-partition.toml"
         )
         self.assertTrue((SERVER_DIR / "entrypoint.sh").stat().st_mode & stat.S_IXUSR)
         self.assertTrue((REPO / "scripts" / "simple-chat").stat().st_mode & stat.S_IXUSR)
 
-    def test_the_entrypoint_seeds_the_config_once_and_runs_agent_sync(self) -> None:
-        from agent_sync.tests.test_server_rollout import FakeInfisical, INFISICAL_PROJECT_ID
+    def test_the_entrypoint_seeds_the_config_once_and_runs_simple_tools(self) -> None:
+        from simple_tools.tests.test_server_rollout import FakeInfisical, INFISICAL_PROJECT_ID
 
         data = self.tmp / "data"
         env = {
@@ -1924,7 +1924,7 @@ class ThreadedServerTests(ServerHarness):
             return self.fake.cond.wait_for(predicate, timeout=timeout)
 
     def test_the_threaded_daemon_runs_routine_wakes_on_a_worker(self) -> None:
-        from agent_sync.daemon import Clock
+        from simple_tools.daemon import Clock
 
         self.write_server_config(coalesce=0.2, owner_coalesce=0.1)
         daemon = self.server_daemon(clock=Clock())
@@ -1962,7 +1962,7 @@ class ThreadedServerTests(ServerHarness):
         """A container waiting on the lock (a rolling redeploy) never touches the running
         listener's ledger, and after the handover it rebuilds from the cursor and ledger that
         listener left:  no second wake and no second inbox row for anything it already routed."""
-        from agent_sync.daemon import Clock
+        from simple_tools.daemon import Clock
 
         class Signal(io.StringIO):
             def __init__(self) -> None:
@@ -2013,7 +2013,7 @@ class ThreadedServerTests(ServerHarness):
         self.addCleanup(second.stop.set)
         self.assertTrue(err.waiting.wait(30), "the second listener did not wait for the lock")
         first_id = self.fake.add_message(
-            "Codex", "agent-sync", "one", MENTION, timestamp=int(time.time())
+            "Codex", "simple-tools", "one", MENTION, timestamp=int(time.time())
         )
         self.assertTrue(self.routine.wait_for(1), "the running listener never woke the routine")
         deadline = time.monotonic() + 30
@@ -2039,7 +2039,7 @@ class ThreadedServerTests(ServerHarness):
         # Wakes run in order on the one worker:  once this later mention reaches the routine, any
         # duplicate of the first would already have been sent.
         second_id = self.fake.add_message(
-            "Codex", "agent-sync", "two", MENTION, timestamp=int(time.time())
+            "Codex", "simple-tools", "two", MENTION, timestamp=int(time.time())
         )
         self.assertTrue(self.routine.wait_for(2), "the new listener never woke the routine")
         self.assertEqual(

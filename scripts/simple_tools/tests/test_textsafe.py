@@ -4,9 +4,9 @@ from __future__ import annotations
 import re
 import unittest
 
-from agent_sync.textsafe import ELLIPSIS, EMPTY, FULLWIDTH_AT, render_untrusted
+from simple_tools.textsafe import ELLIPSIS, EMPTY, FULLWIDTH_AT, render_untrusted
 
-from agent_sync.tests.fake_zulip import visible_markup
+from simple_tools.tests.fake_zulip import visible_markup
 
 # Constructed here, not typed, so no line of this file is a mention or a widget command.
 AT = "@"

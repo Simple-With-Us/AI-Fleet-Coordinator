@@ -10,8 +10,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from agent_sync import systemd
-from agent_sync.tests.listener_harness import ListenerHarness
+from simple_tools import systemd
+from simple_tools.tests.listener_harness import ListenerHarness
 
 
 class UnitTests(unittest.TestCase):
@@ -46,7 +46,7 @@ class UnitTests(unittest.TestCase):
             self.assertTrue(config.exists())
 
     def test_sample_supports_owner_initialization(self):
-        from agent_sync.listener_cli import _rewrite_pins
+        from simple_tools.listener_cli import _rewrite_pins
         result = _rewrite_pins(systemd.sample_config(), 42, [11])
         self.assertIn("owner_user_id = 42", result)
         self.assertIn("eligible_user_ids = [11]", result)
@@ -199,7 +199,7 @@ class UnitTests(unittest.TestCase):
 
 class DispatchTests(ListenerHarness):
     def test_linux_install_and_status(self):
-        with patch("agent_sync.listener_cli.sys.platform", "linux"):
+        with patch("simple_tools.listener_cli.sys.platform", "linux"):
             # The system Python is the default only when this host's copy is 3.11 or newer; a Mac's
             # /usr/bin/python3 is 3.9 and install() falls back deliberately (tested in UnitTests).
             with patch.object(systemd, "too_old", return_value=False):
@@ -213,7 +213,7 @@ class DispatchTests(ListenerHarness):
             self.assertIn("/usr/bin/python3", help_result.out)
             self.assertNotIn("/opt/homebrew", help_result.out)
             with patch(
-                "agent_sync.systemd.status",
+                "simple_tools.systemd.status",
                 return_value={"installed": True, "active_state": "inactive"},
             ):
                 result = self.run_cli("daemon", "status", "--json")
@@ -222,7 +222,7 @@ class DispatchTests(ListenerHarness):
             )
 
     def test_probe_failure_returns_cli_result_and_stderr(self):
-        with patch("agent_sync.listener_cli.sys.platform", "linux"), patch.object(systemd.os, "access", return_value=True), patch.object(systemd.subprocess, "run", side_effect=subprocess.TimeoutExpired("python", 10)):
+        with patch("simple_tools.listener_cli.sys.platform", "linux"), patch.object(systemd.os, "access", return_value=True), patch.object(systemd.subprocess, "run", side_effect=subprocess.TimeoutExpired("python", 10)):
             result = self.run_cli("daemon", "install", "--python", sys.executable)
         self.assertEqual(result.code, 124)
         self.assertIn("version probe failed", result.err)
@@ -230,7 +230,7 @@ class DispatchTests(ListenerHarness):
         self.assertFalse(Path(systemd.unit_path(str(self.home))).exists())
 
     def test_unsupported_platform_refuses_without_writes(self):
-        with patch("agent_sync.listener_cli.sys.platform", "win32"):
+        with patch("simple_tools.listener_cli.sys.platform", "win32"):
             result = self.run_cli("daemon", "install")
             self.assertNotEqual(result.code, 0)
             self.assertIn("only macOS and Linux", result.err)
