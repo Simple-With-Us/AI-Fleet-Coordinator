@@ -20,11 +20,11 @@ import time
 import unittest
 from unittest import mock
 
-from agent_sync import adapters as A
-from agent_sync import config as C
-from agent_sync import daemon as D
-from agent_sync import live as L
-from agent_sync import wakes as W
+from simple_tools import adapters as A
+from simple_tools import config as C
+from simple_tools import daemon as D
+from simple_tools import live as L
+from simple_tools import wakes as W
 
 
 def _record(payload_type: str, **payload: object) -> str:
@@ -348,7 +348,7 @@ class MuseRunnerSchemaTest(unittest.TestCase):
         self.assertEqual(set(sent["required"]), set(sent["properties"]))
 
     def test_the_mac_muse_bridge_sends_the_strict_schema(self) -> None:
-        from agent_sync import muse_bridge_mac as MBM
+        from simple_tools import muse_bridge_mac as MBM
 
         self.assertNotIn("schema_text()", inspect.getsource(MBM), "a muse caller left the loose schema")
 
@@ -793,7 +793,7 @@ class McodeFallbackTest(unittest.TestCase):
     def test_the_documented_argv_carries_the_step_budget_the_code_uses(self) -> None:
         # The protocol doc quotes the fallback argv.  A number that drifts from the code is a doc
         # that lies about the command, so the two are pinned together here.
-        doc = pathlib.Path(__file__).resolve().parents[3] / "docs" / "protocols" / "agent-sync-listener.md"
+        doc = pathlib.Path(__file__).resolve().parents[3] / "docs" / "protocols" / "simple-tools-listener.md"
         text = doc.read_text(encoding="utf-8")
         self.assertIn(
             "--max-steps %d --timeout %s" % (A.MCODE_MAX_STEPS, A.MCODE_TIMEOUT), text
@@ -865,7 +865,7 @@ class McodeFallbackTest(unittest.TestCase):
     def test_a_quota_refusal_never_falls_back(self) -> None:
         # A capped provider stays capped whichever binary asks, so a fallback there would spend a
         # second run to learn what the first one already said.
-        from agent_sync.daemon import _is_fallbackable
+        from simple_tools.daemon import _is_fallbackable
 
         for quota in (
             "You've hit your weekly limit · resets Oct 13 at 5pm",
@@ -878,13 +878,13 @@ class McodeFallbackTest(unittest.TestCase):
     def test_an_unanticipated_quota_wording_still_does_not_fall_back(self) -> None:
         # The reason this is an ALLOWLIST and not a blocklist of known words:  a cap whose phrasing
         # nobody anticipated must not read as "some other fault" and buy itself a second run.
-        from agent_sync.daemon import _is_fallbackable
+        from simple_tools.daemon import _is_fallbackable
 
         self.assertFalse(_is_fallbackable("a wholly unexpected vendor message"))
         self.assertFalse(_is_fallbackable("something nobody has seen before"))
 
     def test_a_real_fault_does_fall_back(self) -> None:
-        from agent_sync.daemon import _is_fallbackable
+        from simple_tools.daemon import _is_fallbackable
 
         for fault in (
             "no parseable result",
@@ -896,7 +896,7 @@ class McodeFallbackTest(unittest.TestCase):
     def test_a_safety_refusal_never_falls_back(self) -> None:
         # The daemon killed that child on purpose (it listed tools, ran a hook, or never emitted an
         # init event).  Re-running it on a second runtime would be trying to get around a guard.
-        from agent_sync.daemon import _is_fallbackable
+        from simple_tools.daemon import _is_fallbackable
 
         for refusal in ("init listed tools", "hook ran", "no init event"):
             self.assertFalse(_is_fallbackable(refusal), refusal)
@@ -1157,7 +1157,7 @@ class McodeFallbackTest(unittest.TestCase):
         # flag fell straight through to UsageError and the self-test could never be run.
         src = " ".join(
             inspect.getsource(
-                __import__("agent_sync.listener_cli", fromlist=["cmd_test_wake"]).cmd_test_wake
+                __import__("simple_tools.listener_cli", fromlist=["cmd_test_wake"]).cmd_test_wake
             ).split()
         )
         self.assertIn('if want == "fallback":', src)
@@ -1210,7 +1210,7 @@ class McodeFallbackTest(unittest.TestCase):
         # Config already refuses `wake = "mcode"`, but a config check is a promise.  This is the
         # choke point every wake passes through, so the asymmetry is structural rather than a table
         # lookup someone could edit away.
-        from agent_sync.daemon import PRIMARY_RUNTIMES
+        from simple_tools.daemon import PRIMARY_RUNTIMES
 
         self.assertIn("claude", PRIMARY_RUNTIMES)
         self.assertIn("muse", PRIMARY_RUNTIMES)
@@ -1237,7 +1237,7 @@ class JetPinnedReviewTest(unittest.TestCase):
         # stop, on the seat that actually hit it.
         import inspect
 
-        from agent_sync.daemon import Daemon
+        from simple_tools.daemon import Daemon
 
         # The shared branch now covers every primary (the OpenRouter wake joined claude and muse) and
         # asks `_primary_state` for the pin and the quota in one place, so a held primary and a
@@ -1261,7 +1261,7 @@ class JetPinnedReviewTest(unittest.TestCase):
 
     def test_a_safety_refusal_is_terminal_for_every_refusal_kind(self) -> None:
         # Finding 2.  Refusals, pins and policy stops must all produce ZERO fallback attempts.
-        from agent_sync.daemon import _is_fallbackable
+        from simple_tools.daemon import _is_fallbackable
 
         for refusal in (
             "init listed tools",
@@ -1306,7 +1306,7 @@ class JetPinnedReviewTest(unittest.TestCase):
         # as done made a queued item look handled on the strength of output nobody could read.
         import inspect
 
-        from agent_sync.daemon import Daemon
+        from simple_tools.daemon import Daemon
 
         src = inspect.getsource(Daemon.run_wake)
         self.assertIn("invalid result: %s", src)
@@ -1575,7 +1575,7 @@ class LiveMuseTest(unittest.TestCase):
         os.chmod(work, 0o700)
         prompt = (
             "Daemon header (trusted):\nSeat: MM\n"
-            'Where: channel "agent-sync", topic "AFC-291 muse headless wake type"\n'
+            'Where: channel "simple-tools", topic "AFC-291 muse headless wake type"\n'
             "Board filing: disabled; never use action board\n"
             "Routing: disabled (no owner trigger); leave route null\n"
             "Return only the JSON object the schema describes.\n"
@@ -1634,7 +1634,7 @@ class McodeFallbackBoundTest(unittest.TestCase):
     @staticmethod
     def _pending(trigger: int = 3) -> "W.Pending":
         pending = W.Pending(
-            "w1", "MM", {"channel": "agent-sync", "topic": "t"}, owner=False, now=1.0, due=2.0
+            "w1", "MM", {"channel": "simple-tools", "topic": "t"}, owner=False, now=1.0, due=2.0
         )
         pending.add({"id": trigger}, False)
         return pending
@@ -1733,7 +1733,7 @@ class McodeFallbackBoundTest(unittest.TestCase):
             "items": [
                 {
                     "message_id": 900,
-                    "channel": "agent-sync",
+                    "channel": "simple-tools",
                     "topic": "earlier",
                     "sender_full_name": "Codex",
                     "reason": "wakes_per_hour",

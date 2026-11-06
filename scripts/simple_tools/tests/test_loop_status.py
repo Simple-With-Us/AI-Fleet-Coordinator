@@ -1,5 +1,5 @@
 import unittest
-from agent_sync import listener_cli as CLI
+from simple_tools import listener_cli as CLI
 
 class LoopStatusTests(unittest.TestCase):
     def test_guard_state_is_explicit(self):

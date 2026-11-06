@@ -13,11 +13,11 @@ import json
 import unittest
 from unittest import mock
 
-from agent_sync import identities as X
-from agent_sync.mcp import identity_router as R
-from agent_sync.mcp import tools as T
-from agent_sync.tests.harness import TAG, write_rc
-from agent_sync.tests.mcp_harness import McpHarness, seat_bearer_locator, zulip_shaped
+from simple_tools import identities as X
+from simple_tools.mcp import identity_router as R
+from simple_tools.mcp import tools as T
+from simple_tools.tests.harness import TAG, write_rc
+from simple_tools.tests.mcp_harness import McpHarness, seat_bearer_locator, zulip_shaped
 
 ENABLED = X.gb_identities()
 PERSONA = ENABLED[1]  # any enabled persona works;  the table decides which
@@ -328,7 +328,7 @@ class CliTests(IdentityHarness):
 
     def audit_after(self, raiser, *argv):
         """Run `post` with a command that verifies the key and then does `raiser`;  the audit rows it left."""
-        from agent_sync import cli as CLI
+        from simple_tools import cli as CLI
 
         def command(agent, args):
             agent.verify()
@@ -369,7 +369,7 @@ class CliTests(IdentityHarness):
                 self.assertNotIn("/private/path", json.dumps(rows))
 
     def test_every_exit_of_a_verified_write_yields_exactly_one_audit_row(self):
-        from agent_sync import zulip as Z
+        from simple_tools import zulip as Z
 
         def ok(agent, args):
             return 0
@@ -385,7 +385,7 @@ class CliTests(IdentityHarness):
 
         cases = {
             "ok": (ok, 0, "ok"),
-            "agent_sync_error": (agent_error, 2, "exit_2"),
+            "simple_tools_error": (agent_error, 2, "exit_2"),
             "interrupt": (interrupted, 130, "interrupted"),
             "broken_pipe": (broken_pipe, 0, "ok"),
         }
@@ -403,7 +403,7 @@ class CliTests(IdentityHarness):
         def never_verified(agent, args):
             raise OSError("before anything was sent")
 
-        from agent_sync import cli as CLI
+        from simple_tools import cli as CLI
 
         path = self.state_dir / "logs" / "identity.jsonl"
         before = path.read_text().splitlines() if path.exists() else []
@@ -414,7 +414,7 @@ class CliTests(IdentityHarness):
         self.assertEqual(path.read_text().splitlines() if path.exists() else [], before)
 
     def test_a_write_that_lands_and_then_loses_its_pipe_is_still_audited(self):
-        from agent_sync import cli as CLI
+        from simple_tools import cli as CLI
 
         def lands_then_pipe_breaks(agent, args):
             agent.verify()
@@ -451,7 +451,7 @@ class CliTests(IdentityHarness):
         self.assertNotIn("hello", json.dumps(rows))
 
     def test_a_mutating_api_call_is_audited_with_its_method_and_path_and_never_its_body(self):
-        mid = self.fake.add_message("Codex", "agent-sync", "t", "hi")
+        mid = self.fake.add_message("Codex", "simple-tools", "t", "hi")
         env = self.cli_env()
         self.assertEqual(self.run_cli("api", "GET", "messages/%d/history" % mid, env=env).code, 0)
         posted = self.run_cli(
@@ -474,7 +474,7 @@ class CliTests(IdentityHarness):
         self.assertNotIn("eyes", json.dumps(rows), "the body is never logged")
 
     def test_an_interrupted_generic_write_is_audited_as_interrupted_and_exits_130(self):
-        from agent_sync import cli as CLI
+        from simple_tools import cli as CLI
 
         def interrupted(agent, args):
             agent.verify()  # the key is checked before any request, so a write may be in flight

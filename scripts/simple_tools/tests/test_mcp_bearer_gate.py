@@ -7,8 +7,8 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from agent_sync import fleet_bearer as F
-from agent_sync.mcp import bearer_gate as G
+from simple_tools import fleet_bearer as F
+from simple_tools.mcp import bearer_gate as G
 
 
 class FakeClient:
@@ -69,7 +69,7 @@ class BearerGateTests(unittest.TestCase):
         self.assertEqual(FakeClient.seen, [])
 
     def test_an_environment_bearer_never_selects_or_replaces_the_file(self):
-        env = {"SIMPLE_TOOLS_BEARER": "sbt_clutch_" + "x" * 43, "ASSIGNED_MCP_BEARER": "sbt_clutch_" + "x" * 43}
+        env = {"AGENT_SYNC_BEARER": "sbt_clutch_" + "x" * 43, "ASSIGNED_MCP_BEARER": "sbt_clutch_" + "x" * 43}
         G.verify(runtime(env), args(default_seat="CODEX"), client_factory=factory())
         self.assertEqual(FakeClient.seen[0][0].name, "codex")
 
@@ -124,7 +124,7 @@ class CallGuardTests(unittest.TestCase):
     """Every tools/call is re-checked, so a revoked bearer stops the next call before a tool runs."""
 
     def server(self, guard):
-        from agent_sync.mcp import stdio as S
+        from simple_tools.mcp import stdio as S
 
         calls = []
 

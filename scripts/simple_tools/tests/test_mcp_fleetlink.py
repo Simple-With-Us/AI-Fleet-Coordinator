@@ -15,9 +15,9 @@ import textwrap
 from pathlib import Path
 from unittest import mock
 
-from agent_sync.mcp import fleetlink_tools as FL
-from agent_sync.mcp import tools as T
-from agent_sync.tests.test_mcp_identity import IdentityHarness
+from simple_tools.mcp import fleetlink_tools as FL
+from simple_tools.mcp import tools as T
+from simple_tools.tests.test_mcp_identity import IdentityHarness
 
 FAKE_FLEET_SHARE = textwrap.dedent("""\
     #!{python}
@@ -328,7 +328,7 @@ class CredentialTests(FleetLinkHarness):
             seen.append(list(argv))
             return mock.Mock(returncode=0, stdout=TOKEN_CLAUDE.encode())
 
-        from agent_sync import zulip as Z
+        from simple_tools import zulip as Z
 
         FL._token_cache.clear()
         with (
@@ -357,7 +357,7 @@ class CredentialTests(FleetLinkHarness):
     def test_only_a_definitive_answer_is_cached(self):
         # A timeout or an unexpected exit must not hide a good token for ten minutes;  a token or a clean "no
         # such key" (exit 3) may be cached.
-        from agent_sync import zulip as Z
+        from simple_tools import zulip as Z
 
         outcomes = [
             subprocess.TimeoutExpired("fleet-secrets", 60),

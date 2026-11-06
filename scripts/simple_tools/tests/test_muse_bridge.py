@@ -60,7 +60,7 @@ def _row(seq: int, message_id: int, **extra) -> dict:
         "seq": seq,
         "id": message_id,
         "type": "stream",
-        "channel": "agent-sync",
+        "channel": "simple-tools",
         "topic": "AFC-326 Universal Muse Inbox Routing",
         "content": "hello %d" % seq,
         "sender": "peer",
@@ -468,7 +468,7 @@ class BridgeWorkerTest(unittest.TestCase):
             "id": 7,
             "seq": 7,
             "type": "stream",
-            "channel": "agent-sync",
+            "channel": "simple-tools",
             "topic": "t",
             "content": "hi",
             "owner": False,
@@ -617,7 +617,7 @@ class BridgeWorkerTest(unittest.TestCase):
             "seq": 8,
             "owner": False,
             "ts": time.time(),
-            "channel": "agent-sync",
+            "channel": "simple-tools",
             "topic": "t",
         }
         state: dict = {"cursors": {}, "decisions": {}}
@@ -637,7 +637,7 @@ class BridgeWorkerTest(unittest.TestCase):
             (stored["source_seat"], stored["id"], stored["delivery"]), ("ECHO", 61, "done")
         )
         self.assertIsInstance(stored["at"], float)
-        self.assertEqual(stored["topic_key"], L.topic_key("agent-sync", "t"))
+        self.assertEqual(stored["topic_key"], L.topic_key("simple-tools", "t"))
         self.assertTrue(stored["model_attempted"])
 
     def test_transport_failure_leaves_the_cursor_for_a_retry(self) -> None:
@@ -856,7 +856,7 @@ class BridgeConsultDegradeTest(unittest.TestCase):
             "source_seat": "MM",
             "id": 42,
             "type": "stream",
-            "channel": "agent-sync",
+            "channel": "simple-tools",
             "topic": "t",
             "content": "hi",
             "sender": "peer",
