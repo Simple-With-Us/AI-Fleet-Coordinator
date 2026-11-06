@@ -197,6 +197,43 @@ final class WakePanelTruthTests: XCTestCase {
         XCTAssertFalse(WakeSettingsBuilder.liveComesFromStatus(.model, wake: "muse"))
         XCTAssertFalse(WakeSettingsBuilder.liveComesFromStatus(.mcodePath, wake: "claude"))
         XCTAssertFalse(WakeSettingsBuilder.liveComesFromStatus(.fallback, wake: "claude"))
+        XCTAssertFalse(WakeSettingsBuilder.liveComesFromStatus(.fallback, wake: "claude", fallback: "mcode"))
+        XCTAssertTrue(WakeSettingsBuilder.liveComesFromStatus(.fallback, wake: "claude", fallback: "openrouter"))
+    }
+
+    /// An OpenRouter fallback's pass is the eavesdropper's own published verdict, so a stopped or
+    /// old eavesdropper cannot keep it PASS.
+    func test_an_openrouter_fallback_pass_is_not_kept_under_an_old_status() {
+        let body = #""seats": {"ROUTER": {"wake": "openrouter", "model": "openai/gpt-5", "fallback": {"runtime": "openrouter", "pinned": true}}}"#
+        let current = WakeSettingsBuilder.build(sources(status: #"{"running": true, "status": {\#(body)}}"#))
+        XCTAssertEqual(setting(.fallback, of: seat("ROUTER", in: current)).state, .match)
+
+        let stopped = WakeSettingsBuilder.build(sources(status: #"{"running": false, "status": {\#(body)}}"#))
+        let row = setting(.fallback, of: seat("ROUTER", in: stopped))
+        XCTAssertEqual(row.state, .stale)
+        XCTAssertTrue(row.note.contains("not running"))
+    }
+
+    /// A seat's connected flag is a last-known value under an old or stopped status, so it is not
+    /// shown as connected, and it is not counted in the connected seats.
+    func test_connected_is_not_claimed_from_an_old_status() {
+        let body = #""seats": {"MM": {"wake": "muse", "connected": true}}"#
+        let stopped = WakeSettingsBuilder.build(sources(status: #"{"running": false, "status": {\#(body)}}"#))
+        XCTAssertNil(seat("MM", in: stopped).connected)
+        XCTAssertEqual(stopped.reportingSeats, 0)
+        XCTAssertEqual(stopped.connectedSeats, 0)
+
+        let published = 1_792_657_970.0
+        var old = sources(status: #"{"running": true, "status": {"updated": \#(published), \#(body)}}"#)
+        old.readAt = Date(timeIntervalSince1970: published + 14 * 60)
+        let aged = WakeSettingsBuilder.build(old)
+        XCTAssertNil(seat("MM", in: aged).connected)
+        XCTAssertEqual(aged.reportingSeats, 0)
+
+        let running = WakeSettingsBuilder.build(sources(status: #"{"running": true, "status": {\#(body)}}"#))
+        XCTAssertEqual(seat("MM", in: running).connected, true)
+        XCTAssertEqual(running.reportingSeats, 1)
+        XCTAssertEqual(running.connectedSeats, 1)
     }
 
     // MARK: The model and the pin, by the seat's own runtime
@@ -789,6 +826,58 @@ final class WakePanelTruthTests: XCTestCase {
         let shown = store.pinGate(seat: "MM", runtime: "muse", pinKey: "muse")
         XCTAssertEqual(shown, .inSession)
         XCTAssertNil(shown.confirmationNote)
+    }
+
+    /// A passing test wake run here is good for a day, as the candidate it left is, and a pin that
+    /// goes through spends it.
+    @MainActor
+    func test_a_passing_test_wake_run_here_does_not_offer_pin_for_ever() async throws {
+        let home = try makeHome(config: mmConfig)
+        let partitionURL = home.appendingPathComponent("partition.toml")
+        try "version = 1\n\n[seats]\nMM = \"mac\"\n".write(to: partitionURL, atomically: true, encoding: .utf8)
+        let fake = Fake()
+        let store = await makeStore(fake, home: home)
+        fake.testWake = AgentSyncCLIResult(exitCode: 0, stdout: "PASS, NOT PINNED YET: read the result above\n", stderr: "")
+        await store.testWake(seat: "MM", runtime: "muse")
+        let now = Date()
+        XCTAssertEqual(store.pinGate(seat: "MM", runtime: "muse", pinKey: "muse", now: now), .inSession)
+
+        let later = now.addingTimeInterval(WakeSettingsStore.pinOfferWindow + 60)
+        let old = store.pinGate(seat: "MM", runtime: "muse", pinKey: "muse", now: later)
+        XCTAssertNotNil(old.blocker)
+        XCTAssertNotEqual(old, .inSession)
+
+        fake.pin = AgentSyncCLIResult(exitCode: 0, stdout: "pinned muse /bin/muse\n", stderr: "")
+        await store.pin(seat: "MM", runtime: "muse")
+        XCTAssertFalse(store.messageIsFailure)
+        XCTAssertNil(store.testReport(seat: "MM", runtime: "muse"))
+        XCTAssertNotNil(store.pinGate(seat: "MM", runtime: "muse", pinKey: "muse", now: now).blocker)
+    }
+
+    /// Resume reads a pause on every seat from the pause file, as Pause reads a seat's own entry,
+    /// so an old status that does not show it cannot turn it into a lifted pause.
+    @MainActor
+    func test_resume_reads_the_every_seat_pause_from_the_file() async throws {
+        let home = try makeHome(config: mmConfig)
+        let partitionURL = home.appendingPathComponent("partition.toml")
+        try "version = 1\n\n[seats]\nMM = \"mac\"\n".write(to: partitionURL, atomically: true, encoding: .utf8)
+        let pauseURL = ListenerStateLocation(home: home).pauseURL
+        try FileManager.default.createDirectory(at: pauseURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try #"{"*": {"wakes_only": true}}"#.write(to: pauseURL, atomically: true, encoding: .utf8)
+        let fake = Fake()
+        fake.statusExit = 1
+        let store = await makeStore(fake, home: home)
+        XCTAssertEqual(store.model.seats.first(where: { $0.seat == "MM" })?.everySeatPaused, false)
+        await store.resume(seat: "MM")
+        XCTAssertTrue(store.messageIsFailure)
+        XCTAssertTrue(store.message?.contains("A pause on every seat is still in force.") == true)
+
+        XCTAssertTrue(WakeSettingsStore.everySeatPauseHolds(at: pauseURL, statusSays: false))
+        try #"{"MM": {"wakes_only": true}}"#.write(to: pauseURL, atomically: true, encoding: .utf8)
+        XCTAssertFalse(WakeSettingsStore.everySeatPauseHolds(at: pauseURL, statusSays: true))
+        try "not json".write(to: pauseURL, atomically: true, encoding: .utf8)
+        XCTAssertTrue(WakeSettingsStore.everySeatPauseHolds(at: pauseURL, statusSays: true))
+        XCTAssertFalse(WakeSettingsStore.everySeatPauseHolds(at: pauseURL, statusSays: false))
     }
 
     /// A field cleared over a setting the file never held is no edit:  the summary and the write

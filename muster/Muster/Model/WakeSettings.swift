@@ -960,7 +960,10 @@ enum WakeSettingsBuilder {
             // read from a pin file itself is not the eavesdropper's word, so the status's age says
             // nothing about it.
             guard !current, sources.status != nil, row.state == .match || row.state == .drift,
-                  Self.liveComesFromStatus(key, wake: wake) else {
+                  Self.liveComesFromStatus(
+                    key, wake: wake,
+                    fallback: sources.config.value(section: section, key: "fallback")?.scalarText
+                  ) else {
                 return row
             }
             return WakeSetting(
@@ -1009,7 +1012,9 @@ enum WakeSettingsBuilder {
             paused: live?.paused ?? false,
             wakesPaused: live?.wakesPaused ?? false,
             pauseScope: host.isElsewhere ? nil : pauseScope(seat: published, status: sources.status),
-            connected: live?.connected,
+            // A last-known value is not a current success:  an old status, or one a stopped
+            // eavesdropper left, does not say the seat is connected now.
+            connected: current ? live?.connected : nil,
             everySeatPaused: !host.isElsewhere && sources.status?.pause["*"] != nil,
             redWarnings: live?.red ?? [],
             heldBackQueueCount: live?.heldBack?.count ?? 0,
@@ -1061,10 +1066,13 @@ enum WakeSettingsBuilder {
     }
 
     /// Whether a row's live value is the eavesdropper's own word, rather than one Muster read from
-    /// a pin file:  the muse model, the mcode binary and the fallback come from pin files.
-    static func liveComesFromStatus(_ key: WakeSettingKey, wake: String?) -> Bool {
+    /// a pin file:  the muse model, the mcode binary and a non-OpenRouter fallback come from pin
+    /// files.  An OpenRouter fallback's verdict is the eavesdropper's published one, so it is not
+    /// a pin-file row.
+    static func liveComesFromStatus(_ key: WakeSettingKey, wake: String?, fallback: String? = nil) -> Bool {
         switch key {
-        case .mcodePath, .fallback: return false
+        case .mcodePath: return false
+        case .fallback: return fallback == "openrouter"
         case .model: return wake != "muse"
         default: return true
         }

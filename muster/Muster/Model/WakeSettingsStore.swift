@@ -603,7 +603,8 @@ final class WakeSettingsStore: ObservableObject {
 
     /// Reads the seat's own entry from the pause file, the way the eavesdropper does:  a JSON object
     /// keyed by the upper-cased seat tag, where an entry without `wakes_only: true` is a full pause.
-    /// The entry on every seat (`*`) is left alone by a seat's pause, so it is not read here.
+    /// The entry on every seat (`*`) is left alone by a seat's pause, and is read by
+    /// `everySeatPauseHolds`.
     nonisolated static func ownPauseEntry(seat: String, at url: URL) -> OwnPauseEntry {
         guard FileManager.default.fileExists(atPath: url.path) else { return .noEntry }
         let data: Data
@@ -619,6 +620,19 @@ final class WakeSettingsStore: ObservableObject {
             return .noEntry
         }
         return (entry["wakes_only"] as? Bool) == true ? .wakesOnly : .full
+    }
+
+    /// Whether a pause on every seat (`*`) is in force.  The pause file decides, as it does for a
+    /// seat's own pause, because the last status may have failed or be old.  Only a file that is not
+    /// there, or cannot be read, falls back to what the status said, so neither turns a pause on
+    /// every seat into "lifted".
+    nonisolated static func everySeatPauseHolds(at url: URL, statusSays: Bool) -> Bool {
+        guard FileManager.default.fileExists(atPath: url.path) else { return statusSays }
+        switch ownPauseEntry(seat: "*", at: url) {
+        case .noEntry: return false
+        case .wakesOnly, .full: return true
+        case .unreadable: return statusSays
+        }
     }
 
     /// Lifts the kill switch on the Mac's eavesdropper.  This lets wakes run again, so unlike the pause
@@ -641,7 +655,10 @@ final class WakeSettingsStore: ObservableObject {
             say("The seat tag is not a plain token, so nothing was resumed.", failure: true)
             return
         }
-        let everySeat = model.seats.first(where: { $0.seat == seat })?.everySeatPaused == true
+        let everySeat = Self.everySeatPauseHolds(
+            at: location.pauseURL,
+            statusSays: model.seats.first(where: { $0.seat == seat })?.everySeatPaused == true
+        )
         let stillInForce = "A pause on every seat is still in force."
         begin()
         defer { end() }
@@ -700,6 +717,9 @@ final class WakeSettingsStore: ObservableObject {
         }
     }
 
+    /// How long a passing test wake run here keeps Pin on offer, as long as the candidate it left.
+    nonisolated static let pinOfferWindow: TimeInterval = 86_400
+
     /// Whether Pin can be offered for a runtime of a seat, and on what.
     ///
     /// The eavesdropper pins only a candidate a passing test wake left under a day ago, and a person
@@ -707,7 +727,10 @@ final class WakeSettingsStore: ObservableObject {
     /// answer the panel shows, or for a candidate under a day old from a run made elsewhere, which
     /// the confirmation names as one Muster did not see.
     func pinGate(seat: String, runtime: String, pinKey: String, now: Date = Date()) -> PinGate {
-        if let report = testReports[seat]?[runtime], report.kind == .run {
+        // A passing test wake is good for a day, as the candidate it left is:  the panel now lives for
+        // the app's lifetime, and the CLI refuses an older candidate.
+        if let report = testReports[seat]?[runtime], report.kind == .run,
+           now.timeIntervalSince(report.finishedAt) <= Self.pinOfferWindow || report.verdict != .passed {
             switch report.verdict {
             case .passed: return .inSession
             case .failed: return .blocked("The last test wake did not pass, so there is nothing to pin.")
@@ -794,6 +817,10 @@ final class WakeSettingsStore: ObservableObject {
             let result = try await runner.run(AgentSyncInvocation.testWakePin(seat: seat, runtime: runtime))
             let report = TestWakeReport.make(from: result, seat: seat, runtime: runtime, kind: .pin)
             say(report.headline, failure: report.verdict != .passed)
+            if report.verdict == .passed {
+                // The pin used that test, so its offer is spent.
+                testReports[seat]?[runtime ?? ""] = nil
+            }
             auditResult = report.verdict == .passed ? "done" : "refused"
         } catch {
             say("The binary could not be pinned: \(error.localizedDescription)", failure: true)
