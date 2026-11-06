@@ -4,8 +4,8 @@ sections a live volume lacks.
 
 Run it inside the container (the Coolify terminal, or docker exec):
 
-    python3 /app/scripts/agent_sync/server/apply_live_config.py            # show what would change
-    python3 /app/scripts/agent_sync/server/apply_live_config.py --apply    # back up, then write
+    python3 /app/scripts/simple_tools/server/apply_live_config.py            # show what would change
+    python3 /app/scripts/simple_tools/server/apply_live_config.py --apply    # back up, then write
 
 The entrypoint seeds /data/listener.toml from the sample only once, so a seat section changed in the
 sample never reaches a live volume by itself.  This copies exactly the sample's [seat.JET] and every
@@ -40,11 +40,11 @@ import tempfile
 import tomllib
 from pathlib import Path
 
-# scripts/, so `agent_sync` imports (the image keeps the repo layout).  Only this sys.path change comes before the
+# scripts/, so `simple_tools` imports (the image keeps the repo layout).  Only this sys.path change comes before the
 # import, which ruff's E402 allows, so the import needs no noqa (a newer ruff drops it as unused).
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from agent_sync import config as C
+from simple_tools import config as C
 
 HERE = Path(__file__).resolve().parent
 

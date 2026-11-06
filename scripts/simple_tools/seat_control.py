@@ -113,7 +113,7 @@ for _platform in SUPPORTED_PLATFORMS:
 
 
 class IdempotencyStore(Protocol):
-    """The subset of the existing ``agent_sync.idem.IdemStore`` used here."""
+    """The subset of the existing ``simple_tools.idem.IdemStore`` used here."""
 
     def begin(
         self, key: str, ttl: float, fields: Mapping[str, Any]

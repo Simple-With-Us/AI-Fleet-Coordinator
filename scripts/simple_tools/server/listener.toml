@@ -24,7 +24,7 @@
 # volume by itself:  server/apply_live_config.py copies the JET and GB sections into /data/listener.toml, adds
 # [listener_api], [notes_queue] and [linear_projects] only where the live file has none (it never changes one that
 # is there), and leaves [daemon] (the pins) untouched.  Never mount this file as a single file, because `daemon init` replaces it
-# atomically.  Every seat here must be "server" in docs/protocols/agent-sync-partition.toml:  a seat is never
+# atomically.  Every seat here must be "server" in docs/protocols/simple-tools-partition.toml:  a seat is never
 # configured in both instances.
 
 [daemon]
@@ -75,7 +75,7 @@ port = 8787
 [muse_bridge]
 enabled = false
 
-# The signed read API (AFC-330, scripts/agent_sync/listener_api.py):  GET /listener/v1/<SEAT>/<record> for
+# The signed read API (AFC-330, scripts/simple_tools/listener_api.py):  GET /listener/v1/<SEAT>/<record> for
 # the hosted Worker's listener_* tools.  Each seat's key is its hmac routine key (JET_ROUTINE_KEY) or
 # <CODE>_ROUTINE_KEY, the same value as the Worker's WAKE_HMAC_KEY_<SEAT>;  a seat without one gets 404.
 # Read-only.  Enable only after the reverse proxy routes /listener/v1/ here (docs/protocols/eavesdropper-server.md).
@@ -84,7 +84,7 @@ enabled = false
 bind = "0.0.0.0"
 port = 8788
 
-# The Operator's Apple Notes queue (AFC-486, docs/protocols/operator-notes.md, scripts/agent_sync/notes_queue.py):
+# The Operator's Apple Notes queue (AFC-486, docs/protocols/operator-notes.md, scripts/simple_tools/notes_queue.py):
 # POST /notes/v1/requests, GET /notes/v1/requests/<SEAT>/<request_id>, GET /notes/v1/log and the Mac runner's
 # /notes/v1/runner/ routes, on the listener API's port above (so [listener_api] must be enabled too).  No Zulip
 # message is involved.  Each principal signs with its own key from Infisical (project AI Fleet Coordinator, prod,
@@ -100,7 +100,7 @@ enabled = false
 worker_seats = ["JET", "GROK-WEB", "ECHO", "WISE", "CURSOR", "CLAUDE", "CODEX"]
 server_seats = ["CLAUDE", "CODEX"]
 
-# The Linear project webhook (AFC-565, scripts/agent_sync/linear_projects_hook.py):
+# The Linear project webhook (AFC-565, scripts/simple_tools/linear_projects_hook.py):
 # POST /linear/v1/projects on the listener API's port above (so [listener_api] must be
 # enabled too).  Its secrets come from Infisical (project AI Fleet Coordinator, prod,
 # folder /operator-linkifiers) through the Coolify runtime-only variable
@@ -116,7 +116,7 @@ wake = "inbox"
 
 # JET (ChatGPT) is woken through OpenAI MCP Events:  the http wake POSTs agent-sync-wake/1 to the hosted
 # MCP Worker (https://agents.simplewithus.com/internal/wake/JET), which sends a signed `zulip.mention` event to
-# every ChatGPT chat or dot that subscribed (scripts/agent-sync-mcp/ARMING-JAY.md, "Wake Jet").  JET_ROUTINE_URL
+# every ChatGPT chat or dot that subscribed (scripts/simple-tools-mcp/ARMING-JAY.md, "Wake Jet").  JET_ROUTINE_URL
 # is that URL;  JET_ROUTINE_KEY is the shared HMAC key, the same value as the Worker secret WAKE_HMAC_KEY_JET
 # (Infisical Fleet-OPS, `fleet-secrets get JET_ROUTINE_KEY`).  Until both are set and the container restarts, each wake
 # is logged as routine-unready and dropped;  the inbox still captures everything.  The budget is explicit
@@ -127,8 +127,8 @@ instance = "server"
 creds = "env"                     # ZULIP_JET_EMAIL, ZULIP_JET_API_KEY (openai-dot-bot@)
 wake = "http"
 # timeout_seconds stays at 15 or more:  the Worker answers only after it tried ChatGPT (about 10 seconds at
-# most), and its 503 asks for this daemon's retry (docs/protocols/agent-sync-mcp.md section 3.12, item 11).
-routine = { url_env = "JET_ROUTINE_URL", key_env = "JET_ROUTINE_KEY", method = "POST", auth = "hmac-sha256", header = "X-Agent-Sync-Signature", timeout_seconds = 15 }
+# most), and its 503 asks for this daemon's retry (docs/protocols/simple-tools-mcp.md section 3.12, item 11).
+routine = { url_env = "JET_ROUTINE_URL", key_env = "JET_ROUTINE_KEY", method = "POST", auth = "hmac-sha256", header = "X-Simple-Tools-Signature", timeout_seconds = 15 }
 budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner_per_day = 30, owner_per_topic_per_hour = 6, usd_per_day = 2.0, board_per_day = 0 }
 
 [seat.GROK-WEB]

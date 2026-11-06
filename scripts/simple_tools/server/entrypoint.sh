@@ -1,7 +1,7 @@
 #!/bin/sh
 # Container entry for the Operator's server instance.
 #
-# On first start it copies the sample config (scripts/agent_sync/server/listener.toml) onto the
+# On first start it copies the sample config (scripts/simple_tools/server/listener.toml) onto the
 # state volume as $AGENT_SYNC_CONFIG; it never overwrites one that exists, because
 # `simple-chat daemon init` pins the owner in that copy.  Then it execs simple-chat with the
 # container's arguments (default:  daemon run --wait-lock).
@@ -13,7 +13,7 @@
 #
 # `docker exec` gets the container's original environment, not the one PID 1 was started with.
 # Run a command that needs the seats' credentials (daemon init, for one) through this script:
-#   docker exec "$C" /app/scripts/agent_sync/server/entrypoint.sh daemon init --seat MA --yes
+#   docker exec "$C" /app/scripts/simple_tools/server/entrypoint.sh daemon init --seat MA --yes
 set -eu
 here=$(dirname "$0")
 : "${AGENT_SYNC_STATE_DIR:=/data}"

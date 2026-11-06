@@ -92,7 +92,7 @@ PARTITION_DEFAULT = os.path.join(
     "..",
     "docs",
     "protocols",
-    "agent-sync-partition.toml",
+    "simple-tools-partition.toml",
 )
 SHARED_NAMES = frozenset(
     {
