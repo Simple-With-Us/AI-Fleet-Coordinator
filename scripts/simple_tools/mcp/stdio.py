@@ -1,4 +1,4 @@
-"""`simple-chat mcp`:  the agent-sync tools over MCP on stdin and stdout (design section 2).
+"""`simple-chat mcp`:  the simple-tools tools over MCP on stdin and stdout (design section 2).
 
 Framing:  newline-delimited UTF-8 JSON-RPC 2.0, one message per line.  Batches are answered only in
 a session that negotiated 2025-03-26, the one revision whose receivers MUST accept them; everywhere

@@ -1,4 +1,4 @@
-"""Default-off Mac Muse bridge for local and server Agent-Sync inboxes.
+"""Default-off Mac Muse bridge for local and server Simple-Tools inboxes.
 
 This worker owns one decision ledger and the tested tool-less Muse runtime.  Server inboxes are
 pulled through the existing ``coolify`` SSH alias; decisions return through a fixed server-local
@@ -43,7 +43,7 @@ def _remote_command(remote_app: str) -> str:
     return (
         "set -eu; c=$(docker ps --filter name=" + remote_app + " --format '{{.Names}}'); "
         'test -n "$c"; test "$(printf \'%s\\n\' "$c" | wc -l)" -eq 1; '
-        'docker exec -i -w /app/scripts "$c" python3 -m agent_sync.muse_bridge '
+        'docker exec -i -w /app/scripts "$c" python3 -m simple_tools.muse_bridge '
     )
 
 

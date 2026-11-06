@@ -1,5 +1,5 @@
 """The ST-MCP tools:  the contract (tools.json), the handlers, the untrusted envelope, the
-schema check and the error model.  docs/protocols/agent-sync-mcp.md section 1 is the spec.
+schema check and the error model.  docs/protocols/simple-tools-mcp.md section 1 is the spec.
 
 Identity never travels in arguments:  the seat is fixed when the process starts and every schema
 sets additionalProperties false, so a `seat` argument is a validation error.
@@ -87,7 +87,7 @@ RECONCILE_WINDOW = (
 IDEM_EXPLICIT_TTL = 24 * 3600.0
 IDEM_IMPLICIT_TTL = 600.0
 FLEET_ROLES = (300, 400)  # moderator and member; daemon.FLEET_ROLES (a test keeps the two equal)
-ERROR_META_KEY = "agent-sync/error"
+ERROR_META_KEY = "simple-tools/error"
 # Every served tool is classified here, explicitly, as a read or a write (AFC-331, per-call identity:
 # a write must name its identity, a read may use the connection's default).  Never inferred from a
 # name or an annotation;  a test checks that the two sets are disjoint and cover every tool served.
@@ -2887,7 +2887,7 @@ class Tools:
                 str((row.get("result") or {}).get("stdout") or ""),
             )
         uid = (
-            ("agent-sync-%s-%s" % (self.seat.lower(), key[len("i:linear:") :][:24]))
+            ("simple-tools-%s-%s" % (self.seat.lower(), key[len("i:linear:") :][:24]))
             if name == "linear_file"
             else None
         )

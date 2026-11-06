@@ -363,7 +363,7 @@ def finish_native(root: str, receipt: str, state: str) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Private Agent-Sync Muse bridge exchange")
+    parser = argparse.ArgumentParser(description="Private Simple-Tools Muse bridge exchange")
     parser.add_argument("command", choices=("export", "submit"))
     args = parser.parse_args(argv)
     root = L.state_root(os.environ)

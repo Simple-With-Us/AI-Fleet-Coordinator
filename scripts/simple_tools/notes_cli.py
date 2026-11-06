@@ -232,7 +232,7 @@ def add_parsers(
     identity_opt(q)
 
 
-def _fail(exc: N.NotesError) -> Z.AgentSyncError:
+def _fail(exc: N.NotesError) -> Z.SimpleToolsError:
     if exc.code in ("invalid_argument", "session_required"):
         return Z.UsageError(exc.message)
     if exc.code in ("not_configured", "forbidden"):
