@@ -58,7 +58,9 @@ class InventoryTests(unittest.TestCase):
                     "env": {"API_TOKEN": SENTINEL},
                     "permissions": {"allow": ["Bash(ls:*)", "Read"], "deny": ["Bash(rm:*)"]},
                     "hooks": {
-                        "PreToolUse": [{"matcher": "Bash", "hooks": [{"command": "/x/" + SENTINEL}]}],
+                        "PreToolUse": [
+                            {"matcher": "Bash", "hooks": [{"command": "/x/" + SENTINEL}]}
+                        ],
                         "Stop": [{}, {}],
                     },
                 }
