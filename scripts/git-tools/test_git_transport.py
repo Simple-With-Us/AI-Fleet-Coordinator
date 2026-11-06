@@ -47,10 +47,9 @@ class Transfer(unittest.TestCase):
             mock.patch.object(G.subprocess, "Popen", popen),
             mock.patch.object(G, "_git_binary", return_value="git"),
             mock.patch.object(G.os, "makedirs"),
-            mock.patch.object(G.os, "chmod"),
+            mock.patch.object(G.os, "chmod"),contextlib.redirect_stdout(io.StringIO())
         ):
-            with contextlib.redirect_stdout(io.StringIO()):
-                self.assertEqual(fn(a, BEARER), 0)
+            self.assertEqual(fn(a, BEARER), 0)
         return calls
 
     def test_the_bearer_is_never_in_argv(self):
@@ -214,7 +213,9 @@ class Transfer(unittest.TestCase):
             (origin / "a.txt").write_text("hello\n")
             subprocess.run(["git", "-C", str(origin), "add", "a.txt"], check=True, timeout=60)
             subprocess.run(
-                ["git", *identity, "-C", str(origin), "commit", "-q", "-m", "one"], check=True, timeout=60
+                ["git", *identity, "-C", str(origin), "commit", "-q", "-m", "one"],
+                check=True,
+                timeout=60,
             )
             with (
                 mock.patch.object(G, "_repo_url", return_value=str(origin)),
@@ -252,9 +253,11 @@ class Publish(unittest.TestCase):
         previous = os.environ.get("SIMPLE_GIT_STATE_DIR")
         os.environ["SIMPLE_GIT_STATE_DIR"] = str(self.root / "state")
         self.addCleanup(
-            lambda: os.environ.__setitem__("SIMPLE_GIT_STATE_DIR", previous)
-            if previous is not None
-            else os.environ.pop("SIMPLE_GIT_STATE_DIR", None)
+            lambda: (
+                os.environ.__setitem__("SIMPLE_GIT_STATE_DIR", previous)
+                if previous is not None
+                else os.environ.pop("SIMPLE_GIT_STATE_DIR", None)
+            )
         )
 
     def file(self, name, size):
@@ -269,7 +272,9 @@ class Publish(unittest.TestCase):
         if store_file.parent.is_symlink():
             raise AssertionError("the fixture state directory must not be a symlink")
         store_file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=store_file.parent, prefix=store_file.name + ".", suffix=".tmp")
+        fd, tmp = tempfile.mkstemp(
+            dir=store_file.parent, prefix=store_file.name + ".", suffix=".tmp"
+        )
         with os.fdopen(fd, "w") as handle:
             json.dump(store, handle)
             handle.flush()
@@ -284,7 +289,11 @@ class Publish(unittest.TestCase):
     def publish_unmocked(self, specs):
         """publish, leaving validate_arguments to the caller's own patch."""
         tools = {
-            name: {"name": name, "read": name == "gr_wf_branch_get", "schema": {"properties": {"identity": {}}}}
+            name: {
+                "name": name,
+                "read": name == "gr_wf_branch_get",
+                "schema": {"properties": {"identity": {}}},
+            }
             for name in ("gr_wf_branch_get", "gr_wf_branch_create", "gr_wf_files_put")
         }
 
@@ -426,10 +435,16 @@ class Publish(unittest.TestCase):
             return {"structured": {}}
 
         tools = {
-            name: {"name": name, "read": name == "gr_wf_branch_get", "schema": {"properties": {"identity": {}}}}
+            name: {
+                "name": name,
+                "read": name == "gr_wf_branch_get",
+                "schema": {"properties": {"identity": {}}},
+            }
             for name in ("gr_wf_branch_get", "gr_wf_branch_create", "gr_wf_files_put")
         }
-        a = ns(repo="Fixture-Org/Fixture-Repo", branch="claude/x", message="m", base=None, file=specs)
+        a = ns(
+            repo="Fixture-Org/Fixture-Repo", branch="claude/x", message="m", base=None, file=specs
+        )
         with (
             mock.patch.object(G, "remote_call", flaky),
             mock.patch.object(G, "validate_arguments"),
@@ -475,7 +490,13 @@ class Publish(unittest.TestCase):
             name: {"name": name, "read": True, "schema": {"properties": {"identity": {}}}}
             for name in ("gr_wf_branch_get", "gr_wf_tree", "gr_wf_files_put")
         }
-        a = ns(repo="Fixture-Org/Fixture-Repo", branch="claude/x", message="m", base=None, file=[f"{local}=same"])
+        a = ns(
+            repo="Fixture-Org/Fixture-Repo",
+            branch="claude/x",
+            message="m",
+            base=None,
+            file=[f"{local}=same"],
+        )
         with (
             mock.patch.object(G, "remote_call", remote),
             mock.patch.object(G, "validate_arguments"),
@@ -488,8 +509,8 @@ class Publish(unittest.TestCase):
     def _writer_source(self, key, batches):
         return f"""
 import importlib.machinery, importlib.util, os, sys
-os.environ["SIMPLE_GIT_STATE_DIR"] = {str(self.root / 'state')!r}
-loader = importlib.machinery.SourceFileLoader("g", {str(HERE / 'git')!r})
+os.environ["SIMPLE_GIT_STATE_DIR"] = {str(self.root / "state")!r}
+loader = importlib.machinery.SourceFileLoader("g", {str(HERE / "git")!r})
 spec = importlib.util.spec_from_loader("g", loader)
 G = importlib.util.module_from_spec(spec)
 loader.exec_module(G)
@@ -602,7 +623,6 @@ finally:
                 self.publish(specs)
         self.assertEqual(self.sent, [])
 
-
     def corrupt_store(self):
         store_file = self.root / "state" / "publish-outcomes.json"
         store_file.write_bytes(b"{not json")
@@ -701,7 +721,9 @@ finally:
             sys.stderr.write("hosted: refused")
             raise SystemExit(G.EXIT_ERROR)
 
-        a = ns(repo="Fixture-Org/Fixture-Repo", branch="claude/x", message="m", base=None, file=specs)
+        a = ns(
+            repo="Fixture-Org/Fixture-Repo", branch="claude/x", message="m", base=None, file=specs
+        )
         with (
             mock.patch.object(G, "remote_call", remote),
             mock.patch.object(G, "validate_arguments"),
@@ -716,7 +738,9 @@ finally:
 
     def test_an_existing_branch_skips_the_base_fetch(self):
         specs = [f"{self.file('h', 10)}=h"]
-        key = G._publish_key("Fixture-Org/Fixture-Repo", "claude/x", "main", "m", [("h", b"x" * 10)])
+        key = G._publish_key(
+            "Fixture-Org/Fixture-Repo", "claude/x", "main", "m", [("h", b"x" * 10)]
+        )
         self.write_store({key: {"batches": {"branch": "ok"}}})
         tools = {
             name: {"read": name == "gr_wf_branch_get", "schema": {"properties": {"identity": {}}}}
@@ -729,7 +753,9 @@ finally:
                 return {"structured": {"branch": {"commit": {"sha": "c" * 40}}}}
             return {"structured": {"commit": "d" * 40}}
 
-        a = ns(repo="Fixture-Org/Fixture-Repo", branch="claude/x", message="m", base="main", file=specs)
+        a = ns(
+            repo="Fixture-Org/Fixture-Repo", branch="claude/x", message="m", base="main", file=specs
+        )
         with (
             mock.patch.object(G, "remote_call", remote),
             mock.patch.object(G, "validate_arguments"),
@@ -786,7 +812,9 @@ finally:
 
     def test_a_base_rerun_fences_on_the_current_branch_head(self):
         specs = [f"{self.file('h', 10)}=h"]
-        key = G._publish_key("Fixture-Org/Fixture-Repo", "claude/x", "main", "m", [("h", b"x" * 10)])
+        key = G._publish_key(
+            "Fixture-Org/Fixture-Repo", "claude/x", "main", "m", [("h", b"x" * 10)]
+        )
         self.write_store({key: {"batches": {"branch": "ok"}}})
         heads = {"main": "a" * 40, "claude/x": "c" * 40}
         tools = {

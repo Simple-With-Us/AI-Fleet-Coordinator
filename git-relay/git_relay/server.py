@@ -938,7 +938,7 @@ def make_handler(relay: Relay):
             action = parts[1]
             auth = self.headers.get("Authorization") or ""
             bearer_prefix = "Bearer "
-            token = auth[len(bearer_prefix):].strip() if auth.startswith(bearer_prefix) else ""
+            token = auth[len(bearer_prefix) :].strip() if auth.startswith(bearer_prefix) else ""
             try:
                 length = int(self.headers.get("Content-Length") or "0")
             except ValueError:

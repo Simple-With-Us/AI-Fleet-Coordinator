@@ -164,7 +164,9 @@ def _serve(relay, handler, seat, repo, upstream_path, kind, body, detail, connec
     # is authorized against or sent to the minter, the same rule every other relay argument already follows.
     if find_secret(repo):
         detail["reason"] = "credential-shaped repo name"
-        _send_json(handler, 400, {"error": "refused: the repo name looks like it contains a credential"})
+        _send_json(
+            handler, 400, {"error": "refused: the repo name looks like it contains a credential"}
+        )
         return "refused"
     denial = relay.policy.authorize(seat, ACTION, repo)
     if denial:
