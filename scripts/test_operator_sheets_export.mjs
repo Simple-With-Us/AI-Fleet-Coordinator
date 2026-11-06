@@ -234,3 +234,32 @@ test("a credential-shaped cell fails its row without wedging the drain", async (
   assert.deepEqual(outbox.marked, ["o2"]); // the refused row stays pending, the healthy row exports
   assert.ok(logs.some((m) => m.includes("o1") && m.includes("Title")));
 });
+
+test("drainOutbox skips a deterministically invalid row instead of wedging the drain", async () => {
+  const adapter = fakeAdapter();
+  const realAppend = adapter.appendEvent.bind(adapter);
+  adapter.appendEvent = async (cells) => {
+    if (cells[0] === "poison") {
+      const err = new Error("row must be an array of strings");
+      err.code = "invalid_row";
+      throw err;
+    }
+    return realAppend(cells);
+  };
+  const rows = [
+    { outbox_id: "o-a", kind: "event_append", payload: { cells: eventCells("a-evt", "r") } },
+    { outbox_id: "o-b", kind: "event_append", payload: { cells: eventCells("poison", "r") } },
+    { outbox_id: "o-c", kind: "event_append", payload: { cells: eventCells("c-evt", "r") } },
+  ];
+  const marked = [];
+  const outbox = {
+    marked,
+    async pending() { return rows.filter((r) => !marked.includes(r.outbox_id)); },
+    async markExported(ids) { marked.push(...ids); },
+  };
+  assert.deepEqual(await drainOutbox({ outbox, adapter }), { exported: 2, failed: 1 });
+  assert.deepEqual(marked, ["o-a", "o-c"]);
+  // poison row stays pending for the Operator; a later drain retries only it and fails it again
+  assert.deepEqual(await drainOutbox({ outbox, adapter }), { exported: 0, failed: 1 });
+  assert.deepEqual(marked, ["o-a", "o-c"]);
+});

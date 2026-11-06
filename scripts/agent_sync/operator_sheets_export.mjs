@@ -165,6 +165,13 @@ export async function drainOutbox({
     } catch (err) {
       failed += 1;
       log(`outbox ${row.outbox_id}: ${err.message}`);
+      // A deterministic local validation refusal (invalid_row, credential_in_cell) means nothing
+      // was sent and a retry can never succeed: skip past the poison row instead of wedging the
+      // drain behind it. Anything else may be uncertain or transient, so stop the drain: later
+      // snapshots must not overtake an unexported earlier one.
+      if (err && (err.code === "invalid_row" || err.code === "credential_in_cell")) {
+        continue;
+      }
       break; // stop the drain: later snapshots must not overtake an unexported earlier one
     }
   }
