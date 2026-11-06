@@ -1,7 +1,7 @@
-"""Tests for agent_sync (unittest only, fake Zulip server on 127.0.0.1, no live network)."""
+"""Tests for simple_tools (unittest only, fake Zulip server on 127.0.0.1, no live network)."""
 
-from agent_sync import heartbeat as _heartbeat
-from agent_sync import zulip as _zulip
+from simple_tools import heartbeat as _heartbeat
+from simple_tools import zulip as _zulip
 
 
 def _no_live_infisical(names, *_args):  # pragma: no cover - a guard
@@ -27,6 +27,6 @@ def _no_live_fleetlink_token(*_args):  # pragma: no cover - a guard
     return None
 
 
-from agent_sync.mcp import fleetlink_tools as _fleetlink
+from simple_tools.mcp import fleetlink_tools as _fleetlink
 
 _fleetlink._default_token_fetch = _no_live_fleetlink_token

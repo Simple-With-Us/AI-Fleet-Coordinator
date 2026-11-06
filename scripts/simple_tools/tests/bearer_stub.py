@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from agent_sync import fleet_bearer as F
-from agent_sync.mcp import bearer_gate as BG
+from simple_tools import fleet_bearer as F
+from simple_tools.mcp import bearer_gate as BG
 
 OTHER = "ZZSTUB"
 

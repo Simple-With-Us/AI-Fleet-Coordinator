@@ -2,18 +2,18 @@
 """Subscribe every fleet bot to every public Zulip channel, each with its own key.
 
 Owner ruling, Sat, Oct 10, 2026:  "I want bots to wake to any channel or DM" ... "not just
-agent-sync or one other since we may start using the other channels more for things".  Zulip
+simple-tools or one other since we may start using the other channels more for things".  Zulip
 delivers a channel message only to a bot subscribed to that channel, so a mention in a channel
 the bot never joined never reaches the listener.  This script closes that gap for the channels
-that exist today;  the listener (scripts/agent_sync/daemon.py, `auto_subscribe`) keeps it closed
+that exist today;  the listener (scripts/simple_tools/daemon.py, `auto_subscribe`) keeps it closed
 for channels created later.
 
 Idempotent.  Dry run by default;  `--apply` subscribes.  Output is seat tags and channel names
 only:  never an email, a key or a message.
 
-    cd scripts && python3 -m agent_sync.subscribe_all                 # what would change
-    cd scripts && python3 -m agent_sync.subscribe_all --apply         # do it
-    cd scripts && python3 -m agent_sync.subscribe_all --source mac    # Fleet-OPS /zulip bots only
+    cd scripts && python3 -m simple_tools.subscribe_all                 # what would change
+    cd scripts && python3 -m simple_tools.subscribe_all --apply         # do it
+    cd scripts && python3 -m simple_tools.subscribe_all --source mac    # Fleet-OPS /zulip bots only
 
 Credentials, deduplicated by bot email:
   mac        every bot with <BOT>_ZULIP_EMAIL, _KEY and _SITE in Infisical Fleet-OPS /zulip (the Mac's
@@ -138,7 +138,7 @@ def _http_json(
         url, data=None if body is None else json.dumps(body).encode(), method=method
     )
     req.add_header("Content-Type", "application/json")
-    req.add_header("User-Agent", "agent-sync subscribe_all")
+    req.add_header("User-Agent", "simple-tools subscribe_all")
     for k, v in (headers or {}).items():
         req.add_header(k, v)
     try:
@@ -152,7 +152,7 @@ def _http_json(
 
 def infisical_credentials(realm: str) -> list[Z.Credentials]:
     # Keep the listener package importable in its runtime image, which intentionally contains
-    # only scripts/agent_sync and scripts/simple-chat.  This optional CLI helper is installed on
+    # only scripts/simple_tools and scripts/simple-chat.  This optional CLI helper is installed on
     # the host, not in the listener image; load it only when this explicit command is invoked.
     try:
         from fleet_secrets import core as scoped_secrets
@@ -235,7 +235,7 @@ def run(creds: list[Z.Credentials], realm: str, *, apply: bool, out=sys.stdout) 
                 ),
                 file=out,
             )
-        except (Z.AgentSyncError, Failure) as exc:
+        except (Z.SimpleToolsError, Failure) as exc:
             failures += 1
             print("%-16s error:  %s" % (c.source.rsplit("/", 1)[-1], exc), file=out)
     print(

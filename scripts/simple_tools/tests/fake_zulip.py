@@ -1,4 +1,4 @@
-"""A small fake Zulip server for the agent_sync tests.
+"""A small fake Zulip server for the simple_tools tests.
 
 ThreadingHTTPServer on 127.0.0.1 with a random port, run in a thread.  It implements only the
 endpoints simple-chat uses, checks Basic auth, records every request, and can inject faults
@@ -28,7 +28,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlsplit
 
-from agent_sync.zulip import DEFAULT_CHANNEL
+from simple_tools.zulip import DEFAULT_CHANNEL
 
 BOT_EMAIL = "claude-bot@zulip.test"
 EPOCH = 1_790_000_000  # a fixed base for message timestamps
@@ -69,10 +69,10 @@ class Queue:
 FAKE_OWNER_ID = 12  # the realm owner (Jay); every fake bot is his, like the real fleet's
 # the fake realm's channel:  these suites pin AGENT_SYNC_CHANNEL to it, so they keep
 # exercising their own name instead of the runtime default (which follows the realm).
-FAKE_CHANNEL = "agent-sync"
+FAKE_CHANNEL = "simple-tools"
 # The realm's live name for the same channel, so a fixture that names it resolves to a stream
 # the bot is in.  The hosted fake teaches the realm both names for one stream id (STREAMS in
-# scripts/agent-sync-mcp/test/fake-zulip.mjs);  the golden fixtures are shared by both servers,
+# scripts/simple-tools-mcp/test/fake-zulip.mjs);  the golden fixtures are shared by both servers,
 # so this one has to know the runtime default too.  The live name comes first in the stream map
 # for the same reason the hosted fake lists it first:  a stream id resolves to one name, and the
 # live name is the one the fleet reads.
