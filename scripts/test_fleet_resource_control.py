@@ -222,36 +222,63 @@ class BrokerTests(unittest.TestCase):
     def test_uncertain_save_never_retries_or_reloads(self):
         def save(value):
             self.store.saves.append(value)
-            raise r.Failed("the policy write outcome is uncertain; it was not retried")
+            raise r.WriteUncertain("The server could not confirm whether the new value was saved.")
 
         self.store.save = save
         answer, code = self.call()
-        self.assertEqual(code, 1)
+        # A write that may have landed is unknown, never failed.
+        self.assertEqual((code, answer["result"], answer["ok"]), (1, "unknown", False))
         self.assertEqual(len(self.store.saves), 1)
         self.assertFalse(self.commands)
-        self.assertIn("uncertain", answer["detail"])
+        self.assertIn("could not confirm", answer["detail"])
+        self.assertTrue(answer["detail"].endswith(r.REFRESH_ADVICE))
+
+    def test_a_refused_write_is_still_failed(self):
+        def save(value):
+            raise r.Failed("The server did not accept the new value.")
+
+        self.store.save = save
+        answer, code = self.call()
+        self.assertEqual((code, answer["result"]), (1, "failed"))
+
+    def test_one_core_is_not_plural(self):
+        self.assertEqual(r.field_display("cpu-cores", 1), "1 core")
+        self.assertEqual(r.field_display("cpu-cores", 12), "12 cores")
+
+    def assertSavedNotConfirmed(self, answer, code):
+        """A write that landed is never answered as failed (RESOURCES-3)."""
+        self.assertEqual((code, answer["result"], answer["ok"]), (0, "submitted", True))
+        self.assertEqual(answer["executionState"], "saved")
+        self.assertIs(answer["saved"], True)
+        self.assertIs(answer["verified"], False)
+        self.assertEqual(answer["errorCode"], "saved_apply_unverified")
+        self.assertNotIn("SavedButApplyUnverified", answer["detail"])
+        self.assertTrue(answer["detail"].endswith(r.REFRESH_ADVICE))
 
     def test_readback_mismatch_never_reloads(self):
         self.store.save = lambda value: self.store.saves.append(value)
         answer, code = self.call()
-        self.assertEqual(code, 1)
-        self.assertIn("SavedButApplyUnverified", answer["detail"])
+        self.assertSavedNotConfirmed(answer, code)
+        self.assertIn("reading the saved policy back did not match", answer["detail"])
         self.assertFalse(self.commands)
 
     def test_reload_failure_retains_desired_separately(self):
         self.ctx.runner = lambda *args, **kwargs: (1, b"private output")
         answer, code = self.call()
-        self.assertEqual(code, 1)
-        self.assertIn("SavedButApplyUnverified", answer["detail"])
+        self.assertSavedNotConfirmed(answer, code)
+        self.assertIn("did not confirm that it reloaded", answer["detail"])
         self.assertEqual(answer["resourcePolicy"]["desired"]["cpuWeight"], 100)
         self.assertNotIn("private", json.dumps(answer))
+        self.assertEqual([e["result"] for e in self.events], ["intent", "submitted"])
 
     def test_apply_wait_bounded_and_requires_matching_revision(self):
         self.ctx.resource_snapshot = lambda: snapshot(policy())
         answer, code = self.call()
-        self.assertEqual(code, 1)
+        self.assertSavedNotConfirmed(answer, code)
+        self.assertIn("within 15 seconds", answer["detail"])
         self.assertEqual(self.clock[0], 15)
         self.assertEqual(answer["resourcePolicy"]["status"], "drift")
+        self.assertIn("policy-not-in-effect", answer["resourcePolicy"]["reasons"])
 
     def test_stale_missing_mismatch_suspended_snapshots_never_applied(self):
         for change in (
@@ -370,6 +397,41 @@ class BrokerTests(unittest.TestCase):
             self.assertEqual(args[3]["environment"], "prod")
             self.assertNotIn("If-Match", args[3])
 
+    def answer_through_real_store(self, outcome):
+        """Drive handle() through InfisicalStore.save with only the HTTP client mocked."""
+        self.credentials()
+        store = r.InfisicalStore(self.ctx)
+        self.ctx.resource_store = store
+        target = self.target()
+        effect = outcome if isinstance(outcome, BaseException) else [outcome]
+        fetched = json.dumps(policy())
+        with mock.patch.object(store.core, "fetch_verified", return_value=fetched):
+            with mock.patch.object(store.core, "_api_json", side_effect=effect) as api:
+                answer, code = r.handle(self.ctx, "resource-policy", target, "yes")
+        self.assertEqual(api.call_count, 1)
+        self.assertFalse(self.commands)
+        return answer, code
+
+    def test_transport_error_or_timeout_on_the_real_store_answers_unknown(self):
+        # The secrets client reports a transport error, a timeout or an oversized
+        # body as status 0, without raising, so the write may have landed.
+        for outcome in ((0, None), OSError("timed out"), (503, None), (502, {}), (408, None)):
+            answer, code = self.answer_through_real_store(outcome)
+            self.assertEqual((code, answer["result"], answer["ok"]), (1, "unknown", False), outcome)
+
+    def test_a_definite_refusal_on_the_real_store_is_still_failed(self):
+        for status in (400, 403, 404):
+            answer, code = self.answer_through_real_store((status, {"message": "no"}))
+            self.assertEqual((code, answer["result"]), (1, "failed"), status)
+
+    def test_a_rate_limited_write_is_failed_and_says_to_try_again(self):
+        # 429 is refused before it is applied:  failed, not unknown, and never retried here.
+        answer, code = self.answer_through_real_store((429, {"message": "slow down"}))
+        self.assertEqual((code, answer["result"]), (1, "failed"))
+        self.assertIn("busy and did not save", answer["detail"])
+        self.assertIn("Wait a minute", answer["detail"])
+        self.assertNotIn("slow down", answer["detail"])
+
     def test_lock_serializes_processes_and_refuses_symlink(self):
         with r.broker_lock(self.ctx), self.assertRaises(r.Refused), r.broker_lock(self.ctx):
             self.fail("nested writer entered")
@@ -415,12 +477,42 @@ class BrokerTests(unittest.TestCase):
 
         self.ctx.runner = runner
         answer, code = self.call()
-        self.assertEqual((code, answer["result"]), (1, "failed"))
-        self.assertTrue(answer["detail"].startswith("SavedButApplyUnverified:"))
+        self.assertSavedNotConfirmed(answer, code)
+        self.assertTrue(answer["detail"].startswith("The new value is saved, but what happened"))
         self.assertNotIn("private", answer["detail"])
         self.assertEqual(len(self.store.saves), 1)
         self.assertEqual(self.commands, [r.RELOAD])
-        self.assertEqual([e["result"] for e in self.events], ["intent", "failed"])
+        self.assertEqual([e["result"] for e in self.events], ["intent", "submitted"])
+
+    def test_saved_change_keeps_the_saved_fact_when_the_outcome_audit_fails(self):
+        self.ctx.runner = lambda *args, **kwargs: (1, b"")
+
+        def audit(record):
+            if record["result"] != "intent":
+                raise OSError("private audit path")
+            self.events.append(record)
+
+        self.ctx.resource_audit = audit
+        answer, code = self.call()
+        self.assertEqual((code, answer["result"]), (0, "submitted"))
+        self.assertTrue(answer["detail"].startswith("The new value is saved"))
+        self.assertTrue(
+            answer["detail"].endswith("could not be written to the server's audit log.")
+        )
+        self.assertNotIn("private", answer["detail"])
+
+    def test_applied_change_stays_done_when_only_the_closing_audit_fails(self):
+        def audit(record):
+            if record["result"] == "done":
+                raise OSError("private audit path")
+            self.events.append(record)
+
+        self.ctx.resource_audit = audit
+        answer, code = self.call()
+        self.assertEqual((code, answer["result"], answer["ok"]), (0, "done", True))
+        self.assertIn("reports it in effect", answer["detail"])
+        self.assertIn("audit log", answer["detail"])
+        self.assertEqual([e["result"] for e in self.events], ["intent"])
 
     def test_unexpected_audit_failure_is_sanitized_and_prevents_save(self):
         def audit(record):
@@ -536,10 +628,159 @@ class BrokerTests(unittest.TestCase):
 
         self.store.get = get
         answer, code = self.call()
-        self.assertEqual(code, 1)
-        self.assertTrue(answer["detail"].startswith("SavedButApplyUnverified"))
+        self.assertSavedNotConfirmed(answer, code)
         self.assertEqual(len(self.store.saves), 1)
         self.assertFalse(self.commands)
+
+    def test_plan_detail_names_the_change_in_owner_units_and_its_production_effect(self):
+        answer, code = self.call("plan", "ram-budget-gib", 12)
+        self.assertEqual(code, 0, answer)
+        detail = answer["detail"]
+        self.assertTrue(detail.startswith("Pressure RAM Limit changes from 8 GiB to 12 GiB."))
+        # 32 GiB host, 6 GiB reserve:  production's pool falls from 18 GiB to 14 GiB.
+        self.assertIn(
+            "Warning: This change leaves production up to 14 GiB of protected memory "
+            "(now up to 18 GiB).",
+            detail,
+        )
+        self.assertNotIn("serialized", detail)
+        self.assertNotIn("  ", detail.replace("\u00a0 ", ""))
+        answer, _ = self.call("plan", "borrow-idle", 0)
+        self.assertTrue(answer["detail"].startswith("Borrow Idle Memory changes from On to Off."))
+        self.assertNotIn("protected memory", answer["detail"])
+        answer, _ = self.call("plan", "ram-reserve-gib", 4)
+        self.assertIn("up to 20 GiB of protected memory (now up to 18 GiB)", answer["detail"])
+        self.assertNotIn("Warning", answer["detail"])
+
+    def test_refusals_name_the_rule_and_the_allowed_maximum(self):
+        answer, code = self.call("plan", "ram-budget-gib", 27)
+        self.assertEqual(code, 2)
+        self.assertIn("at most 26 GiB", answer["detail"])
+        self.assertIn("32 GiB", answer["detail"])
+        answer, code = self.call("plan", "ram-reserve-gib", 25)
+        self.assertEqual(code, 2)
+        self.assertIn("reserve can be at most 24 GiB", answer["detail"])
+        answer, code = self.call("plan", "ram-budget-gib", 5)
+        self.assertEqual(code, 2)
+        self.assertIn("Lower Critical RAM Limit first", answer["detail"])
+        answer, code = self.call("plan", "cpu-cores", 15)
+        self.assertEqual(code, 2)
+        self.assertIn("1 through 14", answer["detail"])
+        self.assertNotIn("schema or host safety bounds", answer["detail"])
+
+    def test_snapshot_reasons_explain_every_unavailable_or_drift_status(self):
+        self.assertEqual(r.public_snapshot({}, NOW, policy())["reasons"], ["receipt-missing"])
+        raw = snapshot(policy())
+        raw["generatedAt"] = r._stamp(NOW - 61)
+        self.assertEqual(r.public_snapshot(raw, NOW)["reasons"], ["receipt-stale"])
+        raw = snapshot(policy())
+        del raw["observed"]["mode"]
+        self.assertEqual(r.public_snapshot(raw, NOW)["reasons"], ["receipt-incomplete"])
+        raw = snapshot(policy(), ramTargetBytes=33 * r.GIB)
+        self.assertEqual(r.public_snapshot(raw, NOW)["reasons"], ["receipt-invalid"])
+        raw = snapshot(policy(), cpuMismatches=2)
+        result = r.public_snapshot(raw, NOW)
+        self.assertEqual((result["status"], result["reasons"]), ("drift", ["cpu-mismatch"]))
+        self.assertEqual(r.public_snapshot(snapshot(policy()), NOW, policy())["reasons"], [])
+
+    def test_saved_policy_ahead_of_the_controller_is_named(self):
+        saved = {**policy(), "cpu_weight": 100}
+        result = r.public_snapshot(snapshot(policy()), NOW, saved)
+        self.assertEqual(result["status"], "drift")
+        self.assertEqual(result["desiredRevision"], r.revision(saved))
+        self.assertEqual(result["policyRevision"], r.revision(policy()))
+        self.assertIn("policy-not-in-effect", result["reasons"])
+        # Review uses the saved policy's revision, which the broker accepts.
+        target = f"cpu-weight.200.{result['desiredRevision']}"
+        self.store.p = saved
+        self.assertEqual(r.handle(self.ctx, "resource-policy", target, "plan")[1], 0)
+
+    def test_controller_reasons_pass_only_through_the_allowlist(self):
+        raw = snapshot(policy())
+        raw["status"] = "unavailable"
+        raw["reasons"] = ["no-coding-groups", "private-path", 7, ["x"], "no-coding-groups"]
+        result = r.public_snapshot(raw, NOW)
+        self.assertEqual(result["status"], "unavailable")
+        self.assertEqual(result["reasons"], ["no-coding-groups"])
+        self.assertNotIn("private", json.dumps(result))
+
+    def test_counts_that_show_a_limit_hurting_are_projected_only_when_measured(self):
+        raw = snapshot(
+            policy(),
+            availableBytes=12 * r.GIB,
+            productionProtectedGroups=3,
+            productionUnprotectedGroups=1,
+            oomKillDelta=2,
+            excludedUnits=1,
+        )
+        observed = r.public_snapshot(raw, NOW)["observed"]
+        self.assertEqual(observed["availableBytes"], 12 * r.GIB)
+        self.assertEqual(observed["productionUnprotectedGroups"], 1)
+        self.assertEqual(observed["oomKillDelta"], 2)
+        self.assertEqual(observed["excludedUnits"], 1)
+        observed = r.public_snapshot(snapshot(policy(), oomKillDelta=-1), NOW)["observed"]
+        self.assertNotIn("oomKillDelta", observed)
+        self.assertNotIn("availableBytes", observed)
+
+    def test_a_zero_memory_total_from_an_older_controller_stays_unknown(self):
+        result = r.public_snapshot(snapshot(policy(), ramTotalBytes=0), NOW)
+        self.assertNotIn("ramTotalBytes", result["observed"])
+        self.assertEqual(result["status"], "unavailable")
+        self.assertEqual(result["reasons"], ["receipt-incomplete"])
+
+    def test_status_with_an_unreadable_saved_policy_says_so(self):
+        def get():
+            raise r.Failed("the resource policy could not be read from its verified source")
+
+        self.store.get = get
+        answer, code = r.handle(self.ctx, "resource-status", "coding", "plan")
+        self.assertEqual(code, 0)
+        self.assertIn("saved-policy-unreadable", answer["resourcePolicy"]["reasons"])
+        self.assertNotIn("desiredRevision", answer["resourcePolicy"])
+
+    def test_muster_contract_fixture_matches_the_broker(self):
+        """Muster's ResourcePolicyContractTests decode this same file (RESOURCES-44)."""
+        expected = contract()
+        if os.environ.get("WRITE_RESOURCE_CONTRACT") == "1":
+            CONTRACT.write_text(json.dumps(expected, indent=2, sort_keys=True) + "\n")
+        self.assertEqual(json.loads(CONTRACT.read_text()), expected)
+
+
+CONTRACT = (
+    Path(__file__).resolve().parent.parent
+    / "muster/MusterTests/Fixtures/resource_policy_contract.json"
+)
+
+
+def contract():
+    """Receipts as the broker really answers them, for Muster's decoder to read."""
+    p = policy()
+    saved_ahead = {**p, "cpu_weight": 100}
+    idle = snapshot(p, codingGroups=0, ramTargetBytes=0)
+    idle.update(status="unavailable", reasons=["no-coding-groups"])
+    no_cpus = snapshot(p, cpuOnline=0)
+    no_cpus.update(status="unavailable", reasons=["no-online-cpus"])
+    fractional = snapshot(p)
+    fractional["generatedAt"] = r._stamp(NOW - 0.25)
+    fractional["observed"]["updatedAt"] = r._stamp(NOW - 0.602189)
+    return {
+        "now": r._stamp(NOW),
+        "fieldTitles": r.FIELD_TITLES,
+        "bounds": {
+            "ramBudgetMaxGiB": (32 * r.GIB - p["reserve_bytes"]) // r.GIB,
+            "ramReserveMaxGiB": (32 * r.GIB - p["budget_bytes"]) // r.GIB,
+            "cpuCoresMax": 16 - 2,
+            "productionProtectionGiB": r.production_protection_bytes(p, 32 * r.GIB) / r.GIB,
+        },
+        "scenarios": {
+            "applied": r.public_snapshot(snapshot(p), NOW, p),
+            "savedAhead": r.public_snapshot(snapshot(p), NOW, saved_ahead),
+            "receiptMissing": r.public_snapshot({}, NOW, p),
+            "idle": r.public_snapshot(idle, NOW, p),
+            "noOnlineCpus": r.public_snapshot(no_cpus, NOW, p),
+            "fractional": r.public_snapshot(fractional, NOW, p),
+        },
+    }
 
 
 if __name__ == "__main__":

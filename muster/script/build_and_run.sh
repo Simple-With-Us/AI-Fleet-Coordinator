@@ -13,11 +13,15 @@ LOCK_DIR="$BUILD_DIR/run.lock"
 MODE="run"
 CONFIGURATION="Release"
 RELAUNCH=0
+ALLOW_OLDER=0
 
+# The developer route, for testing a lane on this Mac.  Merged changes reach the owner's
+# Mac through Sparkle from the release workflow (muster/docs/AUTO-UPDATE.md), never through
+# this script.
 usage() {
-    echo "Usage: $0 [--verify|--logs|--telemetry|--debug] [--development] [--relaunch]"
+    echo "Usage: $0 [--verify|--logs|--telemetry|--debug] [--development] [--relaunch] [--allow-older]"
     echo "Set MUSTER_SIGNING_IDENTITY to an exact Developer ID Application name or SHA-1 to select it."
-    echo "Set MUSTER_BUILD_NUMBER to the 12-digit merge-time build number (YYYYMMDDHHMM)."
+    echo "The build number is the commit's time in UTC (YYYYMMDDHHMM);  MUSTER_BUILD_NUMBER overrides it."
 }
 
 for argument in "$@"; do
@@ -25,23 +29,45 @@ for argument in "$@"; do
         --verify|--logs|--telemetry|--debug) MODE="$argument" ;;
         --development) CONFIGURATION="Debug" ;;
         --relaunch) RELAUNCH=1 ;;
+        --allow-older) ALLOW_OLDER=1 ;;
         --help|-h) usage; exit 0 ;;
         *) usage >&2; exit 2 ;;
     esac
 done
 
-BUILD_NUMBER="${MUSTER_BUILD_NUMBER:-}"
-if [[ ! "$BUILD_NUMBER" =~ ^[0-9]{12}$ ]]; then
-    echo "MUSTER_BUILD_NUMBER must be the 12-digit merge-time build number (YYYYMMDDHHMM); refusing installation with a default build number." >&2
+# An override is checked before anything runs, so a typo never reaches a build.
+if [ -n "${MUSTER_BUILD_NUMBER+set}" ] && [[ ! "$MUSTER_BUILD_NUMBER" =~ ^[0-9]{12}$ ]]; then
+    echo "MUSTER_BUILD_NUMBER must be the 12-digit merge-time build number (YYYYMMDDHHMM); unset it to use the commit's own time." >&2
     exit 2
 fi
 
-for command in xcodebuild xcodegen python3; do
+for command in xcodebuild xcodegen python3 git; do
     if ! command -v "$command" >/dev/null 2>&1; then
         echo "Required command is unavailable: $command" >&2
         exit 1
     fi
 done
+
+# The commit, its time, the build number and the channel (main, lane or development), all
+# from git.  A build numbered below the installed copy is refused unless --allow-older.
+IDENTITY="$(python3 "$ROOT_DIR/script/build_support.py" build-identity "$CONFIGURATION" "$INSTALLED_APP" "$ALLOW_OLDER")" || exit $?
+BUILD_NUMBER=""
+COMMIT=""
+COMMIT_TIME=""
+CHANNEL=""
+while IFS='=' read -r key value; do
+    case "$key" in
+        BUILD_NUMBER) BUILD_NUMBER="$value" ;;
+        COMMIT) COMMIT="$value" ;;
+        COMMIT_TIME) COMMIT_TIME="$value" ;;
+        CHANNEL) CHANNEL="$value" ;;
+    esac
+done <<< "$IDENTITY"
+if [[ ! "$BUILD_NUMBER" =~ ^[0-9]{12}$ ]] || [[ ! "$COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "The build identity could not be read; refusing to build." >&2
+    exit 2
+fi
+echo "Muster build $BUILD_NUMBER from commit ${COMMIT:0:7} ($CHANNEL)."
 
 installed_pids() {
     python3 - "$INSTALLED_BINARY" "$ROOT_DIR/script" <<'PYPROCESSES'
@@ -115,9 +141,17 @@ xcodebuild \
     "CODE_SIGN_IDENTITY=$SIGNING_IDENTITY" \
     "DEVELOPMENT_TEAM=$TEAM_ID" \
     "CURRENT_PROJECT_VERSION=$BUILD_NUMBER" \
+    "MUSTER_COMMIT=$COMMIT" \
+    "MUSTER_COMMIT_TIME=$COMMIT_TIME" \
+    "MUSTER_BUILD_CHANNEL=$CHANNEL" \
     build
 
 /usr/bin/codesign --verify --strict --deep "$STAGED_APP"
+# The stamp is what Settings and the menu show, so a build without it is not installed.
+if [ "$(/usr/libexec/PlistBuddy -c 'Print :MusterCommit' "$STAGED_APP/Contents/Info.plist" 2>/dev/null)" != "$COMMIT" ]; then
+    echo "The built app does not carry commit $COMMIT in its Info.plist." >&2
+    exit 1
+fi
 SIGNATURE_DETAILS="$(/usr/bin/codesign -d --verbose=4 "$STAGED_APP" 2>&1)"
 if ! /usr/bin/grep -q 'Authority=Developer ID Application:' <<< "$SIGNATURE_DETAILS"; then
     echo "The app does not have the required Developer ID Application signature." >&2

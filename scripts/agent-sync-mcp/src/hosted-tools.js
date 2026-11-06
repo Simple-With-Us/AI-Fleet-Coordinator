@@ -184,7 +184,7 @@ const ZULIP_WRITE_NAMES = [...WRITE_TOOLS, ...DM_WRITE_TOOLS].map(publicZulip);
 const FULL_NAMES = Object.keys(ZULIP_FULL_NAMES);
 const FULL_READ_NAMES = FULL_NAMES.filter((name) => !Object.hasOwn(FULL_WRITE_KIND, ZULIP_LEGACY_NAMES[name]));
 const FULL_WRITE_NAMES = FULL_NAMES.filter((name) => Object.hasOwn(FULL_WRITE_KIND, ZULIP_LEGACY_NAMES[name]));
-export const HOSTED_READ_TOOLS = Object.freeze(new Set(["identities", "guide", ...ZULIP_READ_NAMES, ...RECALL_READ_TOOLS, ...LINEAR_READ_TOOLS, ...FLEETLINK_READ_TOOLS, ...FULL_READ_NAMES, ...EAVESDROPPER_READ_TOOLS, ...NOTES_READ_TOOLS, "whatsapp_read", "gr_v1_pr_state", "gr_v1_pr_hold_state", ...WF_V1_TOOLS.filter((t) => WF_V1_READ_ACTIONS.includes(t.name.slice(3))).map((t) => t.name)]));
+export const HOSTED_READ_TOOLS = Object.freeze(new Set(["identities", "guide", "catalog", ...ZULIP_READ_NAMES, ...RECALL_READ_TOOLS, ...LINEAR_READ_TOOLS, ...FLEETLINK_READ_TOOLS, ...FULL_READ_NAMES, ...EAVESDROPPER_READ_TOOLS, ...NOTES_READ_TOOLS, "whatsapp_read", "gr_v1_pr_state", "gr_v1_pr_hold_state", ...WF_V1_TOOLS.filter((t) => WF_V1_READ_ACTIONS.includes(t.name.slice(3))).map((t) => t.name)]));
 export const HOSTED_WRITE_TOOLS = Object.freeze(new Set([...ZULIP_WRITE_NAMES, ...RECALL_WRITE_TOOLS, ...LINEAR_WRITE_TOOLS, ...FLEETLINK_WRITE_TOOLS, ...FULL_WRITE_NAMES, ...NOTES_WRITE_TOOLS, ...GR_TOOL_NAMES, "whatsapp_reply", "whatsapp_send_status", "gr_v1_pr_automerge_disable", ...WF_V1_TOOLS.filter((t) => !WF_V1_READ_ACTIONS.includes(t.name.slice(3))).map((t) => t.name)]));
 export const RECALL_IDEM_TTL_MS = 10 * 60 * 1000;
 // Team and state ids are cached per isolate for an hour:  long enough to keep
@@ -1530,7 +1530,37 @@ export class HostedTools {
     // relay's deliberate verdicts (allowlist, replay refusals, terminal
     // GitHub refusals) - definite, no hidden side effect.
     if (status === 429 && body?.retryable === true) throw new ToolError("rate_limited", "git-relay quota is exhausted.  Retry after the quota window.", {retryable:true});
-    if (status >= 400) throw new ToolError("relay_refused", typeof body?.error === "string" ? body.error.slice(0, 300) : "refused");
+    if (status >= 400) {
+      // Validate the refusal body's shape before reading any field of it:  an
+      // unvalidated relay body is untrusted data, and only schema-parsed
+      // fields may drive the classification.  An unparseable body keeps the
+      // generic code.
+      const refusalShape = z.object({
+        error: z.string().max(1000).optional(),
+        reason: z.enum(["credential_scan"]).optional(),
+      }).safeParse(body);
+      if (!refusalShape.success) throw new ToolError("relay_refused", "refused");
+      const refusalError = refusalShape.data.error;
+      // The relay's credential-scan verdicts map to the dedicated safe code:
+      // CLI callers print codes, not messages, and "relay_refused" alone hid
+      // why the write was refused.  Three vouched forms, never reflected prose:
+      // the workflow verbs' fixed credential refusals, their machine-readable
+      // marker after callWorkflow collapses the workflow body, and the
+      // pre-dispatch scanner's family from the seven-action path - anchored on
+      // the fixed refusal tail, with no whitelist on the field path it names
+      // (real field paths carry spaces and parens too).  The secrets-API
+      // variable refusal is excluded:  it also fires for over-limit or
+      // non-string values, so it is not a credential verdict.
+      const credentialRefusal =
+        refusalShape.data.reason === "credential_scan"
+        || refusalError === "credential-shaped content refused"
+        || (typeof refusalError === "string"
+          && /^[^\n]{1,200} looks like it contains a credential \([A-Za-z0-9_]{1,60}\); refusing to relay it$/.test(refusalError));
+      if (credentialRefusal) {
+        throw new ToolError("refused_secret", "git-relay refused the write:  the content looks like it contains a credential.  Remove or reword the credential-shaped content and send it again.  Nothing was written.");
+      }
+      throw new ToolError("relay_refused", typeof refusalError === "string" ? refusalError.slice(0, 300) : "refused");
+    }
     // A successful call still must answer with a plain JSON object;  anything
     // else is a mis-answering upstream, not a result.
     if (!body || typeof body !== "object" || Array.isArray(body)) {
