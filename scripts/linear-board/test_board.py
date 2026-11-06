@@ -1041,7 +1041,6 @@ class BoardTest(unittest.TestCase):
     def cache(self, seat):
         return self.afc_vault / ("LINEAR_" + seat.replace("-", "_") + "_CACHE_TOKEN")
 
-
     def fs_verbs(self):
         """The fake fleet-secrets calls so far, as 'verb NAME' lines (never a value)."""
         return self.fs_calls.read_text().splitlines() if self.fs_calls.exists() else []
@@ -1369,7 +1368,9 @@ class BearerSeatTests(BoardTest):
         (self.ops_vault / "fleet-seats" / "FIXER_BEARER").write_text(BEARER_FIXER)
         self.bearer_env = {"SIMPLE_BOARD_BEARER_LOCATOR": "/fleet-seats:ECHO_SEAT_BEARER"}
         # The shared Fleet app is retired, so the ECHO seat needs its own pair, like every seat.
-        self.mock.add_client("echo-app-client-id", "echo-app-client-secret-value", "Echo (Instinct)")
+        self.mock.add_client(
+            "echo-app-client-id", "echo-app-client-secret-value", "Echo (Instinct)"
+        )
         self.afc_put("LINEAR_ECHO_CLIENT_ID", "echo-app-client-id")
         self.afc_put("LINEAR_ECHO_CLIENT_SECRET", "echo-app-client-secret-value")
 
@@ -3187,7 +3188,10 @@ class SeatAppTests(BoardTest):
             "credentials: Infisical AI Fleet Coordinator prod /linear (LINEAR_CLAUDE_CLIENT_ID, LINEAR_CLAUDE_CLIENT_SECRET)",
             p.stdout,
         )
-        self.assertIn("token store: Infisical AI Fleet Coordinator prod /linear LINEAR_CLAUDE_CACHE_TOKEN", p.stdout)
+        self.assertIn(
+            "token store: Infisical AI Fleet Coordinator prod /linear LINEAR_CLAUDE_CACHE_TOKEN",
+            p.stdout,
+        )
         self.assertNotIn("notice:", p.stdout)
         self.assertNotIn(claude, p.stdout + p.stderr)  # the path is printed, never a value
         p = self.as_seat("CODEX", "whoami")
@@ -3280,7 +3284,10 @@ class SeatAppTests(BoardTest):
             "credentials: Infisical AI Fleet Coordinator prod /linear (LINEAR_GROK_WEB_CLIENT_ID, LINEAR_GROK_WEB_CLIENT_SECRET)",
             p.stdout,
         )
-        self.assertIn("token store: Infisical AI Fleet Coordinator prod /linear LINEAR_GROK_WEB_CACHE_TOKEN", p.stdout)
+        self.assertIn(
+            "token store: Infisical AI Fleet Coordinator prod /linear LINEAR_GROK_WEB_CACHE_TOKEN",
+            p.stdout,
+        )
         # the environment form spells the hyphen as an underscore
         self.ops_drop_seat("GROK-WEB")
         self.cache("GROK-WEB").unlink()
@@ -3294,7 +3301,10 @@ class SeatAppTests(BoardTest):
             p.stdout,
         )
         self.assertIn("viewer:      Grok Web (app user)", p.stdout)
-        self.assertIn("token store: Infisical AI Fleet Coordinator prod /linear LINEAR_GROK_WEB_CACHE_TOKEN", p.stdout)
+        self.assertIn(
+            "token store: Infisical AI Fleet Coordinator prod /linear LINEAR_GROK_WEB_CACHE_TOKEN",
+            p.stdout,
+        )
         # every GROK-BUILD spelling is GROK, and reads GROK_LINEAR_CLIENT_ID
         self.seat_app("GROK", "Grok")
         p = self.as_seat("Grok-Build", "whoami")
@@ -3313,7 +3323,10 @@ class SeatAppTests(BoardTest):
             "credentials: environment (LINEAR_CODEX_CLIENT_ID, LINEAR_CODEX_CLIENT_SECRET)",
             p.stdout,
         )
-        self.assertIn("token store: Infisical AI Fleet Coordinator prod /linear LINEAR_CODEX_CACHE_TOKEN", p.stdout)
+        self.assertIn(
+            "token store: Infisical AI Fleet Coordinator prod /linear LINEAR_CODEX_CACHE_TOKEN",
+            p.stdout,
+        )
         self.as_seat(
             "CODEX",
             "comment",
@@ -3640,7 +3653,10 @@ class SeatAppTests(BoardTest):
             "credentials: Infisical AI Fleet Coordinator prod /linear (LINEAR_CLAUDE_CLIENT_ID",
             p.stdout,
         )
-        self.assertIn("token store: Infisical AI Fleet Coordinator prod /linear LINEAR_CLAUDE_CACHE_TOKEN", p.stdout)
+        self.assertIn(
+            "token store: Infisical AI Fleet Coordinator prod /linear LINEAR_CLAUDE_CACHE_TOKEN",
+            p.stdout,
+        )
         after = sorted(str(q.relative_to(home)) for q in (home / ("." + "secrets")).rglob("*"))
         self.assertEqual(after, before)
         self.assertEqual(
