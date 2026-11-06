@@ -35,7 +35,7 @@ class InstallTests(unittest.TestCase):
         (stub / "simple-board").write_text('#!/bin/sh\necho "seat:        CLAUDE (bearer-verified)"\n')
         (stub / "simple-board").chmod(0o755)
         base = {"HOME": str(self.home), "PATH": "%s:/usr/bin:/bin" % stub,
-                "SIMPLE_BOARD_BEARER_LOCATOR": "/fleet-seats:CLAUDE_SEAT_BEARER"}
+                "SIMPLE_BOARD_BEARER_FILE": "/run/seat-bearers/claude"}
         base.update(env or {})
         base.pop("AGENT_SEAT", None)
         # the managed-board seam is import-only, so the isolated run sets it in-process before the entry runs

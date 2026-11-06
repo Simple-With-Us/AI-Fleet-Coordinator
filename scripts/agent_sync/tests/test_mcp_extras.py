@@ -28,7 +28,7 @@ from agent_sync.mcp import linear_tools as LT
 from agent_sync.mcp import recall_tools as RT
 from agent_sync.mcp import tools as T
 from agent_sync.tests.harness import SESSION
-from agent_sync.tests.mcp_harness import McpHarness, seat_bearer_locator
+from agent_sync.tests.mcp_harness import McpHarness, seat_bearer_file
 from agent_sync.tests.test_mcp_identity import IdentityHarness
 from agent_sync.tests.test_notes import (
     STORED_CONTENT_HTML,
@@ -46,7 +46,7 @@ FAKE_PROGRAM = textwrap.dedent("""\
     import json, os, sys
     out = os.environ["{out_var}"]
     data = {{"argv": sys.argv[1:], "seat": os.environ.get("AGENT_SEAT"), "writes": os.environ.get("LINEAR_BOARD_WRITES"),
-            "bearer": os.environ.get("SIMPLE_BOARD_BEARER_LOCATOR"),
+            "bearer": os.environ.get("SIMPLE_BOARD_BEARER_FILE"),
             "stdin": sys.stdin.read(), "env": sorted(os.environ),
             "files": {{a: {{"text": open(a[1:]).read(), "mode": oct(os.stat(a[1:]).st_mode & 0o777)}}
                       for a in sys.argv[1:] if a.startswith("@") and os.path.isfile(a[1:])}}}}
@@ -424,7 +424,7 @@ class NotesToolTests(McpHarness):
         self.assertEqual(fenced, entries)
         self.assertEqual(len(run.calls), 1, "the log is read from the file, not the script")
 
-    # ---- through the gateway, as this seat's own fleet bearer ----------------------------------------
+    # ---- through the gateway, as this seat's own fleet-bearer identity ----------------------------
     def test_off_a_mac_a_write_goes_through_the_gateway_and_waits_for_the_runner(self):
         gw, sleeps, patches = self.gateway()
         gw.queue("notes_create", {"request_id": "op-create-0001", "action": "create", "status": "running", "transport": "operator"})
@@ -884,7 +884,7 @@ class LinearToolTests(FakePrograms):
         # identity's own bearer locator and the seat variables are stripped from the child.
         self.assertEqual(
             call["bearer"],
-            seat_bearer_locator("CLAUDE"),
+            seat_bearer_file("CLAUDE"),
             "the call's own bearer locator is the seat board proves",
         )
         self.assertIsNone(call["seat"], "AGENT_SEAT must not reach board")
@@ -908,8 +908,8 @@ class LinearToolTests(FakePrograms):
         self.assertEqual(
             [c["bearer"] for c in calls],
             [
-                seat_bearer_locator("CLAUDE"),
-                seat_bearer_locator("CLAUDE"),
+                seat_bearer_file("CLAUDE"),
+                seat_bearer_file("CLAUDE"),
             ],
             "each call runs under the bearer of the identity it names",
         )
