@@ -161,7 +161,8 @@ test("tools/list pages concatenate to the full list, in order, with no overlap",
     const page = JSON.parse(await dataOf(res.response)).result;
     assert.ok(page.tools.length > 0 && page.tools.length <= 100);
     names.push(...page.tools.map((tool) => tool.name));
-    if (!page.nextCursor) break;
+    if (page.nextCursor === undefined) break;
+    assert.ok(typeof page.nextCursor === "string" && page.nextCursor.length > 0, "a present nextCursor is a non-empty string");
     cursor = page.nextCursor;
   }
   assert.deepEqual(names, full.map((tool) => tool.name));
@@ -187,7 +188,8 @@ test("catalog pages every tool name and description, terminating without a nextC
       assert.deepEqual(Object.keys(entry).sort(), ["description", "name"]);
       seen.push(entry.name);
     }
-    if (!page.nextCursor) break;
+    if (page.nextCursor === undefined) break;
+    assert.ok(typeof page.nextCursor === "string" && page.nextCursor.length > 0, "a present nextCursor is a non-empty string");
     cursor = page.nextCursor;
   }
   assert.deepEqual(seen, router.toolList.map((tool) => tool.name));
@@ -200,4 +202,36 @@ test("catalog refuses a bad cursor as a tool error, never a protocol error", asy
   const result = await router.call("catalog", { identity: "CODEX", cursor: "bogus" });
   assert.ok(result.isError);
   assert.match(JSON.stringify(result), /invalid cursor/);
+});
+
+test("catalog refuses a cursor tagged for a different tool list", async () => {
+  const tools = new HostedTools({ seat: "CODEX", scopes: ["zulip:read"], config, gate: {}, clientId: "t", grantRef: "r" });
+  const router = new IdentityRouter({ callerTools: tools });
+  const first = await router.call("catalog", { identity: "CODEX" });
+  const next = first.structuredContent.nextCursor;
+  assert.ok(typeof next === "string" && next.includes("."), "issued cursors carry the list tag");
+  const [offset, tag] = next.split(".");
+  const staleTag = tag.replace(/[0-9a-f]/, (c) => (c === "0" ? "1" : "0"));
+  const stale = await router.call("catalog", { identity: "CODEX", cursor: `${offset}.${staleTag}` });
+  assert.ok(stale.isError);
+  assert.match(JSON.stringify(stale), /invalid cursor/);
+  const legacy = await router.call("catalog", { identity: "CODEX", cursor: offset });
+  assert.ok(!legacy.isError, "an untagged offset still pages for compatibility");
+});
+
+test("catalog audits exactly one row per execution, success and failure", async () => {
+  const rows = [];
+  const tools = new HostedTools({ seat: "CODEX", scopes: ["zulip:read"], config, gate: {}, clientId: "t", grantRef: "r" });
+  tools.auditRow = async (gate, row) => { rows.push(row); };
+  const router = new IdentityRouter({ callerTools: tools });
+  const ok = await router.call("catalog", { identity: "CODEX" });
+  assert.ok(!ok.isError);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].outcome, "ok");
+  assert.equal(rows[0].tool, "catalog");
+  const bad = await router.call("catalog", { identity: "CODEX", cursor: "bogus" });
+  assert.ok(bad.isError);
+  assert.equal(rows.length, 2);
+  assert.equal(rows[1].outcome, "error");
+  assert.equal(rows[1].error_code, "invalid_argument");
 });

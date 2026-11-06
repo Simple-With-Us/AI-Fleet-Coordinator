@@ -203,23 +203,37 @@ const EMPTY_TOOL_SET = Object.freeze({ list: Object.freeze([]), byName: Object.f
 export const TOOLS_LIST_PAGE = 100;
 export const CATALOG_PAGE = 200;
 
-const CURSOR_PATTERN = /^\d{1,12}$/;
+const CURSOR_PATTERN = /^\d{1,12}(?:\.[0-9a-f]{8})?$/;
 
-/** A cursor is an opaque decimal offset the server issued;  anything else is an invalid argument. */
-export function parseCursor(raw, length) {
+/** FNV-1a over the tool names:  binds an issued cursor to the exact list it paged, so a deploy or config flip fails closed instead of mixing pages. */
+function listTag(list) {
+  let hash = 0x811c9dc5;
+  const names = list.map((tool) => tool.name).join("\n");
+  for (let i = 0; i < names.length; i++) {
+    hash ^= names.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, "0");
+}
+
+/** A cursor is an opaque decimal offset the server issued, optionally carrying the list tag it was issued against;  anything else is an invalid argument. */
+export function parseCursor(raw, length, tag) {
   if (raw === undefined) return 0;
   if (typeof raw !== "string" || !CURSOR_PATTERN.test(raw)) throw new ToolError("invalid_argument", "invalid cursor:  pass the nextCursor value unchanged");
-  const offset = Number(raw);
+  const [offsetText, cursorTag] = raw.split(".");
+  if (cursorTag !== undefined && cursorTag !== tag) throw new ToolError("invalid_argument", "invalid cursor:  pass the nextCursor value unchanged");
+  const offset = Number(offsetText);
   if (!Number.isSafeInteger(offset) || offset >= Math.max(length, 1)) throw new ToolError("invalid_argument", "invalid cursor:  pass the nextCursor value unchanged");
   return offset;
 }
 
-/** One bounded page of a frozen tool list;  nextCursor appears only when more follows. */
+/** One bounded page of a frozen tool list;  nextCursor appears only when more follows and carries the list's tag. */
 export function pageOf(list, cursor, size) {
-  const start = parseCursor(cursor, list.length);
+  const tag = listTag(list);
+  const start = parseCursor(cursor, list.length, tag);
   const tools = list.slice(start, start + size);
   const end = start + size;
-  return end < list.length ? { tools, nextCursor: String(end) } : { tools };
+  return end < list.length ? { tools, nextCursor: `${end}.${tag}` } : { tools };
 }
 
 /** The catalog tool:  paged names and one-line descriptions, schemas stay with tools/list. */
@@ -393,17 +407,23 @@ export class IdentityRouter {
 
   async catalog(rawArgs) {
     const name = "catalog";
+    // Exactly one scrubbed audit row per execution, written from finally on
+    // both paths (the audit helper swallows its own failures via safely()).
+    let row;
     try {
       const { identity: _ignored, ...inner } = parseArgs(CatalogCall, rawArgs);
       this.callerTools.requireScope(name);
       if (this.callerTools.paused) throw new ToolError("paused", `The ${this.seat} seat is paused.`);
       const page = pageOf(this.toolList, inner.cursor, CATALOG_PAGE);
       const result = { tools: page.tools.map((spec) => ({ name: spec.name, description: spec.description ?? "" })), ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}) };
+      row = { acting_identity: this.seat, tool: name, outcome: "ok", error_code: "ok", error_message: "" };
       return okResult(JSON.stringify(result), result);
     } catch (error) {
       const mapped = error instanceof ToolError ? error : new ToolError("unavailable", "The catalog is unavailable.");
-      await this.audit({ acting_identity: this.seat, tool: name, error_code: mapped.code, error_message: mapped.message.slice(0, 120) });
+      row = { acting_identity: this.seat, tool: name, error_code: mapped.code, error_message: mapped.message.slice(0, 120) };
       return errorResult(mapped);
+    } finally {
+      await this.audit(row);
     }
   }
 
