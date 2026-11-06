@@ -73,6 +73,7 @@ READ_TOOLS = {
     "zulip_drafts_list",
     "eavesdropper_status",
     "eavesdropper_inbox",
+    "operator_inbox_pending",
     "eavesdropper_owner_queue",
     "eavesdropper_wakes",
     "eavesdropper_held_back",
@@ -802,7 +803,15 @@ class ProtocolTests(McpHarness):
             self.assertTrue(
                 name in ("whoami", "identities", "guide")
                 or name.startswith(
-                    ("zulip_", "eavesdropper_", "notes_", "recall_", "linear_", "fleetlink_")
+                    (
+                        "zulip_",
+                        "eavesdropper_",
+                        "operator_",
+                        "notes_",
+                        "recall_",
+                        "linear_",
+                        "fleetlink_",
+                    )
                 ),
                 name,
             )

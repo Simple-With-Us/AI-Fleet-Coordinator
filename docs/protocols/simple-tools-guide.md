@@ -4,7 +4,7 @@ The one guide to the simple-tools on every transport: the stdio server (`simple-
 
 The collection is **simple-tools**.  The hosted server is **ST-MCP** and its admin is **ST-MCP + GR-MCP Admin**.  Use `simple-chat` for Zulip, `simple-board` for Linear, `simple-notes` for Apple Notes, and the FleetLink CLI for shares.  Fleet coordination is in **#Work-In-Progress**.  Use these component names in instructions and tool descriptions.
 
-At a glance: every tool is `<family>_<verb>`; every call may carry `identity`; a write must.  The stdio server serves 273 tools and the hosted server 280 (counted from the release source, which adds the seven `gr_*` tools and the hosted-only `catalog`; the deployed server lists 272 until that release ships): `eavesdropper_ack` is stdio only, and the hosted-only `whatsapp_read` is listed only to JET-CHAT, the full Jet login, while the WhatsApp bridge is on (it is default-off), which makes JET-CHAT's hosted list 281 (Tools by Family).
+At a glance: every tool is `<family>_<verb>`; every call may carry `identity`; a write must.  The stdio server serves 274 tools and the hosted server 281 (counted from the release source, which adds the seven `gr_*` tools and the hosted-only `catalog`; the deployed server lists 272 until that release ships): `eavesdropper_ack` is stdio only, and the hosted-only `whatsapp_read` is listed only to JET-CHAT, the full Jet login, while the WhatsApp bridge is on (it is default-off), which makes JET-CHAT's hosted list 282 (Tools by Family).
 
 ## How to Pass Identity
 
@@ -57,7 +57,7 @@ Name = `<family>_<verb>`.  R = read, W = write (writes need `identity`).  Wher
 |---|---|---|---|
 | (none) `whoami`, `identities`, `guide`, `catalog` | 3 stdio, 4 hosted | both | Identity, this guide and the paged tool catalog (above; `catalog` is hosted only) |
 | `zulip_*` | 42 | both | Read and post on the fleet's Zulip as a bot |
-| `eavesdropper_*` | 6 stdio, 5 hosted | both | This seat's eavesdropper records |
+| `eavesdropper_*` | 7 stdio, 6 hosted | both | This seat's eavesdropper records |
 | `notes_*` | 8 | both | Apple Notes in the owner's Coding folder |
 | `recall_*` | 3 | both | The fleet's shared knowledge corpus |
 | `linear_*` | 196 | both | The Linear board as the identity's own app |
@@ -122,6 +122,7 @@ The local eavesdropper's records for the identity.  Stdio reads them from this 
 |---|---|---|---|
 | `eavesdropper_status` | R | both | Counts: seat inbox, owner queue, wakes, held back, leases, nudges, pause |
 | `eavesdropper_inbox` | R | both | The seat inbox after the acknowledged cursor (`since_seq`); never moves the cursor |
+| `operator_inbox_pending` | R | both | Wake-worthy pending seat-inbox items after a caller-held `after_seq`: `mode` check counts them (with `latest_seq`), pull returns them; never moves any cursor |
 | `eavesdropper_owner_queue` | R | both | Notes queued for the owner, after the surfaced mark (`all` for every one) |
 | `eavesdropper_wakes` | R | both | The wake ledger, filtered by `since_hours` and `state` |
 | `eavesdropper_held_back` | R | both | Wakes held back for the budget, with reason and link |
