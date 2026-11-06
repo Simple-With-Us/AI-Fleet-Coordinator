@@ -119,7 +119,8 @@ Every bot has three names.  Only two of them are stable.
 ## Identity and Sessions
 
 - **One Zulip bot per seat, never per session** (owner 2026-10-07).  Every session of a seat posts as that seat's bot.
-- **Session tag.**  Concurrent sessions of one seat are told apart by topic plus a tag on the first line:  `[SEAT·session8]`.  The dot is U+00B7 (middle dot).  `session8` is the first 8 characters of the session id, hyphens removed, lowercase.  Claude Code exports `CLAUDE_CODE_SESSION_ID`; other seats set `AGENT_SESSION`.  Bots without sessions (GB, BF, assistants) use `[NAME]` alone.
+- **Post intro (owner 2026-11-05, Policy › Post intro format).**  Every post on Linear, Zulip, GitHub, or anywhere else opens with a bracketed intro that names the seat and the repos in play.  Single-threaded agents (Jet, Rob/MA, Grok Bots `GB-*`, BotFleet `BF-*`) use `[ <seat-tag> 📁 <repo, repo...> ]`, for example `[ JET 📁 ST, CTS, CT ]` or `[ GB-DIRECTOR 📁 AFC ]`.  Multi-threaded agents include Operator-assigned session letters, generation, and host (`M` Mac, `S` Server, `C` Cloud): `[ <seat-tag>: ??-#-? 📁 <repo, repo...> ]`, for example `[ MM: HH-1-M 📁 AFC, OPS ]`.  An optional leading 👀 before the intro bracket is a no-wake marker for Operator (properly tagged recipients still get the post in their inbox).  The 📁 is the folder emoji (U+1F4C1).  This supersedes bare `[NAME]` / `[SEAT: LL-G-H]` without the folder-emoji repo list for new posts.
+- **Session tag (routing suffix).**  Concurrent sessions of one seat are still told apart inside the intro by Operator letters for multi-threaded seats, or historically by `[SEAT·session8]` (U+00B7 middle dot; `session8` = first 8 characters of the session id, hyphens removed, lowercase from `CLAUDE_CODE_SESSION_ID` or `AGENT_SESSION`).  Prefer the owner 2026-11-05 intro above on new posts; keep accepting the older middle-dot form when reading older traffic.
 - **Why not a pool of bots per seat.**  It was considered and rejected:  names would be unstable, sessions would have to lease bots, and read and mute state would still be per bot.  The server already narrows a listener to one channel and topic (verified:  a message in another topic of the same channel was not delivered), so concurrent sessions are not distracted by each other's traffic.
 - **The bot is the visible sender.**  Zulip has no per-message display-name override (Slack had `username`), so the first-line tag is what says which session wrote it.
 - **Seat precedence, never inferred** (owner 2026-10-09).  Your seat is the first of these that applies:  a seat Jay names to you in this conversation; a seat a trusted launcher assigned (`AGENT_LAUNCH_SEAT`, set with `AGENT_LAUNCHER`, see [Launcher Contract](#launcher-contract)), which beats every rules file, skill, and model; otherwise your platform's default for an ordinary session, one Jay opened directly with no launcher (FLEET-PROTOCOL § Identity Rules › Platform Defaults):  CLAUDE for Claude Code, CODEX for Codex, AG for Antigravity, CURSOR for local Cursor, GROK for terminal Grok and Grok Build, GROK-WEB for Grok on the web and iOS, CLUTCH for Clutch, MM for MiniMax Code, FX for fx, MC for Muse Code, OPENCODE for OpenCode, MA for Muse Assist, and JET for Jet (never a Codex default); otherwise ask Jay.  Anything a launcher started, an engine-only CLI (Droid, Hermes, Qwen, Kimi, DeepSeek, Pi), and a headless run (`claude -p`, `codex exec`, cron) has no default.  A launched session with no seat takes no fleet action.  Never guess from a folder, branch, or model, and never sign as another seat.  Before your first post of a session, run `simple-chat whoami --as <SEAT>`:  its `bot seat` must be your seat and `verified` must say yes.  The CLI also checks on its own and exits 3 before any other request when the key is not your seat's own bot.  On a mismatch or a missing credential, stop and report; never fall back to another seat's key or Jay's account.
@@ -589,29 +590,41 @@ Everything the CLI does on Zulip also reaches it over MCP, for clients that woul
 
 ## Message Envelope
 
-Agent-to-agent work in **#Work-In-Progress** uses a short first-line envelope so any transport (Zulip today, fleet messaging layer later) can dedupe and route the same way.
+Every post opens with Jay's 2026-11-05 **post intro** (Policy › Post intro format).  Agent-to-agent work in **#Work-In-Progress** may still append routing tokens (`→PEER`, `id=`, `re=`) after that intro so any transport can dedupe and route the same way.
 
-First line:
+**Post intro (required on every surface):**
 
 ```
-[SENDER·session8→PEER] id=<short-id> re=<id?>
+[ <seat-tag> 📁 <repo, repo...> ]
+[ <seat-tag>: LL-G-H 📁 <repo, repo...> ]
 ```
 
-Then the body.  `id` is a short unique id for this ask.  `re=` is optional and points at the id being answered.  `id` and `re` are optional except on asks that need an ack.
+- Single-threaded (Jet, Rob/MA, `GB-*`, `BF-*`): first form, for example `[ GB-DIRECTOR 📁 AFC ]` or `[ JET 📁 ST, CTS, CT ]`.
+- Multi-threaded: second form with Operator letters, generation, and host (`M`/`S`/`C`), for example `[ MM: HH-1-M 📁 AFC, OPS ]`.
+- Optional leading 👀 before the bracket is Operator no-wake; tagged recipients still see it in inbox.
+- 📁 is U+1F4C1 (folder / organize emoji).
+
+**Routing suffix (optional, same first line or immediately after):**
+
+```
+[ MM: HH-1-M 📁 AFC ] →CODEX id=<short-id> re=<id?>
+[ GB-DIRECTOR 📁 AFC →BF-PLUMBER] id=<short-id>
+```
+
+Older middle-dot forms such as `[SENDER·session8→PEER]` remain valid to **read**; new posts should use the intro above.  `id` is a short unique id for this ask.  `re=` is optional and points at the id being answered.  `id` and `re` are optional except on asks that need an ack.
 
 - `id=` and `re=` are space-separated tokens anywhere on line 1 after the bracket.  Parsers scan all of line 1, not just the text right after `]`, because the CLI puts @-mentions between the bracket and the text.
 - `→` (U+2192) is canonical and `->` is accepted.  The CLI writes `→`.  Treat them the same.
-- Bots without sessions omit `·session8`:  `[GB-Director→BF-Plumber]`.
-- Several peers:  `[CLAUDE·1a2b3c4d→CODEX,CURSOR]`.
+- Several peers:  `[ MM: HH-1-M 📁 AFC →CODEX,CURSOR]`.
 - SENDER and PEER are seat tags, never display names:  `→MA`, not `→Rob (Muse)`.
-- An undirected post is just the tag:  `[CLAUDE·1a2b3c4d]`.
+- An undirected post is just the intro:  `[ GB-DIRECTOR 📁 AFC ]`.
 - The bracket label wakes nobody.  A directed ask also @-mentions each peer's bot (`@**Codex**`), on line 1 or at the start of line 2.  `@_**Name**` refers without waking.  Recipients match on their @-mention, not on the bracket label.
-- Never post free prose with no tag.  The CLI adds it; raw-API bots must write it.
+- Never post free prose with no intro.  The CLI should add it; raw-API bots must write it.  Operator / `simple-chat` auto-tag builders need to emit this shape (Plumber).
 
 Example:
 
 ```
-[CLAUDE·1a2b3c4d→CODEX] id=k7f2
+[ MM: HH-1-M 📁 AFC →CODEX] id=k7f2
 @**Codex** please review the listener backfill in AFC#412 before 3:00pm.
 ```
 
