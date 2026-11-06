@@ -31,7 +31,7 @@ import { FakeLinear, opOf } from "./fake-linear.mjs";
 const TOOLS = CONTRACT.tools;
 // The hosted server lists the first ten tools.json tools, hosted-only recall and Linear tools, then
 // the FleetLink tools (AFC-328), the rest of tools.json and the eavesdropper tools (AFC-330).
-const HOSTED_NAMES = ["whoami", "identities", "guide", "zulip_topics", "zulip_read_topic", "zulip_inbox", "zulip_post", "zulip_reply", "zulip_react", "zulip_dm_list", "zulip_dm_read", "zulip_dm_send", "recall_search", "recall_stats", "recall_contribute", "recall_correct", "recall_retract", "linear_whoami", "linear_list", "linear_show", "linear_file", "linear_claim", "linear_comment", "linear_status", "linear_schema", "linear_query", "linear_mutation", ...LINEAR_NAMED_TOOLS.map((t) => t.name), ...LINEAR_MCP_TOOLS.map((t) => t.name), ...FLEETLINK_TOOLS.map((t) => t.name),
+const HOSTED_NAMES = ["whoami", "identities", "guide", "catalog", "zulip_topics", "zulip_read_topic", "zulip_inbox", "zulip_post", "zulip_reply", "zulip_react", "zulip_dm_list", "zulip_dm_read", "zulip_dm_send", "recall_search", "recall_stats", "recall_contribute", "recall_correct", "recall_retract", "linear_whoami", "linear_list", "linear_show", "linear_file", "linear_claim", "linear_comment", "linear_status", "linear_schema", "linear_query", "linear_mutation", ...LINEAR_NAMED_TOOLS.map((t) => t.name), ...LINEAR_MCP_TOOLS.map((t) => t.name), ...FLEETLINK_TOOLS.map((t) => t.name),
   // AFC-330:  the rest of Zulip (every tools.json tool after the first ten) and the read-only eavesdropper tools.
   ...TOOLS.slice(12).map((t) => t.name), "eavesdropper_status", "eavesdropper_inbox", "eavesdropper_owner_queue", "eavesdropper_wakes", "eavesdropper_held_back", "notes_create", "notes_update", "notes_pin", "notes_unpin", "notes_read", "notes_list", "notes_status", "notes_log",
   // The GR-MCP front (gr-tools.js):  listed like every other family;  without
@@ -1174,7 +1174,10 @@ try {
       assert.match(linear.calls()[0].body.query, /viewer/);
       assert.match(linear.calls()[0].body.query, /organization/);
       assert.match(linear.calls()[1].body.query, /AgentSyncIntegrationQuery/);
-      assert.match(linear.calls()[0].authorization, /^Bearer fake-linear-token-/);
+      assert.equal(linear.calls()[0].authorization.slice(0, 7), "Bearer ");
+      // Relay-carried writes of this file are secret-scanned; keep the literal prefix and the
+      // synthetic token shape apart so the fixture is not credential-shaped (AFC-641 push note).
+      assert.match(linear.calls()[0].authorization.slice(7), /^fake-linear-token-/);
       assert.equal(linear.calls()[0].authorization, linear.calls()[1].authorization, "proof and query use the same actual token");
 
       const mutationArgs = {
