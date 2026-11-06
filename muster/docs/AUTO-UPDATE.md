@@ -72,18 +72,18 @@ Muster has its own EdDSA key pair, so no other app's key can sign a Muster updat
 
 The three read tokens are Muster's own, each read-only and scoped to one folder, and each expires on Wed, May 5, 2027:
 
-| Repository secret | Infisical token (id) | Reads | Expires (UTC, from Infisical's metadata) |
+| Repository secret | Infisical token | Reads | Expires (UTC, from Infisical's metadata) |
 |---|---|---|---|
-| `INFISICAL_MAC_CERTS_READ_TOKEN` | `muster-ci-mac-certs-read` (`0d2d47aa-41d7-4406-80c6-d6097bc95b06`) | Fleet-OPS prod `/mac-certs` | 2027-05-05T07:54:20Z |
-| `INFISICAL_ASC_READ_TOKEN` | `muster-ci-asc-read` (`67b2b81e-afb8-4011-a4aa-7f70257da0ba`) | Fleet-OPS prod `/asc` | 2027-05-05T07:54:23Z |
-| `INFISICAL_MUSTER_SPARKLE_READ_TOKEN` | `muster-ci-sparkle-read` (`d12cbfca-b260-41e0-a98a-dc6a48fd53d6`) | AI Fleet Coordinator prod `/muster-sparkle` | 2027-05-05T07:54:25Z |
+| `INFISICAL_MAC_CERTS_READ_TOKEN` | `muster-ci-mac-certs-read` | Fleet-OPS prod `/mac-certs` | 2027-05-05T07:54:20Z |
+| `INFISICAL_ASC_READ_TOKEN` | `muster-ci-asc-read` | Fleet-OPS prod `/asc` | 2027-05-05T07:54:23Z |
+| `INFISICAL_MUSTER_SPARKLE_READ_TOKEN` | `muster-ci-sparkle-read` | AI Fleet Coordinator prod `/muster-sparkle` | 2027-05-05T07:54:25Z |
 
 Each token's value is kept in AI Fleet Coordinator prod `/github-actions` under the repository secret's name, and the Infisical secret sync `ai-fleet-coordinator-gh-actions` (non-destructive, automatic) copies that folder into this repository's Actions secrets.  So a token is rotated by minting the replacement, writing it to `/github-actions` under the same name, letting the sync run, and then revoking the old token.  Before the tokens expire, rotate them, or releases stop with a scope-check failure.  Every token is a row in the Infisical Service Tokens registry.
 
 Verification record (Fri, Nov 6, 2026):
 
 - Key:  the private key was read back from Infisical byte-for-byte equal to the generated one, the public key above was derived from that stored copy, and a sign and verify self-test passed.  Every release repeats the derivation in `make_appcast.sh`.
-- Tokens:  each token's project, single prod folder, `read` permission and expiry were read from Infisical's own metadata (`/api/v2/service-token`), each token listed its folder's expected names, and a read aimed at another folder returned nothing from it.  Each has a row in the Infisical Service Tokens registry (rows 82 to 84 on that day).
+- Tokens:  each token's project, single prod folder, `read` permission and expiry were read from Infisical's own metadata (`/api/v2/service-token`), each token listed its folder's expected names, and a read aimed at another folder returned nothing from it.  Each has a row in the Infisical Service Tokens registry (rows 82 to 84 on that day), which holds its id.
 - Sync:  `ai-fleet-coordinator-gh-actions` reported `succeeded` right after the three writes.  A `workflow_dispatch` run on main started after the sync finished with its credential step green;  its log could not be read from the server, so which names it reported as set is not confirmed.
 - Not yet proven here:  a published release.  The first main run that carries this key is that proof;  until it publishes and the feed names its build, treat the route as unverified end to end.
 

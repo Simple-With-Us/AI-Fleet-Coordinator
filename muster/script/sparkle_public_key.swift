@@ -17,8 +17,13 @@ func fail(_ message: String) -> Never {
 
 let arguments = CommandLine.arguments
 guard arguments.count == 2 else { fail("usage: sparkle_public_key.swift <private-key-file>") }
-guard let text = try? String(contentsOfFile: arguments[1], encoding: .utf8) else {
-    fail("the key file cannot be read")
+// The path and the system's reason are named, never the file's contents.
+let keyPath = arguments[1]
+let text: String
+do {
+    text = try String(contentsOfFile: keyPath, encoding: .utf8)
+} catch {
+    fail("cannot read the Sparkle key file at \(keyPath): \(error.localizedDescription)")
 }
 guard let data = Data(base64Encoded: text.trimmingCharacters(in: .whitespacesAndNewlines)) else {
     fail("the key file is not base64")
