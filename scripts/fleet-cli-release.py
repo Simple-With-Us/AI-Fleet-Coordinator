@@ -23,7 +23,7 @@ import uuid
 from pathlib import Path, PurePosixPath
 
 MAX_BUNDLE_BYTES = 8 * 1024 * 1024
-# The reviewed allowlisted runtime contains 152 files.  Keep the exact minimum
+# The reviewed allowlisted runtime contains 153 files.  Keep the exact minimum
 # ceiling in sender and receiver: a new file still needs an explicit policy review.
 # The 132nd file is storage_guard.py (from main);  the 133rd is platform_letter.py (AFC-564, the shared session-letter
 # library);  the 134th is platform_letter_codex.py (the Codex adapter);  the 135th and 136th are
@@ -37,7 +37,9 @@ MAX_BUNDLE_BYTES = 8 * 1024 * 1024
 # serves over the listener HTTPS API (Path B, operator.simplewithus.com).
 # The 151st is agent_sync/registry_api.py, the signed client the package's own registry callers
 # (the operator-registry CLI, the platform-letter registry side) use to reach that API.
-MAX_FILES = 152
+# The 153rd is agent_sync/operator_sheets_google.mjs, the Google Sheets operator adapter shipped beside the
+# AFC-412 PR2 exporter as a data file (AFC-412 PR3, this PR).
+MAX_FILES = 153
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MARKER = "# fleet-cli managed wrapper v1"
 # Retention:  a receive keeps the newest KEEP_RELEASES releases and deletes older ones, but never `current`,
@@ -114,6 +116,7 @@ EXACT = frozenset(
         "scripts/agent_sync/mcp/fleetlink-tools.json",
         # AFC-412 PR2:  the operator registry outbox exporter, shipped as a data file beside the Python modules.
         "scripts/agent_sync/operator_sheets_export.mjs",
+        "scripts/agent_sync/operator_sheets_google.mjs",
         # AFC-564:  the OpenCode letter plugin, a data file beside the Python modules (OpenCode loads it from the path
         # `platform-letter install --platform opencode` writes).  Its node test lives under tests/ and is not shipped.
         "scripts/agent_sync/opencode_letter_plugin/index.js",
