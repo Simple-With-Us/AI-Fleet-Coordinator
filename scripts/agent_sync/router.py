@@ -500,7 +500,9 @@ class Decision:
         self.delivered_to: str | None = None
         self.wake: str | None = None  # "owner" or "peer" when the prefilter says wake
         self.wake_block: str | None = None  # why a seat-inbox item does not wake
-        self.wake_worthy = False  # the prefilter's verdict, whatever the route; a no-wake marker clears it
+        self.wake_worthy = (
+            False  # the prefilter's verdict, whatever the route; a no-wake marker clears it
+        )
         self.wake_owner = False
         self.throttled: list[tuple[str, str]] = []  # (lease id, reason) for interrupts made passive
 
@@ -568,13 +570,21 @@ def route(
         for lease in on_topic:
             # A marker message reaches a lease on the topic as a passive item only:  it is
             # delivered, and it never interrupts the session.
-            wants = c.eligible and not c.no_wake and (
-                (c.owner and not c.everyone_inert)
-                or c.direct
-                or (not c.everyone_inert and c.reply_to is not None and c.reply_to in lease.posted)
-                # A fleet bot's `@all` interrupts a leased topic like the owner's (owner,
-                # Oct 27 2026):  the lease on the topic is woken, under the peer budgets.
-                or (c.peer_broadcast and not c.owner_topic)
+            wants = (
+                c.eligible
+                and not c.no_wake
+                and (
+                    (c.owner and not c.everyone_inert)
+                    or c.direct
+                    or (
+                        not c.everyone_inert
+                        and c.reply_to is not None
+                        and c.reply_to in lease.posted
+                    )
+                    # A fleet bot's `@all` interrupts a leased topic like the owner's (owner,
+                    # Oct 27 2026):  the lease on the topic is woken, under the peer budgets.
+                    or (c.peer_broadcast and not c.owner_topic)
+                )
             )
             klass = PASSIVE
             if wants and not presence:
@@ -587,13 +597,17 @@ def route(
         return c, d
     # A marker message never takes a lease:  it falls through to the seat inbox below, so the
     # tagged seat still gets its copy and no session is woken to take it.
-    mention_class = c.eligible and not c.no_wake and (
-        c.direct
-        or c.dm
-        or (c.owner and c.fleet)
-        # The owner's and a fleet bot's channel-wide mention (owner, Oct 27 2026):  both take a
-        # claude-code lease with `mentions`, and the seat-inbox copy is marked delivered_to.
-        or (c.eligible and c.broadcast_all and not c.owner_topic)
+    mention_class = (
+        c.eligible
+        and not c.no_wake
+        and (
+            c.direct
+            or c.dm
+            or (c.owner and c.fleet)
+            # The owner's and a fleet bot's channel-wide mention (owner, Oct 27 2026):  both take a
+            # claude-code lease with `mentions`, and the seat-inbox copy is marked delivered_to.
+            or (c.eligible and c.broadcast_all and not c.owner_topic)
+        )
     )
     if mention_class:
         candidates = [
