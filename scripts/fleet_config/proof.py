@@ -143,7 +143,10 @@ NATIVE_SHELL_TOOL_NAMES: dict[str, tuple[str, ...]] = {
 # shell commands only and allows a file payload by design, and the installers register
 # it for the shell tools, so file guarding is a rule of its own:  the shell rule reads
 # PASS for what it proves, and the file rule reads UNPROVEN, naming what is missing,
-# until the harness delivers the file tools to a hook that denies them.
+# while the harness never delivers the file tools to the hook (its matcher is the shell
+# tools alone).  Once the harness does deliver them, the probe writes the forbidden
+# destination (``FILE_PROBE_FORBIDDEN_DIR``) into a Write/Edit payload:  a hook that
+# denies it reads PASS and a hook that lets it through reads FAIL.
 # The file tools are per platform,  for the same reason the shell names are:  a probe
 # that names a tool the runtime never delivers proves nothing,  and fails the seat for
 # a tool it does not have.  The MiniMax runtime delivers its native ``write`` (which
@@ -151,6 +154,17 @@ NATIVE_SHELL_TOOL_NAMES: dict[str, tuple[str, ...]] = {
 # claude-shaped runtimes deliver ``Write`` and ``Edit`` (which carry ``file_path``).
 # The platforms whose payload shape carries no file tool are empty,  because the probe
 # cannot express a file write for them.
+
+# The forbidden tree the file probe aims at,  relative to the home being checked.  It
+# is the fleet's secrets folder:  a file guard refuses a write whose path has a
+# ``.secrets`` component (the MiniMax file guard does, ``minimax_guard_hook``), for
+# every seat and every platform, so the destination is the same policy everywhere and
+# is read from the home the check already resolves, never a fixed server path.  The
+# destination is a path no probe ever creates:  the payload only NAMES it, the hook
+# reads the string, and ``_assert_file_destination_inert`` refuses to probe if anything
+# already exists there.  (The temporary directory the shell probe uses is not forbidden
+# to a file guard, so an allow of a temp path proves nothing about file guarding.)
+FILE_PROBE_FORBIDDEN_DIR = ".secrets"
 NATIVE_FILE_TOOLS: dict[str, tuple[tuple[str, str], ...]] = {
     "claude": (("Write", "file_path"), ("Edit", "file_path")),
     "codex": (("Write", "file_path"), ("Edit", "file_path")),
@@ -911,6 +925,10 @@ class Sentinel:
     marker: str
     source: str
     command: str
+    # The path a file payload names.  It sits in the forbidden tree under the home, is
+    # never created, and is empty only for a sentinel built by a caller that probes no
+    # file tool.
+    file_destination: str = ""
 
 
 def _make_sentinel(ctx: CheckContext) -> Sentinel:
@@ -932,12 +950,20 @@ def _make_sentinel(ctx: CheckContext) -> Sentinel:
         code_root = os.path.join(os.fspath(ctx.home), "Code")
     source = os.path.realpath(os.path.join(code_root, SENTINEL_SOURCE_NAME))
     command = "git clone %s %s" % (source, destination)
+    # The file probe's destination is a name that no folder holds, inside the home's
+    # forbidden tree:  <home>/.secrets/<marker>/probe.txt.  The home is spelled as the
+    # check was given it, because a guard judges the lexical path as well as the
+    # resolved one.
+    file_destination = os.path.join(
+        os.fspath(ctx.home), FILE_PROBE_FORBIDDEN_DIR, marker, "probe.txt"
+    )
     return Sentinel(
         root=root,
         destination=destination,
         marker=marker,
         source=source,
         command=command,
+        file_destination=file_destination,
     )
 
 
@@ -955,6 +981,21 @@ def _assert_sentinel_confined(sentinel: Sentinel) -> None:
         raise CheckError("the L1 sentinel destination is outside the probe's throwaway directory")
     if root != temp and not root.startswith(temp + os.sep):
         raise CheckError("the L1 sentinel root is not inside the system temporary directory")
+
+
+def _assert_file_destination_inert(sentinel: Sentinel, home: str) -> None:
+    """The file probe's destination must be a name in the forbidden tree that nothing holds.
+
+    The probe never writes it,  because the payload only names it.  This check is the
+    belt to those braces:  a refactor that pointed the destination anywhere else, or a
+    name that already exists, fails loudly instead of aiming a payload at a real file.
+    """
+    forbidden = os.path.join(home, FILE_PROBE_FORBIDDEN_DIR)
+    destination = sentinel.file_destination
+    if not destination or not destination.startswith(forbidden + os.sep):
+        raise CheckError("the L1 file probe destination is outside the forbidden tree")
+    if os.path.lexists(os.path.dirname(destination)) or os.path.lexists(destination):
+        raise CheckError("the L1 file probe destination already exists, so it is not probed")
 
 
 # --------------------------------------------------------------------------- child processes
@@ -1288,8 +1329,8 @@ def _l1_pass_detail(scopes: tuple[str, ...], fmt: str) -> str:
         parts.append("the shell deny named the sentinel")
     if "file" in scopes:
         parts.append(
-            "the hook denied the file payload (the %s reason is not required to name the path)"
-            % fmt
+            "the hook denied a file-write payload to a forbidden path (the %s reason is "
+            "not required to name the path)" % fmt
         )
     return "exit 0, " + ";  ".join(parts)
 
@@ -1318,9 +1359,12 @@ def run_l1_probe(
     else fails closed.  The payload carries the tool name the platform runtime really
     delivers (AFC-416):  a platform with two shell spellings is probed on both, so a
     matcher that covers only one cannot pass.  The file tools (``Write``/``Edit`` and
-    their lowercase native spellings) are probed only when ``guards`` asks for them, so
-    a seat whose guard ignores file payloads reads PASS for the shell scope and
-    UNPROVEN, naming the file scope, when both are asked.
+    their lowercase native spellings) are probed only when ``guards`` asks for them, and
+    the payload names a path in the forbidden tree (``FILE_PROBE_FORBIDDEN_DIR`` under
+    the home), so a hook that denies it passes the file scope and a hook that allows it
+    fails the file scope (DRIFT), while its shell scope still reads PASS on its own.
+    A platform whose payload carries no file tool stays UNPROVEN (both scopes asked) or
+    not applicable (the file scope alone).
 
     ``hook_command`` overrides the command, which is how a caller proves a command it
     resolved itself.  Without it the command is read from the platform's own config
@@ -1430,9 +1474,15 @@ def run_l1_probe(
                 detail="no file tool was probed",
                 achieved=None,
             )
+        # The file payload names a destination in the forbidden tree (the secrets
+        # folder under the home), so a file guard that works denies it and a hook that
+        # lets it through is not guarding file writes.  Nothing is created there:  the
+        # hook is only handed the path as text.
+        home = os.fspath(ctx.home)
+        _assert_file_destination_inert(sentinel, home)
         for file_tool, path_field in file_tools:
             payload = build_file_payload(
-                adapter, sentinel.destination, sentinel.root, file_tool, path_field
+                adapter, sentinel.file_destination, sentinel.root, file_tool, path_field
             )
             outcome = _run_one_payload(
                 command, payload, fmt, sentinel, env, budget, require_marker=False
@@ -1440,20 +1490,21 @@ def run_l1_probe(
             if outcome.passed:
                 continue
             if outcome.reason_code is ReasonCode.PROOF_FAILED:
-                # The hook answered and allowed the write.  The destination is a
-                # temporary path, which no file policy forbids, so an allow does not
-                # tell an unguarded hook from a guard that has nothing to say about
-                # this path.  The file guard is not proven, and nothing is failing.
+                # The hook answered and let a write to a forbidden tree through, which a
+                # file guard must refuse:  the hook does not enforce file guarding.
+                note = ""
+                if _guard_disabled(env):
+                    note = "  The FLEET_LANE_GUARD switch is off in this environment."
                 return L1Outcome(
                     level=ProofLevel.L1,
                     passed=False,
-                    state=CheckState.UNPROVEN,
+                    state=CheckState.DRIFT,
                     reason=(
-                        "file guarding is not proven:  the hook allowed the %s tool's write "
-                        "to a temporary path,  and a file guard polices forbidden trees,  not "
-                        "temporary paths" % file_tool
+                        "the hook let the %s tool's write into a forbidden tree (the %s "
+                        "folder under the home) through, so it does not guard file "
+                        "writes.%s" % (file_tool, FILE_PROBE_FORBIDDEN_DIR, note)
                     ),
-                    reason_code=ReasonCode.PROOF_NOT_RUN,
+                    reason_code=ReasonCode.PROOF_FAILED,
                     detail=outcome.detail,
                     achieved=None,
                 )

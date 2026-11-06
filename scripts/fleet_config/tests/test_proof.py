@@ -77,6 +77,15 @@ destination = command.split()[-1] if command else ""
 reason = "Blocked: fleet-repo checkouts are not allowed in temp directories; " \\
          "this command would put a clone at %s." % destination
 
+if mode == "secrets-files" and is_file:
+    # A file guard that denies a write into the secrets folder and allows any other
+    # path, which is what a real file guard does.
+    parts = destination.replace("\\\\", "/").split("/")
+    if ".secrets" not in parts:
+        sys.exit(0)
+    mode = "deny"
+elif mode == "secrets-files":
+    mode = "deny"
 if mode == "shell-only" and is_file:
     sys.exit(0)
 if mode == "files-only" and not is_file:
@@ -386,14 +395,15 @@ class L1ScopeTests(FakeHookCase):
         )
         self.assertEqual(self.recorded_payload()["tool_name"], "Bash")
 
-    def test_a_shell_only_guard_asked_for_both_is_partly_proven_not_a_pass(self):
+    def test_a_shell_only_guard_asked_for_both_fails_the_file_scope_not_a_pass(self):
+        """The hook is sent a file write into a forbidden tree and lets it through."""
         outcome = proof.run_l1_probe(
             "claude", self.ctx, hook_command=self.hook("shell-only"), guards=("shell", "file")
         )
         self.assertFalse(outcome.passed)
-        self.assertIs(outcome.state, CheckState.UNPROVEN)
-        self.assertIs(outcome.reason_code, ReasonCode.PROOF_NOT_RUN)
-        self.assertIn("file guarding is not proven", outcome.reason)
+        self.assertIs(outcome.state, CheckState.DRIFT)
+        self.assertIs(outcome.reason_code, ReasonCode.PROOF_FAILED)
+        self.assertIn("forbidden tree", outcome.reason)
 
     def test_a_file_rule_alone_passes_when_the_hook_denies_the_file_tools(self):
         outcome = proof.run_l1_probe(
@@ -415,13 +425,82 @@ class L1ScopeTests(FakeHookCase):
         )
         self.assertTrue(outcome.passed)
 
-    def test_a_file_allow_is_unproven_and_says_what_the_probe_cannot_tell(self):
+    def test_a_file_allow_of_a_forbidden_write_is_a_failure(self):
         outcome = proof.run_l1_probe(
             "claude", self.ctx, hook_command=self.hook("allow"), guards=("file",)
         )
-        self.assertIs(outcome.state, CheckState.UNPROVEN)
-        self.assertIs(outcome.reason_code, ReasonCode.PROOF_NOT_RUN)
-        self.assertIn("temporary path", outcome.reason)
+        self.assertFalse(outcome.passed)
+        self.assertIs(outcome.state, CheckState.DRIFT)
+        self.assertIs(outcome.reason_code, ReasonCode.PROOF_FAILED)
+        self.assertIn("does not guard file writes", outcome.reason)
+        self.assertIsNone(outcome.achieved)
+
+    def test_a_guard_that_denies_the_forbidden_file_write_passes_the_file_rule(self):
+        """A file guard allows a temporary path and denies the forbidden tree.
+
+        The probe's destination is in the forbidden tree, so this guard reads PASS;
+        the old temporary destination would have been allowed and read as unproven.
+        """
+        outcome = proof.run_l1_probe(
+            "claude", self.ctx, hook_command=self.hook("secrets-files"), guards=("file",)
+        )
+        self.assertTrue(outcome.passed, outcome.reason)
+        self.assertIs(outcome.state, CheckState.PASS)
+        self.assertIs(outcome.achieved, ProofLevel.L1)
+        self.assertIn("forbidden path", outcome.detail)
+
+    def test_both_scopes_pass_for_a_guard_that_denies_shell_and_the_forbidden_write(self):
+        outcome = proof.run_l1_probe(
+            "claude",
+            self.ctx,
+            hook_command=self.hook("secrets-files"),
+            guards=("shell", "file"),
+        )
+        self.assertTrue(outcome.passed, outcome.reason)
+        self.assertIs(outcome.state, CheckState.PASS)
+
+    def test_the_file_probe_sends_a_write_shaped_payload_to_a_forbidden_path(self):
+        """PASS means a real Write/Edit payload to a forbidden destination was denied."""
+        for platform in ("claude", "minimax"):
+            with self.subTest(platform=platform):
+                proof.run_l1_probe(
+                    platform, self.ctx, hook_command=self.hook("allow"), guards=("file",)
+                )
+                payload = self.recorded_payload()
+                names = dict(proof.NATIVE_FILE_TOOLS[platform])
+                self.assertIn(payload["tool_name"], names)
+                destination = payload["tool_input"][names[payload["tool_name"]]]
+                parts = destination.split(os.sep)
+                self.assertIn(proof.FILE_PROBE_FORBIDDEN_DIR, parts)
+                self.assertTrue(
+                    destination.startswith(
+                        os.path.join(self.home, proof.FILE_PROBE_FORBIDDEN_DIR) + os.sep
+                    )
+                )
+                self.assertNotIn("command", payload["tool_input"])
+
+    def test_the_file_probe_writes_nothing_and_leaves_no_folder(self):
+        proof.run_l1_probe("claude", self.ctx, hook_command=self.hook("allow"), guards=("file",))
+        destination = next(iter(self.recorded_payload()["tool_input"].values()))
+        self.assertFalse(os.path.lexists(destination))
+        self.assertFalse(os.path.lexists(os.path.dirname(destination)))
+        self.assertFalse(os.path.lexists(os.path.join(self.home, proof.FILE_PROBE_FORBIDDEN_DIR)))
+
+    def test_a_destination_that_already_exists_is_refused_not_probed(self):
+        sentinel = proof.Sentinel(
+            root="/tmp/x",
+            destination="/tmp/x/y",
+            marker="y",
+            source="/s",
+            command="c",
+            file_destination=os.path.join(self.home, ".secrets", "taken", "probe.txt"),
+        )
+        os.makedirs(os.path.dirname(sentinel.file_destination))
+        with self.assertRaises(CheckError):
+            proof._assert_file_destination_inert(sentinel, self.home)
+        outside = replace(sentinel, file_destination=os.path.join(self.home, "elsewhere.txt"))
+        with self.assertRaises(CheckError):
+            proof._assert_file_destination_inert(outside, self.home)
 
     def test_a_crash_on_a_file_probe_keeps_its_own_reason(self):
         """A hook that crashed is not a hook that declined to deny."""
@@ -483,7 +562,7 @@ class L1ScopeTests(FakeHookCase):
             file = proof.prove_rule(file_rule, "claude", self.ctx)
         self.assertIs(shell.state, CheckState.PASS)
         self.assertIs(shell.level, ProofLevel.L1)
-        self.assertIs(file.state, CheckState.UNPROVEN)
+        self.assertIs(file.state, CheckState.DRIFT)
         self.assertIsNone(file.level)
 
     def test_clutch_is_probed_on_the_shell_tool_its_engine_delivers(self):
@@ -507,15 +586,20 @@ class RealGuardTests(FakeHookCase):
         self.assertIs(outcome.state, CheckState.PASS, outcome.reason)
         self.assertIs(outcome.achieved, ProofLevel.L1)
 
-    def test_zcode_carries_file_tools_so_its_file_rule_is_unproven_not_not_applicable(self):
-        """Z Code's hook is Claude-shaped,  so Write and Edit reach it and the rule applies."""
+    def test_zcode_carries_file_tools_so_its_file_rule_applies_and_the_shell_guard_fails_it(self):
+        """Z Code's hook is Claude-shaped,  so Write and Edit reach it and the rule applies.
+
+        The real lane guard only judges shell commands,  so a file write into the
+        forbidden tree is let through:  the file scope fails (it is never not applicable).
+        """
         self.assertEqual(
             proof.NATIVE_FILE_TOOLS["zcode"], (("Write", "file_path"), ("Edit", "file_path"))
         )
         shell = proof.run_l1_probe("zcode", self.ctx, hook_command=self.real, guards=("shell",))
         self.assertIs(shell.state, CheckState.PASS, shell.reason)
         file = proof.run_l1_probe("zcode", self.ctx, hook_command=self.real, guards=("file",))
-        self.assertIs(file.state, CheckState.UNPROVEN, file.reason)
+        self.assertIs(file.state, CheckState.DRIFT, file.reason)
+        self.assertIs(file.reason_code, ReasonCode.PROOF_FAILED)
         self.assertIsNot(file.reason_code, ReasonCode.NOT_APPLICABLE)
 
     def test_the_seed_gives_zcode_a_shell_rule_and_a_file_rule(self):
@@ -532,17 +616,57 @@ class RealGuardTests(FakeHookCase):
         self.assertNotIn("file payload", shell.detail)
         both = proof._l1_pass_detail(("shell", "file"), "claude")
         self.assertIn("shell deny named the sentinel", both)
-        self.assertIn("the hook denied the file payload", both)
+        self.assertIn("the hook denied a file-write payload to a forbidden path", both)
         self.assertIn("not required to name the path", both)
         only_file = proof._l1_pass_detail(("file",), "claude")
         self.assertNotIn("named the sentinel", only_file)
 
-    def test_a_real_shell_guard_asked_for_the_file_scope_is_unproven_not_failing(self):
+    def test_a_real_shell_guard_asked_for_the_file_scope_fails_it(self):
+        """The lane guard allows the forbidden Write,  so the file scope reads FAIL."""
         outcome = proof.run_l1_probe(
             "claude", self.ctx, hook_command=self.real, guards=("file",)
         )
-        self.assertIs(outcome.state, CheckState.UNPROVEN, outcome.reason)
-        self.assertIs(outcome.reason_code, ReasonCode.PROOF_NOT_RUN)
+        self.assertIs(outcome.state, CheckState.DRIFT, outcome.reason)
+        self.assertIs(outcome.reason_code, ReasonCode.PROOF_FAILED)
+
+    def test_the_real_minimax_file_guard_reaches_pass_for_both_scopes(self):
+        """The one real hook that polices file tools denies the forbidden write.
+
+        Run with the repo's own ``fleet_lanes`` importable and no registry:  the deny
+        for a secrets path is decided before the registry is consulted.
+        """
+        scripts = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        ctx = CheckContext(
+            home=self.home,
+            now=datetime(2026, 10, 19, 12, 0, 0, tzinfo=timezone.utc),
+            timeout=30,
+            env={"PYTHONPATH": scripts},
+        )
+        command = "%s -m fleet_lanes.minimax_guard_hook" % shlex.quote(sys.executable)
+        for scopes in (("file",), ("shell", "file")):
+            with self.subTest(scopes=scopes):
+                outcome = proof.run_l1_probe(
+                    "minimax", ctx, hook_command=command, guards=scopes
+                )
+                self.assertIs(outcome.state, CheckState.PASS, outcome.reason)
+                self.assertIs(outcome.achieved, ProofLevel.L1)
+        self.assertFalse(os.path.lexists(os.path.join(self.home, ".secrets")))
+
+    def test_a_hook_carrying_no_file_tool_keeps_its_not_applicable_reading(self):
+        for platform in ("cursor", "antigravity"):
+            with self.subTest(platform=platform):
+                command = self.hook("deny") + " --format claude"
+                outcome = proof.run_l1_probe(
+                    platform, self.ctx, hook_command=command, guards=("file",)
+                )
+                self.assertIs(outcome.state, CheckState.UNSUPPORTED)
+                self.assertIs(outcome.reason_code, ReasonCode.NOT_APPLICABLE)
+        # Both scopes asked:  the shell sentinel was denied and the file surface is not
+        # probed (the fake hook reads the cursor shell payload's own command field).
+        both = proof.run_l1_probe(
+            "cursor", self.ctx, hook_command=command, guards=("shell", "file")
+        )
+        self.assertIs(both.state, CheckState.UNPROVEN)
 
 
 class TargetCommandTests(FakeHookCase):

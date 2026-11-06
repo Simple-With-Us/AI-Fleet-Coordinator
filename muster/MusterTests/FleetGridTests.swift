@@ -201,6 +201,25 @@ final class FleetGridTests: XCTestCase {
         XCTAssertTrue(cell.proofDescription.contains("file guarding"))
     }
 
+    /// A guard that denies both a shell sentinel and a file write into a forbidden tree
+    /// passes both rules, and the cell reads PASS with nothing missing.  A guard the
+    /// harness hands file tools to that lets the forbidden write through reads DRIFT.
+    func test_a_guard_that_denies_the_forbidden_file_write_passes_the_cell() throws {
+        let passing = try hooksCell([
+            hookResult(id: "claude-hooks-lane-guard", state: "PASS", reasonCode: "ok", achieved: "L1", guards: ["shell"]),
+            hookResult(id: "claude-hooks-file-guard", state: "PASS", reasonCode: "ok", achieved: "L1", guards: ["file"]),
+        ])
+        XCTAssertEqual(passing.state, .passed)
+        XCTAssertFalse(passing.isPartlyProven)
+        XCTAssertEqual(passing.proofBadgeText, "L1")
+        let leaking = try hooksCell([
+            hookResult(id: "claude-hooks-lane-guard", state: "PASS", reasonCode: "ok", achieved: "L1", guards: ["shell"]),
+            hookResult(id: "claude-hooks-file-guard", state: "DRIFT", reasonCode: "proof-failed", achieved: nil, guards: ["file"]),
+        ])
+        XCTAssertEqual(leaking.state, .drift)
+        XCTAssertNotEqual(leaking.state, .passed)
+    }
+
     /// A rule that does not apply asks for nothing:  a shell guard on a harness whose hook
     /// carries no file tool is a PASS for what the cell asks, and the tooltip says the file
     /// rule does not apply.

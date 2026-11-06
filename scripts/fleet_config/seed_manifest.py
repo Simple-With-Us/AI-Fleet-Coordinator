@@ -560,9 +560,11 @@ def _file_guard_rule(
     The fleet also asks that a file write into a forbidden tree is policed, and most
     installs register their hook for the shell tools alone.  This rule is the one that
     says so:  it passes only when the harness delivers the file tools to the hook and a
-    file sentinel sent to it is denied, and it reads UNPROVEN, naming what is missing,
-    while the proof is not there.  It never fails the run on its own, because a hook
-    that only watches the shell is not broken.
+    Write/Edit-shaped payload naming a path in a forbidden tree (the secrets folder
+    under the home) is denied by it.  A hook registered for the shell tools alone, so
+    the harness never delivers a file write to it, reads UNPROVEN, naming the matcher
+    that is missing, and is not failing.  A hook the harness does deliver the file tools
+    to that lets the forbidden write through reads FAIL.
     """
     return _rule(
         "%s-hooks-file-guard" % seat.lower(),
