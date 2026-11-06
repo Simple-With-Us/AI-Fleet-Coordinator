@@ -1697,11 +1697,15 @@ class SeatInventoryDispatchTests(Base):
     def test_no_value_from_a_config_file_reaches_the_answer(self):
         self.write_cursor_mcp()
         out = io.StringIO()
-        foc.main(["server", "seat-inventory", "cursor", "--plan", "--json"], ctx=self.ctx(), out=out)
+        foc.main(
+            ["server", "seat-inventory", "cursor", "--plan", "--json"], ctx=self.ctx(), out=out
+        )
         self.assertNotIn(self.VALUE, out.getvalue())
 
     def test_it_runs_no_command_takes_no_lock_and_writes_no_audit_row(self):
-        code, _ = self.run_main(["server", "seat-inventory", "claude", "--plan", "--json"], self.ctx())
+        code, _ = self.run_main(
+            ["server", "seat-inventory", "claude", "--plan", "--json"], self.ctx()
+        )
         self.assertEqual(code, 0)
         self.assertEqual(self.runner.calls, [])
         self.assertEqual(self.audit_rows(), [])
@@ -1710,16 +1714,22 @@ class SeatInventoryDispatchTests(Base):
         config = json.loads(self.config_path.read_text())
         config["server"] = {key: type(value)() for key, value in config["server"].items()}
         self.config_path.write_text(json.dumps(config))
-        code, answer = self.run_main(["server", "seat-inventory", "fx", "--plan", "--json"], self.ctx())
+        code, answer = self.run_main(
+            ["server", "seat-inventory", "fx", "--plan", "--json"], self.ctx()
+        )
         self.assertEqual((code, answer["result"]), (0, "planned"))
 
     def test_yes_is_refused_because_there_is_nothing_to_run(self):
-        code, answer = self.run_main(["server", "seat-inventory", "claude", "--yes", "--json"], self.ctx())
+        code, answer = self.run_main(
+            ["server", "seat-inventory", "claude", "--yes", "--json"], self.ctx()
+        )
         self.assertEqual((code, answer["result"]), (2, "refused"))
         self.assertEqual(self.runner.calls, [])
         # Like every refused `--yes`, the attempt is audited, and nothing else is.
         rows = self.audit_rows()
-        self.assertEqual([(r["verb"], r["result"]) for r in rows], [("server seat-inventory", "refused")])
+        self.assertEqual(
+            [(r["verb"], r["result"]) for r in rows], [("server seat-inventory", "refused")]
+        )
 
     def test_a_platform_that_is_not_known_is_refused(self):
         for target in ("nope", "CLAUDE", "..", "claude.x", "a" * 40):

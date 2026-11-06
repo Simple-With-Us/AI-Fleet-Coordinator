@@ -127,7 +127,11 @@ class InstallerTests(unittest.TestCase):
     def test_symlink_source_package_refused_before_destination_created(self):
         source = self.root / "source"
         source.mkdir()
-        for name in ("fleet-ops-control.py", "fleet_resource_control.py", "fleet_seat_inventory.py"):
+        for name in (
+            "fleet-ops-control.py",
+            "fleet_resource_control.py",
+            "fleet_seat_inventory.py",
+        ):
             (source / name).write_text("pass\n")
         (source / "fleet-ops-control.json").write_text(json.dumps({"schemaVersion": 1}))
         (source / "fleet_secrets").symlink_to(SCRIPTS / "fleet_secrets", target_is_directory=True)
