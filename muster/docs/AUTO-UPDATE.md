@@ -1,6 +1,6 @@
 # Muster Auto-Update (Sparkle 2)
 
-Owner ruling, Tue, Sep 29, 2026:  every fleet Mac app updates itself through Sparkle 2 from releases CI signs, notarizes and staples on each merge to main.  A hand build is never the delivery route.  CodeCaps' `docs/AUTO-UPDATE.md` is the canonical pattern and Hog Hunter's copy is the one Muster follows.  This page says what Muster adds and what is still missing.
+Owner ruling, Tue, Sep 29, 2026:  every fleet Mac app updates itself through Sparkle 2 from releases CI signs, notarizes and staples on each merge to main.  A hand build is never the delivery route.  CodeCaps' `docs/AUTO-UPDATE.md` is the canonical pattern and Hog Hunter's copy is the one Muster follows.  This page says what Muster adds.
 
 ## What Happens
 
@@ -65,14 +65,20 @@ Each read token is its own, per the service-token rule:  one consumer, one proje
 
 ## Keys
 
-Muster needs its own EdDSA key pair, so no other app's key can sign a Muster update.  It does not exist yet.  Making it needs Sparkle's `generate_keys` and the owner's login keychain on the Mac, and storing it needs a write to Infisical and a scoped read token, so it is a Mac seat's step:
+Muster has its own EdDSA key pair, so no other app's key can sign a Muster update.  It was made on Fri, Nov 6, 2026 on the server by the CLAUDE seat, in memory, with no copy on disk:
 
-1. `generate_keys --account muster` (from the Sparkle distribution), which keeps the private key in the login keychain.
-2. Export it value-blind to a 0600 temporary file with `generate_keys --account muster -x <file>`, store it as `MUSTER_SPARKLE_ED_PRIVATE_KEY` in AI Fleet Coordinator prod `/muster-sparkle`, and delete the file.
-3. Mint the read-only service token for exactly that folder, store it as the repository secret `INFISICAL_MUSTER_SPARKLE_READ_TOKEN`, and register it in the Infisical Service Tokens registry.
-4. Commit the public key (`generate_keys --account muster -p`) as `MUSTER_SPARKLE_PUBLIC_KEY` in the Release config of `muster/project.yml`.
+- The private half is `MUSTER_SPARKLE_ED_PRIVATE_KEY` in AI Fleet Coordinator prod `/muster-sparkle`, in Sparkle's export format (base64 of the 32-byte Ed25519 seed), which `generate_appcast --ed-key-file` reads.  It is in no keychain and no repository secret.
+- The public half is `MUSTER_SPARKLE_PUBLIC_KEY` in the Release config of `muster/project.yml`.  `make_appcast.sh` refuses an archive whose `SUPublicEDKey` does not match the signing key, so a mix-up fails in CI.
 
-The same goes for `INFISICAL_MAC_CERTS_READ_TOKEN` and `INFISICAL_ASC_READ_TOKEN` if the first run reports them missing:  each is a new read token for this repository, minted in the owner's session on the Mac.
+The three read tokens are Muster's own, each read-only and scoped to one folder, and each expires on Wed, May 5, 2027:
+
+| Repository secret | Infisical token | Reads |
+|---|---|---|
+| `INFISICAL_MAC_CERTS_READ_TOKEN` | `muster-ci-mac-certs-read` | Fleet-OPS prod `/mac-certs` |
+| `INFISICAL_ASC_READ_TOKEN` | `muster-ci-asc-read` | Fleet-OPS prod `/asc` |
+| `INFISICAL_MUSTER_SPARKLE_READ_TOKEN` | `muster-ci-sparkle-read` | AI Fleet Coordinator prod `/muster-sparkle` |
+
+Each token's value is kept in AI Fleet Coordinator prod `/github-actions` under the repository secret's name, and the Infisical secret sync `ai-fleet-coordinator-gh-actions` (non-destructive, automatic) copies that folder into this repository's Actions secrets.  So a token is rotated by minting the replacement, writing it to `/github-actions` under the same name, letting the sync run, and then revoking the old token.  Before the tokens expire, rotate them, or releases stop with a scope-check failure.  Every token is a row in the Infisical Service Tokens registry.
 
 If the private key is lost, installed copies can no longer update and need one install by hand of a build with a new public key.  If it leaks, rotate:  ship one release signed with the old key that carries the new public key, then switch the secret.
 
