@@ -440,9 +440,22 @@ export function tagPrefix(seat, tag) {
   return tag ? `[${seat}·${tag}` : `[${seat}`;
 }
 
-/** The posted body:  tag (with →LABELS), mentions, text.  Over 10,000 characters is a usage error. */
+/** True when text already opens with this seat's own marker, so the tag is never doubled. */
+function alreadyTagged(prefix, text) {
+  const seat = prefix.slice(1).split("·", 1)[0];
+  const m = text.replace(/^(?:👀\s*)?\s*/, "");
+  if (!m.startsWith(`[${seat}`)) return false;
+  return ["]", " ", ":", "·", "→", "\t", "\n"].includes(m.charAt(seat.length + 1));
+}
+
+/** The posted body:  tag (with →LABELS), mentions, text.  Over 10,000 characters is a usage error.
+ *  A text that already opens with the seat's own intro (post-intro v2.0:  `[SEAT]`,
+ *  `[SEAT 📁repos]`, `[SEAT: LANE.GEN.HOST 📁repos]`, optional leading 👀) is used as-is when
+ *  no labels or mentions are passed:  the seat marker is attribution, and it renders exactly once. */
 export function composeBody(prefix, text, { labels = [], mentions = [] } = {}) {
-  const parts = [`${prefix}${labels.length ? `→${labels.join(",")}` : ""}]`, ...mentions, text];
+  const parts = !labels.length && !mentions.length && alreadyTagged(prefix, text)
+    ? [text]
+    : [`${prefix}${labels.length ? `→${labels.join(",")}` : ""}]`, ...mentions, text];
   const body = parts.join(" ");
   const length = codePoints(body).length;
   if (length > MAX_CONTENT_LENGTH) throw new UsageError(`the message is ${length} characters; Zulip allows at most ${MAX_CONTENT_LENGTH}`);
