@@ -93,14 +93,14 @@ public enum ControlAPIError: LocalizedError, Equatable {
 public final class ControlAPI {
     /// The URL errors that mean a change was sent and the answer was lost.
     ///
-    /// A timeout and a dropped connection can both happen after the server
-    /// has applied the change, so neither proves that it did not.  A refused
-    /// connection and a host that could not be found happen before anything
-    /// was sent, so those keep the plain unavailable answer.
-    static let lostAfterSending: Set<URLError.Code> = [
-        .timedOut,
-        .networkConnectionLost,
-        .cannotParseResponse,
+    /// Failures that happen before a request is sent.  Only these stay
+    /// `unavailable` for non-GET calls; every other transport failure on a
+    /// mutation is `outcomeUnknown` so a retry cannot apply the change twice.
+    static let failedBeforeSending: Set<URLError.Code> = [
+        .cannotConnectToHost,
+        .cannotFindHost,
+        .dnsLookupFailed,
+        .notConnectedToInternet,
     ]
 
     private let session: URLSession
@@ -229,10 +229,14 @@ public final class ControlAPI {
             // have reached the server before the connection dropped or timed
             // out, and URLSession cannot say whether it did, so its outcome
             // is unknown rather than unavailable.
-            // A refused connection or an unknown host fails before anything is
-            // sent, so it stays unavailable and a retry is safe.
-            if method != "GET", let urlError = error as? URLError,
-               ControlAPI.lostAfterSending.contains(urlError.code) {
+            // Only a refused connection, unknown host, DNS failure, or offline
+            // link fails before anything is sent; those stay unavailable and a
+            // retry is safe.  Every other non-GET transport error is unknown.
+            if method != "GET" {
+                if let urlError = error as? URLError,
+                   ControlAPI.failedBeforeSending.contains(urlError.code) {
+                    throw ControlAPIError.unavailable
+                }
                 throw ControlAPIError.outcomeUnknown
             }
             throw ControlAPIError.unavailable
