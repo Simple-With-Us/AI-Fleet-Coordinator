@@ -727,7 +727,7 @@ claimed:  Wed, Oct 7, 2026
 ```
 
 - Statuses:  `CLAIMED`, `IN PROGRESS`, `BLOCKED`, `DONE`, `PARKED`.
-- `repo:` stays in status blocks; everywhere else the topic names the app (owner 2026-10-16).
+- `repo:` stays in status blocks; everywhere else the topic names the app (owner 2026-10-16).  Folder-tagged posts (owner 2026-11-05) may satisfy the outbox project-name check with a non-empty 📁 list instead; see **Post intro format** above.
 - Multi-app work lists every repo (`repo:  Socratic.Trade, Congress.Trade`) and names the lead app in the topic.
 - A claim carries `claimed:  <Day, Mon D, YYYY>` so a forgotten lane is obvious.  Add `ETA:` when you can.
 - Post again in the same topic whenever the state, a PR, a block, or a collision changes.  Never go silent after claiming, blocking, or landing.
@@ -1152,7 +1152,7 @@ Each row is in force as described under "Until then" until you approve or change
 | 6 | Claims flow:  the Linear claim first, then the CLAIMED post;  the PR links the issue.  The old triple claim ended at the cutover. | Resolved 2026-10-16 | Owner approved as written. |
 | 7 | Completed = merged; Deployed = verified in production. | Resolved 2026-10-16 | Owner approved as written. |
 | 8 | Resolve a topic when its Linear issue reaches Deployed or Parked. | Resolved 2026-10-16 | Owner approved as written. |
-| 9 | `repo:` stays in status blocks; elsewhere the topic names the app. | Resolved 2026-10-16 | Owner approved as written. |
+| 9 | `repo:` stays in status blocks; elsewhere the topic names the app. | Resolved 2026-10-16 | Owner approved as written.  Folder-tagged posts (owner 2026-11-05) may use a non-empty 📁 list for the outbox project-name check instead; see Post intro format. |
 | 10 | Gates topic is #builds › `gates`. | Resolved 2026-10-16 | Owner approved as written. |
 | 11 | Sentry's Slack workflow `3930668` (high-priority alerts plus Seer RCA and PR-ready notices) moves to Zulip #alerts, topic = service name. | Resolved 2026-10-16 | Owner approved;  in force once re-pointed. |
 | 12 | Stale-claim timers. | Resolved 2026-10-16 | Owner ruling:  4h without an update to ask `still active?`, 8h to expire ([Claims and Closeouts](#claims-and-closeouts)). |
@@ -1206,3 +1206,4 @@ Each row is in force as described under "Until then" until you approve or change
 | v4.7 | 2026-10-22 | MM | Sentence gap, per surface (owner 2026-10-22):  Zulip keeps a real U+00A0 plus a space, and GitHub titles, bodies, and comments take the `&nbsp;` entity plus a normal space, which supersedes the 2026-10-08 ruling that put a real U+00A0 on GitHub.  The count check accepts either gap form, so the same pair verifies a GitHub body (the entity) and a Zulip body (a real U+00A0).  `docs/ZULIP-SWITCH-PROMPT.md`, `FLEET-UI-COPY.md`, `TEMPLATE-AGENTS.md`, and the owner-copy, codex-triage, land-lane, and fleet-coordination skills follow. |
 | v4.8 | 2026-10-23 | GB-ORACLE | Clutch's app acronym is `C` (owner 2026-10-23, AFC-333):  `C-n` for Linear and `C#n` for PRs, replacing `CLUTCH`;  `CAPS#` is retired and `CC#` stays CodeCaps (row 27, AFC-336).  Row 17 rewritten, row 27 updated, and row 30 opened for the realm changes, which only Jay can make.  `fleet-apps.json`, the Linear guide and the board-ops skill copies follow. |
 | v4.9 | 2026-10-24 | GB-COMPILER | Sentence gap, final policy (owner ruling 2026-10-23):  one mechanism on every surface — a real U+00A0 plus a normal space, GitHub titles, bodies and comments included — and the one exception, the chat panes of Claude Code (the Code tab) and MiniMax Code (the MiniMax Code pane), which normalize a raw U+00A0 away and take the `&nbsp;` entity plus a normal space.  The 2026-10-22 GitHub-entity split (v4.7) is superseded, and the Writing Rules bullet no longer tells a seat to run the entity converter for a GitHub body.  AFC-521. |
+| v4.10 | 2026-11-05 | GB-ORACLE | Folder-tag post intro format (owner Policy 2026-11-05): every post opens with `[<seat> 📁repos]` (multi-thread periods + optional `→` / `👀`); non-empty 📁 satisfies outbox project-name (including claim/closeout);  `FLEET-PROTOCOL.md` Message Shape stays Fleet-OPS handbook-sync/mirror only. |
