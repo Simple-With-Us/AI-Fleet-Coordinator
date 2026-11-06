@@ -7,7 +7,8 @@ calls ``file_reason(payload, policy)``.  The policy itself lives here, once:
   * The path is resolved the way the runtime would open it:  ``~`` against the home, a
     relative path against the payload's absolute ``cwd`` (or the home when there is none,
     so a missing cwd never skips the policy), then ``layout.resolve_path`` (symlinks).
-    Both the lexical and the resolved spelling are checked.
+    Both the lexical and the resolved spelling are checked;  the lexical one is checked for
+    secrets first, and a path the resolver cannot handle is refused, never skipped.
   * A secret-bearing path (a ``.secrets`` component, or a name matching the secret guard's
     ``SECRET_FILE_PATTERNS``) is refused for reads and writes.
   * The human integration tree ``<Code root>/<Repo>`` (the registry's integration names)
@@ -103,6 +104,7 @@ _REASONS = {
     "other_seat": "{label} file tool blocked another seat's lane.  Use the assigned seat's own lane.",
     "table": "{label} file tool refused: SECRET_FILE_PATTERNS is unavailable or invalid.",
     "registry": "{label} file tool refused: required FLEET_APPS_JSON registry is unavailable or invalid.",
+    "unresolvable": "{label} file tool refused a path it cannot resolve.  Use a plain path.",
 }
 
 
@@ -176,22 +178,34 @@ def file_reason(payload: Mapping, policy: FilePolicy, ctx=None, secret_guard=Non
     return None
 
 
-def _resolve(path: str, cwd, home: str, roots) -> tuple:
-    """(lexical, resolved) spellings of a payload path."""
+def _absolute(path: str, cwd, home: str) -> tuple:
+    """(the path as the resolver gets it, its lexical spelling)."""
     if not os.path.isabs(path) and not path.startswith("~"):
         # No usable cwd: resolve against home rather than skip the whole file policy.
         path = os.path.join(cwd if isinstance(cwd, str) and os.path.isabs(cwd) else home, path)
     lexical = os.path.normpath(os.path.join(home, path[2:]) if path.startswith("~/") else path)
-    return lexical, layout.resolve_path(path, roots)
+    return path, lexical
+
+
+def _is_secret(candidates, secret_patterns) -> bool:
+    return any(".secrets" in p.lower().split(os.sep) for p in candidates) or any(
+        pattern.search(p) for p in candidates for pattern in secret_patterns
+    )
 
 
 def path_reason(kind: str, path: str, cwd, ctx, roots, secret_patterns, policy: FilePolicy) -> str | None:
     """The denial for one path of a READ or WRITE, or None."""
-    lexical, resolved = _resolve(path, cwd, ctx.home, roots)
+    path, lexical = _absolute(path, cwd, ctx.home)
+    # The lexical spelling is judged before the filesystem is asked, so a path the resolver
+    # cannot handle (a NUL byte, an unencodable character) never skips the secret check.
+    if _is_secret((lexical,), secret_patterns):
+        return policy.reason("secret")
+    try:
+        resolved = layout.resolve_path(path, roots)
+    except (ValueError, OSError):  # UnicodeError is a ValueError
+        return policy.reason("unresolvable")
     candidates = (lexical, resolved)
-    if any(".secrets" in p.lower().split(os.sep) for p in candidates) or (
-        any(pattern.search(p) for p in candidates for pattern in secret_patterns)
-    ):
+    if _is_secret(candidates, secret_patterns):
         return policy.reason("secret")
     fold = str.casefold if roots.case_insensitive else (lambda value: value)
     code = fold(str(roots.code_root))

@@ -163,6 +163,18 @@ class CoreTests(unittest.TestCase):
         os.symlink(os.path.join(self.home, ".secrets"), os.path.join(self.home, "keys"))
         self.assertIn("secret-bearing", self.reason("Look", "keys/x"))
 
+    def test_a_path_the_resolver_cannot_handle_is_refused_never_skipped(self):
+        """A NUL byte or an unencodable character makes realpath raise;  that must not fail open."""
+        for bad in ("\x00", "\ud800"):
+            with self.subTest(bad=repr(bad)):
+                self.assertIn("secret-bearing", self.reason("Look", ".secrets/x" + bad))
+                self.assertIn("secret-bearing", self.reason("Put", "~/.env" + bad))
+                self.assertIn("cannot resolve", self.reason("Put", "public/f" + bad))
+                self.assertIn("cannot resolve", self.reason("Look", "public/f" + bad))
+        with mock.patch.object(fg.layout, "resolve_path", side_effect=OSError):
+            self.assertIn("secret-bearing", self.reason("Look", ".secrets/x"))
+            self.assertIn("cannot resolve", self.reason("Look", "public/f"))
+
 
 class ClaudeAdapterTests(unittest.TestCase):
     def setUp(self):
