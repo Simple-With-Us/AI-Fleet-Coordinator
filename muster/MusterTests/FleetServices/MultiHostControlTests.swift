@@ -76,9 +76,7 @@ final class MultiHostControlTests: XCTestCase {
         )
 
         MockURLProtocol.handler = { request in
-            // The fixture header is built in parts so the relay secret scanner does not
-            // mistake this synthetic value for a real bearer token.
-            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer " + "fleet-remote-bearer-key")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer remote-stub")
             if request.url!.path == "/api/health" {
                 return (200, Data(#"{"app":"botfleet","pid":999,"ready":true}"#.utf8))
             }
@@ -96,7 +94,7 @@ final class MultiHostControlTests: XCTestCase {
             return (404, Data("{}".utf8))
         }
 
-        let secrets = StubSecrets(values: ["BOTFLEET_REMOTE_TOKEN": "fleet-remote" + "-bearer-key"])
+        let secrets = StubSecrets(values: ["BOTFLEET_REMOTE_TOKEN": "remote-stub"])
         let api = ControlAPI(session: mockSession(), host: host, secrets: secrets)
         let status = try await api.status()
         XCTAssertEqual(secrets.asked.first, "BOTFLEET_REMOTE_TOKEN")
