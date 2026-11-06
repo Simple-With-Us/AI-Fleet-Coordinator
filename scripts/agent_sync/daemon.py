@@ -6848,7 +6848,9 @@ class Daemon:
         # scripts/agent_sync/mcp/linear_tools.py.  With none, resolve_identity finds no pair and
         # the filing fails closed with EXIT_NO_CREDS.
         for key, value in self.env.items():
-            if (key.startswith("LINEAR_") or key == "INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID") and value:
+            if (
+                key.startswith("LINEAR_") or key == "INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID"
+            ) and value:
                 board_env[key] = value
         ok, detail = A.run_board(
             argv,
