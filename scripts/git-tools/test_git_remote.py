@@ -1881,3 +1881,102 @@ class TestRealSharedScanner(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+PUBLISH_TOOLS = [
+    make_tool(
+        "gr_wf_files_put",
+        {
+            "type": "object",
+            "properties": {
+                "repo": {"type": "string"},
+                "branch": {"type": "string"},
+                "message": {"type": "string"},
+                "files": {"type": "array"},
+                "expected_head_sha": {"type": "string"},
+                "identity": {"type": "string"},
+            },
+        },
+        "put files",
+    ),
+    make_tool(
+        "gr_wf_branch_get",
+        {"type": "object", "properties": {"repo": {"type": "string"}, "branch": {"type": "string"}, "identity": {"type": "string"}}},
+        "branch get",
+    ),
+    make_tool(
+        "gr_wf_tree",
+        {"type": "object", "properties": {"repo": {"type": "string"}, "sha": {"type": "string"}, "recursive": {"type": "boolean"}, "identity": {"type": "string"}}},
+        "tree",
+    ),
+]
+
+PUBLISH_HEAD = "1" * 40
+PUBLISH_COMMIT = "2" * 40
+
+
+def _ok_result(structured):
+    return {"structuredContent": structured, "content": [{"type": "text", "text": "done"}], "isError": False}
+
+
+def _publish_setup(testcase, tree_entries, include_tree_tool=True):
+    """A publish rerun whose outcome store already records branch + batch 1 as ok.  Returns (transport, out, err, code)."""
+    tmp = tempfile.TemporaryDirectory()
+    testcase.addCleanup(tmp.cleanup)
+    local = Path(tmp.name) / "x.md"
+    data = b"hello publish\n"
+    local.write_bytes(data)
+    files = [("docs/x.md", data)]
+    key = git._publish_key("o/r", "feature", "main", "m", files)
+    store = {key: {"batches": {"branch": "ok", "1": "ok"}}}
+    (Path(tmp.name) / "publish-outcomes.json").write_text(json.dumps(store))
+    tools = list(PUBLISH_TOOLS) if include_tree_tool else [t for t in PUBLISH_TOOLS if t["name"] != "gr_wf_tree"]
+    transport = FakeTransport(
+        pages=[tools],
+        seat="CODEX",
+        call_results={
+            "gr_wf_branch_get": _ok_result({"branch": {"commit": {"sha": PUBLISH_HEAD}}}),
+            "gr_wf_tree": _ok_result({"tree": tree_entries}),
+            "gr_wf_files_put": _ok_result({"commit": PUBLISH_COMMIT}),
+        },
+    )
+    code, out, err = run_cli(
+        [
+            "publish",
+            "--repo", "o/r",
+            "--branch", "feature",
+            "--base", "main",
+            "--message", "m",
+            "--file", f"{local}=docs/x.md",
+        ],
+        env={"SIMPLE_TOOLS_BEARER": BEARER, "SIMPLE_GIT_STATE_DIR": tmp.name},
+        transport=transport,
+    )
+    return transport, out, err, code
+
+
+class TestPublishRerunTrustsLiveTree(unittest.TestCase):
+    def test_ledger_ok_but_live_tree_missing_the_batch_recommits(self):
+        # The branch was reset or rewritten after batch 1 was recorded:  the live tree lacks the file.
+        transport, out, err, code = _publish_setup(self, tree_entries=[])
+        self.assertEqual(code, 0, err)
+        puts = [args for name, args in transport.calls if name == "gr_wf_files_put"]
+        self.assertEqual(len(puts), 1, transport.calls)
+        self.assertEqual(puts[0]["expected_head_sha"], PUBLISH_HEAD)
+        self.assertIn("missing from the branch", out)
+
+    def test_ledger_ok_and_live_tree_has_the_batch_skips(self):
+        data = b"hello publish\n"
+        tree = [{"type": "blob", "path": "docs/x.md", "sha": git._git_blob_sha(data)}]
+        transport, out, err, code = _publish_setup(self, tree_entries=tree)
+        self.assertEqual(code, 0, err)
+        puts = [args for name, args in transport.calls if name == "gr_wf_files_put"]
+        self.assertEqual(puts, [], transport.calls)
+        self.assertIn("already committed by an earlier run", out)
+
+    def test_ledger_ok_trusted_when_live_tree_unreadable(self):
+        transport, out, err, code = _publish_setup(self, tree_entries=[], include_tree_tool=False)
+        self.assertEqual(code, 0, err)
+        puts = [args for name, args in transport.calls if name == "gr_wf_files_put"]
+        self.assertEqual(puts, [], transport.calls)
+        self.assertIn("already committed by an earlier run", out)

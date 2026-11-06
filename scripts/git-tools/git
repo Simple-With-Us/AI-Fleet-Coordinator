@@ -1928,6 +1928,7 @@ def cmd_publish(tools: dict, a, bearer: str, seat: str, deadline: float) -> int:
         else:
             head = _branch_head(_tool_call(tools, "gr_wf_branch_get", {"repo": a.repo, "branch": a.branch}, bearer, seat, deadline))
         remote = _remote_tree_shas(tools, a.repo, head, bearer, seat, deadline)
+        live = remote if remote is not None else {}
         for number, batch in enumerate(batches, 1):
             prior = state["batches"].get(str(number))
             if prior == "unknown":
@@ -1936,10 +1937,15 @@ def cmd_publish(tools: dict, a, bearer: str, seat: str, deadline: float) -> int:
                     f"batch {number}'s earlier outcome is unknown;  check the branch before running this again",
                     EXIT_ERROR,
                 )
+            pending = [(path, data) for path, data in batch if live.get(path) != _git_blob_sha(data)]
             if prior == "ok":
-                print(f"batch {number} already committed by an earlier run")
-                continue
-            pending = [(path, data) for path, data in batch if remote.get(path) != _git_blob_sha(data)]
+                if remote is None or not pending:
+                    print(f"batch {number} already committed by an earlier run")
+                    continue
+                # The ledger says this batch landed but the branch's live tree disagrees:  an external
+                # reset or rewrite dropped it.  Trust the live tree over the ledger and recommit the
+                # missing files, fenced on the current head like any other batch.
+                print(f"batch {number} was recorded ok but is missing from the branch;  recommitting")
             if not pending:
                 state["batches"][str(number)] = "ok"
                 _publish_store_save(store)
@@ -1968,7 +1974,7 @@ def cmd_publish(tools: dict, a, bearer: str, seat: str, deadline: float) -> int:
                 die("the server did not report the new commit;  check the branch before trying again", EXIT_ERROR)
             head = commit
             for path, data in pending:
-                remote[path] = _git_blob_sha(data)
+                live[path] = _git_blob_sha(data)
             state["batches"][str(number)] = "ok"
             _publish_store_save(store)
             print(f"{commit}  {len(payload['files'])} file(s)")
@@ -1976,20 +1982,21 @@ def cmd_publish(tools: dict, a, bearer: str, seat: str, deadline: float) -> int:
     finally:
         lock.close()
 
-def _remote_tree_shas(tools: dict, repo: str, head: str, bearer: str, seat: str, deadline: float) -> dict:
-    """path -> blob sha for the branch head's tree, for skip-what-already-matches;  empty when unreadable."""
+def _remote_tree_shas(tools: dict, repo: str, head: str, bearer: str, seat: str, deadline: float) -> dict | None:
+    """path -> blob sha for the branch head's tree, for skip-what-already-matches;  None when unreadable,
+    so a ledger "ok" record is trusted only when the live tree could actually be checked against it."""
     if tools.get("gr_wf_tree") is None:
-        return {}
+        return None
     try:
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
             out = _tool_call(tools, "gr_wf_tree", {"repo": repo, "sha": head, "recursive": True}, bearer, seat, deadline)
     except SystemExit:
-        return {}
+        return None
     structured = out.get("structured") if isinstance(out, dict) else None
     tree = structured.get("tree") if isinstance(structured, dict) else None
     if not isinstance(tree, list):
-        return {}
+        return None
     return {
         item["path"]: item["sha"]
         for item in tree
