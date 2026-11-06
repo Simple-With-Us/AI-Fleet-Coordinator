@@ -73,6 +73,7 @@ READ_TOOLS = {
     "zulip_drafts_list",
     "eavesdropper_status",
     "eavesdropper_inbox",
+    "operator_inbox_pending",
     "eavesdropper_owner_queue",
     "eavesdropper_wakes",
     "eavesdropper_held_back",

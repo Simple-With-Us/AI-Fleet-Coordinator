@@ -30,7 +30,7 @@ from . import wakes as W
 from .zulip import UsageError
 
 SEAT_RE = re.compile(r"^[A-Z0-9][A-Z0-9_-]{0,31}$")
-RECORDS = ("status", "inbox", "owner-queue", "wakes", "held-back")
+RECORDS = ("status", "inbox", "pending-inbox", "owner-queue", "wakes", "held-back")
 _LEASE_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,80}$")
 
 
@@ -133,6 +133,48 @@ def inbox_view(
         "pending": len(pending),
         "items": [inbox_item(r) for r in shown],
         "next_seq": shown[-1]["seq"] if shown else (floor or None),
+    }
+
+
+def pending_item(row: Mapping[str, Any]) -> dict[str, Any]:
+    """One pending-inbox item:  the inbox view's fields, plus the router's stored classification
+    (`classes`, `wake_worthy`, `wake_owner`) exactly as the daemon wrote the row, so a caller can
+    see why the prefilter marked it wake-worthy without any second classifier."""
+    item = inbox_item(row)
+    classes = row.get("classes")
+    item["classes"] = [c for c in classes if isinstance(c, str)] if isinstance(classes, list) else []
+    item["wake_worthy"] = bool(row.get("wake_worthy"))
+    item["wake_owner"] = bool(row.get("wake_owner"))
+    return item
+
+
+def pending_inbox_view(
+    root: str, seat: str, *, after_seq: int = 0, limit: int = 20
+) -> dict[str, Any]:
+    """Wake-worthy seat-inbox items after `after_seq`, oldest first (the pending read a hosted
+    seat polls:  OPS-1047).  An item is pending when its seq is past `after_seq`, its stored row
+    carries the router prefilter's `wake_worthy` verdict (daemon.make_item, from router.prefilter)
+    and it was not delivered to a lease.  `count` is every pending item after `after_seq`, not
+    just the page shown;  `latest_seq` is the newest seq in the inbox file, pending or not, so a
+    check with no pending items still learns how far the inbox has run.  Read-only like every
+    view here:  neither the acknowledged cursor (seat-inbox.cursor.json) nor the daemon's own
+    cursor.json or seat-inbox.meta.json is read for a floor or ever moved."""
+    paths = seat_paths(root, seat)
+    rows = [r for r in _rows(paths.seat_inbox, "seat inbox") if _int(r.get("seq")) is not None]
+    latest_seq = max((r["seq"] for r in rows), default=0)
+    pending = [
+        r
+        for r in rows
+        if r["seq"] > after_seq and r.get("wake_worthy") and not r.get("delivered_to")
+    ]
+    shown = pending[: max(0, limit)]
+    return {
+        "seat": seat,
+        "after_seq": after_seq,
+        "count": len(pending),
+        "latest_seq": latest_seq,
+        "items": [pending_item(r) for r in shown],
+        "next_seq": shown[-1]["seq"] if shown else after_seq,
     }
 
 
@@ -423,6 +465,10 @@ def view(
     if record == "inbox":
         return inbox_view(
             root, seat, since_seq=params.get("since_seq"), limit=int(params.get("limit", 20))
+        )
+    if record == "pending-inbox":
+        return pending_inbox_view(
+            root, seat, after_seq=int(params.get("after_seq", 0)), limit=int(params.get("limit", 20))
         )
     if record == "owner-queue":
         return owner_queue_view(

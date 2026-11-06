@@ -284,6 +284,18 @@ The `eavesdropper_status`, `eavesdropper_inbox`, `eavesdropper_owner_queue`, `ea
    ```
 4. Deploy (step 1).  From a connected JET chat, `eavesdropper_status` answers counts;  a 401 there means the two keys differ or the clocks are more than five minutes apart, a 404 that the listener has no key for the seat.  **Not deployed yet.**
 
+### Pending inbox for inbox-only seats (OPS-1047)
+
+`operator_inbox_pending` reads the same signed API's `pending-inbox` record:  the calling seat's wake-worthy seat-inbox items after a caller-held `after_seq`, as a count-only `check` or a full `pull`.  The seat comes only from the grant or bearer, never from an argument, and reading moves no cursor.  For MA (a bearer seat with `wake = "inbox"` on the server listener, so no wake routine ever minted it a key):
+
+1. On the listener side, give MA a read key through the existing mechanism:  set `MA_ROUTINE_KEY` (a fresh value of at least 32 characters) in the listener's environment (Infisical AI Fleet Coordinator, `prod`, the folder the listener loads at start) and restart the container, so `listener_api_keys` picks it up.  MA's wake stays `inbox`;  the key signs reads only.
+2. Give the Worker the same value under its MA listener-read-secret name, from Infisical `/wake` (where `resolveSecret` reads `WAKE_HMAC_KEY_MA` for the listener client alone;  `LISTENER_READ_SECRETS` in `src/config.js`) or as the fallback Worker secret:
+   ```bash
+   fleet-secrets get MA_ROUTINE_KEY | tr -d '"\n' | WRANGLER_SEND_METRICS=false npx --no-install wrangler secret put WAKE_HMAC_KEY_MA >/dev/null && echo "set WAKE_HMAC_KEY_MA"
+   ```
+   This opens no wake route for MA:  `/internal/wake/<SEAT>` and the spike route also require the seat in `HOSTED_SEATS`, and MA is not there.
+3. Deploy the Worker (step 1) and add `operator_inbox_pending` to the calling client's tool allowlist (for MA, the local Fleet Tools client's `ALLOWED_TOOLS`).  Smoke:  `operator_inbox_pending` with `{"mode": "check"}` answers MA's pending count and `latest_seq`;  `{"mode": "pull", "after_seq": <latest_seq>}` answers zero items.
+
 ## Notes, recall and the guide (AFC-331, AFC-486)
 
 The eight notes tools (`notes_create`, `notes_update`, `notes_pin`, `notes_unpin`, `notes_read`, `notes_list`, `notes_status` and `notes_log`, in `src/notes.js`) send each request to the Operator's notes queue over signed HTTPS, and the Mac runner does the work (`docs/protocols/operator-notes.md`).  No Zulip message is involved:  the `#notes-relay` transport of AFC-331 is retired (owner, Thu, Oct 22, 2026:  "I don't want notes going from Zulip to Apple notes").  The Worker signs every request as the principal `WORKER` with the Worker secret `OPERATOR_NOTES_KEY`, which holds the Infisical key `OPERATOR_NOTES_WORKER_KEY` (AI Fleet Coordinator, `prod`, folder `/operator`), and it reaches the Operator at `LISTENER_API_URL`, the same https origin as the listener read API.  The seat a request acts for is always the grant's.  Until both the secret and the var are set, every notes tool answers `not_configured` and nothing else changes.

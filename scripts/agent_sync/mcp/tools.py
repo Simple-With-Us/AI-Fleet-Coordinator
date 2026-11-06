@@ -157,6 +157,7 @@ READ_TOOLS = (
             "zulip_drafts_list",
             "eavesdropper_status",
             "eavesdropper_inbox",
+            "operator_inbox_pending",
             "eavesdropper_owner_queue",
             "eavesdropper_wakes",
             "eavesdropper_held_back",
@@ -221,6 +222,7 @@ CLI_VERBS: dict[str, tuple[str, ...]] = {
     "zulip_typing": ("typing",),
     "eavesdropper_status": ("listener status",),
     "eavesdropper_inbox": ("listener inbox",),
+    "operator_inbox_pending": ("listener pending-inbox",),
     "eavesdropper_owner_queue": ("listener owner-queue",),
     "eavesdropper_wakes": ("listener wakes",),
     "eavesdropper_held_back": ("listener held-back",),
@@ -2974,6 +2976,36 @@ class Tools:
                 "next_seq": view["next_seq"],
             },
         )
+
+    def _tool_operator_inbox_pending(self, args: Mapping[str, Any]) -> dict[str, Any]:
+        mode = args.get("mode", "check")
+        after_seq = args.get("after_seq", 0)
+        view = self._listener(
+            "pending-inbox",
+            {
+                "after_seq": after_seq,
+                "limit": 0 if mode == "check" else args.get("limit", 20),
+            },
+        )
+        structured = {
+            "mode": mode,
+            "count": view["count"],
+            "latest_seq": view["latest_seq"],
+            "after_seq": view["after_seq"],
+        }
+        if mode == "check":
+            return self.ok(
+                json.dumps(dict(view, seat=self.seat, items=[]), ensure_ascii=False), structured
+            )
+        items = self._eavesdropper_items(view["items"])
+        structured["seqs"] = [i["seq"] for i in items]
+        structured["ids"] = [i["id"] for i in items if _int(i.get("id")) is not None]
+        summary = "%s pending after seq %d, latest_seq %d" % (
+            self._plural(view["count"], "pending item"),
+            view["after_seq"],
+            view["latest_seq"],
+        )
+        return self._list_result("operator_inbox_pending", [], summary, items, structured)
 
     def _tool_eavesdropper_owner_queue(self, args: Mapping[str, Any]) -> dict[str, Any]:
         view = self._listener("owner-queue", args)
