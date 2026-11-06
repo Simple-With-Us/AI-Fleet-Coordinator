@@ -338,7 +338,12 @@ class Relay:
                     # content happens in the verb.
                     scan_args(args, _budget=[MAX_SCAN_NODES, MAX_BINARY_REQUEST_BYTES])
                 elif action in FILE_REQUEST_ACTIONS:
-                    scan_args(args, _budget=[MAX_SCAN_NODES, MAX_FILE_REQUEST_BYTES])
+                    # wf_file_put and wf_files_put scan the decoded bytes of each file themselves.
+                    scan_args(
+                        args,
+                        _budget=[MAX_SCAN_NODES, MAX_FILE_REQUEST_BYTES],
+                        _decoded_elsewhere=True,
+                    )
                 elif action in LARGE_TEXT_REQUEST_ACTIONS:
                     scan_args(args, _budget=[MAX_SCAN_NODES, MAX_LARGE_TEXT_REQUEST_BYTES])
                 else:
@@ -932,7 +937,8 @@ def make_handler(relay: Relay):
                 return
             action = parts[1]
             auth = self.headers.get("Authorization") or ""
-            token = auth.removeprefix("Bearer ").strip() if auth.startswith("Bearer ") else ""
+            bearer_prefix = "Bearer "
+            token = auth[len(bearer_prefix) :].strip() if auth.startswith(bearer_prefix) else ""
             try:
                 length = int(self.headers.get("Content-Length") or "0")
             except ValueError:

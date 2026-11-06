@@ -900,7 +900,7 @@ class DigestTests(unittest.TestCase):
 
         q.scroll = spy
         doctor.contribution_digest(q, days=7, app="fleet", now=NOW)
-        self.assertEqual(seen[0]["must_not"], [recall_api.meta_exclude()])
+        self.assertEqual(seen[0]["must_not"], [recall_api.meta_exclude(), recall_api.retracted_exclude()])
         self.assertIn({"key": "source", "match": {"value": "agent-contribution"}}, seen[0]["must"])
         self.assertIn({"key": "app", "match": {"value": "fleet"}}, seen[0]["must"])
         self.assertIn({"key": "created_at", "range": {"gte": NOW - 7 * DAY}}, seen[0]["must"])
