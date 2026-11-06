@@ -1,24 +1,44 @@
 import SwiftUI
 
 /// Server resource controls edit local drafts only.  Each explicit review button sends
-/// one value and the exact revision seen in the current direct receipt to the shared
+/// one value and the saved policy's revision from the current direct receipt to the shared
 /// plan/Touch ID/apply flow owned by the caller.
+///
+/// Every limit says what it really does,  from live values;  saved values and what the
+/// memory controller measured are labelled apart;  and the page reads the server again on
+/// its own while it is open,  so its age and its controls never go stale unnoticed.
 struct ResourceLimitsView: View {
     typealias PolicyReader = () async -> ResourcePolicyReading
+    typealias ReportReader = () -> ServerStatusReading
     typealias ReviewChange = (_ field: String, _ value: String, _ revision: String) -> Void
+    /// A measured value beside a saved one,  under its own label.
+    typealias InEffect = (label: String, value: String)
+
+    /// How often the page reads the server again while it is open.
+    static let autoRefreshSeconds: UInt64 = 30
+
+    private enum WeightChoice: Hashable {
+        case low, normal, custom
+    }
 
     private let readPolicy: PolicyReader
+    private let readReport: ReportReader
     private let onReviewChange: ReviewChange
     @ObservedObject private var controller = OpsController.shared
-    @State private var reading = ResourcePolicyReading.unavailable("Refresh to read the server policy.")
-    @State private var drafts: [ResourcePolicyField: Double] = [:]
+    @State private var reading = ResourcePolicyReading.loading
+    @State private var drafts = ResourceDrafts()
+    /// The custom CPU weight as typed,  while the owner is typing one.
+    @State private var weightText: String?
     @State private var loading = false
+    @State private var showDetails = false
 
     init(
         readPolicy: @escaping PolicyReader = { .unavailable() },
+        readReport: @escaping ReportReader = { ServerStatusReportReader.readDefault() },
         onReviewChange: @escaping ReviewChange = { _, _, _ in }
     ) {
         self.readPolicy = readPolicy
+        self.readReport = readReport
         self.onReviewChange = onReviewChange
     }
 
@@ -28,19 +48,11 @@ struct ResourceLimitsView: View {
                 header
                 receiptStatus
                 if let snapshot = reading.snapshot {
-                    if snapshot.status == "drift" {
-                        Label("Observed runtime limits differ from the persisted policy.\u{00A0} Compare each observed value and mismatch count before reviewing a change.", systemImage: "arrow.triangle.2.circlepath")
-                            .font(.callout)
-                            .foregroundStyle(.orange)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .padding(12)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
-                    }
+                    summaryCard(snapshot)
                     cpuCard(snapshot)
                     memoryCard(snapshot)
                     borrowingCard(snapshot)
-                    observationCard(snapshot)
+                    receiptCard(snapshot)
                 } else {
                     unknownCard
                 }
@@ -50,7 +62,7 @@ struct ResourceLimitsView: View {
             .padding(.vertical, 20)
             .frame(maxWidth: .infinity, alignment: .center)
         }
-        .task { await refresh() }
+        .task { await keepReading() }
         .onChange(of: controller.completedRuns) { _, _ in
             Task { await refresh() }
         }
@@ -76,105 +88,256 @@ struct ResourceLimitsView: View {
         }
     }
 
+    // MARK: - Where the values came from and how old they are
+
+    /// Ticks every second,  so the age it shows is never frozen (RESOURCES-8).
     private var receiptStatus: some View {
-        let state = reading.state(at: Date())
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            receiptStatusLine(now: context.date)
+        }
+    }
+
+    private func receiptStatusLine(now: Date) -> some View {
+        let state = reading.state(at: now)
+        let good = state == .current
+        let waiting = state == .loading
         return HStack(alignment: .top, spacing: 10) {
-            Image(systemName: state == .current ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                .foregroundStyle(state == .current ? Color.green : Color.orange)
+            Image(systemName: good ? "checkmark.circle.fill" : (waiting ? "hourglass" : "exclamationmark.triangle.fill"))
+                .foregroundStyle(good ? Color.green : (waiting ? Color.secondary : Color.orange))
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 3) {
-                Text(state.title)
-                    .font(.headline)
-                if loading {
-                    Text("Reading the server receipt…")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                } else if let reason = reading.reason(at: Date()) {
-                    Text(reason)
+                HStack(spacing: 8) {
+                    Text(state.title)
+                        .font(.headline)
+                    if loading {
+                        ProgressView().controlSize(.small)
+                    }
+                }
+                if let line = statusDetail(state: state, now: now) {
+                    Text(line)
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
-                } else if let directReceiptAt = reading.directReceiptAt {
-                    let age = max(0, Int(Date().timeIntervalSince(directReceiptAt)))
-                    Text("Direct receipt read \(age) seconds ago.\u{00A0} Review uses this policy revision.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
                 }
             }
             Spacer(minLength: 0)
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(state == .current ? Color.green.opacity(0.08) : Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 12))
+        .background(good ? Color.green.opacity(0.08) : (waiting ? Color.secondary.opacity(0.08) : Color.orange.opacity(0.10)),
+                    in: RoundedRectangle(cornerRadius: 12))
     }
 
+    private func statusDetail(state: ResourcePolicyReadState, now: Date) -> String? {
+        if state == .loading {
+            return "Reading the server's resource policy.\u{00A0} Nothing changes."
+        }
+        if let reason = reading.reason(at: now) { return reason }
+        guard let checkedAt = reading.directReceiptAt else { return nil }
+        let age = max(0, Int(now.timeIntervalSince(checkedAt)))
+        return "Checked at \(FleetTime.clock(checkedAt)), \(age) seconds ago.\u{00A0} The page reads the server again every \(Self.autoRefreshSeconds) seconds while it is open."
+    }
+
+    /// No values at all.  The reason above already says why,  with its own next step,  so
+    /// this card never tells the owner to retry something retrying cannot fix.
     private var unknownCard: some View {
         GroupBox("Resource Policy") {
-            Label("No trusted policy values are available.\u{00A0} Refresh to request a direct server receipt.", systemImage: "questionmark.circle")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.vertical, 6)
+            Label(
+                reading.state == .loading
+                    ? "Waiting for the server's answer."
+                    : "No saved or live values are available.\u{00A0} The reason is above.",
+                systemImage: "questionmark.circle"
+            )
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 6)
         }
     }
 
+    /// One sentence on whether the limits are in effect,  then every named cause or reason.
+    /// A reading that is not current never gets the green check:  it says what the last
+    /// report said,  in a neutral tint (RESOURCES-22).
+    private func summaryCard(_ snapshot: ResourcePolicySnapshot) -> some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            summaryBody(snapshot, state: reading.state(at: context.date))
+        }
+    }
+
+    private func summaryBody(_ snapshot: ResourcePolicySnapshot, state: ResourcePolicyReadState) -> some View {
+        let applied = snapshot.status == "applied"
+        let current = state == .current
+        let icon: String
+        if applied { icon = current ? "checkmark.circle.fill" : "clock" }
+        else { icon = snapshot.status == "drift" ? "arrow.triangle.2.circlepath" : "exclamationmark.triangle.fill" }
+        let lines = ResourceLimitsCopy.explanation(snapshot)
+        return VStack(alignment: .leading, spacing: 6) {
+            Label(ResourceLimitsCopy.summary(snapshot, state: state, at: reading.reportTime), systemImage: icon)
+                .font(.callout.weight(.medium))
+                .foregroundStyle(applied ? Color.primary : Color.orange)
+                .fixedSize(horizontal: false, vertical: true)
+            ForEach(lines, id: \.self) { line in
+                Text("\u{2022} \(line)")
+                    .font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background((applied ? Color.secondary : Color.orange).opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    // MARK: - CPU
+
     private func cpuCard(_ snapshot: ResourcePolicySnapshot) -> some View {
-        GroupBox("CPU") {
+        let liveCores: Int? = snapshot.observed.flatMap { $0.cpuCores }
+        return GroupBox("CPU") {
             VStack(alignment: .leading, spacing: 16) {
                 numericControl(
                     .cpuCores,
                     snapshot: snapshot,
-                    range: 1...Double(max(1, snapshot.observed.cpuOnline - 2)),
-                    step: 1,
-                    observed: snapshot.observed.cpuCores.map { "\($0) cores" },
-                    help: "The server has \(snapshot.observed.cpuOnline) online cores.\u{00A0} This cap keeps two cores available to the host."
+                    inEffect: liveCores.map { (label: "In Effect", value: ResourcePolicyField.cpuCores.display(Double($0))) },
+                    help: ResourceLimitsCopy.cpuCoresHelp(snapshot, cores: drafts.value(.cpuCores, in: snapshot))
                 )
-                numericControl(
-                    .cpuWeight,
-                    snapshot: snapshot,
-                    range: 1...10_000,
-                    step: 1,
-                    observed: snapshot.observed.cpuWeight.map(String.init),
-                    help: "CPU weight sets relative priority when services compete.\u{00A0} 50 is low priority; 100 is normal."
-                )
+                weightControl(snapshot)
             }
             .padding(.vertical, 4)
         }
     }
 
+    /// CPU weight is a choice of the two useful values or a typed one,  never a 10,000-step
+    /// slider,  and a typed value counts as it is typed (RESOURCES-18,  A11Y-47).
+    @ViewBuilder
+    private func weightControl(_ snapshot: ResourcePolicySnapshot) -> some View {
+        let field = ResourcePolicyField.cpuWeight
+        let value = drafts.value(field, in: snapshot)
+        let liveWeight: Int? = snapshot.observed.flatMap { $0.cpuWeight }
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(field.title).font(.headline)
+                if drafts.isEdited(field) { editedTag }
+                Spacer()
+                Text(field.display(value))
+                    .font(.system(.body, design: .monospaced).weight(.semibold))
+                    .monospacedDigit()
+            }
+            if field.persistedValue(in: snapshot) != nil {
+                Picker("CPU Weight", selection: weightChoiceBinding(snapshot)) {
+                    Text("Low (50)").tag(WeightChoice.low)
+                    Text("Normal (100)").tag(WeightChoice.normal)
+                    Text("Custom").tag(WeightChoice.custom)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .disabled(!hasReviewableReceipt)
+                if weightChoice(value) == .custom {
+                    HStack(spacing: 10) {
+                        TextField("1 to 10,000", text: weightTextBinding(snapshot))
+                            .textFieldStyle(.roundedBorder)
+                            .monospacedDigit()
+                            .frame(width: 120)
+                            .disabled(!hasReviewableReceipt)
+                            .accessibilityLabel("Custom CPU Weight")
+                        if weightTextInvalid {
+                            Label("Enter a whole number from 1 to 10,000.", systemImage: "exclamationmark.triangle.fill")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                        }
+                    }
+                }
+                reviewRow(field, snapshot: snapshot)
+            } else {
+                Label("Unknown.\u{00A0} The saved policy sets no CPU weight, so it cannot be changed here.", systemImage: "questionmark.circle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+            valueLine(field, snapshot: snapshot,
+                      inEffect: liveWeight.map { (label: "In Effect", value: String($0)) })
+            Text(ResourceLimitsCopy.cpuWeightHelp)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func weightChoice(_ value: Double?) -> WeightChoice {
+        if weightText != nil { return .custom }
+        if value == 50 { return .low }
+        if value == 100 { return .normal }
+        return .custom
+    }
+
+    private func weightChoiceBinding(_ snapshot: ResourcePolicySnapshot) -> Binding<WeightChoice> {
+        Binding(
+            get: { weightChoice(drafts.value(.cpuWeight, in: snapshot)) },
+            set: { choice in
+                switch choice {
+                case .low:
+                    weightText = nil
+                    drafts.set(.cpuWeight, to: 50, in: snapshot)
+                case .normal:
+                    weightText = nil
+                    drafts.set(.cpuWeight, to: 100, in: snapshot)
+                case .custom:
+                    weightText = drafts.value(.cpuWeight, in: snapshot).map { String(Int($0)) } ?? ""
+                }
+            }
+        )
+    }
+
+    private func weightTextBinding(_ snapshot: ResourcePolicySnapshot) -> Binding<String> {
+        Binding(
+            get: { weightText ?? drafts.value(.cpuWeight, in: snapshot).map { String(Int($0)) } ?? "" },
+            set: { text in
+                weightText = text
+                if let number = ResourceLimitsCopy.parseCPUWeight(text) {
+                    drafts.set(.cpuWeight, to: Double(number), in: snapshot)
+                }
+            }
+        )
+    }
+
+    private var weightTextInvalid: Bool {
+        guard let weightText else { return false }
+        return ResourceLimitsCopy.parseCPUWeight(weightText) == nil
+    }
+
+    // MARK: - Memory
+
     private func memoryCard(_ snapshot: ResourcePolicySnapshot) -> some View {
-        GroupBox("Memory") {
+        let pressure = drafts.value(.ramBudgetGiB, in: snapshot) ?? snapshot.desired.ramPressureGiB
+        let critical = drafts.value(.ramCriticalGiB, in: snapshot) ?? snapshot.desired.ramCriticalGiB
+        let reserve = drafts.value(.ramReserveGiB, in: snapshot) ?? snapshot.desired.reserveGiB
+        return GroupBox("Memory") {
             VStack(alignment: .leading, spacing: 16) {
                 numericControl(
                     .ramBudgetGiB,
                     snapshot: snapshot,
-                    range: memoryRange(snapshot, minimum: 2),
-                    step: 1,
-                    observed: gib(snapshot.observed.ramTargetBytes),
-                    help: "Soft target for coding workloads.\u{00A0} This guides pressure management and does not guarantee an allocation."
+                    inEffect: currentLimit(snapshot),
+                    help: ResourceLimitsCopy.pressureHelp(
+                        snapshot, pressure: pressure,
+                        borrowing: (drafts.value(.borrowIdle, in: snapshot) ?? (snapshot.desired.allowBorrowing ? 1 : 0)) >= 0.5
+                    )
                 )
                 numericControl(
                     .ramCriticalGiB,
                     snapshot: snapshot,
-                    range: 1...max(1, snapshot.desired.ramPressureGiB),
-                    step: 1,
-                    observed: nil,
-                    help: "Soft critical target used during severe host memory pressure.\u{00A0} The controller tightens memory limits; it does not stop or restart workloads."
+                    inEffect: nil,
+                    help: ResourceLimitsCopy.criticalHelp(snapshot, critical: critical)
                 )
                 numericControl(
                     .ramReserveGiB,
                     snapshot: snapshot,
-                    range: memoryRange(snapshot, minimum: 2),
-                    step: 1,
-                    observed: nil,
-                    help: "Headroom target for the host and production services.\u{00A0} This is not a guaranteed physical memory reservation."
+                    inEffect: nil,
+                    help: ResourceLimitsCopy.reserveHelp(snapshot, reserve: reserve)
                 )
-                if let total = snapshot.observed.ramTotalBytes {
-                    Text("Host memory: \(formatGiB(Double(total) / 1_073_741_824)) total")
+                productionHeadroom(snapshot, pressure: pressure, reserve: reserve)
+                if let total = snapshot.totalMemoryGiB {
+                    Text("Server memory: \(ResourceLimitsCopy.gib(total)) in all.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
-                    Text("Host memory total is unknown.\u{00A0} Memory controls cannot be reviewed.")
+                    Label("The server's total memory is unknown, so memory limits cannot be changed here.", systemImage: "questionmark.circle")
                         .font(.caption)
                         .foregroundStyle(.orange)
                 }
@@ -182,199 +345,293 @@ struct ResourceLimitsView: View {
             .padding(.vertical, 4)
         }
     }
+
+    /// The coding memory limit the controller is applying now,  which with borrowing on is
+    /// usually above Pressure RAM Limit and is not a drift (RESOURCES-1).
+    private func currentLimit(_ snapshot: ResourcePolicySnapshot) -> InEffect? {
+        guard let observed = snapshot.observed else { return nil }
+        guard observed.ramTargetBytes > 0 else { return (label: "Current Limit", value: "none, no coding running") }
+        return (label: "Current Limit", value: "\(ResourceLimitsCopy.gib(bytes: observed.ramTargetBytes)) in \(observed.mode) mode")
+    }
+
+    /// What these limits leave production,  and what an edit would change (RESOURCES-2).
+    @ViewBuilder
+    private func productionHeadroom(_ snapshot: ResourcePolicySnapshot, pressure: Double, reserve: Double) -> some View {
+        if let line = ResourceLimitsCopy.productionLine(snapshot, pressure: pressure, reserve: reserve) {
+            Label(line.text, systemImage: line.warning ? "exclamationmark.triangle.fill" : "shield.lefthalf.filled")
+                .font(.callout)
+                .foregroundStyle(line.warning ? Color.orange : Color.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    // MARK: - Borrowing
 
     private func borrowingCard(_ snapshot: ResourcePolicySnapshot) -> some View {
-        GroupBox("Idle Capacity") {
+        let field = ResourcePolicyField.borrowIdle
+        let on = (drafts.value(field, in: snapshot) ?? 0) >= 0.5
+        return GroupBox(field.title) {
             VStack(alignment: .leading, spacing: 10) {
-                Toggle("Borrow Idle Memory", isOn: Binding(
-                    get: { drafts[.borrowIdle] == 1 || (drafts[.borrowIdle] == nil && snapshot.desired.allowBorrowing) },
-                    set: { drafts[.borrowIdle] = $0 ? 1 : 0 }
-                ))
-                .disabled(!hasReviewableReceipt)
-                Text("Allow coding services to borrow unused memory.\u{00A0} The memory controller tightens coding limits under pressure.")
+                HStack(spacing: 8) {
+                    Toggle(field.title, isOn: Binding(
+                        get: { on },
+                        set: { drafts.set(field, to: $0 ? 1 : 0, in: snapshot) }
+                    ))
+                    .disabled(!hasReviewableReceipt)
+                    if drafts.isEdited(field) { editedTag }
+                }
+                Text(ResourceLimitsCopy.borrowHelp(on: on))
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                valueLine(
-                    desired: snapshot.desired.allowBorrowing ? "Enabled" : "Disabled",
-                    observed: nil,
-                    note: nil
-                )
-                reviewButton(.borrowIdle, snapshot: snapshot)
+                    .fixedSize(horizontal: false, vertical: true)
+                valueLine(field, snapshot: snapshot, inEffect: nil)
+                reviewRow(field, snapshot: snapshot)
             }
             .padding(.vertical, 4)
         }
     }
 
-    private func observationCard(_ snapshot: ResourcePolicySnapshot) -> some View {
-        GroupBox("Runtime Receipt") {
+    // MARK: - What the server is doing
+
+    private func receiptCard(_ snapshot: ResourcePolicySnapshot) -> some View {
+        let rows = ResourceLimitsCopy.receiptRows(snapshot)
+        let details = rows.filter { $0.kind == .detail }
+        return GroupBox("What The Server Is Doing") {
             VStack(alignment: .leading, spacing: 8) {
-                observationRow("Policy Status", snapshot.status.capitalized)
-                observationRow("Controller Mode", snapshot.observed.mode)
-                observationRow("CPU Groups", count(snapshot.observed.cpuGroups))
-                observationRow("CPU Mismatches", count(snapshot.observed.cpuMismatches))
-                observationRow("Coding Memory In Use", gib(snapshot.observed.ramCurrentBytes) ?? "Unknown")
-                observationRow("Observed RAM Target", gib(snapshot.observed.ramTargetBytes) ?? "Unknown")
-                observationRow("Coding Groups", count(snapshot.observed.codingGroups))
-                observationRow("Production Groups", count(snapshot.observed.productionGroups))
-                observationRow("Control Write Failures", count(snapshot.observed.controlWriteFailures))
-                observationRow("Suspended Controls", count(snapshot.observed.controlSuspended))
-                observationRow("High Memory Mismatches", count(snapshot.observed.actualHighMismatches))
-                observationRow("Policy Stale", snapshot.observed.policyStale ? "Yes" : "No")
-                observationRow("Collector Update", collectorText)
-                if let age = reading.observationAge, age > ResourcePolicyReading.maxCollectorAge {
-                    Label("The collector observation is older than 45 minutes.\u{00A0} Runtime measurements may be out of date.", systemImage: "clock.badge.exclamationmark")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                        .fixedSize(horizontal: false, vertical: true)
+                if rows.isEmpty {
+                    Text("The memory controller sent no complete measurements.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
                 }
+                ForEach(rows.filter { $0.kind == .primary }) { row in
+                    receiptRow(row)
+                }
+                ForEach(rows.filter { $0.kind == .problem }) { row in
+                    receiptRow(row)
+                }
+                if !details.isEmpty {
+                    DisclosureGroup("Details", isExpanded: $showDetails) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(details) { row in
+                                receiptRow(row)
+                            }
+                        }
+                        .padding(.top, 4)
+                    }
+                    .font(.callout)
+                }
+                Text(ResourceLimitsCopy.measuredText(snapshot))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             .padding(.vertical, 4)
         }
     }
 
-    private var collectorText: String {
-        guard let age = reading.observationAge else { return "Unknown.\u{00A0} No readable observation timestamp." }
-        return age < 60 ? "Observed less than a minute ago" : "Observed \(Int(age / 60)) min ago"
+    private func receiptRow(_ row: ResourceReceiptRow) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            if row.kind == .problem {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                    .accessibilityLabel("Problem")
+            }
+            Text(row.title)
+                .foregroundStyle(row.kind == .problem ? Color.primary : Color.secondary)
+            Spacer()
+            Text(row.value)
+                .monospacedDigit()
+        }
+        .font(.callout)
     }
+
+    // MARK: - Shared controls
 
     private var hasReviewableReceipt: Bool { reading.canReviewChanges(at: Date()) }
+
+    private var editedTag: some View {
+        Text("Edited")
+            .font(.caption.weight(.semibold))
+            .padding(.horizontal, 6)
+            .padding(.vertical, 1)
+            .background(Color.accentColor.opacity(0.15), in: Capsule())
+            .accessibilityLabel("Edited, not yet sent")
+    }
 
     @ViewBuilder
     private func numericControl(
         _ field: ResourcePolicyField,
         snapshot: ResourcePolicySnapshot,
-        range: ClosedRange<Double>?,
-        step: Double,
-        observed: String?,
+        inEffect: InEffect?,
         help: String
     ) -> some View {
+        let value = drafts.value(field, in: snapshot)
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
                 Text(field.title).font(.headline)
+                if drafts.isEdited(field) { editedTag }
                 Spacer()
-                if field == .cpuWeight, let persisted = field.persistedValue(in: snapshot) {
-                    TextField("CPU Weight", value: Binding(
-                        get: { drafts[field] ?? persisted },
-                        set: { value in
-                            guard value.isFinite, (1...10_000).contains(value), value.rounded() == value else { return }
-                            drafts[field] = value
-                        }
-                    ), format: .number.precision(.fractionLength(0)))
-                        .font(.system(.body, design: .monospaced).weight(.semibold))
-                        .monospacedDigit()
-                        .multilineTextAlignment(.trailing)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 92)
-                        .disabled(!hasReviewableReceipt)
-                        .accessibilityLabel("CPU Weight")
-                } else {
-                    Text(display(draft(for: field, snapshot: snapshot), unit: field.unit))
-                        .font(.system(.body, design: .monospaced).weight(.semibold))
-                        .monospacedDigit()
-                }
+                Text(field.display(value))
+                    .font(.system(.body, design: .monospaced).weight(.semibold))
+                    .monospacedDigit()
             }
-            if let range, range.lowerBound <= range.upperBound,
-               let persisted = field.persistedValue(in: snapshot) {
-                Slider(value: draftBinding(field, persisted: persisted), in: range, step: step)
+            if let range = field.range(in: snapshot), field.persistedValue(in: snapshot) != nil {
+                Slider(value: draftBinding(field, snapshot: snapshot, fallback: range.lowerBound), in: range, step: 1)
                     .disabled(!hasReviewableReceipt)
-                reviewButton(field, snapshot: snapshot)
+                    .accessibilityLabel(field.title)
+                    .accessibilityValue(field.display(value))
+                reviewRow(field, snapshot: snapshot)
             } else {
-                Label("Unknown.\u{00A0} The host limits or persisted value are unavailable.", systemImage: "questionmark.circle")
+                Label("Unknown.\u{00A0} The server's limits or the saved value are not available, so this cannot be changed here.", systemImage: "questionmark.circle")
                     .font(.caption)
                     .foregroundStyle(.orange)
             }
-            valueLine(
-                desired: field.persistedValue(in: snapshot).map { display($0, unit: field.unit) },
-                observed: observed,
-                note: field.persistedValue(in: snapshot) == nil ? "The persisted value is unknown." : nil
-            )
-            Text(help).font(.caption).foregroundStyle(.secondary)
+            valueLine(field, snapshot: snapshot, inEffect: inEffect)
+            Text(help)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
-    private func reviewButton(_ field: ResourcePolicyField, snapshot: ResourcePolicySnapshot) -> some View {
-        let value = draft(for: field, snapshot: snapshot)
-        let validation = field.validate(value: value, in: snapshot)
-        return VStack(alignment: .leading, spacing: 4) {
-            Button("Review Change") {
-                guard reading.canReviewChanges(at: Date()) else {
-                    Task { await refresh() }
-                    return
+    /// Review,  Revert,  and the note when the server's saved value moved under an edit
+    /// (RESOURCES-9).
+    @ViewBuilder
+    private func reviewRow(_ field: ResourcePolicyField, snapshot: ResourcePolicySnapshot) -> some View {
+        let edited = drafts.isEdited(field)
+        let value = drafts.value(field, in: snapshot)
+        let validation = value.flatMap { field.validate(value: $0, in: snapshot) }
+        let moved = drafts.movedValue(field, in: snapshot)
+        let typingInvalid = field == .cpuWeight && weightTextInvalid
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Button("Review Change") { review(field) }
+                    .disabled(!hasReviewableReceipt || !edited || validation != nil || moved != nil || typingInvalid)
+                if edited {
+                    Button("Revert") { revert(field) }
                 }
-                onReviewChange(field.rawValue, serialized(value, for: field), snapshot.policyRevision)
+                if moved != nil {
+                    Button("Keep My Edit") { drafts.rebase(field, in: snapshot) }
+                }
             }
-            .disabled(!hasReviewableReceipt || validation != nil || field.persistedValue(in: snapshot) == value)
-            if let validation {
-                Text(validation).font(.caption).foregroundStyle(.orange)
+            if let moved {
+                Label("The saved value changed to \(field.display(moved)) on the server after you started this edit.", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if edited, let validation {
+                Label(validation, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
 
-    private func valueLine(desired: String?, observed: String?, note: String?) -> some View {
+    private func valueLine(_ field: ResourcePolicyField, snapshot: ResourcePolicySnapshot, inEffect: InEffect?) -> some View {
         HStack(spacing: 12) {
-            Label("Persisted: \(desired ?? "Unknown")", systemImage: "externaldrive")
-            Label("Observed: \(observed ?? "Unknown")", systemImage: "waveform.path")
+            Label("Saved: \(field.display(field.persistedValue(in: snapshot)))", systemImage: "externaldrive")
+            if let inEffect {
+                Label("\(inEffect.label): \(inEffect.value)", systemImage: "waveform.path")
+            }
             Spacer(minLength: 0)
         }
         .font(.caption)
         .foregroundStyle(.secondary)
-        .lineLimit(1)
-        .help(note ?? "Persisted desired settings and observed runtime values are reported separately.")
+        .help("Saved is the server's saved policy.\u{00A0} \(inEffect?.label ?? "In Effect") is what the memory controller measured.")
     }
 
-    private func observationRow(_ title: String, _ value: String) -> some View {
-        HStack {
-            Text(title).foregroundStyle(.secondary)
-            Spacer()
-            Text(value).monospacedDigit()
+    private func draftBinding(_ field: ResourcePolicyField, snapshot: ResourcePolicySnapshot, fallback: Double) -> Binding<Double> {
+        Binding(
+            get: { drafts.value(field, in: snapshot) ?? fallback },
+            set: { drafts.set(field, to: $0.rounded(), in: snapshot) }
+        )
+    }
+
+    private func revert(_ field: ResourcePolicyField) {
+        drafts.revert(field)
+        if field == .cpuWeight { weightText = nil }
+    }
+
+    /// Send the edit for review.  An expired read is read again first,  and the review then
+    /// goes on by itself when the new read still allows it (RESOURCES-8).
+    private func review(_ field: ResourcePolicyField) {
+        if reading.canReviewChanges(at: Date()) {
+            send(field)
+            return
         }
-        .font(.callout)
+        Task {
+            await settleReading()
+            if reading.canReviewChanges(at: Date()) {
+                send(field)
+            }
+        }
     }
 
-    private func memoryRange(_ snapshot: ResourcePolicySnapshot, minimum: Double) -> ClosedRange<Double>? {
-        guard let total = snapshot.observed.ramTotalBytes, total > 0 else { return nil }
-        let maximum = floor(Double(total) / 1_073_741_824 - 2)
-        guard maximum >= minimum else { return nil }
-        return minimum...maximum
+    /// Wait until a read has finished and the receipt can be reviewed,  or give up quietly.
+    /// A read already running (the 30-second one,  say) is waited for,  never skipped,  and
+    /// when another read starts in the gap before ours,  the second pass waits for that one.
+    @MainActor
+    private func settleReading() async {
+        for _ in 0..<2 {
+            await finishRefresh()
+            if reading.canReviewChanges(at: Date()) { return }
+            await refresh()
+        }
+        await finishRefresh()
     }
 
-    private func draft(for field: ResourcePolicyField, snapshot: ResourcePolicySnapshot) -> Double {
-        drafts[field] ?? field.persistedValue(in: snapshot) ?? 0
+    /// Wait for a read that is already running,  for at most the plan timeout.
+    @MainActor
+    private func finishRefresh() async {
+        var waited = 0
+        while loading && waited < 900 {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            waited += 1
+        }
     }
 
-    private func draftBinding(_ field: ResourcePolicyField, persisted: Double) -> Binding<Double> {
-        Binding(get: { drafts[field] ?? persisted }, set: { drafts[field] = $0 })
+    private func send(_ field: ResourcePolicyField) {
+        guard let snapshot = reading.snapshot,
+              let revision = snapshot.reviewRevision,
+              drafts.isEdited(field),
+              drafts.movedValue(field, in: snapshot) == nil,
+              let value = drafts.value(field, in: snapshot),
+              field.validate(value: value, in: snapshot) == nil,
+              !(field == .cpuWeight && weightTextInvalid) else { return }
+        onReviewChange(field.rawValue, field.serialized(value), revision)
     }
 
-    private func display(_ value: Double?, unit: String) -> String {
-        guard let value, value.isFinite else { return "Unknown" }
-        let amount = value.rounded() == value ? String(Int(value)) : String(format: "%.1f", value)
-        return unit.isEmpty ? amount : "\(amount) \(unit)"
+    // MARK: - Reading
+
+    /// Reads now,  then again every 30 seconds while the page is open.  `.task` ends the loop
+    /// when the page closes,  and no read starts while an action is running.
+    @MainActor
+    private func keepReading() async {
+        await refresh()
+        while !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: Self.autoRefreshSeconds * 1_000_000_000)
+            if Task.isCancelled { return }
+            if controller.isBusy { continue }
+            await refresh()
+        }
     }
 
-    private func serialized(_ value: Double, for field: ResourcePolicyField) -> String {
-        if field == .borrowIdle { return value >= 0.5 ? "1" : "0" }
-        if value.rounded() == value { return String(Int(value)) }
-        return String(format: "%.1f", value)
-    }
-
-    private func count(_ value: Int?) -> String { value.map(String.init) ?? "Unknown" }
-
-    private func gib(_ bytes: Int?) -> String? {
-        bytes.map { "\(formatGiB(Double($0) / 1_073_741_824)) GiB" }
-    }
-
-    private func formatGiB(_ value: Double) -> String { String(format: "%.1f", value) }
-
+    /// A direct read,  or,  when it brings back nothing,  the copy in the server report the
+    /// Mac pulls,  read only (RESOURCES-22).  Untouched fields follow the new saved values.
     @MainActor
     private func refresh() async {
         guard !loading else { return }
         loading = true
-        reading = await readPolicy()
+        var next = await readPolicy()
+        if next.snapshot == nil,
+           let fallback = ResourcePolicyReading.fromServerReport(readReport(), directFailure: next.reason) {
+            next = fallback
+        }
+        reading = next
         loading = false
-        guard let snapshot = reading.snapshot else { return }
-        for field in ResourcePolicyField.allCases where drafts[field] == nil {
-            drafts[field] = field.persistedValue(in: snapshot)
+        if let snapshot = next.snapshot {
+            drafts.follow(snapshot)
         }
     }
 }

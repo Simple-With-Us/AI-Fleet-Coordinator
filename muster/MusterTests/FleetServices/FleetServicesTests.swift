@@ -789,6 +789,9 @@ final class FleetServicesTests: XCTestCase {
             XCTFail("the stop should not have been reported as a success")
         } catch {
             XCTAssertTrue("\(error)".contains("stop itself"))
+            // The app is Muster;  the retired BotFleet Control name is not shown.
+            XCTAssertTrue("\(error)".contains("Muster could not ask it to"))
+            XCTAssertFalse("\(error)".contains("Control app"))
         }
     }
 

@@ -177,7 +177,7 @@ enum OpsAction: Equatable {
         case .knobUnset(let key): return key
         case .pm2App(_, let name): return OpsNames.pm2Title(name)
         case .logs(let unit): return OpsNames.unitTitle(unit)
-        case .serverResource(let field, _, _): return resourceTitle(field)
+        case .serverResource(let field, _, _): return ResourcePolicyField(rawValue: field)?.title ?? "Resource Policy"
         case .resourceStatus: return "The Resource Policy"
         }
     }
@@ -195,7 +195,8 @@ enum OpsAction: Equatable {
         case .knobUnset(let key): return "Reset \(key) to the default \(place)"
         case .pm2App(let verb, _): return "\(verb.title) \(subjectTitle) \(place)"
         case .logs: return "Read the last logs of \(subjectTitle) \(place)"
-        case .serverResource(let field, let value, _): return "Set \(resourceTitle(field)) to \(value) \(place)"
+        case .serverResource(let field, let value, _):
+            return "\(ResourcePolicyField.changePhrase(field: field, value: value)) \(place)"
         case .resourceStatus: return "Read the resource policy \(place)"
         }
     }
@@ -236,7 +237,15 @@ enum OpsAction: Equatable {
         case .logs:
             return "Reads the last journal lines of \(subjectTitle) \(place).\(gap)Nothing changes."
         case .serverResource(let field, let value, _):
-            return "Sets \(resourceTitle(field)) to \(value) \(place)."
+            // The field's own words for the change (`ResourcePolicyField.changePhrase`),  told
+            // as what the plan does:  "Set" becomes "Sets",  "Turn" becomes "Turns".
+            var phrase = ResourcePolicyField.changePhrase(field: field, value: value)
+            for (order, does) in [("Set ", "Sets "), ("Turn ", "Turns "), ("Change ", "Changes ")]
+                where phrase.hasPrefix(order) {
+                phrase = does + phrase.dropFirst(order.count)
+                break
+            }
+            return "\(phrase) \(place)."
         case .resourceStatus:
             return "Reads the resource policy \(place).\(gap)Nothing changes."
         }
@@ -345,18 +354,6 @@ enum OpsAction: Equatable {
         case .serverResource(let field, let value, let revision):
             return ["server", "resource-policy", "\(field).\(value).\(revision)"]
         case .resourceStatus: return ["server", "resource-status", "coding"]
-        }
-    }
-
-    private func resourceTitle(_ field: String) -> String {
-        switch field {
-        case "cpu-cores": return "CPU Cores"
-        case "cpu-weight": return "CPU Weight"
-        case "ram-budget-gib": return "RAM Budget"
-        case "ram-critical-gib": return "Critical RAM Budget"
-        case "ram-reserve-gib": return "Host RAM Reserve"
-        case "borrow-idle": return "Idle Memory Borrowing"
-        default: return "Resource Policy"
         }
     }
 }
@@ -1540,7 +1537,7 @@ struct OpsResourcePolicyReader {
             let outcome = OpsResultParser.parse(process, mode: .plan, action: action, timeout: invocation.timeout)
             guard outcome.isSuccess(for: .plan) else { return .unavailable(outcome.detail) }
             guard let snapshot = outcome.resourcePolicy else {
-                return .unavailable("The server did not include a resource policy receipt.")
+                return .unavailable("The server answered without a readable resource policy, so neither the saved values nor the controller's receipt could be shown.")
             }
             let data = try JSONEncoder().encode(snapshot)
             let receivedAt = now ?? Date()
