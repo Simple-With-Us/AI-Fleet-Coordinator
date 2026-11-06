@@ -243,6 +243,20 @@ def is_backup(name):
     return BACKUP_RE.search(name) is not None
 
 
+def _strip_toml_comment(line):
+    """The line without a trailing ``# comment``.  A ``#`` inside quotes is part of a name."""
+    quote = None
+    for position, char in enumerate(line):
+        if quote:
+            if char == quote:
+                quote = None
+        elif char in ('"', "'"):
+            quote = char
+        elif char == "#":
+            return line[:position]
+    return line
+
+
 def toml_headers(text, arrays=False):
     """The table headers of a TOML text, each split into its dotted parts.
 
@@ -251,7 +265,7 @@ def toml_headers(text, arrays=False):
     line is read."""
     headers = []
     for raw in text.splitlines():
-        line = raw.strip()
+        line = _strip_toml_comment(raw).strip()
         is_array = line.startswith("[[") and line.endswith("]]")
         is_table = (not is_array) and line.startswith("[") and line.endswith("]")
         if not ((arrays and is_array) or (not arrays and is_table)):

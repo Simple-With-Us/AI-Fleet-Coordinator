@@ -293,6 +293,19 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(inv.toml_headers('[a.b."c.d"]\n[e]\n[[f]]\n'), [["a", "b", "c.d"], ["e"]])
         self.assertEqual(inv.toml_headers("[a]\n[[f]]\n[[f]]\n", arrays=True), [["f"], ["f"]])
 
+    def test_a_header_with_a_trailing_comment_still_counts(self):
+        text = (
+            "[mcp_servers.fleet-tools]  # the fleet's tools\n"
+            '[plugins."a#b@source"] # a # inside quotes is part of the name\n'
+            "# [mcp_servers.commented-out]\n"
+            "[[hooks]]  # first\n"
+        )
+        self.assertEqual(
+            inv.toml_headers(text),
+            [["mcp_servers", "fleet-tools"], ["plugins", "a#b@source"]],
+        )
+        self.assertEqual(inv.toml_headers(text, arrays=True), [["hooks"]])
+
     def test_kimi_hooks_are_counted_from_array_tables(self):
         write(
             self.home,

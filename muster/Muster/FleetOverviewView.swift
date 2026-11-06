@@ -32,9 +32,24 @@ struct FleetOverviewView: View {
         _destination = State(initialValue: restored)
     }
 
+    /// The window's size is the window's own, and not the natural height of whichever panel is
+    /// showing.  Several panels are as tall as their content (Tools And Worker Health is 1449
+    /// points, Seats 1345) and the window grew to match and kept that as its minimum, so on a
+    /// 923-point laptop screen its bottom edge sat below the display with no way to shrink it.
+    /// The split view sits in an overlay, which is proposed the window's room and takes no part
+    /// in the window's size.  The minimum is wide enough for every panel's columns and
+    /// controls, which overlapped each other in a narrower window (Controls' tabs, the Apps &
+    /// Work filter bar), and short enough for any laptop screen.
     var body: some View {
+        Color.clear
+            .frame(minWidth: 1160, idealWidth: 1160, maxWidth: .infinity,
+                   minHeight: 560, idealHeight: 780, maxHeight: .infinity)
+            .overlay { splitView }
+    }
+
+    private var splitView: some View {
         let menu = MachineMenu(MachineMenuInputs(admin: admin, monitor: monitor, watch: watch, router: router))
-        NavigationSplitView {
+        return NavigationSplitView {
             List(selection: $destination) {
                 Section {
                     sidebarRow(.overview, menu: menu)
