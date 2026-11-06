@@ -593,8 +593,10 @@ enum MiniMaxReader {
         let tokens = command.split(whereSeparator: { $0 == " " || $0 == "\t" }).map {
             String($0).trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
         }
-        guard let first = tokens.first else { return "" }
-        for token in tokens {
+        // Leading `NAME=value` assignments are never an id:  the value may be a secret.
+        let words = tokens.drop(while: { isAssignment($0) })
+        guard let first = words.first else { return "" }
+        for token in words {
             let base = (token as NSString).lastPathComponent
             let suffix = (base as NSString).pathExtension
             if scriptSuffixes.contains(suffix) {
@@ -1240,10 +1242,20 @@ enum MiniMaxAttention {
             }
         }
         for hook in surface.hooks {
-            if let proof = hook.proof, MiniMaxCopy.needsLook(proof) {
+            if let proof = hook.proof {
+                if MiniMaxCopy.needsLook(proof) {
+                    items.append(
+                        "The \(hook.event) hook \(hook.hookId) is \(MiniMaxCopy.stateWords(proof.state).lowercased())."
+                    )
+                }
+            } else {
+                // No proof is "installed" without "protecting", never fine.
                 items.append(
-                    "The \(hook.event) hook \(hook.hookId) is \(MiniMaxCopy.stateWords(proof.state).lowercased())."
+                    "The \(hook.event) hook \(hook.hookId) is not proved:  the engine has no rule for it."
                 )
+            }
+            if !hook.enabled {
+                items.append("The \(hook.event) hook \(hook.hookId) is switched off in its manifest.")
             }
             switch hook.script {
             case .missing:

@@ -752,4 +752,23 @@ final class MiniMaxSurfaceTests: XCTestCase {
         XCTAssertTrue(items.contains("The PreToolUse hook fleet-guard-hook runs a script that is missing."))
         XCTAssertTrue(items.contains { $0.hasPrefix("The telegram route names gone-bot") })
     }
+
+    /// A hook the engine has no proof for is not fine, even when every kind passes.
+    func test_a_hook_with_no_proof_needs_a_look() throws {
+        let home = try makeHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let surface = MiniMaxReader.read(home: home, rosterSeats: ["MM"], proofs: [])
+        let items = MiniMaxAttention.items(surface: surface, seat: "MM", engine: allPassing(), engineAnswered: true)
+        XCTAssertTrue(
+            items.contains("The PreToolUse hook fleet-guard-hook is not proved:  the engine has no rule for it.")
+        )
+    }
+
+    /// A leading `NAME=value` assignment is never the hook id, so a secret in it is
+    /// not shown through the id.
+    func test_a_command_id_skips_leading_assignments() {
+        XCTAssertEqual(MiniMaxReader.commandId("API_KEY=sk-abc123secret /opt/bin/guard"), "guard")
+        XCTAssertEqual(MiniMaxReader.commandId("A=1 B=2 python3 /opt/x/hook.py"), "hook")
+        XCTAssertEqual(MiniMaxReader.commandId("TOKEN=abc"), "")
+    }
 }

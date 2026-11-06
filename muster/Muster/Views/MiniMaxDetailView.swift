@@ -100,7 +100,7 @@ struct MiniMaxDetailView: View {
                             Text(
                                 ApplyCopy.join(
                                     "Nothing needs a look.",
-                                    "The engine passes every config kind for seat \(seat), and every file here was read."
+                                    "The engine passes every config kind for seat \(seat), every hook is proved and on, and every file that is there was read."
                                 )
                             )
                             .font(.callout)
