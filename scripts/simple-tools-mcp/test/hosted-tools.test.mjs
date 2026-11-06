@@ -1,5 +1,5 @@
 // The seven hosted tools against a fake Zulip, with the shared golden fixtures
-// (scripts/agent_sync/mcp/fixtures.jsonl) and the hosted rules:  seat binding,
+// (scripts/simple_tools/mcp/fixtures.jsonl) and the hosted rules:  seat binding,
 // the D4 allowlist, spacing, budgets, idempotency, reconcile, 429, audit.
 // No dependencies:  CI runs this with plain `node --test`.
 
@@ -26,7 +26,7 @@ import {
 import { FakeZulip, BOT_EMAIL, OWNER_ID, STREAMS, zulipShapedKey } from "./fake-zulip.mjs";
 import { ROOT, testEnv } from "./helpers.mjs";
 
-const FIXTURES_PATH = path.join(ROOT, "../agent_sync/mcp/fixtures.jsonl");
+const FIXTURES_PATH = path.join(ROOT, "../simple_tools/mcp/fixtures.jsonl");
 const fixtures = (kind) =>
   readFileSync(FIXTURES_PATH, "utf8")
     .split("\n")
@@ -120,7 +120,7 @@ function fence(text) {
 // ---------------------------------------------------------------- contract
 
 test("tools.json is the stdio server's file:  whoami, identities, then every Zulip tool as zulip_<verb> (AFC-331), closed inputs, no identity arguments in the shared contract", () => {
-  const file = JSON.parse(readFileSync(path.join(ROOT, "../agent_sync/mcp/tools.json"), "utf8"));
+  const file = JSON.parse(readFileSync(path.join(ROOT, "../simple_tools/mcp/tools.json"), "utf8"));
   assert.deepEqual(TOOLS, file);
   assert.deepEqual(TOOLS.tools.slice(0, 12).map((t) => t.name), ["whoami", "identities", "guide", "zulip_topics", "zulip_read_topic", "zulip_inbox", "zulip_post", "zulip_reply", "zulip_react", "zulip_dm_list", "zulip_dm_read", "zulip_dm_send"]);
   assert.equal(TOOLS.tools.length, 45);

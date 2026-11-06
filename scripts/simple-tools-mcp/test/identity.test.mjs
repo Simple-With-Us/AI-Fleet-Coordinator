@@ -17,7 +17,7 @@ import { gate } from "../src/gate.js";
 import { okResult, ERROR_META_KEY } from "../src/contract.js";
 import { ROOT } from "./helpers.mjs";
 
-const FIXTURES = readFileSync(path.join(ROOT, "../agent_sync/mcp/fixtures.jsonl"), "utf8")
+const FIXTURES = readFileSync(path.join(ROOT, "../simple_tools/mcp/fixtures.jsonl"), "utf8")
   .split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("//")).map((l) => JSON.parse(l));
 
 /** A stand-in for one identity's HostedTools:  records calls and audit rows. */
@@ -255,7 +255,7 @@ test("a removed name is refused with unknown_tool naming its replacement;  an un
   // eavesdropper_* tools, so eavesdropper_ack (stdio-only, like eavesdropper_ack before the rename)
   // is a real name that this transport never served;  the old name is still refused here.
   const contract = new Set(
-    JSON.parse(readFileSync(path.join(ROOT, "../agent_sync/mcp/eavesdropper-tools.json"), "utf8"))
+    JSON.parse(readFileSync(path.join(ROOT, "../simple_tools/mcp/eavesdropper-tools.json"), "utf8"))
       .tools.map((t) => t.name),
   );
   for (const [old, replacement] of Object.entries(RENAMED_TOOLS)) {

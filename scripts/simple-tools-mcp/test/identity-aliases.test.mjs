@@ -20,7 +20,7 @@ const FleetApps = z.looseObject({
 const SCRIPTS = path.resolve(ROOT, "..");
 
 test("the alias table equals identity.py's SEAT_NAME_ALIASES and GROK_ALIAS_PATTERN", () => {
-  const out = execFileSync("python3", ["-c", "import json; from agent_sync import identity as I; print(json.dumps({'a': I.SEAT_NAME_ALIASES, 'p': I.GROK_ALIAS_PATTERN}))"], {
+  const out = execFileSync("python3", ["-c", "import json; from simple_tools import identity as I; print(json.dumps({'a': I.SEAT_NAME_ALIASES, 'p': I.GROK_ALIAS_PATTERN}))"], {
     cwd: SCRIPTS, env: { ...process.env, PYTHONPATH: SCRIPTS }, encoding: "utf8",
   });
   const python = JSON.parse(out);

@@ -376,7 +376,7 @@ test("personas table:  the committed table passes, and a malformed one fails sof
 });
 
 // Loads the Worker's persona consumers in a fresh node process whose personas table is `table`:  a load
-// hook serves the fixture in place of scripts/agent_sync/mcp/gb-identities.json, so nothing on disk changes.
+// hook serves the fixture in place of scripts/simple_tools/mcp/gb-identities.json, so nothing on disk changes.
 // The child prints one JSON line describing what each consumer saw.  The hook needs node:module's
 // registerHooks, which Node has from 22.15 (and 23.5);  package.json allows Node 22.0, so on an older 22 the
 // test is skipped with that reason instead of failing (kody 4368416312).  CI runs Node 24, where it runs.
@@ -387,7 +387,7 @@ function loadWithPersonasTable(table) {
     import { registerHooks } from "node:module";
     registerHooks({
       load(url, context, nextLoad) {
-        if (url.endsWith("/agent_sync/mcp/gb-identities.json")) return { format: "json", source: process.env.GB_TABLE_FIXTURE, shortCircuit: true };
+        if (url.endsWith("/simple_tools/mcp/gb-identities.json")) return { format: "json", source: process.env.GB_TABLE_FIXTURE, shortCircuit: true };
         return nextLoad(url, context);
       },
     });
