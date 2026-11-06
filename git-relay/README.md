@@ -170,7 +170,7 @@ value matching a credential shape is stored hashed, whatever key it arrived unde
 ### Reviewed security-test fixtures
 
 File writes still scan the full decoded content before any GitHub write. The
-server-owned `git_relay/reviewed_fixtures.py` records five exact-content
+server-owned `git_relay/reviewed_fixtures.py` records thirteen exact-content
 attestations for synthetic credential-rejection fixtures in AFC. Each entry binds
 repository, destination path and SHA-256 of the entire file. It is not a caller
 option, path-wide exemption, environment setting or trust in existing Git history.
@@ -178,15 +178,25 @@ Changing one byte or destination invalidates the attestation; any credential sha
 then fails closed. The ordinary scanner and the rejection tests are unchanged.
 PR text, messages, binary assets and all unattested files have no exemption.
 
-The attested source is `c8c2a471fac215957cc81ec3b2e5e765e5908443`:
+The five pre-existing rows remain attested from `c8c2a471fac215957cc81ec3b2e5e765e5908443`.
+The ten added or refreshed rows (the rename-affected fixtures) were re-reviewed on
+the `rename/simple-tools-mcp-2026-11-05` build, head `31dab6c1bd5012ade1bc5babd0ea5cefeb7e8a80`:
 
 | Destination | Source Git blob | Whole-file SHA-256 |
 | --- | --- | --- |
-| `scripts/simple_tools/mcp/fixtures.jsonl` | `7a556de1bff0185b2f943fb822b5e43ac166a40a` | `06389862d783117572042eaef6cfd645c196a74648ad926c1f38a2ff14afe50a` |
+| `scripts/simple_tools/mcp/fixtures.jsonl` | `a4ff4ac5636654ee20954aa7e14595c125c5d547` | `bea6ca376aefdce65ce0295dbc72cef4a396b051c8add3e6d0174fc917c81829` |
 | `scripts/simple_tools/tests/test_operator_github.py` | `db5248bc7e9f61daaffd180b9b7b026643a07a14` | `ef10944dc053c2f4bf664f1ee796257d0deb4d64f1bb786be9ad58ec3ea4b442` |
-| `scripts/simple_tools/tests/test_operator_send.py` | `f6b1a1a622810b4bb3e898f7ca67e0c56cc02a5d` | `d2f235ea96b7cd5bbc2dff026e3db178e051d23775532e7855bc1de019c594a7` |
+| `scripts/simple_tools/tests/test_operator_send.py` | `2ef871ceb92213e7208ab2faaa2cb235d478faf8` | `4353cf8e69c53151e3340c4a1bed374e380bac3dfa076e22d8c08eb575963873` |
 | `scripts/test-lark-mm-bridge.py` | `287b0c42cb7234deb9fd03d359ed6e52fe40959e` | `f94d6ecb794baab74b2d43c97b7cf5efd8aab0e76bc42e2a6224eb2f4ddb5535` |
 | `scripts/test_operator_provenance.py` | `d3c23c8fd8b3ea6b73897c6ab456355a488e3f0a` | `a72e105b054617eecebdd2011dfca341e08dbc9377e378dccc8733aa7fea2c1b` |
+| `scripts/simple-tools-mcp/DEPLOY-PHASE0.md` | `cb10a4f133a5e90a1b3bdc77b1df818ad9dac0e9` | `5f85629a6a6979a763063ad3b79fd56b5d77ab93d2cd0e6da4c200485debca3f` |
+| `scripts/simple-tools-mcp/test/gr-assert.test.mjs` | `80f27a413e461e9adfc8924c881e29d4d9e2d21c` | `ecfa713b33754e1331a8fee0e07c67271fc186908a52830839f1b530a246dad8` |
+| `scripts/simple-tools-mcp/test/gr-front.test.mjs` | `b46549565f659d145f30d6ff1ede3af6515de64d` | `9de759b53f8cb987b16ade0a9cf99ff69d999659519a620b292f4aa748eee3b9` |
+| `scripts/simple-tools-mcp/test/gr-workflow-v1.test.mjs` | `9a36132edd4b6614209c2f6dd12a9df13a939c05` | `1caec47629a7a4592051b25efcfd229cfe662471027c13eb3c5d812952816e95` |
+| `scripts/simple-tools-mcp/test/integration.workerd.mjs` | `6ee7c2dcc2361dcc4f56b6cded05c0efec190dab` | `74dbfe38beea28766c7ba48dca57b8e3b599baaba155f8e97f3ddd87fadf425e` |
+| `scripts/simple_tools/tests/test_infisical_api_route.py` | `03f2ca24e1de1a47fd7aa1bb031e1e68f064c76e` | `87925403c1a4e91a1f4447ebd76d8fa7f28aaf266043c0ef244f75b4e93c99e4` |
+| `scripts/simple_tools/tests/test_mcp_extras.py` | `eaf0c913742de23ef19e5c655a01dc3e5ef071c7` | `d31c6f0a7f84f17dd0d480714a5d0be9f05fad97d3a3ef5d519da68b304bc95a` |
+| `scripts/fleet_lanes/tests/test_install_mcp.py` | `dc00b61c50740ce10ecc796cdfadc9df6d6de7cf` | `e59b1610dde3808e1924433de8c80513662a6c60767d85aeafd40b6674c3b6c7` |
 
 Every attestation addition/change requires normal source review of the complete
 fixture contents and its provenance, evidence that values are synthetic and
