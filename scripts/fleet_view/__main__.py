@@ -10,9 +10,12 @@ environment, decodes ``schemaVersion``, and shows UNKNOWN — never the last
 green — when the run fails.
 
 Exit codes mirror ``fleet_config``:  0 PASS, 3 UNKNOWN, 2 refused, 64 usage.
-The claim expiry ceiling comes from ``CLAIM_EXPIRY_HOURS`` when set, else 72
-hours;  the resolved value rides in the envelope notes so a reader can see
-which ceiling flagged a claim.
+The claim expiry ceiling comes from ``--expiry-hours``, else ``CLAIM_EXPIRY_HOURS``
+when set, else 72 hours;  the resolved value rides in the envelope
+(``claimExpiryHours`` and the notes) so a reader can see which ceiling flagged a
+claim.  The lanes root is ``--lanes-root``, else ``FLEET_LANES_ROOT``, else
+``~/apps/lanes`` on the machine that runs this, and the envelope's ``host`` names
+that machine.
 """
 
 from __future__ import annotations
@@ -22,6 +25,7 @@ import json
 import os
 import pathlib
 import sys
+import time
 from datetime import datetime, timezone
 from typing import TextIO
 
@@ -77,9 +81,20 @@ def _expiry_hours(args) -> int:
         return _DEFAULT_EXPIRY_HOURS
 
 
+def _lanes_root(args) -> pathlib.Path:
+    if args.lanes_root:
+        return pathlib.Path(args.lanes_root)
+    from_env = os.environ.get("FLEET_LANES_ROOT", "")
+    if from_env:
+        return pathlib.Path(from_env)
+    return pathlib.Path.home() / "apps" / "lanes"
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = _Parser(prog="fleet-view", description="Collect lanes, PRs and claims for Muster.")
-    parser.add_argument("--lanes-root", default=None, help="default: ~/apps/lanes")
+    parser.add_argument(
+        "--lanes-root", default=None, help="default: $FLEET_LANES_ROOT, else ~/apps/lanes"
+    )
     parser.add_argument(
         "--registry", default=None, help="default: fleet-apps.json at the repo root"
     )
@@ -95,7 +110,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _render(report: FleetReport) -> str:
-    lines = ["fleet-view status  (%s)" % report.generated_at]
+    lines = ["fleet-view status  (%s, on %s)" % (report.generated_at, report.host)]
     lines.append("verdict: %s" % contract.overall_verdict(report))
     for name, section in (
         ("lanes", report.lanes),
@@ -125,21 +140,25 @@ def _status(args, out: TextIO, err: TextIO) -> int:
     except (OSError, ValueError) as exc:
         err.write("fleet-view: registry unreadable: %s\n" % exc)
         return EXIT_REFUSED
-    lanes_root = (
-        pathlib.Path(args.lanes_root) if args.lanes_root else pathlib.Path.home() / "apps" / "lanes"
-    )
+    lanes_root = _lanes_root(args)
+    started = time.monotonic()
     now = datetime.now(timezone.utc)
+    host = collectors.this_host()
     budget = RequestBudget(github_max=args.github_max, linear_max=args.linear_max)
     runner = collectors.make_runner()
     expiry = _expiry_hours(args)
+    ceiling = collectors.plural(expiry, "hour")
     report = FleetReport(
         generated_at=now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        lanes=collectors.collect_lanes(lanes_root, index, runner, now),
-        pull_requests=collectors.collect_pull_requests(repos, index, runner, budget),
-        claims=collectors.collect_claims(runner, budget, now, expiry),
+        lanes=collectors.collect_lanes(lanes_root, index, runner, now, host),
+        pull_requests=collectors.collect_pull_requests(repos, index, runner, budget, host),
+        claims=collectors.collect_claims(runner, budget, now, expiry, index),
         budget=budget,
-        notes=("claim expiry ceiling: %d hour(s) (CLAIM_EXPIRY_HOURS)" % expiry,),
+        notes=("claim expiry ceiling: %s (CLAIM_EXPIRY_HOURS)" % ceiling,),
+        host=host,
+        claim_expiry_hours=expiry,
     )
+    report.duration_seconds = round(time.monotonic() - started, 1)
     if args.json:
         json.dump(contract.build_envelope(report), out, indent=1)
         out.write("\n")

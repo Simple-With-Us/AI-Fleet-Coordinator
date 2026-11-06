@@ -222,9 +222,6 @@ enum PassMeaning {
     /// What PASS means on a badge whose panel names no more than "this panel's own check".
     static let panelRow = "PASS means every check this panel makes on this row was proven, and nothing else about it."
 
-    /// What PASS on an app row in Apps & Work covers.
-    static let appRow = "Checked: no lane is dirty, no pull request is failing or blocked, and no claim has expired.\u{00A0} Nothing else about the app was checked."
-
     /// What PASS on a host in the Fleet Hosts panel (the tools on both machines) covers.
     static let toolsHost = "Checked: the doctor's report is current, the host answered, and none of its tool rows failed, are behind or could not be read."
 }
