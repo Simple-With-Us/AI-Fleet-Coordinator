@@ -4,6 +4,7 @@ the SUPublicEDKey built into the archive before it signs anything.
 The vector is RFC 8032, section 7.1, test 1 (a published test key, not Muster's).  Swift exists
 only on the Mac, so the Ubuntu job skips this and the Muster macOS build job runs it.
 """
+
 import base64
 import os
 import shutil
@@ -24,7 +25,9 @@ class SparklePublicKeyTests(unittest.TestCase):
             path = os.path.join(directory, "key")
             with open(path, "w", encoding="utf-8") as handle:
                 handle.write(base64.b64encode(data).decode() + "\n")
-            return subprocess.run(["swift", SCRIPT, path], capture_output=True, text=True, timeout=600)
+            return subprocess.run(
+                ["swift", SCRIPT, path], capture_output=True, text=True, timeout=600
+            )
 
     def test_seed_gives_its_public_key(self):
         result = self.run_with(SEED)
