@@ -39,6 +39,75 @@ class Writes(unittest.TestCase):
             with self.assertRaises(Refused):
                 WorkflowVerbs.check_shape(a, {**args, "files": files}, REPO)
 
+    def test_tree_existing_blob_reference(self):
+        import base64
+
+        a = "wf_git_tree_create"
+        blob_sha = "d" * 40
+        blob = {
+            "encoding": "base64",
+            "size": 2,
+            "content": base64.b64encode(b"hi").decode(),
+        }
+        tree = {"sha": "e" * 40, "truncated": False, "tree": []}
+        args = {
+            "repo": REPO,
+            "base_tree": SHA,
+            "files": [{"path": "big.txt", "sha": blob_sha, "mode": "100644"}],
+        }
+        c = Client(blob, tree)
+        out = self.handle(c, a).run(a, args)
+        self.assertEqual(out["tree"]["sha"], "e" * 40)
+        self.assertEqual(c.calls[0][0], "GET")
+        self.assertIn(f"/git/blobs/{blob_sha}", c.calls[0][1])
+        self.assertEqual(
+            c.calls[1][2],
+            {
+                "base_tree": SHA,
+                "tree": [{"path": "big.txt", "mode": "100644", "type": "blob", "sha": blob_sha}],
+            },
+        )
+        # exactly one of text/sha, well-formed sha
+        for bad_files in [
+            [{"path": "x", "mode": "100644"}],
+            [{"path": "x", "text": "hi", "sha": blob_sha, "mode": "100644"}],
+            [{"path": "x", "sha": "zz", "mode": "100644"}],
+        ]:
+            with self.assertRaises(Refused):
+                WorkflowVerbs.check_shape(a, {"repo": REPO, "base_tree": SHA, "files": bad_files}, REPO)
+
+    def test_tree_blob_reference_never_bypasses_scan(self):
+        import base64
+
+        a = "wf_git_tree_create"
+        blob_sha = "d" * 40
+
+        def blob(payload):
+            return {
+                "encoding": "base64",
+                "size": len(payload),
+                "content": base64.b64encode(payload).decode(),
+            }
+
+        base = {"repo": REPO, "base_tree": SHA}
+        files = [{"path": "x.txt", "sha": blob_sha, "mode": "100644"}]
+        # secret-shaped referenced content is refused before any tree write
+        c = Client(blob(b"ghp_" + b"a" * 30))
+        with self.assertRaises(Refused):
+            self.handle(c, a).run(a, {**base, "files": files})
+        self.assertEqual(len(c.calls), 1)
+        # non-utf-8 referenced content is refused (text trees only)
+        c = Client(blob(b"\xff\xfe\x00"))
+        with self.assertRaises(Refused):
+            self.handle(c, a).run(a, {**base, "files": files})
+        # oversized or malformed blob receipts are refused
+        c = Client({"encoding": "base64", "size": 3 * 1024 * 1024, "content": "aGk="})
+        with self.assertRaises(Refused):
+            self.handle(c, a).run(a, {**base, "files": files})
+        c = Client({"encoding": "utf-8", "size": 2, "content": "hi"})
+        with self.assertRaises(Refused):
+            self.handle(c, a).run(a, {**base, "files": files})
+
     def test_commit_exact_tree_parents_and_no_identity_selector(self):
         a = "wf_git_commit_create"
         args = {"repo": REPO, "tree_sha": SHA, "parents": ["b" * 40], "message": "edit"}
