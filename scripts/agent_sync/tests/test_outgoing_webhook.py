@@ -229,8 +229,10 @@ class OutgoingWebhookReceiverTests(ListenerHarness):
         self.write_config(extra_daemon='outgoing_webhook_seats = ["CLAUDE"]')
         daemon = self.daemon()
         self.assertTrue(daemon.connect_seat("CLAUDE"))
+        # A non-owner sender tagging the seat under test, so the assertion exercises the
+        # tagged-recipient path OPS-1036 fixes and not the owner branch of the seat inbox.
         msg_id = self.fake.add_message(
-            "Jay Wedgeworth", "agent-sync", "AFC-309 no-wake", ":eyes: @**Codex** wake up",
+            "Codex", "agent-sync", "AFC-309 no-wake", ":eyes: @**Claude** wake up",
             deliver=False,
         )
         self.assertEqual(daemon._accept_outgoing_webhook("CLAUDE", BOT_EMAIL, msg_id), "accepted")
@@ -250,16 +252,18 @@ class OutgoingWebhookReceiverTests(ListenerHarness):
         daemon = self.daemon()
         self.assertTrue(daemon.connect_seat("CLAUDE"))
         msg_id = self.fake.add_message(
-            "Jay Wedgeworth", "agent-sync", "AFC-309 control", "@**Codex** wake up",
+            "Codex", "agent-sync", "AFC-309 control", "@**Claude** wake up",
             deliver=False,
         )
         self.assertEqual(daemon._accept_outgoing_webhook("CLAUDE", BOT_EMAIL, msg_id), "accepted")
         daemon._drain_outgoing_webhook_spool()
+        rows = [row for row in self.inbox("CLAUDE") if row["id"] == msg_id]
         self.assertEqual(
-            [row["id"] for row in self.inbox("CLAUDE") if row["id"] == msg_id],
+            [row["id"] for row in rows],
             [msg_id],
             "the unmarked message reaches the seat inbox",
         )
+        self.assertTrue(rows[0]["wake_worthy"], "and the unmarked row is wake-worthy")
 
 
 if __name__ == "__main__":
