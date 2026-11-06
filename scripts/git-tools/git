@@ -1650,17 +1650,22 @@ def _publish_key(repo: str, branch: str, base, message: str, files) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
-def _publish_store_load() -> tuple[dict, bool]:
-    """(store, rebuilt_from_corruption).  A corrupt store is never treated as empty state:  the unreadable
-    file is quarantined aside (kept as evidence, never overwritten) and the caller rebuilds ONLY what the
-    canonical branch proves, then stops - no write is dispatched on a corruption run, because an absent
-    record is not evidence that its operation never ran."""
+_RECONCILE_BARRIER = "_reconciliation_required"
+
+
+def _publish_store_load() -> dict:
+    """A corrupt store is never treated as empty state:  the unreadable file is quarantined aside (kept as
+    evidence, never overwritten) and the store becomes one durable reconciliation barrier.  The barrier
+    fails every later publish closed - across restarts and repeated invocations - until an explicit
+    publish-reconcile settles each quarantined record with the original operation's own evidence.  An
+    absent record is not proof its operation never ran, and branch content shows desired state, not an
+    original operation's settled outcome."""
     path = _publish_store_path()
     try:
         with open(path) as handle:
             store = json.load(handle)
     except FileNotFoundError:
-        return {}, False  # the normal first run:  no outcomes recorded yet
+        return {}  # the normal first run:  no outcomes recorded yet
     except (json.JSONDecodeError, ValueError):
         quarantine = path.with_name(f"{path.name}.corrupt-{int(time.time())}-{os.getpid()}")
         try:
@@ -1668,10 +1673,16 @@ def _publish_store_load() -> tuple[dict, bool]:
         except OSError as exc:
             die(f"the publish outcome store is corrupt and cannot be quarantined ({type(exc).__name__})", EXIT_ERROR)
         print(
-            f"the publish outcome store was corrupt;  quarantined to {quarantine};  reconciling from the branch",
+            f"the publish outcome store was corrupt;  quarantined to {quarantine};  reconciliation is required before publishing",
             file=sys.stderr,
         )
-        return {}, True
+        return {
+            _RECONCILE_BARRIER: {
+                "quarantine": quarantine.name,
+                "recorded_at": int(time.time()),
+                "reason": "the publish outcome store was corrupt;  every record it held is unproven until reconciled",
+            }
+        }
     except OSError as exc:
         # An unavailable registry is not an empty one:  fail closed and name the path rather than publish
         # without verifiable prior outcomes.
@@ -1681,7 +1692,7 @@ def _publish_store_load() -> tuple[dict, bool]:
         )
     if not isinstance(store, dict):
         die(f"the publish outcome store at {path} is not an object;  reconcile it before publishing", EXIT_ERROR)
-    return store, False
+    return store
 
 
 def _publish_state_dir() -> Path:
@@ -1773,8 +1784,8 @@ def cmd_publish(tools: dict, a, bearer: str, seat: str, deadline: float) -> int:
 
     Files past one commit's limits go in several commits, in order, each fenced on the head the last one left.
     Nothing retries:  an unknown outcome stops here, as every other write in this client does.  A corrupt
-    outcome store stops the run before any write:  quarantined records are evidence, an absent record is not
-    proof its operation never ran, so only branch-proven state is rebuilt and the rest waits for a rerun.
+    outcome store becomes a durable reconciliation barrier:  every later run stops before any write until
+    publish-reconcile settles each quarantined record with the original operation's own evidence.
     """
     files = _publish_files(a.file)
     if not files:
@@ -1798,17 +1809,22 @@ def cmd_publish(tools: dict, a, bearer: str, seat: str, deadline: float) -> int:
         del payload
     lock = _publish_store_lock()
     try:
-        store, rebuilt = _publish_store_load()
+        store = _publish_store_load()
+        barrier = store.get(_RECONCILE_BARRIER)
+        if barrier is not None:
+            # A durable barrier, not a one-shot exit:  every invocation fails closed here, before ANY write
+            # (branch creation included), until an explicit publish-reconcile settles every quarantined
+            # record.  Branch content cannot prove an original operation was never dispatched.
+            _publish_store_save(store)
+            die(
+                f"the publish outcome store requires reconciliation ({barrier.get('quarantine')}):  "
+                "settle every quarantined record with publish-reconcile before publishing again",
+                EXIT_ERROR,
+            )
         state = _publish_state(store, _publish_key(a.repo, a.branch, a.base, a.message, files))
         if a.base:
             base = _branch_head(_tool_call(tools, "gr_wf_branch_get", {"repo": a.repo, "branch": a.base}, bearer, seat, deadline))
             branch_state = state["batches"].get("branch")
-            if rebuilt and branch_state != "ok":
-                _publish_store_save(store)
-                die(
-                    "the quarantined store leaves this branch creation's history unproven;  reconcile the quarantine, then run this again",
-                    EXIT_ERROR,
-                )
             if branch_state == "unknown":
                 die(
                     "an earlier branch creation's outcome is unknown;  check the branch before running this again",
@@ -1858,15 +1874,6 @@ def cmd_publish(tools: dict, a, bearer: str, seat: str, deadline: float) -> int:
                 _publish_store_save(store)
                 print(f"batch {number} already on the branch")
                 continue
-            if rebuilt:
-                # The branch proves this batch did NOT land, but the quarantine cannot prove its earlier
-                # operation was never dispatched - stop here, record what is proven, and leave the send to a
-                # reconciled rerun.
-                _publish_store_save(store)
-                die(
-                    f"the quarantined store leaves batch {number}'s history unproven;  reconcile the quarantine, then run this again",
-                    EXIT_ERROR,
-                )
             payload = _publish_payload(a.repo, a.branch, a.message, number, len(batches), pending)
             outcome, out = _outcome_of(
                 lambda: _tool_call(tools, "gr_wf_files_put", {**payload, "expected_head_sha": head}, bearer, seat, deadline)
@@ -1893,6 +1900,63 @@ def cmd_publish(tools: dict, a, bearer: str, seat: str, deadline: float) -> int:
         return 0
     finally:
         lock.close()
+
+def cmd_publish_reconcile(a) -> int:
+    """Lift the reconciliation barrier by settling every quarantined record explicitly.
+
+    --settle KEY:BATCH=ok|refused|unknown, one per record in the quarantined store:  ok = the ORIGINAL
+    operation's own evidence (its receipt, the relay's outcome row) shows the write landed, refused = that
+    evidence shows it did not, unknown = still unsettled, and terminal for this client either way.  The
+    barrier stays until every record is settled.
+    """
+    lock = _publish_store_lock()
+    try:
+        store = _publish_store_load()
+        barrier = store.get(_RECONCILE_BARRIER)
+        if barrier is None:
+            die("the publish outcome store has no reconciliation barrier", EXIT_USAGE)
+        quarantine = _publish_store_path().with_name(str(barrier.get("quarantine")))
+        try:
+            with open(quarantine) as handle:
+                old = json.load(handle)
+        except (OSError, ValueError) as exc:
+            die(
+                f"the quarantined store {quarantine} cannot be read ({type(exc).__name__});  reconcile it by hand",
+                EXIT_ERROR,
+            )
+        if not isinstance(old, dict):
+            die(f"the quarantined store {quarantine} is not an object;  reconcile it by hand", EXIT_ERROR)
+        settlements: dict[tuple[str, str], str] = {}
+        for item in a.settle or []:
+            m = re.fullmatch(r"([0-9a-f]{64}):([A-Za-z0-9_]+)=(ok|refused|unknown)", item)
+            if m is None:
+                die(f"{item!r} is not KEY:BATCH=ok|refused|unknown", EXIT_USAGE)
+            settlements[(m.group(1), m.group(2))] = m.group(3)
+        required = {
+            (key, batch)
+            for key, entry in old.items()
+            if isinstance(entry, dict) and isinstance(entry.get("batches"), dict)
+            for batch in entry["batches"]
+        }
+        missing = required - settlements.keys()
+        if missing:
+            die(
+                "every quarantined record needs an explicit settlement;  missing:  "
+                + ", ".join(f"{key}:{batch}" for key, batch in sorted(missing)),
+                EXIT_USAGE,
+            )
+        settled_store = {}
+        for key, entry in old.items():
+            batches = entry.get("batches") if isinstance(entry, dict) else None
+            if not isinstance(batches, dict):
+                continue
+            settled_store[key] = {"batches": {batch: settlements[(key, batch)] for batch in batches}}
+        _publish_store_save(settled_store)
+        print(f"reconciled {len(required)} record(s) from {quarantine.name};  the reconciliation barrier is lifted")
+        return 0
+    finally:
+        lock.close()
+
 
 def _remote_tree_shas(tools: dict, repo: str, head: str, bearer: str, seat: str, deadline: float) -> dict:
     """path -> blob sha for the branch head's tree, for skip-what-already-matches;  empty when unreadable."""
@@ -1955,6 +2019,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="arguments as a JSON object, @file, or - for stdin (default: {})",
     )
     pc.add_argument("--json", action="store_true", help="print structured content and text as JSON")
+    pr = sub.add_parser(
+        "publish-reconcile",
+        help="settle a quarantined publish store's records with original-operation evidence and lift the barrier",
+        allow_abbrev=False,
+    )
+    pr.add_argument(
+        "--settle",
+        action="append",
+        metavar="KEY:BATCH=ok|refused|unknown",
+        help="one per quarantined record;  every record must be settled explicitly",
+    )
     pk = sub.add_parser("clone", help="clone a repo as this bot:  clone OWNER/NAME [FOLDER]", allow_abbrev=False)
     pk.add_argument("repo")
     pk.add_argument("dir", nargs="?")
@@ -2026,6 +2101,8 @@ def main(argv: list[str] | None = None) -> int:
     if a.cmd in transfer:
         # The identities answer above already proved this bearer;  git needs no tool discovery.
         return transfer[a.cmd](a, bearer)
+    if a.cmd == "publish-reconcile":
+        return cmd_publish_reconcile(a)
     tools = discover_tools(bearer, overall_deadline)
     if a.cmd == "publish":
         return cmd_publish(tools, a, bearer, server_seat, overall_deadline)

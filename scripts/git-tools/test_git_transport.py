@@ -493,7 +493,7 @@ G = importlib.util.module_from_spec(spec)
 loader.exec_module(G)
 lock = G._publish_store_lock()
 try:
-    store, _rebuilt = G._publish_store_load()
+    store = G._publish_store_load()
     state = store.setdefault({key!r}, {{"batches": {{}}}})
     for number, outcome in {batches!r}.items():
         prior = state["batches"].get(number)
@@ -517,7 +517,7 @@ finally:
         ]
         for proc in procs:
             self.assertEqual(proc.wait(timeout=60), 0)
-        store, _rebuilt = G._publish_store_load()
+        store = G._publish_store_load()
         self.assertEqual(
             {k: v["batches"] for k, v in store.items()},
             {f"op{n}": {"1": "ok"} for n in range(6)},
@@ -532,7 +532,7 @@ finally:
         source = self._writer_source("shared-op", {"1": "ok"})
         done = subprocess.run(["python3", "-c", source], capture_output=True, timeout=60)
         self.assertEqual(done.returncode, 3)
-        store, _rebuilt = G._publish_store_load()
+        store = G._publish_store_load()
         self.assertEqual(store["shared-op"]["batches"]["1"], "unknown")
 
     def test_the_store_save_is_an_atomic_replace(self):
@@ -554,7 +554,7 @@ finally:
             t.join()
         self.assertEqual(errors, [])
         # Every save is an atomic replace:  the file is always one valid JSON document.
-        self.assertIsInstance(G._publish_store_load()[0], dict)
+        self.assertIsInstance(G._publish_store_load(), dict)
 
     def test_base64_that_looks_like_a_token_is_not_refused(self):
         # This decoded content has no secret, but its base64 is one long run of letters and digits.
@@ -595,102 +595,100 @@ finally:
         self.assertEqual(self.sent, [])
 
 
-    def test_a_corrupt_store_is_quarantined_and_stops_before_any_write(self):
+    def corrupt_store(self):
+        store_file = self.root / "state" / "publish-outcomes.json"
+        store_file.write_bytes(b"{not json")
+        return store_file
+
+    def reconcile(self, *settlements):
+        return G.cmd_publish_reconcile(ns(settle=list(settlements)))
+
+    def test_a_corrupt_store_becomes_a_durable_reconciliation_barrier(self):
         specs = [f"{self.file('c', 10)}=c"]
         self.assertEqual(self.publish(specs), 0)
         self.sent.clear()
-        store_file = self.root / "state" / "publish-outcomes.json"
-        store_file.write_bytes(b"{not json")
-        err = io.StringIO()
-        with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as caught:
-            self.publish(specs)
-        self.assertEqual(caught.exception.code, G.EXIT_ERROR)
+        store_file = self.corrupt_store()
+        for _ in range(3):  # repeated ordinary invocations:  the barrier survives every one
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as caught:
+                self.publish(specs)
+            self.assertEqual(caught.exception.code, G.EXIT_ERROR)
+            self.assertEqual(self.puts(), [])
+            self.assertEqual([n for n, _, _ in self.sent if n == "gr_wf_branch_create"], [])
+        self.assertIn("requires reconciliation", err.getvalue())
         quarantined = list((self.root / "state").glob("publish-outcomes.json.corrupt-*"))
         self.assertEqual(len(quarantined), 1)
         self.assertEqual(quarantined[0].read_bytes(), b"{not json")
-        self.assertIn("quarantined", err.getvalue())
-        self.assertIn("reconcile the quarantine", err.getvalue())
-        # The corruption run dispatched nothing and recorded nothing it could not prove.
-        self.assertEqual(self.puts(), [])
+        store = json.loads(store_file.read_text())
+        self.assertIn(G._RECONCILE_BARRIER, store)
+
+    def install_barrier(self, quarantined_store):
+        """A corruption aftermath whose quarantine the operator made legible by hand."""
+        state = self.root / "state"
+        state.mkdir(parents=True, exist_ok=True)
+        (state / "publish-outcomes.json.corrupt-1").write_text(json.dumps(quarantined_store))
+        self.write_store(
+            {
+                G._RECONCILE_BARRIER: {
+                    "quarantine": "publish-outcomes.json.corrupt-1",
+                    "recorded_at": 0,
+                    "reason": "test barrier",
+                }
+            }
+        )
 
     def test_a_quarantined_unknown_record_is_never_replayed(self):
-        # Negative control:  an unresolved unknown survives corruption as a STOP, not as permission.
+        # The negative control:  unknown -> corruption -> repeated normal invocations send nothing,
+        # and only an explicit per-record settlement lifts the barrier - with unknown still terminal.
         specs = [f"{self.file('u', 10)}=u"]
+        key = G._publish_key("Simple-With-Us/CodeCaps", "claude/x", None, "m", [("u", b"x" * 10)])
+        self.install_barrier({key: {"batches": {"1": "unknown"}}})
+        for _ in range(3):
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                self.publish(specs)
+            self.assertEqual(self.puts(), [])
+            self.assertEqual([n for n, _, _ in self.sent if n == "gr_wf_branch_create"], [])
+            self.sent.clear()
+        # Reconciling without settling the record keeps the barrier.
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as caught:
+            self.reconcile()
+        self.assertEqual(caught.exception.code, G.EXIT_USAGE)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            self.publish(specs)
+        self.assertEqual(self.puts(), [])
+        # Settling the record as unknown lifts the barrier;  the unknown itself stays terminal.
+        self.assertEqual(self.reconcile(f"{key}:1=unknown"), 0)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            self.publish(specs)
+        self.assertEqual(self.puts(), [])
+
+    def test_reconcile_needs_every_record_and_a_refused_settlement_allows_a_rerun(self):
+        specs = [f"{self.file('r', 10)}=r"]
+        key = G._publish_key("Simple-With-Us/CodeCaps", "claude/x", None, "m", [("r", b"x" * 10)])
+        self.install_barrier({key: {"batches": {"1": "unknown", "2": "unknown"}}})
+        # Every record needs an explicit settlement:  one missing keeps the barrier.
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as caught:
+            self.reconcile(f"{key}:1=refused")
+        self.assertEqual(caught.exception.code, G.EXIT_USAGE)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            self.publish(specs)
+        self.assertEqual(self.puts(), [])
+        # Both settled on original evidence (never landed):  the barrier lifts and a rerun may send.
+        self.assertEqual(self.reconcile(f"{key}:1=refused", f"{key}:2=refused"), 0)
         self.assertEqual(self.publish(specs), 0)
-        store_file = self.root / "state" / "publish-outcomes.json"
-        store = json.loads(store_file.read_text())
-        key = next(iter(store))
-        store[key]["batches"]["1"] = "unknown"
-        self.write_store(store)
-        store_file.write_bytes(b"{corrupted after the unknown was recorded")
-        self.sent.clear()
-        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-            self.publish(specs)
-        self.assertEqual(self.puts(), [])
-        # The rerun after reconciliation still honors the unknown:  restore the record and it stops again.
-        self.write_store(store)
-        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-            self.publish(specs)
-        self.assertEqual(self.puts(), [])
+        self.assertEqual(len(self.puts()), 1)
 
-    def test_a_corruption_run_rebuilds_only_what_the_branch_proves(self):
-        old = G.PUBLISH_MAX_COMMIT_FILES
-        self.addCleanup(setattr, G, "PUBLISH_MAX_COMMIT_FILES", old)
-        G.PUBLISH_MAX_COMMIT_FILES = 1  # two batches:  one branch-proven, one not
-        local = self.file("same", 10)
-        data = (self.root / "same").read_bytes()
-        blob = G._git_blob_sha(data)
-        specs = [f"{local}=same", f"{self.file('other', 10)}=other"]
-        store_file = self.root / "state" / "publish-outcomes.json"
-        (self.root / "state").mkdir(parents=True, exist_ok=True)
-        store_file.write_bytes(b"{not json")
+    def test_an_unreadable_quarantine_is_reconciled_by_hand(self):
+        self.install_barrier({})
+        (self.root / "state" / "publish-outcomes.json.corrupt-1").write_bytes(b"{still torn")
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as caught:
+            self.reconcile("0" * 64 + ":1=refused")
+        self.assertEqual(caught.exception.code, G.EXIT_ERROR)  # no auto-settlement of illegible records
 
-        def remote(name, args, write, bearer, deadline=None):
-            self.sent.append((name, args, write))
-            if name == "gr_wf_branch_get":
-                return {"structured": {"branch": {"commit": {"sha": "a" * 40}}}}
-            if name == "gr_wf_tree":
-                return {"structured": {"tree": [{"type": "blob", "path": "same", "sha": blob}]}}
-            return {"structured": {"commit": "b" * 40}}
-
-        tools = {
-            name: {"name": name, "read": True, "schema": {"properties": {"identity": {}}}}
-            for name in ("gr_wf_branch_get", "gr_wf_tree", "gr_wf_files_put")
-        }
-        a = ns(repo="Simple-With-Us/CodeCaps", branch="claude/x", message="m", base=None, file=specs)
-        with (
-            mock.patch.object(G, "remote_call", remote),
-            mock.patch.object(G, "validate_arguments"),
-            mock.patch.object(G, "declared_seat", return_value=None),
-            contextlib.redirect_stdout(io.StringIO()),
-            contextlib.redirect_stderr(io.StringIO()),
-            self.assertRaises(SystemExit),
-        ):
-            G.cmd_publish(tools, a, BEARER, "CLAUDE", 0.0)
-        # Branch-proven batch recorded ok, unproven batch left unrecorded, nothing dispatched.
-        self.assertEqual(self.puts(), [])
-        rebuilt = json.loads(store_file.read_text())
-        batches = rebuilt[next(iter(rebuilt))]["batches"]
-        self.assertEqual(batches.get("1"), "ok")
-        self.assertNotIn("2", batches)
-        # The reconciled rerun skips the proven batch and sends only the other file.
-        self.sent.clear()
-        with (
-            mock.patch.object(G, "remote_call", remote),
-            mock.patch.object(G, "validate_arguments"),
-            mock.patch.object(G, "declared_seat", return_value=None),
-            contextlib.redirect_stdout(io.StringIO()),
-        ):
-            self.assertEqual(G.cmd_publish(tools, a, BEARER, "CLAUDE", 0.0), 0)
-        self.assertEqual([f["path"] for f in self.puts()[0]["files"]], ["other"])
-
-    def test_an_unreadable_store_fails_closed(self):
-        (self.root / "state").mkdir(parents=True)
-        (self.root / "state" / "publish-outcomes.json").mkdir()  # a directory: open() raises OSError
-        with self.assertRaises(SystemExit) as caught, contextlib.redirect_stderr(io.StringIO()):
-            self.publish([f"{self.file('u', 10)}=u"])
-        self.assertEqual(caught.exception.code, G.EXIT_ERROR)
-        self.assertEqual(self.puts(), [])
+    def test_reconcile_without_a_barrier_is_a_usage_error(self):
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as caught:
+            self.reconcile()
+        self.assertEqual(caught.exception.code, G.EXIT_USAGE)
 
     def test_a_symlinked_state_directory_is_refused(self):
         elsewhere = self.root / "elsewhere"
