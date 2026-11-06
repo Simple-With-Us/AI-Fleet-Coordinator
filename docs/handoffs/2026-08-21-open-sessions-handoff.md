@@ -1,5 +1,7 @@
 # Open-session handoff — 2026-08-21
 
+Historical identifiers have been redacted. These records do not certify current deployment state.
+
 **Author:** MONET (Mac) · **Scope:** every unarchived Claude Code session on the Mac as of
 2026-08-21 ~16:30 CT · **Purpose:** any fleet agent can pick up any lane below without
 re-reading the original transcript.
@@ -269,12 +271,12 @@ digest hardcoded `agent-logos/<slug>.svg`.  The portable sentence-gap skill land
    prepare that expanded then released — **a hypothesis, not a conclusion.**  The one
    confirmed *standing* item is the **22 GB CoreSimulator runtime volume (iOS 23F77)**,
    which sat at 97.56% full all session.
-2. **`AGENT-SYNC.md` has genuinely diverged in both directions** — `/Users/jay/apps/AGENT-SYNC.md`
+2. **`FLEET-PROTOCOL.md` has genuinely diverged in both directions** — `/Users/jay/apps/FLEET-PROTOCOL.md`
    has Autorotate content the repo copy lacks; the repo copy has the THE BOARD section the live
    copy lacks.  The session added the cross-link to each independently but deliberately did
    **not** pick a winner.  This needs someone to reconcile it on purpose.
 3. **Uncommitted work is sitting in the `AI-Fleet-Coordinator` worktree right now** on branch
-   `deepseek/seat-onboard`: modified `AGENT-SYNC.md`, `TEMPLATE-AGENTS.md`,
+   `deepseek/seat-onboard`: modified `FLEET-PROTOCOL.md`, `TEMPLATE-AGENTS.md`,
    `docs/fleet-skills/README-add-in-app.md`, `docs/fleet-skills/owner-copy/SKILL.md`, plus
    untracked `docs/fleet-skills/sentence-gap/`, `docs/fleet-skills/sentence-gap.zip`,
    `.claude/skills/sentence-gap/`, `.grok/skills/sentence-gap/` and `.cursor/`.  Per standing
@@ -403,7 +405,7 @@ file before assuming it finished.
 
 - Claim on THE BOARD before substantial work (`simple-board list` → `simple-board claim <id> --by <SEAT>
   --env Mac --where "..."`), land the `docs/EFFORT-LOG.md` row, post start and closeout to
-  `#agent-sync`.
+  `[retired identifier]`.
 - Branch under your own seat prefix and work in `~/apps/*`, never a top-level `~/Code/*`
   checkout (fleet #62).  `code-main-keeper` returns those to `main`.
 - Two spaces between sentences everywhere — two literal ASCII spaces in files like this one,

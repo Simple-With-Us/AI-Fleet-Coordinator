@@ -1,5 +1,7 @@
 # Sentry sponsored-account fleet integration
 
+Historical identifiers have been redacted. These records do not certify current deployment state.
+
 Plan.  Grok.  2026-09-01. Board `6ac85c0e`.  Org `jays-services` (https://jays-services.sentry.io, region `us`).
 
 This is analysis and a recommended operating model.  It is not a runtime change.  Competing in-flight Sentry PRs already exist; unstick those before starting a new expansion lane.
@@ -144,7 +146,7 @@ Do **not** add a second Mac host monitor.  Extend `fleet-sentry-monitor`.
 ### 4. Operating
 
 - **Alerts (the actual hole).**  Create org workflows:
-  - New or regressing issue, priority ≥ high, environment `production` → Slack `#agent-sync` (or a new `#sentry`).
+  - New or regressing issue, priority ≥ high, environment `production` → Slack `[retired identifier]` (or a new `#sentry`).
   - Same + `app:socratic-trade` trading-path tags → PagerDuty critical.
   - Cron missed/failed for `scheduler-tick`, `usage-monitor-scheduler`, `fleet-host-monitor` → Slack.
   - Do not page on CI failures; those stay Sentry issues for agents.
