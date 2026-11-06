@@ -205,7 +205,7 @@ def _without_leading_no_wake(content: str) -> str:
 
 def _seat_of_prefix(prefix: str) -> str:
     """Seat name from a session prefix `[SEAT` or `[SEAT·tag`."""
-    body = prefix[1:] if prefix.startswith("[") else prefix
+    body = prefix.removeprefix("[")
     for sep in ("\u00b7", ":", " ", "\u2192", "->"):
         if sep in body:
             body = body.split(sep, 1)[0]
@@ -260,9 +260,7 @@ def strip_no_wake(content: str, seat: str | None = None) -> tuple[str, bool]:
         return text[:lead] + rest[match.end() :], True
     tag = _SEAT_TAG_PREFIX_RE.match(rest)
     if tag and (
-        tag.group("session")
-        or tag.group("thread")
-        or (seat and tag.group("seat") == seat)
+        tag.group("session") or tag.group("thread") or (seat and tag.group("seat") == seat)
     ):
         after = rest[tag.end() :]
         match = _NO_WAKE_RE.match(after)
