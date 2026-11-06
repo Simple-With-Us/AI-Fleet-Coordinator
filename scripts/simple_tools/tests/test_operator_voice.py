@@ -22,15 +22,15 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from agent_sync import daemon as D
-from agent_sync import live as L
-from agent_sync import operator_post as OPV
-from agent_sync import router as R
-from agent_sync import wakes as W
-from agent_sync import zulip as Z
-from agent_sync.tests.fake_zulip import BOT_EMAIL
-from agent_sync.tests.listener_harness import OPERATOR_EMAIL, OPERATOR_USER_ID
-from agent_sync.tests.test_daemon import MENTION, DaemonHarness
+from simple_tools import daemon as D
+from simple_tools import live as L
+from simple_tools import operator_post as OPV
+from simple_tools import router as R
+from simple_tools import wakes as W
+from simple_tools import zulip as Z
+from simple_tools.tests.fake_zulip import BOT_EMAIL
+from simple_tools.tests.listener_harness import OPERATOR_EMAIL, OPERATOR_USER_ID
+from simple_tools.tests.test_daemon import MENTION, DaemonHarness
 
 OWNER = 12
 CODEX = 11
@@ -376,7 +376,7 @@ class OperatorHarness(DaemonHarness):
         return [row for row in rows if row.get("event") == name]
 
     def peer_wake(self, daemon: D.Daemon, topic: str = "t") -> int:
-        mid = self.fake.add_message("Codex", "agent-sync", topic, MENTION)
+        mid = self.fake.add_message("Codex", "simple-tools", topic, MENTION)
         self.pump_until(daemon, lambda: any(mid in r.get("trigger_ids", []) for r in self.ledger()))
         self.wake_cycle(daemon)
         return mid
@@ -391,7 +391,7 @@ class WakeReplyTests(OperatorHarness):
         mid = self.peer_wake(daemon)
         posts = self.operator_posts()
         self.assertEqual(len(posts), 1)
-        self.assertEqual((posts[0]["display_recipient"], posts[0]["subject"]), ("agent-sync", "t"))
+        self.assertEqual((posts[0]["display_recipient"], posts[0]["subject"]), ("simple-tools", "t"))
         self.assertTrue(posts[0]["content"].startswith("[OPERATOR·wake] re=%d\n" % mid), posts[0]["content"])
         self.assertEqual(self.seat_requests(), [], "the seat's own bot wrote nothing")
         row = self.final_row()
@@ -558,7 +558,7 @@ class NoOperatorTests(OperatorHarness):
         daemon.operator_voice.client()
         with self.assertRaises(OPV.OperatorRefused):
             daemon._operator_send(
-                {"type": "stream", "to": "agent-sync", "topic": "t", "content": "key %s" % self.operator_key}
+                {"type": "stream", "to": "simple-tools", "topic": "t", "content": "key %s" % self.operator_key}
             )
         self.assertEqual(self.operator_posts(), [])
 
@@ -584,7 +584,7 @@ class SiteTests(OperatorHarness):
 
     def quota_pending(self, daemon: D.Daemon, sender: int, message_id: int) -> W.Pending:
         now = self.clock.time()
-        pending = W.Pending("q%d" % message_id, "CLAUDE", {"channel": "agent-sync", "topic": "t", "type": "stream"},
+        pending = W.Pending("q%d" % message_id, "CLAUDE", {"channel": "simple-tools", "topic": "t", "type": "stream"},
                             owner=False, now=now, due=now)
         pending.add({"id": message_id, "sender_id": sender, "ts": now}, False)
         return pending
@@ -599,7 +599,7 @@ class SiteTests(OperatorHarness):
         daemon = self.started()
         pending = self.quota_pending(daemon, CODEX, 55)
         runner = daemon.seats["CLAUDE"]
-        with mock.patch("agent_sync.daemon.A.provider_quota", return_value=self.QUOTA):
+        with mock.patch("simple_tools.daemon.A.provider_quota", return_value=self.QUOTA):
             daemon._tell_requester(runner, pending, "quota is exhausted", self.clock.time())
             self.settle_operator(daemon)  # the router thread skipped; the build ran in the background
             daemon._tell_requester(runner, pending, "quota is exhausted", self.clock.time())
@@ -633,7 +633,7 @@ class SiteTests(OperatorHarness):
             target=lambda: daemon._tell_requester(runner, pending, "quota is exhausted", self.clock.time()),
             daemon=True,
         )
-        with mock.patch("agent_sync.daemon.A.provider_quota", return_value=self.QUOTA):
+        with mock.patch("simple_tools.daemon.A.provider_quota", return_value=self.QUOTA):
             asked.start()
             asked.join(3.0)
             self.assertFalse(asked.is_alive(), "the router thread waited for the Operator client to be built")
@@ -648,7 +648,7 @@ class SiteTests(OperatorHarness):
         daemon = self.started()
         self.warm_operator(daemon)
         pending = self.quota_pending(daemon, OPERATOR_USER_ID, 56)
-        with mock.patch("agent_sync.daemon.A.provider_quota", return_value=self.QUOTA):
+        with mock.patch("simple_tools.daemon.A.provider_quota", return_value=self.QUOTA):
             daemon._tell_requester(daemon.seats["CLAUDE"], pending, "quota is exhausted", self.clock.time())
         self.assertEqual(self.operator_posts(), [])
 
@@ -696,8 +696,8 @@ class SiteTests(OperatorHarness):
         daemon = self.started()
         runner = daemon.seats["CLAUDE"]
         now = self.clock.time()
-        pending = W.Pending("t1", "CLAUDE", {"channel": "agent-sync", "topic": "t", "type": "stream",
-                                             "stream_id": self.fake.streams["agent-sync"]},
+        pending = W.Pending("t1", "CLAUDE", {"channel": "simple-tools", "topic": "t", "type": "stream",
+                                             "stream_id": self.fake.streams["simple-tools"]},
                             owner=False, now=now, due=now)
         self.assertIsNone(daemon._typing_signal(runner, pending))
         self.assertEqual(self.log_events("typing-skipped")[-1]["code"], OPV.CODE_BUILDING)
@@ -755,7 +755,7 @@ def context(**changes: Any) -> R.Context:
 
 def message(sender: int, content: str, flags: tuple[str, ...] = ("mentioned",)) -> dict[str, Any]:
     return {"id": 501, "sender_id": sender, "content": content, "flags": list(flags), "timestamp": 9_990,
-            "client": "ZulipPython", "type": "stream", "display_recipient": "agent-sync", "subject": "t",
+            "client": "ZulipPython", "type": "stream", "display_recipient": "simple-tools", "subject": "t",
             "sender_full_name": "x"}
 
 

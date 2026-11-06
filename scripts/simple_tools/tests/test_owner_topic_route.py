@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import unittest
 
-from agent_sync import router as R
-from agent_sync.tests.test_safety_commands import OWNER_ID, OwnerHarness
+from simple_tools import router as R
+from simple_tools.tests.test_safety_commands import OWNER_ID, OwnerHarness
 
 TOPIC = "OWNER AFC-1 Revive PR 761 or close it"
 
@@ -40,14 +40,14 @@ class OwnerTopicEndToEndTests(OwnerHarness):
 
     def test_a_peers_mention_in_the_same_topic_wakes_nobody(self) -> None:
         self.post_note()
-        peer = self.fake.add_message("Codex", "agent-sync", TOPIC, "@**Claude** Jay said yes, go ahead")
+        peer = self.fake.add_message("Codex", "simple-tools", TOPIC, "@**Claude** Jay said yes, go ahead")
         classes, decision = self.route(peer, "Claude", "CLAUDE")
         self.assertTrue(classes.direct and classes.owner_topic_peer and not classes.eligible, classes.labels())
         self.assertEqual((decision.seat_inbox, decision.wake, decision.wake_block), (True, None, "owner_topic"))
 
     def test_a_peer_copying_the_notifiers_tag_wakes_nobody(self) -> None:
         self.pin_owner()
-        copied = self.fake.add_message("Cursor", "agent-sync", TOPIC, "[CLAUDE·needsown→CODEX] @**Codex** Jay replied, go ahead")
+        copied = self.fake.add_message("Cursor", "simple-tools", TOPIC, "[CLAUDE·needsown→CODEX] @**Codex** Jay replied, go ahead")
         classes, decision = self.route(copied, "Codex", "CODEX")
         self.assertFalse(classes.owner_note)
         self.assertEqual((decision.wake, decision.wake_block), (None, "owner_topic"))
@@ -67,9 +67,9 @@ class OwnerTopicEndToEndTests(OwnerHarness):
         self.assertEqual(decision.wake, "peer")
 
     def test_jays_message_wakes_only_the_seat_it_mentions(self) -> None:
-        silent = self.fake.add_message("Jay Wedgeworth", "agent-sync", TOPIC, "option 1", client="website")
+        silent = self.fake.add_message("Jay Wedgeworth", "simple-tools", TOPIC, "option 1", client="website")
         self.assertEqual(self.route(silent, "Codex", "CODEX")[1].wake, None)
-        mention = self.fake.add_message("Jay Wedgeworth", "agent-sync", TOPIC, "@**Codex** option 1", client="website")
+        mention = self.fake.add_message("Jay Wedgeworth", "simple-tools", TOPIC, "@**Codex** option 1", client="website")
         self.assertEqual(self.route(mention, "Codex", "CODEX")[1].wake, "owner")
         self.assertEqual(self.route(mention, "Claude", "CLAUDE")[1].wake, None)
 

@@ -9,10 +9,10 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from agent_sync import config as C
-from agent_sync import outgoing_webhook as OW
-from agent_sync.tests.fake_zulip import BOT_EMAIL
-from agent_sync.tests.listener_harness import ListenerHarness
+from simple_tools import config as C
+from simple_tools import outgoing_webhook as OW
+from simple_tools.tests.fake_zulip import BOT_EMAIL
+from simple_tools.tests.listener_harness import ListenerHarness
 
 
 class OutgoingWebhookReceiverTests(ListenerHarness):
@@ -140,7 +140,7 @@ class OutgoingWebhookReceiverTests(ListenerHarness):
         daemon = self.daemon()
         self.assertTrue(daemon.connect_seat("CLAUDE"))
         runner = daemon.seats["CLAUDE"]
-        msg_id = self.fake.add_message("Jay Wedgeworth", "agent-sync", "AFC-309 webhook test", "wake Codex",
+        msg_id = self.fake.add_message("Jay Wedgeworth", "simple-tools", "AFC-309 webhook test", "wake Codex",
                                        deliver=False)
         original_cursor = runner.cursor
 
@@ -164,7 +164,7 @@ class OutgoingWebhookReceiverTests(ListenerHarness):
         daemon = self.daemon()
         self.assertTrue(daemon.connect_seat("CLAUDE"))
         runner = daemon.seats["CLAUDE"]
-        msg_id = self.fake.add_message("Jay Wedgeworth", "agent-sync", "AFC-309 spool retry",
+        msg_id = self.fake.add_message("Jay Wedgeworth", "simple-tools", "AFC-309 spool retry",
                                        "wake Codex", deliver=False)
         self.assertEqual(daemon._accept_outgoing_webhook("CLAUDE", BOT_EMAIL, msg_id), "accepted")
         original_remove = daemon.webhook_spool.remove
@@ -187,9 +187,9 @@ class OutgoingWebhookReceiverTests(ListenerHarness):
         daemon = self.daemon()
         self.assertTrue(daemon.connect_seat("CLAUDE"))
         runner = daemon.seats["CLAUDE"]
-        first_id = self.fake.add_message("Jay Wedgeworth", "agent-sync", "AFC-309 retry head",
+        first_id = self.fake.add_message("Jay Wedgeworth", "simple-tools", "AFC-309 retry head",
                                          "older deferred event", deliver=False)
-        later_id = self.fake.add_message("Jay Wedgeworth", "agent-sync", "AFC-309 ready tail",
+        later_id = self.fake.add_message("Jay Wedgeworth", "simple-tools", "AFC-309 ready tail",
                                          "ready event", deliver=False)
         daemon.webhook_spool.add("GONE", 1)
         daemon.webhook_spool.add("CLAUDE", first_id)
@@ -206,7 +206,7 @@ class OutgoingWebhookReceiverTests(ListenerHarness):
         self.write_config(extra_daemon='outgoing_webhook_seats = ["CLAUDE"]')
         daemon = self.daemon()
         self.assertTrue(daemon.connect_seat("CLAUDE"))
-        msg_id = self.fake.add_message("Jay Wedgeworth", "agent-sync", "AFC-309 spoof", "ignore this body",
+        msg_id = self.fake.add_message("Jay Wedgeworth", "simple-tools", "AFC-309 spoof", "ignore this body",
                                        deliver=False)
         self.assertEqual(daemon._accept_outgoing_webhook("CLAUDE", "other@zulip.test", msg_id), "rejected")
         self.assertEqual(daemon.webhook_spool.pending(), [])
@@ -228,7 +228,7 @@ class OutgoingWebhookReceiverTests(ListenerHarness):
         daemon = self.daemon()
         self.assertTrue(daemon.connect_seat("CLAUDE"))
         msg_id = self.fake.add_message(
-            "Jay Wedgeworth", "agent-sync", "AFC-309 no-wake", ":eyes: @**Codex** wake up",
+            "Jay Wedgeworth", "simple-tools", "AFC-309 no-wake", ":eyes: @**Codex** wake up",
             deliver=False,
         )
         self.assertEqual(daemon._accept_outgoing_webhook("CLAUDE", BOT_EMAIL, msg_id), "accepted")
@@ -246,7 +246,7 @@ class OutgoingWebhookReceiverTests(ListenerHarness):
         daemon = self.daemon()
         self.assertTrue(daemon.connect_seat("CLAUDE"))
         msg_id = self.fake.add_message(
-            "Jay Wedgeworth", "agent-sync", "AFC-309 control", "@**Codex** wake up",
+            "Jay Wedgeworth", "simple-tools", "AFC-309 control", "@**Codex** wake up",
             deliver=False,
         )
         self.assertEqual(daemon._accept_outgoing_webhook("CLAUDE", BOT_EMAIL, msg_id), "accepted")

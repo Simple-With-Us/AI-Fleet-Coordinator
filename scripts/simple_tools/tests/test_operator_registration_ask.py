@@ -20,19 +20,19 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from agent_sync import operator_candidates as OC
-from agent_sync import operator_registration as OREG
-from agent_sync import operator_registration_ask as ORASK
-from agent_sync import textfmt
-from agent_sync import zulip as Z
-from agent_sync.tests.fake_zulip import FakeZulip
+from simple_tools import operator_candidates as OC
+from simple_tools import operator_registration as OREG
+from simple_tools import operator_registration_ask as ORASK
+from simple_tools import textfmt
+from simple_tools import zulip as Z
+from simple_tools.tests.fake_zulip import FakeZulip
 
 OPERATOR_ID = 9101
 OPERATOR_EMAIL = "operator-bot@zulip.test"
 SEAT_EMAIL = "claude-bot@zulip.test"
 OWNER_ID = 12
 AFC_PROJECT = "fixture-afc-project"
-CHANNEL = "agent-sync"
+CHANNEL = "simple-tools"
 TOPIC = "AFC Work"
 
 ENTRY = {
@@ -549,7 +549,7 @@ class LocationQuestionDeliveryTests(_LocationQuestionFixture, unittest.TestCase)
     def test_an_indeterminate_answer_leaves_delivery_unknown(self) -> None:
         # Zulip answered, but with no HTTP status the outcome is indeterminate:  the post
         # may have been processed, so this is unknown - never a definite refusal.
-        failing = _StubClient(post_error=Z.AgentSyncError("odd reply"))
+        failing = _StubClient(post_error=Z.SimpleToolsError("odd reply"))
         first = self.send(client=failing)
         self.assertEqual(first["status"], "refused")
         self.assertEqual(first["delivery_status"], OC.DELIVERY_UNKNOWN)
@@ -640,7 +640,7 @@ class LocationQuestionDeliveryTests(_LocationQuestionFixture, unittest.TestCase)
         self.assertEqual(working.posts, [])
 
     def test_a_rejected_credential_is_named_without_any_secret(self) -> None:
-        error = Z.AgentSyncError("unauthorized")
+        error = Z.SimpleToolsError("unauthorized")
         error.status = 401
         out = self.send(client=_StubClient(me_error=error))
         self.assertEqual(out["status"], "refused")

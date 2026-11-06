@@ -3,14 +3,14 @@ import subprocess
 import unittest
 from unittest.mock import patch
 
-from agent_sync.operator_github_secrets import NamedSecrets, fleet_secrets_get
-from agent_sync.github_token_router import RoutingError
+from simple_tools.operator_github_secrets import NamedSecrets, fleet_secrets_get
+from simple_tools.github_token_router import RoutingError
 
 
 class Tests(unittest.TestCase):
     def setUp(self):
         p = patch(
-            "agent_sync.operator_github_secrets.fleet_secrets_bin",
+            "simple_tools.operator_github_secrets.fleet_secrets_bin",
             return_value="fleet-secrets",
         )
         p.start()
@@ -50,7 +50,7 @@ class Tests(unittest.TestCase):
             stdout = b"v\n"
 
         with patch(
-            "agent_sync.operator_github_secrets.subprocess.run", return_value=Done()
+            "simple_tools.operator_github_secrets.subprocess.run", return_value=Done()
         ) as run:
             self.assertEqual(
                 NamedSecrets(["CODEX"], []).caller_key("CODEX"), "v"
@@ -79,7 +79,7 @@ class Tests(unittest.TestCase):
             os.environ, {"OPERATOR_GITHUB_CALLER_CODEX_HMAC": "from-env"}
         ):
             with patch(
-                "agent_sync.operator_github_secrets.subprocess.run", return_value=Done()
+                "simple_tools.operator_github_secrets.subprocess.run", return_value=Done()
             ):
                 self.assertEqual(
                     NamedSecrets(["CODEX"], []).caller_key("CODEX"), "from-cli"
@@ -87,7 +87,7 @@ class Tests(unittest.TestCase):
 
     def test_lookup_failures_name_variable_not_value(self):
         with patch(
-            "agent_sync.operator_github_secrets.subprocess.run",
+            "simple_tools.operator_github_secrets.subprocess.run",
             side_effect=subprocess.TimeoutExpired(["fleet-secrets"], 10),
         ):
             with self.assertRaises(RoutingError) as c:
@@ -96,7 +96,7 @@ class Tests(unittest.TestCase):
         self.assertIn("timed out", str(c.exception))
 
         with patch(
-            "agent_sync.operator_github_secrets.subprocess.run",
+            "simple_tools.operator_github_secrets.subprocess.run",
             side_effect=FileNotFoundError("fleet-secrets"),
         ):
             with self.assertRaises(RoutingError) as c:
@@ -107,7 +107,7 @@ class Tests(unittest.TestCase):
 class LocalFailureOutcomeTests(unittest.TestCase):
     def test_local_lookup_failures_are_refused_so_the_nonce_is_released(self):
         with patch(
-            "agent_sync.operator_github_secrets.fleet_secrets_bin",
+            "simple_tools.operator_github_secrets.fleet_secrets_bin",
             return_value="fleet-secrets",
         ):
             for effect, outcome in (
@@ -116,7 +116,7 @@ class LocalFailureOutcomeTests(unittest.TestCase):
                 (PermissionError("fleet-secrets"), "refused"),
             ):
                 with patch(
-                    "agent_sync.operator_github_secrets.subprocess.run", side_effect=effect
+                    "simple_tools.operator_github_secrets.subprocess.run", side_effect=effect
                 ):
                     with self.assertRaises(RoutingError) as c:
                         fleet_secrets_get("/github-apps", "GH_APP_SWU_EXAMPLE_ID")
@@ -129,7 +129,7 @@ class HomeFailureKeepsExplicitBinary(unittest.TestCase):
         from pathlib import Path
         with mock.patch.dict(os.environ, {"FLEET_SECRETS_BIN": "/opt/pinned/fleet-secrets"}), \
                 mock.patch.object(Path, "home", side_effect=RuntimeError("no home")), \
-                mock.patch("agent_sync.operator_github_secrets.subprocess.run") as run:
+                mock.patch("simple_tools.operator_github_secrets.subprocess.run") as run:
             run.return_value = mock.Mock(returncode=0, stdout=b"v")
             fleet_secrets_get("/p", "N")
         self.assertEqual(run.call_args[0][0][0], "/opt/pinned/fleet-secrets")

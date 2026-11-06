@@ -1,13 +1,13 @@
 import json
 import tempfile
 from pathlib import Path
-from agent_sync.operator_github_state import LedgerError, NonceLedger
+from simple_tools.operator_github_state import LedgerError, NonceLedger
 import threading
 import unittest
 import urllib.request
 import urllib.error
-from agent_sync.operator_github import Broker, BrokerHttp, CallerPolicy, Refused, signature
-from agent_sync.operator_github_client import bound_command, ClientError, child_environment
+from simple_tools.operator_github import Broker, BrokerHttp, CallerPolicy, Refused, signature
+from simple_tools.operator_github_client import bound_command, ClientError, child_environment
 
 KEY='a'*64
 class Router:
@@ -88,7 +88,7 @@ class BrokerTests(unittest.TestCase):
     def test_duplicate_fields(self):
         with self.assertRaises(Refused):self.request(body=b'{"repo":"a/b","repo":"c/d","permissions":{"contents":"read"}}')
     def test_capacity(self):
-        from agent_sync import operator_github as m
+        from simple_tools import operator_github as m
         from unittest.mock import patch
         self.addCleanup(patch.stopall)
         patch.object(m, 'MAX_NONCES', 1).start()
@@ -101,7 +101,7 @@ class BrokerTests(unittest.TestCase):
         again=self.request()
         self.assertEqual(again['token'],first['token']);self.assertEqual(len(self.router.calls),2)
     def test_definite_provider_rejection_releases_nonce(self):
-        from agent_sync.github_token_router import RoutingError
+        from simple_tools.github_token_router import RoutingError
         calls=self.router.calls
         def fail_once(*args):
             calls.append(args)
@@ -113,7 +113,7 @@ class BrokerTests(unittest.TestCase):
         result=self.request()
         self.assertEqual(result['token'],'MOCK-TOKEN-NOT-A-CREDENTIAL')
     def test_unknown_outcome_refuses_same_nonce(self):
-        from agent_sync.github_token_router import RoutingError
+        from simple_tools.github_token_router import RoutingError
         def boom(*args):raise RoutingError('GitHub transport or response failed')
         self.router.token_for=boom
         with self.assertRaises(Refused) as c:self.request()
@@ -188,7 +188,7 @@ class ReviewFixTests(unittest.TestCase):
         self.assertEqual(c.exception.status,503)
         self.assertIn('OPERATOR_GITHUB_CALLER_CODEX_HMAC',c.exception.reason)
     def test_caller_key_lookup_timeout_is_retryable_503_and_audited_retryable(self):
-        from agent_sync.github_token_router import RoutingError
+        from simple_tools.github_token_router import RoutingError
         def boom(seat):
             raise RoutingError('lookup timed out',outcome='retryable')
         self.broker.key_for=boom
@@ -220,7 +220,7 @@ class ReviewFixTests(unittest.TestCase):
         outcome=con.execute("select outcome from nonces").fetchone()[0];con.close()
         self.assertEqual(outcome,'ok')
     def test_replay_definite_rejection_releases_nonce(self):
-        from agent_sync.github_token_router import RoutingError
+        from simple_tools.github_token_router import RoutingError
         self.request()
         def fail(*args):raise RoutingError('GitHub request failed, HTTP 401',status=401)
         self.router.token_for=fail
@@ -239,70 +239,70 @@ class CallerKeyTests(unittest.TestCase):
     def test_fleet_secrets_is_the_single_source(self):
         import os
         from unittest.mock import patch
-        from agent_sync.operator_github_client import caller_key
+        from simple_tools.operator_github_client import caller_key
         class Done:
             returncode=0
             stdout=b'e'*32+b'\n'
         with patch.dict(os.environ,{'OPERATOR_GITHUB_CALLER_ECHO_HMAC':'z'*32}):
-            with patch('agent_sync.operator_github_client.subprocess.run',return_value=Done()) as run:
+            with patch('simple_tools.operator_github_client.subprocess.run',return_value=Done()) as run:
                 self.assertEqual(caller_key('ECHO'),'e'*32)
                 run.assert_called_once()
     def test_fleet_secrets_fallback(self):
         import os
         from unittest.mock import patch
-        from agent_sync.operator_github_client import caller_key
+        from simple_tools.operator_github_client import caller_key
         class Done:
             returncode=0
             stdout=b'f'*32+b'\n'
         with patch.dict(os.environ,{},clear=True):
-            with patch('agent_sync.operator_github_client.fleet_secrets_bin',return_value='fleet-secrets'),patch('agent_sync.operator_github_client.subprocess.run',return_value=Done()) as run:
+            with patch('simple_tools.operator_github_client.fleet_secrets_bin',return_value='fleet-secrets'),patch('simple_tools.operator_github_client.subprocess.run',return_value=Done()) as run:
                 self.assertEqual(caller_key('ECHO'),'f'*32)
                 args=run.call_args[0][0]
                 self.assertEqual(args,['fleet-secrets','get','OPERATOR_GITHUB_CALLER_ECHO_HMAC','--path','/operator-github/callers','--project','fleet-ops'])
     def test_missing_everywhere_names_variable_not_value(self):
         import os
         from unittest.mock import patch
-        from agent_sync.operator_github_client import caller_key
+        from simple_tools.operator_github_client import caller_key
         class Done:
             returncode=3
             stdout=b''
         with patch.dict(os.environ,{},clear=True):
-            with patch('agent_sync.operator_github_client.subprocess.run',return_value=Done()):
+            with patch('simple_tools.operator_github_client.subprocess.run',return_value=Done()):
                 with self.assertRaises(ClientError) as c:caller_key('ECHO')
         self.assertIn('OPERATOR_GITHUB_CALLER_ECHO_HMAC',str(c.exception))
     def test_short_key_refused(self):
         import os
         from unittest.mock import patch
-        from agent_sync.operator_github_client import caller_key
+        from simple_tools.operator_github_client import caller_key
         class Done:
             returncode=0
             stdout=b'short'
         with patch.dict(os.environ,{},clear=True):
-            with patch('agent_sync.operator_github_client.subprocess.run',return_value=Done()):
+            with patch('simple_tools.operator_github_client.subprocess.run',return_value=Done()):
                 with self.assertRaises(ClientError):caller_key('ECHO')
     def test_environment_is_never_consulted(self):
         # Owner decision 2026-10-21:  fleet-secrets is the single credential
         # path;  an exported variable must be ignored even when valid-looking.
         import os
         from unittest.mock import patch
-        from agent_sync.operator_github_client import caller_key
+        from simple_tools.operator_github_client import caller_key
         class Done:
             returncode=0
             stdout=b'g'*32+b'\n'
         with patch.dict(os.environ,{'OPERATOR_GITHUB_CALLER_ECHO_HMAC':'h'*32}):
-            with patch('agent_sync.operator_github_client.subprocess.run',return_value=Done()) as run:
+            with patch('simple_tools.operator_github_client.subprocess.run',return_value=Done()) as run:
                 self.assertEqual(caller_key('ECHO'),'g'*32)
                 run.assert_called_once()
 
 class RunBoundedTests(unittest.TestCase):
     def test_missing_executable_exits_127(self):
-        from agent_sync.operator_github_client import run_bounded
+        from simple_tools.operator_github_client import run_bounded
         def popen(*a,**k):raise FileNotFoundError()
         with self.assertRaises(SystemExit) as c:run_bounded(['gh'],{},popen=popen)
         self.assertEqual(c.exception.code,127)
     def test_unexpected_wait_failure_reaps_child(self):
         import subprocess as sp
-        from agent_sync.operator_github_client import run_bounded
+        from simple_tools.operator_github_client import run_bounded
         class FakeProc:
             def __init__(self):self.terminated=False
             def poll(self):return None
@@ -313,7 +313,7 @@ class RunBoundedTests(unittest.TestCase):
             run_bounded(['gh'],{},popen=lambda *a,**k:proc)
         self.assertTrue(proc.terminated)
     def test_success_returns_status(self):
-        from agent_sync.operator_github_client import run_bounded
+        from simple_tools.operator_github_client import run_bounded
         class FakeProc:
             def poll(self):return 0
             def wait(self,timeout=None):return 0

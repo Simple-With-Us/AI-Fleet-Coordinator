@@ -1,12 +1,12 @@
 import unittest
 
-from agent_sync.operator_github import Broker, CallerPolicy, Refused
-from agent_sync.operator_github_policy import (
+from simple_tools.operator_github import Broker, CallerPolicy, Refused
+from simple_tools.operator_github_policy import (
     APPS, POLICY, SEATS, _validate, app_credentials_loader, caller_key_loader, load_policy,
 )
-from agent_sync.operator_github_state import NonceLedger
-from agent_sync.operator_github import signature
-from agent_sync.github_token_router import RoutingError
+from simple_tools.operator_github_state import NonceLedger
+from simple_tools.operator_github import signature
+from simple_tools.github_token_router import RoutingError
 
 import json, tempfile
 

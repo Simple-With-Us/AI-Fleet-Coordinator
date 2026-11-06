@@ -3,10 +3,10 @@ import uuid
 from pathlib import Path
 from unittest import mock
 
-from agent_sync import config as C
-from agent_sync import identity as I
-from agent_sync import zulip as Z
-from agent_sync.service_identity import (
+from simple_tools import config as C
+from simple_tools import identity as I
+from simple_tools import zulip as Z
+from simple_tools.service_identity import (
     operator_bot,
     operator_credentials,
 )
@@ -152,7 +152,7 @@ class ListenerConnectTests(unittest.TestCase):
 
     def runner(self, email, env):
         from types import SimpleNamespace as NS
-        from agent_sync import daemon as D
+        from simple_tools import daemon as D
 
         cfg = NS(seat="OPERATOR", bot="Operator", creds="infisical", wake="inbox")
         runner = D.SeatRunner.__new__(D.SeatRunner)
@@ -174,7 +174,7 @@ class ListenerConnectTests(unittest.TestCase):
         return runner
 
     def test_pinned_operator_connects_despite_admin_roster_tag(self):
-        from agent_sync import daemon as D
+        from simple_tools import daemon as D
 
         email = "admin-bot@example.test"
         env = dict(ENV, OPERATOR_ZULIP_EMAIL=email)
@@ -188,7 +188,7 @@ class ListenerConnectTests(unittest.TestCase):
         self.assertNotIsInstance(c.exception, D.RoleRefused)
 
     def test_lookalike_operator_is_still_refused(self):
-        from agent_sync import daemon as D
+        from simple_tools import daemon as D
 
         email = "admin-bot@example.test"
         runner = self.runner(email, dict(ENV, OPERATOR_ZULIP_USER_ID="999"))
@@ -215,7 +215,7 @@ class ConfigTests(unittest.TestCase):
         from pathlib import Path
 
         partition, error = C.load_partition(
-            str(Path(__file__).resolve().parents[3] / "docs/protocols/agent-sync-partition.toml")
+            str(Path(__file__).resolve().parents[3] / "docs/protocols/simple-tools-partition.toml")
         )
         self.assertIsNone(error)
         self.assertEqual(partition["OPERATOR"], "mac")
