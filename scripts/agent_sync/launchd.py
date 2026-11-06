@@ -32,6 +32,7 @@ READER_SEATS = [
     "FX",
     "MM",
     "MC",
+    "OPENCODE",
     "ZC",
     "KIMI",
     "AMP",

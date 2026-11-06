@@ -166,14 +166,14 @@ final class WakeSettingsTests: XCTestCase {
             .deletingLastPathComponent()
         let partition = ListenerPartition.load(from: root.appendingPathComponent(ListenerPartition.relativePath))
         XCTAssertNil(partition.problem)
-        for seat in ["CLAUDE", "CODEX", "AG", "CURSOR", "GROK", "CLUTCH", "FX", "MM", "MC", "OPERATOR", "ZC", "KIMI", "AMP"] {
+        for seat in ["CLAUDE", "CODEX", "AG", "CURSOR", "GROK", "CLUTCH", "FX", "MM", "MC", "OPERATOR", "OPENCODE", "ZC", "KIMI", "AMP"] {
             XCTAssertEqual(partition.host(of: seat), .mac, seat)
         }
         for seat in ["MA", "ECHO", "WISE", "GROK-WEB", "JET", "GB-FIXER", "BF-DIRECTOR", "BF-COMPILER", "BF-ENGINEER", "BF-TRADER"] {
             XCTAssertEqual(partition.host(of: seat), .server, seat)
         }
         XCTAssertEqual(partition.host(of: "BF-BUILDER"), .noListener)
-        for seat in ["GROK-BOT", "OPENCODE"] {
+        for seat in ["GROK-BOT"] {
             XCTAssertEqual(partition.host(of: seat), .unlisted, seat)
         }
     }

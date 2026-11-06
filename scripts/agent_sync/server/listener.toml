@@ -34,7 +34,11 @@ instance = "server"
 # sections hold their inboxes (owner, Fri, Nov 6:  every seat working through the Operator).
 # WISE is the canonical seat name (identity.py:  INSTINCT is an accepted alias spelling of
 # it, and config.py only upper-cases this list, it does not canonicalize aliases), so the
-# list names WISE.
+# list names WISE:  an INSTINCT entry here would never match the [seat.WISE] runner or its bot.
+# A live volume seeded before this list took this shape keeps its own [daemon] list until it
+# is edited by hand (apply_live_config.py never touches [daemon]):  rename INSTINCT to WISE,
+# drop the retired BF-BUILDER, and add BF-ENGINEER and BF-TRADER, in the same pass that
+# renames the volume's [seat.INSTINCT] section and /data/INSTINCT state to WISE.
 outgoing_webhook_seats = ["ECHO", "WISE", "JET", "GB-COMPILER", "GB-DIRECTOR", "GB-TRADER", "GB-DEPLOYER", "GB-DESIGNER", "GB-ORACLE", "GB-PUBLISHER", "GB-PLUMBER", "GB-FIXER", "GB-HOUSEKEEPER", "GB-MONITOR", "GB-ENGINEER", "BF-COMPILER", "BF-DEPLOYER", "BF-DESIGNER", "BF-DIRECTOR", "BF-ENGINEER", "BF-FIXER", "BF-HOUSEKEEPER", "BF-MONITOR", "BF-ORACLE", "BF-PLUMBER", "BF-PUBLISHER", "BF-TRADER"]
 owner_user_id = 0                 # pinned by `simple-chat daemon init`, never derived at runtime
 eligible_user_ids = []            # optional extra pins:  every fleet bot is eligible at runtime (owner 2026-10-09)

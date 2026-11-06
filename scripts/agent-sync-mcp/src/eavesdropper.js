@@ -1,5 +1,7 @@
 // The server eavesdropper's records for a hosted seat (AFC-330 part B):  eavesdropper_status,
-// eavesdropper_inbox, eavesdropper_owner_queue, eavesdropper_wakes and eavesdropper_held_back.  The specs are
+// eavesdropper_inbox, eavesdropper_owner_queue, eavesdropper_wakes and eavesdropper_held_back, plus
+// operator_inbox_pending (OPS-1047):  the seat's wake-worthy pending seat-inbox items after a
+// caller-held seq, for hosted seats with no wake adapter.  The specs are
 // scripts/agent_sync/mcp/eavesdropper-tools.json (shared with the stdio server);  the hosted server
 // lists every one of them except eavesdropper_ack, because the eavesdropper's read API is read-only.
 //
@@ -8,7 +10,7 @@
 // with X-Agent-Sync-Timestamp and X-Agent-Sync-Signature, the lowercase hex HMAC-SHA256 of
 // "agent-sync-read/1\nGET\n<path>\n<query>\n<timestamp>" keyed with the seat's wake key
 // (WAKE_HMAC_KEY_<SEAT>, the same secret the eavesdropper signs that seat's wakes with).  The seat
-// comes only from the grant, and only WAKE_SECRETS turns it into a key, so a grant reads its own
+// comes only from the grant, and only listenerSecretName turns it into a key, so a grant reads its own
 // seat's records and never another's.  With LISTENER_API_URL unset (or not https), or no wake key
 // for the seat, the tools answer not_configured and everything else works as before.
 //
@@ -17,7 +19,15 @@
 import EAVESDROPPER_CONTRACT from "../../agent_sync/mcp/eavesdropper-tools.json" with { type: "json" };
 import { z } from "zod";
 import { ToolError, clean, envelope, okResult, BODY_LIMIT, NAME_LIMIT } from "./contract.js";
-import { WAKE_SECRETS } from "./config.js";
+import { LISTENER_READ_SECRETS, WAKE_SECRETS } from "./config.js";
+
+/** The secret name that signs this seat's listener reads, or null:  its wake key when it has a
+ * wake route, else its read-only key from LISTENER_READ_SECRETS (a seat there, like MA, gains
+ * reads and no wake route:  the wake and spike routes consult WAKE_SECRETS only). */
+export function listenerSecretName(seat) {
+  if (Object.hasOwn(LISTENER_READ_SECRETS, seat)) return LISTENER_READ_SECRETS[seat];
+  return Object.hasOwn(WAKE_SECRETS, seat) ? WAKE_SECRETS[seat] : null;
+}
 
 export const LISTENER_CONTRACT_NAME = "agent-sync-read/1";
 
@@ -30,6 +40,7 @@ export const ListenerView = z.looseObject({
   items: z.array(z.unknown()).max(1000).catch([]),
   pending: count0, cursor: count0, total: count0, count: count0, lost: count0,
   next_seq: z.number().int().nonnegative().nullable().catch(null),
+  after_seq: count0, latest_seq: z.number().int().nonnegative().nullable().catch(null),
   inbox_pending: count0, owner_queue_pending: count0, held_back: count0, wakes_24h: count0, leases: count0,
   inbox_cursor: count0, held_back_lost: count0, nudges_pending: count0,
   paused: flag, paused_wakes: flag,
@@ -47,6 +58,7 @@ export const LISTENER_USER_AGENT = "agent-sync-mcp (hosted listener reader)";
 export const LISTENER_RECORDS = Object.freeze({
   eavesdropper_status: "status",
   eavesdropper_inbox: "inbox",
+  operator_inbox_pending: "pending-inbox",
   eavesdropper_owner_queue: "owner-queue",
   eavesdropper_wakes: "wakes",
   eavesdropper_held_back: "held-back",
@@ -140,7 +152,7 @@ export class ListenerClient {
 /** A ListenerClient for `seat`, or null when the read API is not configured for it.  Never throws. */
 export function listenerClientFromEnv(env, seat, { fetch: fetchImpl = globalThis.fetch?.bind(globalThis), now = Date.now, wakeKey } = {}) {
   const baseUrl = listenerBaseUrl(env?.LISTENER_API_URL);
-  const name = Object.hasOwn(WAKE_SECRETS, seat) ? WAKE_SECRETS[seat] : null;
+  const name = listenerSecretName(seat);
   // wakeKey: an already-resolved key (src/infisical.js resolveSecret), so the
   // eavesdropper honors required mode; without it the legacy env binding is read.
   const key = wakeKey !== undefined ? String(wakeKey).trim() : name && typeof env?.[name] === "string" ? env[name].trim() : "";
@@ -177,6 +189,8 @@ export const EAVESDROPPER_METHODS = {
     const params = {
       eavesdropper_status: {},
       eavesdropper_inbox: { since_seq: args.since_seq, limit: args.limit },
+      // check is a count-only read:  limit 0 makes the listener count without returning bodies.
+      operator_inbox_pending: { after_seq: args.after_seq ?? 0, limit: args.mode === "pull" ? (args.limit ?? 20) : 0 },
       eavesdropper_owner_queue: { all: args.all ? "true" : undefined, limit: args.limit },
       eavesdropper_wakes: { since_hours: args.since_hours, state: args.state, limit: args.limit },
       eavesdropper_held_back: { limit: args.limit },
@@ -210,6 +224,33 @@ export const EAVESDROPPER_METHODS = {
       seqs: items.map((i) => i.seq).filter(isInt),
       next_seq: nextSeq,
     });
+  },
+
+  async tool_operator_inbox_pending(args, audit) {
+    // No seat argument exists:  this.seat comes from the grant, and listenerClientFromEnv turned
+    // exactly that seat into its signing key, so the read can only ever be the caller's own inbox.
+    const mode = args.mode === "pull" ? "pull" : "check";
+    const view = await this.listenerView("operator_inbox_pending", { ...args, mode });
+    const latestSeq = isInt(view.latest_seq) ? view.latest_seq : null;
+    const structured = { mode, count: count(view.count), latest_seq: latestSeq, after_seq: count(view.after_seq) };
+    if (mode === "check") {
+      return okResult(JSON.stringify({ seat: this.seat, ...structured }), structured);
+    }
+    const raw = Array.isArray(view.items) ? view.items : [];
+    const items = raw.map((item) => {
+      const out = listenerItem(item);
+      // listenerItem keeps integer lists only;  the router's stored classes are strings, so they
+      // are re-admitted here under the same shape rule, with the row's wake verdict beside them.
+      const classes = item && typeof item === "object" && Array.isArray(item.classes) ? item.classes.filter((c) => typeof c === "string" && /^[a-z_]{1,32}$/.test(c)) : [];
+      out.classes = classes;
+      out.wake_worthy = item?.wake_worthy === true;
+      out.wake_owner = item?.wake_owner === true;
+      return out;
+    });
+    structured.seqs = items.map((i) => i.seq).filter(isInt);
+    structured.ids = items.map((i) => i.id).filter(isInt);
+    const summary = `${structured.count} pending item${structured.count === 1 ? "" : "s"} after seq ${structured.after_seq}, latest_seq ${latestSeq ?? "None"}`;
+    return okResult(envelope("operator_inbox_pending", [], summary, items), structured);
   },
 
   async tool_eavesdropper_owner_queue(args, audit) {

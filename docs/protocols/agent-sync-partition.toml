@@ -41,6 +41,7 @@ CLUTCH = "mac"
 FX = "mac"
 MM = "mac"
 MC = "mac"
+OPENCODE = "mac"
 # ZC, KIMI and AMP are Mac CLI seats like the rest (ZCode, Kimi Code and Amp); they held
 # Zulip bots and Infisical credentials all along and were missing only here (owner,
 # Fri, Nov 6:  they have seats, and every seat works through the Operator).
