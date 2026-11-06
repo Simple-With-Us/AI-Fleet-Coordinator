@@ -44,6 +44,23 @@ class ChildEnvTests(unittest.TestCase):
         self.assertEqual(out["SIMPLE_BOARD_BEARER_FILE"], seat_bearer_file("CLAUDE"))
         self.assertNotIn("AGENT_SEAT", out)
 
+    def test_the_verify_token_reaches_the_child_only_with_a_bearer_file(self):
+        server = {
+            "PATH": "/usr/bin",
+            "SIMPLE_BOARD_TOOLS_TOKEN": "st.tools-read",
+            "SIMPLE_BOARD_TOOLS_PROJECT_ID": "proj-tools",
+            "SIMPLE_BOARD_TOOLS_TOKEN_FILE": "/run/secrets/tools-token",
+        }
+        out = LT.child_env(server, "CLAUDE", {}, bearer_file=seat_bearer_file("CLAUDE"))
+        self.assertEqual(out["SIMPLE_BOARD_TOOLS_TOKEN"], "st.tools-read")
+        self.assertEqual(out["SIMPLE_BOARD_TOOLS_PROJECT_ID"], "proj-tools")
+        self.assertEqual(out["SIMPLE_BOARD_TOOLS_TOKEN_FILE"], "/run/secrets/tools-token")
+        # Without a bearer file the child runs no board write and gets no verify material.
+        out = LT.child_env(server, "CLAUDE", {})
+        self.assertNotIn("SIMPLE_BOARD_TOOLS_TOKEN", out)
+        self.assertNotIn("SIMPLE_BOARD_TOOLS_TOKEN_FILE", out)
+        self.assertNotIn("SIMPLE_BOARD_TOOLS_PROJECT_ID", out)
+
     def test_an_explicit_session_argument_wins(self):
         out = LT.child_env(
             {},

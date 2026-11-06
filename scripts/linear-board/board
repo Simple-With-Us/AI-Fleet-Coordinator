@@ -832,7 +832,8 @@ class Infisical:
                 raw = r.read()
                 return json.loads(raw) if raw else {}
         except urllib.error.HTTPError as e:
-            if e.code == 404 and method != "GET":
+            if e.code == 404:
+                # A missing named key (or object) is a clean miss, not an outage.
                 return {"_status": 404}
             self._off(f"HTTP {e.code} on {path.split('?')[0]}")
         except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as e:
@@ -923,22 +924,28 @@ class Infisical:
         }
 
     def value(self, name: str) -> str:
-        """One /linear secret, read with the whole folder once per run;  "" when absent or off."""
+        """One named /linear secret with the scoped read token;  "" when absent or off.
+        A run fetches only the keys it names, one request each, never a folder
+        listing:  one seat's run never materializes another seat's pair or token
+        blob.  A missing key is a cached clean miss, not an outage."""
         if self._secrets is None:
             self._secrets = {}
-            if self._ready():
-                query = {
-                    "workspaceId": self._project,
-                    "environment": "prod",
-                    "secretPath": INFISICAL_LINEAR_PATH,
-                }
-                js = self._call("GET", "/api/v3/secrets/raw?" + urllib.parse.urlencode(query))
-                for item in (js or {}).get("secrets") or []:
-                    if item.get("secretKey"):
-                        self._secrets[item["secretKey"]] = str(
-                            item.get("secretValue") or ""
-                        ).strip()
-        return self._secrets.get(name, "")
+        if name in self._secrets:
+            return self._secrets[name]
+        value = ""
+        if self._ready():
+            js = self._call(
+                "GET",
+                "/api/v3/secrets/raw/%s?%s"
+                % (urllib.parse.quote(name), urllib.parse.urlencode(self._where())),
+            )
+            if js and not js.get("_status"):
+                secret = js.get("secret")
+                if not isinstance(secret, dict):
+                    secret = js
+                value = str(secret.get("secretValue") or "").strip()
+        self._secrets[name] = value
+        return value
 
     def put(self, name: str, value: str) -> bool:
         """Create or update one /linear secret.  False (with a warning) when it could not be written."""

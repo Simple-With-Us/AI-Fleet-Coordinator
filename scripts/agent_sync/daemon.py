@@ -135,6 +135,15 @@ ENV_RESTART_HINT = (
 )
 
 
+# The Fleet-OPS /tools verify-token names a board child needs alongside SIMPLE_BOARD_BEARER_FILE
+# (keep in sync with BOARD_VERIFY_ENV in scripts/agent_sync/mcp/linear_tools.py).
+BOARD_VERIFY_ENV = (
+    "SIMPLE_BOARD_TOOLS_TOKEN_FILE",
+    "SIMPLE_BOARD_TOOLS_TOKEN",
+    "SIMPLE_BOARD_TOOLS_PROJECT_ID",
+)
+
+
 class Clock:
     def time(self) -> float:
         return time.time()
@@ -6827,6 +6836,12 @@ class Daemon:
             if k not in ("AGENT_SEAT", "AGENT_LAUNCH_SEAT")
         }
         board_env["SIMPLE_BOARD_BEARER_FILE"] = bearer_file
+        # board verifies that bearer with the Fleet-OPS /tools key through its own scoped token;
+        # claude_env is a fixed allowlist, so the daemon passes the verify-token names itself.
+        # Keep in sync with BOARD_VERIFY_ENV in scripts/agent_sync/mcp/linear_tools.py.
+        for key in BOARD_VERIFY_ENV:
+            if self.env.get(key):
+                board_env[key] = self.env[key]
         ok, detail = A.run_board(
             argv,
             board_env,

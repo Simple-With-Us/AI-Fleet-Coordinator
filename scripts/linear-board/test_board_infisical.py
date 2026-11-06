@@ -46,7 +46,7 @@ class InfisicalTests(T.BoardTest):
             all(
                 authorization == "Bearer " + self.vault.read_token
                 for method, path, authorization in self.vault.authorizations
-                if method == "GET" and path in ("/api/v3/secrets/raw",)
+                if method == "GET" and path.startswith("/api/v3/secrets/raw/LINEAR_")
             )
         )
         metadata_auths = [
@@ -69,6 +69,20 @@ class InfisicalTests(T.BoardTest):
         self.assertFalse(
             list((self.tmp / "home").rglob("*.token")), "no token file anywhere under HOME"
         )
+
+    def test_a_run_reads_only_its_own_named_keys_and_never_lists_the_folder(self):
+        self.seat_app("CLAUDE", "Claude")
+        self.seat_app("CODEX", "Codex")
+        self.as_seat("CLAUDE", "whoami")
+        gets = [path for method, path in self.vault.requests if method == "GET"]
+        self.assertNotIn("/api/v3/secrets/raw", gets, "no whole-folder listing, ever")
+        linear_gets = [p for p in gets if p.startswith("/api/v3/secrets/raw/LINEAR_")]
+        self.assertTrue(linear_gets, "the run reads its own named keys")
+        self.assertTrue(
+            all("CODEX" not in p for p in linear_gets),
+            "CLAUDE's run never fetches another seat's pair or token blob: %r" % linear_gets,
+        )
+        self.assertTrue(all("LINEAR_CLAUDE_" in p for p in linear_gets))
 
     def test_a_refused_shared_token_is_reminted_and_shared_again(self):
         self.seat_app("CLAUDE", "Claude")
@@ -166,9 +180,25 @@ class InfisicalTests(T.BoardTest):
             "credentials: Infisical AI Fleet Coordinator prod /linear (LINEAR_CLAUDE_CLIENT_ID",
             p.stdout,
         )
-        gets = [a for a in self.vault.authorizations if a[:2] == ("GET", "/api/v3/secrets/raw")]
-        self.assertEqual(len(gets), 1)
-        self.assertEqual(gets[0][2], "Bearer " + self.vault.read_token)
+        gets = [
+            a
+            for a in self.vault.authorizations
+            if a[0] == "GET" and a[1].startswith("/api/v3/secrets/raw/LINEAR_")
+        ]
+        self.assertEqual(
+            {a[1] for a in gets},
+            {
+                "/api/v3/secrets/raw/LINEAR_CLAUDE_CLIENT_ID",
+                "/api/v3/secrets/raw/LINEAR_CLAUDE_CLIENT_SECRET",
+                "/api/v3/secrets/raw/LINEAR_CLAUDE_CACHE_TOKEN",
+            },
+            "the pair and its cache blob are the only Linear keys this run reads: %r" % gets,
+        )
+        self.assertTrue(all(a[2] == "Bearer " + self.vault.read_token for a in gets))
+        self.assertFalse(
+            any(a[:2] == ("GET", "/api/v3/secrets/raw") for a in self.vault.authorizations),
+            "no whole-folder listing",
+        )
         self.assertFalse(marker.exists(), "the retired wrapper was spawned")
 
     def test_the_environment_pair_beats_the_stored_pair(self):

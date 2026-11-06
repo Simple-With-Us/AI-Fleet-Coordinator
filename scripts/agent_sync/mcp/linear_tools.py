@@ -77,6 +77,16 @@ CHILD_ENV_KEYS = (
 # The variables board itself reads (LINEAR_BOARD_*, and the LINEAR_<SEAT>_CLIENT_ID / _SECRET pairs a cloud
 # host keeps in its environment).  Nothing else passes through.
 PASS_PREFIXES = ("LINEAR_",)
+
+# board verifies the bearer at SIMPLE_BOARD_BEARER_FILE with the Fleet-OPS /tools key, read
+# through its own scoped token (tools_verify_key in scripts/linear-board/board).  These names
+# match no PASS_PREFIXES entry, so a bearer-file child gets them explicitly.  Keep in sync with
+# BOARD_VERIFY_ENV in scripts/agent_sync/daemon.py.
+BOARD_VERIFY_ENV = (
+    "SIMPLE_BOARD_TOOLS_TOKEN_FILE",
+    "SIMPLE_BOARD_TOOLS_TOKEN",
+    "SIMPLE_BOARD_TOOLS_PROJECT_ID",
+)
 SESSION_ENV = (SESSION_IDS.GENERIC_ENV, *SESSION_IDS.FALLBACK_ENV)
 # The core writes `board` refuses without a session id from a seat that is not exempt (AFC-361).
 SESSION_TOOLS = frozenset({"linear_file", "linear_claim", "linear_comment", "linear_status"})
@@ -361,6 +371,11 @@ def child_env(
     out.pop("AGENT_LAUNCH_SEAT", None)
     if bearer_file:
         out["SIMPLE_BOARD_BEARER_FILE"] = bearer_file
+        # The verify token and its project reach the child with the bearer file, or every write
+        # dies at bearer_verified_seat() with EXIT_AUTH "bearer verification is not configured".
+        for key in BOARD_VERIFY_ENV:
+            if env.get(key):
+                out[key] = env[key]
     return out
 
 

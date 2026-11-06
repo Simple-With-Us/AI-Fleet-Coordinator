@@ -1055,7 +1055,9 @@ class WakeTests(DaemonHarness):
 
         self.set_claude(mode="ok", output={"action": "board", "reply": None, "owner_note": None, "risk": None,
                                            "board": {"title": "Fix it", "severity": "P2", "desc": "details"}})
-        daemon = self.started(board_runner=board_runner, board_bin="/fake/board")
+        daemon = self.started(board_runner=board_runner, board_bin="/fake/board",
+                              env=self.env(SIMPLE_BOARD_TOOLS_TOKEN="st.tools-read",
+                                           SIMPLE_BOARD_TOOLS_PROJECT_ID="proj-tools"))
         self.fake.add_message("Codex", "agent-sync", "CT#2316 sentry", MENTION)
         self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
         self.wake_cycle(daemon)
@@ -1082,6 +1084,10 @@ class WakeTests(DaemonHarness):
         # simple-board is a plain symlink to scripts/simple-board and exports nothing itself, so the
         # daemon passes no write switch:  the bearer-verified seat is the write gate.
         self.assertNotIn("LINEAR_BOARD_WRITES", board_envs[0])
+        # board verifies the bearer with the Fleet-OPS /tools key through its own scoped token:
+        # claude_env is a fixed allowlist, so the daemon forwards the verify-token names itself.
+        self.assertEqual(board_envs[0].get("SIMPLE_BOARD_TOOLS_TOKEN"), "st.tools-read")
+        self.assertEqual(board_envs[0].get("SIMPLE_BOARD_TOOLS_PROJECT_ID"), "proj-tools")
 
     def test_board_filing_without_a_bearer_file_files_nothing_and_offers_no_seat(self) -> None:
         board_calls = []

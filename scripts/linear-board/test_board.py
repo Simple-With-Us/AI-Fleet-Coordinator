@@ -3193,13 +3193,29 @@ class SeatAppTests(BoardTest):
     def callers_since(self, n):
         return {c for _, c in self.mock.calls[n:]}
 
-    def test_the_linear_folder_is_read_once_with_the_scoped_read_token(self):
+    def test_the_linear_keys_are_read_by_name_with_the_scoped_read_token(self):
         self.seat_app("CLAUDE", "Claude")
         p = self.as_seat("CLAUDE", "whoami")
         self.assertIn("identity:    Claude (the CLAUDE seat's own Linear app)", p.stdout)
-        gets = [a for a in self.vault.authorizations if a[:2] == ("GET", "/api/v3/secrets/raw")]
-        self.assertEqual(len(gets), 1, "one folder read per run, never a per-key probe")
-        self.assertEqual(gets[0][2], "Bearer " + self.vault.read_token)
+        gets = [
+            a
+            for a in self.vault.authorizations
+            if a[0] == "GET" and a[1].startswith("/api/v3/secrets/raw/LINEAR_CLAUDE_")
+        ]
+        self.assertEqual(
+            {a[1] for a in gets},
+            {
+                "/api/v3/secrets/raw/LINEAR_CLAUDE_CLIENT_ID",
+                "/api/v3/secrets/raw/LINEAR_CLAUDE_CLIENT_SECRET",
+                "/api/v3/secrets/raw/LINEAR_CLAUDE_CACHE_TOKEN",
+            },
+            "the seat's pair and cache blob, one named read each",
+        )
+        self.assertTrue(all(a[2] == "Bearer " + self.vault.read_token for a in gets))
+        self.assertFalse(
+            any(a[:2] == ("GET", "/api/v3/secrets/raw") for a in self.vault.authorizations),
+            "never a whole-folder listing",
+        )
 
     def test_ma_mints_with_its_own_installed_scope_and_other_seats_keep_the_global_one(self):
         ma_scope = "comments:create,issues:create,read,write"
@@ -3460,11 +3476,19 @@ class SeatAppTests(BoardTest):
             "LINEAR_CLAUDE_CLIENT_SECRET)",
             p.stdout,
         )
-        gets = [a for a in self.vault.authorizations if a[:2] == ("GET", "/api/v3/secrets/raw")]
-        self.assertEqual(len(gets), 1)
-        self.assertEqual(gets[0][2], "Bearer " + self.vault.read_token)
-        # the write token and the /tools token never touch the /linear folder
-        auths = {a[2] for a in self.vault.authorizations if a[1] == "/api/v3/secrets/raw"}
+        gets = [
+            a
+            for a in self.vault.authorizations
+            if a[0] == "GET" and a[1].startswith("/api/v3/secrets/raw/LINEAR_CLAUDE_")
+        ]
+        self.assertEqual(len(gets), 3, "pair and cache blob, one named read each")
+        self.assertTrue(all(a[2] == "Bearer " + self.vault.read_token for a in gets))
+        # the write token and the /tools token never read a /linear key
+        auths = {
+            a[2]
+            for a in self.vault.authorizations
+            if a[0] == "GET" and a[1].startswith("/api/v3/secrets/raw/LINEAR_")
+        }
         self.assertNotIn("Bearer " + self.vault.write_token, auths)
         self.assertNotIn("Bearer " + self.vault.tools_token, auths)
 
@@ -4442,7 +4466,13 @@ class TokenBlobTests(BoardTest):
         ]
 
     def folder_reads(self):
-        return [r for r in self.vault.requests if r == ("GET", "/api/v3/secrets/raw")]
+        # named-key reads of the /linear folder; a whole-folder listing would be the bare path
+        assert not any(r == ("GET", "/api/v3/secrets/raw") for r in self.vault.requests), (
+            "a run never lists the whole /linear folder"
+        )
+        return [
+            r for r in self.vault.requests if r[0] == "GET" and r[1].startswith("/api/v3/secrets/raw/LINEAR_")
+        ]
 
     def test_a_fresh_blob_means_zero_mints_zero_writes_and_one_folder_read_per_run(self):
         blob = self.seat()
@@ -4461,8 +4491,8 @@ class TokenBlobTests(BoardTest):
         )
         self.assertEqual(
             len(self.folder_reads()),
-            reads_before + 1,
-            "one /linear folder read per run (pair and blob together)",
+            reads_before + 3,
+            "the second run re-reads only its own named keys (pair and cache blob), never the folder",
         )
 
     def test_an_expired_blob_means_one_mint_and_one_write_with_the_value_on_stdin(self):
