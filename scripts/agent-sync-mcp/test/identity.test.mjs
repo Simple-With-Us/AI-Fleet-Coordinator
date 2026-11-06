@@ -202,7 +202,7 @@ test("row 6:  each grant's tools/list offers exactly its own set, required on wr
     // The whatsapp tools ride with the full Jet login (JET-CHAT);  every other seat
     // has them withheld, so only JET-CHAT advertises the complete catalog.
     const withheld = HOSTED_TOOL_LIST.filter((t) => t.name.startsWith("whatsapp_")).length;
-    assert.equal(list.length, HOSTED_TOOL_LIST.length + 2 - (seat === "JET-CHAT" ?  0 : withheld));
+    assert.equal(list.length, HOSTED_TOOL_LIST.length + 3 - (seat === "JET-CHAT" ?  0 : withheld));
     for (const tool of list) {
       const properties = tool.inputSchema.properties ?? {};
       if (tool.name === "identities") {
@@ -220,7 +220,7 @@ test("every hosted tool is classified as exactly one of read or write", () => {
   // tools on the full Jet login) and the classification covers the whole catalog.
   const names = toolListFor("JET-CHAT", { whatsappEnabled: true }).list.map((t) => t.name);
   for (const name of names) assert.notEqual(HOSTED_READ_TOOLS.has(name), HOSTED_WRITE_TOOLS.has(name), name);
-  assert.deepEqual(sorted([...HOSTED_READ_TOOLS, ...HOSTED_WRITE_TOOLS]), sorted([...HOSTED_TOOL_LIST.map((t) => t.name), "identities", "guide"]));
+  assert.deepEqual(sorted([...HOSTED_READ_TOOLS, ...HOSTED_WRITE_TOOLS]), sorted([...HOSTED_TOOL_LIST.map((t) => t.name), "identities", "guide", "catalog"]));
 });
 
 // ---------------------------------------------------------------- audit (row 7)

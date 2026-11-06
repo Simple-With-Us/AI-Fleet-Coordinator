@@ -264,7 +264,7 @@ struct OperationsView: View {
                             controller.plan(action)
                         }
                         .controlSize(.small)
-                        .disabled(controller.isPresenting)
+                        .disabled(controller.refusesNewPlan)
                         .help(spoken)
                         .accessibilityLabel(spoken)
                     }
@@ -317,7 +317,7 @@ struct OperationsView: View {
                                 controller.plan(action)
                             }
                             .controlSize(.small)
-                            .disabled(controller.isPresenting)
+                            .disabled(controller.refusesNewPlan)
                             .help(spoken)
                             .accessibilityLabel(spoken)
                         }
