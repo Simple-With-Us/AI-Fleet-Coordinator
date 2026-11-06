@@ -60,7 +60,7 @@ branch prefix, so `AGENT_SEAT=GB-DEPLOYER` plans under `gb-deployer/` and signs
 `fleet-apps.json` has a top-level `seatApps` key that says which **app** each seat runs
 in (`claude-code`, `codex`, `grok-terminal`, `grok-web`, `botfleet`, ...).  Code that
 counts apps instead of models (a consult quorum, claim ownership) reads it through two
-functions in `scripts/agent_sync/identity.py`:
+functions in `scripts/simple_tools/identity.py`:
 
 | Function | What it does |
 |----------|--------------|
@@ -243,7 +243,7 @@ Never echo the key.
 
 Cloud / no Mac FS: the seat's bot credential comes from Infisical Fleet-OPS `/zulip`
 (`<BOT>_ZULIP_EMAIL` / `_KEY` / `_SITE`), read by the CLI through `fleet-secrets`
-vars (not setup-only) and run `python3 scripts/agent-sync` from any clone of this repo, or
+vars (not setup-only) and run `python3 scripts/simple-chat` from any clone of this repo, or
 follow `docs/protocols/zulip-fleet-guide.md` § Core Actions over plain HTTP.  State that
 cadence in the intro. Apple Notes is Mac-only — put a handoff body in the
 PR so a Mac seat can publish the note.
@@ -308,14 +308,14 @@ Then, by hand and with the owner's approval of each live install (read the `plan
 
    | Tool | Seat | Rules (`install_rules`) | Skills (`install-fleet-skills.py`) | MCP server (`install_mcp`) | Deny hook (`install_tools`) |
    |---|---|---|---|---|---|
-   | Clutch | CLUTCH, a launcher's seat wins | `clutch`, `~/.clutch/dsh/AGENTS.md` | `~/.clutch/dsh/skills` | `agent-sync` only, the Zulip server (`simple-chat` is the CLI, not a server name; `fleet-recall` is a native preset) | `clutch`, a bridge plugin in the cordis patch |
-   | Muse Code | MC | covered by `claude` (its fallback) | `~/.config/muse/skills` | `muse`: `fleet-recall`, `agent-sync` (the Zulip server) | `muse`, a plugin the owner installs |
+   | Clutch | CLUTCH, a launcher's seat wins | `clutch`, `~/.clutch/dsh/AGENTS.md` | `~/.clutch/dsh/skills` | `simple-chat` for the stock local Zulip server (`fleet-recall` is a native preset) | `clutch`, a bridge plugin in the cordis patch |
+   | Muse Code | MC | covered by `claude` (its fallback) | `~/.config/muse/skills` | `muse`: `fleet-recall`, `simple-chat` (stock local Zulip server; preserve separately approved hosted transport registrations) | `muse`, a plugin the owner installs |
    | Kimi Code | none | `kimi`, `~/.kimi-code/AGENTS.md` | none (reads the shared `~/.agents/skills`) | `kimi`: `fleet-recall` | `kimi`, a `[[hooks]]` block |
    | Copilot CLI | none | `copilot`, `~/.copilot/copilot-instructions.md` (UNVERIFIED) | none | `copilot`: `fleet-recall` | `copilot`, a file this tool owns under `~/.copilot/hooks/` |
    | OpenCode | none | `opencode`, `~/.config/opencode/AGENTS.md` (the owner's row, #438; it may also read `~/AGENTS.md`) | none | `opencode`: `fleet-recall` | `opencode`, a local plugin in the stable dir |
    | Conductor | none | none: its Claude Code and Codex read theirs | none | none: each harness inside reads its own | none: the Claude and Codex guards fire inside it |
-   | MiniMax Code | MM | `minimax` (`memory/user.md`) | `~/.minimax/skills` | `minimax`: `fleet-recall`, `agent-sync` (the Zulip server) | `minimax` (alias `mm`, in `all`), a local plugin directory `~/.minimax/plugins/fleet-guard/` with the lane and secret guard |
-   | fx | FX | `fx` | `~/.fx/skills` | `fx`: `fleet-recall`, `agent-sync` (the Zulip server) | none |
+   | MiniMax Code | MM | `minimax` (`memory/user.md`) | `~/.minimax/skills` | `minimax`: `fleet-recall`, `simple-chat` (stock local Zulip server; preserve separately approved hosted transport registrations) | `minimax` (alias `mm`, in `all`), a local plugin directory `~/.minimax/plugins/fleet-guard/` with the lane and secret guard |
+   | fx | FX | `fx` | `~/.fx/skills` | `fx`: `fleet-recall`, `simple-chat` (stock local Zulip server; preserve separately approved hosted transport registrations) | none |
 
    Not tools to wire: Muse Assist (a cloud assistant, the card in `docs/MUSE-ONBOARDING.md`), BotFleet and Grok Bot (launchers: they
    pass their own seat, so nothing user-level may pin one), `~/.dsh` (BotFleet owns it), Cherry Studio, OpenClaw (not configured), and

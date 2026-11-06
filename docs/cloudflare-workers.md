@@ -54,7 +54,7 @@ A row's `workers_dev` is the state that should be live, so the watchdog's daily 
 
 `free_plan_allows_cpu_ms` is `false` because removing the limit loses nothing on Free, while keeping it may stop the deploy.  Cloudflare's configuration page says limits are supported only on the Standard usage model, and a review reported API error 100328 for a declared `cpu_ms` on Free.  Neither has been tested here, and checklist step 7 settles it.
 
-`python3 scripts/check-worker-guards.py --plan free` rehearses it without changing the file.  Today that flags `limits.cpu_ms` in all five tracked configs, and `scripts/agent-sync-mcp/wrangler.jsonc` at 200 subrequests.
+`python3 scripts/check-worker-guards.py --plan free` rehearses it without changing the file.  Today that flags `limits.cpu_ms` in all five tracked configs, and `scripts/simple-tools-mcp/wrangler.jsonc` at 200 subrequests.
 
 ## The Workers
 
@@ -67,7 +67,7 @@ Measured figures are from the audit of Nov 3-4, 2026.  CPU figures are a 14-day
 - **Storage:** one KV namespace for OAuth grants; one SQLite Durable Object per seat.
 - **Triggers:** fetch, and the SeatGate alarm, which re-arms at 1 second while work is due.
 - **Consumers:** hosted clients over OAuth, and server seats through the stdio adapter and CLIs.
-- **Source:** `scripts/agent-sync-mcp`.
+- **Source:** `scripts/simple-tools-mcp`.
 - **Deploy:** by hand from `DEPLOY.md`.  Status `gated`.  Merge does not deploy it, and each deploy restarts the Durable Objects.
 - **Limits:** 300 ms CPU, 200 subrequests, sampling 1.  Measured CPU p99 78.9 ms, p99.9 120 ms, about 5.5 subrequests per request.  The true per-invocation maximum is not exposed by analytics.  The largest fan-out read from the code is `GET /admin`: about 131 SeatGate calls across 8 hosted seats and 44 bearer rows, plus its Infisical reads.  Whether each call or each stub counts as a subrequest is not verified.  Past the limit its reads show as unavailable or unknown instead of failing the page.
 
