@@ -40,6 +40,8 @@ HIT_TEXT_LIMIT, HIT_TITLE_LIMIT, HIT_URL_LIMIT, HIT_FIELD_LIMIT = 1200, 200, 300
 SCRUBBED_LIMIT = 20
 STATS_KEYS_LIMIT = 50
 CONTRIBUTE_MIN = 40
+REASON_MIN = 3
+REASON_MAX = 500
 CHILD_ENV_KEYS = (
     "PATH",
     "HOME",
@@ -138,11 +140,46 @@ def run(
     return proc.returncode, data, err
 
 
-def failure(code: int, err: str) -> RecallUnavailable:
+UNKNOWN_WRITE = re.compile(
+    r"(?:\bHTTP (?:5\d\d|408)\b|\b(?:timed out|timeout)\b|"
+    r"\b(?:TimeoutError|RemoteDisconnected|Connection(?:Aborted|Refused|Reset)?Error|"
+    r"BrokenPipeError|socket\.timeout)\b|connection reset by peer|"
+    r"remote end closed connection without response)",
+    re.IGNORECASE,
+)
+RATE_LIMITED = re.compile(r"\bHTTP 429\b", re.IGNORECASE)
+
+
+def failure(code: int, err: str, *, write: bool = False) -> RecallUnavailable:
     if code == 2:
+        if RATE_LIMITED.search(err):
+            return RecallUnavailable(
+                "rate_limited",
+                "fleet recall refused the %s because it was rate limited:  %s"
+                % ("write" if write else "request", err or "unknown"),
+                retryable=True,
+            )
+        if UNKNOWN_WRITE.search(err):
+            if not write:
+                return RecallUnavailable(
+                    "unavailable",
+                    "fleet recall is temporarily unavailable:  %s" % (err or "unknown"),
+                    retryable=True,
+                )
+            return RecallUnavailable(
+                "outcome_unknown",
+                "fleet recall failed before the write could be verified:  %s" % (err or "unknown"),
+                retryable=False,
+            )
+        lower = err.lower()
         return RecallUnavailable(
             "not_authorized"
-            if "credential" in err.lower() or "key" in err.lower()
+            if "credential" in lower
+            or "key" in lower
+            or "owning seat" in lower
+            or "runs under your own seat" in lower
+            or "owner identity" in lower
+            or "owner mutation token not configured" in lower
             else "invalid_argument",
             "fleet recall refused the request:  %s" % (err or "usage or credential error"),
         )
@@ -202,6 +239,16 @@ def hit_item(hit: Mapping[str, Any]) -> dict[str, Any]:
         )
         if created > 0
         else None,
+        "revision": hit.get("revision") if isinstance(hit.get("revision"), int) else None,
+        "corrected": hit.get("corrected_at") if isinstance(hit.get("corrected_at"), int) else None,
+        "corrected_by": field("corrected_by", HIT_FIELD_LIMIT),
+        "correction_reason": field("correction_reason", HIT_FIELD_LIMIT),
+        "retracted": hit.get("retracted") is True or hit.get("retracted") == 1,
+        "retracted_at": hit.get("retracted_at")
+        if isinstance(hit.get("retracted_at"), int)
+        else None,
+        "retracted_by": field("retracted_by", HIT_FIELD_LIMIT),
+        "retraction_reason": field("retraction_reason", HIT_FIELD_LIMIT),
         "text": text,
         "truncated": truncated,
     }
@@ -218,7 +265,7 @@ def envelope(header: str, summary: str, items: list[Mapping[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-# ---- the three tools ----------------------------------------------------------------------------
+# ---- the five tools -----------------------------------------------------------------------------
 
 
 def search(
@@ -232,6 +279,8 @@ def search(
         argv += ["--app", str(args["app"])]
     if args.get("category"):
         argv += ["--category", str(args["category"])]
+    if args.get("include_retracted"):
+        argv += ["--include-retracted"]
     code, data, err = run(argv, stdin=b"", env=env, runner=runner)
     if data is None or "hits" not in data:
         raise failure(code, err)
@@ -314,21 +363,18 @@ def contribute(
     argv = [
         "contribute",
         "-",
-        "--category",
-        str(args["category"]),
-        "--app",
-        str(args.get("app") or "fleet"),
-        "--seat",
-        identity,
+        "--category=" + str(args["category"]),
+        "--app=" + str(args.get("app") or "fleet"),
+        "--seat=" + identity,
         "--json",
     ]
     if title:
-        argv += ["--title", title]
+        argv += ["--title=" + title]
     if url:
-        argv += ["--url", url]
+        argv += ["--url=" + url]
     code, data, err = run(argv, stdin=text.encode("utf-8"), env=env, runner=runner)
     if data is None:
-        raise failure(code, err)
+        raise failure(code, err, write=True)
     if data.get("status") == "duplicate":
         existing = data.get("existing") if isinstance(data.get("existing"), dict) else {}
         result = {
@@ -341,7 +387,7 @@ def contribute(
         }
         return json.dumps(result), result
     if code != 0 or "doc_id" not in data:
-        raise failure(code, err)
+        raise failure(code, err, write=True)
     scrubbed = [clean(s, 60)[0] for s in (data.get("scrubbed") or [])[:SCRUBBED_LIMIT]]
     result = {
         "id": clean(data.get("id"), 80)[0],
@@ -349,6 +395,163 @@ def contribute(
         "seat": identity,
         "status": clean(data.get("status"), 40)[0] if isinstance(data.get("status"), str) else "",
         "scrubbed": scrubbed,
+        "duplicate": False,
+    }
+    return json.dumps(result), result
+
+
+def _reason_field(args: Mapping[str, Any], scan: Callable[[str, str], None] | None) -> str:
+    reason = str(args.get("reason") or "").strip()
+    if len(reason) < REASON_MIN:
+        raise RecallUnavailable(
+            "invalid_argument",
+            "argument 'reason' must say why, in at least %d characters" % REASON_MIN,
+        )
+    if len(reason) > REASON_MAX:
+        raise RecallUnavailable(
+            "invalid_argument",
+            "argument 'reason' must be at most %d characters" % REASON_MAX,
+        )
+    if scan is not None:
+        scan("reason", reason)
+    return reason
+
+
+def _invalid_response(field: str) -> RecallUnavailable:
+    return RecallUnavailable(
+        "invalid_response", "fleet recall returned an invalid response field: %s" % field
+    )
+
+
+def _response_str(data: Mapping[str, Any], field: str, limit: int, *, required: bool = True) -> str:
+    value = data.get(field)
+    if value is None and not required:
+        return ""
+    if not isinstance(value, str):
+        raise _invalid_response(field)
+    return clean(value, limit)[0]
+
+
+def _response_int(data: Mapping[str, Any], field: str, *, required: bool = True) -> int:
+    value = data.get(field)
+    if value is None and not required:
+        return 0
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise _invalid_response(field)
+    return value
+
+
+def _response_bool(data: Mapping[str, Any], field: str) -> bool:
+    value = data.get(field)
+    if not isinstance(value, bool):
+        raise _invalid_response(field)
+    return value
+
+
+def _response_strings(data: Mapping[str, Any], field: str, limit: int) -> list[str]:
+    value = data.get(field)
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        raise _invalid_response(field)
+    return [clean(item, 60)[0] for item in value[:limit]]
+
+
+def _doc_id_arg(value: Any) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise RecallUnavailable("invalid_argument", "argument 'doc_id' must be a non-empty string")
+    doc_id = value.strip()
+    if doc_id.startswith("-"):
+        raise RecallUnavailable("invalid_argument", "argument 'doc_id' must not begin with '-'")
+    return doc_id
+
+
+def _expected_revision_arg(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise RecallUnavailable(
+            "invalid_argument", "argument 'expected_revision' must be a positive integer"
+        )
+    return value
+
+
+def correct(
+    args: Mapping[str, Any],
+    identity: str,
+    *,
+    env: Mapping[str, str],
+    runner: Runner | None = None,
+    scan: Callable[[str, str], None] | None = None,
+) -> tuple[str, dict[str, Any]]:
+    text, title, url = contribute_fields(args, scan)
+    reason = _reason_field(args, scan)
+    doc_id = _doc_id_arg(args.get("doc_id"))
+    expected_revision = _expected_revision_arg(args.get("expected_revision"))
+    argv = [
+        "correct",
+        doc_id,
+        "-",
+        "--reason=" + reason,
+        "--seat=" + identity,
+        "--json",
+    ]
+    if title:
+        argv += ["--title=" + title]
+    if url:
+        argv += ["--url=" + url]
+    if expected_revision is not None:
+        argv += ["--expected-revision=" + str(expected_revision)]
+    code, data, err = run(argv, stdin=text.encode("utf-8"), env=env, runner=runner)
+    if data is None or code != 0 or "doc_id" not in data:
+        raise failure(code, err, write=True)
+    result = {
+        "id": _response_str(data, "id", 80),
+        "doc_id": _response_str(data, "doc_id", 200),
+        "seat": identity,
+        "status": _response_str(data, "status", 40),
+        "revision": _response_int(data, "revision"),
+        "corrected_at": _response_int(data, "corrected_at", required=False),
+        "corrected_by": _response_str(data, "corrected_by", 60, required=False),
+        "previous_content_hash": _response_str(data, "previous_content_hash", 80),
+        "content_hash": _response_str(data, "content_hash", 80),
+        "scrubbed": _response_strings(data, "scrubbed", SCRUBBED_LIMIT),
+        "duplicate": False,
+    }
+    return json.dumps(result), result
+
+
+def retract(
+    args: Mapping[str, Any],
+    identity: str,
+    *,
+    env: Mapping[str, str],
+    runner: Runner | None = None,
+    scan: Callable[[str, str], None] | None = None,
+) -> tuple[str, dict[str, Any]]:
+    reason = _reason_field(args, scan)
+    doc_id = _doc_id_arg(args.get("doc_id"))
+    expected_revision = _expected_revision_arg(args.get("expected_revision"))
+    argv = [
+        "retract",
+        doc_id,
+        "--reason=" + reason,
+        "--seat=" + identity,
+        "--json",
+    ]
+    if expected_revision is not None:
+        argv += ["--expected-revision=" + str(expected_revision)]
+    code, data, err = run(argv, stdin=b"", env=env, runner=runner)
+    if data is None or code != 0 or "doc_id" not in data:
+        raise failure(code, err, write=True)
+    result = {
+        "id": _response_str(data, "id", 80),
+        "doc_id": _response_str(data, "doc_id", 200),
+        "seat": identity,
+        "status": _response_str(data, "status", 40),
+        "revision": _response_int(data, "revision"),
+        "retracted": _response_bool(data, "retracted"),
+        "retracted_at": _response_int(data, "retracted_at"),
+        "retracted_by": _response_str(data, "retracted_by", 60),
+        "retraction_reason": _response_str(data, "retraction_reason", 500),
         "duplicate": False,
     }
     return json.dumps(result), result

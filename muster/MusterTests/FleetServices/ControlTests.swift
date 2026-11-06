@@ -73,6 +73,25 @@ final class ControlTests: XCTestCase {
         catch { XCTAssertEqual(error as? ControlAPIError, .unresponsive) }
     }
 
+    /// The identity check answers, then the status read's connection is
+    /// refused:  the server proved it was alive a moment ago, so the refusal
+    /// is surfaced as itself instead of reading as a slow answer.
+    func testAStatusReadRefusedBeforeSendingSurfacesTheRefusal() async {
+        MockURLProtocol.failure = { request in
+            request.url!.path == "/api/system/control" ? URLError(.cannotConnectToHost) : nil
+        }
+        defer { MockURLProtocol.failure = nil }
+        MockURLProtocol.handler = { request in
+            (200, Data(#"{"app":"botfleet","pid":42,"ready":true}"#.utf8))
+        }
+        do { _ = try await ControlAPI(session: mockSession()).status(); XCTFail("Expected a refusal") }
+        catch {
+            guard case .refused = (error as? ControlAPIError) else {
+                return XCTFail("Expected a refusal, got \(error)")
+            }
+        }
+    }
+
     /// A server that does not answer the health check at all really is gone.
     func testUnreachableServerIsStillUnavailable() async {
         MockURLProtocol.failure = { _ in URLError(.cannotConnectToHost) }
