@@ -89,7 +89,7 @@ final class BuildIdentityTests: XCTestCase {
         XCTAssertEqual(BuildIdentityCopy.comparison(app: unstamped, checkout: reading(commit)),
                        "This build does not record its commit,  so it cannot be compared with the checkout.")
         XCTAssertEqual(BuildIdentityCopy.menuCheckoutLine(app: unstamped, checkout: reading(commit)),
-                       "Checkout At 0123456, Not The App's Commit")
+                       "Checkout At 0123456, App Commit Unknown")
         let identity = BuildIdentity(info: info())
         XCTAssertEqual(BuildIdentityCopy.menuCheckoutLine(app: identity, checkout: reading(nil)), "Checkout Commit Unknown")
         XCTAssertTrue(BuildIdentityCopy.checkoutLine(reading(nil)).contains("commit unknown"))

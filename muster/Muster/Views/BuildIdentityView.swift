@@ -53,7 +53,7 @@ struct BuildIdentityMenuSection: View {
                 Text(BuildIdentityCopy.menuCheckoutLine(app: identity, checkout: reading))
             }
             if !updater.waitingFor.isEmpty {
-                Text("Update Waiting Until Nothing Is Running")
+                Text("Update Waiting")
             }
             if updater.availability.isEnabled {
                 CheckForUpdatesButton()

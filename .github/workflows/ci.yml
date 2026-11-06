@@ -621,10 +621,12 @@ jobs:
         working-directory: muster
         run: |
           xcodegen generate --spec project.yml
+          # The checked-out commit's own time, in the same UTC form the build scripts write.
+          commit_time="$(date -u -r "$(git show -s --format=%ct HEAD)" +%Y-%m-%dT%H:%M:%SZ)"
           xcodebuild -project Muster.xcodeproj -scheme Muster -configuration Debug \
             -destination 'platform=macOS' -derivedDataPath .build/CI \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= \
-            "MUSTER_COMMIT=$GITHUB_SHA" MUSTER_COMMIT_TIME=2026-11-05T15:30:00Z MUSTER_BUILD_CHANNEL=development \
+            "MUSTER_COMMIT=$GITHUB_SHA" "MUSTER_COMMIT_TIME=$commit_time" MUSTER_BUILD_CHANNEL=development \
             build
       # The build stamp travels through Support/Info.plist into the generated one, which is
       # what Settings and the menu read.  The Debug build carries no update feed, so Sparkle

@@ -275,7 +275,8 @@ enum BuildIdentityCopy {
     /// The short form the menu shows.
     static func menuCheckoutLine(app: BuildIdentity, checkout: CheckoutRevision.Reading) -> String {
         guard let revision = checkout.revision else { return "Checkout Commit Unknown" }
-        if let appCommit = app.commit, appCommit == revision.commit {
+        guard let appCommit = app.commit else { return "Checkout At \(revision.shortCommit), App Commit Unknown" }
+        if appCommit == revision.commit {
             return "Checkout At \(revision.shortCommit), Same As The App"
         }
         return "Checkout At \(revision.shortCommit), Not The App's Commit"

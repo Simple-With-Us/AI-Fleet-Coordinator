@@ -27,7 +27,7 @@ Even a feed someone replaced could not install anything:  Sparkle refuses an arc
 | The automatic install (`willInstallUpdateOnQuit`) | No work in flight, and Muster not in front |
 | A relaunch, including Install And Relaunch the owner chose (`shouldPostponeRelaunchForUpdate`) | No work in flight |
 
-Work in flight is an apply on the app-lifetime `ApplyCoordinator` (planning, applying or re-proving), an `OpsController` run (planning, running or re-checking a receipt), and a `ServiceActionRouter` action on the direct route (from the click to its result, its alert included) or a service FleetAdmin is acting on.  An open plan sheet with nothing running does not hold it.  The gate looks again whenever any of those change and when Muster stops being in front.  Settings says what an update is waiting for, and the menu says Update Waiting Until Nothing Is Running.  `MusterTests/UpdateInstallGateTests.swift` proves the gate, including with a real `ApplyCoordinator` whose plan is still running.
+Work in flight is an apply on the app-lifetime `ApplyCoordinator` (planning, applying or re-proving), an `OpsController` run (planning, running or re-checking a receipt), and a `ServiceActionRouter` action on the direct route (from the click to its result, its alert included) or a service FleetAdmin is acting on.  An open plan sheet with nothing running does not hold it.  The gate looks again whenever any of those change and when Muster stops being in front.  Settings says what an update is waiting for, and the menu says only Update Waiting.  `MusterTests/UpdateInstallGateTests.swift` proves the gate, including with a real `ApplyCoordinator` whose plan is still running.
 
 ## Build Identity
 

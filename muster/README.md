@@ -149,7 +149,7 @@ The Operations tab shows what the Hog Hunter Mac app says about this Mac: load, 
 
 ## Delivery And Build Identity
 
-Muster updates itself through Sparkle 2.  `.github/workflows/muster-release.yml` builds, signs, notarizes and staples each merge to main that changes `muster/`, and installed copies read Muster's own feed, the fixed `muster-feed` release, once an hour.  An update is installed only when no apply, operations run or service action is in flight and Muster is not the app in front.  `docs/AUTO-UPDATE.md` has the whole route.
+Muster updates itself through Sparkle 2.  `.github/workflows/muster-release.yml` builds, signs, notarizes and staples each merge to main that changes `muster/`, and installed copies read Muster's own feed, the fixed `muster-feed` release, once an hour.  An automatic install waits until no apply, operations run or service action is in flight and Muster is no longer the app in front.  An Install And Relaunch the owner chooses waits only for work in flight.  `docs/AUTO-UPDATE.md` has the whole route.
 
 Settings ▸ This Build and the foot of the menu show the version, the build number and the short commit, with Development Build or Not From Main when that applies, and the commit of the checkout Muster runs its Python from, saying plainly when the two differ.
 
