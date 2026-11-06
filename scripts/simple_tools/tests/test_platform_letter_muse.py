@@ -19,10 +19,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from agent_sync import muse_session_rename as MR
-from agent_sync import operator_registry as OR
-from agent_sync import platform_letter as PL
-from agent_sync import platform_letter_muse as PLM
+from simple_tools import muse_session_rename as MR
+from simple_tools import operator_registry as OR
+from simple_tools import platform_letter as PL
+from simple_tools import platform_letter_muse as PLM
 
 SCRIPTS = Path(__file__).resolve().parents[2]
 SID = "01a18a33-a850-7e22-82f5-a9ce847c65af"
@@ -200,7 +200,7 @@ class KindTests(Tree):
             self.assertEqual(self.kind(), "headless", words)
 
     def test_a_launcher_the_opt_outs_and_the_helper_mark_take_no_letter(self) -> None:
-        for env in ({"AGENT_LAUNCHER": "botfleet"}, {"AGENT_LAUNCH_SEAT": "CODEX"}, {"AGENT_LAUNCHER": "agent-sync-wake"},
+        for env in ({"AGENT_LAUNCHER": "botfleet"}, {"AGENT_LAUNCH_SEAT": "CODEX"}, {"AGENT_LAUNCHER": "simple-tools-wake"},
                     {"SESSION_LETTER": "0"}, {"MUSE_LETTER": "0"}, {MR.HELPER_MARK: "1"}):
             self.muse(env=env)
             self.assertEqual(self.kind(), "headless", env)
@@ -788,10 +788,10 @@ class WorkerTests(Tree):
         self.assertEqual(len(self.sleeps), 2)
 
     def test_the_script_runs_as_a_program_and_leaves_a_missing_job_alone(self) -> None:
-        proc = subprocess.run([sys.executable, str(SCRIPTS / "agent_sync" / "muse_session_rename.py"), "run", "--spool", self.spool],
+        proc = subprocess.run([sys.executable, str(SCRIPTS / "simple_tools" / "muse_session_rename.py"), "run", "--spool", self.spool],
                               capture_output=True, text=True, timeout=30, cwd="/")
         self.assertEqual((proc.returncode, proc.stdout), (0, ""))  # stderr is not checked:  a host's tracer may write to it
-        bad = subprocess.run([sys.executable, str(SCRIPTS / "agent_sync" / "muse_session_rename.py"), "nope"],
+        bad = subprocess.run([sys.executable, str(SCRIPTS / "simple_tools" / "muse_session_rename.py"), "nope"],
                              capture_output=True, text=True, timeout=30, cwd="/")
         self.assertEqual(bad.returncode, 2)
 

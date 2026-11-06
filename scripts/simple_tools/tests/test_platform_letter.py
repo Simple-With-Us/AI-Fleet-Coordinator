@@ -22,8 +22,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from agent_sync import operator_registry as OR
-from agent_sync import platform_letter as PL
+from simple_tools import operator_registry as OR
+from simple_tools import platform_letter as PL
 
 SCRIPTS = Path(__file__).resolve().parents[2]
 ENTRY = SCRIPTS / "platform-letter"
@@ -262,7 +262,7 @@ class SpecTests(unittest.TestCase):
         for env in (
             {"AGENT_LAUNCHER": "botfleet"},
             {"AGENT_LAUNCHER": "grok-bot"},
-            {"AGENT_LAUNCHER": "agent-sync-wake"},
+            {"AGENT_LAUNCHER": "simple-tools-wake"},
             {"AGENT_LAUNCH_SEAT": "BF-BUILDER"},
             {"AGENT_LAUNCHER": "botfleet", "AGENT_LAUNCH_SEAT": "BF-BUILDER"},
         ):
@@ -318,10 +318,10 @@ class SpecTests(unittest.TestCase):
         for name in ("", "../etc", "os", "claude", "Codex", "a;b"):
             self.assertIsNone(PL.load_adapter(name), name)
         module = types.SimpleNamespace(SPEC=make_spec(platform="faux", seat="FAUX"))
-        with mock.patch.dict(sys.modules, {"agent_sync.platform_letter_faux": module}):
+        with mock.patch.dict(sys.modules, {"simple_tools.platform_letter_faux": module}):
             self.assertEqual(PL.load_spec("faux").seat, "FAUX")
         wrong = types.SimpleNamespace(SPEC=make_spec(platform="other", seat="OTHER"))
-        with mock.patch.dict(sys.modules, {"agent_sync.platform_letter_faux": wrong}):
+        with mock.patch.dict(sys.modules, {"simple_tools.platform_letter_faux": wrong}):
             self.assertIsNone(PL.load_spec("faux"))  # an adapter names its own platform
 
 
@@ -1055,11 +1055,11 @@ class HookTests(Base):
             stdout.write('{"own": true}\n')
             return 0
 
-        module = types.ModuleType("agent_sync.platform_letter_owned")
+        module = types.ModuleType("simple_tools.platform_letter_owned")
         module.SPEC = make_spec(platform="owned", seat="CODEX", source="owned-hook")
         module.hook_main = hook_main
         out, err = io.StringIO(), io.StringIO()
-        with mock.patch.dict(sys.modules, {"agent_sync.platform_letter_owned": module}):
+        with mock.patch.dict(sys.modules, {"simple_tools.platform_letter_owned": module}):
             code = PL.main(["hook", "--platform", "owned", "--location", "server", "--remote", "mac"],
                            env=self.env(), stdin=io.StringIO("payload"), stdout=out, stderr=err)
         self.assertEqual((code, out.getvalue(), seen["stdin"]), (0, '{"own": true}\n', "payload"))
@@ -1078,7 +1078,7 @@ class HookTests(Base):
         # BotFleet and every other launcher: no hop, no note, no output.
         for extra in (
             {"AGENT_LAUNCHER": "botfleet", "AGENT_LAUNCH_SEAT": "BF-BUILDER"},
-            {"AGENT_LAUNCHER": "agent-sync-wake"},
+            {"AGENT_LAUNCHER": "simple-tools-wake"},
             {"AGENT_LAUNCH_SEAT": "BF-BUILDER"},
             {"CODEX_LETTER": "0"},
             {"SESSION_LETTER": "0"},
@@ -2011,7 +2011,7 @@ class InstallTests(Base):
     def test_install_main_finds_the_adapter(self) -> None:
         module = types.SimpleNamespace(SPEC=make_spec(platform="faux", seat="FAUX"), INSTALL=self.installer())
         out = io.StringIO()
-        with mock.patch.dict(sys.modules, {"agent_sync.platform_letter_faux": module}):
+        with mock.patch.dict(sys.modules, {"simple_tools.platform_letter_faux": module}):
             code = PL.install_main(["--platform", "faux", "--location", "server", "--remote", "mac"],
                                    {"HOME": self.home}, out)
         self.assertEqual(code, 0)
@@ -2020,11 +2020,11 @@ class InstallTests(Base):
         seen = []
         own = types.SimpleNamespace(SPEC=make_spec(platform="faux", seat="FAUX"),
                                     install=lambda opts, env, stdout: seen.append(opts) or 7)
-        with mock.patch.dict(sys.modules, {"agent_sync.platform_letter_faux": own}):
+        with mock.patch.dict(sys.modules, {"simple_tools.platform_letter_faux": own}):
             code = PL.install_main(["--platform", "faux", "--check"], {"HOME": self.home}, io.StringIO())
         self.assertEqual((code, seen[0].check, seen[0].platform), (7, True, "faux"))
         bare = types.SimpleNamespace(SPEC=make_spec(platform="faux", seat="FAUX"))
-        with mock.patch.dict(sys.modules, {"agent_sync.platform_letter_faux": bare}):
+        with mock.patch.dict(sys.modules, {"simple_tools.platform_letter_faux": bare}):
             self.assertEqual(PL.install_main(["--platform", "faux"], {"HOME": self.home}, io.StringIO()), 2)
         self.assertEqual(PL.install_main(["--platform", "nosuch"], {"HOME": self.home}, io.StringIO()), 2)
 

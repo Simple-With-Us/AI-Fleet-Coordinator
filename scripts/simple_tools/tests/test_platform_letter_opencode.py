@@ -19,13 +19,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from agent_sync import operator_registry as OR
-from agent_sync import platform_letter as PL
-from agent_sync import platform_letter_opencode as OC
-from agent_sync.tests import test_platform_letter as T
+from simple_tools import operator_registry as OR
+from simple_tools import platform_letter as PL
+from simple_tools import platform_letter_opencode as OC
+from simple_tools.tests import test_platform_letter as T
 
 SCRIPTS = Path(__file__).resolve().parents[2]
-PLUGIN = SCRIPTS / "agent_sync" / OC.PLUGIN_DIRNAME
+PLUGIN = SCRIPTS / "simple_tools" / OC.PLUGIN_DIRNAME
 ENTRY = SCRIPTS / "platform-letter"
 PAIR = r"^[A-Z]{2}$"
 SID = "ses_test_0001"
@@ -285,7 +285,7 @@ class InstallBase(unittest.TestCase):
         os.makedirs(self.cfg_dir)
         self.cfg = os.path.join(self.cfg_dir, "opencode.json")
         # A checkout's plugin directory, outside any lane, for the installer to name.
-        self.plugin = os.path.join(self.tmp.name, "runtime", "scripts", "agent_sync", OC.PLUGIN_DIRNAME)
+        self.plugin = os.path.join(self.tmp.name, "runtime", "scripts", "simple_tools", OC.PLUGIN_DIRNAME)
         os.makedirs(self.plugin)
         Path(self.plugin, "index.js").write_text("export default {};\n")
         self.env = {"HOME": self.home, OC.ENV_PLUGIN_DIR: self.plugin}
@@ -373,7 +373,7 @@ class InstallTests(InstallBase):
         # A check against another registry host still says the entry is not what was asked for.
         self.assertEqual(self.run_install("--check", "--remote", "other")[0], 1)
         # An outdated entry is renewed where it stands with the hand-set options, and a new registry host replaces the old.
-        stale = "/old/home/.local/share/fleet-cli/current/scripts/agent_sync/" + OC.PLUGIN_DIRNAME
+        stale = "/old/home/.local/share/fleet-cli/current/scripts/simple_tools/" + OC.PLUGIN_DIRNAME
         self.write({"plugins": ["/a", {"package": stale, "options": dict(hand)}]})
         code, answer = self.run_install("--remote", "macbook")
         self.assertEqual((code, answer["action"]), (0, "updated"))
@@ -398,7 +398,7 @@ class InstallTests(InstallBase):
         self.assertEqual(list(self.read()), ["plugins", "model"])  # key order is the owner's
 
     def test_a_plugin_of_ours_from_another_release_or_home_is_replaced_where_it_stands(self) -> None:
-        stale = "/old/home/.local/share/fleet-cli/current/scripts/agent_sync/" + OC.PLUGIN_DIRNAME
+        stale = "/old/home/.local/share/fleet-cli/current/scripts/simple_tools/" + OC.PLUGIN_DIRNAME
         self.write({"plugins": ["/a", stale, "/b", {"package": stale + "/", "options": {"remote": "mac"}}]})
         code, answer = self.run_install()
         self.assertEqual((code, answer["action"]), (0, "updated"))
@@ -499,7 +499,7 @@ class PluginDirTests(unittest.TestCase):
         os.makedirs(self.home)
 
     def make(self, *parts: str) -> str:
-        path = os.path.join(self.tmp.name, *parts, "scripts", "agent_sync", OC.PLUGIN_DIRNAME)
+        path = os.path.join(self.tmp.name, *parts, "scripts", "simple_tools", OC.PLUGIN_DIRNAME)
         os.makedirs(path)
         Path(path, "index.js").write_text("export default {};\n")
         return path
@@ -515,12 +515,12 @@ class PluginDirTests(unittest.TestCase):
 
     def test_the_servers_checkout_is_named_through_its_current_link(self) -> None:
         cli = os.path.join(self.home, ".local", "share", "fleet-cli")
-        repo = os.path.join(cli, "repo", "scripts", "agent_sync", OC.PLUGIN_DIRNAME)
+        repo = os.path.join(cli, "repo", "scripts", "simple_tools", OC.PLUGIN_DIRNAME)
         os.makedirs(repo)
         Path(repo, "index.js").write_text("export default {};\n")
         os.symlink("repo", os.path.join(cli, "current"))
         got = OC.plugin_dir({}, self.home, source=repo)
-        self.assertEqual(got, os.path.join(cli, "current", "scripts", "agent_sync", OC.PLUGIN_DIRNAME))
+        self.assertEqual(got, os.path.join(cli, "current", "scripts", "simple_tools", OC.PLUGIN_DIRNAME))
         self.assertTrue(os.path.isfile(os.path.join(got, "index.js")))  # the link resolves
 
     def test_the_override_must_be_an_absolute_directory_with_the_plugin(self) -> None:
@@ -541,7 +541,7 @@ class NodeTests(HookBase):
         # The file, never the directory: `node --test <dir>` can take the plugin's own index.js for a test file and pass
         # without running a single test.
         proc = subprocess.run(
-            ["node", "--test", str(SCRIPTS / "agent_sync" / "tests" / "opencode_letter_plugin.test.mjs")],
+            ["node", "--test", str(SCRIPTS / "simple_tools" / "tests" / "opencode_letter_plugin.test.mjs")],
             capture_output=True,
             text=True,
             encoding="utf-8",

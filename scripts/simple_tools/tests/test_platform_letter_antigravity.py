@@ -20,9 +20,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from agent_sync import operator_registry as OR
-from agent_sync import platform_letter as PL
-from agent_sync import platform_letter_antigravity as PA
+from simple_tools import operator_registry as OR
+from simple_tools import platform_letter as PL
+from simple_tools import platform_letter_antigravity as PA
 
 REAL_AGY_ARGUMENTS = PA.agy_arguments  # the tests below replace it on the module; this keeps the real one
 SCRIPTS = Path(__file__).resolve().parents[2]
@@ -509,7 +509,7 @@ class QuickAnswerTests(Base):
     def setUp(self) -> None:
         super().setUp()
         self.checkout = os.path.join(self.tmp.name, "checkout", "scripts")
-        package = os.path.join(self.checkout, "agent_sync")
+        package = os.path.join(self.checkout, "simple_tools")
         os.makedirs(package)
         self.entry = os.path.join(self.checkout, "platform-letter")
         shutil.copy(ENTRY, self.entry)
@@ -570,7 +570,7 @@ class QuickAnswerTests(Base):
         self.assertTrue(os.path.exists(self.imported))
 
     def test_a_checkout_that_cannot_be_imported_still_answers_agy(self) -> None:
-        os.unlink(os.path.join(self.checkout, "agent_sync", "platform_letter.py"))
+        os.unlink(os.path.join(self.checkout, "simple_tools", "platform_letter.py"))
         first = json.dumps(pre_payload(number=0))
         proc = self.run_entry(first)
         self.assertEqual((proc.returncode, proc.stdout), (0, b"{}\n"))  # agy reads an answer from every hook
@@ -678,7 +678,7 @@ class MessageTests(unittest.TestCase):
 class InstallTests(Base):
     def setUp(self) -> None:
         super().setUp()
-        self.link_command()  # the Mac has ~/.local/bin/platform-letter once agent_sync/install.sh has run
+        self.link_command()  # the Mac has ~/.local/bin/platform-letter once simple_tools/install.sh has run
 
     def command(self) -> str:
         return os.path.join(self.home, ".local", "bin", "platform-letter")

@@ -22,9 +22,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from agent_sync import operator_registry as OR
-from agent_sync import platform_letter as PL
-from agent_sync import platform_letter_codex as C
+from simple_tools import operator_registry as OR
+from simple_tools import platform_letter as PL
+from simple_tools import platform_letter_codex as C
 
 PAIR = r"^[A-Z]{2}$"
 HAS_PARENT = PL._accepts(OR.register_session, "parent_session_id")
@@ -996,7 +996,7 @@ class ScopeTests(HookBase):
     def test_a_launcher_run_session_takes_no_letter(self) -> None:
         sid = self.add(1)
         for extra in ({"AGENT_LAUNCHER": "botfleet"}, {"AGENT_LAUNCH_SEAT": "CODEX"},
-                      {"AGENT_LAUNCHER": "agent-sync-wake", "AGENT_LAUNCH_SEAT": "CODEX"}):
+                      {"AGENT_LAUNCHER": "simple-tools-wake", "AGENT_LAUNCH_SEAT": "CODEX"}):
             self.assertIsNone(self.start(sid, env=self.env(**extra)))
             self.nothing_happened(sid)
 
@@ -1371,7 +1371,7 @@ class InstallTests(Base):
                 "%s/.local/bin/platform-letter hook --platform codex --location server --remote mac || true" % self.home,
             )
         self.assertIn("trust", answer)
-        self.assertIn("agent_sync.platform_letter_codex trust", answer["trust"])
+        self.assertIn("simple_tools.platform_letter_codex trust", answer["trust"])
 
     def test_the_mac_install_carries_no_location_or_remote(self) -> None:
         self.install()
@@ -1463,7 +1463,7 @@ class InstallTests(Base):
         self.states = self.entries("untrusted")
         code, answer = self.install()  # nothing changes, and it still says so: the hint is not for a changing run only
         self.assertEqual((code, answer["changed"], answer["trusted"]), (0, [], False))
-        self.assertIn("agent_sync.platform_letter_codex trust", answer["trust"])
+        self.assertIn("simple_tools.platform_letter_codex trust", answer["trust"])
         self.assertEqual(set(answer["trust_status"].values()), {"untrusted"})
         self.assertEqual(len(answer["trust_status"]), 4)
         self.states = self.entries("modified")  # a changed command (a new --location) makes every entry modified

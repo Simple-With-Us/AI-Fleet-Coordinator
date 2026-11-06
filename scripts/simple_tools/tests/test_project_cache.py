@@ -5,7 +5,7 @@ import unittest
 import uuid
 from pathlib import Path
 from unittest import mock
-from agent_sync import zulip as Z
+from simple_tools import zulip as Z
 
 class Tests(unittest.TestCase):
     def setUp(self):

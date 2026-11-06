@@ -9,7 +9,7 @@ import time
 import unittest
 from pathlib import Path
 
-from agent_sync.tests.harness import Harness
+from simple_tools.tests.harness import Harness
 
 ENTRY = Path(__file__).resolve().parents[2] / "simple-chat"
 
@@ -58,9 +58,9 @@ class ProcessTests(Harness):
         first = out = err = ""
         try:
             self.wait_until_registered()
-            self.fake.add_message("Codex", "agent-sync", "t", "live line")
+            self.fake.add_message("Codex", "simple-tools", "t", "live line")
             first = "".join(process.stdout.readline() for _ in range(3))  # head, sender line, body
-            self.assertIn("#agent-sync", first)
+            self.assertIn("#simple-tools", first)
             process.send_signal(signal.SIGTERM)
             out, err = process.communicate(timeout=30)
         finally:
@@ -73,7 +73,7 @@ class ProcessTests(Harness):
         self.assertEqual(self.fake.deleted_queues, ["q1"])
 
     def test_wait_gets_sigterm_and_still_deletes_its_queue(self) -> None:
-        self.fake.add_message("Codex", "agent-sync", "t", "seed")
+        self.fake.add_message("Codex", "simple-tools", "t", "seed")
         self.assertEqual(self.run_entry("read", "--topic", "t", "--new").returncode, 0)
         process = self.spawn("wait", "--topic", "t", "--timeout", "60")
         out = err = ""

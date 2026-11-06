@@ -21,10 +21,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from agent_sync import claude_letter as CL
-from agent_sync import operator_registry as OR
-from agent_sync import platform_letter as PL
-from agent_sync import platform_letter_grok_leader as G
+from simple_tools import claude_letter as CL
+from simple_tools import operator_registry as OR
+from simple_tools import platform_letter as PL
+from simple_tools import platform_letter_grok_leader as G
 
 SCRIPTS = Path(__file__).resolve().parents[2]
 ENTRY = SCRIPTS / "platform-letter"
@@ -116,7 +116,7 @@ class Base(unittest.TestCase):
         return path
 
     def link_program(self) -> str:
-        """The `platform-letter` link that scripts/agent_sync/install.sh puts in ~/.local/bin, which the hook file runs."""
+        """The `platform-letter` link that scripts/simple_tools/install.sh puts in ~/.local/bin, which the hook file runs."""
         return self.exe("home", ".local", "bin", "platform-letter")
 
     # ---- Grok's store ----------------------------------------------------------------------
@@ -872,7 +872,7 @@ class SubagentTests(FlowBase):
 class InstallTests(Base):
     def setUp(self) -> None:
         super().setUp()
-        self.link = self.link_program()  # what scripts/agent_sync/install.sh puts in ~/.local/bin
+        self.link = self.link_program()  # what scripts/simple_tools/install.sh puts in ~/.local/bin
 
     def install(self, *argv: str, env: dict | None = None) -> tuple[int, dict]:
         out = io.StringIO()
@@ -990,7 +990,7 @@ class InstallTests(Base):
     # ---- the program the hooks run ----------------------------------------------------------
 
     def test_it_refuses_to_install_hooks_that_name_a_program_that_is_not_there(self) -> None:
-        """Seen on the Mac: ~/.local/bin/platform-letter is only linked by scripts/agent_sync/install.sh.  Hooks that run
+        """Seen on the Mac: ~/.local/bin/platform-letter is only linked by scripts/simple_tools/install.sh.  Hooks that run
         a program that is not there fail with exit 127 on every Grok event and give no chat a letter."""
         for kind in ("missing", "dangling link", "not executable"):
             if os.path.lexists(self.link):

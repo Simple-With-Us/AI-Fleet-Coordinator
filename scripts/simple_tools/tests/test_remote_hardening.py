@@ -3,7 +3,7 @@
 The same cases run against each transport's own copy of the helpers (they are separate files by design).
 Hermetic: the network function is replaced in process, except the redirect, byte-cap and deadline cases, which run
 the real `_remote_post` against two loopback servers started here.  Nothing reaches the hosted endpoint.
-Run:  cd scripts && python3 -m unittest agent_sync.tests.test_remote_hardening
+Run:  cd scripts && python3 -m unittest simple_tools.tests.test_remote_hardening
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from unittest import mock
 
-from agent_sync import cli
+from simple_tools import cli
 
 SCRIPTS = Path(__file__).resolve().parents[2]
 
@@ -55,12 +55,12 @@ class Adapter:
         if self.name == "cli":
             with mock.patch.object(cli, "_remote_post", post):
                 try:
-                    return cli._remote_call({"SIMPLE_TOOLS_BEARER": BEARER}, tool, args, write), ""
+                    return cli._remote_call({"AGENT_SYNC_BEARER": BEARER}, tool, args, write), ""
                 except cli.RemoteError as exc:
                     return None, str(exc)
         err = io.StringIO()
         with (
-            mock.patch.dict(os.environ, {"SIMPLE_TOOLS_BEARER": BEARER}),
+            mock.patch.dict(os.environ, {"AGENT_SYNC_BEARER": BEARER}),
             mock.patch.object(module, "_remote_post", post),
             contextlib.redirect_stderr(err),
         ):
@@ -166,7 +166,7 @@ class Parsing(unittest.TestCase):
             {
                 "isError": True,
                 "content": [{"type": "text", "text": "x"}],
-                "_meta": {"agent-sync/error": obj},
+                "_meta": {"simple-tools/error": obj},
             }
         )
         limited = rpc(
@@ -397,8 +397,8 @@ class SecretScan(unittest.TestCase):
         self.assertTrue(callable(recall._remote_scanner().scan))
         self.assertTrue(callable(board._remote_scanner().scan))
         release = _load("release_under_test_hardening", SCRIPTS / "fleet-cli-release.py")
-        self.assertIn("scripts/agent_sync/secretscan.py", release.TOOL_REQUIRED)
-        self.assertTrue(release.allowed_path("scripts/agent_sync/secretscan.py"))
+        self.assertIn("scripts/simple_tools/secretscan.py", release.TOOL_REQUIRED)
+        self.assertTrue(release.allowed_path("scripts/simple_tools/secretscan.py"))
 
     def test_an_unloadable_scanner_means_nothing_is_sent(self):
         for module, name in ((recall, "recall"), (board, "board")):
@@ -664,17 +664,17 @@ class DeadlineArithmetic(unittest.TestCase):
 @contextlib.contextmanager
 def scanner_missing():
     """`from . import secretscan` fails as it would if the file were absent from the release."""
-    import agent_sync
+    import simple_tools
 
-    saved = getattr(agent_sync, "secretscan", None)
+    saved = getattr(simple_tools, "secretscan", None)
     if saved is not None:
-        del agent_sync.secretscan
+        del simple_tools.secretscan
     try:
-        with mock.patch.dict("sys.modules", {"agent_sync.secretscan": None}):
+        with mock.patch.dict("sys.modules", {"simple_tools.secretscan": None}):
             yield
     finally:
         if saved is not None:
-            agent_sync.secretscan = saved
+            simple_tools.secretscan = saved
 
 
 class ScannerImport(unittest.TestCase):
@@ -682,7 +682,7 @@ class ScannerImport(unittest.TestCase):
         sent = []
         with scanner_missing(), mock.patch.object(cli, "_remote_post", lambda *a: sent.append(a)):
             with self.assertRaises(cli.RemoteError) as ctx:
-                cli._remote_call({"SIMPLE_TOOLS_BEARER": BEARER}, "whoami", {}, False)
+                cli._remote_call({"AGENT_SYNC_BEARER": BEARER}, "whoami", {}, False)
         self.assertIn("secret scanner is not available", str(ctx.exception))
         self.assertEqual(sent, [])
 
@@ -694,7 +694,7 @@ class ScannerImport(unittest.TestCase):
             code = cli.main(
                 ["whoami"],
                 prog="simple-chat",
-                env={"SIMPLE_CHAT_REMOTE": "1", "SIMPLE_TOOLS_BEARER": BEARER},
+                env={"SIMPLE_CHAT_REMOTE": "1", "AGENT_SYNC_BEARER": BEARER},
                 stdout=out,
                 stderr=err,
                 stdin=io.StringIO(),
@@ -707,7 +707,7 @@ class ScannerImport(unittest.TestCase):
 
 class CodeAllowList(unittest.TestCase):
     def test_every_hosted_error_code_is_allowed_and_nothing_else(self):
-        src = SCRIPTS / "agent-sync-mcp" / "src"
+        src = SCRIPTS / "simple-tools-mcp" / "src"
         found = set()
         for path in src.glob("*.js"):
             found.update(re.findall(r'new ToolError\("([a-z_]+)"', path.read_text()))
