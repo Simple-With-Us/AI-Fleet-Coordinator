@@ -90,6 +90,7 @@ targets:
       - path: Muster/Model/MachineStatus.swift
       - path: Muster/Model/PlaceWatch.swift
       - path: Muster/Model/ServiceActionRouter.swift
+      - path: Muster/Model/ServiceReconciler.swift
       - path: Muster/Model/MiniMaxSurface.swift
       - path: Muster/Model/SeatManifest.swift
       - path: Muster/Model/ThemeChoice.swift
@@ -114,7 +115,9 @@ targets:
       - path: Muster/FleetServices/OfflineDockerVM.swift
       - path: Muster/FleetServices/OfflineVMHelper.swift
       - path: Muster/FleetServices/PersistencePolicy.swift
+      - path: Muster/FleetServices/OwnerStopStore.swift
       - path: Muster/FleetServices/ProcessMonitor.swift
+      - path: Muster/FleetServices/ServiceReconcilePolicy.swift
       - path: Muster/FleetServices/ServerHost.swift
       - path: Muster/FleetServices/ServerPresence.swift
       - path: Muster/FleetServices/StartupPolicy.swift
