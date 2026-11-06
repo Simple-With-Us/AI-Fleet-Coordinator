@@ -9,22 +9,26 @@ function fakeAdapter() {
   const events = [];
   return {
     calls: [],
+    async inspect() { this.calls.push("inspect"); return null; },
     async validateHeaders() { this.calls.push("validateHeaders"); },
     async readRows(table, { startRow, limit }) {
       const src = table === "sessions" ? sessions : events;
       return { rows: src.slice(startRow - 2, startRow - 2 + limit) };
     },
-    async appendSession(cells) {
+    async appendSession(cells, options) {
       this.calls.push("appendSession");
+      this.lastWriteOptions = options;
       sessions.push({ rowNumber: sessions.length + 2, cells });
     },
-    async updateSessionRow(rowNumber, cells) {
+    async updateSessionRow(rowNumber, cells, options) {
       this.calls.push("updateSessionRow");
+      this.lastWriteOptions = options;
       const i = sessions.findIndex((r) => r.rowNumber === rowNumber);
       sessions[i] = { rowNumber, cells };
     },
-    async appendEvent(cells) {
+    async appendEvent(cells, options) {
       this.calls.push("appendEvent");
+      this.lastWriteOptions = options;
       events.push({ rowNumber: events.length + 2, cells });
     },
   };
@@ -56,8 +60,9 @@ test("new session appends and is marked exported", async () => {
   const res = await drainOutbox({ outbox, adapter });
   assert.deepEqual(res, { exported: 1, failed: 0 });
   assert.deepEqual(outbox.marked, ["o1"]);
-  assert.ok(adapter.calls.includes("validateHeaders"));
+  assert.ok(adapter.calls.includes("inspect")); // one inspect per drain, not one validation per row
   assert.ok(adapter.calls.includes("appendSession"));
+  assert.equal(adapter.lastWriteOptions?.validate, false); // the write skips its own revalidation
   assert.ok(!adapter.calls.includes("updateSessionRow"));
 });
 
@@ -69,7 +74,7 @@ test("existing Record ID updates instead of appending", async () => {
     payload: JSON.stringify({ cells: sessionCells("r1", "B") }) }]);
   const res = await drainOutbox({ outbox, adapter });
   assert.deepEqual(res, { exported: 1, failed: 0 });
-  assert.deepEqual(adapter.calls, ["validateHeaders", "updateSessionRow"]);
+  assert.deepEqual(adapter.calls, ["inspect", "updateSessionRow"]);
 });
 
 test("event already present is not appended twice", async () => {
@@ -99,5 +104,5 @@ test("unknown outbox kind fails without a write", async () => {
     payload: "{}" }]);
   const res = await drainOutbox({ outbox, adapter });
   assert.deepEqual(res, { exported: 0, failed: 1 });
-  assert.deepEqual(adapter.calls, ["validateHeaders"]);
+  assert.deepEqual(adapter.calls, ["inspect"]);
 });
