@@ -161,16 +161,12 @@ class InfisicalTests(T.BoardTest):
         cid, secret = self.seat_app("CLAUDE", "Claude", file=False)
         self.afc_put("LINEAR_CLAUDE_CLIENT_ID", cid)
         self.afc_put("LINEAR_CLAUDE_CLIENT_SECRET", secret)
-        p = self.as_seat(
-            "CLAUDE", "whoami", extra={"LINEAR_BOARD_FLEET_SECRETS": str(stub)}
-        )
+        p = self.as_seat("CLAUDE", "whoami", extra={"LINEAR_BOARD_FLEET_SECRETS": str(stub)})
         self.assertIn(
             "credentials: Infisical AI Fleet Coordinator prod /linear (LINEAR_CLAUDE_CLIENT_ID",
             p.stdout,
         )
-        gets = [
-            a for a in self.vault.authorizations if a[:2] == ("GET", "/api/v3/secrets/raw")
-        ]
+        gets = [a for a in self.vault.authorizations if a[:2] == ("GET", "/api/v3/secrets/raw")]
         self.assertEqual(len(gets), 1)
         self.assertEqual(gets[0][2], "Bearer " + self.vault.read_token)
         self.assertFalse(marker.exists(), "the retired wrapper was spawned")
@@ -222,9 +218,7 @@ class InfisicalTests(T.BoardTest):
             },
         )
         linear = [
-            r
-            for r in self.vault.requests
-            if r[1] == "/api/v3/secrets/raw" or "LINEAR_" in r[1]
+            r for r in self.vault.requests if r[1] == "/api/v3/secrets/raw" or "LINEAR_" in r[1]
         ]
         self.assertEqual(linear, [])
 

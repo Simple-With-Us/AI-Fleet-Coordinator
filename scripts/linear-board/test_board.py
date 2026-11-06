@@ -948,9 +948,7 @@ class MockInfisical:
                                 "projectId": workspace,
                                 "workspace": workspace,
                                 "permissions": list(permissions),
-                                "scopes": [
-                                    {"environment": "prod", "secretPath": secret_path}
-                                ],
+                                "scopes": [{"environment": "prod", "secretPath": secret_path}],
                                 "expiresAt": None,
                             },
                         )
@@ -962,8 +960,7 @@ class MockInfisical:
                             200,
                             {
                                 "secrets": [
-                                    {"secretKey": k, "secretValue": v}
-                                    for k, v in bucket.items()
+                                    {"secretKey": k, "secretValue": v} for k, v in bucket.items()
                                 ]
                             },
                         )
@@ -1028,8 +1025,6 @@ class VaultKey:
 
     def exists(self):
         return self.name in self.vault.secrets
-
-
 
 
 class BoardTest(unittest.TestCase):
@@ -3202,9 +3197,7 @@ class SeatAppTests(BoardTest):
         self.seat_app("CLAUDE", "Claude")
         p = self.as_seat("CLAUDE", "whoami")
         self.assertIn("identity:    Claude (the CLAUDE seat's own Linear app)", p.stdout)
-        gets = [
-            a for a in self.vault.authorizations if a[:2] == ("GET", "/api/v3/secrets/raw")
-        ]
+        gets = [a for a in self.vault.authorizations if a[:2] == ("GET", "/api/v3/secrets/raw")]
         self.assertEqual(len(gets), 1, "one folder read per run, never a per-key probe")
         self.assertEqual(gets[0][2], "Bearer " + self.vault.read_token)
 
@@ -3337,9 +3330,7 @@ class SeatAppTests(BoardTest):
         self.assertNotIn("GB-HOUSEKEEPER", cli.SEAT_APP_NAMES)
         self.afc_put("LINEAR_GB_HOUSEKEEPER_CLIENT_ID", "gb-housekeeper-id")
         self.afc_put("LINEAR_GB_HOUSEKEEPER_CLIENT_SECRET", "gb-housekeeper-secret")
-        reads_before = len(
-            [r for r in self.vault.requests if r == ("GET", "/api/v3/secrets/raw")]
-        )
+        reads_before = len([r for r in self.vault.requests if r == ("GET", "/api/v3/secrets/raw")])
         p = self.as_seat("GB-HOUSEKEEPER", "whoami", code=4)
         self.assertIn("no Linear app credentials", p.stderr)
         self.assertNotIn("GB_HOUSEKEEPER", p.stderr)
@@ -3469,9 +3460,7 @@ class SeatAppTests(BoardTest):
             "LINEAR_CLAUDE_CLIENT_SECRET)",
             p.stdout,
         )
-        gets = [
-            a for a in self.vault.authorizations if a[:2] == ("GET", "/api/v3/secrets/raw")
-        ]
+        gets = [a for a in self.vault.authorizations if a[:2] == ("GET", "/api/v3/secrets/raw")]
         self.assertEqual(len(gets), 1)
         self.assertEqual(gets[0][2], "Bearer " + self.vault.read_token)
         # the write token and the /tools token never touch the /linear folder
