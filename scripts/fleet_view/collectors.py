@@ -36,6 +36,7 @@ __all__ = [
     "ALLOWED_EXECUTABLES",
     "MAX_PARALLEL",
     "SEVERITY",
+    "RefusedCommand",
     "Runner",
     "SeatIndex",
     "blocker_for",
@@ -106,14 +107,28 @@ _GH_FIELDS = ",".join(
 )
 
 
+class RefusedCommand(ValueError):
+    """The runner refused a command outside the allowlist.  Nothing was started."""
+
+
 def make_runner(timeout_seconds: int = 20) -> Runner:
-    """The real runner:  one allowlisted subprocess per call, with a timeout."""
+    """The real runner:  one allowlisted subprocess per call, with a timeout.
+
+    Output is decoded with ``errors="replace"``, so a byte that is not text in the
+    locale's encoding becomes U+FFFD instead of an exception that would read as a refusal.
+    """
 
     def run(argv: list) -> tuple:
         if not argv or pathlib.Path(argv[0]).name not in ALLOWED_EXECUTABLES:
-            raise ValueError("refused executable: %r" % (argv[0] if argv else ""))
+            raise RefusedCommand("refused executable: %r" % (argv[0] if argv else ""))
         try:
-            proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout_seconds)
+            proc = subprocess.run(
+                argv,
+                capture_output=True,
+                text=True,
+                errors="replace",
+                timeout=timeout_seconds,
+            )
         except subprocess.TimeoutExpired as exc:
             raise TimeoutError(str(exc)) from exc
         except OSError as exc:
@@ -475,8 +490,10 @@ def _read_repo(repo: str, runner: Runner, host: str) -> tuple:
         return [], "gh timed out"
     except RuntimeError:
         return [], "gh failed to start"
-    except ValueError:
+    except RefusedCommand:
         return [], "gh was refused"
+    except ValueError:
+        return [], "gh output unreadable"
     if code == 4:
         # gh's own exit code for "authentication required".
         return [], "gh is not signed in on %s" % host_name(host)
@@ -593,8 +610,10 @@ def collect_claims(
         return Section(state="UNKNOWN", reason="simple-board timed out")
     except RuntimeError:
         return Section(state="UNKNOWN", reason="simple-board failed to start")
-    except ValueError:
+    except RefusedCommand:
         return Section(state="UNKNOWN", reason="simple-board was refused")
+    except ValueError:
+        return Section(state="UNKNOWN", reason="simple-board output unreadable")
     if code != 0:
         return Section(state="UNKNOWN", reason="simple-board exited %d" % code)
     try:

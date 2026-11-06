@@ -221,6 +221,32 @@ class LaneTests(unittest.TestCase):
         self.assertEqual([item.lane for item in section.items], names)
 
 
+class RunnerTests(unittest.TestCase):
+    def test_a_command_outside_the_allowlist_is_refused_by_name(self):
+        with self.assertRaises(collectors.RefusedCommand):
+            collectors.make_runner()(["rm", "-rf", "/nowhere"])
+
+    def test_output_that_is_not_text_is_replaced_not_raised(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            stub = pathlib.Path(tmp) / "gh"
+            stub.write_bytes(b"#!/bin/sh\nprintf '[\\377]'\n")
+            stub.chmod(0o755)
+            code, out = collectors.make_runner()([str(stub)])
+        self.assertEqual(code, 0)
+        self.assertIn("�", out)
+
+    def test_unreadable_output_is_named_as_such_and_not_as_a_refusal(self):
+        def runner(argv):
+            raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+        index = collectors.SeatIndex(SEATS)
+        section = collectors.collect_pull_requests(["a/b"], index, runner, RequestBudget())
+        self.assertIn("gh output unreadable", section.reason)
+        self.assertNotIn("refused", section.reason)
+        claims = collectors.collect_claims(runner, RequestBudget(), NOW, expiry_hours=72)
+        self.assertEqual(claims.reason, "simple-board output unreadable")
+
+
 class HostTests(unittest.TestCase):
     def test_the_host_is_computed_from_the_platform(self):
         with unittest.mock.patch.object(collectors.platform, "system", return_value="Darwin"):

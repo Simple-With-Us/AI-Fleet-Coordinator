@@ -519,7 +519,7 @@ extension FleetViewEnvelope {
                 text: "Claims were not all read:  \(sections.claims.reason)", url: nil
             ))
         }
-        let unreadableLanes = sections.lanes.items.filter { !$0.isReadable }.count
+        let unreadableLanes = unreadableLaneCount
         if !sections.lanes.isKnown {
             items.append(FleetAttentionItem(
                 id: "unread:lanes", kind: .notRead,
@@ -549,11 +549,29 @@ extension FleetViewEnvelope {
         return parts.joined(separator: "\u{00A0} ")
     }
 
+    /// Lanes git could not read, on the machine that ran the collector.
+    var unreadableLaneCount: Int {
+        sections.lanes.items.filter { !$0.isReadable }.count
+    }
+
+    /// Whether every section read its source and every lane in it could be read.  A lane git
+    /// could not read leaves its section's count exact, but the page must not say all is read.
+    var everythingRead: Bool {
+        sourcesRead && unreadableLaneCount == 0
+    }
+
+    private var sourcesRead: Bool {
+        overallVerdict == "PASS" && sections.lanes.isKnown && sections.pullRequests.isKnown && sections.claims.isKnown
+    }
+
     /// The run's own verdict, in words.
     var verdictText: String {
-        overallVerdict == "PASS" && sections.lanes.isKnown && sections.pullRequests.isKnown && sections.claims.isKnown
-            ? "Every source was read."
-            : "Some sources could not be read, so some counts below are not known."
+        if everythingRead { return "Every source was read." }
+        if sourcesRead {
+            let place = host?.inProse ?? "on the machine that ran this"
+            return "Every source was read, but \(FleetWords.count(unreadableLaneCount, "lane")) \(place) could not be read by git."
+        }
+        return "Some sources could not be read, so some counts below are not known."
     }
 
     private var overallVerdict: String { summary.overallVerdict }

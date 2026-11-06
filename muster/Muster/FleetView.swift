@@ -125,8 +125,7 @@ struct FleetView: View {
 
     private func attentionSection(_ envelope: FleetViewEnvelope) -> some View {
         let items = envelope.attentionItems
-        let allRead = envelope.sections.lanes.isKnown && envelope.sections.pullRequests.isKnown
-            && envelope.sections.claims.isKnown
+        let allRead = envelope.everythingRead
         return Section {
             if !collapsed.contains(.attention) {
                 if items.isEmpty {

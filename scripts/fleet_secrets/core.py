@@ -18,6 +18,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Iterable, Mapping
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -81,6 +82,7 @@ KEYCHAIN_CLIENT_SECRET = "infisical-client-secret"
 ENV_TOKEN = "INFISICAL_TOKEN"
 ENV_AI_FLEET_COORDINATOR_TOKEN = "INFISICAL_AI_FLEET_COORDINATOR_TOKEN"
 ENV_WRITE_TOKEN = "INFISICAL_WRITE_TOKEN"
+MAX_NAMED_READS = 8
 ENV_READ_PATHS = "INFISICAL_READ_PATHS"
 ENV_WRITE_PATHS = "INFISICAL_WRITE_PATHS"
 ENV_CLIENT_ID = "INFISICAL_UNIVERSAL_AUTH_CLIENT_ID"
@@ -521,20 +523,63 @@ def fetch_project(
             )
             for name in sorted(wanted)
         ]
-    for expected_name, endpoint in endpoints:
+
+    # A whole folder may be large.  One named secret is small, and up to MAX_NAMED_READS run at once.
+    max_bytes = MAX_OUTPUT_BYTES if wanted is None else MAX_VERIFIED_BYTES
+
+    def read_one(item: tuple) -> tuple:
+        name, endpoint = item
         status, payload = _api_json(
-            "GET", endpoint, token, None, env, max_bytes=MAX_OUTPUT_BYTES, deadline=deadline
+            "GET", endpoint, token, None, env, max_bytes=max_bytes, deadline=deadline
         )
-        if expected_name is not None and status == 404:
-            continue
+        if name is not None and status == 404:
+            return name, []
         if status != 200 or not isinstance(payload, dict):
             raise SecretsError("fetch-failed")
-        records = payload.get("secrets") if expected_name is None else [payload.get("secret")]
+        records = payload.get("secrets") if name is None else [payload.get("secret")]
         if not isinstance(records, list):
             raise SecretsError("fetch-failed: bad-output")
+        pairs = []
         for record in records:
             key, value = validate_secret_record(record, project, path, single_scope=len(paths) == 1)
-            if (expected_name is not None and key != expected_name) or key in found:
+            if name is not None and key != name:
+                raise SecretsError("unverified-source")
+            pairs.append((key, value))
+        return name, pairs
+
+    # Named reads share one deadline, and the knobs ask for every registered name at once, so they
+    # run side by side:  one after another, 31 names took about 13 s against an 8 s budget.  Each
+    # answer is checked as it arrives, and the first bad one cancels every read not yet started;
+    # a read already in flight may still finish, but its answer is never used.  A failure cancels
+    # only the reads after it in the sorted list, so every earlier read still runs, and the refusal
+    # always names the earliest failing endpoint.  An interrupt is never held back.
+    answers: dict = {}
+    failures: dict = {}
+    with ThreadPoolExecutor(max_workers=MAX_NAMED_READS) as pool:
+        futures = [pool.submit(read_one, item) for item in endpoints]
+        try:
+            for future in as_completed(futures):
+                if future.cancelled():
+                    continue
+                try:
+                    name, pairs = future.result()
+                except Exception as exc:  # noqa: BLE001 - re-raised below, earliest first
+                    index = futures.index(future)
+                    failures[index] = exc
+                    for later in futures[index + 1 :]:
+                        later.cancel()
+                    continue
+                answers[name] = pairs
+        except BaseException:
+            # An interrupt stops every read that has not started before it propagates.
+            for future in futures:
+                future.cancel()
+            raise
+    if failures:
+        raise failures[min(failures)]
+    for expected_name, _endpoint in endpoints:
+        for key, value in answers[expected_name]:
+            if key in found:
                 raise SecretsError("unverified-source")
             found[key] = value
     reject_unresolved(found)

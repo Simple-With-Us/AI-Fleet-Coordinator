@@ -190,6 +190,18 @@ final class FleetViewEnvelopeTests: XCTestCase {
         )
     }
 
+    /// Sentry on #1385:  a lane git could not read must not sit under "Every source was read."
+    func test_an_unreadable_lane_keeps_the_verdict_from_saying_all_was_read() throws {
+        let broken = #"{ "repo": "AI-Fleet-Coordinator", "lane": "claude-z", "seat": "CLAUDE", "branch": "", "dirtyFiles": -1, "ageSeconds": 1, "state": "UNKNOWN" }"#
+        let view = try decode(envelope(
+            lanes: #"{ "state": "OK", "reason": "1 lane; 1 could not be read", "items": [\#(broken)], "unread": [] }"#
+        ))
+        XCTAssertFalse(view.everythingRead)
+        XCTAssertEqual(view.unreadableLaneCount, 1)
+        XCTAssertEqual(view.verdictText, "Every source was read, but 1 lane on the Mac could not be read by git.")
+        XCTAssertTrue(try decode(envelope()).everythingRead)
+    }
+
     func test_lists_put_what_needs_someone_first() throws {
         func prJSON(_ number: Int, _ blocker: String, _ severity: String) -> String {
             #"{ "repo": "Simple-With-Us/R", "number": \#(number), "title": "T", "branch": "b", "seat": "S", "blocker": "\#(blocker)", "state": "OK", "severity": "\#(severity)" }"#
