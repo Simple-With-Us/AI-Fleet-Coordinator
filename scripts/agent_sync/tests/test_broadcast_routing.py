@@ -471,7 +471,10 @@ class PeerBroadcastRuleTests(unittest.TestCase):
     def test_an_eyes_prefixed_peer_at_all_wakes_nobody(self) -> None:
         c, d = R.route(self.peer(":eyes: @all look", **POLICY), ME, self.peer_ctx(), [])
         self.assertTrue(c.no_wake)
-        self.assertEqual(d.drop_reason, "no_wake")
+        self.assertIsNone(d.wake)
+        # OPS-1036:  the wake is suppressed, the delivery is not — the copy still lands in the
+        # seat inbox, so the decision is not a drop any more.
+        self.assertEqual((d.drop_reason, d.seat_inbox), (None, True))
 
     def test_a_silent_at_all_is_not_a_broadcast(self) -> None:
         """`@_**all**` is the escaped mention:  it notifies nobody, so it is not a broadcast."""

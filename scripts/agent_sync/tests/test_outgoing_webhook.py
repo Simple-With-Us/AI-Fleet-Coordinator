@@ -221,9 +221,11 @@ class OutgoingWebhookReceiverTests(ListenerHarness):
         allowed = self.daemon()
         self.assertTrue(allowed.connect_seat("CLAUDE"))
 
-    def test_a_marker_message_through_the_outgoing_webhook_spool_is_suppressed(self):
+    def test_a_marker_message_through_the_outgoing_webhook_spool_reaches_the_inbox_without_a_wake(self):
         # The spool stores authenticated metadata only:  the daemon re-fetches the authoritative
-        # message and routes it, so the router's no-wake gate covers this path too (AFC-468).
+        # message and routes it, so the router's no-wake rule covers this path too (AFC-468).
+        # OPS-1036:  the marker suppresses the wake, not the delivery — the message still lands
+        # in the seat inbox, and its row carries no wake.
         self.write_config(extra_daemon='outgoing_webhook_seats = ["CLAUDE"]')
         daemon = self.daemon()
         self.assertTrue(daemon.connect_seat("CLAUDE"))
@@ -233,11 +235,13 @@ class OutgoingWebhookReceiverTests(ListenerHarness):
         )
         self.assertEqual(daemon._accept_outgoing_webhook("CLAUDE", BOT_EMAIL, msg_id), "accepted")
         daemon._drain_outgoing_webhook_spool()
+        rows = [row for row in self.inbox("CLAUDE") if row["id"] == msg_id]
         self.assertEqual(
-            [row["id"] for row in self.inbox("CLAUDE") if row["id"] == msg_id],
-            [],
-            "the marker message never reaches the seat inbox",
+            [row["id"] for row in rows],
+            [msg_id],
+            "the marker message still reaches the seat inbox",
         )
+        self.assertFalse(rows[0]["wake_worthy"], "and the inbox row wakes nobody")
 
     def test_an_unmarked_message_through_the_outgoing_webhook_spool_still_routes(self):
         # The control:  the same path without the marker does deliver, so the test above is

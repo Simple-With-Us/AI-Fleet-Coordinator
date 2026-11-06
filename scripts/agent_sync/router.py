@@ -500,7 +500,7 @@ class Decision:
         self.delivered_to: str | None = None
         self.wake: str | None = None  # "owner" or "peer" when the prefilter says wake
         self.wake_block: str | None = None  # why a seat-inbox item does not wake
-        self.wake_worthy = False  # the prefilter's verdict, whatever the route
+        self.wake_worthy = False  # the prefilter's verdict, whatever the route; a no-wake marker clears it
         self.wake_owner = False
         self.throttled: list[tuple[str, str]] = []  # (lease id, reason) for interrupts made passive
 
@@ -546,14 +546,12 @@ def route(
     c = classify(message, me, ctx)
     d = Decision()
     kind, block = prefilter(c)
-    d.wake_worthy = kind is not None
-    d.wake_owner = kind == "owner"
-    if c.no_wake:
-        # The owner's per-message signal:  the message stays readable in Zulip and no seat is
-        # woken by it.  The gate is before the lease, the seat inbox and the wake branch, so a
-        # marker message never reaches a seat.
-        d.drop_reason = "no_wake"
-        return c, d
+    # The owner's per-message no-wake signal:  delivery runs exactly as it would without the
+    # marker — the muted gate, the leases, the seat inbox, every other rule — and only the
+    # wake is suppressed (OPS-1036).  wake_worthy is cleared here, not just the wake below,
+    # because the seat-inbox row carries it and the requeue and bridge paths wake off the row.
+    d.wake_worthy = kind is not None and not c.no_wake
+    d.wake_owner = kind == "owner" and not c.no_wake
     if not c.dm and c.key in ctx.muted and not c.direct:
         d.drop_reason = "muted"
         return c, d
@@ -568,7 +566,9 @@ def route(
     if on_topic:
         presence = is_presence(c.channel, c.topic, ctx.presence)
         for lease in on_topic:
-            wants = c.eligible and (
+            # A marker message reaches a lease on the topic as a passive item only:  it is
+            # delivered, and it never interrupts the session.
+            wants = c.eligible and not c.no_wake and (
                 (c.owner and not c.everyone_inert)
                 or c.direct
                 or (not c.everyone_inert and c.reply_to is not None and c.reply_to in lease.posted)
@@ -585,7 +585,9 @@ def route(
                     d.throttled.append((lease.lease_id, reason))
             d.lease_items.append((lease.lease_id, klass, "message"))
         return c, d
-    mention_class = c.eligible and (
+    # A marker message never takes a lease:  it falls through to the seat inbox below, so the
+    # tagged seat still gets its copy and no session is woken to take it.
+    mention_class = c.eligible and not c.no_wake and (
         c.direct
         or c.dm
         or (c.owner and c.fleet)
@@ -619,7 +621,10 @@ def route(
         or c.key in ctx.followed
     ):
         d.seat_inbox = True
-        d.wake, d.wake_block = kind, block
+        if c.no_wake:
+            d.wake, d.wake_block = None, "no_wake"
+        else:
+            d.wake, d.wake_block = kind, block
         return c, d
     d.drop_reason = "chatter"
     return c, d
