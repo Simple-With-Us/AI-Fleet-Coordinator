@@ -799,9 +799,9 @@ class WatcherInstall(WatchReview):
         self.assertIn(W.board_env(P.HOST_SERVER), allowed)
         self.assertIn(W.board_env(P.HOST_MAC), allowed)
 
-    def test_the_templates_carry_the_bearer_locator_and_registry(self) -> None:
+    def test_the_templates_carry_the_bearer_file_and_registry(self) -> None:
         plist = (PKG / "templates" / "com.jay.lane-placement-watch.plist").read_text(encoding="utf-8")
-        self.assertIn("SIMPLE_BOARD_BEARER_LOCATOR", plist)
+        self.assertIn("SIMPLE_BOARD_BEARER_FILE", plist)
         self.assertIn("FLEET_APPS_JSON", plist)
         unit = (REPO / "scripts" / "systemd" / "lane-placement-watch.service").read_text(encoding="utf-8")
         self.assertIn("placement-watch.conf", unit)
@@ -814,7 +814,7 @@ class WatcherInstall(WatchReview):
         self.assertEqual(rc, W.EXIT_FILING)
         status = json.loads(Path(self.state, W.STATUS_NAME).read_text(encoding="utf-8"))
         self.assertFalse(status["ok"])
-        self.assertIn("SIMPLE_BOARD_BEARER_LOCATOR", " ".join(status["errors"]))
+        self.assertIn("SIMPLE_BOARD_BEARER_FILE", " ".join(status["errors"]))
 
     def test_an_unreadable_registry_is_a_status_and_not_a_crash(self) -> None:
         self.vars["FLEET_APPS_JSON"] = self.p("missing.json")
@@ -1705,9 +1705,9 @@ class FirstInstall(WatchRoundTwo):
             self.assertEqual(self.run_watch(self.one(self.p("foo")), run), W.EXIT_FILING)
         self.assertEqual(len(run.calls), sent)
 
-    def test_the_readme_names_the_locator_before_the_first_apply(self) -> None:
+    def test_the_readme_names_the_bearer_file_before_the_first_apply(self) -> None:
         text = (PKG / "README.md").read_text(encoding="utf-8")
-        self.assertLess(text.index("export " + W.BEARER_LOCATOR + "="), text.index("--apply --accept-burst"))
+        self.assertLess(text.index("export " + W.BEARER_FILE + "="), text.index("--apply --accept-burst"))
 
 
 class CliExits(WatchRoundTwo):

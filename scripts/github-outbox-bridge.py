@@ -8,7 +8,7 @@ bridge runs on the Mac, and every tick:
   1. reads new comments on the outbox issue (gh api), checks the fleet header shape
      (legacy [SEAT]/[SEAT->PEER] or folder-tag [SEAT 📁repos] / [SEAT: LL.#.H 📁repos] (legacy hyphen LL-#-H still accepted),
      optional leading 👀 / → peers; 📁 must list real repos; status bodies still need repo:;
-     claim/closeout may rely on a non-empty 📁 alone), and posts each
+     claim/closeout may rely on a non-empty 📁 alone only when not a status block), and posts each
      good one to #Work-In-Progress with the simple-chat CLI, as that seat's own bot.
      A posted comment
      gets a rocket reaction; a rejected one gets a confused reaction plus a reply
@@ -169,9 +169,11 @@ def header_error(text: str, seat: str):
             "[%s 📁repos] / [%s: LL.#.H 📁repos] (optional leading 👀)" % (seat, seat, seat, seat)
         )
     intro = _own_intro_re(seat).match(first)
-    # Folder-tag intros must close with ] on the first line; a body repo: must not salvage.
     has_folder_repos = False
-    if intro and "📁" in first[intro.start() :]:
+    # Folder-tag intros: only treat 📁 inside the matched intro span as a folder list
+    # (a 📁 later on the first line, e.g. in a legacy-tag subject, must not trigger this).
+    # They must close with ] on the first line; a body repo: must not salvage.
+    if intro and "📁" in intro.group():
         if first.find("]", intro.start()) < 0:
             return "folder-tag intro must close with ] on the first line"
         tag_end = first.find("]", intro.start())
@@ -184,36 +186,36 @@ def header_error(text: str, seat: str):
     has_repo_line = any(re.match(r"^\s*repo:\s*\S", line) for line in lines[1:6])
     if not (has_repo_line or has_folder_repos):
         return "repo: <project> must be the first body line"
-    # Non-empty 📁 may omit repo: only for claim/closeout; status bodies still need repo:.
+    # Status bodies always need repo:, even with folder repos and claim/closeout fields.
+    # Claim/closeout may omit repo: only when the body is NOT a status block.
     if has_folder_repos and not has_repo_line and _looks_like_status_body(first, lines[1:]):
-        if not _is_claim_closeout_body(lines[1:]):
-            return "repo: <project> must be the first body line"
+        return "repo: <project> must be the first body line"
     if len(text) > MAX_OUTBOUND_CHARS:
         return "longer than %d characters" % MAX_OUTBOUND_CHARS
     return None
 
 
-def _is_claim_closeout_body(body_lines) -> bool:
-    """True when the first non-empty body line is a claim:/closeout field."""
-    for line in body_lines:
-        s = line.strip()
-        if not s:
-            continue
-        return bool(re.match(r"^(?:claim|closeout):\s*\S", s, re.IGNORECASE))
-    return False
-
-
 def _looks_like_status_body(first_line: str, body_lines) -> bool:
-    """Status block: sync-N subject, state: field, or classic CLAIMED/DONE/IN PROGRESS."""
+    """Status block: sync-N subject, state: field, or classic CLAIMED/DONE/IN PROGRESS.
+
+    Classic tokens are matched in the subject and in non-field body lines only, so a
+    closeout/claim value like `closeout: done` is not treated as the DONE status token.
+    """
     after = first_line.split("]", 1)[1].strip() if "]" in first_line else ""
     if re.match(r"sync-\d+\b", after, re.IGNORECASE):
         return True
     early = body_lines[:6]
     if any(re.match(r"^\s*state:\s*", ln) for ln in early):
         return True
-    blob = after + "\n" + "\n".join(early)
-    if re.search(r"(?:^|[\s|])(?:CLAIMED|DONE|IN PROGRESS)(?:\s|$|[\|])", blob, re.IGNORECASE):
+    status_re = re.compile(r"(?:^|[\s|])(?:CLAIMED|DONE|IN PROGRESS)(?:\s|$|[\|])", re.IGNORECASE)
+    if after and status_re.search(after):
         return True
+    for ln in early:
+        s = ln.strip()
+        if not s or re.match(r"^[A-Za-z0-9_-]+:\s*", s):
+            continue
+        if status_re.search(s):
+            return True
     return False
 
 
@@ -649,7 +651,8 @@ class Bridge:
             "Not posted to #Work-In-Progress: %s.  Shape: `[%s]` / `[%s->PEER]` / "
             "folder-tag `[%s 📁repos]` (optional `→ peers`); 📁 must list real repos "
             "(not empty/`→`/`,`); close the intro with `]`; status bodies still need "
-            "`repo: <project>` (claim/closeout may rely on 📁 alone).  "
+            "`repo: <project>` (claim/closeout may rely on 📁 alone only when not a "
+            "status block).  "
             "Post a corrected comment; edits are not re-read."
             % (BRIDGE_MARKER, cid, reason, self.seat, self.seat, self.seat)
         )

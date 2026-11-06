@@ -469,6 +469,16 @@ class RuleTests(unittest.TestCase):
         self.assertFalse(bridge.skim_match("[JET 📁AFC → @**MMC**, CLAUDE]", "MC"))
         self.assertTrue(bridge.skim_match("[JET 📁AFC → @**INSTINCT**, CLAUDE]", SEAT))
 
+    def test_legacy_intro_folder_emoji_in_subject_ok(self):
+        """Sentry #1404: 📁 outside a legacy intro tag must not false-reject with repo:."""
+        self.assertIsNone(bridge.header_error("[INSTINCT] Subject with 📁 emoji\nrepo: AFC", SEAT))
+        self.assertIsNone(bridge.header_error("[INSTINCT->JET] note 📁 later\nrepo: AFC", SEAT))
+        # Still reject a real empty folder-tag intro.
+        self.assertEqual(
+            bridge.header_error("[INSTINCT 📁]\nclaim: empty", SEAT),
+            "repo: <project> must be the first body line",
+        )
+
     def test_empty_folder_and_unclosed_intro_rejected(self):
         """Bugs 2+3 / OPS-1035: empty 📁 / unclosed [ must not pass header_error."""
         for bad in (
@@ -493,7 +503,7 @@ class RuleTests(unittest.TestCase):
         self.assertIsNone(bridge.header_error("[JET 📁AFC]\nrepo: AFC\nstate: WIP", "JET"))
 
     def test_status_body_requires_repo_even_with_folder(self):
-        """Bug 4 / OPS-1035: status blocks still need repo:; claim/closeout may rely on 📁."""
+        """Bug 4 / OPS-1035: status blocks always need repo:; claim/closeout only without status."""
         self.assertEqual(
             bridge.header_error("[JET 📁AFC] sync-1\nstate: WIP", "JET"),
             "repo: <project> must be the first body line",
@@ -568,6 +578,35 @@ class RuleTests(unittest.TestCase):
         self.assertFalse(bridge.skim_match("[JET 📁AFC →CODEX]", "CURSOR"))
         self.assertTrue(bridge.skim_match("[JET 📁OPS →CODEX]", "CODEX"))
         self.assertFalse(bridge.is_own_post("[JET 📁AFC]\nclaim: x", "MM"))
+
+    def test_malformed_folder_not_salvaged_by_body_repo(self):
+        """Jet remaining #1: body repo: must not salvage empty/malformed 📁 lists."""
+        for bad in (
+            "[JET 📁]\nrepo: AFC",
+            "[JET 📁 → MC]\nrepo: AFC",
+            "[JET 📁,]\nrepo: AFC",
+        ):
+            self.assertEqual(
+                bridge.header_error(bad, "JET"),
+                "repo: <project> must be the first body line",
+                msg=repr(bad),
+            )
+        # Well-formed folder + body repo: still OK.
+        self.assertIsNone(bridge.header_error("[JET 📁AFC]\nrepo: AFC", "JET"))
+        self.assertIsNone(bridge.header_error("[JET 📁AFC → MC]\nrepo: AFC", "JET"))
+
+    def test_status_plus_claim_still_requires_repo(self):
+        """Jet remaining #1: status block always needs repo: even with claim/closeout."""
+        self.assertEqual(
+            bridge.header_error("[JET 📁AFC] sync-1\nclaim: work\nstate: WIP", "JET"),
+            "repo: <project> must be the first body line",
+        )
+        # Same fields with an explicit repo: line are fine.
+        self.assertIsNone(
+            bridge.header_error("[JET 📁AFC] sync-1\nrepo: AFC\nclaim: work\nstate: WIP", "JET")
+        )
+        # Non-status claim/closeout may still omit repo: when 📁 lists real repos.
+        self.assertIsNone(bridge.header_error("[JET 📁AFC]\nclaim: work", "JET"))
 
     def test_reject_guidance_mentions_folder_tag(self):
         """Rejection reply text names folder-tag form and status/repo rules."""
