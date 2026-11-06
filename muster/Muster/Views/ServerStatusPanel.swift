@@ -153,7 +153,7 @@ struct ServerStatusPanel: View {
                             controller.plan(action)
                         }
                         .controlSize(.small)
-                        .disabled(controller.isPresenting)
+                        .disabled(controller.refusesNewPlan)
                         .help(action.title)
                         .accessibilityLabel(action.title)
                     }
@@ -425,7 +425,7 @@ struct ServerStatusPanel: View {
                         controller.plan(.serverUnit(verb: verb, unit: service.unit))
                     }
                     .controlSize(.small)
-                    .disabled(controller.isPresenting)
+                    .disabled(controller.refusesNewPlan)
                     .help(verb == .stop ? (service.stopConsequence ?? verb.title) : verb.title)
                 }
                 if service.offersLogs {
@@ -433,7 +433,7 @@ struct ServerStatusPanel: View {
                         controller.plan(.logs(unit: service.unit))
                     }
                     .controlSize(.small)
-                    .disabled(controller.isPresenting)
+                    .disabled(controller.refusesNewPlan)
                     .help("Plan reading this unit's last journal lines.")
                 }
             }
@@ -549,7 +549,7 @@ struct ServerStatusPanel: View {
                     ))
                 }
                 .controlSize(.small)
-                .disabled(controller.isPresenting)
+                .disabled(controller.refusesNewPlan)
                 .help(reading.redeployHelp(of: resource))
             }
             FleetToolsStateBadge(state: resource.state, width: 92)

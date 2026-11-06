@@ -13,10 +13,11 @@
 
 import { classifyInboundRequest, hostHeaderValidationResponse, isJsonContentType, SUPPORTED_PROTOCOL_VERSIONS } from "@modelcontextprotocol/server";
 import { PUBLIC_HOST } from "./config.js";
-import { identityInstructions, toolListCacheKey, toolListFor, allowedIdentities } from "./delegated-identities.js";
+import { identityInstructions, toolListCacheKey, toolListFor, allowedIdentities, pageOf, TOOLS_LIST_PAGE } from "./delegated-identities.js";
 import { hostedInstructions } from "./hosted-tools.js";
 import { readBodyBytes } from "./wake.js";
 import { SERVER_VERSION } from "./mcp.js";
+import { ToolError } from "./contract.js";
 
 // A lifecycle frame is tiny.  A larger body stays with the SDK path unread here.
 export const LIFECYCLE_MAX_BYTES = 64 * 1024;
@@ -47,7 +48,19 @@ function sse(result, id) {
 // tools/list bytes per isolate:  the list is about 470 KB, so it is serialized once.
 const LIST_BYTES = new Map();
 
-function serveToolList(seat, config, id) {
+function serveToolList(seat, config, id, cursor) {
+  // A cursor opts into one bounded page (AFC-641);  without one the full list is
+  // served, byte-identical to before paging existed.
+  if (cursor !== undefined) {
+    let page;
+    try {
+      page = pageOf(toolListFor(seat, config).list, cursor, TOOLS_LIST_PAGE);
+    } catch (error) {
+      if (error instanceof ToolError) return sseError(id, -32602, error.message);
+      throw error;
+    }
+    return sse(page, id);
+  }
   const key = toolListCacheKey(seat, config);
   let cached = LIST_BYTES.get(key);
   if (!cached) {
@@ -61,6 +74,10 @@ function serveToolList(seat, config, id) {
   body.set(idBytes, cached.head.length);
   body.set(cached.tail, cached.head.length + idBytes.length);
   return new Response(body, { status: 200, headers: SSE_HEADERS });
+}
+
+function sseError(id, code, message) {
+  return new Response(`event: message\ndata: ${JSON.stringify({ jsonrpc: "2.0", id: id ?? null, error: { code, message } })}\n\n`, { status: 200, headers: SSE_HEADERS });
 }
 
 function validInitialize(params) {
@@ -82,7 +99,8 @@ function answer(body, seat, config) {
   }
   if (typeof id !== "string" && !Number.isSafeInteger(id)) return null;
   if (method === "ping" && emptyParams(params)) return sse({}, id);
-  if (method === "tools/list" && emptyParams(params)) return serveToolList(seat, config, id);
+  if (method === "tools/list" && (emptyParams(params) || (isObject(params) && Object.keys(params).length === 1 && typeof params.cursor === "string")))
+    return serveToolList(seat, config, id, params?.cursor);
   if (method === "initialize" && validInitialize(params)) {
     return sse({
       protocolVersion: params.protocolVersion,
