@@ -9,8 +9,8 @@ scripts/agent-sync-mcp/scripts/export-linear-catalog.mjs writes into scripts/lin
 test/linear-catalog-parity.test.mjs.
 
 Execution is `board`'s own code path, never a second Linear client:  each call runs
-`scripts/linear-board/board <verb> ...` as a child with the acting seat's own bearer locator in
-`SIMPLE_BOARD_BEARER_LOCATOR`, so board proves the seat from that bearer and never from AGENT_SEAT, which
+`scripts/linear-board/board <verb> ...` as a child with the acting seat's own bearer file in
+`SIMPLE_BOARD_BEARER_FILE`, so board proves the seat from that bearer and never from AGENT_SEAT, which
 is stripped from the child, and board's per-seat Linear app credential, its viewer check on writes and its
 label protection apply exactly as they do for a shell.  Arguments reach board as flags where board has a
 flag and on standard input otherwise (a comment body, a GraphQL document, a JSON argument object);  none of
@@ -336,15 +336,15 @@ def child_env(
     identity: str,
     extra: Mapping[str, str],
     session_env: Mapping[str, str] | None = None,
-    locator: str | None = None,
+    bearer_file: str | None = None,
 ) -> dict[str, str]:
-    """The environment board runs in:  a short allowlist, the acting seat's bearer locator and the session
+    """The environment board runs in:  a short allowlist, the acting seat's bearer file and the session
     variables board records.  Nothing that holds the Zulip key.  A launcher pin passes through (it equals
     `identity` whenever it is set, because the router refuses any other).
 
-    board proves its seat from the bearer at SIMPLE_BOARD_BEARER_LOCATOR and never reads AGENT_SEAT, so the
-    seat variables are stripped and the identity's own locator is passed instead.  The locator is a
-    FOLDER:KEY_NAME location, never a value."""
+    board proves its seat from the bearer at SIMPLE_BOARD_BEARER_FILE and never reads AGENT_SEAT, so the
+    seat variables are stripped and the identity's own file is passed instead.  It is an absolute path to
+    the seat's private bearer file, never the bearer itself."""
     out = {key: env[key] for key in CHILD_ENV_KEYS if env.get(key)}
     out.update(
         {key: value for key, value in env.items() if key.startswith(PASS_PREFIXES) and value}
@@ -359,8 +359,8 @@ def child_env(
     # The seat variables are stripped after `extra`, so nothing can put one back.
     out.pop("AGENT_SEAT", None)
     out.pop("AGENT_LAUNCH_SEAT", None)
-    if locator:
-        out["SIMPLE_BOARD_BEARER_LOCATOR"] = locator
+    if bearer_file:
+        out["SIMPLE_BOARD_BEARER_FILE"] = bearer_file
     return out
 
 
@@ -393,7 +393,7 @@ def run_board(
     python: str | None = None,
     uid: str | None = None,
     session_env: Mapping[str, str] | None = None,
-    locator: str | None = None,
+    bearer_file: str | None = None,
 ) -> BoardResult:
     board = find_board(env)
     if board is None:
@@ -423,7 +423,7 @@ def run_board(
                 input=plan.stdin,
                 capture_output=True,
                 timeout=timeout,
-                env=child_env(env, identity, plan.env, session_env, locator),
+                env=child_env(env, identity, plan.env, session_env, bearer_file),
                 check=False,
             )
     except subprocess.TimeoutExpired:

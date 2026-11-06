@@ -205,10 +205,6 @@ def env_code(seat: str) -> str:
     return re.sub(r"[^A-Z0-9]", "_", seat.upper())
 
 
-# Same canonical locator shape the board CLI enforces (scripts/linear-board/board BEARER_LOCATOR_RE).
-BEARER_LOCATOR_RE = re.compile(
-    r"/[A-Za-z0-9_-]{1,64}(?:/[A-Za-z0-9_-]{1,64}){0,7}:[A-Z][A-Z0-9_]{0,63}"
-)
 
 
 class RoutineConfig:
@@ -277,7 +273,7 @@ class SeatConfig:
         fallback_model: str = OPENROUTER_FALLBACK_MODEL,
         muse_bridge: bool = False,
         typing_indicator: bool = False,
-        bearer_locator: str | None = None,
+        bearer_file: str | None = None,
         config_problems: list[str] | None = None,
     ) -> None:
         self.seat = seat
@@ -309,10 +305,11 @@ class SeatConfig:
         self.instance = instance
         self.enabled = enabled
         self.creds = creds  # "file", "infisical" or "env"
-        # The seat's own simple-board bearer LOCATOR (a Fleet-OPS FOLDER:KEY_NAME, never a secret), from this trusted
-        # daemon config only.  It names where the seat's bearer lives;  the CLI still verifies it and takes the seat
-        # from the verifier, so a wake or request can never choose a credential.  None = this seat files no board item.
-        self.bearer_locator = bearer_locator
+        # The seat's own simple-board bearer FILE:  an absolute path to that seat's private 0600 bearer file (never
+        # the bearer itself), from this trusted daemon config only.  The CLI still verifies the bearer and takes the
+        # seat from the verifier, so a wake or request can never choose a credential.  None = this seat files no
+        # board item.
+        self.bearer_file = bearer_file
         self.email_env = email_env
         self.key_env = key_env
         self.site_env = site_env
@@ -990,15 +987,20 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         if not isinstance(typing_indicator, bool):
             wake_problems.append("seat.%s.typing_indicator must be true or false" % seat_name)
             typing_indicator = False
-        bearer_locator = section.get("bearer_locator")
-        if bearer_locator is not None and (
-            not isinstance(bearer_locator, str) or not BEARER_LOCATOR_RE.fullmatch(bearer_locator)
+        if "bearer_locator" in section:
+            wake_problems.append(
+                "seat.%s.bearer_locator is retired:  name bearer_file instead, an absolute path to the "
+                "seat's own private bearer file (never the bearer itself)" % seat_name
+            )
+        bearer_file = section.get("bearer_file")
+        if bearer_file is not None and (
+            not isinstance(bearer_file, str) or not bearer_file.startswith("/")
         ):
             wake_problems.append(
-                "seat.%s.bearer_locator must be a FOLDER:KEY_NAME location (no secret value)"
-                % seat_name
+                "seat.%s.bearer_file must be an absolute path to the seat's private bearer file "
+                "(no secret value)" % seat_name
             )
-            bearer_locator = None
+            bearer_file = None
         creds = section.get("creds", "file")
         if creds not in ("file", "infisical", "env"):
             problems.append(
@@ -1270,7 +1272,7 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
             fallback_model=fallback_model,
             muse_bridge=muse_bridge,
             typing_indicator=typing_indicator,
-            bearer_locator=bearer_locator,
+            bearer_file=bearer_file,
             config_problems=wake_problems,
         )
         (cfg.seats if enabled else cfg.disabled)[seat_name] = seat_cfg

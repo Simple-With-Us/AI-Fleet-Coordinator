@@ -681,7 +681,7 @@ class Tools:
         owner_user_id: int = 0,
         operator_user_id: int = 0,
         owner_clients: Iterable[str] = (),
-        seat_bearer_locators: Mapping[str, str] | None = None,
+        seat_bearer_files: Mapping[str, str] | None = None,
         clock: Callable[[], float] = time.time,
         sleep: Callable[[float], None] = time.sleep,
         log: Callable[[str], None] = lambda text: None,
@@ -705,9 +705,9 @@ class Tools:
         # inside one;  a host that does not pin it gets a refusal that names the variable.
         self.operator_user_id = operator_user_id
         self.owner_clients = set(owner_clients)
-        # The seat's own bearer locator, a FOLDER:KEY_NAME location and never a value, so a Linear write
-        # can be signed:  board proves the seat from it and never reads AGENT_SEAT.
-        self.seat_bearer_locators = dict(seat_bearer_locators or {})
+        # The seat's own bearer file (an absolute path to its private bearer file, never a value), so a
+        # Linear write can be signed:  board proves the seat from it and never reads AGENT_SEAT.
+        self.seat_bearer_files = dict(seat_bearer_files or {})
         # The notes host (the Mac's script, or the Operator client) is made on first use:  most sessions never call a
         # Notes tool, and off a Mac it reads a fleet knob.
         self._notes_host_cache: NOTES_CLIENT.Host | None = None
@@ -2651,15 +2651,15 @@ class Tools:
         """Run board and map its failures to tool errors.  LinearOutcomeUnknown (a timeout on a write) is its own
         exception here so a caller can keep an idempotency row for it."""
         session_env = self._own_session_env()
-        # board proves its seat from the bearer at SIMPLE_BOARD_BEARER_LOCATOR and never reads AGENT_SEAT, so
-        # the acting seat's own locator is handed to the child.  A write with no locator is refused here,
-        # before board runs, and names the seat and the config that would give it one.
-        locator = self.seat_bearer_locators.get(self.seat)
-        if spec.kind != "read" and not locator:
+        # board proves its seat from the bearer at SIMPLE_BOARD_BEARER_FILE and never reads AGENT_SEAT, so
+        # the acting seat's own file is handed to the child.  A write with no file is refused here, before
+        # board runs, and names the seat and the config that would give it one.
+        bearer_file = self.seat_bearer_files.get(self.seat)
+        if spec.kind != "read" and not bearer_file:
             raise ToolError(
                 "not_authorized",
-                "no bearer locator is configured for seat %s, so this write cannot be signed:  add "
-                "[seat.%s] bearer_locator to the listener config and restart the server"
+                "no bearer file is configured for seat %s, so this write cannot be signed:  add "
+                "[seat.%s] bearer_file to the listener config and restart the server"
                 % (self.seat, self.seat),
             )
         if spec.tool["name"] in LINEAR.SESSION_TOOLS:
@@ -2687,7 +2687,7 @@ class Tools:
                 env=self.agent.rt.env,
                 uid=uid,
                 session_env=session_env,
-                locator=locator,
+                bearer_file=bearer_file,
             )
         except LINEAR.LinearInvalid as exc:
             raise ToolError("invalid_argument", str(exc)) from None

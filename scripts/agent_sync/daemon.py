@@ -6815,18 +6815,18 @@ class Daemon:
             trigger_id=trigger,
             url=url,
         )
-        # The board CLI proves its seat from the bearer at SIMPLE_BOARD_BEARER_LOCATOR and never reads AGENT_SEAT.
-        # The locator comes only from this seat's own trusted daemon config;  with none configured the seat files
+        # The board CLI proves its seat from the bearer at SIMPLE_BOARD_BEARER_FILE and never reads AGENT_SEAT.
+        # The file comes only from this seat's own trusted daemon config;  with none configured the seat files
         # no board item (fail closed), and no AGENT_SEAT is ever offered as an identity.
-        locator = getattr(runner.cfg, "bearer_locator", None)
-        if not locator:
-            return {"board_skipped": "no bearer_locator configured for this seat"}
+        bearer_file = getattr(runner.cfg, "bearer_file", None)
+        if not bearer_file:
+            return {"board_skipped": "no bearer_file configured for this seat"}
         board_env = {
             k: v
             for k, v in A.claude_env(self.env, self.home, self.wake_path, seat=runner.seat).items()
             if k not in ("AGENT_SEAT", "AGENT_LAUNCH_SEAT")
         }
-        board_env["SIMPLE_BOARD_BEARER_LOCATOR"] = locator
+        board_env["SIMPLE_BOARD_BEARER_FILE"] = bearer_file
         ok, detail = A.run_board(
             argv,
             board_env,
