@@ -135,6 +135,15 @@ ENV_RESTART_HINT = (
 )
 
 
+# The Fleet-OPS /tools verify-token names a board child needs alongside SIMPLE_BOARD_BEARER_FILE
+# (keep in sync with BOARD_VERIFY_ENV in scripts/agent_sync/mcp/linear_tools.py).
+BOARD_VERIFY_ENV = (
+    "SIMPLE_BOARD_TOOLS_TOKEN_FILE",
+    "SIMPLE_BOARD_TOOLS_TOKEN",
+    "SIMPLE_BOARD_TOOLS_PROJECT_ID",
+)
+
+
 class Clock:
     def time(self) -> float:
         return time.time()
@@ -6815,18 +6824,34 @@ class Daemon:
             trigger_id=trigger,
             url=url,
         )
-        # The board CLI proves its seat from the bearer at SIMPLE_BOARD_BEARER_LOCATOR and never reads AGENT_SEAT.
-        # The locator comes only from this seat's own trusted daemon config;  with none configured the seat files
+        # The board CLI proves its seat from the bearer at SIMPLE_BOARD_BEARER_FILE and never reads AGENT_SEAT.
+        # The file comes only from this seat's own trusted daemon config;  with none configured the seat files
         # no board item (fail closed), and no AGENT_SEAT is ever offered as an identity.
-        locator = getattr(runner.cfg, "bearer_locator", None)
-        if not locator:
-            return {"board_skipped": "no bearer_locator configured for this seat"}
+        bearer_file = getattr(runner.cfg, "bearer_file", None)
+        if not bearer_file:
+            return {"board_skipped": "no bearer_file configured for this seat"}
         board_env = {
             k: v
             for k, v in A.claude_env(self.env, self.home, self.wake_path, seat=runner.seat).items()
             if k not in ("AGENT_SEAT", "AGENT_LAUNCH_SEAT")
         }
-        board_env["SIMPLE_BOARD_BEARER_LOCATOR"] = locator
+        board_env["SIMPLE_BOARD_BEARER_FILE"] = bearer_file
+        # board verifies that bearer with the Fleet-OPS /tools key through its own scoped token;
+        # claude_env is a fixed allowlist, so the daemon passes the verify-token names itself.
+        # Keep in sync with BOARD_VERIFY_ENV in scripts/agent_sync/mcp/linear_tools.py.
+        for key in BOARD_VERIFY_ENV:
+            if self.env.get(key):
+                board_env[key] = self.env[key]
+        # The Linear credential config board reads (the Infisical token files and project, or a
+        # cloud host's exported client pair) plus the project fallback name:  claude_env drops
+        # them, so the daemon passes them through itself, mirroring PASS_PREFIXES in
+        # scripts/agent_sync/mcp/linear_tools.py.  With none, resolve_identity finds no pair and
+        # the filing fails closed with EXIT_NO_CREDS.
+        for key, value in self.env.items():
+            if (
+                key.startswith("LINEAR_") or key == "INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID"
+            ) and value:
+                board_env[key] = value
         ok, detail = A.run_board(
             argv,
             board_env,
