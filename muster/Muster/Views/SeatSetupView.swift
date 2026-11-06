@@ -21,6 +21,10 @@ struct SeatSetupView: View {
     @State private var artifacts: [ConfigKind: FleetStore.CellArtifacts] = [:]
     @State private var artifactsSeat: String?
     @State private var open: Set<ConfigKind> = []
+    /// What the platform has installed, for the seat it was read for.
+    @State private var inventory: SeatInventoryReading?
+    @State private var inventorySeat: String?
+    @State private var openInventory: Set<String> = []
 
     /// MiniMax's seat tag, the one seat with extra files of its own to show.
     private static let miniMaxSeat = "MM"
@@ -43,6 +47,9 @@ struct SeatSetupView: View {
                     answers(seat)
                     ForEach(ConfigKind.columnOrder, id: \.self) { kind in
                         kindPanel(kind, seat: seat)
+                    }
+                    if seat != Self.miniMaxSeat {
+                        installed(seat)
                     }
                     if seat == Self.miniMaxSeat {
                         MiniMaxDetailView(embedded: true)
@@ -210,6 +217,91 @@ struct SeatSetupView: View {
         }
     }
 
+    // MARK: - what is installed
+
+    /// What the seat's platform has installed:  MCP servers, hooks, plugins, skills and so on,
+    /// as names and counts.  MiniMax's seat has its own, richer section below instead.
+    @ViewBuilder
+    private func installed(_ seat: String) -> some View {
+        SectionPanel(title: "What Is Installed", subtitle: "Names and counts only, read on the Mac") {
+            if inventorySeat != seat {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Reading what the platform has installed.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                switch inventory {
+                case .some(.loaded(let found)):
+                    VStack(alignment: .leading, spacing: 10) {
+                        ForEach(found.sections) { section in
+                            inventorySection(section)
+                        }
+                    }
+                case .some(.unavailable(let why)):
+                    EmptyNote(text: why)
+                case .none:
+                    EmptyNote(text: "No platform is known for this seat, so nothing was read.")
+                }
+            }
+        }
+    }
+
+    private func inventorySection(_ section: SeatInventory.Section) -> some View {
+        let isOpen = Binding<Bool>(
+            get: { openInventory.contains(section.id) },
+            set: { shown in
+                if shown { openInventory.insert(section.id) } else { openInventory.remove(section.id) }
+            }
+        )
+        return DisclosureGroup(isExpanded: isOpen) {
+            VStack(alignment: .leading, spacing: 3) {
+                if section.items.isEmpty {
+                    Text(section.note ?? "Nothing listed.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(section.items) { item in
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text(item.name)
+                                .font(.system(size: 12, design: .monospaced))
+                                .textSelection(.enabled)
+                            if let detail = item.detail {
+                                Text(detail)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer(minLength: 0)
+                        }
+                    }
+                    if let note = section.note {
+                        Text(note)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .padding(.top, 4)
+                    }
+                }
+                Text(section.source)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.tertiary)
+                    .padding(.top, 4)
+            }
+            .padding(.top, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } label: {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(section.title)
+                    .font(.subheadline.weight(.semibold))
+                Text(section.summary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
     private func openBinding(_ kind: ConfigKind) -> Binding<Bool> {
         Binding(
             get: { open.contains(kind) },
@@ -237,5 +329,18 @@ struct SeatSetupView: View {
         guard !Task.isCancelled else { return }
         artifacts = loaded
         artifactsSeat = seat
+
+        // What the platform has installed is read once the engine's files are shown, so the
+        // slower read never holds the panel up.  MiniMax's seat has its own section.
+        guard let platform = SeatSetup.platform(of: wanted), platform != "minimax" else {
+            inventory = nil
+            inventorySeat = seat
+            return
+        }
+        let repoRoot = FleetConfigLocation.resolve().repoRoot
+        let reading = await MacSeatInventoryReader(repoRoot: repoRoot).read(platform: platform)
+        guard !Task.isCancelled else { return }
+        inventory = reading
+        inventorySeat = seat
     }
 }
