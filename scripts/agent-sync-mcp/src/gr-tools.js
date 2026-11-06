@@ -202,7 +202,24 @@ export class GrRelayClient {
         if (response.status === 502 && parsed.outcome === "unknown" && githubCode) return outcomeUnknown();
         return unavailable();
       }
-      return {status:response.status,body:{error:"workflow_request_refused", ...(parsed.retryable===true ? {retryable:true} : {})}};
+      // Preserve the relay's credential-scan verdict as a machine-readable
+      // marker:  the collapsed prose stays fixed, but without the marker the
+      // hosted front cannot tell a credential refusal from any other 4xx, so
+      // gr_wf_file_put/gr_wf_files_put callers lost their refused_secret reason.
+      // The vouched family is the relay's fixed credential refusals:  the
+      // workflow verbs' "credential-shaped ..." strings, the pre-dispatch
+      // scanner's anchored field/pattern tail, and the credential-only
+      // environment-name refusal.  Three stay OUT:  the secrets-API variable
+      // refusal and "invalid asset content" also fire for over-limit or
+      // non-string values (not credential verdicts), and the commit-message
+      // refusal is post-write - the commit already exists, so the hosted
+      // "Nothing was written" guidance would be false.
+      const credentialMarker = typeof parsed.error === "string"
+        && parsed.error !== "credential-shaped commit message refused"
+        && (parsed.error.startsWith("credential-shaped")
+          || parsed.error === "environment name contains credential pattern"
+          || /^[^\n]{1,200} looks like it contains a credential \([A-Za-z0-9_]{1,60}\); refusing to relay it$/.test(parsed.error));
+      return {status:response.status,body:{error:"workflow_request_refused", ...(credentialMarker ? {reason:"credential_scan"} : {}), ...(parsed.retryable===true ? {retryable:true} : {})}};
     } catch {return unavailable();}
   }
 

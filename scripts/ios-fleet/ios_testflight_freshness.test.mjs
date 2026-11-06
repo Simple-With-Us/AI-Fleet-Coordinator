@@ -95,7 +95,7 @@ function fakeDeps({ repos = {}, builds = {}, window = "normal", lastShip = {}, s
     writeState: (s) => calls.states.push(JSON.parse(JSON.stringify(s))),
     writeReport() {},
     lock: () => () => {},
-    async post(body) { if (failPost) throw new Error("agent-sync exit 1"); calls.posts.push(body); },
+    async post(body) { if (failPost) throw new Error("simple-chat exit 1"); calls.posts.push(body); },
   };
   return { deps, calls };
 }
@@ -463,7 +463,7 @@ test("main --ship-behind --alert:  dispatches without alerting, then a later run
   assert.equal(rep2.apps[0].remedy.action, "blocked", "one dispatch per main HEAD");
   assert.equal(later.calls.dispatch.length, 0);
   assert.equal(rep2.alert.posted, false);
-  assert.match(rep2.alert.error, /agent-sync/);
+  assert.match(rep2.alert.error, /simple-chat/);
   assert.match(rep2.alert.body, /has not landed/);
   assert.equal(later.calls.states.at(-1).apps.b.alert, undefined, "alert stamp rolled back so the next run retries");
 });
