@@ -948,8 +948,8 @@ def cmd_api(agent: Any, args: argparse.Namespace) -> int:
     path = path.removeprefix("api/v1/")
     if not OPS.api_allowed(args.method, path):
         raise UsageError(
-            "%s %s is not on the agent-sync api allowlist (non-admin endpoints only; see "
-            'docs/protocols/zulip-fleet-guide.md, "The agent-sync CLI")' % (args.method, path)
+            "%s %s is not on the simple-tools api allowlist (non-admin endpoints only; see "
+            'docs/protocols/zulip-fleet-guide.md, "The simple-tools CLI")' % (args.method, path)
         )
     params = OPS.encode_json_params(
         _pairs(args.param, "--param"), _pairs(args.json_param, "--json-param")

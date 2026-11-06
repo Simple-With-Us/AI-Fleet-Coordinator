@@ -36,8 +36,8 @@ if [ -n "$(code_lines 'grep -Fw')" ]; then
   fail "empty-string word match on detached HEAD matches every merged branch"
 fi
 
-if ! grep -q 'agent-sync-push' "$SCRIPT"; then
-  fail "mac-auto-cleanup.sh must preserve agent-sync-push runtime"
+if ! grep -q 'unproven_app_root_or_hidden_state' "$SCRIPT"; then
+  fail "mac-auto-cleanup.sh must preserve unknown app roots and hidden state"
 fi
 
 if ! grep -q 'is_git_worktree' "$SCRIPT" || ! grep -q 'wt_has_blocking_dirt' "$SCRIPT" || ! grep -q 'wt_is_active' "$SCRIPT"; then

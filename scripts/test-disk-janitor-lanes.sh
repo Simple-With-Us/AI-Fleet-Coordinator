@@ -218,10 +218,10 @@ for p in "$FH/Code/BotFleet" "$FH/Code/fleet-ops" "$FH/Code/Fleet-OPS" "$FH/Code
          "$(git -C "$FH/Code/BotFleet" worktree list --porcelain | awk '/^worktree /{sub(/^worktree /,""); print; exit}')"; do
   janitor_keep_match "$p" || fail "KEEP_RE must protect $p"
 done
-for p in /Users/jay/apps/botfleet-claude /Users/jay/apps/agent-sync-push /Users/jay/apps/botfleet-server; do   # regex only, never cd there
-  printf '%s\n' "$p" | grep -qiE "$KEEP_RE" || fail "KEEP_RE must still protect the standing lane $p"
+for p in "$FH/apps/botfleet-claude" "$FH/apps/unknown-runtime" "$FH/apps/botfleet-server" "$FH/.unmoved/listener/state" "$LANES/_managed/fleet/live-runtime"; do   # scope to the fake home, never touch the real one
+  janitor_keep_match "$p" || fail "KEEP_RE must still protect the standing lane $p"
 done
-for p in "$LANES/BotFleet/claude-x" "$FH/Code/BotFleet/.claude/worktrees/abc" "$FH/Code/BotFleet-copy" "$FH/apps/botfleet-claude-fix"; do
+for p in "$LANES/BotFleet/claude-x" "$FH/Code/BotFleet/.claude/worktrees/abc" "$FH/Code/BotFleet-copy"; do
   janitor_keep_match "$p" && fail "KEEP_RE must not protect $p"
 done
 
@@ -468,10 +468,10 @@ rm -f "$T/git.lsfail"
 present "$D_OLD/node_modules" && present "$D_OLD/app/vendor/lib/node_modules/pkg/index.js" \
   || fail "a failed ls-files must keep node_modules and the tracked vendored tree"
 
-# Normal pressure run: only the old, idle, unclaimed checkout loses its deps; nothing tracked is ever touched.
+# Normal pressure run: proven nested lanes can lose deps; unknown flat app roots stay protected.
 echo ok > "$T/lsof.mode"; printf '%s\n' "$D_CWD/src" "$D_FLATCWD" > "$T/lsof.cwds"
 ( janitor_dep_reap_worktrees ) >/dev/null 2>&1
-gone "$D_FLAT/node_modules"       || fail "positive control: an old idle flat lane must lose node_modules"
+present "$D_FLAT/node_modules"    || fail "an unproven flat app root must keep node_modules"
 present "$D_FLATCWD/node_modules" || fail "a process cwd keeps a flat lane's node_modules"
 gone "$D_OLD/node_modules"      || fail "positive control: an old idle clean lane must lose node_modules"
 gone "$D_INNER/node_modules"    || fail "the parent lane's own node_modules must be reaped"
@@ -510,7 +510,7 @@ done
 echo ok > "$T/lsof.mode"; echo "$R_CWD" > "$T/lsof.cwds"
 run_reaper
 gone "$R_OLD/node_modules"       || fail "reaper positive control: an old idle nested lane must lose node_modules"
-gone "$R_FLAT/node_modules"      || fail "reaper positive control: an old idle flat lane must lose node_modules"
+present "$R_FLAT/node_modules"   || fail "reaper: an unproven flat app root must keep node_modules"
 present "$R_FORGED/node_modules" || fail "reaper: a re-timed checkout dir with a young git admin dir is still young"
 present "$R_CWD/node_modules"    || fail "reaper: a process cwd keeps node_modules"
 present "$D_YOUNG/node_modules" && present "$D_KEEP/node_modules" && present "$D_GITFAIL/node_modules" \

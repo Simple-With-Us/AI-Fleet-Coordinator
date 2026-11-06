@@ -64,7 +64,7 @@ import urllib.request
 # 3.11+ and pull in Zulip and textfmt transitively.  Keep the wire format and
 # banner text identical to listener_api.CONTRACT/sign and
 # adapters.osascript_argv/clean_banner.
-READ_CONTRACT = "agent-sync-read/1"
+READ_CONTRACT = "simple-tools-read/1"
 _NOTIFY_CUT = 120
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
@@ -240,8 +240,8 @@ def poll_once(
     req = urllib.request.Request(
         base_url.rstrip("/") + path + "?" + QUERY,
         headers={
-            "X-Agent-Sync-Timestamp": timestamp,
-            "X-Agent-Sync-Signature": sign(key, path, QUERY, timestamp),
+            "X-Simple-Tools-Timestamp": timestamp,
+            "X-Simple-Tools-Signature": sign(key, path, QUERY, timestamp),
         },
     )
     try:

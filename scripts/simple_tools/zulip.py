@@ -59,7 +59,7 @@ __all__ = [
     "REALM",
     "RETIRED_CHANNEL_NAMES",
     "USER_AGENT",
-    "AgentSyncError",
+    "SimpleToolsError",
     "ApiError",
     "CredentialError",
     "Credentials",
@@ -198,7 +198,7 @@ def resolve_channel(name: str | None, env: Mapping[str, str] | None = None) -> s
 
     A retired name resolves to the effective default, so the fleet's coordination channel
     stays one channel however it is named.  A deployment whose realm still calls that
-    channel agent-sync keeps the name:  its effective default is the same name, so
+    channel simple-tools keeps the name:  its effective default is the same name, so
     nothing changes for it.
     """
     text = str(name or "").strip()
@@ -281,17 +281,17 @@ _LOOPBACK_NAMES = {"localhost"}
 _OUTBOUND_TEXT_PATH = re.compile(r"(?:messages|scheduled_messages)(?:/\d+)?")
 
 
-class AgentSyncError(Exception):
+class SimpleToolsError(Exception):
     """Base error.  `exit_code` is what the CLI returns."""
 
     exit_code = 1
 
 
-class UsageError(AgentSyncError):
+class UsageError(SimpleToolsError):
     exit_code = 2
 
 
-class CredentialError(AgentSyncError):
+class CredentialError(SimpleToolsError):
     exit_code = 3
 
 
@@ -305,7 +305,7 @@ class RealmMismatch(CredentialError):
     exit_code = 3
 
 
-class ApiError(AgentSyncError):
+class ApiError(SimpleToolsError):
     """Zulip answered with an error.  `code` is Zulip's machine code (e.g. BAD_EVENT_QUEUE_ID)."""
 
     exit_code = 5
@@ -325,7 +325,7 @@ class ApiError(AgentSyncError):
         self.data = dict(data or {})
 
 
-class NetworkError(AgentSyncError):
+class NetworkError(SimpleToolsError):
     """No usable answer.  `timeout` is True for a read or connect timeout.  `maybe_sent` is True
     when the request may have reached the server (a timeout or reset on a non-GET request)."""
 
@@ -337,7 +337,7 @@ class NetworkError(AgentSyncError):
         self.maybe_sent = maybe_sent
 
 
-class DmGuardRefused(AgentSyncError):
+class DmGuardRefused(SimpleToolsError):
     """A direct message the owner-in-the-conversation guard refused (AFC-469).
 
     The rule (owner, Oct 23 2026):  a bot may send a direct message only when Jay is an actual
@@ -345,7 +345,7 @@ class DmGuardRefused(AgentSyncError):
     display name that looks like the owner is not participation, and mentioning Jay in the message
     text is not participation either.
 
-    An AgentSyncError, so the CLI exits 3 (a refusal) and not 2 (a malformed command):  a caller can
+    An SimpleToolsError, so the CLI exits 3 (a refusal) and not 2 (a malformed command):  a caller can
     tell "the guard said no" from "you typed it wrong".  `code` is the machine-readable reason, the
     same shape dm_policy.DmRefused and ApiError use, and it rides in the message text so a caller
     that only prints the error still sees it."""
@@ -974,7 +974,7 @@ def _list_from_fleet_secrets(env: Mapping[str, str], home: Path) -> frozenset[st
         return names
 
 
-# The names tests replace (agent_sync/tests/__init__.py), so none can reach the real fleet-secrets.
+# The names tests replace (simple_tools/tests/__init__.py), so none can reach the real fleet-secrets.
 _default_infisical_fetch = _fetch_from_fleet_secrets
 _default_infisical_names = _list_from_fleet_secrets
 
@@ -1269,7 +1269,7 @@ def multipart_body(filename: str, data: bytes, content_type: str) -> tuple[bytes
         )
     if not re.fullmatch(r"[A-Za-z0-9.+-]{1,60}/[A-Za-z0-9.+-]{1,60}", content_type):
         content_type = "application/octet-stream"
-    boundary = "agent-sync-" + base64.b16encode(os.urandom(12)).decode("ascii").lower()
+    boundary = "simple-tools-" + base64.b16encode(os.urandom(12)).decode("ascii").lower()
     head = (
         '--%s\r\nContent-Disposition: form-data; name="filename"; filename="%s"\r\nContent-Type: %s\r\n\r\n'
         % (boundary, filename, content_type)
@@ -1953,6 +1953,6 @@ class EventQueue:
             self.client.delete("events", {"queue_id": queue_id}, timeout=5.0)
         except ApiError as exc:
             return None if exc.code == "BAD_EVENT_QUEUE_ID" else str(exc)
-        except (AgentSyncError, OSError) as exc:
+        except (SimpleToolsError, OSError) as exc:
             return str(exc)
         return None

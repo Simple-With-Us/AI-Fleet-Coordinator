@@ -144,9 +144,9 @@ no_other_restart none
 #     must not probe the dead Slack relay on :8787 or expect any Slack-era
 #     job, or it restarts or bootstraps a ghost every cycle.
 if grep -q '^curl 8787$' "${STUB_DIR}/curl-calls" 2>/dev/null; then
-  fail "retired agent-sync-push (:8787) is still probed"
+  fail "retired Slack relay (:8787) is still probed"
 fi
-slack_code="$(grep -v '^[[:space:]]*#' "$WATCH" | grep -i -E 'slack|agent-sync' || true)"
+slack_code="$(grep -v '^[[:space:]]*#' "$WATCH" | grep -i -E 'slack|:8787' || true)"
 [ -z "$slack_code" ] || fail "Slack-era entry left in the watch code:"$'\n'"$slack_code"
 
 # 1. rc 7 (connection refused): dead, restart on the very first run.

@@ -463,7 +463,7 @@ class Tests(unittest.TestCase):
         self.assertIn("workflow_run:", text)
         self.assertIn("workflows: [CI]", text)
         self.assertNotIn("WORKER_DEPLOY_ENABLED", text)
-        self.assertNotIn("agent-sync-mcp/wrangler", text)
+        self.assertNotIn("simple-tools-mcp/wrangler", text)
         self.assertIn("17,47 * * * *", text)
 
     def test_numeric_receipt_not_boolean(self):

@@ -3,7 +3,7 @@ resolve and unresolve, reactions, read and star flags, search, channels, users, 
 user groups, custom emoji, uploads, scheduled messages, drafts and typing.
 
 The CLI commands and the stdio MCP tools both call these functions, so the two surfaces share one
-implementation;  the hosted Worker ports the same rules (scripts/agent-sync-mcp/src/zulip-full.js).
+implementation;  the hosted Worker ports the same rules (scripts/simple-tools-mcp/src/zulip-full.js).
 Every function takes the CLI's `Agent` (identity already pinned, every request after users/me
 gated on the bot check) and returns plain data.  Nothing here prints.
 
