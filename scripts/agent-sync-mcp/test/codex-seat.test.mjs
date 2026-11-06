@@ -204,10 +204,17 @@ test("install_seat_key requires its scoped token and refuses malformed Infisical
     refused("fetch-failed: bad-output"),
     refused("fetch-failed: bad-output"),
   ]);
-  // Valid grant metadata must precede the malformed named-secret boundary.
-  assert.deepEqual(observed.secret_calls.slice(0, 6), Array.from({ length: 6 }, () => ["/v2/service-token", "/v3/secrets/raw/E"]));
+  // Valid grant metadata must precede the malformed named-secret boundary.  Named reads run side by
+  // side, so K's read may already be in flight when E's malformed answer fails the fetch;  its
+  // answer is never used, and every case above is still refused.
+  for (const calls of observed.secret_calls.slice(0, 6)) {
+    assert.deepEqual(calls.slice(0, 1), ["/v2/service-token"]);
+    assert.ok(calls.includes("/v3/secrets/raw/E"));
+    assert.ok(calls.slice(1).every((path) => ["/v3/secrets/raw/E", "/v3/secrets/raw/K"].includes(path)));
+  }
   assert.deepEqual(out[8], ["ok", ["e", "k"]]);
-  assert.deepEqual(observed.secret_calls[6], ["/v2/service-token", "/v3/secrets/raw/E", "/v3/secrets/raw/K"]);
+  assert.deepEqual(observed.secret_calls[6].slice(0, 1), ["/v2/service-token"]);
+  assert.deepEqual(observed.secret_calls[6].slice(1).sort(), ["/v3/secrets/raw/E", "/v3/secrets/raw/K"]);
   // Wrong project, wrong folder and expired metadata stop before any secret read.
   assert.deepEqual(observed.grant_results, Array.from({ length: 3 }, () => ["refused", ["/v2/service-token"]]));
 });

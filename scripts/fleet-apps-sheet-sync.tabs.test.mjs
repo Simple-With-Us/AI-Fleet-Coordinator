@@ -54,26 +54,26 @@ test("a BotFleet seat with a Linear app shows that name, and a persona without o
 
 test("Seats and Bots covers every partition seat and every fleet-apps.json seat", () => {
   const tags = new Set(seatsRows.slice(1).filter(r => r.length > 1).map(r => r[0]));
-  for (const s of fleetApps.seats) assert.ok(tags.has(s.tag), `missing ${s.tag}`);
-  for (const t of Object.keys(partition)) assert.ok(tags.has(t), `missing ${t}`);
+  for (const s of fleetApps.seats.filter(s => !["GROK-BOT", "GROK-BUILD"].includes(s.tag))) assert.ok(tags.has(s.tag), `missing ${s.tag}`);
+  for (const t of Object.keys(partition).filter(t => !["GROK-BOT", "GROK-BUILD"].includes(t))) assert.ok(tags.has(t), `missing ${t}`);
   // Eleven BF seats:  the ten role seats plus BF-DIRECTOR.  Twelve GB personas, GB-ENGINEER included.
   assert.equal([...tags].filter(t => t.startsWith("BF-")).length, 11);
   assert.equal([...tags].filter(t => t.startsWith("GB-")).length, 12);
 });
 
-test("Grok shows as plain Grok, GROK-BUILD as a retired alias, retired seats as retired", () => {
-  const grok = seatsRows.find(r => r[0] === "GROK");
-  assert.equal(grok[1], "Grok");
-  const alias = seatsRows.find(r => r[0] === "GROK-BUILD");
-  assert.match(alias[4], /^Retired 2026-10-08/);
-  for (const t of ["MONET", "RENOIR", "HARNESS", "DSH"]) {
-    assert.match(seatsRows.find(r => r[0] === t)[4], /^Retired/, t);
-  }
+test("one Grok Build row, no generic Grok Bot row, active Kimi and ZCode", () => {
+  assert.equal(seatsRows.find(r => r[0] === "GROK")[1], "Grok");
+  assert.ok(!seatsRows.some(r => ["GROK-BUILD", "GROK-BOT"].includes(r[0])));
+  const status = seatsRows[0].indexOf("Status");
+  for (const t of ["KIMI", "ZC"]) assert.equal(seatsRows.find(r => r[0] === t)[status], "active");
+  for (const t of ["MONET", "RENOIR", "HARNESS", "DSH"]) assert.match(seatsRows.find(r => r[0] === t)[status], /^Retired/);
+  assert.ok(!seatsRows[0].some(h => ["Group", "Listener", "Wake Path"].includes(h)));
+  assert.doesNotMatch(JSON.stringify(seatsRows), /Coding seat|Cloud seat|BotFleet handles it natively|none \(no lanes\)/);
 });
 
 test("credential cells carry names and paths only", () => {
   for (const r of seatsRows.slice(1)) {
-    const cell = String(r[7] || "");
+    const cell = String(r[seatsRows[0].indexOf("Zulip Credential (name only)")] || "");
     if (!cell) continue;
     assert.match(cell, /^Infisical /, cell);
     assert.doesNotMatch(cell, /=/, "no KEY=value");
@@ -119,4 +119,13 @@ test("the Markdown mirror escapes HTML in cell text", () => {
   const md = buildMarkdownMirror({ sections: [] }, tabs, "NOW");
   assert.doesNotMatch(md, /<img/);
   assert.match(md, /&lt;img/);
+});
+
+test('Grok Web has its own source branch prefix and no cloud-only PR restriction',()=>{
+  const row=seatsRows.find(r=>r[0]==='GROK-WEB');assert.equal(row[seatsRows[0].indexOf('Branch Prefix')],'grok-web/');assert.doesNotMatch(row.at(-1),/no Mac lanes|no checkouts|refuses|makes no lanes/);
+});
+
+test('source notes and reserved/legacy lane tokens remain visible',()=>{
+  for(const tag of ['ECHO','WISE']) assert.equal(seatsRows.find(r=>r[0]===tag).at(-1),fleetApps.seats.find(s=>s.tag===tag).notes);
+  const text=seatsRows.map(r=>r.join(' ')).join(' ');assert.match(text,/grok-build\//);assert.match(text,/slugs must not start with web-/);assert.doesNotMatch(text,/makes no Mac lanes|not through a Mac lane/);assert.doesNotMatch(seatsRows.at(-1)[0],/server\/listener.toml/);
 });

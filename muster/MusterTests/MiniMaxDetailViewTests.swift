@@ -264,7 +264,7 @@ final class MiniMaxDetailViewTests: XCTestCase {
     func test_the_agents_row_names_the_fleet_seat_beside_the_runtime_name() throws {
         let home = try makeHome()
         defer { try? FileManager.default.removeItem(at: home) }
-        let surface = MiniMaxReader.read(home: home, liveSeats: ["MM"])
+        let surface = MiniMaxReader.read(home: home, rosterSeats: ["MM"])
         let seatAgent = try XCTUnwrap(surface.agents.first { $0.ownsSeatMemory })
         let otherAgent = try XCTUnwrap(surface.agents.first { !$0.ownsSeatMemory })
         XCTAssertEqual(seatAgent.name, "mavis")

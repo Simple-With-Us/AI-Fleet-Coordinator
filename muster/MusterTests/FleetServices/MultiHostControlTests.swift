@@ -76,7 +76,7 @@ final class MultiHostControlTests: XCTestCase {
         )
 
         MockURLProtocol.handler = { request in
-            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer fleet-remote-bearer-key")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer remote-stub")
             if request.url!.path == "/api/health" {
                 return (200, Data(#"{"app":"botfleet","pid":999,"ready":true}"#.utf8))
             }
@@ -94,7 +94,7 @@ final class MultiHostControlTests: XCTestCase {
             return (404, Data("{}".utf8))
         }
 
-        let secrets = StubSecrets(values: ["BOTFLEET_REMOTE_TOKEN": "fleet-remote-bearer-key"])
+        let secrets = StubSecrets(values: ["BOTFLEET_REMOTE_TOKEN": "remote-stub"])
         let api = ControlAPI(session: mockSession(), host: host, secrets: secrets)
         let status = try await api.status()
         XCTAssertEqual(secrets.asked.first, "BOTFLEET_REMOTE_TOKEN")
@@ -193,6 +193,39 @@ final class MultiHostControlTests: XCTestCase {
         MockURLProtocol.handler = { _ in (200, Data(#"{"app":"botfleet","pid":42,"ready":true}"#.utf8)) }
         MockURLProtocol.failure = { request in
             request.url!.path == "/api/system/control/stop" ? URLError(.timedOut) : nil
+        }
+        defer { MockURLProtocol.failure = nil }
+        do {
+            try await ControlAPI(session: mockSession()).stopServer()
+            XCTFail("Expected an unknown outcome")
+        } catch {
+            XCTAssertEqual(error as? ControlAPIError, .outcomeUnknown)
+        }
+    }
+
+    func testAChangeThatIsRefusedBeforeSendingIsUnavailableNotUnknown() async {
+        // The health check answers, and the connection for the stop is refused:
+        // nothing was sent, so a retry is safe and the server is unavailable.
+        MockURLProtocol.handler = { _ in (200, Data(#"{"app":"botfleet","pid":42,"ready":true}"#.utf8)) }
+        MockURLProtocol.failure = { request in
+            request.url!.path == "/api/system/control/stop" ? URLError(.cannotConnectToHost) : nil
+        }
+        defer { MockURLProtocol.failure = nil }
+        do {
+            try await ControlAPI(session: mockSession()).stopServer()
+            XCTFail("Expected unavailable")
+        } catch {
+            XCTAssertEqual(error as? ControlAPIError, .unavailable)
+        }
+    }
+
+    func testAChangeWhoseConnectionDropsMidFlightHasAnUnknownOutcome() async {
+        // The health check answers, and the stop's connection is lost while the
+        // request is in flight:  the server may have applied it, and this code
+        // must never join the safe-to-retry set.
+        MockURLProtocol.handler = { _ in (200, Data(#"{"app":"botfleet","pid":42,"ready":true}"#.utf8)) }
+        MockURLProtocol.failure = { request in
+            request.url!.path == "/api/system/control/stop" ? URLError(.networkConnectionLost) : nil
         }
         defer { MockURLProtocol.failure = nil }
         do {

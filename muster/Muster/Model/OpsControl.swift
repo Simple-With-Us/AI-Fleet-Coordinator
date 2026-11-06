@@ -26,6 +26,10 @@ enum FleetServiceActionRouting {
 // then runs `--yes`.  One action runs at a time in this app,  and the helper holds its own
 // lock on each machine,  so a second app or a shell cannot run one alongside it.
 //
+// The one exception to Touch ID is `OpsController.runUnattended`:  a start that Muster takes on
+// its own for a service whose policy says to keep it running (`ServiceReconciler`).  It plans,
+// runs and audits exactly as above,  with nobody at a sheet,  and it accepts only a start.
+//
 // `ServiceActionRouter` is the one way in for a service row,  from the menu or the panel.
 // BotFleet Server and any LaunchAgent the allowlist does not name stay on `FleetAdmin`'s
 // direct route,  with no plan,  no Touch ID and no audit row:  an allowlist argv cannot say
@@ -1727,9 +1731,12 @@ final class OpsController: ObservableObject {
     /// True when the owner closed the sheet while a plan or a run was still going.  A run
     /// goes on,  and the sheet comes back when it ends.
     @Published private(set) var isSheetHidden = false
-    /// Where the run in flight is,  and since when.
+    /// Where the run in flight is,  and since when:  the sheet's run,  or a start Muster
+    /// takes on its own.
     @Published private(set) var runStage: OpsRunStage?
     @Published private(set) var stageStartedAt: Date?
+    /// True while Muster runs a start of its own (`runUnattended`),  with nobody at a sheet.
+    @Published private(set) var isRunningUnattended = false
 
     private let runner: OpsRunning
     private let makeBuilder: () -> OpsCommandBuilder
@@ -1743,6 +1750,8 @@ final class OpsController: ObservableObject {
     /// The last action whose run ended with no answer,  and when,  so a new plan for it
     /// says so before it is approved again.
     private var unresolved: (action: OpsAction, at: Date)?
+    /// The start Muster is running on its own,  while `runUnattended` has it.
+    private var unattendedAction: OpsAction?
 
     /// How long a run with no answer is remembered when the same action is planned again.
     static let unresolvedMemory: TimeInterval = 60 * 60
@@ -1765,7 +1774,7 @@ final class OpsController: ObservableObject {
 
     /// True while a helper is running.
     var isBusy: Bool {
-        if isRechecking { return true }
+        if isRechecking || isRunningUnattended { return true }
         switch phase {
         case .planning, .running: return true
         default: return false
@@ -1786,9 +1795,17 @@ final class OpsController: ObservableObject {
 
     /// The question to ask before Muster quits,  or nil when quitting loses nothing.  Only a
     /// run that was sent can be lost:  a plan,  even the one read again after the approval,
-    /// changes nothing.
+    /// changes nothing.  A start Muster sent on its own counts too.
     var quitWarning: String? {
-        guard case .running(let action, _) = phase, runStage == .running else { return nil }
+        guard runStage == .running else { return nil }
+        let action: OpsAction
+        if case .running(let shown, _) = phase {
+            action = shown
+        } else if let own = unattendedAction {
+            action = own
+        } else {
+            return nil
+        }
         // Only a server action gets a `started` row in this Mac's log:  a local action's own
         // helper writes its row when it finishes.
         let logs = action.runsOnServer
@@ -1845,6 +1862,10 @@ final class OpsController: ObservableObject {
         case .planning, .review, .running:
             notice = OpsControlError.busy.errorDescription
             if !abandonPlan { isSheetHidden = false }
+            return false
+        }
+        guard !isRunningUnattended else {
+            notice = OpsControlError.busy.errorDescription
             return false
         }
         guard task == nil else { return false }
@@ -1905,6 +1926,69 @@ final class OpsController: ObservableObject {
             await self?.runConfirmed(action, reviewed: reviewed)
         }
         return true
+    }
+
+    /// Runs one start that Muster takes on its own (`ServiceReconciler`),  through the same
+    /// helper,  the same plan,  the same `--yes` run and the same bookkeeping as a start the
+    /// owner approved (one run id,  the same stages,  and the same rows),  but with no sheet
+    /// and no Touch ID,  because nobody is there to answer.
+    ///
+    /// Only a start of a pm2 application or a LaunchAgent is accepted here,  and the helper
+    /// still checks its own allowlist.  The plan is read first and must succeed.  Nil when
+    /// another action is in the way or the action is not a start,  and then nothing ran.
+    func runUnattended(_ action: OpsAction) async -> OpsOutcome? {
+        switch action {
+        case .pm2App(let verb, _), .macAgent(let verb, _):
+            guard verb == .start else { return nil }
+        case .serverUnit, .serverUpdate, .coolifyRedeploy, .knobSet, .knobUnset, .logs,
+             .serverResource, .resourceStatus:
+            return nil
+        }
+        guard !isBusy, !isPresenting, task == nil else { return nil }
+        isRunningUnattended = true
+        unattendedAction = action
+        defer {
+            isRunningUnattended = false
+            unattendedAction = nil
+            runStage = nil
+            stageStartedAt = nil
+        }
+        // True once the `--yes` helper may have started:  only then can anything have run.
+        var started = false
+        let runID = Self.makeRunID()
+        do {
+            enterStage(.checkingPlan)
+            let planned = try await execute(action, mode: .plan)
+            guard planned.isSuccess(for: .plan) else { return planned }
+            let invocation = try prepare(action, mode: .yes)
+            enterStage(.running)
+            record(action, result: "started", runID: runID)
+            started = true
+            let outcome = try await launch(invocation, action: action, mode: .yes)
+            record(action, result: outcome.kind.rawValue, runID: runID, outcome: outcome)
+            remember(action, outcome)
+            completedRuns += 1
+            return outcome
+        } catch {
+            // A helper that could not be started ran nothing,  and its row says so.
+            if let control = error as? OpsControlError, case .launchFailed = control, started {
+                record(action, result: "not-run", runID: runID)
+                started = false
+            }
+            guard started else {
+                return OpsOutcome(kind: .failed, ok: false, commands: [],
+                                  detail: error.localizedDescription, exitCode: -1)
+            }
+            // The helper ran,  and what it answered could not be read,  so the Mac cannot say
+            // how far the start got.
+            let outcome = OpsOutcome(kind: .unknown, ok: false, commands: [],
+                                     detail: error.localizedDescription, exitCode: -1,
+                                     runNotKnown: true)
+            record(action, result: outcome.kind.rawValue, runID: runID)
+            remember(action, outcome)
+            completedRuns += 1
+            return outcome
+        }
     }
 
     /// The Mac cannot ask for the approval:  nothing runs.

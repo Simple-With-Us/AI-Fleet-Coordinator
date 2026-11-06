@@ -1892,3 +1892,125 @@ final class KnobEditorTests: XCTestCase {
         XCTAssertEqual(KnobRegistry.Knob.plainDefault("nonempty"), "nonempty")
     }
 }
+
+// MARK: - A start Muster takes on its own
+
+/// `runUnattended`:  the same plan,  run and audit as a confirmed action,  for a start only.
+@MainActor
+final class OpsControllerUnattendedTests: XCTestCase {
+    private let planned = #"{"ok":true,"result":"planned","commands":[["pm2","start","shellular"]],"detail":"plan"}"#
+    private let done = #"{"ok":true,"result":"done","commands":[["pm2","start","shellular"]],"detail":"ran"}"#
+    private let refused = #"{"ok":false,"result":"refused","commands":[],"detail":"pm2 no longer remembers this application and this tool does not recreate it"}"#
+
+    private func controller(_ runner: FakeOpsRunner) -> OpsController {
+        OpsController(runner: runner, makeBuilder: { exampleBuilder() }, auditURL: nil, checksInstall: false)
+    }
+
+    private func runner(plan: String, run: String) -> FakeOpsRunner {
+        FakeOpsRunner { invocation, _ in
+            OpsProcessResult(exitCode: 0, stdout: invocation.arguments.contains("--plan") ? plan : run, stderr: "")
+        }
+    }
+
+    func test_a_start_is_planned_and_then_run_with_no_sheet() async throws {
+        let fake = runner(plan: planned, run: done)
+        let ops = controller(fake)
+        let outcome = await ops.runUnattended(.pm2App(verb: .start, name: "shellular"))
+        XCTAssertEqual(outcome?.isSuccess(for: .yes), true)
+        XCTAssertEqual(fake.recorded.count, 2)
+        XCTAssertTrue(fake.recorded[0].contains("--plan"))
+        XCTAssertEqual(Array(fake.recorded[1].suffix(5)), ["pm2", "start", "shellular", "--yes", "--json"])
+        // It never showed a sheet,  and it counts as a completed run.
+        XCTAssertEqual(ops.phase, .idle)
+        XCTAssertFalse(ops.isPresenting)
+        XCTAssertEqual(ops.completedRuns, 1)
+        XCTAssertFalse(ops.isRunningUnattended)
+        XCTAssertFalse(ops.isBusy)
+    }
+
+    func test_a_launch_agent_start_is_accepted_too() async throws {
+        let fake = runner(plan: planned, run: done)
+        let outcome = await controller(fake).runUnattended(.macAgent(verb: .start, label: "com.jay.fleet-tools-doctor"))
+        XCTAssertNotNil(outcome)
+        XCTAssertEqual(fake.recorded.count, 2)
+    }
+
+    func test_only_a_start_is_ever_accepted() async throws {
+        let fake = runner(plan: planned, run: done)
+        let ops = controller(fake)
+        let refusedActions: [OpsAction] = [
+            .pm2App(verb: .stop, name: "shellular"),
+            .pm2App(verb: .restart, name: "shellular"),
+            .macAgent(verb: .stop, label: "com.jay.fleet-tools-doctor"),
+            .macAgent(verb: .restart, label: "com.jay.fleet-tools-doctor"),
+            .serverUnit(verb: .start, unit: OpsNames.reportTimerUnit),
+            .serverUpdate(name: "fleet-cli"),
+            .coolifyRedeploy(uuid: "abc123def456", name: "muster-web"),
+            .knobSet(key: "FLEET_X", value: "1"),
+            .knobUnset(key: "FLEET_X"),
+            .logs(unit: OpsNames.reportTimerUnit),
+            .resourceStatus,
+        ]
+        for action in refusedActions {
+            let outcome = await ops.runUnattended(action)
+            XCTAssertNil(outcome, "\(action)")
+        }
+        XCTAssertEqual(fake.recorded.count, 0, "Nothing may run for an action that is not a start.")
+    }
+
+    func test_nothing_runs_while_a_sheet_is_up() async throws {
+        let fake = runner(plan: planned, run: done)
+        let ops = controller(fake)
+        XCTAssertTrue(ops.plan(.pm2App(verb: .stop, name: "shellular")))
+        let before = fake.recorded.count
+        let outcome = await ops.runUnattended(.pm2App(verb: .start, name: "vision-worker"))
+        XCTAssertNil(outcome)
+        // The sheet's own plan is the only thing that ran.
+        XCTAssertLessThanOrEqual(fake.recorded.count, max(before, 1))
+        XCTAssertFalse(fake.recorded.contains { $0.contains("--yes") })
+    }
+
+    func test_a_plan_the_helper_refuses_is_never_run_and_says_why() async throws {
+        let fake = runner(plan: refused, run: done)
+        let ops = controller(fake)
+        let outcome = await ops.runUnattended(.pm2App(verb: .start, name: "shellular"))
+        XCTAssertEqual(outcome?.isSuccess(for: .yes), false)
+        XCTAssertTrue(outcome?.detail.contains("does not recreate it") == true, outcome?.detail ?? "")
+        XCTAssertFalse(fake.recorded.contains { $0.contains("--yes") })
+        XCTAssertEqual(ops.completedRuns, 0)
+    }
+
+    func test_a_run_that_does_not_work_is_not_a_success() async throws {
+        let failed = #"{"ok":false,"result":"failed","commands":[["pm2","start","shellular"]],"detail":"pm2 said no"}"#
+        let fake = runner(plan: planned, run: failed)
+        let outcome = await controller(fake).runUnattended(.pm2App(verb: .start, name: "shellular"))
+        XCTAssertEqual(outcome?.isSuccess(for: .yes), false)
+        XCTAssertTrue(outcome?.detail.contains("pm2 said no") == true, outcome?.detail ?? "")
+    }
+
+    /// A start of Muster's own keeps the same bookkeeping as an approved run:  a stage and
+    /// its clock while it runs,  a quit question once it was sent,  and nothing left after.
+    func test_a_start_of_its_own_has_stages_and_a_quit_question() async throws {
+        let gate = RunGate()
+        let ops = OpsController(runner: GatedRunRunner(base: runner(plan: planned, run: done), gate: gate, answer: done),
+                                makeBuilder: { exampleBuilder() }, auditURL: nil, checksInstall: false)
+        let run = Task { await ops.runUnattended(.pm2App(verb: .start, name: "shellular")) }
+        for _ in 0..<400 {
+            if await gate.started { break }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        XCTAssertTrue(ops.isRunningUnattended)
+        XCTAssertEqual(ops.runStage, .running)
+        XCTAssertNotNil(ops.stageStartedAt)
+        XCTAssertTrue(ops.quitWarning?.contains("has no row for it until it ends") == true, ops.quitWarning ?? "")
+        XCTAssertEqual(ops.phase, .idle, "it never shows a sheet")
+        await gate.release()
+        let outcome = await run.value
+        XCTAssertEqual(outcome?.isSuccess(for: .yes), true)
+        XCTAssertFalse(ops.isRunningUnattended)
+        XCTAssertNil(ops.runStage)
+        XCTAssertNil(ops.stageStartedAt)
+        XCTAssertNil(ops.quitWarning)
+        XCTAssertEqual(ops.completedRuns, 1)
+    }
+}

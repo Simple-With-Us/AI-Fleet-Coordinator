@@ -86,11 +86,22 @@ class GatedServerTests(unittest.TestCase):
 
         def fallback(name, args, local):
             self.backend.append((name, dict(args)))
+            if name == "recall_correct":
+                return {"id": "uuid", "doc_id": args["doc_id"], "seat": args.get("seat") or "CLAUDE", "status": "completed",
+                        "revision": 2, "corrected_at": 1, "corrected_by": args.get("seat") or "CLAUDE",
+                        "previous_content_hash": "old", "content_hash": "new", "scrubbed": []}
+            if name == "recall_retract":
+                return {"id": "uuid", "doc_id": args["doc_id"], "seat": args.get("seat") or "CLAUDE", "status": "completed",
+                        "revision": 2, "retracted": True, "retracted_at": 1, "retracted_by": args.get("seat") or "CLAUDE",
+                        "retraction_reason": args["reason"]}
             return {"hits": [], "mode": "test", "status": "stored"} if name != "recall_stats" else {"points": 1}
 
         patcher = mock.patch.object(self.mod.public_fallback, "call_with_fallback", fallback)
         patcher.start()
         self.addCleanup(patcher.stop)
+        mutation = mock.patch.object(self.mod.public_fallback, "call_mutation", fallback)
+        mutation.start()
+        self.addCleanup(mutation.stop)
         self.logged = []
         patcher = mock.patch.object(self.mod.search_log, "log_search", lambda **kw: self.logged.append(kw))
         patcher.start()
@@ -107,6 +118,21 @@ class GatedServerTests(unittest.TestCase):
         name, args = self.backend[0]
         self.assertEqual((name, args["seat"], args["per_doc"]), ("recall_search", "GROK", 2))  # a corpus filter
         self.assertEqual(self.logged[0]["seat"], "CLAUDE")  # the asker is the bearer's seat
+
+    def test_mutation_is_performed_under_the_bearers_seat_only(self):
+        doc_id = "contrib/CLAUDE/2026-11-05/472fc36e"
+        self.call("recall_correct", {"doc_id": doc_id, "text": LESSON, "reason": "make it current"})
+        self.call("recall_retract", {"doc_id": doc_id, "reason": "obsolete", "seat": "claude"})
+        self.assertEqual([a["seat"] for _, a in self.backend], ["CLAUDE", "CLAUDE"])
+        self.backend.clear()
+        refused = self.call("recall_retract", {"doc_id": doc_id, "reason": "obsolete", "seat": "GROK"})
+        self.assertIs(refused["isError"], True)
+        self.assertIn("own seat", refused["content"][0]["text"])
+        self.assertEqual(self.backend, [])
+        refused = self.call("recall_retract", {"doc_id": doc_id, "reason": "obsolete", "seat": "OWNER"})
+        self.assertIs(refused["isError"], True)
+        self.assertIn("own seat", refused["content"][0]["text"])
+        self.assertEqual(self.backend, [])
 
     def test_contribute_is_stored_under_the_bearers_seat_only(self):
         self.call("recall_contribute", {"text": LESSON, "category": "lesson"})
@@ -125,7 +151,8 @@ class GatedServerTests(unittest.TestCase):
         self.gateway.mode = "revoked"
         self.backend.clear()
         for name, args in (("recall_stats", {}), ("recall_search", {"query": "pm2"}),
-                           ("recall_contribute", {"text": LESSON, "category": "lesson"})):
+                           ("recall_contribute", {"text": LESSON, "category": "lesson"}),
+                           ("recall_retract", {"doc_id": "contrib/CLAUDE/2026-11-05/472fc36e", "reason": "obsolete"})):
             with self.subTest(name):
                 result = self.call(name, args)
                 self.assertIs(result["isError"], True)
@@ -177,7 +204,8 @@ class GatedServerTests(unittest.TestCase):
              mock.patch.object(core, "http_json", boom), \
              mock.patch("subprocess.run", boom):
             for name, args in (("recall_stats", {}), ("recall_search", {"query": "pm2"}),
-                               ("recall_contribute", {"text": LESSON, "category": "lesson"})):
+                               ("recall_contribute", {"text": LESSON, "category": "lesson"}),
+                           ("recall_retract", {"doc_id": "contrib/CLAUDE/2026-11-05/472fc36e", "reason": "obsolete"})):
                 with self.subTest(name):
                     self.assertIs(self.call(name, args)["isError"], False)
         boom.assert_not_called()
