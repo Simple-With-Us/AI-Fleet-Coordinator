@@ -1797,6 +1797,79 @@ class TestReview1199(unittest.TestCase):
             with self.assertRaises(git._TransportError):
                 git._remote_post(git.REMOTE_MCP_URL, {}, b"{}", 5)
 
+    def _remote_post_with_response(self, chunks, headers, eof_error=None):
+        calls = []
+        chunks = list(chunks)
+
+        class FakeSock:
+            def settimeout(self, value):
+                self.value = value
+
+        class Response:
+            status = 200
+
+            def __init__(self):
+                self.headers = headers
+                self.fp = types.SimpleNamespace(raw=types.SimpleNamespace(_sock=FakeSock()))
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read1(self, size):
+                calls.append(size)
+                if chunks:
+                    return chunks.pop(0)
+                if eof_error is not None:
+                    raise eof_error
+                return b""
+
+        class FakeOpener:
+            def open(self, req, timeout=None):
+                return Response()
+
+        with mock.patch.object(git.urllib.request, "build_opener", lambda *handlers: FakeOpener()):
+            return git._remote_post(git.REMOTE_MCP_URL, {}, b"{}", 5), calls
+
+    def test_declared_content_length_completes_sse_without_a_final_closed_socket_read(self):
+        body = b'event: message\ndata: {"jsonrpc":"2.0","id":1,"result":{"tools":[]}}\n\n'
+        chunks = [body[:17], body[17:]]
+        headers = {"Content-Type": "text/event-stream", "Content-Length": str(len(body))}
+        (status, ctype, raw), calls = self._remote_post_with_response(
+            chunks, headers, OSError(9, "Bad file descriptor")
+        )
+        self.assertEqual((status, ctype, raw), (200, "text/event-stream", body))
+        self.assertEqual(len(calls), len(chunks), "the closed socket was read after the declared body")
+
+    def test_declared_content_length_truncated_at_eof_is_a_transport_failure(self):
+        with self.assertRaises(git._TransportError):
+            self._remote_post_with_response(
+                [b"abc", b""], {"Content-Type": "application/json", "Content-Length": "4"}
+            )
+
+    def test_declared_content_length_truncated_by_socket_close_is_a_transport_failure(self):
+        with self.assertRaises(git._TransportError):
+            self._remote_post_with_response(
+                [b"abc"],
+                {"Content-Type": "application/json", "Content-Length": "4"},
+                OSError(9, "Bad file descriptor"),
+            )
+
+    def test_unknown_content_length_still_reads_to_eof(self):
+        (status, ctype, raw), calls = self._remote_post_with_response(
+            [b"abc", b""], {"Content-Type": "application/json"}
+        )
+        self.assertEqual((status, ctype, raw), (200, "application/json", b"abc"))
+        self.assertEqual(len(calls), 2)
+
+    def test_unknown_content_length_socket_close_is_a_transport_failure(self):
+        with self.assertRaises(git._TransportError):
+            self._remote_post_with_response(
+                [b"abc"], {"Content-Type": "application/json"}, OSError(9, "Bad file descriptor")
+            )
+
     # 5. The program name cannot carry newline/tab into stderr lines.
     def test_prog_escapes_newline_and_tab(self):
         with mock.patch.dict(os.environ, {"SIMPLE_GIT_ARGV0": "evil\nname\there"}):
