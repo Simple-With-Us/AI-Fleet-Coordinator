@@ -991,7 +991,7 @@ async function maHarness() {
   h.fake.addLabel("seat:MA");
   h.fake.issued.push("tok-ma");
   const t0 = Date.parse("2026-10-09T10:00:00Z") / 1000;
-  const fp = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`agent-sync-mcp:linear:MA:${CLIENT_ID}:${CLIENT_SECRET}`)).then((b) => [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, "0")).join("").slice(0, 16));
+  const fp = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`simple-tools-mcp:linear:MA:${CLIENT_ID}:${CLIENT_SECRET}`)).then((b) => [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, "0")).join("").slice(0, 16));
   await h.gate.linearTokenSet({ access_token: "tok-ma", minted_at: t0, expires_at: t0 + 30 * 86_400, mint_count: 1, cred_fp: fp });
   return h;
 }
@@ -1010,7 +1010,7 @@ test("MA claim without its claim label says the app cannot delegate, not that th
   const { tools, fake } = harness({ seat: "MA", viewer: { id: "u-ma", name: "Muse Assist (MA)", app: true } });
   const t0 = Date.parse("2026-10-09T10:00:00Z") / 1000;
   fake.issued.push("tok-ma");
-  const fp = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`agent-sync-mcp:linear:MA:${CLIENT_ID}:${CLIENT_SECRET}`)).then((b) => [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, "0")).join("").slice(0, 16));
+  const fp = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`simple-tools-mcp:linear:MA:${CLIENT_ID}:${CLIENT_SECRET}`)).then((b) => [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, "0")).join("").slice(0, 16));
   await tools.gate.linearTokenSet({ access_token: "tok-ma", minted_at: t0, expires_at: t0 + 30 * 86_400, mint_count: 1, cred_fp: fp });
   fake.addIssue({ id: "issue-402", identifier: "AFC-402", team: "AFC" });
   const error = toolError(await tools.call("linear_claim", { id: "AFC-402" }), "invalid_argument");

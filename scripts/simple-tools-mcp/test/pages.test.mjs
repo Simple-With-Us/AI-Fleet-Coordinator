@@ -80,7 +80,7 @@ test("admin page renders state and escapes refusal-log values", async () => {
       notice: "Armed for 10 minutes.  Start the connection from the app now.",
       manualSeats: [{ seat: "ECHO", label: "Echo", redirectsConfigured: true, shared: true }, { seat: "GROK-WEB", label: "Grok", redirectsConfigured: false, shared: false }],
     },
-    { "Set-Cookie": "__Host-agent-sync-csrf=x; Path=/; Secure; HttpOnly; SameSite=Strict" },
+    { "Set-Cookie": "__Host-simple-tools-csrf=x; Path=/; Secure; HttpOnly; SameSite=Strict" },
   );
   const html = await res.text();
   assert.match(html, /Armed until Fri, Oct 9, 3:25am/);

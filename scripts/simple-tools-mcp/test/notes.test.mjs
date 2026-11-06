@@ -1,6 +1,6 @@
 // AFC-486 (docs/protocols/operator-notes.md):  the notes_* tools on the hosted server, against a fake Operator notes
 // API.  The fake recomputes every request's signature with node:crypto, independently of src/notes.js, and answers
-// the way scripts/agent_sync/notes_queue.py does (202 queued, 200 a repeat, 409 a reused request_id, 400 a refusal).
+// the way scripts/simple_tools/notes_queue.py does (202 queued, 200 a repeat, 409 a reused request_id, 400 a refusal).
 // No Zulip is involved.  Plain `node --test`.
 
 import test from "node:test";
@@ -20,11 +20,11 @@ import {
 import { ROOT, testEnv, wranglerConfig } from "./helpers.mjs";
 
 const config = loadConfig(testEnv());
-const SPECS = JSON.parse(readFileSync(path.join(ROOT, "../agent_sync/mcp/notes-tools.json"), "utf8")).tools;
+const SPECS = JSON.parse(readFileSync(path.join(ROOT, "../simple_tools/mcp/notes-tools.json"), "utf8")).tools;
 const FLEET_APPS = JSON.parse(readFileSync(path.join(ROOT, "../../fleet-apps.json"), "utf8"));
 const KEY = "operator-notes-worker-key-for-tests-0123456789";
 const BASE = "https://operator.example.test";
-const CONTRACT = "agent-sync-notes/1";
+const CONTRACT = "simple-tools-notes/1";
 const SESSION = "grokweb-session-0001"; // AFC-361:  GROK-WEB is not exempt and has no environment variable of its own
 const TITLE = "[AFC, Grok Web] Operator Check";
 const STATIC_TITLE = "⭐️ Background Jobs Master List";
@@ -80,10 +80,10 @@ class FakeOperator {
     const headers = init.headers ?? {};
     const call = { url, method: init.method, path: u.pathname, query: u.search.replace(/^\?/, ""), headers, text, json: text ? JSON.parse(text) : undefined, at: this.clock.now, redirect: init.redirect, signal: init.signal };
     this.calls.push(call);
-    const timestamp = headers["X-Agent-Sync-Timestamp"];
+    const timestamp = headers["X-Simple-Tools-Timestamp"];
     const bodySha = createHash("sha256").update(bytes).digest("hex");
     const expected = createHmac("sha256", this.key).update([CONTRACT, call.method, call.path, call.query, timestamp, "WORKER", bodySha].join("\n")).digest("hex");
-    call.signed = headers["X-Agent-Sync-Principal"] === "WORKER" && timestamp === String(Math.floor(this.clock.now / 1000)) && headers["X-Agent-Sync-Signature"] === expected;
+    call.signed = headers["X-Simple-Tools-Principal"] === "WORKER" && timestamp === String(Math.floor(this.clock.now / 1000)) && headers["X-Simple-Tools-Signature"] === expected;
     if (!call.signed) return this.answer(401, { error: "unauthorized", message: "unauthorized" });
     const forced = this.override?.(call);
     if (forced === "throw") throw new TypeError("fetch failed");
@@ -243,9 +243,9 @@ test("notes_create signs a POST of {seat, request} as WORKER, polls the record a
   assert.equal(post.redirect, "manual");
   assert.ok(post.signal instanceof AbortSignal, "every call has its own timeout");
   assert.equal(post.headers["Content-Type"], "application/json");
-  assert.equal(post.headers["X-Agent-Sync-Principal"], "WORKER");
-  assert.match(post.headers["X-Agent-Sync-Signature"], /^[0-9a-f]{64}$/);
-  assert.equal(post.headers["X-Agent-Sync-Timestamp"], String(Math.floor(started / 1000)));
+  assert.equal(post.headers["X-Simple-Tools-Principal"], "WORKER");
+  assert.match(post.headers["X-Simple-Tools-Signature"], /^[0-9a-f]{64}$/);
+  assert.equal(post.headers["X-Simple-Tools-Timestamp"], String(Math.floor(started / 1000)));
   assert.equal(post.text, JSON.stringify(post.json), "the signed bytes are the UTF-8 JSON that was sent");
   assert.deepEqual(post.json, {
     seat: "GROK-WEB",
@@ -261,7 +261,7 @@ test("notes_create signs a POST of {seat, request} as WORKER, polls the record a
 });
 
 test("the signing string is the contract's, and a key the Operator does not hold answers not_configured", async () => {
-  assert.equal(notesSigningString("GET", "/notes/v1/log", "limit=5", "1761145200", "WORKER", "e3b0"), "agent-sync-notes/1\nGET\n/notes/v1/log\nlimit=5\n1761145200\nWORKER\ne3b0");
+  assert.equal(notesSigningString("GET", "/notes/v1/log", "limit=5", "1761145200", "WORKER", "e3b0"), "simple-tools-notes/1\nGET\n/notes/v1/log\nlimit=5\n1761145200\nWORKER\ne3b0");
   const { operator, tools } = harness({ key: `${KEY}-rotated` });
   const error = toolError(await tools.call("notes_pin", { title: STATIC_TITLE }), "not_configured");
   assert.match(error.message, /OPERATOR_NOTES_KEY/);
