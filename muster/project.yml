@@ -128,6 +128,7 @@ targets:
       - path: Muster/Model/OperatorOptions.swift
       - path: Muster/Model/SeatActivity.swift
       - path: Muster/Model/SeatActivityReader.swift
+      - path: Muster/Model/SeatActivityStore.swift
       - path: Muster/Model/WakeLedger.swift
       - path: Muster/Model/WakeSettings.swift
       - path: Muster/Model/WakeSettingsReader.swift
