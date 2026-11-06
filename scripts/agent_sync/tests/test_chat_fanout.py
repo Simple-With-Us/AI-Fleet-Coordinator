@@ -285,15 +285,19 @@ class DaemonFanoutTests(DaemonHarness):
         message_id = self.fake.add_message(
             "Jay Wedgeworth", "agent-sync", "misc", ":eyes: @**all** for ST: hi"
         )
-        # The daemon has to have seen the message:  the wait is on the routing ring, not on a
-        # delivery, because the delivery is exactly what must not happen.
+        # The daemon has to have seen the message:  the wait is on the routing ring, not on the
+        # fanout, because the fanout is exactly what must not happen.
         self.pump_until(daemon, lambda: message_id in daemon.global_ring)
         time.sleep(0.3)
         self.assertNotIn(message_id, daemon._fanout_seen, "the marker stops the fanout")
         self.assertEqual(daemon.chat_queue("CLAUDE").snapshot()["items"], [])
         row = self.route_row(message_id)
         self.assertIsNotNone(row, "the route was logged")
-        self.assertEqual(row["decision"]["drop"], "no_wake", "the log row carries the reason")
+        # OPS-1036:  the message is no longer dropped — it is delivered to the seat inbox with
+        # the wake suppressed, so the log row carries no drop and the no-wake block instead.
+        self.assertIsNone(row["decision"]["drop"], "the marker message is delivered, not dropped")
+        self.assertEqual(row["decision"]["wake_block"], "no_wake", "the log row carries the reason")
+        self.assertTrue(row["decision"]["inbox"], "the seat inbox got its copy")
         self.assertIn("no_wake", row["classes"], "the marker is in the class labels")
 
     def route_row(self, message_id: int) -> dict | None:
