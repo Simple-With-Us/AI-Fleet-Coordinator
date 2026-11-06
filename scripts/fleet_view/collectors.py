@@ -82,7 +82,9 @@ SEVERITY = {
     "behind main": "waiting",
     "unknown": "unknown",
     "waiting for review": "waiting",
-    "blocked (see PR)": "waiting",
+    # GitHub says BLOCKED and no field says why (a missing required check or an open
+    # conversation will not clear by waiting), so this is not proved to be waiting.
+    "blocked (see PR)": "unknown",
     "auto-merge not armed": "waiting",
 }
 

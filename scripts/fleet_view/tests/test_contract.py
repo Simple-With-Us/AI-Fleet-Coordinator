@@ -71,6 +71,15 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(envelope["summary"]["overallVerdict"], "UNKNOWN")
         self.assertEqual(contract.overall_verdict(report), "UNKNOWN")
 
+    def test_an_unreadable_lane_in_an_ok_section_never_verdicts_pass(self):
+        report = ok_report()
+        broken = LaneRecord("AI-Fleet-Coordinator", "ag-broken", "UNKNOWN", "", -1, 60, "UNKNOWN")
+        lanes = report.lanes.items + (broken,)
+        report.lanes = Section(state="OK", reason="2 lane(s)", items=lanes)
+        self.assertEqual(contract.overall_verdict(report), "UNKNOWN")
+        envelope = contract.build_envelope(report)
+        self.assertEqual(envelope["summary"]["overallVerdict"], "UNKNOWN")
+
     def test_every_key_an_older_muster_requires_is_still_written(self):
         # An installed Muster can be older than the checkout it runs, and its decoder
         # requires each of these keys.  Fields may be added at version 1, never removed.

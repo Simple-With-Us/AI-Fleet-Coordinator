@@ -319,6 +319,7 @@ class BlockerTests(unittest.TestCase):
             self.assertEqual(collectors.severity_for(blocker), "action", blocker)
         for blocker in ("draft", "checks pending", "waiting for review", "auto-merge not armed"):
             self.assertEqual(collectors.severity_for(blocker), "waiting", blocker)
+        self.assertEqual(collectors.severity_for("blocked (see PR)"), "unknown")
         self.assertEqual(collectors.severity_for("unknown"), "unknown")
         self.assertEqual(collectors.severity_for("something new"), "unknown")
         for blocker in collectors.SEVERITY:
@@ -372,7 +373,8 @@ class PullRequestTests(unittest.TestCase):
         self.assertEqual(budget.github_used, 1)
         item = section.items[0]
         self.assertEqual(item.blocker, "blocked (see PR)")
-        self.assertEqual(item.severity, "waiting")
+        # BLOCKED names no reason, so it is not proved to be waiting.
+        self.assertEqual(item.severity, "unknown")
         self.assertEqual(item.url, "https://github.com/good/repo/pull/1")
         fields = seen[0][seen[0].index("--json") + 1].split(",")
         self.assertIn("isDraft", fields)

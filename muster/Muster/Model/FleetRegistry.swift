@@ -628,6 +628,10 @@ enum FleetRegistryReader {
             ? (toolsReading?.hosts.first(where: { $0.host == FleetHost.mac.rawValue })?.allRows ?? [])
             : []
         let prsAllKnown = prSection?.isKnown ?? false
+        // A lane git could not read may have no seat (a short folder name is resolved from its
+        // branch, which could not be read).  It belongs to no app, so it could be any app's, and
+        // no app's lane count is exact while one exists.
+        let unreadableUnattributedLanes = lanes.filter { !$0.isReadable && $0.seat == "UNKNOWN" }.count
         let codingStatuses: [CodingAppStatus] = orderedSlugs.map { slug in
             let meta = codingAppMetadata[slug] ?? CodingAppMetadata(title: slug, cli: nil, runsOn: notTracked)
             let seatTags = seatsBySlug[slug] ?? []
@@ -664,7 +668,10 @@ enum FleetRegistryReader {
                 cliState: cliRow?.rowState,
                 doctorReportCurrent: toolsCurrent,
                 toolReadings: readings,
-                lanes: WorkCount(observed: seatLanes.count, complete: lanesKnown && seatLanesReadable),
+                lanes: WorkCount(
+                    observed: seatLanes.count,
+                    complete: lanesKnown && seatLanesReadable && unreadableUnattributedLanes == 0
+                ),
                 pullRequests: WorkCount(observed: prs.filter { matchesSeat($0.seat) }.count, complete: prsAllKnown),
                 claims: WorkCount(observed: claims.filter { matchesSeat($0.seat) }.count, complete: claimsKnown)
             )

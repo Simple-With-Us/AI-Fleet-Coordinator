@@ -11,8 +11,8 @@ installed Muster can be older than the checkout it runs:  its decoder requires
 every key it knows and ignores the rest.  ``host`` names the machine that ran
 the collector, which is the machine every lane row is on.
 
-Verdict rule:  ``PASS`` only when every section observed its source.  Any
-``UNKNOWN`` section makes the run ``UNKNOWN``, never ``PASS`` — a view that
+Verdict rule:  ``PASS`` only when every section observed its source and every
+row in it was read.  Any ``UNKNOWN`` section or row makes the run ``UNKNOWN``, never ``PASS`` — a view that
 could not look must not render as a fleet that is fine.
 """
 
@@ -25,11 +25,22 @@ __all__ = ["build_envelope", "overall_verdict"]
 
 
 def overall_verdict(report: FleetReport) -> str:
-    """``PASS`` when all three sections are OK, else ``UNKNOWN``."""
+    """``PASS`` when all three sections and every row in them are OK, else ``UNKNOWN``.
+
+    A section can read OK while one of its rows could not be read (a lane git
+    could not open), and an unread row is not a fine one.
+    """
     sections = (report.lanes, report.pull_requests, report.claims)
-    if all(section.state == "OK" for section in sections):
+    if all(_section_read(section) for section in sections):
         return "PASS"
     return "UNKNOWN"
+
+
+def _section_read(section) -> bool:
+    if section.state != "OK":
+        return False
+    # A claim carries no state of its own:  it was read or it is not in the list.
+    return all(getattr(item, "state", "OK") == "OK" for item in section.items)
 
 
 def _lane_dict(item) -> dict:

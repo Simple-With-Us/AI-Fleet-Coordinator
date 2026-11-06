@@ -289,7 +289,7 @@ struct FleetViewEnvelope: Decodable {
             case "behind main": return "Behind main"
             case "unknown": return "Merge state not known"
             case "waiting for review": return "Waiting for review"
-            case "blocked (see PR)": return "Blocked by a branch rule"
+            case "blocked (see PR)": return "Blocked, reason not shown"
             case "auto-merge not armed": return "Auto-merge not on"
             default: return blocker
             }
@@ -371,9 +371,9 @@ enum PullRequestSeverity: String, Equatable {
         case "ready": self = .ready
         case "changes requested", "failing checks", "checks need a rerun", "conflicting with main":
             self = .action
-        case "draft", "checks pending", "behind main", "waiting for review", "blocked (see PR)",
-             "auto-merge not armed":
+        case "draft", "checks pending", "behind main", "waiting for review", "auto-merge not armed":
             self = .waiting
+        // "blocked (see PR)" is GitHub's BLOCKED with no reason in the fields, so it falls here.
         default: self = .unknown
         }
     }

@@ -66,9 +66,11 @@ final class FleetViewEnvelopeTests: XCTestCase {
         for blocker in ["changes requested", "failing checks", "checks need a rerun", "conflicting with main"] {
             XCTAssertEqual(PullRequestSeverity(blocker: blocker), .action, blocker)
         }
-        for blocker in ["draft", "checks pending", "behind main", "waiting for review", "blocked (see PR)", "auto-merge not armed"] {
+        for blocker in ["draft", "checks pending", "behind main", "waiting for review", "auto-merge not armed"] {
             XCTAssertEqual(PullRequestSeverity(blocker: blocker), .waiting, blocker)
         }
+        // GitHub's BLOCKED names no reason, so it is not proved to be waiting.
+        XCTAssertEqual(PullRequestSeverity(blocker: "blocked (see PR)"), .unknown)
         XCTAssertEqual(PullRequestSeverity(blocker: "unknown"), .unknown)
         XCTAssertEqual(PullRequestSeverity(blocker: "something new"), .unknown)
     }

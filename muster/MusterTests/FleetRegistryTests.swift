@@ -240,6 +240,36 @@ final class FleetRegistryTests: XCTestCase {
         XCTAssertEqual(WorkCount(observed: 1, complete: true).phrase("PR", "PRs"), "1 PR")
     }
 
+    /// A lane git could not read, and whose seat could not be told, may belong to any coding app,
+    /// so no app's lane count reads as an exact number while it exists.
+    func test_an_unreadable_lane_with_no_seat_leaves_every_coding_apps_lane_count_open() throws {
+        let json = """
+        {
+          "schemaVersion": 1, "tool": "fleet-view", "command": "status", "host": "mac",
+          "generatedAt": "2026-10-25T16:00:00Z",
+          "summary": { "lanes": 2, "pullRequests": 0, "claims": 0, "overallVerdict": "UNKNOWN" },
+          "requestCounts": { "github": 0, "linear": 0, "githubMax": 60, "linearMax": 30 },
+          "sections": {
+            "lanes": { "state": "OK", "reason": "2 lanes", "unread": [], "items": [
+              { "repo": "Socratic-Trade", "lane": "antigravity-st-1", "seat": "AG", "branch": "ag/st-1", "dirtyFiles": 0, "ageSeconds": 60, "state": "OK" },
+              { "repo": "Socratic-Trade", "lane": "ag-broken", "seat": "UNKNOWN", "branch": "", "dirtyFiles": -1, "ageSeconds": 60, "state": "UNKNOWN" }
+            ] },
+            "pullRequests": { "state": "OK", "reason": "none", "items": [], "unread": [] },
+            "claims": { "state": "OK", "reason": "none", "items": [], "unread": [] }
+          },
+          "notes": []
+        }
+        """
+        let view = try JSONDecoder().decode(FleetViewEnvelope.self, from: Data(json.utf8))
+        let summary = FleetRegistryReader.build(from: Data(sampleRegistry.utf8), viewOutput: view)
+        let ag = try XCTUnwrap(summary.codingApps.first { $0.appSlug == "antigravity" })
+        XCTAssertEqual(ag.lanes.observed, 1)
+        XCTAssertFalse(ag.lanes.complete)
+        XCTAssertEqual(ag.lanes.phrase("lane", "lanes"), "at least 1 lane")
+        let muse = try XCTUnwrap(summary.codingApps.first { $0.appSlug == "muse-code" })
+        XCTAssertFalse(muse.lanes.complete)
+    }
+
     private func envelope(prs: String, prState: String = "OK", unread: String = "[]", claims: String = "[]") throws -> FleetViewEnvelope {
         let json = """
         {
