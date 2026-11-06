@@ -22,12 +22,12 @@ function harness({ scopes = ["zulip:read", "zulip:write"], writes = true } = {})
     result: { projectUpdate: { success: true, project: { id: "p1", name: "Updated" } } },
     async call(query, variables) {
       requests.push({ query, variables: structuredClone(variables) });
-      if (query.includes("AgentSyncLabel")) {
+      if (query.includes("SimpleToolsLabel")) {
         const name = labels.get(variables.id);
         return { issueLabel: name ? { id: variables.id, name } : null };
       }
       if (query.includes("BoardIssue")) return { issue: { labels: { nodes: client.issueLabels ?? [] } } };
-      if (query.includes("AgentSyncSchema")) return { __type: client.type };
+      if (query.includes("SimpleToolsSchema")) return { __type: client.type };
       if (client.failure) throw client.failure;
       return client.result;
     },

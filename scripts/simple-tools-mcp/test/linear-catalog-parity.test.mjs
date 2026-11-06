@@ -4,9 +4,9 @@
 // command, an official MCP tool or the public-input allowlist fails CI until the
 // JSON is regenerated and committed with it:
 //
-//   cd scripts/agent-sync-mcp && node scripts/export-linear-catalog.mjs
+//   cd scripts/simple-tools-mcp && node scripts/export-linear-catalog.mjs
 //
-// The board side replays testdata/agent-sync-fixtures.json (also pinned here)
+// The board side replays testdata/simple-tools-fixtures.json (also pinned here)
 // against its Python ports in scripts/linear-board/test_board_parity.py.
 
 import { test } from "node:test";
@@ -24,9 +24,9 @@ for (const [relative, text] of Object.entries(files)) {
   test(`scripts/linear-board/${relative} equals a fresh export`, () => {
     let committed;
     try { committed = readFileSync(path.join(BOARD_DIR, relative), "utf8"); }
-    catch { assert.fail(`${relative} is missing.  Run:  cd scripts/agent-sync-mcp && node scripts/export-linear-catalog.mjs`); }
+    catch { assert.fail(`${relative} is missing.  Run:  cd scripts/simple-tools-mcp && node scripts/export-linear-catalog.mjs`); }
     // One equality, not a deep diff:  a stale file names the regenerate command.
-    assert.ok(committed === text, `${relative} is stale.  Run:  cd scripts/agent-sync-mcp && node scripts/export-linear-catalog.mjs`);
+    assert.ok(committed === text, `${relative} is stale.  Run:  cd scripts/simple-tools-mcp && node scripts/export-linear-catalog.mjs`);
   });
 }
 
