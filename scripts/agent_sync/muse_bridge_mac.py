@@ -409,9 +409,7 @@ class MacBridge:
     def _prompt(self, item: Mapping[str, Any], resources: list[dict[str, Any]]) -> str:
         return CONTRACT.read_text(encoding="utf-8") + self._prompt_body(item, resources)
 
-    def _consult_backup(
-        self, item: Mapping[str, Any], model: str
-    ) -> tuple[str, Any]:
+    def _consult_backup(self, item: Mapping[str, Any], model: str) -> tuple[str, Any]:
         """One backup consult under the declared known-cap mode:  a tool-less OpenRouter call.
 
         ("answered", parsed) - a definitive response came back (parsed may be None, which the
@@ -919,9 +917,7 @@ class MacBridge:
                     )
         self._finalize_resolved_reviews(state, decisions)
 
-    def _finalize_resolved_reviews(
-        self, state: dict[str, Any], decisions: dict[str, Any]
-    ) -> None:
+    def _finalize_resolved_reviews(self, state: dict[str, Any], decisions: dict[str, Any]) -> None:
         """Deliver retained backup rows the operator has resolved.  The cursor already
         advanced past a retained row, so resolution reaches it here, from the durable state
         file - never by re-export and never by re-consult."""
@@ -943,9 +939,7 @@ class MacBridge:
             try:
                 self._deliver(item, decision, remote=decision.get("remote") is True)
             except DeliveryRefused as exc:
-                decisions[key] = dict(
-                    decision, delivery="refused", refused_reason=str(exc)[:200]
-                )
+                decisions[key] = dict(decision, delivery="refused", refused_reason=str(exc)[:200])
                 self._save(state)
                 continue
             decisions[key] = dict(decisions[key], delivery="done")
