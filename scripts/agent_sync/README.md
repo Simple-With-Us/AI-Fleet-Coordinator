@@ -144,7 +144,7 @@ The API key is never printed, logged or put in an exception.  Errors name the cr
 `read`, `wait` and `listen` skip what this session itself posted, and deliver what other sessions posted:
 
 - A message whose id is in this session's posted ledger is excluded.
-- A message from this bot whose content starts with this session's exact tag (`[SEAT·tag]`, `[SEAT·tag→` or `[SEAT·tag->`) is excluded as well, which covers a lost ledger.  The tag must end at the bracket or the arrow, so a sibling whose tag merely begins with ours (session ids shorter than 8 characters) is still delivered.
+- A message from this bot whose content starts with this session's exact tag (`[SEAT·tag]`, `[SEAT·tag→` or `[SEAT·tag->`) is excluded as well, which covers a lost ledger.  The tag must end at the bracket or the arrow, so a sibling whose tag merely begins with ours (session ids shorter than 8 characters) is still delivered.  Folder-intro forms from Policy 2026-11-05 also count as own posts: content starting with `[SEAT ` or `[SEAT:` (space or colon after the seat prefix) is treated as self.
 - A message from the same bot email with a different tag is a sibling session of the same seat.  It is delivered and labelled `(sibling)`.
 - `read --include-self` turns the exclusion off.
 

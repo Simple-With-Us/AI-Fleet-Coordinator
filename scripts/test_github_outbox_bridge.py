@@ -268,6 +268,8 @@ class RuleTests(unittest.TestCase):
         self.assertTrue(bridge.skim_match("👀[INSTINCT 📁AFC, OPS] quiet-tight", SEAT))
         self.assertTrue(bridge.skim_match("[ INSTINCT: AB.1.M 📁AFC ] period-multi", SEAT))
         self.assertFalse(bridge.skim_match("[ CLAUDE 📁 AFC ] unrelated", SEAT))
+        self.assertTrue(bridge.skim_match("[ CLAUDE 📁 AFC → INSTINCT ] to-me", SEAT))
+        self.assertTrue(bridge.skim_match("[CLAUDE 📁AFC → INSTINCT] tight-arrow", SEAT))
         self.assertTrue(bridge.is_own_post("[ INSTINCT 📁 AFC ]\nclaim: x", SEAT))
         self.assertTrue(bridge.is_own_post("👀 [ INSTINCT 📁 AFC ]\nclaim: x", SEAT))
         self.assertTrue(bridge.is_own_post("[ INSTINCT: ZZ-2-S 📁 AFC, OPS ]\nx", SEAT))
@@ -290,6 +292,15 @@ class RuleTests(unittest.TestCase):
         self.assertIn(
             "folder-tag",
             bridge.header_error("[ CLAUDE 📁 AFC ]\nclaim: x", SEAT) or "",
+        )
+        # Empty 📁 list is not a project name — still need repo: or a real repo after 📁.
+        self.assertEqual(
+            bridge.header_error("[ INSTINCT 📁]\nclaim: empty", SEAT),
+            "repo: <project> must be the first body line",
+        )
+        self.assertEqual(
+            bridge.header_error("[ INSTINCT 📁 ]\nclaim: space-empty", SEAT),
+            "repo: <project> must be the first body line",
         )
 
     def test_central_stamp_shape(self):

@@ -139,7 +139,11 @@ def header_error(text: str, seat: str):
             "[%s 📁repos] / [%s: LL.#.H 📁repos] (optional leading 👀)" % (seat, seat, seat, seat)
         )
     has_repo_line = any(re.match(r"^\s*repo:\s*\S", line) for line in lines[1:6])
-    has_folder_repos = bool(re.search(r"📁\s*\S", first))
+    # 📁 must be inside the opening intro tag and followed by a non-bracket, non-space repo char.
+    intro = _own_intro_re(seat).match(first)
+    tag_end = first.find("]", intro.start()) if intro else -1
+    intro_span = first[intro.start() : tag_end + 1] if intro and tag_end >= 0 else ""
+    has_folder_repos = bool(re.search(r"📁\s*[^\]\s]", intro_span))
     if not (has_repo_line or has_folder_repos):
         return "repo: <project> must be the first body line"
     if len(text) > MAX_OUTBOUND_CHARS:
@@ -158,6 +162,8 @@ def skim_match(text: str, seat: str) -> bool:
         return True
     s = re.escape(seat)
     if ("->%s" % seat) in head or ("@%s" % seat) in head:
+        return True
+    if re.search(r"→\s*" + s + r"\b", head):
         return True
     # Legacy tight [SEAT...] or spaced folder-tag [ SEAT 📁 ...] / [ SEAT: LL-#-H 📁 ...]
     if re.search(r"\[\s*" + s + r"(?:\]|->|·|\s|:)", head):
