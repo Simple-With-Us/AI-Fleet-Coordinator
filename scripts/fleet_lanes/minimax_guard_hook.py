@@ -22,9 +22,8 @@ import sys
 from collections.abc import Sequence
 from typing import IO
 
-from fleet_lanes import file_guard
+from fleet_lanes import file_guard, guard, lane_guard_hook, layout  # noqa: F401 -- layout: tests patch it here
 from fleet_lanes import fleet_guard_hook as fleet
-from fleet_lanes import guard, lane_guard_hook, layout  # noqa: F401 -- layout: tests patch it here
 
 MINIMAX_FILE_TOOLS = file_guard.FileTools(
     kinds={
