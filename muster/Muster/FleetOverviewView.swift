@@ -187,7 +187,7 @@ struct FleetOverviewView: View {
         case .controls:
             ControlsView()
         case .seatDetail:
-            MiniMaxDetailView()
+            SeatSetupView()
         case .serverStatus:
             ServerStatusPanel()
         case .serverResourceLimits:
