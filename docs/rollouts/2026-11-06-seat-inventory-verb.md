@@ -15,3 +15,4 @@ Ship the Muster build with the Mac and Server switch first or last, in either or
 - `python3 scripts/test_fleet_seat_inventory.py` and `python3 scripts/test_fleet_ops_control.py` (the verb's tests are `SeatInventoryDispatchTests`).
 - `python3 -m unittest discover -s scripts/hetzner -p test_install_resource_control.py` (the payload now names the module).
 - After deployment, through the Mac's real route:  `ssh fleet-ops-ctl -- server seat-inventory claude --plan --json` returns `result: planned` and an `inventory` whose `host` is `server`;  `--yes` returns `refused`;  an unknown platform returns `refused`.
+- The same answer must list this account's own platform files (for `claude`, the plugins, skills and hook events under `/home/jay/.claude`) and not a set of sections that all say the file or folder is not on this host.  That is what proves the helper read the account's home and not another one.
