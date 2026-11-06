@@ -68,7 +68,7 @@ Each read token is its own, per the service-token rule:  one consumer, one proje
 Muster has its own EdDSA key pair, so no other app's key can sign a Muster update.  It was made on Fri, Nov 6, 2026 on the server by the CLAUDE seat, in memory, with no copy on disk:
 
 - The private half is `MUSTER_SPARKLE_ED_PRIVATE_KEY` in AI Fleet Coordinator prod `/muster-sparkle`, in Sparkle's export format (base64 of the 32-byte Ed25519 seed), which `generate_appcast --ed-key-file` reads.  It is in no keychain and no repository secret.
-- The public half is `MUSTER_SPARKLE_PUBLIC_KEY` in the Release config of `muster/project.yml`.  `make_appcast.sh` refuses an archive whose `SUPublicEDKey` does not match the signing key, so a mix-up fails in CI.
+- The public half is `MUSTER_SPARKLE_PUBLIC_KEY` in the Release config of `muster/project.yml`.  `make_appcast.sh` derives the public key from the signing key (`script/sparkle_public_key.swift`) and refuses an archive whose `SUPublicEDKey` differs, so a mix-up fails in CI and nothing is published.
 
 The three read tokens are Muster's own, each read-only and scoped to one folder, and each expires on Wed, May 5, 2027:
 
