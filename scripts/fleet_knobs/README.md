@@ -27,7 +27,9 @@ key = knobs.get("FLEET_FACTS_SIGNING_KEY")         # raises SecretUnavailable:  
   values are fetched.  Missing or malformed tokens fail closed; there is no machine-identity
   or CLI-session fallback.  One 8 second deadline bounds metadata and all named requests.
 - **Negative cache.**  A failed fetch writes `fetch-failed.json` (0600, timestamp and reason
-  token) beside the copy;  for 60 seconds other processes skip the fetch and read the copy
+  token) beside the copy, except reasons `service-token-required` and
+  `scoped-reader-unavailable`, which belong to this one process (no usable reader token, or no
+  reader code) and write no marker, so a sibling that holds the token can still fetch;  for 60 seconds other processes skip the fetch and read the copy
   (`fetch_reason` `recent-<token>`).  A good fetch clears it;  `refresh()` ignores it.
 - **Last-known-good.**  A good fetch refreshes `~/.local/state/fleet-knobs/lkg.json`
   (dir 0700, file 0600) with the registered non-secret knobs.  If Infisical cannot be reached
@@ -84,7 +86,9 @@ set in Infisical.
 `set` (`setter.py`) is the one write path, and Muster's Controls tab calls it.  It refuses an
 unknown name, any secret and any value the knob's `Spec` rejects, through the same
 `values.parse` the readers use, and writes the canonical text.  `--plan` shows the old and new
-value and the CLI argv and writes nothing; `--yes` runs `infisical secrets set NAME=VALUE
+value and the CLI argv and writes nothing, and it refuses (exit 2) when the write could not run
+in this process, such as when no write token is present, so a plan that succeeds is one a
+`--yes` here could carry out; `--yes` runs `infisical secrets set NAME=VALUE
 --env=prod --path=/ --projectId=<id>` with a write-capable service token in the child's
 `INFISICAL_TOKEN` only.  The token comes only from `FLEET_KNOBS_WRITE_TOKEN`, with its exact
 project, prod root folder and read/write grant verified first; without one the answer is `no write token`. 

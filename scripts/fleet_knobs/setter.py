@@ -6,7 +6,10 @@ The only write path for knobs.  What it promises:
     range, pattern), checked by the same ``values.parse`` every reader uses.  The value is
     written in its canonical text (``values.render``), so what lands in Infisical is exactly
     what a reader will parse back.
-  * ``--plan`` shows the old value, the new one and the CLI argv, and writes nothing.  ``--yes``
+  * ``--plan`` shows the old value, the new one, the direction and the CLI argv, and writes
+    nothing.  It refuses, before any approval, a write that could not run in this process (no
+    write token), a value Infisical already holds and a reset of a knob Infisical does not
+    hold.  ``--yes``
     writes.  With neither it refuses.
   * The write goes through the ``infisical`` CLI with an argv list (no shell) and a
     write-capable service token that lives only in this process's memory and in the child's
@@ -221,7 +224,7 @@ def plan_notes(
 
     A ``default`` answered while Infisical could not be read is only what a job would fall
     back to, so it is not a current value:  the direction is unknown and the plan says so."""
-    known = old_source in ("infisical", "lkg") or (old_source == "default" and stale is not True)
+    known = old_source in ("infisical", "lkg") or (old_source == "default" and stale is False)
     way = values.direction(spec, old, typed) if known else "unknown"
     warnings: list[str] = []
     if way in _DIRECTION_SENTENCES:

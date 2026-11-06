@@ -218,7 +218,13 @@ struct KnobRegistry {
     /// True when some reading of the values was had:  the live read or this Mac's copy.
     var valuesAreKnown: Bool {
         if let live, live.fetchOK { return true }
-        return copyIsReadable || (live?.rows.isEmpty == false)
+        if copyIsReadable { return true }
+        // A failed live read still answers one row per knob, so the rows are no proof of a
+        // reading:  only a knob that holds a value some reading gave it is.
+        return knobs.contains { knob in
+            if case .current = knob.current { return true }
+            return false
+        }
     }
 
     /// True when the engine said it could not write from here.
@@ -259,7 +265,15 @@ struct KnobRegistry {
                 fresh.current = .current(knob.canonical(row.value ?? "") ?? row.value ?? "")
                 fresh.source = .macCopy
             case "default":
-                if live.fetchOK {
+                if row.reason == "invalid" {
+                    // Infisical holds a value the knob refuses, so jobs fall back to the
+                    // default.  That is not "unset":  there is a value to reset or fix, and
+                    // the row must not read as holding its default.
+                    fresh.current = .unknown(
+                        "not valid:  Infisical holds a value this knob refuses, so jobs use the default"
+                    )
+                    fresh.source = .infisical
+                } else if live.fetchOK {
                     fresh.current = .defaultValue(knob.defaultValue)
                     fresh.source = .infisical
                 } else if (row.reason ?? "").contains(",lkg-") {
@@ -627,7 +641,7 @@ enum KnobStatusReader {
         location: EngineLocation,
         home: URL = FileManager.default.homeDirectoryForCurrentUser,
         timeout: TimeInterval = 40
-    ) -> KnobLiveReading {
+    ) async -> KnobLiveReading {
         let process = Process()
         let output = Pipe()
         let errors = Pipe()
@@ -638,34 +652,52 @@ enum KnobStatusReader {
         process.standardOutput = output
         process.standardError = errors
         process.environment = EngineRunner.childEnvironment(location: location, home: home)
-        do {
-            try process.run()
-        } catch {
-            return .failed("Muster could not start the knob engine (\(error.localizedDescription)).")
-        }
         let collected = Collected()
         let group = DispatchGroup()
-        group.enter()
-        DispatchQueue.global().async {
-            collected.output = output.fileHandleForReading.readDataToEndOfFile()
-            group.leave()
+        // Wait for the process to end without holding a thread:  the termination handler
+        // resumes this call,  and a timer ends the process when it runs past the timeout.
+        var startFailure: String?
+        await withCheckedContinuation { (finished: CheckedContinuation<Void, Never>) in
+            process.terminationHandler = { _ in finished.resume() }
+            // Both readers are counted before the process starts, so the notify below can
+            // never fire before they have run, however quickly the process ends.
+            group.enter()
+            group.enter()
+            do {
+                try process.run()
+            } catch {
+                // A process that did not start never calls the termination handler.
+                startFailure = error.localizedDescription
+                group.leave()
+                group.leave()
+                finished.resume()
+                return
+            }
+            DispatchQueue.global().async {
+                collected.output = output.fileHandleForReading.readDataToEndOfFile()
+                group.leave()
+            }
+            DispatchQueue.global().async {
+                collected.errors = errors.fileHandleForReading.readDataToEndOfFile()
+                group.leave()
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
+                if process.isRunning {
+                    collected.timedOut = true
+                    process.terminate()
+                }
+            }
         }
-        group.enter()
-        DispatchQueue.global().async {
-            collected.errors = errors.fileHandleForReading.readDataToEndOfFile()
-            group.leave()
+        if let startFailure {
+            return .failed("Muster could not start the knob engine (\(startFailure)).")
         }
-        let deadline = Date().addingTimeInterval(timeout)
-        while process.isRunning, Date() < deadline {
-            Thread.sleep(forTimeInterval: 0.02)
+        // The pipes close when the process ends, so the two reads finish at once.
+        await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+            group.notify(queue: .global()) { done.resume() }
         }
-        if process.isRunning {
-            process.terminate()
-            process.waitUntilExit()
-            group.wait()
+        if collected.timedOut {
             return .failed("The knob engine did not answer within \(Int(timeout)) seconds.")
         }
-        group.wait()
         if let status = KnobLiveStatus.parse(collected.output) {
             return .read(status)
         }
@@ -678,6 +710,7 @@ enum KnobStatusReader {
     private final class Collected: @unchecked Sendable {
         var output = Data()
         var errors = Data()
+        var timedOut = false
     }
 }
 
@@ -720,12 +753,20 @@ enum KnobReader {
         let unreadable: Int
         let problem: String?
         let file: String
-        if let inventory = readInventory(at: repoRoot.appendingPathComponent(inventoryPath)) {
+        switch readInventory(at: repoRoot.appendingPathComponent(inventoryPath)) {
+        case .knobs(let inventory):
             declared = inventory
             unreadable = 0
             problem = nil
             file = inventoryPath
-        } else {
+        case .invalid(let why):
+            // No knobs and the reason:  a registry that is there and wrong is not replaced by
+            // another file's different facts.
+            declared = []
+            unreadable = 0
+            problem = "The generated registry \(inventoryPath) cannot be used:  \(why)"
+            file = inventoryPath
+        case .absent:
             let table = readTable(in: repoRoot.appendingPathComponent("INFISICAL.md"))
             declared = table.rows.map(knob(fromTableRow:))
             unreadable = table.unreadable
@@ -801,28 +842,61 @@ enum KnobReader {
             knob.minimum = low
             knob.maximum = high
         }
+        if knob.baseKind == "int" {
+            // The table says which way a local file may move a number, and that is which way
+            // narrows it.  Without that wording the direction stays unknown.
+            let rule = row.value(at: 5).lowercased()
+            if rule.contains("only lower") { knob.narrower = "min" }
+            else if rule.contains("only raise") { knob.narrower = "max" }
+        }
+        if knob.baseKind == "caps", !secret,
+           let names = KnobRegistry.Knob.caps(row.value(at: 3)) {
+            // The cap names are the ones the default carries, so the editor offers those
+            // and a misspelled name cannot be typed.
+            knob.capNames = names.keys.sorted()
+        }
         return knob
     }
 
-    /// The knobs in the generated inventory,  or nil to fall back to the table.
+    /// What reading the generated inventory came to.
+    enum InventoryReading {
+        /// There is no such file,  the only case the table in `INFISICAL.md` stands in for.
+        case absent
+        /// The file is there and is not one this app can use,  with why.
+        case invalid(String)
+        case knobs([KnobRegistry.Knob])
+    }
+
+    /// The knobs in the generated inventory.
     ///
-    /// A file that is missing,  unreadable,  of another schema or with any entry this app
-    /// cannot read is not used at all:  a partial inventory would show a few knobs and call
-    /// the set complete.
-    static func readInventory(at url: URL) -> [KnobRegistry.Knob]? {
-        guard
-            let data = try? Data(contentsOf: url),
-            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-            (object["schema"] as? NSNumber)?.intValue == inventorySchema,
-            let entries = object["knobs"] as? [[String: Any]],
-            !entries.isEmpty
-        else { return nil }
+    /// Only a file that is absent falls back to the table.  A file that is there and is
+    /// unreadable,  not JSON,  of another schema or with any entry this app cannot read is
+    /// invalid and says why:  the table carries less than the inventory,  so quietly using
+    /// it would replace a corrupt registry with different facts,  and a partial inventory
+    /// would show a few knobs and call the set complete.
+    static func readInventory(at url: URL) -> InventoryReading {
+        guard FileManager.default.fileExists(atPath: url.path) else { return .absent }
+        guard let data = try? Data(contentsOf: url) else {
+            return .invalid("the file could not be read")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            return .invalid("it is not a JSON object")
+        }
+        let schema = (object["schema"] as? NSNumber)?.intValue
+        guard schema == inventorySchema else {
+            return .invalid("its schema is \(schema.map(String.init) ?? "missing"), and this app reads schema \(inventorySchema)")
+        }
+        guard let entries = object["knobs"] as? [[String: Any]], !entries.isEmpty else {
+            return .invalid("it lists no knobs")
+        }
         var out: [KnobRegistry.Knob] = []
-        for entry in entries {
-            guard let knob = inventoryKnob(entry) else { return nil }
+        for (index, entry) in entries.enumerated() {
+            guard let knob = inventoryKnob(entry) else {
+                return .invalid("entry \(index + 1) has no name or kind")
+            }
             out.append(knob)
         }
-        return out
+        return .knobs(out)
     }
 
     private static func inventoryKnob(_ entry: [String: Any]) -> KnobRegistry.Knob? {
@@ -1432,9 +1506,11 @@ extension KnobRegistry.Knob {
             }
             return b < a ? .narrower : .wider
         case "int":
-            guard let a = Int(before), let b = Int(after) else { return .unknown }
+            // The table fallback does not carry which way a number narrows, and guessing
+            // "lower" would reverse the answer for a knob where a higher number is narrower.
+            guard let narrower, let a = Int(before), let b = Int(after) else { return .unknown }
             let lower = b < a
-            return lower == ((narrower ?? "min") == "min") ? .narrower : .wider
+            return lower == (narrower == "min") ? .narrower : .wider
         case "list":
             let a = Self.tokens(before), b = Self.tokens(after)
             let added = b.contains { !a.contains($0) }

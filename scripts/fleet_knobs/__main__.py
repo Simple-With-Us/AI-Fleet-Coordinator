@@ -79,21 +79,22 @@ def _status(args, out) -> int:
         rows.append(row)
     rep = knobs.report()
     if args.json:
-        json.dump(
-            {
-                "schema": STATUS_SCHEMA,
-                "fetch": rep["fetch"],
-                "fetch_reason": rep.get("fetch_reason"),
-                "checked_epoch": int(time.time()),
-                # Whether a write could run here:  the token's shape only, never its value.
-                "write_token": "present"
+        doc: dict = {
+            "schema": STATUS_SCHEMA,
+            "fetch": rep["fetch"],
+            "fetch_reason": rep.get("fetch_reason"),
+        }
+        if getattr(args, "values", False):
+            # Asked for by name, like the values:  when this was read, and whether a write
+            # could run here (the token's shape only, never its value).
+            doc["checked_epoch"] = int(time.time())
+            doc["write_token"] = (
+                "present"
                 if setter.read_token(dict(os.environ), sys.platform, setter.run)
-                else "missing",
-                "knobs": rows,
-            },
-            out,
-            indent=1,
-        )
+                else "missing"
+            )
+        doc["knobs"] = rows
+        json.dump(doc, out, indent=1)
         out.write("\n")
     else:
         out.write(

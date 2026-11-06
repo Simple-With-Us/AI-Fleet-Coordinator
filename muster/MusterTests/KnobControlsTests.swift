@@ -82,15 +82,55 @@ final class KnobControlsTests: XCTestCase {
         XCTAssertEqual(fallback.registryFile, "INFISICAL.md")
         XCTAssertEqual(fallback.knobs.map { $0.name }, registry.knobs.map { $0.name })
         XCTAssertEqual(fallback.knobs.map { $0.isSecret }, registry.knobs.map { $0.isSecret })
+        // Kody on #1384:  the fallback says which way a number narrows and which cap names
+        // exist, as the inventory does, so it neither guesses a direction nor takes a typo.
+        let hours = try knob(fallback, "FLEET_AUTOPUSH_IDLE_HOURS")
+        XCTAssertEqual(hours.direction(from: "2", to: "4"), .narrower)
+        let caps = try knob(fallback, "NEEDS_OWNER_CAPS")
+        XCTAssertEqual(caps.editor, .caps(["per_day", "per_hour", "urgent_per_hour"]))
+        XCTAssertNotNil(caps.problem(with: "per_dya=5"))
     }
 
-    /// An inventory of a schema this app does not know is not used;  the table is.
-    func test_an_unknown_inventory_schema_falls_back_to_the_table() throws {
+    /// A number whose narrowing direction is not known has no direction, never a guess.
+    func test_an_integer_with_no_narrowing_direction_is_unknown() {
+        var knob = KnobRegistry.Knob(
+            name: "X", owner: "C1", kind: "int", defaultValue: "2", isSecret: false,
+            secretColumn: "no", localMay: "", note: "", current: .unknown("not read")
+        )
+        knob.baseKind = "int"
+        XCTAssertEqual(knob.direction(from: "2", to: "4"), .unknown)
+        knob.narrower = "max"
+        XCTAssertEqual(knob.direction(from: "2", to: "4"), .narrower)
+    }
+
+    /// An inventory that is there and invalid is reported, never replaced by the table.
+    func test_an_unknown_inventory_schema_is_reported_and_not_replaced() throws {
         let root = try emptyHome()
         let folder = root.appendingPathComponent("scripts/fleet_knobs", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         try #"{"schema": 99, "knobs": [{"name": "X", "kind": "bool", "kind_text": "bool"}]}"#
             .write(to: folder.appendingPathComponent("registry.json"), atomically: true, encoding: .utf8)
+        try """
+        <!-- fleet-knobs:begin -->
+        | Key | Owner | Kind | Default | Secret | Local files may | What it does |
+        |---|---|---|---|---|---|---|
+        | `CONSULT_ENABLED` | C7 | bool | `false` | no | only set it to `false` | false refuses every consult verb |
+        <!-- fleet-knobs:end -->
+        """.write(to: root.appendingPathComponent("INFISICAL.md"), atomically: true, encoding: .utf8)
+        let registry = KnobReader.read(repoRoot: root, home: try emptyHome(), identity: identity)
+        XCTAssertEqual(registry.registryFile, KnobReader.inventoryPath)
+        XCTAssertTrue(registry.knobs.isEmpty)
+        XCTAssertTrue(registry.problem?.contains("schema is 99") ?? false, registry.problem ?? "nil")
+        // Malformed JSON is the same:  reported, with no knobs.
+        try "{not json".write(to: folder.appendingPathComponent("registry.json"), atomically: true, encoding: .utf8)
+        let broken = KnobReader.read(repoRoot: root, home: try emptyHome(), identity: identity)
+        XCTAssertTrue(broken.knobs.isEmpty)
+        XCTAssertTrue(broken.problem?.contains("not a JSON object") ?? false, broken.problem ?? "nil")
+    }
+
+    /// Only an absent inventory falls back to the table.
+    func test_an_absent_inventory_falls_back_to_the_table() throws {
+        let root = try emptyHome()
         try """
         <!-- fleet-knobs:begin -->
         | Key | Owner | Kind | Default | Secret | Local files may | What it does |
@@ -207,6 +247,43 @@ final class KnobControlsTests: XCTestCase {
         XCTAssertEqual(registry.freshnessLines().count, 1)
         XCTAssertTrue(registry.freshnessLines()[0].text.hasPrefix("Values read from Infisical at "))
         XCTAssertTrue(registry.freshnessLines()[0].text.hasSuffix(" PM.") || registry.freshnessLines()[0].text.hasSuffix(" AM."))
+    }
+
+    /// Kody on #1384:  a value Infisical holds and the knob refuses reads as the default to a
+    /// job, but it is not "unset":  it is shown as not valid and can be reset.
+    func test_an_invalid_infisical_value_is_not_shown_as_the_default() throws {
+        let json = """
+        {"schema": 1, "fetch": "ok", "fetch_reason": null, "checked_epoch": 1794000000,
+         "write_token": "present", "knobs": [
+          {"name": "LANE_SWEEP_MODE", "owner": "C5", "set": false, "source": "default", "stale": false, "value": "report", "reason": "invalid"},
+          {"name": "CONSULT_ENABLED", "owner": "C7", "set": false, "source": "default", "stale": false, "value": "false", "reason": "unset"}
+        ]}
+        """
+        let status = try XCTUnwrap(KnobLiveStatus.parse(Data(json.utf8)))
+        let registry = try realRegistry().applying(status)
+        let sweep = try knob(registry, "LANE_SWEEP_MODE")
+        guard case .unknown(let why) = sweep.current else { return XCTFail("\(sweep.current)") }
+        XCTAssertTrue(why.hasPrefix("not valid"), why)
+        XCTAssertEqual(sweep.source, .infisical)
+        XCTAssertFalse(sweep.isChanged)
+        XCTAssertEqual(try knob(registry, "CONSULT_ENABLED").current, .defaultValue("false"))
+    }
+
+    /// Kody on #1384:  a failed read answers one row per knob, and those rows are no reading.
+    func test_a_failed_read_with_no_copy_is_not_a_reading() throws {
+        let json = """
+        {"schema": 1, "fetch": "failed", "fetch_reason": "service-token-required",
+         "write_token": "missing", "knobs": [
+          {"name": "LANE_SWEEP_MODE", "owner": "C5", "set": false, "source": "default", "stale": true, "value": "report", "reason": "unreachable:service-token-required,lkg-absent"}
+        ]}
+        """
+        let status = try XCTUnwrap(KnobLiveStatus.parse(Data(json.utf8)))
+        let registry = try realRegistry().applying(status)
+        XCTAssertFalse(registry.valuesAreKnown)
+        XCTAssertEqual(
+            registry.emptyMessage(.changed, host: .any, query: ""),
+            "The values could not be read, so which knobs are changed is not known."
+        )
     }
 
     func test_a_status_of_another_schema_is_not_read() {

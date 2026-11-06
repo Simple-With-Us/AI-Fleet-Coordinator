@@ -160,6 +160,22 @@ class StatusValuesTests(KnobTestCase):
         self.assertIsInstance(doc["checked_epoch"], int)
         code, plain = self.run_cli("status", "--json")
         self.assertNotIn('"value"', plain)
+        # Kody on #1384:  a plain status carries neither the check time nor the token shape.
+        self.assertNotIn("write_token", plain)
+        self.assertNotIn("checked_epoch", plain)
+
+    def test_a_default_with_unknown_staleness_is_not_a_known_value(self):
+        # Kody on #1384:  a reader that does not say whether its default is stale gives no
+        # direction, and the plan says the current value could not be read.
+        direction, warnings = setter.plan_notes(
+            BY_NAME["LANE_SWEEP_MODE"], "act", "act", "report", "default", None
+        )
+        self.assertEqual(direction, "unknown")
+        self.assertTrue(any("could not be read" in w for w in warnings))
+        direction, _ = setter.plan_notes(
+            BY_NAME["LANE_SWEEP_MODE"], "act", "act", "report", "default", False
+        )
+        self.assertEqual(direction, "wider")
 
     def test_a_write_token_is_reported_by_shape_only(self):
         with mock.patch.dict(os.environ, {setter.ENV_WRITE_TOKEN: WRITE_TOKEN}):

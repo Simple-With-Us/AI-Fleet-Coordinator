@@ -29,6 +29,10 @@ struct ControlsView: View {
     @State private var loading = true
     /// True while the engine reads Infisical.  The table stays on screen meanwhile.
     @State private var checking = false
+    /// Which load is the newest.  The tab loads when it appears and again after a run
+    /// finishes,  so two loads can overlap;  only the newest may change what is on screen,
+    /// and `loading` and `checking` stay true until it is done.
+    @State private var generation = 0
     /// The knob whose editor is open.
     @State private var editing: KnobRegistry.Row?
     /// The write the editor asked for,  started once the editor has closed.
@@ -281,6 +285,8 @@ struct ControlsView: View {
     /// The file reads are quick and run first,  so the table is on screen while the engine
     /// works.  A refresh keeps the last reading on screen until the new one is in.
     private func load() async {
+        generation += 1
+        let mine = generation
         guard let root = store.engineRoot else {
             engineReason = "the engine was not found"
             loading = false
@@ -296,6 +302,8 @@ struct ControlsView: View {
         let loaded = await Task.detached(priority: .userInitiated) {
             KnobReader.read(repoRoot: root, home: home, identity: answer.identity)
         }.value
+        // A newer load started while this one read the files:  it owns the screen now.
+        guard mine == generation else { return }
         engineReason = answer.reason
         if let previous = registry?.live {
             // Keep the last live reading until the new one is in, so a refresh does not
@@ -305,26 +313,29 @@ struct ControlsView: View {
             registry = loaded
         }
         loading = false
-        await checkInfisical(base: loaded)
+        await checkInfisical(base: loaded, generation: mine)
     }
 
     /// Ask the knob engine for its live read,  and apply it.
-    private func checkInfisical(base: KnobRegistry) async {
+    private func checkInfisical(base: KnobRegistry, generation mine: Int) async {
         guard let location = store.engineLocation else {
             liveProblem = "Muster could not find the engine, so Infisical was not read."
             return
         }
+        // The reading on screen now,  kept if this one fails:  a failed refresh says so and
+        // leaves the last reading in place, with its own time.
+        let previousLive = registry?.live
         checking = true
-        let reading = await Task.detached(priority: .userInitiated) {
-            KnobStatusReader.read(location: location)
-        }.value
+        // Waiting for the engine does not occupy a thread:  the read is asynchronous.
+        let reading = await KnobStatusReader.read(location: location)
+        guard mine == generation else { return }
         checking = false
         switch reading {
         case .read(let status):
             registry = base.applying(status)
             liveProblem = nil
         case .failed(let why):
-            registry = base
+            registry = previousLive.map { base.applying($0) } ?? base
             liveProblem = why
         }
     }
