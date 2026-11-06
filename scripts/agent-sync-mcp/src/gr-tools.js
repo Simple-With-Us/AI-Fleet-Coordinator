@@ -206,7 +206,12 @@ export class GrRelayClient {
       // marker:  the collapsed prose stays fixed, but without the marker the
       // hosted front cannot tell a credential refusal from any other 4xx, so
       // gr_wf_file_put/gr_wf_files_put callers lost their refused_secret reason.
-      return {status:response.status,body:{error:"workflow_request_refused", ...(parsed.error === "credential-shaped content refused" ? {reason:"credential_scan"} : {}), ...(parsed.retryable===true ? {retryable:true} : {})}};
+      // The vouched family is every fixed refusal the workflow verbs raise:
+      // the "credential-shaped ..." strings and the secrets-API one.
+      const credentialMarker = typeof parsed.error === "string"
+        && (parsed.error.startsWith("credential-shaped")
+          || parsed.error === "invalid or secret variable value; this is not a secrets API");
+      return {status:response.status,body:{error:"workflow_request_refused", ...(credentialMarker ? {reason:"credential_scan"} : {}), ...(parsed.retryable===true ? {retryable:true} : {})}};
     } catch {return unavailable();}
   }
 

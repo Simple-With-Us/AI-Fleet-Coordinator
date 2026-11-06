@@ -94,28 +94,46 @@ test("only the anchored scanner family maps;  near-matches stay relay_refused", 
 
 test("a malformed 4xx body keeps the generic relay_refused code", async () => {
   // Straight to grCall with a stub client:  the zod guard refuses to classify
-  // a body whose shape was never validated.
-  const tools = grHarness({ call: async () => ({ status: 400, body: ["not an object"] }), secrets: () => [] });
+  // a body whose shape was never validated.  The over-long string and the
+  // credential-shaped prose ride an unvalidated body;  deleting the guard
+  // would let the string reach the message and fail every assertion here.
+  const tools = grHarness({
+    call: async () => ({
+      status: 400,
+      body: { error: "x".repeat(1500), note: "credential-shaped content refused" },
+    }),
+    secrets: () => [],
+  });
   const out = await tools.call("gr_comment_pr", { repo: "a/b", number: 1, body: "x" });
   assert.equal(out.isError, true);
-  assert.equal(codeOf(out), "relay_refused");
+  const payload = JSON.parse(out.content[0].text);
+  assert.equal(payload.code, "relay_refused");
+  assert.equal(payload.message, "refused");
+  assert.ok(!out.content[0].text.includes("credential-shaped"));
 });
 
-test("a workflow credential-scan refusal surfaces as refused_secret through callWorkflow", async () => {
-  const tools = grHarness(
-    clientWith({ error: "credential-shaped content refused" }, 400),
-    { ...config, grWorkflowEnabled: true },
-  );
-  const out = await tools.call("gr_wf_files_put", {
-    repo: "a/b",
-    branch: "jet/x",
-    message: "m",
-    expected_head_sha: "a".repeat(40),
-    files: [{ path: "x.txt", content_b64: "eA==" }],
-  });
-  assert.equal(out.isError, true);
-  assert.equal(codeOf(out), "refused_secret");
-  assert.match(out.content[0].text, /Nothing was written/);
+test("every fixed workflow credential refusal surfaces as refused_secret through callWorkflow", async () => {
+  // The vouched family from git-relay/git_relay/workflow_verbs.py:  the
+  // "credential-shaped ..." strings and the secrets-API refusal.
+  for (const error of [
+    "credential-shaped content refused",
+    "credential-shaped binary blob refused",
+    "credential-shaped file path refused",
+    "credential-shaped repository metadata name refused",
+    "invalid or secret variable value; this is not a secrets API",
+  ]) {
+    const tools = grHarness(clientWith({ error }, 400), { ...config, grWorkflowEnabled: true });
+    const out = await tools.call("gr_wf_files_put", {
+      repo: "a/b",
+      branch: "jet/x",
+      message: "m",
+      expected_head_sha: "a".repeat(40),
+      files: [{ path: "x.txt", content_b64: "eA==" }],
+    });
+    assert.equal(out.isError, true);
+    assert.equal(codeOf(out), "refused_secret", error);
+    assert.match(out.content[0].text, /Nothing was written/);
+  }
 });
 
 test("other workflow 4xx verdicts keep the generic relay_refused code", async () => {

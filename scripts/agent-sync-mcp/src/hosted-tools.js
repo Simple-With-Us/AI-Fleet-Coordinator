@@ -1480,14 +1480,17 @@ export class HostedTools {
       // The relay's credential-scan verdicts map to the dedicated safe code:
       // CLI callers print codes, not messages, and "relay_refused" alone hid
       // why the write was refused.  Three vouched forms, never reflected prose:
-      // the workflow verbs' exact fixed string, its machine-readable marker
-      // after callWorkflow collapses the workflow body, and the pre-dispatch
-      // scanner's anchored field/pattern family from the seven-action path.
+      // the workflow verbs' fixed credential refusals, their machine-readable
+      // marker after callWorkflow collapses the workflow body, and the
+      // pre-dispatch scanner's family from the seven-action path - anchored on
+      // the fixed refusal tail, with no whitelist on the field path it names
+      // (real field paths carry spaces and parens too).
       const credentialRefusal =
         refusalShape.data.reason === "credential_scan"
         || refusalError === "credential-shaped content refused"
+        || refusalError === "invalid or secret variable value; this is not a secrets API"
         || (typeof refusalError === "string"
-          && /^[A-Za-z0-9_.\-[\]]{1,120} looks like it contains a credential \([A-Za-z0-9_]{1,60}\); refusing to relay it$/.test(refusalError));
+          && /^[^\n]{1,200} looks like it contains a credential \([A-Za-z0-9_]{1,60}\); refusing to relay it$/.test(refusalError));
       if (credentialRefusal) {
         throw new ToolError("refused_secret", "git-relay refused the write:  the content looks like it contains a credential.  Remove or reword the credential-shaped content and send it again.  Nothing was written.");
       }
