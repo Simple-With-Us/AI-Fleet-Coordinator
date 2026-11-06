@@ -23,8 +23,9 @@ and silently degrading would consume rows nobody decided.
 from __future__ import annotations
 
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any
 
 MUSE = "muse"
 MINIMAX = "minimax"
@@ -81,7 +82,7 @@ REVIEW_DUE = "backup_review_due"
 
 def select_consult_runtime(
     raw: Any, *, now: float | None = None
-) -> tuple[str, "BackupDeclaration | None", "str | None"]:
+) -> tuple[str, BackupDeclaration | None, str | None]:
     """(which runtime a bridge consult uses, the declaration, why consults hold).
 
     (MUSE, None, None)          - never enabled: no declaration configured.

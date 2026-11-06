@@ -402,7 +402,7 @@ class MacBridge:
             + "\nEND UNTRUSTED SOURCE MESSAGE\n"
         )
 
-    def _backup_client(self) -> "MC.MiniMaxConsult":
+    def _backup_client(self) -> MC.MiniMaxConsult:
         """The backup consult client, built once.  The ledger lives next to the listener state
         (private, 0600), and the scoped-key binding comes from the environment the operator
         provisions (MUSE_BRIDGE_MINIMAX_TOKEN_FILE + MUSE_BRIDGE_MINIMAX_PROJECT).  An absent or
@@ -410,9 +410,7 @@ class MacBridge:
         client = getattr(self, "_backup_consult", None)
         if client is None:
             env = getattr(self.daemon, "env", {}) or {}
-            ledger_path = os.path.join(
-                L.listener_dir(self.daemon.root), "minimax-ledger.sqlite3"
-            )
+            ledger_path = os.path.join(L.listener_dir(self.daemon.root), "minimax-ledger.sqlite3")
             client = MC.MiniMaxConsult(
                 MC.SpendLedger(ledger_path),
                 MC.ScopedKeyReader(
@@ -430,7 +428,7 @@ class MacBridge:
         except MC.ConsultUnavailable:
             return False
 
-    def _consult_backup(self, item: Mapping[str, Any], prompt: str) -> "str | None":
+    def _consult_backup(self, item: Mapping[str, Any], prompt: str) -> str | None:
         """One backup consult under the declared known-cap mode.
 
         Returns the answer text, or None when the attempt was CHARGED with an ambiguous outcome
@@ -971,7 +969,9 @@ def main(argv: list[str] | None = None) -> int:
         if len(args.command_args) != 2:
             parser.error("resolve takes SEAT MESSAGE_ID")
         sys.stdout.write(
-            json.dumps(resolve_pending_review(root, args.command_args[0], int(args.command_args[1])))
+            json.dumps(
+                resolve_pending_review(root, args.command_args[0], int(args.command_args[1]))
+            )
             + "\n"
         )
         return 0

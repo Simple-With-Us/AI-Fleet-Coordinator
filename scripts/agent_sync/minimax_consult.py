@@ -3,6 +3,7 @@
 No agent runtime, redirects, tools, automatic retries, token estimates, or spend refunds.
 Rates/limits are a pinned qualification, not a claim about future provider prices.
 """
+
 from __future__ import annotations
 
 import json
@@ -42,8 +43,10 @@ def strict_json(text):
                 raise ConsultUnavailable("duplicate JSON key")
             out[k] = v
         return out
+
     def constant(value):
         raise ConsultUnavailable("non-finite JSON number")
+
     try:
         return json.loads(text, object_pairs_hook=pairs, parse_constant=constant)
     except (ValueError, UnicodeError, TypeError) as exc:
@@ -56,6 +59,7 @@ class SpendLedger:
     Full reservations are permanent. A request ID is single-use even across restarts.
     Both Chicago calendar-day and rolling-24h limits bind, including ambiguous outcomes.
     """
+
     def __init__(self, path):
         self.path = Path(path)
         self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -65,14 +69,23 @@ class SpendLedger:
             raise ConsultUnavailable("unsafe spend ledger")
         self.db = sqlite3.connect(self.path, timeout=5, isolation_level=None)
         self.db.execute("PRAGMA synchronous=FULL")
-        self.db.execute("CREATE TABLE IF NOT EXISTS spends (request TEXT PRIMARY KEY, at REAL NOT NULL, day TEXT NOT NULL, nano INTEGER NOT NULL)")
-        self.db.execute("CREATE TABLE IF NOT EXISTS clock (id INTEGER PRIMARY KEY CHECK(id=1), last REAL NOT NULL)")
+        self.db.execute(
+            "CREATE TABLE IF NOT EXISTS spends (request TEXT PRIMARY KEY, at REAL NOT NULL, day TEXT NOT NULL, nano INTEGER NOT NULL)"
+        )
+        self.db.execute(
+            "CREATE TABLE IF NOT EXISTS clock (id INTEGER PRIMARY KEY CHECK(id=1), last REAL NOT NULL)"
+        )
 
     def reserve(self, request, now):
         import math
+
         if type(now) not in (int, float) or not math.isfinite(now) or now < 0:
             raise ConsultUnavailable("invalid clock")
-        if not isinstance(request, str) or len(request) != 64 or any(c not in "0123456789abcdef" for c in request):
+        if (
+            not isinstance(request, str)
+            or len(request) != 64
+            or any(c not in "0123456789abcdef" for c in request)
+        ):
             raise ConsultUnavailable("invalid reservation key")
         day = datetime.fromtimestamp(now, ZONE).date().isoformat()
         try:
@@ -82,10 +95,15 @@ class SpendLedger:
                 raise ConsultUnavailable("clock moved backward")
             if self.db.execute("SELECT 1 FROM spends WHERE request=?", (request,)).fetchone():
                 raise ConsultCharged("attempt already reserved; outcome retained")
-            daily, rolling = self.db.execute("SELECT COALESCE(SUM(CASE WHEN day=? THEN nano ELSE 0 END),0), COALESCE(SUM(CASE WHEN at>? THEN nano ELSE 0 END),0) FROM spends", (day, now - 86400)).fetchone()
+            daily, rolling = self.db.execute(
+                "SELECT COALESCE(SUM(CASE WHEN day=? THEN nano ELSE 0 END),0), COALESCE(SUM(CASE WHEN at>? THEN nano ELSE 0 END),0) FROM spends",
+                (day, now - 86400),
+            ).fetchone()
             if max(daily, rolling) + RESERVE_NANO_USD > DAILY_NANO_USD:
                 raise ConsultUnavailable("daily spend limit")
-            self.db.execute("INSERT INTO spends VALUES(?,?,?,?)", (request, now, day, RESERVE_NANO_USD))
+            self.db.execute(
+                "INSERT INTO spends VALUES(?,?,?,?)", (request, now, day, RESERVE_NANO_USD)
+            )
             self.db.execute("INSERT OR REPLACE INTO clock VALUES(1,?)", (now,))
             self.db.execute("COMMIT")
         except Exception:
@@ -101,7 +119,12 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 def parse_response(data):
     obj = strict_json(data)
-    if not isinstance(obj, dict) or obj.get("model") != MODEL or obj.get("status") != "completed" or obj.get("error") is not None:
+    if (
+        not isinstance(obj, dict)
+        or obj.get("model") != MODEL
+        or obj.get("status") != "completed"
+        or obj.get("error") is not None
+    ):
         raise ConsultUnavailable("unexpected model or response status")
     if obj.get("tools") not in (None, []) or obj.get("service_tier") not in (None, "standard"):
         raise ConsultUnavailable("unexpected tools or service tier")
@@ -128,7 +151,13 @@ def parse_response(data):
         if row.get("role") != "assistant":
             raise ConsultUnavailable("unexpected output role")
         content = row.get("content")
-        if not isinstance(content, list) or len(content) != 1 or not isinstance(content[0], dict) or content[0].get("type") != "output_text" or not isinstance(content[0].get("text"), str):
+        if (
+            not isinstance(content, list)
+            or len(content) != 1
+            or not isinstance(content[0], dict)
+            or content[0].get("type") != "output_text"
+            or not isinstance(content[0].get("text"), str)
+        ):
             raise ConsultUnavailable("invalid message content")
         messages.append(content[0]["text"])
     if len(messages) != 1:
@@ -139,7 +168,9 @@ def parse_response(data):
 class MiniMaxConsult:
     def __init__(self, ledger, key_reader, *, opener=None, clock=time.time):
         self.ledger, self.key_reader, self.clock = ledger, key_reader, clock
-        self.opener = opener or urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+        self.opener = opener or urllib.request.build_opener(
+            urllib.request.ProxyHandler({}), NoRedirect()
+        )
 
     def run(self, prompt, request_key):
         if not isinstance(prompt, str) or len(prompt.encode("utf-8")) > MAX_PROMPT_BYTES:
@@ -147,8 +178,22 @@ class MiniMaxConsult:
         key = self.key_reader()
         if not isinstance(key, str) or not key or any(c.isspace() for c in key):
             raise ConsultUnavailable("credential unavailable")
-        body = json.dumps({"model": MODEL, "input": prompt, "max_output_tokens": OUTPUT_TOKENS, "reasoning": {"effort": "low"}, "stream": False}, ensure_ascii=True).encode()
-        request = urllib.request.Request(URL, body, {"Authorization": "Bearer " + key, "Content-Type": "application/json"}, method="POST")
+        body = json.dumps(
+            {
+                "model": MODEL,
+                "input": prompt,
+                "max_output_tokens": OUTPUT_TOKENS,
+                "reasoning": {"effort": "low"},
+                "stream": False,
+            },
+            ensure_ascii=True,
+        ).encode()
+        request = urllib.request.Request(
+            URL,
+            body,
+            {"Authorization": "Bearer " + key, "Content-Type": "application/json"},
+            method="POST",
+        )
         # Durable before HTTP. No ambiguous reservation can be replayed or refunded.
         self.ledger.reserve(request_key, self.clock())
         try:
@@ -172,6 +217,7 @@ class ScopedKeyReader:
     No root listing, universal-auth identity, wrapper, environment API-key fallback,
     secret writes, or local API-key copy. Returned value stays in process memory.
     """
+
     ORIGIN = "https://app.infisical.com"
     KEY = "MINIMAX_API_KEY"
 
@@ -182,13 +228,16 @@ class ScopedKeyReader:
             raise ConsultUnavailable("invalid scoped secret path")
         self.secret_path = secret_path
         self.token_file, self.project_id = token_file, project_id
-        self.opener = opener or urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+        self.opener = opener or urllib.request.build_opener(
+            urllib.request.ProxyHandler({}), NoRedirect()
+        )
         self.clock = clock
         self._value = ""
         self._refresh_at = 0.0
 
     def _token(self):
         import stat
+
         if not self.token_file or not self.project_id:
             raise ConsultUnavailable("scoped credential binding missing")
         try:
@@ -203,12 +252,20 @@ class ScopedKeyReader:
             token = raw.decode().strip()
         except (OSError, UnicodeError) as exc:
             raise ConsultUnavailable("scoped credential binding unavailable") from exc
-        if not token.startswith("st.") or not 8 <= len(token) <= 512 or any(ord(c) < 33 or ord(c) > 126 for c in token):
+        if (
+            not token.startswith("st.")
+            or not 8 <= len(token) <= 512
+            or any(ord(c) < 33 or ord(c) > 126 for c in token)
+        ):
             raise ConsultUnavailable("invalid scoped token")
         return token
 
     def _get(self, path, token):
-        request = urllib.request.Request(self.ORIGIN + path, headers={"Authorization": "Bearer " + token, "Accept": "application/json"}, method="GET")
+        request = urllib.request.Request(
+            self.ORIGIN + path,
+            headers={"Authorization": "Bearer " + token, "Accept": "application/json"},
+            method="GET",
+        )
         with self.opener.open(request, timeout=10) as response:
             if response.geturl() != self.ORIGIN + path or response.status != 200:
                 raise ConsultUnavailable("credential redirect/status refused")
@@ -230,6 +287,7 @@ class ScopedKeyReader:
 
     def __call__(self):
         from urllib.parse import urlencode
+
         now = self.clock()
         if now < self._refresh_at:
             if not self._value:
@@ -240,18 +298,38 @@ class ScopedKeyReader:
         try:
             token = self._token()
             meta = self._get("/api/v2/service-token", token)
-            if not isinstance(meta, dict) or meta.get("workspace") != self.project_id or meta.get("projectId", self.project_id) != self.project_id or meta.get("scopes") != [{"environment": "prod", "secretPath": self.secret_path}] or meta.get("permissions") != ["read"]:
+            if (
+                not isinstance(meta, dict)
+                or meta.get("workspace") != self.project_id
+                or meta.get("projectId", self.project_id) != self.project_id
+                or meta.get("scopes") != [{"environment": "prod", "secretPath": self.secret_path}]
+                or meta.get("permissions") != ["read"]
+            ):
                 raise ConsultUnavailable("scoped token grant mismatch")
             expiry = meta.get("expiresAt")
             if expiry is not None:
                 dt = datetime.fromisoformat(str(expiry).replace("Z", "+00:00"))
                 if dt.tzinfo is None or dt.timestamp() <= now:
                     raise ConsultUnavailable("scoped token expired")
-            query = urlencode({"workspaceId": self.project_id, "environment": "prod", "secretPath": self.secret_path})
+            query = urlencode(
+                {
+                    "workspaceId": self.project_id,
+                    "environment": "prod",
+                    "secretPath": self.secret_path,
+                }
+            )
             data = self._get("/api/v3/secrets/raw/" + self.KEY + "?" + query, token)
             row = data.get("secret") if isinstance(data, dict) else None
-            value = row.get("secretValue") if isinstance(row, dict) and row.get("secretKey") == self.KEY else None
-            if not isinstance(value, str) or not 8 <= len(value) <= 512 or any(ord(c) < 33 or ord(c) > 126 for c in value):
+            value = (
+                row.get("secretValue")
+                if isinstance(row, dict) and row.get("secretKey") == self.KEY
+                else None
+            )
+            if (
+                not isinstance(value, str)
+                or not 8 <= len(value) <= 512
+                or any(ord(c) < 33 or ord(c) > 126 for c in value)
+            ):
                 raise ConsultUnavailable("invalid named API key")
             self._value = value
             self._refresh_at = min(now + 600, dt.timestamp()) if expiry is not None else now + 600
