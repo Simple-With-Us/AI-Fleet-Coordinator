@@ -1794,7 +1794,12 @@ def add_parsers(
         lsub,
     )
     q.add_argument(
-        "--after-seq", dest="after_seq", type=int, default=0, metavar="N", help="items after this seq"
+        "--after-seq",
+        dest="after_seq",
+        type=int,
+        default=0,
+        metavar="N",
+        help="items after this seq",
     )
     q.add_argument("--limit", type=int, default=20, metavar="N")
     q = add("ack", "move the seat-inbox cursor forward to --seq (never back)", lsub)

@@ -142,7 +142,9 @@ def pending_item(row: Mapping[str, Any]) -> dict[str, Any]:
     see why the prefilter marked it wake-worthy without any second classifier."""
     item = inbox_item(row)
     classes = row.get("classes")
-    item["classes"] = [c for c in classes if isinstance(c, str)] if isinstance(classes, list) else []
+    item["classes"] = (
+        [c for c in classes if isinstance(c, str)] if isinstance(classes, list) else []
+    )
     item["wake_worthy"] = bool(row.get("wake_worthy"))
     item["wake_owner"] = bool(row.get("wake_owner"))
     return item
@@ -468,7 +470,10 @@ def view(
         )
     if record == "pending-inbox":
         return pending_inbox_view(
-            root, seat, after_seq=int(params.get("after_seq", 0)), limit=int(params.get("limit", 20))
+            root,
+            seat,
+            after_seq=int(params.get("after_seq", 0)),
+            limit=int(params.get("limit", 20)),
         )
     if record == "owner-queue":
         return owner_queue_view(
