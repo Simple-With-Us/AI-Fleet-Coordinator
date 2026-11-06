@@ -358,6 +358,9 @@ struct FleetToolsReading {
     var isCurrent: Bool = false
     /// Why the report could not be read at all,  when it could not be.
     var problem: String?
+    /// True when this app refused the report because of its version or its tool,  rather
+    /// than because the file was missing,  old or broken.
+    var refusal: ReportRefusal?
     /// The hosts,  in the report's own order.
     var hosts: [FleetToolsHostVerdict] = []
     /// The verdict for the whole report.
@@ -408,10 +411,13 @@ enum FleetToolsReportReader {
 
         guard report.schemaVersion == FleetToolsContract.supportedSchemaVersion else {
             reading.problem = "The report is version \(report.schemaVersion);  this app reads version \(FleetToolsContract.supportedSchemaVersion)."
+            reading.refusal = ReportRefusal(reportVersion: report.schemaVersion,
+                                            supported: FleetToolsContract.supportedSchemaVersion)
             return reading
         }
         guard report.tool == FleetToolsContract.expectedTool else {
             reading.problem = "The report came from \"\(report.tool)\";  this app reads \"\(FleetToolsContract.expectedTool)\"."
+            reading.refusal = .appOutOfDate
             return reading
         }
         guard let generated = report.generatedAt.flatMap(FleetTime.parse) else {
@@ -448,9 +454,10 @@ enum FleetToolsReportReader {
     /// check it would have made,  and counting them would report observations that
     /// were never made.
     ///
-    /// The host's own age is information and not a verdict:  the server's doctor runs
-    /// on an hourly timer,  so its half is routinely older than the Mac's report and
-    /// that is the server working as it should.
+    /// The host's own age is information and not a verdict.  The Mac's doctor asks the
+    /// server's doctor for its half live,  over the read-only ssh route,  on every Mac run,
+    /// so the two halves are normally minutes apart;  a server half much older than the
+    /// report is the server's own time and not a fault in itself.
     private static func verdict(
         for host: FleetToolsHostDocument,
         reportIsCurrent: Bool,

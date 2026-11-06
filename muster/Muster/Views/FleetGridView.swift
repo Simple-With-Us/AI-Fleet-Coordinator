@@ -42,10 +42,11 @@ struct CellBadge: View {
             Circle()
                 .fill(cell.state.tint)
                 .frame(width: 7, height: 7)
-            Text(cell.state.shortLabel)
+            Text(cell.stateName)
                 .font(.system(size: 10, weight: .semibold, design: .monospaced))
             Spacer(minLength: 0)
-            Text(cell.proofLevel ?? "—")
+            // The proof the cell REACHED, never the proof its rules required.
+            Text(cell.proofBadgeText)
                 .font(.system(size: 9, weight: .medium, design: .monospaced))
                 .foregroundStyle(.secondary)
             if let age {
@@ -80,19 +81,15 @@ extension GridCell {
 /// panel back to the previous cell,  so the panel and the popup could disagree about
 /// what was selected and neither was the place the operator was reading.
 struct FleetGridView: View {
-    enum GridFilter: String, CaseIterable, Identifiable {
-        case all = "All Seats"
-        case attention = "Needing Attention"
-
-        var id: String { rawValue }
-    }
-
     @EnvironmentObject private var store: FleetStore
     @State private var selectedCell: GridCell?
     /// Artifacts for the selected cell, read off the main thread by `.task`.
     @State private var loadedArtifacts: FleetStore.CellArtifacts?
     @State private var loadedArtifactsCellID: String?
-    @State private var gridFilter: GridFilter = .all
+    @State private var gridFilter: GridStateFilter = .all
+    /// The filter an Overview card asked for,  held by the window that asked.  The grid
+    /// takes it once when it appears and clears it,  so it never outlives that one visit.
+    @Binding private var request: GridStateFilter?
     @State private var searchText: String = ""
     /// The height of the detail panel,  which the operator drags and which survives
     /// the next launch.
@@ -103,18 +100,14 @@ struct FleetGridView: View {
     private let minPanelHeight: CGFloat = 170
     private let maxPanelHeight: CGFloat = 900
 
+    init(request: Binding<GridStateFilter?> = .constant(nil)) {
+        _request = request
+    }
+
     private var visibleRoster: [String] {
-        let base: [String]
-        switch gridFilter {
-        case .all:
-            base = store.roster
-        case .attention:
-            base = store.roster.filter { seat in
-                ConfigKind.columnOrder.contains { kind in
-                    guard let state = store.cell(seat: seat, kind: kind)?.state else { return false }
-                    return state == .drift || state == .missing || state == .unproven || state == .unknown
-                }
-            }
+        let base = store.roster.filter { seat in
+            gridFilter.includes(ConfigKind.columnOrder.compactMap { store.cell(seat: seat, kind: $0) },
+                                commonCheckedAt: store.commonCheckedAt)
         }
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !query.isEmpty else { return base }
@@ -169,25 +162,39 @@ struct FleetGridView: View {
                 }
             }
         }
+        .onAppear {
+            if let requested = request {
+                gridFilter = requested
+                request = nil
+            }
+        }
     }
 
     private var filterBar: some View {
-        HStack(spacing: 12) {
-            Picker("Seats", selection: $gridFilter) {
-                ForEach(GridFilter.allCases) { item in
-                    Text(item.rawValue).tag(item)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 12) {
+                Picker("Seats", selection: $gridFilter) {
+                    ForEach(GridStateFilter.allCases) { item in
+                        Text(item.rawValue).tag(item)
+                    }
                 }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(maxWidth: 560)
+                TextField("Filter seats by tag…", text: $searchText)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 11, design: .monospaced))
+                    .frame(maxWidth: 200)
+                Spacer()
+                Text("\(visibleRoster.count) of \(store.roster.count) seat(s)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-            .pickerStyle(.segmented)
-            .frame(maxWidth: 280)
-            TextField("Filter seats by tag…", text: $searchText)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(size: 11, design: .monospaced))
-                .frame(maxWidth: 200)
-            Spacer()
-            Text("\(visibleRoster.count) of \(store.roster.count) seat(s)")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            if let note = gridFilter.cannotNarrowNote(commonCheckedAt: store.commonCheckedAt) {
+                Text(note)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -319,24 +326,42 @@ struct FleetGridView: View {
             Text("What a badge says")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
+            Text("\(PassMeaning.everywhere)\u{00A0} The proof beside a state is what was reached, and a dash means no proof was reached.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             HStack(alignment: .top, spacing: 22) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("L0").font(.system(size: 10, weight: .semibold, design: .monospaced))
-                    Text("The config is there and matches by hash.")
+                    Text("Reached:  the config was read and holds what the rule expects.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 VStack(alignment: .leading, spacing: 3) {
                     Text("L1").font(.system(size: 10, weight: .semibold, design: .monospaced))
-                    Text("The hook was sent a write and it denied it.")
+                    Text("Reached:  the hook was sent a write and it denied it.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 VStack(alignment: .leading, spacing: 3) {
                     Text("L2").font(.system(size: 10, weight: .semibold, design: .monospaced))
-                    Text("A headless canary showed the platform loads the hook.")
+                    Text("Reached:  a headless canary showed the platform loads the hook.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("1/2").font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    Text("Partly proven:  one of the cell's two rules was proven, and the tooltip names the one that was not.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("NO GUARD").font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    Text("The seat has no guard, so none was checked and none was proven.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)

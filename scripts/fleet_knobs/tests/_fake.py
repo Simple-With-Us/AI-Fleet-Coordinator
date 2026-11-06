@@ -60,8 +60,10 @@ def fixture_service_token() -> str:
     return "st." + secrets.token_urlsafe(32)
 
 
-SIGNING = secrets.token_urlsafe(32)
-UNRELATED = secrets.token_urlsafe(24)
+# Never option-like: argparse treats a leading "-" as an option string,
+# so a fixture starting with one is eaten before the CLI can refuse it.
+SIGNING = secrets.token_urlsafe(32).lstrip("-") or "x"
+UNRELATED = secrets.token_urlsafe(24).lstrip("-") or "x"
 
 
 class ScopedReadAPI:

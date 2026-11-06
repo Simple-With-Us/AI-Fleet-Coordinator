@@ -81,7 +81,7 @@ struct ApplyPlanView: View {
         VStack(alignment: .leading, spacing: 4) {
             Text("Apply Fix")
                 .font(.title2.weight(.semibold))
-            Text("\(session.ruleID) on \(session.seat)")
+            Text("\(session.ruleID) on \(session.seat), \(FleetHost.mac.inProse)")
                 .font(.callout)
                 .foregroundStyle(.secondary)
         }
@@ -211,7 +211,7 @@ struct ApplyPlanView: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             ForEach(entry.files, id: \.self) { file in
-                Text("~/" + file)
+                Text("~/" + file + " \(FleetHost.mac.inProse)")
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(entry.autofix.isAllowed ? Color.primary : Color.secondary)
                     .textSelection(.enabled)
@@ -327,7 +327,7 @@ struct ApplyActivityView: View {
                             ProgressView().controlSize(.small)
                         }
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("\(session.ruleID) on \(session.seat)")
+                            Text("\(session.ruleID) on \(session.seat), \(FleetHost.mac.inProse)")
                                 .font(.callout.weight(.medium))
                             Text(statusLine(session))
                                 .font(.caption)

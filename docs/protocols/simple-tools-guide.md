@@ -4,7 +4,7 @@ The one guide to the simple-tools on every transport: the stdio server (`simple-
 
 The collection is **simple-tools**.  The hosted server is **ST-MCP** and its admin is **ST-MCP + GR-MCP Admin**.  Use `simple-chat` for Zulip, `simple-board` for Linear, `simple-notes` for Apple Notes, and the FleetLink CLI for shares.  Fleet coordination is in **#Work-In-Progress**.  Use these component names in instructions and tool descriptions.
 
-At a glance: every tool is `<family>_<verb>`; every call may carry `identity`; a write must.  The stdio server serves 273 tools and the hosted server 279 (counted from the release source, which adds the seven `gr_*` tools; the deployed server lists 272 until that release ships): `eavesdropper_ack` is stdio only, and the hosted-only `whatsapp_read` is listed only to JET-CHAT, the full Jet login, while the WhatsApp bridge is on (it is default-off), which makes JET-CHAT's hosted list 280 (Tools by Family).
+At a glance: every tool is `<family>_<verb>`; every call may carry `identity`; a write must.  The stdio server serves 273 tools and the hosted server 280 (counted from the release source, which adds the seven `gr_*` tools and the hosted-only `catalog`; the deployed server lists 272 until that release ships): `eavesdropper_ack` is stdio only, and the hosted-only `whatsapp_read` is listed only to JET-CHAT, the full Jet login, while the WhatsApp bridge is on (it is default-off), which makes JET-CHAT's hosted list 281 (Tools by Family).
 
 ## How to Pass Identity
 
@@ -25,6 +25,7 @@ Three tools stand alone and need no identity:
 | `whoami` | The Zulip bot a call acts as (seat, bot email and id, role, realm, transport, post tag).  Takes `identity`. (`linear_whoami` and `fleetlink_whoami` answer for Linear and FleetLink.) |
 | `identities` | The bots this connection may act as and its default, with a status word per identity (`configured` or `missing`; stdio only lists identities whose credential file exists).  Takes no arguments. |
 | `guide` | This guide, or one `##` section by name (case and punctuation ignored).  Needs no credential.  A wrong name lists the section names. |
+| `catalog` | This connection's own tool catalog in bounded pages:  names and one-line descriptions only (full schemas come from `tools/list`, which accepts the same cursor).  Call with no arguments for the first page;  pass the returned `nextCursor` as `cursor` for the next page.  Hosted only. |
 
 Call `identities` first when a client is new, then `whoami` with an `identity` to prove the bot.  Test posts go to #sandbox.
 
@@ -54,7 +55,7 @@ Name = `<family>_<verb>`.  R = read, W = write (writes need `identity`).  Wher
 
 | Family | Count | Where | Purpose |
 |---|---|---|---|
-| (none) `whoami`, `identities`, `guide` | 3 | both | Identity and this guide (above) |
+| (none) `whoami`, `identities`, `guide`, `catalog` | 3 stdio, 4 hosted | both | Identity, this guide and the paged tool catalog (above; `catalog` is hosted only) |
 | `zulip_*` | 42 | both | Read and post on the fleet's Zulip as a bot |
 | `eavesdropper_*` | 6 stdio, 5 hosted | both | This seat's eavesdropper records |
 | `notes_*` | 8 | both | Apple Notes in the owner's Coding folder |
@@ -229,9 +230,13 @@ Per-seat policy is an allowlist layer over that credential: allowed actions, all
 
 **Status.** git-relay and GR-MCP are implemented, policy-checked and tested, but **not deployed**: no seat is pointed at it and no running service has been verified.  The owner has chosen the host and the rollout is staged; until the owner decides the cutover, the relay is not an available route: do not plan work that assumes it is live, and do not assume any other GitHub path or credential is available to a seat either.  What a seat may use today is whatever its own environment and owner have set up and verified.
 
-**Closing a pull request.**  `gr_wf_pr_close` closes one without merging and `gr_wf_pr_reopen` reopens it, as the seat's own GitHub App.  `simple-git call gr_wf_pr_close` does the same.  A merged PR is refused, and a PR already in that state answers with no write.  Who may close whose PR is the superseded-PR rule in `AGENTS.md`.
+**Closing a pull request.**  `gr_wf_pr_close` closes an open PR without merging it and never deletes its branch.  It requires `expected_head_sha` and `expected_base_ref`, and it returns a receipt.  `gr_wf_pr_reopen` reopens a closed PR, with `expected_head_sha` optional, and a PR already open answers with no write.  A merged PR is refused by both.  Those checks read the PR just before the write, so they narrow a race and do not close it.  `simple-git call` reaches both.  Who may close whose PR is the superseded-PR rule in `AGENTS.md`.
 
 `mint_token` is deliberately not exposed over GR-MCP or fronted by ST-MCP: it returns a raw credential, and a stdio transcript is too easy to capture.  A seat that needs a token for git-over-HTTPS calls the relay's HTTP API directly, where the answer goes only to that caller and the mint is capped the same way.
+
+**Fetch and clone need no token.**  `simple-git clone`, `fetch`, `pull`, `ls-remote`, `bundle` and `archive` run local git over the read-only route at `https://agents.simplewithus.com/git/`, as the seat's own GitHub App.  The relay holds the GitHub token, so the machine needs only `SIMPLE_TOOLS_BEARER`.  The route has no push.
+
+**Large files.**  A tool argument is a poor way to send a big file, because the model has to write out all of it.  `simple-git publish --repo OWNER/NAME --branch BRANCH --message TEXT --file LOCAL[=REPO_PATH]` reads the files from disk and commits them through `gr_wf_files_put`, with up to 2 MiB per file.  It splits a set past 20 files or 4 MiB into several commits, in order.  `--base BRANCH` creates the branch first.
 
 A relay refusal arrives as a tool error carrying the relay's own HTTP status, never as one of the codes below: 401 unauthenticated, 403 policy denial, 400 a bad request or a terminal GitHub refusal, 409 a replay refused, 429 a GitHub rate limit (retryable), 502 an unknown outcome (not retryable — check GitHub before retrying) and 503 app-token minting unavailable.
 
@@ -323,6 +328,7 @@ Every MCP tool has a command except the hosted-only `whatsapp_read`, which has n
 | MCP server | `simple-chat mcp` (what an MCP client's config runs) |
 | FleetLink | `fleetlink` (`fleetlink tool NAME` runs any `fleetlink_*` tool; stdio runs it that way) |
 | WhatsApp | None: `whatsapp_read` is hosted only (the whatsapp section above), so no CLI command or stdio tool serves it |
+| Catalog | None: `catalog` is hosted only (paged names and descriptions;  full schemas come from `tools/list` with the same cursor), so no CLI command or stdio tool serves it |
 | GitHub | `git-relay serve` (the relay) and `git-relay mcp` (GR-MCP over stdio); the relay is not deployed yet, so it is not an available route today |
 
 Long text stays out of `argv`: `--body-file PATH` (a file you own, mode 0600 or 0400, at most 64 KB) or `-` for standard input.

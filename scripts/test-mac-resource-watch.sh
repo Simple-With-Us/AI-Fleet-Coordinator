@@ -883,6 +883,37 @@ PY
 # real API and never holds a real credential.  The token is a synthetic
 # string; the only thing the test proves about it is that it is sent in the
 # Authorization header and never printed.
+# A stand-in for /usr/bin/security, so the keychain read can be exercised
+# without touching the owner's keychain.  FAKE_SECURITY_MODE says which answer
+# to give, and the exit codes are the real ones (44 is "no such item", 36 is
+# "the keychain refused the read"), so what the test checks is the watcher's
+# own mapping of them.
+FAKE_SECURITY="$(mktemp "${TMPDIR:-/tmp}/fake-security.XXXXXX")"
+trap 'rm -f "$FAKE_SECURITY"' EXIT
+cat > "$FAKE_SECURITY" <<'SH'
+#!/bin/sh
+case "${FAKE_SECURITY_MODE:-missing}" in
+  ok)
+    printf '%s\n' "$FAKE_SECURITY_VALUE"
+    exit 0
+    ;;
+  missing)
+    echo "security: SecKeychainSearchCopyNext: The specified item could not be found in the keychain." >&2
+    exit 44
+    ;;
+  locked)
+    echo "security: SecKeychainSearchCopyNext: User interaction is not allowed." >&2
+    exit 36
+    ;;
+  *)
+    echo "security: unexpected failure." >&2
+    exit 1
+    ;;
+esac
+SH
+chmod 755 "$FAKE_SECURITY"
+export FAKE_SECURITY
+
 python3 - "$ROOT/mac-resource-watch.py" <<'PY' || fail "scoped webhook token behaviour"
 import contextlib
 import http.server
@@ -985,7 +1016,11 @@ threading.Thread(target=server.serve_forever, daemon=True).start()
 mod.INFISICAL_API = "http://127.0.0.1:%d/api" % server.server_address[1]
 
 scratch = pathlib.Path(tempfile.mkdtemp(prefix="mrw-token-"))
-token_file = scratch / "mac-resource-watch-ro.token"
+# The keychain read is faked with the stand-in for `security`, so the test
+# exercises the real argument list and the real exit-code mapping and never
+# touches the owner's keychain.
+mod.SECURITY_BIN = os.environ["FAKE_SECURITY"]
+os.environ["FAKE_SECURITY_VALUE"] = SYNTHETIC_TOKEN
 
 # The environment must not leak into the cases below;  a case that wants the
 # environment sets it itself.
@@ -1017,39 +1052,53 @@ def spy_check_output(cmd, *args, **kwargs):
 subprocess.run = spy_run
 subprocess.check_output = spy_check_output
 
-try:
-    mod.INFISICAL_TOKEN_FILE = token_file
 
-    # 1. No token file at all:  no secret, and no request to Infisical.
-    #    Nothing else is tried either:  a missing token file must not send the
+def only_keychain_lookup():
+    """The keychain lookup ran, and it is the only credential source that ran.
+
+    Every other credential source is a fallback this watcher must never reach,
+    so the recorded subprocesses have to be exactly the one lookup.
+    """
+    assert SUBPROCESS_CALLS == [[
+        mod.SECURITY_BIN, "find-generic-password",
+        "-s", mod.KEYCHAIN_SERVICE,
+        "-a", mod.KEYCHAIN_ACCOUNT,
+        "-w",
+    ]], (
+        "the keychain lookup is the only credential source the watcher may "
+        "use, but it ran %r" % (SUBPROCESS_CALLS,))
+
+try:
+    mod.KEYCHAIN_SERVICE = "infisical-service-token"
+    mod.KEYCHAIN_ACCOUNT = "mac-resource-watch-ro"
+
+    # 1. No such item in the keychain:  no secret, and no request to Infisical.
+    #    Nothing else is tried either:  a missing item must not send the
     #    watcher looking for another credential source.
     REQUESTS.clear()
     SUBPROCESS_CALLS.clear()
-    token_file.unlink(missing_ok=True)
+    os.environ["FAKE_SECURITY_MODE"] = "missing"
     hooks = mod.load_webhooks()
     assert hooks == [], hooks
     assert not REQUESTS, REQUESTS
-    assert not SUBPROCESS_CALLS, (
-        "a missing token file must not reach for another credential source, "
-        "but it ran %r" % (SUBPROCESS_CALLS,))
+    only_keychain_lookup()
 
-    # 2. A token file that is not 0600 is refused:  0644 is readable by
-    #    everyone, and 0400 is owner-only but still not the 0600 this watcher
-    #    requires.  Either way there is no secret and no request.
-    token_file.write_text(SYNTHETIC_TOKEN, encoding="utf-8")
-    for mode in (0o644, 0o400, 0o660):
-        os.chmod(token_file, mode)
+    # 2. A keychain that refuses the read is refused the same way:  no secret
+    #    and no request.  The locked keychain is its own reason, so the log can
+    #    say the keychain was locked rather than that the token was absent.
+    for mode in ("locked", "unreadable"):
         REQUESTS.clear()
         SUBPROCESS_CALLS.clear()
+        os.environ["FAKE_SECURITY_MODE"] = mode
         hooks = mod.load_webhooks()
-        assert hooks == [], (oct(mode), hooks)
-        assert not REQUESTS, (oct(mode), REQUESTS)
-        assert not SUBPROCESS_CALLS, (
-            "a wrongly permissive token file must not reach for another "
+        assert hooks == [], (mode, hooks)
+        assert not REQUESTS, (mode, REQUESTS)
+        assert len(SUBPROCESS_CALLS) == 1, (
+            "a keychain that refused the read must not reach for another "
             "credential source, but it ran %r" % (SUBPROCESS_CALLS,))
 
-    # 3. A 200 answer supplies the url/secret pair.
-    os.chmod(token_file, 0o600)
+    # 3. The item reads, and a 200 answer supplies the url/secret pair.
+    os.environ["FAKE_SECURITY_MODE"] = "ok"
     REQUESTS.clear()
     AUTHORIZATIONS.clear()
     hooks = mod.load_webhooks()
@@ -1086,9 +1135,7 @@ try:
         hooks = mod.load_webhooks()
         assert hooks == [], (status, hooks)
         assert REQUESTS, "the Infisical path must have been tried"
-        assert not SUBPROCESS_CALLS, (
-            "a failed Infisical fetch must not fall back to another credential "
-            "source, but it ran %r" % (SUBPROCESS_CALLS,))
+        only_keychain_lookup()
     FAILED.clear()
 
     # 5b. A truncated response fails closed too.  It raises http.client's own
@@ -1101,9 +1148,7 @@ try:
     SUBPROCESS_CALLS.clear()
     hooks = mod.load_webhooks()
     assert hooks == [], hooks
-    assert not SUBPROCESS_CALLS, (
-        "a truncated response must not fall back to another credential source, "
-        "but it ran %r" % (SUBPROCESS_CALLS,))
+    only_keychain_lookup()
     TRUNCATED.clear()
 
     # 6. The environment wins over the Infisical value.
@@ -1258,8 +1303,11 @@ threading.Thread(target=server.serve_forever, daemon=True).start()
 mod.INFISICAL_API = "http://127.0.0.1:%d/api" % server.server_address[1]
 
 scratch = pathlib.Path(tempfile.mkdtemp(prefix="mrw-status-"))
-token_file = scratch / "mac-resource-watch-ro.token"
-mod.INFISICAL_TOKEN_FILE = token_file
+# The keychain read is faked with the stand-in for `security`, so the test
+# exercises the real argument list and the real exit-code mapping and never
+# touches the owner's keychain.
+mod.SECURITY_BIN = os.environ["FAKE_SECURITY"]
+os.environ["FAKE_SECURITY_VALUE"] = SYNTHETIC_TOKEN
 
 ENV_KEYS = (
     "BOTFLEET_HOUSEKEEPER_WEBHOOK_URL",
@@ -1276,33 +1324,38 @@ def clear_env():
 
 
 try:
-    # 1. A missing token file is a MISSING TOKEN FILE, not "no valid
+    # 1. No such item in the keychain is a MISSING TOKEN, not "no valid
     #    urls/secrets found" about everything.
-    token_file.unlink(missing_ok=True)
+    os.environ["FAKE_SECURITY_MODE"] = "missing"
     token, status = mod._service_token_status()
     assert token == "", token
     assert status == "no-token", status
 
-    # 2. A token file that is not 0600 is refused, and says so.
-    token_file.write_text(SYNTHETIC_TOKEN, encoding="utf-8")
-    for mode in (0o644, 0o400, 0o660):
-        os.chmod(token_file, mode)
-        token, status = mod._service_token_status()
-        assert token == "", (oct(mode), token)
-        assert status == "token-mode", (oct(mode), status)
+    # 2. A keychain that refuses the read says so, because a locked keychain
+    #    and an absent token are different problems with different fixes.
+    os.environ["FAKE_SECURITY_MODE"] = "locked"
+    token, status = mod._service_token_status()
+    assert token == "", token
+    assert status == "keychain-locked", status
 
-    # 3. A 0600 token file reads.
-    os.chmod(token_file, 0o600)
+    # 3. An item that is there but cannot be read is its own outcome too.
+    os.environ["FAKE_SECURITY_MODE"] = "unreadable"
+    token, status = mod._service_token_status()
+    assert token == "", token
+    assert status == "token-unreadable", status
+
+    # 4. The item reads.
+    os.environ["FAKE_SECURITY_MODE"] = "ok"
     token, status = mod._service_token_status()
     assert token == SYNTHETIC_TOKEN, token
     assert status == "ok", status
 
-    # 3a. The value-only view of the same read agrees, and still refuses a
-    #     wrongly permissive file with no token at all.
+    # 4a. The value-only view of the same read agrees, and a locked keychain
+    #     still yields no token at all.
     assert mod._service_token() == SYNTHETIC_TOKEN
-    os.chmod(token_file, 0o644)
+    os.environ["FAKE_SECURITY_MODE"] = "locked"
     assert mod._service_token() == ""
-    os.chmod(token_file, 0o600)
+    os.environ["FAKE_SECURITY_MODE"] = "ok"
 
     # 4. Every refusal on the Infisical side is told apart.
     for http_status, expected in ((404, "absent"), (403, "forbidden"), (500, "http-500")):

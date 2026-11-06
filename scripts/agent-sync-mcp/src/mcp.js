@@ -16,7 +16,8 @@
 import { createMcpHandler } from "agents/mcp/server";
 import { Server, ProtocolError, ProtocolErrorCode } from "@modelcontextprotocol/server";
 import { UnknownTool, hostedInstructions, wakeOnlyInstructions } from "./hosted-tools.js";
-import { IdentityRouter } from "./delegated-identities.js";
+import { IdentityRouter, pageOf, TOOLS_LIST_PAGE } from "./delegated-identities.js";
+import { ToolError } from "./contract.js";
 import { PUBLIC_HOST } from "./config.js";
 import { EventError } from "./events.js";
 import { z } from "zod";
@@ -74,7 +75,17 @@ export function buildServer(tools, events = null) {
     server.setRequestHandler("events/subscribe", { params: EventParams.subscribe }, (params) => asProtocolError(() => events.subscribe(params)));
     server.setRequestHandler("events/unsubscribe", { params: EventParams.unsubscribe }, (params) => asProtocolError(() => events.unsubscribe(params)));
   }
-  server.setRequestHandler("tools/list", async () => ({ tools: [...toolList] }));
+  server.setRequestHandler("tools/list", async (request) => {
+    // No cursor:  the full list, unchanged.  A cursor:  one bounded page (AFC-641).
+    const cursor = request?.params?.cursor;
+    if (cursor === undefined) return { tools: [...toolList] };
+    try {
+      return pageOf(toolList, cursor, TOOLS_LIST_PAGE);
+    } catch (error) {
+      if (error instanceof ToolError) throw new ProtocolError(ProtocolErrorCode.InvalidParams, error.message);
+      throw error;
+    }
+  });
   server.setRequestHandler("tools/call", async (request) => {
     const name = request.params?.name;
     let result;

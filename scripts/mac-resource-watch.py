@@ -5,11 +5,11 @@ Launchd: com.jay.mac-resource-watch (every 5 min).
 On-demand: python3 ~/apps/mac-resource-watch.py --once
 Never prints webhook secrets.  Load BOTFLEET_HOUSEKEEPER_WEBHOOK_* from the environment, else
 from Infisical Fleet-OPS prod:/botfleet-housekeeper-webhook with the scoped read-only service
-token in ~/.config/infisical/mac-resource-watch-ro.token, and, if present,
+token in the owner's login keychain, and, if present,
 GROK_BOT_HOUSEKEEPER_WEBHOOK_* from the environment, without echoing values.
 The token is scoped to /botfleet-housekeeper-webhook alone, so the Grok Bot pair has no
-Infisical source.  There is no fleet-secrets fallback and no cached copy:  a missing,
-unreadable or wrongly permissive token file, or any Infisical error, yields no webhook.
+Infisical source.  There is no fleet-secrets fallback and no cached copy:  a missing
+keychain item, a locked keychain or any Infisical error yields no webhook.
 BotFleet is the primary wake.  Grok Bot is optional.
 
 The log says where each wake's credentials came from and, when they are missing, WHY
@@ -31,7 +31,6 @@ import os
 import re
 import socket
 import ssl
-import stat
 import subprocess
 import sys
 import threading
@@ -48,14 +47,24 @@ STATE_DIR = HOME / ".claude-disk-janitor"
 STATE_FILE = STATE_DIR / "resource-watch-state.json"
 LOG_FILE = HOME / "Library" / "Logs" / "mac-resource-watch.log"
 BF_SECRET_FOLDER = "/botfleet-housekeeper-webhook"
-# The scoped read-only service token for this watcher (AFC-621).  It lives in
-# its own owner-only file, NOT in the shared `fleet-secrets` reader and NOT in
-# the environment:  the token is what the watcher is allowed to read, and a
-# file that only this watcher reads keeps it that narrow.
-INFISICAL_TOKEN_FILE = HOME / ".config" / "infisical" / "mac-resource-watch-ro.token"
-# The token file must be owner-only.  0600 exactly:  a token any other user
-# can read is refused rather than used.
-INFISICAL_TOKEN_MODE = 0o600
+# The scoped read-only service token for this watcher (AFC-621, AFC-624).  It lives in
+# the owner's login keychain as one generic-password item per token:  the service is
+# KEYCHAIN_SERVICE and the account is the token's registry name, so a reader holding the
+# registry row can find the item by that name.  It is NOT in the shared `fleet-secrets`
+# reader, NOT in the environment and NOT in a file on disk:  the token is what the
+# watcher is allowed to read, and a store only this watcher reads keeps it that narrow.
+KEYCHAIN_SERVICE = "infisical-service-token"
+KEYCHAIN_ACCOUNT = "mac-resource-watch-ro"
+# The login keychain is reachable only from the owner's GUI session.  A launchd agent
+# bootstrapped into gui/$(id -u) is in that session; a plain shell over SSH is not, and
+# `security` there answers "User interaction is not allowed".
+SECURITY_BIN = "/usr/bin/security"
+# `security find-generic-password` exit codes:  44 is errSecItemNotFound (there is no
+# such item) and 36 is errSecInteractionNotAllowed (the keychain is locked, or the
+# caller is outside the GUI session).  Both are refusals, and the watcher has to be able
+# to tell the owner which one it was.
+SECURITY_ITEM_NOT_FOUND = 44
+SECURITY_INTERACTION_NOT_ALLOWED = 36
 INFISICAL_API = "https://app.infisical.com/api"
 INFISICAL_PROJECT_ID = "8dae6d03-8f12-48b2-adf3-e5c1b881c8c5"
 INFISICAL_ENVIRONMENT = "prod"
@@ -256,38 +265,49 @@ def save_state(state: dict) -> None:
 
 
 def _service_token_status() -> tuple[str, str]:
-    """The scoped read-only Infisical token from its owner-only file, and why.
+    """The scoped read-only Infisical token from the owner's login keychain, and why.
 
     Returns (token, status).  The token is "" for every refusal, exactly as
     before;  the status says WHICH refusal it was -- "no-token" (there is no
-    such file), "token-mode" (the file is not 0600) or "token-unreadable" --
+    such item in the keychain), "keychain-locked" (the keychain refused the
+    read, because it is locked or the caller is outside the owner's GUI
+    session) or "token-unreadable" (the item is there but the read failed) --
     because a watcher that skipped its delivery for one of those reasons has
     to be able to tell the owner which one it was.
 
     The token value is never printed, logged or echoed.
     """
+    command = [
+        SECURITY_BIN,
+        "find-generic-password",
+        "-s",
+        KEYCHAIN_SERVICE,
+        "-a",
+        KEYCHAIN_ACCOUNT,
+        "-w",
+    ]
     try:
-        mode = stat.S_IMODE(os.stat(INFISICAL_TOKEN_FILE).st_mode)
-    except FileNotFoundError:
-        return "", "no-token"
-    except OSError:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
         return "", "token-unreadable"
-    if mode != INFISICAL_TOKEN_MODE:
-        return "", "token-mode"
-    try:
-        with open(INFISICAL_TOKEN_FILE, encoding="utf-8") as handle:
-            token = handle.read().strip()
-    except OSError:
-        return "", "token-unreadable"
-    if not token:
+    if result.returncode == 0:
+        token = result.stdout.strip()
+        return (token, "ok") if token else ("", "no-token")
+    detail = (result.stderr or "").lower()
+    if result.returncode == SECURITY_ITEM_NOT_FOUND or "could not be found" in detail:
         return "", "no-token"
-    return token, "ok"
+    if (
+        result.returncode == SECURITY_INTERACTION_NOT_ALLOWED
+        or "interaction is not allowed" in detail
+    ):
+        return "", "keychain-locked"
+    return "", "token-unreadable"
 
 
 def _service_token() -> str:
-    """The scoped read-only Infisical token from its owner-only file, or "".
+    """The scoped read-only Infisical token from the owner's login keychain, or "".
 
-    A missing, unreadable or wrongly-permissioned token file yields no token
+    A missing item, a locked keychain or an unreadable store yields no token
     and no output:  the watcher then simply has no webhook, which is the
     fail-closed behaviour the scoped migration asks for.  The token value is
     never printed, logged or echoed.
@@ -420,8 +440,8 @@ def _read_webhook_status(folder: str, url_key: str, secret_key: str) -> tuple[st
 
     Returns (url, secret, status).  The status says where the values came
     from, or why they are missing:  "env", "ok", "env+infisical", "no-token",
-    "token-mode", "token-unreadable", "absent", "forbidden", "http-<code>",
-    "timeout", "unreachable", "truncated" or "bad-output".
+    "keychain-locked", "token-unreadable", "absent", "forbidden",
+    "http-<code>", "timeout", "unreachable", "truncated" or "bad-output".
     """
     url, secret = _env_webhook(url_key, secret_key)
     if url and secret:
