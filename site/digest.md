@@ -446,7 +446,7 @@ Agent names are stripped from titles; HTML site shows logos instead.
 ### Merged PRs
 
 - **AFC** [#280](https://github.com/jaywedgeworth22/AI-Fleet-Coordinator/pull/280): Rename: ai-fleet-coordinator → AI-Fleet-Coordinator _(by jaywedgeworth22)_
-- **AFC** `Codex` [#281](https://github.com/jaywedgeworth22/AI-Fleet-Coordinator/pull/281): docs(agent-sync): no merge while — review is pending (owner ruling 2026-09-23) _(by jaywedgeworth22)_
+- **AFC** `Codex` [#281](https://github.com/jaywedgeworth22/AI-Fleet-Coordinator/pull/281): docs([retired identifier]): no merge while — review is pending (owner ruling 2026-09-23) _(by jaywedgeworth22)_
 - **BF** [#525](https://github.com/jaywedgeworth22/BotFleet/pull/525): fix(companion): APNs HTTP/2 transport hardening + circuit breaker _(by jaywedgeworth22)_
 - **BF** [#526](https://github.com/jaywedgeworth22/BotFleet/pull/526): chore(updater): transition-capable bootstrap before bundle rename _(by jaywedgeworth22)_
 - **BF** `Grok` [#528](https://github.com/jaywedgeworth22/BotFleet/pull/528): feat(ui): capability matrix + usage expand + API-vs-sub projection + — quota _(by jaywedgeworth22)_
@@ -1407,12 +1407,12 @@ Agent names are stripped from titles; HTML site shows logos instead.
 - **AFC** [#247](https://github.com/jaywedgeworth22/AI-Fleet-Coordinator/pull/247): Show HogHunter on the activity digest legend _(by jaywedgeworth22)_
 - **AFC** [#248](https://github.com/jaywedgeworth22/AI-Fleet-Coordinator/pull/248): Fix launchd gdrive File Provider mirror and BotFleet crash loop _(by jaywedgeworth22)_
 - **AFC** [#249](https://github.com/jaywedgeworth22/AI-Fleet-Coordinator/pull/249): fix(fleet): squash-safe landed check, mac-collab reclaim tests, token staleness _(by jaywedgeworth22)_
-- **AFC** [#250](https://github.com/jaywedgeworth22/AI-Fleet-Coordinator/pull/250): docs: name needs-mac label in AGENT-SYNC.md mirror _(by jaywedgeworth22)_
+- **AFC** [#250](https://github.com/jaywedgeworth22/AI-Fleet-Coordinator/pull/250): docs: name needs-mac label in FLEET-PROTOCOL.md mirror _(by jaywedgeworth22)_
 - **AFC** `Claude` [#251](https://github.com/jaywedgeworth22/AI-Fleet-Coordinator/pull/251): feat(fleet): Instinct onboarding prompt, board /login form, GitHub outbox Slack bridge _(by jaywedgeworth22)_
 - **AFC** [#252](https://github.com/jaywedgeworth22/AI-Fleet-Coordinator/pull/252): fix(rag): wire per_doc/rerank/prefer_lessons through the public recall path _(by jaywedgeworth22)_
 - **AFC** [#253](https://github.com/jaywedgeworth22/AI-Fleet-Coordinator/pull/253): docs(rag): record Sep 17 reranker bake-off results _(by jaywedgeworth22)_
 - **AFC** [#254](https://github.com/jaywedgeworth22/AI-Fleet-Coordinator/pull/254): fix(rag): close recall-tunnel supervisor pid-file race, bound HTTP retry/backoff env vars _(by jaywedgeworth22)_
-- **AFC** [#255](https://github.com/jaywedgeworth22/AI-Fleet-Coordinator/pull/255): docs: sync AGENT-SYNC.md mirror to live (Mac app builds, Fleet mode/delegation) _(by jaywedgeworth22)_
+- **AFC** [#255](https://github.com/jaywedgeworth22/AI-Fleet-Coordinator/pull/255): docs: sync FLEET-PROTOCOL.md mirror to live (Mac app builds, Fleet mode/delegation) _(by jaywedgeworth22)_
 - **AR** [#211](https://github.com/jaywedgeworth22/Autorotate/pull/211): chore(web): remove unvetted plugin-inspect-react-code plugin _(by jaywedgeworth22)_
 - **BF** `Sentry` [#462](https://github.com/jaywedgeworth22/BotFleet/pull/462): fix: Propagate malformed Infisical — DSNs and fix local packaging _(by jaywedgeworth22)_
 - **BF** `Sentry` [#463](https://github.com/jaywedgeworth22/BotFleet/pull/463): fix(observability): bundle — SDK in packaged app _(by jaywedgeworth22)_

@@ -61,7 +61,7 @@ import urllib.request
 # The fleet's coordination channel, from the runtime that owns it:  a provisioned bot has to be
 # subscribed to the channel the seats actually use, and a name written here goes stale the day
 # the realm renames it.  This script runs from scripts/, which is where the package lives.
-from agent_sync.zulip import default_channel
+from simple_tools.zulip import default_channel
 
 REALM = "https://simplewithus.zulipchat.com"
 ADMIN_FOLDER = "/zulip_operator"
@@ -134,7 +134,7 @@ ROSTER = [
         "OpenCode",
         "opencode",
         "OpenCode",
-    ),  # the stem breaks the Title Case rule: SEAT_FILE_OVERRIDES in agent_sync/zulip.py
+    ),  # the stem breaks the Title Case rule: SEAT_FILE_OVERRIDES in simple_tools/zulip.py
     ("Rob (Muse)", "muse-assist", "MA"),
     # BotFleet role bots
     ("BF-Builder", "bf-builder", "BF-Builder"),
@@ -166,7 +166,7 @@ def call(email, key, method, path, data=None):
         url,
         data=body,
         method=method,
-        headers={"Authorization": auth, "User-Agent": "agent-sync-provision/2"},
+        headers={"Authorization": auth, "User-Agent": "simple-tools-provision/2"},
     )
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:

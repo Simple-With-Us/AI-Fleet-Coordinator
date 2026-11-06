@@ -1,21 +1,21 @@
 {
   "simple-tools-mcp": {
     "deployer": "worker-deploy",
-    "gate_variable": "SIMPLE_TOOLS_MCP_DEPLOY_ENABLED",
+    "gate_variable": "AGENT_SYNC_MCP_DEPLOY_ENABLED",
     "min_deploy_interval_seconds": 3600,
-    "config": "scripts/agent-sync-mcp/wrangler.jsonc",
+    "config": "scripts/simple-tools-mcp/wrangler.jsonc",
     "command": [
-      "scripts/agent-sync-mcp/node_modules/.bin/wrangler",
+      "scripts/simple-tools-mcp/node_modules/.bin/wrangler",
       "deploy",
       "--config",
-      "scripts/agent-sync-mcp/wrangler.jsonc"
+      "scripts/simple-tools-mcp/wrangler.jsonc"
     ],
     "paths": [
-      "scripts/agent-sync-mcp/src/**",
-      "scripts/agent-sync-mcp/wrangler.jsonc",
-      "scripts/agent-sync-mcp/package.json",
-      "scripts/agent-sync-mcp/package-lock.json",
-      "scripts/agent_sync/mcp/*.json",
+      "scripts/simple-tools-mcp/src/**",
+      "scripts/simple-tools-mcp/wrangler.jsonc",
+      "scripts/simple-tools-mcp/package.json",
+      "scripts/simple-tools-mcp/package-lock.json",
+      "scripts/simple_tools/mcp/*.json",
       "fleet-apps.json"
     ],
     "ignore": [

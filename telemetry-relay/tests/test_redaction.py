@@ -1,4 +1,5 @@
-"""Relay blocked_values stay in lockstep with scripts/agent_sync/secretscan.py."""
+"""Relay blocked_values stay in lockstep with scripts/simple_tools/secretscan.py."""
+
 from __future__ import annotations
 
 import re
@@ -9,7 +10,7 @@ from pathlib import Path
 from relay_common import SCRIPTS, block, config_text
 
 sys.path.insert(0, str(SCRIPTS))
-from agent_sync.secretscan import scan  # noqa: E402
+from simple_tools.secretscan import scan
 
 
 def _canon(pattern: str) -> str:
@@ -26,7 +27,7 @@ _DIVERGENCES = {
 
 
 def _secretscan_raw_patterns() -> list[str]:
-    src = (SCRIPTS / "agent_sync" / "secretscan.py").read_text(encoding="utf-8")
+    src = (SCRIPTS / "simple_tools" / "secretscan.py").read_text(encoding="utf-8")
     chunk = src[src.index("_PATTERNS") : src.index("_ZULIP_SHAPED")]
     # File text, not eval: r"\b..." in the source is backslash + b, which is the pattern.
     found = re.findall(r're\.compile\(r("(?:\\.|[^"\\])*")\)', chunk)
@@ -108,7 +109,7 @@ class RedactionParityTests(unittest.TestCase):
 class SecretscanSourceTests(unittest.TestCase):
     def test_relay_imports_the_repo_copy(self) -> None:
         path = Path(scan.__code__.co_filename).resolve()
-        self.assertEqual(path, (SCRIPTS / "agent_sync" / "secretscan.py").resolve())
+        self.assertEqual(path, (SCRIPTS / "simple_tools" / "secretscan.py").resolve())
 
 
 if __name__ == "__main__":
