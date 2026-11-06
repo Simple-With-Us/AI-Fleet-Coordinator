@@ -238,6 +238,7 @@ const GUARD_CASES = [
   ["variables under the raised limit", "query { viewer { id } }", { value: "x".repeat(30000) }, "query"],
   ["variables at the raised limit", "query { viewer { id } }", { value: "x".repeat(99988) }, "query"],
   ["variables over the raised limit", "query { viewer { id } }", { value: "x".repeat(99989) }, "query"],
+  ["astral variables count as single characters", "query { viewer { id } }", { value: "\u{1F600}".repeat(60000) }, "query"],
   ["too many tokens", `query { ${Array.from({ length: 4100 }, () => "a: b").join(" ")} }`, {}, "query"],
   ["mutation issueCreate", "mutation M($input: IssueCreateInput!) { issueCreate(input: $input) { success issue { id } } }", { input: { title: "t", teamId: "team" } }, "mutation"],
   ["mutation aliased root", "mutation { made: issueCreate(input: { title: \"t\", labelIds: [\"l1\", \"l2\"], priority: 2, estimate: 1.5, flag: true, none: null, kind: BUG }) { success } }", {}, "mutation"],

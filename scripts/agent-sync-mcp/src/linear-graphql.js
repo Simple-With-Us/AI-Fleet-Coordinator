@@ -24,7 +24,9 @@ function copyVariables(variables) {
     invalid("variables must be JSON data.");
   }
   if (typeof encoded !== "string") invalid("variables must be a JSON object.");
-  if (encoded.length > VARIABLES_LIMIT) invalid("variables exceed the 100000-character limit.");
+  // Code points, matching Python len() in scripts/linear-board/board:  String.length would count
+  // astral characters (emoji) as two UTF-16 units and diverge from the board client.
+  if ([...encoded].length > VARIABLES_LIMIT) invalid("variables exceed the 100000-character limit.");
 
   let copied;
   try {

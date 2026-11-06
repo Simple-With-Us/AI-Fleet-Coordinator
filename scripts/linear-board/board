@@ -3896,7 +3896,7 @@ GQL_DOCUMENT_LIMIT = 24000
 # Raised from 24000 (AFC-646):  the shared deficiency log passed 26,729 characters and no seat
 # could update it in place.  Still a guard against pathological requests, far under Linear's own
 # request-size limits.  Keep in sync with VARIABLES_LIMIT in scripts/agent-sync-mcp/src/linear-graphql.js.
-GQL_VARIABLES_LIMIT = 100000
+GQL_VARIABLES_LIMIT = 100000  # Unicode code points (str len); linear-graphql.js counts the same
 GQL_MAX_DEPTH = 16
 GQL_MAX_FIELDS = 500
 GQL_MAX_TOKENS = 8000
