@@ -206,11 +206,14 @@ export class GrRelayClient {
       // marker:  the collapsed prose stays fixed, but without the marker the
       // hosted front cannot tell a credential refusal from any other 4xx, so
       // gr_wf_file_put/gr_wf_files_put callers lost their refused_secret reason.
-      // The vouched family is every fixed refusal the workflow verbs raise:
-      // the "credential-shaped ..." strings and the secrets-API one.
+      // The vouched family is the relay's fixed credential refusals:  the
+      // workflow verbs' "credential-shaped ..." strings and the pre-dispatch
+      // scanner's anchored field/pattern tail.  The secrets-API variable
+      // refusal stays OUT:  it also fires for over-limit or non-string values,
+      // so it is not a credential verdict.
       const credentialMarker = typeof parsed.error === "string"
         && (parsed.error.startsWith("credential-shaped")
-          || parsed.error === "invalid or secret variable value; this is not a secrets API");
+          || /^[^\n]{1,200} looks like it contains a credential \([A-Za-z0-9_]{1,60}\); refusing to relay it$/.test(parsed.error));
       return {status:response.status,body:{error:"workflow_request_refused", ...(credentialMarker ? {reason:"credential_scan"} : {}), ...(parsed.retryable===true ? {retryable:true} : {})}};
     } catch {return unavailable();}
   }

@@ -1484,11 +1484,12 @@ export class HostedTools {
       // marker after callWorkflow collapses the workflow body, and the
       // pre-dispatch scanner's family from the seven-action path - anchored on
       // the fixed refusal tail, with no whitelist on the field path it names
-      // (real field paths carry spaces and parens too).
+      // (real field paths carry spaces and parens too).  The secrets-API
+      // variable refusal is excluded:  it also fires for over-limit or
+      // non-string values, so it is not a credential verdict.
       const credentialRefusal =
         refusalShape.data.reason === "credential_scan"
         || refusalError === "credential-shaped content refused"
-        || refusalError === "invalid or secret variable value; this is not a secrets API"
         || (typeof refusalError === "string"
           && /^[^\n]{1,200} looks like it contains a credential \([A-Za-z0-9_]{1,60}\); refusing to relay it$/.test(refusalError));
       if (credentialRefusal) {

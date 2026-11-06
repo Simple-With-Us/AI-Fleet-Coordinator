@@ -120,7 +120,7 @@ test("every fixed workflow credential refusal surfaces as refused_secret through
     "credential-shaped binary blob refused",
     "credential-shaped file path refused",
     "credential-shaped repository metadata name refused",
-    "invalid or secret variable value; this is not a secrets API",
+    "args.files[0].content_b64 looks like it contains a credential (github_token); refusing to relay it",
   ]) {
     const tools = grHarness(clientWith({ error }, 400), { ...config, grWorkflowEnabled: true });
     const out = await tools.call("gr_wf_files_put", {
@@ -133,6 +133,25 @@ test("every fixed workflow credential refusal surfaces as refused_secret through
     assert.equal(out.isError, true);
     assert.equal(codeOf(out), "refused_secret", error);
     assert.match(out.content[0].text, /Nothing was written/);
+  }
+});
+
+test("the ambiguous secrets-API variable refusal stays relay_refused", async () => {
+  // The same string fires for over-limit and non-string variable values
+  // (workflow_verbs.py _variable_value), so it is not a credential verdict.
+  for (const enabled of [true, false]) {
+    const tools = grHarness(
+      clientWith({ error: "invalid or secret variable value; this is not a secrets API" }, 400),
+      { ...config, grWorkflowEnabled: enabled },
+    );
+    const out = enabled
+      ? await tools.call("gr_wf_files_put", {
+          repo: "a/b", branch: "jet/x", message: "m",
+          expected_head_sha: "a".repeat(40), files: [{ path: "x.txt", content_b64: "eA==" }],
+        })
+      : await tools.call("gr_comment_pr", { repo: "a/b", number: 1, body: "x" });
+    assert.equal(out.isError, true);
+    assert.equal(codeOf(out), "relay_refused", `grWorkflowEnabled=${enabled}`);
   }
 });
 
