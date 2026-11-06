@@ -30,6 +30,28 @@ struct ListenerStatus: Decodable, Equatable {
         var overflow: Int?
         var reasons: [String: Int]?
         var totals: HeldBackTotals?
+        /// How old the oldest held wake is, in seconds.
+        var oldest_age: Double?
+    }
+
+    /// The fallback an OpenRouter-backed seat publishes:  its model, its own pin, and whether it
+    /// would answer right now.  An eavesdropper publishes this only for `fallback = "openrouter"`.
+    struct Fallback: Decodable, Equatable {
+        var runtime: String?
+        var model: String?
+        var pinned: Bool?
+        var pin: Pin?
+        var ready: Bool?
+        var stands_in: Bool?
+        var primary_hold: String?
+    }
+
+    /// Whether an http seat's routine can be reached.
+    struct Routine: Decodable, Equatable {
+        var ready: Bool?
+        var why: String?
+        var detail: String?
+        var host: String?
     }
 
     /// Chat nudge queue counters published by the Operator for a seat.
@@ -89,6 +111,14 @@ struct ListenerStatus: Decodable, Equatable {
         var chatNudges: ChatNudges?
         /// Quota reading for this seat.
         var quota: Quota?
+        /// The model an OpenRouter wake runs.  An eavesdropper publishes it for that wake only.
+        var model: String?
+        /// The OpenRouter fallback, when the seat has one.
+        var fallback: Fallback?
+        /// Whether an http seat's routine can be reached.
+        var routine: Routine?
+        /// Whether the seat may route a wake to another seat.
+        var routeEnabled: Bool?
 
         enum CodingKeys: String, CodingKey {
             case bot, wake, muse, claude, provider, creds, connected, paused
@@ -97,11 +127,13 @@ struct ListenerStatus: Decodable, Equatable {
             case budget, live, pin, red
             case heldBack = "held_back"
             case chatNudges = "chat_nudges"
-            case quota
+            case quota, model, fallback, routine
+            case routeEnabled = "route_enabled"
         }
     }
 
-    /// The pin that proves a seat's binary works.
+    /// The pin that proves a seat's binary works, as the eavesdropper judges it on every publish:
+    /// the pin file against the binary (or the model and request) the seat runs now.
     struct Pin: Decodable, Equatable {
         /// Whether the eavesdropper holds the pin.
         var pinned: Bool?
@@ -109,7 +141,18 @@ struct ListenerStatus: Decodable, Equatable {
         var pinned_muse: String?
         /// The pinned claude binary.
         var pinned_claude: String?
-        /// The eavesdropper's own reason,  when the pin is not what it should be.
+        /// The pinned OpenRouter model.
+        var pinned_model: String?
+        /// The claude binary on disk now.
+        var claude: String?
+        /// The muse binary on disk now.
+        var muse: String?
+        /// The OpenRouter model the seat runs now.
+        var model: String?
+        /// The OpenRouter role the pin is for.
+        var role: String?
+        /// The eavesdropper's own reason,  when the pin is not what it should be:  `not_pinned`,
+        /// `pin_stale`, `pin_unverified`, `pin_unreadable`, `no_claude` or `no_muse`.
         var why: String?
     }
 
@@ -151,6 +194,11 @@ struct ListenerStatus: Decodable, Equatable {
         /// The seat partition file this eavesdropper reads.  An eavesdropper from before this field does
         /// not say.
         var partition_file: String?
+
+        enum CodingKeys: String, CodingKey {
+            case seats, pause, updated, started, version, instance, disabled, skipped_seats
+            case config_errors, reload_refused, reload_at, partition_file
+        }
     }
 
     /// Whether the eavesdropper is running.
@@ -163,6 +211,10 @@ struct ListenerStatus: Decodable, Equatable {
     var plugin: JSONValue?
     /// The launch agent that keeps the eavesdropper alive.
     var launch_agent: JSONValue?
+
+    enum CodingKeys: String, CodingKey {
+        case running, pid, status, plugin, launch_agent
+    }
 
     /// The seat's state,  when the eavesdropper has one.
     func seat(_ tag: String) -> Seat? {
@@ -182,6 +234,77 @@ struct ListenerStatus: Decodable, Equatable {
     /// The seats the eavesdropper knows.
     var seatTags: [String] {
         (status?.seats ?? [:]).keys.sorted()
+    }
+}
+
+// MARK: - Reading the status field by field
+
+// The status is read one field at a time, the way Seat Activity reads its own:  one field an
+// eavesdropper writes in a shape Muster does not expect costs that field, and never the whole
+// status.  A strict read made one mistyped number blank every seat and say the eavesdropper was
+// not running.  The decoders live in extensions so the memberwise initializers stay.
+
+private extension KeyedDecodingContainer {
+    /// A field, or nil when it is missing, null or not of this type.
+    func lenient<T: Decodable>(_ type: T.Type, _ key: Key) -> T? {
+        guard let value = try? decodeIfPresent(type, forKey: key) else { return nil }
+        return value
+    }
+}
+
+extension ListenerStatus {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        running = container.lenient(Bool.self, .running)
+        pid = container.lenient(Int.self, .pid)
+        status = container.lenient(State.self, .status)
+        plugin = container.lenient(JSONValue.self, .plugin)
+        launch_agent = container.lenient(JSONValue.self, .launch_agent)
+    }
+}
+
+extension ListenerStatus.State {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        seats = container.lenient([String: ListenerStatus.Seat].self, .seats)
+        pause = container.lenient([String: ListenerStatus.PauseEntry].self, .pause)
+        updated = container.lenient(Double.self, .updated)
+        started = container.lenient(Double.self, .started)
+        version = container.lenient(String.self, .version)
+        instance = container.lenient(String.self, .instance)
+        disabled = container.lenient([String].self, .disabled)
+        skipped_seats = container.lenient([String: [String]].self, .skipped_seats)
+        config_errors = container.lenient([String].self, .config_errors)
+        reload_refused = container.lenient([String].self, .reload_refused)
+        reload_at = container.lenient(Double.self, .reload_at)
+        partition_file = container.lenient(String.self, .partition_file)
+    }
+}
+
+extension ListenerStatus.Seat {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        bot = container.lenient(String.self, .bot)
+        wake = container.lenient(String.self, .wake)
+        muse = container.lenient(String.self, .muse)
+        claude = container.lenient(String.self, .claude)
+        provider = container.lenient(String.self, .provider)
+        creds = container.lenient(String.self, .creds)
+        connected = container.lenient(Bool.self, .connected)
+        paused = container.lenient(Bool.self, .paused)
+        wakesPaused = container.lenient(Bool.self, .wakesPaused)
+        wakes24h = container.lenient(Int.self, .wakes24h)
+        budget = container.lenient([String: JSONValue].self, .budget)
+        live = container.lenient([String: JSONValue].self, .live)
+        pin = container.lenient(ListenerStatus.Pin.self, .pin)
+        red = container.lenient([String].self, .red)
+        heldBack = container.lenient(ListenerStatus.HeldBack.self, .heldBack)
+        chatNudges = container.lenient(ListenerStatus.ChatNudges.self, .chatNudges)
+        quota = container.lenient(ListenerStatus.Quota.self, .quota)
+        model = container.lenient(String.self, .model)
+        fallback = container.lenient(ListenerStatus.Fallback.self, .fallback)
+        routine = container.lenient(ListenerStatus.Routine.self, .routine)
+        routeEnabled = container.lenient(Bool.self, .routeEnabled)
     }
 }
 
@@ -380,7 +503,20 @@ struct AgentSyncCLIResult: Equatable {
 
     /// The last few non-empty stderr lines,  bounded,  for showing a refusal.
     var stderrTail: String {
-        let lines = stderr.split(whereSeparator: \.isNewline)
+        Self.tail(of: stderr)
+    }
+
+    /// The reason to show for a run that failed.  The eavesdropper's own command line prints its
+    /// refusals (`FAIL: …`, `NOT PINNED: …`) on stdout and leaves stderr empty, so an empty stderr
+    /// falls back to the last lines of stdout rather than to nothing.
+    var failureTail: String {
+        let errors = stderrTail
+        return errors.isEmpty ? Self.tail(of: stdout) : errors
+    }
+
+    /// The last few non-empty lines of a text,  bounded.
+    static func tail(of text: String) -> String {
+        let lines = text.split(whereSeparator: \.isNewline)
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
         let tail = lines.suffix(6).joined(separator: "\n")
