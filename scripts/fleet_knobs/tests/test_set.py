@@ -297,6 +297,9 @@ class CliTests(SetTestCase):
         self.assertEqual((code, answer["result"], answer["new"]), (0, "planned", "ping-only"))
         self.assertEqual(self.set_calls(), [])
 
+    def test_fixtures_are_never_option_like(self):
+        self.assertFalse(SIGNING.startswith("-"))
+
     def test_set_refuses_secret_text(self):
         out = io.StringIO()
         code = cli.main(["set", "FLEET_FACTS_SIGNING_KEY", SIGNING, "--plan"], out=out)

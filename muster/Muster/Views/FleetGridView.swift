@@ -42,10 +42,11 @@ struct CellBadge: View {
             Circle()
                 .fill(cell.state.tint)
                 .frame(width: 7, height: 7)
-            Text(cell.state.shortLabel)
+            Text(cell.stateName)
                 .font(.system(size: 10, weight: .semibold, design: .monospaced))
             Spacer(minLength: 0)
-            Text(cell.proofLevel ?? "—")
+            // The proof the cell REACHED, never the proof its rules required.
+            Text(cell.proofBadgeText)
                 .font(.system(size: 9, weight: .medium, design: .monospaced))
                 .foregroundStyle(.secondary)
             if let age {
@@ -319,24 +320,42 @@ struct FleetGridView: View {
             Text("What a badge says")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
+            Text("\(PassMeaning.everywhere)\u{00A0} The proof beside a state is what was reached, and a dash means no proof was reached.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             HStack(alignment: .top, spacing: 22) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("L0").font(.system(size: 10, weight: .semibold, design: .monospaced))
-                    Text("The config is there and matches by hash.")
+                    Text("Reached:  the config was read and holds what the rule expects.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 VStack(alignment: .leading, spacing: 3) {
                     Text("L1").font(.system(size: 10, weight: .semibold, design: .monospaced))
-                    Text("The hook was sent a write and it denied it.")
+                    Text("Reached:  the hook was sent a write and it denied it.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 VStack(alignment: .leading, spacing: 3) {
                     Text("L2").font(.system(size: 10, weight: .semibold, design: .monospaced))
-                    Text("A headless canary showed the platform loads the hook.")
+                    Text("Reached:  a headless canary showed the platform loads the hook.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("1/2").font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    Text("Partly proven:  one of the cell's two rules was proven, and the tooltip names the one that was not.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("NO GUARD").font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    Text("The seat has no guard, so none was checked and none was proven.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)

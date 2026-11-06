@@ -42,10 +42,11 @@ import subprocess
 import tempfile
 from dataclasses import dataclass, replace
 
-from .checks import CheckContext, CheckError, build_result, kill_process_group
+from .checks import CheckContext, CheckError, build_result, expand_target, kill_process_group
 from .types import (
     CheckResult,
     CheckState,
+    CheckType,
     ObservedState,
     ProofLevel,
     ReasonCode,
@@ -96,7 +97,7 @@ SENTINEL_SOURCE_NAME = "fleet-config-l1-sentinel-source"
 
 # The hook names the fleet installs.  A config entry naming one of them is the hook
 # under test.
-GUARD_HOOK_NAMES = ("lane-guard-hook", "fleet-guard-hook")
+GUARD_HOOK_NAMES = ("lane-guard-hook", "fleet-guard-hook", "minimax-guard-hook")
 
 # The guard's own sentence,  as the canary sees it:  the destination the canary asks
 # about is in a temp directory,  so that is the location the guard names.  A permission
@@ -124,20 +125,28 @@ NATIVE_SHELL_TOOL_NAMES: dict[str, tuple[str, ...]] = {
     "codex": ("Bash",),
     "grok": ("Bash",),
     "kimi": ("Bash",),
-    "clutch": ("Bash",),
+    # The Clutch engine's shell tool is lowercase ``bash``, and the installed matcher
+    # is ``bash`` (install_tools.render_clutch_hooks).  A tuple of ``Bash`` would read a
+    # correct install as a hook the harness never calls.
+    "clutch": ("bash",),
     "minimax": ("bash", "Bash"),
     "muse": ("bash",),
     "muse-code": ("bash",),
     "cursor": (),
     "antigravity": (),
+    "zcode": ("Bash",),
 }
 
-# The file tool names the L1 sentinel set must also cover (AFC-416).  The native
-# ``write`` tool carries ``path`` and the native ``edit`` tool carries ``file_path``,
-# so a sentinel set of shell payloads alone leaves file writes unproven.  The current
-# lane guard evaluates shell commands only and fails open on file payloads, so a file
-# probe that is allowed is a genuine DRIFT, not a harness error:  the seat is
-# unguarded for file writes.
+# The file tool names the file-guard rule probes (AFC-416).  The native ``write`` tool
+# carries ``path`` and the native ``edit`` tool carries ``file_path``, so a sentinel
+# set of shell payloads alone leaves file writes unproven.  The lane guard evaluates
+# shell commands only and allows a file payload by design, and the installers register
+# it for the shell tools, so file guarding is a rule of its own:  the shell rule reads
+# PASS for what it proves, and the file rule reads UNPROVEN, naming what is missing,
+# while the harness never delivers the file tools to the hook (its matcher is the shell
+# tools alone).  Once the harness does deliver them, the probe writes the forbidden
+# destination (``FILE_PROBE_FORBIDDEN_DIR``) into a Write/Edit payload:  a hook that
+# denies it reads PASS and a hook that lets it through reads FAIL.
 # The file tools are per platform,  for the same reason the shell names are:  a probe
 # that names a tool the runtime never delivers proves nothing,  and fails the seat for
 # a tool it does not have.  The MiniMax runtime delivers its native ``write`` (which
@@ -145,6 +154,17 @@ NATIVE_SHELL_TOOL_NAMES: dict[str, tuple[str, ...]] = {
 # claude-shaped runtimes deliver ``Write`` and ``Edit`` (which carry ``file_path``).
 # The platforms whose payload shape carries no file tool are empty,  because the probe
 # cannot express a file write for them.
+
+# The forbidden tree the file probe aims at,  relative to the home being checked.  It
+# is the fleet's secrets folder:  a file guard refuses a write whose path has a
+# ``.secrets`` component (the MiniMax file guard does, ``minimax_guard_hook``), for
+# every seat and every platform, so the destination is the same policy everywhere and
+# is read from the home the check already resolves, never a fixed server path.  The
+# destination is a path no probe ever creates:  the payload only NAMES it, the hook
+# reads the string, and ``_assert_file_destination_inert`` refuses to probe if anything
+# already exists there.  (The temporary directory the shell probe uses is not forbidden
+# to a file guard, so an allow of a temp path proves nothing about file guarding.)
+FILE_PROBE_FORBIDDEN_DIR = ".secrets"
 NATIVE_FILE_TOOLS: dict[str, tuple[tuple[str, str], ...]] = {
     "claude": (("Write", "file_path"), ("Edit", "file_path")),
     "codex": (("Write", "file_path"), ("Edit", "file_path")),
@@ -160,6 +180,14 @@ NATIVE_FILE_TOOLS: dict[str, tuple[tuple[str, str], ...]] = {
     # says so instead of reporting a bare pass.
     "cursor": (),
     "antigravity": (),
+    # Z Code's payload is Claude-shaped (a Claude-style deny, ``Write`` and ``Edit`` both
+    # carrying ``file_path``), but its installed hook is registered with the matcher
+    # ``Bash``, so the harness never delivers those file tools to it today.  The names
+    # are pinned so the file rule reads UNPROVEN, naming the non-matching matcher, and
+    # not "not applicable" (an empty tuple would say the harness has no file tool, which
+    # is not the cursor or antigravity case).  They are probed at L1 only if a matcher
+    # ever delivers them.
+    "zcode": (("Write", "file_path"), ("Edit", "file_path")),
 }
 
 
@@ -187,6 +215,7 @@ PLATFORM_ADAPTERS: dict[str, PlatformAdapter] = {
         "antigravity", "antigravity", "antigravity", ".gemini/config/hooks.json"
     ),
     "cursor": PlatformAdapter("cursor", "cursor", "cursor", ".cursor/hooks.json"),
+    "zcode": PlatformAdapter("zcode", "claude", "claude", ".zcode/cli/config.json"),
     "muse": PlatformAdapter("muse", "muse", "muse"),
     "muse-code": PlatformAdapter("muse-code", "muse", "muse"),
     "clutch": PlatformAdapter("clutch", "muse", "claude"),
@@ -363,10 +392,12 @@ def build_file_payload(
     the L1 probe correctly folds into DRIFT.  Cursor and Antigravity gate shell
     calls on a different event, so they have no file payload in Phase 2.
     """
+    # A file tool carries a path and its content and no command, so the payload has no
+    # ``command`` field:  a hook that reads one would be reading a field the runtime
+    # never sends, and a fake hook that denied on it would prove nothing.
     tool_input: dict[str, object] = {
         path_field: destination,
         "content": "fleet-config L1 sentinel probe %s" % destination,
-        "command": "fleet-config L1 sentinel probe %s" % destination,
         "description": "fleet-config L1 sentinel probe",
     }
     if adapter.payload_shape == "muse":
@@ -447,9 +478,10 @@ def _event_key(name: str) -> str:
 class HookConfigSchema:
     """Where one platform keeps the commands its hooks run,  and which event gates them.
 
-    ``shape`` is ``event-map`` (a mapping of event name to a list of hook entries)  or
+    ``shape`` is ``event-map`` (a mapping of event name to a list of hook entries),
     ``named-groups`` (one group per hook name at the top level,  each holding its own
-    event lists).  ``section`` is the key the event map lives under.
+    event lists)  or ``event-list`` (a list of tables,  each naming its own event).
+    ``section`` is the key the event map or list lives under.
 
     ``event`` is the ONE event the platform gates its tool calls on,  and it is the only
     event this package reads,  validates or bounds.  A sibling event,  and a section the
@@ -471,6 +503,14 @@ HOOK_CONFIG_SCHEMAS: dict[str, HookConfigSchema] = {
     "cursor": HookConfigSchema("event-map", event="beforeShellExecution"),
     # Antigravity keeps one group per hook name at the top level.
     "antigravity": HookConfigSchema("named-groups", event="PreToolUse"),
+    # Z Code keeps the Claude shape one level down,  under ``hooks.events``.
+    "zcode": HookConfigSchema("event-map", event="PreToolUse"),
+    # Clutch and MiniMax Code keep the Claude shape in a hooks file of their own, which
+    # the rule's target names.  Kimi keeps a ``[[hooks]]`` table per entry, each with
+    # its own ``event``.
+    "clutch": HookConfigSchema("event-map", event="PreToolUse"),
+    "minimax": HookConfigSchema("event-map", event="PreToolUse"),
+    "kimi": HookConfigSchema("event-list", event="PreToolUse"),
 }
 
 
@@ -602,12 +642,60 @@ def _commands_from_event_map(
             % (schema.section, path, platform),
             ReasonCode.UNPARSEABLE,
         )
+    nested = section.get("events")
+    if isinstance(nested, dict):
+        # Z Code keeps the event map one level down, under ``hooks.events``.
+        section = nested
     entries = _event_entries(section, schema.event)
     if entries is None:
         return []
     _assert_bounded(entries, platform, path)
     found: list[str] = []
     _commands_from_entries(entries, "the event %r" % schema.event, platform, path, found)
+    return found
+
+
+def _commands_from_event_list(
+    document: dict[str, object], schema: HookConfigSchema, platform: str, path: str
+) -> list[str]:
+    """The commands of the ``[[hooks]]`` tables whose ``event`` is the platform's own.
+
+    Kimi Code keeps one table per hook, each with an ``event`` field and a ``command``.
+    Only a table whose event is the schema's event is read, and the part that is read is
+    bounded first, so a table for another event is never looked at.
+    """
+    section = document.get(schema.section)
+    if section is None:
+        return []
+    if not isinstance(section, list):
+        raise CheckError(
+            "the %s section of the hook config %s for the platform %s is not a list of tables"
+            % (schema.section, path, platform),
+            ReasonCode.UNPARSEABLE,
+        )
+    wanted = _event_key(schema.event)
+    matching: list[object] = []
+    for entry in section:
+        if not isinstance(entry, dict):
+            raise CheckError(
+                "a hook table in the hook config %s for the platform %s is not an object"
+                % (path, platform),
+                ReasonCode.UNPARSEABLE,
+            )
+        name = entry.get("event")
+        if not isinstance(name, str) or not name.strip():
+            # A table names its event or it is not a hook table,  and a table this reader
+            # cannot place is a config it cannot vouch for,  not one to skip.
+            raise CheckError(
+                "a hook table in the hook config %s for the platform %s names no event"
+                % (path, platform),
+                ReasonCode.UNPARSEABLE,
+            )
+        if _event_key(name) == wanted:
+            matching.append(entry)
+    _assert_bounded(matching, platform, path)
+    found: list[str] = []
+    _commands_from_entries(matching, "the event %r" % schema.event, platform, path, found)
     return found
 
 
@@ -655,6 +743,8 @@ def schema_commands(
         )
     if schema.shape == "named-groups":
         return _commands_from_named_groups(document, schema, platform, path)
+    if schema.shape == "event-list":
+        return _commands_from_event_list(document, schema, platform, path)
     return _commands_from_event_map(document, schema, platform, path)
 
 
@@ -705,6 +795,64 @@ def resolve_hook_command(platform: str, ctx: CheckContext) -> str | None:
         if any(name in command for name in GUARD_HOOK_NAMES):
             return command
     return None
+
+
+def resolve_target_command(
+    platform: str, target: str, ctx: CheckContext, event: str | None = None
+) -> str | None:
+    """The hook command a rule's own config file runs, for a platform with no adapter file.
+
+    Kimi, Clutch and MiniMax Code have no ``config_rel`` of their own, so their hook
+    lives where the rule's ``check.target`` says:  a TOML file, a JSON file in the stable
+    dir, or the plugin bundle's ``hooks.json``.  The probe takes the command from that
+    file so it proves the hook the seat runs and not a stable-dir shim that happens to
+    sit beside it.  A platform that has an adapter file, or a target that is not there,
+    or one this reader cannot parse, returns None, and the L0 check has already said so.
+
+    The file is read as untrusted input,  exactly as ``resolve_hook_command`` reads an
+    adapter file:  it is bounded, and only the part the platform's own schema names for
+    the rule's ``event`` is checked and read,  so a ``command`` in a section the harness
+    never reads cannot reach the probe.
+
+    Raises ``CheckError`` when the file parses and names no guard hook,  because then
+    the seat would run something else and proving the stable-dir hook would be a false
+    PASS.
+    """
+    adapter = PLATFORM_ADAPTERS.get(platform)
+    if adapter is None or adapter.config_rel or not target:
+        return None
+    schema = HOOK_CONFIG_SCHEMAS.get(platform)
+    if schema is None:
+        raise CheckError(
+            "there is no hook config schema for the platform %s, so %s is not read"
+            % (platform, target),
+            ReasonCode.UNSUPPORTED,
+        )
+    if event:
+        schema = replace(schema, event=event)
+    from .checks_hooks import read_config_document
+
+    try:
+        path = expand_target(target, ctx.home)
+        if os.path.getsize(path) > MAX_CONFIG_BYTES:
+            raise CheckError(
+                "the hook config %s for the platform %s is larger than %d bytes, so no "
+                "command is read from it" % (target, platform, MAX_CONFIG_BYTES),
+                ReasonCode.UNPARSEABLE,
+            )
+        document = read_config_document(path)
+    except (OSError, UnicodeDecodeError, ValueError, CheckError) as exc:
+        if isinstance(exc, CheckError) and exc.reason_code is ReasonCode.UNPARSEABLE:
+            raise
+        return None
+    for command in schema_commands(document, schema, platform, path):
+        if any(name in command for name in GUARD_HOOK_NAMES):
+            return command
+    raise CheckError(
+        "the hook config %s for the platform %s names no guard hook,  so there is nothing "
+        "installed to prove" % (target, platform),
+        ReasonCode.PROOF_FAILED,
+    )
 
 
 def default_hook_command(platform: str, ctx: CheckContext) -> str:
@@ -780,6 +928,10 @@ class Sentinel:
     marker: str
     source: str
     command: str
+    # The path a file payload names.  It sits in the forbidden tree under the home, is
+    # never created, and is empty only for a sentinel built by a caller that probes no
+    # file tool.
+    file_destination: str = ""
 
 
 def _make_sentinel(ctx: CheckContext) -> Sentinel:
@@ -791,14 +943,30 @@ def _make_sentinel(ctx: CheckContext) -> Sentinel:
     root = tempfile.mkdtemp(prefix=SENTINEL_PREFIX + "-")
     marker = os.path.basename(root)
     destination = os.path.join(root, marker)
-    source = os.path.realpath(os.path.join(os.fspath(ctx.home), "Code", SENTINEL_SOURCE_NAME))
+    # The guard reads its integration root from FLEET_CODE_ROOT before it falls back
+    # to the home's Code folder (the server keeps its trees on another volume), so the
+    # sentinel names a source under the same root the guard will use.  Naming the
+    # home's Code folder there would make the guard see no fleet source at all and
+    # allow the probe, which reads as a guard that does not work.
+    code_root = (ctx.child_env().get("FLEET_CODE_ROOT") or "").strip()
+    if not code_root:
+        code_root = os.path.join(os.fspath(ctx.home), "Code")
+    source = os.path.realpath(os.path.join(code_root, SENTINEL_SOURCE_NAME))
     command = "git clone %s %s" % (source, destination)
+    # The file probe's destination is a name that no folder holds, inside the home's
+    # forbidden tree:  <home>/.secrets/<marker>/probe.txt.  The home is spelled as the
+    # check was given it, because a guard judges the lexical path as well as the
+    # resolved one.
+    file_destination = os.path.join(
+        os.fspath(ctx.home), FILE_PROBE_FORBIDDEN_DIR, marker, "probe.txt"
+    )
     return Sentinel(
         root=root,
         destination=destination,
         marker=marker,
         source=source,
         command=command,
+        file_destination=file_destination,
     )
 
 
@@ -816,6 +984,21 @@ def _assert_sentinel_confined(sentinel: Sentinel) -> None:
         raise CheckError("the L1 sentinel destination is outside the probe's throwaway directory")
     if root != temp and not root.startswith(temp + os.sep):
         raise CheckError("the L1 sentinel root is not inside the system temporary directory")
+
+
+def _assert_file_destination_inert(sentinel: Sentinel, home: str) -> None:
+    """The file probe's destination must be a name in the forbidden tree that nothing holds.
+
+    The probe never writes it,  because the payload only names it.  This check is the
+    belt to those braces:  a refactor that pointed the destination anywhere else, or a
+    name that already exists, fails loudly instead of aiming a payload at a real file.
+    """
+    forbidden = os.path.join(home, FILE_PROBE_FORBIDDEN_DIR)
+    destination = sentinel.file_destination
+    if not destination or not destination.startswith(forbidden + os.sep):
+        raise CheckError("the L1 file probe destination is outside the forbidden tree")
+    if os.path.lexists(os.path.dirname(destination)) or os.path.lexists(destination):
+        raise CheckError("the L1 file probe destination already exists, so it is not probed")
 
 
 # --------------------------------------------------------------------------- child processes
@@ -1030,13 +1213,24 @@ def _l1_outcome(
     )
 
 
-def _interpret_l1(run: _Run, fmt: str, marker: str, budget: int, guard_off: bool) -> L1Outcome:
+def _interpret_l1(
+    run: _Run,
+    fmt: str,
+    marker: str,
+    budget: int,
+    guard_off: bool,
+    require_marker: bool = True,
+) -> L1Outcome:
     """Turn one hook run into an L1 outcome, fail closed.
 
     A deny that names the sentinel is a pass.  A hook that allowed the sentinel is
     drift:  the hook is present and it does not enforce.  A hook that could not be
     started, that timed out, that crashed, or whose output could not be read is
     unknown, and unknown is failing.
+
+    ``require_marker`` is false for a file payload:  a file guard's reason names the
+    rule it applied and need not echo the path, and the payload was sent for this probe
+    alone, so any readable deny of it is the hook's answer to it.
     """
     if run.error:
         return _l1_outcome(
@@ -1078,7 +1272,7 @@ def _interpret_l1(run: _Run, fmt: str, marker: str, budget: int, guard_off: bool
             ReasonCode.PROOF_FAILED,
             "exit %s, no deny" % run.returncode,
         )
-    if marker not in reason:
+    if require_marker and marker not in reason:
         return _l1_outcome(
             CheckState.DRIFT,
             "the hook denied, but its reason does not name the sentinel destination, "
@@ -1092,7 +1286,14 @@ def _interpret_l1(run: _Run, fmt: str, marker: str, budget: int, guard_off: bool
         state=CheckState.PASS,
         reason="the installed hook denied the sentinel write at L1",
         reason_code=ReasonCode.OK,
-        detail="exit %s, the %s deny named the sentinel" % (run.returncode, fmt),
+        detail="exit %s, the %s deny %s"
+        % (
+            run.returncode,
+            fmt,
+            "named the sentinel"
+            if marker in reason
+            else "did not name the sentinel (not required for this payload)",
+        ),
         achieved=ProofLevel.L1,
     )
 
@@ -1104,6 +1305,7 @@ def _run_one_payload(
     sentinel: Sentinel,
     env: dict[str, str],
     budget: int,
+    require_marker: bool = True,
 ) -> L1Outcome:
     """Pipe one payload into the hook and interpret the answer, fail closed."""
     run = _run_shell(
@@ -1113,7 +1315,41 @@ def _run_one_payload(
         budget,
         sentinel.root,
     )
-    return _interpret_l1(run, fmt, sentinel.marker, budget, _guard_disabled(env))
+    return _interpret_l1(
+        run, fmt, sentinel.marker, budget, _guard_disabled(env), require_marker
+    )
+
+
+def _exit_label(detail: str) -> str:
+    """The ``exit N`` a passing payload's detail recorded,  from the hook run itself."""
+    match = re.match(r"exit (-?\d+)", detail or "")
+    return "exit %s" % match.group(1) if match else "exit 0"
+
+
+def _exit_summary(labels: list[str]) -> str:
+    """The distinct exit codes the hook really returned,  in the order they were seen."""
+    return "/".join(dict.fromkeys(labels)) if labels else "exit 0"
+
+
+def _l1_pass_detail(scopes: tuple[str, ...], fmt: str, exit_label: str = "exit 0") -> str:
+    """What a passing L1 probe actually showed,  built from the scopes that ran.
+
+    ``exit_label`` is the exit code the hook really returned (a kimi deny exits 2),
+    so the stored evidence matches the hook run and is never assumed.
+
+    Only the shell scope requires the deny to name the sentinel.  The file scope runs
+    with ``require_marker=False``,  so a file deny of any readable reason passes,  and
+    the detail must not say the deny named the path.
+    """
+    parts = []
+    if "shell" in scopes:
+        parts.append("the shell deny named the sentinel")
+    if "file" in scopes:
+        parts.append(
+            "the hook denied a file-write payload to a forbidden path (the %s reason is "
+            "not required to name the path)" % fmt
+        )
+    return exit_label + ", " + ";  ".join(parts)
 
 
 def run_l1_probe(
@@ -1121,17 +1357,31 @@ def run_l1_probe(
     ctx: CheckContext,
     hook_command: str | None = None,
     timeout: int | None = None,
+    guards: tuple[str, ...] | None = None,
+    config_target: str | None = None,
+    event: str | None = None,
 ) -> L1Outcome:
     """Prove at L1 that a platform's installed hook denies a write into a sentinel lane.
+
+    ``guards`` is the scope the caller asks to have proven:  ``shell`` sends the shell
+    sentinel, ``file`` sends the file-tool sentinels, and both is the default.  A
+    shell-only proof that is denied is a PASS for the shell scope and says so, and it
+    claims nothing about file writes.  ``config_target`` is the config file a rule names
+    for a platform whose adapter has none of its own, so the command proved is the one
+    that file runs, and ``event`` is the event the rule registers it for.
 
     The probe builds a synthetic PreToolUse payload whose command names a write into
     a throwaway sentinel lane, pipes it into the installed hook on stdin, and reads
     the platform's deny signal.  A deny that names the sentinel is a pass;  anything
     else fails closed.  The payload carries the tool name the platform runtime really
     delivers (AFC-416):  a platform with two shell spellings is probed on both, so a
-    matcher that covers only one cannot pass, and the sentinel set also covers the
-    file tools (``Write``/``Edit`` and their lowercase native spellings), so a seat
-    whose guard ignores file payloads correctly reports DRIFT instead of PASS.
+    matcher that covers only one cannot pass.  The file tools (``Write``/``Edit`` and
+    their lowercase native spellings) are probed only when ``guards`` asks for them, and
+    the payload names a path in the forbidden tree (``FILE_PROBE_FORBIDDEN_DIR`` under
+    the home), so a hook that denies it passes the file scope and a hook that allows it
+    fails the file scope (DRIFT), while its shell scope still reads PASS on its own.
+    A platform whose payload carries no file tool stays UNPROVEN (both scopes asked) or
+    not applicable (the file scope alone).
 
     ``hook_command`` overrides the command, which is how a caller proves a command it
     resolved itself.  Without it the command is read from the platform's own config
@@ -1154,10 +1404,13 @@ def run_l1_probe(
             detail="",
             achieved=None,
         )
+    scopes = tuple(guards) if guards else ("shell", "file")
     if hook_command:
         command = hook_command
     else:
         command = resolve_hook_command(platform, ctx)
+        if not command and config_target:
+            command = resolve_target_command(platform, config_target, ctx, event)
         if not command:
             # A platform that HAS a hook config but does not name the guard hook would
             # run something else,  so proving the stable-dir hook would be a false
@@ -1174,65 +1427,118 @@ def run_l1_probe(
     budget = int(timeout) if timeout else int(ctx.timeout or 10)
     env = _probe_env(ctx)
     sentinel = _make_sentinel(ctx)
+    exit_labels: list[str] = []
     try:
         _assert_sentinel_confined(sentinel)
-        shell_names = NATIVE_SHELL_TOOL_NAMES.get(platform)
-        if shell_names:
-            for shell_tool in shell_names:
-                payload = build_payload(
-                    adapter, sentinel.command, sentinel.root, tool_name=shell_tool
-                )
+        if "shell" in scopes:
+            shell_names = NATIVE_SHELL_TOOL_NAMES.get(platform)
+            if shell_names:
+                for shell_tool in shell_names:
+                    payload = build_payload(
+                        adapter, sentinel.command, sentinel.root, tool_name=shell_tool
+                    )
+                    outcome = _run_one_payload(command, payload, fmt, sentinel, env, budget)
+                    if not outcome.passed:
+                        return L1Outcome(
+                            level=outcome.level,
+                            passed=False,
+                            state=outcome.state,
+                            reason="%s (tool %r)" % (outcome.reason, shell_tool),
+                            reason_code=outcome.reason_code,
+                            detail=outcome.detail,
+                            achieved=None,
+                        )
+                    exit_labels.append(_exit_label(outcome.detail))
+            else:
+                payload = build_payload(adapter, sentinel.command, sentinel.root)
                 outcome = _run_one_payload(command, payload, fmt, sentinel, env, budget)
                 if not outcome.passed:
-                    return L1Outcome(
-                        level=outcome.level,
-                        passed=False,
-                        state=outcome.state,
-                        reason="%s (tool %r)" % (outcome.reason, shell_tool),
-                        reason_code=outcome.reason_code,
-                        detail=outcome.detail,
-                        achieved=None,
-                    )
-        else:
-            payload = build_payload(adapter, sentinel.command, sentinel.root)
-            outcome = _run_one_payload(command, payload, fmt, sentinel, env, budget)
-            if not outcome.passed:
-                return outcome
+                    return outcome
+                exit_labels.append(_exit_label(outcome.detail))
+        if "file" not in scopes:
+            # The caller asked for the shell scope alone.  The proof is complete for
+            # that scope and says nothing about file writes, which have a rule of
+            # their own.
+            return L1Outcome(
+                level=ProofLevel.L1,
+                passed=True,
+                state=CheckState.PASS,
+                reason=(
+                    "the installed hook denied the shell sentinel at L1;  this proves "
+                    "shell guarding only"
+                ),
+                reason_code=ReasonCode.OK,
+                detail="%s, the %s deny named the sentinel;  no file tool was asked"
+                % (_exit_summary(exit_labels), fmt),
+                achieved=ProofLevel.L1,
+            )
         file_tools = NATIVE_FILE_TOOLS.get(platform, ())
         if not file_tools:
-            # The file surface of this platform cannot be probed,  so the proof is not
-            # complete.  A bare PASS would claim the seat is guarded for file writes
-            # when nothing was checked;  UNPROVEN says the check was not run.
+            # The file surface of this platform cannot be probed,  so file guarding is
+            # not proven.  A bare PASS would claim the seat is guarded for file writes
+            # when nothing was checked.
+            asked_shell = "shell" in scopes
             return L1Outcome(
                 level=ProofLevel.L1,
                 passed=False,
-                state=CheckState.UNPROVEN,
+                state=CheckState.UNPROVEN if asked_shell else CheckState.UNSUPPORTED,
                 reason=(
                     "the shell sentinel was denied,  but the file surface of this "
                     "platform is not probed,  because its hook carries no file tool"
+                    if asked_shell
+                    else "file guarding does not apply to this platform,  because its "
+                    "hook carries no file tool"
                 ),
-                reason_code=ReasonCode.PROOF_NOT_RUN,
-                detail="the shell sentinel was denied;  no file tool was probed",
+                reason_code=(
+                    ReasonCode.PROOF_NOT_RUN if asked_shell else ReasonCode.NOT_APPLICABLE
+                ),
+                detail="no file tool was probed",
                 achieved=None,
             )
+        # The file payload names a destination in the forbidden tree (the secrets
+        # folder under the home), so a file guard that works denies it and a hook that
+        # lets it through is not guarding file writes.  Nothing is created there:  the
+        # hook is only handed the path as text.
+        home = os.fspath(ctx.home)
+        _assert_file_destination_inert(sentinel, home)
         for file_tool, path_field in file_tools:
             payload = build_file_payload(
-                adapter, sentinel.destination, sentinel.root, file_tool, path_field
+                adapter, sentinel.file_destination, sentinel.root, file_tool, path_field
             )
-            outcome = _run_one_payload(command, payload, fmt, sentinel, env, budget)
-            if not outcome.passed:
+            outcome = _run_one_payload(
+                command, payload, fmt, sentinel, env, budget, require_marker=False
+            )
+            if outcome.passed:
+                exit_labels.append(_exit_label(outcome.detail))
+                continue
+            if outcome.reason_code is ReasonCode.PROOF_FAILED:
+                # The hook answered and let a write to a forbidden tree through, which a
+                # file guard must refuse:  the hook does not enforce file guarding.
+                note = ""
+                if _guard_disabled(env):
+                    note = "  The FLEET_LANE_GUARD switch is off in this environment."
                 return L1Outcome(
-                    level=outcome.level,
+                    level=ProofLevel.L1,
                     passed=False,
-                    state=outcome.state,
+                    state=CheckState.DRIFT,
                     reason=(
-                        "the guard did not deny the %s tool's write,  so a file write "
-                        "into a forbidden tree is not policed" % file_tool
+                        "the hook let the %s tool's write into a forbidden tree (the %s "
+                        "folder under the home) through, so it does not guard file "
+                        "writes.%s" % (file_tool, FILE_PROBE_FORBIDDEN_DIR, note)
                     ),
-                    reason_code=outcome.reason_code,
+                    reason_code=ReasonCode.PROOF_FAILED,
                     detail=outcome.detail,
                     achieved=None,
                 )
+            return L1Outcome(
+                level=outcome.level,
+                passed=False,
+                state=outcome.state,
+                reason="%s (tool %r)" % (outcome.reason, file_tool),
+                reason_code=outcome.reason_code,
+                detail=outcome.detail,
+                achieved=None,
+            )
     finally:
         shutil.rmtree(sentinel.root, ignore_errors=True)
     return L1Outcome(
@@ -1241,7 +1547,7 @@ def run_l1_probe(
         state=CheckState.PASS,
         reason="the installed hook denied the sentinel write at L1",
         reason_code=ReasonCode.OK,
-        detail="exit 0, the %s deny named the sentinel" % fmt,
+        detail=_l1_pass_detail(scopes, fmt, _exit_summary(exit_labels)),
         achieved=ProofLevel.L1,
     )
 
@@ -1524,7 +1830,17 @@ def prove_rule(
             )
         outcome = run_l2_canary(platform, ctx)
         return _with_achieved(outcome)
-    outcome = run_l1_probe(platform, ctx)
+    outcome = run_l1_probe(
+        platform,
+        ctx,
+        guards=tuple(rule.expected.guards) or None,
+        config_target=rule.check.target,
+        # The detail of a hook rule is its event.  It is free text for every other kind of
+        # rule,  and none of those reaches an L1 proof,  but only a hook rule's is an event.
+        event=(
+            rule.check.detail or None if rule.check.type is CheckType.HOOK_REGISTERED else None
+        ),
+    )
     return _with_achieved(outcome)
 
 
