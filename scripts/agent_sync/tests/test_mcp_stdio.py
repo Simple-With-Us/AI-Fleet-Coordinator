@@ -803,7 +803,15 @@ class ProtocolTests(McpHarness):
             self.assertTrue(
                 name in ("whoami", "identities", "guide")
                 or name.startswith(
-                    ("zulip_", "eavesdropper_", "notes_", "recall_", "linear_", "fleetlink_")
+                    (
+                        "zulip_",
+                        "eavesdropper_",
+                        "operator_",
+                        "notes_",
+                        "recall_",
+                        "linear_",
+                        "fleetlink_",
+                    )
                 ),
                 name,
             )
