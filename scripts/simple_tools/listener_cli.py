@@ -824,7 +824,7 @@ def cmd_init(rt: Any, args: argparse.Namespace) -> int:
                 s.get("name")
                 for s in seat_client.get("users/me/subscriptions").get("subscriptions") or []
             }
-        except Z.AgentSyncError:
+        except Z.SimpleToolsError:
             subs = set()
         rt.out(
             "  %s: %s ok, role %s%s, subscribed to #%s: %s\n"
@@ -1338,7 +1338,7 @@ def cmd_inbox_local(rt: Any, args: argparse.Namespace) -> int:
                 for n in notes
             ]
             rt.out(
-                "[agent-sync owner queue] %d item%s\n%s\n"
+                "[simple-tools owner queue] %d item%s\n%s\n"
                 % (
                     len(notes),
                     "" if len(notes) == 1 else "s",
@@ -1470,7 +1470,7 @@ def cmd_listener(rt: Any, args: argparse.Namespace) -> int:
             return emit(view)
         _fenced(
             rt,
-            "[agent-sync owner queue] %d note%s for %s (%d not surfaced)"
+            "[simple-tools owner queue] %d note%s for %s (%d not surfaced)"
             % (len(view["items"]), "" if len(view["items"]) == 1 else "s", seat, view["pending"]),
             view["items"],
         )
@@ -1648,7 +1648,7 @@ def add_parsers(
         % (systemd.DEFAULT_PYTHON if sys.platform.startswith("linux") else launchd.DEFAULT_PYTHON),
     )
     q.add_argument(
-        "--bin", metavar="PATH", help="the agent-sync program (default: ~/.local/bin/agent-sync)"
+        "--bin", metavar="PATH", help="the simple-tools program (default: ~/.local/bin/simple-tools)"
     )
     q = add("uninstall", "remove the platform service; prints stop commands", dsub)
     q.add_argument("--dry-run", action="store_true", help="only print what would change")

@@ -8,9 +8,9 @@ Authentication is per seat, with the HMAC key the listener already shares with t
 seat's wakes (the listener's routine key_env, default <CODE>_ROUTINE_KEY;  the Worker's
 WAKE_HMAC_KEY_<SEAT>).  Two headers:
 
-    X-Agent-Sync-Timestamp:  unix seconds
-    X-Agent-Sync-Signature:  lowercase hex HMAC-SHA256 over
-                             "agent-sync-read/1\\nGET\\n<path>\\n<raw query>\\n<timestamp>"
+    X-Simple-Tools-Timestamp:  unix seconds
+    X-Simple-Tools-Signature:  lowercase hex HMAC-SHA256 over
+                             "simple-tools-read/1\\nGET\\n<path>\\n<raw query>\\n<timestamp>"
 
 so a signature names one seat, one record, one exact query and one moment;  it is good for five
 minutes either side of the listener's clock.  A seat with no key (or a key under 32 characters) is
@@ -48,8 +48,8 @@ from . import notes_wire as NW
 from .zulip import UsageError
 
 CONTRACT = "agent-sync-read/1"
-SIGNATURE_HEADER = "X-Agent-Sync-Signature"
-TIMESTAMP_HEADER = "X-Agent-Sync-Timestamp"
+SIGNATURE_HEADER = "X-Simple-Tools-Signature"
+TIMESTAMP_HEADER = "X-Simple-Tools-Timestamp"
 MAX_SKEW_S = 300
 MIN_KEY_LEN = 32
 MAX_QUERY = 512

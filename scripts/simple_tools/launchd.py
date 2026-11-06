@@ -114,12 +114,12 @@ def sample_config(secrets_dir: str | None, env: Mapping[str, str] | None = None)
 
     lines = [
         "# simple-chat listener config.  Local to this Mac; it holds no secrets.",
-        "# Design: docs/protocols/agent-sync-listener.md in AI-Fleet-Coordinator.",
+        "# Design: docs/protocols/simple-tools-listener.md in AI-Fleet-Coordinator.",
         "# Changes take effect on `simple-chat daemon reload` (SIGHUP) or a restart.",
         "",
         "[daemon]",
         "# The Mac instance holds the Mac seats (owner decision, Thu, Oct 8); the cloud seats (Grok Bots, MA, Jet,",
-        "# Instinct, Echo, Grok Web) run on the server instance.  docs/protocols/agent-sync-partition.toml says which instance holds which",
+        "# Instinct, Echo, Grok Web) run on the server instance.  docs/protocols/simple-tools-partition.toml says which instance holds which",
         "# seat and fails closed:  a listener refuses to start with any seat it does not give to this instance.",
         'instance = "mac"',
         "# Sender eligibility for migrated BotFleet outgoing bots.  This does not hold a queue:",
@@ -159,7 +159,7 @@ def sample_config(secrets_dir: str | None, env: Mapping[str, str] | None = None)
         "owner_per_topic_per_hour = 6, usd_per_day = 2.0, board_per_day = 0 }",
         "live = { per_hour = 6, per_day = 30, per_topic_minutes = 5, owner_per_day = 20, loop_turns = 3 }",
         "",
-        "# The muse wake (docs/protocols/agent-sync-listener.md 3.3a) is verified and available, and",
+        "# The muse wake (docs/protocols/simple-tools-listener.md 3.3a) is verified and available, and",
         "# no seat below uses it:  a seat moves to it only when the owner switches it over on purpose,",
         "# after `simple-chat daemon test-wake --seat <SEAT> --run` and then --pin on that seat's own",
         "# muse pin file.  Uncomment for a seat that is meant to wake on it.",
@@ -172,7 +172,7 @@ def sample_config(secrets_dir: str | None, env: Mapping[str, str] | None = None)
         '# fallback = "mcode"                      # optional; the mcode fallback (3.3b).  Fallback-only by design.',
         "# fallback_uncontained_ok = false       # mcode writes files while it answers; only true if that is accepted",
         "",
-        "# The OpenRouter wake (docs/protocols/agent-sync-listener.md 3.3c) is one HTTPS call with no tools:",
+        "# The OpenRouter wake (docs/protocols/simple-tools-listener.md 3.3c) is one HTTPS call with no tools:",
         "# no binary to pin and no login to expire.  The key is the Operator's, read from Fleet-OPS /wake.",
         "# Either run the Muse contributor tier through it as the wake (and fall back to a second model):",
         "# [seat.MM]",
@@ -239,7 +239,7 @@ def install(
     )
     if not os.path.exists(program):
         out.write(
-            "note: %s does not exist yet; run scripts/agent_sync/install.sh first\n" % program
+            "note: %s does not exist yet; run scripts/simple_tools/install.sh first\n" % program
         )
     if not os.access(python, os.X_OK):
         out.write("note: %s is not executable; pass --python PATH (3.11 or newer)\n" % python)

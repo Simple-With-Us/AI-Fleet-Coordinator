@@ -26,8 +26,8 @@ What this build does NOT claim (Echo's reviewer addendum, 2026-10-23):
 
 Run (server instance, stdlib only, Python 3.11+):
 
-    python3 -m agent_sync.linear_relay run        # long-running loop
-    python3 -m agent_sync.linear_relay check      # credentials, public streams, Linear auth; no writes
+    python3 -m simple_tools.linear_relay run        # long-running loop
+    python3 -m simple_tools.linear_relay check      # credentials, public streams, Linear auth; no writes
 
 Credentials (environment, loaded by the container from Infisical, never logged):
 
@@ -108,7 +108,7 @@ MAX_SEEN = 200  # message ids remembered per comment, for idempotency
 MAX_ISSUES_PER_MESSAGE = 5
 QUOTE_CHARS = 280
 LINEAR_URL = "https://api.linear.app/graphql"
-USER_AGENT = "agent-sync-linear-relay/1 (fleet)"
+USER_AGENT = "simple-tools-linear-relay/1 (fleet)"
 MARKER = "<!-- zulip-relay -->"  # first line of every relay comment, so humans can spot them
 LIVE_STATE = "~/.agent-sync/linear-relay.json"
 DRY_STATE = "~/.agent-sync/linear-relay.dry-run.json"
