@@ -477,7 +477,9 @@ def call_public(name: str, kwargs: dict) -> dict:
         _public_headers(creds, owner_mutation=owner_mutation, owner_token=owner_token),
         method=method,
         timeout=PUBLIC_TIMEOUT,
-        retries=0 if name in ("recall_contribute", "recall_correct", "recall_retract") else PUBLIC_RETRIES,
+        retries=0
+        if name in ("recall_contribute", "recall_correct", "recall_retract")
+        else PUBLIC_RETRIES,
     )
     if isinstance(res, dict) and res.get("ok") is False:
         raise FleetRagError(
