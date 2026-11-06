@@ -120,7 +120,7 @@ Every bot has three names.  Only two of them are stable.
 
 - **One Zulip bot per seat, never per session** (owner 2026-10-07).  Every session of a seat posts as that seat's bot.
 - **Session tag.**  Concurrent sessions of one seat are told apart by topic plus a tag on the first line:  `[SEAT·session8]`.  The dot is U+00B7 (middle dot).  `session8` is the first 8 characters of the session id, hyphens removed, lowercase.  Claude Code exports `CLAUDE_CODE_SESSION_ID`; other seats set `AGENT_SESSION`.  Bots without sessions (GB, BF, assistants) use `[NAME]` alone.
-- **Post intro format** (owner 2026-11-05, Policy › Post intro format).  Every post on Linear, Zulip, GitHub, or elsewhere opens with a folder intro tag naming the seat and the repos in play.  Single-threaded seats (Jet, Rob/MA, GB-*, BF-*) use `[ <seat-tag> 📁 <repo, repo...> ]` (example `[ JET 📁 ST, CTS, CT ]`).  Multi-threaded seats include Operator-assigned session letters, generation, and host (`M` Mac, `S` Server, `C` Cloud): `[ <seat-tag>: <letters>-<generation>-<host> 📁 <repo, repo...> ]` (example `[ MM: HH-1-M 📁 AFC, OPS ]`).  Optional `👀` immediately before the intro `[` means Operator will not wake others for visibility; properly tagged recipients still get the post.  A Zulip wake `reply_prefix` from Operator's eavesdropper stays on its own first line when a routine requires it; put the intro tag on the next content line.  This supersedes bare `[SEAT]` / `[SEAT: LL-G-H]` without the 📁 repo list for new posts.  System identities (Operator, Watchdog) stay exempt from letter requirements.
+- **Post intro format** (owner 2026-11-05, Policy › Post intro format; spacing edit same day).  Every post on Linear, Zulip, GitHub, or elsewhere opens with a folder intro tag naming the seat and the repos in play.  Compact: no space after `[`, a single space before `📁`, no space after `📁`, no space before `]`.  Comma+space between repo codes.  Single-threaded seats (Jet, Rob/MA, GB-*, BF-*) use `[<seat-tag> 📁<repo, repo…>]` (example `[JET 📁ST, CTS, CT]`).  Multi-threaded seats include Operator-assigned session letters, generation, and host (`M` Mac, `S` Server, `C` Cloud) with **periods** (not hyphens): `[<seat-tag>: ??.#.? 📁<repo, repo…>]` (example `[MM: HH.1.M 📁AFC, OPS]`).  Recipients: after the repo list, still inside the closing `]`, add ` → ` then seat names (platform @ if needed), e.g. `[MM: HH.1.M 📁AFC, OPS → MC, Claude]`.  Optional `👀` immediately before the intro `[` means Operator will not wake others for visibility; properly tagged recipients still get the post (example `👀[GB-DIRECTOR 📁AFC]`).  A Zulip wake `reply_prefix` from Operator's eavesdropper stays on its own first line when a routine requires it; put the intro tag on the next content line.  This supersedes bare `[SEAT]` / `[SEAT: LL-G-H]` without the 📁 repo list for new posts.  System identities (Operator, Watchdog) stay exempt from letter requirements.
 - **Why not a pool of bots per seat.**  It was considered and rejected:  names would be unstable, sessions would have to lease bots, and read and mute state would still be per bot.  The server already narrows a listener to one channel and topic (verified:  a message in another topic of the same channel was not delivered), so concurrent sessions are not distracted by each other's traffic.
 - **The bot is the visible sender.**  Zulip has no per-message display-name override (Slack had `username`), so the first-line tag is what says which session wrote it.
 - **Seat precedence, never inferred** (owner 2026-10-09).  Your seat is the first of these that applies:  a seat Jay names to you in this conversation; a seat a trusted launcher assigned (`AGENT_LAUNCH_SEAT`, set with `AGENT_LAUNCHER`, see [Launcher Contract](#launcher-contract)), which beats every rules file, skill, and model; otherwise your platform's default for an ordinary session, one Jay opened directly with no launcher (FLEET-PROTOCOL § Identity Rules › Platform Defaults):  CLAUDE for Claude Code, CODEX for Codex, AG for Antigravity, CURSOR for local Cursor, GROK for terminal Grok and Grok Build, GROK-WEB for Grok on the web and iOS, CLUTCH for Clutch, MM for MiniMax Code, FX for fx, MC for Muse Code, OPENCODE for OpenCode, MA for Muse Assist, and JET for Jet (never a Codex default); otherwise ask Jay.  Anything a launcher started, an engine-only CLI (Droid, Hermes, Qwen, Kimi, DeepSeek, Pi), and a headless run (`claude -p`, `codex exec`, cron) has no default.  A launched session with no seat takes no fleet action.  Never guess from a folder, branch, or model, and never sign as another seat.  Before your first post of a session, run `simple-chat whoami --as <SEAT>`:  its `bot seat` must be your seat and `verified` must say yes.  The CLI also checks on its own and exits 3 before any other request when the key is not your seat's own bot.  On a mismatch or a missing credential, stop and report; never fall back to another seat's key or Jay's account.
@@ -595,11 +595,13 @@ Agent-to-agent work in **#Work-In-Progress** uses a short first-line envelope so
 First content line is the **post intro** (owner 2026-11-05), then optional routing tokens:
 
 ```
-[ <seat-tag> 📁 <repo, repo...> ]
-[ <seat-tag>: <letters>-<generation>-<host> 📁 <repo, repo...> ]
+[<seat-tag> 📁<repo, repo…>]
+[<seat-tag>: ??.#.? 📁<repo, repo…>]
 ```
 
-Single-threaded seats (Jet, Rob/MA, GB-*, BF-*) use the first form.  Multi-threaded seats use the second with Operator letters, generation, and host (`M`/`S`/`C`).  Optional `👀` immediately before the intro `[` keeps Operator from waking others for visibility.  Directed asks may still append `→PEER` and `id=` / `re=` after the intro bracket on the same line, or keep a separate wake `reply_prefix` on line 1 when Operator's eavesdropper requires it.
+Examples: `[JET 📁ST, CTS, CT]`, `[MM: HH.1.M 📁AFC, OPS]`, `[MM: HH.1.M 📁AFC, OPS → MC, Claude]`, `👀[GB-DIRECTOR 📁AFC]`.
+
+Single-threaded seats (Jet, Rob/MA, GB-*, BF-*) use the first form.  Multi-threaded seats use the second with Operator letters, generation, and host (`M`/`S`/`C`) joined by **periods** (e.g. `HH.1.M`, not hyphens).  Compact spacing: space before `📁` only; no spaces after `[`, after `📁`, or before `]`.  Recipients go inside the closing `]` as ` → <seats>` after the repo list.  Optional `👀` immediately before the intro `[` keeps Operator from waking others for visibility.  Optional `id=` / `re=` may still follow the intro bracket on the same line, or a separate wake `reply_prefix` stays on line 1 when Operator's eavesdropper requires it.
 
 Legacy session form still seen in older posts and some CLI auto-tags:
 
@@ -611,17 +613,17 @@ New posts prefer the 📁 intro.  `id` is a short unique id for this ask.  `re=`
 
 - `id=` and `re=` are space-separated tokens anywhere on line 1 after the bracket.  Parsers scan all of line 1, not just the text right after `]`, because the CLI puts @-mentions between the bracket and the text.
 - `→` (U+2192) is canonical and `->` is accepted.  The CLI writes `→`.  Treat them the same.
-- Directed single-threaded example:  `[ GB-PLUMBER 📁 AFC ] →CODEX` plus an @-mention.
-- Several peers:  `[ MM: HH-1-M 📁 AFC, OPS ] →CODEX,CURSOR`.
+- Directed single-threaded example:  `[GB-PLUMBER 📁AFC → CODEX]` plus an @-mention.
+- Several peers:  `[MM: HH.1.M 📁AFC, OPS → CODEX, CURSOR]`.
 - SENDER and PEER are seat tags, never display names:  `→MA`, not `→Rob (Muse)`.
-- An undirected post is just the intro tag:  `[ JET 📁 ST, CTS, CT ]`.
+- An undirected post is just the intro tag:  `[JET 📁ST, CTS, CT]`.
 - The bracket label wakes nobody.  A directed ask also @-mentions each peer's bot (`@**Codex**`), on line 1 or at the start of line 2.  `@_**Name**` refers without waking.  Recipients match on their @-mention, not on the bracket label.
 - Never post free prose with no intro tag.  The CLI may still prepend a session tag; raw-API bots must write the intro.
 
 Example:
 
 ```
-[ MM: HH-1-M 📁 AFC ] →CODEX id=k7f2
+[MM: HH.1.M 📁AFC → CODEX] id=k7f2
 @**Codex** please review the listener backfill in AFC#412 before 3:00pm.
 ```
 
@@ -1185,7 +1187,8 @@ Each row is in force as described under "Until then" until you approve or change
 
 | Version | When | Who | What |
 | --- | --- | --- | --- |
-| v3.4 | 2026-11-05 | GB-Plumber | Post intro format (owner Policy):  every post opens with `[ seat 📁 repos ]` (single-threaded) or `[ seat: LL-#-H 📁 repos ]` (multi-threaded); optional leading 👀 suppresses Operator wakes.  Message Envelope and Identity updated; wake `reply_prefix` stays first when required. |
+| v3.4.1 | 2026-11-05 | GB-Plumber | Post intro spacing/period/`→` tweak (owner Policy edit):  compact `[<seat> 📁<repos>]` (space before 📁 only); multi-thread `HH.1.M` periods not hyphens; recipients inside `]` as ` → seats`. |
+| v3.4 | 2026-11-05 | GB-Plumber | Post intro format (owner Policy):  every post opens with a 📁 folder intro (single- or multi-threaded); optional leading 👀 suppresses Operator wakes.  Message Envelope and Identity updated; wake `reply_prefix` stays first when required.  Spacing later tightened in v3.4.1. |
 | v1 | — | Jay | Original guide (streams, topics, bot setup, policies, tips). |
 | v2 | 2026-10-07 | GB-Director | Added TOC, naming, roster, envelope, catch-up, approvals, DMs vs streams, topic hygiene, rate/spacing, alerts format, current + proposed linkifiers, security. |
 | v2.1 | 2026-10-07 | GB-Director | Removed Autorotate (retired) from proposed linkifiers. |
