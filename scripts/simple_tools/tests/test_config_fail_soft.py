@@ -7,8 +7,8 @@ import os
 import tomllib
 import unittest
 
-from agent_sync import config as C
-from agent_sync.tests.listener_harness import ListenerHarness
+from simple_tools import config as C
+from simple_tools.tests.listener_harness import ListenerHarness
 
 MENTION = "@**Claude** can you check the AFC cutover?"
 
@@ -111,7 +111,7 @@ class FailSoftDaemon(ListenerHarness):
         daemon = self.daemon()
         self.assertIn("CLAUDE", daemon.seats, "the seat has a runner")
         self.assertTrue(daemon.connect_seat("CLAUDE"), daemon.seats["CLAUDE"].error)
-        self.fake.add_message("Codex", "agent-sync", "t", MENTION)
+        self.fake.add_message("Codex", "simple-tools", "t", MENTION)
         self.pump_until(daemon, lambda: len(self.inbox()) >= 1)
         self.assertEqual(len(self.inbox()), 1, "the mention was captured to the seat inbox")
         status = daemon.status()
@@ -141,7 +141,7 @@ class FailSoftDaemon(ListenerHarness):
         os.unlink(self.claude)
         daemon = self.daemon()
         self.assertTrue(daemon.connect_seat("CLAUDE"), daemon.seats["CLAUDE"].error)
-        self.fake.add_message("Codex", "agent-sync", "t", MENTION)
+        self.fake.add_message("Codex", "simple-tools", "t", MENTION)
         self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
         self.clock.advance(25.0)
         daemon.tick()
@@ -161,7 +161,7 @@ class FailSoftDaemon(ListenerHarness):
         daemon = self.daemon()
         self.assertTrue(daemon.connect_seat("CLAUDE"))
         for n in range(2):
-            self.fake.add_message("Codex", "agent-sync", "t%d" % n, MENTION)
+            self.fake.add_message("Codex", "simple-tools", "t%d" % n, MENTION)
         self.pump_until(daemon, lambda: len(self.ledger()) >= 2)
         self.clock.advance(25.0)
         daemon.tick()

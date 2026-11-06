@@ -9,9 +9,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from agent_sync import zulip as Z
-from agent_sync.tests.fake_zulip import BOT_EMAIL
-from agent_sync.tests.harness import TAG, Harness, write_rc
+from simple_tools import zulip as Z
+from simple_tools.tests.fake_zulip import BOT_EMAIL
+from simple_tools.tests.harness import TAG, Harness, write_rc
 
 FAKE_FLEET_SECRETS = Path(__file__).resolve().parent / "fixtures" / "fake-fleet-secrets"
 FAKE_PROJECT_ID = "11111111-2222-3333-4444-555555555555"
@@ -314,7 +314,7 @@ class InfisicalFallbackTests(Harness):
             self.assertFalse(Z.infisical_has("JAY", env, self.home))
 
     def test_an_infisical_outage_costs_one_names_fetch_for_every_identity_candidate(self) -> None:
-        from agent_sync import identities as X
+        from simple_tools import identities as X
 
         log = self.tmp / "calls.log"
         wrapper = self.tmp / "counting-fleet-secrets"
@@ -640,7 +640,7 @@ class RefusalTests(Harness):
 
 class SecrecyTests(Harness):
     def test_key_is_absent_everywhere_across_commands_and_error_paths(self) -> None:
-        self.fake.add_message("Codex", "agent-sync", "topic a", "hello @**Claude**")
+        self.fake.add_message("Codex", "simple-tools", "topic a", "hello @**Claude**")
         self.fake.echo_auth = True  # the server echoes the Authorization header into its errors
         commands = [
             ("whoami",),
@@ -677,7 +677,7 @@ class SecrecyTests(Harness):
     def test_unexpected_exception_is_reported_without_a_traceback_or_key(self) -> None:
         from unittest import mock
 
-        from agent_sync import cli
+        from simple_tools import cli
 
         with mock.patch.object(cli, "cmd_whoami", side_effect=RuntimeError("boom " + self.key)):
             with mock.patch.dict(cli.COMMANDS, {"whoami": cli.cmd_whoami}):

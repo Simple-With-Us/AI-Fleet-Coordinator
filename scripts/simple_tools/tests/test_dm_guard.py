@@ -18,9 +18,9 @@ from __future__ import annotations
 import json
 import unittest
 
-from agent_sync import zulip as Z
-from agent_sync.tests.fake_zulip import BOT_EMAIL
-from agent_sync.tests.harness import Harness
+from simple_tools import zulip as Z
+from simple_tools.tests.fake_zulip import BOT_EMAIL
+from simple_tools.tests.harness import Harness
 
 # The fake realm:  10 is this bot (Claude), 11 is Codex, 12 is Jay Wedgeworth (the owner),
 # 14 is Grok.  A production user id is private inventory, so none is committed here.
@@ -33,7 +33,7 @@ class GuardShapeTests(unittest.TestCase):
     """What counts as a direct send, and who counts as a recipient."""
 
     def test_a_channel_send_is_not_a_direct_message(self) -> None:
-        self.assertIsNone(Z.direct_recipient_sets({"type": "stream", "to": "agent-sync", "topic": "t"}))
+        self.assertIsNone(Z.direct_recipient_sets({"type": "stream", "to": "simple-tools", "topic": "t"}))
         self.assertIsNone(Z.direct_recipient_sets({"type": "stream", "to": 7, "topic": "t"}))
         self.assertIsNone(Z.direct_recipient_sets({}))
         self.assertIsNone(Z.direct_recipient_sets(None))
@@ -98,7 +98,7 @@ class GuardShapeTests(unittest.TestCase):
     def test_an_unreadable_recipient_set_is_an_empty_one(self) -> None:
         #  A `to` nobody can read fails the guard closed:  a recipient set nobody can read is a
         #  recipient set nobody may claim to include the owner.
-        self.assertEqual(Z.direct_recipient_sets({"type": "direct", "to": "agent-sync"}), [[]])
+        self.assertEqual(Z.direct_recipient_sets({"type": "direct", "to": "simple-tools"}), [[]])
         self.assertEqual(Z.direct_recipient_sets({"type": "direct", "to": ["x"]}), [[]])
 
 
@@ -126,7 +126,7 @@ class GuardDecisionTests(unittest.TestCase):
     def test_a_channel_post_is_never_refused(self) -> None:
         #  No owner id at all, and a channel post still goes out:  the guard is about direct
         #  messages only.
-        Z.check_dm_guard("messages", {"type": "stream", "to": "agent-sync", "topic": "t"}, 0)
+        Z.check_dm_guard("messages", {"type": "stream", "to": "simple-tools", "topic": "t"}, 0)
 
     def test_a_path_that_cannot_carry_a_message_is_never_refused(self) -> None:
         Z.check_dm_guard("users/me", {"type": "direct", "to": [CODEX_ID]}, 0)
@@ -156,7 +156,7 @@ class ClientGuardTests(Harness):
     def test_a_stream_post_is_unaffected(self) -> None:
         client = self.client(0)
         result = client.post(
-            "messages", {"type": "stream", "to": "agent-sync", "topic": "t", "content": "hello"}
+            "messages", {"type": "stream", "to": "simple-tools", "topic": "t", "content": "hello"}
         )
         self.assertIn("id", result)
         self.assertEqual(len(self.fake.requests_to("POST", "messages")), 1)

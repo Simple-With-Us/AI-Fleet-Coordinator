@@ -25,11 +25,11 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from agent_sync import clarify
-from agent_sync import dm_policy as DMP
-from agent_sync import identity_log as AUDIT
-from agent_sync import zulip as Z
-from agent_sync.mcp import tools as T
+from simple_tools import clarify
+from simple_tools import dm_policy as DMP
+from simple_tools import identity_log as AUDIT
+from simple_tools import zulip as Z
+from simple_tools.mcp import tools as T
 
 
 class FakeZulip:
@@ -401,7 +401,7 @@ class RefusalExitCodeTests(unittest.TestCase):
     """A refusal is not a malformed command:  the CLI must exit 3 so a caller can tell them apart."""
 
     def test_the_refusal_is_an_agentsync_error_with_exit_code_three(self) -> None:
-        self.assertTrue(issubclass(DMP.DmRefused, Z.AgentSyncError))
+        self.assertTrue(issubclass(DMP.DmRefused, Z.SimpleToolsError))
         self.assertEqual(DMP.DmRefused.exit_code, 3)
         self.assertEqual(DMP.DmRefused("no", reason="seat").exit_code, 3)
 
@@ -796,7 +796,7 @@ class DmLookupCredentialTests(unittest.TestCase):
     def test_the_cli_lookup_lets_a_rejected_key_through_too(self) -> None:
         # `simple-chat dm` reads the conversation with the same discrimination as `_dm_exists`:  a
         # rejected key propagates as the ApiError it is, never as the policy's DmRefused.
-        from agent_sync import cli
+        from simple_tools import cli
 
         for status in (401, 403):
 
@@ -890,7 +890,7 @@ class ClarifyingFlagOnTheCliTests(unittest.TestCase):
 
     @staticmethod
     def _parser() -> Any:
-        from agent_sync import cli
+        from simple_tools import cli
 
         return cli.build_parser()
 
@@ -950,7 +950,7 @@ class CliRuleSwitchTests(unittest.TestCase):
         return StubAgent()
 
     def test_the_rule_off_needs_no_operator_id_and_reads_no_conversation(self) -> None:
-        from agent_sync import cli
+        from simple_tools import cli
 
         with tempfile.TemporaryDirectory() as home:
             agent = self._agent({"HOME": home, "AGENT_SYNC_DM_RULE": "off"}, [])
@@ -959,7 +959,7 @@ class CliRuleSwitchTests(unittest.TestCase):
         self.assertEqual(type(agent).reads, 0, "the conversation is not read when the rule is off")
 
     def test_the_rule_on_refuses_a_missing_operator_id_by_name(self) -> None:
-        from agent_sync import cli
+        from simple_tools import cli
 
         opened = [
             {
@@ -1046,7 +1046,7 @@ class DamagedOperatorConfigTests(unittest.TestCase):
         ]
 
     def test_an_operator_id_that_is_not_a_user_id_names_the_setting(self) -> None:
-        from agent_sync import cli
+        from simple_tools import cli
 
         with tempfile.TemporaryDirectory() as home:
             path = self._config(home, '[daemon]\noperator_user_id = "not-a-user-id"\n')
@@ -1059,7 +1059,7 @@ class DamagedOperatorConfigTests(unittest.TestCase):
         self.assertNotIn("not-a-user-id", message, "no value from the config is exposed")
 
     def test_an_unreadable_listener_config_names_the_setting(self) -> None:
-        from agent_sync import cli
+        from simple_tools import cli
 
         with tempfile.TemporaryDirectory() as home:
             path = self._config(home, "[daemon\noperator_user_id = 1\n")
@@ -1073,7 +1073,7 @@ class DamagedOperatorConfigTests(unittest.TestCase):
         # `operator_user_id = 0` means the host has not pinned it:  nothing is broken, and the
         # refusal names the variable the host can set.  An existing conversation is what makes the
         # id matter:  without it there is nothing to attribute and the rule refuses either way.
-        from agent_sync import cli
+        from simple_tools import cli
 
         with tempfile.TemporaryDirectory() as home:
             path = self._config(home, "[daemon]\noperator_user_id = 0\n")
@@ -1090,7 +1090,7 @@ class DamagedOperatorConfigTests(unittest.TestCase):
         # The environment comes first, so a host that exports the id never consults the config it
         # does not need:  a damaged listener.toml must not break it.  The conversation is one the
         # Operator opened, so the id is what decides, and the answer is that the seat may answer.
-        from agent_sync import cli
+        from simple_tools import cli
 
         with tempfile.TemporaryDirectory() as home:
             path = self._config(home, '[daemon]\noperator_user_id = "not-a-user-id"\n')
@@ -1106,7 +1106,7 @@ class DamagedOperatorConfigTests(unittest.TestCase):
     def test_the_operators_clarifying_question_needs_no_id(self) -> None:
         # Operator's own clarifying question is permitted without knowing who the Operator is, so
         # a host whose config is damaged can still send it, and no conversation is read.
-        from agent_sync import cli
+        from simple_tools import cli
 
         with tempfile.TemporaryDirectory() as home:
             path = self._config(home, '[daemon]\noperator_user_id = "not-a-user-id"\n')

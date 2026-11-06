@@ -14,11 +14,11 @@ import pathlib
 import re
 import unittest
 
-from agent_sync import live as L
-from agent_sync import router as R
-from agent_sync import zulip as Z
-from agent_sync.mcp import tools as T
-from agent_sync.mcp.tools import with_defaults
+from simple_tools import live as L
+from simple_tools import router as R
+from simple_tools import zulip as Z
+from simple_tools.mcp import tools as T
+from simple_tools.mcp.tools import with_defaults
 from fleet_skill_identity import catalog_seats
 
 #: A channel is written in its hashtag form.  The pattern is deliberately loose:  it catches
@@ -107,7 +107,7 @@ class DefaultChannelTests(unittest.TestCase):
         )
 
     def test_the_presence_topics_follow_the_default_channel(self) -> None:
-        # live.py sits on the hook fast path and may not import agent_sync.zulip, so it holds the
+        # live.py sits on the hook fast path and may not import simple_tools.zulip, so it holds the
         # coordination channel as a literal.  This test is the drift guard:  when the realm renames
         # the channel again, that literal has to move with it, or the listener stops recognising
         # presence messages in the channel it actually lives in.
@@ -115,7 +115,7 @@ class DefaultChannelTests(unittest.TestCase):
         self.assertIn(Z.DEFAULT_CHANNEL, presence_channels)
         # The realm kept the old name as a "DO NOT USE" tombstone stream, so a regression to it
         # would post into a stream nobody reads and fail silently rather than loudly.
-        self.assertNotIn("agent-sync", presence_channels)
+        self.assertNotIn("simple-tools", presence_channels)
 
     def test_the_shipped_listener_configs_carry_the_same_presence_topics(self) -> None:
         # The server config and its test fixture are what the listener actually reads, so a
@@ -171,7 +171,7 @@ class DefaultChannelTests(unittest.TestCase):
         # The channel's display name is title-cased and its slug is not, so the check folds case.
         help_text = (AGENT_SYNC_DIR / "cli.py").read_text()
         self.assertIn("#%s" % Z.DEFAULT_CHANNEL, help_text.casefold())
-        self.assertNotIn("#agent-sync", help_text.casefold())
+        self.assertNotIn("#simple-tools", help_text.casefold())
 
     def test_no_channel_in_the_skills_pack_names_the_old_channel(self) -> None:
         # The pack is what every seat reads, and it is rendered from the canonical tree, so a
@@ -186,10 +186,10 @@ class DefaultChannelTests(unittest.TestCase):
         pack = repo_root / "docs" / "fleet-skills"
         offenders = []
         for path in sorted(pack.rglob("*.md")):
-            if "#agent-sync" in path.read_text():
+            if "#simple-tools" in path.read_text():
                 offenders.append(str(path.relative_to(repo_root)))
         for path in sorted((repo_root / ".claude" / "skills").rglob("SKILL.md")):
-            if "#agent-sync" in path.read_text():
+            if "#simple-tools" in path.read_text():
                 offenders.append(str(path.relative_to(repo_root)))
         self.assertEqual(
             offenders,
@@ -302,7 +302,7 @@ class DefaultChannelTests(unittest.TestCase):
             path = repo_root / name
             self.assertTrue(path.exists(), "%s is missing" % name)
             self.assertNotIn(
-                "#agent-sync",
+                "#simple-tools",
                 path.read_text(),
                 "%s still names the old channel" % name,
             )
@@ -326,7 +326,7 @@ class DefaultChannelTests(unittest.TestCase):
                 if path.name.startswith("test_") or ".test." in path.name:
                     continue
                 text = _without_comments(path.read_text(), path.suffix)
-                if "#agent-sync" in text:
+                if "#simple-tools" in text:
                     offenders.append(str(path.relative_to(repo_root)))
         self.assertEqual(
             offenders,
@@ -345,7 +345,7 @@ class DefaultChannelTests(unittest.TestCase):
         repo_root = AGENT_SYNC_DIR.parents[1]
         text = (repo_root / "scripts" / "zulip_provision_bots.py").read_text()
         self.assertIn("default_channel(os.environ)", text)
-        self.assertNotIn('"agent-sync"', text)
+        self.assertNotIn('"simple-tools"', text)
 
 
 if __name__ == "__main__":

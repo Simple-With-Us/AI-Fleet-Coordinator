@@ -11,7 +11,7 @@ SCRIPTS = ROOT / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
-from agent_sync.cursor_chat_transport import CursorCloudTransport  # noqa: E402
+from simple_tools.cursor_chat_transport import CursorCloudTransport  # noqa: E402
 
 
 class FakeCursorApi:

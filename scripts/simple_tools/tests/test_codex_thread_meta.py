@@ -6,12 +6,12 @@ import io
 import json
 from unittest import mock
 
-from agent_sync import cli
-from agent_sync import zulip as Z
-from agent_sync.mcp import stdio as S
-from agent_sync.mcp import tools as T
-from agent_sync.state import State
-from agent_sync.tests.mcp_harness import McpHarness, zulip_shaped
+from simple_tools import cli
+from simple_tools import zulip as Z
+from simple_tools.mcp import stdio as S
+from simple_tools.mcp import tools as T
+from simple_tools.state import State
+from simple_tools.tests.mcp_harness import McpHarness, zulip_shaped
 
 A = "019f0000-0000-7000-8000-000000000001"
 B = "019f0000-0000-7000-8000-000000000002"
@@ -246,7 +246,7 @@ class CodexThreadMetaTests(McpHarness):
 
         def broken(args):
             states.append(tools.agent.state.path)
-            tools.agent.state.advance_cursor("agent-sync", "AFC-296", 9)
+            tools.agent.state.advance_cursor("simple-tools", "AFC-296", 9)
             raise RuntimeError("synthetic failure")
 
         with mock.patch.object(tools, "_tool_zulip_topics", side_effect=broken):

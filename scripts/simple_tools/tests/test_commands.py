@@ -7,8 +7,8 @@ import shlex
 import stat
 import unittest
 
-from agent_sync.tests.fake_zulip import BOT_EMAIL, EPOCH
-from agent_sync.tests.harness import TAG, Harness
+from simple_tools.tests.fake_zulip import BOT_EMAIL, EPOCH
+from simple_tools.tests.harness import TAG, Harness
 
 # 2026-10-07 23:41 UTC is 6:41pm Central (daylight time), a Wednesday.
 OCT_7_2026_2341_UTC = 1_791_416_460
@@ -29,12 +29,12 @@ class WhoamiAndListingTests(Harness):
     def test_channels(self) -> None:
         result = self.run_cli("channels")
         self.assertEqual(result.code, 0, result.err)
-        self.assertIn("#agent-sync", result.out)
+        self.assertIn("#simple-tools", result.out)
         self.assertIn("the other channel", result.out)
 
     def test_topics_newest_first_with_max_id_and_limit(self) -> None:
-        first = self.fake.add_message("Codex", "agent-sync", "old topic", "x")
-        newest = self.fake.add_message("Codex", "agent-sync", "new topic", "x")
+        first = self.fake.add_message("Codex", "simple-tools", "old topic", "x")
+        newest = self.fake.add_message("Codex", "simple-tools", "new topic", "x")
         self.fake.add_message("Codex", "other", "elsewhere", "x")
         result = self.run_cli("topics")
         self.assertEqual(result.code, 0, result.err)
@@ -44,17 +44,17 @@ class WhoamiAndListingTests(Harness):
         self.assertEqual(json.loads(limited.out), [{"name": "new topic", "max_id": newest}])
 
     def test_subscribe_reports_joined_and_already(self) -> None:
-        result = self.run_cli("subscribe", "--channel", "agent-sync")
+        result = self.run_cli("subscribe", "--channel", "simple-tools")
         self.assertEqual(result.code, 0, result.err)
-        self.assertIn("already subscribed to #agent-sync", result.out)
+        self.assertIn("already subscribed to #simple-tools", result.out)
 
     def test_subscribe_is_a_plain_post_by_default(self) -> None:
-        result = self.run_cli("subscribe", "--channel", "new-channel", "--channel", "agent-sync")
+        result = self.run_cli("subscribe", "--channel", "new-channel", "--channel", "simple-tools")
         self.assertEqual(result.code, 0, result.err)
         self.assertIn("subscribed to #new-channel", result.out)
         self.assertEqual(self.fake.requests_to("GET", "get_stream_id"), [])  # no pre-check unless asked for
         payload = json.loads(self.fake.requests_to("POST", "users/me/subscriptions")[0].form["subscriptions"])
-        self.assertEqual(payload, [{"name": "new-channel"}, {"name": "agent-sync"}])
+        self.assertEqual(payload, [{"name": "new-channel"}, {"name": "simple-tools"}])
 
     def test_subscribe_must_exist_refuses_a_channel_that_cannot_be_found(self) -> None:
         refused = self.run_cli("subscribe", "--channel", "typo-channel", "--must-exist")
@@ -101,7 +101,7 @@ class PostTests(Harness):
         self.assertEqual(result.code, 0, result.err)
         form = self.last_post().form
         self.assertEqual(form["type"], "stream")
-        self.assertEqual(form["to"], "agent-sync")
+        self.assertEqual(form["to"], "simple-tools")
         self.assertEqual(form["topic"], "AFC 18f61cf4 Zulip cutover")
         self.assertEqual(form["content"], "[CLAUDE·%s] hello there" % TAG)
         message_id = self.fake.messages[-1]["id"]
@@ -150,7 +150,7 @@ class PostTests(Harness):
         self.assertEqual(len(self.fake.requests_to("POST", "messages")), before)
 
     def test_peer_labels_come_from_the_bot_email_not_the_display_name(self) -> None:
-        from agent_sync.cli import seat_tag_for
+        from simple_tools.cli import seat_tag_for
         bot = lambda email, name: {"email": email, "full_name": name, "is_bot": True}
         cases = {
             ("mm-bot@simplewithus.zulipchat.com", "MiniMax"): "MM",
@@ -182,7 +182,7 @@ class PostTests(Harness):
         self.assertEqual(len(listed), 5)
         self.assertEqual(self.fake.requests_to("POST", "messages"), [])
 
-    def test_fleet_adds_at_all_in_agent_sync_fleet(self) -> None:
+    def test_fleet_adds_at_all_in_simple_tools_fleet(self) -> None:
         result = self.run_cli("post", "--topic", "fleet", "--channel", "work-in-progress", "--fleet", "wake up")
         self.assertEqual(result.code, 0, result.err)
         self.assertEqual(self.last_post().form["content"], "[CLAUDE·%s] @**all** wake up" % TAG)
@@ -199,7 +199,7 @@ class PostTests(Harness):
         self.assertEqual(self.run_cli("post", "--topic", "Fleet", "--channel", "Work-In-Progress", "--fleet", "x").code, 0)
         self.assertIn("@**all**", self.last_post().form["content"])
 
-    def test_fleet_is_refused_outside_agent_sync_fleet_before_any_request(self) -> None:
+    def test_fleet_is_refused_outside_simple_tools_fleet_before_any_request(self) -> None:
         for argv in (("--topic", "t"), ("--topic", "fleet2"), ("--topic", "roll call"),
                      ("--topic", "fleet", "--channel", "general"), ("--topic", "fleet", "--channel", "sandbox")):
             with self.subTest(argv=argv):
@@ -255,7 +255,7 @@ class PostTests(Harness):
 
     def test_json_output(self) -> None:
         result = self.run_cli("post", "--topic", "t", "--json", "hi")
-        self.assertEqual(json.loads(result.out), {"id": self.fake.messages[-1]["id"], "channel": "agent-sync", "topic": "t"})
+        self.assertEqual(json.loads(result.out), {"id": self.fake.messages[-1]["id"], "channel": "simple-tools", "topic": "t"})
 
     def test_other_channel(self) -> None:
         self.run_cli("post", "--topic", "t", "--channel", "other", "hi")
@@ -516,7 +516,7 @@ class DmReadAndInboxTests(Harness):
         self.assertEqual(self.run_cli("dm-read").code, 2)
 
     def test_inbox_lists_dms_to_the_bot_with_mentions_but_not_its_own_dms(self) -> None:
-        mention = self.fake.add_message("Codex", "agent-sync", "ask", "@**Claude** look")
+        mention = self.fake.add_message("Codex", "simple-tools", "ask", "@**Claude** look")
         dm = self.fake.add_direct_message("Codex", "psst, in a DM")
         self.fake.add_direct_message(self.fake.me, "my own DM", recipients=[self.codex])
         result = self.run_cli("inbox", "--json")
@@ -547,13 +547,13 @@ class ReplyTests(Harness):
         self.assertIn(self.fake.messages[-1]["id"], json.loads(self.state_path().read_text())["posted"])
 
     def test_reply_with_to_adds_the_mention(self) -> None:
-        original = self.fake.add_message("Codex", "agent-sync", "t", "q")
+        original = self.fake.add_message("Codex", "simple-tools", "t", "q")
         self.run_cli("reply", "--id", str(original), "--to", "Codex", "a")
         self.assertEqual(self.fake.requests_to("POST", "messages")[-1].form["content"],
                          "[CLAUDE·%s\u2192CODEX] @**Codex** a" % TAG)
 
     def test_the_check_hint_after_a_timeout_cannot_smuggle_a_command_in_through_a_topic(self) -> None:
-        topic = "x' ; touch /tmp/agent-sync-pwned ; echo '"  # a topic any member of the realm can set
+        topic = "x' ; touch /tmp/simple-tools-pwned ; echo '"  # a topic any member of the realm can set
         original = self.fake.add_message("Codex", "other", topic, "question?")
         self.fake.inject("POST", "messages", delay=1.5)
         result = self.run_cli("reply", "--id", str(original), "answer", timeout=0.4)
@@ -571,7 +571,7 @@ class ReplyTests(Harness):
                          ["simple-chat", "read", "--channel", "my channel", "--topic", "Jay's fix", "--include-self"])
 
     def test_the_success_line_shows_server_supplied_names_safely(self) -> None:
-        original = self.fake.add_message("Codex", "agent-sync", "red\x1b[31mtopic", "q")
+        original = self.fake.add_message("Codex", "simple-tools", "red\x1b[31mtopic", "q")
         result = self.run_cli("reply", "--id", str(original), "a")
         self.assertEqual(result.code, 0, result.err)
         self.assertNotIn("\x1b", result.out)
@@ -590,42 +590,42 @@ class ReplyTests(Harness):
 
 class ReadTests(Harness):
     def test_default_shows_the_newest_messages_in_order(self) -> None:
-        ids = [self.fake.add_message("Codex", "agent-sync", "t", "message %d" % n) for n in range(5)]
-        self.fake.add_message("Codex", "agent-sync", "other topic", "not me")
+        ids = [self.fake.add_message("Codex", "simple-tools", "t", "message %d" % n) for n in range(5)]
+        self.fake.add_message("Codex", "simple-tools", "other topic", "not me")
         result = self.run_cli("read", "--topic", "t", "--limit", "3")
         self.assertEqual(result.code, 0, result.err)
         shown = [int(line.rsplit("id ", 1)[1]) for line in result.out.splitlines() if line.startswith("#")]
         self.assertEqual(shown, ids[-3:])
 
     def test_human_format_is_two_lines_plus_body_and_a_blank_line(self) -> None:
-        message_id = self.fake.add_message("Codex", "agent-sync", "my topic", "the body\nsecond line",
+        message_id = self.fake.add_message("Codex", "simple-tools", "my topic", "the body\nsecond line",
                                            timestamp=OCT_7_2026_2341_UTC)
         result = self.run_cli("read", "--topic", "my topic")
-        self.assertEqual(result.out, "#agent-sync › my topic · id %d\nCodex [bot] · Wed, Oct 7, 6:41pm\n"
+        self.assertEqual(result.out, "#simple-tools › my topic · id %d\nCodex [bot] · Wed, Oct 7, 6:41pm\n"
                                      "the body\nsecond line\n\n" % message_id)
         for abbreviation in ("CDT", "CST", " CT"):
             self.assertNotIn(abbreviation, result.out)
 
     def test_human_sender_and_mention_marker(self) -> None:
-        self.fake.add_message("Jay Wedgeworth", "agent-sync", "t", "hey @**Claude** look", timestamp=OCT_7_2026_2341_UTC)
+        self.fake.add_message("Jay Wedgeworth", "simple-tools", "t", "hey @**Claude** look", timestamp=OCT_7_2026_2341_UTC)
         out = self.run_cli("read", "--topic", "t").out
         self.assertIn("Jay Wedgeworth [human] · Wed, Oct 7, 6:41pm · @you", out)
 
     def test_control_characters_are_shown_not_sent_to_the_terminal(self) -> None:
-        self.fake.add_message("Codex", "agent-sync", "t", "before \x1b[31mred\x1b[0m after\tkeep")
+        self.fake.add_message("Codex", "simple-tools", "t", "before \x1b[31mred\x1b[0m after\tkeep")
         out = self.run_cli("read", "--topic", "t").out
         self.assertNotIn("\x1b", out)
         self.assertIn("\\x1b[31mred", out)
         self.assertIn("after\tkeep", out)
 
     def test_json_lines(self) -> None:
-        message_id = self.fake.add_message("Codex", "agent-sync", "t", "hi @**Claude**")
-        self.fake.add_message("Jay Wedgeworth", "agent-sync", "t", "plain")
+        message_id = self.fake.add_message("Codex", "simple-tools", "t", "hi @**Claude**")
+        self.fake.add_message("Jay Wedgeworth", "simple-tools", "t", "plain")
         lines = [json.loads(line) for line in self.run_cli("read", "--topic", "t", "--json").out.splitlines()]
         self.assertEqual(len(lines), 2)
         first = lines[0]
         self.assertEqual(first["id"], message_id)
-        self.assertEqual((first["channel"], first["topic"]), ("agent-sync", "t"))
+        self.assertEqual((first["channel"], first["topic"]), ("simple-tools", "t"))
         self.assertEqual((first["sender_email"], first["sender_full_name"]), ("codex-bot@zulip.test", "Codex"))
         self.assertIs(first["is_bot"], True)
         self.assertIs(lines[1]["is_bot"], False)
@@ -639,7 +639,7 @@ class ReadTests(Harness):
         self.assertEqual(self.fake.requests_to("GET", "messages")[0].query["apply_markdown"], "false")
 
     def test_since_returns_messages_after_the_id_only(self) -> None:
-        ids = [self.fake.add_message("Codex", "agent-sync", "t", "m%d" % n) for n in range(4)]
+        ids = [self.fake.add_message("Codex", "simple-tools", "t", "m%d" % n) for n in range(4)]
         result = self.run_cli("read", "--topic", "t", "--since", str(ids[1]))
         shown = [int(line.rsplit("id ", 1)[1]) for line in result.out.splitlines() if line.startswith("#")]
         self.assertEqual(shown, ids[2:])
@@ -650,30 +650,30 @@ class ReadTests(Harness):
         self.assertEqual(self.run_cli("read", "--topic", "t", "--since", "5", "--new").code, 2)
 
     def test_new_advances_the_session_cursor(self) -> None:
-        first = [self.fake.add_message("Codex", "agent-sync", "t", "a%d" % n) for n in range(2)]
+        first = [self.fake.add_message("Codex", "simple-tools", "t", "a%d" % n) for n in range(2)]
         one = self.run_cli("read", "--topic", "t", "--new")
         self.assertEqual(one.code, 0, one.err)
-        self.assertEqual(one.out.count("#agent-sync"), 2)
-        key = "agent-sync\u0000t"
+        self.assertEqual(one.out.count("#simple-tools"), 2)
+        key = "simple-tools\u0000t"
         self.assertEqual(json.loads(self.state_path().read_text())["cursors"][key], first[-1])
         again = self.run_cli("read", "--topic", "t", "--new")
         self.assertEqual(again.out, "")
-        later = self.fake.add_message("Codex", "agent-sync", "t", "b")
+        later = self.fake.add_message("Codex", "simple-tools", "t", "b")
         third = self.run_cli("read", "--topic", "t", "--new")
-        self.assertEqual(third.out.count("#agent-sync"), 1)
+        self.assertEqual(third.out.count("#simple-tools"), 1)
         self.assertEqual(json.loads(self.state_path().read_text())["cursors"][key], later)
 
     def test_cursors_are_per_session(self) -> None:
-        self.fake.add_message("Codex", "agent-sync", "t", "a")
+        self.fake.add_message("Codex", "simple-tools", "t", "a")
         self.run_cli("read", "--topic", "t", "--new")
         other = self.run_cli("read", "--topic", "t", "--new", "--session", "99998888-0000")
-        self.assertEqual(other.out.count("#agent-sync"), 1)
+        self.assertEqual(other.out.count("#simple-tools"), 1)
         self.assertTrue(self.state_path("99998888").exists())
 
     def test_new_limit_pages_through_a_backlog_without_dropping_messages(self) -> None:
-        self.fake.add_message("Codex", "agent-sync", "t", "history")
+        self.fake.add_message("Codex", "simple-tools", "t", "history")
         self.run_cli("read", "--topic", "t", "--new")  # no cursor yet: shows history, sets the cursor
-        ids = [self.fake.add_message("Codex", "agent-sync", "t", "m%d" % n) for n in range(5)]
+        ids = [self.fake.add_message("Codex", "simple-tools", "t", "m%d" % n) for n in range(5)]
         pages = []
         for _ in range(3):
             out = self.run_cli("read", "--topic", "t", "--new", "--limit", "2").out
@@ -681,50 +681,50 @@ class ReadTests(Harness):
         self.assertEqual(pages, [ids[0:2], ids[2:4], ids[4:5]])
 
     def test_new_looks_past_a_whole_page_of_this_sessions_own_posts(self) -> None:
-        self.fake.add_message("Codex", "agent-sync", "t", "history")
+        self.fake.add_message("Codex", "simple-tools", "t", "history")
         self.run_cli("read", "--topic", "t", "--new")
         for n in range(7):
-            self.fake.add_message(self.fake.me, "agent-sync", "t", "[CLAUDE\u00b7%s] own %d" % (TAG, n))
-        question = self.fake.add_message("Codex", "agent-sync", "t", "a peer question")
+            self.fake.add_message(self.fake.me, "simple-tools", "t", "[CLAUDE\u00b7%s] own %d" % (TAG, n))
+        question = self.fake.add_message("Codex", "simple-tools", "t", "a peer question")
         result = self.run_cli("read", "--topic", "t", "--new", "--limit", "3")  # pages of 3: own, own, own+...
         self.assertEqual(result.code, 0, result.err)
         shown = [int(line.rsplit("id ", 1)[1]) for line in result.out.splitlines() if line.startswith("#")]
         self.assertEqual(shown, [question])
         self.assertNotIn("no messages", result.err)
-        self.assertEqual(json.loads(self.state_path().read_text())["cursors"]["agent-sync\u0000t"], question)
+        self.assertEqual(json.loads(self.state_path().read_text())["cursors"]["simple-tools\u0000t"], question)
 
     def test_new_with_nothing_but_own_posts_says_so_and_still_advances(self) -> None:
-        self.fake.add_message("Codex", "agent-sync", "t", "history")
+        self.fake.add_message("Codex", "simple-tools", "t", "history")
         self.run_cli("read", "--topic", "t", "--new")
-        last = self.fake.add_message(self.fake.me, "agent-sync", "t", "[CLAUDE\u00b7%s] only me" % TAG)
+        last = self.fake.add_message(self.fake.me, "simple-tools", "t", "[CLAUDE\u00b7%s] only me" % TAG)
         result = self.run_cli("read", "--topic", "t", "--new")
         self.assertEqual(result.out, "")
         self.assertIn("no messages", result.err)
-        self.assertEqual(json.loads(self.state_path().read_text())["cursors"]["agent-sync\u0000t"], last)
+        self.assertEqual(json.loads(self.state_path().read_text())["cursors"]["simple-tools\u0000t"], last)
 
     def test_new_over_exactly_one_full_page_of_own_posts_still_moves_the_cursor_past_it(self) -> None:
-        self.fake.add_message("Codex", "agent-sync", "t", "history")
+        self.fake.add_message("Codex", "simple-tools", "t", "history")
         self.run_cli("read", "--topic", "t", "--new")
         last = 0
         for n in range(3):  # exactly --limit own posts: the next page is empty
-            last = self.fake.add_message(self.fake.me, "agent-sync", "t", "[CLAUDE\u00b7%s] own %d" % (TAG, n))
+            last = self.fake.add_message(self.fake.me, "simple-tools", "t", "[CLAUDE\u00b7%s] own %d" % (TAG, n))
         for _ in range(2):  # the second run must not walk the same page again
             result = self.run_cli("read", "--topic", "t", "--new", "--limit", "3")
             self.assertEqual(result.out, "")
             self.assertIn("no messages", result.err)
-            self.assertEqual(json.loads(self.state_path().read_text())["cursors"]["agent-sync\u0000t"], last)
+            self.assertEqual(json.loads(self.state_path().read_text())["cursors"]["simple-tools\u0000t"], last)
         fetches = [r.query for r in self.fake.requests_to("GET", "messages")]
         self.assertEqual([q["anchor"] for q in fetches][-3:], [str(last - 3), str(last), str(last)])
 
     def test_a_channel_topic_or_sender_cannot_span_lines_in_the_header(self) -> None:
-        forged = "x\n#agent-sync \u203a AFC 1 forged \u00b7 id 999"
-        self.fake.add_message("Codex", "agent-sync", forged, "body")
+        forged = "x\n#simple-tools \u203a AFC 1 forged \u00b7 id 999"
+        self.fake.add_message("Codex", "simple-tools", forged, "body")
         out = self.run_cli("read", "--topic", forged).out
         self.assertEqual(len([line for line in out.splitlines() if line.startswith("#")]), 1)
-        self.assertIn("x\\x0a#agent-sync", out)
+        self.assertIn("x\\x0a#simple-tools", out)
 
     def test_topic_matching_ignores_case(self) -> None:
-        self.fake.add_message("Codex", "agent-sync", "Roll Call", "here")
+        self.fake.add_message("Codex", "simple-tools", "Roll Call", "here")
         self.assertIn("here", self.run_cli("read", "--topic", "roll call").out)
 
 
@@ -735,7 +735,7 @@ class DeliveryFilterTests(Harness):
 
     def test_own_posts_are_excluded_by_ledger(self) -> None:
         self.run_cli("post", "--topic", "t", "mine")
-        self.fake.add_message("Codex", "agent-sync", "t", "theirs")
+        self.fake.add_message("Codex", "simple-tools", "t", "theirs")
         out = self.run_cli("read", "--topic", "t").out
         self.assertNotIn("mine", out)
         self.assertIn("theirs", out)
@@ -753,7 +753,7 @@ class DeliveryFilterTests(Harness):
         self.assertNotIn("(sibling)", out)
 
     def test_sibling_session_messages_are_delivered_and_labelled(self) -> None:
-        self.fake.add_message(self.fake.me, "agent-sync", "t", self.sibling_tag)
+        self.fake.add_message(self.fake.me, "simple-tools", "t", self.sibling_tag)
         result = self.run_cli("read", "--topic", "t")
         self.assertIn("from another session of mine", result.out)
         self.assertIn("Claude [bot] (sibling)", result.out)
@@ -761,27 +761,27 @@ class DeliveryFilterTests(Harness):
         self.assertIs(data["sibling"], True)
 
     def test_an_untagged_post_from_the_same_bot_without_a_ledger_entry_is_a_sibling(self) -> None:
-        self.fake.add_message(self.fake.me, "agent-sync", "t", "[CLAUDE] no session tag")
+        self.fake.add_message(self.fake.me, "simple-tools", "t", "[CLAUDE] no session tag")
         self.assertIn("(sibling)", self.run_cli("read", "--topic", "t").out)
 
     def test_a_short_session_tag_does_not_take_a_longer_sibling_tag_for_itself(self) -> None:
-        self.fake.add_message(self.fake.me, "agent-sync", "t", "[CLAUDE\u00b7abcdef12] sibling here")
-        self.fake.add_message(self.fake.me, "agent-sync", "t", "[CLAUDE\u00b7abc] mine")
-        self.fake.add_message(self.fake.me, "agent-sync", "t", "[CLAUDE\u00b7abc->CODEX] @**Codex** mine, directed")
+        self.fake.add_message(self.fake.me, "simple-tools", "t", "[CLAUDE\u00b7abcdef12] sibling here")
+        self.fake.add_message(self.fake.me, "simple-tools", "t", "[CLAUDE\u00b7abc] mine")
+        self.fake.add_message(self.fake.me, "simple-tools", "t", "[CLAUDE\u00b7abc->CODEX] @**Codex** mine, directed")
         out = self.run_cli("read", "--topic", "t", "--session", "abc").out
         self.assertIn("sibling here", out)
         self.assertIn("(sibling)", out)
         self.assertNotIn("mine", out)
 
     def test_a_directed_tag_of_this_session_is_still_recognised_as_self(self) -> None:
-        self.fake.add_message(self.fake.me, "agent-sync", "t", "[CLAUDE·%s->CODEX] @**Codex** hi" % TAG)
+        self.fake.add_message(self.fake.me, "simple-tools", "t", "[CLAUDE·%s->CODEX] @**Codex** hi" % TAG)
         self.assertEqual(self.run_cli("read", "--topic", "t").out, "")
 
 
 class InboxTests(Harness):
     def test_first_run_shows_newest_and_sets_the_cursor(self) -> None:
-        ids = [self.fake.add_message("Jay Wedgeworth", "agent-sync", "t%d" % n, "ping @**Claude** %d" % n) for n in range(3)]
-        self.fake.add_message("Jay Wedgeworth", "agent-sync", "t", "no mention here")
+        ids = [self.fake.add_message("Jay Wedgeworth", "simple-tools", "t%d" % n, "ping @**Claude** %d" % n) for n in range(3)]
+        self.fake.add_message("Jay Wedgeworth", "simple-tools", "t", "no mention here")
         result = self.run_cli("inbox", "--limit", "2")
         self.assertEqual(result.code, 0, result.err)
         shown = [int(line.rsplit("id ", 1)[1]) for line in result.out.splitlines() if line.startswith("#")]
@@ -789,7 +789,7 @@ class InboxTests(Harness):
         self.assertEqual(json.loads((self.state_dir / "CLAUDE" / "inbox.json").read_text()), {"cursor": ids[-1]})
 
     def test_next_run_shows_only_newer_mentions(self) -> None:
-        self.fake.add_message("Jay Wedgeworth", "agent-sync", "t", "old @**Claude**")
+        self.fake.add_message("Jay Wedgeworth", "simple-tools", "t", "old @**Claude**")
         self.run_cli("inbox")
         self.assertEqual(self.run_cli("inbox").out, "")
         newer = self.fake.add_message("Codex", "other", "x", "new @**Claude**")
@@ -800,16 +800,16 @@ class InboxTests(Harness):
         self.assertEqual(json.loads((self.state_dir / "CLAUDE" / "inbox.json").read_text())["cursor"], newer)
 
     def test_peek_does_not_advance_and_does_not_create_a_cursor(self) -> None:
-        self.fake.add_message("Jay Wedgeworth", "agent-sync", "t", "hey @**Claude**")
+        self.fake.add_message("Jay Wedgeworth", "simple-tools", "t", "hey @**Claude**")
         self.assertIn("hey", self.run_cli("inbox", "--peek").out)
         self.assertFalse((self.state_dir / "CLAUDE" / "inbox.json").exists())
         self.assertIn("hey", self.run_cli("inbox").out)
-        self.fake.add_message("Jay Wedgeworth", "agent-sync", "t", "again @**Claude**")
+        self.fake.add_message("Jay Wedgeworth", "simple-tools", "t", "again @**Claude**")
         self.assertIn("again", self.run_cli("inbox", "--peek").out)
         self.assertIn("again", self.run_cli("inbox", "--peek").out)
 
     def test_the_inbox_cursor_is_seat_wide_not_per_session(self) -> None:
-        self.fake.add_message("Jay Wedgeworth", "agent-sync", "t", "hey @**Claude**")
+        self.fake.add_message("Jay Wedgeworth", "simple-tools", "t", "hey @**Claude**")
         self.assertIn("hey", self.run_cli("inbox").out)
         self.assertEqual(self.run_cli("inbox", "--session", "99998888-0000").out, "")
         self.assertFalse((self.state_dir / "CLAUDE" / "99998888" / "inbox.json").exists())
@@ -829,8 +829,8 @@ class TopicActionTests(Harness):
         self.assertEqual(self.fake.requests_to("POST", "user_topics")[-1].form["stream_id"], "8")
 
     def test_resolve_renames_the_topic_through_its_newest_message(self) -> None:
-        self.fake.add_message("Codex", "agent-sync", "AFC 12345678 Work", "a")
-        newest = self.fake.add_message("Codex", "agent-sync", "AFC 12345678 Work", "b")
+        self.fake.add_message("Codex", "simple-tools", "AFC 12345678 Work", "a")
+        newest = self.fake.add_message("Codex", "simple-tools", "AFC 12345678 Work", "b")
         result = self.run_cli("resolve", "--topic", "AFC 12345678 Work")
         self.assertEqual(result.code, 0, result.err)
         patch = self.fake.requests_to("PATCH", "messages/%d" % newest)[0]
@@ -838,7 +838,7 @@ class TopicActionTests(Harness):
         self.assertEqual({m["subject"] for m in self.fake.messages}, {"✔ AFC 12345678 Work"})
 
     def test_resolve_uses_the_real_spelling_of_the_topic_not_what_was_typed(self) -> None:
-        newest = self.fake.add_message("Codex", "agent-sync", "AFC Zulip cutover", "a")
+        newest = self.fake.add_message("Codex", "simple-tools", "AFC Zulip cutover", "a")
         result = self.run_cli("resolve", "--topic", "afc zulip cutover")
         self.assertEqual(result.code, 0, result.err)
         patch = self.fake.requests_to("PATCH", "messages/%d" % newest)[0]
@@ -852,11 +852,11 @@ class TopicActionTests(Harness):
 
     def test_resolve_refuses_an_empty_topic_and_a_name_that_would_be_too_long(self) -> None:
         self.assertEqual(self.run_cli("resolve", "--topic", "nothing here").code, 2)
-        self.fake.add_message("Codex", "agent-sync", "t" * 60, "x")
+        self.fake.add_message("Codex", "simple-tools", "t" * 60, "x")
         self.assertEqual(self.run_cli("resolve", "--topic", "t" * 60).code, 2)
 
     def test_react(self) -> None:
-        message_id = self.fake.add_message("Codex", "agent-sync", "t", "x")
+        message_id = self.fake.add_message("Codex", "simple-tools", "t", "x")
         self.assertEqual(self.run_cli("react", "--id", str(message_id), ":eyes:").code, 0)
         request = self.fake.requests_to("POST", "messages/%d/reactions" % message_id)[0]
         self.assertEqual(request.form, {"emoji_name": "eyes"})
@@ -870,7 +870,7 @@ class StateFileTests(Harness):
         old_umask = os.umask(0o000)  # a permissive umask must not leak into the modes
         try:
             self.run_cli("post", "--topic", "t", "hi")
-            self.fake.add_message("Jay Wedgeworth", "agent-sync", "t", "@**Claude**")
+            self.fake.add_message("Jay Wedgeworth", "simple-tools", "t", "@**Claude**")
             self.run_cli("read", "--topic", "t", "--new")
             self.run_cli("inbox")
         finally:
