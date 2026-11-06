@@ -598,6 +598,7 @@ On the network the seat is proved, not claimed:  see [The Shared Bearer](#the-sh
 | FX | `Fx` | `fx/` | `fx` | fx-bot@ |
 | MC | `Muse Code` | `muse-code/` | `muse-code` | mc-bot@ |
 | OPENCODE | `OpenCode` | `opencode/` | `opencode` | opencode-bot@ |
+| AMP | `Amp` | `amp/` | `amp` | amp-bot@ |
 | MA | `Muse Assist` | `muse-assist/` | `muse-assist` | muse-assist-bot@ |
 | ECHO | `Echo` | `echo/`, `instinct/` | `echo` | instinct-bat-bot@ |
 | WISE | `Wise` | `wise/`, `instinct/` | `wise` | instinct-owl-bot@ |
@@ -607,11 +608,11 @@ On the network the seat is proved, not claimed:  see [The Shared Bearer](#the-sh
 - **Identity, not model or location.**  A seat may run locally or in the cloud, on any session, with any model.  The model never changes the seat:  MiniMax inside fx is FX, the Codex provider inside fx is FX, and a BotFleet bot keeps its `BF-<ROLE>` seat on every engine.
 - **Sub-agents inherit.**  A sub-agent takes its parent's seat, a launcher-assigned one included, and posts through the parent's bot.  It never gets its own identity.
 - **Seat aliases.**  WISE is the canonical key for Wise, with `Wise-Instinct`, `Echo-Instinct` and legacy `Instinct` resolving to it.  `Rob` and `Rob-Muse` resolve to MA, alongside `Muse-Assist`.
-- **BotFleet and Grok Bot.**  BotFleet assigns each role bot a `BF-<ROLE>` seat at launch:  `BF-BUILDER`, `BF-COMPILER`, `BF-DEPLOYER`, `BF-DESIGNER`, `BF-DIRECTOR`, `BF-FIXER`, `BF-HOUSEKEEPER`, `BF-MONITOR`, `BF-ORACLE`, `BF-PLUMBER`, `BF-PUBLISHER`.  Grok Bot's personas are `GB-<NAME>`.  Both families are distinct from the seats above.
+- **BotFleet and Grok Bot.**  BotFleet assigns each role bot a `BF-<ROLE>` seat at launch:  `BF-COMPILER`, `BF-DEPLOYER`, `BF-DESIGNER`, `BF-DIRECTOR`, `BF-ENGINEER`, `BF-FIXER`, `BF-HOUSEKEEPER`, `BF-MONITOR`, `BF-ORACLE`, `BF-PLUMBER`, `BF-PUBLISHER`, `BF-TRADER` (BF-ENGINEER replaced BF-BUILDER, owner 2026-11-01).  Grok Bot's personas are `GB-<NAME>`.  Both families are distinct from the seats above.
 
 ### Availability
 
-- **Available (normal):**  CLAUDE, CODEX, AG, CURSOR, GROK (terminal), GROK-WEB (cloud), CLUTCH, MM, KIMI, ZC, FX, MC, OPENCODE, MA, ECHO, WISE, and the BotFleet role bots.
+- **Available (normal):**  CLAUDE, CODEX, AG, CURSOR, GROK (terminal), GROK-WEB (cloud), CLUTCH, MM, KIMI, ZC, FX, MC, OPENCODE, AMP, MA, ECHO, WISE, and the BotFleet role bots.
 - **Retired.**  Never assign work to these seats, accept work from them, leave their work In Progress, or wait on them.  Unclaim any leftover lanes.
   - MONET (owner 2026-10-07):  the Monet Claude account and app are no longer used.
   - RENOIR (owner 2026-10-07):  the seat never opened; the Renoir Claude account and app are no longer used.
