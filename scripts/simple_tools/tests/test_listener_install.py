@@ -14,10 +14,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from agent_sync import config as C
-from agent_sync import live as L
-from agent_sync.tests.harness import write_rc
-from agent_sync.tests.listener_harness import ListenerHarness, mode_of, reply_output
+from simple_tools import config as C
+from simple_tools import live as L
+from simple_tools.tests.harness import write_rc
+from simple_tools.tests.listener_harness import ListenerHarness, mode_of, reply_output
 
 REPO = Path(__file__).resolve().parents[3]
 ENTRY = REPO / "scripts" / "simple-chat"
@@ -26,7 +26,7 @@ ENTRY = REPO / "scripts" / "simple-chat"
 class InstallTests(ListenerHarness):
     def setUp(self):
         super().setUp()
-        platform = patch("agent_sync.listener_cli.sys.platform", "darwin")
+        platform = patch("simple_tools.listener_cli.sys.platform", "darwin")
         platform.start()
         self.addCleanup(platform.stop)
 
@@ -113,7 +113,7 @@ class InstallTests(ListenerHarness):
         self.assertTrue((self.home / ".agent-sync" / "listener.toml").exists(), "state is kept")
 
     def test_no_launchctl_anywhere_in_the_package(self) -> None:
-        for path in (REPO / "scripts" / "agent_sync").glob("*.py"):
+        for path in (REPO / "scripts" / "simple_tools").glob("*.py"):
             text = path.read_text()
             self.assertNotRegex(
                 text, r"\[\s*['\"]launchctl['\"]", "%s builds a launchctl argv" % path.name
@@ -389,7 +389,7 @@ class LocalReadTests(ListenerHarness):
                     "seq": 1,
                     "id": 500,
                     "kind": "message",
-                    "channel": "agent-sync",
+                    "channel": "simple-tools",
                     "topic": "t",
                     "sender": "Codex",
                     "sender_id": 11,
@@ -401,7 +401,7 @@ class LocalReadTests(ListenerHarness):
                     "seq": 2,
                     "id": 501,
                     "kind": "message",
-                    "channel": "agent-sync",
+                    "channel": "simple-tools",
                     "topic": "t",
                     "sender": "Codex",
                     "content": "already live",
@@ -415,7 +415,7 @@ class LocalReadTests(ListenerHarness):
                 {
                     "seq": 1,
                     "kind": "owner_note",
-                    "title": "agent-sync CLAUDE",
+                    "title": "simple-tools CLAUDE",
                     "text": "a note for you",
                     "note": "Jay asked for a deploy.",
                     "owner": True,
@@ -446,7 +446,7 @@ class LocalReadTests(ListenerHarness):
                     "ts": 1_790_000_000,
                     "wake_id": "w1",
                     "state": "queued",
-                    "channel": "agent-sync",
+                    "channel": "simple-tools",
                     "topic": "t",
                     "trigger_ids": [5],
                 },

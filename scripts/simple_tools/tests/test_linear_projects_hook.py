@@ -4,7 +4,7 @@ route on the listener API (listener_api.py).
 The hook is driven directly (no socket);  one test runs it behind a real
 ListenerReadApi on an ephemeral port.  Nothing here touches the network.
 
-Run:  cd scripts && python3 -m unittest agent_sync.tests.test_linear_projects_hook
+Run:  cd scripts && python3 -m unittest simple_tools.tests.test_linear_projects_hook
 """
 
 from __future__ import annotations
@@ -19,8 +19,8 @@ import urllib.error
 import urllib.request
 
 import linear_project_linkifiers as LPL
-from agent_sync import linear_projects_hook as H
-from agent_sync import listener_api as API
+from simple_tools import linear_projects_hook as H
+from simple_tools import listener_api as API
 
 SECRET = "linear-webhook-secret-long"
 
@@ -449,7 +449,7 @@ class ImageTests(unittest.TestCase):
 
 class LinearProjectsConfigTests(unittest.TestCase):
     def test_malformed_sections_are_rejected_not_coerced_to_empty(self):
-        from agent_sync import config as C
+        from simple_tools import config as C
 
         for bad in (None, [], "", 0, False):
             with self.subTest(bad=bad):
@@ -458,7 +458,7 @@ class LinearProjectsConfigTests(unittest.TestCase):
                 self.assertFalse(cfg.linear_projects_enabled)
 
     def test_missing_and_valid_sections_stay_valid(self):
-        from agent_sync import config as C
+        from simple_tools import config as C
 
         self.assertNotIn(
             "[linear_projects] must be a table", C.from_dict({}).errors
@@ -477,7 +477,7 @@ class DaemonWiringTests(unittest.TestCase):
         import types
         from unittest import mock
 
-        from agent_sync import daemon as D
+        from simple_tools import daemon as D
 
         events = []
         fake = types.SimpleNamespace(
@@ -509,7 +509,7 @@ class DaemonWiringTests(unittest.TestCase):
         import types
         from unittest import mock
 
-        from agent_sync import daemon as D
+        from simple_tools import daemon as D
 
         fake = types.SimpleNamespace(
             config=types.SimpleNamespace(linear_projects_enabled=True),
@@ -537,7 +537,7 @@ class DaemonWiringTests(unittest.TestCase):
         import types
         from unittest import mock
 
-        from agent_sync import daemon as D
+        from simple_tools import daemon as D
 
         logged = []
         fake = types.SimpleNamespace(

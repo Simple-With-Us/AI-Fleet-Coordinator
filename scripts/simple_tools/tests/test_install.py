@@ -1,7 +1,7 @@
 """install.sh: dry run changes nothing, a real run links and makes ~/.agent-sync 700, reruns are idempotent.
 
 Always runs with HOME pointed at a temp directory, against a fake checkout holding only
-scripts/agent-sync, so the real home, LaunchAgents and credential folders are never involved."""
+scripts/simple-tools, so the real home, LaunchAgents and credential folders are never involved."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ ENTRY = Path(__file__).resolve().parents[2] / "simple-chat"
 
 class InstallTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.tmp = Path(tempfile.mkdtemp(prefix="agent-sync-install-"))
+        self.tmp = Path(tempfile.mkdtemp(prefix="simple-tools-install-"))
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.home = self.tmp / "home"
         self.home.mkdir()
@@ -60,7 +60,7 @@ class InstallTests(unittest.TestCase):
         self.assertNotIn('DEFAULT_CHECKOUT="/Users/jay/Code', text)
 
     def test_the_runtime_sync_script_is_executable_and_parses(self) -> None:
-        script = Path(__file__).resolve().parents[2] / "agent-sync-runtime-sync.sh"
+        script = Path(__file__).resolve().parents[2] / "simple-tools-runtime-sync.sh"
         self.assertTrue(os.access(script, os.X_OK))
         result = subprocess.run(
             ["bash", "-n", str(script)], capture_output=True, text=True, timeout=30

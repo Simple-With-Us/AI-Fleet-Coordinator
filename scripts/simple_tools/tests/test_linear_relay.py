@@ -35,8 +35,8 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
 
-from agent_sync import linear_relay as lr
-from agent_sync.zulip import ApiError, NetworkError, _NoRedirect
+from simple_tools import linear_relay as lr
+from simple_tools.zulip import ApiError, NetworkError, _NoRedirect
 
 
 class StreamsZulip:

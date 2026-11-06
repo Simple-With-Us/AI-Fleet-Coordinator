@@ -456,11 +456,11 @@ class RegistryTransportTest(unittest.TestCase):
 
     def _env(self, **overrides: str) -> Any:
         env = {
-            "SIMPLE_TOOLS_OPERATOR_REGISTRY_URL": "",
+            "AGENT_SYNC_OPERATOR_REGISTRY_URL": "",
             "MM_OPERATOR_REGISTRY_CMD": "",
-            "SIMPLE_TOOLS_OPERATOR_REGISTRY_PRINCIPAL": "",
-            "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY_ENV": "",
-            "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY": "",
+            "AGENT_SYNC_OPERATOR_REGISTRY_PRINCIPAL": "",
+            "AGENT_SYNC_OPERATOR_REGISTRY_KEY_ENV": "",
+            "AGENT_SYNC_OPERATOR_REGISTRY_KEY": "",
             "AGENT_SYNC_OPERATOR_REGISTRY": self.db,
             "AGENT_SYNC_STATE_DIR": os.path.join(self.tmp.name, "state"),
         }
@@ -550,9 +550,9 @@ class RegistryTransportTest(unittest.TestCase):
         host, port = server.address
         url = "http://%s:%d" % (host, port)  # loopback stub:  http is allowed there only
         with self._env(
-            SIMPLE_TOOLS_OPERATOR_REGISTRY_URL=url,
-            SIMPLE_TOOLS_OPERATOR_REGISTRY_PRINCIPAL="OPERATOR",
-            SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY=OPERATOR_KEY,
+            AGENT_SYNC_OPERATOR_REGISTRY_URL=url,
+            AGENT_SYNC_OPERATOR_REGISTRY_PRINCIPAL="OPERATOR",
+            AGENT_SYNC_OPERATOR_REGISTRY_KEY=OPERATOR_KEY,
             MM_OPERATOR_REGISTRY_CMD="false",  # the URL transport wins over the command
         ):
             answer = self.M.registry_call(
@@ -571,9 +571,9 @@ class RegistryTransportTest(unittest.TestCase):
         self.assertEqual(answer.get("label"), "AA", answer)
         # The same call as the owning seat reads its own session back.
         with self._env(
-            SIMPLE_TOOLS_OPERATOR_REGISTRY_URL=url,
-            SIMPLE_TOOLS_OPERATOR_REGISTRY_PRINCIPAL="MM",
-            SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY=MM_KEY,
+            AGENT_SYNC_OPERATOR_REGISTRY_URL=url,
+            AGENT_SYNC_OPERATOR_REGISTRY_PRINCIPAL="MM",
+            AGENT_SYNC_OPERATOR_REGISTRY_KEY=MM_KEY,
         ):
             answer = self.M.registry_call(
                 ["resolve", "--platform=minimax", "--letter=AA"]
@@ -582,7 +582,7 @@ class RegistryTransportTest(unittest.TestCase):
         self.assertEqual(answer.get("seat"), "MM")
 
     def test_url_set_without_a_key_is_not_configured(self) -> None:
-        with self._env(SIMPLE_TOOLS_OPERATOR_REGISTRY_URL="https://operator.example.test"):
+        with self._env(AGENT_SYNC_OPERATOR_REGISTRY_URL="https://operator.example.test"):
             answer = self.M.registry_call(["resolve", "--platform=minimax", "--letter=A"])
         self.assertEqual(answer.get("code"), "not_configured", answer)
 

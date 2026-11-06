@@ -5,13 +5,13 @@ from __future__ import annotations
 
 import unittest
 
-from agent_sync.mcp import linear_tools as LT
-from agent_sync.tests.mcp_harness import (
+from simple_tools.mcp import linear_tools as LT
+from simple_tools.tests.mcp_harness import (
     SESSION as SERVER_SESSION,
 )  # the harness's CLAUDE_CODE_SESSION_ID
-from agent_sync.tests.mcp_harness import seat_bearer_locator
-from agent_sync.tests.test_mcp_extras import FakePrograms
-from agent_sync.tests.test_mcp_identity import ENABLED, PERSONA
+from simple_tools.tests.mcp_harness import seat_bearer_locator
+from simple_tools.tests.test_mcp_extras import FakePrograms
+from simple_tools.tests.test_mcp_identity import ENABLED, PERSONA
 
 
 class ChildEnvTests(unittest.TestCase):
