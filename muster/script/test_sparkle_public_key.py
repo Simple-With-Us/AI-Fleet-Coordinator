@@ -21,7 +21,9 @@ PUBLIC = bytes.fromhex("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68
 
 # CryptoKit is Apple's, so only a Mac can run the script, even where Linux has a swift toolchain
 # (the Ubuntu runner does).
-@unittest.skipUnless(sys.platform == "darwin" and shutil.which("swift"), "needs swift with CryptoKit (macOS)")
+@unittest.skipUnless(
+    sys.platform == "darwin" and shutil.which("swift"), "needs swift with CryptoKit (macOS)"
+)
 class SparklePublicKeyTests(unittest.TestCase):
     def run_with(self, data):
         with tempfile.TemporaryDirectory() as directory:
