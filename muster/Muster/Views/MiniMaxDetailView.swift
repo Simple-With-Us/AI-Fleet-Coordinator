@@ -1,9 +1,10 @@
 import SwiftUI
 
-/// The MiniMax panel:  what the MiniMax install on the Mac looks like, for seat MM.
+/// MiniMax's own files:  what the MiniMax install on the Mac looks like, for seat MM.
 ///
-/// It is one seat's panel and it covers the Mac only;  the server's MiniMax install is
-/// not read here, and the panel says so.  The top answers "does anything need a look?"
+/// This is the part of Seat Setup that only MiniMax has (its plugins, config.yaml, channels
+/// and agents), shown under its seat there.  It covers the Mac only;  the server's MiniMax
+/// install is not read here, and the panel says so.  The top answers "does anything need a look?"
 /// in plain words, with where the reading came from and how old it is.  The engine's
 /// own answers come next, then the hooks with their proof, because that is where the
 /// problems were (AFC-354).  Plugins, config.yaml, channels and agents are folded
@@ -23,28 +24,43 @@ struct MiniMaxDetailView: View {
     @State private var showChannels = false
     @State private var showAgents = false
 
+    /// True when the view sits inside the Seat Setup panel for MiniMax's seat.  That panel
+    /// already shows the engine's answers for any seat and has its own scrolling, so an
+    /// embedded view leaves out its own copy of the answers and its own scroll view.
+    var embedded = false
+
     private let seat = "MM"
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                attention
-                verdicts
-                if let surface, surface.installFound {
-                    hooks(surface)
-                    plugins(surface)
-                    settings(surface)
-                    channels(surface)
-                    agents(surface)
+        Group {
+            if embedded {
+                content
+            } else {
+                ScrollView {
+                    content
+                        .padding(.horizontal, 22)
+                        .padding(.vertical, 18)
                 }
             }
-            .padding(.horizontal, 22)
-            .padding(.vertical, 18)
         }
         // The panel reads the disk and the engine, and the engine run finishes after
         // the window appears.  Reading once at appear time would leave the proof column
         // empty on every launch, which is the one thing that column exists to prevent.
         .task(id: store.phase) { await reload() }
+    }
+
+    private var content: some View {
+        VStack(alignment: .leading, spacing: 24) {
+            attention
+            if !embedded { verdicts }
+            if let surface, surface.installFound {
+                hooks(surface)
+                plugins(surface)
+                settings(surface)
+                channels(surface)
+                agents(surface)
+            }
+        }
     }
 
     private func reload() async {
@@ -95,7 +111,10 @@ struct MiniMaxDetailView: View {
     // MARK: - what needs a look
 
     private var attention: some View {
-        SectionPanel(title: "What Needs A Look", subtitle: "MiniMax, seat \(seat), on the Mac") {
+        SectionPanel(
+            title: embedded ? "MiniMax's Own Files" : "What Needs A Look",
+            subtitle: "MiniMax, seat \(seat), on the Mac"
+        ) {
             VStack(alignment: .leading, spacing: 8) {
                 if let surface {
                     let items = MiniMaxAttention.items(

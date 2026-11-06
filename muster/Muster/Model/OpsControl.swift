@@ -708,6 +708,21 @@ struct OpsCommandBuilder {
         )
     }
 
+    /// The typed, read-only route that asks the server what one platform has installed:
+    /// `server seat-inventory PLATFORM --plan --json`.  It changes nothing, so it needs no
+    /// confirmation sheet and no Touch ID, and the helper accepts only `--plan` for it.  The
+    /// platform is a plain lower-case id and nothing else, so no word reaches the server that
+    /// could be read as a flag or a second verb.
+    func seatInventoryInvocation(platform: String) throws -> OpsInvocation {
+        guard SeatInventoryDecoder.isPlatformId(platform) else {
+            throw OpsControlError.invalidArgument("seat inventory platform")
+        }
+        return serverInvocation(
+            tail: ["server", "seat-inventory", platform, "--plan", "--json"],
+            timeout: OpsControlRoute.planTimeout
+        )
+    }
+
     private func serverInvocation(tail: [String], timeout: TimeInterval) -> OpsInvocation {
         OpsInvocation(
             executable: OpsControlRoute.ssh,
