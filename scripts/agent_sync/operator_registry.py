@@ -2141,6 +2141,67 @@ def mark_exported(db_path: str, outbox_ids: list[str], exported_at: str | None =
         conn.close()
 
 
+EXPORT_OUTCOMES = ("exported", "already_present", "failed", "ambiguous")
+
+
+def record_export_attempt(
+    db_path: str,
+    outbox_id: str,
+    destination: str,
+    tab: str,
+    kind: str,
+    outcome: str,
+    detail: str = "",
+) -> str:
+    """Record one export attempt in the store-side fence (OPS-1037) and return its id.
+
+    The fence is the store's own record of what an exporter did:  an outbox row is only
+    treated as exported (see mark_exported) once an attempt with outcome 'exported' or
+    'already_present' exists for its (outbox_id, destination, tab, kind).  Recording is
+    deliberately separate from marking, so a runner can never quietly skip the audit row:
+    it asks the store to remember the attempt, then asks the store to mark the row.
+    """
+    if outcome not in EXPORT_OUTCOMES:
+        raise ValueError("outcome must be one of %s" % ", ".join(EXPORT_OUTCOMES))
+    attempt_id = _ulid()
+    conn = sqlite3.connect(str(db_path))
+    try:
+        with conn:
+            conn.execute(
+                "INSERT INTO export_attempts"
+                " (attempt_id, outbox_id, destination, tab, kind, outcome, detail, attempted_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (attempt_id, outbox_id, destination, tab, kind, outcome, detail, _utcnow()),
+            )
+        return attempt_id
+    finally:
+        conn.close()
+
+
+def export_attempts(
+    db_path: str, outbox_id: str | None = None, limit: int = 100
+) -> list[dict[str, Any]]:
+    """The fence rows, newest first — one outbox row's history, or the recent drain's."""
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        if outbox_id:
+            rows = conn.execute(
+                "SELECT attempt_id, outbox_id, destination, tab, kind, outcome, detail, attempted_at"
+                " FROM export_attempts WHERE outbox_id = ? ORDER BY rowid DESC LIMIT ?",
+                (outbox_id, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT attempt_id, outbox_id, destination, tab, kind, outcome, detail, attempted_at"
+                " FROM export_attempts ORDER BY rowid DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
 def default_db(env: Mapping[str, str] | None = None) -> str:
     """The shared registry location, from the same environment the Operator's eavesdropper reads.
 
@@ -2247,6 +2308,21 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
     m = sub.add_parser("mark-exported")
     m.add_argument("--db", default="", help="the registry file (default: the shared path)")
     m.add_argument("outbox_ids", nargs="+")
+    ra = sub.add_parser(
+        "record-export-attempt",
+        help="record one export attempt in the store-side fence (OPS-1037)",
+    )
+    ra.add_argument("--db", default="", help="the registry file (default: the shared path)")
+    ra.add_argument("--outbox-id", required=True)
+    ra.add_argument("--destination", required=True, help="the export target, such as a workbook id")
+    ra.add_argument("--tab", required=True)
+    ra.add_argument("--kind", required=True)
+    ra.add_argument("--outcome", required=True, choices=list(EXPORT_OUTCOMES))
+    ra.add_argument("--detail", default="")
+    ea = sub.add_parser("export-attempts", help="read the export fence (OPS-1037)")
+    ea.add_argument("--db", default="", help="the registry file (default: the shared path)")
+    ea.add_argument("--outbox-id", default="")
+    ea.add_argument("--limit", type=int, default=100)
     r = sub.add_parser(
         "register",
         help="register one session and print its letter, generation and title form",
@@ -2430,6 +2506,21 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
         return 3
     if args.command == "pending-outbox":
         print(json.dumps(pending_outbox(args.db, args.limit)))
+        return 0
+    if args.command == "record-export-attempt":
+        attempt_id = record_export_attempt(
+            db,
+            args.outbox_id,
+            args.destination,
+            args.tab,
+            args.kind,
+            args.outcome,
+            args.detail,
+        )
+        print(json.dumps({"attempt_id": attempt_id}))
+        return 0
+    if args.command == "export-attempts":
+        print(json.dumps(export_attempts(db, args.outbox_id or None, args.limit)))
         return 0
     if args.command == "resolve":
         try:

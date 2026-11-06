@@ -439,3 +439,77 @@ test("the header contract's three copies stay equal (registry, exporter, adapter
   assert.deepEqual([...SESSION_HEADERS], tuple("SESSIONS_HEADERS"));
   assert.deepEqual([...EVENT_HEADERS], tuple("EVENTS_HEADERS"));
 });
+// ---- OPS-1037: workbook-profile tables (the live SWU Operator workbook shape) ----
+
+const WB_SESSIONS_HEADERS = ['Record ID', 'Label', 'Seat', 'Platform', 'Host', 'Native Session ID',
+  'Title', 'Project', 'Thread Link', 'Apple Note Link'];
+const WB_TABLES = {
+  sessions: { title: 'Sessions', headers: WB_SESSIONS_HEADERS },
+  events: { title: 'Events', headers: EVENT_HEADERS },
+};
+const WB_IDS = { sessions: 20964676, events: 1449318075 };
+const WB_SESSION_ROW = ['r1', 'A', 'MM', 'zulip', 'mac', 'native-1', 'Title', '', '', ''];
+
+function fakeWorkbookFetch({ metadataSheets = null } = {}) {
+  const sheets = metadataSheets ?? [
+    { properties: { sheetId: WB_IDS.sessions, title: 'Sessions', gridProperties: { rowCount: 50, columnCount: 26 } } },
+    { properties: { sheetId: WB_IDS.events, title: 'Events', gridProperties: { rowCount: 50, columnCount: 26 } } },
+  ];
+  const calls = [];
+  const fetch = async (url) => {
+    calls.push(String(url));
+    const parsed = new URL(url);
+    const path = decodeURIComponent(parsed.pathname);
+    if (!path.includes('/values/')) return jsonResponse({ spreadsheetId: SPREADSHEET, sheets });
+    const range = path.slice(path.indexOf('/values/') + 8);
+    if (range.endsWith(':append')) {
+      const sessions = range.includes('Sessions');
+      const cols = sessions ? WB_SESSIONS_HEADERS.length : EVENT_HEADERS.length;
+      return jsonResponse({ spreadsheetId: SPREADSHEET, updates: {
+        spreadsheetId: SPREADSHEET, tableRange: sessions ? 'Sessions!A1:J1' : 'Events!A1:I1',
+        updatedRange: sessions ? 'Sessions!A2:J2' : "'Events'!A2:I2",
+        updatedRows: 1, updatedColumns: cols, updatedCells: cols } });
+    }
+    if (range.startsWith("'Sessions'!") || range.startsWith('Sessions!')) {
+      const values = range.endsWith(':Z1') ? [WB_SESSIONS_HEADERS] : [];
+      return jsonResponse({ spreadsheetId: SPREADSHEET, range, majorDimension: 'ROWS', values });
+    }
+    if (range.startsWith("'Events'!") || range.startsWith('Events!')) {
+      const values = range.endsWith(':Z1') ? [EVENT_HEADERS] : [];
+      return jsonResponse({ spreadsheetId: SPREADSHEET, range, majorDimension: 'ROWS', values });
+    }
+    throw new Error(`unexpected URL ${url}`);
+  };
+  return { fetch, calls };
+}
+
+test('workbook profile: inspect, validate and appends confirm on real tab titles', async () => {
+  const { fetch } = fakeWorkbookFetch();
+  const adapter = new OperatorSheetsGoogle({ spreadsheetId: SPREADSHEET, sheetIds: WB_IDS, tables: WB_TABLES,
+    token: async () => 'token', fetch });
+  const view = await adapter.inspect();
+  assert.deepEqual(view, {
+    sessions: { rowCount: 50, columnCount: 26 },
+    events: { rowCount: 50, columnCount: 26 },
+  });
+  await adapter.validateHeaders();
+  assert.deepEqual(await adapter.appendSession(WB_SESSION_ROW), { rowNumber: 2 });
+  assert.deepEqual(await adapter.appendEvent(eventRow()), { rowNumber: 2 });
+});
+
+test('workbook profile: a renamed tab fails identity validation', async () => {
+  const { fetch } = fakeWorkbookFetch({ metadataSheets: [
+    { properties: { sheetId: WB_IDS.sessions, title: 'Session', gridProperties: { rowCount: 50, columnCount: 26 } } },
+    { properties: { sheetId: WB_IDS.events, title: 'Events', gridProperties: { rowCount: 50, columnCount: 26 } } },
+  ] });
+  const adapter = new OperatorSheetsGoogle({ spreadsheetId: SPREADSHEET, sheetIds: WB_IDS, tables: WB_TABLES,
+    token: async () => 'token', fetch });
+  await assert.rejects(adapter.inspect(), /sheet_identity_mismatch/);
+});
+
+test('workbook profile: 16-column canonical rows are refused by the 10-column profile', async () => {
+  const { fetch } = fakeWorkbookFetch();
+  const adapter = new OperatorSheetsGoogle({ spreadsheetId: SPREADSHEET, sheetIds: WB_IDS, tables: WB_TABLES,
+    token: async () => 'token', fetch });
+  await assert.rejects(adapter.appendSession(sessionRow()), /invalid_row/);
+});

@@ -263,3 +263,122 @@ test("drainOutbox skips a deterministically invalid row instead of wedging the d
   assert.deepEqual(await drainOutbox({ outbox, adapter }), { exported: 0, failed: 1 });
   assert.deepEqual(marked, ["o-a", "o-c"]);
 });
+
+// ---- OPS-1037: fence recording, layout projection, batch collapse, stale index ----
+
+function fakeAttempts() {
+  return { records: [], async record(r) { this.records.push(r); } };
+}
+
+test("fence records exported and already_present attempts with destination, tab and kind", async () => {
+  const adapter = fakeAdapter();
+  await adapter.appendEvent(eventCells("e1", "r1")); // event already in the sheet
+  adapter.calls = [];
+  const attempts = fakeAttempts();
+  const outbox = fakeOutbox([
+    { outbox_id: "f1", kind: "session_upsert", payload: JSON.stringify({ cells: sessionCells("r1") }) },
+    { outbox_id: "f2", kind: "event_append", payload: JSON.stringify({ cells: eventCells("e1", "r1") }) },
+  ]);
+  const res = await drainOutbox({ outbox, adapter, attempts, destination: "wb-1" });
+  assert.deepEqual(res, { exported: 2, failed: 0 });
+  assert.deepEqual(attempts.records, [
+    { outboxId: "f1", destination: "wb-1", tab: "sessions", kind: "session_upsert", outcome: "exported", detail: "" },
+    { outboxId: "f2", destination: "wb-1", tab: "events", kind: "event_append", outcome: "already_present", detail: "" },
+  ]);
+  assert.deepEqual(outbox.marked, ["f1", "f2"]);
+});
+
+test("fence records a failed attempt and the row stays pending", async () => {
+  const adapter = fakeAdapter();
+  adapter.appendSession = async () => { throw new Error("HTTP 503"); };
+  const attempts = fakeAttempts();
+  const outbox = fakeOutbox([{ outbox_id: "f3", kind: "session_upsert",
+    payload: JSON.stringify({ cells: sessionCells("r9") }) }]);
+  const res = await drainOutbox({ outbox, adapter, attempts, destination: "wb-1" });
+  assert.deepEqual(res, { exported: 0, failed: 1 });
+  assert.equal(attempts.records.length, 1);
+  assert.equal(attempts.records[0].outcome, "failed");
+  assert.match(attempts.records[0].detail, /503/);
+  assert.deepEqual(outbox.marked, []);
+});
+
+test("duplicate IDs in the destination fence as ambiguous and stop the drain", async () => {
+  const writes = [];
+  const adapter = {
+    validateHeaders: async () => {},
+    inspect: async () => ({ sessions: { rowCount: 401 }, events: { rowCount: 1 } }),
+    readRows: async (table, { startRow }) => [{ rowNumber: startRow, cells: sessionCells("same") }],
+    appendSession: async () => writes.push("append"),
+    updateSessionRow: async () => writes.push("update"),
+    appendEvent: async () => writes.push("event"),
+  };
+  const attempts = fakeAttempts();
+  const outbox = fakeOutbox([
+    { outbox_id: "a1", kind: "session_upsert", payload: JSON.stringify({ cells: sessionCells("same") }) },
+    { outbox_id: "a2", kind: "event_append", payload: JSON.stringify({ cells: eventCells("e9", "same") }) },
+  ]);
+  const res = await drainOutbox({ outbox, adapter, attempts, destination: "wb-1" });
+  assert.deepEqual(res, { exported: 0, failed: 1 });
+  assert.deepEqual(writes, []);
+  assert.deepEqual(outbox.marked, []); // the later row never runs: the drain stopped
+  assert.equal(attempts.records.length, 1);
+  assert.equal(attempts.records[0].outcome, "ambiguous");
+  assert.match(attempts.records[0].detail, /appears on 2 rows/);
+});
+
+test("layout projection writes the workbook's own columns by header name", async () => {
+  const WB_SESSIONS = ["Record ID", "Label", "Seat", "Platform", "Host", "Native Session ID",
+    "Title", "Project", "Thread Link", "Apple Note Link"];
+  const adapter = fakeAdapter();
+  const cells = sessionCells("r1", "A");
+  cells[5] = "native-1"; cells[6] = "A Title"; cells[10] = "active"; cells[15] = "test source";
+  const outbox = fakeOutbox([{ outbox_id: "p1", kind: "session_upsert",
+    payload: JSON.stringify({ cells }) }]);
+  const res = await drainOutbox({ outbox, adapter, layout: { sessions: WB_SESSIONS, events: EVENTS_HEADERS } });
+  assert.deepEqual(res, { exported: 1, failed: 0 });
+  const page = await adapter.readRows("sessions", { startRow: 2, limit: 10 });
+  const written = page.rows[0].cells ?? page.rows[0];
+  assert.equal(written.length, 10);
+  assert.deepEqual(written.slice(0, 7), ["r1", "A", "MM", "", "", "native-1", "A Title"]);
+});
+
+test("layout that moves the ID column is refused before any write", async () => {
+  const adapter = fakeAdapter();
+  const outbox = fakeOutbox([{ outbox_id: "p2", kind: "session_upsert",
+    payload: JSON.stringify({ cells: sessionCells("r1") }) }]);
+  await assert.rejects(
+    drainOutbox({ outbox, adapter, layout: { sessions: ["Label", "Record ID"], events: EVENTS_HEADERS } }),
+    /must keep "Record ID" as its first header/);
+  assert.deepEqual(outbox.marked, []);
+});
+
+test("session snapshots collapse to the latest within one batch", async () => {
+  const adapter = fakeAdapter();
+  const attempts = fakeAttempts();
+  const outbox = fakeOutbox([
+    { outbox_id: "s1", kind: "session_upsert", payload: JSON.stringify({ cells: sessionCells("r1", "A") }) },
+    { outbox_id: "s2", kind: "session_upsert", payload: JSON.stringify({ cells: sessionCells("r1", "B") }) },
+  ]);
+  const res = await drainOutbox({ outbox, adapter, attempts, destination: "wb-1" });
+  assert.deepEqual(res, { exported: 2, failed: 0 });
+  assert.deepEqual(outbox.marked, ["s1", "s2"]);
+  assert.equal(adapter.calls.filter((c) => c === "appendSession").length, 1);
+  const page = await adapter.readRows("sessions", { startRow: 2, limit: 10 });
+  const rows = page.rows ?? page;
+  assert.equal(rows.length, 1);
+  assert.equal((rows[0].cells ?? rows[0])[1], "B"); // the latest snapshot's label
+  assert.equal(attempts.records[0].outcome, "exported");
+  assert.match(attempts.records[0].detail, /superseded in batch by s2/);
+  assert.equal(attempts.records[1].outcome, "exported");
+});
+
+test("an append without a confirmed row number rescans before the next lookup", async () => {
+  const adapter = fakeAdapter(); // fake appends return no rowNumber
+  const outbox = fakeOutbox([
+    { outbox_id: "d1", kind: "event_append", payload: JSON.stringify({ cells: eventCells("e1", "r1") }) },
+    { outbox_id: "d2", kind: "event_append", payload: JSON.stringify({ cells: eventCells("e1", "r1") }) },
+  ]);
+  const res = await drainOutbox({ outbox, adapter });
+  assert.deepEqual(res, { exported: 2, failed: 0 });
+  assert.equal(adapter.calls.filter((c) => c === "appendEvent").length, 1); // second reconciled, not duplicated
+});
