@@ -93,7 +93,7 @@ final class ServiceReconciler: ObservableObject {
             let policy = ServicePolicyTable.policy(for: id)
             // "At login" lasts until the first time the service's state is known.
             let firstLook = !seenKnown.contains(id)
-            if entry.state != .unknown { seenKnown.insert(id) }
+            let known = entry.state != .unknown
             let record = records[id] ?? ReconcileRecord()
             let now = clock()
             let decision = ServiceReconcileEngine.decide(
@@ -106,7 +106,10 @@ final class ServiceReconciler: ObservableObject {
                 firstLook: firstLook,
                 config: config)
             switch decision {
-            case .skip:
+            case .skip(let why):
+                // The first look is used up only by a look that could have started the service:
+                // a pass the setting turned off did not look at it for the owner.
+                if known, why != .turnedOff { seenKnown.insert(id) }
                 store(ServiceReconcileEngine.settle(record, state: entry.state, decision: decision,
                                                     now: now, config: config), for: id)
             case .start:
@@ -118,9 +121,11 @@ final class ServiceReconciler: ObservableObject {
                 case .skipped:
                     return publish(startedNow: started)
                 case .started:
+                    seenKnown.insert(id)
                     store(ServiceReconcileEngine.recordTry(record, policy: policy, outcome: .started, at: ended), for: id)
                     started.insert(id)
                 case .notStarted(let reason):
+                    seenKnown.insert(id)
                     store(ServiceReconcileEngine.recordTry(record, policy: policy,
                                                            outcome: .notStarted(reason), at: ended), for: id)
                 }

@@ -277,6 +277,25 @@ final class ServiceReconcilerTests: XCTestCase {
         XCTAssertEqual(rig.starts, ["clutch-web"])
     }
 
+    func testALoginStartIsNotUsedUpByAPassThatCouldNotStartTheService() async {
+        // The setting was off at the first look,  and a start something got in the way of did
+        // not happen:  neither of those is the one start at login.
+        let rig = Rig()
+        rig.states = ["grok-leader": .stopped]
+        rig.enabled = false
+        await rig.pass()
+        rig.enabled = true
+        rig.result = .skipped
+        await rig.pass()
+        XCTAssertEqual(rig.starts, ["grok-leader"])
+        rig.result = .started
+        await rig.pass()
+        XCTAssertEqual(rig.starts, ["grok-leader", "grok-leader"])
+        rig.advance(3_600)
+        await rig.pass()
+        XCTAssertEqual(rig.starts.count, 2)
+    }
+
     func testALoginOnlyServiceThatWasRunningAtLoginIsNotStartedWhenItStopsLater() async {
         let rig = Rig()
         rig.states = ["grok-leader": .running]
