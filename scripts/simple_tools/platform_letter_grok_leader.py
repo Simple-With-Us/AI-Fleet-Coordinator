@@ -104,7 +104,7 @@ the gates would read.  The pause file was exercised in process, not against a l
 
 Trust.  `~/.grok/hooks/*.json` runs once the folder is trusted, as the owner's lane-guard.json and seat-session.json
 already do; nothing extra to approve.  A new session loads the new file, and `/hooks` reloads it in a running one.  The
-hook command is `~/.local/bin/platform-letter`, which `scripts/agent_sync/install.sh` links: `install` refuses while it
+hook command is `~/.local/bin/platform-letter`, which `scripts/simple_tools/install.sh` links: `install` refuses while it
 is not there, and `install --check` fails.
 
 Python 3.11+, standard library only.
@@ -556,7 +556,7 @@ def installer(env: Mapping[str, str]) -> PL.JsonHookInstaller:
         trust=(
             "nothing to approve: hooks in ~/.grok/hooks run once the folder is trusted, as the existing ones do; a "
             "new session loads the file, and /hooks reloads it in a running one; the hook runs "
-            "~/.local/bin/platform-letter, which scripts/agent_sync/install.sh links"
+            "~/.local/bin/platform-letter, which scripts/simple_tools/install.sh links"
         ),
     )
 
@@ -626,7 +626,7 @@ def install(opts: PL.InstallOptions, env: Mapping[str, str], stdout: TextIO) -> 
         return _emit(
             stdout,
             {
-                "error": "%s is not an executable file: run scripts/agent_sync/install.sh, which links it"
+                "error": "%s is not an executable file: run scripts/simple_tools/install.sh, which links it"
                 % program
             },
             2,

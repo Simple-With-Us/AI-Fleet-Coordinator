@@ -85,7 +85,7 @@ PLATFORM = "opencode"
 SEAT = "OPENCODE"
 SOURCE = "opencode-letter-plugin"
 PLUGIN_DIRNAME = "opencode_letter_plugin"
-PACKAGE_DIRNAME = "agent_sync"
+PACKAGE_DIRNAME = "simple_tools"
 # A plugin directory to list instead of the checkout's own (a test).
 ENV_PLUGIN_DIR = "OPENCODE_LETTER_PLUGIN_DIR"
 
@@ -202,7 +202,7 @@ def entry_options(entry: object) -> dict[str, Any]:
 
 def is_ours(entry: object) -> bool:
     """The entry lists a directory named like this plugin's, whichever host, release or home wrote it: a plugin that
-    merely has a similar name elsewhere is not ours (it needs `agent_sync` as its parent)."""
+    merely has a similar name elsewhere is not ours (it needs `simple_tools` as its parent)."""
     parts = [p for p in entry_path(entry).replace("\\", "/").split("/") if p not in ("", ".")]
     return len(parts) >= 2 and parts[-1] == PLUGIN_DIRNAME and parts[-2] == PACKAGE_DIRNAME
 

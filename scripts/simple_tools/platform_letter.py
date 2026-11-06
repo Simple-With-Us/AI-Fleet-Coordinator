@@ -7,7 +7,7 @@ platforms other than Claude and MiniMax (owner request, Oct 29, 2026).  Claude 
     platform-letter show --platform P       this chat's letter from its local note; no network
     platform-letter install --platform P    add the platform's hooks (--check, --remove)
 
-An adapter is one file, `agent_sync/platform_letter_<platform>.py`, with a `SPEC` (a PlatformSpec: what differs per
+An adapter is one file, `simple_tools/platform_letter_<platform>.py`, with a `SPEC` (a PlatformSpec: what differs per
 platform) and, to be installable, an `INSTALL` (a JsonHookInstaller) or its own `install(options, env, stdout)`.  The
 library does everything else: the in-scope rule, the registry transport, the note, the title, retry, touch and close.
 
@@ -359,13 +359,13 @@ def register_spec(spec: PlatformSpec) -> PlatformSpec:
 
 
 def load_adapter(platform: str) -> Any:
-    """The adapter module `agent_sync/platform_letter_<platform>.py`, or None.  The name is checked first, so an
+    """The adapter module `simple_tools/platform_letter_<platform>.py`, or None.  The name is checked first, so an
     argument can never name any other module."""
     if not PLATFORM_RE.fullmatch(platform or "") or platform in RESERVED_PLATFORMS:
         return None
     import importlib
 
-    name = "%s.platform_letter_%s" % (__package__ or "agent_sync", platform.replace("-", "_"))
+    name = "%s.platform_letter_%s" % (__package__ or "simple_tools", platform.replace("-", "_"))
     try:
         return importlib.import_module(name)
     except ImportError:

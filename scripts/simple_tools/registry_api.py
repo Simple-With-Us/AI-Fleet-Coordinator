@@ -11,13 +11,13 @@ JSON, exactly as the local path's functions answer.
 
 Configuration is the daemon's own, read from the caller's environment and nothing else:
 
-  SIMPLE_TOOLS_OPERATOR_REGISTRY_URL        the API's base URL (the bare origin;  the
+  AGENT_SYNC_OPERATOR_REGISTRY_URL        the API's base URL (the bare origin;  the
                                             /registry/v1/ prefix is the client's to add)
-  SIMPLE_TOOLS_OPERATOR_REGISTRY_PRINCIPAL  the signing principal (default OPERATOR:
+  AGENT_SYNC_OPERATOR_REGISTRY_PRINCIPAL  the signing principal (default OPERATOR:
                                             these callers are the Operator's own machinery,
                                             and the local paths they replace act as it)
-  SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY_ENV    names the env var holding the signing key
-  SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY        that var's default name
+  AGENT_SYNC_OPERATOR_REGISTRY_KEY_ENV    names the env var holding the signing key
+  AGENT_SYNC_OPERATOR_REGISTRY_KEY        that var's default name
 
 With no URL set there is no API path:  base_url answers "" and every caller keeps its
 local behaviour, byte for byte.  With a URL set the caller uses this transport instead of
@@ -40,10 +40,10 @@ import urllib.request
 from collections.abc import Mapping
 from typing import Any
 
-URL_ENV = "SIMPLE_TOOLS_OPERATOR_REGISTRY_URL"
-PRINCIPAL_ENV = "SIMPLE_TOOLS_OPERATOR_REGISTRY_PRINCIPAL"
-KEY_ENV = "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY"
-KEY_REF_ENV = "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY_ENV"
+URL_ENV = "AGENT_SYNC_OPERATOR_REGISTRY_URL"
+PRINCIPAL_ENV = "AGENT_SYNC_OPERATOR_REGISTRY_PRINCIPAL"
+KEY_ENV = "AGENT_SYNC_OPERATOR_REGISTRY_KEY"
+KEY_REF_ENV = "AGENT_SYNC_OPERATOR_REGISTRY_KEY_ENV"
 
 #: The principal these callers sign as when the environment names none.  The registry
 #: CLI and the platform-letter registry side are the Operator's own machinery:  the local

@@ -487,7 +487,7 @@ def install(options: PL.InstallOptions, env: Mapping[str, str], stdout: TextIO) 
                     "changed": [],
                     "path": path,
                     "error": "nothing written: the hook command %s %s.  The Mac links it with "
-                    "scripts/agent_sync/install.sh, and the server gets it from the fleet-cli release."
+                    "scripts/simple_tools/install.sh, and the server gets it from the fleet-cli release."
                     % (command, why),
                 },
                 2,

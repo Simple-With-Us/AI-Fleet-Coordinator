@@ -47,7 +47,7 @@ Trust.  Codex runs a new hook only after its hash is recorded in `config.toml` 
 fleet's lane-tools installer reports this step and never writes it, so `trust` is this adapter's own: it asks the
 app-server for each hook's current hash (`hooks/list`) and records the hash of this adapter's own entries with
 `config/batchWrite`, which keeps the file's comments and touches no other hook.  The installer reports the step and
-never runs it: `python3 -m agent_sync.platform_letter_codex trust [--check]`.  Until it has run, the hooks are inert
+never runs it: `python3 -m simple_tools.platform_letter_codex trust [--check]`.  Until it has run, the hooks are inert
 and Codex opens its blocking "Hooks need review" prompt at the next start of a TUI (the unattended `codex resume`
 seat included), so every `install` answer says whether this adapter's entries are trusted, `install --check` exits 0
 only when they are installed, current and trusted, and any install that changes the command (a new `--location`, a new `--remote`) makes them
@@ -658,7 +658,7 @@ INSTALL = PL.JsonHookInstaller(
     build=codex_entry,
     trust=(
         "Codex runs a new hook only after its hash is trusted, and until then its next TUI start stops at a "
-        "'Hooks need review' prompt: run `python3 -m agent_sync.platform_letter_codex trust` from the scripts folder "
+        "'Hooks need review' prompt: run `python3 -m simple_tools.platform_letter_codex trust` from the scripts folder "
         "of the checkout this host runs right after the install (`trust --check` first, to see the state; it "
         "records only this adapter's own entries)"
     ),
@@ -803,7 +803,7 @@ def main(
     stdout = stdout or sys.stdout
     if argv[:1] == ["trust"]:
         return trust_main(argv[1:], env, stdout)
-    stdout.write("usage: python3 -m agent_sync.platform_letter_codex trust [--check]\n")
+    stdout.write("usage: python3 -m simple_tools.platform_letter_codex trust [--check]\n")
     return 2
 
 
