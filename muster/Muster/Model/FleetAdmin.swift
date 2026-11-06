@@ -388,9 +388,14 @@ final class FleetAdmin: ObservableObject {
     /// running already sees the owner's stop,  and it goes back exactly as it was when the
     /// manager refuses the change.  A change that did not throw and did not land is treated
     /// the same way:  the owner is told,  and a stop that did not happen is not recorded as one.
-    func perform(_ action: ManagedServiceAction, serviceID: String) async {
-        guard busyServiceID == nil else { return }
-        guard let service = services?.menuItems.first(where: { $0.id == serviceID }) else { return }
+    ///
+    /// Returns what this call did,  or nil when it did nothing because another change was
+    /// running or the service is not one the admin can see.  A caller reads the answer from
+    /// here and never from `lastResult`,  which can still hold an older call's result.
+    @discardableResult
+    func perform(_ action: ManagedServiceAction, serviceID: String) async -> FleetActionResult? {
+        guard busyServiceID == nil else { return nil }
+        guard let service = services?.menuItems.first(where: { $0.id == serviceID }) else { return nil }
         busyServiceID = serviceID
         problem = nil
         lastResult = nil
@@ -500,9 +505,11 @@ final class FleetAdmin: ObservableObject {
                 problem = "\(FleetActionWords.didNot(action, title: service.title, host: service.host)):  \(reason)"
             }
         }
-        lastResult = FleetActionResult(serviceID: serviceID, title: service.title, action: action,
+        let result = FleetActionResult(serviceID: serviceID, title: service.title, action: action,
                                        succeeded: reason == nil, reason: reason, notKnown: notKnown, at: Date())
+        lastResult = result
         await refresh()
+        return result
     }
 
     /// The state an action should leave a service in.

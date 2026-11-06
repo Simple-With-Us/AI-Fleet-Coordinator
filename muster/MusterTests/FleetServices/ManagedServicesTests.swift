@@ -288,7 +288,9 @@ final class ManagedServicesTests: XCTestCase {
         }
     }
 
-    func testAPM2TimeoutIsReportedAsAPM2Problem() async throws {
+    /// A command that ended but whose output could not be read did not time out,  so it is not
+    /// called one.
+    func testAPM2CommandWhoseOutputCouldNotBeReadIsNotCalledATimeout() async throws {
         ManagedServicesURLProtocol.handler = { _ in
             .response(200, Data(#"{"status":"ok","app":"botfleet-admin-mcp"}"#.utf8))
         }
@@ -297,10 +299,10 @@ final class ManagedServicesTests: XCTestCase {
         let control = try makeControl(commands: commands)
         do {
             _ = try await control.setRunning(false, within: 1)
-            XCTFail("Expected the timeout to be reported")
+            XCTFail("Expected the failure to be reported")
         } catch {
             XCTAssertEqual(error as? McpServerError,
-                           .refused("pm2 timed out before it could change the BotFleet MCP Server."))
+                           .refused("pm2 could not change the BotFleet MCP Server."))
         }
     }
 
@@ -316,8 +318,9 @@ final class ManagedServicesTests: XCTestCase {
             _ = try await control.setRunning(false, within: 1)
             XCTFail("Expected the timeout to be reported")
         } catch {
+            // pm2 can take a change and then be slow to answer,  so a timeout is not a refusal.
             XCTAssertEqual(error as? McpServerError,
-                           .refused("pm2 timed out before it could change the BotFleet MCP Server."))
+                           .notKnown("pm2 did not finish in time to change the BotFleet MCP Server, so it is not known whether it did."))
         }
     }
 

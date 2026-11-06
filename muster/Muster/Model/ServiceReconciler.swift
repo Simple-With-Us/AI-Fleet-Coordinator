@@ -182,8 +182,9 @@ extension ServiceReconciler {
                     if outcome.isSuccess(for: .yes) { return .started }
                     return .notStarted(outcome.detail.isEmpty ? "the helper gave no reason." : outcome.detail)
                 case .admin(let managed, let serviceID):
-                    await admin.perform(managed, serviceID: serviceID)
-                    guard let result = admin.lastResult, result.serviceID == serviceID else { return .skipped }
+                    // A call that did nothing (another change running,  or no such service)
+                    // is a skip,  and never an older call's result.
+                    guard let result = await admin.perform(managed, serviceID: serviceID) else { return .skipped }
                     return result.succeeded ? .started : .notStarted(result.reason ?? "no reason was given.")
                 }
             },

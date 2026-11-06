@@ -759,6 +759,25 @@ final class FleetServicesTests: XCTestCase {
         XCTAssertLessThan(looks.value, 9)
     }
 
+    func testAPM2ThatTimesOutDuringARestartIsNotKnownAndNotARefusal() async throws {
+        // pm2 can take a restart and then be slow to answer,  so the outcome is not known.
+        let home = try makeHome(serverInstalled: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let commands = FleetServiceCommands()
+        commands.restartFailure = CommandTimedOutError(executable: "/usr/bin/node",
+                                                       arguments: ["/usr/bin/pm2", "restart", "shellular"])
+        let control = FleetServiceControl(pm2: pm2(commands),
+                                          startup: StartupPolicy(home: home, commands: LaunchAgentCommands(), uid: 501, environment: [:]),
+                                          mcpServer: nil)
+        do {
+            _ = try await control.perform(.restart, serviceID: "shellular")
+            XCTFail("a restart that timed out should not be reported as a success")
+        } catch {
+            XCTAssertEqual(error as? FleetServiceError,
+                           .notKnown("pm2 did not finish in time to restart shellular, so it is not known whether it did."))
+        }
+    }
+
     func testStoppingTheBotFleetServerIsRefusedWhenTheServerCannotBeAsked() async throws {
         let home = try makeHome(serverInstalled: true)
         defer { try? FileManager.default.removeItem(at: home) }

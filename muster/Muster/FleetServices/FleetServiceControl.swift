@@ -179,8 +179,7 @@ public final class FleetServiceControl {
                 do {
                     return try await mcpServer.setRunning(running, within: PM2Client.mcpSettleWindow)
                 } catch let error as McpServerError {
-                    throw FleetServiceError.refused(error.errorDescription
-                        ?? "The BotFleet MCP Server could not be changed.")
+                    throw Self.mcpFailure(error, fallback: "The BotFleet MCP Server could not be changed.")
                 }
             }
             do {
@@ -233,8 +232,7 @@ public final class FleetServiceControl {
                 do {
                     return try await mcpServer.restart(within: PM2Client.mcpSettleWindow)
                 } catch let error as McpServerError {
-                    throw FleetServiceError.refused(error.errorDescription
-                        ?? "The BotFleet MCP Server could not be restarted.")
+                    throw Self.mcpFailure(error, fallback: "The BotFleet MCP Server could not be restarted.")
                 }
             }
             do {
@@ -302,17 +300,36 @@ public final class FleetServiceControl {
         }
     }
 
-    /// The error the Control app reports when pm2 refused a change.
+    /// The error the Control app reports for the BotFleet MCP Server's own control.  A change
+    /// that may have landed is not a refused one.
+    ///
+    /// `managerMissingIsOwnError` is how a missing manager is reported:  as its own error
+    /// (the pm2 path),  or in the manager's own words as a refusal (the MCP server's control).
+    private static func mcpFailure(_ error: McpServerError, fallback: String,
+                                   managerMissingIsOwnError: Bool = false) -> FleetServiceError {
+        switch error {
+        case .managerMissing:
+            return managerMissingIsOwnError ? .managerMissing : .refused(error.errorDescription ?? fallback)
+        case .notKnown(let why):
+            return .notKnown(why)
+        case .refused(let why):
+            return .refused(why.isEmpty ? fallback : why)
+        }
+    }
+
+    /// The error the Control app reports when pm2 refused a change or could not be asked.
     private func pm2Failure(_ error: Error, action: String, appName: String) -> FleetServiceError {
         switch error {
         case let failure as McpServerError:
-            if case .managerMissing = failure { return .managerMissing }
-            return .refused(failure.errorDescription ?? "pm2 could not \(action) \(appName).")
+            return Self.mcpFailure(failure, fallback: "pm2 could not \(action) \(appName).",
+                                   managerMissingIsOwnError: true)
         case let failure as CommandExitError:
             let why = failure.reason
             return .refused(why.isEmpty ? "pm2 could not \(action) \(appName)." : why)
-        case is CommandTimedOutError, StartupPolicyError.commandFailed:
-            return .refused("pm2 timed out before it could \(action) \(appName).")
+        case is CommandTimedOutError:
+            // pm2 can take a change and then be slow to answer,  so a timeout says nothing
+            // about whether it landed.
+            return .notKnown("pm2 did not finish in time to \(action) \(appName), so it is not known whether it did.")
         default:
             return .refused("pm2 could not \(action) \(appName).")
         }

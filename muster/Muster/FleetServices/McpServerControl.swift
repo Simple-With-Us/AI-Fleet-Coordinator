@@ -11,12 +11,14 @@ public struct McpServerHealth: Decodable, Equatable {
 public enum McpServerError: LocalizedError, Equatable {
     case managerMissing
     case refused(String)
+    /// The change may have been made,  and nothing could say how it ended.  It is not a refusal.
+    case notKnown(String)
 
     public var errorDescription: String? {
         switch self {
         case .managerMissing:
             return "The BotFleet MCP Server manager is not installed on the Mac."
-        case .refused(let message):
+        case .refused(let message), .notKnown(let message):
             return message
         }
     }
@@ -494,11 +496,10 @@ public final class McpServerControl {
             let why = error.reason
             throw McpServerError.refused(why.isEmpty ? "pm2 could not \(verb) the BotFleet MCP Server." : why)
         } catch is CommandTimedOutError {
-            // Say which command it was, so a slow pm2 is never reported as a problem with
-            // some other service.
-            throw McpServerError.refused("pm2 timed out before it could \(verb) the BotFleet MCP Server.")
-        } catch StartupPolicyError.commandFailed {
-            throw McpServerError.refused("pm2 timed out before it could \(verb) the BotFleet MCP Server.")
+            // pm2 can take a change and then be slow to answer,  so a timeout says nothing
+            // about whether it landed.  Say which command it was,  so a slow pm2 is never
+            // reported as a problem with some other service.
+            throw McpServerError.notKnown("pm2 did not finish in time to \(verb) the BotFleet MCP Server, so it is not known whether it did.")
         } catch {
             throw McpServerError.refused("pm2 could not \(verb) the BotFleet MCP Server.")
         }

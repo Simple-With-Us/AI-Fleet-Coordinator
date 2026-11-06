@@ -189,7 +189,10 @@ public struct ProcessCommandRunner: CommandRunning {
         }
         guard readerDone.wait(timeout: .now() + 2) == .success,
               errorReaderDone.wait(timeout: .now() + 2) == .success else {
-            throw CommandTimedOutError(executable: executable, arguments: arguments)
+            // The command ended,  so it did not time out:  only its output could not be read
+            // (something it started still holds the pipe).  That is a failed command and not a
+            // timeout,  and the answer is not guessed from half an output.
+            throw StartupPolicyError.commandFailed
         }
         let result = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
         let errorText = String(decoding: errorData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)

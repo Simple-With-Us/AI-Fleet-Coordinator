@@ -139,17 +139,20 @@ public enum ServicePolicyTable {
     public static var agentLabels: [String] { agents.map { $0.0 } }
 
     /// Every row:  the Services list first,  in the order the menu shows it,  then the agents.
-    public static var rows: [ServicePolicyRow] {
+    ///
+    /// Built once:  a Services panel render and every reconcile pass look rows up,  and
+    /// none of them should rebuild the table to do it.
+    public static let rows: [ServicePolicyRow] = {
         var out: [ServicePolicyRow] = []
         for descriptor in FleetServiceRegistry.all {
-            let found = servicesList.first { $0.0 == descriptor.id }
+            let found = ServicePolicyTable.servicesList.first { $0.0 == descriptor.id }
             out.append(ServicePolicyRow(id: descriptor.id,
                                         title: descriptor.title,
                                         source: .servicesList,
                                         policy: found?.1 ?? .leaveAlone,
-                                        reason: found?.2 ?? unlistedReason))
+                                        reason: found?.2 ?? ServicePolicyTable.unlistedReason))
         }
-        for agent in agents {
+        for agent in ServicePolicyTable.agents {
             out.append(ServicePolicyRow(id: agent.0,
                                         title: OpsNames.agentTitle(agent.0),
                                         source: .allowlistedAgent,
@@ -157,7 +160,11 @@ public enum ServicePolicyTable {
                                         reason: agent.1))
         }
         return out
-    }
+    }()
+
+    /// The rows by id,  for a lookup.
+    private static let rowsByID: [String: ServicePolicyRow] =
+        Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
 
     /// The ids the Services list names that have an explicit row in the table.
     public static var listedServiceIDs: [String] { servicesList.map { $0.0 } }
@@ -167,7 +174,7 @@ public enum ServicePolicyTable {
 
     /// The table's row for one service,  or nil when nobody wrote one.
     public static func row(for id: String) -> ServicePolicyRow? {
-        rows.first { $0.id == id }
+        rowsByID[id]
     }
 
     /// The policy for one service.  A service with no row is left alone.

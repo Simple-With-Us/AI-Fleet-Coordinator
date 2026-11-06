@@ -114,6 +114,21 @@ final class FleetAdminTests: XCTestCase {
         XCTAssertEqual(admin.entries.first { $0.id == "app.botfleet.companion" }?.stoppedByOwner, true)
     }
 
+    /// A call that did nothing answers nil,  so a caller never mistakes the result of an
+    /// older call for its own.
+    func testACallThatDidNothingAnswersNilAndNotAnOlderResult() async {
+        let admin = makeAdmin(commands: FleetAdminCommands(), server: FleetAdminServer())
+        await waitForTheFleet(admin)
+
+        let first = await admin.perform(.start, serviceID: "app.botfleet.companion")
+        XCTAssertEqual(first?.serviceID, "app.botfleet.companion")
+
+        let none = await admin.perform(.start, serviceID: "no-such-service")
+        XCTAssertNil(none)
+        // The older result is still there to read,  which is why callers use the answer.
+        XCTAssertEqual(admin.lastResult?.serviceID, "app.botfleet.companion")
+    }
+
     func testAStartThatLandsAMomentLaterIsAStart() async {
         let commands = FleetAdminCommands()
         commands.looksBeforeAChangeShows = 2
