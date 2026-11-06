@@ -50,7 +50,7 @@ enum MusterDestination: String, CaseIterable, Identifiable {
         case .appsAndWork: return "Apps & Work"
         case .seats: return "Seats"
         case .controls: return "Controls"
-        case .hosts: return "Tools On Both Machines"
+        case .hosts: return "Tools And Worker Health"
         case .virtualMachines: return "Virtual Machines"
         case .actionHistory: return "Action History"
         }
@@ -184,7 +184,7 @@ extension MusterDestination {
         case .controls:
             return "Shared values in the fleet's secret store, as the Mac's copy shows them."
         case .hosts:
-            return "The doctor's report on the Mac, which covers the Mac and the server."
+            return "The doctor's report on the Mac, which covers the Mac and the server.\(gap)Worker Health is the Worker's own file, read on the Mac."
         case .virtualMachines:
             return "Each machine's own report, copied to the Mac."
         case .actionHistory:
@@ -321,7 +321,8 @@ enum ServerLastKnown {
     struct Row: Equatable, Identifiable {
         let id: String
         let unit: String
-        /// The scope the last report gave, or nil for a unit it did not name.
+        /// The scope the last report gave, or nil for a unit it did not name or named with no
+        /// scope.  A missing scope is never shown as a scope, and never treated as `system`.
         let scope: String?
         /// The unit's last state, in words.
         let lastState: String
@@ -332,7 +333,7 @@ enum ServerLastKnown {
     /// unlisted timer row would say nothing the report said, so it is left out.
     static func rows(_ services: [ServerService], offersRepairs: Bool) -> [Row] {
         var rows = services.map { service in
-            Row(id: service.id, unit: service.unit, scope: service.scope ?? "system",
+            Row(id: service.id, unit: service.unit, scope: service.scope,
                 lastState: "last known \(service.activeState ?? "not known")")
         }
         if offersRepairs, !services.contains(where: { $0.unit == OpsNames.reportTimerUnit }) {
@@ -342,21 +343,25 @@ enum ServerLastKnown {
         return rows
     }
 
-    /// The actions one row gets:  Restart when the allowlist names it, and Logs when the
-    /// allowlist names the unit at all.  No Start or Stop:  an old state is no reason for
-    /// either.
+    /// The actions one row gets, which are the menu's own repair and nothing wider:  only
+    /// the report timer has any, Restart when the allowlist names it and Logs when the
+    /// allowlist names the unit at all.  Every other unit gets none.  An old report is no
+    /// reason to restart a unit it names, such as a production service, and no reason for a
+    /// Start or a Stop.
     ///
     /// An action names the unit and not its scope, and the server acts on the unit in the
     /// scope its allowlist gives.  So a row from the report gets actions only when its scope
     /// is that one:  a same-named unit in the other scope gets none, because the button
     /// would act on a unit the row does not show.  A row the report did not name has no
-    /// scope of its own, and its actions run in the allowlist's.
+    /// scope of its own, and its actions run in the allowlist's.  The same holds for a
+    /// report row that gave no scope:  it shows the bare unit name, and the allowlist's scope
+    /// applies.
     ///
     /// The repairs are offered only when the menu offers its own:  when the server was
     /// reached and its report stopped.  When the Mac's fetch stopped or could not reach the
     /// server, the menu offers a fetch instead, and so the panel offers nothing.
     static func actions(unit: String, scope: String?, allowlist: OpsAllowlist?, offersRepairs: Bool) -> [OpsAction] {
-        guard offersRepairs, let allowlist else { return [] }
+        guard offersRepairs, unit == OpsNames.reportTimerUnit, let allowlist else { return [] }
         if let scope, allowlist.scope(forServerUnit: unit) != scope { return [] }
         let verbs = allowlist.verbs(forServerUnit: unit)
         guard !verbs.isEmpty else { return [] }

@@ -80,7 +80,7 @@ final class MusterNavigationTests: XCTestCase {
         XCTAssertEqual(MusterDestination.macAgents.title, "Background Agents")
         XCTAssertEqual(MusterDestination.serverUpdates.title, "Server Updates")
         XCTAssertEqual(MusterDestination.actionHistory.title, "Action History")
-        XCTAssertEqual(MusterDestination.hosts.title, "Tools On Both Machines")
+        XCTAssertEqual(MusterDestination.hosts.title, "Tools And Worker Health")
         XCTAssertEqual(MusterDestination.seatDetail.title, "MiniMax On The Mac")
     }
 
@@ -418,6 +418,29 @@ final class MusterNavigationTests: XCTestCase {
         for action in ServerLastKnown.actions(unit: unit, scope: "user", allowlist: full, offersRepairs: true) {
             XCTAssertEqual(action.runsOn, .server)
         }
+    }
+
+    /// An old report is no reason to restart some other unit it names, even one the
+    /// allowlist allows:  only the report timer, the menu's own repair, gets a button.
+    func test_last_known_offers_nothing_on_a_unit_that_is_not_the_report_timer() {
+        let production = "fleet-recall.service"
+        let allowlist = OpsAllowlist(serverUnits: [
+            OpsAllowlist.Entry(name: production, actions: ["start", "stop", "restart"], scope: "system"),
+            OpsAllowlist.Entry(name: OpsNames.reportTimerUnit, actions: ["restart"], scope: "user"),
+        ])
+        XCTAssertEqual(ServerLastKnown.actions(unit: production, scope: "system", allowlist: allowlist, offersRepairs: true), [])
+        XCTAssertEqual(ServerLastKnown.actions(unit: production, scope: nil, allowlist: allowlist, offersRepairs: true), [])
+        XCTAssertFalse(ServerLastKnown.actions(unit: OpsNames.reportTimerUnit, scope: "user", allowlist: allowlist,
+                                               offersRepairs: true).isEmpty)
+    }
+
+    /// A report row with no scope keeps no scope:  it is not shown as `system`.
+    func test_last_known_does_not_invent_a_scope_for_a_row_with_none() throws {
+        let json = #"{"unit":"no-scope.timer","activeState":"active","controllable":true}"#
+        let service = try JSONDecoder().decode(ServerService.self, from: Data(json.utf8))
+        let rows = ServerLastKnown.rows([service], offersRepairs: false)
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertNil(rows.first?.scope)
     }
 
     /// An action names the unit and not its scope, and the server acts in the allowlist's

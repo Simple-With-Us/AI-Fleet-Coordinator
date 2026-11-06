@@ -1442,8 +1442,20 @@ struct OpsAllowlist: Equatable {
         return parse(data)
     }
 
-    /// Parse the allowlist.  A version this app does not know is not read:  the buttons
+    /// Parse the allowlist.  A version this app does not know is not read:  the buttons
     /// it would draw could name verbs that mean something else.
+    ///
+    /// The server refuses the whole file when any entry is malformed, so that a typo can
+    /// never widen what is allowed (`validate_config` in fleet-ops-control.py).  This read
+    /// refuses it for the same structural faults, and returns nil:  buttons drawn from a
+    /// file the server will not accept would only ever fail, and a value the file never
+    /// gave is never filled in.  The faults are a list that is not a list of objects, a
+    /// LaunchAgent without a string label, a pm2 application without a string name, a unit
+    /// without a string name or with a scope other than `user` or `system`, an update
+    /// without a string name, a string unit ending in `.service` and a scope of those two,
+    /// and actions that are empty, not a list, or not `start`, `stop` and `restart`.  The
+    /// server's name patterns and its refusal of a name used twice are not repeated here,
+    /// and the server still checks every run against its own copy.
     static func parse(_ data: Data) -> OpsAllowlist? {
         guard
             let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -1452,35 +1464,56 @@ struct OpsAllowlist: Equatable {
         var list = OpsAllowlist()
         let mac = object["mac"] as? [String: Any]
         let server = object["server"] as? [String: Any]
-        for item in (mac?["agents"] as? [[String: Any]]) ?? [] {
-            guard let label = item["label"] as? String else { continue }
-            list.macAgents.append(Entry(name: label, actions: (item["actions"] as? [String]) ?? []))
+        guard
+            let agents = rows(mac?["agents"]),
+            let pm2 = rows(mac?["pm2Apps"]),
+            let units = rows(server?["units"]),
+            let updates = rows(server?["updates"])
+        else { return nil }
+        for item in agents {
+            guard let label = item["label"] as? String, let actions = verbWords(item) else { return nil }
+            list.macAgents.append(Entry(name: label, actions: actions))
         }
-        for item in (mac?["pm2Apps"] as? [[String: Any]]) ?? [] {
-            guard let name = item["name"] as? String else { continue }
-            list.pm2Apps.append(Entry(name: name, actions: (item["actions"] as? [String]) ?? []))
+        for item in pm2 {
+            guard let name = item["name"] as? String, let actions = verbWords(item) else { return nil }
+            list.pm2Apps.append(Entry(name: name, actions: actions))
         }
-        for item in (server?["units"] as? [[String: Any]]) ?? [] {
-            guard let unit = item["unit"] as? String else { continue }
-            // A unit's scope is `user` or `system`, and the server refuses the whole file when
-            // one is missing, of another type or another word (`load_config` in
-            // fleet-ops-control.py).  So this read refuses it too:  buttons drawn from a file
-            // the server will not accept would only ever fail.
-            guard let scope = item["scope"] as? String, serverScopes.contains(scope) else { return nil }
-            list.serverUnits.append(Entry(name: unit, actions: (item["actions"] as? [String]) ?? [],
-                                          scope: scope))
+        for item in units {
+            guard
+                let unit = item["unit"] as? String,
+                let scope = item["scope"] as? String, serverScopes.contains(scope),
+                let actions = verbWords(item)
+            else { return nil }
+            list.serverUnits.append(Entry(name: unit, actions: actions, scope: scope))
         }
-        for item in (server?["updates"] as? [[String: Any]]) ?? [] {
-            guard let name = item["name"] as? String else { continue }
-            list.updates.append(Update(
-                name: name,
-                unit: (item["unit"] as? String) ?? "",
-                scope: (item["scope"] as? String) ?? "system"
-            ))
+        for item in updates {
+            guard
+                let name = item["name"] as? String,
+                let unit = item["unit"] as? String, unit.hasSuffix(".service"),
+                let scope = item["scope"] as? String, serverScopes.contains(scope)
+            else { return nil }
+            list.updates.append(Update(name: name, unit: unit, scope: scope))
         }
         let coolify = server?["coolify"] as? [String: Any]
         list.coolifyRedeploy = (coolify?["redeploy"] as? Bool) == true
         return list
+    }
+
+    /// A section's entries:  none when the key is absent or null, nil when it is there and
+    /// is not a list of objects.
+    private static func rows(_ value: Any?) -> [[String: Any]]? {
+        guard let value, !(value is NSNull) else { return [] }
+        return value as? [[String: Any]]
+    }
+
+    /// An entry's verbs as written, or nil when they are not a non-empty list of `start`,
+    /// `stop` and `restart`.
+    private static func verbWords(_ item: [String: Any]) -> [String]? {
+        guard
+            let words = item["actions"] as? [String], !words.isEmpty,
+            words.allSatisfy({ OpsVerb(rawValue: $0) != nil })
+        else { return nil }
+        return words
     }
 }
 
