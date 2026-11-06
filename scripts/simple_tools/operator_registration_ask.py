@@ -298,7 +298,7 @@ def send_location_question(
         )
     try:
         me = client.get("users/me")
-    except Z.AgentSyncError as exc:
+    except Z.SimpleToolsError as exc:
         # A rejected credential is named by its identity (the bot email) and the
         # server's status code only:  no part of the key, not even a masked
         # first-eight/last-four preview.  This flow is deliberately stricter than the
@@ -451,7 +451,7 @@ def send_location_question(
             "the location question was not sent and may be retried: %s" % type(exc).__name__,
             delivery_status=OC.DELIVERY_RETRYABLE,
         )
-    except Z.AgentSyncError as exc:
+    except Z.SimpleToolsError as exc:
         # Zulip answered.  What the answer means for a later pass differs by status:
         # - 429 rate limit:  the post was rejected before processing (the client already
         #   spent its bounded in-request retries), so it definitely did not go out - the

@@ -125,7 +125,7 @@ def connect_operator(
             )
     try:
         me = client.get("users/me")
-    except Z.AgentSyncError as exc:
+    except Z.SimpleToolsError as exc:
         status = getattr(exc, "status", getattr(exc, "status_code", None))
         if status in (401, 403):
             return _outcome(
@@ -340,7 +340,7 @@ def _send_status_dm(
 
     try:
         raw_members = operator.get("users")
-    except Z.AgentSyncError as exc:
+    except Z.SimpleToolsError as exc:
         return _outcome("refused", "the recipient could not be looked up: %s" % exc)
     except Exception as exc:
         return _outcome("refused", "the recipient could not be looked up: %s" % type(exc).__name__)
@@ -402,7 +402,7 @@ def _send_status_dm(
             code=exc.code,
             recipient=recipient_id,
         )
-    except Z.AgentSyncError as exc:
+    except Z.SimpleToolsError as exc:
         status = getattr(exc, "status", getattr(exc, "status_code", None))
         if isinstance(status, int) and not isinstance(status, bool):
             if status in (401, 403):

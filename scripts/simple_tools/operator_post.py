@@ -58,7 +58,7 @@ CODE_BUILDING = "operator_building"
 Factory = Callable[[int], Any]
 
 
-class OperatorUnavailable(Z.AgentSyncError):
+class OperatorUnavailable(Z.SimpleToolsError):
     """The Operator client could not be built or verified, so nothing is posted.  `reason` carries a
     reason token or a short sentence, never a credential."""
 
@@ -70,7 +70,7 @@ class OperatorUnavailable(Z.AgentSyncError):
         self.code = code
 
 
-class OperatorRefused(Z.AgentSyncError):
+class OperatorRefused(Z.SimpleToolsError):
     """The text itself was refused before it left (the secret scanner)."""
 
     exit_code = 3
@@ -331,7 +331,7 @@ class OperatorVoice:
             self._hide(str(creds.email), str(creds.key))
         try:
             me = client.get("users/me")
-        except Z.AgentSyncError as exc:
+        except Z.SimpleToolsError as exc:
             status = getattr(exc, "status", getattr(exc, "status_code", None))
             if status in (401, 403):
                 raise OperatorUnavailable(
