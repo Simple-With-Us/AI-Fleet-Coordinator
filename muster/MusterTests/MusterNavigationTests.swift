@@ -514,20 +514,22 @@ final class MusterNavigationTests: XCTestCase {
         XCTAssertNil(list.scope(forServerUnit: "c.timer"))
     }
 
-    /// A scope that is not `user` or `system`, or not a string, is a malformed entry:  the
-    /// unit is left out and gets no buttons, and a unit with no scope keeps its verbs.
-    func test_the_allowlist_leaves_out_a_unit_with_a_malformed_scope() throws {
-        let json = #"{"schemaVersion":1,"server":{"units":["#
-            + #"{"unit":"odd.timer","scope":"global","actions":["restart"]},"#
-            + #"{"unit":"typed.timer","scope":3,"actions":["restart"]},"#
-            + #"{"unit":"null.timer","scope":null,"actions":["restart"]},"#
-            + #"{"unit":"none.timer","actions":["restart"]},"#
-            + #"{"unit":"ok.timer","scope":"user","actions":["restart"]}]}}"#
-        let list = try XCTUnwrap(OpsAllowlist.parse(Data(json.utf8)))
-        XCTAssertEqual(list.serverUnits.map(\.name), ["null.timer", "none.timer", "ok.timer"])
-        XCTAssertTrue(list.verbs(forServerUnit: "odd.timer").isEmpty)
-        XCTAssertTrue(list.verbs(forServerUnit: "typed.timer").isEmpty)
-        XCTAssertNil(list.scope(forServerUnit: "none.timer"))
+    /// The server refuses the whole allowlist when one unit's scope is missing, not a string,
+    /// or not `user` or `system`, so the Mac does not read it either:  no buttons are drawn
+    /// from a file the server would not accept.
+    func test_the_allowlist_is_not_read_when_a_units_scope_is_malformed() throws {
+        let ok = #"{"unit":"ok.timer","scope":"user","actions":["restart"]}"#
+        for bad in [
+            #"{"unit":"odd.timer","scope":"global","actions":["restart"]}"#,
+            #"{"unit":"typed.timer","scope":3,"actions":["restart"]}"#,
+            #"{"unit":"null.timer","scope":null,"actions":["restart"]}"#,
+            #"{"unit":"none.timer","actions":["restart"]}"#,
+        ] {
+            let json = #"{"schemaVersion":1,"server":{"units":["# + ok + "," + bad + "]}}"
+            XCTAssertNil(OpsAllowlist.parse(Data(json.utf8)), bad)
+        }
+        let fine = #"{"schemaVersion":1,"server":{"units":["# + ok + "]}}"
+        let list = try XCTUnwrap(OpsAllowlist.parse(Data(fine.utf8)))
         XCTAssertEqual(list.scope(forServerUnit: "ok.timer"), "user")
     }
 
