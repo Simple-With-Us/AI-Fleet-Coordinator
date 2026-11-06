@@ -102,6 +102,12 @@ class Writes(unittest.TestCase):
         c = Client(blob(b"\xff\xfe\x00"))
         with self.assertRaises(Refused):
             self.handle(c, a).run(a, {**base, "files": files})
+        # GitHub wraps blob base64 at 60 columns: wrapped content still decodes
+        wrapped = blob(b"hi")
+        wrapped["content"] = wrapped["content"][:2] + "\n" + wrapped["content"][2:]
+        tree = {"sha": "e" * 40, "truncated": False, "tree": []}
+        c = Client(wrapped, tree)
+        self.assertEqual(self.handle(c, a).run(a, {**base, "files": files})["tree"]["sha"], "e" * 40)
         # a receipt that overstates the size but decodes small is accepted: budgets
         # measure the decoded bytes, never the receipt's declared size
         tree = {"sha": "e" * 40, "truncated": False, "tree": []}

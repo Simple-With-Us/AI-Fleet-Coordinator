@@ -5495,7 +5495,9 @@ class WorkflowVerbs:
                 ):
                     raise Refused("referenced blob unavailable or unsupported")
                 try:
-                    decoded_raw = base64.b64decode(raw, validate=True)
+                    # GitHub wraps blob content base64 at 60 columns; strip the
+                    # whitespace before validating, as the other blob reads do.
+                    decoded_raw = base64.b64decode("".join(raw.split()), validate=True)
                 except (binascii.Error, ValueError):
                     raise Refused("referenced blob unavailable or unsupported") from None
                 # Budgets measure the decoded bytes, never the receipt's declared
