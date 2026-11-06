@@ -141,13 +141,26 @@ def run(
 
 
 UNKNOWN_WRITE = re.compile(
-    r"(?:\bHTTP (?:5\d\d|408|429)\b|\b(?:timed out|timeout)\b)", re.IGNORECASE
+    r"(?:\bHTTP (?:5\d\d|408)\b|\b(?:timed out|timeout)\b)", re.IGNORECASE
 )
+RATE_LIMITED = re.compile(r"\bHTTP 429\b", re.IGNORECASE)
 
 
-def failure(code: int, err: str) -> RecallUnavailable:
+def failure(code: int, err: str, *, write: bool = False) -> RecallUnavailable:
     if code == 2:
-        if UNKNOWN_WRITE.search(err):
+        if write and RATE_LIMITED.search(err):
+            return RecallUnavailable(
+                "rate_limited",
+                "fleet recall refused the write because it was rate limited:  %s" % (err or "unknown"),
+                retryable=True,
+            )
+        if UNKNOWN_WRITE.search(err) or (not write and RATE_LIMITED.search(err)):
+            if not write:
+                return RecallUnavailable(
+                    "unavailable",
+                    "fleet recall is temporarily unavailable:  %s" % (err or "unknown"),
+                    retryable=True,
+                )
             return RecallUnavailable(
                 "outcome_unknown",
                 "fleet recall failed before the write could be verified:  %s" % (err or "unknown"),
@@ -356,7 +369,7 @@ def contribute(
         argv += ["--url=" + url]
     code, data, err = run(argv, stdin=text.encode("utf-8"), env=env, runner=runner)
     if data is None:
-        raise failure(code, err)
+        raise failure(code, err, write=True)
     if data.get("status") == "duplicate":
         existing = data.get("existing") if isinstance(data.get("existing"), dict) else {}
         result = {
@@ -369,7 +382,7 @@ def contribute(
         }
         return json.dumps(result), result
     if code != 0 or "doc_id" not in data:
-        raise failure(code, err)
+        raise failure(code, err, write=True)
     scrubbed = [clean(s, 60)[0] for s in (data.get("scrubbed") or [])[:SCRUBBED_LIMIT]]
     result = {
         "id": clean(data.get("id"), 80)[0],
@@ -484,7 +497,7 @@ def correct(
         argv += ["--expected-revision=" + str(expected_revision)]
     code, data, err = run(argv, stdin=text.encode("utf-8"), env=env, runner=runner)
     if data is None or code != 0 or "doc_id" not in data:
-        raise failure(code, err)
+        raise failure(code, err, write=True)
     result = {
         "id": _response_str(data, "id", 80),
         "doc_id": _response_str(data, "doc_id", 200),
@@ -523,7 +536,7 @@ def retract(
         argv += ["--expected-revision=" + str(expected_revision)]
     code, data, err = run(argv, stdin=b"", env=env, runner=runner)
     if data is None or code != 0 or "doc_id" not in data:
-        raise failure(code, err)
+        raise failure(code, err, write=True)
     result = {
         "id": _response_str(data, "id", 80),
         "doc_id": _response_str(data, "doc_id", 200),

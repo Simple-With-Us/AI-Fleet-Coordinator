@@ -655,6 +655,7 @@ def recall_contribute(
                 "id": str(existing.get("id") or point["id"]),
                 "doc_id": str(old.get("doc_id") or doc_id),
                 "seat": str(old.get("seat") or ""),
+                "content_hash": str(old.get("content_hash") or ""),
                 "retracted": _is_retracted(old),
             },
         }

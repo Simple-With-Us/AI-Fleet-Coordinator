@@ -655,6 +655,8 @@ class DuplicateConcurrencyTests(RecallBase):
         second = recall_api.recall_contribute(text, "lesson", seat="CLAUDE")
         self.assertEqual(second["status"], "duplicate")
         self.assertEqual(second["existing"]["doc_id"], first["doc_id"])
+        self.assertEqual(second["existing"]["content_hash"], content_hash(text))
+        self.assertIs(second["existing"]["retracted"], False)
         recall_api.embed.assert_not_called()
         self.assertEqual(len(FakeQdrant.upserts), 1)
 
@@ -1571,6 +1573,59 @@ class CliTests(RecallBase):
         self.assertNotIn("--force", body["message"])
         self.assertNotIn("stored contrib/", out.getvalue())
         self.assertEqual(err.getvalue(), "")
+
+    def test_deterministic_duplicate_after_correction_does_not_claim_the_old_text_is_stored(self):
+        old_text = "pm2 restart needs --update-env before process env changes take effect."
+        new_text = "pm2 restart applies process environment changes after an explicit reload."
+        with mock.patch("sys.stdin", io.StringIO(old_text)):
+            rc = self.cli.main(["contribute", "-", "--category", "lesson", "--seat", "CLAUDE", "--json"])
+        self.assertEqual(rc, 0)
+        point = FakeQdrant.points[-1]
+        doc_id = point["payload"]["doc_id"]
+        with mock.patch("sys.stdin", io.StringIO(new_text)), mock.patch("sys.stdout", io.StringIO()):
+            rc = self.cli.main(["correct", doc_id, "-", "--reason", "correct the steps", "--seat", "CLAUDE", "--json"])
+        self.assertEqual(rc, 0)
+        out = io.StringIO()
+        err = io.StringIO()
+        with mock.patch("sys.stdin", io.StringIO(old_text)), mock.patch("sys.stdout", out), mock.patch("sys.stderr", err):
+            rc = self.cli.main(["contribute", "-", "--category", "lesson", "--seat", "CLAUDE", "--json"])
+        self.assertEqual(rc, 1)
+        body = json.loads(out.getvalue())
+        self.assertIn("was corrected to different text", body["message"])
+        self.assertIn("your text is not stored", body["message"])
+        self.assertNotIn("identical text", body["message"])
+
+    def test_deterministic_duplicate_after_retraction_names_the_retracted_state(self):
+        text = "pm2 restart needs --update-env before process env changes take effect."
+        with mock.patch("sys.stdin", io.StringIO(text)):
+            rc = self.cli.main(["contribute", "-", "--category", "lesson", "--seat", "CLAUDE", "--json"])
+        self.assertEqual(rc, 0)
+        doc_id = FakeQdrant.points[-1]["payload"]["doc_id"]
+        with mock.patch("sys.stdout", io.StringIO()):
+            rc = self.cli.main(["retract", doc_id, "--reason", "obsolete", "--seat", "CLAUDE", "--json"])
+        self.assertEqual(rc, 0)
+        out = io.StringIO()
+        err = io.StringIO()
+        with mock.patch("sys.stdin", io.StringIO(text)), mock.patch("sys.stdout", out), mock.patch("sys.stderr", err):
+            rc = self.cli.main(["contribute", "-", "--category", "lesson", "--seat", "CLAUDE", "--json"])
+        self.assertEqual(rc, 1)
+        body = json.loads(out.getvalue())
+        self.assertIn("already retracted", body["message"])
+        self.assertIn("excluded from search", body["message"])
+        self.assertNotIn("identical text", body["message"])
+
+    def test_deterministic_duplicate_response_validates_external_fields(self):
+        text = "pm2 restart needs --update-env before process env changes take effect."
+        stored_hash = content_hash(text)
+        for existing in (
+            {"doc_id": 123, "content_hash": stored_hash, "retracted": False},
+            {"doc_id": "", "content_hash": stored_hash, "retracted": False},
+            {"doc_id": "contrib/CLAUDE/2026-11-05/472fc36e", "content_hash": "not-a-hash", "retracted": False},
+            {"doc_id": "contrib/CLAUDE/2026-11-05/472fc36e", "content_hash": stored_hash},
+        ):
+            with self.subTest(existing=existing):
+                with self.assertRaisesRegex(FleetRagError, "doc_id|content_hash|retracted"):
+                    self.cli.deterministic_duplicate_message(existing, text)
 
     def test_contribute_without_text_is_a_usage_error(self):
         err = io.StringIO()
