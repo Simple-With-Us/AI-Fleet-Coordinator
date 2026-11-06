@@ -91,7 +91,7 @@ public enum ControlAPIError: LocalizedError, Equatable {
 }
 
 public final class ControlAPI {
-    /// The URL errors that mean a change was sent and the answer was lost.
+    /// The URL errors that mean the request failed before anything was sent.
     ///
     /// Failures that happen before a request is sent.  Only these stay
     /// `unavailable` for non-GET calls; every other transport failure on a
@@ -173,9 +173,12 @@ public final class ControlAPI {
     private func post(_ path: String) async throws {
         try await verifyIdentity()
         let data = try await send(path, method: "POST", body: Data("{}".utf8), timeout: 300)
-        guard let result = try? decoder.decode(ActionResult.self, from: data), result.ok else {
-            throw ControlAPIError.invalidResponse
+        guard let result = try? decoder.decode(ActionResult.self, from: data) else {
+            // The change may have been applied before its answer was lost to a parse
+            // failure, so a blind retry could apply it twice.
+            throw ControlAPIError.outcomeUnknown
         }
+        guard result.ok else { throw ControlAPIError.invalidResponse }
     }
 
     private func verifyIdentity() async throws {
@@ -239,9 +242,19 @@ public final class ControlAPI {
                 }
                 throw ControlAPIError.outcomeUnknown
             }
+            // A read that never reached the server means the server is gone, not slow:
+            // report the refusal itself so status() does not misread it as unresponsive.
+            if let urlError = error as? URLError,
+               ControlAPI.failedBeforeSending.contains(urlError.code) {
+                throw ControlAPIError.refused(urlError.localizedDescription)
+            }
             throw ControlAPIError.unavailable
         }
-        guard let http = response as? HTTPURLResponse else { throw ControlAPIError.invalidResponse }
+        guard let http = response as? HTTPURLResponse else {
+            // A mutation whose answer cannot even be read as HTTP may have been applied.
+            if method != "GET" { throw ControlAPIError.outcomeUnknown }
+            throw ControlAPIError.invalidResponse
+        }
         if host.isLocal {
             guard http.url?.scheme == "http",
                   (http.url?.host == "127.0.0.1" || http.url?.host == "localhost"),
