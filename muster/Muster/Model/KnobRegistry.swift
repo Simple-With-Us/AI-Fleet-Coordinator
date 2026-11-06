@@ -1419,6 +1419,20 @@ extension KnobRegistry.Knob {
         return false
     }
 
+    /// True when a live read of Infisical (not this Mac's copy, which can be days old) says
+    /// it holds this value.  Only a live reading may say so,  because a copy can read as an
+    /// old value after the knob was changed from another host.
+    func liveReadingHolds(_ raw: String) -> Bool {
+        guard source == .infisical, case .current(let held) = current else { return false }
+        return (canonical(held) ?? held) == (canonical(raw) ?? raw)
+    }
+
+    /// True when a live read of Infisical says it holds no value for this knob.
+    var liveReadingHoldsNothing: Bool {
+        guard source == .infisical, case .defaultValue = current else { return false }
+        return true
+    }
+
     /// True when the value a reading carries differs from the default.
     var isChanged: Bool {
         guard case .current(let value) = current else { return false }

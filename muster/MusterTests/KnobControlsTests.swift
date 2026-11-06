@@ -269,6 +269,36 @@ final class KnobControlsTests: XCTestCase {
         XCTAssertEqual(try knob(registry, "CONSULT_ENABLED").current, .defaultValue("false"))
     }
 
+    /// Reviewer on #1384:  only a live read may say Infisical holds a value or holds none,
+    /// because this Mac's copy can be days old and the knob may have changed on another host.
+    func test_only_a_live_read_says_what_infisical_holds() throws {
+        let copy = try realRegistry().applying(try statusFixture())
+        let copySweep = try knob(copy, "LANE_SWEEP_MODE")
+        XCTAssertEqual(copySweep.current, .current("act"))
+        XCTAssertFalse(copySweep.liveReadingHolds("act"), "a copy never says Infisical holds it")
+        XCTAssertFalse(copySweep.liveReadingHolds("report"))
+        let copyConsult = try knob(copy, "CONSULT_ENABLED")
+        XCTAssertEqual(copyConsult.current, .defaultValue("false"))
+        XCTAssertFalse(copyConsult.liveReadingHoldsNothing, "a copy never says Infisical holds nothing")
+
+        let json = """
+        {"schema": 1, "fetch": "ok", "fetch_reason": null, "checked_epoch": 1794000000,
+         "write_token": "present", "knobs": [
+          {"name": "LANE_SWEEP_MODE", "owner": "C5", "set": true, "source": "infisical", "stale": false, "value": "ACT"},
+          {"name": "CONSULT_ENABLED", "owner": "C7", "set": false, "source": "default", "stale": false, "value": "false", "reason": "unset"}
+        ]}
+        """
+        let live = try realRegistry().applying(try XCTUnwrap(KnobLiveStatus.parse(Data(json.utf8))))
+        let sweep = try knob(live, "LANE_SWEEP_MODE")
+        XCTAssertTrue(sweep.liveReadingHolds("act"))
+        XCTAssertTrue(sweep.liveReadingHolds("ACT"), "compared in the engine's form")
+        XCTAssertFalse(sweep.liveReadingHolds("report"))
+        XCTAssertFalse(sweep.liveReadingHoldsNothing)
+        let consult = try knob(live, "CONSULT_ENABLED")
+        XCTAssertTrue(consult.liveReadingHoldsNothing)
+        XCTAssertFalse(consult.liveReadingHolds("false"))
+    }
+
     /// Kody on #1384:  a failed read answers one row per knob, and those rows are no reading.
     func test_a_failed_read_with_no_copy_is_not_a_reading() throws {
         let json = """

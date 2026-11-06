@@ -376,24 +376,31 @@ private struct KnobRowView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(row.title)
-                        .font(.body.weight(.medium))
-                    Text(row.name)
-                        .font(.system(.caption, design: .monospaced))
+                // The summary is one spoken element;  the row's button stays a separate
+                // control beside it, so VoiceOver can still activate it.
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(row.title)
+                            .font(.body.weight(.medium))
+                        Text(row.name)
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                    .frame(minWidth: 220, maxWidth: .infinity, alignment: .leading)
+                    nowCell
+                        .frame(width: 190, alignment: .leading)
+                    Text(row.nowIsSecret ? "none" : defaultText)
+                        .font(.system(.callout, design: .monospaced))
                         .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
+                        .frame(width: 150, alignment: .leading)
+                    hostChip
+                        .frame(width: 170, alignment: .leading)
                 }
-                .frame(minWidth: 220, maxWidth: .infinity, alignment: .leading)
-                nowCell
-                    .frame(width: 190, alignment: .leading)
-                Text(row.nowIsSecret ? "none" : defaultText)
-                    .font(.system(.callout, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .frame(width: 150, alignment: .leading)
-                hostChip
-                    .frame(width: 170, alignment: .leading)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(accessibilityText)
                 actionButton
                     .frame(width: 70, alignment: .trailing)
             }
@@ -405,8 +412,7 @@ private struct KnobRowView: View {
             }
         }
         .padding(.vertical, 8)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(accessibilityText)
+        .accessibilityElement(children: .contain)
     }
 
     private var defaultText: String {
@@ -422,7 +428,8 @@ private struct KnobRowView: View {
             Text(row.now)
                 .font(.system(.callout, design: .monospaced).weight(changed ? .semibold : .regular))
                 .foregroundStyle(changed ? Color.primary : Color.secondary)
-                .lineLimit(3)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
             Text(sourceLine(changed: changed))
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -449,7 +456,7 @@ private struct KnobRowView: View {
                 Text(consumers.joined(separator: ", "))
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -550,17 +557,17 @@ private struct KnobEditSheet: View {
         return knob.problem(with: value)
     }
 
-    /// True when the value is the one Infisical already holds,  so there is nothing to plan.
+    /// True when a live read says Infisical already holds this value,  so there is nothing
+    /// to plan.  This Mac's copy never says so:  it can be days old.
     private var unchanged: Bool {
-        guard let knob, case .current(let held) = knob.current else { return false }
-        return (knob.canonical(held) ?? held) == (knob.canonical(value) ?? value)
+        guard let knob else { return false }
+        return knob.liveReadingHolds(value)
     }
 
-    /// True when a reading says Infisical holds no value,  so there is nothing to reset.
+    /// True when a live read says Infisical holds no value,  so there is nothing to reset.
     private var nothingToReset: Bool {
         guard let knob else { return false }
-        if case .defaultValue = knob.current { return true }
-        return false
+        return knob.liveReadingHoldsNothing
     }
 
     private var writesUnavailable: Bool { registry?.writesUnavailable ?? false }
@@ -607,7 +614,7 @@ private struct KnobEditSheet: View {
                         .disabled(problem != nil || unchanged || writesUnavailable)
                 }
                 if unchanged && problem == nil {
-                    Text("This is the value it holds now, so there is nothing to change.")
+                    Text("Infisical holds this value now, so there is nothing to change.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -681,7 +688,7 @@ private struct KnobEditSheet: View {
                         .foregroundStyle(Color.orange)
                 }
                 if knob.once, knob.isSet {
-                    Label("Changing it moves the time the claim clock starts from.", systemImage: "clock")
+                    Label("This is meant to be set once, and it already holds a value.", systemImage: "clock")
                         .foregroundStyle(Color.orange)
                 }
             }
