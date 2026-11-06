@@ -1,8 +1,8 @@
-// Tests for agent_sync/operator_sheets_export.mjs (AFC-412 PR2).
+// Tests for simple_tools/operator_sheets_export.mjs (AFC-412 PR2).
 // Run: node --test scripts/test_operator_sheets_export.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { drainOutbox, SESSIONS_HEADERS, EVENTS_HEADERS } from "./agent_sync/operator_sheets_export.mjs";
+import { drainOutbox, SESSIONS_HEADERS, EVENTS_HEADERS } from "./simple_tools/operator_sheets_export.mjs";
 
 function fakeAdapter() {
   const sessions = []; // { rowNumber, cells }

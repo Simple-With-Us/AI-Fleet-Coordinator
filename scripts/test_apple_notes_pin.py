@@ -605,13 +605,13 @@ class PinDecisionTests(unittest.TestCase):
         self.assertTrue(self.lock_left)
 
     def test_every_pin_skipped_reason_fits_the_consumers_cap_with_its_tail(self):
-        """agent_sync.notes keeps 200 characters of the reason, and the tail says the note was saved.
+        """simple_tools.notes keeps 200 characters of the reason, and the tail says the note was saved.
 
         A reason that runs over loses exactly that tail, so a caller could not tell a saved, unpinned note from a
         failed write.  Every `pin skipped:` line of the real script is rendered with the longest outcome, a
         three-digit lock wait and a 100-character lock path (a long HOME), then read back through the consumer."""
         sys.path.insert(0, str(SCRIPT.parent))
-        from agent_sync import notes as N
+        from simple_tools import notes as N
 
         text = SCRIPT.read_text()
         start = text.index('case "$_pin_rc" in\n  1)')

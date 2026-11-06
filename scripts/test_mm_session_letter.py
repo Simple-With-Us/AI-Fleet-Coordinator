@@ -1324,7 +1324,7 @@ class MmLetterReopenTest(unittest.TestCase):
         self.scripts = os.path.dirname(os.path.abspath(M.__file__))
         self.scope = os.path.join(self.tmp.name, "v2", "hook-data", "user", "session-letters")
         # The script never brings a registry into being, so the file is created here.
-        from agent_sync import operator_registry as R
+        from simple_tools import operator_registry as R
 
         R.SessionRegistry(self.db).close_db()
 
@@ -1339,7 +1339,7 @@ class MmLetterReopenTest(unittest.TestCase):
         )
 
     def _registry(self):
-        from agent_sync import operator_registry as R
+        from simple_tools import operator_registry as R
 
         reg = R.SessionRegistry(self.db)
         self.addCleanup(reg.close_db)
@@ -1504,7 +1504,7 @@ class MmReopenStrictTouchTest(unittest.TestCase):
         # The script never brings a registry into being, so the file is created here.  A
         # test that reads the registry of the host it runs on passes for the wrong
         # reason on the seat's own Mac and fails on a runner that keeps none.
-        from agent_sync import operator_registry as R
+        from simple_tools import operator_registry as R
 
         R.SessionRegistry(self.db).close_db()
 
@@ -1554,7 +1554,7 @@ class MmReopenStrictTouchTest(unittest.TestCase):
     def test_a_reopen_that_fails_on_the_registry_is_a_registry_error(self):
         # A raw storage failure out of the reopen travels as a RegistryError, so every
         # caller handles it the same way.
-        from agent_sync import operator_registry as OR
+        from simple_tools import operator_registry as OR
 
         with (
             self._env(),
@@ -1966,7 +1966,7 @@ class RegistryHttpsCallTest(unittest.TestCase):
                     raise error
                 return _Response()
 
-        env = {"SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY": "k" * 40}
+        env = {"AGENT_SYNC_OPERATOR_REGISTRY_KEY": "k" * 40}
         with (
             mock.patch.dict(os.environ, env),
             mock.patch.object(M, "_REGISTRY_OPENER", _Opener()),
