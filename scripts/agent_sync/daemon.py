@@ -294,6 +294,10 @@ class SeatRunner:
         self.jobs_cond = threading.Condition()
         self.running: W.Pending | None = None
         self.ledger = W.Ledger(self.paths.wakes)
+        # Highest event id routed from the outgoing-webhook spool this boot (AFC-652):  those
+        # routes do not advance the native cursor, so a restart before the cursor passes them
+        # would replay them.  status exposes it;  the drain waits for cursor >= high-water.
+        self.webhook_high_water: int = 0
         self.crashes: dict[int, int] = {}
         self.stop = threading.Event()  # set when a reload removes the seat:  its threads exit
         self.threads: dict[str, threading.Thread] = {}
@@ -1180,7 +1184,13 @@ class Daemon:
             )
 
         try:
-            hook = LPH.LinearProjectsHook(loader, runner, clock=self.clock.time, log=self.log.write)
+            hook = LPH.LinearProjectsHook(
+                loader,
+                runner,
+                clock=self.clock.time,
+                log=self.log.write,
+                drain_armed=lambda: drain_deferred(self.root),
+            )
         except OSError as exc:
             self.log.write("linear-projects-error", error=type(exc).__name__)
             return None
@@ -1821,6 +1831,8 @@ class Daemon:
         runner.ring.add(message_id)
         self._note_probe(runner, message)
         self._route_retrying(runner, message, edited=False)
+        if not advance_cursor and message_id > runner.webhook_high_water:
+            runner.webhook_high_water = message_id
         if advance_cursor:
             runner.advance(message_id)
 
@@ -2131,7 +2143,15 @@ class Daemon:
                             stale=c.stale,
                         )
                     if not matched:
-                        self.offer_wake(runner, row, owner=d.wake == "owner")
+                        # F4 fence (AFC-652):  an ingress re-route of a message whose wake
+                        # already reached the durable ledger must not offer a second copy.
+                        # Edited routes stay exempt (route_edit).
+                        if edited or not self._wake_already_recorded(runner, message["id"]):
+                            self.offer_wake(runner, row, owner=d.wake == "owner")
+                        else:
+                            self.log.write(
+                                "wake-offer-fenced", seat=runner.seat, id=message["id"]
+                            )
                     done.add("wake")
 
     def _append_seat_inbox(self, runner: SeatRunner, rows: list[dict[str, Any]]) -> None:
@@ -2253,6 +2273,19 @@ class Daemon:
         self.log.write("rename", seat=runner.seat, leases=renamed)
 
     # ---- wakes ---------------------------------------------------------------------------------
+    def _wake_already_recorded(self, runner: SeatRunner, message_id: int) -> bool:
+        """True when any wake in the durable ledger already carries this message as a trigger
+        (AFC-652, F4):  the offer for it ran - or was deliberately held or dropped, both
+        recorded decisions a re-route must not undo - so an ingress re-route (post-restart
+        repair, webhook replay ahead of the cursor, a re-driven broadcast hand-off) must not
+        offer a second copy.  Read at the ingress call sites only:  _requeue and catch-up
+        legitimately re-offer, and edited routes stay exempt (a new tag on an old message
+        must wake).  Same cached-view iteration as the stale-owner check below."""
+        for view in runner.ledger.wakes().values():
+            if message_id in (view.get("trigger_ids") or []):
+                return True
+        return False
+
     def offer_wake(self, runner: SeatRunner, item: Mapping[str, Any], *, owner: bool) -> None:
         now = self.clock.time()
         key = L.topic_key(str(item.get("channel") or ""), str(item.get("topic") or ""))
@@ -2293,7 +2326,16 @@ class Daemon:
             return
         reason = self._wake_block(runner, pending, now)
         if reason:
-            self._not_run(runner, pending, reason, now)
+            if reason == "paused" and drain_deferred(self.root):
+                # Drain-qualified pause (AFC-652, F7):  defer, never drop.  The "queued" ledger
+                # row already exists (offer_wake wrote it synchronously) and recovery restores
+                # it, so re-arming writes no row per cycle;  the stale gate in _wake_block
+                # still bounds a long defer.  An ordinary pause keeps its recorded drop.
+                pending.due = now + self.coalescer.window
+                self.coalescer.restore(pending)
+                self.log.write("wake-deferred", seat=pending.seat, wake_id=pending.wake_id)
+            else:
+                self._not_run(runner, pending, reason, now)
             return
         lease_id = self.takeover(runner, pending)
         if lease_id:
@@ -3439,7 +3481,15 @@ class Daemon:
         # staleness, and the budgets with every other accepted wake reserved at its maximum.
         reason = self._wake_block(runner, pending, now)
         if reason:
-            self._not_run(runner, pending, reason, now)
+            if reason == "paused" and drain_deferred(self.root):
+                # Same drain defer as finalize (AFC-652, F7):  a wake admitted before the drain
+                # whose turn comes inside the window re-arms instead of dropping.  The second
+                # "accepted" row merges into the same ledger view, so budgets count it once.
+                pending.due = now + self.coalescer.window
+                self.coalescer.restore(pending)
+                self.log.write("wake-deferred", seat=pending.seat, wake_id=pending.wake_id)
+            else:
+                self._not_run(runner, pending, reason, now)
             return
         if runner.cfg.wake == "http":
             self.run_routine(runner, pending, now)
@@ -3939,6 +3989,12 @@ class Daemon:
         message_id = message.get("id")
         if not isinstance(message_id, int):
             return
+        if L.paused(self.root, "*"):
+            # F2 (AFC-652):  a global pause (a drain window always sets one) parks the effect
+            # durably instead of starting work a stop could silently cut.  The gate sits
+            # before the seen-ring mark, so the pause never claims the id.
+            self._defer_broadcast_effect(message, c, "fanout")
+            return
         with self._fanout_lock:
             if message_id in self._fanout_seen:
                 return
@@ -3996,6 +4052,10 @@ class Daemon:
         message_id = message.get("id")
         if not isinstance(message_id, int):
             return
+        if L.paused(self.root, "*"):
+            # F2 (AFC-652):  parked durably while a global pause covers admission (see fanout).
+            self._defer_broadcast_effect(message, c, "inbox")
+            return
         with self._fanout_lock:
             if message_id in self._inbox_seen:
                 return
@@ -4051,6 +4111,10 @@ class Daemon:
         message_id = message.get("id")
         if not isinstance(message_id, int) or minutes <= 0:
             return
+        if L.paused(self.root, "*"):
+            # F2 (AFC-652):  parked durably while a global pause covers admission (see fanout).
+            self._defer_broadcast_effect(message, c, "audit")
+            return
         seat = BAUD.sender_seat_for(
             str(message.get("sender_email") or ""), seats=self._fleet_seat_tags()
         )
@@ -4068,6 +4132,152 @@ class Daemon:
             due = self.clock.time() + minutes * 60.0
             self._broadcast_audits[message_id] = (broadcast, due, 0)
         self.log.write("peer-broadcast-audit-scheduled", id=message_id, seat=seat or "unknown")
+
+    # ---- deferred broadcast effects (AFC-652, F2) ---------------------------------------------
+    # A broadcast that arrives under a global pause parks each of its effect kinds (fanout,
+    # inbox, audit) in a durable record BEFORE the route moves on, so a stop inside the pause
+    # loses nothing.  Boot and tick re-drive parked kinds through the same gated admission once
+    # no global pause covers them.  Each kind is claimed and finished in one atomic write:  a
+    # pause that lands mid-drive re-parks the kind (the defer write wins over the finish), and
+    # the seen rings fence a duplicate start after a crash between claim and start.
+
+    def _deferred_broadcasts_path(self) -> str:
+        return os.path.join(L.listener_dir(self.root), "deferred_broadcasts.json")
+
+    def _defer_broadcast_effect(
+        self, message: Mapping[str, Any], c: R.Classes, kind: str
+    ) -> None:
+        message_id = message.get("id")
+        if not isinstance(message_id, int):
+            return
+
+        def mutate(data: dict[str, Any]) -> None:
+            row = data.setdefault(
+                str(message_id),
+                {
+                    "channel": c.channel,
+                    "topic": c.topic,
+                    "ts": self.clock.time(),
+                    "effects": {},
+                    "claims": {},
+                },
+            )
+            row.setdefault("effects", {})[kind] = False
+            row.setdefault("claims", {}).pop(kind, None)
+
+        try:
+            L.update_json(self._deferred_broadcasts_path(), mutate)
+        except OSError:
+            self.log.write("broadcast-defer-failed", id=message_id, effect=kind)
+            return
+        self.log.write("broadcast-effect-deferred", id=message_id, effect=kind)
+
+    def _claim_broadcast_effect(self, mid: str, kind: str) -> bool:
+        claimed = False
+
+        def mutate(data: dict[str, Any]) -> None:
+            nonlocal claimed
+            row = data.get(mid)
+            if not isinstance(row, dict) or row.get("effects", {}).get(kind) is not False:
+                return
+            row.setdefault("claims", {})[kind] = self.clock.time()
+            claimed = True
+
+        try:
+            L.update_json(self._deferred_broadcasts_path(), mutate)
+        except OSError:
+            return False
+        return claimed
+
+    def _finish_broadcast_effect(self, mid: str, kind: str) -> None:
+        """Done, unless a pause raced the drive and re-parked the kind (its defer write removed
+        the claim, so the finish leaves the kind parked).  The record drops once every kind is
+        done."""
+
+        def mutate(data: dict[str, Any]) -> None:
+            row = data.get(mid)
+            if not isinstance(row, dict) or kind not in (row.get("claims") or {}):
+                return
+            row["claims"].pop(kind, None)
+            row.setdefault("effects", {})[kind] = True
+            if all(row["effects"].values()):
+                data.pop(mid, None)
+
+        try:
+            L.update_json(self._deferred_broadcasts_path(), mutate)
+        except OSError:
+            pass
+
+    def _fetch_deferred_message(
+        self, mid: str
+    ) -> tuple[str, "SeatRunner | None", Mapping[str, Any] | None]:
+        """("ok", runner, message) | ("gone", None, None) | ("unknown", None, None) for a parked
+        broadcast's payload, re-fetched by id through the same REST read the spool drain uses."""
+        runner = next(
+            (
+                r
+                for r in self.seats.values()
+                if r.connected and r.client is not None and r.me is not None
+            ),
+            None,
+        )
+        if runner is None:
+            return "unknown", None, None
+        try:
+            response = runner.client.get(
+                "messages/%s" % mid,
+                {"apply_markdown": False},
+                timeout=min(5.0, self.http_timeout),
+            )
+        except Z.ApiError as exc:
+            if exc.status is not None and exc.status < 500 and exc.status != 429:
+                return "gone", None, None
+            return "unknown", None, None
+        except (Z.NetworkError, OSError):
+            return "unknown", None, None
+        message = response.get("message") if isinstance(response, dict) else None
+        if not isinstance(message, dict) or str(message.get("id")) != str(mid):
+            return "gone", None, None
+        return "ok", runner, message
+
+    def _redrive_deferred_broadcasts(self) -> None:
+        """Re-drive parked broadcast effects once no global pause covers them (boot and tick)."""
+        try:
+            data = L.read_json(self._deferred_broadcasts_path())
+        except Exception:
+            return
+        if not isinstance(data, dict) or not data:
+            return
+        if L.paused(self.root, "*"):
+            return
+        for mid in sorted(data):
+            row = data.get(mid)
+            if not isinstance(row, dict):
+                continue
+            parked = [k for k, v in (row.get("effects") or {}).items() if v is False]
+            if not parked:
+                continue
+            state, runner, message = self._fetch_deferred_message(mid)
+            if state == "unknown":
+                continue  # no connected seat or a transient fetch failure:  stay parked
+            if state == "gone":
+                # The payload no longer exists:  a logged done-with-reason, never silence.
+                for kind in parked:
+                    if self._claim_broadcast_effect(mid, kind):
+                        self._finish_broadcast_effect(mid, kind)
+                    self.log.write("broadcast-deferral-expired", id=mid, effect=kind)
+                continue
+            c, _d = R.route(message, runner.me, self.context(runner), self.lease_views(runner))
+            for kind in parked:
+                if not self._claim_broadcast_effect(mid, kind):
+                    continue
+                if kind == "fanout":
+                    self.start_fanout(message, c)
+                elif kind == "inbox":
+                    self.start_inbox_delivery(message, c)
+                elif kind == "audit":
+                    self.schedule_broadcast_audit(message, c)
+                self._finish_broadcast_effect(mid, kind)
 
     def _fleet_seat_tags(self) -> frozenset[str]:
         """The seat tags this instance knows:  the partition's seats and the fleet's own list.
@@ -4607,6 +4817,12 @@ class Daemon:
                 if not d.wake or d.delivered_to or MB.enabled(self.config, seat):
                     continue
                 item = self.make_item(runner, message, c, d)
+                mid = message.get("id")
+                if isinstance(mid, int) and self._wake_already_recorded(runner, mid):
+                    # F4 fence (AFC-652):  a crash mid-hand-off must not double-offer a seat
+                    # whose wake for this message already ran.
+                    self.log.write("wake-offer-fenced", seat=seat, id=mid)
+                    continue
                 self.offer_wake(runner, item, owner=d.wake == "owner")
             except Exception as exc:  # noqa: BLE001 - one seat must not stop the broadcast
                 self.log.write(
@@ -7367,6 +7583,7 @@ class Daemon:
             # Publish this tick, so a tool that asked for the reload reads the answer straight away.
             self.last_tick["status"] = 0.0
         self._drain_broadcast_wakes()
+        self._redrive_deferred_broadcasts()
         self._start_due_inbox_retries(now)
         self._start_due_broadcast_audits(now)
         for pending in self.coalescer.take_due(now):
@@ -7753,6 +7970,7 @@ class Daemon:
                 "creds": runner.cfg.creds,
                 "connected": runner.connected,
                 "cursor": runner.cursor,
+                "webhook_high_water": runner.webhook_high_water,
                 "last_event": runner.last_event_wall,
                 "wake": runner.cfg.wake,
                 "routine": routine,
@@ -7841,7 +8059,56 @@ class Daemon:
             "rewake_verified_cli": self.config.rewake_verified_cli,
             "rewake_verified_desktop": self.config.rewake_verified_desktop,
             "pause": L.read_json(pause_path(self.root)),
+            "drain": self._drain_status(),
             "seats": seats,
+        }
+
+    def _drain_status(self) -> dict[str, Any]:
+        """The planned-drain observability surface (AFC-652, F1):  every field a qualified
+        drain checks before SIGTERM, plus the armed marker.  In-memory or small-file reads."""
+        try:
+            spool_rows = self.webhook_spool.pending()
+            spool: dict[str, Any] = {
+                "pending": len(spool_rows),
+                "max_id": max((int(r.get("message_id") or 0) for r in spool_rows), default=0),
+            }
+        except OSError:
+            spool = {"unavailable": True}
+        with self._fanout_lock:
+            broadcasts = {
+                "wake_handoffs": self._broadcast_wakes.qsize(),
+                "inbox_pending": len(self._inbox_pending),
+                "audits": len(self._broadcast_audits),
+            }
+        effect_names = (
+            "chat-fanout",
+            "inbox-delivery",
+            "inbox-delivery-retry",
+            "broadcast-audit",
+            "broadcast-wake-unsupported",
+        )
+        threads = {name: 0 for name in effect_names}
+        for t in threading.enumerate():
+            if t.name in threads and t.is_alive():
+                threads[t.name] += 1
+        with self.child_lock:
+            children = len(self.children)
+        hook = getattr(self, "linear_projects_hook", None)
+        deferred = L.read_json(self._deferred_broadcasts_path())
+        return {
+            "armed": drain_deferred(self.root),
+            "outgoing_webhook": {
+                "enabled": bool(getattr(self.config, "outgoing_webhook_enabled", False)),
+                "listening": self.outgoing_webhook_server is not None,
+                "spool": spool,
+            },
+            "broadcasts": broadcasts,
+            "effect_threads": threads,
+            "coalescer_pending": len(self.coalescer.pending),
+            "router_queue": self.router_queue.qsize(),
+            "children": children,
+            "deferred_broadcasts": len(deferred) if isinstance(deferred, dict) else 0,
+            "linear_projects_queued": hook.queued if hook is not None else None,
         }
 
     def write_status(self) -> None:
@@ -8226,6 +8493,7 @@ class Daemon:
         self._configure_listener_api()
         for seat in ("GROK", "CURSOR", "CODEX"):
             self.chat_queue(seat).recover_interrupted()
+        self._redrive_deferred_broadcasts()
         os.ftruncate(lock_fd, 0)
         os.write(lock_fd, str(os.getpid()).encode())
         self.install_excepthooks()
@@ -8346,16 +8614,32 @@ def set_pause(
     by: str,
     now: float,
     message_id: int | None = None,
+    defer: bool = False,
 ) -> None:
     def mutate(data: dict[str, Any]) -> None:
-        data[seat or "*"] = {
+        entry: dict[str, Any] = {
             "wakes_only": wakes_only,
             "by": by,
             "ts": now,
             "message_id": message_id,
         }
+        if defer:
+            # Drain marker (AFC-652):  this pause is a qualified drain window.  Wakes defer
+            # (re-arm) instead of dropping, broadcast admissions park durably, and the Linear
+            # hook refuses new events with a 503.  An ordinary pause has no marker and keeps
+            # the existing drop semantics.  The exact-prior-bytes restore removes it.
+            entry["defer"] = True
+        data[seat or "*"] = entry
 
     L.update_json(pause_path(root), mutate)
+
+
+def drain_deferred(root: str) -> bool:
+    """True while any pause entry carries the drain marker (AFC-652)."""
+    data = L.read_json(pause_path(root))
+    if not isinstance(data, dict):
+        return False
+    return any(isinstance(v, dict) and v.get("defer") for v in data.values())
 
 
 def clear_pause(root: str, seat: str | None) -> bool:

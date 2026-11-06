@@ -302,7 +302,7 @@ def cmd_daemon(rt: Any, args: argparse.Namespace) -> int:
         from .daemon import set_pause
 
         seat = Z.normalise_seat(args.seat) if args.seat else None
-        set_pause(root, seat, wakes_only=args.wakes_only, by="cli", now=time.time())
+        set_pause(root, seat, wakes_only=args.wakes_only, by="cli", now=time.time(), defer=args.defer)
         rt.out(
             "paused %s%s; resume with: simple-chat daemon resume%s\n"
             % (
@@ -512,7 +512,12 @@ def cmd_status(rt: Any, args: argparse.Namespace) -> int:
             lines.append(
                 "paused: %s"
                 % ", ".join(
-                    "%s%s" % (k, " (wakes only)" if (v or {}).get("wakes_only") else "")
+                    "%s%s%s"
+                    % (
+                        k,
+                        " (wakes only)" if (v or {}).get("wakes_only") else "",
+                        " (drain)" if (v or {}).get("defer") else "",
+                    )
                     for k, v in sorted(pause.items())
                 )
             )
@@ -1455,45 +1460,6 @@ def cmd_listener(rt: Any, args: argparse.Namespace) -> int:
             L.DRAIN_PER_MESSAGE,
         )
         return 0
-    if action == "pending-inbox":
-        view = LR.pending_inbox_view(root, seat, after_seq=args.after_seq, limit=args.limit)
-        if as_json:
-            return emit(view)
-        if not view["items"]:
-            if view["count"]:
-                rt.out(
-                    "simple-chat: %d wake-worthy item%s pending for %s after seq %d "
-                    "(latest_seq %d;  --limit 0 shows none)\n"
-                    % (
-                        view["count"],
-                        "" if view["count"] == 1 else "s",
-                        seat,
-                        view["after_seq"],
-                        view["latest_seq"],
-                    )
-                )
-                return 0
-            rt.err(
-                "simple-chat: no wake-worthy items pending for %s after seq %d (latest_seq %d)"
-                % (seat, view["after_seq"], view["latest_seq"])
-            )
-            return 0
-        _fenced(
-            rt,
-            "[simple-chat listener pending-inbox] %d of %d pending item%s for %s after seq %d "
-            "(latest_seq %d;  read-only, no cursor moved)"
-            % (
-                len(view["items"]),
-                view["count"],
-                "" if view["count"] == 1 else "s",
-                seat,
-                view["after_seq"],
-                view["latest_seq"],
-            ),
-            view["items"],
-            L.DRAIN_PER_MESSAGE,
-        )
-        return 0
     if action == "ack":
         return emit(
             {"seat": seat, "cursor": LR.ack_inbox(root, seat, args.seq)},
@@ -1700,6 +1666,12 @@ def add_parsers(
     q = add("pause", "kill switch: stop wakes and live interrupts (capture continues)", dsub)
     q.add_argument("--seat", metavar="S", help="one seat (default: every seat)")
     q.add_argument("--wakes-only", action="store_true", help="stop headless wakes only")
+    q.add_argument(
+        "--defer",
+        action="store_true",
+        help="mark this pause as a qualified drain window: wakes defer instead of dropping, "
+        "broadcast effects park durably, and the Linear hook refuses new events (AFC-652)",
+    )
     q = add("resume", "lift a pause", dsub)
     q.add_argument("--seat", metavar="S", help="one seat (default: every pause)")
     add("reload", "re-read listener.toml (SIGHUP to the running listener)", dsub)
@@ -1784,7 +1756,7 @@ def add_parsers(
 
     p = add(
         "listener",
-        "this seat's own listener records:  status, inbox, pending-inbox, ack, owner-queue, surface, wakes, "
+        "this seat's own listener records:  status, inbox, ack, owner-queue, surface, wakes, "
         "held-back, clear-held, leases, live, drain, nudges (no Zulip login)",
     )
     lsub = p.add_subparsers(dest="listener_action", metavar="ACTION", required=True)
@@ -1801,20 +1773,6 @@ def add_parsers(
     q.add_argument(
         "--delivered", action="store_true", help="also show items already delivered to a session"
     )
-    q = add(
-        "pending-inbox",
-        "wake-worthy seat-inbox items after --after-seq (bodies are untrusted data); never moves any cursor",
-        lsub,
-    )
-    q.add_argument(
-        "--after-seq",
-        dest="after_seq",
-        type=int,
-        default=0,
-        metavar="N",
-        help="items after this seq",
-    )
-    q.add_argument("--limit", type=int, default=20, metavar="N")
     q = add("ack", "move the seat-inbox cursor forward to --seq (never back)", lsub)
     q.add_argument("--seq", type=int, required=True, metavar="N")
     q = add("owner-queue", "notes the listener queued for the owner, after the surfaced mark", lsub)
