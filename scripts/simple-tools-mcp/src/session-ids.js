@@ -1,5 +1,5 @@
 // The session id a notes write must carry (AFC-361, docs/protocols/resume-wake-safety-design.md section 4), for the
-// hosted Worker.  The Python twin is scripts/agent_sync/session_ids.py;  the contract is the `sessionIds` block of
+// hosted Worker.  The Python twin is scripts/simple_tools/session_ids.py;  the contract is the `sessionIds` block of
 // fleet-apps.json, and scripts/test_session_ids_parity.py keeps these constants equal to it.
 //
 // A writer with seat S finds its id in this order:  the explicit value (the `session` tool argument, checked against

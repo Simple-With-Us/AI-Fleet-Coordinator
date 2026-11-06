@@ -6,7 +6,7 @@
 // `put(key, value)`.  The SeatGate Durable Object hands it `ctx.storage`, whose
 // input and output gates make each method below atomic (no external I/O runs
 // between the read and the write).  Tests hand it a Map.
-// Spec:  docs/protocols/agent-sync-mcp.md sections 3.4, 3.5 and 3.10.
+// Spec:  docs/protocols/simple-tools-mcp.md sections 3.4, 3.5 and 3.10.
 
 import { WA_EVENT } from "./wa/contract.js";
 import { ARM_WINDOW_MS, GRANT_MAX_AGE_MS, PROPS_PHASE } from "./config.js";

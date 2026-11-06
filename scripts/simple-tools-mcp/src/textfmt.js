@@ -1,4 +1,4 @@
-// The outbound text fix-ups:  a port of scripts/agent_sync/textfmt.py (AFC #392
+// The outbound text fix-ups:  a port of scripts/simple_tools/textfmt.py (AFC #392
 // and owner 2026-10-19), so a hosted post carries the same text a stdio post does.
 //
 // After `.`, `!` or `?` (optionally followed by closing characters " ' ” ’ ) ] * _),

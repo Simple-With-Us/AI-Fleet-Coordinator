@@ -19,7 +19,7 @@ const ERROR_GUIDANCE = {
   not_armed: ["No matching seat was armed for this connection attempt.", "Arm the intended seat in Admin, then restart the connection within the arming window."],
   redirect_not_allowlisted: ["The redirect URL is not registered for this client.", "Sync or correct the client's redirect URL in Admin, then restart sign-in."],
   cimd_client_not_allowlisted: ["This published client metadata URL is not on the allowlist.", "Add the exact client metadata URL to the approved configuration, then restart sign-in."],
-  resource_mismatch: ["The request targeted a resource that does not match this server.", "Use the configured Agent-Sync resource URL and reconnect the client."],
+  resource_mismatch: ["The request targeted a resource that does not match this server.", "Use the configured Simple-Tools resource URL and reconnect the client."],
   not_authorized: ["The request did not carry a valid authorization for this resource.", "Reconnect the client and approve the intended seat and scopes."],
   not_configured: ["A required server credential or setting is missing.", "Restore the named configuration through the approved secret or settings source."],
   writes_disabled: ["Write tools are disabled for this deployment.", "Enable writes only if intended, then verify the seat and tool scopes."],

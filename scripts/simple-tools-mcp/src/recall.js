@@ -1,4 +1,4 @@
-// Fleet recall for hosted seats (docs/protocols/agent-sync-mcp.md section 1.1).
+// Fleet recall for hosted seats (docs/protocols/simple-tools-mcp.md section 1.1).
 // Five hosted-only tools over the recall service's REST twin at
 // https://recall.jays.services (scripts/fleet-recall-service/server.py):
 // GET /recall/stats, POST /recall/search, /recall/contribute, /recall/correct
@@ -16,7 +16,7 @@ import { resolveSecret } from "./infisical.js";
 
 export const RECALL_HOST = "recall.jays.services";
 export const RECALL_TIMEOUT_MS = 10_000;
-export const RECALL_USER_AGENT = "agent-sync-mcp/2.0";
+export const RECALL_USER_AGENT = "simple-tools-mcp/2.0";
 export const RECALL_RESPONSE_LIMIT = 1_000_000; // bytes
 export const RECALL_JSON_DEPTH_LIMIT = 64;
 export const RECALL_JSON_NODE_LIMIT = 20_000;

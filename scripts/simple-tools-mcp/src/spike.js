@@ -4,16 +4,16 @@
 // POST /internal/spike/<SEAT> sends one `fleet.spike.ping` to that seat's
 // spike subscription.  The event itself is in src/events.js
 // (spikeEventDefinition), offered only while SPIKE_EXTRA_EVENTS is "on".
-// Spec:  docs/protocols/agent-sync-mcp.md section 3.12, item 16.
+// Spec:  docs/protocols/simple-tools-mcp.md section 3.12, item 16.
 //
 // The route answers 404 unless SPIKE_EXTRA_EVENTS is "on", SPIKE_HMAC_KEY is
 // set, and the seat is hosted with a wake key (only such a seat is offered
 // events at all).  Its gate is its own HMAC:  the header
-// X-Agent-Sync-Spike-Signature is the lowercase hex HMAC-SHA256 of the raw
+// X-Simple-Tools-Spike-Signature is the lowercase hex HMAC-SHA256 of the raw
 // body bytes, keyed with the UTF-8 bytes of SPIKE_HMAC_KEY, a Worker secret
 // that is never WAKE_HMAC_KEY_<SEAT>:  the Worker refuses to fire when the two
 // are equal.  The body is exactly
-//   {"contract": "agent-sync-spike/1", "seat": "<SEAT>", "spike_id": "<uuid>", "sent_at": <unix seconds>}
+//   {"contract": "simple-tools-spike/1", "seat": "<SEAT>", "spike_id": "<uuid>", "sent_at": <unix seconds>}
 // checked over the raw bytes before any JSON parse, with sent_at no more than
 // five minutes old or one minute in the future.  SeatGate.spikeClaim dedupes
 // on spike_id for an hour (a replay is a 200 duplicate) and allows at most
@@ -26,8 +26,8 @@ import { safeEqual } from "./policy.js";
 import { wakeSignature } from "./wake.js";
 import { SPIKE_EVENT_NAME, subEventName, deliverEvent, eventIdFor, wakeOutcome } from "./events.js";
 
-export const SPIKE_CONTRACT = "agent-sync-spike/1";
-export const SPIKE_SIGNATURE_HEADER = "x-agent-sync-spike-signature";
+export const SPIKE_CONTRACT = "simple-tools-spike/1";
+export const SPIKE_SIGNATURE_HEADER = "x-simple-tools-spike-signature";
 export const SPIKE_MAX_BODY = 1024;
 export const SPIKE_MAX_AGE_S = 5 * 60;
 export const SPIKE_MAX_SKEW_S = 60;
