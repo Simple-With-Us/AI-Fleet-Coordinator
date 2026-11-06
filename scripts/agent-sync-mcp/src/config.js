@@ -72,6 +72,20 @@ export const GRANT_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
 // creates (2026-11-03 ruling:  pause and epoch are not the real kill path),
 // and src/identity-cache.js states the full trade.
 export const GATE_IDENTITY_CACHE_MS = 60 * 60 * 1000;
+
+// The seat's shared hourly wake envelope:  BOTH wake paths (eavesdropper and
+// webhook) draw on it atomically inside eventClaimWake/webhookWakeClaim.
+// A deploy-time reviewed change is the EVENT_WAKE_RATE_LIMIT var, never a
+// source edit;  the constant is the compiled default.  Defined here (not
+// seat-state.js) because loadConfig validates the var, and seat-state.js
+// re-exports it for the paths that import it from there.
+export const WAKE_RATE_LIMIT = 6;
+
+// wake_seen (the store the hourly budget is counted from) holds at most this
+// many entries, trimmed oldest-first.  A configured rate above the accounting
+// capacity would be silently UNLIMITED (the cap evicts before the budget can
+// ever be reached), so EVENT_WAKE_RATE_LIMIT may never exceed it.
+export const WAKE_SEEN_CAP = 500;
 // The Git bearer verify cache (AFC-617), separate from the window above, which
 // never reaches this route:  how long one isolate may reuse a positive
 // /internal/gr-bearer-verify answer.  Off by default, because a window delays a
@@ -129,6 +143,14 @@ export const WAKE_SECRETS = Object.freeze({
   "GROK-WEB": "WAKE_HMAC_KEY_GROK_WEB",
   ECHO: "WAKE_HMAC_KEY_ECHO",
   WISE: "WAKE_HMAC_KEY_INSTINCT",
+});
+
+// Jet's additive webhook wake (owner ask 2026-11-04):  the seat's
+// POST /internal/webhook-wake/<SEAT> signing key binding.  Separate from
+// WAKE_SECRETS:  the webhook key is its own signing domain and is never the
+// seat's wake HMAC key (the Worker refuses to fire when they are equal).
+export const WEBHOOK_WAKE_SECRETS = Object.freeze({
+  JET: "WAKE_WEBHOOK_KEY_JET",
 });
 
 // The Operator notes API key (AFC-486, docs/protocols/operator-notes.md):  the Worker signs every notes_* request
@@ -215,6 +237,15 @@ export function loadConfig(env) {
   if (gateIdentityCacheRaw !== undefined && gateIdentityCacheRaw !== null && String(gateIdentityCacheRaw).trim() !== "") {
     gateIdentityCacheMs = Number(gateIdentityCacheRaw);
     if (!Number.isSafeInteger(gateIdentityCacheMs) || gateIdentityCacheMs < 0) throw new Error("config: GATE_IDENTITY_CACHE_MS must be a non-negative integer number of milliseconds");
+  }
+
+  // Same shape for the shared wake envelope:  absent means the compiled
+  // default;  anything malformed fails closed like every other var.
+  const eventWakeRateLimitRaw = env.EVENT_WAKE_RATE_LIMIT;
+  let eventWakeRateLimit = WAKE_RATE_LIMIT;
+  if (eventWakeRateLimitRaw !== undefined && eventWakeRateLimitRaw !== null && String(eventWakeRateLimitRaw).trim() !== "") {
+    eventWakeRateLimit = Number(eventWakeRateLimitRaw);
+    if (!Number.isSafeInteger(eventWakeRateLimit) || eventWakeRateLimit < 1 || eventWakeRateLimit > WAKE_SEEN_CAP) throw new Error(`config: EVENT_WAKE_RATE_LIMIT must be a positive integer no larger than the wake accounting capacity (${WAKE_SEEN_CAP})`);
   }
 
   // The Git bearer verify window:  absent or empty means off, and this var alone
@@ -358,6 +389,7 @@ export function loadConfig(env) {
     hostedSeats: Object.freeze(hostedSeats),
     eventsOnlySeats: Object.freeze(eventsOnlySeats),
     gateIdentityCacheMs,
+    eventWakeRateLimit,
     grVerifyCacheMs,
     seats: Object.freeze(seats),
     redirectSeats,
@@ -389,6 +421,7 @@ export function loadConfig(env) {
     grWorkflowEnabled: String(env.GR_WORKFLOW_TOOLS ?? "").trim() === "on",
     whatsappWakeEnabled: String(env.WHATSAPP_BRIDGE_WAKE_ENABLED ?? "").trim() === "on",
     spikeExtraEvents: String(env.SPIKE_EXTRA_EVENTS ?? "").trim() === "on",
+    webhookWakeEnabled: String(env.WEBHOOK_WAKE_ENABLED ?? "").trim() === "on",
   });
 }
 

@@ -255,6 +255,10 @@ export function classifyPath(pathname) {
       // AFC-477 spike (temporary, src/spike.js):  a 404 unless SPIKE_EXTRA_EVENTS
       // is "on" and SPIKE_HMAC_KEY is set.  Its own HMAC is the gate.
       if (/^\/internal\/spike\/[A-Z][A-Z0-9-]{0,31}$/.test(pathname)) return "spike";
+      // Jet's additive webhook wake (owner ask 2026-11-04, src/webhook-wake.js):
+      // a 404 unless WEBHOOK_WAKE_ENABLED is "on" and the seat's
+      // WAKE_WEBHOOK_KEY_<SEAT> is set.  Its own HMAC is the gate.
+      if (/^\/internal\/webhook-wake\/[A-Z][A-Z0-9-]{0,31}$/.test(pathname)) return "webhook_wake";
       return null;
   }
 }

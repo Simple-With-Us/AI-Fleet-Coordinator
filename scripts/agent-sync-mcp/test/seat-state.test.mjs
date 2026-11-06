@@ -169,17 +169,61 @@ test("a channel refusal settles the wake and audits the stream id only", async (
   assert.equal((await S.eventClaimWake(store, { wakeId: "w-c" }, T0 + 20)).verdict, "duplicate");
 });
 
-test("wake claims still expire after WAKE_SEEN_MS and stay capped at 500", async () => {
+test("wake claims outlive the shared budget window and stay capped at 500", async () => {
   const store = S.memoryStore();
   const claim = await S.eventClaimWake(store, { wakeId: "w-ttl" }, T0);
   await S.eventSettleWake(store, { wakeId: "w-ttl", token: claim.token, outcome: "delivered" }, T0);
-  assert.equal((await S.eventClaimWake(store, { wakeId: "w-ttl" }, T0 + S.WAKE_SEEN_MS - 1)).verdict, "duplicate");
-  assert.equal((await S.eventClaimWake(store, { wakeId: "w-ttl" }, T0 + S.WAKE_SEEN_MS + 1)).verdict, "go");
-  for (let i = 0; i < 520; i++) await S.eventClaimWake(store, { wakeId: `w-cap-${i}` }, T0 + S.WAKE_SEEN_MS + 2);
+  assert.equal((await S.eventClaimWake(store, { wakeId: "w-ttl" }, T0 + S.WAKE_SEEN_MS + 1)).verdict, "duplicate", "still remembered past the old 15-minute GC");
+  assert.equal((await S.eventClaimWake(store, { wakeId: "w-ttl" }, T0 + S.WAKE_SEEN_WINDOW_MS - 1)).verdict, "duplicate");
+  assert.equal((await S.eventClaimWake(store, { wakeId: "w-ttl" }, T0 + S.WAKE_SEEN_WINDOW_MS + 1)).verdict, "go", "forgotten past the window");
+  for (let i = 0; i < 520; i++) await S.eventClaimWake(store, { wakeId: `w-cap-${i}` }, T0 + S.WAKE_SEEN_WINDOW_MS + 2 + i);
   const seen = await store.get("wake_seen");
   assert.equal(Object.keys(seen).length, 500);
-  assert.ok(!Object.hasOwn(seen, "w-cap-0"), "the oldest claims go first");
+  assert.ok(!Object.hasOwn(seen, "w-cap-19"), "the oldest claims go first");
+  assert.ok(Object.hasOwn(seen, "w-cap-20"));
   assert.ok(Object.hasOwn(seen, "w-cap-519"));
+});
+
+test("UNKNOWN custody is terminal:  no GC horizon, no cap eviction, fail-closed when full", async () => {
+  const store = S.memoryStore();
+  // An uncertain tombstone and a dispatched (crash-fenced) claim at T0.
+  const tomb = await S.eventClaimWake(store, { wakeId: "w-tomb" }, T0);
+  await S.eventSettleWake(store, { wakeId: "w-tomb", token: tomb.token, outcome: "uncertain" }, T0);
+  const crash = await S.eventClaimWake(store, { wakeId: "w-crash" }, T0 + 1);
+  await S.eventMarkDispatched(store, { wakeId: "w-crash", token: crash.token }, T0 + 1);
+  // Past the ordinary window both still bind...
+  const t = T0 + S.WAKE_SEEN_WINDOW_MS + 1;
+  assert.equal((await S.eventClaimWake(store, { wakeId: "w-tomb" }, t)).verdict, "duplicate", "tombstone survives the GC");
+  assert.equal((await S.eventClaimWake(store, { wakeId: "w-crash" }, t)).verdict, "duplicate", "crash fence survives the GC");
+  // ...and a cap flood evicts ordinary claims first, never custody.
+  for (let i = 0; i < 520; i++) await S.eventClaimWake(store, { wakeId: `f-${i}` }, t + 1 + i);
+  assert.equal((await S.eventClaimWake(store, { wakeId: "w-tomb" }, t + 600)).verdict, "duplicate", "tombstone survives the cap");
+  assert.equal((await S.eventClaimWake(store, { wakeId: "w-crash" }, t + 600)).verdict, "duplicate", "fence survives the cap");
+  const seen = await store.get("wake_seen");
+  assert.ok(Object.keys(seen).length <= 502, "ordinary entries trim to the cap; custody stays");
+  // Elapsed time is not proof of no remote effect:  even a week later the id
+  // is spent.  Only operator reconciliation clears custody.
+  const t2 = T0 + 7 * 24 * 60 * 60 * 1000;
+  assert.equal((await S.eventClaimWake(store, { wakeId: "w-tomb" }, t2)).verdict, "duplicate", "tombstones never expire into a re-arm");
+  assert.equal((await S.eventClaimWake(store, { wakeId: "w-crash" }, t2)).verdict, "duplicate", "fenced claims never expire into a re-arm");
+});
+
+test("fail-closed:  a full custody ledger refuses NEW admissions instead of evicting unknowns", async () => {
+  const store = S.memoryStore();
+  // Fill the custody ledger to the cap with tombstones.
+  const tomb = {};
+  for (let i = 0; i < S.WAKE_CUSTODY_CAP; i++) tomb[`old-${i}`] = T0;
+  await store.put("wake_tomb", tomb);
+  // A tombstoned id is still a duplicate (custody check first)...
+  assert.equal((await S.eventClaimWake(store, { wakeId: "old-0" }, T0 + 1)).verdict, "duplicate");
+  // ...and a NEW wake is refused, fail-closed:  nothing is evicted for it.
+  const refused = await S.eventClaimWake(store, { wakeId: "w-new" }, T0 + 1);
+  assert.equal(refused.verdict, "rate_limited");
+  assert.equal((await store.get("wake_tomb"))[`old-${S.WAKE_CUSTODY_CAP - 1}`], T0, "no unknown was evicted");
+  // Under the cap again, admission resumes.
+  const tomb2 = { "old-0": T0 };
+  await store.put("wake_tomb", tomb2);
+  assert.equal((await S.eventClaimWake(store, { wakeId: "w-new" }, T0 + 2)).verdict, "go");
 });
 
 test("eventSubLive says why a subscription may no longer receive an event", async () => {

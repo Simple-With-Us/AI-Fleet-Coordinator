@@ -63,7 +63,13 @@ export const EVENT_NAME = "zulip.mention";
 export const SPIKE_EVENT_NAME = "fleet.spike.ping";
 // Every name a subscription may carry.  An unsubscribe accepts any of them
 // whatever the flag says, so a subscription can always be removed.
-export const KNOWN_EVENT_NAMES = Object.freeze([EVENT_NAME, SPIKE_EVENT_NAME, WA_EVENT]);
+// Jet's additive webhook wake (owner ask 2026-11-04):  a second, signed
+// trigger into this delivery plane, on the whatsapp.message pattern - its own
+// event name and signing domain, no Zulip carrier.  Offered only while the
+// deploy's WEBHOOK_WAKE_ENABLED is "on", and fired only by the signed
+// POST /internal/webhook-wake/<SEAT> (src/webhook-wake.js).
+export const WEBHOOK_EVENT_NAME = "fleet.webhook";
+export const KNOWN_EVENT_NAMES = Object.freeze([EVENT_NAME, SPIKE_EVENT_NAME, WA_EVENT, WEBHOOK_EVENT_NAME]);
 // One live destination per seat and event name (Jay:  hold ambiguous routing
 // rather than wake several chats).  A refresh of the same subscription is
 // fine;  a second chat for the same event is refused, never silently swapped
@@ -220,11 +226,41 @@ export function spikeEventDefinition() {
   };
 }
 
+export function webhookEventDefinition() {
+  return {
+    name: WEBHOOK_EVENT_NAME,
+    description:
+      "A doorbell fired by a signed fleet caller (POST /internal/webhook-wake/<SEAT>), for waking Jet about something outside Zulip and WhatsApp.  " +
+      "data holds only the wake's id and the time it was fired - a pure doorbell, no caller content of any kind.  No Zulip or WhatsApp content.",
+    delivery: ["webhook"],
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    payloadSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "The wake's id, unique per wake." },
+        fired_at: { type: "string", description: "When the caller fired it (ISO 8601, UTC)." },
+      },
+      required: ["id", "fired_at"],
+      additionalProperties: false,
+    },
+  };
+}
+
+/** The fleet.webhook event takes no arguments:  absent, null or an empty object.  Anything else is refused. */
+export function validateWebhookWakeArguments(args) {
+  if (args === undefined || args === null) return {};
+  if (typeof args !== "object" || Array.isArray(args)) throw new EventError(INVALID_PARAMS, "arguments must be an object");
+  // The refusal never echoes the argument's name:  the event has no arguments to name.
+  if (Object.keys(args).length > 0) throw new EventError(INVALID_PARAMS, "fleet.webhook takes no arguments");
+  return {};
+}
+
 /** The events a seat offers:  zulip.mention always, and the spike only while SPIKE_EXTRA_EVENTS is "on". */
 export function eventDefinitions(config) {
   const out = [eventDefinition(config)];
   if (config?.spikeExtraEvents === true) out.push(spikeEventDefinition());
   if (config?.whatsappEnabled && config?.eventSeat === "JET") out.push(waDefinition());
+  if (config?.webhookWakeEnabled === true && config?.eventSeat === "JET") out.push(webhookEventDefinition());
   return out;
 }
 
@@ -656,7 +692,16 @@ export async function deliverEvent(
     if (!(timeoutMs >= MIN_ATTEMPT_MS)) break;
     // A fresh timestamp and signature on every attempt, the same event id.
     const result = await signedPost(fetchFn, { url: sub.url, subId: sub.id, secrets: signingSecrets(sub, now()), webhookId: event.eventId, body, timeoutMs, now });
-    if (result.response) await result.response.body?.cancel().catch(() => {});
+    // Post-receipt cleanup can never change the outcome:  the response is
+    // already back.  body.cancel() throwing SYNCHRONOUSLY (rather than a
+    // rejected promise, which .catch already absorbs) must not escape either -
+    // an exception out of this function is classified by fanOut as UNKNOWN
+    // custody, never as a false zero-dispatch.
+    if (result.response) {
+      try {
+        await result.response.body?.cancel().catch(() => {});
+      } catch {}
+    }
     const status = result.status ?? null;
     if (status !== null && status >= 200 && status < 300) return { outcome: "delivered", status, attempts: attempt };
     if (status === 410) return { outcome: "gone", status, attempts: attempt };
@@ -688,9 +733,19 @@ export async function fanOut({ gate, wake, subs, allowed, fetchFn, now = Date.no
         const event = { eventId: await eventIdFor(wake.wake_id, sub.id), name: EVENT_NAME, timestamp, data, cursor: null };
         let result;
         try {
-          result = await deliverEvent(fetchFn, sub, event, { now, deadline, isLive: () => gate.eventSubLive({ subId: sub.id }), ...(sleep ? { sleep } : {}) });
+          // backoff: [] - exactly ONE attempt, as on the webhook path:  an
+          // internal retry could repeat an uncertain POST (timeout, 5xx) that
+          // the tombstone cannot undo.  One attempt, then custody
+          // classification in wakeOutcome.
+          result = await deliverEvent(fetchFn, sub, event, { now, deadline, backoff: [], isLive: () => gate.eventSubLive({ subId: sub.id }), ...(sleep ? { sleep } : {}) });
         } catch {
-          result = { outcome: "failed", status: null, attempts: 0 };
+          // An unexpected throw can follow a REAL dispatch (a sync throw in
+          // signing or post-receipt cleanup):  from inside a catch nothing
+          // proves the POST never happened, so attempts is conservatively
+          // non-zero.  wakeOutcome then reads this as dispatched with an
+          // unknown fate - "uncertain" custody, tombstoned - never a
+          // fabricated zero-dispatch "retry" that re-arms the same wake id.
+          result = { outcome: "failed", status: null, attempts: 1 };
         }
         try {
           await gate.eventDeliveryResult({ subId: sub.id, outcome: result.outcome, status: result.status, attempts: result.attempts, reason: result.reason, wakeRef: String(wake.wake_id).slice(0, 40), messageId: wake.message_id });
@@ -704,28 +759,44 @@ export async function fanOut({ gate, wake, subs, allowed, fetchFn, now = Date.no
 }
 
 /**
- * One outcome for a whole wake from fanOut's results:  "no_subscriber" when
- * nothing matched, "delivered" when any delivery got a 2xx, "retry" when none
- * did and at least one failed in a way worth retrying (5xx, 408, 429, a
- * timeout, a network error), else the permanent drop:  "rejected" (another
- * 4xx or a redirect), "gone" (410) or "not_live" (paused, revoked,
- * unsubscribed or lapsed since the claim).
+ * One outcome for a whole wake from fanOut's results, by custody:
+ * "no_subscriber" when nothing matched, "delivered" when any delivery got a
+ * 2xx, "retry" ONLY for provable zero-dispatch (no attempt made), the
+ * permanent drops "rejected" (4xx, redirect), "gone" (410) and "not_live"
+ * (paused, revoked, unsubscribed or lapsed) when every dispatch met an
+ * authoritative answer, and "uncertain" - tombstoned, never re-armed - for
+ * anything else after a dispatch (5xx, 408, 429, timeout, network).
  */
 export function wakeOutcome(results) {
   if (results.length === 0) return "no_subscriber";
   if (results.some((r) => r.outcome === "delivered")) return "delivered";
-  if (results.some((r) => r.outcome === "failed")) return "retry";
-  return ["rejected", "gone", "not_live"].find((outcome) => results.some((r) => r.outcome === outcome)) ?? "rejected";
+  // A zero-attempt result (a liveness failure before any send) has no remote
+  // effect and is custody-neutral.  "retry" is reserved for PROVABLE
+  // zero-dispatch:  no attempt was made at all, so the SAME wake may come
+  // back.
+  const dispatched = results.filter((r) => (r.attempts ?? 0) > 0);
+  if (dispatched.length === 0) {
+    return results.every((r) => r.outcome === "not_live") ? "not_live" : "retry";
+  }
+  // Every dispatch met an authoritative answer:  a permanent drop.
+  if (dispatched.every((r) => ["rejected", "gone"].includes(r.outcome))) {
+    return ["rejected", "gone"].find((outcome) => dispatched.some((r) => r.outcome === outcome));
+  }
+  // A dispatch's fate is unknown (5xx, 408, 429, timeout, network):  the wake
+  // is tombstoned, never re-armed - firing again could repeat a turn.
+  return "uncertain";
 }
 
 /**
  * Deliver one claimed wake (`claim` from SeatGate.eventClaimWake) and end its
- * claim with SeatGate.eventSettleWake:  "retry" forgets the wake so the
- * eavesdropper's next attempt claims it again, any other outcome settles it.
- * Never throws:  anything unexpected is a "retry".
+ * claim with SeatGate.eventSettleWake:  "retry" (provable zero-dispatch
+ * only) forgets the wake so the eavesdropper's next attempt claims it again,
+ * any other outcome settles it - "uncertain" tombstones it forever.  Never
+ * throws:  an unexpected failure after a possible dispatch is "uncertain",
+ * before any dispatch it is a "retry".
  *
  * `channels` resolves the seat's ChannelSet from Zulip (null when there is no
- * key or the bot is refused).  It runs here, inside the try, so a Zulip
+ * key or the bot is refused).  It runs before any dispatch, so a Zulip
  * failure is a "retry" (503, the eavesdropper sends the wake again), never a
  * permanent refusal.  A DM wake whose held_back names no stream skips it;  a
  * DM is still delivered when it fails, with any channel item in held_back
@@ -737,8 +808,11 @@ export async function deliverWake({ gate, wake, claim, channels = async () => nu
   let outcome = "retry";
   let delivered = 0;
   let streamId = null;
+  let allowed = null;
+  let refused = false;
   try {
-    let allowed = null;
+    // Channel resolution happens BEFORE any dispatch, so its failure is a
+    // provable zero-dispatch "retry" (503, the listener sends the wake again).
     if (wakeNeedsChannels(wake)) {
       if (isDirectWake(wake)) allowed = await channels().catch(() => null);
       else allowed = await channels();
@@ -746,15 +820,41 @@ export async function deliverWake({ gate, wake, claim, channels = async () => nu
     if (wakeChannelRefusal(wake, allowed)) {
       outcome = "channel_refused";
       streamId = Number.isSafeInteger(wake.stream_id) ? wake.stream_id : null;
-    } else {
-      const results = await fanOut({ gate, wake, subs: claim.subs, allowed, fetchFn, now, sleep, deadline });
-      outcome = wakeOutcome(results);
-      delivered = results.filter((r) => r.outcome === "delivered").length;
+      refused = true;
     }
   } catch {
-    console.log(JSON.stringify({ event: "wake_fanout_failed" }));
-    outcome = "retry";
-    delivered = 0;
+    console.log(JSON.stringify({ event: "wake_channels_failed" }));
+    refused = true;
+  }
+  if (!refused) {
+    // UNKNOWN fence (the webhook path's contract, applied to the listener
+    // too):  mark the claim before the first dispatch, so a crash between
+    // a callback POST and the settle is never re-armed by lease expiry
+    // (seat-state eventClaimWake), on EITHER path.  No mark, no dispatch:
+    // provably no remote effect, so the claim releases as "retry" and the
+    // SAME wake may come back.
+    let marked = { ok: true };
+    if (claim.subs.length > 0) {
+      try {
+        marked = await gate.eventMarkDispatched({ wakeId: wake.wake_id, token: claim.token });
+      } catch {
+        marked = { ok: false };
+      }
+    }
+    if (!marked.ok) {
+      outcome = "retry";
+    } else {
+      try {
+        const results = await fanOut({ gate, wake, subs: claim.subs, allowed, fetchFn, now, sleep, deadline });
+        outcome = wakeOutcome(results);
+        delivered = results.filter((r) => r.outcome === "delivered").length;
+      } catch {
+        // A dispatch may already have happened:  tombstone, never re-arm.
+        console.log(JSON.stringify({ event: "wake_fanout_failed" }));
+        outcome = "uncertain";
+        delivered = 0;
+      }
+    }
   }
   try {
     await gate.eventSettleWake({ wakeId: wake.wake_id, token: claim.token, outcome, delivered, streamId });
@@ -781,6 +881,7 @@ export async function deliverWake({ gate, wake, claim, channels = async () => nu
 export function wakeReply(result) {
   if (result.verdict === "duplicate") return { status: 200, body: { ok: true, duplicate: true } };
   if (result.verdict === "in_flight") return { status: 503, body: { ok: false, in_flight: true }, retryAfterS: Math.max(1, result.retryAfterS ?? 1) };
+  if (result.verdict === "rate_limited") return { status: 429, body: { ok: false, rate_limited: true }, retryAfterS: Math.max(1, result.retryAfterS ?? 1) };
   if (result.verdict === "paused") return { status: 202, body: { ok: true, paused: true, subscribers: 0 } };
   if (result.outcome === "retry") return { status: 503, body: { ok: false, retry: true, subscribers: result.subscribers, delivered: 0 } };
   return { status: 202, body: { ok: true, subscribers: result.subscribers, delivered: result.delivered, outcome: result.outcome } };
@@ -840,7 +941,7 @@ export class SeatEvents {
     this.requireRead();
     if (this.paused) throw new EventError(INVALID_REQUEST, "This seat is paused.");
     const name = this.checkName(params.name);
-    const args = name === EVENT_NAME ? await validateArguments(params.arguments, this.channels) : name === WA_EVENT ? validateWaArguments(params.arguments) : validateSpikeArguments(params.arguments);
+    const args = name === EVENT_NAME ? await validateArguments(params.arguments, this.channels) : name === WA_EVENT ? validateWaArguments(params.arguments) : name === WEBHOOK_EVENT_NAME ? validateWebhookWakeArguments(params.arguments) : validateSpikeArguments(params.arguments);
     const delivery = params.delivery;
     if (!delivery || typeof delivery !== "object" || delivery.mode !== "webhook") throw new EventError(INVALID_PARAMS, "Only webhook delivery is supported.");
     if (!parseWhsec(delivery.secret)) throw new EventError(INVALID_PARAMS, "delivery.secret must be whsec_ followed by base64 of 24 to 64 bytes.");

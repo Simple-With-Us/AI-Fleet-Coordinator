@@ -9,9 +9,13 @@
 // Spec:  docs/protocols/agent-sync-mcp.md sections 3.4, 3.5 and 3.10.
 
 import { WA_EVENT } from "./wa/contract.js";
-import { ARM_WINDOW_MS, GRANT_MAX_AGE_MS, PROPS_PHASE } from "./config.js";
+import { ARM_WINDOW_MS, GRANT_MAX_AGE_MS, PROPS_PHASE, WAKE_RATE_LIMIT, WAKE_SEEN_CAP } from "./config.js";
+export { WAKE_RATE_LIMIT };
+// WAKE_RATE_LIMIT (the compiled default hourly wake envelope) lives in
+// config.js:  loadConfig validates the EVENT_WAKE_RATE_LIMIT var override.
+// Re-exported here for the modules that import it from this storage module.
 import { scanSecret } from "./contract.js";
-import { EVENT_NAME, SPIKE_EVENT_NAME, subEventName } from "./events.js";
+import { EVENT_NAME, SPIKE_EVENT_NAME, WEBHOOK_EVENT_NAME, subEventName } from "./events.js";
 
 const AUDIT_CAP = 200;
 // Authorize refusals come from a request that passed Cloudflare Access, so the
@@ -856,9 +860,38 @@ export const WAKE_SEEN_MS = 15 * MINUTE_MS; // > the wake's 5-minute sent_at win
 // failure), so the eavesdropper's last retry claims again a wake whose isolate died
 // mid-delivery.
 export const WAKE_LEASE_MS = 15 * 1000;
-const WAKE_SEEN_CAP = 500;
+// One hourly wake envelope per seat, shared by BOTH wake paths (listener and
+// webhook):  it is charged inside eventClaimWake itself, so no path can push
+// the seat past it and the charge is atomic with the claim.
+export const WAKE_RATE_WINDOW_MS = 60 * MINUTE_MS;
+// Ordinary wake_seen entries must outlive the shared hourly budget window:
+// the old 15-minute GC erased the window's accounting (six claims at T, then
+// a 7th admitted at T+16m against an empty-looking ledger).
+export const WAKE_SEEN_WINDOW_MS = WAKE_RATE_WINDOW_MS + MINUTE_MS;
+// UNKNOWN custody is TERMINAL and lives in the separate `wake_tomb` ledger,
+// never in wake_seen:  a claim is tombstoned the moment it is marked
+// dispatched (a crash after that may have caused a remote effect) and a
+// settled "uncertain" id stays tombstoned.  Elapsed time is not proof that
+// no remote effect happened, so neither a GC horizon nor a cap trim may ever
+// make such an id claimable again.  Only a token-valid settle that RESOLVES
+// custody (delivered / an authoritative refusal / provable zero-dispatch
+// "retry") removes the id.  The ledger is bounded by FAIL-CLOSED admission:
+// once WAKE_CUSTODY_CAP unknown ids are held, NEW wakes are refused
+// (rate_limited) until an operator reconciles custody;  unknowns are never
+// evicted to make room.
+export const WAKE_CUSTODY_CAP = 1024;
+async function wakeTomb(store) {
+  return (await store.get("wake_tomb")) ?? {};
+}
+// WAKE_SEEN_CAP lives in config.js beside WAKE_RATE_LIMIT:  the config
+// validator bounds EVENT_WAKE_RATE_LIMIT by this accounting capacity.
 // Every way a claim can end (eventSettleWake).  "retry" forgets the wake;  the rest settle it.
-export const WAKE_OUTCOMES = Object.freeze(["delivered", "no_subscriber", "rejected", "gone", "not_live", "channel_refused", "retry"]);
+// "uncertain" is the webhook wake's tombstone (src/webhook-wake.js):  a
+// dispatch happened and its fate is unknown, so the wake stays spent - firing
+// again, same id or new, could repeat a turn.  The listener wake never emits
+// it.  "retry" (forget, re-arm the same id) is only for a provable
+// zero-dispatch, and the listener's existing contract.
+export const WAKE_OUTCOMES = Object.freeze(["delivered", "no_subscriber", "rejected", "gone", "not_live", "channel_refused", "retry", "uncertain"]);
 const VERIFIED_CAP = 20;
 const subRef = (id) => String(id ?? "").slice(0, 16);
 
@@ -1009,18 +1042,20 @@ function wakeEntry(value) {
   return value.s === "claimed" || value.s === "settled" ? value : null;
 }
 
-/** The claims of the last WAKE_SEEN_MS, oldest first. */
+/** The claims still inside the retention window, oldest first. */
 async function wakeSeen(store, now) {
   const seen = (await store.get("wake_seen")) ?? {};
   for (const [k, value] of Object.entries(seen)) {
     const entry = wakeEntry(value);
-    if (!entry || !(entry.at > now - WAKE_SEEN_MS && entry.at <= now + MINUTE_MS)) delete seen[k];
+    if (!entry || !(entry.at > now - WAKE_SEEN_WINDOW_MS && entry.at <= now + MINUTE_MS)) delete seen[k];
   }
   return seen;
 }
 
 async function putWakeSeen(store, seen) {
-  const keys = Object.keys(seen);
+  // Oldest-first trim.  UNKNOWN custody is unaffected:  it lives in
+  // wake_tomb, not here.
+  const keys = Object.keys(seen).sort((a, b) => (wakeEntry(seen[a])?.at ?? 0) - (wakeEntry(seen[b])?.at ?? 0));
   while (keys.length > WAKE_SEEN_CAP) delete seen[keys.shift()];
   await store.put("wake_seen", seen);
 }
@@ -1039,15 +1074,59 @@ async function putWakeSeen(store, seen) {
  * (liveSubs), and eventSubLive checks each one again before every attempt.
  * Only subscriptions to `name` (zulip.mention) are returned and counted, so a
  * spike subscription (AFC-477) never changes a wake's answer.
+ * With `budget` ({max, windowMs}) the seat's shared hourly envelope is
+ * charged here, after dedupe:  {verdict: "rate_limited", retryAfterS}.
  * Returns {verdict: "go", subs, token}, {verdict: "duplicate"},
  * {verdict: "in_flight", retryAfterS} or {verdict: "paused"}.
  */
-export async function eventClaimWake(store, { wakeId, messageId = null, name = EVENT_NAME }, now = Date.now()) {
+export async function eventClaimWake(store, { wakeId, messageId = null, name = EVENT_NAME, budget = null }, now = Date.now()) {
   const seen = await wakeSeen(store, now);
+  const tomb = await wakeTomb(store);
+  // Terminal UNKNOWN custody:  an id tombstoned after an uncertain dispatch
+  // is spent forever;  only operator reconciliation clears it.
+  if (Object.hasOwn(tomb, wakeId)) {
+    await audit(store, { event: "event_wake_tombstoned_replay", wake_ref: wakeRefOf(wakeId) }, now);
+    return { verdict: "duplicate" };
+  }
   const prior = wakeEntry(seen[wakeId]);
   if (prior?.s === "settled") return { verdict: "duplicate" };
   if (prior && Number.isFinite(prior.until) && prior.until > now) {
     return { verdict: "in_flight", retryAfterS: Math.max(1, Math.ceil((prior.until - now) / 1000)) };
+  }
+  // UNKNOWN fence:  an expired claim already marked dispatched (the webhook
+  // path marks before its first POST) may have caused a remote effect - the
+  // request died between dispatch and settle.  It is never re-armed:  the id
+  // stays spent.  Claims without the mark reclaim as before (no dispatch, no
+  // remote effect), so the listener's behavior is unchanged.
+  // Fail-closed bound:  when the held UNKNOWN custody reaches the cap, refuse
+  // NEW admissions instead of evicting unknowns.
+  const custody = Object.keys(tomb).length;
+  if (custody >= WAKE_CUSTODY_CAP) {
+    await audit(store, { event: "event_wake_custody_full", wake_ref: wakeRefOf(wakeId), custody }, now);
+    return { verdict: "rate_limited", retryAfterS: 3600 };
+  }
+  if (prior?.s === "claimed" && prior.dispatched === true) {
+    await audit(store, { event: "event_wake_reclaim_fenced", wake_ref: wakeRefOf(wakeId) }, now);
+    return { verdict: "duplicate" };
+  }
+  // The seat's shared hourly envelope, charged here at the canonical entry so
+  // BOTH wake paths draw on it atomically.  Dedupe first:  a settled or
+  // in-flight id is a duplicate, never a budget charge.
+  if (budget) {
+    // Sound accounting:  the budget is counted from wake_seen, which holds at
+    // most WAKE_SEEN_CAP entries trimmed oldest-first, so a max above that
+    // capacity could never be reached (the trim would evict first) and would
+    // be silently unlimited.  Config validation bounds the deploy var at
+    // load;  this clamp keeps the invariant for every caller.
+    const max = Math.max(1, Math.min(Math.floor(budget.max), WAKE_SEEN_CAP));
+    const inWindow = Object.values(seen)
+      .map(wakeEntry)
+      .filter((entry) => entry && Number.isFinite(entry.at) && now - entry.at < budget.windowMs && entry.at <= now + MINUTE_MS);
+    if (inWindow.length >= max) {
+      const oldest = Math.min(...inWindow.map((entry) => entry.at));
+      await audit(store, { event: "event_wake_rate_limited", wake_ref: wakeRefOf(wakeId) }, now);
+      return { verdict: "rate_limited", retryAfterS: Math.max(1, Math.ceil((oldest + budget.windowMs - now) / 1000)) };
+    }
   }
   delete seen[wakeId]; // written again last, so the cap trims older wakes first
   const wakeRef = wakeRefOf(wakeId);
@@ -1069,6 +1148,27 @@ export async function eventClaimWake(store, { wakeId, messageId = null, name = E
 }
 
 /**
+ * Fence a claim before its first dispatch (the webhook wake path):  once a
+ * claim is marked dispatched, its expired lease is never blindly reclaimed -
+ * a crash after dispatch may have caused a remote effect, so eventClaimWake
+ * keeps the id spent.  Only the claim's `token` may mark.  Returns {ok: true},
+ * or {ok: false} when the claim is no longer this one's.
+ */
+export async function eventMarkDispatched(store, { wakeId, token }, now = Date.now()) {
+  const seen = await wakeSeen(store, now);
+  const entry = wakeEntry(seen[wakeId]);
+  if (!entry || entry.s !== "claimed" || typeof token !== "string" || entry.token !== token) return { ok: false };
+  // Tombstone FIRST:  from here on a crash leaves the id spent forever, and
+  // only a token-valid settle that resolves custody can release it.
+  const tomb = await wakeTomb(store);
+  tomb[wakeId] = now;
+  await store.put("wake_tomb", tomb);
+  seen[wakeId] = { ...entry, dispatched: true };
+  await putWakeSeen(store, seen);
+  return { ok: true };
+}
+
+/**
  * End a claim (WAKE_OUTCOMES).  Only the request that holds it (`token`) may:
  * one whose lease ran out and was claimed again changes nothing.
  * "retry" (no delivery, and one failed in a way worth retrying) forgets the
@@ -1083,18 +1183,33 @@ export async function eventSettleWake(store, { wakeId, token, outcome, delivered
   const entry = wakeEntry(seen[wakeId]);
   const wakeRef = wakeRefOf(wakeId);
   if (!entry || entry.s !== "claimed" || typeof token !== "string" || entry.token !== token) {
+    // A settle that cannot prove ownership changes nothing:  any tombstone
+    // from the dispatch mark stays (fail closed).
     await audit(store, { event: "event_wake_settle_stale", wake_ref: wakeRef, outcome }, now);
     return { ok: false };
   }
+  const tomb = await wakeTomb(store);
   if (outcome === "retry") {
+    // Provable zero-dispatch:  custody is moot, release the id entirely.
     delete seen[wakeId];
+    delete tomb[wakeId];
     await putWakeSeen(store, seen);
+    await store.put("wake_tomb", tomb);
     await audit(store, { event: "event_wake_released", wake_ref: wakeRef }, now);
     return { ok: true };
   }
   delete seen[wakeId];
   seen[wakeId] = { s: "settled", at: now, outcome };
   await putWakeSeen(store, seen);
+  if (outcome === "uncertain") {
+    // Terminal custody:  the id is spent forever.
+    tomb[wakeId] = now;
+  } else {
+    // Custody resolved (delivered or an authoritative answer):  the
+    // pre-dispatch tombstone goes;  the settled entry dedupes the window.
+    delete tomb[wakeId];
+  }
+  await store.put("wake_tomb", tomb);
   if (outcome === "channel_refused") {
     await audit(store, { event: "event_wake_channel_refused", wake_ref: wakeRef, stream_id: Number.isSafeInteger(streamId) ? streamId : null }, now);
   } else {
@@ -1179,6 +1294,23 @@ export async function spikeClaim(store, { spikeId, max = 3, windowMs = 60 * MINU
   const mine = subsNamed(subs, SPIKE_EVENT_NAME);
   await audit(store, { event: "spike_captured", spike_ref: ref, subscribers: mine.length }, now);
   return { verdict: "go", subs: mine.map((sub) => ({ ...sub })) };
+}
+
+// Jet's additive webhook wake (owner ask 2026-11-04).  Dedupe and budget are
+// the CANONICAL ones, shared with the listener wake:  the budget reads the
+// same wake_seen ledger eventClaimWake writes, so listener and webhook wakes
+// draw on ONE hourly envelope (the seat's existing wake budget) and the new
+// ingress can never double it;  the claim itself IS eventClaimWake, so a
+// wake_id claimed, in flight or settled on EITHER path can never cause a
+// second event on the other.  Custody after delivery is src/webhook-wake.js's
+// contract (uncertain tombstones, never re-arms).  Budget first:  a
+// rate-limited wake was never claimed and never dispatched, so the same id
+// may come back inside a later window.
+export async function webhookWakeClaim(store, { wakeId, max = WAKE_RATE_LIMIT, windowMs = WAKE_RATE_WINDOW_MS }, now = Date.now()) {
+  if (typeof wakeId !== "string" || wakeId.length === 0 || wakeId.length > 128) throw new Error("bad wake id");
+  // Dedupe (before any charge), the shared envelope and the crash fence all
+  // live in the canonical claim now:  this path only names its event.
+  return eventClaimWake(store, { wakeId, messageId: null, name: WEBHOOK_EVENT_NAME, budget: { max, windowMs } }, now);
 }
 
 /** Live subscriptions for /admin:  never the URL path or the secret. */
