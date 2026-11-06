@@ -2,13 +2,14 @@
 the SUPublicEDKey built into the archive before it signs anything.
 
 The vector is RFC 8032, section 7.1, test 1 (a published test key, not Muster's).  Swift exists
-only on the Mac, so the Ubuntu job skips this and the Muster macOS build job runs it.
+with CryptoKit only on the Mac, so the Ubuntu job skips this and the Muster macOS build job runs it.
 """
 
 import base64
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -18,7 +19,9 @@ SEED = bytes.fromhex("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031c
 PUBLIC = bytes.fromhex("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a")
 
 
-@unittest.skipUnless(shutil.which("swift"), "swift is not installed here")
+# CryptoKit is Apple's, so only a Mac can run the script, even where Linux has a swift toolchain
+# (the Ubuntu runner does).
+@unittest.skipUnless(sys.platform == "darwin" and shutil.which("swift"), "needs swift with CryptoKit (macOS)")
 class SparklePublicKeyTests(unittest.TestCase):
     def run_with(self, data):
         with tempfile.TemporaryDirectory() as directory:
