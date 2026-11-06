@@ -42,7 +42,7 @@ struct FleetOverviewView: View {
     /// Work filter bar), and short enough for any laptop screen.
     var body: some View {
         Color.clear
-            .frame(minWidth: 1100, idealWidth: 1100, maxWidth: .infinity,
+            .frame(minWidth: 1160, idealWidth: 1160, maxWidth: .infinity,
                    minHeight: 560, idealHeight: 780, maxHeight: .infinity)
             .overlay { splitView }
     }
