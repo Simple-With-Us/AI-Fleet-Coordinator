@@ -1,5 +1,5 @@
 {
-  "//": "The fleetlink_* tools, one contract for the stdio server and the hosted Worker.  Generated from src/fleetlink.js FLEETLINK_TOOLS (test/fleetlink.test.mjs fails when this file differs);  regenerate with: cd scripts/agent-sync-mcp && node scripts/export-fleetlink-tools.mjs",
+  "//": "The fleetlink_* tools, one contract for the stdio server and the hosted Worker.  Generated from src/fleetlink.js FLEETLINK_TOOLS (test/fleetlink.test.mjs fails when this file differs);  regenerate with: cd scripts/simple-tools-mcp && node scripts/export-fleetlink-tools.mjs",
   "tools": [
     {
       "name": "fleetlink_create_share",

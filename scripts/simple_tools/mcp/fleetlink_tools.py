@@ -1,7 +1,7 @@
 """The `fleetlink_*` tools on the stdio server:  FleetLink for every seat, not only the hosted ones.
 
-Same names, input schemas and annotations as the hosted Worker (scripts/agent_sync/mcp/fleetlink-tools.json is
-generated from scripts/agent-sync-mcp/src/fleetlink.js, and a hosted test fails when the two differ).  Execution is
+Same names, input schemas and annotations as the hosted Worker (scripts/simple_tools/mcp/fleetlink-tools.json is
+generated from scripts/simple-tools-mcp/src/fleetlink.js, and a hosted test fails when the two differ).  Execution is
 FleetLink's own CLI, `fleetlink tool <name> --args-json @<file>`, run as a child:  the arguments go through a
 mode-0600 file in a private temporary directory (deleted afterwards), never on the command line.  The CLI is
 AGENT_SYNC_FLEETLINK_CLI, else `fleetlink` on PATH.
@@ -217,7 +217,7 @@ def _fleet_secrets_token(name: str, env: Mapping[str, str], home: Path) -> str |
     return value
 
 
-# The name tests replace (agent_sync/tests/__init__.py), so none can reach the real fleet-secrets.
+# The name tests replace (simple_tools/tests/__init__.py), so none can reach the real fleet-secrets.
 _default_token_fetch = _fleet_secrets_token
 
 
@@ -353,7 +353,7 @@ def run(
         value = args.get(field)
         if isinstance(value, str) and value:
             scan(field, value, extra_known)
-    private = tempfile.mkdtemp(prefix="agent-sync-fleetlink-")
+    private = tempfile.mkdtemp(prefix="simple-tools-fleetlink-")
     try:
         os.chmod(private, 0o700)
         args_path = _write_args(private, args)

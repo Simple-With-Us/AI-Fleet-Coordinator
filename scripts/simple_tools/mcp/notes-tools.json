@@ -1,5 +1,5 @@
 {
-  "//": "AFC-486 (docs/protocols/operator-notes.md):  the notes_* tools, one contract for simple-notes, the stdio server and the hosted Worker.  The hosted src/notes.js and stdio tools.py serve these specs unchanged, and simple-notes has one verb per tool with one option per argument;  scripts/agent_sync/tests/test_notes_parity.py checks all three.",
+  "//": "AFC-486 (docs/protocols/operator-notes.md):  the notes_* tools, one contract for simple-notes, the stdio server and the hosted Worker.  The hosted src/notes.js and stdio tools.py serve these specs unchanged, and simple-notes has one verb per tool with one option per argument;  scripts/simple_tools/tests/test_notes_parity.py checks all three.",
   "tools": [
     {
       "name": "notes_create",

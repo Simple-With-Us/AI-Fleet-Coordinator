@@ -4,7 +4,7 @@ The hosted Worker serves Linear as 196 tools:  ten core ones (linear_whoami, lis
 comment, status, schema, query, mutation), 175 named commands and 11 proxied official Linear MCP tools.
 The stdio server serves the same names with the same input schemas, so a client that works against one
 works against the other.  The specs are not retyped here:  they are the JSON that
-scripts/agent-sync-mcp/scripts/export-linear-catalog.mjs writes into scripts/linear-board/catalog/
+scripts/simple-tools-mcp/scripts/export-linear-catalog.mjs writes into scripts/linear-board/catalog/
 (core-tools.json, named-commands.json, official-mcp-tools.json), pinned to the hosted JavaScript by
 test/linear-catalog-parity.test.mjs.
 
@@ -409,7 +409,7 @@ def run_board(
     try:
         if plan.vars_json is not None:
             fd, vars_path = tempfile.mkstemp(
-                prefix="agent-sync-linear-vars-", suffix=".json"
+                prefix="simple-tools-linear-vars-", suffix=".json"
             )  # mode 0600
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 fh.write(plan.vars_json)

@@ -1,5 +1,5 @@
 {
-  "//": "AFC-331:  the recall_* tools, one contract for the stdio server and the hosted Worker.  Generated from src/recall.js RECALL_TOOLS (test/recall.test.mjs fails when this file differs);  regenerate with: cd scripts/agent-sync-mcp && node scripts/export-recall-tools.mjs",
+  "//": "AFC-331:  the recall_* tools, one contract for the stdio server and the hosted Worker.  Generated from src/recall.js RECALL_TOOLS (test/recall.test.mjs fails when this file differs);  regenerate with: cd scripts/simple-tools-mcp && node scripts/export-recall-tools.mjs",
   "tools": [
     {
       "name": "recall_search",
