@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { adminPage } from '../../scripts/agent-sync-mcp/src/pages.js';
+import { adminPage } from '../../scripts/simple-tools-mcp/src/pages.js';
 
 const stamp = Date.parse('2026-10-15T09:00:00Z');
 const call = { ts: stamp - 30000, seat: 'CURSOR', tool: 'linear_query', outcome: 'error', error_code: 'budget_exhausted', error_message: 'The hourly Linear read budget is exhausted.', retryable: true, reset_at: stamp + 1800000, grant_ref: '0123456789ab', client_id: 'https://cursor.com/oauth/mcp-client.json' };
@@ -29,14 +29,14 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     await expect(page).toHaveTitle('Fleet MCP Admin');
     const heading = page.getByRole('heading', { name: 'Fleet MCP Admin', exact: true });
     await expect(heading).toBeVisible();
-    await expect(heading).toHaveScreenshot(`agent-sync-admin-title-${viewport.width}.png`, { animations: 'disabled', maxDiffPixels: 0 });
+    await expect(heading).toHaveScreenshot(`simple-tools-admin-title-${viewport.width}.png`, { animations: 'disabled', maxDiffPixels: 0 });
     // The status overview folds by default (AFC-347); open it before asserting on its cards.
     await page.locator('details#status-overview > summary').click();
     await expect(page.locator('.error-card').filter({ hasText: 'The hourly Linear read budget is exhausted.' }).first()).toBeVisible();
     // Empty manual-seat state: the section is deliberately absent (kody 4364333458 - both
     // states need coverage; this full-page screenshot is the empty baseline).
     await expect(page.getByRole('heading', { name: 'Manual seats' })).toHaveCount(0);
-    await expect(page.locator('body')).toHaveScreenshot(`agent-sync-status-${viewport.width}.png`, { animations: 'disabled', fullPage: true });
+    await expect(page.locator('body')).toHaveScreenshot(`simple-tools-status-${viewport.width}.png`, { animations: 'disabled', fullPage: true });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   });
 
@@ -55,7 +55,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     const line = page.locator('p.warn', { hasText: 'Secrets mode:' });
     await expect(line).toBeVisible();
     await expect(line).toContainText('2 fallbacks to Worker bindings');
-    await expect(line).toHaveScreenshot(`agent-sync-secrets-mode-${viewport.width}.png`, { animations: 'disabled', maxDiffPixels: 0 });
+    await expect(line).toHaveScreenshot(`simple-tools-secrets-mode-${viewport.width}.png`, { animations: 'disabled', maxDiffPixels: 0 });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   });
 
@@ -82,7 +82,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     await expect(page.getByText('1234567 wrong-secret attempts', { exact: false })).toBeVisible();
     await expect(page.getByText('wrong-secret counter read unavailable')).toBeVisible();
     const section = page.locator('table', { has: page.getByText('1234567 wrong-secret attempts') }).first();
-    await expect(section).toHaveScreenshot(`agent-sync-bearer-mismatches-${viewport.width}.png`, { animations: 'disabled', maxDiffPixels: 0 });
+    await expect(section).toHaveScreenshot(`simple-tools-bearer-mismatches-${viewport.width}.png`, { animations: 'disabled', maxDiffPixels: 0 });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   });
 
@@ -100,7 +100,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     await page.goto('/admin');
     await expect(page.getByRole('heading', { name: 'Manual seats' })).toBeVisible();
     await expect(page.getByRole('cell', { name: 'Configured, shared with another seat of the same app' })).toBeVisible();
-    await expect(page.locator('body')).toHaveScreenshot(`agent-sync-manual-seats-${viewport.width}.png`, { animations: 'disabled', fullPage: true });
+    await expect(page.locator('body')).toHaveScreenshot(`simple-tools-manual-seats-${viewport.width}.png`, { animations: 'disabled', fullPage: true });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   });
 }
