@@ -415,7 +415,14 @@ final class SeatActivityTests: XCTestCase {
         let row = try XCTUnwrap(model.rows.first)
         XCTAssertEqual(row.place, .noEavesdropper)
         XCTAssertNotNil(row.openSessions.notHereReason)
-        XCTAssertFalse(row.hasUnknown)
+        XCTAssertNotNil(row.listener.notHereReason)
+        XCTAssertNotNil(row.quota.notHereReason)
+        // Only the last post can be unknown here:  the fixture has no Zulip bot for this seat.
+        let unknownColumns = row.unknowns.map(\.column)
+        XCTAssertTrue(unknownColumns.contains("last post"))
+        XCTAssertFalse(unknownColumns.contains("eavesdropper"))
+        XCTAssertFalse(unknownColumns.contains("sessions"))
+        XCTAssertFalse(unknownColumns.contains("quota"))
     }
 
     /// The rows sit in groups by where each seat is held,  Mac first.
