@@ -266,7 +266,9 @@ class Publish(unittest.TestCase):
         """Seed durable outcome state the way production writes it:  same-directory temp file, fsync,
         atomic replace, fsync the directory - a torn fixture would not model durable persistence."""
         store_file = self.root / "state" / "publish-outcomes.json"
-        store_file.parent.mkdir(parents=True, exist_ok=True)
+        if store_file.parent.is_symlink():
+            raise AssertionError("the fixture state directory must not be a symlink")
+        store_file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=store_file.parent, prefix=store_file.name + ".", suffix=".tmp")
         with os.fdopen(fd, "w") as handle:
             json.dump(store, handle)
@@ -291,7 +293,7 @@ class Publish(unittest.TestCase):
             return {"structured": {"branch": {"commit": {"sha": "a" * 40}}, "commit": "b" * 40}}
 
         a = ns(
-            repo="Simple-With-Us/CodeCaps", branch="claude/x", message="m", base=None, file=specs
+            repo="Fixture-Org/Fixture-Repo", branch="claude/x", message="m", base=None, file=specs
         )
         with (
             mock.patch.object(G, "remote_call", remote),
@@ -317,7 +319,7 @@ class Publish(unittest.TestCase):
             return {"structured": {}}
 
         a = ns(
-            repo="Simple-With-Us/CodeCaps", branch="claude/x", message="m", base=base, file=specs
+            repo="Fixture-Org/Fixture-Repo", branch="claude/x", message="m", base=base, file=specs
         )
         with (
             mock.patch.object(G, "remote_call", remote),
@@ -427,7 +429,7 @@ class Publish(unittest.TestCase):
             name: {"name": name, "read": name == "gr_wf_branch_get", "schema": {"properties": {"identity": {}}}}
             for name in ("gr_wf_branch_get", "gr_wf_branch_create", "gr_wf_files_put")
         }
-        a = ns(repo="Simple-With-Us/CodeCaps", branch="claude/x", message="m", base=None, file=specs)
+        a = ns(repo="Fixture-Org/Fixture-Repo", branch="claude/x", message="m", base=None, file=specs)
         with (
             mock.patch.object(G, "remote_call", flaky),
             mock.patch.object(G, "validate_arguments"),
@@ -473,7 +475,7 @@ class Publish(unittest.TestCase):
             name: {"name": name, "read": True, "schema": {"properties": {"identity": {}}}}
             for name in ("gr_wf_branch_get", "gr_wf_tree", "gr_wf_files_put")
         }
-        a = ns(repo="Simple-With-Us/CodeCaps", branch="claude/x", message="m", base=None, file=[f"{local}=same"])
+        a = ns(repo="Fixture-Org/Fixture-Repo", branch="claude/x", message="m", base=None, file=[f"{local}=same"])
         with (
             mock.patch.object(G, "remote_call", remote),
             mock.patch.object(G, "validate_arguments"),
@@ -515,8 +517,14 @@ finally:
             )
             for n in range(6)
         ]
-        for proc in procs:
-            self.assertEqual(proc.wait(timeout=60), 0)
+        try:
+            for proc in procs:
+                self.assertEqual(proc.wait(timeout=60), 0)
+        finally:
+            for proc in procs:
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.wait(timeout=10)
         store = G._publish_store_load()
         self.assertEqual(
             {k: v["batches"] for k, v in store.items()},
@@ -643,6 +651,96 @@ finally:
             self.publish(specs)
         self.assertEqual(self.puts(), [])
 
+    def test_a_missing_store_beside_a_quarantine_still_fails_closed(self):
+        # The crash window between quarantining the corruption and persisting the barrier:  the store file
+        # is gone but its quarantined predecessor remains, and that must fail closed just the same.
+        specs = [f"{self.file('m', 10)}=m"]
+        self.assertEqual(self.publish(specs), 0)
+        self.corrupt_store()
+        self.sent.clear()
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            self.publish(specs)
+        store_file = self.root / "state" / "publish-outcomes.json"
+        store_file.unlink()  # the crash window:  barrier write never landed
+        self.assertTrue(list(store_file.parent.glob(store_file.name + ".corrupt-*")))
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            self.publish(specs)
+        self.assertEqual(self.puts(), [])
+        self.assertEqual([n for n, _, _ in self.sent if n == "gr_wf_branch_create"], [])
+
+    def test_the_barrier_is_persisted_when_the_corruption_is_quarantined(self):
+        specs = [f"{self.file('p', 10)}=p"]
+        self.assertEqual(self.publish(specs), 0)
+        self.corrupt_store()
+        self.sent.clear()
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            self.publish(specs)
+        # The barrier was written by the load itself:  no later save is what makes it durable.
+        store = json.loads((self.root / "state" / "publish-outcomes.json").read_text())
+        self.assertIn(G._RECONCILE_BARRIER, store)
+        self.assertEqual(self.puts(), [])
+
+    def test_a_malformed_barrier_fails_closed(self):
+        self.write_store({G._RECONCILE_BARRIER: "not-an-object"})
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as caught:
+            self.publish([f"{self.file('b', 10)}=b"])
+        self.assertEqual(caught.exception.code, G.EXIT_ERROR)
+        self.assertEqual(self.sent, [])
+
+    def test_a_refused_batch_is_recorded(self):
+        specs = [f"{self.file('x', 10)}=x"]
+        tools = {
+            name: {"read": name == "gr_wf_branch_get", "schema": {"properties": {"identity": {}}}}
+            for name in ("gr_wf_branch_get", "gr_wf_files_put")
+        }
+
+        def remote(name, args, write, bearer, deadline=None):
+            self.sent.append((name, args, write))
+            if name == "gr_wf_branch_get":
+                return {"structured": {"branch": {"commit": {"sha": "a" * 40}}}}
+            sys.stderr.write("hosted: refused")
+            raise SystemExit(G.EXIT_ERROR)
+
+        a = ns(repo="Fixture-Org/Fixture-Repo", branch="claude/x", message="m", base=None, file=specs)
+        with (
+            mock.patch.object(G, "remote_call", remote),
+            mock.patch.object(G, "validate_arguments"),
+            mock.patch.object(G, "declared_seat", return_value=None),
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()),
+            self.assertRaises(SystemExit),
+        ):
+            G.cmd_publish(tools, a, BEARER, "CLAUDE", 0.0)
+        store = json.loads((self.root / "state" / "publish-outcomes.json").read_text())
+        self.assertEqual(store[next(iter(store))]["batches"]["1"], "refused")
+
+    def test_an_existing_branch_skips_the_base_fetch(self):
+        specs = [f"{self.file('h', 10)}=h"]
+        key = G._publish_key("Fixture-Org/Fixture-Repo", "claude/x", "main", "m", [("h", b"x" * 10)])
+        self.write_store({key: {"batches": {"branch": "ok"}}})
+        tools = {
+            name: {"read": name == "gr_wf_branch_get", "schema": {"properties": {"identity": {}}}}
+            for name in ("gr_wf_branch_get", "gr_wf_files_put")
+        }
+
+        def remote(name, args, write, bearer, deadline=None):
+            self.sent.append((name, args, write))
+            if name == "gr_wf_branch_get":
+                return {"structured": {"branch": {"commit": {"sha": "c" * 40}}}}
+            return {"structured": {"commit": "d" * 40}}
+
+        a = ns(repo="Fixture-Org/Fixture-Repo", branch="claude/x", message="m", base="main", file=specs)
+        with (
+            mock.patch.object(G, "remote_call", remote),
+            mock.patch.object(G, "validate_arguments"),
+            mock.patch.object(G, "declared_seat", return_value=None),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(G.cmd_publish(tools, a, BEARER, "CLAUDE", 0.0), 0)
+        self.assertEqual(
+            [args["branch"] for n, args, _ in self.sent if n == "gr_wf_branch_get"], ["claude/x"]
+        )
+
     def test_a_symlinked_state_directory_is_refused(self):
         elsewhere = self.root / "elsewhere"
         elsewhere.mkdir()
@@ -667,7 +765,7 @@ finally:
             return {"structured": {"commit": "b" * 40}}
 
         a = ns(
-            repo="Simple-With-Us/CodeCaps",
+            repo="Fixture-Org/Fixture-Repo",
             branch="claude/x",
             message="m",
             base="main",
@@ -688,7 +786,7 @@ finally:
 
     def test_a_base_rerun_fences_on_the_current_branch_head(self):
         specs = [f"{self.file('h', 10)}=h"]
-        key = G._publish_key("Simple-With-Us/CodeCaps", "claude/x", "main", "m", [("h", b"x" * 10)])
+        key = G._publish_key("Fixture-Org/Fixture-Repo", "claude/x", "main", "m", [("h", b"x" * 10)])
         self.write_store({key: {"batches": {"branch": "ok"}}})
         heads = {"main": "a" * 40, "claude/x": "c" * 40}
         tools = {
@@ -703,7 +801,7 @@ finally:
             return {"structured": {"commit": "d" * 40}}
 
         a = ns(
-            repo="Simple-With-Us/CodeCaps",
+            repo="Fixture-Org/Fixture-Repo",
             branch="claude/x",
             message="m",
             base="main",

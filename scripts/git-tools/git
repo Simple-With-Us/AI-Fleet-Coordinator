@@ -1630,6 +1630,15 @@ def _tool_call(tools: dict, name: str, args: dict, bearer: str, seat: str, deadl
 # never replayed by this client, and batches already visible on the remote branch are skipped by content.
 
 
+def _fsync_dir(directory: Path) -> None:
+    """Durability means the name survives the crash too:  fsync the directory after an atomic replace."""
+    fd = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def _publish_store_path() -> Path:
     base = os.environ.get("SIMPLE_GIT_STATE_DIR") or os.path.join(os.path.expanduser("~"), ".simple-tools")
     return Path(base) / "publish-outcomes.json"
@@ -1666,24 +1675,51 @@ def _publish_store_load() -> dict:
         with open(path) as handle:
             store = json.load(handle)
     except FileNotFoundError:
+        quarantines = (
+            sorted(path.parent.glob(path.name + ".corrupt-*"), key=lambda q: q.stat().st_mtime)
+            if path.parent.is_dir()
+            else []
+        )
+        if quarantines:
+            # A missing store beside a quarantined corruption is the crash window between quarantining and
+            # persisting the barrier:  fail closed here too, never silently restart with empty state.
+            latest = quarantines[-1]
+            return {
+                _RECONCILE_BARRIER: {
+                    "quarantine": latest.name,
+                    "recorded_at": int(latest.stat().st_mtime),
+                    "reason": "the publish outcome store is missing beside a quarantined corruption;  every record it held is unproven until reconciled",
+                }
+            }
         return {}  # the normal first run:  no outcomes recorded yet
     except (json.JSONDecodeError, ValueError):
         quarantine = path.with_name(f"{path.name}.corrupt-{int(time.time())}-{os.getpid()}")
-        try:
-            os.replace(path, quarantine)
-        except OSError as exc:
-            die(f"the publish outcome store is corrupt and cannot be quarantined ({type(exc).__name__})", EXIT_ERROR)
-        print(
-            f"the publish outcome store was corrupt;  quarantined to {quarantine};  reconciliation is required before publishing",
-            file=sys.stderr,
-        )
-        return {
+        barrier = {
             _RECONCILE_BARRIER: {
                 "quarantine": quarantine.name,
                 "recorded_at": int(time.time()),
                 "reason": "the publish outcome store was corrupt;  every record it held is unproven until reconciled",
             }
         }
+        # Persist the barrier BEFORE moving the corrupt file aside:  a crash anywhere in this sequence still
+        # fails closed - either the barrier is durable in place, or the store is missing beside a quarantine
+        # sibling, which the FileNotFoundError branch above turns into the same barrier.
+        try:
+            fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+            with os.fdopen(fd, "w") as handle:
+                json.dump(barrier, handle)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(path, quarantine)
+            os.replace(tmp, path)
+            _fsync_dir(path.parent)
+        except OSError as exc:
+            die(f"the publish outcome store is corrupt and cannot be quarantined ({type(exc).__name__})", EXIT_ERROR)
+        print(
+            f"the publish outcome store was corrupt;  quarantined to {quarantine};  reconciliation is required before publishing",
+            file=sys.stderr,
+        )
+        return barrier
     except OSError as exc:
         # An unavailable registry is not an empty one:  fail closed and name the path rather than publish
         # without verifiable prior outcomes.
@@ -1700,21 +1736,36 @@ def _publish_state_dir() -> Path:
     """The store's private directory, created 0700 and verified to be a real directory:  a symlinked path would
     redirect durable outcome state outside its intended location, so it is refused before anything is written."""
     path = _publish_store_path().parent
-    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if path.is_symlink():
+        die(f"the publish state directory {path} is a symlink;  refusing to keep publish state there", EXIT_USAGE)
+    try:
+        path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    except FileExistsError:
+        # A dangling symlink or a non-directory at the path:  exist_ok only covers a real directory.
+        die(f"the publish state directory {path} is not a usable directory;  refusing to keep publish state there", EXIT_USAGE)
     if path.is_symlink():
         die(f"the publish state directory {path} is a symlink;  refusing to keep publish state there", EXIT_USAGE)
     return path
 
 
-def _publish_store_lock():
+def _publish_store_lock(deadline_s: float = 30.0):
     """One cross-process lock held for a publish's whole send phase:  independent CLI writers are serialized, so
     no read-modify-write can lose another run's record, and a batch recorded unknown is seen - and honored -
-    by every later run of the same operation before it sends anything.  flock releases if the process dies."""
+    by every later run of the same operation before it sends anything.  flock releases if the process dies, and
+    acquisition is bounded:  a wedged holder stops later publishes for the deadline, not forever."""
     _publish_state_dir()
     path = _publish_store_path()
     handle = open(path.with_suffix(".lock"), "w")
-    fcntl.flock(handle, fcntl.LOCK_EX)
-    return handle
+    deadline = time.monotonic() + deadline_s
+    while True:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return handle
+        except OSError:
+            if time.monotonic() >= deadline:
+                handle.close()
+                die("another publish holds the outcome-store lock;  try again shortly", EXIT_ERROR)
+            time.sleep(0.1)
 
 
 def _publish_store_save(store: dict) -> None:
@@ -1725,7 +1776,10 @@ def _publish_store_save(store: dict) -> None:
         fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
         with os.fdopen(fd, "w") as handle:
             json.dump(store, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(tmp, path)
+        _fsync_dir(path.parent)
     except OSError as exc:
         die(f"the publish outcome store cannot be written ({type(exc).__name__})", EXIT_ERROR)
 
@@ -1816,16 +1870,28 @@ def cmd_publish(tools: dict, a, bearer: str, seat: str, deadline: float) -> int:
             # A durable barrier, not a one-shot exit:  every invocation fails closed here, before ANY write
             # (branch creation included), until the operator reconciles every quarantined record by hand.
             # Branch content cannot prove an original operation was never dispatched.
+            if not isinstance(barrier, dict):
+                die(
+                    f"the publish outcome store at {_publish_store_path()} holds a malformed reconciliation barrier;  "
+                    "reconcile and rebuild the store by hand - this client has no automatic settlement path",
+                    EXIT_ERROR,
+                )
             _publish_store_save(store)
+            quarantine = barrier.get("quarantine")
+            location = _publish_store_path()
+            named = (
+                f";  quarantined corruption: {location.with_name(quarantine)}"
+                if isinstance(quarantine, str)
+                else ""
+            )
             die(
-                f"the publish outcome store requires reconciliation ({barrier.get('quarantine')}):  "
+                f"the publish outcome store at {location} requires reconciliation{named}:  "
                 "settle every quarantined record against the original operation's own receipt, then "
                 "restore or rebuild the store by hand - this client has no automatic settlement path",
                 EXIT_ERROR,
             )
         state = _publish_state(store, _publish_key(a.repo, a.branch, a.base, a.message, files))
         if a.base:
-            base = _branch_head(_tool_call(tools, "gr_wf_branch_get", {"repo": a.repo, "branch": a.base}, bearer, seat, deadline))
             branch_state = state["batches"].get("branch")
             if branch_state == "unknown":
                 die(
@@ -1833,6 +1899,9 @@ def cmd_publish(tools: dict, a, bearer: str, seat: str, deadline: float) -> int:
                     EXIT_ERROR,
                 )
             if branch_state != "ok":
+                # The base head is fetched only when the branch still needs creating:  a rerun whose branch
+                # exists fences on the branch's own current head below, not on the base.
+                base = _branch_head(_tool_call(tools, "gr_wf_branch_get", {"repo": a.repo, "branch": a.base}, bearer, seat, deadline))
                 outcome, _ = _outcome_of(
                     lambda: _tool_call(
                         tools, "gr_wf_branch_create", {"repo": a.repo, "branch": a.branch, "sha": base}, bearer, seat, deadline
@@ -1888,7 +1957,11 @@ def cmd_publish(tools: dict, a, bearer: str, seat: str, deadline: float) -> int:
                     EXIT_ERROR,
                 )
             if outcome == "refused":
-                raise SystemExit(EXIT_ERROR)  # definite: nothing was written, a corrected rerun may try again
+                # Definite:  nothing was written, so record the refusal like a refused branch creation - a
+                # corrected rerun reuses the key and tries the batch again.
+                state["batches"][str(number)] = "refused"
+                _publish_store_save(store)
+                raise SystemExit(EXIT_ERROR)
             structured = out.get("structured") if isinstance(out, dict) else None
             commit = structured.get("commit") if isinstance(structured, dict) else None
             if not isinstance(commit, str) or re.fullmatch(r"[0-9a-f]{40}", commit) is None:

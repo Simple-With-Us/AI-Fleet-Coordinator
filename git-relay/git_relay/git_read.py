@@ -136,14 +136,16 @@ def handle(
             return
         body = handler.rfile.read(length)
     auth = handler.headers.get("Authorization") or ""
-    token = auth.removeprefix("Bearer ").strip() if auth.startswith("Bearer ") else ""
+    presented = auth.removeprefix("Bearer ").strip() if auth.startswith("Bearer ") else ""
     proof = {"action": ACTION, "body_sha256": hashlib.sha256(body).hexdigest()}
-    seat = relay.policy.authenticate(token, proof)
+    seat = relay.policy.authenticate(presented, proof)
     if seat is None:
         relay._unauth_auditor.record(relay.audit, ACTION)
         _send_json(handler, 401, {"error": "unauthenticated"})
         return
-    outcome, detail = "ok", {"kind": kind, "bytes": 0}
+    # The default is "error":  an exception of a type the except clause does not name still records its real
+    # class, never a silent "ok" (the finally below records before the exception propagates).
+    outcome, detail = "error", {"kind": kind, "bytes": 0}
     try:
         outcome = _serve(relay, handler, seat, repo, upstream_path, kind, body, detail, connect)
     except (OSError, http.client.HTTPException) as exc:
@@ -158,6 +160,12 @@ def _serve(relay, handler, seat, repo, upstream_path, kind, body, detail, connec
     # Imported here:  server imports this module.
     from .server import _perm_within_ceiling
 
+    # The path charset admits a token pasted as a repo name:  refuse a credential-shaped one before it
+    # is authorized against or sent to the minter, the same rule every other relay argument already follows.
+    if find_secret(repo):
+        detail["reason"] = "credential-shaped repo name"
+        _send_json(handler, 400, {"error": "refused: the repo name looks like it contains a credential"})
+        return "refused"
     denial = relay.policy.authorize(seat, ACTION, repo)
     if denial:
         detail["reason"] = denial
