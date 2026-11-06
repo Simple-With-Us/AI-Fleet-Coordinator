@@ -21,7 +21,7 @@ Grok publishes its own client details (`https://grok.com/oauth/mcp-client.json`)
 
 1. **Arm GROK-WEB.**  Open `https://agents.simplewithus.com/admin` and sign in when Cloudflare asks.  In the GROK-WEB row press **Arm**.  You now have 10 minutes, and the window works once.
 2. **Add the connector.**  On `grok.com/connectors` (on the web, not the app), choose **New Connector** → **Custom**.
-   - Name:  `ST-MCP`  (connectors created before the rename are named `Agent-Sync`;  the name is display-only and either works)
+   - Name:  `ST-MCP`  (connectors created before the rename are named `Simple-Tools`;  the name is display-only and either works)
    - URL:  `https://agents.simplewithus.com/mcp`
    - Leave any client ID and client secret fields empty.
 3. **Sign in and approve.**  Grok opens a sign-in window.  Cloudflare asks you to sign in, then the consent page shows App:  Grok, published by grok.com, Tokens go to:  grok.com, Seat:  **GROK-WEB**, and both scopes ticked.  Press **Approve**.  If the page says "No Connection Expected", the 10 minutes ran out:  arm again and retry.
@@ -94,7 +94,7 @@ and [Claude Code connector delivery](https://code.claude.com/docs/en/mcp#use-mcp
 
 The same connector now also has `recall_search`, `recall_stats` and `recall_contribute`, so Grok and Jet can search the fleet's shared lessons and add one of their own.  Nothing to reconnect:  search uses the read permission and contribute uses the write permission you already approved.  A contribution is always stored under the app's own seat (GROK-WEB or JET).
 
-Test prompt, in Grok and in ChatGPT:  "Use Agent-Sync.  Call recall_search for 'agent-sync bridge' and show the top title."  Expect a title and a short excerpt.  Tell Claude the result:  that call is the live check that the server reaches recall.
+Test prompt, in Grok and in ChatGPT:  "Use Simple-Tools.  Call recall_search for 'simple-tools bridge' and show the top title."  Expect a title and a short excerpt.  Tell Claude the result:  that call is the live check that the server reaches recall.
 
 If the recall tools do not show up, the app is holding an old tool list:  refresh the connector's tools (or start a new chat).  There is no need to reconnect or approve again.  If the call answers "not configured", tell Claude:  a server secret is missing.
 
@@ -204,7 +204,7 @@ Issue text comes back fenced as untrusted data, the same as a channel post, beca
 
 ## Wake Jet
 
-Jet can now be woken when someone @-mentions it (or DMs openai-dot-bot) in Zulip.  The server eavesdropper tells the Agent-Sync server, which sends a signed **MCP Event** (`zulip.mention`) to every ChatGPT chat or dot that subscribed.  No polling loop, and nothing to install.  Design:  `docs/protocols/agent-sync-mcp.md` section 3.12.
+Jet can now be woken when someone @-mentions it (or DMs openai-dot-bot) in Zulip.  The server eavesdropper tells the Simple-Tools server, which sends a signed **MCP Event** (`zulip.mention`) to every ChatGPT chat or dot that subscribed.  No polling loop, and nothing to install.  Design:  `docs/protocols/simple-tools-mcp.md` section 3.12.
 
 **1. Turn on the eavesdropper's half (Coolify, once).**  Three parts, then one restart.
 
@@ -227,7 +227,7 @@ if not m: sys.exit("no [seat.JET] section")
 body = m.group(1)
 if 'wake = "http"' in body: sys.exit("JET already has wake = \"http\"; nothing changed")
 if body.count('wake = "inbox"') != 1: sys.exit("JET section does not hold exactly one wake = \"inbox\" line; edit by hand")
-new = body.replace('wake = "inbox"', 'wake = "http"\nroutine = { url_env = "JET_ROUTINE_URL", key_env = "JET_ROUTINE_KEY", method = "POST", auth = "hmac-sha256", header = "X-Agent-Sync-Signature", timeout_seconds = 15 }\nbudget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner_per_day = 30, owner_per_topic_per_hour = 6, usd_per_day = 2.0, board_per_day = 0 }', 1)
+new = body.replace('wake = "inbox"', 'wake = "http"\nroutine = { url_env = "JET_ROUTINE_URL", key_env = "JET_ROUTINE_KEY", method = "POST", auth = "hmac-sha256", header = "X-Simple-Tools-Signature", timeout_seconds = 15 }\nbudget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner_per_day = 30, owner_per_topic_per_hour = 6, usd_per_day = 2.0, board_per_day = 0 }', 1)
 with open(p, "r+") as f:
     f.seek(0); f.write(s[:m.start(1)] + new + s[m.end(1):]); f.truncate()
 print("JET switched to wake = \"http\"")

@@ -4,7 +4,7 @@ The runbook for `https://agents.simplewithus.com` from Phase 2 on:  the seven to
 
 A merge is never a deploy (spec 3.2):  agents auto-merge to `main`, so every deploy is run by hand from a checkout of the merged commit, never from CI.  Decision D8 (Thu, Oct 8) accepts deploying with the Cloudflare Global key pair from the handoff file until Jay mints a per-Worker deploy token (owner item A5).  Anyone who can deploy this Worker can act as every hosted seat;  that is the accepted residual.
 
-Run everything from `scripts/agent-sync-mcp/` in a fresh worktree off `origin/main` (never `~/Code/AI-Fleet-Coordinator`).  Never merge stderr into output (`2>&1`) on a command that touches a credential.
+Run everything from `scripts/simple-tools-mcp/` in a fresh worktree off `origin/main` (never `~/Code/AI-Fleet-Coordinator`).  Never merge stderr into output (`2>&1`) on a command that touches a credential.
 
 ## Runtime secrets from Infisical (scoped service token, INFISICAL_MODE)
 
@@ -86,7 +86,7 @@ force the scoped token to read source paths outside its grant.
 ## Step 0:  Preflight
 
 ```bash
-cd scripts/agent-sync-mcp
+cd scripts/simple-tools-mcp
 npm ci --ignore-scripts
 npx --no-install wrangler --version       # the pinned devDependency
 node --test test/*.test.mjs
@@ -263,13 +263,13 @@ Owner decisions, Sat, Oct 10:  a DM event carries its fenced excerpt ("yes"), an
 
 ## Any public channel
 
-Owner ruling, Sat, Oct 10, 2026:  "I want bots to wake to any channel or DM" … "not just agent-sync or one other", and for the ECHO and WISE pollers, "All of them".  The `CHANNELS` var (#agent-sync and #sandbox) is removed;  a seat now uses any public channel its own bot is subscribed to, read from Zulip per seat and cached 60 seconds, minus `CHANNELS_DENY` (a JSON array of stream ids in `wrangler.jsonc` vars, `[]` by default).  Private channels are never allowed.  MCP Events wakes use the same rule, read at delivery time with the seat's key (a Zulip failure there answers 503, so the listener retries).  The `events/list` channel filter is now a free string checked at subscribe time;  ChatGPT may need a plugin rescan to see the new schema, and an existing subscription keeps working.  No secret, scope or binding changes, and no migration:  step 1 is the whole deploy.  To keep a public channel off every seat, add its stream id to `CHANNELS_DENY` and redeploy.
+Owner ruling, Sat, Oct 10, 2026:  "I want bots to wake to any channel or DM" … "not just simple-tools or one other", and for the ECHO and WISE pollers, "All of them".  The `CHANNELS` var (#simple-tools and #sandbox) is removed;  a seat now uses any public channel its own bot is subscribed to, read from Zulip per seat and cached 60 seconds, minus `CHANNELS_DENY` (a JSON array of stream ids in `wrangler.jsonc` vars, `[]` by default).  Private channels are never allowed.  MCP Events wakes use the same rule, read at delivery time with the seat's key (a Zulip failure there answers 503, so the listener retries).  The `events/list` channel filter is now a free string checked at subscribe time;  ChatGPT may need a plugin rescan to see the new schema, and an existing subscription keeps working.  No secret, scope or binding changes, and no migration:  step 1 is the whole deploy.  To keep a public channel off every seat, add its stream id to `CHANNELS_DENY` and redeploy.
 
 **Deployed** Sun, Oct 11, about 12:39am (CLAUDE sub-agent), from `10b2042b` (PR 464):  version `ebe48ba3-c792-44af-8d0b-c4cb151a04c6`, `CHANNELS_DENY ([])`, no `CHANNELS`.  `/health` answered `{"ok":true}`;  `/mcp` with no token and an unsigned `/internal/wake/JET` both answered 401.
 
 ## The rest of Zulip (AFC-330)
 
-Owner, Thu, Oct 15:  "I'd like Agent-Sync and whatever local agents use to be able to do all tasks supported by Zulip."  33 more `zulip_*` tools (spec section 1.6) come from `tools.json` by construction, implemented in `src/zulip-full.js`.  No secret, scope or var changes:  step 1 is the whole deploy.  Clients that cache `tools/list` (Grok on the web, ChatGPT) refresh the connector's tools to see them.  Smoke test from a connected seat after the deploy:  `zulip_channels`, then `zulip_search` with `{"query": "deploy", "channel": "sandbox"}`, then `zulip_draft_create` and `zulip_draft_delete` in #sandbox (a draft is never sent).  **Not deployed yet.**
+Owner, Thu, Oct 15:  "I'd like Simple-Tools and whatever local agents use to be able to do all tasks supported by Zulip."  33 more `zulip_*` tools (spec section 1.6) come from `tools.json` by construction, implemented in `src/zulip-full.js`.  No secret, scope or var changes:  step 1 is the whole deploy.  Clients that cache `tools/list` (Grok on the web, ChatGPT) refresh the connector's tools to see them.  Smoke test from a connected seat after the deploy:  `zulip_channels`, then `zulip_search` with `{"query": "deploy", "channel": "sandbox"}`, then `zulip_draft_create` and `zulip_draft_delete` in #sandbox (a draft is never sent).  **Not deployed yet.**
 
 ## Listener read API (AFC-330)
 
@@ -299,7 +299,7 @@ The eight notes tools (`notes_create`, `notes_update`, `notes_pin`, `notes_unpin
 
 **Moved Wed, Nov 4, 2026:**  the Operator's origin is `https://operator.simplewithus.com` (owner rename), and `https://operator.jays.services` is retired.  `LISTENER_API_URL` names the new origin, and the fleet knob `OPERATOR_API_URL` was set to the same origin ("Listener read API" step 2).
 
-The `guide` tool serves `src/guide-text.js`, generated from `docs/protocols/simple-tools-guide.md`:  after editing that page run `node scripts/export-guide.mjs` (a test fails when it is stale).  `recall_*` specs are shared with the stdio server through `scripts/agent_sync/mcp/recall-tools.json`:  after changing `src/recall.js` run `node scripts/export-recall-tools.mjs`.  Clients that cache `tools/list` refresh the connector to see the new tools (the notes tools went from five to eight).
+The `guide` tool serves `src/guide-text.js`, generated from `docs/protocols/simple-tools-guide.md`:  after editing that page run `node scripts/export-guide.mjs` (a test fails when it is stale).  `recall_*` specs are shared with the stdio server through `scripts/simple_tools/mcp/recall-tools.json`:  after changing `src/recall.js` run `node scripts/export-recall-tools.mjs`.  Clients that cache `tools/list` refresh the connector to see the new tools (the notes tools went from five to eight).
 
 ## AFC-477 second-event spike (temporary)
 
@@ -330,11 +330,11 @@ import hmac, hashlib, http.client, json, os, sys, time, urllib.error, urllib.req
 key = os.environ.get("SPIKE_HMAC_KEY", "")
 if len(key) < 32: sys.exit("SPIKE_HMAC_KEY is missing or shorter than 32 characters")
 spike_id = str(uuid.uuid4())
-body = json.dumps({"contract": "agent-sync-spike/1", "seat": "JET", "spike_id": spike_id, "sent_at": int(time.time())}).encode()
+body = json.dumps({"contract": "simple-tools-spike/1", "seat": "JET", "spike_id": spike_id, "sent_at": int(time.time())}).encode()
 sig = hmac.new(key.encode(), body, hashlib.sha256).hexdigest()
 req = urllib.request.Request("https://agents.simplewithus.com/internal/spike/JET", data=body, method="POST",
-                             headers={"Content-Type": "application/json", "X-Agent-Sync-Spike-Signature": sig,
-                                      "User-Agent": "agent-sync-spike/1"})  # Cloudflare answers 1010 to Python's default UA
+                             headers={"Content-Type": "application/json", "X-Simple-Tools-Spike-Signature": sig,
+                                      "User-Agent": "simple-tools-spike/1"})  # Cloudflare answers 1010 to Python's default UA
 try:
     with urllib.request.urlopen(req, timeout=25) as r: print(spike_id, r.status, r.read().decode()[:300])
 except urllib.error.HTTPError as e:
@@ -404,7 +404,7 @@ exact pair.
    `LINEAR_TOOLS_WRITES=0`, and Jet's grants, epochs, subscription and wakes.
 2. **Secure owner handoff:** Jay provisions CURSOR's own bot credential through
    the Cloudflare dashboard's encrypted Secret field, named `ZULIP_KEY_CURSOR`,
-   on account `3a9368057468d0909cafaa85df12d1b7`, Worker `agent-sync-mcp`.
+   on account `3a9368057468d0909cafaa85df12d1b7`, Worker `simple-tools-mcp`.
    Maintain the corresponding source of truth in AI Fleet Coordinator Infisical
    `prod` `/zulip` as `ZULIP_CURSOR_API_KEY` and `ZULIP_CURSOR_EMAIL`.
    Never send the value, a screenshot of it, or a token through chat.  Do not
@@ -448,7 +448,7 @@ explicit authorization for these actions before performing the rollout.
    secret through stdin.  Secret installation publishes a Worker version, so
    it is part of the deployment approval, not a preparation step.
 
-   **Owner-operated commands, from `scripts/agent-sync-mcp/`:** using the existing
+   **Owner-operated commands, from `scripts/simple-tools-mcp/`:** using the existing
    canonical entries in step 1, first run the check-only command:
 
    ```bash
@@ -493,7 +493,7 @@ Verify production CURSOR audit outcomes for both reads and writes after deployme
 
 ## Per-Call Identity (AFC-322, AFC-331)
 
-Every grant offers per-call `identity` selection (`docs/protocols/per-call-identity.md`).  A CURSOR or GROK-WEB grant may act as CURSOR, GROK-WEB and the twelve enabled Grok Bot personas;  every other grant only as its own seat.  `identities` (formerly `agent_sync_identities`) reports the set with Zulip and Linear configured or missing states.  The personas are the `enabled` list in `scripts/agent_sync/mcp/gb-identities.json`:  `GB-DIRECTOR`, `GB-FIXER`, `GB-DESIGNER`, `GB-COMPILER`, `GB-HOUSEKEEPER`, `GB-PUBLISHER`, `GB-DEPLOYER`, `GB-MONITOR`, `GB-PLUMBER`, `GB-ORACLE` and `GB-TRADER`.  `BF-*` identities belong to BotFleet, so they do not appear.  Writes must name their identity;  a client that omits it gets `identity_required`, so the Cursor and Grok connector instructions must say to pass it.  No OAuth client, callback, token, grant, scope or `HOSTED_SEATS` entry is added for a GB identity.
+Every grant offers per-call `identity` selection (`docs/protocols/per-call-identity.md`).  A CURSOR or GROK-WEB grant may act as CURSOR, GROK-WEB and the twelve enabled Grok Bot personas;  every other grant only as its own seat.  `identities` (formerly `simple_tools_identities`) reports the set with Zulip and Linear configured or missing states.  The personas are the `enabled` list in `scripts/simple_tools/mcp/gb-identities.json`:  `GB-DIRECTOR`, `GB-FIXER`, `GB-DESIGNER`, `GB-COMPILER`, `GB-HOUSEKEEPER`, `GB-PUBLISHER`, `GB-DEPLOYER`, `GB-MONITOR`, `GB-PLUMBER`, `GB-ORACLE` and `GB-TRADER`.  `BF-*` identities belong to BotFleet, so they do not appear.  Writes must name their identity;  a client that omits it gets `identity_required`, so the Cursor and Grok connector instructions must say to pass it.  No OAuth client, callback, token, grant, scope or `HOSTED_SEATS` entry is added for a GB identity.
 
 The source remains the 24 `ZULIP_GB_<ROLE>_EMAIL` and `ZULIP_GB_<ROLE>_API_KEY` values in the **AI Fleet Coordinator** Infisical project, `prod` `/zulip`, plus the 24 `LINEAR_GB_<ROLE>_CLIENT_ID` and `LINEAR_GB_<ROLE>_CLIENT_SECRET` values in that project's `prod` `/linear`.  The earlier separate **Fleet Linear Seats** project guidance does not apply to these GB pairs.  Each role's email must equal `<role>-grok-bot@simplewithus.zulipchat.com`;  its Zulip key must authenticate that member bot (role 400), and its Linear viewer must name the selected `GB-ROLE` app.
 
@@ -556,7 +556,7 @@ The Worker reaches the relay through `GR_UPSTREAM_URL` with a Cloudflare Access 
 - `GITHUB_TOKEN`:  the owner's scoped PR-only PAT (the only credential the service holds).  Deliver it into the service environment at start with the host's existing Infisical pattern (a `fleet-secrets` read of the Fleet-OPS prod root entry), never into a file in the repo, a log line or a message.
 - `GH_APP_<SLUG>_ID` / `GH_APP_<SLUG>_PRIVATE_KEY`:  read per App through `fleet-secrets` from Fleet-OPS prod `/github-apps` (present today).  `fleet-secrets` must be on the service's PATH at startup, or App actions stay disabled (`GIT_RELAY_APP_MINT=0` forces that).
 - `GR_BEARER_VERIFY_KEY`:  read through `fleet-secrets` from Fleet-OPS prod `/tools` (present today).  The Worker side fetches the same key at runtime through its existing Infisical runtime pattern;  neither side keeps a persistent Cloudflare copy.
-- `GR_ASSERTION_SIGN_KEY`:  the hosted-OAuth assertion signing key (scripts/agent-sync-mcp/src/gr-assert.js), placed ONLY in the DEDICATED Fleet-OPS prod folder `/gr-assert-signing` - NOT in `/gr-front`:  the host's live token inventory shows the broad `st-mcp-runtime-read` token reads `/gr-front`, so that folder is not signer-isolated.  It is MINT-capable:  whoever holds it can assert any opted-in seat's identity, so it must never sit in `/tools` or anywhere the relay reads.  It resolves through its OWN narrowly scoped service-token binding, `GR_ASSERT_INFISICAL_SERVICE_TOKEN` (scoped to `/gr-assert-signing` only;  the resolver never falls back to the generic read-tools `INFISICAL_SERVICE_TOKEN`, any other token, folder, key name, or any alias binding - src/infisical.js resolveSecretIsolated).  The isolation claim is against runtime readers;  administrative control-plane access is a separate plane and is not covered by this statement.  The relay holds no copy and no other mint material:  it verifies by calling the Worker's signed `/internal/gr-assert-verify` route (git_relay/assertion.py) with the existing `GR_BEARER_VERIFY_KEY`, so no new relay-side secret is needed.  Absent binding, absent or short key:  both sides fail closed - OAuth seats' `gr_*` tools answer `not_configured` and the route answers `not_configured`.
+- `GR_ASSERTION_SIGN_KEY`:  the hosted-OAuth assertion signing key (scripts/simple-tools-mcp/src/gr-assert.js), placed ONLY in the DEDICATED Fleet-OPS prod folder `/gr-assert-signing` - NOT in `/gr-front`:  the host's live token inventory shows the broad `st-mcp-runtime-read` token reads `/gr-front`, so that folder is not signer-isolated.  It is MINT-capable:  whoever holds it can assert any opted-in seat's identity, so it must never sit in `/tools` or anywhere the relay reads.  It resolves through its OWN narrowly scoped service-token binding, `GR_ASSERT_INFISICAL_SERVICE_TOKEN` (scoped to `/gr-assert-signing` only;  the resolver never falls back to the generic read-tools `INFISICAL_SERVICE_TOKEN`, any other token, folder, key name, or any alias binding - src/infisical.js resolveSecretIsolated).  The isolation claim is against runtime readers;  administrative control-plane access is a separate plane and is not covered by this statement.  The relay holds no copy and no other mint material:  it verifies by calling the Worker's signed `/internal/gr-assert-verify` route (git_relay/assertion.py) with the existing `GR_BEARER_VERIFY_KEY`, so no new relay-side secret is needed.  Absent binding, absent or short key:  both sides fail closed - OAuth seats' `gr_*` tools answer `not_configured` and the route answers `not_configured`.
 - Audit and outcome paths (`GIT_RELAY_AUDIT_PATH`, `GIT_RELAY_OUTCOMES_PATH`) need a writable directory on the host;  both fail closed on write errors.
 
 ### 4. Seat policy

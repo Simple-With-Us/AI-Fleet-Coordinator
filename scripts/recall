@@ -660,7 +660,7 @@ def build_parser() -> argparse.ArgumentParser:
 # ---------------------------------------------------------------- remote read transport (opt-in)
 #
 # SIMPLE_RECALL_REMOTE=1 sends the supported recall tools to the hosted ST-MCP endpoint with the bot's own bearer
-# (SIMPLE_TOOLS_BEARER, process environment only).  The hosted server serves Recall from ONE shared backend
+# (AGENT_SYNC_BEARER, process environment only).  The hosted server serves Recall from ONE shared backend
 # credential set, so this proves which bot asked, not a per-bot Recall credential.  The endpoint is the fixed
 # constant below (no override), nothing here reads a Recall, Qdrant, Infisical or Access credential, and a
 # failure never falls back to the direct or public route.  Every other verb, and every search flag with no
@@ -668,7 +668,7 @@ def build_parser() -> argparse.ArgumentParser:
 # not this CLI's formatted lines.  The hosted bearer holds every hosted tool of its seat; this mode only ever
 # calls the recall tools named by the CLI verb, which is a client choice and not a server restriction.
 REMOTE_MCP_URL = "https://agents.simplewithus.com/mcp"
-REMOTE_BEARER_ENV = "SIMPLE_TOOLS_BEARER"
+REMOTE_BEARER_ENV = "AGENT_SYNC_BEARER"
 REMOTE_BEARER_RE = re.compile(r"[A-Za-z0-9_\-]{20,200}")
 REMOTE_TIMEOUT_S = 40
 
@@ -680,7 +680,7 @@ def remote_selected() -> bool:
 REMOTE_MAX_BYTES = 4_000_000
 REMOTE_MAX_DEPTH = 64
 REMOTE_MAX_NODES = 100_000
-# The error codes the hosted server can return (the ToolError codes in scripts/agent-sync-mcp/src);  a test keeps
+# The error codes the hosted server can return (the ToolError codes in scripts/simple-tools-mcp/src);  a test keeps
 # this list in step with that source.  Anything else, including a code that merely looks safe, prints as "error".
 _REMOTE_CODES = frozenset(
     (
@@ -845,13 +845,13 @@ def _remote_code(value) -> str:
 
 def _remote_error_object(result: dict, sc) -> dict:
     """The hosted server's error object.  The server answers a tool error with isError and NO structuredContent: the
-    object (code, retry_after_s, ...) is in `_meta["agent-sync/error"]` and, as JSON, in the first text part that is a JSON object.  A
+    object (code, retry_after_s, ...) is in `_meta["simple-tools/error"]` and, as JSON, in the first text part that is a JSON object.  A
     structuredContent that carries a code still wins.  Only the code and the retry-after are ever shown, and
     the code only when it is allow-listed, so nothing the server wrote is copied."""
     if isinstance(sc, dict) and "code" in sc:
         return sc
     meta = result.get("_meta")
-    cand = meta.get("agent-sync/error") if isinstance(meta, dict) else None
+    cand = meta.get("simple-tools/error") if isinstance(meta, dict) else None
     if not isinstance(cand, dict):
         cand = None
         for part in result.get("content") or []:
@@ -965,11 +965,11 @@ def _remote_scan_arguments(scanner, arguments, bearer: str) -> str | None:
 
 
 def _remote_scanner():
-    """The fleet's secret scanner (scripts/agent_sync/secretscan.py, standard library only), loaded by path.  If it
+    """The fleet's secret scanner (scripts/simple_tools/secretscan.py, standard library only), loaded by path.  If it
     cannot be loaded nothing is sent:  remote mode has no unscanned route."""
     import importlib.util
 
-    path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "agent_sync", "secretscan.py")
+    path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "simple_tools", "secretscan.py")
     try:
         spec = importlib.util.spec_from_file_location("_remote_secretscan", path)
         module = importlib.util.module_from_spec(spec)

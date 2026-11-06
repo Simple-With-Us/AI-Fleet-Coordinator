@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """platform-letter: Operator session letters for the platforms other than Claude and MiniMax.  See
-scripts/agent_sync/README.md (Platform Session Letters).
+scripts/simple_tools/README.md (Platform Session Letters).
 
     platform-letter hook --platform P       the hook a platform runs on start, prompt, rename and end
     platform-letter registry OP --platform P ...   the registry side, run on the Mac (the server reaches it over ssh)
     platform-letter show --platform P       this chat's letter from its local note
     platform-letter install --platform P    add the platform's hooks (--check, --remove)
 
-This file is symlinked as ~/.local/bin/platform-letter on the Mac (agent_sync/install.sh) and is a fleet-cli managed
+This file is symlinked as ~/.local/bin/platform-letter on the Mac (simple_tools/install.sh) and is a fleet-cli managed
 wrapper on the server (fleet-cli-release.py), so it resolves its own real path before it puts the scripts directory
 on sys.path.  It is dispatched on its own, apart from simple-chat, so the hook path loads only light modules.
 
@@ -136,6 +136,15 @@ def start():
 
     sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 
+    # The registry route:  on a host that holds the reviewed dispatch config, the dispatcher owns
+    # `registry` and `show` outright (fail-closed).  Hooks and a host without the config are untouched.
+    if sys.argv[1:2] in (["registry"], ["show"]):
+        from simple_tools.server.operator_registry_dispatch import main_if_configured  # noqa: E402
+
+        _dispatch_code = main_if_configured(["platform-letter"] + sys.argv[1:])
+        if _dispatch_code is not None:
+            sys.exit(_dispatch_code)
+
     if raw is not None:
         import io
 
@@ -147,7 +156,7 @@ def start():
         )
 
     try:
-        from agent_sync.platform_letter import main  # noqa: E402
+        from simple_tools.platform_letter import main  # noqa: E402
     except Exception:  # noqa: BLE001 - a hook never blocks a chat, even from a checkout that cannot be imported
         if sys.argv[1:2] == ["hook"]:
             say_nothing(raw)
