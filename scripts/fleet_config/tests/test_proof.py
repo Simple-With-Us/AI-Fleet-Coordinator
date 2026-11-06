@@ -542,6 +542,116 @@ class TargetCommandTests(FakeHookCase):
     def test_a_platform_with_its_own_adapter_file_ignores_the_target(self):
         self.assertIsNone(proof.resolve_target_command("claude", "~/x.json", self.ctx))
 
+    def _write(self, name: str, text: str) -> str:
+        path = os.path.join(self.home, name)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        return "~/" + name
+
+    def test_a_command_in_a_section_the_harness_never_reads_is_never_taken(self):
+        """Only the part the platform's schema names is read,  so a stray `command` is inert."""
+        doc = {
+            "notes": {"command": "/tmp/evil/minimax-guard-hook --format claude"},
+            "hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": "/bin/true"}]}]},
+        }
+        target = self._write("mm-hooks.json", json.dumps(doc))
+        with self.assertRaises(CheckError) as caught:
+            proof.resolve_target_command("minimax", target, self.ctx)
+        self.assertIs(caught.exception.reason_code, ReasonCode.PROOF_FAILED)
+
+    def test_an_oversized_target_is_refused_before_any_command_is_read(self):
+        target = self._write("mm-hooks.json", " " * (proof.MAX_CONFIG_BYTES + 10))
+        with self.assertRaises(CheckError) as caught:
+            proof.resolve_target_command("minimax", target, self.ctx)
+        self.assertIs(caught.exception.reason_code, ReasonCode.UNPARSEABLE)
+
+    def test_the_rules_own_event_is_the_one_read(self):
+        """A hook registered for another event is read for that event,  not failed on PreToolUse."""
+        doc = {
+            "hooks": {
+                "beforeTool": [
+                    {"hooks": [{"type": "command", "command": "/opt/x/minimax-guard-hook"}]}
+                ]
+            }
+        }
+        target = self._write("mm-hooks.json", json.dumps(doc))
+        self.assertEqual(
+            proof.resolve_target_command("minimax", target, self.ctx, "beforeTool"),
+            "/opt/x/minimax-guard-hook",
+        )
+        with self.assertRaises(CheckError):
+            proof.resolve_target_command("minimax", target, self.ctx)
+
+    def test_the_probe_threads_the_rules_event_into_the_target_lookup(self):
+        doc = {
+            "hooks": {
+                "beforeTool": [
+                    {
+                        "matcher": "bash|Bash",
+                        "hooks": [
+                            {"type": "command", "command": "%s deny %s" % (
+                                shlex.quote(self._copy_hook("minimax-guard-hook")),
+                                shlex.quote(self.record),
+                            )}
+                        ],
+                    }
+                ]
+            }
+        }
+        target = self._write("mm-hooks.json", json.dumps(doc))
+        outcome = proof.run_l1_probe(
+            "minimax", self.ctx, config_target=target, guards=("shell",), event="beforeTool"
+        )
+        self.assertIs(outcome.state, CheckState.PASS, outcome.reason)
+
+    def _copy_hook(self, name: str) -> str:
+        path = os.path.join(self.home, name)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(FAKE_HOOK)
+        os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR)
+        return path
+
+    def test_a_kimi_toml_target_gives_the_command_of_its_own_event(self):
+        text = (
+            "[[hooks]]\n"
+            'event = "PostToolUse"\n'
+            'command = "/opt/x/fleet-guard-hook --format claude"\n'
+            "\n"
+            "[[hooks]]\n"
+            'event = "PreToolUse"\n'
+            'matcher = "Bash"\n'
+            'command = "/opt/x/fleet-guard-hook --format kimi"\n'
+        )
+        target = self._write("kimi.toml", text)
+        self.assertEqual(
+            proof.resolve_target_command("kimi", target, self.ctx),
+            "/opt/x/fleet-guard-hook --format kimi",
+        )
+
+    def test_zcode_is_read_from_its_nested_event_map(self):
+        doc = {
+            "hooks": {
+                "events": {
+                    "PreToolUse": [
+                        {
+                            "matcher": "Bash",
+                            "hooks": [
+                                {"type": "command", "command": "/opt/x/lane-guard-hook --format claude"}
+                            ],
+                        }
+                    ]
+                }
+            }
+        }
+        self._write(".zcode/cli/config.json", json.dumps(doc))
+        self.assertEqual(
+            proof.resolve_hook_command("zcode", self.ctx),
+            "/opt/x/lane-guard-hook --format claude",
+        )
+        self.assertEqual(proof.NATIVE_SHELL_TOOL_NAMES["zcode"], ("Bash",))
+        self.assertIn("zcode", proof.PLATFORM_ADAPTERS)
+
 
 class HookResolutionTests(FakeHookCase):
     """The hook under test is the installed one, read from the platform's config."""

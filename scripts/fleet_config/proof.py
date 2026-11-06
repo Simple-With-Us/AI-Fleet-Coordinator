@@ -133,6 +133,7 @@ NATIVE_SHELL_TOOL_NAMES: dict[str, tuple[str, ...]] = {
     "muse-code": ("bash",),
     "cursor": (),
     "antigravity": (),
+    "zcode": ("Bash",),
 }
 
 # The file tool names the file-guard rule probes (AFC-416).  The native ``write`` tool
@@ -164,6 +165,10 @@ NATIVE_FILE_TOOLS: dict[str, tuple[tuple[str, str], ...]] = {
     # says so instead of reporting a bare pass.
     "cursor": (),
     "antigravity": (),
+    # Z Code's hook is Claude-shaped (matcher ``Bash``, a Claude-style deny).  No file
+    # tool name is pinned for it, so its file surface is not probed and the seed holds
+    # no file-guard rule for it yet.
+    "zcode": (),
 }
 
 
@@ -191,6 +196,7 @@ PLATFORM_ADAPTERS: dict[str, PlatformAdapter] = {
         "antigravity", "antigravity", "antigravity", ".gemini/config/hooks.json"
     ),
     "cursor": PlatformAdapter("cursor", "cursor", "cursor", ".cursor/hooks.json"),
+    "zcode": PlatformAdapter("zcode", "claude", "claude", ".zcode/cli/config.json"),
     "muse": PlatformAdapter("muse", "muse", "muse"),
     "muse-code": PlatformAdapter("muse-code", "muse", "muse"),
     "clutch": PlatformAdapter("clutch", "muse", "claude"),
@@ -453,9 +459,10 @@ def _event_key(name: str) -> str:
 class HookConfigSchema:
     """Where one platform keeps the commands its hooks run,  and which event gates them.
 
-    ``shape`` is ``event-map`` (a mapping of event name to a list of hook entries)  or
+    ``shape`` is ``event-map`` (a mapping of event name to a list of hook entries),
     ``named-groups`` (one group per hook name at the top level,  each holding its own
-    event lists).  ``section`` is the key the event map lives under.
+    event lists)  or ``event-list`` (a list of tables,  each naming its own event).
+    ``section`` is the key the event map or list lives under.
 
     ``event`` is the ONE event the platform gates its tool calls on,  and it is the only
     event this package reads,  validates or bounds.  A sibling event,  and a section the
@@ -477,6 +484,14 @@ HOOK_CONFIG_SCHEMAS: dict[str, HookConfigSchema] = {
     "cursor": HookConfigSchema("event-map", event="beforeShellExecution"),
     # Antigravity keeps one group per hook name at the top level.
     "antigravity": HookConfigSchema("named-groups", event="PreToolUse"),
+    # Z Code keeps the Claude shape one level down,  under ``hooks.events``.
+    "zcode": HookConfigSchema("event-map", event="PreToolUse"),
+    # Clutch and MiniMax Code keep the Claude shape in a hooks file of their own, which
+    # the rule's target names.  Kimi keeps a ``[[hooks]]`` table per entry, each with
+    # its own ``event``.
+    "clutch": HookConfigSchema("event-map", event="PreToolUse"),
+    "minimax": HookConfigSchema("event-map", event="PreToolUse"),
+    "kimi": HookConfigSchema("event-list", event="PreToolUse"),
 }
 
 
@@ -608,12 +623,52 @@ def _commands_from_event_map(
             % (schema.section, path, platform),
             ReasonCode.UNPARSEABLE,
         )
+    nested = section.get("events")
+    if isinstance(nested, dict):
+        # Z Code keeps the event map one level down, under ``hooks.events``.
+        section = nested
     entries = _event_entries(section, schema.event)
     if entries is None:
         return []
     _assert_bounded(entries, platform, path)
     found: list[str] = []
     _commands_from_entries(entries, "the event %r" % schema.event, platform, path, found)
+    return found
+
+
+def _commands_from_event_list(
+    document: dict[str, object], schema: HookConfigSchema, platform: str, path: str
+) -> list[str]:
+    """The commands of the ``[[hooks]]`` tables whose ``event`` is the platform's own.
+
+    Kimi Code keeps one table per hook, each with an ``event`` field and a ``command``.
+    Only a table whose event is the schema's event is read, and the part that is read is
+    bounded first, so a table for another event is never looked at.
+    """
+    section = document.get(schema.section)
+    if section is None:
+        return []
+    if not isinstance(section, list):
+        raise CheckError(
+            "the %s section of the hook config %s for the platform %s is not a list of tables"
+            % (schema.section, path, platform),
+            ReasonCode.UNPARSEABLE,
+        )
+    wanted = _event_key(schema.event)
+    matching: list[object] = []
+    for entry in section:
+        if not isinstance(entry, dict):
+            raise CheckError(
+                "a hook table in the hook config %s for the platform %s is not an object"
+                % (path, platform),
+                ReasonCode.UNPARSEABLE,
+            )
+        name = entry.get("event")
+        if isinstance(name, str) and _event_key(name) == wanted:
+            matching.append(entry)
+    _assert_bounded(matching, platform, path)
+    found: list[str] = []
+    _commands_from_entries(matching, "the event %r" % schema.event, platform, path, found)
     return found
 
 
@@ -661,6 +716,8 @@ def schema_commands(
         )
     if schema.shape == "named-groups":
         return _commands_from_named_groups(document, schema, platform, path)
+    if schema.shape == "event-list":
+        return _commands_from_event_list(document, schema, platform, path)
     return _commands_from_event_map(document, schema, platform, path)
 
 
@@ -714,7 +771,7 @@ def resolve_hook_command(platform: str, ctx: CheckContext) -> str | None:
 
 
 def resolve_target_command(
-    platform: str, target: str, ctx: CheckContext, event: str = "PreToolUse"
+    platform: str, target: str, ctx: CheckContext, event: str | None = None
 ) -> str | None:
     """The hook command a rule's own config file runs, for a platform with no adapter file.
 
@@ -725,6 +782,11 @@ def resolve_target_command(
     sit beside it.  A platform that has an adapter file, or a target that is not there,
     or one this reader cannot parse, returns None, and the L0 check has already said so.
 
+    The file is read as untrusted input,  exactly as ``resolve_hook_command`` reads an
+    adapter file:  it is bounded, and only the part the platform's own schema names for
+    the rule's ``event`` is checked and read,  so a ``command`` in a section the harness
+    never reads cannot reach the probe.
+
     Raises ``CheckError`` when the file parses and names no guard hook,  because then
     the seat would run something else and proving the stable-dir hook would be a false
     PASS.
@@ -732,7 +794,16 @@ def resolve_target_command(
     adapter = PLATFORM_ADAPTERS.get(platform)
     if adapter is None or adapter.config_rel or not target:
         return None
-    from .checks_hooks import hook_records, read_config_document
+    schema = HOOK_CONFIG_SCHEMAS.get(platform)
+    if schema is None:
+        raise CheckError(
+            "there is no hook config schema for the platform %s, so %s is not read"
+            % (platform, target),
+            ReasonCode.UNSUPPORTED,
+        )
+    if event:
+        schema = replace(schema, event=event)
+    from .checks_hooks import read_config_document
 
     try:
         path = expand_target(target, ctx.home)
@@ -743,14 +814,13 @@ def resolve_target_command(
                 ReasonCode.UNPARSEABLE,
             )
         document = read_config_document(path)
-        records = hook_records(document, event)
     except (OSError, UnicodeDecodeError, ValueError, CheckError) as exc:
         if isinstance(exc, CheckError) and exc.reason_code is ReasonCode.UNPARSEABLE:
             raise
         return None
-    for record in records:
-        if any(name in record.command for name in GUARD_HOOK_NAMES):
-            return record.command[:MAX_COMMAND_CHARS]
+    for command in schema_commands(document, schema, platform, path):
+        if any(name in command for name in GUARD_HOOK_NAMES):
+            return command
     raise CheckError(
         "the hook config %s for the platform %s names no guard hook,  so there is nothing "
         "installed to prove" % (target, platform),
@@ -1196,6 +1266,7 @@ def run_l1_probe(
     timeout: int | None = None,
     guards: tuple[str, ...] | None = None,
     config_target: str | None = None,
+    event: str | None = None,
 ) -> L1Outcome:
     """Prove at L1 that a platform's installed hook denies a write into a sentinel lane.
 
@@ -1204,7 +1275,7 @@ def run_l1_probe(
     shell-only proof that is denied is a PASS for the shell scope and says so, and it
     claims nothing about file writes.  ``config_target`` is the config file a rule names
     for a platform whose adapter has none of its own, so the command proved is the one
-    that file runs.
+    that file runs, and ``event`` is the event the rule registers it for.
 
     The probe builds a synthetic PreToolUse payload whose command names a write into
     a throwaway sentinel lane, pipes it into the installed hook on stdin, and reads
@@ -1243,7 +1314,7 @@ def run_l1_probe(
     else:
         command = resolve_hook_command(platform, ctx)
         if not command and config_target:
-            command = resolve_target_command(platform, config_target, ctx)
+            command = resolve_target_command(platform, config_target, ctx, event)
         if not command:
             # A platform that HAS a hook config but does not name the guard hook would
             # run something else,  so proving the stable-dir hook would be a false
@@ -1656,6 +1727,7 @@ def prove_rule(
         ctx,
         guards=tuple(rule.expected.guards) or None,
         config_target=rule.check.target,
+        event=rule.check.detail or None,
     )
     return _with_achieved(outcome)
 

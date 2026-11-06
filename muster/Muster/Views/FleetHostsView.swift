@@ -461,11 +461,12 @@ struct FleetToolsStateBadge: View {
         .help(helpText)
     }
 
-    /// The tooltip:  what the badge checked when its panel says,  and otherwise what PASS
-    /// means everywhere,  so no PASS in the app is a bare word.
+    /// The tooltip:  what the badge checked when its panel says,  and otherwise that PASS
+    /// covers this panel's own check and nothing else,  so no PASS in the app is a bare
+    /// word and none of them claims a config rule was proven.
     private var helpText: String {
         if let checked { return "\(state.rawValue):  \(checked)" }
-        return state == .passed ? PassMeaning.everywhere : ""
+        return state == .passed ? PassMeaning.panelRow : ""
     }
 }
 

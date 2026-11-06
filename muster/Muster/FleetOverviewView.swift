@@ -199,9 +199,10 @@ struct FleetOverviewView: View {
         }
         .foregroundStyle(verdictColor)
         // The footer's verdict is the grid's PASS,  and the tooltip says what that is.
+        // Only a verdict the engine returned has a meaning to state,  as the overview says.
         .help(
             store.phase == .loaded
-                ? "\(PassMeaning.verdict(store.summary?.overallVerdict))\u{00A0} \(PassMeaning.everywhere)"
+                ? (store.summary.map { "\(PassMeaning.verdict($0.overallVerdict))\u{00A0} \(PassMeaning.everywhere)" } ?? "")
                 : ""
         )
     }

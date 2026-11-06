@@ -430,11 +430,15 @@ class HooksTests(TempHome):
         result = check_hook_registered(self._scoped_rule(("file",)), "claude", self.ctx)
         self.assertIs(result.state, CheckState.PASS)
 
-    def test_a_file_rule_is_unsupported_where_the_payload_carries_no_file_tool(self):
+    def test_a_file_rule_does_not_apply_where_the_payload_carries_no_file_tool(self):
+        """Nothing can be sent to a hook that never receives a file tool,  so the rule asks
+        for nothing and the verdict leaves it out instead of holding the fleet off PASS."""
         self.write_json(".claude/settings.json", self.claude_settings())
         result = check_hook_registered(self._scoped_rule(("file",)), "cursor", self.ctx)
         self.assertIs(result.state, CheckState.UNSUPPORTED)
-        self.assertIs(result.reason_code, ReasonCode.UNSUPPORTED)
+        self.assertIs(result.reason_code, ReasonCode.NOT_APPLICABLE)
+        self.assertTrue(contract.is_not_applicable(result))
+        self.assertIn("does not apply", result.reason)
 
     def test_a_matcher_that_is_not_text_delivers_nothing(self):
         settings = self.claude_settings()

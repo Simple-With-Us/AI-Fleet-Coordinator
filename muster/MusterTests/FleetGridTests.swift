@@ -161,6 +161,35 @@ final class FleetGridTests: XCTestCase {
         XCTAssertTrue(cell.tooltip.contains("claude-hooks-file-guard:  UNPROVEN (file guarding)"))
     }
 
+    /// The sentence about a partly proven cell does not claim the strongest level for
+    /// the rules that did not reach it, and it names what was not proven.
+    func test_a_partly_proven_cell_does_not_describe_the_strongest_level_for_all_of_it() throws {
+        let cell = try hooksCell([
+            hookResult(id: "claude-hooks-lane-guard", state: "PASS", reasonCode: "ok", achieved: "L1", guards: ["shell"]),
+            hookResult(id: "claude-hooks-file-guard", state: "UNPROVEN", reasonCode: "proof-not-run", achieved: nil, guards: ["file"]),
+        ])
+        XCTAssertTrue(cell.proofDescription.hasPrefix("Partly proven:"))
+        XCTAssertTrue(cell.proofDescription.contains("1 of 2"))
+        XCTAssertTrue(cell.proofDescription.contains("file guarding"))
+        XCTAssertFalse(cell.proofDescription.contains("Reached L1"))
+    }
+
+    /// A rule that does not apply asks for nothing:  a shell guard on a harness whose hook
+    /// carries no file tool is a PASS for what the cell asks, and the tooltip says the file
+    /// rule does not apply.
+    func test_a_rule_that_does_not_apply_neither_helps_nor_hurts_the_cell() throws {
+        let cell = try hooksCell([
+            hookResult(id: "claude-hooks-lane-guard", state: "PASS", reasonCode: "ok", achieved: "L1", guards: ["shell"]),
+            hookResult(id: "claude-hooks-file-guard", state: "UNSUPPORTED", reasonCode: "not-applicable", achieved: nil, guards: ["file"]),
+        ])
+        XCTAssertEqual(cell.state, .passed)
+        XCTAssertFalse(cell.isNoGuard)
+        XCTAssertFalse(cell.isPartlyProven)
+        XCTAssertEqual(cell.proofBadgeText, "L1")
+        XCTAssertTrue(cell.proofDescription.hasPrefix("Reached L1:"))
+        XCTAssertTrue(cell.tooltip.contains("claude-hooks-file-guard:  does not apply (file guarding)"))
+    }
+
     /// The scope a rule asks for comes from the engine's `guards` field.
     func test_the_guard_scope_comes_from_the_engine() {
         XCTAssertEqual(hookResult(id: "a", state: "PASS", reasonCode: "ok", achieved: "L1", guards: ["shell"]).guardScope, "shell guarding")

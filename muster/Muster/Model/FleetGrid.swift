@@ -62,7 +62,9 @@ struct GridCell: Identifiable {
     /// This is what the cells NEED, and a badge must never print it as if it had
     /// happened:  the badge and the tooltip read `proofLevelAchieved` for that.
     var proofLevel: String? {
-        let levels = rules.map { $0.proofLevelRequired ?? "L0" }
+        // A rule that does not apply needs no proof, so it does not raise the level.
+        let asked = askedRules.isEmpty ? rules : askedRules
+        let levels = asked.map { $0.proofLevelRequired ?? "L0" }
         return levels.max()
     }
 
@@ -81,9 +83,17 @@ struct GridCell: Identifiable {
         !rules.isEmpty && rules.allSatisfy { $0.isNotApplicable }
     }
 
+    /// The rules that ask for something to be proven.
+    ///
+    /// A rule that does not apply (file guarding on a harness whose hook carries no
+    /// file tool) asks for nothing, so it is neither proven nor missing.
+    var askedRules: [CheckResult] {
+        rules.filter { !$0.isNotApplicable }
+    }
+
     /// The rules whose every check was proven.
     var provenRules: [CheckResult] {
-        rules.filter { $0.checkState == .passed }
+        askedRules.filter { $0.checkState == .passed }
     }
 
     /// Whether some of the cell's rules were proven and some were not.
@@ -92,7 +102,7 @@ struct GridCell: Identifiable {
     /// PASS for what it proved, and the cell reads as partly proven, never as a bare
     /// PASS.
     var isPartlyProven: Bool {
-        !provenRules.isEmpty && provenRules.count < rules.count
+        !provenRules.isEmpty && provenRules.count < askedRules.count
     }
 
     /// The state's name as the badge and the panel print it.
@@ -109,7 +119,7 @@ struct GridCell: Identifiable {
     var proofBadgeText: String {
         guard !rules.isEmpty, !isNoGuard else { return "—" }
         let reached = proofLevelAchieved ?? "—"
-        if isPartlyProven { return "\(reached) \(provenRules.count)/\(rules.count)" }
+        if isPartlyProven { return "\(reached) \(provenRules.count)/\(askedRules.count)" }
         return reached
     }
 
@@ -148,6 +158,15 @@ struct GridCell: Identifiable {
     /// level the rules reached and never from the level they required:  a cell that
     /// needs L1 and reached L0 must not say a write was sent to the hook.
     var proofDescription: String {
+        if isPartlyProven {
+            // The strongest level any rule reached belongs to the rules that were proven,
+            // so a sentence about the whole cell would claim it for the rules that were not.
+            let missing = askedRules
+                .filter { $0.checkState != .passed }
+                .map { $0.guardScope ?? $0.ruleId }
+                .joined(separator: ", ")
+            return "Partly proven:  \(provenRules.count) of \(askedRules.count) rules reached the proof they need.\u{00A0} Not proven:  \(missing)."
+        }
         let needed = proofLevel ?? "L0"
         guard let reached = proofLevelAchieved else {
             return "Not proved.\u{00A0} Needs \(needed):  \(GridCell.levelWords(needed))."
@@ -199,6 +218,9 @@ enum PassMeaning {
         }
     }
 
+    /// What PASS means on a badge whose panel names no more than "this panel's own check".
+    static let panelRow = "PASS means every check this panel makes on this row was proven, and nothing else about it."
+
     /// What PASS on an app row in Apps & Work covers.
     static let appRow = "Checked: no lane is dirty, no pull request is failing or blocked, and no claim has expired.\u{00A0} Nothing else about the app was checked."
 
@@ -222,6 +244,7 @@ extension CheckResult {
     /// The rule's state and what it checked, in one line.
     var checkLine: String {
         let scope = guardScope.map { " (\($0))" } ?? ""
+        if isNotApplicable { return "does not apply\(scope)" }
         return "\(state)\(scope), \(proofText)"
     }
 }
@@ -279,7 +302,10 @@ enum GridBuilder {
     /// The worst state among a cell's rules.
     static func worstState(of rules: [CheckResult]) -> CellState {
         var worst = CellState.passed
-        for rule in rules {
+        // A rule that does not apply asks for nothing, so it cannot make a cell worse.
+        // When every rule is one,  the cell keeps their state and says why in words.
+        let asked = rules.filter { !$0.isNotApplicable }
+        for rule in (asked.isEmpty ? rules : asked) {
             let state = CellState(checkState: rule.checkState)
             if severityIndex(of: state) < severityIndex(of: worst) {
                 worst = state

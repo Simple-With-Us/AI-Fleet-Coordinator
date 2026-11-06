@@ -647,6 +647,8 @@ class SeededManifestTests(unittest.TestCase):
 
     def test_every_guarded_seat_has_a_shell_rule_and_a_file_rule(self) -> None:
         """PASS has one meaning,  so shell guarding and file guarding are two rules."""
+        from fleet_config import seed_manifest
+
         for seat in self.manifest.seats:
             ids = {rule.id: rule for rule in seat.rules if rule.kind.value == "hooks"}
             tag = seat.seat.lower()
@@ -657,10 +659,14 @@ class SeededManifestTests(unittest.TestCase):
             if not ids:
                 continue
             shell = ids["%s-hooks-lane-guard" % tag]
-            file = ids["%s-hooks-file-guard" % tag]
             self.assertEqual(shell.expected.guards, ("shell",), seat.seat)
-            self.assertEqual(file.expected.guards, ("file",), seat.seat)
             self.assertEqual(shell.proof_level.value, "L1")
+            if shell.platforms[0] in seed_manifest.NO_FILE_GUARD_RULE:
+                # Z Code has no file tool name pinned,  so it has the shell rule alone.
+                self.assertEqual(len(ids), 1, seat.seat)
+                continue
+            file = ids["%s-hooks-file-guard" % tag]
+            self.assertEqual(file.expected.guards, ("file",), seat.seat)
             self.assertEqual(file.proof_level.value, "L1")
             self.assertEqual(shell.expected.names, file.expected.names)
             self.assertEqual(shell.check.target, file.check.target)

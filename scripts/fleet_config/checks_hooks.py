@@ -891,13 +891,16 @@ def _guard_scope_result(
     if "file" in guards:
         file_tools = [name for name, _field in NATIVE_FILE_TOOLS.get(platform, ())]
         if not file_tools:
+            # The harness's hook payload carries no file tool, so there is nothing a
+            # file guard could be sent and nothing for the rule to ask.  That is not a
+            # hole in the proof:  the rule does not apply, and the verdict leaves it out.
             return build_result(
                 rule,
                 platform,
                 CheckState.UNSUPPORTED,
-                "File guarding cannot be checked for the %s harness:  its hook payload carries "
-                "no file tool." % platform,
-                ReasonCode.UNSUPPORTED,
+                "File guarding does not apply to the %s harness:  its hook payload carries "
+                "no file tool, so no file write reaches a hook." % platform,
+                ReasonCode.NOT_APPLICABLE,
                 observed,
                 ctx,
             )
