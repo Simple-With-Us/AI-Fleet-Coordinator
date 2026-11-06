@@ -204,6 +204,25 @@ final class FleetViewEnvelopeTests: XCTestCase {
         XCTAssertTrue(try decode(envelope()).everythingRead)
     }
 
+    /// Kody on #1385:  a pull request or claim row whose field did not decode sits in a section
+    /// that still reads OK, so the verdict and the app counts must not say all was read.
+    func test_an_unreadable_pull_request_or_claim_keeps_the_verdict_and_counts_from_saying_all_was_read() throws {
+        let pr = #"{ "repo": "Simple-With-Us/R", "number": "x", "title": "T", "branch": "b", "seat": "S", "blocker": "draft", "state": "OK", "severity": "waiting" }"#
+        let claim = #"{ "identifier": "AFC-1", "title": "T", "seat": "S", "ageSeconds": "soon", "expired": false }"#
+        let view = try decode(envelope(
+            prs: #"{ "state": "OK", "reason": "1", "items": [\#(pr)], "unread": [] }"#,
+            claims: #"{ "state": "OK", "reason": "1", "items": [\#(claim)] }"#
+        ))
+        XCTAssertEqual(view.unreadablePullRequestCount, 1)
+        XCTAssertEqual(view.unreadableClaimCount, 1)
+        XCTAssertFalse(view.everythingRead)
+        XCTAssertEqual(
+            view.verdictText,
+            "Every source was read, but 1 pull request could not be fully read and 1 claim could not be fully read."
+        )
+        XCTAssertEqual(view.attentionItems.filter { $0.kind == .notRead }.count, 2)
+    }
+
     func test_lists_put_what_needs_someone_first() throws {
         func prJSON(_ number: Int, _ blocker: String, _ severity: String) -> String {
             #"{ "repo": "Simple-With-Us/R", "number": \#(number), "title": "T", "branch": "b", "seat": "S", "blocker": "\#(blocker)", "state": "OK", "severity": "\#(severity)" }"#

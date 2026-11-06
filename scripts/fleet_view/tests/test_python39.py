@@ -118,7 +118,7 @@ class EndToEndTests(unittest.TestCase):
         lane = lanes / "Fixture-Repo" / "claude-x"
         lane.mkdir(parents=True)
         # A real checkout, so the real git's output is what the collector parses.
-        subprocess.run(["git", "init", "-q", str(lane)], check=True, capture_output=True)
+        subprocess.run(["git", "init", "-q", str(lane)], check=True, capture_output=True, timeout=60)
         registry = home / "registry.json"
         registry.write_text(json.dumps(REGISTRY), encoding="utf-8")
         return subprocess.run(

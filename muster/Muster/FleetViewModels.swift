@@ -241,6 +241,9 @@ struct FleetViewEnvelope: Decodable {
         var id: String { "\(repo)#\(number)" }
         /// Whether someone has to act before this can merge.  Waiting is not a problem.
         var needsAction: Bool { severity == .action }
+        /// Whether every field of this row was read.  A row that was not is on the page
+        /// with a state of UNKNOWN, and the section above it still reads OK.
+        var isReadable: Bool { state == "OK" }
 
         private enum CodingKeys: String, CodingKey {
             case repo, number, title, branch, seat, blocker, state, severity, draft, url
@@ -307,6 +310,9 @@ struct FleetViewEnvelope: Decodable {
         let url: URL?
 
         var id: String { identifier }
+        /// Whether the row's identifier and age were read.  A claim has no state field, so a
+        /// field that did not decode shows as an empty identifier or an age of -1.
+        var isReadable: Bool { !identifier.isEmpty && ageSeconds >= 0 }
 
         private enum CodingKeys: String, CodingKey {
             case identifier, title, seat, ageSeconds, expired, url
@@ -519,6 +525,18 @@ extension FleetViewEnvelope {
                 text: "Claims were not all read:  \(sections.claims.reason)", url: nil
             ))
         }
+        if sections.pullRequests.isKnown, unreadablePullRequestCount > 0 {
+            items.append(FleetAttentionItem(
+                id: "unread:pullRequests", kind: .notRead,
+                text: "\(FleetWords.count(unreadablePullRequestCount, "pull request")) could not be fully read.", url: nil
+            ))
+        }
+        if sections.claims.isKnown, unreadableClaimCount > 0 {
+            items.append(FleetAttentionItem(
+                id: "unread:claims", kind: .notRead,
+                text: "\(FleetWords.count(unreadableClaimCount, "claim")) could not be fully read.", url: nil
+            ))
+        }
         let unreadableLanes = unreadableLaneCount
         if !sections.lanes.isKnown {
             items.append(FleetAttentionItem(
@@ -557,7 +575,17 @@ extension FleetViewEnvelope {
     /// Whether every section read its source and every lane in it could be read.  A lane git
     /// could not read leaves its section's count exact, but the page must not say all is read.
     var everythingRead: Bool {
-        sourcesRead && unreadableLaneCount == 0
+        sourcesRead && unreadableLaneCount == 0 && unreadablePullRequestCount == 0 && unreadableClaimCount == 0
+    }
+
+    /// Pull requests with a field that did not decode, which the section's state does not count.
+    var unreadablePullRequestCount: Int {
+        sections.pullRequests.items.filter { !$0.isReadable }.count
+    }
+
+    /// Claims with an identifier or age that did not decode.
+    var unreadableClaimCount: Int {
+        sections.claims.items.filter { !$0.isReadable }.count
     }
 
     private var sourcesRead: Bool {
@@ -569,7 +597,17 @@ extension FleetViewEnvelope {
         if everythingRead { return "Every source was read." }
         if sourcesRead {
             let place = host?.inProse ?? "on the machine that ran this"
-            return "Every source was read, but \(FleetWords.count(unreadableLaneCount, "lane")) \(place) could not be read by git."
+            var unread: [String] = []
+            if unreadableLaneCount > 0 {
+                unread.append("\(FleetWords.count(unreadableLaneCount, "lane")) \(place) could not be read by git")
+            }
+            if unreadablePullRequestCount > 0 {
+                unread.append("\(FleetWords.count(unreadablePullRequestCount, "pull request")) could not be fully read")
+            }
+            if unreadableClaimCount > 0 {
+                unread.append("\(FleetWords.count(unreadableClaimCount, "claim")) could not be fully read")
+            }
+            return "Every source was read, but \(unread.joined(separator: " and "))."
         }
         return "Some sources could not be read, so some counts below are not known."
     }

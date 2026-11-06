@@ -513,8 +513,16 @@ enum FleetRegistryReader {
             }()
 
             let laneCount = WorkCount(observed: repoLanes.count, complete: lanesKnown)
-            let prCount = WorkCount(observed: repoPRs.count, complete: prsComplete(for: [fullRepo, app.repo]))
-            let claimCount = WorkCount(observed: appClaims.count, complete: claimsKnown)
+            // A row with a field that did not decode is counted but not fully read, so the
+            // count is "at least", never exact.
+            let prCount = WorkCount(
+                observed: repoPRs.count,
+                complete: prsComplete(for: [fullRepo, app.repo]) && repoPRs.allSatisfy(\.isReadable)
+            )
+            let claimCount = WorkCount(
+                observed: appClaims.count,
+                complete: claimsKnown && appClaims.allSatisfy(\.isReadable)
+            )
 
             var reasons: [String] = []
             if actionPRs > 0 {

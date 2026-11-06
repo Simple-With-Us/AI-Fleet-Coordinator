@@ -288,7 +288,7 @@ struct FleetView: View {
             sectionHeader(
                 .lanes,
                 title: envelope.lanesHeading,
-                count: "\(section.items.count)",
+                count: WorkCount(observed: section.items.count, complete: section.isKnown).text,
                 detail: detail,
                 detailIsProblem: !section.isKnown
             )
