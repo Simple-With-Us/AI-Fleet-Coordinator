@@ -62,10 +62,15 @@ BACKUP_MARKERS = (".bak", ".before-", ".disabled", ".orig", ".tmp")
 SOURCES = {
     "claude": [
         ("hook_events", ".claude/settings.json", ("hooks",)),
-        ("counts", "Permissions", ".claude/settings.json", (
-            ("allow rules", ("permissions", "allow")),
-            ("deny rules", ("permissions", "deny")),
-        )),
+        (
+            "counts",
+            "Permissions",
+            ".claude/settings.json",
+            (
+                ("allow rules", ("permissions", "allow")),
+                ("deny rules", ("permissions", "deny")),
+            ),
+        ),
         ("keys", "Plugins", ".claude/plugins/installed_plugins.json", ("plugins",)),
         ("folder", "Skills", ".claude/skills", False),
         ("folder", "Sub-Agents", ".claude/agents", True),
@@ -80,10 +85,15 @@ SOURCES = {
     "cursor": [
         ("mcp", ".cursor/mcp.json", ("mcpServers",)),
         ("hook_events", ".cursor/hooks.json", ("hooks",)),
-        ("counts", "Permissions", ".cursor/cli-config.json", (
-            ("allow rules", ("permissions", "allow")),
-            ("deny rules", ("permissions", "deny")),
-        )),
+        (
+            "counts",
+            "Permissions",
+            ".cursor/cli-config.json",
+            (
+                ("allow rules", ("permissions", "allow")),
+                ("deny rules", ("permissions", "deny")),
+            ),
+        ),
         ("folder", "Skills", ".cursor/skills", False),
         ("folder", "Sub-Agents", ".cursor/agents", True),
         ("folder", "Rules", ".cursor/rules", False),
@@ -127,8 +137,12 @@ SOURCES = {
         ("folder", "Skills", ".config/muse/skills", False),
     ],
     "clutch": [
-        ("not_read", "MCP Servers And Hooks", "~/.clutch/dsh/cordis.patch.yml",
-         "Clutch keeps them in YAML, which this reader does not read yet."),
+        (
+            "not_read",
+            "MCP Servers And Hooks",
+            "~/.clutch/dsh/cordis.patch.yml",
+            "Clutch keeps them in YAML, which this reader does not read yet.",
+        ),
         ("folder", "Skills", ".clutch/dsh/skills", False),
     ],
 }
@@ -157,8 +171,12 @@ def _section(title, source, items, note=None, empty_note=None):
         return {"title": title, "source": source, "items": [], "note": note or empty_note}
     if len(items) > MAX_NAMES:
         cut = "Only the first %d of %d are listed." % (MAX_NAMES, len(items))
-        return {"title": title, "source": source, "items": items[:MAX_NAMES],
-                "note": cut if not note else note + "  " + cut}
+        return {
+            "title": title,
+            "source": source,
+            "items": items[:MAX_NAMES],
+            "note": cut if not note else note + "  " + cut,
+        }
     return {"title": title, "source": source, "items": items, "note": note}
 
 
@@ -288,7 +306,9 @@ def _folder_section(home, title, relative, drop_markdown):
         items.append(_item(shown_name))
     note = None
     if backups:
-        note = ("1 backup copy is" if backups == 1 else "%d backup copies are" % backups) + " not listed."
+        note = (
+            "1 backup copy is" if backups == 1 else "%d backup copies are" % backups
+        ) + " not listed."
     return _section(title, shown, items, note=note, empty_note="The folder is empty.")
 
 
@@ -318,8 +338,12 @@ def _hook_folder_section(home, relative):
         if isinstance(events, dict):
             for event in sorted(events):
                 count = len(events[event]) if isinstance(events[event], list) else None
-                items.append(_item("%s (%s)" % (clean(event), clean(name)),
-                                   _entries(count) if count is not None else None))
+                items.append(
+                    _item(
+                        "%s (%s)" % (clean(event), clean(name)),
+                        _entries(count) if count is not None else None,
+                    )
+                )
     note = "  ".join(problems) if problems else None
     return _section("Hooks", shown, items, note=note, empty_note="No hook file registers any.")
 
@@ -349,8 +373,12 @@ def _read_source(home, source):
         def build_events(root):
             events = _value_at(root, path)
             events = events if isinstance(events, dict) else {}
-            return [_item(event, _entries(len(events[event])) if isinstance(events[event], list) else None)
-                    for event in sorted(events)]
+            return [
+                _item(
+                    event, _entries(len(events[event])) if isinstance(events[event], list) else None
+                )
+                for event in sorted(events)
+            ]
 
         return _json_section(home, "Hooks", relative, build_events)
     if kind == "hook_groups":
@@ -361,7 +389,9 @@ def _read_source(home, source):
             items = []
             for group in sorted(groups):
                 entry = groups[group] if isinstance(groups[group], dict) else {}
-                parts = sorted(clean(key) for key, value in entry.items() if isinstance(value, list))
+                parts = sorted(
+                    clean(key) for key, value in entry.items() if isinstance(value, list)
+                )
                 if isinstance(entry.get("enabled"), bool):
                     parts.append("on" if entry["enabled"] else "off")
                 items.append(_item(group, ", ".join(parts) if parts else None))
@@ -376,8 +406,10 @@ def _read_source(home, source):
         def build_keys(root):
             keys = _value_at(root, path)
             keys = keys if isinstance(keys, dict) else {}
-            return [_item(key, ("on" if keys[key] else "off") if isinstance(keys[key], bool) else None)
-                    for key in sorted(keys)]
+            return [
+                _item(key, ("on" if keys[key] else "off") if isinstance(keys[key], bool) else None)
+                for key in sorted(keys)
+            ]
 
         return _json_section(home, title, relative, build_keys)
     if kind == "array_names":
@@ -389,7 +421,9 @@ def _read_source(home, source):
             items = []
             for index, element in enumerate(array):
                 fields = element if isinstance(element, dict) else {}
-                name = fields.get("name") if isinstance(fields.get("name"), str) else fields.get("id")
+                name = (
+                    fields.get("name") if isinstance(fields.get("name"), str) else fields.get("id")
+                )
                 items.append(_item(name if isinstance(name, str) else "entry %d" % (index + 1)))
             return items
 
@@ -447,16 +481,27 @@ def inventory(platform, home=None, now=None):
     """The whole answer for one platform:  the JSON document both hosts return."""
     home = home or os.path.expanduser("~")
     sections = read_platform(platform, home)
-    stamp = (now or datetime.datetime.now(datetime.timezone.utc)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    stamp = (now or datetime.datetime.now(datetime.UTC)).strftime("%Y-%m-%dT%H:%M:%SZ")
     if sections is None:
         return {
-            "schemaVersion": SCHEMA_VERSION, "tool": TOOL, "ok": False, "host": host_label(),
-            "platform": platform, "generatedAt": stamp, "sections": [],
+            "schemaVersion": SCHEMA_VERSION,
+            "tool": TOOL,
+            "ok": False,
+            "host": host_label(),
+            "platform": platform,
+            "generatedAt": stamp,
+            "sections": [],
             "detail": "This reader has no sources for that platform.",
         }
     return {
-        "schemaVersion": SCHEMA_VERSION, "tool": TOOL, "ok": True, "host": host_label(),
-        "platform": platform, "generatedAt": stamp, "sections": sections, "detail": "",
+        "schemaVersion": SCHEMA_VERSION,
+        "tool": TOOL,
+        "ok": True,
+        "host": host_label(),
+        "platform": platform,
+        "generatedAt": stamp,
+        "sections": sections,
+        "detail": "",
     }
 
 
@@ -479,7 +524,10 @@ def main(argv=None, out=None):
         elif word == "--json":
             index += 1
         else:
-            out.write(json.dumps({"ok": False, "detail": "usage: --platform NAME [--home HOME] [--json]"}) + "\n")
+            out.write(
+                json.dumps({"ok": False, "detail": "usage: --platform NAME [--home HOME] [--json]"})
+                + "\n"
+            )
             return 2
     if not platform or not PLATFORM_RE.fullmatch(platform):
         out.write(json.dumps({"ok": False, "detail": "name one platform with --platform"}) + "\n")
