@@ -5481,9 +5481,7 @@ class WorkflowVerbs:
                     blob = _obj(self._get(f"/repos/{repo}/git/blobs/{sha}"))
                 except RelayGitHubError as exc:
                     if exc.code == "response_too_large":
-                        raise Refused(
-                            "referenced blob exceeds supported response size"
-                        ) from None
+                        raise Refused("referenced blob exceeds supported response size") from None
                     if exc.status in (0, 408) or exc.status >= 500:
                         raise PreReadUnavailable(
                             "blob pre-read unavailable; no write attempted"
