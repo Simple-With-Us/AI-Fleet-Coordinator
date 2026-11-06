@@ -5,8 +5,8 @@ try:
 except ImportError:
     from test_workflow_verbs import REPO, SHA, Client, Policy
 from git_relay.github_client import RelayGitHubError
-from git_relay.server import _REAPPLY_STATE_ACTIONS
-from git_relay.workflow_verbs import Refused, WorkflowVerbs
+from git_relay.server import _REAPPLY_STATE_ACTIONS, PreReadUnavailable
+from git_relay.workflow_verbs import MAX_FILE_RAW, Refused, WorkflowVerbs
 
 
 class Writes(unittest.TestCase):
@@ -102,13 +102,70 @@ class Writes(unittest.TestCase):
         c = Client(blob(b"\xff\xfe\x00"))
         with self.assertRaises(Refused):
             self.handle(c, a).run(a, {**base, "files": files})
-        # oversized or malformed blob receipts are refused
-        c = Client({"encoding": "base64", "size": 3 * 1024 * 1024, "content": "aGk="})
-        with self.assertRaises(Refused):
-            self.handle(c, a).run(a, {**base, "files": files})
+        # a receipt that overstates the size but decodes small is accepted: budgets
+        # measure the decoded bytes, never the receipt's declared size
+        tree = {"sha": "e" * 40, "truncated": False, "tree": []}
+        c = Client({"encoding": "base64", "size": 3 * 1024 * 1024, "content": "aGk="}, tree)
+        out = self.handle(c, a).run(a, {**base, "files": files})
+        self.assertEqual(out["tree"]["sha"], "e" * 40)
         c = Client({"encoding": "utf-8", "size": 2, "content": "hi"})
         with self.assertRaises(Refused):
             self.handle(c, a).run(a, {**base, "files": files})
+
+    def test_tree_blob_reference_budget_measures_decoded_bytes(self):
+        import base64
+
+        a = "wf_git_tree_create"
+        blob_sha = "d" * 40
+        base = {"repo": REPO, "base_tree": SHA}
+        files = [{"path": "x.txt", "sha": blob_sha, "mode": "100644"}]
+        # adversarial: the declared size lies low while the decoded bytes exceed the
+        # per-file raw budget - refused on the measured length, never the receipt
+        big = b"a" * (MAX_FILE_RAW + 1)
+        c = Client(
+            {"encoding": "base64", "size": 2, "content": base64.b64encode(big).decode()}
+        )
+        with self.assertRaises(Refused):
+            self.handle(c, a).run(a, {**base, "files": files})
+        self.assertEqual(len(c.calls), 1, "refused before any tree write")
+
+    def test_tree_blob_pre_read_failures_release_retryable(self):
+        a = "wf_git_tree_create"
+        blob_sha = "d" * 40
+        base = {"repo": REPO, "base_tree": SHA}
+        files = [{"path": "x.txt", "sha": blob_sha, "mode": "100644"}]
+
+        class Boom(Client):
+            def __init__(self, exc):
+                super().__init__()
+                self.exc = exc
+
+            def _call(self, *args, **kw):
+                raise self.exc
+
+        # transient upstream failures during the pre-read release as retryable
+        # (PreReadUnavailable): the read ran before any dispatch, so no write was
+        # attempted and nothing is unknown
+        for status in (0, 408, 500, 503):
+            with self.assertRaises(PreReadUnavailable):
+                self.handle(Boom(RelayGitHubError(status, "boom")), a).run(
+                    a, {**base, "files": files}
+                )
+        # an oversized response is a definite refusal, never a retryable unknown
+        with self.assertRaises(Refused):
+            self.handle(
+                Boom(
+                    RelayGitHubError(
+                        0, "github response exceeded 1 MiB bound", code="response_too_large"
+                    )
+                ),
+                a,
+            ).run(a, {**base, "files": files})
+        # a definite 404 stays a hard upstream error, not a retry
+        with self.assertRaises(RelayGitHubError):
+            self.handle(Boom(RelayGitHubError(404, "not found")), a).run(
+                a, {**base, "files": files}
+            )
 
     def test_commit_exact_tree_parents_and_no_identity_selector(self):
         a = "wf_git_commit_create"

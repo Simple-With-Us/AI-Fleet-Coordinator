@@ -5474,12 +5474,25 @@ class WorkflowVerbs:
                 # the raw work budget (MAX_FILES_RAW), not the transport cap.
                 if not isinstance(sha, str) or not _SHA.fullmatch(sha):
                     raise Refused("invalid file content or path")
-                blob = _obj(self._get(f"/repos/{repo}/git/blobs/{sha}"))
+                # The pre-read runs before any dispatch:  a transient upstream
+                # failure here means NO write was attempted, so it releases the
+                # idempotency key as retryable instead of locking it unknown.
+                try:
+                    blob = _obj(self._get(f"/repos/{repo}/git/blobs/{sha}"))
+                except RelayGitHubError as exc:
+                    if exc.code == "response_too_large":
+                        raise Refused(
+                            "referenced blob exceeds supported response size"
+                        ) from None
+                    if exc.status in (0, 408) or exc.status >= 500:
+                        raise PreReadUnavailable(
+                            "blob pre-read unavailable; no write attempted"
+                        ) from None
+                    raise
                 raw = blob.get("content")
                 if (
                     blob.get("encoding") != "base64"
                     or not isinstance(blob.get("size"), int)
-                    or blob["size"] > MAX_FILE_RAW
                     or not isinstance(raw, str)
                 ):
                     raise Refused("referenced blob unavailable or unsupported")
@@ -5487,6 +5500,11 @@ class WorkflowVerbs:
                     decoded_raw = base64.b64decode(raw, validate=True)
                 except (binascii.Error, ValueError):
                     raise Refused("referenced blob unavailable or unsupported") from None
+                # Budgets measure the decoded bytes, never the receipt's declared
+                # size:  a receipt that understates blob["size"] cannot smuggle
+                # content past the raw work budget.
+                if len(decoded_raw) > MAX_FILE_RAW:
+                    raise Refused("referenced blob exceeds the per-file raw budget")
                 if unreviewed_file_secret(repo, path, decoded_raw):
                     raise Refused("credential-shaped content refused")
                 try:
@@ -5495,7 +5513,7 @@ class WorkflowVerbs:
                     raise Refused("referenced blob is not utf-8 text") from None
                 if self._provider_token_text(decoded):
                     raise Refused("credential-shaped content refused")
-                referenced_total += blob["size"]
+                referenced_total += len(decoded_raw)
                 if referenced_total > MAX_FILES_RAW:
                     raise Refused("file content budget exceeded")
                 seen.add(path)
