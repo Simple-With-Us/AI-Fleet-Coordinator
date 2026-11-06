@@ -797,14 +797,31 @@ struct SeatActivityModel: Equatable, Sendable {
                 // A seat whose state could not be read may be connected,  so with any unread
                 // the count says only what is known and is never a flat "0 of N".
                 let connectedWords = unread > 0 ? "known to be connected" : "connected"
+                // A seat whose sessions could not be read may be working,  so the working
+                // count is a floor whenever any seat that is not known to be working has
+                // sessions that are unknown.
+                let sessionsUnread = mac.filter { !$0.isWorking && !$0.openSessions.isKnown }.count
+                let workingWords: String
+                if sessionsUnread == 0 {
+                    workingWords = "\(working) \(working == 1 ? "is" : "are") working on the Mac."
+                } else if working == 0 {
+                    workingWords = "none is known to be working on the Mac."
+                } else {
+                    workingWords = "at least \(working) \(working == 1 ? "is" : "are") working on the Mac."
+                }
                 sentences.append(
                     "\(connected) of \(seats) held by the Mac \(connected == 1 ? "is" : "are") \(connectedWords),  "
-                        + "and \(working) \(working == 1 ? "is" : "are") working on the Mac."
+                        + "and \(workingWords)"
                 )
                 if unread > 0 {
                     sentences.append(unread == 1
                         ? "The state of 1 of them could not be read."
                         : "The state of \(unread) of them could not be read.")
+                }
+                if sessionsUnread > 0 {
+                    sentences.append(sessionsUnread == 1
+                        ? "The sessions of 1 of them could not be read."
+                        : "The sessions of \(sessionsUnread) of them could not be read.")
                 }
             }
             let attention = mac.filter { $0.needsAttention }.count
@@ -955,7 +972,14 @@ enum SeatActivityBuilder {
             guard let leases = entry.leases else {
                 return .unknown("The eavesdropper's state for this seat names no leases,  so its sessions on the Mac are unknown.")
             }
-            return .known(leases.filter { $0.alive == true }.count)
+            let live = leases.filter { $0.alive == true }.count
+            // A lease whose "alive" is missing or of the wrong type is not a dead one.  With
+            // no lease known to be alive and any of them unsaid,  the count is unknown,  and
+            // never a zero.
+            if live == 0, leases.contains(where: { $0.alive == nil }) {
+                return .unknown("The eavesdropper's state does not say whether this seat's session leases are alive.")
+            }
+            return .known(live)
         }
         if place.isElsewhere {
             return .notHere(place.notHereReason)

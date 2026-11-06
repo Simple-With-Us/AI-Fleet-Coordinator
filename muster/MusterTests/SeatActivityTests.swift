@@ -544,6 +544,66 @@ final class SeatActivityTests: XCTestCase {
         XCTAssertTrue(model.headline.contains("The state of 1 of them could not be read."), model.headline)
     }
 
+    /// The fixture with a second seat the eavesdropper publishes without any lease list.
+    private var listenerWithSeatOfUnknownSessions: String {
+        listenerJSON.replacingOccurrences(
+            of: "\"seats\": {",
+            with: "\"seats\": {\n    \"CODEX\": {\"bot\": \"Codex\", \"connected\": true, \"paused\": false, \"jobs\": 0},"
+        )
+    }
+
+    /// With one seat working and another whose sessions could not be read,  the working
+    /// count is a floor,  and the headline says how many seats could not be counted.
+    func test_the_headline_says_at_least_when_a_seats_sessions_are_unknown() async throws {
+        let state = listenerWithSeatOfUnknownSessions
+        XCTAssertNotEqual(state, listenerJSON, "the fixture edit must land")
+        let model = try await read(roster: ["CLAUDE", "CODEX"], runner: healthyRunner(), listener: state)
+        let codex = try XCTUnwrap(model.rows.first { $0.seat == "CODEX" })
+        XCTAssertTrue(codex.listener.isKnown)
+        XCTAssertFalse(codex.openSessions.isKnown)
+        XCTAssertTrue(model.headline.contains("at least 1 is working on the Mac."), model.headline)
+        XCTAssertFalse(model.headline.contains("and 1 is working"), model.headline)
+        XCTAssertTrue(model.headline.contains("The sessions of 1 of them could not be read."), model.headline)
+    }
+
+    /// With no seat known to be working and a seat whose sessions are unknown,  the headline
+    /// does not say that none is working.
+    func test_the_headline_does_not_say_zero_working_when_sessions_are_unknown() async throws {
+        let model = try await read(
+            roster: ["CODEX"],
+            runner: healthyRunner(),
+            listener: listenerWithSeatOfUnknownSessions
+        )
+        XCTAssertTrue(model.headline.contains("none is known to be working on the Mac."), model.headline)
+        XCTAssertFalse(model.headline.contains("0 are working"), model.headline)
+        XCTAssertTrue(model.headline.contains("The sessions of 1 of them could not be read."), model.headline)
+    }
+
+    /// A lease whose "alive" is missing or of the wrong type is not a dead lease:  with no
+    /// lease known to be alive,  the seat's sessions are unknown and not zero.
+    func test_leases_that_do_not_say_alive_make_the_sessions_unknown_not_zero() async throws {
+        let state = listenerJSON
+            .replacingOccurrences(of: "\"alive\": true,", with: "\"alive\": \"yes\",")
+            .replacingOccurrences(of: "\"alive\": false,", with: "")
+        XCTAssertNotEqual(state, listenerJSON, "the fixture edit must land")
+        let model = try await read(runner: healthyRunner(), listener: state)
+        let row = try XCTUnwrap(model.rows.first)
+        XCTAssertEqual(row.sessions.count, 2)
+        XCTAssertTrue(row.sessions.allSatisfy { $0.alive == nil })
+        XCTAssertFalse(row.openSessions.isKnown)
+        XCTAssertNotEqual(row.openSessions, .known(0))
+        XCTAssertNotNil(row.openSessions.reason)
+        XCTAssertFalse(row.isWorking)
+    }
+
+    /// A lease that does not say alive does not hide one that does:  the count stays known.
+    func test_one_live_lease_keeps_the_count_known_beside_one_that_does_not_say() async throws {
+        let state = listenerJSON.replacingOccurrences(of: "\"alive\": false,", with: "")
+        XCTAssertNotEqual(state, listenerJSON, "the fixture edit must land")
+        let model = try await read(runner: healthyRunner(), listener: state)
+        XCTAssertEqual(try XCTUnwrap(model.rows.first).openSessions, .known(1))
+    }
+
     /// A configuration file that is there but cannot be read is said to be a problem,  because
     /// it could hide a seat the Mac refuses.  A missing one is normal and says nothing.
     func test_an_unreadable_configuration_is_a_problem_and_a_missing_one_is_not() async throws {
