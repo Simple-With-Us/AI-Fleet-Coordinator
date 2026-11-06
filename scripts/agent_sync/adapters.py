@@ -2185,8 +2185,11 @@ def openrouter_request_body(model: str, system: str, user: str, schema: str) -> 
 
     No `tools`, no `tool_choice`, no `stream` and no plugin:  the model is offered nothing to call.
     `provider.require_parameters` makes OpenRouter refuse a provider that cannot honor the strict
-    `response_format` (or the reasoning setting) instead of quietly dropping it."""
-    return {
+    `response_format` (or the reasoning setting) instead of quietly dropping it.  A preset-referencing
+    model (`@preset/<slug>`) also pins "tools": []:  a preset can carry tools server-side, the
+    documented shallow merge lets a request field override the preset's, and an empty array is the
+    only request-side shape that keeps this call tool-less no matter how the dashboard is edited."""
+    body = {
         "model": model,
         "messages": [
             {"role": "system", "content": system},
@@ -2206,6 +2209,9 @@ def openrouter_request_body(model: str, system: str, user: str, schema: str) -> 
         "reasoning": dict(OPENROUTER_REASONING),
         "stream": False,
     }
+    if model.startswith("@preset/"):
+        body["tools"] = []
+    return body
 
 
 def openrouter_http_reason(status: int) -> str:
