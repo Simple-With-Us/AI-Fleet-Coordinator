@@ -709,6 +709,53 @@ final class OpsAllowlistAndAuditTests: XCTestCase {
         XCTAssertTrue(list.coolifyRedeploy)
     }
 
+    /// The server refuses the whole file when any entry is malformed, so the Mac does not read
+    /// it either, and invents no scope or unit for an update that gave none.
+    func test_the_allowlist_is_not_read_when_an_entry_is_malformed() throws {
+        let head = #"{"schemaVersion":1,"#
+        let goodUpdate = #"{"name":"fleet-cli","unit":"fleet-cli-git-update.service","scope":"user"}"#
+        let sections = [
+            // Updates
+            #""server":{"updates":[{"name":"fleet-cli","unit":"a.service"}]}"#,
+            #""server":{"updates":[{"name":"fleet-cli","unit":"a.service","scope":"global"}]}"#,
+            #""server":{"updates":[{"name":"fleet-cli","unit":"a.service","scope":null}]}"#,
+            #""server":{"updates":[{"name":"fleet-cli","scope":"user"}]}"#,
+            #""server":{"updates":[{"name":"fleet-cli","unit":"a.timer","scope":"user"}]}"#,
+            #""server":{"updates":[{"unit":"a.service","scope":"user"}]}"#,
+            #""server":{"updates":[3]}"#,
+            #""server":{"updates":"none"}"#,
+            // Units, LaunchAgents and pm2 applications
+            #""server":{"units":[{"unit":"a.timer","scope":"user","actions":[]}]}"#,
+            #""server":{"units":[{"unit":"a.timer","scope":"user","actions":["reboot"]}]}"#,
+            #""server":{"units":[{"unit":"a.timer","scope":"user"}]}"#,
+            #""server":{"units":[{"scope":"user","actions":["restart"]}]}"#,
+            #""mac":{"agents":[{"actions":["start"]}]}"#,
+            #""mac":{"agents":[{"label":"com.jay.x","actions":[]}]}"#,
+            #""mac":{"pm2Apps":[{"actions":["start"]}]}"#,
+            #""mac":{"pm2Apps":[{"name":"shellular","actions":["fly"]}]}"#,
+            // Sections that are not objects, and booleans that are not booleans
+            #""mac":"none""#,
+            #""server":[1]"#,
+            #""server":{"coolify":"yes"}"#,
+            #""server":{"coolify":{"redeploy":"true"}}"#,
+            #""server":{"coolify":{"redeploy":1}}"#,
+            #""server":{"coolify":{"redeploy":null}}"#,
+            #""server":{"resourcePolicy":"true"}"#,
+            #""server":{"resourcePolicy":null}"#,
+        ]
+        for section in sections {
+            XCTAssertNil(OpsAllowlist.parse(Data((head + section + "}").utf8)), section)
+        }
+        let fine = head + #""server":{"updates":["# + goodUpdate + #"]}}"#
+        let list = try XCTUnwrap(OpsAllowlist.parse(Data(fine.utf8)))
+        XCTAssertEqual(list.updates, [OpsAllowlist.Update(name: "fleet-cli", unit: "fleet-cli-git-update.service", scope: "user")])
+        // An empty or null value is an empty section, as the server's `or` defaults read it.
+        let empty = head + #""mac":null,"server":{"coolify":{},"resourcePolicy":false,"units":[]}}"#
+        let none = try XCTUnwrap(OpsAllowlist.parse(Data(empty.utf8)))
+        XCTAssertFalse(none.coolifyRedeploy)
+        XCTAssertTrue(none.serverUnits.isEmpty)
+    }
+
     func test_an_allowlist_of_another_version_or_shape_is_not_read() throws {
         let other = try fixture("ops_allowlist", "json")
             .replacingOccurrences(of: "\"schemaVersion\": 1", with: "\"schemaVersion\": 2")
@@ -1310,5 +1357,101 @@ final class KnobEditorTests: XCTestCase {
         XCTAssertEqual(KnobRegistry.Knob.plainDefault("none"), "")
         XCTAssertEqual(KnobRegistry.Knob.plainDefault("None (uses the built-in list)"), "")
         XCTAssertEqual(KnobRegistry.Knob.plainDefault("nonempty"), "nonempty")
+    }
+}
+
+// MARK: - A start Muster takes on its own
+
+/// `runUnattended`:  the same plan,  run and audit as a confirmed action,  for a start only.
+@MainActor
+final class OpsControllerUnattendedTests: XCTestCase {
+    private let planned = #"{"ok":true,"result":"planned","commands":[["pm2","start","shellular"]],"detail":"plan"}"#
+    private let done = #"{"ok":true,"result":"done","commands":[["pm2","start","shellular"]],"detail":"ran"}"#
+    private let refused = #"{"ok":false,"result":"refused","commands":[],"detail":"pm2 no longer remembers this application and this tool does not recreate it"}"#
+
+    private func controller(_ runner: FakeOpsRunner) -> OpsController {
+        OpsController(runner: runner, makeBuilder: { exampleBuilder() }, auditURL: nil, checksInstall: false)
+    }
+
+    private func runner(plan: String, run: String) -> FakeOpsRunner {
+        FakeOpsRunner { invocation, _ in
+            OpsProcessResult(exitCode: 0, stdout: invocation.arguments.contains("--plan") ? plan : run, stderr: "")
+        }
+    }
+
+    func test_a_start_is_planned_and_then_run_with_no_sheet() async throws {
+        let fake = runner(plan: planned, run: done)
+        let ops = controller(fake)
+        let outcome = await ops.runUnattended(.pm2App(verb: .start, name: "shellular"))
+        XCTAssertEqual(outcome?.isSuccess(for: .yes), true)
+        XCTAssertEqual(fake.recorded.count, 2)
+        XCTAssertTrue(fake.recorded[0].contains("--plan"))
+        XCTAssertEqual(Array(fake.recorded[1].suffix(5)), ["pm2", "start", "shellular", "--yes", "--json"])
+        // It never showed a sheet,  and it counts as a completed run.
+        XCTAssertEqual(ops.phase, .idle)
+        XCTAssertFalse(ops.isPresenting)
+        XCTAssertEqual(ops.completedRuns, 1)
+        XCTAssertFalse(ops.isRunningUnattended)
+        XCTAssertFalse(ops.isBusy)
+    }
+
+    func test_a_launch_agent_start_is_accepted_too() async throws {
+        let fake = runner(plan: planned, run: done)
+        let outcome = await controller(fake).runUnattended(.macAgent(verb: .start, label: "com.jay.fleet-tools-doctor"))
+        XCTAssertNotNil(outcome)
+        XCTAssertEqual(fake.recorded.count, 2)
+    }
+
+    func test_only_a_start_is_ever_accepted() async throws {
+        let fake = runner(plan: planned, run: done)
+        let ops = controller(fake)
+        let refusedActions: [OpsAction] = [
+            .pm2App(verb: .stop, name: "shellular"),
+            .pm2App(verb: .restart, name: "shellular"),
+            .macAgent(verb: .stop, label: "com.jay.fleet-tools-doctor"),
+            .macAgent(verb: .restart, label: "com.jay.fleet-tools-doctor"),
+            .serverUnit(verb: .start, unit: OpsNames.reportTimerUnit),
+            .serverUpdate(name: "fleet-cli"),
+            .coolifyRedeploy(uuid: "abc123def456", name: "muster-web"),
+            .knobSet(key: "FLEET_X", value: "1"),
+            .knobUnset(key: "FLEET_X"),
+            .logs(unit: OpsNames.reportTimerUnit),
+            .resourceStatus,
+        ]
+        for action in refusedActions {
+            let outcome = await ops.runUnattended(action)
+            XCTAssertNil(outcome, "\(action)")
+        }
+        XCTAssertEqual(fake.recorded.count, 0, "Nothing may run for an action that is not a start.")
+    }
+
+    func test_nothing_runs_while_a_sheet_is_up() async throws {
+        let fake = runner(plan: planned, run: done)
+        let ops = controller(fake)
+        XCTAssertTrue(ops.plan(.pm2App(verb: .stop, name: "shellular")))
+        let before = fake.recorded.count
+        let outcome = await ops.runUnattended(.pm2App(verb: .start, name: "vision-worker"))
+        XCTAssertNil(outcome)
+        // The sheet's own plan is the only thing that ran.
+        XCTAssertLessThanOrEqual(fake.recorded.count, max(before, 1))
+        XCTAssertFalse(fake.recorded.contains { $0.contains("--yes") })
+    }
+
+    func test_a_plan_the_helper_refuses_is_never_run_and_says_why() async throws {
+        let fake = runner(plan: refused, run: done)
+        let ops = controller(fake)
+        let outcome = await ops.runUnattended(.pm2App(verb: .start, name: "shellular"))
+        XCTAssertEqual(outcome?.isSuccess(for: .yes), false)
+        XCTAssertTrue(outcome?.detail.contains("does not recreate it") == true, outcome?.detail ?? "")
+        XCTAssertFalse(fake.recorded.contains { $0.contains("--yes") })
+        XCTAssertEqual(ops.completedRuns, 0)
+    }
+
+    func test_a_run_that_does_not_work_is_not_a_success() async throws {
+        let failed = #"{"ok":false,"result":"failed","commands":[["pm2","start","shellular"]],"detail":"pm2 said no"}"#
+        let fake = runner(plan: planned, run: failed)
+        let outcome = await controller(fake).runUnattended(.pm2App(verb: .start, name: "shellular"))
+        XCTAssertEqual(outcome?.isSuccess(for: .yes), false)
+        XCTAssertTrue(outcome?.detail.contains("pm2 said no") == true, outcome?.detail ?? "")
     }
 }

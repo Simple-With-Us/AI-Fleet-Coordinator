@@ -55,6 +55,9 @@ struct DriftMenuBarContent: View {
                 Button(MachineMenuCopy.oneRow(problem)) { perform(.openServices) }
             }
         }
+        // The foot names the running build and its checkout,  so a report can say which
+        // code the owner was looking at.
+        BuildIdentityMenuSection()
     }
 
     /// The window's identifier.  `MusterWindow` opens it only when no window is on screen,

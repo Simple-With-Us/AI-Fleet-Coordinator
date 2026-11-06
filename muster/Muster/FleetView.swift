@@ -125,7 +125,7 @@ struct FleetView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Label("Fleet View", systemImage: "list.bullet.rectangle")
+                Label(MusterDestination.appsAndWork.title, systemImage: MusterDestination.appsAndWork.systemImage)
                     .font(.headline)
                 Text("Zulip #\(registrySummary.zulipChannelDisplayName)")
                     .font(.caption.monospaced())
@@ -134,6 +134,14 @@ struct FleetView: View {
                     .padding(.vertical, 2)
                     .background(.quaternary, in: Capsule())
                 Spacer()
+                // A refresh over rows already on screen says so,  so old rows never look
+                // current while the new ones are read.
+                if loading && !(envelope == nil && registrySummary.apps.isEmpty) {
+                    ProgressView().controlSize(.small)
+                    Text("Refreshing\u{2026}")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
                 if let stamp = refreshClock.headerText {
                     Text(stamp)
                         .font(.callout)
@@ -219,7 +227,7 @@ struct FleetView: View {
                                 Text("\(app.activeClaims) claim(s)\(app.expiredClaims > 0 ? " (\(app.expiredClaims) expired)" : "")")
                                     .font(.caption.monospaced())
                                     .foregroundStyle(app.expiredClaims > 0 ? .red : .secondary)
-                                FleetToolsStateBadge(state: app.state, width: 92)
+                                FleetToolsStateBadge(state: app.state, width: 92, checked: PassMeaning.appRow)
                             }
                         }
                     }

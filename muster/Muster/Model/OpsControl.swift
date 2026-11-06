@@ -25,6 +25,10 @@ enum FleetServiceActionRouting {
 // view asks for Touch ID,  then Muster plans again,  refuses when the plan changed,  and only
 // then runs `--yes`.  One action runs at a time,  app-wide.
 //
+// The one exception to Touch ID is `OpsController.runUnattended`:  a start that Muster takes on
+// its own for a service whose policy says to keep it running (`ServiceReconciler`).  It plans,
+// runs and audits exactly as above,  with nobody at a sheet,  and it accepts only a start.
+//
 // `ServiceActionRouter` is the one way in for a service row,  from the menu or the panel.
 // BotFleet Server and any LaunchAgent the allowlist does not name stay on `FleetAdmin`'s
 // direct route,  with no plan,  no Touch ID and no audit row:  an allowlist argv cannot say
@@ -158,7 +162,7 @@ enum OpsAction: Equatable {
         case .knobUnset(let key): return key
         case .pm2App(_, let name): return OpsNames.pm2Title(name)
         case .logs(let unit): return OpsNames.unitTitle(unit)
-        case .serverResource(let field, _, _): return resourceTitle(field)
+        case .serverResource(let field, _, _): return ResourcePolicyField(rawValue: field)?.title ?? "Resource Policy"
         case .resourceStatus: return "The Resource Policy"
         }
     }
@@ -176,7 +180,8 @@ enum OpsAction: Equatable {
         case .knobUnset(let key): return "Reset \(key) to the default \(place)"
         case .pm2App(let verb, _): return "\(verb.title) \(subjectTitle) \(place)"
         case .logs: return "Read the last logs of \(subjectTitle) \(place)"
-        case .serverResource(let field, let value, _): return "Set \(resourceTitle(field)) to \(value) \(place)"
+        case .serverResource(let field, let value, _):
+            return "\(ResourcePolicyField.changePhrase(field: field, value: value)) \(place)"
         case .resourceStatus: return "Read the resource policy \(place)"
         }
     }
@@ -292,18 +297,6 @@ enum OpsAction: Equatable {
         case .serverResource(let field, let value, let revision):
             return ["server", "resource-policy", "\(field).\(value).\(revision)"]
         case .resourceStatus: return ["server", "resource-status", "coding"]
-        }
-    }
-
-    private func resourceTitle(_ field: String) -> String {
-        switch field {
-        case "cpu-cores": return "CPU Cores"
-        case "cpu-weight": return "CPU Weight"
-        case "ram-budget-gib": return "RAM Budget"
-        case "ram-critical-gib": return "Critical RAM Budget"
-        case "ram-reserve-gib": return "Host RAM Reserve"
-        case "borrow-idle": return "Idle Memory Borrowing"
-        default: return "Resource Policy"
         }
     }
 }
@@ -1358,7 +1351,7 @@ struct OpsResourcePolicyReader {
             let outcome = OpsResultParser.parse(process, mode: .plan, action: action, timeout: invocation.timeout)
             guard outcome.isSuccess(for: .plan) else { return .unavailable(outcome.detail) }
             guard let snapshot = outcome.resourcePolicy else {
-                return .unavailable("The server did not include a resource policy receipt.")
+                return .unavailable("The server answered without a readable resource policy, so neither the saved values nor the controller's receipt could be shown.")
             }
             let data = try JSONEncoder().encode(snapshot)
             let receivedAt = now ?? Date()
@@ -1379,6 +1372,9 @@ struct OpsAllowlist: Equatable {
     struct Entry: Equatable {
         let name: String
         let actions: [String]
+        /// The scope a server unit is run in,  `user` or `system`,  when the allowlist says.
+        /// The helper acts on a unit in this scope only,  whatever a row says.
+        var scope: String? = nil
     }
 
     struct Update: Equatable, Identifiable {
@@ -1388,6 +1384,9 @@ struct OpsAllowlist: Equatable {
 
         var id: String { name }
     }
+
+    /// The two scopes a server unit can run in.
+    static let serverScopes: Set<String> = ["user", "system"]
 
     var macAgents: [Entry] = []
     var pm2Apps: [Entry] = []
@@ -1410,6 +1409,12 @@ struct OpsAllowlist: Equatable {
         verbs(in: serverUnits, named: unit)
     }
 
+    /// The scope the allowlist runs a unit in,  or nil when it does not name the unit or
+    /// gives no scope.
+    func scope(forServerUnit unit: String) -> String? {
+        serverUnits.first(where: { $0.name == unit })?.scope
+    }
+
     private func verbs(in entries: [Entry], named name: String) -> [OpsVerb] {
         guard let entry = entries.first(where: { $0.name == name }) else { return [] }
         return OpsVerb.allCases.filter { entry.actions.contains($0.rawValue) }
@@ -1426,39 +1431,114 @@ struct OpsAllowlist: Equatable {
         return parse(data)
     }
 
-    /// Parse the allowlist.  A version this app does not know is not read:  the buttons
+    /// Parse the allowlist.  A version this app does not know is not read:  the buttons
     /// it would draw could name verbs that mean something else.
+    ///
+    /// The server refuses the whole file when any entry is malformed, so that a typo can
+    /// never widen what is allowed (`validate_config` in fleet-ops-control.py).  This read
+    /// refuses it for the same structural faults, and returns nil:  buttons drawn from a
+    /// file the server will not accept would only ever fail, and a value the file never
+    /// gave is never filled in.  The faults are a list that is not a list of objects, a
+    /// LaunchAgent without a string label, a pm2 application without a string name, a unit
+    /// without a string name or with a scope other than `user` or `system`, an update
+    /// without a string name, a string unit ending in `.service` and a scope of those two,
+    /// actions that are empty, not a list, or not `start`, `stop` and `restart`, a `mac`,
+    /// `server` or `server.coolify` given as something other than an object, and a
+    /// `server.coolify.redeploy` or `server.resourcePolicy` given as something other than a
+    /// boolean.  The
+    /// server's name patterns and its refusal of a name used twice are not repeated here,
+    /// and the server still checks every run against its own copy.
     static func parse(_ data: Data) -> OpsAllowlist? {
         guard
             let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
             (object["schemaVersion"] as? NSNumber)?.intValue == 1
         else { return nil }
         var list = OpsAllowlist()
-        let mac = object["mac"] as? [String: Any]
-        let server = object["server"] as? [String: Any]
-        for item in (mac?["agents"] as? [[String: Any]]) ?? [] {
-            guard let label = item["label"] as? String else { continue }
-            list.macAgents.append(Entry(name: label, actions: (item["actions"] as? [String]) ?? []))
+        // The server reads an absent or empty value as an empty section (`or {}`), and
+        // refuses any other value that is not an object.
+        guard
+            let mac = section(object["mac"]),
+            let server = section(object["server"]),
+            let coolify = section(server["coolify"])
+        else { return nil }
+        // `redeploy` and `resourcePolicy`, when present, must be JSON booleans:  the server
+        // refuses a string such as "true", a number and a null alike.
+        if let redeploy = coolify["redeploy"], !isJSONBool(redeploy) { return nil }
+        if let policy = server["resourcePolicy"], !isJSONBool(policy) { return nil }
+        guard
+            let agents = rows(mac["agents"]),
+            let pm2 = rows(mac["pm2Apps"]),
+            let units = rows(server["units"]),
+            let updates = rows(server["updates"])
+        else { return nil }
+        for item in agents {
+            guard let label = item["label"] as? String, let actions = verbWords(item) else { return nil }
+            list.macAgents.append(Entry(name: label, actions: actions))
         }
-        for item in (mac?["pm2Apps"] as? [[String: Any]]) ?? [] {
-            guard let name = item["name"] as? String else { continue }
-            list.pm2Apps.append(Entry(name: name, actions: (item["actions"] as? [String]) ?? []))
+        for item in pm2 {
+            guard let name = item["name"] as? String, let actions = verbWords(item) else { return nil }
+            list.pm2Apps.append(Entry(name: name, actions: actions))
         }
-        for item in (server?["units"] as? [[String: Any]]) ?? [] {
-            guard let unit = item["unit"] as? String else { continue }
-            list.serverUnits.append(Entry(name: unit, actions: (item["actions"] as? [String]) ?? []))
+        for item in units {
+            guard
+                let unit = item["unit"] as? String,
+                let scope = item["scope"] as? String, serverScopes.contains(scope),
+                let actions = verbWords(item)
+            else { return nil }
+            list.serverUnits.append(Entry(name: unit, actions: actions, scope: scope))
         }
-        for item in (server?["updates"] as? [[String: Any]]) ?? [] {
-            guard let name = item["name"] as? String else { continue }
-            list.updates.append(Update(
-                name: name,
-                unit: (item["unit"] as? String) ?? "",
-                scope: (item["scope"] as? String) ?? "system"
-            ))
+        for item in updates {
+            guard
+                let name = item["name"] as? String,
+                let unit = item["unit"] as? String, unit.hasSuffix(".service"),
+                let scope = item["scope"] as? String, serverScopes.contains(scope)
+            else { return nil }
+            list.updates.append(Update(name: name, unit: unit, scope: scope))
         }
-        let coolify = server?["coolify"] as? [String: Any]
-        list.coolifyRedeploy = (coolify?["redeploy"] as? Bool) == true
+        list.coolifyRedeploy = (coolify["redeploy"] as? Bool) == true
         return list
+    }
+
+    /// A section's entries:  none when the value is absent or empty, as the server's
+    /// `or []` reads it, and nil when it is anything else that is not a list of objects.
+    private static func rows(_ value: Any?) -> [[String: Any]]? {
+        guard isPresent(value) else { return [] }
+        return value as? [[String: Any]]
+    }
+
+    /// An object section:  empty when the value is absent or empty, as the server's `or {}`
+    /// reads it, and nil when it is anything else that is not an object.
+    private static func section(_ value: Any?) -> [String: Any]? {
+        guard isPresent(value) else { return [:] }
+        return value as? [String: Any]
+    }
+
+    /// Whether a JSON value counts as given, by Python's truth rule, which the server's
+    /// `or` defaults use:  null, false, zero and an empty string, list or object do not.
+    private static func isPresent(_ value: Any?) -> Bool {
+        guard let value, !(value is NSNull) else { return false }
+        if let number = value as? NSNumber { return number.doubleValue != 0 }
+        if let text = value as? String { return !text.isEmpty }
+        if let list = value as? [Any] { return !list.isEmpty }
+        if let object = value as? [String: Any] { return !object.isEmpty }
+        return true
+    }
+
+    /// Whether a JSON value is `true` or `false` and not a number:  Foundation hands both
+    /// back as `NSNumber`, so `as? Bool` alone would take 1 and 0 as well.
+    private static func isJSONBool(_ value: Any) -> Bool {
+        guard let number = value as? NSNumber else { return false }
+        return CFGetTypeID(number) == CFBooleanGetTypeID()
+    }
+
+    /// An entry's verbs as written, or nil when they are not a non-empty list of `start`,
+    /// `stop` and `restart`.
+    private static func verbWords(_ item: [String: Any]) -> [String]? {
+        guard
+            let words = item["actions"] as? [String], !words.isEmpty,
+            words.allSatisfy({ OpsVerb(rawValue: $0) != nil })
+        else { return nil }
+        return words
     }
 }
 
@@ -1499,6 +1579,8 @@ final class OpsController: ObservableObject {
     /// Counts every `--yes` run that ended,  so a view can read its data again.
     @Published private(set) var completedRuns = 0
     @Published private(set) var isRechecking = false
+    /// True while Muster runs a start of its own (`runUnattended`),  with nobody at a sheet.
+    @Published private(set) var isRunningUnattended = false
 
     private let runner: OpsRunning
     private let makeBuilder: () -> OpsCommandBuilder
@@ -1522,7 +1604,7 @@ final class OpsController: ObservableObject {
 
     /// True while a helper is running.
     var isBusy: Bool {
-        if isRechecking { return true }
+        if isRechecking || isRunningUnattended { return true }
         switch phase {
         case .planning, .running: return true
         default: return false
@@ -1570,6 +1652,10 @@ final class OpsController: ObservableObject {
             notice = OpsControlError.busy.errorDescription
             return false
         }
+        guard !isRunningUnattended else {
+            notice = OpsControlError.busy.errorDescription
+            return false
+        }
         guard task == nil else { return false }
         notice = nil
         phase = .planning(action)
@@ -1586,6 +1672,48 @@ final class OpsController: ObservableObject {
         phase = .running(action, reviewed)
         task = Task { [weak self] in
             await self?.runConfirmed(action, reviewed: reviewed)
+        }
+    }
+
+    /// Runs one start that Muster takes on its own (`ServiceReconciler`),  through the same
+    /// helper,  the same plan,  the same `--yes` run and the same audit row as a start the owner
+    /// confirmed,  but with no sheet and no Touch ID,  because nobody is there to answer.
+    ///
+    /// Only a start of a pm2 application or a LaunchAgent is accepted here,  and the helper
+    /// still checks its own allowlist.  The plan is read first and must succeed.  Nil when
+    /// another action is in the way or the action is not a start,  and then nothing ran.
+    func runUnattended(_ action: OpsAction) async -> OpsOutcome? {
+        switch action {
+        case .pm2App(let verb, _), .macAgent(let verb, _):
+            guard verb == .start else { return nil }
+        case .serverUnit, .serverUpdate, .coolifyRedeploy, .knobSet, .knobUnset, .logs,
+             .serverResource, .resourceStatus:
+            return nil
+        }
+        guard !isBusy, !isPresenting, task == nil else { return nil }
+        isRunningUnattended = true
+        defer { isRunningUnattended = false }
+        // True once the `--yes` helper may have started:  only then can anything have run.
+        var started = false
+        do {
+            let planned = try await execute(action, mode: .plan)
+            guard planned.isSuccess(for: .plan) else { return planned }
+            let invocation = try prepare(action, mode: .yes)
+            started = true
+            let outcome = try await launch(invocation, action: action, mode: .yes)
+            record(action, result: outcome.kind.rawValue)
+            completedRuns += 1
+            return outcome
+        } catch {
+            // A helper that could not be started ran nothing.
+            if let control = error as? OpsControlError, case .launchFailed = control { started = false }
+            if started {
+                record(action, result: OpsResultKind.failed.rawValue)
+                completedRuns += 1
+            }
+            return OpsOutcome(kind: started ? .unknown : .failed, ok: false, commands: [],
+                              detail: error.localizedDescription, exitCode: -1,
+                              runNotKnown: started)
         }
     }
 

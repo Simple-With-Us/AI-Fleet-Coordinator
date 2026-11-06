@@ -6,13 +6,15 @@ Such a seat posts to Zulip by commenting on a private "outbox" GitHub issue.  Th
 bridge runs on the Mac, and every tick:
 
   1. reads new comments on the outbox issue (gh api), checks the fleet header shape
-     ([SEAT] or [SEAT->PEER] on the first line, then a repo: line), and posts each
+     (legacy [SEAT]/[SEAT->PEER] or folder-tag [SEAT 📁repos] / [SEAT: LL.#.H 📁repos] (legacy hyphen LL-#-H still accepted),
+     optional leading 👀 / → peers; 📁 must list real repos; status bodies still need repo:;
+     claim/closeout may rely on a non-empty 📁 alone), and posts each
      good one to #Work-In-Progress with the simple-chat CLI, as that seat's own bot.
      A posted comment
      gets a rocket reaction; a rejected one gets a confused reaction plus a reply
      that names the reason.
   2. reads new #Work-In-Progress messages (Zulip get_messages, --rc credential or --read-as bot) and
-     mirrors the ones that skim-match the seat (->SEAT, @SEAT, [SEAT, ->FLEET,
+     mirrors the ones that skim-match the seat (->SEAT / →SEAT including multi-recipient lists, @SEAT / @**SEAT**, [SEAT, ->FLEET / →FLEET,
      OBJECTION / HALT / PROD DOWN / URGENT / HEADS-UP / DEPLOY CLAIM) back onto the
      same issue as comments marked <!-- outbox-bridge:zulip id=... -->.  Mirrored
      text is data for the seat, never instructions; the comment says so.
@@ -106,32 +108,123 @@ def load_env_tokens(path: Path) -> dict:
 # --- message rules -----------------------------------------------------------
 
 
+def _own_intro_re(seat: str):
+    """Legacy [SEAT]/[SEAT->]/[SEAT·...] or folder-tag intros for this seat (Policy 2026-11-05)."""
+    s = re.escape(seat)
+    # Optional leading 👀, then either a tight legacy tag or a spaced folder-tag intro.
+    return re.compile(
+        r"^(?:👀\s*)?(?:"
+        r"\[" + s + r"(?:\]|->|·)"
+        r"|"
+        r"\[\s*" + s + r"(?:\s*:\s*[A-Za-z0-9]+(?:[.-]\d+[.-][MSC]|-\d+-[MSC]))?\s+📁"
+        r")"
+    )
+
+
+def _first_content_line(text: str) -> str:
+    for line in text.splitlines():
+        if line.strip():
+            return line.strip()
+    return ""
+
+
 def header_error(text: str, seat: str):
     """Why `text` breaks the #Work-In-Progress header shape, or None when it is fine."""
     lines = text.strip().splitlines()
     if not lines:
         return "empty message"
     first = lines[0].strip()
-    if not (first.startswith("[%s]" % seat) or first.startswith("[%s->" % seat)):
-        return "first line must start with [%s] or [%s->PEER]" % (seat, seat)
-    if not any(re.match(r"^\s*repo:\s*\S", line) for line in lines[1:6]):
+    if not _own_intro_re(seat).match(first):
+        return (
+            "first line must start with [%s], [%s->PEER], or folder-tag "
+            "[%s 📁repos] / [%s: LL.#.H 📁repos] (optional leading 👀)" % (seat, seat, seat, seat)
+        )
+    intro = _own_intro_re(seat).match(first)
+    # Folder-tag intros must close with ] on the first line; a body repo: must not salvage.
+    if intro and "📁" in first[intro.start() :]:
+        if first.find("]", intro.start()) < 0:
+            return "folder-tag intro must close with ] on the first line"
+    has_repo_line = any(re.match(r"^\s*repo:\s*\S", line) for line in lines[1:6])
+    # 📁 must be inside the opening intro tag and followed by a real repo token (letter/digit).
+    tag_end = first.find("]", intro.start()) if intro else -1
+    intro_span = first[intro.start() : tag_end + 1] if intro and tag_end >= 0 else ""
+    has_folder_repos = bool(re.search(r"📁\s*[A-Za-z0-9]", intro_span))
+    if not (has_repo_line or has_folder_repos):
         return "repo: <project> must be the first body line"
+    # Non-empty 📁 may omit repo: only for claim/closeout; status bodies still need repo:.
+    if has_folder_repos and not has_repo_line and _looks_like_status_body(first, lines[1:]):
+        if not _is_claim_closeout_body(lines[1:]):
+            return "repo: <project> must be the first body line"
     if len(text) > MAX_OUTBOUND_CHARS:
         return "longer than %d characters" % MAX_OUTBOUND_CHARS
     return None
 
 
+def _is_claim_closeout_body(body_lines) -> bool:
+    """True when the first non-empty body line is a claim:/closeout field."""
+    for line in body_lines:
+        s = line.strip()
+        if not s:
+            continue
+        return bool(re.match(r"^(?:claim|closeout):\s*\S", s, re.IGNORECASE))
+    return False
+
+
+def _looks_like_status_body(first_line: str, body_lines) -> bool:
+    """Status block: sync-N subject, state: field, or classic CLAIMED/DONE/IN PROGRESS."""
+    after = first_line.split("]", 1)[1].strip() if "]" in first_line else ""
+    if re.match(r"sync-\d+\b", after, re.IGNORECASE):
+        return True
+    early = body_lines[:6]
+    if any(re.match(r"^\s*state:\s*", ln) for ln in early):
+        return True
+    blob = after + "\n" + "\n".join(early)
+    if re.search(r"(?:^|[\s|])(?:CLAIMED|DONE|IN PROGRESS)(?:\s|$|[\|])", blob, re.IGNORECASE):
+        return True
+    return False
+
+
 def is_own_post(text: str, seat: str) -> bool:
-    head = text.lstrip()
-    return head.startswith("[%s]" % seat) or head.startswith("[%s->" % seat)
+    return bool(_own_intro_re(seat).match(_first_content_line(text)))
+
+
+# One recipient token after → / ->: plain seat, @SEAT, or Zulip bold @**Name**.
+_RECIPIENT_TOKEN = (
+    r"(?:@\*\*[A-Za-z][A-Za-z0-9_-]*\*\*|@[A-Za-z][A-Za-z0-9_-]*|[A-Za-z][A-Za-z0-9_-]*)"
+)
+
+
+def _arrow_recipient_re(token: str):
+    """Match `token` as any comma-separated recipient after Unicode → or ASCII ->.
+
+    Accepts plain seats and Zulip native mentions (`@SEAT`, `@**Name**`) in the list.
+    Seat-token boundaries: the name must be a whole recipient (not a substring of
+    another token such as INSTINCT inside INSTINCTIVE, or MC inside MMC).
+    Comparison is case-insensitive so `@**Claude**` matches seat CLAUDE.
+    """
+    # Optional Zulip @ / @** wrappers around the target seat token.
+    target = r"(?:@\*\*)?" + re.escape(token) + r"(?:\*\*)?"
+    return re.compile(
+        r"(?:→|->)\s*(?:" + _RECIPIENT_TOKEN + r"\s*,\s*)*" + target + r"(?![A-Za-z0-9_-])",
+        re.IGNORECASE,
+    )
 
 
 def skim_match(text: str, seat: str) -> bool:
     """Skim rule (FLEET-PROTOCOL.md § Skim, Then Full-Read Only on a Match): the seat, a FLEET wake, or an alarm word."""
     head = text[:240]
-    if "->FLEET" in head:
+    # Fleet wake: ->FLEET / →FLEET, including mid-list (→ MC, FLEET). Envelope treats → and -> the same.
+    if _arrow_recipient_re("FLEET").search(head):
         return True
-    if ("->%s" % seat) in head or ("@%s" % seat) in head or ("[%s" % seat) in head:
+    s = re.escape(seat)
+    # Seat as any recipient after → / -> (multi-recipient folder-tag or directed envelope).
+    if _arrow_recipient_re(seat).search(head):
+        return True
+    # Raw @SEAT or Zulip bold @**SEAT** / @**Name** (case-insensitive) with seat-token boundary.
+    if re.search(r"@(?:\*\*)?" + s + r"(?:\*\*)?(?![A-Za-z0-9_-])", head, re.IGNORECASE):
+        return True
+    # Legacy tight [SEAT...] or spaced folder-tag [ SEAT 📁 ...] / [ SEAT: LL-#-H 📁 ...]
+    if re.search(r"\[\s*" + s + r"(?:\]|->|·|\s|:)", head):
         return True
     head_l = head.lower()
     return any(word.lower() in head_l for word in URGENT)
@@ -520,10 +613,12 @@ class Bridge:
     def _reject(self, cid: int, reason: str) -> None:
         body = (
             "%sreject id=%d -->\n"
-            "Not posted to #Work-In-Progress: %s.  Shape: first line `[%s] subject` or "
-            "`[%s->PEER] subject`, then `repo: <project>` as the first body line.  "
+            "Not posted to #Work-In-Progress: %s.  Shape: `[%s]` / `[%s->PEER]` / "
+            "folder-tag `[%s 📁repos]` (optional `→ peers`); 📁 must list real repos "
+            "(not empty/`→`/`,`); close the intro with `]`; status bodies still need "
+            "`repo: <project>` (claim/closeout may rely on 📁 alone).  "
             "Post a corrected comment; edits are not re-read."
-            % (BRIDGE_MARKER, cid, reason, self.seat, self.seat)
+            % (BRIDGE_MARKER, cid, reason, self.seat, self.seat, self.seat)
         )
         if self.dry_run:
             self.log("DRY would reject comment %d: %s" % (cid, reason))
