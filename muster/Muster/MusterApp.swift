@@ -7,6 +7,7 @@ struct MusterApp: App {
     @StateObject private var monitor: DriftMonitor
     @StateObject private var admin: FleetAdmin
     @StateObject private var router: ServiceActionRouter
+    @StateObject private var reconciler: ServiceReconciler
     @StateObject private var watch: PlaceWatch
 
     @MainActor
@@ -21,7 +22,9 @@ struct MusterApp: App {
         // at this point,  so the monitor hears it land.
         let monitor = DriftMonitor(grid: store)
         monitor.start()
-        let admin = FleetAdmin()
+        // The owner's stops are kept in a file,  so Muster never starts a service the owner
+        // stopped,  even after Muster quits and comes back.
+        let admin = FleetAdmin(ownerStopStore: OwnerStopFile())
         _store = StateObject(wrappedValue: store)
         _monitor = StateObject(wrappedValue: monitor)
         _admin = StateObject(wrappedValue: admin)
@@ -31,6 +34,10 @@ struct MusterApp: App {
         _router = StateObject(wrappedValue: router)
         // Updates arrive through Sparkle,  and the install waits while any action runs.
         AppUpdater.shared.start(router: router, admin: admin)
+        // Muster starts the Mac's services again when they stop,  only while it runs,  and the
+        // setting above turns it off.
+        let reconciler = ServiceReconciler.live(admin: admin, router: router, controller: OpsController.shared)
+        _reconciler = StateObject(wrappedValue: reconciler)
         _watch = StateObject(wrappedValue: PlaceWatch(onWake: {
             Task { await admin.refresh() }
         }))
@@ -85,6 +92,7 @@ struct MusterSettingsView: View {
     @AppStorage(MusterSettings.zulipSeatDefaultsKey) private var zulipSeat = MusterSettings.defaultZulipSeat
     @AppStorage(MusterSettings.themeDefaultsKey) private var theme: ThemeChoice = .system
     @AppStorage(MusterSettings.shortMenuBarTextDefaultsKey) private var shortMenuBarText = false
+    @AppStorage(MusterSettings.keepServicesRunningDefaultsKey) private var keepServicesRunning = true
     @State private var pickingRepoRoot = false
     @State private var pickingScriptsDir = false
 
@@ -121,6 +129,11 @@ struct MusterSettingsView: View {
                     ForEach(seatChoices, id: \.self) { seat in Text(seat).tag(seat) }
                 }
                 Text("Saved as \(MusterSettings.zulipSeatDefaultsKey).\u{00A0} MUSTER_ZULIP_SEAT, when set, still wins over the saved seat.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("Services") {
+                Toggle("Keep Services Running", isOn: $keepServicesRunning)
+                Text("While Muster runs, it starts a service on the Mac again when it stops or fails, waits longer after each try, and stops trying after 3.\u{00A0} It never stops a service, and it never starts one you stopped from Muster.\u{00A0} The Services panel says what it does for each service.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Appearance") {

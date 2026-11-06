@@ -2,14 +2,22 @@
 from __future__ import annotations
 
 import datetime as dt
+import io
 import json
 import os
 import re
+import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from types import SimpleNamespace
+from unittest import mock
 
+import fleet_lanes
+from fleet_lanes import lane_guard_hook as H
 from fleet_lanes import placement as P
+from fleet_lanes.tests import fixtures_guard as F
 
 TODAY = dt.date(2026, 11, 4)
 
@@ -189,6 +197,99 @@ class EventLog(unittest.TestCase):
 
     def test_a_bad_directory_never_raises(self) -> None:
         P.log_event("/nonexistent", {"a": 1}, {P.ENV_STATE_DIR: "/dev/null/x"})
+
+
+class TestRunNeverReachesTheRealLog(unittest.TestCase):
+    """A run of the suite put 114 fixture events in the account's own log, which is the input to the seven-day clean-detect gate.  The
+    account's home is faked here, so a test of this guard that fails cannot itself do the damage."""
+
+    DETECT = "git -C ~/Code/DealDex worktree add -b claude/fix ~/apps/dealdex-claude-fix origin/main"
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.home = os.path.realpath(tmp.name)
+        self.log = os.path.join(self.home, P.STATE_DIR_REL, P.EVENT_LOG_NAME)
+        patcher = mock.patch.object(P, "_account_home", return_value=self.home)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_log_event_refuses_the_real_log_whatever_home_it_is_given(self) -> None:
+        P.log_event(self.home, {"a": 1}, {"HOME": self.home})
+        self.assertFalse(os.path.exists(self.log))
+
+    def test_naming_the_real_folder_outright_is_refused_too(self) -> None:
+        P.log_event("/elsewhere", {"a": 1}, {P.ENV_STATE_DIR: os.path.dirname(self.log)})
+        self.assertFalse(os.path.exists(self.log))
+
+    def test_a_log_a_test_points_elsewhere_still_works(self) -> None:
+        env = {P.ENV_STATE_DIR: os.path.join(self.home, "s")}
+        P.log_event(self.home, {"a": 1}, env)
+        self.assertEqual([e["a"] for e in P.read_events(P.event_log_path(self.home, env))], [1])
+
+    def test_the_hook_detect_path_cannot_reach_it(self) -> None:
+        """The in-process path the suite used:  lane_guard_hook.main with the fixture HOME, which on the owner's Mac was the real one."""
+        payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": self.DETECT}, "cwd": self.home})
+        reg = os.path.join(self.home, "reg.json")
+        with open(reg, "w", encoding="utf-8") as fh:
+            json.dump(F.REGISTRY_DATA, fh)
+        env = {"HOME": self.home, "AGENT_SEAT": "CLAUDE", "FLEET_APPS_JSON": reg, "TMPDIR": "/nonexistent-tmp/"}
+        seen = []
+        real_detect = H.record_detection
+
+        def spy(decision):
+            seen.append(getattr(decision, "detected_detail", None))
+            real_detect(decision)
+
+        with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(H, "record_detection", spy):
+            H.main(["--format", "claude"], io.StringIO(payload), io.StringIO(), io.StringIO())
+        self.assertTrue(seen and seen[0], "this command no longer detects, so the test proves nothing")
+        self.assertFalse(os.path.exists(self.log))
+
+    def test_outside_a_test_run_the_real_log_is_written(self) -> None:
+        saved = {name: sys.modules.pop(name) for name in ("unittest", "pytest") if name in sys.modules}
+        self.addCleanup(sys.modules.update, saved)
+        P.log_event(self.home, {"a": 1}, {"HOME": self.home})
+        self.assertTrue(os.path.exists(self.log))
+
+    def test_the_marker_alone_guards_a_child_that_never_imported_unittest(self) -> None:
+        saved = {name: sys.modules.pop(name) for name in ("unittest", "pytest") if name in sys.modules}
+        self.addCleanup(sys.modules.update, saved)
+        P.log_event(self.home, {"a": 1}, {"HOME": self.home, P.ENV_TEST_RUN: "1"})
+        self.assertFalse(os.path.exists(self.log))
+
+
+class TestRunReachesEveryChild(unittest.TestCase):
+    def test_a_child_with_a_hand_built_environment_gets_the_marker(self) -> None:
+        out = subprocess.run([sys.executable, "-I", "-c", f"import os; print(os.environ.get('{P.ENV_TEST_RUN}'))"],
+                             env={"PATH": "/usr/bin:/bin"}, capture_output=True, text=True, check=True)
+        self.assertEqual(out.stdout.strip(), "1")
+
+    def test_a_real_hook_or_shim_process_is_not_taken_for_a_test_run(self) -> None:
+        """What the guard keys on must never be true in production, or the real log would silently stop filling."""
+        here = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        code = ("import sys, os; sys.path.insert(0, sys.argv[1]); os.environ.pop('" + P.ENV_TEST_RUN + "', None)\n"
+                "from fleet_lanes import lane_guard_hook, fleet_guard_hook, minimax_guard_hook, git_shim, guard, placement, placement_watch, doctor\n"
+                "print('unittest' in sys.modules, 'pytest' in sys.modules, '" + P.ENV_TEST_RUN + "' in os.environ)")
+        out = subprocess.run([sys.executable, "-I", "-c", code, here], capture_output=True, text=True, check=True)
+        self.assertEqual(out.stdout.strip(), "False False False")
+
+    def test_a_test_runs_git_is_not_an_installed_shim(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            shimmed, plain = os.path.join(tmp, "a"), os.path.join(tmp, "b")
+            os.makedirs(shimmed)
+            os.makedirs(plain)
+            with open(os.path.join(shimmed, "git"), "w", encoding="utf-8") as fh:
+                fh.write("#!/bin/sh\n# Fleet git shim:  a stand-in\n")
+            with open(os.path.join(plain, "git"), "w", encoding="utf-8") as fh:
+                fh.write("#!/bin/sh\n")
+            self.assertEqual(fleet_lanes._without_git_shim(f"{shimmed}:{plain}:{tmp}"), f"{plain}:{tmp}")  # noqa: SLF001
+        found = shutil.which("git")
+        with open(found, "rb") as fh:
+            self.assertNotIn(b"Fleet git shim", fh.read(4096), found)
+
+    def test_the_fixture_home_is_not_this_account(self) -> None:
+        self.assertNotEqual(os.path.realpath(F.HOME), os.path.realpath(P._account_home()))  # noqa: SLF001
 
 
 if __name__ == "__main__":

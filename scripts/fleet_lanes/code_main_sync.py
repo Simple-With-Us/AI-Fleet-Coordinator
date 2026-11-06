@@ -43,6 +43,7 @@ GIT = os.environ.get("FLEET_GIT_SHIM_REAL") or "/usr/bin/git"
 TIMEOUT = 120
 STALE_LOCK_S = 3600
 FLEET_OWNERS = {"simple-with-us", "jaywedgeworth22"}
+CANONICAL_OWNERS = {"simple-with-us": "Simple-With-Us", "jaywedgeworth22": "jaywedgeworth22"}
 
 
 def log(message: str) -> None:
@@ -81,7 +82,8 @@ def origin_repo(remote: str) -> str | None:
     owner, name = parts[0], parts[1].removesuffix(".git")
     if not all(re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}", part) for part in (owner, name)) or ".." in owner + name:
         return None
-    return f"{owner}/{name}"
+    # GitHub ignores case, but the relay's seat policy matches it exactly, so a fleet owner is written its canonical way.
+    return f"{CANONICAL_OWNERS.get(owner.casefold(), owner)}/{name}"
 
 
 def relay_fetch_url(env: Mapping[str, str], repo: str) -> str:

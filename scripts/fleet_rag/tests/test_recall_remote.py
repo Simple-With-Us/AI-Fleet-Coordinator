@@ -48,8 +48,11 @@ class RemoteRecall(unittest.TestCase):
         out, err = io.StringIO(), io.StringIO()
         with mock.patch.dict(os.environ, full, clear=True), mock.patch.object(recall, "_remote_post", fake), \
                 mock.patch.object(recall.public_fallback, "call_with_fallback", boom), \
+                mock.patch.object(recall.public_fallback, "call_mutation", boom), \
                 mock.patch.object(recall.recall_api, "recall_search", boom), \
                 mock.patch.object(recall.recall_api, "recall_contribute", boom), \
+                mock.patch.object(recall.recall_api, "recall_correct", boom), \
+                mock.patch.object(recall.recall_api, "recall_retract", boom), \
                 contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = recall.main(argv)
         return code, out.getvalue(), err.getvalue(), calls
@@ -63,6 +66,9 @@ class RemoteRecall(unittest.TestCase):
         self.assertEqual(headers["Authorization"], "Bearer " + BEARER)
         self.assertEqual(msg["params"], {"name": "recall_search",
                          "arguments": {"query": "pm2 dump", "limit": 3, "app": "fleet", "category": "lesson"}})
+        code, _, _, calls = self.run_cli(["pm2 dump", "--include-retracted"], reply({"count": 1}))
+        self.assertEqual(code, 0)
+        self.assertTrue(calls[0][2]["params"]["arguments"]["include_retracted"])
         self.assertIn("BEGIN_UNTRUSTED_RECALL", out)
         self.assertNotIn(BEARER, out + err)
 
@@ -125,6 +131,37 @@ class RemoteRecall(unittest.TestCase):
             code, _, _, calls = self.run_cli(["contribute", self.LESSON, "--category", "lesson"] + extra,
                                              reply({}), env=self.W)
             self.assertEqual((code, calls), (2, []))
+
+    def test_correct_and_retract_need_the_write_switch(self):
+        doc = "contrib/CODEX/2026-11-05/472fc36e"
+        for argv in (["correct", doc, self.LESSON, "--reason", "make it current"],
+                     ["retract", doc, "--reason", "obsolete now"]):
+            code, _, err, calls = self.run_cli(argv, reply({}))
+            self.assertEqual((code, calls), (2, []))
+            self.assertIn("SIMPLE_RECALL_REMOTE_WRITES", err)
+
+    def test_correct_and_retract_map_without_a_caller_seat(self):
+        doc = "contrib/CODEX/2026-11-05/472fc36e"
+        code, _, err, calls = self.run_cli(
+            ["correct", doc, self.LESSON, "--reason", "make it current", "--expected-revision", "2"],
+            reply({"id": "1", "doc_id": doc, "status": "completed"}, "corrected"), env=self.W)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(calls[0][2]["params"], {"name": "recall_correct", "arguments": {
+            "doc_id": doc, "text": self.LESSON, "reason": "make it current", "expected_revision": 2}})
+        self.assertNotIn("seat", calls[0][2]["params"]["arguments"])
+        code, _, err, calls = self.run_cli(["retract", doc, "--reason", "obsolete now"],
+            reply({"id": "1", "doc_id": doc, "retracted": True}, "retracted"), env=self.W)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(calls[0][2]["params"], {"name": "recall_retract", "arguments": {
+            "doc_id": doc, "reason": "obsolete now"}})
+
+    def test_mutations_refuse_a_caller_seat(self):
+        doc = "contrib/CODEX/2026-11-05/472fc36e"
+        for argv in (["correct", doc, self.LESSON, "--reason", "make it current", "--seat", "ECHO"],
+                     ["retract", doc, "--reason", "obsolete now", "--seat", "ECHO"]):
+            code, _, err, calls = self.run_cli(argv, reply({}), env=self.W)
+            self.assertEqual((code, calls), (2, []))
+            self.assertIn("no meaning in remote mode", err)
 
     def test_bearer_problems_and_refusals_do_not_fall_back(self):
         for env in ({"SIMPLE_TOOLS_BEARER": ""}, {"SIMPLE_TOOLS_BEARER": "short"}):

@@ -13,7 +13,7 @@ from fleet_lanes import layout as L
 from fleet_lanes import placement as P
 from fleet_lanes.tests import fixtures_guard as F
 
-HOME = "/Users/jay"
+HOME = "/Users/fixture-home"
 LANES = f"{HOME}/apps/lanes"
 FLEET = "https://github.com/Simple-With-Us/BotFleet.git"
 THIRD = "https://github.com/someone/else.git"
