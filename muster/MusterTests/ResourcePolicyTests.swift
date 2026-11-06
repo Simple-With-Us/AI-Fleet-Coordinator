@@ -211,6 +211,28 @@ final class ResourcePolicyTests: XCTestCase {
         XCTAssertFalse(reading.canReviewChanges(at: now))
     }
 
+    func test_unavailable_report_with_no_online_cpus_keeps_the_saved_values_and_the_reason() throws {
+        var root = try XCTUnwrap(JSONSerialization.jsonObject(with: try json(status: "unavailable", cpuOnline: 0)) as? [String: Any])
+        var report = try XCTUnwrap(root["resourcePolicy"] as? [String: Any])
+        report["reasons"] = ["no-online-cpus"]
+        root["resourcePolicy"] = report
+        let reading = decode(try JSONSerialization.data(withJSONObject: root))
+        XCTAssertEqual(reading.state, .unavailable)
+        let snapshot = try XCTUnwrap(reading.snapshot)
+        XCTAssertEqual(snapshot.desired.ramPressureGiB, 8)
+        XCTAssertEqual(snapshot.desired.cpuCores, 8)
+        XCTAssertEqual(snapshot.reasons, ["no-online-cpus"])
+        XCTAssertEqual(ResourceLimitsCopy.explanation(snapshot), [ResourceLimitsCopy.reasonSentence("no-online-cpus")])
+        XCTAssertNil(ResourcePolicyField.cpuCores.range(in: snapshot))
+        // Zero online cores is unknown,  never shown as a count.
+        XCTAssertEqual(ResourceLimitsCopy.cpuCoresHelp(snapshot, cores: 8), "The server's core count is unknown.")
+        XCTAssertFalse(reading.canReviewChanges(at: now))
+    }
+
+    func test_an_applied_report_with_no_online_cpus_is_still_invalid() throws {
+        XCTAssertEqual(decode(try json(status: "applied", cpuOnline: 0)).state, .invalid)
+    }
+
     func test_malformed_revision_is_unknown() throws {
         let data = try json()
         var root = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
@@ -260,10 +282,11 @@ final class ResourcePolicyTests: XCTestCase {
     }
 
     func test_memory_sliders_stop_where_the_server_stops() throws {
-        // 16 GiB server, saved reserve 4 and pressure limit 8.
+        // 16 GiB server, saved reserve 4, critical limit 4 and pressure limit 8.  The pressure
+        // slider starts at the saved critical limit,  because the server refuses anything below.
         let snapshot = try XCTUnwrap(decode(try json()).snapshot)
         let expected: [(ResourcePolicyField, Double, Double)] = [
-            (.ramBudgetGiB, 2, 12), (.ramReserveGiB, 2, 8), (.ramCriticalGiB, 1, 8), (.cpuCores, 1, 14),
+            (.ramBudgetGiB, 4, 12), (.ramReserveGiB, 2, 8), (.ramCriticalGiB, 1, 8), (.cpuCores, 1, 14),
         ]
         for (field, low, high) in expected {
             let range = field.range(in: snapshot)
@@ -496,6 +519,19 @@ final class ResourcePolicyTests: XCTestCase {
         XCTAssertTrue(ResourceLimitsCopy.explanation(snapshot).contains { $0.contains("No coding services are running") })
     }
 
+    func test_contract_no_online_cpus_keeps_the_saved_values_and_names_the_reason() throws {
+        let contract = try loadContract()
+        let reading = contract.reading("noOnlineCpus")
+        XCTAssertEqual(reading.state, .unavailable)
+        let snapshot = try XCTUnwrap(reading.snapshot)
+        XCTAssertEqual(snapshot.observed?.cpuOnline, 0)
+        XCTAssertEqual(snapshot.desired.cpuCores, 12)
+        XCTAssertEqual(snapshot.desired.ramPressureGiB, 8)
+        XCTAssertEqual(snapshot.reasons, ["no-online-cpus"])
+        XCTAssertTrue(ResourceLimitsCopy.explanation(snapshot).contains { $0.contains("could not count the server's cores") })
+        XCTAssertFalse(reading.canReviewChanges(at: contract.now))
+    }
+
     func test_contract_fractional_timestamps_read_as_current() throws {
         let contract = try loadContract()
         let reading = contract.reading("fractional")
@@ -514,6 +550,30 @@ final class ResourcePolicyTests: XCTestCase {
         XCTAssertFalse(reading.canReviewChanges(at: contract.now))
         XCTAssertTrue(reading.reason?.hasPrefix("The server did not answer, so nothing ran.\u{00A0} Showing the server report from ") == true, reading.reason ?? "")
         XCTAssertNil(ResourcePolicyReading.fromServerReport(ServerStatusReading(), directFailure: nil, now: contract.now))
+    }
+
+    func test_a_pulled_report_summary_never_states_a_present_success() throws {
+        let contract = try loadContract()
+        var report = ServerStatusReading()
+        report.resourcePolicy = try contract.snapshot("applied")
+        report.generatedAt = contract.now.addingTimeInterval(-3 * 3600)
+        let reading = try XCTUnwrap(ResourcePolicyReading.fromServerReport(report, directFailure: nil, now: contract.now))
+        let snapshot = try XCTUnwrap(reading.snapshot)
+        XCTAssertEqual(snapshot.status, "applied")
+        let summary = ResourceLimitsCopy.summary(snapshot, state: reading.state, at: reading.reportTime)
+        XCTAssertFalse(summary.contains("are in effect"), summary)
+        XCTAssertFalse(summary.contains("is normal"), summary)
+        XCTAssertTrue(summary.hasPrefix("The last report at \(FleetTime.clock(contract.now.addingTimeInterval(-3 * 3600))) said these limits were in effect."), summary)
+    }
+
+    func test_a_stale_direct_read_summary_is_qualified_and_a_current_one_is_not() throws {
+        let contract = try loadContract()
+        let snapshot = try contract.snapshot("applied")
+        XCTAssertTrue(ResourceLimitsCopy.summary(snapshot).hasPrefix("These limits are in effect."))
+        XCTAssertTrue(ResourceLimitsCopy.summary(snapshot, state: .current).hasPrefix("These limits are in effect."))
+        let stale = ResourceLimitsCopy.summary(snapshot, state: .stale, at: nil)
+        XCTAssertFalse(stale.contains("are in effect"), stale)
+        XCTAssertTrue(stale.hasPrefix("The last report said these limits were in effect."), stale)
     }
 
     // MARK: - Helpers

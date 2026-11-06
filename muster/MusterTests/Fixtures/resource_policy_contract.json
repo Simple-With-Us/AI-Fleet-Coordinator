@@ -125,6 +125,44 @@
       "schemaVersion": 1,
       "status": "unavailable"
     },
+    "noOnlineCpus": {
+      "desired": {
+        "allowBorrowing": true,
+        "cpuCores": 12,
+        "cpuWeight": 50,
+        "criticalAvailableGiB": 2.0,
+        "pressureAvailableGiB": 4.0,
+        "ramCriticalGiB": 6.0,
+        "ramPressureGiB": 8.0,
+        "reserveGiB": 6.0
+      },
+      "desiredRevision": "722e7e49cb546718d6800bfd94399fff789d564cec5cf05f0b9b7d6c7e4b78a4",
+      "generatedAt": "2027-01-15T08:00:00Z",
+      "observed": {
+        "actualHighMismatches": 0,
+        "codingGroups": 3,
+        "controlSuspended": 0,
+        "controlWriteFailures": 0,
+        "cpuCores": 12,
+        "cpuGroups": 3,
+        "cpuMismatches": 0,
+        "cpuOnline": 0,
+        "cpuWeight": 50,
+        "mode": "normal",
+        "policyStale": false,
+        "productionGroups": 4,
+        "ramCurrentBytes": 4294967296,
+        "ramTargetBytes": 8589934592,
+        "ramTotalBytes": 34359738368,
+        "updatedAt": "2027-01-15T08:00:00Z"
+      },
+      "policyRevision": "722e7e49cb546718d6800bfd94399fff789d564cec5cf05f0b9b7d6c7e4b78a4",
+      "reasons": [
+        "no-online-cpus"
+      ],
+      "schemaVersion": 1,
+      "status": "unavailable"
+    },
     "receiptMissing": {
       "desired": {
         "allowBorrowing": true,

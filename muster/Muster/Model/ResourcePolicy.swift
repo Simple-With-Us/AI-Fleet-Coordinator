@@ -250,7 +250,8 @@ enum ResourcePolicyField: String, CaseIterable, Hashable, Identifiable {
             return nil
         case .ramBudgetGiB:
             guard let total = snapshot.totalMemoryGiB else { return nil }
-            return Self.bounded(2, floor(total - snapshot.desired.reserveGiB))
+            // Never below the saved Critical RAM Limit,  which the server refuses to go under.
+            return Self.bounded(max(2, ceil(snapshot.desired.ramCriticalGiB)), floor(total - snapshot.desired.reserveGiB))
         case .ramCriticalGiB:
             return Self.bounded(1, floor(snapshot.desired.ramPressureGiB))
         case .ramReserveGiB:
@@ -271,7 +272,7 @@ enum ResourcePolicyField: String, CaseIterable, Hashable, Identifiable {
         let gap = ResourceLimitsCopy.gap
         switch self {
         case .cpuCores:
-            guard let online = snapshot.observed?.cpuOnline else { return "The server's core count is unknown." }
+            guard let online = snapshot.observed?.cpuOnline, online >= 1 else { return "The server's core count is unknown." }
             guard value.rounded() == value, value >= 1, value <= Double(online - 2) else {
                 return "Choose 1 through \(max(0, online - 2)) cores.\(gap)The server keeps 2 of its \(online) cores free."
             }
@@ -404,26 +405,38 @@ enum ResourceLimitsCopy {
 
     /// The one sentence that leads the page:  whether the limits are in effect,  and the
     /// memory mode the server is in.
-    static func summary(_ s: ResourcePolicySnapshot) -> String {
+    /// Only a reading that is current may state the status in the present tense.  Any other
+    /// reading (a pulled server report,  an out-of-date or unconfirmed read) says what the
+    /// last report said,  with its time when known,  never a present success.
+    static func summary(_ s: ResourcePolicySnapshot, state: ResourcePolicyReadState = .current, at time: Date? = nil) -> String {
+        let now = state == .current
+        let when = time.map { " at \(FleetTime.clock($0))" } ?? ""
         let status: String
         switch s.status {
-        case "applied": status = "These limits are in effect."
-        case "drift": status = "Some limits differ from the saved policy."
+        case "applied":
+            status = now ? "These limits are in effect." : "The last report\(when) said these limits were in effect."
+        case "drift":
+            status = now ? "Some limits differ from the saved policy." : "The last report\(when) said some limits differed from the saved policy."
         default: status = "The server cannot confirm these limits are in effect."
         }
         guard let mode = s.observed?.mode else { return status }
         switch mode {
         case "pressure":
-            return status + gap + "The server is under memory pressure, so coding is held to Pressure RAM Limit."
+            return status + gap + (now
+                ? "The server is under memory pressure, so coding is held to Pressure RAM Limit."
+                : "The server was under memory pressure, so coding was held to Pressure RAM Limit.")
         case "critical":
-            return status + gap + "The server is in critical memory mode, so coding is held to Critical RAM Limit."
+            return status + gap + (now
+                ? "The server is in critical memory mode, so coding is held to Critical RAM Limit."
+                : "The server was in critical memory mode, so coding was held to Critical RAM Limit.")
         default:
-            return status + gap + "Memory is normal."
+            return status + gap + (now ? "Memory is normal." : "Memory was normal.")
         }
     }
 
     static func cpuCoresHelp(_ s: ResourcePolicySnapshot, cores: Double?) -> String {
-        guard let online = s.observed?.cpuOnline else { return "The server's core count is unknown." }
+        // No online core counted (the unavailable no-online-cpus report) is unknown, never 0.
+        guard let online = s.observed?.cpuOnline, online >= 1 else { return "The server's core count is unknown." }
         guard let cores, cores.isFinite, cores >= 1 else {
             return "The server has \(online) online cores.\(gap)At least 2 always stay free for the host."
         }
@@ -700,6 +713,12 @@ struct ResourcePolicyReading: Equatable {
         return age >= 0 && age <= Self.maxReceiptAge
     }
 
+    /// When the values on the page were reported:  the pulled server report's time,  else the
+    /// controller's own measurement time.  Nil when neither is known.
+    var reportTime: Date? {
+        reportAt ?? snapshot?.observed?.updatedAt.flatMap { Self.parseDate($0) }
+    }
+
     func state(at date: Date) -> ResourcePolicyReadState {
         guard state == .current, let directReceiptAt else { return state }
         let age = date.timeIntervalSince(directReceiptAt)
@@ -845,8 +864,12 @@ struct ResourcePolicyReading: Equatable {
             observed.productionUnprotectedGroups, observed.oomKillDelta, observed.excludedUnits,
         ]
         guard counters.compactMap({ $0 }).allSatisfy({ $0 >= 0 }) else { return false }
-        if observed.cpuOnline < 3 { return false }
-        if let cores = s.desired.cpuCores, cores > observed.cpuOnline - 2 { return false }
+        // An unavailable report may say no CPU is online (reason no-online-cpus):  that is a
+        // measurement to show with the saved values,  not a corrupt report.
+        if s.status != "unavailable" {
+            if observed.cpuOnline < 3 { return false }
+            if let cores = s.desired.cpuCores, cores > observed.cpuOnline - 2 { return false }
+        }
         if let weight = observed.cpuWeight, !(1...10_000).contains(weight) { return false }
         // A zero total is an older controller that has not measured yet:  unknown, not corrupt,
         // and `totalMemoryGiB` already reads it as unknown.

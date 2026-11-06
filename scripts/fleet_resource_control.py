@@ -166,8 +166,10 @@ class InfisicalStore:
         finally:
             body.clear()
         if status not in (200, 201):
-            if isinstance(status, int) and status >= 500:
-                # The server may have applied it before it failed.
+            if not isinstance(status, int) or status == 0 or status >= 500:
+                # Status 0 is how the secrets client reports a transport error, a
+                # timeout or an oversized body, so the request may have gone out;
+                # a 5xx may also have been applied before it failed.
                 raise WriteUncertain(
                     "The server could not confirm whether the new value was saved, "
                     "and the write was not retried."

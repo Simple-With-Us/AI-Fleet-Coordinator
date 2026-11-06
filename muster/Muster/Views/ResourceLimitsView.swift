@@ -156,12 +156,23 @@ struct ResourceLimitsView: View {
     }
 
     /// One sentence on whether the limits are in effect,  then every named cause or reason.
+    /// A reading that is not current never gets the green check:  it says what the last
+    /// report said,  in a neutral tint (RESOURCES-22).
     private func summaryCard(_ snapshot: ResourcePolicySnapshot) -> some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            summaryBody(snapshot, state: reading.state(at: context.date))
+        }
+    }
+
+    private func summaryBody(_ snapshot: ResourcePolicySnapshot, state: ResourcePolicyReadState) -> some View {
         let applied = snapshot.status == "applied"
-        let icon = applied ? "checkmark.circle.fill" : (snapshot.status == "drift" ? "arrow.triangle.2.circlepath" : "exclamationmark.triangle.fill")
+        let current = state == .current
+        let icon: String
+        if applied { icon = current ? "checkmark.circle.fill" : "clock" }
+        else { icon = snapshot.status == "drift" ? "arrow.triangle.2.circlepath" : "exclamationmark.triangle.fill" }
         let lines = ResourceLimitsCopy.explanation(snapshot)
         return VStack(alignment: .leading, spacing: 6) {
-            Label(ResourceLimitsCopy.summary(snapshot), systemImage: icon)
+            Label(ResourceLimitsCopy.summary(snapshot, state: state, at: reading.reportTime), systemImage: icon)
                 .font(.callout.weight(.medium))
                 .foregroundStyle(applied ? Color.primary : Color.orange)
                 .fixedSize(horizontal: false, vertical: true)

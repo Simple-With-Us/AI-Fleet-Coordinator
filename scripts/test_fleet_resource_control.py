@@ -397,6 +397,33 @@ class BrokerTests(unittest.TestCase):
             self.assertEqual(args[3]["environment"], "prod")
             self.assertNotIn("If-Match", args[3])
 
+    def answer_through_real_store(self, outcome):
+        """Drive handle() through InfisicalStore.save with only the HTTP client mocked."""
+        self.credentials()
+        store = r.InfisicalStore(self.ctx)
+        self.ctx.resource_store = store
+        target = self.target()
+        effect = outcome if isinstance(outcome, BaseException) else [outcome]
+        fetched = json.dumps(policy())
+        with mock.patch.object(store.core, "fetch_verified", return_value=fetched):
+            with mock.patch.object(store.core, "_api_json", side_effect=effect) as api:
+                answer, code = r.handle(self.ctx, "resource-policy", target, "yes")
+        self.assertEqual(api.call_count, 1)
+        self.assertFalse(self.commands)
+        return answer, code
+
+    def test_transport_error_or_timeout_on_the_real_store_answers_unknown(self):
+        # The secrets client reports a transport error, a timeout or an oversized
+        # body as status 0, without raising, so the write may have landed.
+        for outcome in ((0, None), OSError("timed out"), (503, None), (502, {})):
+            answer, code = self.answer_through_real_store(outcome)
+            self.assertEqual((code, answer["result"], answer["ok"]), (1, "unknown", False), outcome)
+
+    def test_a_definite_refusal_on_the_real_store_is_still_failed(self):
+        for status in (400, 403, 404):
+            answer, code = self.answer_through_real_store((status, {"message": "no"}))
+            self.assertEqual((code, answer["result"]), (1, "failed"), status)
+
     def test_lock_serializes_processes_and_refuses_symlink(self):
         with r.broker_lock(self.ctx), self.assertRaises(r.Refused), r.broker_lock(self.ctx):
             self.fail("nested writer entered")
@@ -723,6 +750,8 @@ def contract():
     saved_ahead = {**p, "cpu_weight": 100}
     idle = snapshot(p, codingGroups=0, ramTargetBytes=0)
     idle.update(status="unavailable", reasons=["no-coding-groups"])
+    no_cpus = snapshot(p, cpuOnline=0)
+    no_cpus.update(status="unavailable", reasons=["no-online-cpus"])
     fractional = snapshot(p)
     fractional["generatedAt"] = r._stamp(NOW - 0.25)
     fractional["observed"]["updatedAt"] = r._stamp(NOW - 0.602189)
@@ -740,6 +769,7 @@ def contract():
             "savedAhead": r.public_snapshot(snapshot(p), NOW, saved_ahead),
             "receiptMissing": r.public_snapshot({}, NOW, p),
             "idle": r.public_snapshot(idle, NOW, p),
+            "noOnlineCpus": r.public_snapshot(no_cpus, NOW, p),
             "fractional": r.public_snapshot(fractional, NOW, p),
         },
     }
