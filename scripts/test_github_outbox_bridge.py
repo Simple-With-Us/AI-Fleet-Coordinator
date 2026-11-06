@@ -348,8 +348,6 @@ class BridgeTests(unittest.TestCase):
             tmp.cleanup()
 
 
-
-
 class RuleTests(unittest.TestCase):
     def test_skim_match(self):
         self.assertTrue(bridge.skim_match("[CLAUDE->INSTINCT] x", SEAT))
@@ -454,7 +452,6 @@ class RuleTests(unittest.TestCase):
             "repo: <project> must be the first body line",
         )
 
-
     def test_native_zulip_mention_skim(self):
         """Bug 1 / OPS-1035: Zulip @**Name** mentions wake the seat (inbound skim, tolerant)."""
         self.assertTrue(bridge.skim_match("@**Claude** please look", "CLAUDE"))
@@ -493,9 +490,7 @@ class RuleTests(unittest.TestCase):
         )
         # Closed with real repos + claim still OK; body repo: does not salvage unclosed.
         self.assertIsNone(bridge.header_error("[JET 📁AFC]\nclaim: ok", "JET"))
-        self.assertIsNone(
-            bridge.header_error("[JET 📁AFC]\nrepo: AFC\nstate: WIP", "JET")
-        )
+        self.assertIsNone(bridge.header_error("[JET 📁AFC]\nrepo: AFC\nstate: WIP", "JET"))
 
     def test_status_body_requires_repo_even_with_folder(self):
         """Bug 4 / OPS-1035: status blocks still need repo:; claim/closeout may rely on 📁."""
@@ -519,9 +514,7 @@ class RuleTests(unittest.TestCase):
         self.assertIsNone(bridge.header_error("[JET 📁AFC]\nclaim: work below", "JET"))
         self.assertIsNone(bridge.header_error("[INSTINCT 📁AFC]\ncloseout: done", SEAT))
         # Status with an explicit repo: body line is fine.
-        self.assertIsNone(
-            bridge.header_error("[JET 📁AFC] sync-1\nrepo: AFC\nstate: WIP", "JET")
-        )
+        self.assertIsNone(bridge.header_error("[JET 📁AFC] sync-1\nrepo: AFC\nstate: WIP", "JET"))
         # Legacy non-folder intros still always require repo:.
         self.assertEqual(
             bridge.header_error("[JET] sync-1\nstate: WIP", "JET"),
@@ -535,9 +528,7 @@ class RuleTests(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         try:
             state = bridge.State(Path(tmp.name) / "state.json")
-            b = bridge.Bridge(
-                SEAT, issue, poster, None, state, topic="t", logger=lambda *_: None
-            )
+            b = bridge.Bridge(SEAT, issue, poster, None, state, topic="t", logger=lambda *_: None)
             b.run_once()
         finally:
             tmp.cleanup()

@@ -189,7 +189,9 @@ def is_own_post(text: str, seat: str) -> bool:
 
 
 # One recipient token after → / ->: plain seat, @SEAT, or Zulip bold @**Name**.
-_RECIPIENT_TOKEN = r"(?:@\*\*[A-Za-z][A-Za-z0-9_-]*\*\*|@[A-Za-z][A-Za-z0-9_-]*|[A-Za-z][A-Za-z0-9_-]*)"
+_RECIPIENT_TOKEN = (
+    r"(?:@\*\*[A-Za-z][A-Za-z0-9_-]*\*\*|@[A-Za-z][A-Za-z0-9_-]*|[A-Za-z][A-Za-z0-9_-]*)"
+)
 
 
 def _arrow_recipient_re(token: str):
