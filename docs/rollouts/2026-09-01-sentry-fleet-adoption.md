@@ -1,5 +1,7 @@
 # 2026-09-01 — Sentry fleet adoption (standing split + hygiene)
 
+Historical identifiers have been redacted. These records do not certify current deployment state.
+
 ## Summary
 
 Implementation of the 2026-09-01 Sentry fleet adoption report as fleet-level
@@ -49,7 +51,7 @@ page.
 
 ## What this unit lands
 
-- AGENT-SYNC Observability section: standing split, Seer gate, overlap table,
+- [retired identifier] Observability section: standing split, Seer gate, overlap table,
   CI fingerprint rule, Size Analysis TODO.
 - This rollout (implementation of the adoption report, not a second plan).
 - Plan addendum pointing here.
@@ -103,7 +105,7 @@ quota.  No new LaunchAgent.
 
 ## Files
 
-- `AGENT-SYNC.md` — standing split (also live `~/apps/AGENT-SYNC.md`).
+- `FLEET-PROTOCOL.md` — standing split (also live `~/apps/FLEET-PROTOCOL.md`).
 - `docs/plans/2026-09-01-sentry-fleet-integration.md` — addendum.
 - `docs/rollouts/2026-09-01-sentry-fleet-adoption.md` — this file.
 - `github-workflows-template/workflows/sentry-ci-report.yml` — fingerprint comment.

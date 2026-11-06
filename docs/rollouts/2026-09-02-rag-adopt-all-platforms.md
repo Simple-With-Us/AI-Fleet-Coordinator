@@ -1,5 +1,7 @@
 # Fleet RAG adoption across platforms — 2026-09-02
 
+Historical identifiers have been redacted. These records do not certify current deployment state.
+
 **Seat:** GROK.  **Board:** `03ee6d8b`.  **Branch:** `grok/rag-adopt`.
 
 Owner: continue making the system and engineer transition/adoption on all platforms.
@@ -22,7 +24,7 @@ nightly ingest + weekly eval routines exist.  First corpus ingest still running 
 ## Not in this PR
 
 - Bulk ingest of staged chat JSONL (forbidden).  Extra markdown after ingest lock drops.
-- AGENT-SYNC byte diet (board `0f9a13b1` leftover).
+- [retired identifier] byte diet (board `0f9a13b1` leftover).
 - Product-app `AGENTS.md` PRs (snippet is ready).
 - BotFleet native MCP consumer: Oracle already runs ingest/eval; bots that spawn Mac CLIs inherit stdio MCP.  Native BotFleet config.json has no mcpServers key — REST hop is the cloud/phone path.
 
