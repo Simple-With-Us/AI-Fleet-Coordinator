@@ -10,10 +10,10 @@ import time
 import unittest
 from unittest import mock
 
-from agent_sync import attach
-from agent_sync import live as L
-from agent_sync import zulip as Z
-from agent_sync.tests.listener_harness import ListenerHarness, fake_watcher, mode_of
+from simple_tools import attach
+from simple_tools import live as L
+from simple_tools import zulip as Z
+from simple_tools.tests.listener_harness import ListenerHarness, fake_watcher, mode_of
 
 PID = os.getpid()
 START = 1_789_000_000
@@ -21,7 +21,7 @@ LEASE = "claude-code-%d-%d" % (PID, START)
 
 
 def message_item(mid: int, content: str = "body text", klass: str = "interrupt", **extra):
-    row = {"kind": "message", "class": klass, "id": mid, "type": "stream", "channel": "agent-sync", "topic": "t",
+    row = {"kind": "message", "class": klass, "id": mid, "type": "stream", "channel": "simple-tools", "topic": "t",
            "sender_id": 11, "sender": "Codex", "is_bot": True, "owner": False, "ts": time.time(),
            "time": "Wed, Oct 7, 6:41pm", "content": content}
     row.update(extra)
@@ -154,7 +154,7 @@ class HookTests(AttachHarness):
     def test_clear_and_resume_keep_the_lease_live(self) -> None:
         self.hook("session-start", {"source": "startup", "session_id": "s1"})
         self.hook("prompt", {"prompt": "lease this", "session_id": "s1"})
-        L.update_lease(self.seat_paths(), LEASE, lambda d: L.add_topic(d, "agent-sync", "t", None))
+        L.update_lease(self.seat_paths(), LEASE, lambda d: L.add_topic(d, "simple-tools", "t", None))
         for reason in ("clear", "resume"):
             with self.subTest(reason=reason):
                 self.hook("session-end", {"reason": reason})
@@ -190,12 +190,12 @@ class HookTests(AttachHarness):
 
     def test_unexpected_exception_names_simple_chat_not_the_retired_command(self) -> None:
         # #860 r4:  the generic hook failure names the current command; the retired
-        # `agent-sync` name must not resurface in user-facing errors after the hard cutover.
+        # `simple-tools` name must not resurface in user-facing errors after the hard cutover.
         with mock.patch.object(attach, "cmd_attach", side_effect=RuntimeError("boom")):
             code, out, err = self.attach_run()
         self.assertEqual(code, 1)
         self.assertIn("simple-chat attach: internal error: RuntimeError", err)
-        self.assertNotIn("agent-sync attach", err)
+        self.assertNotIn("simple-tools attach", err)
 
 
 class RewakeTests(AttachHarness):
@@ -230,10 +230,10 @@ class RewakeTests(AttachHarness):
         self.assertLessEqual(len(err), L.REWAKE_MAX_CHARS + 400)
         budget = L.read_json(self.seat_paths().budget(LEASE))
         self.assertEqual(len(budget["turns"]), 1)
-        self.assertEqual(budget["streak"], {L.topic_key("agent-sync", "t"): 1})
+        self.assertEqual(budget["streak"], {L.topic_key("simple-tools", "t"): 1})
 
     def test_no_live_budget_room_means_no_wake(self) -> None:
-        L.write_json(self.seat_paths().budget(LEASE), {"turns": [{"ts": time.time(), "topic": L.topic_key("agent-sync", "t"),
+        L.write_json(self.seat_paths().budget(LEASE), {"turns": [{"ts": time.time(), "topic": L.topic_key("simple-tools", "t"),
                                                                  "owner": False}]})
         L.append_live(self.seat_paths(), LEASE, [message_item(1)])
         clock = [time.time()]
@@ -252,7 +252,7 @@ class DrainWaitDetachTests(AttachHarness):
         self.hook("session-start", {"source": "startup"})
         L.append_live(self.seat_paths(), LEASE, [message_item(1, "first"), message_item(2, "second", klass="passive")])
         code, out, err = self.attach_run("--drain")
-        self.assertIn("[agent-sync drain] 2 Zulip items", out)
+        self.assertIn("[simple-tools drain] 2 Zulip items", out)
         self.assertIn("second", out)
         code, out, err = self.attach_run("--drain")
         self.assertIn("nothing pending", out)

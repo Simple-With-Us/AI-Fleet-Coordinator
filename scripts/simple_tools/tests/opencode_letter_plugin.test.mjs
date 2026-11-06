@@ -1,4 +1,4 @@
-// Tests for the OpenCode letter plugin (AFC-564): node --test scripts/agent_sync/tests/opencode_letter_plugin.test.mjs
+// Tests for the OpenCode letter plugin (AFC-564): node --test scripts/simple_tools/tests/opencode_letter_plugin.test.mjs
 // The OpenCode side (session.get and session.update) and the platform-letter hook are both faked, except in the last
 // group, which runs the real spawn plumbing against a small script.
 import assert from "node:assert/strict";

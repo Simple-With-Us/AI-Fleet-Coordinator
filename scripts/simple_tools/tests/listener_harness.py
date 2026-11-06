@@ -23,13 +23,13 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from agent_sync import adapters as A
-from agent_sync import host_load as HL
-from agent_sync import live as L
-from agent_sync import zulip as Z
-from agent_sync.daemon import Daemon
-from agent_sync.tests.fake_zulip import EPOCH
-from agent_sync.tests.harness import Harness
+from simple_tools import adapters as A
+from simple_tools import host_load as HL
+from simple_tools import live as L
+from simple_tools import zulip as Z
+from simple_tools.daemon import Daemon
+from simple_tools.tests.fake_zulip import EPOCH
+from simple_tools.tests.harness import Harness
 
 BASE_CONFIG = {
     "owner": 12,

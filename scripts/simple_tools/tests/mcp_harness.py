@@ -25,14 +25,14 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from agent_sync import cli
-from agent_sync import identity as I
-from agent_sync import live as L
-from agent_sync.mcp import identity_router as R
-from agent_sync.mcp import stdio as S
-from agent_sync.mcp import tools as T
-from agent_sync.tests import bearer_stub
-from agent_sync.tests.fake_zulip import BOT_EMAIL, EPOCH, FAKE_CHANNEL, FAKE_OWNER_ID
+from simple_tools import cli
+from simple_tools import identity as I
+from simple_tools import live as L
+from simple_tools.mcp import identity_router as R
+from simple_tools.mcp import stdio as S
+from simple_tools.mcp import tools as T
+from simple_tools.tests import bearer_stub
+from simple_tools.tests.fake_zulip import BOT_EMAIL, EPOCH, FAKE_CHANNEL, FAKE_OWNER_ID
 
 
 def seat_bearer_locator(seat: str) -> str:
@@ -42,7 +42,7 @@ def seat_bearer_locator(seat: str) -> str:
     is underscored there.
     """
     return "/fleet-seats:%s_SEAT_BEARER" % re.sub(r"[^A-Z0-9]", "_", seat.upper())
-from agent_sync.tests.harness import SESSION, Harness, write_rc
+from simple_tools.tests.harness import SESSION, Harness, write_rc
 
 SCRIPT = Path(__file__).resolve().parents[2] / "simple-chat"
 BEARER_STUB_LAUNCHER = Path(__file__).resolve().parent / "fixtures" / "simple-chat-bearer-stub.py"
@@ -328,7 +328,7 @@ class McpHarness(Harness):
             "INFISICAL_FLEET_OPS_PROJECT_ID": FAKE_PROJECT_ID,
             # The DM rule defaults ON (owner decision, Oct 22 2026).  The mechanical DM tool tests
             # are about tagging, grouping, the secret scan and idempotency, not the rule, so they run
-            # with it off;  the rule's own tests are agent_sync/tests/test_dm_rule.py.
+            # with it off;  the rule's own tests are simple_tools/tests/test_dm_rule.py.
             "AGENT_SYNC_DM_RULE": "off",
             # board proves its seat from the bearer at SIMPLE_BOARD_BEARER_LOCATOR and never reads
             # AGENT_SEAT, so a Linear write through this server needs the seat's own locator.  It is a

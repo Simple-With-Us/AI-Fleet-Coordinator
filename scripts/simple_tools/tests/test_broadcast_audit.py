@@ -6,9 +6,9 @@ from __future__ import annotations
 
 import unittest
 
-from agent_sync import broadcast_audit as BA
-from agent_sync import secretscan
-from agent_sync import zulip as Z
+from simple_tools import broadcast_audit as BA
+from simple_tools import secretscan
+from simple_tools import zulip as Z
 
 OWNER = 12
 NOW = 1_700_000_000.0

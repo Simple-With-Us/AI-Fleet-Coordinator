@@ -8,8 +8,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from agent_sync import chat_transport as CT
-from agent_sync.chat_catalog import MAX_FILES_PER_SOURCE, ChatCatalog, _stable_id
+from simple_tools import chat_transport as CT
+from simple_tools.chat_catalog import MAX_FILES_PER_SOURCE, ChatCatalog, _stable_id
 
 
 class FakeClock:
@@ -1029,7 +1029,7 @@ class OpenCodeCatalogTests(unittest.TestCase):
                 raise OSError("permission denied")
             return real_scandir(path)
 
-        with mock.patch("agent_sync.chat_catalog.os.scandir", side_effect=flaky):
+        with mock.patch("simple_tools.chat_catalog.os.scandir", side_effect=flaky):
             rows = self.catalog().discover()
         found = {r.get("session_id") for r in rows if r["platform"] == "opencode"}
         self.assertIn("ses_a", found)
@@ -1356,7 +1356,7 @@ class OpenCodeCatalogTests(unittest.TestCase):
     def test_legacy_tree_read_error_reports_unavailable(self):
         base = self.home / ".local" / "share" / "opencode" / "storage" / "session"
         base.mkdir(parents=True)
-        with mock.patch("agent_sync.chat_catalog.os.scandir", side_effect=OSError("denied")):
+        with mock.patch("simple_tools.chat_catalog.os.scandir", side_effect=OSError("denied")):
             rows = self.catalog().discover()
         row = next(r for r in rows if r["platform"] == "opencode")
         self.assertEqual(row["status"], "unavailable")
@@ -1471,8 +1471,8 @@ class OpenCodeCatalogTests(unittest.TestCase):
         finally:
             conn.close()
         catalog = self.catalog()
-        with mock.patch("agent_sync.chat_catalog.OPENCODE_SQLITE_WORK_STEPS", 2000), mock.patch(
-            "agent_sync.chat_catalog.OPENCODE_SQLITE_PROGRESS_STEPS", 100
+        with mock.patch("simple_tools.chat_catalog.OPENCODE_SQLITE_WORK_STEPS", 2000), mock.patch(
+            "simple_tools.chat_catalog.OPENCODE_SQLITE_PROGRESS_STEPS", 100
         ):
             rows = catalog.discover()
         row = next(r for r in rows if r["platform"] == "opencode")
@@ -1482,8 +1482,8 @@ class OpenCodeCatalogTests(unittest.TestCase):
     def test_deadline_trip_reports_store_heavy(self):
         self._db()
         catalog = self.catalog()
-        with mock.patch("agent_sync.chat_catalog.OPENCODE_SQLITE_DEADLINE_SECONDS", 0), mock.patch(
-            "agent_sync.chat_catalog.OPENCODE_SQLITE_PROGRESS_STEPS", 1
+        with mock.patch("simple_tools.chat_catalog.OPENCODE_SQLITE_DEADLINE_SECONDS", 0), mock.patch(
+            "simple_tools.chat_catalog.OPENCODE_SQLITE_PROGRESS_STEPS", 1
         ):
             rows = catalog.discover()
         row = next(r for r in rows if r["platform"] == "opencode")

@@ -24,10 +24,10 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from agent_sync import cli
-from agent_sync import live as L
-from agent_sync import zulip as Z
-from agent_sync.tests.fake_zulip import BOT_EMAIL, FakeZulip
+from simple_tools import cli
+from simple_tools import live as L
+from simple_tools import zulip as Z
+from simple_tools.tests.fake_zulip import BOT_EMAIL, FakeZulip
 
 SESSION = "11112222-3333-4444-5555-666677778888"
 TAG = "11112222"
@@ -84,7 +84,7 @@ class Harness(unittest.TestCase):
         self.fake = FakeZulip(self.key, heartbeat=self.heartbeat)
         self.fake.start()
         self.addCleanup(self.fake.stop)
-        self.tmp = Path(tempfile.mkdtemp(prefix="agent-sync-test-"))
+        self.tmp = Path(tempfile.mkdtemp(prefix="simple-tools-test-"))
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.home = self.tmp / "home"
         self.home.mkdir()
@@ -140,13 +140,13 @@ class Harness(unittest.TestCase):
             "AGENT_SYNC_STATE_DIR": str(self.state_dir),
             # The fake realm's channels are its own;  pin the default to one of them so a
             # test never depends on the channel the live realm happens to use.
-            "AGENT_SYNC_CHANNEL": "agent-sync",
+            "AGENT_SYNC_CHANNEL": "simple-tools",
             "AGENT_SEAT": "CLAUDE",
             "CLAUDE_CODE_SESSION_ID": SESSION,
             # The DM rule defaults ON (owner decision, Oct 22 2026):  a seat may not open a new
             # direct message.  The many mechanical `dm` tests below are about tagging, grouping,
             # the secret scan and idempotency, not the rule, so they run with it off.  The rule's
-            # own tests are agent_sync/tests/test_dm_rule.py.
+            # own tests are simple_tools/tests/test_dm_rule.py.
             "AGENT_SYNC_DM_RULE": "off",
         }
         base.update({k: v for k, v in overrides.items() if v is not None})

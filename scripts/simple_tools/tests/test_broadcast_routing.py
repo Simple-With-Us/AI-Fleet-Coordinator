@@ -9,17 +9,17 @@ import threading
 import unittest
 from unittest import mock
 
-from agent_sync import broadcast_audit as BAUD
-from agent_sync import chat_fanout as F
-from agent_sync import live as L
-from agent_sync import router as R
-from agent_sync import zulip as Z
-from agent_sync.live import topic_key
-from agent_sync.tests.harness import write_rc
-from agent_sync.tests.test_chat_fanout import FakeCatalog, cloud
-from agent_sync.tests.fake_zulip import FAKE_OWNER_ID
-from agent_sync.tests.listener_harness import OPERATOR_USER_ID
-from agent_sync.tests.test_daemon import DaemonHarness
+from simple_tools import broadcast_audit as BAUD
+from simple_tools import chat_fanout as F
+from simple_tools import live as L
+from simple_tools import router as R
+from simple_tools import zulip as Z
+from simple_tools.live import topic_key
+from simple_tools.tests.harness import write_rc
+from simple_tools.tests.test_chat_fanout import FakeCatalog, cloud
+from simple_tools.tests.fake_zulip import FAKE_OWNER_ID
+from simple_tools.tests.listener_harness import OPERATOR_USER_ID
+from simple_tools.tests.test_daemon import DaemonHarness
 
 ST_URL = "https://github.com/example-org/Socratic-Trade"
 
@@ -44,7 +44,7 @@ def ctx(**kw):
     return R.Context(**options)
 
 
-def msg(sender=OWNER, content="hello", *, client="website", flags=(), topic="t", channel="agent-sync", mid=900):
+def msg(sender=OWNER, content="hello", *, client="website", flags=(), topic="t", channel="simple-tools", mid=900):
     return {
         "id": mid,
         "sender_id": sender,
@@ -406,7 +406,7 @@ class RouteModeMuseTests(unittest.TestCase):
     def test_muse_wake_is_headless_not_inbox_only(self) -> None:
         from types import SimpleNamespace
 
-        from agent_sync.daemon import Daemon
+        from simple_tools.daemon import Daemon
 
         daemon = Daemon.__new__(Daemon)
         cfg = SimpleNamespace(wake="muse")
@@ -424,7 +424,7 @@ class OwnerTopicBroadcastTests(unittest.TestCase):
         message = msg(
             content="@**all** pick one",
             topic=self.OWNER_TOPIC,
-            channel="agent-sync",
+            channel="simple-tools",
             flags=["stream_wildcard_mentioned"],
         )
         d = R.route(message, ME, ctx(), [])[1]
@@ -447,7 +447,7 @@ class PeerBroadcastRuleTests(unittest.TestCase):
 
     def test_a_peer_at_all_in_an_owner_topic_does_not_wake(self) -> None:
         peer = self.peer(
-            "@all look", topic="OWNER AFC-12 decision", channel="agent-sync"
+            "@all look", topic="OWNER AFC-12 decision", channel="simple-tools"
         )
         c, d = R.route(peer, ME, self.peer_ctx(), [])
         self.assertIsNone(d.wake)
@@ -491,7 +491,7 @@ class PeerBroadcastDaemonTests(DaemonHarness):
     book:  one audit per broadcast, and none for the owner."""
 
     def peer_all(self) -> int:
-        return self.fake.add_message("Codex", "agent-sync", "t", "@all the deploy is broken")
+        return self.fake.add_message("Codex", "simple-tools", "t", "@all the deploy is broken")
 
     def log_rows(self, daemon) -> list[dict]:
         return L.read_jsonl(daemon.log.path)
@@ -544,7 +544,7 @@ class PeerBroadcastDaemonTests(DaemonHarness):
         self.assertTrue(daemon.connect_seat("CODEX"))
         daemon._chat_catalog = FakeCatalog([])
         message_id = self.fake.add_message(
-            "Codex", "agent-sync", "t", "@all the deploy is broken", deliver=False
+            "Codex", "simple-tools", "t", "@all the deploy is broken", deliver=False
         )
         message = next(m for m in self.fake.messages if m["id"] == message_id)
         # The sender's own seat routes it first:  that view is `own`, not a peer broadcast.
@@ -560,7 +560,7 @@ class PeerBroadcastDaemonTests(DaemonHarness):
         daemon._chat_catalog = FakeCatalog([])
         message_id = self.fake.add_message(
             "Codex",
-            "agent-sync",
+            "simple-tools",
             "t",
             "@all the deploy is broken",
             timestamp=int(self.clock.time()) - 10000,
@@ -573,7 +573,7 @@ class PeerBroadcastDaemonTests(DaemonHarness):
         daemon = self.started()
         daemon._chat_catalog = FakeCatalog([])
         message_id = self.fake.add_message(
-            "Jay Wedgeworth", "agent-sync", "t", "@all the deploy is broken"
+            "Jay Wedgeworth", "simple-tools", "t", "@all the deploy is broken"
         )
         self.pump_until(daemon, lambda: message_id in daemon._fanout_seen)
         self.assertEqual(daemon._broadcast_audits, {})
@@ -684,7 +684,7 @@ class PeerBroadcastDaemonTests(DaemonHarness):
         self.fake.add_user("guest@zulip.test", "Guest", is_bot=False)
         daemon = self.started()
         daemon._chat_catalog = FakeCatalog([])
-        message_id = self.fake.add_message("Guest", "agent-sync", "t", "@all the deploy is broken")
+        message_id = self.fake.add_message("Guest", "simple-tools", "t", "@all the deploy is broken")
         message = next(m for m in self.fake.messages if m["id"] == message_id)
         daemon.route_message(daemon.seats["CLAUDE"], dict(message))
         self.assertEqual(daemon._broadcast_audits, {})
@@ -695,7 +695,7 @@ class PeerBroadcastDaemonTests(DaemonHarness):
         daemon = self.started()
         daemon._chat_catalog = FakeCatalog([])
         message_id = self.fake.add_message(
-            "Codex", "agent-sync", "t", "@all the deploy is broken"
+            "Codex", "simple-tools", "t", "@all the deploy is broken"
         )
         message = next(m for m in self.fake.messages if m["id"] == message_id)
         daemon.route_message(daemon.seats["CLAUDE"], dict(message, sender_id=987654))
@@ -708,7 +708,7 @@ class PeerBroadcastDaemonTests(DaemonHarness):
         daemon._chat_catalog = FakeCatalog([])
         self.fake.add_user("mystery-bot@zulip.test", "Mystery", is_bot=True)
         message_id = self.fake.add_message(
-            "Mystery", "agent-sync", "t", "@all the deploy is broken"
+            "Mystery", "simple-tools", "t", "@all the deploy is broken"
         )
         self.pump_until(daemon, lambda: message_id in daemon._broadcast_audits)
         broadcast = daemon._broadcast_audits[message_id][0]
@@ -736,7 +736,7 @@ class PeerBroadcastDaemonTests(DaemonHarness):
         message_id = self.peer_all()
         self.pump_until(daemon, lambda: message_id in daemon._fanout_seen)
         self.clock.advance(11 * 60)
-        with mock.patch("agent_sync.daemon.threading") as fake_threading:
+        with mock.patch("simple_tools.daemon.threading") as fake_threading:
             fake_threading.Thread.side_effect = RuntimeError("no thread today")
             daemon._start_due_broadcast_audits(self.clock.time())
         self.assertIn(message_id, daemon._broadcast_audits, "a spawn failure requeues the audit")
