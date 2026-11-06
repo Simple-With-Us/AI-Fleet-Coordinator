@@ -145,6 +145,15 @@ enum MusterSettings {
     /// The place the window was:  the sidebar destination saved by `FleetOverviewView`.
     static let sidebarSelectionDefaultsKey = "musterSidebarSelection"
     static let defaultZulipSeat = "CLAUDE"
+    /// Whether Muster starts the Mac's services again when they stop.  On unless the owner
+    /// turned it off:  `ServiceReconciler` reads this on every pass.
+    static let keepServicesRunningDefaultsKey = "musterKeepServicesRunning"
+
+    /// True when Muster may start the Mac's services again when they stop.  A setting that
+    /// was never saved is on.
+    static func keepsServicesRunning(defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: keepServicesRunningDefaultsKey) as? Bool ?? true
+    }
 
     static func scriptsDirectory(
         defaults: UserDefaults = .standard,

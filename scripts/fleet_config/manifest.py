@@ -219,6 +219,7 @@ def _parse_rule(raw: object, seat: str) -> Rule:
                 None,
                 "rule %s expected timeoutSeconds" % rule_id,
             ),
+            guards=_guards(expected_raw.get("guards"), rule_id),
         ),
         proof_level=_enum(ProofLevel, raw.get("proofLevel"), "rule %s proofLevel" % rule_id),
         owner_seat=str(raw.get("ownerSeat") or ""),
@@ -233,6 +234,21 @@ def _parse_rule(raw: object, seat: str) -> Rule:
         implemented=True if implemented_raw is None else implemented_raw,
         implementation_reason=str(raw.get("implementationReason") or ""),
     )
+
+
+GUARD_SCOPES: tuple[str, ...] = ("shell", "file")
+
+
+def _guards(value: object, rule_id: str) -> tuple[str, ...]:
+    """The guard scopes a hook rule asks for:  ``shell``, ``file``, both or neither."""
+    names = _str_tuple(value, "rule %s expected guards" % rule_id)
+    for name in names:
+        if name not in GUARD_SCOPES:
+            raise ManifestError(
+                "rule %s expects the guard scope %r, which is not one of %s"
+                % (rule_id, name, ", ".join(GUARD_SCOPES))
+            )
+    return names
 
 
 def _int_field(value: object, default: int | None, what: str) -> int | None:

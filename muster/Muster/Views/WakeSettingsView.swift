@@ -1230,7 +1230,7 @@ private extension WakeSettingState {
     /// The badge's tooltip.
     var note: String {
         switch self {
-        case .match: return "The eavesdropper is using the value the file holds."
+        case .match: return "The eavesdropper is using the value the file holds.\u{00A0} This compares two values, and it does not prove the setting works."
         case .drift: return "The eavesdropper is using something other than the file's value."
         case .unproven: return "Configured,  but no pin has ever proved it works."
         case .notOwned: return "The engine does not enforce this setting,  so Muster will not write it."

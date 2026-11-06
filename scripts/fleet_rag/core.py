@@ -145,9 +145,9 @@ def http_json(
     exported, and tests can set/clear them per-case.  A caller that passes `retries` explicitly
     (e.g. the public-fallback REST twin's PUBLIC_RETRIES=1) is never affected by the env var.
 
-    408 (Request Timeout) is retried like 429/5xx: Qdrant's upsert-by-id and delete-by-id are
-    idempotent, so retrying one after a tunnel stall is safe and is exactly what lets a caller
-    behind the SSH tunnel ride out a reconnect instead of failing the whole ingest run.
+    408 (Request Timeout) is retried like 429/5xx: Qdrant's upsert-by-id, set-payload-by-id and
+    delete-by-id/filter calls are idempotent, so retrying one after a tunnel stall replays the
+    exact same bounded point request, never the larger recall operation that planned it.
     """
     if retries is None:
         retries = _env_int(RETRIES_ENV, RETRIES, min_value=0, max_value=MAX_RETRIES)
@@ -641,11 +641,50 @@ class Qdrant:
     def info(self) -> dict:
         return self._call(self._cpath())["result"]
 
+    def create_payload_index(self, field_name: str, field_schema: str) -> None:
+        """Create one payload index; Qdrant treats an identical existing index as a no-op."""
+        self._call(
+            self._cpath("/index"),
+            {"field_name": field_name, "field_schema": field_schema},
+            method="PUT",
+            write=True,
+        )
+
     def count(self, flt: dict | None = None, exact: bool = True) -> int:
         body: dict[str, Any] = {"exact": exact}
         if flt:
             body["filter"] = flt
         return self._call(self._cpath("/points/count"), body)["result"]["count"]
+
+    def retrieve(
+        self, point_id: str, *, with_payload: Any = True, with_vector: bool = False
+    ) -> dict | None:
+        """One point by id, or None when it does not exist."""
+        import urllib.parse
+
+        path = self._cpath("/points/" + urllib.parse.quote(point_id, safe=""))
+        if with_payload is not True or with_vector:
+            path += "?" + urllib.parse.urlencode(
+                {"with_payload": str(with_payload).lower(), "with_vector": str(with_vector).lower()}
+            )
+        try:
+            response = self._call(path, method="GET")
+        except FleetRagError as e:
+            if "HTTP 404" in str(e):
+                return None
+            raise
+        if not isinstance(response, dict):
+            raise FleetRagError("Qdrant retrieve returned a malformed response")
+        point = response.get("result")
+        if not isinstance(point, dict):
+            raise FleetRagError("Qdrant retrieve returned a malformed point")
+        if not isinstance(point.get("id"), str) or not point["id"]:
+            raise FleetRagError("Qdrant retrieve returned a point without a valid id")
+        if point.get("payload") is not None and not isinstance(point["payload"], dict):
+            raise FleetRagError("Qdrant retrieve returned an invalid payload")
+        if "vector" in point and not isinstance(point["vector"], (list, dict)):
+            raise FleetRagError("Qdrant retrieve returned an invalid vector")
+        return point
 
     def scroll(
         self,
