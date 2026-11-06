@@ -41,7 +41,7 @@ The broker also checks receipt age, required fields, host bounds, and the expect
 
 A receipt also names two revisions: `policyRevision`, the one the controller is running, and `desiredRevision`, the saved policy's.  A change is reviewed against `desiredRevision`, which is what the broker compares, so a saved policy that is not yet in effect can still be changed, and the page names that state.
 
-When the policy write lands but the reload or the applied receipt is not confirmed, the broker answers `result: "submitted"`, `executionState: "saved"`, `saved: true` and `errorCode: "saved_apply_unverified"`, with a plain sentence saying the value is saved and not yet confirmed in effect.  A persisted change is never answered as failed.  The saved policy stays visible separately from the observed result, and an uncertain write is not retried automatically.
+When the policy write lands but the reload or the applied receipt is not confirmed, the broker answers `result: "submitted"`, `executionState: "saved"`, `saved: true` and `errorCode: "saved_apply_unverified"`, with a plain sentence saying the value is saved and not yet confirmed in effect.  A persisted change is never answered as failed.  A write that was sent and never confirmed (a timeout or a server error) is answered `result: "unknown"`, because it may have landed.  The saved policy stays visible separately from the observed result, and an uncertain write is not retried automatically.
 
 ## Review And Apply
 

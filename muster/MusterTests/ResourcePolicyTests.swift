@@ -370,6 +370,27 @@ final class ResourcePolicyTests: XCTestCase {
         XCTAssertTrue(off?.hasPrefix("Borrow Idle Memory is off") == true)
     }
 
+    func test_pressure_limit_help_follows_the_borrowing_draft() throws {
+        let applied = try loadContract().snapshot("applied")
+        let off = ResourceLimitsCopy.pressureHelp(applied, pressure: 8, borrowing: false)
+        XCTAssertTrue(off.hasPrefix("Borrow Idle Memory is off"), off)
+        let saved = try decode(try json()).snapshot.map { ResourceLimitsCopy.pressureHelp($0, pressure: 8, borrowing: true) }
+        XCTAssertTrue(saved?.hasPrefix("With Borrow Idle Memory on") == true, saved ?? "")
+    }
+
+    func test_an_unreadable_saved_policy_cannot_be_reviewed() throws {
+        var root = try XCTUnwrap(try JSONSerialization.jsonObject(with: try json()) as? [String: Any])
+        var payload = try XCTUnwrap(root["resourcePolicy"] as? [String: Any])
+        payload.removeValue(forKey: "desiredRevision")
+        payload["reasons"] = ["saved-policy-unreadable"]
+        root["resourcePolicy"] = payload
+        let reading = decode(try JSONSerialization.data(withJSONObject: root))
+        XCTAssertEqual(reading.state, .current)
+        XCTAssertNotNil(reading.snapshot, "the values stay visible, read only")
+        XCTAssertNil(reading.snapshot?.reviewRevision)
+        XCTAssertFalse(reading.canReviewChanges(at: now))
+    }
+
     func test_cpu_cores_help_counts_the_cores_coding_cannot_use() throws {
         let applied = try loadContract().snapshot("applied")
         XCTAssertTrue(ResourceLimitsCopy.cpuCoresHelp(applied, cores: 12).hasPrefix(

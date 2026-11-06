@@ -140,9 +140,10 @@ extension ResourcePolicySnapshot {
     static let bytesPerGiB = 1_073_741_824.0
 
     /// The revision a change is reviewed against.  The server compares a change with the
-    /// saved policy's revision,  so that one is sent;  the controller's stands in only when
-    /// the saved one was not read,  and the server then refuses a stale one by itself.
-    var reviewRevision: String? { desiredRevision ?? policyRevision }
+    /// saved policy's revision,  so only that one is sent.  When the server could not read the
+    /// saved policy it sends none,  the controller's revision cannot stand in for it,  and
+    /// the values stay read only.
+    var reviewRevision: String? { desiredRevision }
 
     /// True when the server holds a saved policy the controller is not running yet.
     var savedPolicyNotInEffect: Bool {
@@ -436,11 +437,15 @@ enum ResourceLimitsCopy {
 
     /// What Pressure RAM Limit really does (RESOURCES-1):  with borrowing on it is a floor in
     /// normal operation and the limit only under pressure.
-    static func pressureHelp(_ s: ResourcePolicySnapshot, pressure: Double) -> String {
+    /// `borrowing` is the owner's draft of Borrow Idle Memory when there is one,  so the words
+    /// follow the control as it is moved.  The live "up to" figure is the controller's own
+    /// measurement,  so it is quoted only while the draft still matches the saved setting.
+    static func pressureHelp(_ s: ResourcePolicySnapshot, pressure: Double, borrowing: Bool? = nil) -> String {
         let held = "Under memory pressure coding is held to \(gib(pressure)), and in critical mode to \(gib(s.desired.ramCriticalGiB))."
         let lead: String
-        if s.desired.allowBorrowing {
-            if let o = s.observed, o.mode == "normal", o.codingGroups > 0, o.ramTargetBytes > 0 {
+        let borrowOn = borrowing ?? s.desired.allowBorrowing
+        if borrowOn {
+            if s.desired.allowBorrowing, let o = s.observed, o.mode == "normal", o.codingGroups > 0, o.ramTargetBytes > 0 {
                 lead = "Coding may use up to \(gib(bytes: o.ramTargetBytes)) right now because Borrow Idle Memory is on."
             } else {
                 lead = "With Borrow Idle Memory on, coding may use more than this while the server has memory to spare."
@@ -540,7 +545,7 @@ enum ResourceLimitsCopy {
         case "receipt-invalid":
             return "The memory controller's receipt has values this server cannot have."
         case "saved-policy-unreadable":
-            return "The saved policy could not be read from its source, so the values shown are the controller's copy."
+            return "The saved policy could not be read from its source, so the values shown are the controller's copy and cannot be changed until the saved policy can be read."
         case "policy-not-in-effect":
             return "The saved policy is not yet in effect.\(gap)The memory controller is still running an older copy."
         case "cpu-values-differ":
@@ -742,8 +747,9 @@ struct ResourcePolicyReading: Equatable {
             guard ["applied", "drift", "unavailable"].contains(snapshot.status) else {
                 return invalid("The server returned an unknown policy status.")
             }
-            // A report the server stands behind names the revision a change is checked against.
-            guard snapshot.reviewRevision != nil || snapshot.status == "unavailable" else {
+            // A report the server stands behind names a revision,  the saved policy's or,
+            // when that could not be read,  the controller's.
+            guard !revisions.isEmpty || snapshot.status == "unavailable" else {
                 return invalid("The policy revision is missing.")
             }
             // Measurements are what an applied or drift status rests on.

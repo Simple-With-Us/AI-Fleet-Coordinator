@@ -222,14 +222,28 @@ class BrokerTests(unittest.TestCase):
     def test_uncertain_save_never_retries_or_reloads(self):
         def save(value):
             self.store.saves.append(value)
-            raise r.Failed("the policy write outcome is uncertain; it was not retried")
+            raise r.WriteUncertain("The server could not confirm whether the new value was saved.")
 
         self.store.save = save
         answer, code = self.call()
-        self.assertEqual(code, 1)
+        # A write that may have landed is unknown, never failed.
+        self.assertEqual((code, answer["result"], answer["ok"]), (1, "unknown", False))
         self.assertEqual(len(self.store.saves), 1)
         self.assertFalse(self.commands)
-        self.assertIn("uncertain", answer["detail"])
+        self.assertIn("could not confirm", answer["detail"])
+        self.assertTrue(answer["detail"].endswith(r.REFRESH_ADVICE))
+
+    def test_a_refused_write_is_still_failed(self):
+        def save(value):
+            raise r.Failed("The server did not accept the new value.")
+
+        self.store.save = save
+        answer, code = self.call()
+        self.assertEqual((code, answer["result"]), (1, "failed"))
+
+    def test_one_core_is_not_plural(self):
+        self.assertEqual(r.field_display("cpu-cores", 1), "1 core")
+        self.assertEqual(r.field_display("cpu-cores", 12), "12 cores")
 
     def assertSavedNotConfirmed(self, answer, code):
         """A write that landed is never answered as failed (RESOURCES-3)."""

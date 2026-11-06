@@ -303,7 +303,10 @@ struct ResourceLimitsView: View {
                     .ramBudgetGiB,
                     snapshot: snapshot,
                     inEffect: currentLimit(snapshot),
-                    help: ResourceLimitsCopy.pressureHelp(snapshot, pressure: pressure)
+                    help: ResourceLimitsCopy.pressureHelp(
+                        snapshot, pressure: pressure,
+                        borrowing: (drafts.value(.borrowIdle, in: snapshot) ?? (snapshot.desired.allowBorrowing ? 1 : 0)) >= 0.5
+                    )
                 )
                 numericControl(
                     .ramCriticalGiB,
@@ -547,16 +550,24 @@ struct ResourceLimitsView: View {
             return
         }
         Task {
-            // A read already running (the 30-second one,  say) is waited for,  never
-            // skipped,  so the click is not lost.
-            await finishRefresh()
-            if !reading.canReviewChanges(at: Date()) {
-                await refresh()
-            }
+            await settleReading()
             if reading.canReviewChanges(at: Date()) {
                 send(field)
             }
         }
+    }
+
+    /// Wait until a read has finished and the receipt can be reviewed,  or give up quietly.
+    /// A read already running (the 30-second one,  say) is waited for,  never skipped,  and
+    /// when another read starts in the gap before ours,  the second pass waits for that one.
+    @MainActor
+    private func settleReading() async {
+        for _ in 0..<2 {
+            await finishRefresh()
+            if reading.canReviewChanges(at: Date()) { return }
+            await refresh()
+        }
+        await finishRefresh()
     }
 
     /// Wait for a read that is already running,  for at most the plan timeout.

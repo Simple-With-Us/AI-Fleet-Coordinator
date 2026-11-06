@@ -84,6 +84,10 @@ class Failed(Exception):
     pass
 
 
+class WriteUncertain(Failed):
+    """The policy write was sent and nothing says whether it landed."""
+
+
 class SavedUnverified(Failed):
     """The policy write landed, and what was meant to follow it was not confirmed."""
 
@@ -155,11 +159,20 @@ class InfisicalStore:
                 "PATCH", "/v3/secrets/raw/" + KEY, self.token, body, self.env, max_bytes=65536
             )
         except Exception:
-            raise Failed("the policy write outcome is uncertain; it was not retried") from None
+            raise WriteUncertain(
+                "The server could not confirm whether the new value was saved, "
+                "and the write was not retried."
+            ) from None
         finally:
             body.clear()
         if status not in (200, 201):
-            raise Failed("the policy write was not confirmed; it was not retried")
+            if isinstance(status, int) and status >= 500:
+                # The server may have applied it before it failed.
+                raise WriteUncertain(
+                    "The server could not confirm whether the new value was saved, "
+                    "and the write was not retried."
+                )
+            raise Failed("The server did not accept the new value, and the write was not retried.")
 
 
 def parse_target(target):
@@ -273,7 +286,7 @@ def field_display(field, value):
     if field in ("ram-budget-gib", "ram-critical-gib", "ram-reserve-gib"):
         return gib_text(value)
     if field == "cpu-cores":
-        return f"{value} cores"
+        return f"{value} core" if value == 1 else f"{value} cores"
     return str(value)
 
 
@@ -780,6 +793,11 @@ def handle(ctx, action, target, mode):
                 detail=what + GAP + REFRESH_ADVICE,
             )
             code = 0
+        elif isinstance(exc, WriteUncertain):
+            # The write was sent and may have landed, so this is not known to have failed:
+            # the route's word for that is unknown, never failed.
+            answer.update(result="unknown", detail=str(exc) + GAP + REFRESH_ADVICE)
+            code = 1
         else:
             detail = (
                 str(exc)
