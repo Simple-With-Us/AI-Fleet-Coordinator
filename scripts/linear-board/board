@@ -3893,7 +3893,10 @@ def with_defaults(schema: dict, args: dict) -> dict:
 # resolved arguments.  Parse errors all read "GraphQL document is invalid.", as the server's do.
 
 GQL_DOCUMENT_LIMIT = 24000
-GQL_VARIABLES_LIMIT = 24000
+# Raised from 24000 (AFC-646):  the shared deficiency log passed 26,729 characters and no seat
+# could update it in place.  Still a guard against pathological requests, far under Linear's own
+# request-size limits.  Keep in sync with VARIABLES_LIMIT in scripts/agent-sync-mcp/src/linear-graphql.js.
+GQL_VARIABLES_LIMIT = 100000
 GQL_MAX_DEPTH = 16
 GQL_MAX_FIELDS = 500
 GQL_MAX_TOKENS = 8000
@@ -4286,7 +4289,7 @@ def _copy_variables(variables) -> dict:
     except (TypeError, ValueError):
         _gql_invalid("variables must be JSON data.")
     if len(encoded) > GQL_VARIABLES_LIMIT:
-        _gql_invalid("variables exceed the 24000-character limit.")
+        _gql_invalid("variables exceed the 100000-character limit.")
     copied = json.loads(encoded)
     if not isinstance(copied, dict):
         _gql_invalid("variables must be a JSON object.")

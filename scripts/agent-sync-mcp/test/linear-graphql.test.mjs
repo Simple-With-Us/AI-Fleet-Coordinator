@@ -81,7 +81,7 @@ test("enforces expanded selection depth and field-count bounds", () => {
 
 test("enforces document and JSON variable size and nesting limits", () => {
   rejected(`query Q { field(arg: "${"x".repeat(24000)}") }`);
-  rejected("query Q { field }", { value: "x".repeat(24000) });
+  rejected("query Q { field }", { value: "x".repeat(100001) });
   let nested = "leaf";
   for (let i = 0; i < 17; i++) nested = { child: nested };
   rejected("query Q { field }", { value: nested });
