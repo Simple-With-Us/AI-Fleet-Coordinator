@@ -219,7 +219,7 @@ struct FleetView: View {
                                 Text("\(app.activeClaims) claim(s)\(app.expiredClaims > 0 ? " (\(app.expiredClaims) expired)" : "")")
                                     .font(.caption.monospaced())
                                     .foregroundStyle(app.expiredClaims > 0 ? .red : .secondary)
-                                FleetToolsStateBadge(state: app.state, width: 92)
+                                FleetToolsStateBadge(state: app.state, width: 92, checked: PassMeaning.appRow)
                             }
                         }
                     }
