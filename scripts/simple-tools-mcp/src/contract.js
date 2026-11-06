@@ -1,6 +1,6 @@
 // The ST-MCP tool contract, shared with the stdio server
-// (docs/protocols/agent-sync-mcp.md section 1).  A port of the pure parts of
-// scripts/agent_sync/mcp/tools.py, live.py, secretscan.py and wakes.py:  the
+// (docs/protocols/simple-tools-mcp.md section 1).  A port of the pure parts of
+// scripts/simple_tools/mcp/tools.py, live.py, secretscan.py and wakes.py:  the
 // schema check, the untrusted envelope, the error model, the secret scanner,
 // mention neutralization, seat tags and the Central clock.
 //
@@ -8,7 +8,7 @@
 // `node --test` runs the shared golden fixtures against it.  The tool schemas
 // are the stdio server's own tools.json, imported at bundle time, never copied.
 
-import TOOLS from "../../agent_sync/mcp/tools.json" with { type: "json" };
+import TOOLS from "../../simple_tools/mcp/tools.json" with { type: "json" };
 
 export { TOOLS };
 
@@ -17,7 +17,7 @@ export const NAME_LIMIT = 100;
 export const MESSAGE_LIMIT = 300;
 export const MAX_CONTENT_LENGTH = 10000;
 export const MAX_TOPIC_LENGTH = 60;
-export const ERROR_META_KEY = "agent-sync/error";
+export const ERROR_META_KEY = "simple-tools/error";
 export const WRITE_TOOLS = Object.freeze(new Set(["post", "reply", "react"]));
 export const READ_TOOLS = Object.freeze(new Set(["whoami", "topics", "read_topic", "inbox"]));
 export const RESOLVED_PREFIX = "✔ ";
@@ -194,20 +194,20 @@ export function envelope(tool, args, summary, items, nonce = newNonce()) {
 
 // ---------------------------------------------------------------- errors
 
-export class AgentSyncError extends Error {}
-export class UsageError extends AgentSyncError {
+export class SimpleToolsError extends Error {}
+export class UsageError extends SimpleToolsError {
   constructor(message) {
     super(message);
     this.name = "UsageError";
   }
 }
-export class CredentialError extends AgentSyncError {
+export class CredentialError extends SimpleToolsError {
   constructor(message) {
     super(message);
     this.name = "CredentialError";
   }
 }
-export class ApiError extends AgentSyncError {
+export class ApiError extends SimpleToolsError {
   constructor(message, { code = null, status = null, data = null } = {}) {
     super(message);
     this.name = "ApiError";
@@ -216,7 +216,7 @@ export class ApiError extends AgentSyncError {
     this.data = data ?? {};
   }
 }
-export class NetworkError extends AgentSyncError {
+export class NetworkError extends SimpleToolsError {
   constructor(message, { timeout = false, maybeSent = false } = {}) {
     super(message);
     this.name = "NetworkError";
@@ -231,7 +231,7 @@ export class NetworkError extends AgentSyncError {
  * participation is the authenticated Zulip user id.  `code` is the machine-readable reason, the
  * same shape the Python guard uses.
  */
-export class DmGuardRefused extends AgentSyncError {
+export class DmGuardRefused extends SimpleToolsError {
   constructor(message, { code = "dm_owner_not_participant" } = {}) {
     super(message);
     this.name = "DmGuardRefused";

@@ -20,7 +20,7 @@ export const PUBLIC_HOST = "agents.simplewithus.com";
 export const ISSUER = `https://${PUBLIC_HOST}`;
 
 // The Operator bot's Zulip user id, pinned (owner decision, Oct 22 2026) and the same value as
-// scripts/agent_sync/zulip.py OPERATOR_USER_ID.  It is an identity, not a credential, and it is only
+// scripts/simple_tools/zulip.py OPERATOR_USER_ID.  It is an identity, not a credential, and it is only
 // ever compared against the opener of a conversation.  OPERATOR_ZULIP_USER_ID overrides it where the
 // deployment pins a different one;  when it is absent this pinned value is the whole truth, so there
 // is nothing to fail closed on.  Exported so the Worker and the tests never carry a second copy.
@@ -333,7 +333,7 @@ export function loadConfig(env) {
   return Object.freeze({
     host: PUBLIC_HOST,
     // The DM rule (owner decision, Oct 22 2026, hard cutover):  a seat may not open a new direct
-    // message.  Mirrors scripts/agent_sync/dm_policy.py rule_enabled();  default on.
+    // message.  Mirrors scripts/simple_tools/dm_policy.py rule_enabled();  default on.
     dmRule: !["off", "0", "false", "no", "none", "disabled"].includes(
       String(env.AGENT_SYNC_DM_RULE ?? "").trim().toLowerCase(),
     ),

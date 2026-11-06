@@ -6,13 +6,13 @@
 // Every tool family passes through the same server-side allow-set check. Existing
 // admin provisioning endpoints remain separate from acting as another agent.
 //
-// GB_IDENTITIES is read from scripts/agent_sync/mcp/gb-identities.json, the one list the stdio
+// GB_IDENTITIES is read from scripts/simple_tools/mcp/gb-identities.json, the one list the stdio
 // server reads too.  No other list of personas exists, here or anywhere.  It comes through
 // infisical-manifest.js, which checks the table's shape once:  a malformed table enables no
 // persona (an empty list and one logged event) instead of failing this module's load, which
 // would stop the whole Worker (kody 4367022121).
 import { GB_ENABLED_IDENTITIES } from "./infisical-manifest.js";
-import RENAMED from "../../agent_sync/mcp/renamed-tools.json" with { type: "json" };
+import RENAMED from "../../simple_tools/mcp/renamed-tools.json" with { type: "json" };
 import { HOSTED_TOOL_LIST, HOSTED_TOOLS_BY_NAME, HOSTED_WRITE_TOOLS, UnknownTool } from "./hosted-tools.js";
 import { resolveSecret, infisicalMode } from "./infisical.js";
 import { ToolError, errorResult, okResult, scanSecret, schemaProblem } from "./contract.js";
