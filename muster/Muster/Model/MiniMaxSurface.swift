@@ -25,8 +25,9 @@ struct MiniMaxSurface {
 
     /// What the reader found at the script a hook command runs.
     enum ScriptState: Equatable {
-        /// The command names no file path:  it runs a program by name from the PATH, or
-        /// hands the interpreter code inline, so there is no file to look at.
+        /// The command names no absolute file path:  it runs a program by name from the
+        /// PATH, names a script by a relative path whose working folder is not known, or
+        /// hands the interpreter code inline, so there is no file the panel can look at.
         case noPath
         /// The file is there, and it can run.
         case present
@@ -68,6 +69,9 @@ struct MiniMaxSurface {
         /// and a hook that has been seen to deny are different states, and only the
         /// engine's own proof says which one this is.
         let proof: HookProof?
+
+        /// The id as the panel shows it:  a value after `NAME=` is never on the screen.
+        var shownHookId: String { MiniMaxReader.shownHookId(hookId) }
 
         /// The same hook, carrying the engine's proof.
         func withProof(_ proof: HookProof) -> Hook {
@@ -438,8 +442,14 @@ enum MiniMaxReader {
                     commandCount: parsed?.entries.count ?? 0
                 )
             )
-            if parsed == nil {
-                problems.append("The hook manifest of plugin \(name) is not readable JSON, so its hooks are not shown.")
+            if let parsed {
+                if !parsed.hasHooksSection {
+                    problems.append("The hook manifest of plugin \(name) has no hooks section, so the plugin registers no hook.")
+                }
+            } else {
+                problems.append(
+                    "The hook manifest of plugin \(name) is not a readable hook manifest (it is not JSON, or its hooks are not in the hook shape), so its hooks are not shown."
+                )
             }
         }
         return (listing.state, plugins)
@@ -472,7 +482,9 @@ enum MiniMaxReader {
                 hooks += shape(parsed, plugin: nil, origin: userHooksOrigin, home: home)
             } else {
                 userFile = .unreadable
-                problems.append("\(userHooksOrigin) is there but is not readable JSON, so its hooks are not shown.")
+                problems.append(
+                    "\(userHooksOrigin) is there but is not a readable hook manifest (it is not JSON, or its hooks are not in the hook shape), so its hooks are not shown."
+                )
             }
         }
         for plugin in plugins where plugin.hasHookManifest && plugin.hookManifestValid {
@@ -493,7 +505,7 @@ enum MiniMaxReader {
 
     /// The registrations of one manifest, shaped for the panel.
     private static func shape(
-        _ parsed: (enabled: Bool, entries: [RawHook]),
+        _ parsed: (enabled: Bool, entries: [RawHook], hasHooksSection: Bool),
         plugin: String?,
         origin: String,
         home: URL
@@ -540,28 +552,38 @@ enum MiniMaxReader {
         }
     }
 
-    /// The hook manifest as a flat list of registrations, or nil when it is not JSON or
-    /// its root is not an object.
+    /// The hook manifest as a flat list of registrations, or nil when it is not JSON, its
+    /// root is not an object, or a `hooks` value that is there has the wrong shape.
     ///
     /// The shape is `hooks` keyed by event, each holding matcher groups, each holding
     /// the commands themselves, so the panel can say what runs, for what, and through
-    /// which matcher.
-    private static func parseHookManifest(at url: URL) -> (enabled: Bool, entries: [RawHook])? {
+    /// which matcher.  An object with no `hooks` key registers no hooks:  that is empty,
+    /// not unreadable, and `hasHooksSection` says so the caller can tell.  A `hooks` that
+    /// is there and is not an object, or an event or group list of the wrong type, is not
+    /// empty either:  the engine rejects the same files, so the panel does not read them
+    /// as "no hooks".
+    private static func parseHookManifest(
+        at url: URL
+    ) -> (enabled: Bool, entries: [RawHook], hasHooksSection: Bool)? {
         guard
             let data = try? Data(contentsOf: url),
             let object = try? JSONSerialization.jsonObject(with: data),
             let root = object as? [String: Any]
         else { return nil }
-        // JSON that is an object with no `hooks` key registers no hooks:  that is empty,
-        // not unreadable.
-        let events = root["hooks"] as? [String: Any] ?? [:]
+        let hasHooksSection = root.keys.contains("hooks")
+        var events: [String: Any] = [:]
+        if hasHooksSection {
+            guard let section = root["hooks"] as? [String: Any] else { return nil }
+            events = section
+        }
         let enabled = (root["enabled"] as? Bool) ?? true
         var hooks: [RawHook] = []
         for event in events.keys.sorted() {
-            guard let groups = events[event] as? [[String: Any]] else { continue }
+            guard let groups = events[event] as? [[String: Any]] else { return nil }
             for group in groups {
                 let matcher = group["matcher"] as? String ?? "any"
-                guard let entries = group["hooks"] as? [[String: Any]] else { continue }
+                guard group.keys.contains("hooks") else { continue }
+                guard let entries = group["hooks"] as? [[String: Any]] else { return nil }
                 for entry in entries {
                     hooks.append(
                         RawHook(
@@ -575,7 +597,7 @@ enum MiniMaxReader {
                 }
             }
         }
-        return (enabled, hooks)
+        return (enabled, hooks, hasHooksSection)
     }
 
     // MARK: - reading a hook command
@@ -591,14 +613,17 @@ enum MiniMaxReader {
 
     /// The id a command names (`checks_hooks.command_id`):  the first token with a
     /// script suffix, without the suffix, else the file name of the first token.
+    ///
+    /// This is the id the engine compares, so it is not changed to hide anything:  a
+    /// command that begins with `NAME=value` and names no script has the id
+    /// `NAME=value`, in the engine and here, and a rule can only prove it by that id.
+    /// What is shown is `shownHookId`, which keeps a value off the screen.
     static func commandId(_ command: String) -> String {
         let tokens = command.split(whereSeparator: { $0 == " " || $0 == "\t" }).map {
             String($0).trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
         }
-        // Leading `NAME=value` assignments are never an id:  the value may be a secret.
-        let words = tokens.drop(while: { isAssignment($0) })
-        guard let first = words.first else { return "" }
-        for token in words {
+        guard let first = tokens.first else { return "" }
+        for token in tokens {
             let base = (token as NSString).lastPathComponent
             let suffix = (base as NSString).pathExtension
             if scriptSuffixes.contains(suffix) {
@@ -606,6 +631,16 @@ enum MiniMaxReader {
             }
         }
         return (first as NSString).lastPathComponent
+    }
+
+    /// A hook id as the panel may show it.
+    ///
+    /// An id that is a `NAME=value` assignment came from a command with no script in it,
+    /// and the value may be a secret, so the value is replaced.  Matching a proof still
+    /// uses the id as the engine derived it.
+    static func shownHookId(_ id: String) -> String {
+        guard isAssignment(id), let equals = id.firstIndex(of: "=") else { return id }
+        return "\(id[..<equals])=\(ConfigFileReader.redactionMark)"
     }
 
     /// A hook id as the engine compares it:  a trailing `-hook` does not matter.
@@ -673,7 +708,7 @@ enum MiniMaxReader {
     /// readers hide the same things.  The home folder is shortened to `~`.
     static func shownCommand(_ command: String, home: URL) -> String {
         let mark = ConfigFileReader.redactionMark
-        let tokens = command.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
+        let tokens = shellTokens(command)
         var shown: [String] = []
         var hideNext = false
         for raw in tokens {
@@ -687,6 +722,7 @@ enum MiniMaxReader {
                 let name = String(bare[..<equals])
                 let key = name.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
                 let value = String(bare[bare.index(after: equals)...])
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
                 if ConfigFileReader.isSecretKey(key) || ConfigFileReader.looksLikeSecretValue(value) {
                     shown.append("\(name)=\(mark)")
                     continue
@@ -695,7 +731,8 @@ enum MiniMaxReader {
             if bare.hasPrefix("-") {
                 let flag = bare.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
                 if !flag.isEmpty, ConfigFileReader.isSecretKey(flag) { hideNext = true }
-                shown.append(bare)
+                // `--body={"apiKey":"..."}` carries its value inside the flag.
+                shown.append(redactEmbedded(bare))
                 continue
             }
             if bare.lowercased() == "bearer" {
@@ -707,12 +744,108 @@ enum MiniMaxReader {
                 shown.append(mark)
                 continue
             }
-            shown.append(abbreviateHome(bare, home: home))
+            // The scan looks at the word as written, quotes included:  a quoted header or
+            // JSON body only shows its structure there.
+            let embedded = redactEmbedded(raw)
+            shown.append(abbreviateHome(embedded == raw ? bare : embedded, home: home))
         }
         return shown.joined(separator: " ")
     }
 
-    private static func isAssignment(_ token: String) -> Bool {
+    /// The words of a command, with a quoted span kept in one word.
+    ///
+    /// `API_KEY="two words"` is one word, so the redaction sees the whole value and not
+    /// a fragment of it.  The quote marks stay in the word, and a backslash keeps the
+    /// character after it.
+    static func shellTokens(_ command: String) -> [String] {
+        var tokens: [String] = []
+        var current = ""
+        var quote: Character?
+        var escaped = false
+        for character in command {
+            if escaped {
+                current.append(character)
+                escaped = false
+            } else if character == "\\" {
+                current.append(character)
+                escaped = true
+            } else if let open = quote {
+                current.append(character)
+                if character == open { quote = nil }
+            } else if character == "\"" || character == "'" {
+                current.append(character)
+                quote = character
+            } else if character == " " || character == "\t" {
+                if !current.isEmpty {
+                    tokens.append(current)
+                    current = ""
+                }
+            } else {
+                current.append(character)
+            }
+        }
+        if !current.isEmpty { tokens.append(current) }
+        return tokens
+    }
+
+    /// Secrets inside a larger argument, such as a JSON body or a header.
+    ///
+    /// Only an argument with a quote or a brace in it is scanned, so a plain path is not
+    /// touched.  A `Bearer` credential, the value of a secret-named `name: value` or
+    /// `name=value` pair, and any long opaque run shaped like a token are replaced.
+    static func redactEmbedded(_ token: String) -> String {
+        guard token.contains("\"") || token.contains("'") || token.contains("{") else { return token }
+        let mark = ConfigFileReader.redactionMark
+        var text = token
+        text = replacingMatches(
+            in: text,
+            pattern: "(bearer\\s+)[^\\s\"',}]+",
+            options: [.caseInsensitive]
+        ) { groups in groups[1] + mark }
+        text = replacingMatches(
+            in: text,
+            pattern: "([A-Za-z0-9_.-]+)([\"']?\\s*[:=]\\s*)(\"[^\"]*\"|'[^']*'|[^\\s\"',}&]+)",
+            options: []
+        ) { groups in
+            let key = groups[1].trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+            let value = groups[3].trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+            if ConfigFileReader.isSecretKey(key) || ConfigFileReader.looksLikeSecretValue(value) {
+                return groups[1] + groups[2] + mark
+            }
+            return groups[0]
+        }
+        text = replacingMatches(in: text, pattern: "[A-Za-z0-9_+=.\\-]{24,}", options: []) { groups in
+            ConfigFileReader.looksLikeSecretValue(groups[0]) ? mark : groups[0]
+        }
+        return text
+    }
+
+    /// Replace every match of a pattern with what `replacement` makes of its groups.
+    private static func replacingMatches(
+        in text: String,
+        pattern: String,
+        options: NSRegularExpression.Options,
+        replacement: ([String]) -> String
+    ) -> String {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: options) else { return text }
+        let source = text as NSString
+        var result = ""
+        var cursor = 0
+        for match in regex.matches(in: text, range: NSRange(location: 0, length: source.length)) {
+            result += source.substring(with: NSRange(location: cursor, length: match.range.location - cursor))
+            var groups: [String] = []
+            for index in 0..<match.numberOfRanges {
+                let range = match.range(at: index)
+                groups.append(range.location == NSNotFound ? "" : source.substring(with: range))
+            }
+            result += replacement(groups)
+            cursor = match.range.location + match.range.length
+        }
+        result += source.substring(from: cursor)
+        return result
+    }
+
+    static func isAssignment(_ token: String) -> Bool {
         guard let equals = token.firstIndex(of: "="), equals != token.startIndex else { return false }
         let name = token[..<equals]
         guard let first = name.first, first.isLetter || first == "_" else { return false }
@@ -1089,7 +1222,11 @@ enum MiniMaxCopy {
             checked = "The check time is unknown."
         }
         if CheckState(envelopeValue: proof.state) == .passed {
-            return ApplyCopy.join("Proved by \(levelWords(proof.achieved)).", checked)
+            // A pass that carries no level is still a pass, but it did not say by what.
+            guard let achieved = proof.achieved, !achieved.isEmpty else {
+                return ApplyCopy.join("Proved, but the engine recorded no level.", checked)
+            }
+            return ApplyCopy.join("Proved by \(levelWords(achieved)).", checked)
         }
         return ApplyCopy.join(
             "\(stateWords(proof.state)).",
@@ -1108,7 +1245,7 @@ enum MiniMaxCopy {
     static func scriptText(_ hook: MiniMaxSurface.Hook) -> String {
         switch hook.script {
         case .noPath:
-            return "no file path in the command, so nothing was checked"
+            return "no absolute file path in the command, so nothing was checked"
         case .present:
             return "\(hook.scriptPath ?? ""), present"
         case .notExecutable:
@@ -1164,6 +1301,25 @@ enum MiniMaxCopy {
         ApplyCopy.join(
             "Read from ~/.minimax on the Mac at \(FleetTime.clock(surface.readAt)).",
             "The server's MiniMax install is not shown here."
+        )
+    }
+
+    /// What the panel says when nothing needs a look.
+    ///
+    /// A kind the manifest covers has no engine result, so the engine did not pass it, and
+    /// the text says so instead of claiming the engine passed every kind.
+    static func allClearText(seat: String, engine: [(kind: ConfigKind, state: CellState)]) -> String {
+        let covered = engine.filter { $0.state == .covered }.map { $0.kind.title }
+        if covered.isEmpty {
+            return ApplyCopy.join(
+                "Nothing needs a look.",
+                "The engine passes every config kind for seat \(seat), every hook is proved and on, and every file that is there was read."
+            )
+        }
+        return ApplyCopy.join(
+            "Nothing needs a look.",
+            "The engine passes every config kind it checks for seat \(seat), and the manifest covers \(list(covered)) instead of an engine result.",
+            "Every hook is proved and on, and every file that is there was read."
         )
     }
 
@@ -1270,22 +1426,22 @@ enum MiniMaxAttention {
             if let proof = hook.proof {
                 if MiniMaxCopy.needsLook(proof) {
                     items.append(
-                        "The \(hook.event) hook \(hook.hookId) is \(MiniMaxCopy.stateWords(proof.state).lowercased())."
+                        "The \(hook.event) hook \(hook.shownHookId) is \(MiniMaxCopy.stateWords(proof.state).lowercased())."
                     )
                 }
             } else {
                 // No proof is "installed" without "protecting", never fine.
                 let why = engineAnswered ? "the engine has no rule for it" : "the engine has not answered"
-                items.append("The \(hook.event) hook \(hook.hookId) is not proved: \(why).")
+                items.append("The \(hook.event) hook \(hook.shownHookId) is not proved: \(why).")
             }
             if !hook.enabled {
-                items.append("The \(hook.event) hook \(hook.hookId) is switched off in its manifest.")
+                items.append("The \(hook.event) hook \(hook.shownHookId) is switched off in its manifest.")
             }
             switch hook.script {
             case .missing:
-                items.append("The \(hook.event) hook \(hook.hookId) runs a script that is missing.")
+                items.append("The \(hook.event) hook \(hook.shownHookId) runs a script that is missing.")
             case .notExecutable:
-                items.append("The \(hook.event) hook \(hook.hookId) runs a script that is not executable.")
+                items.append("The \(hook.event) hook \(hook.shownHookId) runs a script that is not executable.")
             case .present, .noPath:
                 break
             }

@@ -434,18 +434,18 @@ final class MiniMaxSurfaceTests: XCTestCase {
 
     /// The script path is found behind an interpreter, `~`, `$HOME` and assignments.
     func test_the_script_path_is_found_in_interpreter_and_home_forms() {
-        let home = URL(fileURLWithPath: "/Users/jay", isDirectory: true)
+        let home = URL(fileURLWithPath: "/tmp/fixture-home", isDirectory: true)
         XCTAssertEqual(
             MiniMaxReader.scriptLocation(in: "python3 ~/apps/x.py --flag", home: home),
-            MiniMaxReader.ScriptLocation(path: "/Users/jay/apps/x.py", viaInterpreter: true)
+            MiniMaxReader.ScriptLocation(path: "/tmp/fixture-home/apps/x.py", viaInterpreter: true)
         )
         XCTAssertEqual(
             MiniMaxReader.scriptLocation(in: "MODE=1 /usr/bin/env bash $HOME/x.sh", home: home).path,
-            "/Users/jay/x.sh"
+            "/tmp/fixture-home/x.sh"
         )
         XCTAssertEqual(
             MiniMaxReader.scriptLocation(in: "${HOME}/bin/guard --format claude", home: home),
-            MiniMaxReader.ScriptLocation(path: "/Users/jay/bin/guard", viaInterpreter: false)
+            MiniMaxReader.ScriptLocation(path: "/tmp/fixture-home/bin/guard", viaInterpreter: false)
         )
         XCTAssertNil(MiniMaxReader.scriptLocation(in: "python3 -c 'print(1)'", home: home).path)
         XCTAssertNil(MiniMaxReader.scriptLocation(in: "mm-session-letter hook-stop", home: home).path)
@@ -510,11 +510,11 @@ final class MiniMaxSurfaceTests: XCTestCase {
 
     /// A command never carries a token onto the screen, and the home folder is `~`.
     func test_the_command_is_redacted_before_it_is_kept() throws {
-        let home = URL(fileURLWithPath: "/Users/jay", isDirectory: true)
+        let home = URL(fileURLWithPath: "/tmp/fixture-home", isDirectory: true)
         // A made-up value, long and opaque enough to be shaped like a token.
         let token = String(repeating: "aB3", count: 9)
         let shown = MiniMaxReader.shownCommand(
-            "API_TOKEN=\(token) /Users/jay/bin/guard --token \(token) --format claude Bearer \(token) \(token)",
+            "API_TOKEN=\(token) /tmp/fixture-home/bin/guard --token \(token) --format claude Bearer \(token) \(token)",
             home: home
         )
         XCTAssertFalse(shown.contains(token))
@@ -764,12 +764,140 @@ final class MiniMaxSurfaceTests: XCTestCase {
         )
     }
 
-    /// A leading `NAME=value` assignment is never the hook id, so a secret in it is
-    /// not shown through the id.
-    func test_a_command_id_skips_leading_assignments() {
-        XCTAssertEqual(MiniMaxReader.commandId("MODE=strict /opt/bin/guard"), "guard")
+    /// The id used to find a proof is the engine's, assignment and all, and the id on the
+    /// screen never carries the value of an assignment.
+    func test_a_hook_id_matches_like_the_engine_and_shows_no_assignment_value() {
+        // The engine's own answers for these commands (`checks_hooks.command_id`).
+        XCTAssertEqual(MiniMaxReader.commandId("MODE=strict /opt/bin/guard"), "MODE=strict")
         XCTAssertEqual(MiniMaxReader.commandId("A=1 B=2 python3 /opt/x/hook.py"), "hook")
-        XCTAssertEqual(MiniMaxReader.commandId("MODE=strict"), "")
+        XCTAssertEqual(MiniMaxReader.commandId("MODE=strict"), "MODE=strict")
+        XCTAssertEqual(MiniMaxReader.commandId(""), "")
+
+        XCTAssertEqual(MiniMaxReader.shownHookId("MODE=strict"), "MODE=<redacted>")
+        XCTAssertEqual(MiniMaxReader.shownHookId("fleet-guard-hook"), "fleet-guard-hook")
+    }
+
+    /// A hook whose id is an assignment is still proved by a rule that names that id, and
+    /// the attention list and the hook's own line show the id without its value.
+    func test_an_assignment_id_binds_its_proof_and_is_not_shown() {
+        let hook = MiniMaxSurface.Hook(
+            id: "h",
+            plugin: nil,
+            origin: "~/.minimax/hooks.json",
+            event: "PreToolUse",
+            matcher: "Bash",
+            hookId: "MODE=strict",
+            shownCommand: "",
+            scriptPath: nil,
+            script: .noPath,
+            timeout: nil,
+            enabled: true,
+            proof: nil
+        )
+        let proof = MiniMaxSurface.HookProof(
+            hookName: "MODE=strict",
+            required: "L1",
+            achieved: "L1",
+            checkedAt: nil,
+            state: "PASS"
+        )
+        XCTAssertEqual(MiniMaxReader.attach([proof], to: [hook]).first?.proof, proof)
+        XCTAssertEqual(hook.shownHookId, "MODE=<redacted>")
+    }
+
+    /// A quoted value with spaces is one word, so its whole value is redacted, and a
+    /// secret inside a JSON body or a header never reaches the screen.
+    func test_quoted_and_embedded_secrets_are_redacted() {
+        let home = URL(fileURLWithPath: "/tmp/fixture-home", isDirectory: true)
+        XCTAssertEqual(
+            MiniMaxReader.shellTokens("A=\"two words\" /bin/guard 'x y'"),
+            ["A=\"two words\"", "/bin/guard", "'x y'"]
+        )
+        let assignment = MiniMaxReader.shownCommand("API_KEY=\"first second\" /bin/guard", home: home)
+        XCTAssertEqual(assignment, "API_KEY=<redacted> /bin/guard")
+
+        let body = MiniMaxReader.shownCommand("/bin/guard --body '{\"apiKey\":\"plainvalue\",\"mode\":\"strict\"}'", home: home)
+        XCTAssertFalse(body.contains("plainvalue"))
+
+        let inline = MiniMaxReader.shownCommand("/bin/guard --body={\"token\":\"plainvalue\"}", home: home)
+        XCTAssertFalse(inline.contains("plainvalue"))
+
+        let header = MiniMaxReader.shownCommand("/bin/guard -H 'Authorization: Bearer plainvalue'", home: home)
+        XCTAssertFalse(header.contains("plainvalue"))
+
+        // A plain path, even a long one, is left alone.
+        let path = "/tmp/fixture-home/apps/a-very-long-file-name-with-many-words/guard"
+        XCTAssertEqual(MiniMaxReader.shownCommand(path, home: home), "~/apps/a-very-long-file-name-with-many-words/guard")
+    }
+
+    /// A relative script path reads as "no absolute file path", never as no path at all.
+    func test_a_relative_script_path_is_not_reported_as_having_no_path() {
+        let hook = MiniMaxSurface.Hook(
+            id: "h",
+            plugin: nil,
+            origin: "~/.minimax/hooks.json",
+            event: "PreToolUse",
+            matcher: "Bash",
+            hookId: "guard",
+            shownCommand: "python3 hooks/guard.py",
+            scriptPath: nil,
+            script: .noPath,
+            timeout: nil,
+            enabled: true,
+            proof: nil
+        )
+        XCTAssertEqual(
+            MiniMaxCopy.scriptText(hook),
+            "no absolute file path in the command, so nothing was checked"
+        )
+    }
+
+    /// A pass with no recorded level does not claim to be proved by nothing.
+    func test_a_pass_with_no_level_does_not_say_proved_by_nothing() {
+        let proof = MiniMaxSurface.HookProof(
+            hookName: "fleet-guard-hook",
+            required: "L1",
+            achieved: nil,
+            checkedAt: nil,
+            state: "PASS"
+        )
+        let text = MiniMaxCopy.proofText(proof)
+        XCTAssertFalse(text.contains("nothing"))
+        XCTAssertTrue(text.hasPrefix("Proved, but the engine recorded no level."))
+    }
+
+    /// A kind the manifest covers has no engine result, and the all-clear says so.
+    func test_the_all_clear_does_not_claim_a_covered_kind_passed() {
+        var engine = allPassing()
+        XCTAssertTrue(MiniMaxCopy.allClearText(seat: "MM", engine: engine).contains("passes every config kind for seat MM"))
+        engine[0] = (kind: engine[0].kind, state: .covered)
+        let text = MiniMaxCopy.allClearText(seat: "MM", engine: engine)
+        XCTAssertTrue(text.contains("every config kind it checks"))
+        XCTAssertTrue(text.contains("the manifest covers \(engine[0].kind.title)"))
+    }
+
+    /// A manifest whose `hooks` is the wrong shape is unreadable, and a plugin manifest
+    /// with no `hooks` section is a problem, not a quiet empty plugin.
+    func test_a_wrong_shaped_or_missing_hooks_section_is_a_problem() throws {
+        let home = try makeHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let manifest = root(home).appendingPathComponent("plugins/fleet-guard/hooks/hooks.json")
+
+        try "{\"hooks\": [1]}".write(to: manifest, atomically: true, encoding: .utf8)
+        let wrongType = MiniMaxReader.read(home: home, rosterSeats: ["MM"])
+        XCTAssertTrue(wrongType.problems.contains { $0.contains("plugin fleet-guard") })
+        XCTAssertEqual(wrongType.plugins.first { $0.name == "fleet-guard" }?.hookManifestValid, false)
+
+        try "{\"hooks\": {\"PreToolUse\": \"nope\"}}".write(to: manifest, atomically: true, encoding: .utf8)
+        let wrongEvent = MiniMaxReader.read(home: home, rosterSeats: ["MM"])
+        XCTAssertEqual(wrongEvent.plugins.first { $0.name == "fleet-guard" }?.hookManifestValid, false)
+
+        try "{}".write(to: manifest, atomically: true, encoding: .utf8)
+        let missing = MiniMaxReader.read(home: home, rosterSeats: ["MM"])
+        XCTAssertEqual(missing.plugins.first { $0.name == "fleet-guard" }?.hookManifestValid, true)
+        XCTAssertTrue(
+            missing.problems.contains("The hook manifest of plugin fleet-guard has no hooks section, so the plugin registers no hook.")
+        )
     }
 
     /// An engine that has not answered is never reported as having no row for the seat:

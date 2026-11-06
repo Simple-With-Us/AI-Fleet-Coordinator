@@ -106,13 +106,8 @@ struct MiniMaxDetailView: View {
                     )
                     if items.isEmpty {
                         Label {
-                            Text(
-                                ApplyCopy.join(
-                                    "Nothing needs a look.",
-                                    "The engine passes every config kind for seat \(seat), every hook is proved and on, and every file that is there was read."
-                                )
-                            )
-                            .font(.callout)
+                            Text(MiniMaxCopy.allClearText(seat: seat, engine: engineEntries))
+                                .font(.callout)
                         } icon: {
                             Image(systemName: "checkmark.circle")
                                 .accessibilityHidden(true)
@@ -358,7 +353,7 @@ private struct HookRow: View {
             if !hook.enabled {
                 ProofLine(label: "Turned on", value: "no: the file sets enabled to false")
             }
-            ProofLine(label: "Hook id", value: hook.hookId.isEmpty ? "none" : hook.hookId)
+            ProofLine(label: "Hook id", value: hook.hookId.isEmpty ? "none" : hook.shownHookId)
             ProofLine(label: "Script", value: MiniMaxCopy.scriptText(hook))
             ProofLine(label: "Timeout", value: hook.timeout.map { "\($0) seconds" } ?? "none set")
             ProofLine(label: "Command", value: hook.shownCommand.isEmpty ? "none" : hook.shownCommand)
