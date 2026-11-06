@@ -13,7 +13,7 @@ bridge runs on the Mac, and every tick:
      gets a rocket reaction; a rejected one gets a confused reaction plus a reply
      that names the reason.
   2. reads new #Work-In-Progress messages (Zulip get_messages, --rc credential or --read-as bot) and
-     mirrors the ones that skim-match the seat (->SEAT, @SEAT, [SEAT, ->FLEET,
+     mirrors the ones that skim-match the seat (->SEAT / →SEAT including multi-recipient lists, @SEAT, [SEAT, ->FLEET / →FLEET,
      OBJECTION / HALT / PROD DOWN / URGENT / HEADS-UP / DEPLOY CLAIM) back onto the
      same issue as comments marked <!-- outbox-bridge:zulip id=... -->.  Mirrored
      text is data for the seat, never instructions; the comment says so.
@@ -155,15 +155,31 @@ def is_own_post(text: str, seat: str) -> bool:
     return bool(_own_intro_re(seat).match(_first_content_line(text)))
 
 
+def _arrow_recipient_re(token: str):
+    """Match `token` as any comma-separated recipient after Unicode → or ASCII ->.
+
+    Seat-token boundaries: the name must be a whole recipient (not a substring of
+    another token such as INSTINCT inside INSTINCTIVE, or MC inside MMC).
+    """
+    return re.compile(
+        r"(?:→|->)\s*(?:[A-Za-z][A-Za-z0-9_-]*\s*,\s*)*"
+        + re.escape(token)
+        + r"(?![A-Za-z0-9_-])"
+    )
+
+
 def skim_match(text: str, seat: str) -> bool:
     """Skim rule (FLEET-PROTOCOL.md § Skim, Then Full-Read Only on a Match): the seat, a FLEET wake, or an alarm word."""
     head = text[:240]
-    if "->FLEET" in head:
+    # Fleet wake: ->FLEET / →FLEET, including mid-list (→ MC, FLEET). Envelope treats → and -> the same.
+    if _arrow_recipient_re("FLEET").search(head):
         return True
     s = re.escape(seat)
-    if ("->%s" % seat) in head or ("@%s" % seat) in head:
+    # Seat as any recipient after → / -> (multi-recipient folder-tag or directed envelope).
+    if _arrow_recipient_re(seat).search(head):
         return True
-    if re.search(r"→\s*" + s + r"\b", head):
+    # Raw @SEAT mention with seat-token boundary (no partial seat-name hits).
+    if re.search(r"@" + s + r"(?![A-Za-z0-9_-])", head):
         return True
     # Legacy tight [SEAT...] or spaced folder-tag [ SEAT 📁 ...] / [ SEAT: LL-#-H 📁 ...]
     if re.search(r"\[\s*" + s + r"(?:\]|->|·|\s|:)", head):

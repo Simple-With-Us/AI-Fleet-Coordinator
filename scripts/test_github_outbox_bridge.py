@@ -277,6 +277,59 @@ class RuleTests(unittest.TestCase):
         self.assertTrue(bridge.is_own_post("[ INSTINCT: ZZ.2.S 📁AFC, OPS ]\nx", SEAT))
         self.assertFalse(bridge.is_own_post("[ CLAUDE 📁 AFC ]\nx", SEAT))
 
+
+    def test_multi_recipient_arrow_and_boundaries(self):
+        """Jet OPS-1035 / #1391: every → recipient wakes; precise seat-token boundaries."""
+        multi = "[JET 📁AFC, OPS → MC, CLAUDE]"
+        self.assertTrue(bridge.skim_match(multi, "MC"))
+        self.assertTrue(bridge.skim_match(multi, "CLAUDE"))
+        self.assertFalse(bridge.skim_match(multi, "INSTINCT"))
+        self.assertFalse(bridge.skim_match(multi, SEAT))
+        # ASCII -> recipient lists (envelope treats → and -> the same).
+        ascii_multi = "[JET 📁AFC, OPS -> MC, CLAUDE]"
+        self.assertTrue(bridge.skim_match(ascii_multi, "MC"))
+        self.assertTrue(bridge.skim_match(ascii_multi, "CLAUDE"))
+        self.assertFalse(bridge.skim_match(ascii_multi, "INSTINCT"))
+        # Directed envelope multi-peer (guide: [SEAT→PEER1,PEER2]).
+        self.assertTrue(bridge.skim_match("[CLAUDE·1a2b3c4d→CODEX,CURSOR] x", "CODEX"))
+        self.assertTrue(bridge.skim_match("[CLAUDE·1a2b3c4d→CODEX,CURSOR] x", "CURSOR"))
+        self.assertFalse(bridge.skim_match("[CLAUDE·1a2b3c4d→CODEX,CURSOR] x", "INSTINCT"))
+        # Raw @SEAT mention still wakes; partial seat token does not.
+        self.assertTrue(bridge.skim_match("[GROK] ping @INSTINCT please", SEAT))
+        self.assertFalse(bridge.skim_match("[GROK] ping @INSTINCTIVE please", SEAT))
+        self.assertFalse(bridge.skim_match("[GROK] ping @INST please", SEAT))
+        # Unicode →FLEET wake (same as ->FLEET per envelope arrow rule).
+        self.assertTrue(bridge.skim_match("[GROK→FLEET] x", SEAT))
+        self.assertTrue(bridge.skim_match("[GROK 📁AFC → FLEET] x", SEAT))
+        self.assertTrue(bridge.skim_match("[GROK 📁AFC → MC, FLEET] x", SEAT))
+        # Precise boundaries: INSTINCT is not a substring hit inside another token.
+        self.assertFalse(bridge.skim_match("[JET 📁AFC → INSTINCTIVE]", SEAT))
+        self.assertFalse(bridge.skim_match("[JET 📁AFC → MMC, CLAUDE]", "MC"))
+        self.assertTrue(bridge.skim_match("[JET 📁AFC → INSTINCT, CLAUDE]", SEAT))
+        # Own-post suppression still works for folder tags (and optional 👀).
+        self.assertTrue(bridge.is_own_post("[INSTINCT 📁AFC → MC, CLAUDE]\nclaim: x", SEAT))
+        self.assertTrue(bridge.is_own_post("👀[INSTINCT 📁AFC → MC]\nx", SEAT))
+        self.assertFalse(bridge.is_own_post("[JET 📁AFC → INSTINCT]\nx", SEAT))
+        # Dotted multi-thread + legacy hyphen still skim / own-post.
+        self.assertTrue(bridge.skim_match("[ INSTINCT: HH.1.M 📁AFC ] multi", SEAT))
+        self.assertTrue(bridge.skim_match("[ INSTINCT: HH-1-M 📁AFC ] legacy", SEAT))
+        self.assertTrue(bridge.is_own_post("[ INSTINCT: HH.1.M 📁AFC, OPS → MC ]\nx", SEAT))
+        # Closed/nonempty folder headers accepted even with a repo: body line; empty 📁 rejected.
+        self.assertIsNone(
+            bridge.header_error("[INSTINCT 📁AFC, OPS → MC]\nrepo: AFC\nstate: WIP", SEAT)
+        )
+        self.assertIsNone(bridge.header_error("[INSTINCT 📁AFC]\nclaim: no-repo-line", SEAT))
+        self.assertEqual(
+            bridge.header_error("[INSTINCT 📁]\nclaim: empty", SEAT),
+            "repo: <project> must be the first body line",
+        )
+        # Legacy non-folder intros still require repo:.
+        self.assertEqual(
+            bridge.header_error("[INSTINCT] hello\nstate: WIP", SEAT),
+            "repo: <project> must be the first body line",
+        )
+        self.assertIsNone(bridge.header_error("[INSTINCT->CLAUDE] x\nrepo: fleet-infra", SEAT))
+
     def test_folder_tag_header_accepted(self):
         self.assertIsNone(bridge.header_error("[ INSTINCT 📁 AFC ]\nclaim: ship it", SEAT))
         self.assertIsNone(bridge.header_error("👀 [ INSTINCT 📁 AFC, OPS ]\nclaim: quiet", SEAT))
