@@ -17,7 +17,7 @@ from typing import Any
 
 def _load_surfaces() -> Any:
     path = Path(__file__).resolve().parents[1] / "cursor_chat_surfaces.py"
-    spec = importlib.util.spec_from_file_location("agent_sync_cursor_chat_surfaces", path)
+    spec = importlib.util.spec_from_file_location("simple_tools_cursor_chat_surfaces", path)
     if spec is None or spec.loader is None:
         raise RuntimeError("Cursor Cloud API helper unavailable")
     module = importlib.util.module_from_spec(spec)

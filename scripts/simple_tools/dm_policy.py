@@ -70,10 +70,10 @@ GUIDANCE_PEOPLE = (
 )
 
 
-class DmRefused(Z.AgentSyncError):
+class DmRefused(Z.SimpleToolsError):
     """A seat tried to open a direct message on its own.  Carries the audit `reason`.
 
-    An AgentSyncError, so the CLI exits 3 (a refusal) and not 2 (a malformed command):  a caller can
+    An SimpleToolsError, so the CLI exits 3 (a refusal) and not 2 (a malformed command):  a caller can
     tell "the rule said no" from "you typed it wrong"."""
 
     code = "dm_not_allowed"

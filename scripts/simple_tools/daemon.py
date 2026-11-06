@@ -123,7 +123,7 @@ PROBE_TOPIC = "listener probe"
 # The owner's DM kill switch.  `simple-chat` is the current CLI name, so that phrase is the
 # canonical one;  the retired `agent-sync` launcher is still on PATH, so its phrase keeps working.
 PAUSE_COMMAND = "simple-chat pause"
-PAUSE_COMMANDS = frozenset((PAUSE_COMMAND, "agent-sync pause"))
+PAUSE_COMMANDS = frozenset((PAUSE_COMMAND, "simple-tools pause"))
 PLUGIN_MANIFEST = os.path.join(
     A.REPO_ROOT, "plugins", "simple-chat", ".claude-plugin", "plugin.json"
 )
@@ -146,7 +146,7 @@ class Clock:
         time.sleep(max(0.0, seconds))
 
 
-class RoleRefused(Z.AgentSyncError):
+class RoleRefused(Z.SimpleToolsError):
     exit_code = 3
 
 
@@ -1866,7 +1866,7 @@ class Daemon:
             return
         try:
             fetched = runner.client.get("messages/%d" % message_id, {"apply_markdown": "false"})
-        except Z.AgentSyncError as exc:
+        except Z.SimpleToolsError as exc:
             self.log.write(
                 "edit-route-error",
                 seat=runner.seat,
@@ -2646,7 +2646,7 @@ class Daemon:
                     reset_at=when,
                     posted_by=OPV.VOICE,
                 )
-        except Z.AgentSyncError as exc:
+        except Z.SimpleToolsError as exc:
             self.log.write(
                 "wake-quota-hold-tell-failed",
                 seat=runner.seat,
@@ -3486,7 +3486,7 @@ class Daemon:
                 return
         try:
             history = self.history(runner, pending)
-        except Z.AgentSyncError as exc:
+        except Z.SimpleToolsError as exc:
             runner.ledger.append(
                 pending.row("failed", now, reason="history: %s" % self.scrub(str(exc)))
             )
@@ -5971,7 +5971,7 @@ class Daemon:
         cost = runner.cfg.wake_max_usd
         try:
             row = self.trigger_row(runner, pending)
-        except Z.AgentSyncError as exc:
+        except Z.SimpleToolsError as exc:
             runner.ledger.append(
                 pending.row(
                     "failed",
@@ -6571,7 +6571,7 @@ class Daemon:
                 "owner_dm": None,
                 "owner_dm_error": self.scrub("operator unavailable: " + exc.reason),
             }
-        except Z.AgentSyncError as exc:
+        except Z.SimpleToolsError as exc:
             reason_text = self.scrub(str(exc))
             self.log.write(
                 "owner-dm-failed", seat=runner.seat, wake_id=pending.wake_id, error=reason_text
@@ -6698,7 +6698,7 @@ class Daemon:
                 "owner_dm": None,
                 "owner_dm_error": self.scrub("operator unavailable: " + exc.reason),
             }
-        except Z.AgentSyncError as exc:
+        except Z.SimpleToolsError as exc:
             reason = self.scrub(str(exc))
             self.log.write(
                 "owner-dm-failed", seat=runner.seat, wake_id=pending.wake_id, error=reason
@@ -6773,7 +6773,7 @@ class Daemon:
             self._operator_refused("wake-reply", exc, seat=runner.seat, wake_id=pending.wake_id)
             pending.post_refusal = exc.code
             return None
-        except Z.AgentSyncError as exc:
+        except Z.SimpleToolsError as exc:
             self.log.write(
                 "post-failed",
                 seat=runner.seat,
@@ -7008,7 +7008,7 @@ class Daemon:
             # cost of waiting is one cached refusal a tick, which is nothing next to a post attempt.
             self._operator_refused("held-alert", exc, throttle=every, seats=fields["seats"])
             return
-        except Z.AgentSyncError as exc:
+        except Z.SimpleToolsError as exc:
             # A failed post is still an ATTEMPT, and an attempt consumes the window.  Without this the
             # held tick would retry every HELD_TICK_SECONDS for as long as the key stayed bad, which is
             # 120 attempts an hour per broken key and exactly the flood this design exists to avoid.
@@ -7079,7 +7079,7 @@ class Daemon:
             )
             HELDALERT.note_post(self.root, now)
             return "failed"
-        except Z.AgentSyncError as exc:
+        except Z.SimpleToolsError as exc:
             self.log.write(
                 "held-alert-edit-failed",
                 seat=OPV.VOICE,

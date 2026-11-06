@@ -1,6 +1,6 @@
 """simple-chat: the fleet's Zulip coordination CLI (argparse front end).
 
-`main(argv) -> int` is the whole program; scripts/agent-sync just calls it.  Everything that
+`main(argv) -> int` is the whole program; scripts/simple-tools just calls it.  Everything that
 touches the outside world is injectable, so the tests drive it with a fake environment and fake
 streams: `env`, `stdin`, `stdout`, `stderr`, `home`, `sleep`, `stop` (a threading.Event that ends
 `listen`) and the two network timeouts.
@@ -391,7 +391,7 @@ class Agent:
             return True
         try:
             users = self.users()
-        except Z.AgentSyncError:
+        except Z.SimpleToolsError:
             with self._lock:
                 self._users = []
             return None
@@ -410,7 +410,7 @@ class Agent:
         if found is None:  # a user created after this process started
             try:
                 found = find(self.users(refresh=True))
-            except Z.AgentSyncError:
+            except Z.SimpleToolsError:
                 found = None
         return found
 
@@ -864,7 +864,7 @@ def build_parser(
         description="Coordinate with the fleet on Zulip.  Every post goes to a channel and a topic, "
         "and the default channel is %s." % channel_default,
         epilog="Exit codes: 0 ok, 2 usage, 3 credentials or realm, 4 wait timeout, 5 Zulip API error, "
-        "6 network error, 7 verify-owner-msg did not verify.  See scripts/agent_sync/README.md.",
+        "6 network error, 7 verify-owner-msg did not verify.  See scripts/simple_tools/README.md.",
     )
     parser.add_argument("--version", action="version", version="%s %s" % (prog, __version__))
     if prog == "simple-notes":
@@ -1244,7 +1244,7 @@ def build_parser(
 
     p = add(
         "mcp",
-        "serve the agent-sync tools over MCP on stdin and stdout (an MCP client's config runs this, not a person)",
+        "serve the simple-tools tools over MCP on stdin and stdout (an MCP client's config runs this, not a person)",
     )
     p.add_argument(
         "--codex-thread-meta",
@@ -2907,14 +2907,14 @@ def build_parser_for(
 # ---------------------------------------------------------------- remote read transport (opt-in)
 #
 # SIMPLE_CHAT_REMOTE=1 sends a few READ verbs (whoami, channels, topics, read, inbox) to the hosted ST-MCP
-# endpoint with the bot's own bearer (SIMPLE_TOOLS_BEARER, process environment only).  The hosted server decides
+# endpoint with the bot's own bearer (AGENT_SYNC_BEARER, process environment only).  The hosted server decides
 # the seat from the bearer; this client never names one, so --as and --default-seat are refused.  The endpoint is
 # the fixed constant below (no override), no Zulip key or rc file is read, and a failure never falls back to the
 # direct path.  Every other verb and every flag with no hosted equivalent is refused.  The hosted bearer holds
 # every hosted tool of its seat; calling only these reads is a client choice, not a server restriction.
 # This is the LOCAL simple-chat CLI calling the HOSTED ST-MCP server:  two different servers.
 REMOTE_MCP_URL = "https://agents.simplewithus.com/mcp"
-REMOTE_BEARER_ENV = "SIMPLE_TOOLS_BEARER"
+REMOTE_BEARER_ENV = "AGENT_SYNC_BEARER"
 REMOTE_BEARER_RE = re.compile(r"[A-Za-z0-9_\-]{20,200}")
 REMOTE_TIMEOUT_S = 40
 REMOTE_READ_VERBS = ("whoami", "channels", "topics", "read", "inbox", "search", "dm-read")
@@ -2925,7 +2925,7 @@ REMOTE_VERBS = REMOTE_READ_VERBS + REMOTE_WRITE_VERBS
 REMOTE_MAX_BYTES = 4_000_000
 REMOTE_MAX_DEPTH = 64
 REMOTE_MAX_NODES = 100_000
-# The error codes the hosted server can return (the ToolError codes in scripts/agent-sync-mcp/src);  a test keeps
+# The error codes the hosted server can return (the ToolError codes in scripts/simple-tools-mcp/src);  a test keeps
 # this list in step with that source.  Anything else, including a code that merely looks safe, prints as "error".
 _REMOTE_CODES = frozenset(
     (
@@ -3090,14 +3090,14 @@ def _remote_code(value) -> str:
 
 def _remote_error_object(result: dict, sc) -> dict:
     """The hosted server's error object.  The server answers a tool error with isError and NO structuredContent: the
-    object (code, retry_after_s, ...) is in `_meta["agent-sync/error"]` and, as JSON, in the first text part
+    object (code, retry_after_s, ...) is in `_meta["simple-tools/error"]` and, as JSON, in the first text part
     that is a JSON object.  A
     structuredContent that carries a code still wins.  Only the code and the retry-after are ever shown, and
     the code only when it is allow-listed, so nothing the server wrote is copied."""
     if isinstance(sc, dict) and "code" in sc:
         return sc
     meta = result.get("_meta")
-    cand = meta.get("agent-sync/error") if isinstance(meta, dict) else None
+    cand = meta.get("simple-tools/error") if isinstance(meta, dict) else None
     if not isinstance(cand, dict):
         cand = None
         for part in result.get("content") or []:
@@ -3528,7 +3528,7 @@ def main(
         # prompt, Stop and session boundary, and a nonzero exit from a command hook blocks the
         # user's prompt (the `letter` hook follows the same contract for this reason).  In remote
         # mode these hook calls no-op:  exit 0 with no output, nothing run locally, the
-        # agent_sync.attach module never imported.  A bare `attach`/`detach` typed by a person
+        # simple_tools.attach module never imported.  A bare `attach`/`detach` typed by a person
         # stays a clear refusal with exit 2.
         if any(a == "--rewake" or a == "--hook" or a.startswith("--hook=") for a in argv[1:]):
             return 0
@@ -3592,7 +3592,7 @@ def main(
         code = COMMANDS[args.command](agent, args)
         audit = (code, None)
         return code
-    except Z.AgentSyncError as exc:
+    except Z.SimpleToolsError as exc:
         rt.err("%s: %s" % (rt.prog, exc))
         if agent is not None and agent._verified:
             audit = (exc.exit_code, None)

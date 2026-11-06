@@ -155,7 +155,7 @@ def canonical_hint(raw):
 
 # The whoami verification cache:  one small JSON row beside the seat's
 # idempotency state (<state>/<SEAT>/mcp-idem.json), in the state root
-# agent_sync.state resolves ($AGENT_SYNC_STATE_DIR, else ~/.agent-sync).
+# simple_tools.state resolves ($AGENT_SYNC_STATE_DIR, else ~/.agent-sync).
 # The rule is mirrored here, not imported, so this file stays self-contained
 # for its vendored copies.  Every cache anomaly - missing, malformed, loose
 # permissions, wrong owner, a different bearer's hash, a stale or future

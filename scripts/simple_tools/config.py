@@ -8,7 +8,7 @@ notify-owner and keeps running with what it could read (a seat with a bad sectio
 Two instances of this package run the listener (owner decision, Thu, Oct 8):  `mac` holds
 the nine Mac seats (AG, CLAUDE, CLUTCH, CODEX, CURSOR, FX, GROK, MC and MM), and `server`
 (a container on the Coolify box) holds the Grok Bot personas and the other cloud seats.  The
-one exception to "never stops" is the seat partition (docs/protocols/agent-sync-partition.toml,
+one exception to "never stops" is the seat partition (docs/protocols/simple-tools-partition.toml,
 required on both instances).  It fails closed:  a daemon whose config holds a seat, enabled or
 not, that the partition does not give to its own instance (a seat of the other instance, a
 `none` seat, or a seat the partition does not list), or a section that reads another listed
@@ -61,7 +61,7 @@ ENV_INSTANCE = (
     "AGENT_SYNC_INSTANCE"  # set by the LaunchAgent (mac) and the container image (server)
 )
 ENV_PARTITION = "AGENT_SYNC_PARTITION"  # tests point it elsewhere; production uses the repo copy
-PARTITION_RELPATH = os.path.join("docs", "protocols", "agent-sync-partition.toml")
+PARTITION_RELPATH = os.path.join("docs", "protocols", "simple-tools-partition.toml")
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DEFAULT_OWNER_CLIENTS = ["website", "ZulipMobile", "ZulipFlutter", "ZulipElectron", "ZulipDesktop"]
 BUDGET_DEFAULTS: dict[str, float] = {
@@ -176,7 +176,7 @@ ROUTINE_METHODS = ("POST", "PUT", "PATCH")
 ROUTINE_DEFAULT_HEADER = {
     "header": "X-Routine-Key",
     "bearer": "Authorization",
-    "hmac-sha256": "X-Agent-Sync-Signature",
+    "hmac-sha256": "X-Simple-Tools-Signature",
 }
 ROUTINE_RESERVED_HEADERS = frozenset(
     {
