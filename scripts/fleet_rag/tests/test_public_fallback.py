@@ -959,6 +959,96 @@ class CallWithFallbackTests(unittest.TestCase):
         self.assertEqual(captured["name"], "recall_contribute")
         self.assertNotIn("force", captured["kwargs"])
 
+    def test_seatless_contribute_is_refused_before_any_public_send_tailscale_down(self):
+        """Tailscale believed down (a cloud seat, or the Mac asleep) skips the local path, where the
+        seat check lives, and the public POST went out with no seat -- the hosted service answers 400
+        ("seat is required on this surface").  The fallback now refuses first, with the fix named."""
+        local = mock.Mock(side_effect=AssertionError("must not run"))
+        with (
+            mock.patch.object(
+                public_fallback,
+                "call_public",
+                side_effect=AssertionError("seatless contribute must never be sent"),
+            ) as pub,
+            self.assertRaises(FleetRagError) as ctx,
+        ):
+            public_fallback.call_with_fallback(
+                "recall_contribute",
+                {"text": "x" * 60, "category": "lesson", "seat": None, "force": False},
+                local,
+                status_probe=lambda: "Logged out.\n",
+            )
+        msg = str(ctx.exception)
+        self.assertIn("no seat", msg)
+        self.assertIn("--seat", msg)
+        self.assertIn("AGENT_SEAT", msg)
+        pub.assert_not_called()
+        local.assert_not_called()
+
+    def test_seatless_contribute_is_refused_before_any_public_send_connection_error(self):
+        local = mock.Mock(
+            side_effect=FleetRagError("ConnectionRefusedError reaching 100.69.77.26:8081")
+        )
+        with (
+            mock.patch.object(
+                public_fallback,
+                "call_public",
+                side_effect=AssertionError("seatless contribute must never be sent"),
+            ) as pub,
+            self.assertRaisesRegex(FleetRagError, "no seat"),
+        ):
+            public_fallback.call_with_fallback(
+                "recall_contribute",
+                {"text": "x" * 60, "category": "lesson", "seat": None, "force": False},
+                local,
+                status_probe=lambda: None,
+            )
+        pub.assert_not_called()
+
+    def test_an_empty_whitespace_or_non_string_seat_is_no_seat(self):
+        """Same condition the hosted service itself applies (server.py: not a string, or nothing
+        but whitespace)."""
+        local = mock.Mock(side_effect=AssertionError("must not run"))
+        for bad in ("", "   ", "\t\n", 7):
+            with self.subTest(seat=bad):
+                with (
+                    mock.patch.object(
+                        public_fallback,
+                        "call_public",
+                        side_effect=AssertionError("seatless contribute must never be sent"),
+                    ),
+                    self.assertRaisesRegex(FleetRagError, "no seat"),
+                ):
+                    public_fallback.call_with_fallback(
+                        "recall_contribute",
+                        {"text": "x" * 60, "category": "lesson", "seat": bad, "force": False},
+                        local,
+                        status_probe=lambda: "Logged out.\n",
+                    )
+
+    def test_a_seated_contribute_is_unchanged_by_the_guard(self):
+        """No-regression pin only:  a fake call_public stands in for the network, so this proves
+        the guard leaves the seated path byte-identical (the caller's own seat from its AGENT_SEAT
+        or --seat rides the POST and force stays dropped).  It is NOT evidence any server accepts
+        MC; acceptance is the live service's own contract check."""
+        local = mock.Mock(side_effect=AssertionError("must not run"))
+        captured = {}
+
+        def fake_call_public(name, kwargs):
+            captured.update(name=name, kwargs=kwargs)
+            return {"id": "x", "doc_id": "contrib/MC/d/1", "status": "completed"}
+
+        with mock.patch.object(public_fallback, "call_public", fake_call_public):
+            res = public_fallback.call_with_fallback(
+                "recall_contribute",
+                {"text": "x" * 60, "category": "lesson", "seat": "MC", "force": False},
+                local,
+                status_probe=lambda: "Logged out.\n",
+            )
+        self.assertEqual(captured["kwargs"]["seat"], "MC")
+        self.assertNotIn("force", captured["kwargs"])
+        self.assertEqual(res["status"], "completed")
+
     def test_recall_search_kwargs_pass_through_on_fallback(self):
         """per_doc / rerank / prefer_lessons now have a public route and must reach it; a
         None-valued optional (since_days) and any genuinely unknown key are still dropped."""

@@ -35,7 +35,7 @@ loader.exec_module(git)
 
 BEARER = "b" * 40
 ENV_KEYS = (
-    "SIMPLE_TOOLS_BEARER",
+    "AGENT_SYNC_BEARER",
     "SIMPLE_GIT_REMOTE",
     "SIMPLE_GIT_ARGV0",
     "AGENT_SEAT",
@@ -83,7 +83,7 @@ DEFAULT_PAGE = [
 
 
 class FakeScanner:
-    """Stands in for scripts/agent_sync/secretscan.py:  flags any string containing a known token."""
+    """Stands in for scripts/simple_tools/secretscan.py:  flags any string containing a known token."""
 
     def scan(self, value, known=()):
         for token in known:
@@ -252,33 +252,33 @@ class TestSmokeShape(unittest.TestCase):
     def test_list_without_bearer_exits_no_creds(self):
         code, out, err = run_cli(["list"])
         self.assertEqual(code, 4)
-        self.assertIn("SIMPLE_TOOLS_BEARER", err)
+        self.assertIn("AGENT_SYNC_BEARER", err)
 
     def test_whoami_without_bearer_exits_no_creds(self):
         code, out, err = run_cli(["whoami"])
         self.assertEqual(code, 4)
 
     def test_malformed_bearer_refused(self):
-        code, out, err = run_cli(["list"], env={"SIMPLE_TOOLS_BEARER": "not a bearer!"})
+        code, out, err = run_cli(["list"], env={"AGENT_SYNC_BEARER": "not a bearer!"})
         self.assertEqual(code, 4)
 
     def test_abbreviated_long_option_rejected(self):
         code, out, err = run_cli(
-            ["list", "--js"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=FakeTransport()
+            ["list", "--js"], env={"AGENT_SYNC_BEARER": BEARER}, transport=FakeTransport()
         )
         self.assertEqual(code, 2)
 
     def test_unknown_flag_rejected(self):
         code, out, err = run_cli(
             ["list", "--seat", "CODEX"],
-            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            env={"AGENT_SYNC_BEARER": BEARER},
             transport=FakeTransport(),
         )
         self.assertEqual(code, 2)
 
 
 class TestUserBearerInput(unittest.TestCase):
-    """The CLI user's OWN bearer:  SIMPLE_TOOLS_BEARER for automation, otherwise one hidden prompt on an
+    """The CLI user's OWN bearer:  AGENT_SYNC_BEARER for automation, otherwise one hidden prompt on an
     interactive terminal - never an argument, history, a file or a log line."""
 
     def test_prompt_answer_becomes_the_authorization_bearer(self):
@@ -295,14 +295,14 @@ class TestUserBearerInput(unittest.TestCase):
     def test_environment_bearer_never_prompts(self):
         # The harness arms getpass with a tripwire whenever typed_bearer is None:  any prompt fails here.
         code, out, err = run_cli(
-            ["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=FakeTransport()
+            ["list"], env={"AGENT_SYNC_BEARER": BEARER}, transport=FakeTransport()
         )
         self.assertEqual(code, 0, err)
 
     def test_empty_prompt_answer_fails_closed_without_network(self):
         code, out, err = run_cli(["list"], typed_bearer="")
         self.assertEqual(code, 4)
-        self.assertIn("SIMPLE_TOOLS_BEARER", err)
+        self.assertIn("AGENT_SYNC_BEARER", err)
 
     def test_malformed_prompt_answer_refused_without_network(self):
         code, out, err = run_cli(["list"], typed_bearer="not a bearer!")
@@ -390,7 +390,7 @@ class TestUserBearerInput(unittest.TestCase):
         # getpass carries the tripwire:  a non-tty caller must get the plain no-credential refusal.
         code, out, err = run_cli(["list"])
         self.assertEqual(code, 4)
-        self.assertIn("SIMPLE_TOOLS_BEARER", err)
+        self.assertIn("AGENT_SYNC_BEARER", err)
 
 
 class TestPromptTerminalGate(unittest.TestCase):
@@ -449,7 +449,7 @@ class TestPromptTerminalGate(unittest.TestCase):
 class TestDiscovery(unittest.TestCase):
     def test_list_uses_runtime_discovery_and_filters_non_git_tools(self):
         t = FakeTransport()
-        code, out, err = run_cli(["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=t)
+        code, out, err = run_cli(["list"], env={"AGENT_SYNC_BEARER": BEARER}, transport=t)
         self.assertEqual(code, 0)
         self.assertIn("gr_wf_repo_get", out)
         self.assertNotIn("notes_search", out)
@@ -457,14 +457,14 @@ class TestDiscovery(unittest.TestCase):
 
     def test_read_write_labels_come_from_the_pinned_read_set(self):
         code, out, err = run_cli(
-            ["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=FakeTransport()
+            ["list"], env={"AGENT_SYNC_BEARER": BEARER}, transport=FakeTransport()
         )
         self.assertIn("read  gr_wf_repo_get", out)
         self.assertIn("write  gr_wf_issue_create", out)
 
     def test_unknown_action_is_a_write(self):
         code, out, err = run_cli(
-            ["list", "--writes"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=FakeTransport()
+            ["list", "--writes"], env={"AGENT_SYNC_BEARER": BEARER}, transport=FakeTransport()
         )
         self.assertEqual(code, 0)
         self.assertIn("gr_new_unknown", out)
@@ -472,7 +472,7 @@ class TestDiscovery(unittest.TestCase):
 
     def test_reads_filter(self):
         code, out, err = run_cli(
-            ["list", "--reads"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=FakeTransport()
+            ["list", "--reads"], env={"AGENT_SYNC_BEARER": BEARER}, transport=FakeTransport()
         )
         self.assertIn("gr_wf_repo_get", out)
         self.assertNotIn("gr_wf_issue_create", out)
@@ -483,7 +483,7 @@ class TestDiscovery(unittest.TestCase):
             [make_tool("gr_wf_issue_create", WRITE_SCHEMA)],
         ]
         code, out, err = run_cli(
-            ["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=FakeTransport(pages)
+            ["list"], env={"AGENT_SYNC_BEARER": BEARER}, transport=FakeTransport(pages)
         )
         self.assertEqual(code, 0)
         self.assertIn("gr_wf_issue_create", out)
@@ -494,7 +494,7 @@ class TestDiscovery(unittest.TestCase):
             ([make_tool("gr_wf_pr_get")], "cursor-1"),
         ]
         code, out, err = run_cli(
-            ["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=FakeTransport(pages)
+            ["list"], env={"AGENT_SYNC_BEARER": BEARER}, transport=FakeTransport(pages)
         )
         self.assertEqual(code, 1)
         self.assertIn("cursor", err)
@@ -502,7 +502,7 @@ class TestDiscovery(unittest.TestCase):
     def test_paging_past_the_page_cap_rejected(self):
         pages = [[make_tool("gr_wf_p%d" % i)] for i in range(git.DISCOVERY_MAX_PAGES + 1)]
         code, out, err = run_cli(
-            ["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=FakeTransport(pages)
+            ["list"], env={"AGENT_SYNC_BEARER": BEARER}, transport=FakeTransport(pages)
         )
         self.assertEqual(code, 1)
         self.assertIn("paging", err)
@@ -511,7 +511,7 @@ class TestDiscovery(unittest.TestCase):
         page = [make_tool("gr_wf_a%d" % i) for i in range(3)]
         with mock.patch.object(git, "DISCOVERY_MAX_TOOLS", 2):
             code, out, err = run_cli(
-                ["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=FakeTransport([page])
+                ["list"], env={"AGENT_SYNC_BEARER": BEARER}, transport=FakeTransport([page])
             )
         self.assertEqual(code, 1)
         self.assertIn("too many tools", err)
@@ -519,7 +519,7 @@ class TestDiscovery(unittest.TestCase):
     def test_duplicate_tool_name_rejected(self):
         page = [make_tool("gr_wf_repo_get", READ_SCHEMA), make_tool("gr_wf_repo_get", READ_SCHEMA)]
         code, out, err = run_cli(
-            ["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=FakeTransport([page])
+            ["list"], env={"AGENT_SYNC_BEARER": BEARER}, transport=FakeTransport([page])
         )
         self.assertEqual(code, 1)
         self.assertIn("twice", err)
@@ -527,14 +527,14 @@ class TestDiscovery(unittest.TestCase):
     def test_oversized_cursor_rejected(self):
         pages = [([make_tool("gr_wf_repo_get", READ_SCHEMA)], "x" * 513)]
         code, out, err = run_cli(
-            ["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=FakeTransport(pages)
+            ["list"], env={"AGENT_SYNC_BEARER": BEARER}, transport=FakeTransport(pages)
         )
         self.assertEqual(code, 1)
 
     def test_no_git_tools_for_this_caller_is_a_refusal(self):
         code, out, err = run_cli(
             ["list"],
-            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            env={"AGENT_SYNC_BEARER": BEARER},
             transport=FakeTransport([[make_tool("notes_search")]]),
         )
         self.assertEqual(code, 1)
@@ -543,7 +543,7 @@ class TestDiscovery(unittest.TestCase):
     def test_unreadable_schema_rejected(self):
         page = [make_tool("gr_wf_repo_get", {"type": "array"})]
         code, out, err = run_cli(
-            ["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=FakeTransport([page])
+            ["list"], env={"AGENT_SYNC_BEARER": BEARER}, transport=FakeTransport([page])
         )
         self.assertEqual(code, 1)
         self.assertIn("unreadable schema", err)
@@ -551,14 +551,14 @@ class TestDiscovery(unittest.TestCase):
     def test_oversized_description_rejected(self):
         page = [make_tool("gr_wf_repo_get", READ_SCHEMA, "d" * 4097)]
         code, out, err = run_cli(
-            ["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=FakeTransport([page])
+            ["list"], env={"AGENT_SYNC_BEARER": BEARER}, transport=FakeTransport([page])
         )
         self.assertEqual(code, 1)
         self.assertIn("oversized description", err)
 
     def test_show_unknown_tool(self):
         code, out, err = run_cli(
-            ["show", "gr_nope"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=FakeTransport()
+            ["show", "gr_nope"], env={"AGENT_SYNC_BEARER": BEARER}, transport=FakeTransport()
         )
         self.assertEqual(code, 2)
         self.assertIn("unknown tool", err)
@@ -566,7 +566,7 @@ class TestDiscovery(unittest.TestCase):
     def test_show_prints_schema(self):
         code, out, err = run_cli(
             ["show", "gr_wf_repo_get"],
-            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            env={"AGENT_SYNC_BEARER": BEARER},
             transport=FakeTransport(),
         )
         self.assertEqual(code, 0)
@@ -576,7 +576,7 @@ class TestDiscovery(unittest.TestCase):
         page = [make_tool("gr_wf_repo_get", READ_SCHEMA, "safe \x1b[31m red")]
         code, out, err = run_cli(
             ["show", "gr_wf_repo_get"],
-            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            env={"AGENT_SYNC_BEARER": BEARER},
             transport=FakeTransport([page]),
         )
         self.assertEqual(code, 0)
@@ -585,7 +585,7 @@ class TestDiscovery(unittest.TestCase):
 
     def test_listing_is_not_execution_proof_footer(self):
         code, out, err = run_cli(
-            ["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=FakeTransport()
+            ["list"], env={"AGENT_SYNC_BEARER": BEARER}, transport=FakeTransport()
         )
         self.assertIn("listing is not execution proof", err)
 
@@ -595,7 +595,7 @@ class TestActorResolution(unittest.TestCase):
         t = FakeTransport()
         code, out, err = run_cli(
             ["call", "gr_wf_repo_get", "--args-json", '{"owner":"o"}'],
-            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            env={"AGENT_SYNC_BEARER": BEARER},
             transport=t,
         )
         self.assertEqual(code, 0, err)
@@ -606,7 +606,7 @@ class TestActorResolution(unittest.TestCase):
         t = FakeTransport()
         code, out, err = run_cli(
             ["call", "gr_wf_issue_create", "--args-json", '{"title":"t"}'],
-            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            env={"AGENT_SYNC_BEARER": BEARER},
             transport=t,
         )
         self.assertEqual(code, 0, err)
@@ -616,7 +616,7 @@ class TestActorResolution(unittest.TestCase):
         t = FakeTransport()
         code, out, err = run_cli(
             ["call", "gr_wf_repo_get", "--args-json", '{"owner":"o","identity":"CODEX"}'],
-            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            env={"AGENT_SYNC_BEARER": BEARER},
             transport=t,
         )
         self.assertEqual(code, 0, err)
@@ -625,7 +625,7 @@ class TestActorResolution(unittest.TestCase):
         t = FakeTransport()
         code, out, err = run_cli(
             ["call", "gr_wf_repo_get", "--args-json", '{"owner":"o","identity":"GROK"}'],
-            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            env={"AGENT_SYNC_BEARER": BEARER},
             transport=t,
         )
         self.assertEqual(code, 6)
@@ -635,7 +635,7 @@ class TestActorResolution(unittest.TestCase):
         t = FakeTransport()
         code, out, err = run_cli(
             ["call", "gr_wf_repo_get", "--args-json", '{"owner":"o"}'],
-            env={"SIMPLE_TOOLS_BEARER": BEARER, "AGENT_SEAT": "CODEX"},
+            env={"AGENT_SYNC_BEARER": BEARER, "AGENT_SEAT": "CODEX"},
             transport=t,
         )
         self.assertEqual(code, 0, err)
@@ -645,7 +645,7 @@ class TestActorResolution(unittest.TestCase):
         t = FakeTransport(seat="ECHO")
         code, out, err = run_cli(
             ["call", "gr_wf_repo_get", "--args-json", '{"owner":"o"}'],
-            env={"SIMPLE_TOOLS_BEARER": BEARER, "AGENT_SEAT": "CODEX"},
+            env={"AGENT_SYNC_BEARER": BEARER, "AGENT_SEAT": "CODEX"},
             transport=t,
         )
         self.assertEqual(code, 6)
@@ -655,7 +655,7 @@ class TestActorResolution(unittest.TestCase):
         t = FakeTransport()
         code, out, err = run_cli(
             ["call", "gr_wf_repo_get", "--args-json", '{"owner":"o","identity":"GROK"}'],
-            env={"SIMPLE_TOOLS_BEARER": BEARER, "AGENT_SEAT": "CODEX"},
+            env={"AGENT_SYNC_BEARER": BEARER, "AGENT_SEAT": "CODEX"},
             transport=t,
         )
         self.assertEqual(code, 2)
@@ -665,7 +665,7 @@ class TestActorResolution(unittest.TestCase):
         t = FakeTransport()
         code, out, err = run_cli(
             ["call", "gr_wf_repo_get", "--args-json", '{"owner":"o"}'],
-            env={"SIMPLE_TOOLS_BEARER": BEARER, "AGENT_SEAT": "CODEX", "AGENT_TAG": "GROK"},
+            env={"AGENT_SYNC_BEARER": BEARER, "AGENT_SEAT": "CODEX", "AGENT_TAG": "GROK"},
             transport=t,
         )
         self.assertEqual(code, 2)
@@ -675,7 +675,7 @@ class TestActorResolution(unittest.TestCase):
         t = FakeTransport()
         code, out, err = run_cli(
             ["call", "gr_wf_repo_get", "--args-json", '{"owner":"o"}'],
-            env={"SIMPLE_TOOLS_BEARER": BEARER, "AGENT_LAUNCHER": "claude"},
+            env={"AGENT_SYNC_BEARER": BEARER, "AGENT_LAUNCHER": "claude"},
             transport=t,
         )
         self.assertEqual(code, 2)
@@ -684,14 +684,14 @@ class TestActorResolution(unittest.TestCase):
         t = FakeTransport()
         code, out, err = run_cli(
             ["call", "gr_wf_repo_get", "--args-json", '{"owner":"o","identity":"codex"}'],
-            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            env={"AGENT_SYNC_BEARER": BEARER},
             transport=t,
         )
         self.assertEqual(code, 2)
 
     def test_whoami_prints_the_reported_seat(self):
         code, out, err = run_cli(
-            ["whoami"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=FakeTransport()
+            ["whoami"], env={"AGENT_SYNC_BEARER": BEARER}, transport=FakeTransport()
         )
         self.assertEqual(code, 0)
         self.assertIn("authenticated_seat: CODEX", out)
@@ -701,7 +701,7 @@ class TestStrictJsonAndBounds(unittest.TestCase):
     def test_duplicate_keys_in_arguments_refused(self):
         code, out, err = run_cli(
             ["call", "gr_wf_repo_get", "--args-json", '{"owner":"a","owner":"b"}'],
-            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            env={"AGENT_SYNC_BEARER": BEARER},
             transport=FakeTransport(),
         )
         self.assertEqual(code, 2)
@@ -711,7 +711,7 @@ class TestStrictJsonAndBounds(unittest.TestCase):
     def test_non_finite_numbers_in_arguments_refused(self):
         code, out, err = run_cli(
             ["call", "gr_wf_repo_get", "--args-json", '{"owner":NaN}'],
-            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            env={"AGENT_SYNC_BEARER": BEARER},
             transport=FakeTransport(),
         )
         self.assertEqual(code, 2)
@@ -720,14 +720,14 @@ class TestStrictJsonAndBounds(unittest.TestCase):
         transport = FakeTransport()
         raw = b'{"jsonrpc":"2.0","id":1,"id":1,"result":{"tools":[]}}'
         transport.post = lambda url, headers, body, timeout: (200, "application/json", raw)
-        code, out, err = run_cli(["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=transport)
+        code, out, err = run_cli(["list"], env={"AGENT_SYNC_BEARER": BEARER}, transport=transport)
         self.assertEqual(code, 1)
         self.assertIn("no readable answer", err)
 
     def test_stdin_over_the_cap_rejected(self):
         code, out, err = run_cli(
             ["call", "gr_wf_repo_get", "--args-json", "-"],
-            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            env={"AGENT_SYNC_BEARER": BEARER},
             transport=FakeTransport(),
             stdin_text=" " * (git.ARGS_MAX_BYTES + 2),
         )
@@ -738,7 +738,7 @@ class TestStrictJsonAndBounds(unittest.TestCase):
         t = FakeTransport()
         code, out, err = run_cli(
             ["call", "gr_wf_repo_get", "--args-json", "-"],
-            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            env={"AGENT_SYNC_BEARER": BEARER},
             transport=t,
             stdin_text='{"owner":"stdin"}',
         )
@@ -752,7 +752,7 @@ class TestStrictJsonAndBounds(unittest.TestCase):
         try:
             code, out, err = run_cli(
                 ["call", "gr_wf_repo_get", "--args-json", "@" + path],
-                env={"SIMPLE_TOOLS_BEARER": BEARER},
+                env={"AGENT_SYNC_BEARER": BEARER},
                 transport=FakeTransport(),
             )
         finally:
@@ -763,7 +763,7 @@ class TestStrictJsonAndBounds(unittest.TestCase):
     def test_missing_at_file_rejected(self):
         code, out, err = run_cli(
             ["call", "gr_wf_repo_get", "--args-json", "@/nonexistent/nope.json"],
-            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            env={"AGENT_SYNC_BEARER": BEARER},
             transport=FakeTransport(),
         )
         self.assertEqual(code, 2)
@@ -772,7 +772,7 @@ class TestStrictJsonAndBounds(unittest.TestCase):
     def test_arguments_must_be_an_object(self):
         code, out, err = run_cli(
             ["call", "gr_wf_repo_get", "--args-json", '["owner"]'],
-            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            env={"AGENT_SYNC_BEARER": BEARER},
             transport=FakeTransport(),
         )
         self.assertEqual(code, 2)
@@ -783,7 +783,7 @@ class TestValidationAndScanning(unittest.TestCase):
         t = FakeTransport()
         code, out, err = run_cli(
             ["call", "gr_wf_issue_create", "--args-json", json.dumps({"title": "x" * 70000})],
-            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            env={"AGENT_SYNC_BEARER": BEARER},
             transport=t,
         )
         self.assertEqual(code, 2)
@@ -797,7 +797,7 @@ class TestValidationAndScanning(unittest.TestCase):
         big = "x" * 100000
         code, out, err = run_cli(
             ["call", "gr_wf_file_put", "--args-json", json.dumps({"path": "a", "content": big})],
-            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            env={"AGENT_SYNC_BEARER": BEARER},
             transport=t,
         )
         self.assertEqual(code, 0, err)
@@ -806,7 +806,7 @@ class TestValidationAndScanning(unittest.TestCase):
         t = FakeTransport()
         code, out, err = run_cli(
             ["call", "gr_wf_repo_get", "--args-json", '{"owner":"o","bogus":1}'],
-            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            env={"AGENT_SYNC_BEARER": BEARER},
             transport=t,
         )
         self.assertEqual(code, 2)
@@ -816,7 +816,7 @@ class TestValidationAndScanning(unittest.TestCase):
         t = FakeTransport()
         code, out, err = run_cli(
             ["call", "gr_wf_issue_create", "--args-json", json.dumps({"title": "token " + BEARER})],
-            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            env={"AGENT_SYNC_BEARER": BEARER},
             transport=t,
         )
         self.assertEqual(code, 2)
@@ -825,16 +825,16 @@ class TestValidationAndScanning(unittest.TestCase):
         self.assertEqual([c[0] for c in t.calls], ["identities"])  # the target call never left
 
     def test_scanner_missing_fails_closed(self):
-        # The real scripts/agent_sync/secretscan.py is not in this repository:  loading must fail closed.
+        # The real scripts/simple_tools/secretscan.py is not in this repository:  loading must fail closed.
         scanner_path = (
-            Path(os.path.realpath(str(IMPL))).parent.parent / "agent_sync" / "secretscan.py"
+            Path(os.path.realpath(str(IMPL))).parent.parent / "simple_tools" / "secretscan.py"
         )
         if scanner_path.is_file():
             self.skipTest("the real scanner is present here; the fail-closed path is unreachable")
         t = FakeTransport()
         code, out, err = run_cli(
             ["call", "gr_wf_repo_get", "--args-json", '{"owner":"o"}'],
-            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            env={"AGENT_SYNC_BEARER": BEARER},
             transport=t,
             scanner=None,
         )
@@ -857,7 +857,7 @@ class TestOutcomes(unittest.TestCase):
         t.post = flaky
         code, out, err = run_cli(
             ["call", "gr_wf_issue_create", "--args-json", '{"title":"t"}'],
-            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            env={"AGENT_SYNC_BEARER": BEARER},
             transport=t,
         )
         self.assertEqual(code, 1)
@@ -866,7 +866,7 @@ class TestOutcomes(unittest.TestCase):
 
     def test_5xx_on_a_read_is_not_uncertain(self):
         code, out, err = run_cli(
-            ["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=FakeTransport(status=500)
+            ["list"], env={"AGENT_SYNC_BEARER": BEARER}, transport=FakeTransport(status=500)
         )
         self.assertEqual(code, 1)
         self.assertNotIn("may or may not have been applied", err)
@@ -886,7 +886,7 @@ class TestOutcomes(unittest.TestCase):
         t.post = boom
         code, out, err = run_cli(
             ["call", "gr_wf_issue_create", "--args-json", '{"title":"t"}'],
-            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            env={"AGENT_SYNC_BEARER": BEARER},
             transport=t,
         )
         self.assertEqual(code, 1)
@@ -900,7 +900,7 @@ class TestOutcomes(unittest.TestCase):
         t.post = boom
         code, out, err = run_cli(
             ["call", "gr_wf_issue_create", "--args-json", '{"title":"t"}'],
-            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            env={"AGENT_SYNC_BEARER": BEARER},
             transport=t,
         )
         self.assertEqual(code, 1)
@@ -916,7 +916,7 @@ class TestOutcomes(unittest.TestCase):
         }
         raw = json.dumps(evil).encode()
         t.post = lambda url, headers, body, timeout: (200, "application/json", raw)
-        code, out, err = run_cli(["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=t)
+        code, out, err = run_cli(["list"], env={"AGENT_SYNC_BEARER": BEARER}, transport=t)
         self.assertEqual(code, 1)
         self.assertNotIn("SECRETINPUT", err)
         self.assertIn("refused", err)
@@ -933,7 +933,7 @@ class TestOutcomes(unittest.TestCase):
         )
         code, out, err = run_cli(
             ["call", "gr_wf_issue_create", "--args-json", '{"title":"t"}'],
-            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            env={"AGENT_SYNC_BEARER": BEARER},
             transport=t,
         )
         self.assertEqual(code, 1)
@@ -952,7 +952,7 @@ class TestOutcomes(unittest.TestCase):
         )
         code, out, err = run_cli(
             ["call", "gr_wf_repo_get", "--args-json", '{"owner":"o"}'],
-            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            env={"AGENT_SYNC_BEARER": BEARER},
             transport=t,
         )
         self.assertEqual(code, 1)
@@ -971,7 +971,7 @@ class TestOutcomes(unittest.TestCase):
         )
         code, out, err = run_cli(
             ["call", "gr_wf_repo_get", "--args-json", '{"owner":"o"}'],
-            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            env={"AGENT_SYNC_BEARER": BEARER},
             transport=t,
         )
         self.assertIn("rate_limited, retry after 30s", err)
@@ -988,7 +988,7 @@ class TestOutcomes(unittest.TestCase):
         )
         code, out, err = run_cli(
             ["call", "gr_wf_repo_get", "--args-json", '{"owner":"o"}'],
-            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            env={"AGENT_SYNC_BEARER": BEARER},
             transport=t,
         )
         self.assertIn("rate_limited", err)
@@ -1007,7 +1007,7 @@ class TestOutcomes(unittest.TestCase):
         )
         code, out, err = run_cli(
             ["call", "gr_new_unknown", "--args-json", "{}"],
-            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            env={"AGENT_SYNC_BEARER": BEARER},
             transport=t,
         )
         self.assertEqual(code, 1)
@@ -1015,7 +1015,7 @@ class TestOutcomes(unittest.TestCase):
 
     def test_call_unknown_tool(self):
         code, out, err = run_cli(
-            ["call", "gr_nope"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=FakeTransport()
+            ["call", "gr_nope"], env={"AGENT_SYNC_BEARER": BEARER}, transport=FakeTransport()
         )
         self.assertEqual(code, 2)
 
@@ -1028,14 +1028,14 @@ class TestOutcomes(unittest.TestCase):
             return status, "text/event-stream", b"data: " + raw + b"\n\n"
 
         t.post = sse
-        code, out, err = run_cli(["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=t)
+        code, out, err = run_cli(["list"], env={"AGENT_SYNC_BEARER": BEARER}, transport=t)
         self.assertEqual(code, 0, err)
 
     def test_deep_nesting_rejected(self):
         t = FakeTransport()
         raw = ("{" * 100 + "}" * 100).encode()
         t.post = lambda url, headers, body, timeout: (200, "application/json", raw)
-        code, out, err = run_cli(["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=t)
+        code, out, err = run_cli(["list"], env={"AGENT_SYNC_BEARER": BEARER}, transport=t)
         self.assertEqual(code, 1)
         self.assertIn("nests too deeply", err)
 
@@ -1043,7 +1043,7 @@ class TestOutcomes(unittest.TestCase):
         t = FakeTransport()
         raw = json.dumps({"jsonrpc": "2.0", "id": 99, "result": {"tools": []}}).encode()
         t.post = lambda url, headers, body, timeout: (200, "application/json", raw)
-        code, out, err = run_cli(["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=t)
+        code, out, err = run_cli(["list"], env={"AGENT_SYNC_BEARER": BEARER}, transport=t)
         self.assertEqual(code, 1)
 
     def test_redirects_are_never_followed(self):
@@ -1055,7 +1055,7 @@ class TestOutcomes(unittest.TestCase):
         t = FakeTransport()
         code, out, err = run_cli(
             ["call", "gr_wf_repo_get", "--args-json", '{"owner":"o"}', "--json"],
-            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            env={"AGENT_SYNC_BEARER": BEARER},
             transport=t,
         )
         self.assertEqual(code, 0, err)
@@ -1076,7 +1076,7 @@ class TestNoCallerEcho(unittest.TestCase):
         try:
             code, out, err = run_cli(
                 ["call", "gr_wf_issue_create", "--args-json", "@" + path],
-                env={"SIMPLE_TOOLS_BEARER": BEARER},
+                env={"AGENT_SYNC_BEARER": BEARER},
                 transport=FakeTransport(),
             )
         finally:
@@ -1093,7 +1093,7 @@ class TestNoCallerEcho(unittest.TestCase):
                 "--args-json",
                 '{"' + self.SENTINEL + '":1,"' + self.SENTINEL + '":2}',
             ],
-            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            env={"AGENT_SYNC_BEARER": BEARER},
             transport=FakeTransport(),
         )
         self.assertEqual(code, 2)
@@ -1103,7 +1103,7 @@ class TestNoCallerEcho(unittest.TestCase):
     def test_non_finite_value_never_echoed(self):
         code, out, err = run_cli(
             ["call", "gr_wf_repo_get", "--args-json", '{"' + self.SENTINEL + '":Infinity}'],
-            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            env={"AGENT_SYNC_BEARER": BEARER},
             transport=FakeTransport(),
         )
         self.assertEqual(code, 2)
@@ -1114,7 +1114,7 @@ class TestNoCallerEcho(unittest.TestCase):
         deep = "[" * 1500 + "]" * 1500
         code, out, err = run_cli(
             ["call", "gr_wf_repo_get", "--args-json", "-"],
-            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            env={"AGENT_SYNC_BEARER": BEARER},
             transport=FakeTransport(),
             stdin_text=deep,
         )
@@ -1130,7 +1130,7 @@ class TestActorAssertionEveryVerb(unittest.TestCase):
     def test_list_with_matching_declared_seat(self):
         t = FakeTransport()
         code, out, err = run_cli(
-            ["list"], env={"SIMPLE_TOOLS_BEARER": BEARER, "AGENT_SEAT": "CODEX"}, transport=t
+            ["list"], env={"AGENT_SYNC_BEARER": BEARER, "AGENT_SEAT": "CODEX"}, transport=t
         )
         self.assertEqual(code, 0, err)
         self.assertEqual(
@@ -1140,7 +1140,7 @@ class TestActorAssertionEveryVerb(unittest.TestCase):
     def test_list_with_mismatching_declared_seat_refused_before_discovery(self):
         t = FakeTransport(seat="ECHO")
         code, out, err = run_cli(
-            ["list"], env={"SIMPLE_TOOLS_BEARER": BEARER, "AGENT_SEAT": "CODEX"}, transport=t
+            ["list"], env={"AGENT_SYNC_BEARER": BEARER, "AGENT_SEAT": "CODEX"}, transport=t
         )
         self.assertEqual(code, 6)
         self.assertEqual([c[0] for c in t.calls], ["identities"])
@@ -1150,7 +1150,7 @@ class TestActorAssertionEveryVerb(unittest.TestCase):
         t = FakeTransport(seat="ECHO")
         code, out, err = run_cli(
             ["show", "gr_wf_repo_get"],
-            env={"SIMPLE_TOOLS_BEARER": BEARER, "AGENT_SEAT": "CODEX"},
+            env={"AGENT_SYNC_BEARER": BEARER, "AGENT_SEAT": "CODEX"},
             transport=t,
         )
         self.assertEqual(code, 6)
@@ -1159,7 +1159,7 @@ class TestActorAssertionEveryVerb(unittest.TestCase):
     def test_whoami_mismatch_refuses_instead_of_displaying(self):
         t = FakeTransport(seat="ECHO")
         code, out, err = run_cli(
-            ["whoami"], env={"SIMPLE_TOOLS_BEARER": BEARER, "AGENT_SEAT": "CODEX"}, transport=t
+            ["whoami"], env={"AGENT_SYNC_BEARER": BEARER, "AGENT_SEAT": "CODEX"}, transport=t
         )
         self.assertEqual(code, 6)
         self.assertNotIn("authenticated_seat", out)
@@ -1167,7 +1167,7 @@ class TestActorAssertionEveryVerb(unittest.TestCase):
     def test_whoami_matching_declared_seat_displays(self):
         code, out, err = run_cli(
             ["whoami"],
-            env={"SIMPLE_TOOLS_BEARER": BEARER, "AGENT_SEAT": "CODEX"},
+            env={"AGENT_SYNC_BEARER": BEARER, "AGENT_SEAT": "CODEX"},
             transport=FakeTransport(),
         )
         self.assertEqual(code, 0)
@@ -1178,7 +1178,7 @@ class TestActorAssertionEveryVerb(unittest.TestCase):
         t = FakeTransport(seat="ECHO")
         code, out, err = run_cli(
             ["call", "gr_new_unknown", "--args-json", "{}"],
-            env={"SIMPLE_TOOLS_BEARER": BEARER, "AGENT_SEAT": "CODEX"},
+            env={"AGENT_SYNC_BEARER": BEARER, "AGENT_SEAT": "CODEX"},
             transport=t,
         )
         self.assertEqual(code, 6)
@@ -1190,7 +1190,7 @@ class TestActorAssertionEveryVerb(unittest.TestCase):
         t = FakeTransport()
         code, out, err = run_cli(
             ["call", "gr_new_unknown", "--args-json", "{}"],
-            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            env={"AGENT_SYNC_BEARER": BEARER},
             transport=t,
         )
         self.assertEqual(code, 0, err)
@@ -1206,14 +1206,14 @@ class TestPrincipalEstablishment(unittest.TestCase):
 
     def test_contradictory_auth_and_default_refused(self):
         t = FakeTransport(seat="CODEX", default_seat="ECHO")
-        code, out, err = run_cli(["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=t)
+        code, out, err = run_cli(["list"], env={"AGENT_SYNC_BEARER": BEARER}, transport=t)
         self.assertEqual(code, 6)
         self.assertIn("contradictory", err)
         self.assertEqual(t.list_requests, 0)
 
     def test_contradiction_refused_even_undeclared(self):
         t = FakeTransport(seat="CODEX", default_seat="ECHO")
-        code, out, err = run_cli(["whoami"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=t)
+        code, out, err = run_cli(["whoami"], env={"AGENT_SYNC_BEARER": BEARER}, transport=t)
         self.assertEqual(code, 6)
 
     def _legacy_sc(self, auth):
@@ -1225,17 +1225,17 @@ class TestPrincipalEstablishment(unittest.TestCase):
 
     def test_absent_auth_falls_back_to_default(self):
         t = FakeTransport(sc_override=self._legacy_sc("absent"))
-        code, out, err = run_cli(["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=t)
+        code, out, err = run_cli(["list"], env={"AGENT_SYNC_BEARER": BEARER}, transport=t)
         self.assertEqual(code, 0, err)
 
     def test_null_auth_falls_back_to_default(self):
         t = FakeTransport(sc_override=self._legacy_sc(None))
-        code, out, err = run_cli(["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=t)
+        code, out, err = run_cli(["list"], env={"AGENT_SYNC_BEARER": BEARER}, transport=t)
         self.assertEqual(code, 0, err)
 
     def test_present_nonnull_malformed_auth_refused(self):
         t = FakeTransport(sc_override=self._legacy_sc("not a seat!"))
-        code, out, err = run_cli(["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=t)
+        code, out, err = run_cli(["list"], env={"AGENT_SYNC_BEARER": BEARER}, transport=t)
         self.assertEqual(code, 6)
         self.assertIn("malformed", err)
 
@@ -1246,7 +1246,7 @@ class TestPrincipalEstablishment(unittest.TestCase):
             "identities": [{"identity": "CODEX"}],
         }
         t = FakeTransport(sc_override=sc)
-        code, out, err = run_cli(["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=t)
+        code, out, err = run_cli(["list"], env={"AGENT_SYNC_BEARER": BEARER}, transport=t)
         self.assertEqual(code, 6)
         self.assertIn("malformed", err)
 
@@ -1254,7 +1254,7 @@ class TestPrincipalEstablishment(unittest.TestCase):
         t = FakeTransport(sc_override=self._legacy_sc("absent"))
         code, out, err = run_cli(
             ["call", "gr_wf_repo_get", "--args-json", '{"owner":"o"}'],
-            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            env={"AGENT_SYNC_BEARER": BEARER},
             transport=t,
         )
         self.assertEqual(code, 0, err)
@@ -1262,44 +1262,44 @@ class TestPrincipalEstablishment(unittest.TestCase):
 
     def test_neither_field_usable_refused(self):
         t = FakeTransport(sc_override={"identities": [{"identity": "CODEX"}]})
-        code, out, err = run_cli(["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=t)
+        code, out, err = run_cli(["list"], env={"AGENT_SYNC_BEARER": BEARER}, transport=t)
         self.assertEqual(code, 6)
         self.assertIn("did not report a usable seat", err)
 
     def test_advertised_identities_must_include_the_seat(self):
         t = FakeTransport(seat="CODEX", advertised=[{"identity": "GROK"}])
-        code, out, err = run_cli(["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=t)
+        code, out, err = run_cli(["list"], env={"AGENT_SYNC_BEARER": BEARER}, transport=t)
         self.assertEqual(code, 6)
         self.assertIn("do not include", err)
 
     def test_empty_advertised_list_refused(self):
         t = FakeTransport(seat="CODEX", advertised=[])
-        code, out, err = run_cli(["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=t)
+        code, out, err = run_cli(["list"], env={"AGENT_SYNC_BEARER": BEARER}, transport=t)
         self.assertEqual(code, 6)
         self.assertIn("no usable identities", err)
 
     def test_missing_advertised_list_refused(self):
         sc = {"authenticated_seat": "CODEX", "default_identity": "CODEX"}
         t = FakeTransport(sc_override=sc)
-        code, out, err = run_cli(["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=t)
+        code, out, err = run_cli(["list"], env={"AGENT_SYNC_BEARER": BEARER}, transport=t)
         self.assertEqual(code, 6)
 
     def test_non_list_advertised_refused(self):
         sc = {"authenticated_seat": "CODEX", "identities": "CODEX"}
         t = FakeTransport(sc_override=sc)
-        code, out, err = run_cli(["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=t)
+        code, out, err = run_cli(["list"], env={"AGENT_SYNC_BEARER": BEARER}, transport=t)
         self.assertEqual(code, 6)
 
     def test_invalid_identity_objects_refused(self):
         for bad in (["CODEX"], [{"name": "CODEX"}], [{"identity": "not a seat!"}]):
             sc = {"authenticated_seat": "CODEX", "identities": bad}
             t = FakeTransport(sc_override=sc)
-            code, out, err = run_cli(["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=t)
+            code, out, err = run_cli(["list"], env={"AGENT_SYNC_BEARER": BEARER}, transport=t)
             self.assertEqual(code, 6, bad)
 
     def test_whoami_makes_exactly_one_request(self):
         t = FakeTransport()
-        code, out, err = run_cli(["whoami"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=t)
+        code, out, err = run_cli(["whoami"], env={"AGENT_SYNC_BEARER": BEARER}, transport=t)
         self.assertEqual(code, 0)
         self.assertEqual(len(t.calls), 1)
         self.assertEqual(t.calls[0][0], "identities")
@@ -1310,7 +1310,7 @@ class TestSchemaFailClosed(unittest.TestCase):
         entry = make_tool("gr_wf_repo_get", READ_SCHEMA)
         del entry["inputSchema"]
         code, out, err = run_cli(
-            ["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=FakeTransport([[entry]])
+            ["list"], env={"AGENT_SYNC_BEARER": BEARER}, transport=FakeTransport([[entry]])
         )
         self.assertEqual(code, 1)
         self.assertIn("missing or unreadable schema", err)
@@ -1319,7 +1319,7 @@ class TestSchemaFailClosed(unittest.TestCase):
         entry = make_tool("gr_wf_repo_get", READ_SCHEMA)
         entry["inputSchema"] = "not-a-schema"
         code, out, err = run_cli(
-            ["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=FakeTransport([[entry]])
+            ["list"], env={"AGENT_SYNC_BEARER": BEARER}, transport=FakeTransport([[entry]])
         )
         self.assertEqual(code, 1)
         self.assertIn("missing or unreadable schema", err)
@@ -1349,14 +1349,14 @@ class TestReview1199(unittest.TestCase):
     # 1. An empty nextCursor is malformed, never a terminator.
     def test_empty_cursor_is_malformed_not_a_terminator(self):
         t = FakeTransport(pages=[(DEFAULT_PAGE[:1], "")])
-        code, out, err = run_cli(["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=t)
+        code, out, err = run_cli(["list"], env={"AGENT_SYNC_BEARER": BEARER}, transport=t)
         self.assertEqual(code, 1)
         self.assertIn("malformed or repeating", err)
 
     def test_absent_and_null_cursor_end_the_list(self):
         for nxt in (None,):  # absent already covered everywhere;  null is explicit here
             t = FakeTransport(pages=[(DEFAULT_PAGE[:1], nxt)])
-            code, out, err = run_cli(["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=t)
+            code, out, err = run_cli(["list"], env={"AGENT_SYNC_BEARER": BEARER}, transport=t)
             self.assertEqual(code, 0, err)
 
     # 2. anyOf intersection:  root constraints AND one variant, variant-only keys known there only.
@@ -1376,7 +1376,7 @@ class TestReview1199(unittest.TestCase):
     def _anyof_call(self, args, t=None):
         return run_cli(
             ["call", "gr_wf_repo_get", "--args-json", json.dumps(args)],
-            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            env={"AGENT_SYNC_BEARER": BEARER},
             transport=t or self._anyof_transport(),
         )
 
@@ -1429,7 +1429,7 @@ class TestReview1199(unittest.TestCase):
         t = FakeTransport(pages=[[make_tool("gr_wf_repo_get", self.OVERLAP_SCHEMA)]])
         return run_cli(
             ["call", "gr_wf_repo_get", "--args-json", json.dumps(args)],
-            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            env={"AGENT_SYNC_BEARER": BEARER},
             transport=t,
         )
 
@@ -1552,7 +1552,7 @@ class TestReview1199(unittest.TestCase):
         t = FakeTransport(pages=[[make_tool("gr_wf_issue_create", schema)]])
         code, out, err = run_cli(
             ["call", "gr_wf_issue_create", "--args-json", json.dumps({"title": "a" * 49 + "!"})],
-            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            env={"AGENT_SYNC_BEARER": BEARER},
             transport=t,
         )
         self.assertEqual(code, 1)
@@ -1571,13 +1571,13 @@ class TestReview1199(unittest.TestCase):
         t = FakeTransport(pages=[[make_tool("gr_wf_issue_create", schema)]])
         code, out, err = run_cli(
             ["call", "gr_wf_issue_create", "--args-json", json.dumps({"title": "a" * 40})],
-            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            env={"AGENT_SYNC_BEARER": BEARER},
             transport=t,
         )
         self.assertEqual(code, 0, err)
         code, out, err = run_cli(
             ["call", "gr_wf_issue_create", "--args-json", json.dumps({"title": "g" * 40})],
-            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            env={"AGENT_SYNC_BEARER": BEARER},
             transport=t,
         )
         self.assertEqual(code, 2)  # a real non-match is a clean usage refusal
@@ -1592,7 +1592,7 @@ class TestReview1199(unittest.TestCase):
         t = FakeTransport(pages=[[make_tool("gr_wf_repo_get", schema)]])
         code, out, err = run_cli(
             ["call", "gr_wf_repo_get", "--args-json", '{"title":"x"}'],
-            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            env={"AGENT_SYNC_BEARER": BEARER},
             transport=t,
         )
         self.assertEqual(code, 0, err)
@@ -1621,7 +1621,7 @@ class TestReview1199(unittest.TestCase):
                     "--args-json",
                     json.dumps({"title": "a" * 49 + "!"}),
                 ],
-                env={"SIMPLE_TOOLS_BEARER": BEARER},
+                env={"AGENT_SYNC_BEARER": BEARER},
                 transport=t,
             )
         # one shared 0.3s end - NOT a fresh cap per variant (3 x 0.3 would take ~1s)
@@ -1743,7 +1743,7 @@ class TestReview1199(unittest.TestCase):
         with clock:
             code, out, err = run_cli(
                 ["call", "gr_wf_issue_create", "--args-json", '{"title":"t"}'],
-                env={"SIMPLE_TOOLS_BEARER": BEARER},
+                env={"AGENT_SYNC_BEARER": BEARER},
                 transport=t,
             )
         self.assertEqual(code, 1)
@@ -1764,7 +1764,7 @@ class TestReview1199(unittest.TestCase):
         with mock.patch.object(git, "OVERALL_DEADLINE_S", 10):
             code, out, err = run_cli(
                 ["call", "gr_wf_repo_get", "--args-json", '{"owner":"o"}'],
-                env={"SIMPLE_TOOLS_BEARER": BEARER},
+                env={"AGENT_SYNC_BEARER": BEARER},
                 transport=t,
             )
         self.assertEqual(code, 0, err)
@@ -1805,7 +1805,7 @@ class TestReview1199(unittest.TestCase):
     # 6. Malformed leaf constraints:  clean refusal at discovery, clean False in _type_ok.
     def _schema_refusal(self, schema):
         t = FakeTransport(pages=[[make_tool("gr_wf_repo_get", schema)]])
-        code, out, err = run_cli(["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=t)
+        code, out, err = run_cli(["list"], env={"AGENT_SYNC_BEARER": BEARER}, transport=t)
         self.assertEqual(code, 1)
         self.assertIn("missing or unreadable schema", err)
 
@@ -1835,10 +1835,12 @@ class TestReview1199(unittest.TestCase):
         self.assertTrue(git._type_ok({"type": "array", "minItems": 0, "maxItems": 2}, [1]))
 
 
-REAL_SCANNER = Path(os.path.realpath(str(IMPL))).parent.parent / "agent_sync" / "secretscan.py"
+REAL_SCANNER = Path(os.path.realpath(str(IMPL))).parent.parent / "simple_tools" / "secretscan.py"
 
 
-@unittest.skipUnless(REAL_SCANNER.is_file(), "scripts/agent_sync/secretscan.py not available here")
+@unittest.skipUnless(
+    REAL_SCANNER.is_file(), "scripts/simple_tools/secretscan.py not available here"
+)
 class TestRealSharedScanner(unittest.TestCase):
     """The actual fleet scanner, loaded exactly the way the implementation loads it."""
 
@@ -1859,7 +1861,7 @@ class TestRealSharedScanner(unittest.TestCase):
         t = FakeTransport()
         code, out, err = run_cli(
             ["call", "gr_wf_issue_create", "--args-json", json.dumps({"title": "token " + BEARER})],
-            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            env={"AGENT_SYNC_BEARER": BEARER},
             transport=t,
             scanner="real",
         )
@@ -1872,7 +1874,7 @@ class TestRealSharedScanner(unittest.TestCase):
         t = FakeTransport()
         code, out, err = run_cli(
             ["call", "gr_wf_repo_get", "--args-json", '{"owner":"o"}'],
-            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            env={"AGENT_SYNC_BEARER": BEARER},
             transport=t,
             scanner="real",
         )

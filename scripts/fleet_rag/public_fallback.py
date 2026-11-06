@@ -531,6 +531,12 @@ def _fallback(name: str, kwargs: dict, why: str) -> dict:
     public_kwargs = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
     if name == "recall_contribute":
         public_kwargs.pop("force", None)
+        seat = public_kwargs.get("seat")
+        if not isinstance(seat, str) or not seat.strip():
+            raise FleetRagError(
+                "refusing the public fallback: recall_contribute would be sent with no seat, which the "
+                "hosted service rejects -- pass --seat or set AGENT_SEAT"
+            )
     try:
         return call_public(name, public_kwargs)
     except FleetRagError as pub_err:

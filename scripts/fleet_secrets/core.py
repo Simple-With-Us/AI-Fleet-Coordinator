@@ -178,7 +178,7 @@ def infisical_project_id(env: Mapping[str, str], home: Path, project: str = DEFA
     """The Fleet-OPS Infisical project id, from env INFISICAL_FLEET_OPS_PROJECT_ID or the first line of
     ~/.agent-sync/fleet-ops-project-id.  Fails closed, naming both, and never echoes a malformed value.
 
-    Same sources and error text as ``scripts/agent_sync/zulip.py:infisical_project_id`` (PR #634);
+    Same sources and error text as ``scripts/simple_tools/zulip.py:infisical_project_id`` (PR #634);
     this copy exists so a stable install needs no sibling package.  The id lives in the private
     fleet-ops inventory and is never committed to this public repo."""
     env_name, project_file = PROJECT_SOURCES[project]

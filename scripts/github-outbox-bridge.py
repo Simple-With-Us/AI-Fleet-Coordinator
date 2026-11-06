@@ -56,7 +56,7 @@ try:
 except ImportError:  # pragma: no cover
     ZoneInfo = None
 
-CHANNEL_DEFAULT = "work-in-progress"  # the channel the owner renamed #agent-sync to on 2026-10-22
+CHANNEL_DEFAULT = "work-in-progress"  # the current fleet work channel
 TOPIC_DEFAULT = "outbox"
 READ_AS_DEFAULT = "CLAUDE"  # Infisical /zulip keys <BOT>_ZULIP_EMAIL / _KEY / _SITE
 FLEET_SECRETS_BIN = os.environ.get("FLEET_SECRETS_BIN") or str(
@@ -696,7 +696,7 @@ def main(argv=None) -> int:
     seats = load_seats(args)
     # The simple-chat CLI resolves each seat's own Zulip credential for posting;  the read client
     # takes an explicit --rc file or the --read-as bot's key from Infisical /zulip (AFC-359).
-    # The old AGENT_SYNC_ENV / SLACK_BOT_TOKEN route is retired.
+    # The old environment-file / Slack token route is retired.
     zulip_read = ZulipClient(args.rc, bot=args.read_as) if args.read_history else None
     if args.read_history and zulip_read is None and not args.dry_run:
         log(

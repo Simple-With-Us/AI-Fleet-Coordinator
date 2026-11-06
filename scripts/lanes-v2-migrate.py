@@ -81,7 +81,7 @@ EXIT_USAGE = 64
 
 LOG_NAME = ".lanes-v2-migration.json"
 GRACE_DAYS = 7
-RUNTIME_NAME = "agent-sync-runtime"
+RUNTIME_NAME = "simple-tools-runtime"
 
 # Actions in a plan.
 MOVE = "move"  # a lane to its new folder, with a symlink left behind
@@ -649,7 +649,7 @@ def plan_one_lane(ctx: Ctx, cname: str, cpath: str, f: Facts, *, bucket_name: st
     if cname == RUNTIME_NAME:
         it.action = SKIP
         it.reasons.append(
-            "live infrastructure: the Operator, ~/.local/bin/agent-sync and the runtime-sync "
+            "live infrastructure: the Operator, ~/.local/bin/simple-chat and the runtime-sync "
             "LaunchAgent use this path, so it needs its own coordinated step and the owner's choice of a new path"
         )
         return it

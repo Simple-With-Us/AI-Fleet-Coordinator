@@ -232,11 +232,11 @@ COORDINATOR_SELF_ID = "AFC"
 
 
 def _load_gb_role_tags() -> tuple[str, ...]:
-    """The enabled Grok Bot personas, from the one list the MCP servers use (scripts/agent_sync/mcp/gb-identities.json,
+    """The enabled Grok Bot personas, from the one list the MCP servers use (scripts/simple_tools/mcp/gb-identities.json,
     which the hosted Worker imports as GB_IDENTITIES).  Never a list of its own here, so a skill cannot name a
     persona the connectors refuse or miss one they accept."""
     path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "agent_sync", "mcp", "gb-identities.json"
+        os.path.dirname(os.path.abspath(__file__)), "simple_tools", "mcp", "gb-identities.json"
     )
     with open(path, encoding="utf-8") as fh:
         enabled = json.load(fh).get("enabled")
@@ -819,7 +819,7 @@ NEVER_INSTALL = frozenset({"ios-ship"})
 # under a name that no longer exists.  The installer deletes them (and their zip) from every install target, so a seat
 # never keeps a stale copy beside the renamed skill.  Delete this set, its use in install-fleet-skills.py and its test
 # once every seat home has been re-rendered.
-RENAMED_SKILL_OLD_NAMES = frozenset({"agent-sync-tools-guide"})
+RENAMED_SKILL_OLD_NAMES = frozenset()
 
 # Optional allowlist of Seat.seat_key values.  A missing key means every
 # seat except NEVER_INSTALL.  Use this when a skill is only meaningful on

@@ -2,7 +2,7 @@
 """The fleet git tools CLI:  a thin client for the git tools of the hosted simple-tools MCP.
 
 Every operation is remote.  The endpoint is the fixed constant below (no environment override) and the
-bearer is the CLI user's OWN credential:  it comes from SIMPLE_TOOLS_BEARER in the environment (automation)
+bearer is the CLI user's OWN credential:  it comes from AGENT_SYNC_BEARER in the environment (automation)
 or one hidden interactive prompt (no echo - never an argument, history, a file or a log line here), and
 there is no direct path, no credential minting and no other credential source.  The server, never this
 client, decides who the bearer is and what it may do.
@@ -58,7 +58,7 @@ REMOTE_ENV = _ENV_STEM + "_REMOTE"  # set by the seat helper;  informational onl
 USER_AGENT = _ENV_STEM.lower().replace("_", "-") + "-remote/1"
 
 REMOTE_MCP_URL = "https://agents.simplewithus.com/mcp"
-REMOTE_BEARER_ENV = "SIMPLE_TOOLS_BEARER"
+REMOTE_BEARER_ENV = "AGENT_SYNC_BEARER"
 REMOTE_TIMEOUT_S = 40
 # One budget for the whole verb:  the identities probe, every discovery page and the target call share
 # it.  Each request gets the REMAINING budget (capped per request);  a
@@ -106,7 +106,7 @@ INPUT_LIMITS = {
 }
 DEFAULT_INPUT_LIMIT = 65536
 
-# The error codes the hosted server can return (the ToolError codes in scripts/agent-sync-mcp/src), kept in
+# The error codes the hosted server can return (the ToolError codes in scripts/simple-tools-mcp/src), kept in
 # step with scripts/linear-board/board.  Anything else, including a code that merely looks safe, prints as
 # "error".
 _REMOTE_CODES = frozenset(
@@ -231,7 +231,7 @@ def _prompt_terminal_available() -> bool:
 
 
 def remote_bearer() -> str:
-    """The CLI user's OWN bearer:  SIMPLE_TOOLS_BEARER from the environment (automation), otherwise one
+    """The CLI user's OWN bearer:  AGENT_SYNC_BEARER from the environment (automation), otherwise one
     hidden prompt on the controlling terminal.  The answer is held only in process memory for the
     session - never an argument, history, a file this tool writes or a log line."""
     v = env(REMOTE_BEARER_ENV)
@@ -342,15 +342,15 @@ def _remote_post(url: str, headers: dict, body: bytes, timeout: float) -> tuple[
 
 def _error_code_of(result: dict) -> str | None:
     """The hosted server's error code from a tools/call-style result:  structuredContent, then
-    `_meta["agent-sync/error"]`, then the first text part that is a JSON object.  Only allow-listed codes
+    `_meta["simple-tools/error"]`, then the first text part that is a JSON object.  Only allow-listed codes
     are recognized;  anything else (or nothing) is None."""
     candidates = []
     sc = result.get("structuredContent")
     if isinstance(sc, dict):
         candidates.append(sc)
     meta = result.get("_meta")
-    if isinstance(meta, dict) and isinstance(meta.get("agent-sync/error"), dict):
-        candidates.append(meta["agent-sync/error"])
+    if isinstance(meta, dict) and isinstance(meta.get("simple-tools/error"), dict):
+        candidates.append(meta["simple-tools/error"])
     for part in result.get("content") or []:
         if isinstance(part, dict) and isinstance(part.get("text"), str):
             try:
@@ -489,12 +489,12 @@ _SCANNER = None
 
 
 def _scanner():
-    """The fleet's secret scanner (scripts/agent_sync/secretscan.py, standard library only), loaded by path.
+    """The fleet's secret scanner (scripts/simple_tools/secretscan.py, standard library only), loaded by path.
     If it cannot be loaded nothing is sent:  there is no unscanned route."""
     global _SCANNER
     if _SCANNER is not None:
         return _SCANNER
-    path = Path(os.path.realpath(__file__)).parent.parent / "agent_sync" / "secretscan.py"
+    path = Path(os.path.realpath(__file__)).parent.parent / "simple_tools" / "secretscan.py"
     try:
         spec = importlib.util.spec_from_file_location("_git_secretscan", str(path))
         module = importlib.util.module_from_spec(spec)
@@ -605,7 +605,7 @@ def remote_call(tool: str, arguments: dict, write: bool, bearer: str, deadline: 
         # retry-after is the only other field ever shown, and only bounded.
         retry = None
         meta = result.get("_meta")
-        for source in (sc if isinstance(sc, dict) else {}, meta.get("agent-sync/error") if isinstance(meta, dict) and isinstance(meta.get("agent-sync/error"), dict) else {}):
+        for source in (sc if isinstance(sc, dict) else {}, meta.get("simple-tools/error") if isinstance(meta, dict) and isinstance(meta.get("simple-tools/error"), dict) else {}):
             value = source.get("retry_after_s", source.get("retry_after"))
             if isinstance(value, (int, float)) and not isinstance(value, bool) and 0 <= value <= 86400:
                 retry = value
