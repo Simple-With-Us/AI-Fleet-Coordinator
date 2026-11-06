@@ -8,9 +8,11 @@ import contextlib
 import importlib.machinery
 import importlib.util
 import io
+import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import types
 import unittest
@@ -260,6 +262,23 @@ class Publish(unittest.TestCase):
         path.write_bytes(b"x" * size)
         return str(path)
 
+    def write_store(self, store):
+        """Seed durable outcome state the way production writes it:  same-directory temp file, fsync,
+        atomic replace, fsync the directory - a torn fixture would not model durable persistence."""
+        store_file = self.root / "state" / "publish-outcomes.json"
+        store_file.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=store_file.parent, prefix=store_file.name + ".", suffix=".tmp")
+        with os.fdopen(fd, "w") as handle:
+            json.dump(store, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, store_file)
+        dirfd = os.open(store_file.parent, os.O_RDONLY)
+        try:
+            os.fsync(dirfd)
+        finally:
+            os.close(dirfd)
+
     def publish_unmocked(self, specs):
         """publish, leaving validate_arguments to the caller's own patch."""
         tools = {
@@ -338,7 +357,10 @@ class Publish(unittest.TestCase):
     def test_base_creates_the_branch_first(self):
         self.assertEqual(self.publish([f"{self.file('a', 1)}=a"], base="main"), 0)
         names = [name for name, _, _ in self.sent]
-        self.assertEqual(names, ["gr_wf_branch_get", "gr_wf_branch_create", "gr_wf_files_put"])
+        self.assertEqual(
+            names,
+            ["gr_wf_branch_get", "gr_wf_branch_create", "gr_wf_branch_get", "gr_wf_files_put"],
+        )
 
     def test_a_problem_in_a_later_batch_stops_the_first_commit(self):
         # The refusal comes from the production pre-flight (path shape mirror), not a stricter mock.
@@ -425,10 +447,10 @@ class Publish(unittest.TestCase):
         specs = [f"{self.file('u', 10)}=u"]
         store_file = self.root / "state" / "publish-outcomes.json"
         self.assertEqual(self.publish(specs), 0)
-        store = __import__("json").loads(store_file.read_text())
+        store = json.loads(store_file.read_text())
         key = next(iter(store))
         store[key]["batches"]["1"] = "unknown"
-        store_file.write_text(__import__("json").dumps(store))
+        self.write_store(store)
         self.sent.clear()
         with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
             self.publish(specs)
@@ -571,6 +593,125 @@ finally:
             with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
                 self.publish(specs)
         self.assertEqual(self.sent, [])
+
+
+    def test_a_corrupt_store_is_quarantined_and_rebuilt(self):
+        specs = [f"{self.file('c', 10)}=c"]
+        self.assertEqual(self.publish(specs), 0)
+        store_file = self.root / "state" / "publish-outcomes.json"
+        store_file.write_bytes(b"{not json")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(self.publish(specs), 0)
+        quarantined = list((self.root / "state").glob("publish-outcomes.json.corrupt-*"))
+        self.assertEqual(len(quarantined), 1)
+        self.assertEqual(quarantined[0].read_bytes(), b"{not json")
+        self.assertIn("quarantined", err.getvalue())
+        rebuilt = json.loads(store_file.read_text())
+        self.assertEqual(rebuilt[next(iter(rebuilt))]["batches"]["1"], "ok")
+
+    def test_an_unreadable_store_fails_closed(self):
+        (self.root / "state").mkdir(parents=True)
+        (self.root / "state" / "publish-outcomes.json").mkdir()  # a directory: open() raises OSError
+        with self.assertRaises(SystemExit) as caught, contextlib.redirect_stderr(io.StringIO()):
+            self.publish([f"{self.file('u', 10)}=u"])
+        self.assertEqual(caught.exception.code, G.EXIT_ERROR)
+        self.assertEqual(self.puts(), [])
+
+    def test_a_symlinked_state_directory_is_refused(self):
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        os.symlink(elsewhere, self.root / "state")
+        with self.assertRaises(SystemExit) as caught, contextlib.redirect_stderr(io.StringIO()):
+            self.publish([f"{self.file('s', 10)}=s"])
+        self.assertEqual(caught.exception.code, G.EXIT_USAGE)
+        self.assertEqual(self.sent, [])
+
+    def test_a_refused_branch_creation_stops_the_publish(self):
+        tools = {
+            name: {"read": name == "gr_wf_branch_get", "schema": {"properties": {"identity": {}}}}
+            for name in ("gr_wf_branch_get", "gr_wf_branch_create", "gr_wf_files_put")
+        }
+
+        def remote(name, args, write, bearer, deadline=None):
+            self.sent.append((name, args, write))
+            if name == "gr_wf_branch_get":
+                return {"structured": {"branch": {"commit": {"sha": "a" * 40}}}}
+            if name == "gr_wf_branch_create":
+                raise SystemExit(G.EXIT_ERROR)  # a definite refusal: nothing created
+            return {"structured": {"commit": "b" * 40}}
+
+        a = ns(
+            repo="Simple-With-Us/CodeCaps",
+            branch="claude/x",
+            message="m",
+            base="main",
+            file=[f"{self.file('r', 10)}=r"],
+        )
+        with (
+            mock.patch.object(G, "remote_call", remote),
+            mock.patch.object(G, "validate_arguments"),
+            mock.patch.object(G, "declared_seat", return_value=None),
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()),
+            self.assertRaises(SystemExit),
+        ):
+            G.cmd_publish(tools, a, BEARER, "CLAUDE", 0.0)
+        self.assertEqual(self.puts(), [])
+        store = json.loads((self.root / "state" / "publish-outcomes.json").read_text())
+        self.assertEqual(store[next(iter(store))]["batches"]["branch"], "refused")
+
+    def test_a_base_rerun_fences_on_the_current_branch_head(self):
+        specs = [f"{self.file('h', 10)}=h"]
+        key = G._publish_key("Simple-With-Us/CodeCaps", "claude/x", "main", "m", [("h", b"x" * 10)])
+        self.write_store({key: {"batches": {"branch": "ok"}}})
+        heads = {"main": "a" * 40, "claude/x": "c" * 40}
+        tools = {
+            name: {"read": name == "gr_wf_branch_get", "schema": {"properties": {"identity": {}}}}
+            for name in ("gr_wf_branch_get", "gr_wf_branch_create", "gr_wf_files_put")
+        }
+
+        def remote(name, args, write, bearer, deadline=None):
+            self.sent.append((name, args, write))
+            if name == "gr_wf_branch_get":
+                return {"structured": {"branch": {"commit": {"sha": heads[args["branch"]]}}}}
+            return {"structured": {"commit": "d" * 40}}
+
+        a = ns(
+            repo="Simple-With-Us/CodeCaps",
+            branch="claude/x",
+            message="m",
+            base="main",
+            file=specs,
+        )
+        with (
+            mock.patch.object(G, "remote_call", remote),
+            mock.patch.object(G, "validate_arguments"),
+            mock.patch.object(G, "declared_seat", return_value=None),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(G.cmd_publish(tools, a, BEARER, "CLAUDE", 0.0), 0)
+        self.assertEqual(self.puts()[0]["expected_head_sha"], "c" * 40)
+        self.assertNotIn(("gr_wf_branch_create",), [(n,) for n, _, _ in self.sent])
+
+    def test_the_uncertainty_note_is_classified_unknown(self):
+        def write_that_may_have_landed():
+            sys.stderr.write(f"hosted: http 502{G._REMOTE_UNKNOWN}")
+            raise SystemExit(G.EXIT_ERROR)
+
+        with contextlib.redirect_stderr(io.StringIO()):
+            outcome, _ = G._outcome_of(write_that_may_have_landed)
+        self.assertEqual(outcome, "unknown")
+
+    def test_a_missing_git_binary_exits_127(self):
+        with (
+            mock.patch.object(G.subprocess, "Popen", side_effect=FileNotFoundError()),
+            mock.patch.object(G, "_git_binary", return_value="/nonexistent/git"),
+            contextlib.redirect_stderr(io.StringIO()),
+            self.assertRaises(SystemExit) as caught,
+        ):
+            G._run_git(["status"], BEARER)
+        self.assertEqual(caught.exception.code, 127)
 
 
 class Parser(unittest.TestCase):

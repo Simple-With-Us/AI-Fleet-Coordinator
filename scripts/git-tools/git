@@ -1416,6 +1416,8 @@ def _run_git(args: list[str], bearer: str, cwd: str | None = None) -> int:
                 stdin=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
+        except FileNotFoundError:
+            die("git is not installed or not on PATH", 127)
         except OSError as exc:
             die(f"git could not start ({type(exc).__name__})", EXIT_ERROR)
         try:
@@ -1603,7 +1605,8 @@ def _publish_batches(files: list[tuple[str, bytes]]) -> list[list[tuple[str, byt
 
 
 def _branch_head(result: dict) -> str:
-    branch = (result.get("structured") or {}).get("branch")
+    structured = result.get("structured") if isinstance(result, dict) else None
+    branch = structured.get("branch") if isinstance(structured, dict) else None
     commit = branch.get("commit") if isinstance(branch, dict) else None
     sha = commit.get("sha") if isinstance(commit, dict) else None
     if not isinstance(sha, str) or re.fullmatch(r"[0-9a-f]{40}", sha) is None:
@@ -1648,20 +1651,55 @@ def _publish_key(repo: str, branch: str, base, message: str, files) -> str:
 
 
 def _publish_store_load() -> dict:
+    path = _publish_store_path()
     try:
-        with open(_publish_store_path()) as handle:
+        with open(path) as handle:
             store = json.load(handle)
-        return store if isinstance(store, dict) else {}
-    except (OSError, ValueError):
+    except FileNotFoundError:
+        return {}  # the normal first run:  no outcomes recorded yet
+    except (json.JSONDecodeError, ValueError):
+        # A corrupt store is not empty state:  quarantine the unreadable file aside (kept as evidence, never
+        # overwritten), then rebuild from the canonical remote branch.  The content-match skip in cmd_publish
+        # settles what actually landed - a batch whose write landed is on the branch and is re-recorded ok, one
+        # that did not is safe to send - and the rebuilt records are saved before any further write is sent.
+        quarantine = path.with_name(f"{path.name}.corrupt-{int(time.time())}-{os.getpid()}")
+        try:
+            os.replace(path, quarantine)
+        except OSError as exc:
+            die(f"the publish outcome store is corrupt and cannot be quarantined ({type(exc).__name__})", EXIT_ERROR)
+        print(
+            f"the publish outcome store was corrupt;  quarantined to {quarantine} and rebuilding from the branch",
+            file=sys.stderr,
+        )
         return {}
+    except OSError as exc:
+        # An unavailable registry is not an empty one:  fail closed and name the path rather than publish
+        # without verifiable prior outcomes.
+        die(
+            f"the publish outcome store at {path} cannot be read ({type(exc).__name__});  reconcile it before publishing",
+            EXIT_ERROR,
+        )
+    if not isinstance(store, dict):
+        die(f"the publish outcome store at {path} is not an object;  reconcile it before publishing", EXIT_ERROR)
+    return store
+
+
+def _publish_state_dir() -> Path:
+    """The store's private directory, created 0700 and verified to be a real directory:  a symlinked path would
+    redirect durable outcome state outside its intended location, so it is refused before anything is written."""
+    path = _publish_store_path().parent
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if path.is_symlink():
+        die(f"the publish state directory {path} is a symlink;  refusing to keep publish state there", EXIT_USAGE)
+    return path
 
 
 def _publish_store_lock():
     """One cross-process lock held for a publish's whole send phase:  independent CLI writers are serialized, so
     no read-modify-write can lose another run's record, and a batch recorded unknown is seen - and honored -
     by every later run of the same operation before it sends anything.  flock releases if the process dies."""
+    _publish_state_dir()
     path = _publish_store_path()
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     handle = open(path.with_suffix(".lock"), "w")
     fcntl.flock(handle, fcntl.LOCK_EX)
     return handle
@@ -1670,7 +1708,7 @@ def _publish_store_lock():
 def _publish_store_save(store: dict) -> None:
     path = _publish_store_path()
     try:
-        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        _publish_state_dir()
         # A unique sibling per save:  os.replace stays atomic, and concurrent writers never share a temp name.
         fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
         with os.fdopen(fd, "w") as handle:
@@ -1693,7 +1731,12 @@ def _outcome_of(fn) -> tuple[str, dict | None]:
     except SystemExit:
         text = err.getvalue()
         sys.stderr.write(text)  # the verdict is the caller's to see;  only its CLASS is consumed here
-        unknown = "outcome_unknown" in text or "did not answer" in text or "was cut off" in text
+        unknown = (
+            _REMOTE_UNKNOWN in text
+            or "outcome_unknown" in text
+            or "did not answer" in text
+            or "was cut off" in text
+        )
         return ("unknown" if unknown else "refused"), None
 
 
@@ -1776,8 +1819,17 @@ def cmd_publish(tools: dict, a, bearer: str, seat: str, deadline: float) -> int:
                 if outcome == "ok":
                     state["batches"]["branch"] = "ok"
                     _publish_store_save(store)
-                # A definite refusal releases the key:  nothing was created, a corrected rerun may try again.
-            head = base
+                if outcome == "refused":
+                    # A definite refusal still stops the publish:  later writes must not follow a failed
+                    # branch creation.  The key is reusable - nothing was created, a corrected rerun may try again.
+                    state["batches"]["branch"] = "refused"
+                    _publish_store_save(store)
+                    raise SystemExit(EXIT_ERROR)
+            # Fence on the branch's CURRENT head, not the original base:  an earlier run may already have
+            # landed batches on it, and reconciling against a stale head would reapply them or mis-fence.
+            head = _branch_head(
+                _tool_call(tools, "gr_wf_branch_get", {"repo": a.repo, "branch": a.branch}, bearer, seat, deadline)
+            )
         else:
             head = _branch_head(_tool_call(tools, "gr_wf_branch_get", {"repo": a.repo, "branch": a.branch}, bearer, seat, deadline))
         remote = _remote_tree_shas(tools, a.repo, head, bearer, seat, deadline)
@@ -1811,7 +1863,8 @@ def cmd_publish(tools: dict, a, bearer: str, seat: str, deadline: float) -> int:
                 )
             if outcome == "refused":
                 raise SystemExit(EXIT_ERROR)  # definite: nothing was written, a corrected rerun may try again
-            commit = (out.get("structured") or {}).get("commit")
+            structured = out.get("structured") if isinstance(out, dict) else None
+            commit = structured.get("commit") if isinstance(structured, dict) else None
             if not isinstance(commit, str) or re.fullmatch(r"[0-9a-f]{40}", commit) is None:
                 die("the server did not report the new commit;  check the branch before trying again", EXIT_ERROR)
             head = commit
@@ -1834,7 +1887,8 @@ def _remote_tree_shas(tools: dict, repo: str, head: str, bearer: str, seat: str,
             out = _tool_call(tools, "gr_wf_tree", {"repo": repo, "sha": head, "recursive": True}, bearer, seat, deadline)
     except SystemExit:
         return {}
-    tree = (out.get("structured") or {}).get("tree")
+    structured = out.get("structured") if isinstance(out, dict) else None
+    tree = structured.get("tree") if isinstance(structured, dict) else None
     if not isinstance(tree, list):
         return {}
     return {
