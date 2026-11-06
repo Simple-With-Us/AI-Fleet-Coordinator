@@ -56,7 +56,7 @@ class GrokTransport:
     """Only the shared leader owns the target session.  No session/new, cancel or model change."""
 
     def __init__(self) -> None:
-        self.disk = _module("agent_sync_grok_disk", "session_disk.py")
+        self.disk = _module("simple_tools_grok_disk", "session_disk.py")
         self.leader = None
 
     @staticmethod
@@ -390,7 +390,7 @@ class GrokTransport:
         if self.preflight(binding) != "ready":
             return "deferred"
         if self.leader is None:
-            self.leader = _module("agent_sync_grok_leader", "leader-client.py")
+            self.leader = _module("simple_tools_grok_leader", "leader-client.py")
         client = None
         sent = False
         try:

@@ -50,7 +50,7 @@ def nudge_text(channel: str, topic: str, message_id: str, source_seat: str | Non
 class ChatNudges:
     """Per-seat exact chat bindings and durable nudge queue.
 
-    `root` is the Agent-Sync state root.  Registry and queue share one private file under
+    `root` is the Simple-Tools state root.  Registry and queue share one private file under
     `<root>/<seat>` with a state lock for short updates and a separate dispatch lock for one
     serialized transport attempt.
     """

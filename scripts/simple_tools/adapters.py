@@ -139,7 +139,7 @@ def claude_env(
     ZULIP_* and ANTHROPIC_API_KEY are dropped, so the run uses the claude.ai login.
 
     With `seat` (a wake, or test-wake), the listener acts as the reference launcher
-    (FLEET-PROTOCOL § Identity Rules › Launcher Contract):  it sets AGENT_LAUNCHER=agent-sync-wake,
+    (FLEET-PROTOCOL § Identity Rules › Launcher Contract):  it sets AGENT_LAUNCHER=simple-tools-wake,
     AGENT_LAUNCH_SEAT and AGENT_SEAT to the seat it is waking, and AGENT_SYNC_ATTACH=0, fresh, after
     every inherited identity variable was dropped.  The wake has no tools and posts nothing itself
     (the daemon posts its validated reply as the seat's bot), so this only keeps the seat explicit."""
@@ -1274,7 +1274,7 @@ def muse_pin_candidate(paths: L.SeatPaths, muse: str, now: float) -> str | None:
 # quota app) publishes what each provider has left;  a wake whose provider is spent is refused
 # BEFORE the subprocess spawns, so an exhausted seat costs no run, no queue slot and no retry.
 #
-# The source is the Usage Monitor snapshot (docs/protocols/agent-sync-listener.md), read with the
+# The source is the Usage Monitor snapshot (docs/protocols/simple-tools-listener.md), read with the
 # same rules the rest of the fleet uses for it:  a regular same-user file, no symlink, capped size,
 # and a 15-minute expiry (the producer's 5-minute cadence plus two missed cycles).  A file that is
 # missing, stale, malformed or simply has no window for this provider NEVER blocks a wake:  this is
@@ -2088,7 +2088,7 @@ OPENROUTER_HTTP_REASONS = {
 }
 
 
-class OpenRouterUnavailable(Z.AgentSyncError):
+class OpenRouterUnavailable(Z.SimpleToolsError):
     """The OpenRouter key could not be read, so no call is made.  `reason` is a reason token or a
     short sentence naming the secret, never its value."""
 
@@ -2685,7 +2685,7 @@ ROUTINE_RESPONSE_CAP = 65536
 # The hosted MCP Worker refuses a wake body over 64 KiB (src/wake.js WAKE_MAX_BODY).  A body with
 # `held_back` stays far below it;  run_routine lists fewer items rather than ever cross it.
 ROUTINE_MAX_BODY = 64 * 1024
-# The hosted Worker's settled outcomes (docs/protocols/agent-sync-mcp.md section 3.12, item 12).
+# The hosted Worker's settled outcomes (docs/protocols/simple-tools-mcp.md section 3.12, item 12).
 WORKER_OUTCOMES = frozenset(
     {"delivered", "no_subscriber", "channel_refused", "rejected", "gone", "not_live"}
 )
@@ -3235,7 +3235,7 @@ def board_app(topic: str, acronyms: set[str]) -> str:
 
 # The daemon files this board item with no agent session behind it, and `board file` needs a session id from every
 # seat but the single-thread ones (AFC-361).  A label that is not a transcript id resolves to no session.
-BOARD_SESSION_LABEL = "agent-sync-wake"
+BOARD_SESSION_LABEL = "simple-tools-wake"
 
 
 def board_argv(
