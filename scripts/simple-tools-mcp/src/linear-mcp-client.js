@@ -233,7 +233,7 @@ export async function callOfficialLinear(client, name, args, { write = false, fe
     params: {
       protocolVersion: LINEAR_MCP_PROTOCOL_VERSION,
       capabilities: {},
-      clientInfo: { name: "agent-sync-mcp", version: "2.0.0" },
+      clientInfo: { name: "simple-tools-mcp", version: "2.0.0" },
     },
   }, { phase: "initialize", timeoutMs: boundedTimeout, write: isWrite, id: 1 });
   const initialized = initializeResponse.result;

@@ -8,7 +8,7 @@ const PROTECTED_LABEL = /^(?:claimed:|seat:|stale-claim$)/i;
 const SECRET_FIELD = /secret|token|password|credential|authorization|cookie|api_?key/i;
 const DEFINITIVE_MUTATION_FAILURE_KINDS = new Set(["unauthorized", "rate_limited", "mint"]);
 const typeRef = (depth) => `kind name${depth ? ` ofType { ${typeRef(depth - 1)} }` : ""}`;
-const TYPE_QUERY = `query AgentSyncSchema($name: String!) {
+const TYPE_QUERY = `query SimpleToolsSchema($name: String!) {
   __type(name: $name) {
     name kind description
     fields(includeDeprecated: true) {
@@ -114,7 +114,7 @@ async function protectLabels(tools, prepared) {
   for (const id of labelIds) {
     await tools.reserveLinear("read");
     const result = await tools.linearCall(() => tools.linear.call(
-      "query AgentSyncLabel($id: String!) { issueLabel(id: $id) { id name } }", { id },
+      "query SimpleToolsLabel($id: String!) { issueLabel(id: $id) { id name } }", { id },
     ));
     if (!result.issueLabel) throw new ToolError("not_found", "A supplied label does not exist.");
     if (PROTECTED_LABEL.test(result.issueLabel.name)) {

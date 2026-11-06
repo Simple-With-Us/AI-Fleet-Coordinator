@@ -38,7 +38,7 @@ export function buildNamedOperation(name, args) {
   assertPublicInputs(command, variables);
   const fields = args.selection ?? command.selection;
   const operation = entry.write ? 'mutation' : 'query';
-  const document = `${operation} AgentSyncNamed${definitions.length ? `(${definitions.join(', ')})` : ''} { ${command.root}${parameters.length ? `(${parameters.join(', ')})` : ''}${fields ? ` { ${selectedFields(fields)} }` : ''} }`;
+  const document = `${operation} SimpleToolsNamed${definitions.length ? `(${definitions.join(', ')})` : ''} { ${command.root}${parameters.length ? `(${parameters.join(', ')})` : ''}${fields ? ` { ${selectedFields(fields)} }` : ''} }`;
   return { entry, document, variables };
 }
 
