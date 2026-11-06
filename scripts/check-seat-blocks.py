@@ -39,7 +39,6 @@ HOME_FILES = (
     "~/.claude/CLAUDE.md",
     "~/AGENTS.md",
     "~/.codex/AGENTS.md",
-    "~/.cursor/rules/agent-sync-zulip.mdc",
     "~/.gemini/config/AGENTS.md",
     "~/.grok/GROK.md",
     "~/.fx/AGENTS.md",
@@ -146,6 +145,8 @@ def main(argv: list[str] | None = None) -> int:
         for tree in REPO_TREES:
             found += check_path(ROOT / tree)
     if args.home:
+        for path in sorted(Path(os.path.expanduser("~/.cursor/rules")).glob("*.mdc")):
+            found += check_path(path, rules_file=True)
         for raw in HOME_FILES:
             path = Path(os.path.expanduser(raw))
             if path.is_file():

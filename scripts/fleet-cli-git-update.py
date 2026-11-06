@@ -177,7 +177,7 @@ def smoke_settings(
     The running updater's settings are not the right ones:  when a release removes a CLI, the
     installed updater still asks for it, the target checkout no longer ships it, and the smoke
     fails on a file that is meant to be gone.  That deadlock held a host on an old commit for
-    hours (the Oct 22, 2026 cutover from agent-sync to simple-chat).  The target's own settings
+    hours (the Oct 22, 2026 chat CLI cutover).  The target's own settings
     are what must work, so read them from the target;  fall back to the running ones when the
     target has no updater to read.
     """

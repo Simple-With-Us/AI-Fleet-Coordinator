@@ -29,8 +29,8 @@ RELEASE_PATHS = [
     "scripts/deploy-mapped-worker.py",
     "scripts/worker-targets.json",
     "scripts/infisical-fetch.mjs",
-    "scripts/agent-sync-mcp/package.json",
-    "scripts/agent-sync-mcp/package-lock.json",
+    "scripts/simple-tools-mcp/package.json",
+    "scripts/simple-tools-mcp/package-lock.json",
     ".github/workflows/alert-workers-deploy.yml",
     "docs/releases/alert-credentials-qualified.json",
 ]
@@ -450,7 +450,7 @@ def main():
             continue
         subprocess.run(
             [
-                "scripts/agent-sync-mcp/node_modules/.bin/wrangler",
+                "scripts/simple-tools-mcp/node_modules/.bin/wrangler",
                 "deploy",
                 "--config",
                 target["config"],

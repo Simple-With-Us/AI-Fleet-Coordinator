@@ -77,8 +77,8 @@ class Finding:
 
 
 def _load_secretscan() -> Callable[[str], str | None] | None:
-    """`agent_sync.secretscan.scan`, loaded by path so the package's own imports never run.  None if absent."""
-    path = HERE / "agent_sync" / "secretscan.py"
+    """`simple_tools.secretscan.scan`, loaded by path so the package's own imports never run.  None if absent."""
+    path = HERE / "simple_tools" / "secretscan.py"
     try:
         spec = importlib.util.spec_from_file_location("_routine_check_secretscan", str(path))
         if spec is None or spec.loader is None:
@@ -91,7 +91,7 @@ def _load_secretscan() -> Callable[[str], str | None] | None:
 
 
 # Local copy of the F3 prefixes (Linear, Sentry, xAI, Infisical, Cloudflare, Coolify).  Always applied:  once F3
-# lands the same kinds are in agent_sync.secretscan and this list is a harmless duplicate.
+# lands the same kinds are in simple_tools.secretscan and this list is a harmless duplicate.
 _LOCAL_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("Linear API key", re.compile(r"\blin_(api|oauth)_[A-Za-z0-9]{20,}")),
     (
@@ -117,7 +117,7 @@ _LOCAL_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         ),
     ),
 ]
-# Only used when agent_sync.secretscan cannot be loaded (this script copied out of the repo).
+# Only used when simple_tools.secretscan cannot be loaded (this script copied out of the repo).
 _FALLBACK_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("private key block", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
     ("AWS access key", re.compile(r"\b(AKIA|ASIA)[0-9A-Z]{16}\b")),
@@ -227,7 +227,7 @@ def single_space_gaps(text: str) -> list[int]:
 _MENTION = re.compile(r"@_?\*\*")
 _CODE_PATH = re.compile(r"(?:~|\$HOME|\$\{HOME\}|/Users/[^/\s`'\"]+)/Code\b")
 _SLACK = re.compile(
-    r"agent-sync-websocket|agent-sync-push|slack[-_]post|slack[-_]helper|hooks\.slack\.com"
+    r"obsolete-websocket|obsolete-push|slack[-_]post|slack[-_]helper|hooks\.slack\.com"
     r"|slack\.com/api",
     re.IGNORECASE,
 )

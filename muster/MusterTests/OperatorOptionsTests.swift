@@ -60,7 +60,7 @@ final class OperatorOptionsTests: XCTestCase {
     /// Every name the Operator needs names Infisical as its source.
     ///
     /// The eavesdropper's environment is where the values arrive,  not where they live:
-    /// `scripts/agent_sync/service_identity.py` holds `OPERATOR_INFISICAL_PATH =
+    /// `scripts/simple_tools/service_identity.py` holds `OPERATOR_INFISICAL_PATH =
     /// "/zulip_operator"`,  so the panel must not point an operator at a plain env var.
     func test_every_operator_name_names_infisical_as_its_source() {
         for name in OperatorOptions.names {

@@ -34,7 +34,7 @@ final class WakeSettingsStore: ObservableObject {
     /// Where the eavesdropper's state lives.
     private let location: ListenerStateLocation
     /// The eavesdropper's own command line.
-    private let runner: AgentSyncRunning
+    private let runner: SimpleToolsRunning
     /// Where the seat partition is.
     private let partitionURL: URL?
     /// The writer, when the panel may write.  Each read points it at the partition the eavesdropper
@@ -59,7 +59,7 @@ final class WakeSettingsStore: ObservableObject {
 
     init(
         location: ListenerStateLocation = ListenerStateLocation(),
-        runner: AgentSyncRunning = AgentSyncCLI(),
+        runner: SimpleToolsRunning = SimpleToolsCLI(),
         partitionURL: URL? = ListenerPartition.defaultURL(),
         writes: Bool = true,
         reloadPollInterval: TimeInterval = 1,
@@ -320,7 +320,7 @@ final class WakeSettingsStore: ObservableObject {
         let check: ListenerConfigCheck
         do {
             let result = try await runner.run(
-                AgentSyncInvocation.checkConfig(file: candidate.path, partition: writer.partitionURL?.path)
+                SimpleToolsInvocation.checkConfig(file: candidate.path, partition: writer.partitionURL?.path)
             )
             guard let data = result.stdout.data(using: .utf8),
                   let decoded = try? JSONDecoder().decode(ListenerConfigCheck.self, from: data) else {
@@ -354,7 +354,7 @@ final class WakeSettingsStore: ObservableObject {
     func reload() async -> ListenerReloadOutcome {
         let sentAt = Date().timeIntervalSince1970
         do {
-            let result = try await runner.run(AgentSyncInvocation.reload())
+            let result = try await runner.run(SimpleToolsInvocation.reload())
             guard result.exitCode == 0 else { return .notAsked(result.stderrTail) }
         } catch {
             return .notAsked(error.localizedDescription)
@@ -363,7 +363,7 @@ final class WakeSettingsStore: ObservableObject {
             if reloadPollInterval > 0 {
                 try? await Task.sleep(nanoseconds: UInt64(reloadPollInterval * 1_000_000_000))
             }
-            guard let result = try? await runner.run(AgentSyncInvocation.status()),
+            guard let result = try? await runner.run(SimpleToolsInvocation.status()),
                   result.exitCode == 0,
                   let data = result.stdout.data(using: .utf8),
                   let status = try? JSONDecoder().decode(ListenerStatus.self, from: data) else {
@@ -389,7 +389,7 @@ final class WakeSettingsStore: ObservableObject {
             say("Nothing was paused for \(seat).\u{00A0} \(host.readOnlyReason ?? "")", failure: true)
             return
         }
-        guard let invocation = try? AgentSyncInvocation.pause(seat: seat) else {
+        guard let invocation = try? SimpleToolsInvocation.pause(seat: seat) else {
             say("The seat tag is not a plain token, so nothing was paused.", failure: true)
             return
         }
@@ -412,7 +412,7 @@ final class WakeSettingsStore: ObservableObject {
             say("Nothing was resumed for \(seat).\u{00A0} \(host.readOnlyReason ?? "")", failure: true)
             return
         }
-        guard let invocation = try? AgentSyncInvocation.resume(seat: seat) else {
+        guard let invocation = try? SimpleToolsInvocation.resume(seat: seat) else {
             say("The seat tag is not a plain token, so nothing was resumed.", failure: true)
             return
         }
@@ -450,7 +450,7 @@ final class WakeSettingsStore: ObservableObject {
         isBusy = true
         defer { isBusy = false }
         do {
-            let result = try await runner.run(AgentSyncInvocation.testWakeRun(seat: seat, runtime: runtime))
+            let result = try await runner.run(SimpleToolsInvocation.testWakeRun(seat: seat, runtime: runtime))
             if result.exitCode == 0 {
                 say("The test wake ran.\u{00A0} Read its result before you pin it.")
             } else {
@@ -471,7 +471,7 @@ final class WakeSettingsStore: ObservableObject {
         isBusy = true
         defer { isBusy = false }
         do {
-            let result = try await runner.run(AgentSyncInvocation.testWakePin(seat: seat, runtime: runtime))
+            let result = try await runner.run(SimpleToolsInvocation.testWakePin(seat: seat, runtime: runtime))
             if result.exitCode == 0 {
                 say("The binary was pinned.\u{00A0} A failed run never pins.")
             } else {
@@ -484,7 +484,7 @@ final class WakeSettingsStore: ObservableObject {
     }
 
     /// Runs a command line and says what it did.
-    private func run(_ invocation: AgentSyncInvocation, success: String) async {
+    private func run(_ invocation: SimpleToolsInvocation, success: String) async {
         isBusy = true
         defer { isBusy = false }
         do {
