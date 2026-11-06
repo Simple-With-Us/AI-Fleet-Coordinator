@@ -1562,7 +1562,7 @@ class CliTests(RecallBase):
         self.assertEqual(rc, 0)
         out = io.StringIO()
         err = io.StringIO()
-        with mock.patch("sys.stdin", io.StringIO(text)), mock.patch("sys.stdout", out), mock.patch("sys.stderr", err):
+        with mock.patch("sys.stdin", io.StringIO(text + "\n\n")), mock.patch("sys.stdout", out), mock.patch("sys.stderr", err):
             rc = self.cli.main(["contribute", "-", "--category", "lesson", "--seat", "CLAUDE", "--force", "--json"])
         self.assertEqual(rc, 1)
         self.assertEqual(json.loads(out.getvalue())["status"], "duplicate")
@@ -1614,18 +1614,19 @@ class CliTests(RecallBase):
         self.assertIn("excluded from search", body["message"])
         self.assertNotIn("identical text", body["message"])
 
-    def test_deterministic_duplicate_response_validates_external_fields(self):
+    def test_deterministic_duplicate_response_degrades_invalid_external_fields(self):
         text = "pm2 restart needs --update-env before process env changes take effect."
         stored_hash = content_hash(text)
         for existing in (
+            {},
             {"doc_id": 123, "content_hash": stored_hash, "retracted": False},
             {"doc_id": "", "content_hash": stored_hash, "retracted": False},
             {"doc_id": "contrib/CLAUDE/2026-11-05/472fc36e", "content_hash": "not-a-hash", "retracted": False},
             {"doc_id": "contrib/CLAUDE/2026-11-05/472fc36e", "content_hash": stored_hash},
         ):
             with self.subTest(existing=existing):
-                with self.assertRaisesRegex(FleetRagError, "doc_id|content_hash|retracted"):
-                    self.cli.deterministic_duplicate_message(existing, text)
+                message = self.cli.deterministic_duplicate_message(existing, text)
+                self.assertEqual(message, "a matching lesson is already stored; nothing was written")
 
     def test_contribute_without_text_is_a_usage_error(self):
         err = io.StringIO()

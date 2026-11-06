@@ -786,13 +786,17 @@ class RecallToolTests(FakePrograms):
     def test_failure_classifies_read_outages_as_retryable_unavailability(self):
         for err in (
             "recall: HTTP 500 from qdrant",
-            "recall: HTTP 429 from recall.example.test",
             "recall: timeout reaching recall.example.test",
         ):
             with self.subTest(err=err):
                 exc = RT.failure(2, err)
                 self.assertEqual(exc.code, "unavailable")
                 self.assertTrue(exc.retryable)
+
+    def test_failure_classifies_a_rate_limited_read_as_rate_limited(self):
+        exc = RT.failure(2, "recall: HTTP 429 from recall.example.test")
+        self.assertEqual(exc.code, "rate_limited")
+        self.assertTrue(exc.retryable)
 
     def test_an_unconfigured_owner_token_is_an_authorization_failure(self):
         session = self.session(
@@ -877,6 +881,19 @@ class RecallToolTests(FakePrograms):
         )
         error = self.assert_tool_error(
             session.call("recall_search", {"query": "pm2 env"}), "unavailable"
+        )
+        self.assertIs(error["retryable"], True)
+
+    def test_a_rate_limited_read_is_rate_limited_not_an_outage(self):
+        session = self.session(
+            self.env(
+                RECALL_TEST_EXIT="2",
+                RECALL_TEST_ERR="recall: HTTP 429 from recall.example.test",
+                RECALL_TEST_REPLY="{}",
+            )
+        )
+        error = self.assert_tool_error(
+            session.call("recall_search", {"query": "pm2 env"}), "rate_limited"
         )
         self.assertIs(error["retryable"], True)
 

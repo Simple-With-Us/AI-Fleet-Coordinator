@@ -146,14 +146,14 @@ RATE_LIMITED = re.compile(r"\bHTTP 429\b", re.IGNORECASE)
 
 def failure(code: int, err: str, *, write: bool = False) -> RecallUnavailable:
     if code == 2:
-        if write and RATE_LIMITED.search(err):
+        if RATE_LIMITED.search(err):
             return RecallUnavailable(
                 "rate_limited",
-                "fleet recall refused the write because it was rate limited:  %s"
-                % (err or "unknown"),
+                "fleet recall refused the %s because it was rate limited:  %s"
+                % ("write" if write else "request", err or "unknown"),
                 retryable=True,
             )
-        if UNKNOWN_WRITE.search(err) or (not write and RATE_LIMITED.search(err)):
+        if UNKNOWN_WRITE.search(err):
             if not write:
                 return RecallUnavailable(
                     "unavailable",
