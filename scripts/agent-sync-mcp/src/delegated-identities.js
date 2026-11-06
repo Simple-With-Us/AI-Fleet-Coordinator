@@ -414,6 +414,7 @@ export class IdentityRouter {
       const { identity: _ignored, ...inner } = parseArgs(CatalogCall, rawArgs);
       this.callerTools.requireScope(name);
       if (this.callerTools.paused) throw new ToolError("paused", `The ${this.seat} seat is paused.`);
+      await this.callerTools.reserve("read");
       const page = pageOf(this.toolList, inner.cursor, CATALOG_PAGE);
       const result = { tools: page.tools.map((spec) => ({ name: spec.name, description: spec.description ?? "" })), ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}) };
       row = { acting_identity: this.seat, tool: name, outcome: "ok", error_code: "ok", error_message: "" };

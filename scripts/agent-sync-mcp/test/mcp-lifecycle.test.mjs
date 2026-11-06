@@ -191,6 +191,7 @@ test("tools/list rejects a malformed or out-of-range cursor exactly like the SDK
 
 test("catalog pages every tool name and description, terminating without a nextCursor", async () => {
   const tools = new HostedTools({ seat: "CODEX", scopes: ["zulip:read"], config, gate: {}, clientId: "t", grantRef: "r" });
+  tools.reserve = async () => {};
   const router = new IdentityRouter({ callerTools: tools });
   const seen = [];
   let cursor;
@@ -214,6 +215,7 @@ test("catalog pages every tool name and description, terminating without a nextC
 
 test("catalog refuses a bad cursor as a tool error, never a protocol error", async () => {
   const tools = new HostedTools({ seat: "CODEX", scopes: ["zulip:read"], config, gate: {}, clientId: "t", grantRef: "r" });
+  tools.reserve = async () => {};
   const router = new IdentityRouter({ callerTools: tools });
   const result = await router.call("catalog", { identity: "CODEX", cursor: "bogus" });
   assert.ok(result.isError);
@@ -222,6 +224,7 @@ test("catalog refuses a bad cursor as a tool error, never a protocol error", asy
 
 test("catalog refuses a cursor tagged for a different tool list", async () => {
   const tools = new HostedTools({ seat: "CODEX", scopes: ["zulip:read"], config, gate: {}, clientId: "t", grantRef: "r" });
+  tools.reserve = async () => {};
   const router = new IdentityRouter({ callerTools: tools });
   const first = await router.call("catalog", { identity: "CODEX" });
   const next = first.structuredContent.nextCursor;
@@ -240,9 +243,12 @@ test("catalog audits exactly one row per execution, success and failure", async 
   const rows = [];
   const tools = new HostedTools({ seat: "CODEX", scopes: ["zulip:read"], config, gate: {}, clientId: "t", grantRef: "r" });
   tools.auditRow = async (gate, row) => { rows.push(row); };
+  const reserves = [];
+  tools.reserve = async (kind) => { reserves.push(kind); };
   const router = new IdentityRouter({ callerTools: tools });
   const ok = await router.call("catalog", { identity: "CODEX" });
   assert.ok(!ok.isError);
+  assert.deepEqual(reserves, ["read"], "a successful catalog call consumes read budget like identities()");
   assert.equal(rows.length, 1);
   assert.equal(rows[0].outcome, "ok");
   assert.equal(rows[0].tool, "catalog");
