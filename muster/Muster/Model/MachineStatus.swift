@@ -361,7 +361,7 @@ enum MachineMenuCopy {
         case .missing: return "missing"
         case .unknown: return "could not be read"
         case .drift: return "drifted"
-        case .passed: return "passing"
+        case .passed: return "every check proven"
         case .unproven: return "not proven"
         case .unsupported: return "not supported"
         case .covered: return "does not apply"

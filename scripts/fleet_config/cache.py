@@ -126,6 +126,7 @@ def _expected_from_dict(raw: Any) -> ExpectedState:
         names=tuple(data.get("names") or ()),
         mode=data.get("mode"),
         timeout_seconds=data.get("timeoutSeconds"),
+        guards=tuple(str(item) for item in data.get("guards") or ()),
     )
 
 

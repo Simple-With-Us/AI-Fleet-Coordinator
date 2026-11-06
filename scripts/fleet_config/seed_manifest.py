@@ -74,9 +74,9 @@ PACK_SKILLS_DIR = "docs/fleet-skills"
 
 # The hook ids the check derives from an installed config.  A hook id is the entry's
 # own name, else its group name, else the script its command runs, and a trailing
-# "-hook" is ignored when two ids are compared.
-LANE_GUARD_HOOK = "lane-guard-hook"  # the five config-file platforms:  from the command
-FLEET_GUARD_HOOK = "fleet-guard-hook"  # the clutch block and the minimax bundle
+# "-hook" is ignored when two ids are compared.  Every id that is a script name comes
+# from the installer's own constants (HOOK_NAME, FLEET_HOOK_NAME and
+# MINIMAX_HOOK_NAME), so the seed cannot name a hook the installer never writes.
 NAMED_GROUP_HOOK = "lane-guard"  # the antigravity group, and the muse plugin hook
 
 # The seat to platform mapping.  Nothing in the registry maps a seat tag to a
@@ -520,21 +520,68 @@ def _hooks_rule(
     description: str,
     proof_level: str = "L1",
 ) -> dict[str, object]:
-    """The rule that pins the guard hook of a platform."""
+    """The rule that pins the shell guard hook of a platform.
+
+    It asks for shell guarding and nothing else:  the hook is registered with a matcher
+    that delivers the shell tools, and a shell sentinel sent to it is denied.  PASS here
+    means exactly that.  File guarding has its own rule (``_file_guard_rule``), so a
+    guard that only watches the shell reads PASS for what it does and partly proven for
+    what the fleet also asks of it.
+    """
     return _rule(
         "%s-hooks-lane-guard" % seat.lower(),
         "hooks",
         [platform],
         {"type": "hook_registered", "target": target, "detail": event},
         {
-            "description": "The fleet guard hook is registered for %s in %s" % (event, target),
+            "description": "The fleet guard hook is registered for %s in %s and denies "
+            "a shell command that writes into a forbidden tree" % (event, target),
             "present": True,
             "names": list(names),
             "timeoutSeconds": timeout_seconds,
+            "guards": ["shell"],
         },
         seat,
         description,
         proof_level=proof_level,
+    )
+
+
+def _file_guard_rule(
+    seat: str,
+    platform: str,
+    target: str,
+    event: str,
+    names: Sequence[str],
+    timeout_seconds: int,
+) -> dict[str, object]:
+    """The rule that pins the file guard of a platform.
+
+    The fleet also asks that a file write into a forbidden tree is policed, and most
+    installs register their hook for the shell tools alone.  This rule is the one that
+    says so:  it passes only when the harness delivers the file tools to the hook and a
+    file sentinel sent to it is denied, and it reads UNPROVEN, naming what is missing,
+    while the proof is not there.  It never fails the run on its own, because a hook
+    that only watches the shell is not broken.
+    """
+    return _rule(
+        "%s-hooks-file-guard" % seat.lower(),
+        "hooks",
+        [platform],
+        {"type": "hook_registered", "target": target, "detail": event},
+        {
+            "description": "The fleet guard hook is registered for %s in %s with a matcher "
+            "that delivers the file tools to it, and it denies a file write into a "
+            "forbidden tree" % (event, target),
+            "present": True,
+            "names": list(names),
+            "timeoutSeconds": timeout_seconds,
+            "guards": ["file"],
+        },
+        seat,
+        "Shell guarding has its own rule.  This one asks the same hook to police file "
+        "writes too, which needs a matcher that delivers the file tools to it.",
+        proof_level="L1",
     )
 
 
@@ -681,10 +728,15 @@ def _hook_target(platform: str) -> tuple[str, str, int, str]:
         timeout = install_tools.HOOK_TIMEOUT_S
         # Antigravity keeps one named group per hook, so its id is the group name;
         # the others name the hook after the script their command runs.
-        hook_id = NAMED_GROUP_HOOK if platform == "antigravity" else LANE_GUARD_HOOK
+        hook_id = NAMED_GROUP_HOOK if platform == "antigravity" else install_tools.HOOK_NAME
         return "~/" + row.config_rel, row.event, timeout, hook_id
     if platform == "kimi":
-        return "~/" + row.config_rel, row.event, install_tools.HOOK_TIMEOUT_S, FLEET_GUARD_HOOK
+        return (
+            "~/" + row.config_rel,
+            row.event,
+            install_tools.HOOK_TIMEOUT_S,
+            install_tools.FLEET_HOOK_NAME,
+        )
     if platform == "clutch":
         # The Clutch cordis patch is YAML, which the standard library cannot read.
         # The hook loads a JSON file in the stable dir instead, and that JSON is what
@@ -693,16 +745,17 @@ def _hook_target(platform: str) -> tuple[str, str, int, str]:
             "~/apps/lane-tools/" + install_tools.CLUTCH_HOOKS_FILE,
             "PreToolUse",
             install_tools.HOOK_TIMEOUT_S,
-            FLEET_GUARD_HOOK,
+            install_tools.FLEET_HOOK_NAME,
         )
     if platform == "minimax":
         # MiniMax Code reads no settings file for hooks:  it loads them from a local
-        # plugin bundle, whose hooks.json holds the fleet hook.
+        # plugin bundle, whose hooks.json holds its own hook shim.  The id is the one
+        # the installer writes there, so a correct install is not a hook "not registered".
         return (
             "~/" + install_tools.MINIMAX_PLUGIN_REL + "/" + install_tools.MINIMAX_HOOKS_FILE,
             "PreToolUse",
             install_tools.MINIMAX_HOOK_TIMEOUT_S,
-            FLEET_GUARD_HOOK,
+            install_tools.MINIMAX_HOOK_NAME,
         )
     raise ValueError("the platform %r has no hook config file" % platform)
 
@@ -769,8 +822,10 @@ def _no_hooks_rule(seat: str, platform: str, target: str, description: str) -> d
     """The rule that pins the absence of a hook, for a harness with no hook mechanism.
 
     ``expected.present`` false inverts the check:  the target must hold no hook for
-    the event.  The rule passes while the harness has no hook surface, and reports
-    drift the moment one is registered there.
+    the event.  While the harness has no hook surface the rule reads UNSUPPORTED with
+    the reason code ``not-applicable``:  there is no guard to prove, so it is never a
+    PASS, and the verdict leaves it out.  It reports drift the moment a hook is
+    registered there.
     """
     return _rule(
         "%s-hooks-none" % seat.lower(),
@@ -829,6 +884,7 @@ def _harness_seat(
                 "and the timeout is the one the installer writes.",
             )
         )
+        rules.append(_file_guard_rule(seat, platform, target, event, [hook_id], timeout))
     else:
         rules.append(_no_hooks_rule(seat, platform, hook_absent_target, hook_absent_description))
     if skip_mcp_reason is None:

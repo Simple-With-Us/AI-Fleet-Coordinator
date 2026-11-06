@@ -332,6 +332,29 @@ class AggregatorTests(unittest.TestCase):
         self.assertIs(result.reason_code, ReasonCode.PROOF_NOT_RUN)
         self.assertIsNot(report.summary.overall_verdict, OverallVerdict.PASS)
 
+    def test_a_proof_that_cannot_exist_is_unsupported_and_not_unproven(self):
+        """UNPROVEN says a proof is on its way.  A platform with no adapter has none."""
+        rule = make_rule(
+            "zc-hooks",
+            ConfigKind.HOOKS,
+            check_type=CheckType.HOOK_REGISTERED,
+            proof=ProofLevel.L1,
+        )
+        manifest = make_manifest([rule])
+        registry = registry_with({CheckType.HOOK_REGISTERED: result_check(CheckState.PASS)})
+        report = aggregator.run_status(
+            manifest,
+            registry=registry,
+            ctx=context(),
+            proof_runner=lambda rule, platform, ctx, prove: aggregator.ProofOutcome(
+                None, "no L1 adapter for the platform", ReasonCode.UNSUPPORTED
+            ),
+        )
+        result = report.results[0]
+        self.assertIs(result.state, CheckState.UNSUPPORTED)
+        self.assertIs(result.reason_code, ReasonCode.UNSUPPORTED)
+        self.assertIsNot(report.summary.overall_verdict, OverallVerdict.PASS)
+
     def test_a_proof_that_could_not_complete_is_a_failing_unknown(self):
         # The design's step 4:  a check that raised, timed out or returned unparseable
         # output is UNKNOWN and it counts against the run.  A proof that cannot start is

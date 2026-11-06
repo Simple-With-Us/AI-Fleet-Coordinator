@@ -198,6 +198,12 @@ struct FleetOverviewView: View {
             }
         }
         .foregroundStyle(verdictColor)
+        // The footer's verdict is the grid's PASS,  and the tooltip says what that is.
+        .help(
+            store.phase == .loaded
+                ? "\(PassMeaning.verdict(store.summary?.overallVerdict))\u{00A0} \(PassMeaning.everywhere)"
+                : ""
+        )
     }
 
     private var verdictText: String {
