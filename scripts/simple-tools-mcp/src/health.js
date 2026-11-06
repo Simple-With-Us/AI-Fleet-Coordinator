@@ -8,8 +8,8 @@
 import { safeEqual } from "./policy.js";
 import { wakeSignature } from "./wake.js";
 
-export const HEALTH_CONTRACT = "agent-sync-health/1";
-export const HEALTH_SIGNATURE_HEADER = "x-agent-sync-health-signature";
+export const HEALTH_CONTRACT = "simple-tools-health/1";
+export const HEALTH_SIGNATURE_HEADER = "x-simple-tools-health-signature";
 export const HEALTH_MAX_BODY = 512;
 export const HEALTH_MAX_AGE_S = 5 * 60;
 export const HEALTH_MAX_SKEW_S = 60;

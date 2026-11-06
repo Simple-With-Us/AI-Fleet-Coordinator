@@ -22,7 +22,7 @@
 // see the validated list, never the raw JSON.  The name derivation below must
 // stay identical to delegatedNames() there;  a test guards the drift.
 import { z } from "zod";
-import GB_TABLE from "../../agent_sync/mcp/gb-identities.json" with { type: "json" };
+import GB_TABLE from "../../simple_tools/mcp/gb-identities.json" with { type: "json" };
 
 // The table's shape is checked before any name is derived from it (kody
 // 4366922209, 4366922334):  a missing `enabled` list or a malformed persona

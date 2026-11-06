@@ -8,7 +8,7 @@
 // is exactly what the SeatGate stores - the Worker compares hashes and answers.
 //
 // Auth on the route itself reuses the wake scheme (src/wake.js):  the
-// X-Agent-Sync-Signature header is the lowercase hex HMAC-SHA256 of the raw
+// X-Simple-Tools-Signature header is the lowercase hex HMAC-SHA256 of the raw
 // body bytes keyed with GR_BEARER_VERIFY_KEY, checked before any JSON parse.
 // The key itself lives ONLY in Fleet-OPS /tools (owner direction 2026-10-23:
 // no persistent Cloudflare copy) and is resolved at request time through

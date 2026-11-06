@@ -1,4 +1,4 @@
-// Hosted ST-MCP Worker (docs/protocols/agent-sync-mcp.md section 3):
+// Hosted ST-MCP Worker (docs/protocols/simple-tools-mcp.md section 3):
 // OAuth 2.1 with CIMD for ChatGPT and Grok, hand-registered public PKCE
 // clients bound to one seat each (manual forms, the Instinct app's loopback
 // callback), arming, a consent page behind Cloudflare
@@ -207,7 +207,7 @@ function rememberBadBearer(hash) {
 }
 
 const MAX_TOKEN_BODY = 16 * 1024;
-const CSRF_COOKIE = "__Host-agent-sync-csrf";
+const CSRF_COOKIE = "__Host-simple-tools-csrf";
 // A manual client for a seat with no redirect URI yet gets this one, which no
 // seat lists, so the app's first attempt is refused and its real callback is
 // logged on /admin.
@@ -371,7 +371,7 @@ async function serveMcp(request, env, ctx) {
     const refused = invalidToken("This grant is no longer valid.");
     try {
       await seatGate.audit({ event: "mcp_refused", reason: result.code, status: 401 });
-      refused.headers.set("X-Agent-Sync-Diagnostic", "recorded");
+      refused.headers.set("X-Simple-Tools-Diagnostic", "recorded");
     } catch {
       console.log(JSON.stringify({ event: "diagnostic_unavailable", kind: "mcp_refused", seat }));
     }
@@ -1689,7 +1689,7 @@ async function serveRequest(request, env, ctx) {
     const writeRow = !(route === "mcp" && response.status === 401 && hasAuthorization) || await noteAuthFailure(request, env, credential);
     // An unauthenticated MCP discovery 401 is normal OAuth negotiation.
     // Count only failed requests that actually supplied authorization.
-    if (writeRow && route === "mcp" && response.status >= 400 && hasAuthorization && response.headers.get("X-Agent-Sync-Diagnostic") !== "recorded") {
+    if (writeRow && route === "mcp" && response.status >= 400 && hasAuthorization && response.headers.get("X-Simple-Tools-Diagnostic") !== "recorded") {
       let knownToolFailure = false;
       if (response.status === 400) {
         // Unknown tool calls already have a fixed, safe per-seat error row.
@@ -1698,9 +1698,9 @@ async function serveRequest(request, env, ctx) {
       }
       if (!knownToolFailure) await recordDiagnostic(env, { kind: "mcp", reason: `mcp_http_${response.status}`, status: response.status });
     }
-    if (response.headers.has("X-Agent-Sync-Diagnostic")) {
+    if (response.headers.has("X-Simple-Tools-Diagnostic")) {
       const headers = new Headers(response.headers);
-      headers.delete("X-Agent-Sync-Diagnostic");
+      headers.delete("X-Simple-Tools-Diagnostic");
       return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
     }
     return response;

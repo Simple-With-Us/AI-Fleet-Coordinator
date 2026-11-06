@@ -1,4 +1,4 @@
-// The seat-name aliases the stdio server resolves (scripts/agent_sync/identity.py, canonical_seat), for the Worker,
+// The seat-name aliases the stdio server resolves (scripts/simple_tools/identity.py, canonical_seat), for the Worker,
 // which cannot import that module or read fleet-apps.json at run time.  Two parts, the same rule as stdio:
 //   - every spelling of GROK followed by BUILD is GROK (GROK_ALIAS_PATTERN, the GROK row's aliasPattern in
 //     fleet-apps.json);

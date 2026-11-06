@@ -1,6 +1,6 @@
 // The `guide` tool on the hosted server (AFC-331, docs/protocols/per-call-identity.md section 7).  The text is
 // docs/protocols/simple-tools-guide.md, bundled as src/guide-text.js (scripts/export-guide.mjs writes it;
-// test/guide.test.mjs fails when it is stale).  Sections and lookup follow scripts/agent_sync/mcp/guide.py.
+// test/guide.test.mjs fails when it is stale).  Sections and lookup follow scripts/simple_tools/mcp/guide.py.
 
 import { z } from "zod";
 import { ToolError, okResult } from "./contract.js";

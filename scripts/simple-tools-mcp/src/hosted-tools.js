@@ -8,7 +8,7 @@ import { LINEAR_MCP_BY_NAME } from "./linear-mcp-specs.js";
 import { callLinearMcp } from "./linear-mcp.js";
 import { apiSchema, apiQuery, apiMutation } from "./linear-api.js";
 // The seven chat tools for one hosted seat (spec sections 1, 3.6 to 3.9).
-// A port of scripts/agent_sync/mcp/tools.py over the Zulip REST API, with the
+// A port of scripts/simple_tools/mcp/tools.py over the Zulip REST API, with the
 // hosted rules on top:  the seat only from the grant, the channel rule (any
 // public channel the seat's bot is subscribed to, src/channels.js) by stream
 // id on every tool, the member-only role check, spacing,
@@ -719,7 +719,7 @@ export class HostedTools {
   /** Spec 3.6:  users/me on first use and every 10 minutes;  member bots of this seat only. */
   async _ensureSeatVerified() {
     if (!this.zulip) {
-      throw new ToolError("not_authorized", `No Zulip key is installed for ${this.seat}.  The owner installs it (scripts/agent-sync-mcp/install_seat_key.py).`);
+      throw new ToolError("not_authorized", `No Zulip key is installed for ${this.seat}.  The owner installs it (scripts/simple-tools-mcp/install_seat_key.py).`);
     }
     const cached = await this.gate.roleGet();
     // A cached verdict only stands when it was checked against the CURRENT owner
@@ -1354,7 +1354,7 @@ export class HostedTools {
     );
   }
 
-  // The DM rule (owner decision, Oct 22 2026, hard cutover).  Mirrors scripts/agent_sync/dm_policy.py
+  // The DM rule (owner decision, Oct 22 2026, hard cutover).  Mirrors scripts/simple_tools/dm_policy.py
   // so both transports refuse the same calls with the same guidance.  A seat may not open a new
   // direct message;  a reply inside a conversation Operator already opened is allowed, because that
   // conversation is Operator's and the seat is answering rather than opening.  Operator itself may
@@ -1438,7 +1438,7 @@ export class HostedTools {
    */
   async fleetlinkTool(name, args, audit) {
     if (!this.fleetlink) {
-      throw new ToolError("not_configured", `FleetLink is not configured on this server.  The owner sets FLEETLINK_SEAT_TOKENS or ${FLEETLINK_SECRET} (scripts/agent-sync-mcp/DEPLOY.md, "FleetLink").  Every other tool still works.`);
+      throw new ToolError("not_configured", `FleetLink is not configured on this server.  The owner sets FLEETLINK_SEAT_TOKENS or ${FLEETLINK_SECRET} (scripts/simple-tools-mcp/DEPLOY.md, "FleetLink").  Every other tool still works.`);
     }
     const write = FLEETLINK_WRITE_TOOLS.has(name);
     for (const field of FLEETLINK_SCANNED_FIELDS) {
@@ -1467,7 +1467,7 @@ export class HostedTools {
     if (this.recall) return this.recall;
     throw new ToolError(
       "not_configured",
-      `Fleet recall is not configured on this server.  The owner sets ${Object.values(RECALL_SECRETS).join(", ")} (scripts/agent-sync-mcp/DEPLOY.md).  The Zulip tools still work.`,
+      `Fleet recall is not configured on this server.  The owner sets ${Object.values(RECALL_SECRETS).join(", ")} (scripts/simple-tools-mcp/DEPLOY.md).  The Zulip tools still work.`,
     );
   }
 
@@ -1477,7 +1477,7 @@ export class HostedTools {
     if (this.gr) return this.gr;
     throw new ToolError(
       "not_configured",
-      `GR-MCP is not configured on this server.  The owner sets GR_UPSTREAM_URL and ${Object.values(GR_SECRETS).join(", ")} (scripts/agent-sync-mcp/DEPLOY.md).  The other tools still work.`,
+      `GR-MCP is not configured on this server.  The owner sets GR_UPSTREAM_URL and ${Object.values(GR_SECRETS).join(", ")} (scripts/simple-tools-mcp/DEPLOY.md).  The other tools still work.`,
     );
   }
 
@@ -1853,18 +1853,18 @@ export class HostedTools {
    */
   requireLinear() {
     if (!this.delegatedLinear && !LINEAR_SEATS.includes(this.seat)) {
-      throw new ToolError("not_configured", `Linear tools are not enabled for ${this.seat}.  The owner adds the seat to LINEAR_SEATS at deploy (scripts/agent-sync-mcp/DEPLOY.md).  The Zulip tools still work.`);
+      throw new ToolError("not_configured", `Linear tools are not enabled for ${this.seat}.  The owner adds the seat to LINEAR_SEATS at deploy (scripts/simple-tools-mcp/DEPLOY.md).  The Zulip tools still work.`);
     }
     if (this.linear) return this.linear;
     const names = this.linearCredentialNames ?? LINEAR_SECRETS[this.seat];
-    throw new ToolError("not_configured", `No Linear credentials are installed for ${this.seat}.  The owner sets ${names?.clientId ?? "the seat's client id"} and ${names?.clientSecret ?? "its secret"} as Worker secrets (scripts/agent-sync-mcp/DEPLOY.md).  The Zulip tools still work.`);
+    throw new ToolError("not_configured", `No Linear credentials are installed for ${this.seat}.  The owner sets ${names?.clientId ?? "the seat's client id"} and ${names?.clientSecret ?? "its secret"} as Worker secrets (scripts/simple-tools-mcp/DEPLOY.md).  The Zulip tools still work.`);
   }
 
   /** Writes stay off until the owner turns LINEAR_TOOLS_WRITES on. */
   requireLinearWrites() {
     const client = this.requireLinear();
     if (!this.linearWrites) {
-      throw new ToolError("writes_disabled", `Linear writes are off on this server.  Jay turns them on with LINEAR_TOOLS_WRITES=1 at deploy (scripts/agent-sync-mcp/DEPLOY.md);  the read tools work now.`);
+      throw new ToolError("writes_disabled", `Linear writes are off on this server.  Jay turns them on with LINEAR_TOOLS_WRITES=1 at deploy (scripts/simple-tools-mcp/DEPLOY.md);  the read tools work now.`);
     }
     return client;
   }
