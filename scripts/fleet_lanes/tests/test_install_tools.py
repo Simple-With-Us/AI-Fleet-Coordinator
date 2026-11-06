@@ -6466,6 +6466,9 @@ class MinimaxBundleTests(World):
         self.assertIsNotNone(problem)
         self.assertIn("not executable", problem)
 
+    @unittest.skipIf(
+        os.geteuid() == 0, "root passes every search and owner check, so the mode bits cannot deny it"
+    )
     def test_the_mode_bit_check_answers_for_the_target_user_not_the_caller(self) -> None:
         # Root's os.access says yes to almost anything, so a check for another user reads the mode bits.
         me = os.getuid()
