@@ -269,7 +269,7 @@ struct ControlsView: View {
                             KnobRowView(
                                 row: row,
                                 writesUnavailable: registry.writesUnavailable,
-                                canEdit: !controller.isPresenting,
+                                canEdit: !controller.refusesNewPlan,
                                 onEdit: { editing = row }
                             )
                             Divider()
