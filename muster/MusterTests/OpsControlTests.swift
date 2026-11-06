@@ -733,6 +733,15 @@ final class OpsAllowlistAndAuditTests: XCTestCase {
             #""mac":{"agents":[{"label":"com.jay.x","actions":[]}]}"#,
             #""mac":{"pm2Apps":[{"actions":["start"]}]}"#,
             #""mac":{"pm2Apps":[{"name":"shellular","actions":["fly"]}]}"#,
+            // Sections that are not objects, and booleans that are not booleans
+            #""mac":"none""#,
+            #""server":[1]"#,
+            #""server":{"coolify":"yes"}"#,
+            #""server":{"coolify":{"redeploy":"true"}}"#,
+            #""server":{"coolify":{"redeploy":1}}"#,
+            #""server":{"coolify":{"redeploy":null}}"#,
+            #""server":{"resourcePolicy":"true"}"#,
+            #""server":{"resourcePolicy":null}"#,
         ]
         for section in sections {
             XCTAssertNil(OpsAllowlist.parse(Data((head + section + "}").utf8)), section)
@@ -740,6 +749,11 @@ final class OpsAllowlistAndAuditTests: XCTestCase {
         let fine = head + #""server":{"updates":["# + goodUpdate + #"]}}"#
         let list = try XCTUnwrap(OpsAllowlist.parse(Data(fine.utf8)))
         XCTAssertEqual(list.updates, [OpsAllowlist.Update(name: "fleet-cli", unit: "fleet-cli-git-update.service", scope: "user")])
+        // An empty or null value is an empty section, as the server's `or` defaults read it.
+        let empty = head + #""mac":null,"server":{"coolify":{},"resourcePolicy":false,"units":[]}}"#
+        let none = try XCTUnwrap(OpsAllowlist.parse(Data(empty.utf8)))
+        XCTAssertFalse(none.coolifyRedeploy)
+        XCTAssertTrue(none.serverUnits.isEmpty)
     }
 
     func test_an_allowlist_of_another_version_or_shape_is_not_read() throws {

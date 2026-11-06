@@ -445,11 +445,15 @@ struct ServerStatusPanel: View {
     /// The verbs a controllable unit gets:  the ones the report lists,  because the collector
     /// asked the helper on the server.  A report that lists none gets the ones this Mac's
     /// allowlist names for it,  or
-    /// all three when this checkout has no entry for it.  The server checks its own
+    /// all three when the allowlist was read and has no entry for it,  and none when the
+    /// allowlist is missing or refused.  The server checks its own
     /// allowlist again either way.
     private func verbs(for service: ServerService) -> [OpsVerb] {
         if let listed = service.listedVerbs { return listed }
-        let named = allowlist?.verbs(forServerUnit: service.unit) ?? []
+        // An allowlist that is missing or refused gives no buttons:  one typo refuses the
+        // whole file on the server too,  so buttons drawn without it would only ever fail.
+        guard let allowlist else { return [] }
+        let named = allowlist.verbs(forServerUnit: service.unit)
         return named.isEmpty ? OpsVerb.allCases : named
     }
 

@@ -1453,7 +1453,10 @@ struct OpsAllowlist: Equatable {
     /// LaunchAgent without a string label, a pm2 application without a string name, a unit
     /// without a string name or with a scope other than `user` or `system`, an update
     /// without a string name, a string unit ending in `.service` and a scope of those two,
-    /// and actions that are empty, not a list, or not `start`, `stop` and `restart`.  The
+    /// actions that are empty, not a list, or not `start`, `stop` and `restart`, a `mac`,
+    /// `server` or `server.coolify` given as something other than an object, and a
+    /// `server.coolify.redeploy` or `server.resourcePolicy` given as something other than a
+    /// boolean.  The
     /// server's name patterns and its refusal of a name used twice are not repeated here,
     /// and the server still checks every run against its own copy.
     static func parse(_ data: Data) -> OpsAllowlist? {
@@ -1462,13 +1465,22 @@ struct OpsAllowlist: Equatable {
             (object["schemaVersion"] as? NSNumber)?.intValue == 1
         else { return nil }
         var list = OpsAllowlist()
-        let mac = object["mac"] as? [String: Any]
-        let server = object["server"] as? [String: Any]
+        // The server reads an absent or empty value as an empty section (`or {}`), and
+        // refuses any other value that is not an object.
         guard
-            let agents = rows(mac?["agents"]),
-            let pm2 = rows(mac?["pm2Apps"]),
-            let units = rows(server?["units"]),
-            let updates = rows(server?["updates"])
+            let mac = section(object["mac"]),
+            let server = section(object["server"]),
+            let coolify = section(server["coolify"])
+        else { return nil }
+        // `redeploy` and `resourcePolicy`, when present, must be JSON booleans:  the server
+        // refuses a string such as "true", a number and a null alike.
+        if let redeploy = coolify["redeploy"], !isJSONBool(redeploy) { return nil }
+        if let policy = server["resourcePolicy"], !isJSONBool(policy) { return nil }
+        guard
+            let agents = rows(mac["agents"]),
+            let pm2 = rows(mac["pm2Apps"]),
+            let units = rows(server["units"]),
+            let updates = rows(server["updates"])
         else { return nil }
         for item in agents {
             guard let label = item["label"] as? String, let actions = verbWords(item) else { return nil }
@@ -1494,16 +1506,40 @@ struct OpsAllowlist: Equatable {
             else { return nil }
             list.updates.append(Update(name: name, unit: unit, scope: scope))
         }
-        let coolify = server?["coolify"] as? [String: Any]
-        list.coolifyRedeploy = (coolify?["redeploy"] as? Bool) == true
+        list.coolifyRedeploy = (coolify["redeploy"] as? Bool) == true
         return list
     }
 
-    /// A section's entries:  none when the key is absent or null, nil when it is there and
-    /// is not a list of objects.
+    /// A section's entries:  none when the value is absent or empty, as the server's
+    /// `or []` reads it, and nil when it is anything else that is not a list of objects.
     private static func rows(_ value: Any?) -> [[String: Any]]? {
-        guard let value, !(value is NSNull) else { return [] }
+        guard isPresent(value) else { return [] }
         return value as? [[String: Any]]
+    }
+
+    /// An object section:  empty when the value is absent or empty, as the server's `or {}`
+    /// reads it, and nil when it is anything else that is not an object.
+    private static func section(_ value: Any?) -> [String: Any]? {
+        guard isPresent(value) else { return [:] }
+        return value as? [String: Any]
+    }
+
+    /// Whether a JSON value counts as given, by Python's truth rule, which the server's
+    /// `or` defaults use:  null, false, zero and an empty string, list or object do not.
+    private static func isPresent(_ value: Any?) -> Bool {
+        guard let value, !(value is NSNull) else { return false }
+        if let number = value as? NSNumber { return number.doubleValue != 0 }
+        if let text = value as? String { return !text.isEmpty }
+        if let list = value as? [Any] { return !list.isEmpty }
+        if let object = value as? [String: Any] { return !object.isEmpty }
+        return true
+    }
+
+    /// Whether a JSON value is `true` or `false` and not a number:  Foundation hands both
+    /// back as `NSNumber`, so `as? Bool` alone would take 1 and 0 as well.
+    private static func isJSONBool(_ value: Any) -> Bool {
+        guard let number = value as? NSNumber else { return false }
+        return CFGetTypeID(number) == CFBooleanGetTypeID()
     }
 
     /// An entry's verbs as written, or nil when they are not a non-empty list of `start`,
