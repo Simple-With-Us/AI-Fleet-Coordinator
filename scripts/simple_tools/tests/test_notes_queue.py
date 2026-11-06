@@ -6,7 +6,7 @@ runs the queue behind a real ListenerReadApi on an ephemeral port.  Seats are ch
 fleet-apps.json (identity.seat_registry_path with no FLEET_APPS_JSON override).  Every key is generated per run, so the
 source holds no key-looking literal.
 
-Run:  cd scripts && python3 -m unittest agent_sync.tests.test_notes_queue
+Run:  cd scripts && python3 -m unittest simple_tools.tests.test_notes_queue
 """
 
 from __future__ import annotations
@@ -25,11 +25,11 @@ from types import SimpleNamespace
 from typing import Any
 from unittest import mock
 
-from agent_sync import daemon as D
-from agent_sync import listener_api as API
-from agent_sync import notes as N
-from agent_sync import notes_queue as NQ
-from agent_sync import notes_wire as W
+from simple_tools import daemon as D
+from simple_tools import listener_api as API
+from simple_tools import notes as N
+from simple_tools import notes_queue as NQ
+from simple_tools import notes_wire as W
 
 SID = "thread-id-0001"
 WORKER_SEATS = ("CLAUDE", "JET", "CURSOR")

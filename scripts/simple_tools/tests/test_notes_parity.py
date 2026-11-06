@@ -1,9 +1,9 @@
 """One contract for Apple Notes on three surfaces (AFC-486, docs/protocols/operator-notes.md, "One Tool Set, Three
-Surfaces"):  scripts/agent_sync/mcp/notes-tools.json.  This fails when `simple-notes`, the stdio server or the hosted
+Surfaces"):  scripts/simple_tools/mcp/notes-tools.json.  This fails when `simple-notes`, the stdio server or the hosted
 Worker drifts from it:  every tool has a verb, every verb but `runner` is a tool, every tool argument is an option of
 its verb, the stdio server serves exactly these specs, and the Worker imports the same file.
 
-Run:  cd scripts && python3 -m unittest agent_sync.tests.test_notes_parity
+Run:  cd scripts && python3 -m unittest simple_tools.tests.test_notes_parity
 """
 
 from __future__ import annotations
@@ -14,13 +14,13 @@ import re
 import unittest
 from pathlib import Path
 
-from agent_sync import cli
-from agent_sync import notes as N
-from agent_sync.mcp import tools as T
+from simple_tools import cli
+from simple_tools import notes as N
+from simple_tools.mcp import tools as T
 
 SCRIPTS = Path(__file__).resolve().parents[2]
-NOTES_JSON = SCRIPTS / "agent_sync" / "mcp" / "notes-tools.json"
-WORKER_NOTES_JS = SCRIPTS / "agent-sync-mcp" / "src" / "notes.js"
+NOTES_JSON = SCRIPTS / "simple_tools" / "mcp" / "notes-tools.json"
+WORKER_NOTES_JS = SCRIPTS / "simple-tools-mcp" / "src" / "notes.js"
 CLI_ONLY_VERBS = {"runner"}  # the Mac runner:  the LaunchAgent runs it, no tool does
 # The options of the common parent every verb carries (cli._common_parent), and the CLI's own conveniences.
 COMMON_DESTS = {"help", "as_seat", "default_seat", "rc", "session", "json"}
@@ -146,7 +146,7 @@ class ParityTests(unittest.TestCase):
                 self.assertEqual(tool["inputSchema"]["properties"]["wait_seconds"]["maximum"], 300)
         # The stdio server answers one call at a time:  a short default, and wait_seconds may raise it to the most.
         self.assertEqual((T.Tools.NOTES_WAIT_DEFAULT, T.Tools.NOTES_WAIT_MAX), (25, 90))
-        from agent_sync import notes_cli
+        from simple_tools import notes_cli
 
         self.assertEqual(notes_cli.CLI_WAIT_DEFAULT, 300)
 
@@ -166,10 +166,10 @@ class ParityTests(unittest.TestCase):
         source = WORKER_NOTES_JS.read_text(encoding="utf-8")
         self.assertRegex(
             source,
-            re.compile(r'^import\s+\w+\s+from\s+"\.\./\.\./agent_sync/mcp/notes-tools\.json"\s+with\s+\{\s*type:\s*"json"\s*\};', re.M),
+            re.compile(r'^import\s+\w+\s+from\s+"\.\./\.\./simple_tools/mcp/notes-tools\.json"\s+with\s+\{\s*type:\s*"json"\s*\};', re.M),
         )
         self.assertEqual(
-            (WORKER_NOTES_JS.parent / "../../agent_sync/mcp/notes-tools.json").resolve(), NOTES_JSON.resolve()
+            (WORKER_NOTES_JS.parent / "../../simple_tools/mcp/notes-tools.json").resolve(), NOTES_JSON.resolve()
         )
 
 

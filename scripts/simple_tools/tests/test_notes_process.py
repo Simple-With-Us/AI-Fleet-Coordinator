@@ -8,7 +8,7 @@ process group goes down together.
 The keyword arguments are the ones `subprocess.run` takes,  so a test that stands in for the
 helper keeps the same shape and only the real path changes.
 
-Run:  cd scripts && python3 -m unittest agent_sync.tests.test_notes_process
+Run:  cd scripts && python3 -m unittest simple_tools.tests.test_notes_process
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ import time
 import unittest
 from pathlib import Path
 
-from agent_sync import notes as N
+from simple_tools import notes as N
 
 #  /bin and /usr/bin both,  because `cat` and `sleep` live in /bin on macOS
 PATH = "/usr/bin:/bin"

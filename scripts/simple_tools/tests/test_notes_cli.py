@@ -1,11 +1,11 @@
 """`simple-notes create|update|pin|unpin|read|list|status|log|runner` and `simple-chat guide` (AFC-331, AFC-486):  the CLI
-twin of the notes_* tools, run through agent_sync.cli.main as the wrapper runs it.
+twin of the notes_* tools, run through simple_tools.cli.main as the wrapper runs it.
 
 On a "Mac" (notes.direct_available patched to a path, the helper patched to FakeRun) a command runs the script
 directly;  off one (the default here, whatever host runs the tests) it goes to the hosted gateway as the bot's own
 fleet bearer through a fake fleet client.  No bearer file, the fleet knob and fleet-secrets are never read for real.
 
-Run:  cd scripts && python3 -m unittest agent_sync.tests.test_notes_cli
+Run:  cd scripts && python3 -m unittest simple_tools.tests.test_notes_cli
 """
 
 from __future__ import annotations
@@ -18,14 +18,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
-from agent_sync import notes as N
-from agent_sync import notes_client as NC
-from agent_sync import notes_wire as W
-from agent_sync.mcp import guide as G
-from agent_sync.tests.harness import SESSION, Harness
-from agent_sync.tests.test_notes import STORED_CONTENT_HTML, STORED_CONTENT_TEXT, STORED_TITLE, FakeRun, read_answer
-from agent_sync import fleet_bearer as F
-from agent_sync.tests.test_notes_client import FakeFleet, FakeOperator, record
+from simple_tools import notes as N
+from simple_tools import notes_client as NC
+from simple_tools import notes_wire as W
+from simple_tools.mcp import guide as G
+from simple_tools.tests.harness import SESSION, Harness
+from simple_tools.tests.test_notes import STORED_CONTENT_HTML, STORED_CONTENT_TEXT, STORED_TITLE, FakeRun, read_answer
+from simple_tools import fleet_bearer as F
+from simple_tools.tests.test_notes_client import FakeFleet, FakeOperator, record
 
 TITLE = "[AFC, Claude] Cli Check"
 MASTER = "⭐️ Background Jobs Master List"
@@ -66,7 +66,7 @@ class NotesCliHarness(Harness):
             gw,
             sleeps,
             (
-                mock.patch("agent_sync.fleet_bearer.Client", gw.factory),
+                mock.patch("simple_tools.fleet_bearer.Client", gw.factory),
                 mock.patch.object(NC.time, "sleep", fake_sleep),
                 mock.patch.object(NC.time, "monotonic", lambda: now[0]),
             ),

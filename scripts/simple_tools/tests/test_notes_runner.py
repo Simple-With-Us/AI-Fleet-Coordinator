@@ -3,7 +3,7 @@ claim, the second check, the run, the state file that survives a crash, the lock
 
 The client, the script finder and the runner are fakes, and the home folder is a temp dir:  no network, no osascript.
 
-Run:  cd scripts && python3 -m unittest agent_sync.tests.test_notes_runner
+Run:  cd scripts && python3 -m unittest simple_tools.tests.test_notes_runner
 """
 
 from __future__ import annotations
@@ -17,8 +17,8 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from agent_sync import notes as N
-from agent_sync import notes_runner as RUN
+from simple_tools import notes as N
+from simple_tools import notes_runner as RUN
 
 SESSION = "11112222-3333-4444-5555-666677778888"
 SCRIPT = Path("/fake/apple-notes-coding.sh")

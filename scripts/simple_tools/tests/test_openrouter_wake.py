@@ -20,13 +20,13 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from agent_sync import adapters as A
-from agent_sync import config as C
-from agent_sync import live as L
-from agent_sync import service_identity as SI
-from agent_sync import wakes as W
-from agent_sync import zulip as Z
-from agent_sync.tests.fake_openrouter import FakeOpenRouter, Reply, completion
+from simple_tools import adapters as A
+from simple_tools import config as C
+from simple_tools import live as L
+from simple_tools import service_identity as SI
+from simple_tools import wakes as W
+from simple_tools import zulip as Z
+from simple_tools.tests.fake_openrouter import FakeOpenRouter, Reply, completion
 
 MODEL = "meta/muse-spark-1.3-contributor"
 FALLBACK_MODEL = "~deepseek/deepseek-flash-latest"

@@ -5,7 +5,7 @@ simple-notes and the stdio tools share, on a Mac and off one.
 Nothing here reaches a network, Infisical or the real fleet-secrets:  the opener, the key runner and the clock are
 fakes, and the one test that needs real HTTP (a redirect is never followed) talks to a server on 127.0.0.1.
 
-Run:  cd scripts && python3 -m unittest agent_sync.tests.test_notes_client
+Run:  cd scripts && python3 -m unittest simple_tools.tests.test_notes_client
 """
 
 from __future__ import annotations
@@ -26,10 +26,10 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from agent_sync import notes as N
-from agent_sync import notes_client as NC
-from agent_sync import notes_wire as W
-from agent_sync.idem import IdemStore
+from simple_tools import notes as N
+from simple_tools import notes_client as NC
+from simple_tools import notes_wire as W
+from simple_tools.idem import IdemStore
 
 # Built from plain parts, so no key-looking literal sits in the source (the gitleaks job runs on this repo).
 TEST_KEY = "notes-wire-test-vector-" + "x" * 16
@@ -39,7 +39,7 @@ TITLE = "[AFC, Claude] Client Check"
 MASTER = "⭐️ Background Jobs Master List"
 
 def hdr(request: Any, name: str) -> str | None:
-    """urllib stores header names capitalized ("X-agent-sync-principal")."""
+    """urllib stores header names capitalized ("X-simple-tools-principal")."""
     return request.get_header(name.capitalize())
 
 def record(state: str, rid: str = "requestid-0001", *, action: str = "create", seat: str = "CLAUDE", title: str | None = TITLE, **fields: Any) -> dict[str, Any]:
@@ -98,7 +98,7 @@ class FakeOperator:
         principal = hdr(request, W.PRINCIPAL_HEADER)
         expected = hmac.new(
             self.key.encode(),
-            ("agent-sync-notes/1\n%s\n%s\n%s\n%s\n%s\n%s" % (method, parts.path, parts.query, timestamp, principal, hashlib.sha256(body).hexdigest())).encode(),
+            ("simple-tools-notes/1\n%s\n%s\n%s\n%s\n%s\n%s" % (method, parts.path, parts.query, timestamp, principal, hashlib.sha256(body).hexdigest())).encode(),
             hashlib.sha256,
         ).hexdigest()
         assert hdr(request, W.SIGNATURE_HEADER) == expected, "the signature does not match the documented string"
@@ -168,7 +168,7 @@ class WireTests(unittest.TestCase):
     GET_VECTOR = "b5e4bc6d3b769594f251fd7c674a2f7cd49aed7b7ba4ca02aa9ac68a1a342236"
 
     def documented(self, method, path, query, timestamp, principal, body):
-        text = "agent-sync-notes/1\n%s\n%s\n%s\n%s\n%s\n%s" % (method, path, query, timestamp, principal, hashlib.sha256(body).hexdigest())
+        text = "simple-tools-notes/1\n%s\n%s\n%s\n%s\n%s\n%s" % (method, path, query, timestamp, principal, hashlib.sha256(body).hexdigest())
         return hmac.new(TEST_KEY.encode(), text.encode(), hashlib.sha256).hexdigest()
 
     def test_the_signature_is_the_documented_string_signed(self):
@@ -180,7 +180,7 @@ class WireTests(unittest.TestCase):
         self.assertEqual(get, self.documented("GET", "/notes/v1/log", "since_hours=24&limit=50", "1761170400", "WORKER", b""))
         self.assertEqual(get, self.GET_VECTOR)
         self.assertEqual(W.sign(TEST_KEY, "post", "/notes/v1/requests", "", "1761170400", "SERVER", self.BODY), post, "the method is upper-cased")
-        self.assertEqual(W.signing_string("GET", "/p", "q=1", "5", "RUNNER", b""), ("agent-sync-notes/1\nGET\n/p\nq=1\n5\nRUNNER\n" + W.EMPTY_SHA256).encode())
+        self.assertEqual(W.signing_string("GET", "/p", "q=1", "5", "RUNNER", b""), ("simple-tools-notes/1\nGET\n/p\nq=1\n5\nRUNNER\n" + W.EMPTY_SHA256).encode())
 
     def test_every_part_is_signed(self):
         base = ("POST", "/notes/v1/requests", "", "1761170400", "SERVER", self.BODY)
@@ -197,9 +197,9 @@ class WireTests(unittest.TestCase):
         self.assertEqual(
             out,
             {
-                "X-Agent-Sync-Principal": "SERVER",
-                "X-Agent-Sync-Timestamp": "1761170400",
-                "X-Agent-Sync-Signature": self.POST_VECTOR,
+                "X-Simple-Tools-Principal": "SERVER",
+                "X-Simple-Tools-Timestamp": "1761170400",
+                "X-Simple-Tools-Signature": self.POST_VECTOR,
                 "Content-Type": "application/json",
             },
         )
@@ -640,7 +640,7 @@ class HostTests(unittest.TestCase):
         really read, because the fake replaces the whole client.  `own_seat` is what a one-seat process (the stdio
         server) knows without a request."""
         gw = FakeFleet(seat=seat)
-        patcher = mock.patch("agent_sync.fleet_bearer.Client", gw.factory)
+        patcher = mock.patch("simple_tools.fleet_bearer.Client", gw.factory)
         patcher.start()
         self.addCleanup(patcher.stop)
         host = NC.Host(
@@ -746,7 +746,7 @@ class HostTests(unittest.TestCase):
     def test_who_may_send_is_checked_before_anything_runs_or_is_sent(self):
         host = self.mac()
         gw = FakeFleet()
-        with mock.patch("agent_sync.fleet_bearer.Client", gw.factory):
+        with mock.patch("simple_tools.fleet_bearer.Client", gw.factory):
             off = NC.Host(self.env, self.home, self.store, caller="cli", script_finder=lambda env, home: None)
             for target in (host, off):
                 with self.subTest(mac=target is host):
@@ -867,7 +867,7 @@ class HostTests(unittest.TestCase):
     def test_a_mac_never_looks_for_a_bearer_file(self):
         host = NC.Host(self.env, self.home, self.store, caller="cli", script_finder=lambda env, home: self.SCRIPT)
         with mock.patch.object(N, "run_direct", self.fake_run), mock.patch(
-            "agent_sync.fleet_bearer.Client",
+            "simple_tools.fleet_bearer.Client",
             side_effect=AssertionError("a Mac reads no fleet bearer"),
         ):
             NC.call(host, "CLAUDE", self.req(), wait=90)
@@ -888,7 +888,7 @@ class HostTests(unittest.TestCase):
 
     def test_off_a_mac_the_shared_key_is_never_read(self):
         gw = FakeFleet()
-        with mock.patch("agent_sync.fleet_bearer.Client", gw.factory), mock.patch.object(
+        with mock.patch("simple_tools.fleet_bearer.Client", gw.factory), mock.patch.object(
             NC, "operator_client", side_effect=AssertionError("the shared credential is not built")
         ), mock.patch.object(
             NC.SR, "load", side_effect=AssertionError("the service reader is not asked")
@@ -978,7 +978,7 @@ class HostTests(unittest.TestCase):
                 self.assertEqual(caught.exception.code, "not_configured")
 
     def test_off_a_mac_a_gateway_error_keeps_its_code_and_a_write_names_how_to_recover(self):
-        from agent_sync import fleet_bearer as F
+        from simple_tools import fleet_bearer as F
 
         host, gw = self.fleet()
         gw.queue("notes_pin", F.FleetError("not_found", "no note with that title"))

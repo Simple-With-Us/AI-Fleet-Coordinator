@@ -20,16 +20,16 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from agent_sync import adapters as A
-from agent_sync import daemon as D
-from agent_sync import live as L
-from agent_sync import wakes as W
-from agent_sync import zulip as Z
-from agent_sync.tests.fake_openrouter import FakeOpenRouter, Reply, completion
-from agent_sync.tests.harness import write_rc
-from agent_sync.tests.listener_harness import reply_output
-from agent_sync.tests.test_daemon import MUSE_MENTION, DaemonHarness
-from agent_sync.tests.test_openrouter_wake import (
+from simple_tools import adapters as A
+from simple_tools import daemon as D
+from simple_tools import live as L
+from simple_tools import wakes as W
+from simple_tools import zulip as Z
+from simple_tools.tests.fake_openrouter import FakeOpenRouter, Reply, completion
+from simple_tools.tests.harness import write_rc
+from simple_tools.tests.listener_harness import reply_output
+from simple_tools.tests.test_daemon import MUSE_MENTION, DaemonHarness
+from simple_tools.tests.test_openrouter_wake import (
     FALLBACK_MODEL,
     GOOD,
     MODEL,
@@ -170,7 +170,7 @@ class OpenRouterHarness(DaemonHarness):
         return daemon
 
     def mm_wake(self, daemon: D.Daemon, topic: str = "t") -> int:
-        mid = self.fake.add_message("Cursor", "agent-sync", topic, MUSE_MENTION)
+        mid = self.fake.add_message("Cursor", "simple-tools", topic, MUSE_MENTION)
         self.pump_until(
             daemon, lambda: any(mid in r.get("trigger_ids", []) for r in self.ledger("MM")), seat="MM"
         )
@@ -227,7 +227,7 @@ class PrimaryTests(OpenRouterHarness):
         # The Operator said it, tagged with the seat's wake, and no seat bot wrote a thing.
         (post,) = self.operator_posts()
         self.assertTrue(post["content"].startswith("[OPERATOR·wake] re=%d\n" % mid), post["content"])
-        self.assertEqual((post["display_recipient"], post["subject"]), ("agent-sync", "t"))
+        self.assertEqual((post["display_recipient"], post["subject"]), ("simple-tools", "t"))
         self.assertEqual(self.seat_requests(), [])
         # The ledger names the runtime, the model and what the call reported, and nothing secret.
         started = [r for r in self.ledger("MM") if r["state"] == "started"][0]
@@ -745,7 +745,7 @@ class ClaudeSeatTests(OpenRouterHarness):
         self.pin_openrouter(seat="CLAUDE", role=FALLBACK)
 
     def wake(self, daemon: D.Daemon, topic: str = "t") -> int:
-        mid = self.fake.add_message("Codex", "agent-sync", topic, "@**Claude** can you check the AFC cutover?")
+        mid = self.fake.add_message("Codex", "simple-tools", topic, "@**Claude** can you check the AFC cutover?")
         self.pump_until(daemon, lambda: any(mid in r.get("trigger_ids", []) for r in self.ledger()))
         self.wake_cycle(daemon)
         return mid

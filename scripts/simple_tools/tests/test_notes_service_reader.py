@@ -13,9 +13,9 @@ import urllib.error
 from pathlib import Path
 from unittest import mock
 
-from agent_sync import notes as N
-from agent_sync import notes_client as C
-from agent_sync import notes_service_reader as R
+from simple_tools import notes as N
+from simple_tools import notes_client as C
+from simple_tools import notes_service_reader as R
 
 PROJECT = "00000000-0000-4000-8000-000000000001"
 TOKEN_ID = "00000000-0000-4000-8000-000000000002"
