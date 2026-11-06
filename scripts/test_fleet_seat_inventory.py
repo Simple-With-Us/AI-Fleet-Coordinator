@@ -361,6 +361,18 @@ class InventoryTests(unittest.TestCase):
         self.assertFalse(answer["ok"])
         self.assertEqual(answer["sections"], [])
 
+    def test_the_answer_names_the_host_it_was_asked_for_and_otherwise_the_one_it_runs_on(self):
+        self.assertEqual(inv.inventory("fx", self.home, host="server")["host"], "server")
+        self.assertEqual(inv.inventory("nope", self.home, host="server")["host"], "server")
+        self.assertEqual(inv.inventory("fx", self.home)["host"], inv.host_label())
+
+    def test_the_module_stays_readable_by_the_macs_python_3_9(self):
+        # `datetime.UTC` is Python 3.11, and the Mac runs this file with its system Python 3.9,
+        # so a formatter rewriting the older spelling would break the Mac's reader.
+        with open(inv.__file__, encoding="utf-8") as handle:
+            source = handle.read()
+        self.assertNotIn("datetime.UTC", source)
+
     def test_every_known_platform_answers_and_the_answer_is_json(self):
         for platform in inv.PLATFORMS:
             answer = inv.inventory(platform, self.home)

@@ -477,17 +477,23 @@ def host_label():
     return "mac" if sys.platform == "darwin" else "server"
 
 
-def inventory(platform, home=None, now=None):
-    """The whole answer for one platform:  the JSON document both hosts return."""
+def inventory(platform, home=None, now=None, host=None):
+    """The whole answer for one platform:  the JSON document both hosts return.
+
+    ``host`` names the host the answer is for;  it defaults to the one this process runs on."""
     home = home or os.path.expanduser("~")
     sections = read_platform(platform, home)
-    stamp = (now or datetime.datetime.now(datetime.UTC)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # The `UTC` alias on the datetime module is Python 3.11, and the Mac's system Python is 3.9,
+    # so this stays the older spelling that both read.
+    moment = now or datetime.datetime.now(datetime.timezone.utc)  # noqa: UP017
+    stamp = moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+    host = host or host_label()
     if sections is None:
         return {
             "schemaVersion": SCHEMA_VERSION,
             "tool": TOOL,
             "ok": False,
-            "host": host_label(),
+            "host": host,
             "platform": platform,
             "generatedAt": stamp,
             "sections": [],
@@ -497,7 +503,7 @@ def inventory(platform, home=None, now=None):
         "schemaVersion": SCHEMA_VERSION,
         "tool": TOOL,
         "ok": True,
-        "host": host_label(),
+        "host": host,
         "platform": platform,
         "generatedAt": stamp,
         "sections": sections,
