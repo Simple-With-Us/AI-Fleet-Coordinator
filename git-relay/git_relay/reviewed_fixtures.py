@@ -9,8 +9,11 @@ from hashlib import sha256
 
 from .secret_scan import find_secret
 
-# Source c8c2a471fac215957cc81ec3b2e5e765e5908443. Only these exact
-# bytes at these exact repository destinations are attested synthetic fixtures.
+# Three unchanged rows source from c8c2a471fac215957cc81ec3b2e5e765e5908443;
+# the ten added or refreshed rows were reviewed on the
+# rename/simple-tools-mcp-2026-11-05 build at 31dab6c1bd5012ade1bc5babd0ea5cefeb7e8a80.
+# Only these exact bytes at these exact repository destinations are attested
+# synthetic fixtures.
 # The source Git blob ids and review procedure are recorded in the README.
 _REVIEWED_FIXTURES = frozenset(
     {

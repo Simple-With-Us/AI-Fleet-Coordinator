@@ -178,9 +178,10 @@ Changing one byte or destination invalidates the attestation; any credential sha
 then fails closed. The ordinary scanner and the rejection tests are unchanged.
 PR text, messages, binary assets and all unattested files have no exemption.
 
-The five pre-existing rows remain attested from `c8c2a471fac215957cc81ec3b2e5e765e5908443`.
-The ten added or refreshed rows (the rename-affected fixtures) were re-reviewed on
-the `rename/simple-tools-mcp-2026-11-05` build, head `31dab6c1bd5012ade1bc5babd0ea5cefeb7e8a80`:
+Three unchanged rows remain attested from `c8c2a471fac215957cc81ec3b2e5e765e5908443`;
+the ten added or refreshed rows (the rename-affected fixtures) were re-reviewed on
+the `rename/simple-tools-mcp-2026-11-05` build, head `31dab6c1bd5012ade1bc5babd0ea5cefeb7e8a80`
+(3 unchanged + 10 added or refreshed = the 13 rows in the registry and the table below):
 
 | Destination | Source Git blob | Whole-file SHA-256 |
 | --- | --- | --- |
