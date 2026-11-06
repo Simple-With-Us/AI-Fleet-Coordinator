@@ -162,9 +162,7 @@ def _arrow_recipient_re(token: str):
     another token such as INSTINCT inside INSTINCTIVE, or MC inside MMC).
     """
     return re.compile(
-        r"(?:→|->)\s*(?:[A-Za-z][A-Za-z0-9_-]*\s*,\s*)*"
-        + re.escape(token)
-        + r"(?![A-Za-z0-9_-])"
+        r"(?:→|->)\s*(?:[A-Za-z][A-Za-z0-9_-]*\s*,\s*)*" + re.escape(token) + r"(?![A-Za-z0-9_-])"
     )
 
 

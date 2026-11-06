@@ -277,7 +277,6 @@ class RuleTests(unittest.TestCase):
         self.assertTrue(bridge.is_own_post("[ INSTINCT: ZZ.2.S 📁AFC, OPS ]\nx", SEAT))
         self.assertFalse(bridge.is_own_post("[ CLAUDE 📁 AFC ]\nx", SEAT))
 
-
     def test_multi_recipient_arrow_and_boundaries(self):
         """Jet OPS-1035 / #1391: every → recipient wakes; precise seat-token boundaries."""
         multi = "[JET 📁AFC, OPS → MC, CLAUDE]"
