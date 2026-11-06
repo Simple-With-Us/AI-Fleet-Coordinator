@@ -107,7 +107,9 @@ class Writes(unittest.TestCase):
         wrapped["content"] = wrapped["content"][:2] + "\n" + wrapped["content"][2:]
         tree = {"sha": "e" * 40, "truncated": False, "tree": []}
         c = Client(wrapped, tree)
-        self.assertEqual(self.handle(c, a).run(a, {**base, "files": files})["tree"]["sha"], "e" * 40)
+        self.assertEqual(
+            self.handle(c, a).run(a, {**base, "files": files})["tree"]["sha"], "e" * 40
+        )
         # a receipt that overstates the size but decodes small is accepted: budgets
         # measure the decoded bytes, never the receipt's declared size
         tree = {"sha": "e" * 40, "truncated": False, "tree": []}
