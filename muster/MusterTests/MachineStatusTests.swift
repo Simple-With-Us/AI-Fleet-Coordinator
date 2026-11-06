@@ -541,6 +541,9 @@ final class MachineStatusTests: XCTestCase {
         XCTAssertEqual(menu.mac.health, .notKnown)
         XCTAssertNotEqual(menu.mac.health, .ok)
         assertLines(menu, contain: ["Seat Setup:  no red or drifted cells, 3 not proven"])
+        // The counted cells are listed and the grid is one click away.
+        XCTAssertTrue(menu.plainText.contains("S0 / \(unproven[0].kindTitle):  not proven"), menu.plainText)
+        XCTAssertTrue(menu.plainText.contains("Open Compliance Grid"), menu.plainText)
     }
 
     /// With a red cell as well, the unproven count rides in the group title.

@@ -235,6 +235,18 @@ class L1DenyTests(FakeHookCase):
         self.assertTrue(outcome.passed)
         self.assertIs(outcome.state, CheckState.PASS)
 
+    def test_a_passing_detail_records_the_exit_code_the_hook_returned(self):
+        """A kimi deny exits 2,  and the stored evidence must say so,  not exit 0."""
+        for guards in (("shell",), ("file",), ("shell", "file")):
+            with self.subTest(guards=guards):
+                outcome = proof.run_l1_probe(
+                    "kimi", self.ctx, hook_command=self.hook("exit2"), guards=guards
+                )
+                self.assertTrue(outcome.passed, outcome.reason)
+                self.assertTrue(outcome.detail.startswith("exit 2"), outcome.detail)
+        claude = proof.run_l1_probe("claude", self.ctx, hook_command=self.hook("deny"))
+        self.assertTrue(claude.detail.startswith("exit 0"), claude.detail)
+
     def test_a_platform_without_an_adapter_is_unsupported(self):
         outcome = proof.run_l1_probe("no-such-platform", self.ctx, hook_command=self.hook("deny"))
         self.assertIs(outcome.state, CheckState.UNSUPPORTED)
@@ -495,7 +507,13 @@ class L1ScopeTests(FakeHookCase):
             command="c",
             file_destination=os.path.join(self.home, ".secrets", "taken", "probe.txt"),
         )
-        os.makedirs(os.path.dirname(sentinel.file_destination))
+        secrets_dir = os.path.join(self.home, ".secrets")
+        probe_dir = os.path.dirname(sentinel.file_destination)
+        for directory in (secrets_dir, probe_dir):
+            if os.path.islink(directory):
+                self.fail("refusing symlinked directory: %s" % directory)
+        os.makedirs(secrets_dir, mode=0o700, exist_ok=True)
+        os.makedirs(probe_dir, mode=0o700)
         with self.assertRaises(CheckError):
             proof._assert_file_destination_inert(sentinel, self.home)
         outside = replace(sentinel, file_destination=os.path.join(self.home, "elsewhere.txt"))
@@ -587,10 +605,13 @@ class RealGuardTests(FakeHookCase):
         self.assertIs(outcome.achieved, ProofLevel.L1)
 
     def test_zcode_carries_file_tools_so_its_file_rule_applies_and_the_shell_guard_fails_it(self):
-        """Z Code's hook is Claude-shaped,  so Write and Edit reach it and the rule applies.
+        """Z Code's payload is Claude-shaped,  so its file tools are pinned and the rule applies.
 
-        The real lane guard only judges shell commands,  so a file write into the
-        forbidden tree is let through:  the file scope fails (it is never not applicable).
+        The installed Z Code hook is registered for ``Bash`` alone,  so the matcher check
+        (``checks_hooks``) reads the file rule UNPROVEN naming the matcher before any
+        probe runs.  Probed directly,  the real lane guard only judges shell commands,
+        so a file write into the forbidden tree is let through and the file scope fails;
+        it is never not applicable.
         """
         self.assertEqual(
             proof.NATIVE_FILE_TOOLS["zcode"], (("Write", "file_path"), ("Edit", "file_path"))

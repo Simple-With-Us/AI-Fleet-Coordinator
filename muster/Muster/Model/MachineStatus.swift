@@ -338,7 +338,19 @@ enum MachineMenuCopy {
         if reds.isEmpty, drifted.isEmpty {
             // Unproven cells are not red,  and the line must not read as a clean bill.
             if unproven > 0 {
-                return .line("Seat Setup:  no red or drifted cells, \(unproven) not proven")
+                // The cells the line counts are listed, with the way to the grid.
+                var unprovenRows: [MenuItem] = inputs.unprovenCells.prefix(cellRowLimit).map { cell in
+                    MenuItem.command(title: "\(cell.seat) / \(cell.kindTitle):  \(cell.ruleID ?? stateWords(cell.state))",
+                             .openComplianceGrid)
+                }
+                let hidden = unproven - cellRowLimit
+                if hidden > 0 {
+                    unprovenRows.append(.command(title: hidden == 1 ? "1 More Cell" : "\(hidden) More Cells",
+                                                 .openComplianceGrid))
+                }
+                unprovenRows.append(.command(title: "Open Compliance Grid", .openComplianceGrid))
+                return .group(title: "Seat Setup:  no red or drifted cells, \(unproven) not proven",
+                              items: unprovenRows)
             }
             return .line("Seat Setup:  no red or drifted cells")
         }
@@ -348,11 +360,11 @@ enum MachineMenuCopy {
         if unproven > 0 { parts.append("\(unproven) not proven") }
 
         var rows: [MenuItem] = []
-        for cell in (reds + drifted).prefix(cellRowLimit) {
+        for cell in (reds + drifted + inputs.unprovenCells).prefix(cellRowLimit) {
             rows.append(.command(title: "\(cell.seat) / \(cell.kindTitle):  \(cell.ruleID ?? stateWords(cell.state))",
                                  .openComplianceGrid))
         }
-        let more = reds.count + drifted.count - cellRowLimit
+        let more = reds.count + drifted.count + unproven - cellRowLimit
         if more > 0 {
             // No ellipsis:  this opens the grid,  and nothing runs.
             rows.append(.command(title: more == 1 ? "1 More Cell" : "\(more) More Cells",

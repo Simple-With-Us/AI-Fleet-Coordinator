@@ -180,10 +180,13 @@ NATIVE_FILE_TOOLS: dict[str, tuple[tuple[str, str], ...]] = {
     # says so instead of reporting a bare pass.
     "cursor": (),
     "antigravity": (),
-    # Z Code's hook is Claude-shaped (matcher ``Bash``, a Claude-style deny), so the
-    # Claude file tools (``Write`` and ``Edit``, both carrying ``file_path``) do reach
-    # it.  It is not the cursor or antigravity case, whose payload shape has no file
-    # tool, and an empty tuple would turn its file rule into not applicable.
+    # Z Code's payload is Claude-shaped (a Claude-style deny, ``Write`` and ``Edit`` both
+    # carrying ``file_path``), but its installed hook is registered with the matcher
+    # ``Bash``, so the harness never delivers those file tools to it today.  The names
+    # are pinned so the file rule reads UNPROVEN, naming the non-matching matcher, and
+    # not "not applicable" (an empty tuple would say the harness has no file tool, which
+    # is not the cursor or antigravity case).  They are probed at L1 only if a matcher
+    # ever delivers them.
     "zcode": (("Write", "file_path"), ("Edit", "file_path")),
 }
 
@@ -1317,8 +1320,22 @@ def _run_one_payload(
     )
 
 
-def _l1_pass_detail(scopes: tuple[str, ...], fmt: str) -> str:
+def _exit_label(detail: str) -> str:
+    """The ``exit N`` a passing payload's detail recorded,  from the hook run itself."""
+    match = re.match(r"exit (-?\d+)", detail or "")
+    return "exit %s" % match.group(1) if match else "exit 0"
+
+
+def _exit_summary(labels: list[str]) -> str:
+    """The distinct exit codes the hook really returned,  in the order they were seen."""
+    return "/".join(dict.fromkeys(labels)) if labels else "exit 0"
+
+
+def _l1_pass_detail(scopes: tuple[str, ...], fmt: str, exit_label: str = "exit 0") -> str:
     """What a passing L1 probe actually showed,  built from the scopes that ran.
+
+    ``exit_label`` is the exit code the hook really returned (a kimi deny exits 2),
+    so the stored evidence matches the hook run and is never assumed.
 
     Only the shell scope requires the deny to name the sentinel.  The file scope runs
     with ``require_marker=False``,  so a file deny of any readable reason passes,  and
@@ -1332,7 +1349,7 @@ def _l1_pass_detail(scopes: tuple[str, ...], fmt: str) -> str:
             "the hook denied a file-write payload to a forbidden path (the %s reason is "
             "not required to name the path)" % fmt
         )
-    return "exit 0, " + ";  ".join(parts)
+    return exit_label + ", " + ";  ".join(parts)
 
 
 def run_l1_probe(
@@ -1410,6 +1427,7 @@ def run_l1_probe(
     budget = int(timeout) if timeout else int(ctx.timeout or 10)
     env = _probe_env(ctx)
     sentinel = _make_sentinel(ctx)
+    exit_labels: list[str] = []
     try:
         _assert_sentinel_confined(sentinel)
         if "shell" in scopes:
@@ -1430,11 +1448,13 @@ def run_l1_probe(
                             detail=outcome.detail,
                             achieved=None,
                         )
+                    exit_labels.append(_exit_label(outcome.detail))
             else:
                 payload = build_payload(adapter, sentinel.command, sentinel.root)
                 outcome = _run_one_payload(command, payload, fmt, sentinel, env, budget)
                 if not outcome.passed:
                     return outcome
+                exit_labels.append(_exit_label(outcome.detail))
         if "file" not in scopes:
             # The caller asked for the shell scope alone.  The proof is complete for
             # that scope and says nothing about file writes, which have a rule of
@@ -1448,7 +1468,8 @@ def run_l1_probe(
                     "shell guarding only"
                 ),
                 reason_code=ReasonCode.OK,
-                detail="exit 0, the %s deny named the sentinel;  no file tool was asked" % fmt,
+                detail="%s, the %s deny named the sentinel;  no file tool was asked"
+                % (_exit_summary(exit_labels), fmt),
                 achieved=ProofLevel.L1,
             )
         file_tools = NATIVE_FILE_TOOLS.get(platform, ())
@@ -1488,6 +1509,7 @@ def run_l1_probe(
                 command, payload, fmt, sentinel, env, budget, require_marker=False
             )
             if outcome.passed:
+                exit_labels.append(_exit_label(outcome.detail))
                 continue
             if outcome.reason_code is ReasonCode.PROOF_FAILED:
                 # The hook answered and let a write to a forbidden tree through, which a
@@ -1525,7 +1547,7 @@ def run_l1_probe(
         state=CheckState.PASS,
         reason="the installed hook denied the sentinel write at L1",
         reason_code=ReasonCode.OK,
-        detail=_l1_pass_detail(scopes, fmt),
+        detail=_l1_pass_detail(scopes, fmt, _exit_summary(exit_labels)),
         achieved=ProofLevel.L1,
     )
 
