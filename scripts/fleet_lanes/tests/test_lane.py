@@ -1195,11 +1195,7 @@ class ResolveTests(unittest.TestCase):
                 }.get(raw, "not a seat tag")
                 self.assertIn(needle, str(cm.exception))
         with self.subTest(raw="GROK-WEB"):
-            with self.assertRaises(
-                K.Refusal
-            ) as cm:  # a cloud seat: no branch prefix, so no lane
-                K.branch_for(K.resolve_seat({"AGENT_SEAT": "GROK-WEB"}, registry), "x")
-            self.assertIn("no branch prefix", str(cm.exception))
+            self.assertEqual(K.branch_for(K.resolve_seat({"AGENT_SEAT": "GROK-WEB"}, registry), "x"), "grok-web/x")
 
 
 class GrokBuildAliasResolveTests(unittest.TestCase):

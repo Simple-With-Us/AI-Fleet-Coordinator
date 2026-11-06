@@ -15,7 +15,7 @@ public enum McpServerError: LocalizedError, Equatable {
     public var errorDescription: String? {
         switch self {
         case .managerMissing:
-            return "The BotFleet MCP Server manager is not installed on this Mac."
+            return "The BotFleet MCP Server manager is not installed on the Mac."
         case .refused(let message):
             return message
         }

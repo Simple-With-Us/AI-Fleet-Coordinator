@@ -11,16 +11,19 @@ Without --apply it prints what it would file and changes no state.  One run does
   2. Findings.  Everything in placement_anomalies, each detect-mode event, and any hook whose command no longer exists.
      With --verify-hooks, also the failures of `install_tools verify` for the platforms that are safe to probe.
   3. Dedupe.  The state file remembers each path and problem it has reported, until a clean sweep no longer sees it, so a checkout
-     fixed and broken again is told again.  A path on a disk that is not mounted was not seen either way, so it stays remembered.  One
-     Linear issue per creator and repo, never per path, with a comment for each later batch of new findings, and one post in the
-     issue's topic when it is filed.  If that issue has since been closed, the next batch gets a new one.  Every finding remembered has
-     reached Linear in a body or a comment.  A run with more than MAX_NEW_PER_RUN new findings looks like a renamed mount or a wrong
-     root, not a leak, so it sends nothing and says so until a person passes --accept-burst.
-  4. The owner hears only about a leak that keeps growing after seven days, at most once a day, or a clone in the Code root holding
-     unpushed work on any branch or in a stash (not a harness worktree inside one, which is in-flight work with an issue already).  One
-     message per path:  a send whose outcome is unknown counts as sent, because only a proven refusal is safe to send again.  A filing
-     retries every run, since the board dedupes it on its uid, and a filing the board deduped goes in as a comment, because the board
-     keeps the old text.
+     fixed and broken again is told again.  A path on a disk that is not mounted or cannot be read was not seen either way, so it stays
+     remembered.  One rolling Linear issue per rule class per host, never per path or per creator, with every row of the batch in its
+     body, a comment for each later batch of new findings, and one post in the issue's topic when it is filed.  If that issue has since
+     been closed, the next batch gets a new one.  Every finding remembered has reached Linear in a body or a comment.  A run with more
+     than MAX_NEW_PER_RUN new findings looks like a renamed mount or a wrong root, not a leak, so it sends nothing and says so until a
+     person passes --accept-burst.
+  4. The owner hears only about one creator's leak in one repo that keeps growing after seven days, or a clone in the Code root holding
+     unpushed work on any branch or in a stash (not a harness worktree inside one, which is in-flight work with an issue already, and not
+     a clone whose only such work is local branches past 30 days, which looks just like old squash-merged branches and stays in the
+     issue).  One message for each new set of rows, whatever its size, and at most one a day:  rows that arrive after it wait for the
+     next.  A send whose outcome is unknown counts as sent, because only a proven refusal is safe to send again.  A filing retries every
+     run, since the board dedupes it on its uid, and a filing the board deduped goes in as a comment, because the board keeps the old
+     text.
 
 A lost or corrupt state file holds all sending, since everything would otherwise look new, until --reset-state.  Who has been told
 lives in its own small file as well, so a reset does not message the owner twice.  An unusable exceptions file holds every placement
@@ -28,9 +31,12 @@ finding, since each excused checkout would look misplaced, and files only the pr
 
 Public text uses root tokens ({home}, {code}, {apps}, {lanes}), never a real path, since a server path is private
 inventory.  Exit 0 when it ran;  3 when its inputs are stale or unreadable, the exceptions file among them, or `install_tools verify`
-could not run;  4 when filing failed (it retries next run).
-The status file beside the state file lets `fleet-tools-doctor` see a watcher that has gone quiet.  It lists no processes
-(no `ps`).  The seat is CLAUDE until the owner chooses another.  Python 3.9 safe.
+could not run;  4 when filing failed (it retries next run);  5 when it ran but an external root refused to be read, as launchd meets a
+disk it has no permission for, so the result is partial and not clean (`coverage` in the status file).
+The status file beside the state file lets `fleet-tools-doctor` and Muster see a watcher that has gone quiet.  A run without --apply
+writes it too, with `held` true, so a watcher held in dry run shows up instead of leaving no row at all.  It leaves the recent
+status of a run meant to act alone, so a dry run by hand neither calls that watcher held nor hides its errors.  It lists no
+processes (no `ps`).  The seat is CLAUDE until the owner chooses another.  Python 3.9 safe.
 Tests: fleet_lanes/tests/test_placement_watch.py.
 """
 from __future__ import annotations
@@ -73,7 +79,9 @@ TOLD_NAME = "placement-watch-told.json"
 REPORT_NAME = "placement-report.json"
 VERIFY_TARGETS = ("claude", "codex", "cursor", "grok", "minimax", "opencode", "antigravity")
 MAINTAIN_REPORT = "Library/Application Support/HogHunter/Maintain/lane-doctor-report.json"
-EXIT_OK, EXIT_STALE, EXIT_FILING = 0, 3, 4
+EXIT_OK, EXIT_STALE, EXIT_FILING, EXIT_UNREADABLE = 0, 3, 4, 5
+COVERAGE_FULL, COVERAGE_UNREADABLE = "full", "external-unreadable"
+STATUS_FRESH_HOURS = 3  # as long as fleet-tools-doctor gives a watcher before it calls it stale
 BEARER_LOCATOR = "SIMPLE_BOARD_BEARER_LOCATOR"
 # What a send can come to.  Only a refusal the CLI made before sending anything is safe to repeat.
 OK, REFUSED, UNKNOWN = "ok", "refused", "unknown"
@@ -87,14 +95,22 @@ REFUSED_EXITS = {
 # simple-chat exits 6 for any network error, and adds this to its message when the request may have reached Zulip.
 CHAT_NETWORK_EXIT, CHAT_MAYBE_SENT = 6, "not retried"
 LINES_PER_BODY = 40
-DM_ROWS = 10
-REPEAT_DM_HOURS = 24
+DM_MAX_CHARS = 9000  # under Zulip's 10,000
+OWNER_DM_HOURS = 24
 MAX_GENERATIONS = 16
 # Judged against the exception rows, so none of them means anything while those rows cannot be read.
 _JUDGED_BY_ROWS = frozenset({"MISPLACED", "SHIM-EVENT", "MAIN-CLONE"})
 CLOSED_STATUSES = frozenset({"completed", "deployed", "wontfix", "duplicate", "canceled"})
 _REPO_LOCAL_WORKTREES = ("/.claude/worktrees/", "/.muse/worktrees/")
 _ISSUE_ID = re.compile(r"\b[A-Z][A-Z0-9]{1,9}-\d+\b")
+
+
+# One rolling issue per rule class:  a reader acts on the rule, and the rows say who and where.
+RULE_CLASSES = {
+    "MISPLACED": "misplaced", "SHIM-EVENT": "misplaced", "MAIN-CLONE": "main-clone", "CODE-WORK": "code-work",
+    "EXPIRED-EXCEPTION": "exceptions", "EXPIRING-EXCEPTION": "exceptions", "EXCEPTIONS-UNUSABLE": "exceptions-file",
+    "MODE-FILE": "mode-file",
+}
 
 
 @dataclass(frozen=True)
@@ -109,6 +125,11 @@ class Finding:
 
     @property
     def group(self) -> str:
+        return RULE_CLASSES.get(self.kind, "hook-coverage")
+
+    @property
+    def leak(self) -> str:
+        """Who is leaking where, which is what a leak's seven days count from, now that one issue holds them all."""
         return f"{self.creator}|{self.repo}"
 
     @property
@@ -188,7 +209,8 @@ def findings_from_report(report: Mapping[str, Any], roots: L.Roots, registry: L.
         path, detail = str(item.get("path", "")), str(item.get("detail") or "")
         if item.get("type") == "CODE-WORK":
             # One issue for all of them, because a Code clone with old branches is the usual case and not a leak per repo.
-            out.append(Finding(path, public_path(path, roots), "code-work", "AI-Fleet-Coordinator", "CODE-WORK", detail, True))
+            out.append(Finding(path, public_path(path, roots), "code-work", "AI-Fleet-Coordinator", "CODE-WORK", detail,
+                               item.get("old_branches_only") is not True))
             continue
         creator = "mode-file" if item.get("type") == "MODE-FILE" else "exceptions"
         out.append(Finding(path, path, creator, "AI-Fleet-Coordinator", str(item.get("type", "")), detail))
@@ -327,8 +349,46 @@ def dead_hook_commands(home: str, *, configs: Sequence[str] = HOOK_CONFIGS) -> l
     return sorted(set(out))
 
 
-def verify_failures(stable: str, targets: Sequence[str], run: Callable[..., Any] = subprocess.run,
-                    env: Mapping[str, str] | None = None) -> list[str] | None:
+@dataclass(frozen=True)
+class VerifyRow:
+    """One FAIL row.  `detail` can name a real path, so it stays here and only `problem` leaves."""
+
+    target: str
+    name: str
+    detail: str
+
+    @property
+    def row(self) -> str:
+        return f"{self.target} {self.name}"
+
+    @property
+    def timed_out(self) -> bool:
+        return "timed out" in self.detail
+
+    @property
+    def problem(self) -> str:
+        if self.timed_out:
+            return "probe timed out"
+        return "hook missing" if _HOOK_MISSING.search(self.detail) else "hook failed its probe"
+
+
+_FAIL_ROW = re.compile(r"^FAIL\s+(\S+)\s+(.*)$")
+_NAME_THEN_DETAIL = re.compile(r"^(.{1,24}?)\s{2,}(.*)$")
+_HOOK_MISSING = re.compile(r"\bno \S*\s?hook\b|does not exist|is missing|no usable hook", re.IGNORECASE)
+
+
+def _verify_row(line: str) -> VerifyRow | None:
+    """Check.line() pads a name to 24 columns, and a name can hold a space, so a whitespace split would merge rows."""
+    match = _FAIL_ROW.match(line)
+    if match is None:
+        return None
+    target, rest = match.groups()
+    named = _NAME_THEN_DETAIL.match(rest)
+    name, detail = named.groups() if named else (rest[:24].rstrip(), rest[24:].strip())
+    return VerifyRow(target, name, detail)
+
+
+def _verify_once(stable: str, targets: Sequence[str], run: Callable[..., Any], env: Mapping[str, str] | None) -> list[VerifyRow] | None:
     """`install_tools verify` FAIL rows for the platforms safe to probe, or None if it could not run.  Muse, Clutch and Kimi
     are left out:  their verify runs the tool's own validator, which is not proven read-only."""
     code = ("import sys; sys.path.insert(0, sys.argv[1]); targets = sys.argv[2:]; "
@@ -339,13 +399,40 @@ def verify_failures(stable: str, targets: Sequence[str], run: Callable[..., Any]
                   env=dict(os.environ if env is None else env))
     except (OSError, subprocess.SubprocessError):
         return None
-    rows = [line.split(None, 3) for line in (res.stdout or "").splitlines() if line.startswith("FAIL")]
+    rows = [row for row in map(_verify_row, (res.stdout or "").splitlines()) if row is not None]
     if res.returncode != 0 and not rows:
         return None  # it crashed, or could not import:  no FAIL rows here says nothing about the hooks
-    return [f"{r[1]} {r[2]}" for r in rows if len(r) >= 3]
+    return rows
+
+
+def verify_rows(stable: str, targets: Sequence[str], run: Callable[..., Any] = subprocess.run,
+                env: Mapping[str, str] | None = None) -> list[VerifyRow] | None:
+    """What fails `install_tools verify` twice, or None if it could not run.  Under load, such as a doctor sweep alongside, a good hook
+    misses its five seconds, so each platform with a failure is probed again, one at a time, and only a row that fails both times is
+    reported.  A retry that cannot run proves nothing, so the first answer stands."""
+    first = _verify_once(stable, targets, run, env)
+    if not first:
+        return first
+    out: list[VerifyRow] = []
+    for target in dict.fromkeys(row.target for row in first):
+        wanted = [row for row in first if row.target == target]
+        again = _verify_once(stable, (target,), run, env)
+        if again is None:
+            out += wanted
+            continue
+        still = {row.name: row for row in again if row.target == target}
+        out += [still[row.name] for row in wanted if row.name in still]
+    return out
+
+
+def verify_failures(stable: str, targets: Sequence[str], run: Callable[..., Any] = subprocess.run,
+                    env: Mapping[str, str] | None = None) -> list[str] | None:
+    rows = verify_rows(stable, targets, run, env)
+    return None if rows is None else [row.row for row in rows]
 
 
 VERIFY_UNAVAILABLE = "VERIFY-UNAVAILABLE"
+VERIFY_TIMEOUT = "VERIFY-TIMEOUT"
 
 
 def hook_findings(home: str, roots: L.Roots, host: str, stable: str | None, *, run=subprocess.run) -> list[Finding]:
@@ -355,12 +442,13 @@ def hook_findings(home: str, roots: L.Roots, host: str, stable: str | None, *, r
         for path, cmd in dead_hook_commands(home)
     ]
     if stable:
-        failures = verify_failures(stable, VERIFY_TARGETS, run=run)
+        failures = verify_rows(stable, VERIFY_TARGETS, run=run)
         if failures is None:
             out.append(Finding("verify:unavailable", "install_tools verify", "hook-coverage", host, VERIFY_UNAVAILABLE,
                                "it could not run, so the hooks are unverified"))
         for row in failures or ():
-            out.append(Finding(f"verify:{row}", row, "hook-coverage", host, "VERIFY-FAIL", "install_tools verify"))
+            kind = VERIFY_TIMEOUT if row.timed_out else "VERIFY-FAIL"
+            out.append(Finding(f"verify:{row.row}", row.row, "hook-coverage", host, kind, f"install_tools verify: {row.problem}, twice"))
     return out
 
 
@@ -381,7 +469,7 @@ def load_report(path: str, now: _dt.datetime, max_age_hours: float) -> dict | No
 
 
 def _empty_state() -> dict:
-    return {"version": 1, "groups": {}, "events_since": "", "dm_paths": [], "repeat_pending": {}, "last_repeat_dm": ""}
+    return {"version": 1, "groups": {}, "events_since": "", "dm_paths": [], "repeat_pending": {}, "last_owner_dm": ""}
 
 
 def _shape_problem(state: Any) -> bool:
@@ -394,12 +482,14 @@ def _shape_problem(state: Any) -> bool:
             return True
         if not isinstance(group.get("issue"), (str, type(None))) or not isinstance(group.get("first_seen", ""), str):
             return True
+        if not isinstance(group.get("leaks", {}), dict):
+            return True
         if type(group.get("generation", 0)) is not int:
             return True
     dm_paths = state.get("dm_paths", [])
     return not (isinstance(state.get("events_since", ""), str) and isinstance(dm_paths, list)
                 and all(isinstance(p, str) for p in dm_paths) and isinstance(state.get("repeat_pending", {}), dict)
-                and isinstance(state.get("last_repeat_dm", ""), str))
+                and isinstance(state.get("last_repeat_dm", ""), str) and isinstance(state.get("last_owner_dm", ""), str))
 
 
 def _read_json(path: str) -> Any:
@@ -442,6 +532,25 @@ def _write_json(path: str, data: Mapping[str, Any]) -> None:
         fh.flush()
         os.fsync(fh.fileno())
     os.replace(tmp, path)
+
+
+def _write_status(path: str, status: Mapping[str, Any], acting: bool, now: _dt.datetime) -> None:
+    """A dry run does not replace the recent status of a run that was meant to act, whether it worked or failed:  it would call that
+    watcher held and hide its errors.  Once that status is stale the watcher is gone or has been held, so the dry run takes over and
+    keeps when the last acting run was, so a watcher that stopped still reads as stopped."""
+    if acting:
+        _write_json(path, {**status, "acting": True})
+        return
+    prior = _read_json(path)
+    prior = prior if isinstance(prior, dict) else {}
+    last = prior.get("at") if prior.get("acting") is True else prior.get("last_acting_run")
+    if prior.get("acting") is True:
+        try:
+            if (now - _dt.datetime.fromisoformat(str(last))).total_seconds() < STATUS_FRESH_HOURS * 3600:
+                return
+        except (TypeError, ValueError):
+            pass
+    _write_json(path, {**status, "acting": False, "last_acting_run": last if isinstance(last, str) else ""})
 
 
 def _nothing_sent(tool: str, code: int, stderr: str) -> bool:
@@ -531,7 +640,8 @@ def board_env(host: str) -> str:
 
 
 _TITLES = {
-    "main-clone": "Main Clone Off Its Default Branch: {repo} ({host})",
+    "misplaced": "Misplaced Checkouts ({host})",
+    "main-clone": "Main Clones Off Their Default Branch ({host})",
     "exceptions": "Placement Exceptions Expired Or Near Expiry ({host})",
     "exceptions-file": "Placement Exceptions File Unusable ({host})",
     "code-work": "Code Clones Holding Work No Remote Has ({host})",
@@ -540,23 +650,36 @@ _TITLES = {
 }
 
 
-def _title(creator: str, repo: str, host: str) -> str:
-    template = _TITLES.get(creator, "Misplaced Checkouts: {creator} In {repo} ({host})")
-    return template.format(creator=creator.title(), repo=repo, host=host.title())
+def _title(group: str, host: str) -> str:
+    return _TITLES[group].format(host=host.title())
+
+
+def _who(f: Finding) -> str:
+    """An issue is per rule, so a misplaced row says who and where, which the rule alone does not."""
+    return f"{f.creator} in {f.repo}, " if f.group == "misplaced" else ""
 
 
 def _lines(items: Sequence[Finding], limit: int = LINES_PER_BODY) -> str:
-    rows = [f"- `{D.redact_text(f.public)}`: {f.kind.lower()}, {D.redact_text(f.detail)}" for f in items[:limit]]
+    rows = [f"- `{D.redact_text(f.public)}`: {f.kind.lower()}, {_who(f)}{D.redact_text(f.detail)}" for f in items[:limit]]
     if len(items) > limit:
         rows.append(f"- and {len(items) - limit} more")
     return "\n".join(rows)
 
 
-def _out_of_sight(path: str, roots: L.Roots) -> bool:
-    """Whether `path` lies on something not there right now:  a lanes symlink with no target, or a disk that is not mounted.  A sweep
-    says nothing about such a path, and AGENTS.md says these do stop resolving on a remount."""
+def _under(path: str, root: str) -> bool:
+    return path == root or path.startswith(root.rstrip("/") + "/")
+
+
+def _out_of_sight(path: str, roots: L.Roots, unreadable: Sequence[str] = ()) -> bool:
+    """Whether `path` lies on something not there right now:  a lanes symlink with no target, a disk that is not mounted, or a root the
+    sweep could not read.  A sweep says nothing about such a path, and AGENTS.md says these do stop resolving on a remount.  A symlink
+    into an unreadable root still resolves, so that is judged by where it leads."""
     if not path.startswith("/"):
         return False
+    real = os.path.realpath(path)
+    for root in unreadable:
+        if any(_under(spelling, candidate) for spelling in (path, real) for candidate in (root, os.path.realpath(root))):
+            return True
     for root in roots.external_lanes_roots:
         text = os.fspath(root)
         if (path == text or path.startswith(text + "/")) and not os.path.isdir(text):
@@ -572,7 +695,7 @@ def _out_of_sight(path: str, roots: L.Roots) -> bool:
     return False
 
 
-def _forget_resolved(state: dict, findings: Sequence[Finding], roots: L.Roots) -> int:
+def _forget_resolved(state: dict, findings: Sequence[Finding], roots: L.Roots, unreadable: Sequence[str] = ()) -> int:
     """Drop what the latest full look no longer sees, so a checkout fixed and broken again is reported again.  Returns how many it kept
     only because it could not look."""
     current = {key for f in findings for key in f.keys}
@@ -582,7 +705,7 @@ def _forget_resolved(state: dict, findings: Sequence[Finding], roots: L.Roots) -
         for key, stamp in group.get("paths", {}).items():
             if key in current:
                 kept[key] = stamp
-            elif _out_of_sight(key.split("|", 1)[0], roots):
+            elif _out_of_sight(key.split("|", 1)[0], roots, unreadable):
                 kept[key] = stamp
                 held += 1
         group["paths"] = kept
@@ -600,7 +723,7 @@ def _file_group(filer: Filer, group: dict, key: str, title: str, body: str, host
             return issue, issue is not None
         if not filer.issue_is_closed(issue):
             return issue, False
-        group.update(generation=generation + 1, first_seen=stamp)
+        group.update(generation=generation + 1, first_seen=stamp, leaks={})
     filer.errors.append(f"simple-board file: {MAX_GENERATIONS} closed issues in a row for {key}")
     return None, False
 
@@ -625,28 +748,30 @@ def apply_findings(findings: Sequence[Finding], state: dict, filer: Filer | None
                             "Check the mount and the roots, then run once with --accept-burst.")
         return fresh
     for key, items in sorted(fresh.items()):
-        creator, repo = key.split("|", 1)
         group = state["groups"].setdefault(key, {"first_seen": stamp, "issue": None, "paths": {}})
-        title = _title(creator, repo, host)
+        title = _title(key, host)
         if group.get("issue") and filer.issue_is_closed(group["issue"]):
-            group.update(issue=None, generation=int(group.get("generation", 0)) + 1, first_seen=stamp)
-        chunks = [items[i:i + LINES_PER_BODY] for i in range(0, len(items), LINES_PER_BODY)]
+            group.update(issue=None, generation=int(group.get("generation", 0)) + 1, first_seen=stamp, leaks={})
+        waiting = list(items)
         sent: list[Finding] = []
         if not group.get("issue"):
             body = (f"The placement watcher found these on the {host}.{SG}It never moves or deletes anything.{SG}"
-                    f"Rules: docs/protocols/lane-map.md.\n\n{_lines(chunks[0])}\n")
+                    f"Rules: docs/protocols/lane-map.md.\n\n{_lines(items, len(items))}\n")
             issue, holds = _file_group(filer, group, key, title, body, host, stamp)
             if issue is None:
                 continue
             group["issue"] = issue
             if holds:
                 # The issue holds these findings now, whatever becomes of the post.
-                sent += chunks.pop(0)
+                sent, waiting = waiting, []
                 filer.post(f"{issue} {title}", f"repo: AI-Fleet-Coordinator{SG}{title}, filed as {issue}.\n\n{_lines(items, 15)}\n")
-        for chunk in chunks:
+        for chunk in (waiting[i:i + LINES_PER_BODY] for i in range(0, len(waiting), LINES_PER_BODY)):
             if filer.comment(group["issue"], f"New since the last run:\n{_lines(chunk)}\n") == REFUSED:
                 break
             sent += chunk
+        leaks = group.setdefault("leaks", {})
+        for f in items:
+            leaks.setdefault(f.leak, stamp)
         for f in sent:
             for fingerprint in f.keys:
                 group["paths"][fingerprint] = stamp
@@ -654,47 +779,62 @@ def apply_findings(findings: Sequence[Finding], state: dict, filer: Filer | None
     return fresh
 
 
+def _fit_message(body: str) -> str:
+    """Every row, unless Zulip would refuse the message for its length.  What is cut is counted, and those rows are all in the issues."""
+    if len(body) <= DM_MAX_CHARS:
+        return body
+    kept: list[str] = []
+    used, dropped = 0, 0
+    for line in body.splitlines():
+        if dropped or used + len(line) + 1 > DM_MAX_CHARS - 80:
+            dropped += line.startswith("- ")
+            continue
+        kept.append(line)
+        used += len(line) + 1
+    return "\n".join(kept) + f"\n- and {dropped} more, all in the issues\n"
+
+
 def _notify_owner(findings: Sequence[Finding], fresh: Mapping[str, list[Finding]], state: dict, filer: Filer,
                   now: _dt.datetime) -> None:
-    """Unpushed work goes at once.  A growing leak waits in `repeat_pending` for the day's one message, since each new path in an old
-    group would otherwise be a message an hour for as long as the issue stays open.  A path counts as told only once a message named it."""
+    """One message for everything new, and at most one a day (OWNER_DM_HOURS).  Unpushed work goes as soon as today's message is free, and
+    a growing leak waits in `repeat_pending` for the same one, since each new path in an old leak would otherwise be a message an hour for
+    as long as the issue stays open.  A path counts as told only once a message named it."""
     told = set(state.get("dm_paths", ()))
     urgent = list({f.path: f for f in findings if f.unpushed_in_code and f.path not in told}.values())
     pending: dict = state.setdefault("repeat_pending", {})
+    # Only a misplaced checkout is a leak.  The other rules, a Code clone's old branches among them, stay in their issues.
     for key, items in fresh.items():
-        group = state["groups"].get(key) or {}
-        try:
-            first = _dt.datetime.fromisoformat(group.get("first_seen", ""))
-        except ValueError:
+        if key != "misplaced":
             continue
-        if (now - first).days >= REPEAT_LEAK_DAYS:
-            for f in items:
-                if f.path not in told:
-                    pending.setdefault(f.path, _lines([f]))
+        leaks = (state["groups"].get(key) or {}).get("leaks", {})
+        for f in items:
+            # A state file from before one issue per rule class kept this date on the leak's own group.
+            before = (state["groups"].get(f.leak) or {}).get("first_seen", "")
+            try:
+                first = _dt.datetime.fromisoformat(before or leaks.get(f.leak, ""))
+            except (TypeError, ValueError):
+                continue
+            if (now - first).days >= REPEAT_LEAK_DAYS and f.path not in told:
+                pending.setdefault(f.path, _lines([f]))
     try:
-        last = _dt.datetime.fromisoformat(state.get("last_repeat_dm", ""))
+        last = _dt.datetime.fromisoformat(state.get("last_owner_dm") or state.get("last_repeat_dm") or "")
     except ValueError:
         last = None
-    due = bool(pending) and (last is None or (now - last).total_seconds() >= REPEAT_DM_HOURS * 3600)
-    if not urgent and not due:
+    if not urgent and not pending:
         return
-    shown_urgent = urgent[:DM_ROWS]
-    shown_repeat = sorted(pending)[:DM_ROWS] if due else []
+    if last is not None and (now - last).total_seconds() < OWNER_DM_HOURS * 3600:
+        return
     parts = []
-    if shown_urgent:
-        more = f"\n- and {len(urgent) - DM_ROWS} more in the next message" if len(urgent) > DM_ROWS else ""
-        parts.append(f"{len(urgent)} checkout(s) in the Code root hold unpushed work:\n{_lines(shown_urgent, DM_ROWS)}{more}")
-    if shown_repeat:
-        more = f"\n- and {len(pending) - DM_ROWS} more in the next message" if len(pending) > DM_ROWS else ""
-        rows = "\n".join(pending[path] for path in shown_repeat)
-        parts.append(f"{len(pending)} new misplaced checkout(s) from a leak open over {REPEAT_LEAK_DAYS} days:\n{rows}{more}")
-    if filer.dm_owner("From the placement watcher.\n\n" + "\n\n".join(parts) + "\n") == REFUSED:
+    if urgent:
+        parts.append(f"{len(urgent)} checkout(s) in the Code root hold unpushed work:\n{_lines(urgent, len(urgent))}")
+    if pending:
+        rows = "\n".join(pending[path] for path in sorted(pending))
+        parts.append(f"{len(pending)} new misplaced checkout(s) from a leak open over {REPEAT_LEAK_DAYS} days:\n{rows}")
+    if filer.dm_owner(_fit_message("From the placement watcher.\n\n" + "\n\n".join(parts) + "\n")) == REFUSED:
         return
-    state["dm_paths"] = sorted(told | {f.path for f in shown_urgent} | set(shown_repeat))
-    for path in shown_repeat:
-        del pending[path]
-    if shown_repeat:
-        state["last_repeat_dm"] = now.isoformat(timespec="seconds")
+    state["dm_paths"] = sorted(told | {f.path for f in urgent} | set(pending))
+    pending.clear()
+    state["last_owner_dm"] = now.isoformat(timespec="seconds")
 
 
 def run_once(*, home: str, env: Mapping[str, str], apply: bool, seat: str, session: str, report_path: str | None,
@@ -707,14 +847,14 @@ def run_once(*, home: str, env: Mapping[str, str], apply: bool, seat: str, sessi
     state_path = os.path.join(state_root, STATE_NAME)
     status_path = os.path.join(state_root, STATUS_NAME)
     errors: list[str] = []
+    acting = apply or filer is not None
     try:
         registry = L.load_registry(env=env)
         roots = L.make_roots(home, env, registry=registry)
     except (OSError, ValueError, L.LayoutError) as exc:
-        if apply or filer is not None:
-            _write_json(status_path, {"at": now.isoformat(timespec="seconds"), "ok": False, "input": None, "host": socket.gethostname(),
-                                      "findings": 0, "new": 0, "errors": [f"registry unreadable: {type(exc).__name__}"], "applied": False,
-                                      "state_written": _state_was_written(state_path, status_path)})
+        _write_status(status_path, {"at": now.isoformat(timespec="seconds"), "ok": False, "input": None, "host": socket.gethostname(),
+                                    "findings": 0, "new": 0, "errors": [f"registry unreadable: {type(exc).__name__}"], "applied": False,
+                                    "held": not acting, "state_written": _state_was_written(state_path, status_path)}, acting, now)
         return EXIT_STALE
     # Never this watcher's own last sweep:  an hourly job that read it back would look at the disk once every few hours.
     candidates = [report_path] if report_path else [os.path.join(home, MAINTAIN_REPORT)]
@@ -732,7 +872,6 @@ def run_once(*, home: str, env: Mapping[str, str], apply: bool, seat: str, sessi
                 _write_json(os.path.join(state_root, REPORT_NAME), report)
         except Exception as exc:  # noqa: BLE001 - reported through the status file and the exit code
             errors.append(f"sweep failed: {type(exc).__name__}")
-    acting = apply or filer is not None
     state = load_state(state_path)
     hold = state_problem(state_path, status_path) if acting else None
     if hold and reset_state:
@@ -743,6 +882,8 @@ def run_once(*, home: str, env: Mapping[str, str], apply: bool, seat: str, sessi
         told = _read_json(os.path.join(state_root, TOLD_NAME))
         if isinstance(told, dict) and isinstance(told.get("dm_paths"), list):
             state["dm_paths"] = [p for p in told["dm_paths"] if isinstance(p, str)]
+        if isinstance(told, dict) and isinstance(told.get("last_owner_dm"), str):
+            state["last_owner_dm"] = told["last_owner_dm"]
     if hold:
         errors.append(f"{hold}, so nothing was sent.  Check it, then run once with --reset-state.")
     active = filer
@@ -774,6 +915,7 @@ def run_once(*, home: str, env: Mapping[str, str], apply: bool, seat: str, sessi
     if hold:
         active = None
     fresh = apply_findings(findings, state, active, host=host, now=now, accept_burst=accept_burst)
+    no_read = [row for row in (report or {}).get("unreadable_roots", ()) if isinstance(row, Mapping) and isinstance(row.get("path"), str)]
     out_of_sight = 0
     if active is not None:
         errors.extend(active.errors)
@@ -782,30 +924,38 @@ def run_once(*, home: str, env: Mapping[str, str], apply: bool, seat: str, sessi
         if not active.errors and not unusable:
             state["events_since"] = newest
             if report is not None:
-                out_of_sight = _forget_resolved(state, findings, roots)
+                out_of_sight = _forget_resolved(state, findings, roots, [row["path"] for row in no_read])
         _write_json(state_path, state)
-        _write_json(os.path.join(state_root, TOLD_NAME), {"dm_paths": state.get("dm_paths", [])})
+        _write_json(os.path.join(state_root, TOLD_NAME), {"dm_paths": state.get("dm_paths", []), "last_owner_dm": state.get("last_owner_dm", "")})
     for key, items in sorted(fresh.items()):
         out.write(f"{key}: {len(items)} new\n")
         for f in items[:10]:
             out.write(f"  {f.kind} {f.public} {f.detail}\n")
+    for row in no_read:
+        out.write(f"external root unreadable: {public_path(row['path'], roots)} ({row.get('error')}).  This result is partial, not clean.\n")
     status = {
         "at": now.isoformat(timespec="seconds"),
-        "ok": report is not None and not errors,
+        "ok": report is not None and not errors and not no_read,
+        "held": not acting,
+        "coverage": COVERAGE_UNREADABLE if no_read else COVERAGE_FULL,
+        "unreadable_roots": [{"path": public_path(row["path"], roots), "error": row.get("error")} for row in no_read],
         "input": source,
         "host": socket.gethostname(),
         "findings": len(findings),
         "new": sum(len(v) for v in fresh.values()),
+        "groups": {key: len(items) for key, items in sorted(fresh.items())},
         "errors": errors,
         "applied": active is not None,
         "out_of_sight": out_of_sight,
-        "state_written": bool(hold) or os.path.exists(state_path),  # a hold stays a hold, and a reset that sent nothing leaves none
+        # A hold stays a hold, and a reset that sent nothing leaves none.  A dry run looks at nothing here, so it passes on what it found.
+        "state_written": (bool(hold) or os.path.exists(state_path)) if acting else _state_was_written(state_path, status_path),
     }
-    if acting:
-        _write_json(status_path, status)
+    _write_status(status_path, status, acting, now)
     if report is None or unusable or unverified:
         return EXIT_STALE
-    return EXIT_FILING if errors else EXIT_OK
+    if errors:
+        return EXIT_FILING
+    return EXIT_UNREADABLE if no_read else EXIT_OK
 
 
 def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None) -> int:

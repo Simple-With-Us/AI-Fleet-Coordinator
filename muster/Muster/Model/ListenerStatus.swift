@@ -103,13 +103,13 @@ struct ListenerStatus: Decodable, Equatable {
 
     /// The pin that proves a seat's binary works.
     struct Pin: Decodable, Equatable {
-        /// Whether the listener holds the pin.
+        /// Whether the eavesdropper holds the pin.
         var pinned: Bool?
         /// The pinned muse binary.
         var pinned_muse: String?
         /// The pinned claude binary.
         var pinned_claude: String?
-        /// The listener's own reason,  when the pin is not what it should be.
+        /// The eavesdropper's own reason,  when the pin is not what it should be.
         var why: String?
     }
 
@@ -123,32 +123,48 @@ struct ListenerStatus: Decodable, Equatable {
         var ts: Double?
     }
 
-    /// The listener's own state.
+    /// The eavesdropper's own state.
     struct State: Decodable, Equatable {
         /// The seats,  by tag.
         var seats: [String: Seat]?
         /// The kill switch,  by scope.
         var pause: [String: PauseEntry]?
-        /// When the listener last published.
+        /// When the eavesdropper last published.
         var updated: Double?
-        /// When the listener started.
+        /// When the eavesdropper started.
         var started: Double?
-        /// The listener's version.
+        /// The eavesdropper's version.
         var version: String?
+        /// Which instance this eavesdropper says it is:  "mac" or "server".
+        var instance: String?
+        /// The seats the file turns off.
+        var disabled: [String]?
+        /// The seats the eavesdropper would not run, and why.
+        var skipped_seats: [String: [String]]?
+        /// Everything wrong with the configuration the eavesdropper read, a refused reload included.
+        var config_errors: [String]?
+        /// Why the eavesdropper refused its last reload, or empty when it did not.  An eavesdropper from
+        /// before this field publishes the same text in `config_errors` only.
+        var reload_refused: [String]?
+        /// When the eavesdropper last ran a reload, accepted or refused.
+        var reload_at: Double?
+        /// The seat partition file this eavesdropper reads.  An eavesdropper from before this field does
+        /// not say.
+        var partition_file: String?
     }
 
-    /// Whether the listener is running.
+    /// Whether the eavesdropper is running.
     var running: Bool?
     /// Its pid.
     var pid: Int?
     /// The state itself.
     var status: State?
-    /// The plugin the listener runs,  when it runs one.
+    /// The plugin the eavesdropper runs,  when it runs one.
     var plugin: JSONValue?
-    /// The launch agent that keeps the listener alive.
+    /// The launch agent that keeps the eavesdropper alive.
     var launch_agent: JSONValue?
 
-    /// The seat's state,  when the listener has one.
+    /// The seat's state,  when the eavesdropper has one.
     func seat(_ tag: String) -> Seat? {
         status?.seats?[tag]
     }
@@ -158,14 +174,109 @@ struct ListenerStatus: Decodable, Equatable {
         status?.pause ?? [:]
     }
 
-    /// When the listener last published its state.
+    /// When the eavesdropper last published its state.
     var updated: Date? {
         status?.updated.map { Date(timeIntervalSince1970: $0) }
     }
 
-    /// The seats the listener knows.
+    /// The seats the eavesdropper knows.
     var seatTags: [String] {
         (status?.seats ?? [:]).keys.sorted()
+    }
+}
+
+// MARK: - What a reload did
+
+/// What the eavesdropper did when it was asked to re-read the file.
+///
+/// `daemon reload` only sends a signal and exits 0, so its exit code says nothing about whether
+/// the eavesdropper took the file.  The answer is in the status the eavesdropper publishes afterwards.
+enum ListenerReloadOutcome: Equatable {
+    /// The eavesdropper read the file and is running on it.  `otherProblems` are soft errors it
+    /// reports, which do not stop the reload.
+    case accepted(otherProblems: [String])
+    /// The eavesdropper refused the file and kept its old settings.
+    case refused([String])
+    /// An eavesdropper too old to say which:  it re-read the file and reports these errors, which may
+    /// include a refusal, so Muster cannot call it accepted.
+    case reportsProblems([String])
+    /// An eavesdropper too old to say which, reporting nothing wrong.  It publishes on every tick, so a
+    /// status newer than the signal does not show it has read the file, or that it took it.
+    case cannotTell
+    /// The eavesdropper published nothing newer in time.
+    case noAnswer(seconds: Int)
+    /// The signal could not be sent.
+    case notAsked(String)
+
+    /// Whether the panel shows this as a failure.
+    var isFailure: Bool {
+        if case .accepted = self { return false }
+        return true
+    }
+
+    /// What the panel says.
+    var report: String {
+        switch self {
+        case .accepted(let others):
+            guard !others.isEmpty else { return "The eavesdropper accepted it." }
+            return "The eavesdropper accepted it, and reports these problems:\n" + others.joined(separator: "\n")
+        case .refused(let reasons):
+            return "The eavesdropper refused it and kept running on its old settings.\u{00A0} It will refuse to start until this is fixed:\n"
+                + reasons.joined(separator: "\n")
+        case .reportsProblems(let problems):
+            return "The eavesdropper re-read it and reports these problems, so Muster cannot say it accepted the change:\n"
+                + problems.joined(separator: "\n")
+        case .cannotTell:
+            return "This eavesdropper is too old to say whether it took the change, so Muster cannot say it is in effect.\u{00A0} An eavesdropper restart loads the current settings and gives Muster an answer next time."
+        case .noAnswer(let seconds):
+            return "No answer from the eavesdropper after \(seconds) seconds, so Muster cannot say the change is in effect."
+        case .notAsked(let reason):
+            let detail = reason.isEmpty ? "" : "\u{00A0} \(reason)"
+            return "The eavesdropper could not be asked to re-read it, so the change is not in effect yet.\(detail)"
+        }
+    }
+
+    /// The answer a published status gives to a reload sent at a time, or nil when that status
+    /// could have been written before the eavesdropper acted on it.
+    static func answer(toReloadSentAt sentAt: Double, in status: ListenerStatus) -> ListenerReloadOutcome? {
+        guard let state = status.status else { return nil }
+        if let refused = state.reload_refused {
+            guard let reloadAt = state.reload_at, reloadAt >= sentAt else { return nil }
+            if !refused.isEmpty { return .refused(refused) }
+            return .accepted(otherProblems: state.config_errors ?? [])
+        }
+        guard let updated = state.updated, updated >= sentAt else { return nil }
+        let problems = state.config_errors ?? []
+        return problems.isEmpty ? .cannotTell : .reportsProblems(problems)
+    }
+}
+
+// MARK: - What the eavesdropper thinks of a candidate file
+
+/// The answer of `daemon check-config`:  the eavesdropper's own rules run on a candidate file.
+struct ListenerConfigCheck: Decodable, Equatable {
+    var ok: Bool
+    /// Why the candidate is not TOML the eavesdropper can read.
+    var parse_error: String?
+    /// Errors the candidate has and the current file does not.
+    var new_errors: [String]?
+    /// What the seat partition refuses in the candidate.
+    var refused: [String]?
+
+    /// What stops an ordinary edit:  anything new, and any refusal at all, because the eavesdropper
+    /// would refuse every reload of a file that holds one.
+    var problems: [String] {
+        var found: [String] = parse_error.map { [$0] } ?? []
+        for problem in (refused ?? []) + (new_errors ?? []) where !found.contains(problem) {
+            found.append(problem)
+        }
+        return found
+    }
+
+    /// What stops a repair:  only something new, because a repair of one refused section may leave
+    /// another one the file already had.
+    var problemsForARepair: [String] {
+        (parse_error.map { [$0] } ?? []) + (new_errors ?? [])
     }
 }
 
@@ -185,7 +296,7 @@ struct AgentSyncInvocation: Equatable {
         self.timeout = timeout
     }
 
-    /// `daemon status --json`:  the listener's own published state.
+    /// `daemon status --json`:  the eavesdropper's own published state.
     static func status() -> AgentSyncInvocation {
         AgentSyncInvocation(["daemon", "status", "--json"])
     }
@@ -203,11 +314,19 @@ struct AgentSyncInvocation: Equatable {
     }
 
     /// `daemon reload`:  re-read the configuration file.
-    ///
-    /// A reload does not re-read a seat's budget,  so a changed budget needs a listener
-    /// restart.  The panel says so instead of pretending the reload was enough.
     static func reload() -> AgentSyncInvocation {
         AgentSyncInvocation(["daemon", "reload"])
+    }
+
+    /// `daemon check-config --file F [--partition P] --json`:  would the eavesdropper take this
+    /// candidate file?
+    ///
+    /// The command line runs from Muster's checkout and the eavesdropper can run from another, so
+    /// `partition` names the copy to judge by.  A checkout too old for the flag exits 2 with no
+    /// answer, and that stops the write.
+    static func checkConfig(file: String, partition: String?) -> AgentSyncInvocation {
+        let copy = partition.map { ["--partition", $0] } ?? []
+        return AgentSyncInvocation(["daemon", "check-config", "--file", file] + copy + ["--json"])
     }
 
     /// `daemon test-wake --seat S --runtime R --run`:  run the seat's wake for real.
@@ -327,7 +446,7 @@ struct AgentSyncCLI: AgentSyncRunning {
 
     /// The child environment.
     ///
-    /// HOME stays,  because the listener's state lives under it.  PYTHON* and FLEET_* go,
+    /// HOME stays,  because the eavesdropper's state lives under it.  PYTHON* and FLEET_* go,
     /// so nothing in the app's environment can point the command line at another checkout.
     static func sanitizedEnvironment(_ environment: [String: String]) -> [String: String] {
         var result = environment.filter { key, _ in

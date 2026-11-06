@@ -961,6 +961,7 @@ class Checkout:
     ignored_regenerable: int | None = None
     unpushed: int | None = None
     unpushed_all_branches: int | None = None
+    newest_unpushed_age_hours: float | None = None
     has_stash: bool | None = None
     upstream: str | None = None
     upstream_state: str = "unknown"
@@ -1461,6 +1462,17 @@ def _not_remotes(trusted: list[str] | None) -> list[str]:
     return ["--not", *(f"--remotes={name}" for name in trusted)] if trusted else []
 
 
+def _newest_unpushed_age(ctx: _Ctx, path: str, not_args: Sequence[str]) -> float | None:
+    """Hours since the newest commit on any local branch that no trusted remote has, by committer date, or None if it could not be
+    read.  rev-list lists newest first."""
+    res = _call(ctx, ["git", "rev-list", "--max-count=1", "--branches", *not_args], path)
+    newest = res.out.strip() if res.ok else ""
+    if not _SHA.match(newest):
+        return None
+    res = _call(ctx, ["git", "log", "-1", "--no-show-signature", "--format=%ct", newest], path)
+    return _hours(ctx.now, float(res.out.strip())) if res.ok and res.out.strip().isdigit() else None
+
+
 def _probe_git(co: Checkout, ctx: _Ctx, path: str) -> None:
     errors = co.read_errors
     res = _call(ctx, ["git", "rev-parse", "HEAD"], path)
@@ -1559,6 +1571,8 @@ def _probe_git(co: Checkout, ctx: _Ctx, path: str) -> None:
         count = _as_count(res)
         if count is not None:
             co.unpushed_all_branches = count
+            if count:
+                co.newest_unpushed_age_hours = _newest_unpushed_age(ctx, path, not_args)
         else:
             errors.append("unpushed-all-branches: " + _why(res))
         res = _call(ctx, ["git", "for-each-ref", "--count=1", "--format=%(refname)", "refs/stash"], path)
@@ -2075,16 +2089,25 @@ def _main_clones(ctx: _Ctx, ordered: Sequence[Checkout], behind_limit: int) -> l
     return out
 
 
+CODE_WORK_OLD_DAYS = 30
+
+
 def _code_clone_work(ordered: Sequence[Checkout], main_clones: Sequence[dict]) -> list[dict]:
-    """A clone in the Code root with work HEAD does not reach that no remote has, which a reset of it would strand."""
+    """A clone in the Code root with work HEAD does not reach that no remote has, which a reset of it would strand.  `old_branches_only`
+    is that work when all of it is local branches past CODE_WORK_OLD_DAYS, which is what an old squash-merged branch looks like.  An
+    age or a stash that could not be read is not old."""
     by_path = {co.path: co for co in ordered}
     out: list[dict] = []
     for row in main_clones:
         co = by_path[row["path"]]
         other = max(0, (co.unpushed_all_branches or 0) - (co.unpushed or 0))
         held = ([f"{other} commit(s) on other branches"] if other else []) + (["a stash"] if co.has_stash else [])
-        if held and not row["exception"]:
-            out.append({"type": "CODE-WORK", "path": co.path, "detail": " and ".join(held)})
+        if not held or row["exception"]:
+            continue
+        age = co.newest_unpushed_age_hours
+        old = bool(other) and co.has_stash is False and co.unpushed == 0 and age is not None and age > CODE_WORK_OLD_DAYS * 24
+        detail = " and ".join(held) + (f", the newest {int(age / 24)} days old" if old else "")
+        out.append({"type": "CODE-WORK", "path": co.path, "detail": detail, "old_branches_only": old})
     return out
 
 
@@ -2149,6 +2172,28 @@ def external_lane_warnings(roots: L.Roots) -> list[str]:
             if stray:
                 out.append(f"{ext} holds {', '.join(stray[:6])}{' ...' if len(stray) > 6 else ''} with no symlink under "
                            f"{roots.lanes_root}; its lanes are not at their ~/apps/lanes path.")
+    return out
+
+
+def unreadable_roots(roots: L.Roots) -> list[dict]:
+    """External lanes roots that are there and refuse to be read, as launchd meets an external disk it has no permission for.  A sweep
+    finds nothing on such a root and looks clean, so it says so.  A root that is not there is not this:  that is an unmounted disk."""
+    out: list[dict] = []
+    seen: set[str] = set()
+    for root in (os.fspath(r) for r in roots.external_lanes_roots):
+        parts = root.split("/")
+        mount = "/".join(parts[:3]) if len(parts) > 3 and parts[1] == "Volumes" else None
+        for path in filter(None, (mount, root)):
+            try:
+                with os.scandir(path):
+                    pass
+            except PermissionError as exc:
+                if path not in seen:
+                    seen.add(path)
+                    out.append({"path": path, "error": exc.strerror or type(exc).__name__})
+                break
+            except OSError:
+                break
     return out
 
 
@@ -2422,6 +2467,8 @@ def build_report(home: str | os.PathLike[str], env: Mapping[str, str] | None = N
         {"type": "MODE-FILE", "path": f"mode-file:{problem}", "detail": "that line of the lane-guard mode file does nothing"}
         for problem in P.read_mode(os.fspath(roots.home), env).problems
     ]
+    no_read = unreadable_roots(roots)
+    warnings += [f"{row['path']} cannot be read ({row['error']}), so no checkout on it is in this report." for row in no_read]
     shown = ordered
     if only_class:
         want_cls = only_class.upper()
@@ -2460,6 +2507,7 @@ def build_report(home: str | os.PathLike[str], env: Mapping[str, str] | None = N
         "main_clones": main_clones,
         "placement_anomalies": placement_anomalies,
         "placement_warnings": placement_warnings,
+        "unreadable_roots": no_read,
         "summary": summary,
     }
 
@@ -2573,6 +2621,8 @@ def render_text(report: Mapping) -> str:
         out.append(f"Placement problems {s.get('placement_violations', 0)}   "
                    f"Main clones {len(report['main_clones'])}")
     out.append("")
+    if report.get("shim_reach") is not None:
+        out += _shim_reach_module().render(report["shim_reach"]) + [""]
     if report.get("placement_anomalies"):
         out.append(f"PLACEMENT ({len(report['placement_anomalies'])})")
         out += [f"  {a['type']:<18} {a['path']}  {a['detail']}" for a in report["placement_anomalies"]]
@@ -2644,7 +2694,8 @@ fleet_lanes/placement-exceptions.json excuse a checkout.  --strict leaves all of
 separate fields, and only cleanup_eligible matters to cleaner_candidates.
 
 exit codes: 0 normally, 2 with --strict when a forbidden or unsanctioned checkout exists or with --strict-placement
-when placement_anomalies is not empty, 64 for a usage error."""
+when placement_anomalies is not empty, 64 for a usage error.  --strict-placement also says which shell shapes find the git shim,
+which fails no check:  fleet_lanes/shim_reach.py."""
 
 
 def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = None,
@@ -2685,6 +2736,8 @@ def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = N
     p.add_argument("--strict", action="store_true", help="exit 2 if any forbidden or unsanctioned checkout exists")
     p.add_argument("--strict-placement", action="store_true",
                    help="exit 2 if placement_anomalies is not empty (see placement, below)")
+    p.add_argument("--shim-reach", action="store_true",
+                   help="also say which common shell shapes find the git shim (--strict-placement implies this; it starts those shells)")
     p.add_argument("--main-clone-behind", metavar="N", type=int, default=MAIN_CLONE_BEHIND_LIMIT,
                    help=f"report a clone in the Code root more than N commits behind its default branch "
                         f"(default {MAIN_CLONE_BEHIND_LIMIT})")
@@ -2706,6 +2759,12 @@ def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = N
         lsof_cwds=lsof_cwds, clock=clock, only_class=args.only_class, gh_limit=args.gh_limit,
         fresh_days=args.fresh_days, cleaner_retention_days=args.cleaner_retention_days,
         main_clone_behind=args.main_clone_behind)
+    if args.shim_reach or args.strict_placement:
+        reach = _shim_reach_module()
+        if reach is not None:
+            report["shim_reach"] = reach.shim_reach(home, env)
+        else:
+            report["warnings"].append("this copy of the tools has no shim_reach module, so shim reach was not checked.")
     text = json.dumps(report, indent=2, sort_keys=False) + "\n"
     if args.write:
         _write_atomic(args.write, text)
@@ -2718,6 +2777,15 @@ def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = N
     if args.strict and report["summary"]["strict_violations"]:
         return 2
     return 2 if args.strict_placement and report["summary"]["placement_violations"] else 0
+
+
+def _shim_reach_module():
+    """Imported only when asked for, because the server's reviewed CLI bundle carries the doctor without it, and `lane` must still run."""
+    try:
+        from . import shim_reach
+    except ImportError:
+        return None
+    return shim_reach
 
 
 def _cleaner_notes(report: Mapping) -> list[str]:

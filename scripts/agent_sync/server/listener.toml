@@ -4,12 +4,11 @@
 # It holds no secrets.  Each seat's Zulip email and API key, ZULIP_SITE, and each routine's URL and sender key reach
 # the container as environment variables, from one of two sources under the same names.  Infisical (fleet-secrets'
 # source) is the intended one;  Coolify copies are the fallback:
-#   - Infisical at start:  when Coolify sets INFISICAL_CLIENT_ID, INFISICAL_CLIENT_SECRET and INFISICAL_PROJECT_ID
-#     (a read-only machine identity), the entrypoint loads the listener's variables from Infisical (project
+#   - Infisical at start:  when Coolify binds a scoped INFISICAL_TOKEN service token, the entrypoint loads
+#     the listener's variables from Infisical (project
 #     "AI Fleet Coordinator", environment prod, folder /zulip) on every start (server/infisical_env.py), and an
 #     Infisical value wins over a Coolify one of the same name;
-#   - fallback, runtime-only Coolify variables copied from that folder (the entrypoint logs an ERROR when a
-#     partial Infisical identity forces this).
+#   - environment backfills are accepted for names not stored in Infisical; the scoped token is still required.
 # ZULIP_SITE is never in Infisical:  Coolify sets it.  The Zulip names are the defaults (ZULIP_<CODE>_EMAIL and
 # ZULIP_<CODE>_API_KEY, where CODE is the seat with hyphens as underscores).  A Grok Bot persona's routine reads
 # the webhook names Infisical already holds, ZULIP_ALERT_GB_<ROLE>_ENDPOINT (the https URL) and

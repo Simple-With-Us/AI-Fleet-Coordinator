@@ -9,12 +9,17 @@ account, no handoff file, no edit to core.py.
 
 from __future__ import annotations
 
+import json
 import os
 import pathlib
+import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
 
+from fleet_knobs.tests._fake import ScopedReadAPI
 from fleet_rag import core
 
 # The five variables a third party sets to run their own corpus.
@@ -25,6 +30,7 @@ BYO = {
     "TEI_API_KEY": "byo-tei-key",
     "QDRANT_FLEET_COLLECTION": "my-agents",
 }
+SERVICE_TOKEN = "st." + "synthetic-recall-reader-token-value"
 
 
 class ExplodingHttp:
@@ -68,6 +74,13 @@ class CleanEnvironmentTests(unittest.TestCase):
         with mock.patch.dict(os.environ, self.env(), clear=True):
             cfg = core.load_config(need_write=True)
         self.assertEqual(cfg["QDRANT_API_KEY"], BYO["QDRANT_API_KEY"])
+        self.assertEqual(self.http.calls, [])
+
+    def test_complete_environment_ignores_unrelated_generic_service_token(self) -> None:
+        with (mock.patch.dict(os.environ, self.env(INFISICAL_TOKEN="st." + "x" * 32), clear=True),
+              mock.patch.object(core, "fleet_secrets_many", side_effect=AssertionError("unexpected fetch"))):
+            cfg = core.load_config()
+        self.assertEqual({key: cfg[key] for key in BYO}, BYO)
         self.assertEqual(self.http.calls, [])
 
     def test_optional_keys_are_absent_not_fatal(self) -> None:
@@ -138,7 +151,7 @@ class FleetSecretsFallbackTests(unittest.TestCase):
         )
         with mock.patch.dict(os.environ, {}, clear=True):
             with mock.patch.object(core, "_fleet_secrets_bin", lambda: str(self.bin)):
-                self.assertEqual(core._identity("INFISICAL_SHARED"), ("cid-fs", "placeholder-fs"))
+                self.assertEqual(core._identity("INFISICAL_SHARED"), (None, None))
                 self.assertEqual(core._identity("INFISICAL_OTHER"), (None, None))
 
     def test_identity_environment_beats_fleet_secrets(self) -> None:
@@ -147,7 +160,7 @@ class FleetSecretsFallbackTests(unittest.TestCase):
             mock.patch.dict(os.environ, env, clear=True),
             mock.patch.object(core, "_fleet_secrets_bin", lambda: "/nonexistent/fleet-secrets"),
         ):
-            self.assertEqual(core._identity("INFISICAL_SHARED"), ("cid-env", "sec-env"))
+            self.assertEqual(core._identity("INFISICAL_SHARED"), (None, None))
 
     def test_missing_binary_is_just_absent(self) -> None:
         with mock.patch.object(core, "_fleet_secrets_bin", lambda: None):
@@ -159,21 +172,17 @@ class FleetSecretsFallbackTests(unittest.TestCase):
         with mock.patch.object(core, "_fleet_secrets_bin", lambda: str(self.bin)):
             self.assertEqual(core.fleet_secrets_many(["TEI_URL"]), {})
 
-    def test_load_config_fills_gaps_from_fleet_secrets(self) -> None:
-        env = {"QDRANT_API_KEY": "k", "TEI_API_KEY": "from-env"}
-        with (
-            mock.patch.dict(os.environ, env, clear=True),
-            mock.patch.object(core, "_fleet_secrets_bin", lambda: str(self.bin)),
-            mock.patch.object(core, "http_json", ExplodingHttp()),
-        ):
-            cfg = core.load_config()
-        self.assertEqual(cfg["TEI_URL"], "https://tei.example.invalid")
-        self.assertEqual(cfg["TEI_API_KEY"], "from-env", "the environment always wins")
+    def test_missing_config_does_not_borrow_a_foreign_project_loader(self) -> None:
+        with (mock.patch.dict(os.environ, {"QDRANT_API_KEY": "k"}, clear=True),
+              mock.patch.object(core, "fleet_secrets_many", side_effect=AssertionError("foreign fallback"))):
+            with self.assertRaises(core.FleetRagError):
+                core.load_config()
+
 
     def test_identity_comes_from_the_environment(self) -> None:
         env = {"INFISICAL_SHARED_CLIENT_ID": "cid-env", "INFISICAL_SHARED_CLIENT_SECRET": "sec-env"}
         with mock.patch.dict(os.environ, env, clear=True):
-            self.assertEqual(core._identity("INFISICAL_SHARED"), ("cid-env", "sec-env"))
+            self.assertEqual(core._identity("INFISICAL_SHARED"), (None, None))
 
 
 class OverrideTests(unittest.TestCase):
@@ -228,43 +237,88 @@ class OverrideTests(unittest.TestCase):
                 "INFISICAL_SHARED_CLIENT_SECRET='placeholder-1'\n"
             )
             with mock.patch.dict(os.environ, {"FLEET_RAG_HANDOFF_FILE": str(path)}, clear=True):
-                self.assertEqual(core._identity("INFISICAL_SHARED"), ("cid-1", "placeholder-1"))
+                self.assertEqual(core._identity("INFISICAL_SHARED"), (None, None))
 
     def test_login_and_fetch_use_the_overridden_infisical(self) -> None:
         seen: list[str] = []
 
-        def fake_http(url, body=None, headers=None, method=None, timeout=None, retries=None):
-            seen.append(url)
-            if "/v1/auth/" in url:
-                return {"accessToken": "placeholder-token"}
-            return {"secrets": [{"secretKey": "TEI_RERANK_URL", "secretValue": "https://rr"}]}
+        from fleet_secrets import core as secrets
 
-        with tempfile.TemporaryDirectory() as tmp:
-            path = pathlib.Path(tmp) / "creds"
-            path.write_text(
-                "INFISICAL_SHARED_CLIENT_ID=cid\nINFISICAL_SHARED_CLIENT_SECRET=placeholder\n"
-            )
-            env = {
-                **BYO,
-                "FLEET_RAG_HANDOFF_FILE": str(path),
-                "FLEET_RAG_INFISICAL_API": "https://infisical.example.invalid/api",
-                "FLEET_RAG_INFISICAL_PROJECT": "proj-1234",
-                "FLEET_RAG_INFISICAL_ENV": "prod",
-            }
-            with (
-                mock.patch.dict(os.environ, env, clear=True),
-                mock.patch.object(core, "http_json", fake_http),
-            ):
-                cfg = core.load_config()
+        def fake_api(method, path, token, body, env, **kwargs):
+            seen.append(path)
+            if path == "/v2/service-token":
+                return 200, {"workspace": "proj-1234", "permissions": ["read"],
+                             "scopes": [{"environment": "prod", "secretPath": "/"}], "expiresAt": None}
+            name = path.split("?", 1)[0].rsplit("/", 1)[-1]
+            if name != "TEI_RERANK_URL":
+                return 404, {}
+            record = {"secretKey": "TEI_RERANK_URL", "secretValue": "https://rr",
+                      "type": "shared", "workspace": "proj-1234",
+                      "environment": "prod", "secretPath": "/"}
+            return 200, {"secret": record}
+
+        env = {
+            **BYO,
+            "FLEET_RECALL_INFISICAL_TOKEN": SERVICE_TOKEN,
+            "FLEET_RAG_INFISICAL_API": "https://infisical.example.invalid/api",
+            "FLEET_RAG_INFISICAL_PROJECT": "proj-1234",
+            "FLEET_RAG_INFISICAL_ENV": "prod",
+        }
+        with (mock.patch.dict(os.environ, env, clear=True),
+              mock.patch.object(secrets, "_api_json", fake_api)):
+            cfg = core.load_config()
         self.assertEqual(cfg["TEI_RERANK_URL"], "https://rr")
-        self.assertEqual(
-            seen[0], "https://infisical.example.invalid/api/v1/auth/universal-auth/login"
-        )
-        self.assertIn("https://infisical.example.invalid/api/v3/secrets/raw", seen[1])
+        self.assertEqual(seen[0], "/v2/service-token")
+        self.assertIn("/v3/secrets/raw", seen[1])
         self.assertIn("workspaceId=proj-1234", seen[1])
         self.assertIn("environment=prod", seen[1])
         # The owner's project id is never used once an override is set.
         self.assertNotIn(core.SHARED_PROJECT, seen[1])
+
+
+@unittest.skipUnless(shutil.which("rsync"), "standalone installer requires rsync")
+class StandaloneScopedReaderTests(unittest.TestCase):
+    def test_installed_recall_verifies_real_scoped_reads_and_replaces_only_code(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = pathlib.Path(tmp) / "home"
+            home.mkdir()
+            stable = home / "apps/fleet-rag"
+            installer = pathlib.Path(__file__).resolve().parents[2] / "install-fleet-rag.sh"
+            env = {"HOME": str(home), "PATH": "/usr/bin:/bin", "FLEET_RAG_HOME": str(stable)}
+            installed = subprocess.run(["bash", str(installer)], env=env, capture_output=True, text=True, timeout=60)
+            self.assertEqual(installed.returncode, 0, installed.stderr)
+            package = stable / "fleet_secrets"
+            self.assertEqual(sorted(p.name for p in package.iterdir()), ["__init__.py", "core.py"])
+            self.assertFalse((stable / "fleet-secrets").exists())
+            (package / "cli.py").write_text("# stale code must not ship\n")
+            (stable / "state/keep").write_text("preserved")
+            again = subprocess.run(["bash", str(installer)], env=env, capture_output=True, text=True, timeout=60)
+            self.assertEqual(again.returncode, 0, again.stderr)
+            self.assertFalse((package / "cli.py").exists())
+            self.assertEqual((stable / "state/keep").read_text(), "preserved")
+            boot = (
+                "import json,os,sys;sys.path.insert(0,sys.argv[1]);"
+                "from fleet_rag import core;import fleet_secrets.core as verifier;"
+                "assert os.path.commonpath([sys.argv[1],verifier.__file__])==sys.argv[1];"
+                "print(json.dumps(core.infisical_fetch({'RECALL_API_URL'})))"
+            )
+            with ScopedReadAPI({"RECALL_API_URL": "https://recall.invalid"}, project=core.SHARED_PROJECT) as api:
+                child = {**env, "FLEET_RECALL_INFISICAL_TOKEN": api.token,
+                         "FLEET_SECRETS_API": api.env["FLEET_SECRETS_API"],
+                         "FLEET_RAG_INFISICAL_API": api.env["FLEET_SECRETS_API"]}
+                ran = subprocess.run([sys.executable, "-I", "-B", "-c", boot, str(stable)],
+                                     env=child, cwd=home, capture_output=True, text=True, timeout=15)
+                self.assertEqual(ran.returncode, 0, ran.stderr)
+                self.assertEqual(json.loads(ran.stdout), {"RECALL_API_URL": "https://recall.invalid"})
+                self.assertEqual(len(api.requests), 2)
+                self.assertEqual(api.requests[0], "/api/v2/service-token")
+                self.assertTrue(api.requests[1].startswith("/api/v3/secrets/raw/RECALL_API_URL?"))
+                api.requests.clear()
+                api.metadata_override["permissions"] = ["read", "write"]
+                denied = subprocess.run([sys.executable, "-I", "-B", "-c", boot, str(stable)],
+                                        env=child, cwd=home, capture_output=True, text=True, timeout=15)
+                self.assertNotEqual(denied.returncode, 0)
+                self.assertEqual(api.requests, ["/api/v2/service-token"])
 
 
 if __name__ == "__main__":

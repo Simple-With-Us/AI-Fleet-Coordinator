@@ -1,4 +1,4 @@
-// AFC-330 part B:  the hosted listener_* tools.  They read the server listener's signed read API
+// AFC-330 part B:  the hosted eavesdropper_* tools.  They read the server eavesdropper's signed read API
 // (scripts/agent_sync/listener_api.py) with the seat's wake key, fence what comes back, keep
 // structuredContent to integers, and answer not_configured when the API is not set up.
 // No dependencies:  CI runs this with plain `node --test`.
@@ -27,7 +27,7 @@ async function hmacHex(key, text) {
   return [...new Uint8Array(await crypto.subtle.sign("HMAC", k, new TextEncoder().encode(text)))].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-/** A fake listener read API:  checks the signature like listener_api.py, answers views. */
+/** A fake eavesdropper read API:  checks the signature like listener_api.py, answers views. */
 function fakeListener({ views = {}, status = null, seat = "GROK-WEB", key = KEY, now }) {
   const requests = [];
   const fetch = async (input, init = {}) => {
@@ -74,7 +74,7 @@ function ok(result, tool) {
   return result.structuredContent;
 }
 
-test("the hosted list carries the five read-only listener tools from eavesdropper-tools.json, never eavesdropper_ack", () => {
+test("the hosted list carries the five read-only eavesdropper tools from eavesdropper-tools.json, never eavesdropper_ack", () => {
   const file = JSON.parse(readFileSync(path.join(ROOT, "../agent_sync/mcp/eavesdropper-tools.json"), "utf8"));
   assert.deepEqual(EAVESDROPPER_TOOLS, file.tools.filter((t) => t.name !== "eavesdropper_ack"));
   assert.equal(HOSTED_TOOLS_BY_NAME.eavesdropper_ack, undefined);
@@ -84,7 +84,7 @@ test("the hosted list carries the five read-only listener tools from eavesdroppe
   }
 });
 
-test("the signature is the listener's:  same string, same HMAC as listener_api.py", async () => {
+test("the signature is the eavesdropper's:  same string, same HMAC as listener_api.py", async () => {
   assert.equal(await hmacHex(KEY, listenerSigningString("/listener/v1/JET/inbox", "limit=5", "1790000000")), PY_VECTOR);
 });
 
@@ -105,7 +105,7 @@ test("listenerBaseUrl and listenerClientFromEnv:  https origin only, the seat's 
   assert.ok(!JSON.stringify(client).includes(KEY));
 });
 
-test("not configured:  every listener tool says not_configured and the Zulip tools still work", async () => {
+test("not configured:  every eavesdropper tool says not_configured and the Zulip tools still work", async () => {
   const { tools } = harness();
   for (const tool of EAVESDROPPER_TOOLS) {
     const error = toolError(await tools.call(tool.name, {}), "not_configured");
@@ -141,7 +141,7 @@ test("reads:  signed GETs for the grant's seat, fenced items, integer-only struc
   assert.deepEqual(ok(await tools.call("eavesdropper_held_back", {}), "eavesdropper_held_back"), { count: 1, ids: [601], lost: 2 });
 });
 
-test("errors map to short tool errors and never echo the listener's body or the key", async () => {
+test("errors map to short tool errors and never echo the eavesdropper's body or the key", async () => {
   for (const [status, code] of [[401, "not_authorized"], [404, "not_configured"], [400, "invalid_argument"], [503, "unavailable"], [302, "not_authorized"]]) {
     const { tools } = harness({ listener: (clock) => new ListenerClient({ baseUrl: BASE, seat: "GROK-WEB", key: KEY, fetch: fakeListener({ status, now: () => clock.now }).fetch, now: () => clock.now }) });
     const result = await tools.call("eavesdropper_status", {});
@@ -168,7 +168,7 @@ test("the read API's answer is parsed before use:  odd fields fall back on their
 test("listenerClientFromEnv: a resolved wake key builds the client with no env binding (required mode)", () => {
   const env = { LISTENER_API_URL: "https://listener.example.test" };
   const client = listenerClientFromEnv(env, "GROK-WEB", { fetch: async () => new Response("[]"), wakeKey: "w".repeat(40) });
-  assert.ok(client, "resolved key serves the listener with no legacy binding");
+  assert.ok(client, "resolved key serves the eavesdropper with no legacy binding");
   assert.equal(listenerClientFromEnv(env, "GROK-WEB", { fetch: async () => new Response("[]"), wakeKey: "" }), null, "empty resolved key = not configured, env never consulted");
   assert.equal(listenerClientFromEnv({ ...env, WAKE_HMAC_KEY_GROK_WEB: "legacy-value-ignored" }, "GROK-WEB", { fetch: async () => new Response("[]"), wakeKey: "w".repeat(40) }) === null, false, "an explicit resolved key wins over the env binding");
 });

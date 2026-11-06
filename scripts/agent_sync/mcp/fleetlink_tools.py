@@ -59,7 +59,7 @@ INFISICAL_PROJECT = "ai-fleet-coordinator"  # the project that folder lives in (
 INFISICAL_LABEL = "Infisical AI Fleet Coordinator"
 TOKEN_CACHE_TTL = 600.0
 FETCH_TIMEOUT_S = (
-    60.0  # one `fleet-secrets get`:  the machine-identity login and the export, under load
+    60.0  # one scoped `fleet-secrets get`:  metadata verification and export, under load
 )
 KEY_ABSENT_EXIT = (
     3  # fleet-secrets: the key is not there (a failure of any other kind says nothing about it)

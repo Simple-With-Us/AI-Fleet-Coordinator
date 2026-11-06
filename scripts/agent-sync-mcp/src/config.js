@@ -72,6 +72,13 @@ export const GRANT_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
 // creates (2026-11-03 ruling:  pause and epoch are not the real kill path),
 // and src/identity-cache.js states the full trade.
 export const GATE_IDENTITY_CACHE_MS = 60 * 60 * 1000;
+// The Git bearer verify cache (AFC-617), separate from the window above, which
+// never reaches this route:  how long one isolate may reuse a positive
+// /internal/gr-bearer-verify answer.  Off by default, because a window delays a
+// pause or revocation on Git calls, writes included, and that lag is the owner's
+// decision.  The GR_VERIFY_CACHE_MS var turns it on per deploy, up to the cap the
+// relay itself puts on a positive verify cache (git-relay/git_relay/shared_bearer.py).
+export const GR_VERIFY_CACHE_MAX_MS = 60_000;
 export const ACCESS_TOKEN_TTL_S = 60 * 60;
 export const REFRESH_TOKEN_TTL_S = 90 * 24 * 60 * 60;
 
@@ -113,7 +120,7 @@ export const SEAT_SECRETS = Object.freeze({
   WISE: Object.freeze({ key: "ZULIP_KEY_WISE", email: "ZULIP_EMAIL_WISE", infisical: Object.freeze({ name: "WISE_ZULIP_KEY", path: "/zulip" }) }),
 });
 
-// The shared HMAC key the server listener signs each seat's wake with
+// The shared HMAC key the server eavesdropper signs each seat's wake with
 // (POST /internal/wake/<SEAT>, src/wake.js).  Only this table turns a seat
 // from the path into a secret name, so a path can never pick another secret.
 // A seat whose secret is unset answers 404 there.
@@ -210,6 +217,15 @@ export function loadConfig(env) {
     if (!Number.isSafeInteger(gateIdentityCacheMs) || gateIdentityCacheMs < 0) throw new Error("config: GATE_IDENTITY_CACHE_MS must be a non-negative integer number of milliseconds");
   }
 
+  // The Git bearer verify window:  absent or empty means off, and this var alone
+  // controls it.  Anything malformed or past the relay's cap fails closed.
+  const grVerifyCacheRaw = env.GR_VERIFY_CACHE_MS;
+  let grVerifyCacheMs = 0;
+  if (grVerifyCacheRaw !== undefined && grVerifyCacheRaw !== null && String(grVerifyCacheRaw).trim() !== "") {
+    grVerifyCacheMs = Number(grVerifyCacheRaw);
+    if (!Number.isSafeInteger(grVerifyCacheMs) || grVerifyCacheMs < 0 || grVerifyCacheMs > GR_VERIFY_CACHE_MAX_MS) throw new Error(`config: GR_VERIFY_CACHE_MS must be an integer from 0 to ${GR_VERIFY_CACHE_MAX_MS} milliseconds`);
+  }
+
   const seatsRaw = parseJsonVar(env, "SEATS");
   if (typeof seatsRaw !== "object" || Array.isArray(seatsRaw)) throw new Error("config: SEATS must be an object");
   const seats = {};
@@ -271,7 +287,7 @@ export function loadConfig(env) {
     }
   }
 
-  // The owner's pinned Zulip user id and human clients (listener rule):  the
+  // The owner's pinned Zulip user id and human clients (eavesdropper rule):  the
   // `owner` flag on a message is a routing hint, never authority.
   const ownerUserId = Number(env.OWNER_USER_ID);
   if (!Number.isSafeInteger(ownerUserId) || ownerUserId <= 0) throw new Error("config: OWNER_USER_ID must be a Zulip user id");
@@ -342,6 +358,7 @@ export function loadConfig(env) {
     hostedSeats: Object.freeze(hostedSeats),
     eventsOnlySeats: Object.freeze(eventsOnlySeats),
     gateIdentityCacheMs,
+    grVerifyCacheMs,
     seats: Object.freeze(seats),
     redirectSeats,
     redirectOwner,

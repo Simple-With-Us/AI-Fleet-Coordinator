@@ -7,12 +7,12 @@ import pathlib
 import tempfile
 import unittest
 import unittest.mock
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from fleet_view import collectors
 from fleet_view.types import RequestBudget
 
-NOW = datetime(2026, 10, 20, 12, 0, tzinfo=UTC)
+NOW = datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc)
 
 SEATS = [
     {"tag": "CLAUDE", "worktreeSuffix": "claude", "branchPrefixes": ["claude/"]},

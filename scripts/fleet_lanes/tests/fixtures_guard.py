@@ -6,7 +6,7 @@ the owner listed; "sweep" rows are commands found in platform session logs and o
 "variant" rows are invented to cover quoting, line continuations, env prefixes, cd chains,
 subshells, and absolute, tilde and HOME-relative paths.
 
-All rows run against one context: home /Users/jay, TMPDIR in the macOS per-user temp dir, seat
+All rows run against one context: home /Users/fixture-home, TMPDIR in the macOS per-user temp dir, seat
 CLAUDE, case-insensitive comparison (APFS), and the frozen REGISTRY_DATA below, so the table
 never moves when the real fleet-apps.json gains a row.  A row with `env` replaces that env
 wholesale.  `dest`, when set, must equal Decision.destination exactly.
@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Mapping
 
-HOME = "/Users/jay"
+HOME = "/Users/fixture-home"
 TMPDIR = "/var/folders/0b/_hqdjtss47j2vcp2fhvfp4r40000gn/T/"
 TMPDIR_N = "/var/folders/0b/_hqdjtss47j2vcp2fhvfp4r40000gn/T"     # as the guard normalizes it
 SCRATCH = "/private/tmp/claude-501/-Users-jay-Code-AI-Fleet-Coordinator/43eb9ff7/scratchpad"
@@ -68,8 +68,8 @@ _SEATS = [
 ]
 REGISTRY_DATA = {
     "owner": "Simple-With-Us",
-    "codeRoot": "/Users/jay/Code",
-    "appsRoot": "/Users/jay/apps",
+    "codeRoot": "/Users/fixture-home/Code",
+    "appsRoot": "/Users/fixture-home/apps",
     "apps": [{"repo": r, "acronym": a, "worktreePrefix": p, "codeDir": c, "displayName": r, "kind": "product"}
              for r, a, p, c in _APPS],
     "seats": [{"tag": t, "worktreeSuffix": s, "branchPrefixes": b, **({"retired": True} if ret else {})}
@@ -113,7 +113,7 @@ DENY_FIXTURES: tuple[GuardFixture, ...] = (
          "git -C ~/Code/BotFleet worktree add -b grok/fix-thing /tmp/fix-thing origin/main",
          WT_ADD, "spec; Grok 2026-09-30 BotFleet Publisher workspace", dest="/tmp/fix-thing"),
     deny("spec-um-1595-private-tmp",
-         "git -C /Users/jay/Code/Usage-Monitor worktree add /private/tmp/um-1595-wt origin/main",
+         "git -C /Users/fixture-home/Code/Usage-Monitor worktree add /private/tmp/um-1595-wt origin/main",
          WT_ADD, "spec; sweep /private/tmp/um-1595-wt (UM PR #1595)", dest="/private/tmp/um-1595-wt"),
     deny("spec-mktemp-clutch",
          "d=$(mktemp -d) && git clone https://github.com/Simple-With-Us/Clutch.git $d/repo",
@@ -143,24 +143,24 @@ DENY_FIXTURES: tuple[GuardFixture, ...] = (
     deny("spec-mm-afc-baseline-cwd",
          "git worktree add /tmp/afc-baseline origin/main",
          WT_ADD, "spec; platform-matrix MM /tmp/afc-baseline 2026-10-04",
-         cwd="/Users/jay/Code/AI-Fleet-Coordinator", dest="/tmp/afc-baseline"),
+         cwd="/Users/fixture-home/Code/AI-Fleet-Coordinator", dest="/tmp/afc-baseline"),
 
     # ---- found in session logs and on disk
     deny("sweep-grok-st-eod",
-         "git -C /Users/jay/Code/Socratic.Trade worktree add -b grok/st-eod-freshness /tmp/st-eod-freshness",
+         "git -C /Users/fixture-home/Code/Socratic.Trade worktree add -b grok/st-eod-freshness /tmp/st-eod-freshness",
          WT_ADD, "sweep tmp-evidence.txt grok (x6)", dest="/tmp/st-eod-freshness"),
     deny("sweep-grok-st-disclosure-dash-dir",
-         "git -C /Users/jay/Code/Socratic-Trade worktree add -b grok/st-disclosure-feed /tmp/st-disclosure-feed",
+         "git -C /Users/fixture-home/Code/Socratic-Trade worktree add -b grok/st-disclosure-feed /tmp/st-disclosure-feed",
          WT_ADD, "sweep tmp-evidence.txt grok; Socratic-Trade spelling", dest="/tmp/st-disclosure-feed"),
     deny("sweep-grok-ct-poll-lock",
-         "git -C /Users/jay/Code/Congress.Trade worktree add -b grok/ct-poll-lock /tmp/ct-poll-lock",
+         "git -C /Users/fixture-home/Code/Congress.Trade worktree add -b grok/ct-poll-lock /tmp/ct-poll-lock",
          WT_ADD, "sweep tmp-evidence.txt grok", dest="/tmp/ct-poll-lock"),
     deny("sweep-grok-botfleet-staging",
          "git worktree add -f /tmp/botfleet-staging",
          WT_ADD, "sweep tmp-evidence.txt grok 2026-09-18 (cwd ~/Code/BotFleet)",
-         cwd="/Users/jay/Code/BotFleet", dest="/tmp/botfleet-staging"),
+         cwd="/Users/fixture-home/Code/BotFleet", dest="/tmp/botfleet-staging"),
     deny("sweep-mm-afc-detach",
-         "git -C /Users/jay/Code/AI-Fleet-Coordinator worktree add -q --detach /tmp/afc-baseline",
+         "git -C /Users/fixture-home/Code/AI-Fleet-Coordinator worktree add -q --detach /tmp/afc-baseline",
          WT_ADD, "sweep tmp-evidence.txt minimax", dest="/tmp/afc-baseline"),
     deny("sweep-mm-verify-clone",
          "git clone -q --depth 1 --branch main https://github.com/jaywedgeworth22/AI-Fleet-Coordinator.git /tmp/mm-verify",
@@ -168,15 +168,15 @@ DENY_FIXTURES: tuple[GuardFixture, ...] = (
     deny("sweep-mm-bf-main-lint-from-lane",
          "git worktree add /tmp/bf-main-lint origin/main",
          WT_ADD, "sweep tmp-evidence.txt minimax (cwd a flat MM lane)",
-         cwd="/Users/jay/apps/botfleet-minimax-lint", dest="/tmp/bf-main-lint"),
+         cwd="/Users/fixture-home/apps/botfleet-minimax-lint", dest="/tmp/bf-main-lint"),
     deny("sweep-bf-st4013-workspace-clone",
          "git worktree add -q /tmp/st4013",
          WT_ADD, "sweep platform-matrix BotFleet native logs (bot workspace nested clone)",
-         cwd="/Users/jay/.botfleet/workspaces/e8da75c0-8b66-4ab5-9dbf-fe6ad7466db4/Socratic.Trade",
+         cwd="/Users/fixture-home/.botfleet/workspaces/fixture-workspace/Socratic.Trade",
          dest="/tmp/st4013"),
     deny("sweep-bf-st-4013-verify",
          "git worktree add --detach /tmp/st-4013-verify",
-         WT_ADD, "sweep tmp-evidence.txt botfleet", cwd="/Users/jay/Code/Socratic.Trade",
+         WT_ADD, "sweep tmp-evidence.txt botfleet", cwd="/Users/fixture-home/Code/Socratic.Trade",
          dest="/tmp/st-4013-verify"),
     deny("sweep-relay-st-pr-ssh",
          "mkdir -p /tmp/st-pr && git clone ssh://github.com/jaywedgeworth22/Socratic-Trade.git /tmp/st-pr/repo",
@@ -289,7 +289,7 @@ DENY_FIXTURES: tuple[GuardFixture, ...] = (
          'git -C "$HOME/Code/DealDex" worktree add -b claude/x /tmp/dd-x',
          WT_ADD, "variant", dest="/tmp/dd-x"),
     deny("var-git-dir-global",
-         "git --git-dir=/Users/jay/Code/HogHunter/.git worktree add /tmp/hh-wt main",
+         "git --git-dir=/Users/fixture-home/Code/HogHunter/.git worktree add /tmp/hh-wt main",
          WT_ADD, "variant", dest="/tmp/hh-wt"),
     deny("var-config-global",
          "git -c core.longpaths=true -C ~/Code/Clutch worktree add -B claude/tmp /tmp/clutch-wt origin/main",
@@ -330,16 +330,16 @@ DENY_FIXTURES: tuple[GuardFixture, ...] = (
          "git clone ~/Code/BotFleet /tmp/bf-local",
          CLONE, "variant", dest="/tmp/bf-local"),
     deny("var-file-url-source",
-         "git clone file:///Users/jay/Code/HogHunter /tmp/hh-file",
+         "git clone file:///Users/fixture-home/Code/HogHunter /tmp/hh-file",
          CLONE, "variant", dest="/tmp/hh-file"),
     deny("var-flat-lane-source",
          "git -C ~/apps/botfleet-claude-kody worktree add /tmp/bf-kody-check origin/main",
          WT_ADD, "variant", dest="/tmp/bf-kody-check"),
     deny("var-nested-lane-relative-dest",
          "git worktree add ../../../../../../tmp/dd-rel",
-         WT_ADD, "variant", cwd="/Users/jay/apps/lanes/DealDex/claude-x", dest="/tmp/dd-rel"),
+         WT_ADD, "variant", cwd="/Users/fixture-home/apps/lanes/DealDex/claude-x", dest="/tmp/dd-rel"),
     deny("var-tilde-user",
-         "git clone " + _DD + " ~jay/../../tmp/dd-tilde",
+         "git clone " + _DD + " ~fixture-home/../../tmp/dd-tilde",
          CLONE, "variant", dest="/tmp/dd-tilde"),
     deny("var-credential-url",
          "git clone https://agentuser:hunter2@github.com/Simple-With-Us/DealDex.git /tmp/dd-tok",
@@ -437,7 +437,7 @@ DENY_FIXTURES: tuple[GuardFixture, ...] = (
          ARCHIVE, "review finding 2; a top-level glob spans the tree", dest="/tmp/bf-glob"),
     deny("rev-archive-parent-of-cwd",
          "git archive HEAD .. | tar -x -C /tmp/bf-parent",
-         ARCHIVE, "review finding 2; `..` from a subdirectory", cwd="/Users/jay/Code/BotFleet/scripts",
+         ARCHIVE, "review finding 2; `..` from a subdirectory", cwd="/Users/fixture-home/Code/BotFleet/scripts",
          dest="/tmp/bf-parent"),
     deny("rev-archive-add-file",
          "git -C ~/Code/BotFleet archive --add-file extra.txt HEAD | tar -x -C /tmp/bf-extra",
@@ -457,7 +457,7 @@ DENY_FIXTURES: tuple[GuardFixture, ...] = (
          "git init /tmp/ip2 && git -C /tmp/ip2 fetch ~/Code/BotFleet main",
          INIT_FETCH, "review finding 3; -C form", dest="/tmp/ip2"),
     deny("rev-fetch-absolute-lane-path",
-         "cd /tmp/ip3 && git init -q && git fetch /Users/jay/apps/lanes/DealDex/claude-x HEAD",
+         "cd /tmp/ip3 && git init -q && git fetch /Users/fixture-home/apps/lanes/DealDex/claude-x HEAD",
          INIT_FETCH, "review finding 3; an absolute lane path", dest="/tmp/ip3"),
 )
 
@@ -495,7 +495,7 @@ ALLOW_FIXTURES: tuple[GuardFixture, ...] = (
           "git -C /tmp/dealdex-work status --short", "spec: reading an existing checkout"),
     allow("spec-worktree-remove",
           "git worktree remove --force /tmp/um-1595-wt", "spec: cleanup must stay possible",
-          cwd="/Users/jay/Code/Usage-Monitor"),
+          cwd="/Users/fixture-home/Code/Usage-Monitor"),
     allow("spec-rm-rf", "rm -rf /tmp/bf898 /tmp/bf898.tgz", "spec"),
     allow("spec-lane-worktree",
           "git -C ~/Code/BotFleet worktree add -b claude/x ~/apps/lanes/BotFleet/claude-x origin/main", "spec"),
@@ -537,7 +537,7 @@ ALLOW_FIXTURES: tuple[GuardFixture, ...] = (
           "cat /tmp/BotFleet-PR894-permission-wire-id.diff | git -C ~/apps/lanes/BotFleet/claude-x apply",
           "sweep: diff beside /private/tmp/botfleet-pr894-review"),
     allow("log-grep", "git log --oneline | grep clone | head -5", "variant",
-          cwd="/Users/jay/Code/BotFleet"),
+          cwd="/Users/fixture-home/Code/BotFleet"),
 
     # ---- mentions only
     allow("echo-clone-command", "echo 'git clone https://github.com/Simple-With-Us/DealDex.git /tmp/dd'", "variant"),
@@ -545,7 +545,7 @@ ALLOW_FIXTURES: tuple[GuardFixture, ...] = (
           "variant"),
     allow("comment-line-cd",
           "# cd /tmp\ngit clone " + _DD + " dd",
-          "variant: a commented-out cd is not run", cwd="/Users/jay/apps/lanes/DealDex"),
+          "variant: a commented-out cd is not run", cwd="/Users/fixture-home/apps/lanes/DealDex"),
     allow("printf-append-notes",
           "printf '%s\\n' 'git worktree add /tmp/x' >> ~/apps/lanes/AI-Fleet-Coordinator/claude-x/notes.md", "variant"),
     allow("python-print",
@@ -553,21 +553,21 @@ ALLOW_FIXTURES: tuple[GuardFixture, ...] = (
     allow("gh-pr-view-grep", "gh pr view 894 --json body -q .body | grep -n 'worktree add'", "variant"),
     allow("commit-heredoc-body", _COMMIT_HEREDOC,
           "Claude Code commit idiom; the body names a denied command",
-          cwd="/Users/jay/Code/AI-Fleet-Coordinator"),
+          cwd="/Users/fixture-home/Code/AI-Fleet-Coordinator"),
     allow("pr-body-heredoc", _PR_HEREDOC,
           "Claude Code PR idiom; the body has apostrophes, backticks and a bare )",
-          cwd="/Users/jay/apps/lanes/AI-Fleet-Coordinator/claude-x"),
+          cwd="/Users/fixture-home/apps/lanes/AI-Fleet-Coordinator/claude-x"),
     allow("lane-heredoc-file",
           "cat > ~/apps/lanes/AI-Fleet-Coordinator/claude-x/notes.md <<EOF\ncd /tmp && git clone " + _DD + "\nEOF",
           "variant"),
     allow("single-quoted-var",
           "d=/tmp/x; git clone " + _DD + " '$d'",
-          "variant: a single-quoted $d is a literal directory name", cwd="/Users/jay/apps/lanes/DealDex"),
+          "variant: a single-quoted $d is a literal directory name", cwd="/Users/fixture-home/apps/lanes/DealDex"),
 
     # ---- not temp, or not provably temp
     allow("redirect-log-lane-cwd",
           "git clone --depth 50 -b main https://github.com/Simple-With-Us/DealDex.git dealdex-work > /tmp/clone.log",
-          "sweep tmp-evidence.txt (the log is in /tmp, the clone is not)", cwd="/Users/jay/apps/lanes/DealDex"),
+          "sweep tmp-evidence.txt (the log is in /tmp, the clone is not)", cwd="/Users/fixture-home/apps/lanes/DealDex"),
     allow("pnpm-runner-store",
           "git clone git@github.com:jaywedgeworth22/Harness.git "
           "/home/runner/.local/share/pnpm/store/v10/tmp/_tmp_2373_73cd96a5c890493e34ca95f2d2bd2c7b",
@@ -578,7 +578,7 @@ ALLOW_FIXTURES: tuple[GuardFixture, ...] = (
     allow("unknown-cwd", 'cd "$WORK" && git clone ' + _DD, "variant: unresolvable cwd"),
     allow("subshell-scope",
           "(cd /tmp && ls) && git clone " + _DD + " dd",
-          "variant: the subshell cd does not leak", cwd="/Users/jay/apps/lanes/DealDex"),
+          "variant: the subshell cd does not leak", cwd="/Users/fixture-home/apps/lanes/DealDex"),
     allow("mktemp-under-review-root",
           "d=$(mktemp -d ~/apps/lanes/DealDex/review-pr-1.XXXX) && git clone " + _DD + " $d/repo",
           "variant: an explicit template outside temp"),
@@ -588,7 +588,7 @@ ALLOW_FIXTURES: tuple[GuardFixture, ...] = (
           "git -C ~/Code/DealDex worktree add -b claude/fix ~/apps/dealdex-claude-fix origin/main", "variant"),
     allow("relative-lane-worktree",
           "git worktree add ../../apps/lanes/BotFleet/claude-rel -b claude/rel", "variant",
-          cwd="/Users/jay/Code/BotFleet"),
+          cwd="/Users/fixture-home/Code/BotFleet"),
     allow("lane-fetch-pull",
           "cd ~/apps/lanes/DealDex/claude-x && git fetch origin && git pull --rebase", "variant"),
     allow("gh-pr-checkout-lane", "cd ~/apps/lanes/BotFleet/claude-x && gh pr checkout 894", "variant"),
@@ -626,7 +626,7 @@ ALLOW_FIXTURES: tuple[GuardFixture, ...] = (
     # ---- self-cleaning scratch scripts
     allow("script-update-botfleet", "bash ~/apps/update-botfleet.sh --force",
           "spec: ~/apps/update-botfleet.sh run as a file"),
-    allow("script-check-hetzner", "bash /Users/jay/apps/check-hetzner-cx43.sh",
+    allow("script-check-hetzner", "bash /Users/fixture-home/apps/check-hetzner-cx43.sh",
           "spec: ~/apps/check-hetzner-cx43.sh run as a file"),
     allow("inline-hetzner-mktemp",
           'TMP="$(mktemp -d)"; trap \'rm -rf "$TMP"\' EXIT; ssh root@203.0.113.7 \'df -h\' > "$TMP/df.txt"',

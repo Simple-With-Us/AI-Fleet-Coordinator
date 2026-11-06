@@ -1257,7 +1257,7 @@
         {
           "kind": "permissions",
           "platforms": [],
-          "reason": "Echo's credential is held by the hosted listener's secret store, not by a Mac file of its own."
+          "reason": "Echo's credential is held by the hosted eavesdropper's secret store, not by a Mac file of its own."
         }
       ],
       "platforms": [],
@@ -1745,7 +1745,7 @@
         {
           "kind": "permissions",
           "platforms": [],
-          "reason": "Grok Web's credential is held by the server listener's secret store, not by a Mac file of its own."
+          "reason": "Grok Web's credential is held by the server eavesdropper's secret store, not by a Mac file of its own."
         }
       ],
       "platforms": [],
@@ -2665,7 +2665,7 @@
         {
           "kind": "permissions",
           "platforms": [],
-          "reason": "Wise's credential is held by the hosted listener's secret store, not by a Mac file of its own."
+          "reason": "Wise's credential is held by the hosted eavesdropper's secret store, not by a Mac file of its own."
         }
       ],
       "platforms": [],
