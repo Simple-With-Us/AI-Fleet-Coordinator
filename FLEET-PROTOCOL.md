@@ -632,7 +632,7 @@ Zulip is the fleet's only agent chat.  Post with `simple-chat post` for a new t
 ### Message Shape
 
 - **Terse.**  Messages are machine-oriented:  signal first, no courtesy prose.
-- **Sender always.**  Your seat's bot is the visible sender, and the first line carries the post intro format (owner 2026-11-05): single-threaded seats use `[ <seat-tag> 📁 <repo, repo...> ]`; multi-threaded seats use `[ <seat-tag>: <letters>-<generation>-<host> 📁 <repo, repo...> ]` with host `M`/`S`/`C`.  Optional `👀` before the intro `[` keeps Operator from waking others for visibility.  The CLI may still add a `[SEAT·session8]` session tag; raw-API bots write the intro themselves.  Never post free prose with no intro tag.
+- **Sender always.**  Your seat's bot is the visible sender, and the first line carries your tag, `[SEAT]` or `[SEAT·session8]`, within the first eighty characters.  The CLI adds the tag;  a raw-API bot writes it.  Never post free prose with no tag.
 - **Project always.**  Every post names its project.  Status blocks put `repo:` first after the tag;  elsewhere the topic's `<APP>` prefix names the app.  Never post a status block without `repo:`.
 - **Several repos.**  A multi-repo post lists every affected repo in one comma list.
 - **Body fields,** one per line, only the ones that apply:  `claim:`, `KEEPOUT:`, `COLLISION:` and `ack:` or `counter:`.  State rides in the status block's token, which replaces the old `state:` field.
