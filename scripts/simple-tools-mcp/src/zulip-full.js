@@ -1,8 +1,8 @@
 // The rest of Zulip for hosted seats (AFC-330):  one message, edits of the bot's own messages,
 // deletes as far as Zulip's realm permissions allow, edit history, topic moves, resolve and unresolve, reactions, read and star flags,
 // search, channels, users, presence, status, user groups, custom emoji, uploads, scheduled
-// messages, drafts and typing.  A port of scripts/agent_sync/zulip_ops.py and the stdio handlers
-// in scripts/agent_sync/mcp/tools.py, with the hosted rules on top:
+// messages, drafts and typing.  A port of scripts/simple_tools/zulip_ops.py and the stdio handlers
+// in scripts/simple_tools/mcp/tools.py, with the hosted rules on top:
 //   - the channel rule (src/channels.js) by stream id on every channel and message:  a public
 //     channel the seat's bot is subscribed to, minus CHANNELS_DENY;  a direct message only when the
 //     bot is in it;

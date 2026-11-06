@@ -52,7 +52,7 @@ export function encodeParams(params) {
   return out.toString();
 }
 
-// The owner-in-the-conversation guard (AFC-469).  Mirrors scripts/agent_sync/zulip.py:  the POST
+// The owner-in-the-conversation guard (AFC-469).  Mirrors scripts/simple_tools/zulip.py:  the POST
 // paths whose body can carry a direct message, and the message types that make one.
 export const DM_GUARD_PATHS = Object.freeze(["messages", "scheduled_messages", "drafts"]);
 const DM_GUARD_TYPES = Object.freeze(["direct", "private"]);
@@ -240,7 +240,7 @@ export class ZulipClient {
           signal: AbortSignal.timeout(TIMEOUT_MS),
           headers: {
             Authorization: basicHeader(this.email, this.#key),
-            "User-Agent": "agent-sync-mcp (hosted)",
+            "User-Agent": "simple-tools-mcp (hosted)",
             // A multipart upload sets its own boundary header.
             ...(method === "GET" || form ? {} : { "Content-Type": "application/x-www-form-urlencoded" }),
           },

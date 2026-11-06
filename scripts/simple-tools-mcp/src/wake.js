@@ -1,8 +1,8 @@
 // The eavesdropper's wake into a hosted seat:  POST /internal/wake/<SEAT> with the
-// `agent-sync-wake/1` body (scripts/agent_sync/adapters.py routine_body), sent
+// `agent-sync-wake/1` body (scripts/simple_tools/adapters.py routine_body), sent
 // by the server eavesdropper's `http` wake adapter with `auth = "hmac-sha256"`.
 //
-// The header is X-Agent-Sync-Signature:  the lowercase hex HMAC-SHA256 of the
+// The header is X-Simple-Tools-Signature:  the lowercase hex HMAC-SHA256 of the
 // raw body bytes, keyed with the UTF-8 bytes of the shared key (the eavesdropper's
 // <SEAT>_ROUTINE_KEY, this Worker's WAKE_HMAC_KEY_<SEAT>), with no prefix.
 // The signature is checked over the raw bytes before any JSON parse.  A body
@@ -22,7 +22,7 @@
 import { safeEqual } from "./policy.js";
 
 export const WAKE_CONTRACT = "agent-sync-wake/1";
-export const WAKE_SIGNATURE_HEADER = "x-agent-sync-signature";
+export const WAKE_SIGNATURE_HEADER = "x-simple-tools-signature";
 export const WAKE_MAX_BODY = 64 * 1024;
 export const WAKE_MAX_AGE_S = 5 * 60;
 export const WAKE_MAX_SKEW_S = 60;
