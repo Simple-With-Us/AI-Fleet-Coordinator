@@ -10,9 +10,9 @@
 //   notes_status    one GET of that record.
 //   notes_log       GET /notes/v1/log?since_hours=&limit=&by_seat=&action=&title=
 //
-// Every request is signed as the principal WORKER with OPERATOR_NOTES_KEY:  X-Agent-Sync-Principal,
-// X-Agent-Sync-Timestamp (unix seconds) and X-Agent-Sync-Signature, the lowercase hex HMAC-SHA256 of
-// "agent-sync-notes/1\n<METHOD>\n<path>\n<raw query>\n<timestamp>\nWORKER\n<sha256 hex of the body bytes>".  The
+// Every request is signed as the principal WORKER with OPERATOR_NOTES_KEY:  X-Simple-Tools-Principal,
+// X-Simple-Tools-Timestamp (unix seconds) and X-Simple-Tools-Signature, the lowercase hex HMAC-SHA256 of
+// "simple-tools-notes/1\n<METHOD>\n<path>\n<raw query>\n<timestamp>\nWORKER\n<sha256 hex of the body bytes>".  The
 // seat is the grant's (this.seat) and never an argument, and the request's `identity` is the same seat.  Without
 // LISTENER_API_URL (an https origin with no path) or the key, every notes tool answers not_configured and the other
 // tools work as before.
@@ -23,10 +23,10 @@
 // unless the seat is a single-thread one;  the fleet secret scan runs on every write's text.  Note bodies and titles
 // that come back are the owner's data:  they are fenced as untrusted in the text content.
 //
-// The tool specs are scripts/agent_sync/mcp/notes-tools.json, shared with the stdio server and simple-notes.  Pure
+// The tool specs are scripts/simple_tools/mcp/notes-tools.json, shared with the stdio server and simple-notes.  Pure
 // module apart from the HostedTools methods at the bottom:  WebCrypto and fetch only, no `cloudflare:` imports.
 
-import NOTES_JSON from "../../agent_sync/mcp/notes-tools.json" with { type: "json" };
+import NOTES_JSON from "../../simple_tools/mcp/notes-tools.json" with { type: "json" };
 import FLEET_APPS from "../../../fleet-apps.json" with { type: "json" };
 import { z } from "zod";
 import { ToolError, okResult, clean, NAME_LIMIT, MESSAGE_LIMIT, newNonce, scanSecret } from "./contract.js";
@@ -35,14 +35,14 @@ import { listenerBaseUrl } from "./eavesdropper.js";
 import { OPERATOR_NOTES_SECRET } from "./config.js";
 import * as SESSION_IDS from "./session-ids.js";
 
-export const NOTES_CONTRACT_NAME = "agent-sync-notes/1";
+export const NOTES_CONTRACT_NAME = "simple-tools-notes/1";
 export const NOTES_PRINCIPAL = "WORKER";
 export const REQUEST_VERSION = 2;
 export const NOTES_TIMEOUT_MS = 10_000;
 export const NOTES_MIN_KEY_LEN = 32;
 export const NOTES_POLL_MS = 1500;
 export const NOTES_WAIT_MAX_S = 25; // ST-MCP waits at most this long, and this long by default
-export const NOTES_USER_AGENT = "agent-sync-mcp (hosted notes client)";
+export const NOTES_USER_AGENT = "simple-tools-mcp (hosted notes client)";
 export const NOTES_TRANSPORT = "operator";
 
 export const ACTIONS = Object.freeze(["create", "update", "pin", "unpin", "read", "list"]);
@@ -391,7 +391,7 @@ export async function hmacHex(key, text) {
   return HEX(await crypto.subtle.sign("HMAC", cryptoKey, new TextEncoder().encode(text)));
 }
 
-/** The string the Operator verifies (contract agent-sync-notes/1). */
+/** The string the Operator verifies (contract simple-tools-notes/1). */
 export function notesSigningString(method, path, query, timestamp, principal, bodySha256) {
   return `${NOTES_CONTRACT_NAME}\n${method}\n${path}\n${query}\n${timestamp}\n${principal}\n${bodySha256}`;
 }
@@ -422,9 +422,9 @@ export class OperatorNotesClient {
     const timestamp = String(Math.floor(this.now() / 1000));
     const signature = await hmacHex(this.#key, notesSigningString(method, path, query, timestamp, NOTES_PRINCIPAL, await sha256HexBytes(bytes)));
     const headers = {
-      "X-Agent-Sync-Principal": NOTES_PRINCIPAL,
-      "X-Agent-Sync-Timestamp": timestamp,
-      "X-Agent-Sync-Signature": signature,
+      "X-Simple-Tools-Principal": NOTES_PRINCIPAL,
+      "X-Simple-Tools-Timestamp": timestamp,
+      "X-Simple-Tools-Signature": signature,
       "User-Agent": NOTES_USER_AGENT,
       Accept: "application/json",
       ...(body === undefined ? {} : { "Content-Type": "application/json" }),
@@ -630,7 +630,7 @@ export const NOTES_METHODS = {
     if (this.notes) return this.notes;
     throw new ToolError(
       "not_configured",
-      "Apple Notes are not reachable from this server.  The owner sets LISTENER_API_URL (the Operator's https origin) and the Worker secret OPERATOR_NOTES_KEY, and turns on [notes_queue] on the Operator (scripts/agent-sync-mcp/DEPLOY.md, \"Notes, recall and the guide\").  Every other tool still works.",
+      "Apple Notes are not reachable from this server.  The owner sets LISTENER_API_URL (the Operator's https origin) and the Worker secret OPERATOR_NOTES_KEY, and turns on [notes_queue] on the Operator (scripts/simple-tools-mcp/DEPLOY.md, \"Notes, recall and the guide\").  Every other tool still works.",
     );
   },
 

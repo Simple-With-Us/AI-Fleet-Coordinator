@@ -28,7 +28,7 @@
 // a 280-character excerpt, scrubbed by the Worker's own secret scanner.
 //
 // The Zulip-thread rule is the reason this feature exists at all:  the AFC
-// relay (scripts/agent_sync/linear_relay.py) mirrors a Zulip conversation
+// relay (scripts/simple_tools/linear_relay.py) mirrors a Zulip conversation
 // onto the Linear issue it is about, and a mirrored comment that names a
 // fleet bot must NOT wake that bot, because the Zulip side already did.
 
@@ -75,7 +75,7 @@ export const LINEAR_WAKE_TITLE_MAX = 200;
 /** The delivery timeout. */
 export const LINEAR_WAKE_TIMEOUT_MS = 15_000;
 
-/** The relay's marker (scripts/agent_sync/linear_relay.py MARKER). */
+/** The relay's marker (scripts/simple_tools/linear_relay.py MARKER). */
 export const ZULIP_RELAY_MARKER = "<!-- zulip-relay -->";
 /** The relay's own actor name. */
 export const ZULIP_RELAY_ACTOR = "Relay → Linear";
@@ -85,7 +85,7 @@ export const ZULIP_NARROW = "simplewithus.zulipchat.com/#narrow/";
 export const ZULIP_DISCUSSION = "**Zulip discussion:**";
 /** The fleet realm host, for the attachment check. */
 export const ZULIP_HOST = "simplewithus.zulipchat.com";
-/** The no-wake marker, both spellings (Zulip's rule, agent_sync/router.py). */
+/** The no-wake marker, both spellings (Zulip's rule, simple_tools/router.py). */
 export const NO_WAKE_MARKERS = Object.freeze([":eyes:", "\u{1F440}"]);
 
 /** The GraphQL document that names a seat's own Linear app user. */

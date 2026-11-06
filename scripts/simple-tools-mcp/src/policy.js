@@ -2,7 +2,7 @@
 //
 // Pure module:  no `cloudflare:` imports, no I/O.  Every check here runs before
 // the OAuth library sees the request, so nothing here may fetch anything.
-// Spec:  docs/protocols/agent-sync-mcp.md sections 3.2 to 3.4.
+// Spec:  docs/protocols/simple-tools-mcp.md sections 3.2 to 3.4.
 
 const MAX_PARAM_LENGTH = 512;
 

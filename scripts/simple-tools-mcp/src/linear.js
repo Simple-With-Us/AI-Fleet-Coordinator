@@ -21,7 +21,7 @@ import { resolveSecret } from "./infisical.js";
 //
 // The tool specs live here, not in the stdio server's tools.json:  that file is
 // the Python stdio server's whole tool list, dispatched with a bare getattr
-// (scripts/agent_sync/mcp/tools.py), so an entry there would advertise tools the
+// (scripts/simple_tools/mcp/tools.py), so an entry there would advertise tools the
 // stdio server cannot run.  recall.js and dm.js are hosted-only the same way.
 //
 // Pure module:  no `cloudflare:` imports and no packages, so CI's plain
@@ -32,7 +32,7 @@ import { clean, ToolError, scanSecret } from "./contract.js";
 
 export const LINEAR_GRAPHQL_URL = "https://api.linear.app/graphql";
 export const LINEAR_TOKEN_URL = "https://api.linear.app/oauth/token";
-export const LINEAR_USER_AGENT = "agent-sync-mcp/2.0";
+export const LINEAR_USER_AGENT = "simple-tools-mcp/2.0";
 export const LINEAR_TIMEOUT_MS = 30_000;
 export const LINEAR_RESPONSE_LIMIT = 4_000_000; // bytes
 
@@ -456,7 +456,7 @@ export function teamForSlug(slug) {
  * repeated create updates the same row instead of adding a second one.
  */
 export async function stableUuid(kind, key) {
-  const raw = new TextEncoder().encode(`agent-sync-mcp:linear:v1:${kind}:${key}`);
+  const raw = new TextEncoder().encode(`simple-tools-mcp:linear:v1:${kind}:${key}`);
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", raw)).slice(0, 16);
   // Clear the version and variant bits, as uuid.UUID(..., version=4) does.
   digest[6] = (digest[6] & 0x0f) | 0x40;
@@ -952,7 +952,7 @@ export class LinearClient {
   #resolving = null;
 
   async #tokenFingerprint(token) {
-    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`agent-sync-mcp:linear-token:${token}`));
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`simple-tools-mcp:linear-token:${token}`));
     return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 32);
   }
 
@@ -990,7 +990,7 @@ export class LinearClient {
     if (!parsed.success) return null;
     const id = parsed.data.viewer.id;
     const workspace = parsed.data.organization.urlKey;
-    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`agent-sync-mcp:linear-quota:${workspace}:${id}`));
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`simple-tools-mcp:linear-quota:${workspace}:${id}`));
     return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
   }
 
@@ -1151,7 +1151,7 @@ export class LinearClient {
   }
 
   async #fingerprint() {
-    const raw = `agent-sync-mcp:linear:${this.seat}:${this.clientId}:${this.#clientSecret}`;
+    const raw = `simple-tools-mcp:linear:${this.seat}:${this.clientId}:${this.#clientSecret}`;
     const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(raw));
     return [...new Uint8Array(digest)]
       .map((b) => b.toString(16).padStart(2, "0"))
