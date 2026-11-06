@@ -265,16 +265,19 @@ enum FleetTime {
         return "\(seconds / 86400)d"
     }
 
-    /// The time of day, on Jay's clock, in 12-hour form with am or pm.
+    /// The time of day, on Jay's clock, in 12-hour form with AM or PM:  `2:46 PM`.
+    ///
+    /// The zone is America/Chicago wherever the app runs, and it is never written beside
+    /// the time.
     static func clock(_ date: Date) -> String {
         var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = .current
+        calendar.timeZone = TimeZone(identifier: "America/Chicago") ?? .current
         let parts = calendar.dateComponents([.hour, .minute], from: date)
         let hour24 = parts.hour ?? 0
         let minute = parts.minute ?? 0
-        let suffix = hour24 < 12 ? "am" : "pm"
+        let suffix = hour24 < 12 ? "AM" : "PM"
         var hour12 = hour24 % 12
         if hour12 == 0 { hour12 = 12 }
-        return String(format: "%d:%02d%@", hour12, minute, suffix)
+        return String(format: "%d:%02d %@", hour12, minute, suffix)
     }
 }

@@ -35,8 +35,8 @@ What it promises:
     resource, so no uuid or host is kept in this repo.  The Coolify token is read through
     `fleet-secrets` into memory, sent in one request header and never printed, logged or
     passed in an argv.  A forced command has only the environment sshd gives it, so
-    fleet-secrets logs in with the Infisical identity in `~/.config/fleet-tools/ops-control.env`
-    (0600) when that file exists.  `--check-token` reads the token the same way and asks
+    `fleet-secrets` receives the scoped Fleet Ops Control token from `ops-control.env` (0600).
+    `--check-token` reads the token the same way and asks
     Coolify for its version, which proves the whole path and changes nothing.
   * `--from-ssh` is the forced command of the `fleet-ops-ctl` key.  It reads
     `SSH_ORIGINAL_COMMAND`, refuses any shell metacharacter, splits it with `shlex`, and
@@ -44,7 +44,13 @@ What it promises:
     `--json`.  Anything more is refused.
   * Every `--yes` run appends one JSON line to `~/.local/state/fleet-tools/ops-audit.jsonl`
     (0600): time, host role, verb, target and result.  No command output is recorded, and a
-    redeploy is recorded by its resource name, never its uuid.
+    redeploy is recorded by its resource name, never its uuid.  Each row also has a short
+    `id`, and the `--yes` answer carries it (`auditID`) with the row's target (`auditTarget`),
+    so the caller's own log can name the row this run wrote.
+  * One `--yes` runs at a time on a machine:  a second one while another holds
+    `~/.local/state/fleet-tools/ops-control.lock` is refused with `errorCode` `action_busy`.
+    Plans, update-status reads and journal reads take no lock.  A chain of commands that
+    stops at a failure says how many finished first (`completedCommands`).
 
 An update is submitted until a new successful service invocation is observed; API acceptance
 of a redeploy is also submitted.  Neither is called completed from submission alone.
@@ -55,10 +61,13 @@ Exit status: 0 planned, submitted or done, 1 a command failed, 2 refused.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime
+import fcntl
 import json
 import os
 import re
+import secrets
 import selectors
 import shlex
 import stat
@@ -121,10 +130,24 @@ COOLIFY_TOKEN_PATH = "/coolify"
 COOLIFY_DEFAULT_BASE = "http://127.0.0.1:8000"
 # The Infisical identity fleet-secrets may be handed from the credential file, and nothing
 # else from it.
-CREDENTIAL_NAMES = (
-    "INFISICAL_TOKEN",
-    "INFISICAL_AUTOMATION_CLIENT_ID",
-    "INFISICAL_AUTOMATION_CLIENT_SECRET",
+CREDENTIAL_NAMES = ("FLEET_OPS_CONTROL_INFISICAL_TOKEN",)
+SCOPED_TOKEN_NAME = CREDENTIAL_NAMES[0]
+# Keep this boundary independent of optional fleet-secrets imports.
+SHARED_AUTH_ENV_NAMES = frozenset(
+    {
+        "INFISICAL_TOKEN",
+        "INFISICAL_AI_FLEET_COORDINATOR_TOKEN",
+        "INFISICAL_WRITE_TOKEN",
+        "INFISICAL_CLIENT_ID",
+        "INFISICAL_CLIENT_SECRET",
+        "INFISICAL_AUTOMATION_CLIENT_ID",
+        "INFISICAL_AUTOMATION_CLIENT_SECRET",
+        "INFISICAL_UNIVERSAL_AUTH_CLIENT_ID",
+        "INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET",
+        "INFISICAL_SHARED_CLIENT_ID",
+        "INFISICAL_SHARED_CLIENT_SECRET",
+        "WISE_RELAY_INFISICAL_TOKEN",
+    }
 )
 CREDENTIALS_MAX_BYTES = 8 * 1024
 COMMAND_TIMEOUT = 90
@@ -175,11 +198,15 @@ class Refused(Exception):
 
 
 class Failed(Exception):
-    """An allowed command ran and did not succeed."""
+    """An allowed command ran and did not succeed.
 
-    def __init__(self, message, *, error_code=None):
+    `completed` is how many commands of the plan finished before this one, when the run
+    was a chain;  None when it was not."""
+
+    def __init__(self, message, *, error_code=None, completed=None):
         super().__init__(message)
         self.error_code = error_code
+        self.completed = completed
 
 
 # MARK: - The allowlist
@@ -1019,12 +1046,24 @@ def coolify_resource(ctx, uuid):
         raise Refused("the server status report is stale")
     for row in doc.get("coolify") or []:
         if isinstance(row, dict) and row.get("uuid") == uuid:
-            if row.get("type") not in REDEPLOYABLE_TYPES:
-                raise Refused("only a Coolify application can be redeployed")
-            if not uuid_from_label(row):
-                raise Refused("the report has no Coolify uuid for that resource")
+            refusal = redeploy_refusal(row)
+            if refusal:
+                raise Refused(refusal)
             return row
     raise Refused("the uuid is not in the latest server status report")
+
+
+def redeploy_refusal(row):
+    """Why the first report row with a uuid cannot be redeployed, or None when it can."""
+    if row.get("type") not in REDEPLOYABLE_TYPES:
+        return "only a Coolify application can be redeployed"
+    if not uuid_from_label(row):
+        return "the report has no Coolify uuid for that resource"
+    # The collector puts live rows first, so a first row that is not live says that
+    # nothing with this uuid is on the host now.
+    if row.get("status") in ("absent", "unknown"):
+        return "that application is not running on the server"
+    return None
 
 
 def uuid_from_label(row):
@@ -1102,17 +1141,25 @@ def read_coolify_token(ctx):
 def secrets_env(ctx):
     """The environment the fleet-secrets child runs with.  Raises Failed.
 
-    When the credential file exists it is the one source of the Infisical identity: the
-    process's own CREDENTIAL_NAMES are dropped and the file's are used, so a run over ssh
-    and a run from a root shell log in the same way.  The file must be a regular file of
-    ours with no group or other bits, holding only `NAME=value` lines (no quotes) for
-    INFISICAL_TOKEN, or for both INFISICAL_AUTOMATION_CLIENT_ID and _SECRET.  Its values
-    reach this one child only, never an argv, a launchctl or systemctl child, the answer or
-    the audit.  With no file, the process environment is used as it is."""
+    The private file supplies only this caller's scoped read-only service token.  It is mapped
+    to INFISICAL_TOKEN for the one fleet-secrets child, never to an argv or a service-control
+    child.  Inherited shared token and machine-identity bindings are discarded."""
     env = dict(ctx.environ)
+    process_token = env.pop(SCOPED_TOKEN_NAME, "")
+    for name in SHARED_AUTH_ENV_NAMES:
+        env.pop(name, None)
     try:
         fd = os.open(str(ctx.credentials_path), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     except FileNotFoundError:
+        value = process_token
+        if value:
+            if (
+                not value.startswith("st.")
+                or not 20 <= len(value) <= 2048
+                or any(c.isspace() for c in value)
+            ):
+                raise Failed("the scoped Infisical token is malformed")
+            env["INFISICAL_TOKEN"] = value
         return env
     except OSError:
         raise Failed("the Infisical credential file cannot be read") from None
@@ -1148,12 +1195,17 @@ def secrets_env(ctx):
         ):
             raise Failed("the Infisical credential file is malformed")
         values[name] = value
-    pair = [n for n in CREDENTIAL_NAMES[1:] if n in values]
-    if len(pair) == 1 or not ("INFISICAL_TOKEN" in values or pair):
+    if SCOPED_TOKEN_NAME not in values:
         raise Failed("the Infisical credential file is malformed")
-    for name in CREDENTIAL_NAMES:
-        env.pop(name, None)
-    env.update(values)
+    token = values.get(SCOPED_TOKEN_NAME)
+    if token and (
+        not token.startswith("st.")
+        or not 20 <= len(token) <= 2048
+        or any(c.isspace() for c in token)
+    ):
+        raise Failed("the Infisical credential file is malformed")
+    if token:
+        env["INFISICAL_TOKEN"] = token
     return env
 
 
@@ -1220,6 +1272,10 @@ def plan_request(ctx, config, scope, action, target):
         row = coolify_resource(ctx, target)
         query = urllib.parse.urlencode({"uuid": target})
         name = row.get("name") if isinstance(row.get("name"), str) else "coolify resource"
+        # A redeploy covers the whole application, so the audit names it and not one service.
+        service = row.get("service")
+        if isinstance(service, str) and name.endswith(f" ({service})"):
+            name = name[: -len(f" ({service})")]
         return [["coolify", "GET", f"/api/v1/deploy?{query}"]], "redeploy", name[:120]
     raise Refused("unknown server verb")
 
@@ -1240,12 +1296,53 @@ def execute(ctx, scope, action, target, commands):
             raise Failed(f"Coolify answered HTTP {status}" if status else "Coolify did not answer")
         return f"Coolify accepted the redeploy (HTTP {status})"
     env = ctx.pm2_env() if scope == "pm2" else ctx.child_env()
+    finished = 0
     for argv in commands:
         status, _ = ctx.runner(argv, timeout=COMMAND_TIMEOUT, env=env)
         if status != 0:
             verb = next((a for a in argv[1:] if not a.startswith("-") and "/" not in a), action)
-            raise Failed(f"{os.path.basename(argv[0])} {verb} exited {status}")
+            raise Failed(f"{os.path.basename(argv[0])} {verb} exited {status}", completed=finished)
+        finished += 1
     return "done" if commands else "nothing to do"
+
+
+@contextlib.contextmanager
+def action_lock(ctx):
+    """Hold the one `--yes` lock on this machine, or refuse at once.
+
+    A second caller, such as a second Muster or a shell, gets a fixed refusal instead of
+    racing the first one on the same unit.  The lock is released when the process exits,
+    however it exits."""
+    directory = ctx.home / ".local" / "state" / "fleet-tools"
+    try:
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        info = directory.lstat()
+        fd = os.open(
+            directory / "ops-control.lock",
+            os.O_RDWR | os.O_CREAT | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+    except OSError:
+        raise Refused(
+            "the action lock is unavailable", error_code="action_lock_unavailable"
+        ) from None
+    try:
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
+            raise Refused(
+                "the action lock directory is untrusted", error_code="action_lock_unavailable"
+            )
+        lock_info = os.fstat(fd)
+        if not stat.S_ISREG(lock_info.st_mode) or lock_info.st_uid != os.getuid():
+            raise Refused("the action lock is untrusted", error_code="action_lock_unavailable")
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise Refused(
+                "another action is still running on this machine", error_code="action_busy"
+            ) from None
+        yield
+    finally:
+        os.close(fd)
 
 
 def execute_logs(ctx, commands):
@@ -1276,6 +1373,7 @@ def audit(
     invocation_id=None,
     verified=None,
     baseline=None,
+    row_id=None,
 ):
     """One JSON line, 0600, appended.  Never command output, never a uuid or a hostname.
     A finished logs run adds its line count and nothing of the text."""
@@ -1286,6 +1384,10 @@ def audit(
         "target": target,
         "result": result,
     }
+    # A short id the caller's own log can store, so the two rows of one action link up.
+    # The function answers True only when the row was written.
+    if isinstance(row_id, str) and re.fullmatch(r"[0-9a-f]{12}", row_id):
+        row["id"] = row_id
     if lines is not None:
         row["lines"] = lines
     if route in ("sudo-system-update", "root-system-update"):
@@ -1349,34 +1451,43 @@ def handle(ctx, scope, action, target, mode):
                 sys.path.insert(0, scripts)
             from fleet_resource_control import handle as handle_resource
 
+            if mode == "yes" and action == "resource-policy":
+                # A write holds the same one-action lock as every other `--yes` write.
+                with action_lock(ctx):
+                    return handle_resource(ctx, action, target, mode)
             return handle_resource(ctx, action, target, mode)
-        commands, note, audit_target = plan_request(ctx, config, scope, action, target)
-        answer["commands"] = commands
-        if mode == "plan":
-            answer.update(ok=True, result="planned", detail=note)
-            code = 0
-        elif scope == "server" and action == "logs":
-            detail, text, log_lines = execute_logs(ctx, commands)
-            answer.update(ok=True, result="done", detail=detail, output=text, lines=log_lines)
-            code = 0
-        elif scope == "server" and action == "update":
-            receipt, code = execute_update(ctx, config, target, commands)
-            answer.update(receipt)
-        elif scope == "server" and action == "redeploy":
-            detail = execute(ctx, scope, action, target, commands)
-            answer.update(
-                ok=True,
-                result="submitted",
-                detail=detail,
-                executionState="submitted",
-                verified=False,
-            )
-            code = 0
-        else:
-            answer.update(
-                ok=True, result="done", detail=execute(ctx, scope, action, target, commands)
-            )
-            code = 0
+        with contextlib.ExitStack() as held:
+            # A logs run only reads the journal, so it takes no write lock.
+            if mode == "yes" and not (scope == "server" and action == "logs"):
+                held.enter_context(action_lock(ctx))
+            commands, note, audit_target = plan_request(ctx, config, scope, action, target)
+            answer["commands"] = commands
+            if mode == "plan":
+                answer.update(ok=True, result="planned", detail=note)
+                code = 0
+            elif scope == "server" and action == "logs":
+                detail, text, log_lines = execute_logs(ctx, commands)
+                answer.update(ok=True, result="done", detail=detail, output=text, lines=log_lines)
+                code = 0
+            elif scope == "server" and action == "update":
+                receipt, code = execute_update(ctx, config, target, commands)
+                answer.update(receipt)
+            elif scope == "server" and action == "redeploy":
+                detail = execute(ctx, scope, action, target, commands)
+                answer.update(
+                    ok=True,
+                    result="submitted",
+                    detail=detail,
+                    executionState="submitted",
+                    verified=False,
+                )
+                code = 0
+            else:
+                answer.update(
+                    ok=True, result="done", detail=execute(ctx, scope, action, target, commands)
+                )
+                answer["completedCommands"] = len(commands)
+                code = 0
     except Refused as exc:
         answer.update(ok=False, result="refused", detail=str(exc))
         if exc.error_code:
@@ -1386,6 +1497,8 @@ def handle(ctx, scope, action, target, mode):
         answer.update(ok=False, result="failed", detail=str(exc))
         if exc.error_code:
             answer["errorCode"] = exc.error_code
+        if exc.completed is not None:
+            answer["completedCommands"] = exc.completed
         code = 1
     if mode == "yes" and not (scope == "server" and action == "update-status"):
         if scope == "server" and action == "redeploy" and audit_target == target:
@@ -1397,18 +1510,24 @@ def handle(ctx, scope, action, target, mode):
                 route = "sudo-system-update"
             elif ctx.uid == 0 and answer["commands"] == [direct]:
                 route = "root-system-update"
-        audit(
+        row_id = secrets.token_hex(6)
+        written_target = (audit_target or "")[:120]
+        if audit(
             ctx,
             scope,
             action,
-            (audit_target or "")[:120],
+            written_target,
             answer["result"],
             lines=log_lines if answer["result"] == "done" else None,
             route=route,
             invocation_id=answer.get("invocationID"),
             verified=answer.get("verified"),
             baseline=answer.get("baselineStartMonotonic"),
-        )
+            row_id=row_id,
+        ):
+            # Only a row that was written is named, so the caller never links to nothing.
+            answer["auditID"] = row_id
+            answer["auditTarget"] = written_target
     return answer, code
 
 

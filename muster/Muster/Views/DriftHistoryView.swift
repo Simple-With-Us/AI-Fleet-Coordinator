@@ -39,7 +39,7 @@ struct DriftHistoryView: View {
     private var header: some View {
         HStack(alignment: .firstTextBaseline) {
             VStack(alignment: .leading, spacing: 6) {
-                Text("Drift History")
+                Text(MusterDestination.driftHistory.title)
                     .font(.largeTitle.weight(.semibold))
                 Text("Every cell that turned red,  newest first.")
                     .font(.callout)
@@ -67,13 +67,18 @@ struct DriftHistoryView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 if let count = monitor.redCount {
-                    Text("\(count) red cell(s)")
+                    Text(count == 1 ? "1 red cell" : "\(count) red cells")
                         .font(.caption)
                         .foregroundStyle(count > 0 ? Color.red : Color.secondary)
-                } else {
+                } else if monitor.lastRunWasTrusted == false {
                     Text("The last run could not be trusted.")
                         .font(.caption)
                         .foregroundStyle(Color.orange)
+                } else {
+                    // No run has landed yet,  which is not a run that failed.
+                    Text("Checking\u{2026}")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
             if let problem = monitor.historyProblem {

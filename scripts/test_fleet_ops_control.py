@@ -975,6 +975,206 @@ class MacVerbTests(Base):
         self.assertEqual(code, 2)
 
 
+class OneActionAndAuditLinkTests(Base):
+    """One `--yes` at a time on a machine, the row id the caller can store, and how far a
+    chain got before it stopped."""
+
+    def hold_lock(self):
+        fd = os.open(self.state / "ops-control.lock", os.O_RDWR | os.O_CREAT, 0o600)
+        foc.fcntl.flock(fd, foc.fcntl.LOCK_EX | foc.fcntl.LOCK_NB)
+        self.addCleanup(os.close, fd)
+
+    def test_a_second_run_while_one_holds_the_lock_is_refused_and_runs_nothing(self):
+        self.hold_lock()
+        code, ans = self.run_main(
+            ["server", "restart", "fleet-server-status.timer", "--yes", "--json"], self.ctx()
+        )
+        self.assertEqual((code, ans["result"], ans["errorCode"]), (2, "refused", "action_busy"))
+        self.assertEqual(ans["detail"], "another action is still running on this machine")
+        self.assertEqual(ans["commands"], [])
+        self.assertEqual(self.runner.calls, [])
+        self.assertEqual(self.audit_rows()[0]["result"], "refused")
+
+    def test_a_journal_read_takes_no_lock_and_is_still_audited(self):
+        self.hold_lock()
+        code, ans = self.run_main(
+            ["server", "logs", "fleet-server-status.timer", "--yes", "--json"], self.ctx()
+        )
+        self.assertEqual((code, ans["result"]), (0, "done"))
+        self.assertEqual(self.audit_rows()[0]["verb"], "server logs")
+
+    def test_a_resource_policy_write_holds_the_same_lock(self):
+        config = json.loads(self.config_path.read_text())
+        config["server"]["resourcePolicy"] = True
+        self.config_path.write_text(json.dumps(config))
+        target = "cpu-weight.50." + "a" * 64
+        reply = {"ok": True, "result": "done", "commands": []}
+        with mock.patch("fleet_resource_control.handle", return_value=(reply, 0)) as handler:
+            self.hold_lock()
+            code, ans = self.run_main(
+                ["server", "resource-policy", target, "--yes", "--json"], self.ctx()
+            )
+            self.assertEqual((code, ans["errorCode"]), (2, "action_busy"))
+            handler.assert_not_called()
+
+    def test_a_plan_takes_no_lock(self):
+        self.hold_lock()
+        code, ans = self.run_main(
+            ["server", "restart", "fleet-server-status.timer", "--plan", "--json"], self.ctx()
+        )
+        self.assertEqual((code, ans["result"]), (0, "planned"))
+
+    def test_the_lock_is_released_after_a_run(self):
+        for _ in range(2):
+            code, ans = self.run_main(
+                ["server", "restart", "fleet-server-status.timer", "--yes", "--json"], self.ctx()
+            )
+            self.assertEqual((code, ans["result"]), (0, "done"))
+
+    def test_a_shared_lock_directory_is_refused(self):
+        self.state.chmod(0o777)
+        try:
+            code, ans = self.run_main(
+                ["server", "restart", "fleet-server-status.timer", "--yes", "--json"], self.ctx()
+            )
+        finally:
+            self.state.chmod(0o700)
+        self.assertEqual((code, ans["errorCode"]), (2, "action_lock_unavailable"))
+        self.assertEqual(self.runner.calls, [])
+
+    def test_a_run_names_the_row_it_wrote(self):
+        code, ans = self.run_main(
+            ["server", "stop", "fleet-server-status.timer", "--yes", "--json"], self.ctx()
+        )
+        self.assertEqual(code, 0)
+        row = self.audit_rows()[0]
+        self.assertRegex(ans["auditID"], r"^[0-9a-f]{12}$")
+        self.assertEqual(row["id"], ans["auditID"])
+        self.assertEqual(ans["auditTarget"], row["target"])
+        self.assertEqual(ans["completedCommands"], 1)
+
+    def test_a_refused_redeploy_names_the_target_the_row_holds(self):
+        code, ans = self.run_main(["server", "redeploy", UUID, "--yes", "--json"], self.ctx())
+        self.assertEqual(code, 2)
+        self.assertEqual(ans["auditTarget"], "coolify resource")
+        self.assertEqual(self.audit_rows()[0]["id"], ans["auditID"])
+
+    def test_a_plan_writes_no_row_and_names_none(self):
+        _, ans = self.run_main(
+            ["server", "stop", "fleet-server-status.timer", "--plan", "--json"], self.ctx()
+        )
+        self.assertNotIn("auditID", ans)
+        self.assertNotIn("completedCommands", ans)
+
+    def test_a_row_that_could_not_be_written_is_not_named(self):
+        with mock.patch.object(foc, "audit", return_value=False):
+            _, ans = self.run_main(
+                ["server", "stop", "fleet-server-status.timer", "--yes", "--json"], self.ctx()
+            )
+        self.assertNotIn("auditID", ans)
+        self.assertNotIn("auditTarget", ans)
+
+    def test_a_chain_that_stops_says_how_many_commands_finished(self):
+        folder = self.home / "Library" / "LaunchAgents"
+        folder.mkdir(parents=True, exist_ok=True)
+        plist = folder / "com.jay.fleet-tools-doctor.plist"
+        plist.write_text("<plist/>")
+        os.chmod(plist, 0o600)
+
+        class KickstartFails(FakeRunner):
+            def __call__(self, argv, **kwargs):
+                if argv[1:2] == ["kickstart"]:
+                    self.calls.append((list(argv), dict(kwargs.get("env") or {})))
+                    return 5, b""
+                return super().__call__(argv, **kwargs)
+
+        code, ans = self.run_main(
+            ["mac", "start", "com.jay.fleet-tools-doctor", "--yes", "--json"],
+            self.ctx("darwin", KickstartFails(loaded=False)),
+        )
+        self.assertEqual((code, ans["result"]), (1, "failed"))
+        self.assertEqual(len(ans["commands"]), 2)
+        self.assertEqual(ans["completedCommands"], 1)
+
+
+GOLDEN = Path(HERE).parent / "muster" / "MusterTests" / "Fixtures" / "ops_wire_golden.json"
+GOLDEN_ACTIONS = {
+    "serverUnit": None,
+    "logs": "logs",
+    "serverUpdate": "update",
+    "coolifyRedeploy": "redeploy",
+    "resourceStatus": "resource-status",
+}
+
+
+class WireContractTests(Base):
+    """The lines Muster sends and the answers it reads, from the file its own tests read."""
+
+    def setUp(self):
+        super().setUp()
+        self.golden = json.loads(GOLDEN.read_text())
+
+    def from_ssh(self, line):
+        ctx = self.ctx(environ={"PATH": "/usr/bin:/bin", "SSH_ORIGINAL_COMMAND": line})
+        return self.run_main(["--from-ssh"], ctx)
+
+    @staticmethod
+    def normalized(answer):
+        """The answer with what differs by machine or by run put in the golden file's form."""
+        answer = json.loads(json.dumps(answer))
+        for argv in answer.get("commands", []):
+            if argv and os.path.basename(argv[0]) == "systemctl":
+                argv[0] = "/usr/bin/systemctl"
+        if "auditID" in answer:
+            answer["auditID"] = "0123456789ab"
+        return answer
+
+    def test_every_line_muster_sends_passes_the_gate_as_the_verb_it_names(self):
+        self.assertTrue(self.golden["accepted"])
+        for entry in self.golden["accepted"]:
+            line = entry["line"]
+            words = foc.parse_ssh_command(line)
+            self.assertEqual(words, line.split(), line)
+            scope, action, target, mode, as_json = foc.parse_request(words)
+            expected = GOLDEN_ACTIONS[entry["action"]] or entry["verb"]
+            self.assertEqual(
+                (scope, action, target, mode, as_json),
+                ("server", expected, entry["target"], entry["mode"], True),
+                line,
+            )
+
+    def test_every_line_the_gate_refuses_runs_nothing(self):
+        for line in self.golden["refusedAtGate"]:
+            with self.assertRaises(foc.Refused, msg=line):
+                foc.parse_ssh_command(line)
+            code, ans = self.from_ssh(line)
+            self.assertEqual((code, ans["result"]), (2, "refused"), line)
+            self.assertEqual(self.runner.calls, [], line)
+
+    def test_every_line_the_helper_refuses_passes_the_gate_and_runs_nothing(self):
+        for line in self.golden["refusedByHelper"]:
+            foc.parse_ssh_command(line)
+            code, ans = self.from_ssh(line)
+            self.assertEqual((code, ans["result"]), (2, "refused"), line)
+            self.assertEqual(self.runner.calls, [], line)
+
+    def test_the_server_still_gives_the_answers_muster_reads(self):
+        answers = self.golden["answers"]
+        _, planned = self.from_ssh("server restart fleet-server-status.timer --plan --json")
+        self.assertEqual(self.normalized(planned), answers["planned"])
+        _, not_listed = self.from_ssh("server restart sshd.service --plan --json")
+        self.assertEqual(not_listed, answers["notListed"])
+        _, done = self.from_ssh("server stop fleet-server-status.timer --yes --json")
+        self.assertEqual(self.normalized(done), answers["done"])
+        fd = os.open(self.state / "ops-control.lock", os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            foc.fcntl.flock(fd, foc.fcntl.LOCK_EX | foc.fcntl.LOCK_NB)
+            _, busy = self.from_ssh("server stop fleet-server-status.timer --yes --json")
+        finally:
+            os.close(fd)
+        self.assertEqual(self.normalized(busy), answers["busy"])
+
+
 class RedeployTests(Base):
     ROWS = [
         {"uuid": UUID, "name": "fleet-recall", "type": "application", "status": "running"},
@@ -1025,6 +1225,59 @@ class RedeployTests(Base):
             self.assertEqual((code, ans["result"]), (2, "refused"), (age, mode, tool, uuid))
             self.assertEqual(self.http_calls, [])
         self.assertNotIn(UUID, (self.state / "ops-audit.jsonl").read_text())
+
+    def test_refuses_an_application_that_is_not_on_the_host_now(self):
+        for status in ("absent", "unknown"):
+            rows = [
+                {
+                    "uuid": UUID,
+                    "name": "fleet-recall",
+                    "type": "application",
+                    "uuidSource": "label",
+                    "status": status,
+                }
+            ]
+            self.write_status(rows)
+            code, ans = self.run_main(["server", "redeploy", UUID, "--yes", "--json"], self.ctx())
+            self.assertEqual((code, ans["result"]), (2, "refused"), status)
+        self.assertEqual(self.http_calls, [])
+
+    def test_a_live_row_ahead_of_a_leftover_with_its_uuid_is_redeployed(self):
+        rows = [
+            {
+                "uuid": UUID,
+                "name": "fleet-recall",
+                "type": "application",
+                "uuidSource": "label",
+                "status": "exited",
+            },
+            {
+                "uuid": UUID,
+                "name": "fleet-recall (old)",
+                "type": "application",
+                "uuidSource": "label",
+                "status": "absent",
+            },
+        ]
+        self.write_status(rows)
+        code, ans = self.run_main(["server", "redeploy", UUID, "--plan", "--json"], self.ctx())
+        self.assertEqual(code, 0, ans)
+
+    def test_the_audit_names_the_application_and_not_one_service(self):
+        rows = [
+            {
+                "uuid": UUID,
+                "name": "fleet-recall (worker)",
+                "service": "worker",
+                "type": "application",
+                "uuidSource": "label",
+                "status": "running",
+            }
+        ]
+        self.write_status(rows)
+        code, ans = self.run_main(["server", "redeploy", UUID, "--yes", "--json"], self.ctx())
+        self.assertEqual((code, ans["result"]), (0, "submitted"), ans)
+        self.assertEqual(self.audit_rows()[0]["target"], "fleet-recall")
 
     def test_refuses_rows_whose_uuid_is_not_a_coolify_uuid(self):
         # A service, a database, or an application without a uuid label:  the collector put
@@ -1109,13 +1362,29 @@ class RedeployTests(Base):
 
 
 class CredentialTests(Base):
-    """The Infisical identity fleet-secrets logs in with, from the root-only file."""
+    """A caller-scoped service token reaches only the fleet-secrets child."""
 
     ROWS = RedeployTests.ROWS
-    PAIR = {
-        "INFISICAL_AUTOMATION_CLIENT_ID": "id-" + "a" * 30,
-        "INFISICAL_AUTOMATION_CLIENT_SECRET": "sec-" + "b" * 40,
+    TOKEN = "FLEET_OPS_CONTROL_INFISICAL_TOKEN"
+    VALUE = "st." + "scoped-fleet-ops-control-token"
+    SHARED_AUTH = {
+        name: "synthetic-unrelated-credential"
+        for name in (
+            "INFISICAL_TOKEN",
+            "INFISICAL_AI_FLEET_COORDINATOR_TOKEN",
+            "INFISICAL_WRITE_TOKEN",
+            "INFISICAL_CLIENT_ID",
+            "INFISICAL_CLIENT_SECRET",
+            "INFISICAL_AUTOMATION_CLIENT_ID",
+            "INFISICAL_AUTOMATION_CLIENT_SECRET",
+            "INFISICAL_UNIVERSAL_AUTH_CLIENT_ID",
+            "INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET",
+            "INFISICAL_SHARED_CLIENT_ID",
+            "INFISICAL_SHARED_CLIENT_SECRET",
+            "WISE_RELAY_INFISICAL_TOKEN",
+        )
     }
+    COORDINATES = {"INFISICAL_PROJECT_ID": "preserved-project", "INFISICAL_READ_PATHS": "/coolify"}
 
     def credentials(self, text, mode=0o600):
         folder = self.home / ".config" / "fleet-tools"
@@ -1126,7 +1395,7 @@ class CredentialTests(Base):
         return path
 
     def pair_text(self):
-        return "# fleet-ops-control\n" + "".join(f"{k}={v}\n" for k, v in self.PAIR.items())
+        return "# fleet-ops-control\n" + f"{self.TOKEN}={self.VALUE}\n"
 
     def redeploy(self, environ=None):
         self.write_status(self.ROWS)
@@ -1139,51 +1408,85 @@ class CredentialTests(Base):
         ((argv, env),) = [c for c in self.runner.calls if c[0][1:2] == ["get"]]
         return env
 
-    def test_file_is_the_one_identity_and_reaches_only_fleet_secrets(self):
+    def test_file_scoped_token_reaches_only_fleet_secrets(self):
         self.credentials(self.pair_text())
-        code, ans = self.redeploy()
+        inherited = {
+            "PATH": "/usr/bin",
+            **self.SHARED_AUTH,
+            **self.COORDINATES,
+            self.TOKEN: "st.different-process-reader-token",
+        }
+        code, ans = self.redeploy(inherited)
+        # A server redeploy is submitted rather than run inline:  the merged code answers
+        # "submitted" for that action, so the expectation follows the code.
         self.assertEqual((code, ans["result"]), (0, "submitted"), ans)
         env = self.secrets_env()
-        for key, value in self.PAIR.items():
-            self.assertEqual(env[key], value)
-        self.assertNotIn("INFISICAL_TOKEN", env)
+        self.assertEqual(env["INFISICAL_TOKEN"], self.VALUE)
+        self.assertNotIn(self.TOKEN, env)
+        self.assertFalse((self.SHARED_AUTH.keys() - {"INFISICAL_TOKEN"}) & env.keys())
+        self.assertEqual({key: env[key] for key in self.COORDINATES}, self.COORDINATES)
         text = json.dumps(ans) + (self.state / "ops-audit.jsonl").read_text()
-        for value in self.PAIR.values():
-            self.assertNotIn(value, text)
-            for argv, _env in self.runner.calls:
-                self.assertNotIn(value, " ".join(argv))
+        self.assertNotIn(self.VALUE, text)
+        for argv, _env in self.runner.calls:
+            self.assertNotIn(self.VALUE, " ".join(argv))
         # A systemctl child never sees it.
         self.runner.calls.clear()
         self.run_main(
-            ["server", "stop", "fleet-server-status.timer", "--yes", "--json"], self.ctx()
+            ["server", "stop", "fleet-server-status.timer", "--yes", "--json"],
+            self.ctx(environ=inherited),
         )
         ((argv, env),) = self.runner.calls
-        self.assertFalse(set(self.PAIR) & set(env))
+        self.assertNotIn("INFISICAL_TOKEN", env)
+        self.assertNotIn(self.TOKEN, env)
+        self.assertFalse(self.SHARED_AUTH.keys() & env.keys())
 
-    def test_a_token_line_alone_is_enough(self):
-        self.credentials("INFISICAL_TOKEN=st." + "c" * 40 + "\n")
-        code, _ = self.redeploy({"PATH": "/usr/bin", **self.PAIR})
+    def test_process_scoped_token_is_mapped_for_the_child(self):
+        inherited = {
+            "PATH": "/usr/bin",
+            **self.SHARED_AUTH,
+            **self.COORDINATES,
+            self.TOKEN: self.VALUE,
+        }
+        code, _ = self.redeploy(inherited)
         self.assertEqual(code, 0)
         env = self.secrets_env()
-        self.assertEqual(env["INFISICAL_TOKEN"], "st." + "c" * 40)
-        self.assertFalse(set(self.PAIR) & set(env))
+        self.assertEqual(env["INFISICAL_TOKEN"], self.VALUE)
+        self.assertNotIn(self.TOKEN, env)
+        self.assertFalse((self.SHARED_AUTH.keys() - {"INFISICAL_TOKEN"}) & env.keys())
+        self.assertEqual({key: env[key] for key in self.COORDINATES}, self.COORDINATES)
+        self.runner.calls.clear()
+        self.run_main(
+            ["server", "stop", "fleet-server-status.timer", "--yes", "--json"],
+            self.ctx(environ=inherited),
+        )
+        ((argv, env),) = self.runner.calls
+        self.assertNotIn(self.TOKEN, env)
+        self.assertFalse(self.SHARED_AUTH.keys() & env.keys())
 
-    def test_no_file_keeps_the_process_environment(self):
-        code, _ = self.redeploy({"PATH": "/usr/bin", **self.PAIR})
+    def test_no_file_discards_broad_token_and_machine_credentials(self):
+        code, _ = self.redeploy({"PATH": "/usr/bin", **self.SHARED_AUTH})
         self.assertEqual(code, 0)
         env = self.secrets_env()
-        self.assertEqual({k: env[k] for k in self.PAIR}, self.PAIR)
+        self.assertNotIn("INFISICAL_TOKEN", env)
+        self.assertFalse(self.SHARED_AUTH.keys() & env.keys())
 
     def test_a_shared_or_malformed_file_fails_before_fleet_secrets_runs(self):
         cases = [
             (self.pair_text(), 0o640),
             (self.pair_text(), 0o604),
             ("INFISICAL_AUTOMATION_CLIENT_ID=only-half\n", 0o600),
-            ('INFISICAL_TOKEN="quoted"\n', 0o600),
+            ('FLEET_OPS_CONTROL_INFISICAL_TOKEN="quoted"\n', 0o600),
             ("PATH=/tmp/evil\n", 0o600),
-            ("INFISICAL_TOKEN=a b\n", 0o600),
-            ("INFISICAL_TOKEN=x\nINFISICAL_TOKEN=y\n", 0o600),
-            ("export INFISICAL_TOKEN=x\n", 0o600),
+            ("FLEET_OPS_CONTROL_INFISICAL_TOKEN=a b\n", 0o600),
+            (
+                "FLEET_OPS_CONTROL_INFISICAL_TOKEN=st."
+                + "x" * 20
+                + "\nFLEET_OPS_CONTROL_INFISICAL_TOKEN=st."
+                + "y" * 20
+                + "\n",
+                0o600,
+            ),
+            ("export FLEET_OPS_CONTROL_INFISICAL_TOKEN=st." + "x" * 25 + "\n", 0o600),
             ("# nothing\n", 0o600),
         ]
         for text, mode in cases:
@@ -1219,10 +1522,7 @@ class CredentialTests(Base):
         self.assertEqual(headers["Authorization"], "Bearer " + TOKEN)
         self.assertNotIn(TOKEN, json.dumps(ans))
         self.assertEqual(self.audit_rows(), [])
-        self.assertEqual(
-            self.secrets_env()["INFISICAL_AUTOMATION_CLIENT_ID"],
-            self.PAIR["INFISICAL_AUTOMATION_CLIENT_ID"],
-        )
+        self.assertEqual(self.secrets_env()["INFISICAL_TOKEN"], self.VALUE)
 
     def test_check_token_failures(self):
         code, ans = self.run_main(["--check-token"], self.ctx(runner=FakeRunner(secret="")))

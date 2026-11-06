@@ -88,6 +88,7 @@ it from any AI-Fleet-Coordinator checkout: python3 scripts/linear-board/board.
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import datetime as dt
 import errno
 import fcntl
@@ -782,25 +783,18 @@ INFISICAL_LINEAR_PATH = "/linear"
 
 
 class Infisical:
-    """AI Fleet Coordinator prod /linear through the INFISICAL_AUTOMATION machine identity.
-
-    The identity comes from the environment (INFISICAL_AUTOMATION_CLIENT_ID / _SECRET), else an
-    INFISICAL_TOKEN already in the environment, else `fleet-secrets get` (OPS-818), which on the Mac
-    reads Fleet-OPS through its Keychain login.  Off (every read answers "", every write False) without
-    any of them, with LINEAR_BOARD_INFISICAL=0, or after the first failed call, so a host with no
-    identity, or an Infisical outage, skips the shared token copy and the old /linear folder instead of failing.  Values are
-    never printed;  messages name keys only."""
+    """AI Fleet Coordinator prod /linear with separate scoped read and write tokens."""
 
     _instance: "Infisical | None" = None
 
     def __init__(self) -> None:
         self.api = (env("LINEAR_BOARD_INFISICAL_API") or "https://app.infisical.com").rstrip("/")
-        self.cid = env("INFISICAL_AUTOMATION_CLIENT_ID") or ""
-        self.sec = env("INFISICAL_AUTOMATION_CLIENT_SECRET") or ""
-        self._token = env("INFISICAL_TOKEN") or ""
+        self._token = env("LINEAR_BOARD_INFISICAL_READ_TOKEN") or ""
+        self._write_token = env("LINEAR_BOARD_INFISICAL_WRITE_TOKEN") or ""
         self.enabled = env("LINEAR_BOARD_INFISICAL", "1") != "0"
-        self._looked = bool(self._token or (self.cid and self.sec))
         self._project = ""
+        self._expected_project = env("LINEAR_BOARD_INFISICAL_PROJECT_ID") or env("INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID") or ""
+        self._verified_tokens: set[tuple[str, bool]] = set()
         self._secrets: dict[str, str] | None = None
 
     @classmethod
@@ -810,12 +804,13 @@ class Infisical:
         return cls._instance
 
     def _call(
-        self, method: str, path: str, body: dict | None = None, auth: bool = True
+        self, method: str, path: str, body: dict | None = None, token: str | None = None
     ) -> dict | None:
         """One request, or None when it failed (and Infisical is then off for this run)."""
         headers = {"Content-Type": "application/json", "User-Agent": USER_AGENT}
-        if auth:
-            headers["Authorization"] = f"Bearer {self._token}"
+        bearer = self._token if token is None else token
+        if bearer:
+            headers["Authorization"] = f"Bearer {bearer}"
         req = urllib.request.Request(
             self.api + path,
             method=method,
@@ -841,55 +836,73 @@ class Infisical:
             )
         self.enabled = False
 
-    def _fleet_secrets(self, name: str) -> str:
-        """One Fleet-OPS secret through `fleet-secrets get` (OPS-818), or "" when it is not installed or fails."""
-        binary = (
-            env("LINEAR_BOARD_FLEET_SECRETS")
-            or shutil.which("fleet-secrets")
-            or str(Path.home() / ".local" / "bin" / "fleet-secrets")
-        )
-        if not os.access(binary, os.X_OK):
-            return ""
-        try:
-            proc = subprocess.run(
-                [binary, "get", name], capture_output=True, text=True, timeout=60, check=False
-            )
-        except (OSError, subprocess.SubprocessError):
-            return ""
-        return proc.stdout.strip() if proc.returncode == 0 else ""
-
     def _identity(self) -> bool:
-        """Whether an identity (or a token) is available, looking it up through fleet-secrets once."""
-        if not self._looked:
-            self._looked = True
-            self.cid = self._fleet_secrets("INFISICAL_AUTOMATION_CLIENT_ID")
-            self.sec = self._fleet_secrets("INFISICAL_AUTOMATION_CLIENT_SECRET") if self.cid else ""
-        return bool(self._token or (self.cid and self.sec))
+        """Whether a valid scoped read token is configured for this caller."""
+        return (
+            self._token.startswith("st.")
+            and 20 <= len(self._token) <= 2048
+            and not any(c.isspace() for c in self._token)
+        )
+
+    def _verify_scope(self, token: str, *, writer: bool = False) -> dict | None:
+        """Verify the service token's grant before using an endpoint that can clamp scope."""
+        key = (token, writer)
+        if key in self._verified_tokens:
+            return {"projectId": self._project}
+        if not self._expected_project:
+            self._off("project-id-unconfigured")
+            return None
+        payload = self._call("GET", "/api/v2/service-token", token=token)
+        if not isinstance(payload, dict):
+            self._off("token-metadata-unavailable")
+            return None
+        scopes = payload.get("scopes")
+        permissions = payload.get("permissions")
+        expected_permissions = {"read", "write"} if writer else {"read"}
+        if (
+            payload.get("workspace") != self._expected_project
+            or (
+                "projectId" in payload
+                and payload.get("projectId") != self._expected_project
+            )
+            or not isinstance(scopes, list)
+            or len(scopes) != 1
+            or scopes[0] != {"environment": "prod", "secretPath": INFISICAL_LINEAR_PATH}
+            or not isinstance(permissions, list)
+            or any(not isinstance(permission, str) for permission in permissions)
+            or len(permissions) != len(set(permissions))
+            or set(permissions) != expected_permissions
+        ):
+            self._off("token-scope-mismatch")
+            return None
+        expiry = payload.get("expiresAt")
+        if expiry is not None:
+            try:
+                parsed = datetime.fromisoformat(expiry.replace("Z", "+00:00"))
+                if parsed.tzinfo is None or parsed <= datetime.now(timezone.utc):
+                    raise ValueError
+            except (AttributeError, TypeError, ValueError):
+                self._off("token-expired-or-invalid")
+                return None
+        self._verified_tokens.add(key)
+        return payload
 
     def _ready(self, need_project: bool = False) -> bool:
-        """Logged in, and (for a write) the project id resolved.  Reads name the project by slug."""
+        """Read and optional write bindings prove the exact AI Fleet Coordinator grant."""
         if not self.enabled:
             return False
         if not self._identity():
             self.enabled = False
             return False
-        if not self._token:
-            js = self._call(
-                "POST",
-                "/api/v1/auth/universal-auth/login",
-                {"clientId": self.cid, "clientSecret": self.sec},
-                auth=False,
-            )
-            self._token = (js or {}).get("accessToken") or ""
-            if not self._token:
-                self._off("login returned no token")
-                return False
-        if need_project and not self._project:
-            js = self._call("GET", f"/api/v1/projects/slug/{INFISICAL_PROJECT_SLUG}")
-            self._project = ((js or {}).get("project") or js or {}).get("id") or ""
-            if not self._project:
-                self._off(f"no project with slug {INFISICAL_PROJECT_SLUG}")
-                return False
+        metadata = self._verify_scope(self._token)
+        if metadata is None:
+            return False
+        self._project = self._expected_project
+        if need_project and not self._write_token:
+            warn("Infisical write skipped (LINEAR_BOARD_INFISICAL_WRITE_TOKEN is not configured)")
+            return False
+        if need_project and self._verify_scope(self._write_token, writer=True) is None:
+            return False
         return True
 
     def _where(self) -> dict:
@@ -905,7 +918,7 @@ class Infisical:
             self._secrets = {}
             if self._ready():
                 query = {
-                    "workspaceSlug": INFISICAL_PROJECT_SLUG,
+                    "workspaceId": self._project,
                     "environment": "prod",
                     "secretPath": INFISICAL_LINEAR_PATH,
                 }
@@ -922,9 +935,9 @@ class Infisical:
         if not self._ready(need_project=True):
             return False
         body = dict(self._where(), secretValue=value, type="shared")
-        js = self._call("PATCH", f"/api/v3/secrets/raw/{urllib.parse.quote(name)}", body)
+        js = self._call("PATCH", f"/api/v3/secrets/raw/{urllib.parse.quote(name)}", body, token=self._write_token)
         if js is not None and js.get("_status") == 404:
-            js = self._call("POST", f"/api/v3/secrets/raw/{urllib.parse.quote(name)}", body)
+            js = self._call("POST", f"/api/v3/secrets/raw/{urllib.parse.quote(name)}", body, token=self._write_token)
         if js is None or js.get("_status"):
             return False
         if self._secrets is not None:
@@ -1421,8 +1434,8 @@ class Identity:
         self.where, self.blob, self.accept, self.label = where, blob, accept, label
         # blob:  the Fleet-OPS /linear secret that holds this app's minted token (CACHE_<SEAT>, CACHE_FLEET),
         # or "" for the environment's generic pair, which may be either app, so it has no shared token.
-        # shared:  the old AI Fleet Coordinator name (LINEAR_<SEAT>_CACHE_TOKEN), used only on a host with no
-        # fleet-secrets (a server or cloud runtime) that has an INFISICAL_AUTOMATION identity.
+        # shared:  the AI Fleet Coordinator name (LINEAR_<SEAT>_CACHE_TOKEN), read through a
+        # separately scoped LINEAR_BOARD_INFISICAL_READ_TOKEN.
         self.shared = shared
         self.slug = slug  # names the app's idempotency file
         self.prefetched = (
@@ -1681,8 +1694,7 @@ class Auth:
         return blob if isinstance(blob, dict) else {}
 
     def _has_store(self, ident: Identity) -> bool:
-        """Whether this app's token has a shared home:  Fleet-OPS through fleet-secrets, or, on a host
-        with no fleet-secrets, the old AI Fleet Coordinator folder through an INFISICAL_AUTOMATION identity."""
+        """Whether this app's token has a shared home reachable with the scoped read token."""
         if ident.blob and fleet_secrets_bin():
             return True
         return bool(ident.shared and Infisical.get().enabled and Infisical.get()._identity())
@@ -6026,6 +6038,7 @@ REMOTE_MAX_NODES = 100_000
 _REMOTE_CODES = frozenset(
     (
         "invalid_argument",
+        "invalid_response",
         "unavailable",
         "upstream_error",
         "not_authorized",

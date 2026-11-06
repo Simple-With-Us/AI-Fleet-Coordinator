@@ -334,7 +334,82 @@ def cmd_daemon(rt: Any, args: argparse.Namespace) -> int:
         return cmd_init(rt, args)
     if sub == "test-wake":
         return cmd_test_wake(rt, args)
+    if sub == "check-config":
+        return cmd_check_config(rt, args)
     raise Z.UsageError("unknown daemon command %r" % sub)
+
+
+# --------------------------------------------------------------------------------------------
+# check-config
+# --------------------------------------------------------------------------------------------
+
+
+def cmd_check_config(rt: Any, args: argparse.Namespace) -> int:
+    """Would the listener take this candidate listener.toml?  The listener's own TOML read, its
+    from_dict and its seat partition check run on the candidate and on the current file, so a tool
+    that writes the file (Muster's Wake & Listener panel) can refuse a bad edit before it lands and
+    does not have to copy the rules.  It reads two files and changes nothing.
+
+    `ok` means the candidate parses, the partition refuses nothing in it, and it brings no error the
+    current file does not already have.  An existing soft error on another seat does not block an
+    edit;  an existing partition refusal does, because the listener would refuse any reload of it.
+
+    `--partition` names the partition to judge by.  The running listener can read another checkout's
+    copy than this command's, and that copy is the one that can refuse the file, so a tool that knows
+    it (the status's `partition_file`) passes it."""
+    root = _root(rt)
+    current = _config_path(rt)
+    partition_file = (
+        os.path.expanduser(args.partition) if args.partition else C.partition_path(rt.env)
+    )
+    partition, partition_problem = C.load_partition(partition_file)
+    env_instance = (rt.env.get(C.ENV_INSTANCE) or "").strip().casefold() or None
+
+    def judge(path: str) -> tuple[list[str], list[str]]:
+        cfg = C.load(root, path)
+        if partition_problem:
+            refused = [partition_problem + "; cannot check the seat partition, so no seat is held"]
+        else:
+            refused = C.partition_errors(
+                cfg, partition, partition_file=partition_file, env_instance=env_instance
+            )
+        return list(cfg.errors), refused
+
+    raw, parse_error = L.load_config(root, args.file)
+    if parse_error is None and not raw:
+        parse_error = "%s holds no settings" % args.file
+    errors: list[str] = []
+    refused: list[str] = []
+    new_errors: list[str] = []
+    if parse_error is None:
+        errors, refused = judge(args.file)
+        before_errors, before_refused = judge(current)
+        before = set(before_errors) | set(before_refused)
+        new_errors = [e for e in errors + refused if e not in before]
+    ok = parse_error is None and not new_errors and not refused
+    if getattr(args, "json", False):
+        rt.out(
+            json.dumps(
+                {
+                    "ok": ok,
+                    "candidate": args.file,
+                    "current": current,
+                    "partition_file": partition_file,
+                    "parse_error": parse_error,
+                    "errors": errors,
+                    "new_errors": new_errors,
+                    "refused": refused,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n"
+        )
+    else:
+        rt.out("the listener would %s %s\n" % ("take" if ok else "not take", args.file))
+        for problem in ([parse_error] if parse_error else []) + refused + new_errors:
+            rt.out("  %s\n" % problem)
+    return 0 if ok else 1
 
 
 # --------------------------------------------------------------------------------------------
@@ -1589,6 +1664,18 @@ def add_parsers(
     q = add("resume", "lift a pause", dsub)
     q.add_argument("--seat", metavar="S", help="one seat (default: every pause)")
     add("reload", "re-read listener.toml (SIGHUP to the running listener)", dsub)
+    q = add(
+        "check-config",
+        "would the listener take this candidate listener.toml?  Runs its own read, rules and seat "
+        "partition check, and changes nothing",
+        dsub,
+    )
+    q.add_argument("--file", metavar="PATH", required=True, help="the candidate file to check")
+    q.add_argument(
+        "--partition",
+        metavar="PATH",
+        help="the seat partition to judge by (default: this checkout's copy)",
+    )
     q = add("chats", "discover, inspect, or manage existing-chat Zulip nudges", dsub)
     csub = q.add_subparsers(dest="chats_action", metavar="ACTION", required=True)
     c = csub.add_parser("catalog", parents=[common])

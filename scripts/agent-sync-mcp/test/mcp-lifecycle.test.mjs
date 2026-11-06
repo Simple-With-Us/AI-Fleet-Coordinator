@@ -102,7 +102,6 @@ test("everything else goes on to the SDK, with its body intact", async () => {
     ["a tool call", { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "guide", arguments: {} } }, {}],
     ["a modern request", { jsonrpc: "2.0", id: 1, method: "tools/list", params: { _meta: { "io.modelcontextprotocol/protocolVersion": "2026-07-28" } } }, { "mcp-protocol-version": "2026-07-28", "mcp-method": "tools/list" }],
     ["params on ping", { jsonrpc: "2.0", id: 1, method: "ping", params: { extra: 1 } }, {}],
-    ["a list cursor", { jsonrpc: "2.0", id: 1, method: "tools/list", params: { cursor: "x" } }, {}],
     ["a null id", { jsonrpc: "2.0", id: null, method: "ping" }, {}],
     ["a fractional id", { jsonrpc: "2.0", id: 1.5, method: "ping" }, {}],
     ["an extra top-level key", { jsonrpc: "2.0", id: 1, method: "ping", extra: 1 }, {}],
@@ -139,4 +138,123 @@ test("a body longer than its Content-Length claimed is refused, never forwarded 
   });
   const seen = await answerLifecycle(lying, { seat: "CLAUDE", config });
   assert.equal(seen.response?.status, 413);
+});
+
+// AFC-641:  opt-in bounded pages for tools/list (no-cursor keeps the full response above).
+
+test("tools/list with a cursor serves bounded pages, byte-identical to the SDK", async () => {
+  for (const seat of ["GROK-WEB", "CLAUDE", "CODEX"]) {
+    for (const header of [{ "mcp-protocol-version": "2025-03-26" }, {}]) {
+      // Cursors are server-issued (offset.list-tag).  The bare "0" entry point pages
+      // like the SDK (no page precedes it, so no walk can be shifted);  a hand-composed
+      // nonzero offset fails closed on our side even where the SDK would page it -
+      // intentional, so a stale tool list can never silently shift a walk.
+      {
+        const res = await answerLifecycle(request({ jsonrpc: "2.0", id: 9, method: "tools/list", params: { cursor: "0" } }), { seat, config });
+        const text = await res.response.text();
+        const first = JSON.parse(text.slice(text.indexOf("data: ") + 6).trim()).result;
+        assert.ok(first.tools.length > 0 && first.tools.length <= 100);
+        assert.match(first.nextCursor, /^100\.[0-9a-f]{8}$/);
+      }
+      {
+        const res = await answerLifecycle(request({ jsonrpc: "2.0", id: 10, method: "tools/list", params: { cursor: "100" } }), { seat, config });
+        const text = await res.response.text();
+        assert.match(text, /invalid cursor/);
+      }
+    }
+  }
+});
+
+test("tools/list pages concatenate to the full list, in order, with no overlap", async () => {
+  const dataOf = async (res) => { const text = await res.text(); return text.slice(text.indexOf("data: ") + 6).trim(); };
+  const full = JSON.parse(await dataOf((await answerLifecycle(request({ jsonrpc: "2.0", id: 1, method: "tools/list" }), { seat: "CODEX", config })).response)).result.tools;
+  const names = [];
+  let cursor = "0";
+  for (;;) {
+    const res = await answerLifecycle(request({ jsonrpc: "2.0", id: 2, method: "tools/list", params: { cursor } }), { seat: "CODEX", config });
+    const page = JSON.parse(await dataOf(res.response)).result;
+    assert.ok(page.tools.length > 0 && page.tools.length <= 100);
+    names.push(...page.tools.map((tool) => tool.name));
+    if (page.nextCursor === undefined) break;
+    assert.ok(typeof page.nextCursor === "string" && page.nextCursor.length > 0, "a present nextCursor is a non-empty string");
+    cursor = page.nextCursor;
+  }
+  assert.deepEqual(names, full.map((tool) => tool.name));
+});
+
+test("tools/list rejects a malformed or out-of-range cursor exactly like the SDK", async () => {
+  await assertParity("CODEX", { jsonrpc: "2.0", id: 11, method: "tools/list", params: { cursor: "x" } }, {});
+  await assertParity("CODEX", { jsonrpc: "2.0", id: 12, method: "tools/list", params: { cursor: "999999999999" } }, {});
+  const empty = await answerLifecycle(request({ jsonrpc: "2.0", id: 13, method: "tools/list", params: { cursor: "" } }), { seat: "CODEX", config });
+  assert.match(JSON.stringify(empty.response ? await empty.response.text() : empty), /invalid cursor/, "an empty-string cursor is rejected, never forwarded");
+});
+
+test("catalog pages every tool name and description, terminating without a nextCursor", async () => {
+  const tools = new HostedTools({ seat: "CODEX", scopes: ["zulip:read"], config, gate: {}, clientId: "t", grantRef: "r" });
+  tools.reserve = async () => {};
+  const router = new IdentityRouter({ callerTools: tools });
+  const seen = [];
+  let cursor;
+  for (;;) {
+    const args = cursor === undefined ? { identity: "CODEX" } : { identity: "CODEX", cursor };
+    const result = await router.call("catalog", args);
+    assert.ok(!result.isError, JSON.stringify(result).slice(0, 200));
+    const page = result.structuredContent;
+    assert.ok(page.tools.length > 0 && page.tools.length <= 200);
+    for (const entry of page.tools) {
+      assert.deepEqual(Object.keys(entry).sort(), ["description", "name"]);
+      seen.push(entry.name);
+    }
+    if (page.nextCursor === undefined) break;
+    assert.ok(typeof page.nextCursor === "string" && page.nextCursor.length > 0, "a present nextCursor is a non-empty string");
+    cursor = page.nextCursor;
+  }
+  assert.deepEqual(seen, router.toolList.map((tool) => tool.name));
+  assert.ok(seen.includes("catalog"));
+});
+
+test("catalog refuses a bad cursor as a tool error, never a protocol error", async () => {
+  const tools = new HostedTools({ seat: "CODEX", scopes: ["zulip:read"], config, gate: {}, clientId: "t", grantRef: "r" });
+  tools.reserve = async () => {};
+  const router = new IdentityRouter({ callerTools: tools });
+  const result = await router.call("catalog", { identity: "CODEX", cursor: "bogus" });
+  assert.ok(result.isError);
+  assert.match(JSON.stringify(result), /invalid cursor/);
+});
+
+test("catalog refuses a cursor tagged for a different tool list", async () => {
+  const tools = new HostedTools({ seat: "CODEX", scopes: ["zulip:read"], config, gate: {}, clientId: "t", grantRef: "r" });
+  tools.reserve = async () => {};
+  const router = new IdentityRouter({ callerTools: tools });
+  const first = await router.call("catalog", { identity: "CODEX" });
+  const next = first.structuredContent.nextCursor;
+  assert.ok(typeof next === "string" && next.includes("."), "issued cursors carry the list tag");
+  const [offset, tag] = next.split(".");
+  const staleTag = tag.replace(/[0-9a-f]/, (c) => (c === "0" ? "1" : "0"));
+  const stale = await router.call("catalog", { identity: "CODEX", cursor: `${offset}.${staleTag}` });
+  assert.ok(stale.isError);
+  assert.match(JSON.stringify(stale), /invalid cursor/);
+  const bare = await router.call("catalog", { identity: "CODEX", cursor: offset });
+  assert.ok(bare.isError, "a bare hand-composed offset is refused");
+  assert.match(JSON.stringify(bare), /invalid cursor/);
+});
+
+test("catalog audits exactly one row per execution, success and failure", async () => {
+  const rows = [];
+  const tools = new HostedTools({ seat: "CODEX", scopes: ["zulip:read"], config, gate: {}, clientId: "t", grantRef: "r" });
+  tools.auditRow = async (gate, row) => { rows.push(row); };
+  const reserves = [];
+  tools.reserve = async (kind) => { reserves.push(kind); };
+  const router = new IdentityRouter({ callerTools: tools });
+  const ok = await router.call("catalog", { identity: "CODEX" });
+  assert.ok(!ok.isError);
+  assert.deepEqual(reserves, ["read"], "a successful catalog call consumes read budget like identities()");
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].outcome, "ok");
+  assert.equal(rows[0].tool, "catalog");
+  const bad = await router.call("catalog", { identity: "CODEX", cursor: "bogus" });
+  assert.ok(bad.isError);
+  assert.equal(rows.length, 2);
+  assert.equal(rows[1].outcome, "error");
+  assert.equal(rows[1].error_code, "invalid_argument");
 });

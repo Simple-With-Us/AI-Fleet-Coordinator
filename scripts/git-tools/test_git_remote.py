@@ -1797,6 +1797,128 @@ class TestReview1199(unittest.TestCase):
             with self.assertRaises(git._TransportError):
                 git._remote_post(git.REMOTE_MCP_URL, {}, b"{}", 5)
 
+    def _remote_post_with_response(
+        self, chunks, headers, eof_error=None, chunked=False, close_after_body=False
+    ):
+        calls = []
+        chunks = list(chunks)
+
+        class FakeSock:
+            def settimeout(self, value):
+                self.value = value
+                if close_after_body and not chunks:
+                    raise OSError(9, "Bad file descriptor")
+
+        class Response:
+            status = 200
+
+            def __init__(self):
+                self.headers = headers
+                self.chunked = chunked
+                self.fp = types.SimpleNamespace(raw=types.SimpleNamespace(_sock=FakeSock()))
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read1(self, size):
+                calls.append(size)
+                if chunks:
+                    return chunks.pop(0)
+                if eof_error is not None:
+                    raise eof_error
+                return b""
+
+        class FakeOpener:
+            def open(self, req, timeout=None):
+                return Response()
+
+        with mock.patch.object(git.urllib.request, "build_opener", lambda *handlers: FakeOpener()):
+            return git._remote_post(git.REMOTE_MCP_URL, {}, b"{}", 5), calls
+
+    def test_declared_content_length_completes_sse_without_a_final_closed_socket_read(self):
+        body = b'event: message\ndata: {"jsonrpc":"2.0","id":1,"result":{"tools":[]}}\n\n'
+        chunks = [body[:17], body[17:]]
+        headers = {"Content-Type": "text/event-stream", "Content-Length": str(len(body))}
+        (status, ctype, raw), calls = self._remote_post_with_response(
+            chunks, headers, OSError(9, "Bad file descriptor")
+        )
+        self.assertEqual((status, ctype, raw), (200, "text/event-stream", body))
+        self.assertEqual(
+            len(calls), len(chunks), "the closed socket was read after the declared body"
+        )
+
+    def test_declared_content_length_truncated_at_eof_is_a_transport_failure(self):
+        with self.assertRaises(git._TransportError):
+            self._remote_post_with_response(
+                [b"abc", b""], {"Content-Type": "application/json", "Content-Length": "4"}
+            )
+
+    def test_declared_content_length_truncated_by_socket_close_is_a_transport_failure(self):
+        with self.assertRaises(git._TransportError):
+            self._remote_post_with_response(
+                [b"abc"],
+                {"Content-Type": "application/json", "Content-Length": "4"},
+                OSError(9, "Bad file descriptor"),
+            )
+
+    def test_transfer_coding_ignores_a_misleading_content_length(self):
+        body = b'event: message\ndata: {"jsonrpc":"2.0","id":1,"result":{}}\n\n'
+        (status, ctype, raw), calls = self._remote_post_with_response(
+            [body, b""],
+            {
+                "Content-Type": "text/event-stream",
+                "Content-Length": "1",
+                "Transfer-Encoding": "chunked",
+            },
+            chunked=True,
+        )
+        self.assertEqual((status, ctype, raw), (200, "text/event-stream", body))
+        self.assertEqual(len(calls), 2)
+
+    def test_unknown_content_length_still_reads_to_eof(self):
+        (status, ctype, raw), calls = self._remote_post_with_response(
+            [b"abc", b""], {"Content-Type": "application/json"}
+        )
+        self.assertEqual((status, ctype, raw), (200, "application/json", b"abc"))
+        self.assertEqual(len(calls), 2)
+
+    def test_unknown_content_length_closed_after_body_completes_the_body(self):
+        (status, ctype, raw), calls = self._remote_post_with_response(
+            [b"abc"],
+            {"Content-Type": "application/json"},
+            OSError(9, "Bad file descriptor"),
+        )
+        self.assertEqual((status, ctype, raw), (200, "application/json", b"abc"))
+        self.assertEqual(len(calls), 2)
+
+    def test_unknown_content_length_post_body_settimeout_close_completes_the_body(self):
+        (status, ctype, raw), calls = self._remote_post_with_response(
+            [b"abc"],
+            {"Content-Type": "application/json"},
+            close_after_body=True,
+        )
+        self.assertEqual((status, ctype, raw), (200, "application/json", b"abc"))
+        self.assertEqual(len(calls), 1)
+
+    def test_unknown_content_length_timeout_after_body_is_a_transport_failure(self):
+        with self.assertRaises(git._TransportError):
+            self._remote_post_with_response(
+                [b"abc"],
+                {"Content-Type": "application/json"},
+                TimeoutError("timed out"),
+            )
+
+    def test_truncated_body_failure_says_the_answer_was_cut_short(self):
+        exc = git._TransportError(True, "truncated response")
+        self.assertEqual(
+            git._failure(exc, False),
+            "the hosted endpoint closed the answer before its declared length (no direct fallback)",
+        )
+        self.assertIn(git._REMOTE_UNKNOWN, git._failure(exc, True))
+
     # 5. The program name cannot carry newline/tab into stderr lines.
     def test_prog_escapes_newline_and_tab(self):
         with mock.patch.dict(os.environ, {"SIMPLE_GIT_ARGV0": "evil\nname\there"}):
@@ -1881,3 +2003,130 @@ class TestRealSharedScanner(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+PUBLISH_TOOLS = [
+    make_tool(
+        "gr_wf_files_put",
+        {
+            "type": "object",
+            "properties": {
+                "repo": {"type": "string"},
+                "branch": {"type": "string"},
+                "message": {"type": "string"},
+                "files": {"type": "array"},
+                "expected_head_sha": {"type": "string"},
+                "identity": {"type": "string"},
+            },
+        },
+        "put files",
+    ),
+    make_tool(
+        "gr_wf_branch_get",
+        {
+            "type": "object",
+            "properties": {
+                "repo": {"type": "string"},
+                "branch": {"type": "string"},
+                "identity": {"type": "string"},
+            },
+        },
+        "branch get",
+    ),
+    make_tool(
+        "gr_wf_tree",
+        {
+            "type": "object",
+            "properties": {
+                "repo": {"type": "string"},
+                "sha": {"type": "string"},
+                "recursive": {"type": "boolean"},
+                "identity": {"type": "string"},
+            },
+        },
+        "tree",
+    ),
+]
+
+PUBLISH_HEAD = "1" * 40
+PUBLISH_COMMIT = "2" * 40
+
+
+def _ok_result(structured):
+    return {
+        "structuredContent": structured,
+        "content": [{"type": "text", "text": "done"}],
+        "isError": False,
+    }
+
+
+def _publish_setup(testcase, tree_entries, include_tree_tool=True):
+    """A publish rerun whose outcome store already records branch + batch 1 as ok.  Returns (transport, out, err, code)."""
+    tmp = tempfile.TemporaryDirectory()
+    testcase.addCleanup(tmp.cleanup)
+    local = Path(tmp.name) / "x.md"
+    data = b"hello publish\n"
+    local.write_bytes(data)
+    files = [("docs/x.md", data)]
+    key = git._publish_key("o/r", "feature", "main", "m", files)
+    store = {key: {"batches": {"branch": "ok", "1": "ok"}}}
+    (Path(tmp.name) / "publish-outcomes.json").write_text(json.dumps(store))
+    tools = (
+        list(PUBLISH_TOOLS)
+        if include_tree_tool
+        else [t for t in PUBLISH_TOOLS if t["name"] != "gr_wf_tree"]
+    )
+    transport = FakeTransport(
+        pages=[tools],
+        seat="CODEX",
+        call_results={
+            "gr_wf_branch_get": _ok_result({"branch": {"commit": {"sha": PUBLISH_HEAD}}}),
+            "gr_wf_tree": _ok_result({"tree": tree_entries}),
+            "gr_wf_files_put": _ok_result({"commit": PUBLISH_COMMIT}),
+        },
+    )
+    code, out, err = run_cli(
+        [
+            "publish",
+            "--repo",
+            "o/r",
+            "--branch",
+            "feature",
+            "--base",
+            "main",
+            "--message",
+            "m",
+            "--file",
+            f"{local}=docs/x.md",
+        ],
+        env={"SIMPLE_TOOLS_BEARER": BEARER, "SIMPLE_GIT_STATE_DIR": tmp.name},
+        transport=transport,
+    )
+    return transport, out, err, code
+
+
+class TestPublishRerunTrustsLiveTree(unittest.TestCase):
+    def test_ledger_ok_but_live_tree_missing_the_batch_recommits(self):
+        # The branch was reset or rewritten after batch 1 was recorded:  the live tree lacks the file.
+        transport, out, err, code = _publish_setup(self, tree_entries=[])
+        self.assertEqual(code, 0, err)
+        puts = [args for name, args in transport.calls if name == "gr_wf_files_put"]
+        self.assertEqual(len(puts), 1, transport.calls)
+        self.assertEqual(puts[0]["expected_head_sha"], PUBLISH_HEAD)
+        self.assertIn("missing from the branch", out)
+
+    def test_ledger_ok_and_live_tree_has_the_batch_skips(self):
+        data = b"hello publish\n"
+        tree = [{"type": "blob", "path": "docs/x.md", "sha": git._git_blob_sha(data)}]
+        transport, out, err, code = _publish_setup(self, tree_entries=tree)
+        self.assertEqual(code, 0, err)
+        puts = [args for name, args in transport.calls if name == "gr_wf_files_put"]
+        self.assertEqual(puts, [], transport.calls)
+        self.assertIn("already committed by an earlier run", out)
+
+    def test_ledger_ok_trusted_when_live_tree_unreadable(self):
+        transport, out, err, code = _publish_setup(self, tree_entries=[], include_tree_tool=False)
+        self.assertEqual(code, 0, err)
+        puts = [args for name, args in transport.calls if name == "gr_wf_files_put"]
+        self.assertEqual(puts, [], transport.calls)
+        self.assertIn("already committed by an earlier run", out)

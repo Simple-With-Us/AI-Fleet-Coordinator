@@ -70,6 +70,8 @@ class SeatPolicy:
     VALID_ACTIONS = ("open_pr",)
     APP_ACTIONS = (
         "mint_token",
+        # Read-only fetch and clone over the relay's /git/ route (git_read.py).  The token stays in the relay.
+        "git_read",
         "merge_pr",
         "workflow_dispatch",
         "resolve_thread",
@@ -159,6 +161,9 @@ class SeatPolicy:
         "wf_merge_queue_dequeue",
         "wf_git_blob_get",
         "wf_git_blob_create",
+        "wf_pr_create",
+        "wf_pr_edit",
+        "wf_pr_close",
         "wf_git_commit_get",
         "wf_git_tree_get",
         "wf_commit_statuses",
@@ -210,6 +215,7 @@ class SeatPolicy:
         "wf_tag_delete",
         "wf_pr_draft",
         "wf_pr_ready",
+        "wf_pr_reopen",
         "wf_automerge_enable",
         "wf_automerge_disable",
         "wf_review_threads",
@@ -487,7 +493,7 @@ class SeatPolicy:
         repository state.  Registered-but-unwired actions and any unclassified name count as writes, so the
         write bucket can only err toward counting.
         """
-        if action == "mint_token":
+        if action in ("mint_token", "git_read"):
             return False
         if action in cls.WORKFLOW_ACTIONS:
             # Imported here:  workflow_verbs imports server, which imports this module.

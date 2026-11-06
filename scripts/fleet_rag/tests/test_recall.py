@@ -12,6 +12,8 @@ import json
 import os
 import pathlib
 import tempfile
+import threading
+import time
 import unittest
 from unittest import mock
 
@@ -23,6 +25,8 @@ from fleet_rag.recall_api import FakeQdrant
 SEAMS = ("load_config", "embed", "embedder_healthy", "rerank_healthy", "Qdrant", "gitleaks_flagged",
          "gitleaks_available")
 META_EXCLUDE = {"key": "source", "match": {"value": "meta"}}
+RETRACTED_EXCLUDE = {"key": "retracted", "match": {"value": True}}
+DEFAULT_MUST_NOT = [META_EXCLUDE, RETRACTED_EXCLUDE]
 
 
 def add_fake_point(text: str, **payload) -> dict:
@@ -52,11 +56,11 @@ class RecallBase(unittest.TestCase):
 
 class BuildFilterTests(RecallBase):
     def test_no_filters_still_excludes_meta(self):
-        self.assertEqual(recall_api.build_filter(), {"must_not": [META_EXCLUDE]})
+        self.assertEqual(recall_api.build_filter(), {"must_not": DEFAULT_MUST_NOT})
 
     def test_match_fields(self):
         flt = recall_api.build_filter(category="lesson", app="fleet", source="doc", seat="CLAUDE")
-        self.assertEqual(flt, {"must_not": [META_EXCLUDE], "must": [
+        self.assertEqual(flt, {"must_not": DEFAULT_MUST_NOT, "must": [
             {"key": "category", "match": {"value": "lesson"}},
             {"key": "app", "match": {"value": "fleet"}},
             {"key": "source", "match": {"value": "doc"}},
@@ -65,7 +69,7 @@ class BuildFilterTests(RecallBase):
 
     def test_since_days_range_alone(self):
         flt = recall_api.build_filter(since_days=7, now=10_000_000_000)
-        self.assertEqual(flt, {"must_not": [META_EXCLUDE],
+        self.assertEqual(flt, {"must_not": DEFAULT_MUST_NOT,
                                "must": [{"key": "created_at",
                                          "range": {"gte": 10_000_000_000 - 7 * 86_400_000}}]})
 
@@ -73,7 +77,7 @@ class BuildFilterTests(RecallBase):
         flt = recall_api.build_filter(app="fleet", since_days=1, now=5_000_000_000)
         self.assertEqual(flt["must"][0], {"key": "app", "match": {"value": "fleet"}})
         self.assertEqual(flt["must"][1], {"key": "created_at", "range": {"gte": 5_000_000_000 - 86_400_000}})
-        self.assertEqual(flt["must_not"], [META_EXCLUDE])
+        self.assertEqual(flt["must_not"], DEFAULT_MUST_NOT)
 
     def test_since_days_must_be_positive_int(self):
         for bad in (0, -3, "7", 1.5, True):
@@ -83,7 +87,7 @@ class BuildFilterTests(RecallBase):
     def test_meta_exclude_is_a_fresh_dict_each_call(self):
         a = recall_api.build_filter()
         a["must_not"][0]["match"]["value"] = "tampered"
-        self.assertEqual(recall_api.build_filter()["must_not"], [META_EXCLUDE])
+        self.assertEqual(recall_api.build_filter()["must_not"], DEFAULT_MUST_NOT)
 
 
 class SearchTests(RecallBase):
@@ -96,7 +100,7 @@ class SearchTests(RecallBase):
             self.assertIn(f, hit)
         self.assertIn("List names only", hit["text"])
         vector, terms, limit, flt = FakeQdrant.calls[-1]
-        self.assertEqual(flt, {"must_not": [META_EXCLUDE]})
+        self.assertEqual(flt, {"must_not": DEFAULT_MUST_NOT})
         self.assertIn("credentials", terms)
         # Without a rerank endpoint the window is `limit` docs * GROUP_DEPTH points, one fused
         # query, grouped in-process (the server-side groups query is opt-in).
@@ -115,13 +119,13 @@ class SearchTests(RecallBase):
         self.assertEqual(flt["must"][2]["match"]["value"], "CLAUDE")   # seat uppercased
         gte = flt["must"][3]["range"]["gte"]
         self.assertTrue(before - 30 * 86_400_000 - 5000 <= gte <= before - 30 * 86_400_000 + 5000)
-        self.assertEqual(flt["must_not"], [META_EXCLUDE])
+        self.assertEqual(flt["must_not"], DEFAULT_MUST_NOT)
 
     def test_stopword_only_query_falls_back_to_dense(self):
         res = recall_api.recall_search("is it", limit=2)
         self.assertEqual(res["mode"], "dense")
         self.assertEqual(FakeQdrant.calls[-1][1], [])
-        self.assertEqual(FakeQdrant.calls[-1][3], {"must_not": [META_EXCLUDE]})
+        self.assertEqual(FakeQdrant.calls[-1][3], {"must_not": DEFAULT_MUST_NOT})
 
     def test_ingest_sentinel_never_returned(self):
         # A source="meta" point whose text matches the query better than anything else.
@@ -132,7 +136,7 @@ class SearchTests(RecallBase):
             self.assertTrue(res["hits"], kwargs)
             self.assertNotIn("meta", [h["source"] for h in res["hits"]], kwargs)
             self.assertNotIn("meta/ingest-run", [h["doc_id"] for h in res["hits"]], kwargs)
-            self.assertEqual(FakeQdrant.calls[-1][3]["must_not"], [META_EXCLUDE], kwargs)
+            self.assertEqual(FakeQdrant.calls[-1][3]["must_not"], DEFAULT_MUST_NOT, kwargs)
         # Even asking for it by source is refused (meta is not a searchable source).
         with self.assertRaisesRegex(FleetRagError, "source must be one of"):
             recall_api.recall_search("anything", source="meta")
@@ -165,7 +169,7 @@ class SearchTests(RecallBase):
         for s in recall_api.SOURCES:
             recall_api.recall_search("x", source=s)
         recall_api.recall_search("x", category="", source="  ", app="", seat=None)
-        self.assertEqual(FakeQdrant.calls[-1][3], {"must_not": [META_EXCLUDE]})
+        self.assertEqual(FakeQdrant.calls[-1][3], {"must_not": DEFAULT_MUST_NOT})
 
 
 class StatsTests(RecallBase):
@@ -355,6 +359,387 @@ class ContributeTests(RecallBase):
         with self.assertRaisesRegex(FleetRagError, "QDRANT_API_KEY"):
             recall_api.recall_contribute(GOOD, "lesson", seat="CLAUDE")
         self.assertEqual(calls, [True])
+
+
+class CorrectRetractTests(RecallBase):
+    def contribute(self, text: str = GOOD, seat: str = "CLAUDE") -> dict:
+        recall_api.gitleaks_available = lambda: False
+        return recall_api.recall_contribute(text, "lesson", seat=seat)
+
+    def test_correction_preserves_id_doc_and_revision_audit(self):
+        original = self.contribute()
+        replacement = (
+            "pm2 start only applies a new ecosystem env after restart --update-env; "
+            "check pm2 describe for the process env before debugging PATH."
+        )
+        res = recall_api.recall_correct(
+            original["doc_id"], replacement, "make the restart command exact", seat="CLAUDE",
+            title="pm2 env refresh", url="https://example.com/pr/2", expected_revision=1,
+        )
+        self.assertEqual(res["status"], "completed")
+        self.assertEqual(res["id"], original["id"])
+        self.assertEqual(res["doc_id"], original["doc_id"])
+        self.assertEqual(res["revision"], 2)
+        self.assertEqual(len(FakeQdrant.upserts), 2)
+        payload = FakeQdrant.upserts[-1][0]["payload"]
+        self.assertEqual(payload["text"], replacement)
+        self.assertEqual(payload["title"], "pm2 env refresh")
+        self.assertEqual(payload["revision"], 2)
+        self.assertEqual(payload["corrected_by"], "CLAUDE")
+        self.assertEqual(payload["correction_reason"], "make the restart command exact")
+        self.assertEqual(len(payload["revisions"]), 1)
+        self.assertEqual(payload["revisions"][0]["text"], GOOD)
+        self.assertEqual(payload["revisions"][0]["replaced_by"], "CLAUDE")
+
+    def test_correction_archives_the_original_scrub_audit(self):
+        original = self.contribute()
+        point = next(p for p in FakeQdrant.points if p["payload"].get("doc_id") == original["doc_id"])
+        point["payload"]["scrubbed"] = ["token"]
+        replacement = (
+            "pm2 start only applies a new ecosystem env after restart --update-env; "
+            "check pm2 describe for the process env before debugging PATH."
+        )
+        recall_api.recall_correct(original["doc_id"], replacement, "replace the scrubbed text", seat="CLAUDE")
+        payload = FakeQdrant.upserts[-1][0]["payload"]
+        self.assertEqual(payload["revisions"][0]["scrubbed"], ["token"])
+        self.assertEqual(payload["scrubbed"], ["gitleaks-unavailable"])
+
+    def test_same_text_correction_is_unchanged_and_authority_is_enforced(self):
+        original = self.contribute()
+        res = recall_api.recall_correct(
+            original["doc_id"], GOOD, "retry after a timeout", seat="CLAUDE",
+        )
+        self.assertEqual(res["status"], "unchanged")
+        self.assertEqual(len(FakeQdrant.upserts), 1)
+        with self.assertRaisesRegex(FleetRagError, "owning seat"):
+            recall_api.recall_correct(original["doc_id"], "x" * 50, "not mine", seat="GROK")
+        with self.assertRaisesRegex(FleetRagError, "expected_revision"):
+            recall_api.recall_correct(original["doc_id"], "y" * 50, "stale read", seat="CLAUDE", expected_revision=2)
+        self.assertEqual(len(FakeQdrant.upserts), 1)
+
+    def test_recontribute_of_corrected_replacement_is_a_duplicate(self):
+        original = self.contribute()
+        replacement = (
+            "pm2 restart needs --update-env before process env changes take effect; "
+            "check pm2 describe after the restart."
+        )
+        recall_api.recall_correct(original["doc_id"], replacement, "make current", seat="CLAUDE")
+        again = self.contribute(replacement)
+        self.assertEqual(again["status"], "duplicate")
+        self.assertEqual(again["id"], original["id"])
+        self.assertEqual(again["existing"]["doc_id"], original["doc_id"])
+        self.assertEqual(len(FakeQdrant.upserts), 2)
+
+    def test_revision_history_cap_preserves_history_and_refuses_further_correction(self):
+        original = self.contribute()
+        point = next(p for p in FakeQdrant.points if p["payload"].get("doc_id") == original["doc_id"])
+        history = [{"revision": i + 1, "text": f"old {i}", "content_hash": f"hash-{i}"}
+                   for i in range(recall_api.REVISION_HISTORY_LIMIT)]
+        point["payload"]["revisions"] = history
+        before = [dict(item) for item in history]
+        with self.assertRaisesRegex(FleetRagError, "preserved revisions"):
+            recall_api.recall_correct(original["doc_id"], "z" * 50, "one correction too many", seat="CLAUDE")
+        self.assertEqual(point["payload"]["revisions"], before)
+        self.assertEqual(len(FakeQdrant.upserts), 1)
+
+    def test_retraction_during_correction_embedding_wins_and_correction_refuses(self):
+        original = self.contribute()
+        real_embed = recall_api.embed
+
+        def racing_embed(cfg, texts):
+            recall_api.recall_retract(original["doc_id"], "obsolete while replacement embedded", seat="CLAUDE")
+            return real_embed(cfg, texts)
+
+        with mock.patch.object(recall_api, "embed", racing_embed):
+            with self.assertRaisesRegex(FleetRagError, "retracted"):
+                recall_api.recall_correct(original["doc_id"], "z" * 50, "late replacement", seat="CLAUDE")
+        point = next(p for p in FakeQdrant.points if p["payload"].get("doc_id") == original["doc_id"])
+        self.assertTrue(point["payload"]["retracted"])
+        self.assertEqual(point["payload"]["retraction_reason"], "obsolete while replacement embedded")
+        self.assertEqual(point["payload"]["text"], GOOD)
+
+    def test_metadata_only_correction_updates_the_same_point_with_audit(self):
+        original = self.contribute()
+        res = recall_api.recall_correct(
+            original["doc_id"], GOOD, "link the runbook", seat="CLAUDE",
+            title="pm2 env", url="https://example.com/runbooks/pm2-env", expected_revision=1,
+        )
+        self.assertEqual(res["status"], "completed")
+        self.assertEqual(res["revision"], 2)
+        self.assertEqual(res["content_hash"], res["previous_content_hash"])
+        self.assertEqual(len(FakeQdrant.upserts), 1)  # no re-embed / replacement point write
+        point = next(p for p in FakeQdrant.points if p["payload"].get("doc_id") == original["doc_id"])
+        payload = point["payload"]
+        self.assertEqual(payload["text"], GOOD)
+        self.assertEqual(payload["title"], "pm2 env")
+        self.assertEqual(payload["url"], "https://example.com/runbooks/pm2-env")
+        self.assertEqual(payload["revision"], 2)
+        self.assertEqual(payload["correction_reason"], "link the runbook")
+        self.assertEqual(len(payload["revisions"]), 1)
+        self.assertEqual(payload["revisions"][0]["text"], GOOD)
+        self.assertEqual(payload["revisions"][0]["title"], "")
+
+    def test_recontribute_never_overwrites_retracted_or_corrected_away_point(self):
+        original = self.contribute()
+        recall_api.recall_retract(original["doc_id"], "obsolete instruction", seat="OWNER")
+        res = self.contribute()
+        self.assertEqual(res["status"], "duplicate")
+        self.assertTrue(res["existing"]["retracted"])
+        self.assertEqual(len(FakeQdrant.upserts), 1)
+        point = next(p for p in FakeQdrant.points if p["payload"].get("doc_id") == original["doc_id"])
+        self.assertTrue(point["payload"]["retracted"])
+        self.assertEqual(point["payload"]["retraction_reason"], "obsolete instruction")
+
+        FakeQdrant.reset()
+        corrected = self.contribute()
+        replacement = (
+            "pm2 restart needs --update-env before process env changes take effect; "
+            "check pm2 describe after the restart."
+        )
+        recall_api.recall_correct(corrected["doc_id"], replacement, "make current", seat="CLAUDE")
+        again = self.contribute()
+        self.assertEqual(again["status"], "duplicate")
+        self.assertEqual(again["existing"]["doc_id"], corrected["doc_id"])
+        self.assertEqual(len(FakeQdrant.upserts), 2)
+        point = next(p for p in FakeQdrant.points if p["payload"].get("doc_id") == corrected["doc_id"])
+        self.assertEqual(point["payload"]["text"], replacement)
+        self.assertEqual(len(point["payload"]["revisions"]), 1)
+
+    def test_retraction_keeps_audit_excludes_default_search_and_is_idempotent(self):
+        original = self.contribute()
+        res = recall_api.recall_retract(original["doc_id"], "obsolete instruction", seat="OWNER")
+        self.assertEqual(res["status"], "completed")
+        self.assertTrue(res["retracted"])
+        self.assertEqual(res["retracted_by"], "OWNER")
+        point = next(p for p in FakeQdrant.points if p["payload"].get("doc_id") == original["doc_id"])
+        self.assertTrue(point["payload"]["retracted"])
+        self.assertEqual(point["payload"]["retraction_reason"], "obsolete instruction")
+        hits = recall_api.recall_search("pm2 ecosystem env", source="agent-contribution", include_retracted=False)["hits"]
+        self.assertNotIn(original["doc_id"], [h["doc_id"] for h in hits])
+        audit = recall_api.recall_search("pm2 ecosystem env", source="agent-contribution", include_retracted=True)["hits"]
+        hit = next(h for h in audit if h["doc_id"] == original["doc_id"])
+        self.assertTrue(hit["retracted"])
+        self.assertEqual(hit["retracted_by"], "OWNER")
+        again = recall_api.recall_retract(original["doc_id"], "duplicate retry", seat="OWNER")
+        self.assertEqual(again["status"], "already_retracted")
+        self.assertEqual(again["retraction_reason"], "obsolete instruction")
+
+    def test_retracted_contribution_cannot_be_corrected(self):
+        original = self.contribute()
+        recall_api.recall_retract(original["doc_id"], "wrong for the current service", seat="CLAUDE")
+        with self.assertRaisesRegex(FleetRagError, "retracted"):
+            recall_api.recall_correct(original["doc_id"], "z" * 50, "do not resurrect", seat="CLAUDE")
+
+    def test_mutation_input_and_gate_fail_before_lookup(self):
+        with self.assertRaisesRegex(FleetRagError, "doc_id must"):
+            recall_api.recall_correct("docs/x", GOOD, "reason", seat="CLAUDE")
+        with self.assertRaisesRegex(FleetRagError, "reason"):
+            recall_api.recall_retract("contrib/CLAUDE/2026-11-05/472fc36e", "no", seat="CLAUDE")
+        recall_api.gitleaks_available = lambda: True
+        recall_api.gitleaks_flagged = lambda path, timeout=300: {1}
+        with self.assertRaisesRegex(FleetRagError, "looks like it contains a secret"):
+            recall_api.recall_retract("contrib/CLAUDE/2026-11-05/472fc36e", "safe reason", seat="CLAUDE")
+        with self.assertRaisesRegex(FleetRagError, "looks like it contains a secret"):
+            recall_api.recall_correct(
+                "contrib/CLAUDE/2026-11-05/472fc36e", "x" * 50, "token ghp_" + "a" * 36, seat="CLAUDE"
+            )
+        self.assertEqual(FakeQdrant.scrolls, [])
+
+    def test_retracted_uses_one_bool_representation_and_initial_revision_is_one(self):
+        self.assertEqual(recall_api.retracted_exclude(), {"key": "retracted", "match": {"value": True}})
+        self.assertTrue(recall_api._is_retracted({"retracted": True}))
+        self.assertFalse(recall_api._is_retracted({"retracted": 1}))
+
+        original = self.contribute()
+        audit = recall_api.recall_search("pm2 ecosystem env", source="agent-contribution")["hits"]
+        hit = next(h for h in audit if h["doc_id"] == original["doc_id"])
+        self.assertEqual(hit["revision"], 1)
+
+
+
+class MutationConcurrencyTests(RecallBase):
+    def test_one_process_lock_serializes_concurrent_correct_and_retract(self):
+        original = recall_api.recall_contribute(GOOD, "lesson", seat="CLAUDE")
+        recall_api.gitleaks_available = lambda: False
+        state = {"inside": 0, "overlap": False}
+        embedding_started = threading.Event()
+        allow_embedding = threading.Event()
+
+        class SlowQdrant(FakeQdrant):
+            def scroll(self, *args, **kwargs):
+                state["inside"] += 1
+                state["overlap"] = state["overlap"] or state["inside"] > 1
+                try:
+                    time.sleep(0.03)
+                    yield from super().scroll(*args, **kwargs)
+                finally:
+                    state["inside"] -= 1
+
+        def slow_embed(cfg, texts):
+            embedding_started.set()
+            if not allow_embedding.wait(timeout=5):
+                raise AssertionError("test did not release the embedding seam")
+            return [[0.0] * 4 for _ in texts]
+
+        recall_api.Qdrant = SlowQdrant
+        recall_api.embed = slow_embed
+        replacement = GOOD + " Check pm2 describe after the restart."
+        errors = []
+
+        def correct():
+            try:
+                recall_api.recall_correct(
+                    original["doc_id"], replacement, "add verification", seat="CLAUDE"
+                )
+            except FleetRagError as exc:
+                errors.append(str(exc))
+
+        def retract():
+            try:
+                recall_api.recall_retract(original["doc_id"], "obsolete in test", seat="CLAUDE")
+            except FleetRagError as exc:
+                errors.append(str(exc))
+
+        correction = threading.Thread(target=correct)
+        correction.start()
+        self.assertTrue(embedding_started.wait(timeout=5))
+        retraction = threading.Thread(target=retract)
+        retraction.start()
+        retraction.join(timeout=5)
+        self.assertFalse(retraction.is_alive())
+        allow_embedding.set()
+        correction.join(timeout=5)
+        self.assertFalse(correction.is_alive())
+        self.assertFalse(state["overlap"])
+        self.assertEqual(len(errors), 1)
+        self.assertIn("retracted", errors[0])
+        point = next(p for p in FakeQdrant.points if p["payload"].get("doc_id") == original["doc_id"])
+        self.assertEqual(point["payload"].get("revision", 1), 1)
+        self.assertTrue(point["payload"]["retracted"])
+        self.assertEqual(point["payload"]["text"], GOOD)
+        self.assertNotIn("revisions", point["payload"])
+
+    def test_concurrent_stale_revision_loses_after_the_first_commit(self):
+        original = recall_api.recall_contribute(GOOD, "lesson", seat="CLAUDE")
+        recall_api.gitleaks_available = lambda: False
+        results = []
+
+        def change(marker):
+            try:
+                results.append(("ok", recall_api.recall_correct(
+                    original["doc_id"], GOOD + " " + marker, "concurrent " + marker,
+                    seat="CLAUDE", expected_revision=1)))
+            except FleetRagError as exc:
+                results.append(("error", str(exc)))
+
+        threads = [threading.Thread(target=change, args=("first correction",)),
+                   threading.Thread(target=change, args=("second correction",))]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(sorted(kind for kind, _ in results), ["error", "ok"])
+        error = next(text for kind, text in results if kind == "error")
+        self.assertIn("now at revision 2", error)
+        point = next(p for p in FakeQdrant.points if p["payload"].get("doc_id") == original["doc_id"])
+        self.assertEqual(point["payload"]["revision"], 2)
+        self.assertEqual(len(point["payload"]["revisions"]), 1)
+
+
+class DuplicateConcurrencyTests(RecallBase):
+    def test_deterministic_duplicate_skips_embedding(self):
+        text = "pm2 restart needs --update-env before process env changes take effect."
+        first = recall_api.recall_contribute(text, "lesson", seat="CLAUDE")
+        self.assertEqual(first["status"], "completed")
+        recall_api.embed = mock.Mock(wraps=recall_api.embed)
+        second = recall_api.recall_contribute(text, "lesson", seat="CLAUDE")
+        self.assertEqual(second["status"], "duplicate")
+        self.assertEqual(second["existing"]["doc_id"], first["doc_id"])
+        self.assertEqual(second["existing"]["content_hash"], content_hash(text))
+        self.assertIs(second["existing"]["retracted"], False)
+        recall_api.embed.assert_not_called()
+        self.assertEqual(len(FakeQdrant.upserts), 1)
+
+    def test_duplicate_recheck_and_upsert_share_the_mutation_lock(self):
+        text = "pm2 restart needs --update-env before process env changes take effect."
+        state = {"inside": 0, "overlap": False, "embedded": 0}
+        both_prechecked = threading.Barrier(2)
+        original_embed = recall_api.embed
+
+        def embed(cfg, texts):
+            both_prechecked.wait(timeout=2)
+            state["embedded"] += 1
+            return original_embed(cfg, texts)
+
+        class SlowQdrant(FakeQdrant):
+            def retrieve(self, *args, **kwargs):
+                if state["embedded"]:
+                    state["inside"] += 1
+                    state["overlap"] = state["overlap"] or state["inside"] > 1
+                try:
+                    time.sleep(0.05)
+                    return super().retrieve(*args, **kwargs)
+                finally:
+                    if state["embedded"]:
+                        state["inside"] -= 1
+
+            def upsert(self, *args, **kwargs):
+                state["inside"] += 1
+                state["overlap"] = state["overlap"] or state["inside"] > 1
+                try:
+                    time.sleep(0.05)
+                    return super().upsert(*args, **kwargs)
+                finally:
+                    state["inside"] -= 1
+
+        recall_api.embed = embed
+        recall_api.Qdrant = SlowQdrant
+        recall_api.reset_config_cache()
+        results = []
+        threads = [
+            threading.Thread(
+                target=lambda: results.append(recall_api.recall_contribute(text, "lesson", seat="CLAUDE"))
+            )
+            for _ in range(2)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertFalse(state["overlap"])
+        self.assertEqual(sorted(r["status"] for r in results), ["completed", "duplicate"])
+        self.assertEqual(len(FakeQdrant.upserts), 1)
+
+
+class PublicMutationAuthTests(RecallBase):
+    def test_owner_mutation_uses_the_distinct_owner_bearer(self):
+        calls = []
+
+        def http(url, body, headers, method, timeout, retries):
+            calls.append((url, body, headers, method))
+            return {"ok": True, "doc_id": (body or {}).get("doc_id"), "status": "completed"}
+
+        env = {
+            "RECALL_API_TOKEN": "shared",
+            "RECALL_OWNER_TOKEN": "owner",
+            "CF_ACCESS_CLIENT_ID": "cf-id",
+            "CF_ACCESS_CLIENT_SECRET": "cf-secret",
+        }
+        with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(public_fallback.core, "http_json", http):
+            public_fallback.call_public("recall_retract", {
+                "doc_id": "contrib/CLAUDE/2026-11-05/472fc36e", "reason": "obsolete", "seat": "OWNER"})
+            public_fallback.call_public("recall_stats", {})
+        self.assertEqual(calls[0][2]["Authorization"], "Bearer owner")
+        self.assertEqual(calls[1][2]["Authorization"], "Bearer shared")
+
+    def test_owner_mutation_without_owner_bearer_fails_before_http(self):
+        env = {"RECALL_API_TOKEN": "shared", "CF_ACCESS_CLIENT_ID": "cf-id", "CF_ACCESS_CLIENT_SECRET": "cf-secret"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            with self.assertRaisesRegex(FleetRagError, "RECALL_OWNER_TOKEN"):
+                public_fallback.call_public("recall_correct", {
+                    "doc_id": "contrib/CLAUDE/2026-11-05/472fc36e", "text": GOOD,
+                    "reason": "make current", "seat": "OWNER"})
+
 
 
 class ConfigCacheTests(RecallBase):
@@ -1006,6 +1391,16 @@ class CliTests(RecallBase):
         self.assertEqual(n(["stats", "--json"]), ["stats", "--json"])
         self.assertEqual(n(["--json", "stats"]), ["--json", "stats"])            # subcommand later in argv
         self.assertEqual(n(["contribute", "-", "--category", "lesson"]), ["contribute", "-", "--category", "lesson"])
+        self.assertEqual(n(["correct"]), ["search", "correct"])
+        self.assertEqual(n(["retract"]), ["search", "retract"])
+        self.assertEqual(
+            n(["correct", "contrib/CLAUDE/2026-11-05/472fc36e", "--reason", "stale"]),
+            ["correct", "contrib/CLAUDE/2026-11-05/472fc36e", "--reason", "stale"],
+        )
+        self.assertEqual(
+            n(["retract", "contrib/CLAUDE/2026-11-05/472fc36e", "--reason", "obsolete"]),
+            ["retract", "contrib/CLAUDE/2026-11-05/472fc36e", "--reason", "obsolete"],
+        )
         self.assertEqual(n(["ingest", "--all"]), ["ingest", "--all"])
         self.assertEqual(n(["ingest", "--source", "doc", "--dry-run"]),
                          ["ingest", "--source", "doc", "--dry-run"])
@@ -1160,11 +1555,103 @@ class CliTests(RecallBase):
         self.assertEqual(FakeQdrant.upserts[-1][0]["payload"]["text"], GOOD)
 
         buf = io.StringIO()
-        with mock.patch("sys.stdout", buf), mock.patch("sys.stdin", io.StringIO(GOOD + "\n")):
+        stdin_text = (
+            "Qdrant snapshots belong under /var/lib/qdrant/snapshots; verify a fresh "
+            "snapshot before any collection migration.\n"
+        )
+        with mock.patch("sys.stdout", buf), mock.patch("sys.stdin", io.StringIO(stdin_text)):
             rc = self.cli.main(["contribute", "-", "--category", "runbook", "--seat", "GROK"])
         self.assertEqual(rc, 0)
         self.assertIn("stored contrib/GROK/", buf.getvalue())
         self.assertEqual(len(FakeQdrant.upserts), 2)
+
+    def test_deterministic_duplicate_is_a_refusal_not_a_stored_success(self):
+        text = "pm2 restart needs --update-env before process env changes take effect."
+        with mock.patch("sys.stdin", io.StringIO(text)):
+            rc = self.cli.main(["contribute", "-", "--category", "lesson", "--seat", "CLAUDE"])
+        self.assertEqual(rc, 0)
+        out = io.StringIO()
+        err = io.StringIO()
+        with mock.patch("sys.stdin", io.StringIO(text + "\n\n")), mock.patch("sys.stdout", out), mock.patch("sys.stderr", err):
+            rc = self.cli.main(["contribute", "-", "--category", "lesson", "--seat", "CLAUDE", "--force", "--json"])
+        self.assertEqual(rc, 1)
+        self.assertEqual(json.loads(out.getvalue())["status"], "duplicate")
+        body = json.loads(out.getvalue())
+        self.assertIn("identical text is already stored as contrib/CLAUDE/", body["message"])
+        self.assertIn("nothing was written", body["message"])
+        self.assertNotIn("similarity", body["message"])
+        self.assertNotIn("--force", body["message"])
+        self.assertNotIn("stored contrib/", out.getvalue())
+        self.assertEqual(err.getvalue(), "")
+
+    def test_deterministic_duplicate_after_correction_does_not_claim_the_old_text_is_stored(self):
+        old_text = "pm2 restart needs --update-env before process env changes take effect."
+        new_text = "pm2 restart applies process environment changes after an explicit reload."
+        with mock.patch("sys.stdin", io.StringIO(old_text)):
+            rc = self.cli.main(["contribute", "-", "--category", "lesson", "--seat", "CLAUDE", "--json"])
+        self.assertEqual(rc, 0)
+        point = FakeQdrant.points[-1]
+        doc_id = point["payload"]["doc_id"]
+        with mock.patch("sys.stdin", io.StringIO(new_text)), mock.patch("sys.stdout", io.StringIO()):
+            rc = self.cli.main(["correct", doc_id, "-", "--reason", "correct the steps", "--seat", "CLAUDE", "--json"])
+        self.assertEqual(rc, 0)
+        out = io.StringIO()
+        err = io.StringIO()
+        with mock.patch("sys.stdin", io.StringIO(old_text)), mock.patch("sys.stdout", out), mock.patch("sys.stderr", err):
+            rc = self.cli.main(["contribute", "-", "--category", "lesson", "--seat", "CLAUDE", "--json"])
+        self.assertEqual(rc, 1)
+        body = json.loads(out.getvalue())
+        self.assertIn("was corrected to different text", body["message"])
+        self.assertIn("your text is not stored", body["message"])
+        self.assertNotIn("identical text", body["message"])
+
+    def test_deterministic_duplicate_after_retraction_names_the_retracted_state(self):
+        text = "pm2 restart needs --update-env before process env changes take effect."
+        with mock.patch("sys.stdin", io.StringIO(text)):
+            rc = self.cli.main(["contribute", "-", "--category", "lesson", "--seat", "CLAUDE", "--json"])
+        self.assertEqual(rc, 0)
+        doc_id = FakeQdrant.points[-1]["payload"]["doc_id"]
+        with mock.patch("sys.stdout", io.StringIO()):
+            rc = self.cli.main(["retract", doc_id, "--reason", "obsolete", "--seat", "CLAUDE", "--json"])
+        self.assertEqual(rc, 0)
+        out = io.StringIO()
+        err = io.StringIO()
+        with mock.patch("sys.stdin", io.StringIO(text)), mock.patch("sys.stdout", out), mock.patch("sys.stderr", err):
+            rc = self.cli.main(["contribute", "-", "--category", "lesson", "--seat", "CLAUDE", "--json"])
+        self.assertEqual(rc, 1)
+        body = json.loads(out.getvalue())
+        self.assertIn("already retracted", body["message"])
+        self.assertIn("excluded from search", body["message"])
+        self.assertNotIn("identical text", body["message"])
+
+    def test_deterministic_duplicate_response_validates_external_fields(self):
+        text = "pm2 restart needs --update-env before process env changes take effect."
+        stored_hash = content_hash(text)
+        for existing, field in (
+            ({}, "doc_id"),
+            ({"doc_id": 123, "content_hash": stored_hash, "retracted": False}, "doc_id"),
+            ({"doc_id": "", "content_hash": stored_hash, "retracted": False}, "doc_id"),
+            ({"doc_id": "contrib/CLAUDE/2026-11-05/472fc36e", "content_hash": "not-a-hash", "retracted": False}, "content_hash"),
+            ({"doc_id": "contrib/CLAUDE/2026-11-05/472fc36e", "content_hash": stored_hash}, "retracted"),
+        ):
+            with self.subTest(existing=existing):
+                with self.assertRaisesRegex(FleetRagError, field):
+                    self.cli.deterministic_duplicate_message(existing, text)
+
+    def test_invalid_duplicate_metadata_is_a_refusal_not_a_usage_error(self):
+        text = "pm2 restart needs --update-env before process env changes take effect."
+        out = io.StringIO()
+        err = io.StringIO()
+        with mock.patch.object(
+            self.cli.public_fallback,
+            "call_with_fallback",
+            return_value={"status": "duplicate", "existing": {}},
+        ), mock.patch("sys.stdin", io.StringIO(text)), mock.patch("sys.stdout", out), mock.patch("sys.stderr", err):
+            rc = self.cli.main(["contribute", "-", "--category", "lesson", "--seat", "CLAUDE", "--json"])
+        self.assertEqual(rc, 1)
+        body = json.loads(out.getvalue())
+        self.assertEqual(body["message"], "a matching lesson is already stored; nothing was written")
+        self.assertEqual(err.getvalue(), "")
 
     def test_contribute_without_text_is_a_usage_error(self):
         err = io.StringIO()

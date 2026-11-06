@@ -135,7 +135,7 @@ every seat is `auth: shared` and signs in with its own admin-minted bearer.  It
 for each of the 39 identities the Worker can mint a bearer for, each acting as the `swu-` App
 whose GitHub description names that seat.  Five slugs are not `swu-<identity>`:  MA is
 `swu-rob`, GROK is `swu-grok-build`, MM is `swu-minimax`, JET-CHAT is `swu-jet` and AMP is `swu-amp-agent` (`swu-amp` is reserved for an account).  JET-CHAT is the full Jet login on its own policy entry; the original JET wake-only login has no Git entry (Q7).  Seats share the `fleet` profile
-(the same actions, repositories and permission ceiling);  Since the 2026-11-01 every-repo widening (owner instruction) the fleet profile names the two verified namespaces, `Simple-With-Us/*` and `jaywedgeworth22/*`;  Echo's profile survives but resolves to the same set.  The fleet profile mirrors the host's reviewed live rollout exactly:  the live 175-action list (the 7 existing relay actions plus the 168-workflow rollout) and the live 10-key mint ceiling.  `swu-amp-agent` and `swu-wise` keep the host's exact live action ordering through their own pinned profiles (the same set, ceiling and repositories as fleet).  BF-BUILDER is dropped (owner 2026-11-01:  BF-ENGINEER replaced it):  it has no entry, so the relay authenticates no BF-BUILDER bearer.  Every GB seat and every BF bot, including BF-TRADER and BF-ENGINEER, is on the fleet profile.  `git_relay/tests/test_seat_policy_file.py` holds the file to the relay's SeatPolicy, the
+(the same actions, repositories and permission ceiling);  Since the 2026-11-01 every-repo widening (owner instruction) the fleet profile names the two verified namespaces, `Simple-With-Us/*` and `jaywedgeworth22/*`;  Echo's profile survives but resolves to the same set.  The fleet profile carries a 178-action list (8 relay actions, including `git_read`, plus 170 workflow actions, including `wf_pr_close` and `wf_pr_reopen`) and the live 10-key mint ceiling.  `swu-amp-agent` and `swu-wise` keep the host's exact live action ordering through their own pinned profiles (the same set, ceiling and repositories as fleet).  BF-BUILDER is dropped (owner 2026-11-01:  BF-ENGINEER replaced it):  it has no entry, so the relay authenticates no BF-BUILDER bearer.  Every GB seat and every BF bot, including BF-TRADER and BF-ENGINEER, is on the fleet profile.  `git_relay/tests/test_seat_policy_file.py` holds the file to the relay's SeatPolicy, the
 Worker's identity lists and each action's permission needs.
 
 On the relay host, as root.  Root runs only a root-owned copy that only root can write, never
@@ -170,7 +170,7 @@ value matching a credential shape is stored hashed, whatever key it arrived unde
 ### Reviewed security-test fixtures
 
 File writes still scan the full decoded content before any GitHub write. The
-server-owned `git_relay/reviewed_fixtures.py` records five exact-content
+server-owned `git_relay/reviewed_fixtures.py` records thirteen exact-content
 attestations for synthetic credential-rejection fixtures in AFC. Each entry binds
 repository, destination path and SHA-256 of the entire file. It is not a caller
 option, path-wide exemption, environment setting or trust in existing Git history.
@@ -178,15 +178,38 @@ Changing one byte or destination invalidates the attestation; any credential sha
 then fails closed. The ordinary scanner and the rejection tests are unchanged.
 PR text, messages, binary assets and all unattested files have no exemption.
 
-The attested source is `c8c2a471fac215957cc81ec3b2e5e765e5908443`:
+All thirteen rows were re-verified byte-exact against the corrected rename checkpoint
+`81d8bb0cd4f5a63d3dc330b8f42be4a3e93e87a3` (tree
+`b548e1a81d4fd18d72206f8c1f22cb41a6d19bcf`, built on main
+`ac6d5d44500937274aeddfc794a05fb427158f8c`). The first checkpoint
+`4977e6a7970dc0a25638181600137fe06167dcec` is retained as original evidence only,
+never as a shipping target: semantic review found out-of-scope changes in it, so the
+corrected checkpoint restores the current retirement behavior and wire-protocol
+surfaces and drops the bundled seat-policy and cleanup changes. Ten rows carry
+digests unchanged from the first re-attestation; three rows
+(`scripts/fleet_lanes/tests/test_install_mcp.py`,
+`scripts/simple-tools-mcp/test/integration.workerd.mjs`,
+`scripts/simple_tools/tests/test_infisical_api_route.py`) are refreshed from the
+corrected checkpoint (10 + 3 = the 13 rows in the registry and the table below). The rename-affected destinations are FUTURE targets: they do not exist
+on main yet, match nothing, and fail closed until the exact attested bytes land with
+the rename; the published rename branch currently omits these ten files, which is the
+gap this attestation exists to close:
 
 | Destination | Source Git blob | Whole-file SHA-256 |
 | --- | --- | --- |
-| `scripts/simple_tools/mcp/fixtures.jsonl` | `7a556de1bff0185b2f943fb822b5e43ac166a40a` | `06389862d783117572042eaef6cfd645c196a74648ad926c1f38a2ff14afe50a` |
+| `scripts/simple_tools/mcp/fixtures.jsonl` | `a4ff4ac5636654ee20954aa7e14595c125c5d547` | `bea6ca376aefdce65ce0295dbc72cef4a396b051c8add3e6d0174fc917c81829` |
 | `scripts/simple_tools/tests/test_operator_github.py` | `db5248bc7e9f61daaffd180b9b7b026643a07a14` | `ef10944dc053c2f4bf664f1ee796257d0deb4d64f1bb786be9ad58ec3ea4b442` |
-| `scripts/simple_tools/tests/test_operator_send.py` | `f6b1a1a622810b4bb3e898f7ca67e0c56cc02a5d` | `d2f235ea96b7cd5bbc2dff026e3db178e051d23775532e7855bc1de019c594a7` |
+| `scripts/simple_tools/tests/test_operator_send.py` | `2ef871ceb92213e7208ab2faaa2cb235d478faf8` | `4353cf8e69c53151e3340c4a1bed374e380bac3dfa076e22d8c08eb575963873` |
 | `scripts/test-lark-mm-bridge.py` | `287b0c42cb7234deb9fd03d359ed6e52fe40959e` | `f94d6ecb794baab74b2d43c97b7cf5efd8aab0e76bc42e2a6224eb2f4ddb5535` |
 | `scripts/test_operator_provenance.py` | `d3c23c8fd8b3ea6b73897c6ab456355a488e3f0a` | `a72e105b054617eecebdd2011dfca341e08dbc9377e378dccc8733aa7fea2c1b` |
+| `scripts/simple-tools-mcp/DEPLOY-PHASE0.md` | `cb10a4f133a5e90a1b3bdc77b1df818ad9dac0e9` | `5f85629a6a6979a763063ad3b79fd56b5d77ab93d2cd0e6da4c200485debca3f` |
+| `scripts/simple-tools-mcp/test/gr-assert.test.mjs` | `80f27a413e461e9adfc8924c881e29d4d9e2d21c` | `ecfa713b33754e1331a8fee0e07c67271fc186908a52830839f1b530a246dad8` |
+| `scripts/simple-tools-mcp/test/gr-front.test.mjs` | `b46549565f659d145f30d6ff1ede3af6515de64d` | `9de759b53f8cb987b16ade0a9cf99ff69d999659519a620b292f4aa748eee3b9` |
+| `scripts/simple-tools-mcp/test/gr-workflow-v1.test.mjs` | `9a36132edd4b6614209c2f6dd12a9df13a939c05` | `1caec47629a7a4592051b25efcfd229cfe662471027c13eb3c5d812952816e95` |
+| `scripts/simple-tools-mcp/test/integration.workerd.mjs` | `f122a279489d871d7fc3f71c97acd5e2ec9dcfaf` | `2b76ceeed6f6fdf66f6e04523d05cc9652e00377e82bcb55268ceaf143e10f8c` |
+| `scripts/simple_tools/tests/test_infisical_api_route.py` | `7f962a62b00f7db6660168db818735142d897278` | `34041aaa826e24b919621c7d5ed6703c2b602beda05449dd9801a13e02d67090` |
+| `scripts/simple_tools/tests/test_mcp_extras.py` | `eaf0c913742de23ef19e5c655a01dc3e5ef071c7` | `d31c6f0a7f84f17dd0d480714a5d0be9f05fad97d3a3ef5d519da68b304bc95a` |
+| `scripts/fleet_lanes/tests/test_install_mcp.py` | `6b2392ff3238806f7ad251b347e424b8bb99b57d` | `a0b944f012a3fa8c27dfe52cab1c53ef8893ec4f945e6b62eb6c297f42e8853b` |
 
 Every attestation addition/change requires normal source review of the complete
 fixture contents and its provenance, evidence that values are synthetic and
@@ -200,6 +223,10 @@ runs in the service. This change does not deploy itself or resume a paused write
 `mint_token` returns a raw App installation token, so it is NOT exposed over the MCP wrapper
 (a stdio transcript is too easy to capture);  seats that need a token for git-over-HTTPS call the
 relay's HTTP API directly, where the response goes only to that caller.
+
+## Read-only git
+
+`GET /git/<owner>/<repo>[.git]/info/refs?service=git-upload-pack` and `POST /git/<owner>/<repo>[.git]/git-upload-pack` serve `git fetch` and `git clone` under the action `git_read`, as the seat's own GitHub App, with the seat's bearer in the `Authorization` header.  The relay mints a `contents:read` token for that one repo and keeps it, so the caller never holds a GitHub credential.  Pushing has no route and answers 403.  Each request writes one audit row and draws on the seat's hourly quota, at most four transfers run at once and two per seat, and a later one answers 503.  A long want list needs `http.postBuffer` set to 8 MiB, because the route refuses a chunked request.  The code is `git_relay/git_read.py`.
 
 ## Audit
 

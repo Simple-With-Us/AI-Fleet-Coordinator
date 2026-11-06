@@ -7,8 +7,8 @@
 #   docker build -f scripts/agent_sync/server/Dockerfile -t agent-sync-server .
 #
 # No secrets are baked in.  Bot emails and keys and the routine URLs and keys arrive at run time:
-# loaded from Infisical by the entrypoint when Coolify sets the INFISICAL_* machine identity
-# (server/infisical_env.py), else as runtime-only Coolify variables.  ZULIP_SITE is a Coolify
+# loaded from Infisical by the entrypoint when Coolify binds the scoped INFISICAL_TOKEN
+# service token (server/infisical_env.py).  ZULIP_SITE is a Coolify
 # variable either way.  State, the config and the logs live on the /data volume.
 FROM python:3.14-slim
 
