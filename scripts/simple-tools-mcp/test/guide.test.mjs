@@ -4,14 +4,14 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { guideModuleText, GUIDE_MD, GUIDE_MODULE } from "../scripts/export-guide.mjs";
-import RENAMED_CONTRACT from "../../agent_sync/mcp/renamed-tools.json" with { type: "json" };
+import RENAMED_CONTRACT from "../../simple_tools/mcp/renamed-tools.json" with { type: "json" };
 import { GUIDE_TEXT } from "../src/guide-text.js";
 import { guideResult, sectionNames, splitSections } from "../src/guide.js";
 import { IdentityRouter } from "../src/delegated-identities.js";
 import { okResult, ERROR_META_KEY } from "../src/contract.js";
 
 test("src/guide-text.js is the guide markdown, bundled at build time (regenerate: node scripts/export-guide.mjs)", () => {
-  assert.equal(readFileSync(GUIDE_MODULE, "utf8"), guideModuleText(), "src/guide-text.js is stale.  Run:  cd scripts/agent-sync-mcp && node scripts/export-guide.mjs");
+  assert.equal(readFileSync(GUIDE_MODULE, "utf8"), guideModuleText(), "src/guide-text.js is stale.  Run:  cd scripts/simple-tools-mcp && node scripts/export-guide.mjs");
   assert.equal(GUIDE_TEXT, readFileSync(GUIDE_MD, "utf8"));
 });
 
@@ -112,7 +112,7 @@ test("read result formatters do not emit retired product prefixes", () => {
     assert.ok(!source.includes("`agent-sync ${"), name);
   }
   for (const name of ["tools.py", "fleetlink_tools.py", "recall_tools.py", "linear_tools.py"]) {
-    const source = readFileSync(new URL(`../../agent_sync/mcp/${name}`, import.meta.url), "utf8");
+    const source = readFileSync(new URL(`../../simple_tools/mcp/${name}`, import.meta.url), "utf8");
     assert.ok(!/"agent-sync (?:%s|recall_search)/.test(source), name);
   }
 });
