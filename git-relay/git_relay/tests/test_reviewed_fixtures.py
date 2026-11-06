@@ -21,7 +21,9 @@ class ReviewedFixturesTests(TestCase):
 
     def test_registry_is_bounded_exact_and_cannot_be_supplied_by_caller(self):
         self.assertIsInstance(_REVIEWED_FIXTURES, frozenset)
-        self.assertEqual(len(_REVIEWED_FIXTURES), 13)  # pin moves only with a reviewed attestation (2026-11-05, PR #1399)
+        self.assertEqual(
+            len(_REVIEWED_FIXTURES), 13
+        )  # pin moves only with a reviewed attestation (2026-11-05, PR #1399)
         for repo, path, digest in _REVIEWED_FIXTURES:
             self.assertEqual(repo, REPO)
             self.assertTrue(path.startswith("scripts/"))
