@@ -1392,6 +1392,9 @@ struct OpsAllowlist: Equatable {
         var id: String { name }
     }
 
+    /// The two scopes a server unit can run in.
+    static let serverScopes: Set<String> = ["user", "system"]
+
     var macAgents: [Entry] = []
     var pm2Apps: [Entry] = []
     var serverUnits: [Entry] = []
@@ -1455,8 +1458,18 @@ struct OpsAllowlist: Equatable {
         }
         for item in (server?["units"] as? [[String: Any]]) ?? [] {
             guard let unit = item["unit"] as? String else { continue }
+            // A scope is `user` or `system` or it is not given.  Any other value, or one that
+            // is not a string, is a malformed entry:  the unit is left out, so it gets no
+            // buttons, as a unit with no verbs would.
+            let scope: String?
+            if let raw = item["scope"], !(raw is NSNull) {
+                guard let text = raw as? String, serverScopes.contains(text) else { continue }
+                scope = text
+            } else {
+                scope = nil
+            }
             list.serverUnits.append(Entry(name: unit, actions: (item["actions"] as? [String]) ?? [],
-                                          scope: item["scope"] as? String))
+                                          scope: scope))
         }
         for item in (server?["updates"] as? [[String: Any]]) ?? [] {
             guard let name = item["name"] as? String else { continue }
