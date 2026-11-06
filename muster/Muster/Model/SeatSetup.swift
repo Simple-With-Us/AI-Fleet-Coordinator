@@ -20,6 +20,9 @@ enum SeatSetup {
         let text: String
     }
 
+    /// What a kind with no answer yet says while the engine has not finished a run.
+    static let waitingForEngine = "Waiting for the engine to answer."
+
     /// The seat the panel shows:  the one chosen before when it is still on the roster,
     /// else the first seat on it, and nil when the roster is empty.
     static func resolvedSeat(stored: String, roster: [String]) -> String? {
@@ -47,8 +50,13 @@ enum SeatSetup {
     }
 
     /// The cells of a seat that need a look, in the grid's column order.
-    static func attention(for cells: [GridCell]) -> [Attention] {
-        ConfigKind.columnOrder.compactMap { kind -> Attention? in
+    ///
+    /// `answered` is whether the engine has finished a run.  Until it has, the grid holds an
+    /// empty UNKNOWN cell for every seat and kind, which is silence and not a missing rule,
+    /// so nothing is raised and the panel says the engine has not answered.
+    static func attention(for cells: [GridCell], answered: Bool = true) -> [Attention] {
+        guard answered else { return [] }
+        return ConfigKind.columnOrder.compactMap { kind -> Attention? in
             guard let cell = cells.first(where: { $0.kind == kind }), needsALook(cell) else { return nil }
             // The rules are worst first, so the first one is the reason the cell is not green.
             // A cell with no rule at all is a hole in the coverage:  the grid counts it as
@@ -65,7 +73,9 @@ enum SeatSetup {
     }
 
     /// The one line a kind's folded panel shows under its title.
-    static func summary(for cell: GridCell?) -> String {
+    static func summary(for cell: GridCell?, answered: Bool = true) -> String {
+        // A cell with no rules before the engine has answered is not a missing rule.
+        if !answered, cell?.rules.isEmpty ?? true { return waitingForEngine }
         guard let cell else { return "The engine has no rule for this seat and kind." }
         if cell.rules.isEmpty {
             return cell.coverReason ?? "No rule covers this seat and kind."

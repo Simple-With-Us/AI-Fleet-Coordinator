@@ -33,6 +33,10 @@ struct SeatSetupView: View {
         SeatSetup.resolvedSeat(stored: storedSeat, roster: store.roster)
     }
 
+    /// Whether the engine has finished a run.  Until it has, the grid's cells are empty UNKNOWN
+    /// placeholders and say nothing about the seat.
+    private var answered: Bool { store.phase == .loaded }
+
     private var cells: [GridCell] {
         guard let seat else { return [] }
         return ConfigKind.columnOrder.compactMap { store.cell(seat: seat, kind: $0) }
@@ -113,10 +117,12 @@ struct SeatSetupView: View {
     // MARK: - what needs a look
 
     private func attention(_ seat: String) -> some View {
-        let items = SeatSetup.attention(for: cells)
+        let items = SeatSetup.attention(for: cells, answered: answered)
         return SectionPanel(title: "What Needs A Look", subtitle: "Seat \(seat), on the Mac") {
             VStack(alignment: .leading, spacing: 8) {
-                if store.phase != .loaded && cells.isEmpty {
+                if !answered {
+                    // Until a run finishes, the grid holds an empty UNKNOWN cell for every kind.
+                    // That is silence and not a missing rule, so nothing is raised.
                     Text("The engine has not answered for this seat yet.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
@@ -179,7 +185,7 @@ struct SeatSetupView: View {
         let cell = store.cell(seat: seat, kind: kind)
         return FoldedPanel(
             title: kind.title,
-            summary: SeatSetup.summary(for: cell),
+            summary: SeatSetup.summary(for: cell, answered: answered),
             expanded: openBinding(kind)
         ) {
             kindDetail(kind, seat: seat, cell: cell)
@@ -189,10 +195,12 @@ struct SeatSetupView: View {
     @ViewBuilder
     private func kindDetail(_ kind: ConfigKind, seat: String, cell: GridCell?) -> some View {
         if cell == nil {
-            EmptyNote(text: SeatSetup.summary(for: nil))
+            EmptyNote(text: SeatSetup.summary(for: nil, answered: answered))
         } else if let found = artifacts[kind], artifactsSeat == seat {
             if found.rules.isEmpty {
-                EmptyNote(text: found.coverReason ?? "No rule covers this seat and kind.")
+                EmptyNote(text: answered
+                    ? (found.coverReason ?? "No rule covers this seat and kind.")
+                    : SeatSetup.waitingForEngine)
             } else {
                 let sources = store.ruleSources(seat: seat, kind: kind)
                 VStack(alignment: .leading, spacing: 20) {
