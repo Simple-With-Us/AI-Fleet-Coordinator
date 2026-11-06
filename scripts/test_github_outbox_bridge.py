@@ -260,6 +260,38 @@ class RuleTests(unittest.TestCase):
         self.assertFalse(bridge.skim_match("[GROK] repo: DealDex\nstate: WIP", SEAT))
         self.assertTrue(bridge.is_own_post("  [INSTINCT->CLAUDE] x", SEAT))
         self.assertFalse(bridge.is_own_post("[CLAUDE->INSTINCT] x", SEAT))
+        # Folder-tag intros (Policy 2026-11-05): spaces, 📁 repos, optional 👀 / multi-thread.
+        self.assertTrue(bridge.skim_match("[ INSTINCT 📁 AFC ] hello", SEAT))
+        self.assertTrue(bridge.skim_match("👀 [ INSTINCT 📁 AFC, OPS ] quiet", SEAT))
+        self.assertTrue(bridge.skim_match("[ INSTINCT: AB-1-M 📁 AFC ] multi", SEAT))
+        self.assertFalse(bridge.skim_match("[ CLAUDE 📁 AFC ] unrelated", SEAT))
+        self.assertTrue(bridge.is_own_post("[ INSTINCT 📁 AFC ]\nclaim: x", SEAT))
+        self.assertTrue(bridge.is_own_post("👀 [ INSTINCT 📁 AFC ]\nclaim: x", SEAT))
+        self.assertTrue(bridge.is_own_post("[ INSTINCT: ZZ-2-S 📁 AFC, OPS ]\nx", SEAT))
+        self.assertFalse(bridge.is_own_post("[ CLAUDE 📁 AFC ]\nx", SEAT))
+
+    def test_folder_tag_header_accepted(self):
+        self.assertIsNone(
+            bridge.header_error("[ INSTINCT 📁 AFC ]\nclaim: ship it", SEAT)
+        )
+        self.assertIsNone(
+            bridge.header_error("👀 [ INSTINCT 📁 AFC, OPS ]\nclaim: quiet", SEAT)
+        )
+        self.assertIsNone(
+            bridge.header_error("[ INSTINCT: AB-1-C 📁 AFC ]\nclaim: cloud", SEAT)
+        )
+        # Folder-tag may still carry a legacy repo: body line.
+        self.assertIsNone(
+            bridge.header_error("[ INSTINCT 📁 AFC ]\nrepo: AFC\nstate: WIP", SEAT)
+        )
+        # Legacy session middle-dot tag still counts as own intro.
+        self.assertIsNone(
+            bridge.header_error("[INSTINCT·session8]\nrepo: AFC\nx", SEAT)
+        )
+        self.assertIn(
+            "folder-tag",
+            bridge.header_error("[ CLAUDE 📁 AFC ]\nclaim: x", SEAT) or "",
+        )
 
     def test_central_stamp_shape(self):
         # 2026-09-17T21:10:00Z is 4:10 PM CDT

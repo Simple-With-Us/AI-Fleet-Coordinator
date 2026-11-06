@@ -6,7 +6,8 @@ Such a seat posts to Zulip by commenting on a private "outbox" GitHub issue.  Th
 bridge runs on the Mac, and every tick:
 
   1. reads new comments on the outbox issue (gh api), checks the fleet header shape
-     ([SEAT] or [SEAT->PEER] on the first line, then a repo: line), and posts each
+     (legacy [SEAT]/[SEAT->PEER] or folder-tag [ SEAT 📁 repos ] / [ SEAT: LL-#-H 📁 repos ],
+     optional leading 👀; then a repo: line unless 📁 already names repos), and posts each
      good one to #Work-In-Progress with the simple-chat CLI, as that seat's own bot.
      A posted comment
      gets a rocket reaction; a rejected one gets a confused reaction plus a reply
@@ -106,15 +107,40 @@ def load_env_tokens(path: Path) -> dict:
 # --- message rules -----------------------------------------------------------
 
 
+def _own_intro_re(seat: str):
+    """Legacy [SEAT]/[SEAT->]/[SEAT·...] or folder-tag intros for this seat (Policy 2026-11-05)."""
+    s = re.escape(seat)
+    # Optional leading 👀, then either a tight legacy tag or a spaced folder-tag intro.
+    return re.compile(
+        r"^(?:👀\s*)?(?:"
+        r"\[" + s + r"(?:\]|->|·)"
+        r"|"
+        r"\[\s*" + s + r"(?:\s*:\s*[A-Za-z0-9]+-\d+-[MSC])?\s+📁"
+        r")"
+    )
+
+
+def _first_content_line(text: str) -> str:
+    for line in text.splitlines():
+        if line.strip():
+            return line.strip()
+    return ""
+
+
 def header_error(text: str, seat: str):
     """Why `text` breaks the #Work-In-Progress header shape, or None when it is fine."""
     lines = text.strip().splitlines()
     if not lines:
         return "empty message"
     first = lines[0].strip()
-    if not (first.startswith("[%s]" % seat) or first.startswith("[%s->" % seat)):
-        return "first line must start with [%s] or [%s->PEER]" % (seat, seat)
-    if not any(re.match(r"^\s*repo:\s*\S", line) for line in lines[1:6]):
+    if not _own_intro_re(seat).match(first):
+        return (
+            "first line must start with [%s], [%s->PEER], or folder-tag "
+            "[ %s 📁 repos ] (optional leading 👀)" % (seat, seat, seat)
+        )
+    has_repo_line = any(re.match(r"^\s*repo:\s*\S", line) for line in lines[1:6])
+    has_folder_repos = bool(re.search(r"📁\s*\S", first))
+    if not (has_repo_line or has_folder_repos):
         return "repo: <project> must be the first body line"
     if len(text) > MAX_OUTBOUND_CHARS:
         return "longer than %d characters" % MAX_OUTBOUND_CHARS
@@ -122,8 +148,7 @@ def header_error(text: str, seat: str):
 
 
 def is_own_post(text: str, seat: str) -> bool:
-    head = text.lstrip()
-    return head.startswith("[%s]" % seat) or head.startswith("[%s->" % seat)
+    return bool(_own_intro_re(seat).match(_first_content_line(text)))
 
 
 def skim_match(text: str, seat: str) -> bool:
@@ -131,7 +156,11 @@ def skim_match(text: str, seat: str) -> bool:
     head = text[:240]
     if "->FLEET" in head:
         return True
-    if ("->%s" % seat) in head or ("@%s" % seat) in head or ("[%s" % seat) in head:
+    s = re.escape(seat)
+    if ("->%s" % seat) in head or ("@%s" % seat) in head:
+        return True
+    # Legacy tight [SEAT...] or spaced folder-tag [ SEAT 📁 ...] / [ SEAT: LL-#-H 📁 ...]
+    if re.search(r"\[\s*" + s + r"(?:\]|->|·|\s|:)", head):
         return True
     head_l = head.lower()
     return any(word.lower() in head_l for word in URGENT)
