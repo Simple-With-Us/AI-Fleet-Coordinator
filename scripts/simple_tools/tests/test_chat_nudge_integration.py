@@ -4,11 +4,11 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-from agent_sync import live as L
-from agent_sync.cli import build_parser
-from agent_sync.daemon import set_pause
-from agent_sync.live import SeatPaths
-from agent_sync.tests.test_daemon import DaemonHarness
+from simple_tools import live as L
+from simple_tools.cli import build_parser
+from simple_tools.daemon import set_pause
+from simple_tools.live import SeatPaths
+from simple_tools.tests.test_daemon import DaemonHarness
 
 
 class ChatNudgeIntegrationTests(DaemonHarness):
@@ -28,7 +28,7 @@ class ChatNudgeIntegrationTests(DaemonHarness):
         self.write_config()
         daemon = self.daemon()
         target = {
-            "channel": "agent-sync",
+            "channel": "simple-tools",
             "topic": "AFC-305",
             "platform": "grok-leader",
             "host": "host",
@@ -36,23 +36,23 @@ class ChatNudgeIntegrationTests(DaemonHarness):
             "cwd": "/repo",
         }
         daemon.chat_nudges.bind(**target)
-        daemon.chat_nudges.enqueue("agent-sync", "AFC-305", 42, self.clock.time())
+        daemon.chat_nudges.enqueue("simple-tools", "AFC-305", 42, self.clock.time())
         runner = self._grok_runner(daemon)
         fake = SimpleNamespace(
             preflight=lambda binding: "busy",
             send=lambda binding, text, **kwargs: "accepted" if kwargs["permit"]() else "deferred",
         )
-        with mock.patch("agent_sync.daemon.CT.GrokTransport", return_value=fake):
+        with mock.patch("simple_tools.daemon.CT.GrokTransport", return_value=fake):
             self.assertEqual(daemon.dispatch_chat_nudge(runner)["status"], "busy")
         self.assertEqual(daemon.chat_nudges.snapshot()["items"][0]["status"], "pending")
 
         fake.preflight = lambda binding: "ready"
-        with mock.patch("agent_sync.daemon.CT.GrokTransport", return_value=fake):
+        with mock.patch("simple_tools.daemon.CT.GrokTransport", return_value=fake):
             self.assertEqual(daemon.dispatch_chat_nudge(runner)["status"], "accepted")
         rows = runner.ledger.rows()
         nudge = [row for row in rows if row.get("adapter") == "chat-nudge"]
         self.assertEqual([row["state"] for row in nudge], ["started", "done"])
-        self.assertEqual(nudge[0]["topic_key"], L.topic_key("agent-sync", "AFC-305"))
+        self.assertEqual(nudge[0]["topic_key"], L.topic_key("simple-tools", "AFC-305"))
         self.assertEqual(nudge[0]["owner"], False)
         self.assertEqual(nudge[-1]["cost_usd"], 0.0)
         self.assertTrue(nudge[-1]["downstream_cost_unknown"])
@@ -63,7 +63,7 @@ class ChatNudgeIntegrationTests(DaemonHarness):
         runner.seat = "CODEX"
         queue = daemon.chat_queue("CODEX")
         binding = {
-            "channel": "agent-sync",
+            "channel": "simple-tools",
             "topic": "AFC-305",
             "platform": "codex",
             "host": "host",
@@ -100,7 +100,7 @@ class ChatNudgeIntegrationTests(DaemonHarness):
         runner.seat = "CODEX"
         queue = daemon.chat_queue("CODEX")
         binding = dict(
-            channel="agent-sync",
+            channel="simple-tools",
             topic="AFC-305",
             platform="codex",
             host="host",
@@ -127,7 +127,7 @@ class ChatNudgeIntegrationTests(DaemonHarness):
                 runner = self._grok_runner(daemon)
                 runner.seat = "CODEX"
                 queue = daemon.chat_queue("CODEX")
-                binding = dict(channel="agent-sync", topic="AFC-305", platform="codex",
+                binding = dict(channel="simple-tools", topic="AFC-305", platform="codex",
                                host="host", session_id="existing-1", cwd="/repo")
                 queue.enqueue_target(binding, 42, self.clock.time(), source_seat="CODEX", owner=False)
                 daemon._chat_transport = SimpleNamespace(
@@ -140,7 +140,7 @@ class ChatNudgeIntegrationTests(DaemonHarness):
 
     def test_stale_owner_backlog_surfaces_once_but_fresh_owner_still_wakes(self):
         daemon = self.daemon()
-        daemon.chat_nudges.bind("agent-sync", "topic", "grok-leader", "host", "existing", "/repo")
+        daemon.chat_nudges.bind("simple-tools", "topic", "grok-leader", "host", "existing", "/repo")
         runner = self._grok_runner(daemon)
 
         def send(binding, text, *, permit):
@@ -151,13 +151,13 @@ class ChatNudgeIntegrationTests(DaemonHarness):
         )
         for mid in (41, 42):
             daemon.chat_nudges.enqueue(
-                "agent-sync", "topic", mid, self.clock.time(), owner=True, stale=True
+                "simple-tools", "topic", mid, self.clock.time(), owner=True, stale=True
             )
         self.assertEqual(daemon.dispatch_chat_nudge(runner)["status"], "accepted")
         daemon.dispatch_chat_nudge(runner)
         self.assertEqual(daemon._chat_transport.send.call_count, 1)
         self.assertIn("stale owner", daemon.chat_nudges.snapshot()["items"][1]["hold_reason"])
-        daemon.chat_nudges.enqueue("agent-sync", "topic", 43, self.clock.time(), owner=True)
+        daemon.chat_nudges.enqueue("simple-tools", "topic", 43, self.clock.time(), owner=True)
         self.assertEqual(daemon.dispatch_chat_nudge(runner)["status"], "accepted")
         self.assertEqual(daemon._chat_transport.send.call_count, 2)
 
@@ -165,8 +165,8 @@ class ChatNudgeIntegrationTests(DaemonHarness):
         daemon = self.started()
         runner = daemon.seats["CLAUDE"]
         runner.seat = "GROK"
-        runner.streams = {1: "agent-sync", 2: "destination"}
-        daemon.chat_nudges.bind("agent-sync", "old", "grok-leader", "host", "existing", "/repo")
+        runner.streams = {1: "simple-tools", 2: "destination"}
+        daemon.chat_nudges.bind("simple-tools", "old", "grok-leader", "host", "existing", "/repo")
         daemon.handle_update(
             runner,
             {
@@ -178,7 +178,7 @@ class ChatNudgeIntegrationTests(DaemonHarness):
             },
         )
         self.assertTrue(daemon.chat_nudges.enqueue("destination", "new", 42, self.clock.time()))
-        self.assertFalse(daemon.chat_nudges.enqueue("agent-sync", "old", 43, self.clock.time()))
+        self.assertFalse(daemon.chat_nudges.enqueue("simple-tools", "old", 43, self.clock.time()))
 
     def test_cli_requires_explicit_target_grok_and_has_nudge_actions(self):
         parser = build_parser()
@@ -190,7 +190,7 @@ class ChatNudgeIntegrationTests(DaemonHarness):
                 "--target-seat",
                 "GROK",
                 "--channel",
-                "agent-sync",
+                "simple-tools",
                 "--topic",
                 "AFC-305",
                 "--session-id",
@@ -216,7 +216,7 @@ class ChatNudgeIntegrationTests(DaemonHarness):
         runner.seat = "GROK"
         runner.paths = SeatPaths(daemon.root, "GROK")
         target = {
-            "channel": "agent-sync",
+            "channel": "simple-tools",
             "topic": "AFC-305",
             "platform": "grok-leader",
             "host": "host",
@@ -226,7 +226,7 @@ class ChatNudgeIntegrationTests(DaemonHarness):
         daemon.chat_nudges.bind(**target)
         offered = []
         daemon.offer_wake = lambda *a, **kw: offered.append((a, kw))
-        mid = self.fake.add_message("Cursor", "agent-sync", "AFC-305", "@**Claude** please check")
+        mid = self.fake.add_message("Cursor", "simple-tools", "AFC-305", "@**Claude** please check")
         daemon._route(runner, dict(self.fake.messages[-1], flags=["mentioned"]))
         self.assertEqual([row["id"] for row in L.read_jsonl(runner.paths.seat_inbox)], [mid])
         self.assertEqual(daemon.chat_nudges.snapshot()["items"][0]["message_id"], str(mid))
@@ -234,18 +234,18 @@ class ChatNudgeIntegrationTests(DaemonHarness):
 
     def test_pause_and_budget_gate_pending_delivery(self):
         daemon = self.daemon()
-        daemon.chat_nudges.bind("agent-sync", "topic", "grok-leader", "host", "existing", "/repo")
+        daemon.chat_nudges.bind("simple-tools", "topic", "grok-leader", "host", "existing", "/repo")
         runner = self._grok_runner(daemon)
         fake = SimpleNamespace(
             preflight=lambda binding: "ready", send=mock.Mock(return_value="accepted")
         )
         daemon._chat_transport = fake
         for mid in (41, 42, 43):
-            daemon.chat_nudges.enqueue("agent-sync", "topic", mid, self.clock.time())
+            daemon.chat_nudges.enqueue("simple-tools", "topic", mid, self.clock.time())
         set_pause(daemon.root, "GROK", wakes_only=True, by="test", now=self.clock.time())
         self.assertEqual(daemon.dispatch_chat_nudge(runner)["status"], "busy")
         fake.send.assert_not_called()
-        from agent_sync.daemon import clear_pause
+        from simple_tools.daemon import clear_pause
 
         clear_pause(daemon.root, "GROK")
         self.assertEqual(daemon.dispatch_chat_nudge(runner)["status"], "accepted")
@@ -257,8 +257,8 @@ class ChatNudgeIntegrationTests(DaemonHarness):
 
     def test_pause_during_connect_defers_without_duplicate_prompt(self):
         daemon = self.daemon()
-        daemon.chat_nudges.bind("agent-sync", "topic", "grok-leader", "host", "existing", "/repo")
-        daemon.chat_nudges.enqueue("agent-sync", "topic", 41, self.clock.time())
+        daemon.chat_nudges.bind("simple-tools", "topic", "grok-leader", "host", "existing", "/repo")
+        daemon.chat_nudges.enqueue("simple-tools", "topic", 41, self.clock.time())
         runner = self._grok_runner(daemon)
 
         def send(binding, text, *, permit):
@@ -272,8 +272,8 @@ class ChatNudgeIntegrationTests(DaemonHarness):
 
     def test_late_saved_receipt_updates_ledger_without_resend(self):
         daemon = self.daemon()
-        daemon.chat_nudges.bind("agent-sync", "topic", "grok-leader", "host", "existing", "/repo")
-        daemon.chat_nudges.enqueue("agent-sync", "topic", 41, self.clock.time())
+        daemon.chat_nudges.bind("simple-tools", "topic", "grok-leader", "host", "existing", "/repo")
+        daemon.chat_nudges.enqueue("simple-tools", "topic", 41, self.clock.time())
         runner = self._grok_runner(daemon)
         fake = SimpleNamespace(
             preflight=lambda binding: "ready",
@@ -290,17 +290,17 @@ class ChatNudgeIntegrationTests(DaemonHarness):
 
     def test_owner_keeps_owner_allowance_when_peer_budget_is_exhausted(self):
         daemon = self.daemon()
-        daemon.chat_nudges.bind("agent-sync", "topic", "grok-leader", "host", "existing", "/repo")
+        daemon.chat_nudges.bind("simple-tools", "topic", "grok-leader", "host", "existing", "/repo")
         runner = self._grok_runner(daemon)
         daemon._chat_transport = SimpleNamespace(
             preflight=lambda binding: "ready", send=mock.Mock(return_value="accepted")
         )
         for mid in (41, 42):
-            daemon.chat_nudges.enqueue("agent-sync", "topic", mid, self.clock.time())
+            daemon.chat_nudges.enqueue("simple-tools", "topic", mid, self.clock.time())
             self.assertEqual(daemon.dispatch_chat_nudge(runner)["status"], "accepted")
-        daemon.chat_nudges.enqueue("agent-sync", "topic", 43, self.clock.time())
+        daemon.chat_nudges.enqueue("simple-tools", "topic", 43, self.clock.time())
         self.assertEqual(daemon.dispatch_chat_nudge(runner)["status"], "busy")
-        daemon.chat_nudges.enqueue("agent-sync", "topic", 44, self.clock.time(), owner=True)
+        daemon.chat_nudges.enqueue("simple-tools", "topic", 44, self.clock.time(), owner=True)
         self.assertEqual(daemon.dispatch_chat_nudge(runner)["status"], "accepted")
         self.assertTrue(runner.ledger.rows()[-1]["owner"])
         pending = [

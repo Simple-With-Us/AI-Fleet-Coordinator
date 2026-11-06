@@ -19,9 +19,9 @@ from datetime import UTC, datetime
 from unittest import mock
 from types import SimpleNamespace
 
-from agent_sync import claude_app_lineage as AL
-from agent_sync import claude_letter as CL
-from agent_sync import operator_registry as OR
+from simple_tools import claude_app_lineage as AL
+from simple_tools import claude_letter as CL
+from simple_tools import operator_registry as OR
 
 
 class Base(unittest.TestCase):

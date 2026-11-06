@@ -1,9 +1,9 @@
 from __future__ import annotations
 from types import SimpleNamespace
 from unittest import mock
-from agent_sync import chat_transport as CT
-from agent_sync import wakes as W
-from agent_sync.tests.test_daemon import DaemonHarness
+from simple_tools import chat_transport as CT
+from simple_tools import wakes as W
+from simple_tools.tests.test_daemon import DaemonHarness
 
 class ChatRoutingTests(DaemonHarness):
     def setup_route(self):
@@ -18,7 +18,7 @@ class ChatRoutingTests(DaemonHarness):
         d._chat_catalog = SimpleNamespace(discover=mock.Mock(return_value=[target]),
                                          resolve=mock.Mock(return_value=target),
                                          excerpt=mock.Mock(return_value=[{'role': 'user', 'text': 'Recent work'}]))
-        p = W.Pending('wake', 'CLAUDE', {'channel': 'agent-sync', 'topic': 'work'}, owner=True,
+        p = W.Pending('wake', 'CLAUDE', {'channel': 'simple-tools', 'topic': 'work'}, owner=True,
                       now=self.clock.time(), due=self.clock.time())
         p.add({'id': 42}, True)
         return d, r, p, target
@@ -51,7 +51,7 @@ class ChatRoutingTests(DaemonHarness):
         item = d.chat_queue('GROK').snapshot()['items'][0]
         self.assertFalse(item['owner'])
         self.assertTrue(d.may_inspect_chat(p))
-        routed = W.Pending('routed', 'CLAUDE', {'channel': 'agent-sync', 'topic': 'work'}, owner=False,
+        routed = W.Pending('routed', 'CLAUDE', {'channel': 'simple-tools', 'topic': 'work'}, owner=False,
                            now=self.clock.time(), due=self.clock.time())
         routed.add({'id': 43}, True)
         routed.route_tagged = True

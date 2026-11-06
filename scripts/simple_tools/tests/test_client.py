@@ -7,9 +7,9 @@ import socket
 import time
 import unittest
 
-from agent_sync import zulip as Z
-from agent_sync.tests.fake_zulip import BOT_EMAIL
-from agent_sync.tests.harness import Harness, write_rc
+from simple_tools import zulip as Z
+from simple_tools.tests.fake_zulip import BOT_EMAIL
+from simple_tools.tests.harness import Harness, write_rc
 
 RATE_LIMITED = {"result": "error", "msg": "API usage exceeded rate limit", "code": "RATE_LIMIT_HIT", "retry-after": 0.01}
 
@@ -221,7 +221,7 @@ class QuietPostTests(Harness):
         self.assertNotIn(":eyes:", self.fake.messages[0]["content"])
 
     def test_the_marker_is_read_back_as_a_signal(self) -> None:
-        from agent_sync import router as R
+        from simple_tools import router as R
 
         result = self.run_cli("post", "--topic", "t", "--quiet", "hello")
         self.assertEqual(result.code, 0, result.err)

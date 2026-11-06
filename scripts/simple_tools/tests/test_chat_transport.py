@@ -14,8 +14,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from agent_sync import chat_transport as CT
-from agent_sync.chat_transport import GrokTransport
+from simple_tools import chat_transport as CT
+from simple_tools.chat_transport import GrokTransport
 
 
 class TransportTests(unittest.TestCase):
@@ -106,7 +106,7 @@ class TransportTests(unittest.TestCase):
             turn_state=lambda _: {"turnState": "idle", "turnEndedAt": 10},
             is_self_session=lambda _: False,
         )
-        with patch("agent_sync.chat_transport.subprocess.run", return_value=self.leader_result([
+        with patch("simple_tools.chat_transport.subprocess.run", return_value=self.leader_result([
             {"sessionId": "chat-1", "cwd": "/work", "title": "Existing chat", "updatedAt": 9},
             {"sessionId": "chat-no-cwd", "title": "Workspace unavailable"},
         ])) as run:
@@ -129,7 +129,7 @@ class TransportTests(unittest.TestCase):
                                          is_self_session=lambda _: False)
         response = self.leader_result([{"sessionId": "chat-1", "cwd": "/one"},
                                        {"sessionId": "chat-2", "cwd": "/two"}])
-        with patch("agent_sync.chat_transport.subprocess.run", return_value=response) as run:
+        with patch("simple_tools.chat_transport.subprocess.run", return_value=response) as run:
             rows = transport.discover()
         self.assertEqual([row["session_id"] for row in rows], ["chat-1", "chat-2"])
         self.assertEqual(run.call_count, 1)
@@ -147,7 +147,7 @@ class TransportTests(unittest.TestCase):
                                        {"sessionId": "chat-2", "cwd": "/two"}])
 
         try:
-            with patch("agent_sync.chat_transport.subprocess.run", side_effect=fake_run) as run:
+            with patch("simple_tools.chat_transport.subprocess.run", side_effect=fake_run) as run:
                 with self.assertRaisesRegex(RuntimeError, "pending"):
                     transport.discover(wait=False)
                 with self.assertRaisesRegex(RuntimeError, "pending"):
@@ -175,8 +175,8 @@ class TransportTests(unittest.TestCase):
             raise subprocess.TimeoutExpired("leader-list", timeout=kwargs["timeout"])
 
         with patch.object(CT, "_DISCOVERY_TIMEOUT", 1.0), \
-                patch("agent_sync.chat_transport.time.monotonic", side_effect=lambda: clock["now"]), \
-                patch("agent_sync.chat_transport.subprocess.run", side_effect=fake_run):
+                patch("simple_tools.chat_transport.time.monotonic", side_effect=lambda: clock["now"]), \
+                patch("simple_tools.chat_transport.subprocess.run", side_effect=fake_run):
             with self.assertRaisesRegex(RuntimeError, "leader pagination budget exceeded"):
                 transport.discover(wait=True)
 
@@ -191,7 +191,7 @@ class TransportTests(unittest.TestCase):
                                          is_self_session=lambda _: False)
         partial = self.leader_result([{"sessionId": "chat-%d" % n, "cwd": "/work"}
                                       for n in range(CT._DISCOVERY_MAX_PAGES)], next_cursor="page-21")
-        with patch("agent_sync.chat_transport.subprocess.run", return_value=partial) as run:
+        with patch("simple_tools.chat_transport.subprocess.run", return_value=partial) as run:
             rows = transport.discover(wait=True)
         self.assertEqual(run.call_count, 1)
         self.assertEqual(len(rows), CT._DISCOVERY_MAX_PAGES)
@@ -203,7 +203,7 @@ class TransportTests(unittest.TestCase):
                                          is_self_session=lambda _: False)
         response = self.leader_result([{"sessionId": "chat-1", "cwd": "/one"},
                                        {"sessionId": "chat-2", "cwd": "/two"}], next_cursor="repeat")
-        with patch("agent_sync.chat_transport.subprocess.run", return_value=response) as run:
+        with patch("simple_tools.chat_transport.subprocess.run", return_value=response) as run:
             rows = transport.discover()
         self.assertEqual([row["session_id"] for row in rows], ["chat-1", "chat-2"])
         self.assertEqual(run.call_count, 1)
@@ -221,7 +221,7 @@ class TransportTests(unittest.TestCase):
             CT._DISCOVERY_COMPLETE = True
         response = self.leader_result([{"sessionId": "chat-1", "cwd": "/one"},
                                        {"sessionId": "chat-2", "cwd": "/two"}], next_cursor="page-3")
-        with patch("agent_sync.chat_transport.subprocess.run", return_value=response):
+        with patch("simple_tools.chat_transport.subprocess.run", return_value=response):
             rows = transport.discover()
         self.assertEqual([row["session_id"] for row in rows], ["chat-1", "chat-2"])
         self.assertTrue(all(row["stale"] and not row["wake"] for row in rows))
@@ -231,14 +231,14 @@ class TransportTests(unittest.TestCase):
         transport.disk = SimpleNamespace(load_active=lambda: [],
                                          turn_state=lambda _: {"turnState": "idle", "turnEndedAt": 1},
                                          is_self_session=lambda _: False)
-        with patch("agent_sync.chat_transport.subprocess.run", side_effect=RuntimeError("temporary list failure")):
+        with patch("simple_tools.chat_transport.subprocess.run", side_effect=RuntimeError("temporary list failure")):
             with self.assertRaisesRegex(RuntimeError, "leader list unavailable"):
                 transport.discover(force=True)
         with CT._DISCOVERY_LOCK:
             self.assertIsNone(CT._DISCOVERY_CURSOR)
             self.assertEqual(CT._DISCOVERY_SEEN_CURSORS, set())
             self.assertIsNone(CT._DISCOVERY_CANDIDATE_SESSIONS)
-        with patch("agent_sync.chat_transport.subprocess.run", return_value=self.leader_result([
+        with patch("simple_tools.chat_transport.subprocess.run", return_value=self.leader_result([
                 {"sessionId": "fresh-page", "cwd": "/fresh"}])) as run:
             rows = transport.discover(force=True)
         self.assertEqual([row["session_id"] for row in rows], ["fresh-page"])
@@ -351,7 +351,7 @@ class TransportTests(unittest.TestCase):
                                          is_self_session=lambda _: False)
         for result in (self.leader_result([], ok=False, returncode=1),
                        SimpleNamespace(returncode=0, stdout="not-json", stderr="")):
-            with self.subTest(result=result), patch("agent_sync.chat_transport.subprocess.run", return_value=result):
+            with self.subTest(result=result), patch("simple_tools.chat_transport.subprocess.run", return_value=result):
                 with self.assertRaises(RuntimeError):
                     transport.discover(wait=True, force=True)
 
@@ -367,7 +367,7 @@ class TransportTests(unittest.TestCase):
                 is_self_session=lambda _: False,
             )
             with self.subTest(state=state, ended=ended), patch(
-                    "agent_sync.chat_transport.subprocess.run",
+                    "simple_tools.chat_transport.subprocess.run",
                     return_value=self.leader_result([{"sessionId": "chat-1", "cwd": "/work"}])):
                 self.reset_discovery()
                 row = transport.discover(wait=True)[0]
@@ -387,7 +387,7 @@ class TransportTests(unittest.TestCase):
                                        {"sessionId": "chat-2", "cwd": "/two"}])
 
         try:
-            with patch("agent_sync.chat_transport.subprocess.run", side_effect=page):
+            with patch("simple_tools.chat_transport.subprocess.run", side_effect=page):
                 with self.assertRaisesRegex(RuntimeError, "pending"):
                     transport.discover(wait=False)
                 self.assertTrue(started.wait(1))
@@ -411,7 +411,7 @@ class TransportTests(unittest.TestCase):
         transport.disk = SimpleNamespace(load_active=lambda: [],
                                          turn_state=lambda _: {"turnState": "idle", "turnEndedAt": 1},
                                          is_self_session=lambda _: False)
-        with patch("agent_sync.chat_transport.subprocess.run") as run:
+        with patch("simple_tools.chat_transport.subprocess.run") as run:
             self.assertTrue(transport.discover(wait=False)[0]["wake"])
             run.assert_not_called()
         with CT._DISCOVERY_LOCK:
@@ -430,7 +430,7 @@ class TransportTests(unittest.TestCase):
             CT._DISCOVERY_UPDATED = time.monotonic()
             CT._DISCOVERY_LAST_ATTEMPT = 0.0
             CT._DISCOVERY_COMPLETE = True
-        with patch("agent_sync.chat_transport.subprocess.run", return_value=self.leader_result([
+        with patch("simple_tools.chat_transport.subprocess.run", return_value=self.leader_result([
                 {"sessionId": "chat-2", "cwd": "/work"}])) as run:
             rows = transport.discover(wait=True)
         self.assertEqual([row["session_id"] for row in rows], ["chat-2"])
@@ -458,7 +458,7 @@ class TransportTests(unittest.TestCase):
     def test_discovery_failure_is_retryable_preflight_not_permanent_failure(self):
         transport, binding, client = self.transport()
         transport.discover = GrokTransport.discover.__get__(transport, GrokTransport)
-        with patch("agent_sync.chat_transport.subprocess.run",
+        with patch("simple_tools.chat_transport.subprocess.run",
                    side_effect=subprocess.TimeoutExpired("leader-list", timeout=27)):
             self.assertEqual(transport.preflight(binding), "busy")
             self.assertTrue(CT._DISCOVERY_DONE.wait(1))
@@ -468,7 +468,7 @@ class TransportTests(unittest.TestCase):
     def test_successful_singleflight_refresh_allows_one_later_send(self):
         transport, binding, client = self.transport()
         transport.discover = GrokTransport.discover.__get__(transport, GrokTransport)
-        with patch("agent_sync.chat_transport.subprocess.run", return_value=self.leader_result([
+        with patch("simple_tools.chat_transport.subprocess.run", return_value=self.leader_result([
                 {"sessionId": "chat-1", "cwd": "/work"}])) as run:
             # The shared background list may finish before or after the first preflight reads;
             # either way, its completed fresh snapshot permits one send.
@@ -537,7 +537,7 @@ class TransportTests(unittest.TestCase):
             CT._DISCOVERY_COMPLETE = True
         binding = {"platform": "grok-leader", "host": socket.gethostname(),
                    "session_id": "chat-1", "cwd": "/work"}
-        with patch("agent_sync.chat_transport.subprocess.run") as run:
+        with patch("simple_tools.chat_transport.subprocess.run") as run:
             self.assertEqual(transport.preflight(binding), "ready")
             run.assert_not_called()
         self.assertEqual(CT._DISCOVERY_SESSIONS, [{"sessionId": "chat-1", "cwd": "/work"}])
@@ -557,7 +557,7 @@ class TransportTests(unittest.TestCase):
             CT._DISCOVERY_COMPLETE = False
         binding = {"platform": "grok-leader", "host": socket.gethostname(),
                    "session_id": "chat-1", "cwd": "/work"}
-        with patch("agent_sync.chat_transport.subprocess.run") as run:
+        with patch("simple_tools.chat_transport.subprocess.run") as run:
             self.assertEqual(transport.preflight(binding), "busy")
             run.assert_not_called()
         self.assertEqual(CT._DISCOVERY_SESSIONS[0]["sessionId"], "chat-1")
@@ -574,7 +574,7 @@ class TransportTests(unittest.TestCase):
 
         try:
             with patch.object(CT, "_DISCOVERY_MAX_PAGES", 20), \
-                    patch("agent_sync.chat_transport.subprocess.run", side_effect=fake_run):
+                    patch("simple_tools.chat_transport.subprocess.run", side_effect=fake_run):
                 started = time.monotonic()
                 with self.assertRaisesRegex(RuntimeError, "pending"):
                     transport.discover(wait=True, timeout=0.25)
