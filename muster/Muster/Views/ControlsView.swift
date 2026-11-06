@@ -102,7 +102,7 @@ struct ControlsView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("Controls")
+                Text(MusterDestination.controls.title)
                     .font(.largeTitle.weight(.semibold))
                 Spacer()
                 Button {

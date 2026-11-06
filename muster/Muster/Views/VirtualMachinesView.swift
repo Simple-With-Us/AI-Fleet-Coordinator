@@ -50,7 +50,7 @@ struct VirtualMachinesView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("Virtual Machines")
+                Text(MusterDestination.virtualMachines.title)
                     .font(.largeTitle.weight(.semibold))
                 Spacer()
                 Button {

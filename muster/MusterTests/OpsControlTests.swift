@@ -709,6 +709,53 @@ final class OpsAllowlistAndAuditTests: XCTestCase {
         XCTAssertTrue(list.coolifyRedeploy)
     }
 
+    /// The server refuses the whole file when any entry is malformed, so the Mac does not read
+    /// it either, and invents no scope or unit for an update that gave none.
+    func test_the_allowlist_is_not_read_when_an_entry_is_malformed() throws {
+        let head = #"{"schemaVersion":1,"#
+        let goodUpdate = #"{"name":"fleet-cli","unit":"fleet-cli-git-update.service","scope":"user"}"#
+        let sections = [
+            // Updates
+            #""server":{"updates":[{"name":"fleet-cli","unit":"a.service"}]}"#,
+            #""server":{"updates":[{"name":"fleet-cli","unit":"a.service","scope":"global"}]}"#,
+            #""server":{"updates":[{"name":"fleet-cli","unit":"a.service","scope":null}]}"#,
+            #""server":{"updates":[{"name":"fleet-cli","scope":"user"}]}"#,
+            #""server":{"updates":[{"name":"fleet-cli","unit":"a.timer","scope":"user"}]}"#,
+            #""server":{"updates":[{"unit":"a.service","scope":"user"}]}"#,
+            #""server":{"updates":[3]}"#,
+            #""server":{"updates":"none"}"#,
+            // Units, LaunchAgents and pm2 applications
+            #""server":{"units":[{"unit":"a.timer","scope":"user","actions":[]}]}"#,
+            #""server":{"units":[{"unit":"a.timer","scope":"user","actions":["reboot"]}]}"#,
+            #""server":{"units":[{"unit":"a.timer","scope":"user"}]}"#,
+            #""server":{"units":[{"scope":"user","actions":["restart"]}]}"#,
+            #""mac":{"agents":[{"actions":["start"]}]}"#,
+            #""mac":{"agents":[{"label":"com.jay.x","actions":[]}]}"#,
+            #""mac":{"pm2Apps":[{"actions":["start"]}]}"#,
+            #""mac":{"pm2Apps":[{"name":"shellular","actions":["fly"]}]}"#,
+            // Sections that are not objects, and booleans that are not booleans
+            #""mac":"none""#,
+            #""server":[1]"#,
+            #""server":{"coolify":"yes"}"#,
+            #""server":{"coolify":{"redeploy":"true"}}"#,
+            #""server":{"coolify":{"redeploy":1}}"#,
+            #""server":{"coolify":{"redeploy":null}}"#,
+            #""server":{"resourcePolicy":"true"}"#,
+            #""server":{"resourcePolicy":null}"#,
+        ]
+        for section in sections {
+            XCTAssertNil(OpsAllowlist.parse(Data((head + section + "}").utf8)), section)
+        }
+        let fine = head + #""server":{"updates":["# + goodUpdate + #"]}}"#
+        let list = try XCTUnwrap(OpsAllowlist.parse(Data(fine.utf8)))
+        XCTAssertEqual(list.updates, [OpsAllowlist.Update(name: "fleet-cli", unit: "fleet-cli-git-update.service", scope: "user")])
+        // An empty or null value is an empty section, as the server's `or` defaults read it.
+        let empty = head + #""mac":null,"server":{"coolify":{},"resourcePolicy":false,"units":[]}}"#
+        let none = try XCTUnwrap(OpsAllowlist.parse(Data(empty.utf8)))
+        XCTAssertFalse(none.coolifyRedeploy)
+        XCTAssertTrue(none.serverUnits.isEmpty)
+    }
+
     func test_an_allowlist_of_another_version_or_shape_is_not_read() throws {
         let other = try fixture("ops_allowlist", "json")
             .replacingOccurrences(of: "\"schemaVersion\": 1", with: "\"schemaVersion\": 2")
