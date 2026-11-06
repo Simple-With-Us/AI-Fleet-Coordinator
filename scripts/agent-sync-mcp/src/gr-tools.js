@@ -202,7 +202,11 @@ export class GrRelayClient {
         if (response.status === 502 && parsed.outcome === "unknown" && githubCode) return outcomeUnknown();
         return unavailable();
       }
-      return {status:response.status,body:{error:"workflow_request_refused", ...(parsed.retryable===true ? {retryable:true} : {})}};
+      // Preserve the relay's credential-scan verdict as a machine-readable
+      // marker:  the collapsed prose stays fixed, but without the marker the
+      // hosted front cannot tell a credential refusal from any other 4xx, so
+      // gr_wf_file_put/gr_wf_files_put callers lost their refused_secret reason.
+      return {status:response.status,body:{error:"workflow_request_refused", ...(parsed.error === "credential-shaped content refused" ? {reason:"credential_scan"} : {}), ...(parsed.retryable===true ? {retryable:true} : {})}};
     } catch {return unavailable();}
   }
 

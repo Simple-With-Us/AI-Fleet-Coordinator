@@ -1467,15 +1467,31 @@ export class HostedTools {
     // GitHub refusals) - definite, no hidden side effect.
     if (status === 429 && body?.retryable === true) throw new ToolError("rate_limited", "git-relay quota is exhausted.  Retry after the quota window.", {retryable:true});
     if (status >= 400) {
-      // The relay's refusal reasons are fixed public strings that never wrap
-      // upstream text.  Map the exact credential-scan verdict to the dedicated
-      // safe code:  CLI callers print codes, not messages, and "relay_refused"
-      // alone hid why the write was refused.  Anything else keeps the generic
-      // code;  only this exact string is vouched for.
-      if (body?.error === "credential-shaped content refused") {
-        throw new ToolError("refused_secret", "git-relay refused the write:  a file's content or the commit message looks like it contains a credential.  Remove or reword the credential-shaped content and send it again.  Nothing was written.");
+      // Validate the refusal body's shape before reading any field of it:  an
+      // unvalidated relay body is untrusted data, and only schema-parsed
+      // fields may drive the classification.  An unparseable body keeps the
+      // generic code.
+      const refusalShape = z.object({
+        error: z.string().max(1000).optional(),
+        reason: z.enum(["credential_scan"]).optional(),
+      }).safeParse(body);
+      if (!refusalShape.success) throw new ToolError("relay_refused", "refused");
+      const refusalError = refusalShape.data.error;
+      // The relay's credential-scan verdicts map to the dedicated safe code:
+      // CLI callers print codes, not messages, and "relay_refused" alone hid
+      // why the write was refused.  Three vouched forms, never reflected prose:
+      // the workflow verbs' exact fixed string, its machine-readable marker
+      // after callWorkflow collapses the workflow body, and the pre-dispatch
+      // scanner's anchored field/pattern family from the seven-action path.
+      const credentialRefusal =
+        refusalShape.data.reason === "credential_scan"
+        || refusalError === "credential-shaped content refused"
+        || (typeof refusalError === "string"
+          && /^[A-Za-z0-9_.\-[\]]{1,120} looks like it contains a credential \([A-Za-z0-9_]{1,60}\); refusing to relay it$/.test(refusalError));
+      if (credentialRefusal) {
+        throw new ToolError("refused_secret", "git-relay refused the write:  the content looks like it contains a credential.  Remove or reword the credential-shaped content and send it again.  Nothing was written.");
       }
-      throw new ToolError("relay_refused", typeof body?.error === "string" ? body.error.slice(0, 300) : "refused");
+      throw new ToolError("relay_refused", typeof refusalError === "string" ? refusalError.slice(0, 300) : "refused");
     }
     // A successful call still must answer with a plain JSON object;  anything
     // else is a mis-answering upstream, not a result.
