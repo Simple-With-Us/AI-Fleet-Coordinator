@@ -995,6 +995,28 @@ class OneActionAndAuditLinkTests(Base):
         self.assertEqual(self.runner.calls, [])
         self.assertEqual(self.audit_rows()[0]["result"], "refused")
 
+    def test_a_journal_read_takes_no_lock_and_is_still_audited(self):
+        self.hold_lock()
+        code, ans = self.run_main(
+            ["server", "logs", "fleet-server-status.timer", "--yes", "--json"], self.ctx()
+        )
+        self.assertEqual((code, ans["result"]), (0, "done"))
+        self.assertEqual(self.audit_rows()[0]["verb"], "server logs")
+
+    def test_a_resource_policy_write_holds_the_same_lock(self):
+        config = json.loads(self.config_path.read_text())
+        config["server"]["resourcePolicy"] = True
+        self.config_path.write_text(json.dumps(config))
+        target = "cpu-weight.50." + "a" * 64
+        reply = {"ok": True, "result": "done", "commands": []}
+        with mock.patch("fleet_resource_control.handle", return_value=(reply, 0)) as handler:
+            self.hold_lock()
+            code, ans = self.run_main(
+                ["server", "resource-policy", target, "--yes", "--json"], self.ctx()
+            )
+            self.assertEqual((code, ans["errorCode"]), (2, "action_busy"))
+            handler.assert_not_called()
+
     def test_a_plan_takes_no_lock(self):
         self.hold_lock()
         code, ans = self.run_main(

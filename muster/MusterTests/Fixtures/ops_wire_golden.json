@@ -14,7 +14,7 @@
     "server restart fleet-server-status.timer --plan --yes --json",
     "server restart fleet-server-status.timer;reboot --plan --json",
     "server restart a/b.service --plan --json",
-    "mac restart com.jay.fleet-tools-doctor --plan --json",
+    "mac restart com.example.fixture-doctor --plan --json",
     "server restart fleet-server-status.timer --plan --json --verbose"
   ],
   "refusedByHelper": [

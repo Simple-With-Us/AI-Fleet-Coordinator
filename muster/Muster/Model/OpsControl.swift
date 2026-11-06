@@ -1789,9 +1789,14 @@ final class OpsController: ObservableObject {
     /// changes nothing.
     var quitWarning: String? {
         guard case .running(let action, _) = phase, runStage == .running else { return nil }
+        // Only a server action gets a `started` row in this Mac's log:  a local action's own
+        // helper writes its row when it finishes.
+        let logs = action.runsOnServer
+            ? "this Mac's log keeps only that it started."
+            : "this Mac's log has no row for it until it ends."
         return ApplyCopy.join(
             "\(action.title) is still running.",
-            "If Muster quits now, it cannot learn how it ended, and this Mac's log keeps only that it started."
+            "If Muster quits now, it cannot learn how it ended, and \(logs)"
         )
     }
 
@@ -1934,6 +1939,9 @@ final class OpsController: ObservableObject {
             isSheetHidden = true
         case .running:
             isSheetHidden = true
+            // A refusal noted while the run was in view is old by the time the result comes
+            // back, so it is not shown under that result.
+            notice = nil
         case .idle, .review, .finished, .failed:
             phase = .idle
             notice = nil

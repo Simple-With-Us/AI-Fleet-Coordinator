@@ -1642,7 +1642,8 @@ final class OpsControllerFlowTests: XCTestCase {
         }
         XCTAssertEqual(ops.runStage, .running)
         XCTAssertNotNil(ops.stageStartedAt)
-        XCTAssertNotNil(ops.quitWarning)
+        // A server action leaves a `started` row in this Mac's log,  and the warning says so.
+        XCTAssertTrue(ops.quitWarning?.contains("keeps only that it started") == true)
         ops.dismiss()
         XCTAssertTrue(ops.isSheetHidden)
         XCTAssertFalse(ops.isSheetShown)
@@ -1651,10 +1652,14 @@ final class OpsControllerFlowTests: XCTestCase {
         // Another action is refused,  and the run's sheet comes back to say why.
         XCTAssertFalse(ops.plan(.serverUpdate(name: "fleet-cli")))
         XCTAssertTrue(ops.isSheetShown)
+        XCTAssertNotNil(ops.notice)
         ops.dismiss()
         XCTAssertEqual(ops.hiddenRun, action)
+        // The refusal was about the moment it was shown,  so it does not come back later.
+        XCTAssertNil(ops.notice)
         await gate.release()
         try await waitFor(ops, until: isFinished)
+        XCTAssertNil(ops.notice)
         XCTAssertFalse(ops.isSheetHidden)
         XCTAssertTrue(ops.isSheetShown)
         XCTAssertNil(ops.runStage)

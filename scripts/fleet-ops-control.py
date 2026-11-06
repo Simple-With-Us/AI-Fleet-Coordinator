@@ -49,8 +49,8 @@ What it promises:
     so the caller's own log can name the row this run wrote.
   * One `--yes` runs at a time on a machine:  a second one while another holds
     `~/.local/state/fleet-tools/ops-control.lock` is refused with `errorCode` `action_busy`.
-    Plans and update-status reads take no lock.  A chain of commands that stops at a failure
-    says how many finished first (`completedCommands`).
+    Plans, update-status reads and journal reads take no lock.  A chain of commands that
+    stops at a failure says how many finished first (`completedCommands`).
 
 An update is submitted until a new successful service invocation is observed; API acceptance
 of a redeploy is also submitted.  Neither is called completed from submission alone.
@@ -1451,9 +1451,14 @@ def handle(ctx, scope, action, target, mode):
                 sys.path.insert(0, scripts)
             from fleet_resource_control import handle as handle_resource
 
+            if mode == "yes" and action == "resource-policy":
+                # A write holds the same one-action lock as every other `--yes` write.
+                with action_lock(ctx):
+                    return handle_resource(ctx, action, target, mode)
             return handle_resource(ctx, action, target, mode)
         with contextlib.ExitStack() as held:
-            if mode == "yes":
+            # A logs run only reads the journal, so it takes no write lock.
+            if mode == "yes" and not (scope == "server" and action == "logs"):
                 held.enter_context(action_lock(ctx))
             commands, note, audit_target = plan_request(ctx, config, scope, action, target)
             answer["commands"] = commands
