@@ -96,12 +96,23 @@ public final class ControlAPI {
     /// Failures that happen before a request is sent.  Only these stay
     /// `unavailable` for non-GET calls; every other transport failure on a
     /// mutation is `outcomeUnknown` so a retry cannot apply the change twice.
+    /// On a GET the miss is handed to the caller as `GETNeverReached`, because
+    /// what a read that never arrived means depends on the route.
     static let failedBeforeSending: Set<URLError.Code> = [
         .cannotConnectToHost,
         .cannotFindHost,
         .dnsLookupFailed,
         .notConnectedToInternet,
     ]
+
+    /// A GET whose request never left the device (connection refused, unknown
+    /// host, DNS failure, offline link).  `send` cannot know what a missed
+    /// read means for the route:  the identity probe's miss means the server
+    /// is gone, while a status read that misses right after the probe passed
+    /// is a refusal to surface, not a slow answer.  Each caller maps it.
+    private struct GETNeverReached: Error {
+        let urlError: URLError
+    }
 
     private let session: URLSession
     public let host: ServerHost
@@ -143,6 +154,11 @@ public final class ControlAPI {
         let data: Data
         do {
             data = try await send("/api/system/control", method: "GET", timeout: timeout)
+        } catch let miss as GETNeverReached {
+            // The identity check already proved the server was alive a moment
+            // ago, so a status read that never reached it is not a slow
+            // answer:  surface the refusal itself instead of unresponsive.
+            throw ControlAPIError.refused(miss.urlError.localizedDescription)
         } catch ControlAPIError.unavailable {
             // The identity check already proved the server is alive and ready,
             // so a failure here means it was too slow to answer, not that it
@@ -182,7 +198,14 @@ public final class ControlAPI {
     }
 
     private func verifyIdentity() async throws {
-        let data = try await send("/api/health", method: "GET")
+        let data: Data
+        do {
+            data = try await send("/api/health", method: "GET")
+        } catch is GETNeverReached {
+            // The identity probe is what decides whether the server is there
+            // at all:  a probe that never reached it means it is gone.
+            throw ControlAPIError.unavailable
+        }
         guard let value = try? decoder.decode(Health.self, from: data),
               value.app == "botfleet",
               (!host.isLocal || (value.pid ?? 0) > 0),
@@ -242,11 +265,13 @@ public final class ControlAPI {
                 }
                 throw ControlAPIError.outcomeUnknown
             }
-            // A read that never reached the server means the server is gone, not slow:
-            // report the refusal itself so status() does not misread it as unresponsive.
+            // A read that failed changed nothing, and a read whose request
+            // never left the device is handed up as GETNeverReached:  gone for
+            // the identity probe, a refusal to surface for the status read.
+            // Every other GET transport failure stays unavailable.
             if let urlError = error as? URLError,
                ControlAPI.failedBeforeSending.contains(urlError.code) {
-                throw ControlAPIError.refused(urlError.localizedDescription)
+                throw GETNeverReached(urlError: urlError)
             }
             throw ControlAPIError.unavailable
         }
