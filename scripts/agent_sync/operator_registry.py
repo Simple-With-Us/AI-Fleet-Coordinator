@@ -42,6 +42,61 @@ from . import secretscan
 from . import session_ids as SI
 from .operator_registry_schema import DDL, SCHEMA_VERSION
 
+# Wake-transport support by adapter platform, the one canonical table the registry
+# derives a session's stored wake_capability from and the chat-nudge transport list
+# reads.  It lives in this module, not a file of its own, because the shipped set is
+# capped at 150 files (fleet-cli-release.py MAX_FILES, with the receiver's
+# fleet-cli-sync.py enforcing the same count):  a 151st file would need a budget
+# raise on both sides, and this table does not carry one.
+WAKE_SUPPORTED = "code-supported"
+WAKE_NONE = "none"
+WAKE_UNKNOWN = "unknown"
+
+# Every platform the chat catalog scans, assessed against this tree, plus the
+# owner-named chatgpt exception below.  A platform not listed derives
+# WAKE_UNKNOWN, not WAKE_NONE.
+_WAKE_SUPPORT: dict[str, str] = {
+    "grok-leader": WAKE_SUPPORTED,
+    "cursor-cloud": WAKE_SUPPORTED,
+    "codex": WAKE_SUPPORTED,
+    "claude": WAKE_NONE,
+    "cursor-local": WAKE_NONE,
+    "muse": WAKE_NONE,
+    "minimax": WAKE_NONE,
+    "fx": WAKE_NONE,
+    "antigravity": WAKE_NONE,
+    "opencode": WAKE_NONE,
+    # Owner ask 2026-11-04:  "jet needs to wake also his own way".  chatgpt is
+    # not a catalog platform - the JET/JET-CHAT seat is OpenAI-hosted with no
+    # local store to scan - and this tree ships no chatgpt wake adapter:  his
+    # wake is his own hosted route (the JET listener HTTP -> hosted MCP events
+    # callbacks, events-only per the Oct 30 grounding), outside this tree.  So
+    # he is recorded here explicitly, NONE against this tree, never UNKNOWN.
+    "chatgpt": WAKE_NONE,
+}
+
+
+def wake_capability_for_platform(platform: object) -> str:
+    """The tree's wake-transport support for one adapter platform, source-only.
+
+    This table is the tree's support as written, not a runtime promise:  it
+    says nothing about a live adapter's current reachability.  Registration
+    derives a session's stored wake_capability from it only when the caller
+    makes no claim of its own, so a new row carries the tree's honest support
+    level instead of the blanket "unknown" default.  Derivation fills new or
+    "unknown" rows only:  a stored non-"unknown" value is a stored claim,
+    explicit or derived, and is never rewritten by a later derivation.
+    """
+    if not isinstance(platform, str):
+        return WAKE_UNKNOWN
+    return _WAKE_SUPPORT.get(platform.strip().lower(), WAKE_UNKNOWN)
+
+
+def implemented_wake_platforms() -> frozenset[str]:
+    """The adapter platforms this tree ships a delivery adapter for."""
+    return frozenset(p for p, state in _WAKE_SUPPORT.items() if state == WAKE_SUPPORTED)
+
+
 LETTERS = tuple("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 
 # Two letter spaces on one platform (owner 2026-10-28):  a main conversation takes a
@@ -699,6 +754,28 @@ class SessionRegistry:
                         "UPDATE sessions SET last_seen_at = ? WHERE record_id = ?",
                         (now, record_id),
                     )
+                    # A stored "unknown" is the no-claim sentinel, never a stored
+                    # claim, so the row takes the incoming value on its own resume:
+                    # the derivation's source-tree support, or a caller's fresher
+                    # claim.  Any other stored value is a stored claim, explicit
+                    # or derived, and wins.  The sentinel is recognized case- and
+                    # whitespace-insensitively on BOTH sides (kody #1348):  a row
+                    # written "UNKNOWN" or " unknown " through the mutable
+                    # session_upsert path is still no claim and takes the update,
+                    # and an unknown-ish incoming value is never stored as one.
+                    # Real claims stay verbatim (any case is a claim).
+                    # This is not a batch migration:  rows change only when their own
+                    # session next registers, and closed rows keep their history.
+                    stored_capability = str(row["wake_capability"] or "unknown").strip().lower()
+                    incoming_capability = str(identity.get("wake_capability") or "unknown")
+                    if (
+                        stored_capability == "unknown"
+                        and incoming_capability.strip().lower() != "unknown"
+                    ):
+                        conn.execute(
+                            "UPDATE sessions SET wake_capability = ? WHERE record_id = ?",
+                            (incoming_capability, record_id),
+                        )
                     # The exported sheet refreshes "Last Seen At" only from a
                     # session_upsert payload, so the row that just moved has to be
                     # enqueued in the same transaction.  Without it the database
@@ -1110,6 +1187,13 @@ def register_session(
     )
     native = SI.check(native_session_id, "the native session id")
     parent = _clean_parent(parent_session_id)
+    if str(wake_capability or "unknown").strip().lower() == "unknown":
+        # No caller claim:  derive the tree's own source-only support level for
+        # the adapter platform (new or "unknown" rows only;  a stored
+        # non-"unknown" claim, explicit or derived, is never rewritten), before
+        # the letter namespace folds it ("cursor-cloud" and "cursor-local" both
+        # become "cursor", and only one of them can deliver).
+        wake_capability = wake_capability_for_platform(platform)
     platform = normalize_platform(platform)
     default_space, default_pick = PLATFORM_LETTER_DEFAULTS.get(platform, ("single", "lowest"))
     space = letter_space or default_space

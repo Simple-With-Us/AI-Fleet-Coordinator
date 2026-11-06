@@ -18,8 +18,8 @@
  *   TestFlight Builds  — latest uploaded build per app, expiry, public beta link.
  *   Icon Audit         — output of fleet-icon-audit.mjs; the icon health check.
  *   Fleet Apps         — every fleet app in fleet-apps.json, with its repo, lanes and Linear team.
- *   Seats and Bots     — every seat and bot:  fleet-apps.json seats joined with the listener partition, the
- *                        server listener config and the Linear seat apps.  Credential NAMES only, never values.
+ *   Seats and Bots     — MANUAL since 2026-11-05 (owner decision):  hand-maintained in the sheet;  this sync
+ *                        never clears, creates or rewrites it (same treatment as Infisical Service Tokens).
  *
  * DESIGN RULES (learned the hard way — do not undo)
  *   • The sync OWNS its tabs and rewrites them wholesale:  it clears each tab before writing it, so a tab that
@@ -770,10 +770,7 @@ export function buildMarkdownMirror(rules, tabs) {
     "",
     toMarkdownTable(tabs.fleetApps[0], tableBody(tabs.fleetApps)),
     "",
-    "## 5. Seats and Bots",
-    "",
-    toMarkdownTable(tabs.seats[0], tableBody(tabs.seats)),
-    "",
+    ...(tabs.seats ? ["## 5. Seats and Bots", "", toMarkdownTable(tabs.seats[0], tableBody(tabs.seats)), ""] : []),
     "## 6. Standing Rules & Standards",
     ""
   ];
@@ -993,7 +990,9 @@ async function main() {
     testflight: asc ? buildTestFlightTab(appsData, asc, nowIso) : null,
     icons: buildIconTab(iconReport, nowIso),
     fleetApps: buildFleetAppsTab(fleetApps, teamKeys, nowIso),
-    seats: buildSeatsTab({ fleetApps, partition, serverSeats, seatAppNames, facts }, nowIso),
+    // Owner 2026-11-05: Seats and Bots is manually maintained in the sheet.  Build nothing for it and
+    // never write it; the plan filter below already drops null tabs.
+    seats: null,
   };
   const plan = [
     // [key, title, header row indexes, column count]
