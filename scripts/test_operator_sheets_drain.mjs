@@ -10,11 +10,28 @@ import { join } from "node:path";
 
 import { PAYLOAD_HEADERS, projectCells } from "./agent_sync/operator_sheets_export.mjs";
 import {
-  acquireLease, EVENTS_HEADERS, SESSIONS_HEADERS, SPREADSHEET_ID, TABLES,
+  acquireLease, EVENTS_HEADERS, SESSIONS_HEADERS, TABLES, workbookProfileFromEnv,
 } from "./agent_sync/operator_sheets_drain.mjs";
 
+test("runner profile: workbook identity resolves from env and fails closed", () => {
+  const profile = workbookProfileFromEnv({
+    OPERATOR_SHEETS_WORKBOOK_ID: "workbook_ABC-123",
+    OPERATOR_SHEETS_SESSIONS_SHEET_ID: "1000000001",
+    OPERATOR_SHEETS_EVENTS_SHEET_ID: "1000000002",
+  });
+  assert.deepEqual(profile, {
+    spreadsheetId: "workbook_ABC-123",
+    sheetIds: { sessions: 1000000001, events: 1000000002 },
+  });
+  assert.throws(() => workbookProfileFromEnv({}), /OPERATOR_SHEETS_WORKBOOK_ID is required/);
+  assert.throws(() => workbookProfileFromEnv({
+    OPERATOR_SHEETS_WORKBOOK_ID: "workbook_ABC-123",
+    OPERATOR_SHEETS_SESSIONS_SHEET_ID: "5",
+    OPERATOR_SHEETS_EVENTS_SHEET_ID: "5",
+  }), /distinct/);
+});
+
 test("runner profile: every workbook header projects from the payload layout", () => {
-  assert.match(SPREADSHEET_ID, /^[A-Za-z0-9_-]+$/);
   for (const table of ["sessions", "events"]) {
     const layout = table === "sessions" ? SESSIONS_HEADERS : EVENTS_HEADERS;
     assert.deepEqual(TABLES[table].headers, layout);

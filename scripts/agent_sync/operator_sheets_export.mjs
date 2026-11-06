@@ -156,8 +156,17 @@ export function formatCellsForDisplay(kind, cells) {
 // Session snapshots of one record inside a single batch collapse to the latest: the
 // sheet is a current-state mirror, so an intermediate snapshot has no sheet-visible
 // effect. A collapsed row is fenced 'exported' with the superseding outbox id in the
-// detail and marked exported; if the winning snapshot then fails, the drain stops
-// with it still pending, so no state is lost.
+// detail and marked exported — but only once the winning snapshot's own write has
+// confirmed. If the winner is refused or fails, the collapsed rows stay pending
+// with it, so the sheet never loses a state it was never shown.
+//
+// Acknowledgements are batched: fence records and exported marks flush together
+// every 100 confirmed rows and at every stop point, so a multi-thousand-row
+// backfill costs a handful of bridge calls instead of two per row. The invariant
+// is unchanged — a row counts as exported only once its fence record and its mark
+// have both landed; a failed flush leaves its rows pending for the next drain's
+// reconcile. When the attempts implementation offers recordBatch(records) it is
+// used; otherwise record() is called per record within the same flush.
 export async function drainOutbox({
   outbox,
   adapter,
@@ -173,17 +182,31 @@ export async function drainOutbox({
   if (!rows.length) return { exported, failed };
   await adapter.validateHeaders(); // header check before any live write
 
-  const fence = async (row, table, outcome, detail = "") => {
-    if (!attempts) return;
-    await attempts.record({
-      outboxId: row.outbox_id, destination, tab: table, kind: row.kind, outcome, detail,
-    });
+  const ACK_BATCH = 100;
+  let ackQueue = [];
+  const queueAck = (row, table, outcome, detail = "", mark = true) => {
+    ackQueue.push({ row, table, outcome, detail, mark });
   };
-  const fenceQuiet = async (row, table, outcome, detail = "") => {
+  const flushAcks = async () => {
+    if (!ackQueue.length) return;
+    const batch = ackQueue;
+    if (attempts) {
+      const records = batch.map(({ row, table, outcome, detail }) => ({
+        outboxId: row.outbox_id, destination, tab: table, kind: row.kind, outcome, detail,
+      }));
+      if (typeof attempts.recordBatch === "function") await attempts.recordBatch(records);
+      else for (const record of records) await attempts.record(record);
+    }
+    const ids = batch.filter((a) => a.mark).map((a) => a.row.outbox_id);
+    if (ids.length) await outbox.markExported(ids);
+    ackQueue = [];
+    exported += ids.length;
+  };
+  const flushAcksQuiet = async () => {
     try {
-      await fence(row, table, outcome, detail);
+      await flushAcks();
     } catch (err) {
-      log(`outbox ${row.outbox_id}: fence record failed: ${err.message}`);
+      log(`ack flush failed: ${err.message}`);
     }
   };
 
@@ -229,6 +252,9 @@ export async function drainOutbox({
     }
   }
 
+  // Snapshots superseded inside this batch, held until their winner confirms.
+  const pendingSuperseded = new Map();
+
   for (const row of rows) {
     const table = row.kind === "session_upsert" ? "sessions" : row.kind === "event_append" ? "events" : null;
     try {
@@ -241,16 +267,18 @@ export async function drainOutbox({
       const refusedIndex = cells.findIndex((cell) => scanCellText(cell) !== null);
       if (refusedIndex >= 0) {
         failed += 1;
-        await fenceQuiet(row, table, "failed", `credential-shaped cell refused (${headers[refusedIndex]})`);
+        queueAck(row, table, "failed", `credential-shaped cell refused (${headers[refusedIndex]})`, false);
         log(`outbox ${row.outbox_id}: credential-shaped cell refused (${headers[refusedIndex]}); left pending`);
         continue;
       }
 
       if (row.kind === "session_upsert" && latestSessionRow.get(payload.cells[0]) !== row.outbox_id) {
-        const winner = latestSessionRow.get(payload.cells[0]);
-        await fence(row, table, "exported", `superseded in batch by ${winner}; latest snapshot written once`);
-        await outbox.markExported([row.outbox_id]);
-        exported += 1;
+        // Not the batch's latest snapshot for this record: hold it. It is fenced and
+        // marked only when the winning snapshot's write confirms (below); if the
+        // winner is refused or fails, this row stays pending alongside it.
+        const held = pendingSuperseded.get(payload.cells[0]) ?? [];
+        held.push(row);
+        pendingSuperseded.set(payload.cells[0], held);
         continue;
       }
 
@@ -259,9 +287,10 @@ export async function drainOutbox({
       const matches = index.get(payload.cells[0]) ?? [];
       if (matches.length > 1) {
         failed += 1;
-        await fenceQuiet(row, table, "ambiguous",
-          `id ${payload.cells[0]} appears on ${matches.length} rows (${matches.join(", ")}); refusing to write`);
+        queueAck(row, table, "ambiguous",
+          `id ${payload.cells[0]} appears on ${matches.length} rows (${matches.join(", ")}); refusing to write`, false);
         log(`outbox ${row.outbox_id}: duplicate Record ID or Event ID in destination (${matches.join(", ")}); left pending`);
+        await flushAcksQuiet();
         break; // ambiguous destination state needs a human; later rows must not pile onto it
       }
       const existing = matches.length === 1 ? matches[0] : null;
@@ -282,13 +311,20 @@ export async function drainOutbox({
         if (Number.isSafeInteger(rn)) index.set(payload.cells[0], [rn]);
         else stale[table] = true;
       }
-      await fence(row, table, outcome);
-      await outbox.markExported([row.outbox_id]); // only after the write + fence confirm
-      exported += 1;
+      // The write confirmed: release any snapshots this row superseded, then its
+      // own ack. Both land at the next flush; until then neither counts exported.
+      for (const held of pendingSuperseded.get(payload.cells[0]) ?? []) {
+        queueAck(held, "sessions", "exported",
+          `superseded in batch by ${row.outbox_id}; latest snapshot written once`);
+      }
+      pendingSuperseded.delete(payload.cells[0]);
+      queueAck(row, table, outcome);
+      if (ackQueue.length >= ACK_BATCH) await flushAcks();
     } catch (err) {
       failed += 1;
       log(`outbox ${row.outbox_id}: ${err.message}`);
-      if (table !== null) await fenceQuiet(row, table, "failed", err.message);
+      if (table !== null) queueAck(row, table, "failed", err.message, false);
+      await flushAcksQuiet();
       // A deterministic local validation refusal (invalid_row, credential_in_cell) means nothing
       // was sent and a retry can never succeed: skip past the poison row instead of wedging the
       // drain behind it. Anything else may be uncertain or transient, so stop the drain: later
@@ -298,6 +334,18 @@ export async function drainOutbox({
       }
       break; // stop the drain: later snapshots must not overtake an unexported earlier one
     }
+  }
+  try {
+    await flushAcks();
+  } catch (err) {
+    const lost = ackQueue.filter((a) => a.mark).length;
+    log(`ack flush failed: ${err.message}; ${lost} written row(s) left pending for reconcile`);
+    failed += lost;
+    ackQueue = [];
+  }
+  const unreleased = [...pendingSuperseded.values()].reduce((n, held) => n + held.length, 0);
+  if (unreleased) {
+    log(`${unreleased} superseded snapshot(s) left pending: the winning snapshot did not export`);
   }
   return { exported, failed };
 }

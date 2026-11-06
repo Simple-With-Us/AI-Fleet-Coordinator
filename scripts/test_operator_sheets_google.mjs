@@ -447,7 +447,7 @@ const WB_TABLES = {
   sessions: { title: 'Sessions', headers: WB_SESSIONS_HEADERS },
   events: { title: 'Events', headers: EVENT_HEADERS },
 };
-const WB_IDS = { sessions: 20964676, events: 1449318075 };
+const WB_IDS = { sessions: 1000000001, events: 1000000002 }; // synthetic fixture ids
 const WB_SESSION_ROW = ['r1', 'A', 'MM', 'zulip', 'mac', 'native-1', 'Title', '', '', ''];
 
 function fakeWorkbookFetch({ metadataSheets = null } = {}) {

@@ -2178,6 +2178,45 @@ def record_export_attempt(
         conn.close()
 
 
+def record_export_attempts(db_path: str, records: list[dict[str, Any]]) -> list[str]:
+    """Record many fence attempts in one transaction and return their ids (OPS-1037).
+
+    The drain records one attempt per outbox row; batching keeps a multi-thousand-row
+    backfill from paying a process spawn and a connection per row.  Every record is
+    validated before any insert, so a bad record fails the whole batch with nothing
+    written — the caller keeps all of the batch's rows pending and retries cleanly.
+    """
+    prepared = []
+    for record in records:
+        outcome = str(record.get("outcome") or "")
+        if outcome not in EXPORT_OUTCOMES:
+            raise ValueError("outcome must be one of %s" % ", ".join(EXPORT_OUTCOMES))
+        prepared.append(
+            (
+                _ulid(),
+                str(record.get("outbox_id") or ""),
+                str(record.get("destination") or ""),
+                str(record.get("tab") or ""),
+                str(record.get("kind") or ""),
+                outcome,
+                str(record.get("detail") or ""),
+                _utcnow(),
+            )
+        )
+    conn = sqlite3.connect(str(db_path))
+    try:
+        with conn:
+            conn.executemany(
+                "INSERT INTO export_attempts"
+                " (attempt_id, outbox_id, destination, tab, kind, outcome, detail, attempted_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                prepared,
+            )
+        return [p[0] for p in prepared]
+    finally:
+        conn.close()
+
+
 def export_attempts(
     db_path: str, outbox_id: str | None = None, limit: int = 100
 ) -> list[dict[str, Any]]:
@@ -2319,6 +2358,17 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
     ra.add_argument("--kind", required=True)
     ra.add_argument("--outcome", required=True, choices=list(EXPORT_OUTCOMES))
     ra.add_argument("--detail", default="")
+    rb = sub.add_parser(
+        "record-export-attempts",
+        help="record a batch of export attempts in the store-side fence (OPS-1037)",
+    )
+    rb.add_argument("--db", default="", help="the registry file (default: the shared path)")
+    rb.add_argument(
+        "--record",
+        action="append",
+        default=[],
+        help="one JSON object per attempt: outbox_id, destination, tab, kind, outcome, detail",
+    )
     ea = sub.add_parser("export-attempts", help="read the export fence (OPS-1037)")
     ea.add_argument("--db", default="", help="the registry file (default: the shared path)")
     ea.add_argument("--outbox-id", default="")
@@ -2486,6 +2536,36 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
     args = parser.parse_args(argv)
     from . import registry_api
 
+    if args.command in ("record-export-attempt", "record-export-attempts", "export-attempts"):
+        # The export fence is the store's own bookkeeping (OPS-1037):  it is handled
+        # locally, before the registry-API cutover below, because the API carries no
+        # fence ops and the fence's only caller (the Sheets drain) runs on the store's
+        # host against the store file.  Routing these through the API would reject
+        # them as unknown ops and wedge the drain.  The no-registry guard still
+        # applies, so a stray local file is never brought into being for them either.
+        db = getattr(args, "db", "") or default_db(env)
+        if not os.path.isfile(db):
+            print(json.dumps({"error": "no Operator registry on this host"}))
+            return 3
+        if args.command == "record-export-attempt":
+            attempt_id = record_export_attempt(
+                db,
+                args.outbox_id,
+                args.destination,
+                args.tab,
+                args.kind,
+                args.outcome,
+                args.detail,
+            )
+            print(json.dumps({"attempt_id": attempt_id}))
+            return 0
+        if args.command == "record-export-attempts":
+            records = [json.loads(item) for item in args.record]
+            print(json.dumps({"attempt_ids": record_export_attempts(db, records)}))
+            return 0
+        print(json.dumps(export_attempts(db, args.outbox_id or None, args.limit)))
+        return 0
+
     if registry_api.base_url(env):
         # The HTTPS transport is this CLI's cutover, the same rule the MiniMax helper's
         # registry_call follows:  with the registry API URL configured, the server's
@@ -2506,21 +2586,6 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
         return 3
     if args.command == "pending-outbox":
         print(json.dumps(pending_outbox(args.db, args.limit)))
-        return 0
-    if args.command == "record-export-attempt":
-        attempt_id = record_export_attempt(
-            db,
-            args.outbox_id,
-            args.destination,
-            args.tab,
-            args.kind,
-            args.outcome,
-            args.detail,
-        )
-        print(json.dumps({"attempt_id": attempt_id}))
-        return 0
-    if args.command == "export-attempts":
-        print(json.dumps(export_attempts(db, args.outbox_id or None, args.limit)))
         return 0
     if args.command == "resolve":
         try:

@@ -12,6 +12,9 @@
 // docker and node. A systemd timer runs this file every few minutes on the host.
 //
 // Configuration (environment; the systemd unit supplies it via EnvironmentFile):
+//   OPERATOR_SHEETS_WORKBOOK_ID        the target workbook's id (required)
+//   OPERATOR_SHEETS_SESSIONS_SHEET_ID  the Sessions tab's immutable sheet id (required)
+//   OPERATOR_SHEETS_EVENTS_SHEET_ID    the Events tab's immutable sheet id (required)
 //   OPERATOR_SHEETS_SA_FILE   path to the fleet Sheets service-account JSON (0600)
 //   OPERATOR_SHEETS_SA_JSON   the same JSON inline (either one; file wins)
 //   OPERATOR_REGISTRY_CONTAINER  docker container name (default: eavesdropper)
@@ -19,8 +22,9 @@
 //                             (default: /data/operator/registry.sqlite3)
 //   OPERATOR_SHEETS_PAGE_LIMIT  outbox rows per pass (default: 1000)
 //   OPERATOR_SHEETS_LOCK      writer-lease lock file (default: /tmp/operator-sheets-drain.lock)
-// The workbook id and tab ids below are the SWU Operator workbook's identity, not
-// secrets; the exporter's layout guard fails closed if they ever drift.
+// Resource identifiers are deployment configuration, never source constants: the
+// workbook profile resolves from the environment and fails closed when missing,
+// so rotating the workbook is a config change, not a code change.
 
 import { execFile } from "node:child_process";
 import { open, readFile, unlink } from "node:fs/promises";
@@ -34,8 +38,20 @@ import {
 
 const run = promisify(execFile);
 
-export const SPREADSHEET_ID = "18jphqaT8cc5PN1WwbYEtDXDycEcnJ7-G3FhEUJ-VwEc";
-export const SHEET_IDS = { sessions: 20964676, events: 1449318075 };
+export function workbookProfileFromEnv(env) {
+  const spreadsheetId = env.OPERATOR_SHEETS_WORKBOOK_ID;
+  if (typeof spreadsheetId !== "string" || !/^[A-Za-z0-9_-]+$/.test(spreadsheetId)) {
+    throw new Error("OPERATOR_SHEETS_WORKBOOK_ID is required: the target workbook id, from the install config");
+  }
+  const sessions = Number(env.OPERATOR_SHEETS_SESSIONS_SHEET_ID);
+  const events = Number(env.OPERATOR_SHEETS_EVENTS_SHEET_ID);
+  if (!Number.isSafeInteger(sessions) || sessions < 0 ||
+      !Number.isSafeInteger(events) || events < 0 || sessions === events) {
+    throw new Error("OPERATOR_SHEETS_SESSIONS_SHEET_ID and OPERATOR_SHEETS_EVENTS_SHEET_ID must be distinct non-negative integers");
+  }
+  return { spreadsheetId, sheetIds: { sessions, events } };
+}
+
 export const SESSIONS_HEADERS = [
   "Record ID", "Label", "Seat", "Platform", "Host", "Native Session ID",
   "Title", "Project", "Thread Link", "Apple Note Link",
@@ -76,6 +92,18 @@ export function makeRegistryBridge({ container, db }) {
           "--outbox-id", outboxId, "--destination", destination,
           "--tab", TAB_TITLES[tab] ?? tab, "--kind", kind,
           "--outcome", outcome, "--detail", detail ?? ""]);
+      },
+      recordBatch: async (records) => {
+        if (!records.length) return;
+        const args = ["record-export-attempts", "--db", db];
+        for (const r of records) {
+          args.push("--record", JSON.stringify({
+            outbox_id: r.outboxId, destination: r.destination,
+            tab: TAB_TITLES[r.tab] ?? r.tab, kind: r.kind,
+            outcome: r.outcome, detail: r.detail ?? "",
+          }));
+        }
+        await call(args);
       },
     },
   };
@@ -124,9 +152,10 @@ export async function drainOnce({ env = process.env, log = (m) => console.log(m)
     db: env.OPERATOR_REGISTRY_DB || "/data/operator/registry.sqlite3",
   });
   const limit = Number(env.OPERATOR_SHEETS_PAGE_LIMIT || 1000);
+  const profile = workbookProfileFromEnv(env);
   const adapter = new OperatorSheetsGoogle({
-    spreadsheetId: SPREADSHEET_ID,
-    sheetIds: SHEET_IDS,
+    spreadsheetId: profile.spreadsheetId,
+    sheetIds: profile.sheetIds,
     tables: TABLES,
     token: createServiceAccountTokenProvider({
       loadServiceAccount: () => loadServiceAccount(env),
@@ -140,7 +169,7 @@ export async function drainOnce({ env = process.env, log = (m) => console.log(m)
     const res = await drainOutbox({
       outbox: bridge.outbox,
       attempts: bridge.attempts,
-      destination: SPREADSHEET_ID,
+      destination: profile.spreadsheetId,
       layout: LAYOUT,
       adapter,
       limit,
