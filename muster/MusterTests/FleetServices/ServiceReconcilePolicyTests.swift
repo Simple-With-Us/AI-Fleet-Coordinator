@@ -83,15 +83,39 @@ final class ServiceReconcilePolicyTests: XCTestCase {
 
     func testThePoliciesAreNamedInTitleCase() {
         XCTAssertEqual(ServiceReconcilePolicy.allCases.map(\.title),
-                       ["Keep Running", "Start At Login Only", "Leave Alone"])
+                       ["Keep Running", "Start Once Per Launch", "Leave Alone"])
     }
 
     func testARowSaysWhatMusterDoesForItsPolicy() {
         let services = FleetServices(serverState: .running, states: [:])
         let shellular = services.entries.first { $0.id == "shellular" }
-        XCTAssertEqual(shellular?.reconcilePolicyLine, "Keep Running:  Muster starts it again when it stops.")
+        XCTAssertEqual(shellular?.reconcilePolicyLine(), "Keep Running:  Muster starts it again when it stops.")
         let server = services.entries.first { $0.id == "app.botfleet.server" }
-        XCTAssertTrue(server?.reconcilePolicyLine.hasPrefix("Leave Alone:  ") == true)
+        XCTAssertTrue(server?.reconcilePolicyLine().hasPrefix("Leave Alone:  ") == true)
+    }
+
+    func testAStartOncePerLaunchRowDoesNotSayLogin() {
+        let services = FleetServices(serverState: .running, states: [:])
+        let leader = services.entries.first { $0.id == "grok-leader" }
+        XCTAssertEqual(leader?.reconcilePolicyLine(),
+                       "Start Once Per Launch:  Muster starts it once when Muster starts, and never again after that.")
+        for row in ServicePolicyTable.rows {
+            XCTAssertFalse(row.reason.lowercased().contains("login"), row.id)
+        }
+    }
+
+    func testARowDoesNotPromiseAStartWhenKeepServicesRunningIsOff() {
+        let services = FleetServices(serverState: .running, states: [:])
+        let off = "Turned off in Settings, so Muster does not start it."
+        for id in ["shellular", "grok-leader", "clutch-web"] {
+            let line = services.entries.first { $0.id == id }?.reconcilePolicyLine(keepServicesRunning: false)
+            XCTAssertTrue(line?.hasSuffix(off) == true, id)
+            XCTAssertFalse(line?.contains("starts it again") == true, id)
+        }
+        // A Leave Alone row keeps its own reason,  which is true either way.
+        let server = services.entries.first { $0.id == "app.botfleet.server" }
+        XCTAssertEqual(server?.reconcilePolicyLine(keepServicesRunning: false),
+                       server?.reconcilePolicyLine(keepServicesRunning: true))
     }
 
     // MARK: - What it does
@@ -361,6 +385,16 @@ final class ServiceReconcilePolicyTests: XCTestCase {
         XCTAssertEqual(ReconcileNote(.gaveUp(tries: 1)).line, "Muster stopped retrying after 1 try")
     }
 
+    func testAStartedServiceWhoseStateCannotBeSeenIsNotReportedAsRestarted() {
+        let record = ServiceReconcileEngine.recordTry(ReconcileRecord(), policy: .keepRunning,
+                                                      outcome: .started, at: t0)
+        for state in [ManagedServiceState.unknown, .notInstalled, .notInPM2] {
+            let note = ReconcileNote.make(record: record, state: state, config: config)
+            XCTAssertEqual(note?.line, "Muster started it at \(FleetTime.clock(t0)), and its state is not known.", "\(state)")
+            XCTAssertEqual(note?.isProblem, true, "\(state)")
+        }
+    }
+
     func testAStableServiceKeepsTheNoteOfTheLastStartThatWorked() {
         var record = ReconcileRecord()
         record.lastSuccessAt = t0
@@ -376,6 +410,7 @@ final class ServiceReconcilePolicyTests: XCTestCase {
             ReconcileNote(.stoppedAgain(tries: 2, at: t0, next: t0)),
             ReconcileNote(.couldNotStart(reason: "no", at: t0, next: nil)),
             ReconcileNote(.gaveUp(tries: 3)),
+            ReconcileNote(.startedStateNotKnown(at: t0)),
         ]
         for note in notes {
             for line in [note.line, note.shortLine] {

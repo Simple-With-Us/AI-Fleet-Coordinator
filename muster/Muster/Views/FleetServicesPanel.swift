@@ -67,7 +67,7 @@ struct FleetServicesPanel: View {
     /// Says whether Muster starts services again on its own,  and where to turn that off.
     private var reconcilerLine: some View {
         Text(keepServicesRunning
-             ? "Muster starts a service again when its row says Keep Running and it stops, waits longer after each try, and stops trying after 3.\u{00A0} It never stops a service, and it never starts one you stopped.\u{00A0} Turn this off in Settings."
+             ? "Muster starts a service again when its row says Keep Running and it stops, waits longer after each try, and stops trying after 3.\u{00A0} It never stops a service, and it never starts one you stopped from Muster.\u{00A0} Turn this off in Settings."
              : "Muster does not start services on its own, because Keep Services Running is turned off in Settings.")
             .font(.caption)
             .foregroundStyle(.secondary)
@@ -218,7 +218,7 @@ struct FleetServicesPanel: View {
                         .foregroundStyle(entry.reconcileNote?.isProblem == true && !entry.stoppedByOwner ? Color.orange : Color.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                Text(entry.reconcilePolicyLine)
+                Text(entry.reconcilePolicyLine(keepServicesRunning: keepServicesRunning))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

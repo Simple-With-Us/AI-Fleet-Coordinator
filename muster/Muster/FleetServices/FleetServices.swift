@@ -198,9 +198,16 @@ public struct FleetServiceEntry: Equatable {
     public var reconcilePolicy: ServiceReconcilePolicy { ServicePolicyTable.policy(for: id) }
 
     /// The one line that says what Muster does about this service,  for the Services panel.
-    public var reconcilePolicyLine: String {
+    ///
+    /// `keepServicesRunning` is the Settings switch.  When it is off Muster starts nothing,
+    /// so a row must not promise a start.  A Leave Alone row keeps its reason,  which is
+    /// true either way.
+    public func reconcilePolicyLine(keepServicesRunning: Bool = true) -> String {
         switch reconcilePolicy {
         case .keepRunning, .startAtLoginOnly:
+            if !keepServicesRunning {
+                return "\(reconcilePolicy.title):  Turned off in Settings, so Muster does not start it."
+            }
             return "\(reconcilePolicy.title):  \(reconcilePolicy.sentence)"
         case .leaveAlone:
             return "\(reconcilePolicy.title):  \(ServicePolicyTable.reason(for: id))"

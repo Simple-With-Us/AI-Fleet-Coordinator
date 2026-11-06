@@ -14,7 +14,9 @@ import Foundation
 public enum ServiceReconcilePolicy: String, Equatable, CaseIterable {
     /// Start it again whenever it is found stopped or failed,  with a backoff and a cap.
     case keepRunning
-    /// Start it once after Muster comes up (which is at login),  and never again.
+    /// Start it once, at the first look after Muster starts,  and never again until Muster is
+    /// started again.  That is the moment Muster comes up,  which is at login only when the
+    /// owner turned on its login item,  so the policy is not tied to a login.
     case startAtLoginOnly
     /// Never start it.
     case leaveAlone
@@ -23,7 +25,7 @@ public enum ServiceReconcilePolicy: String, Equatable, CaseIterable {
     public var title: String {
         switch self {
         case .keepRunning: return "Keep Running"
-        case .startAtLoginOnly: return "Start At Login Only"
+        case .startAtLoginOnly: return "Start Once Per Launch"
         case .leaveAlone: return "Leave Alone"
         }
     }
@@ -32,7 +34,7 @@ public enum ServiceReconcilePolicy: String, Equatable, CaseIterable {
     public var sentence: String {
         switch self {
         case .keepRunning: return "Muster starts it again when it stops."
-        case .startAtLoginOnly: return "Muster starts it once at login, and never again after that."
+        case .startAtLoginOnly: return "Muster starts it once when Muster starts, and never again after that."
         case .leaveAlone: return "Muster never starts it."
         }
     }
@@ -61,7 +63,7 @@ public struct ServicePolicyRow: Equatable {
 ///
 /// Most services keep running.  Anything whose restart could do harm,  or that is stopped on
 /// purpose today,  is left alone.  A service that stops itself on purpose to avoid a restart
-/// storm is started at login only,  so Muster cannot fight whatever holds its lock or port.
+/// storm is started once per launch,  so Muster cannot fight whatever holds its lock or port.
 public enum ServicePolicyTable {
     private static func row(_ id: String, _ policy: ServiceReconcilePolicy,
                             _ reason: String) -> (String, ServiceReconcilePolicy, String) {
@@ -72,11 +74,11 @@ public enum ServicePolicyTable {
     /// and a test fails when a new service is added without one.
     private static let servicesList: [(String, ServiceReconcilePolicy, String)] = [
         row("botfleet-mcp", .leaveAlone,
-            "It is stopped on purpose with BotFleet Server today, and it has nothing to serve while that server is down."),
+            "It only proxies BotFleet Server, and its pm2 record can be stale, so Muster does not guess and never starts it."),
         row("app.botfleet.server", .leaveAlone,
-            "It is stopped on purpose today, and starting it clears the deliberate-stop marker."),
+            "Starting it clears BotFleet's deliberate-stop marker, so only the owner starts it."),
         row("app.botfleet.companion", .leaveAlone,
-            "It is stopped on purpose today, along with BotFleet Server, which it only serves."),
+            "It only serves BotFleet Server, which Muster leaves alone, so Muster leaves it alone too."),
         row("shellular", .keepRunning,
             "A long-running job in the pm2 ecosystem file, and starting it again is safe."),
         row("code-main-keeper", .keepRunning,
@@ -88,11 +90,11 @@ public enum ServicePolicyTable {
         row("agy-acp", .keepRunning,
             "A long-running bridge in the pm2 ecosystem file, and starting it again is safe."),
         row("grok-leader", .startAtLoginOnly,
-            "It exits on purpose when another leader holds its lock, so Muster starts it once at login and never fights the lock."),
+            "It exits on purpose when another leader holds its lock, so Muster starts it once when Muster starts and never fights the lock."),
         row("grok-acp", .keepRunning,
             "A long-running bridge in the pm2 ecosystem file, and starting it again is safe."),
         row("clutch-web", .startAtLoginOnly,
-            "It exits on purpose when something else holds its port, so Muster starts it once at login and never fights the port."),
+            "It exits on purpose when something else holds its port, so Muster starts it once when Muster starts and never fights the port."),
         row("seat-mcp", .keepRunning,
             "A long-running job in the pm2 ecosystem file, and starting it again is safe."),
     ]
@@ -373,6 +375,8 @@ public struct ReconcileNote: Equatable {
         case couldNotStart(reason: String, at: Date, next: Date?)
         /// Muster stopped trying.
         case gaveUp(tries: Int)
+        /// Muster started it,  and the last look could not say whether it is running.
+        case startedStateNotKnown(at: Date)
     }
 
     public let kind: Kind
@@ -391,6 +395,8 @@ public struct ReconcileNote: Equatable {
             return "Muster could not restart it at \(FleetTime.clock(at)):  \(next == nil ? reason : ended)\(Self.nextText(next))"
         case .gaveUp(let tries):
             return "Muster stopped retrying after \(tries) \(tries == 1 ? "try" : "tries")"
+        case .startedStateNotKnown(let at):
+            return "Muster started it at \(FleetTime.clock(at)), and its state is not known."
         }
     }
 
@@ -405,6 +411,8 @@ public struct ReconcileNote: Equatable {
             return "Muster could not restart it at \(FleetTime.clock(at))"
         case .gaveUp(let tries):
             return "Muster stopped retrying after \(tries) \(tries == 1 ? "try" : "tries")"
+        case .startedStateNotKnown(let at):
+            return "Muster started it at \(FleetTime.clock(at)), state not known"
         }
     }
 
@@ -422,7 +430,7 @@ public struct ReconcileNote: Equatable {
     public var isProblem: Bool {
         switch kind {
         case .restarted: return false
-        case .stoppedAgain, .couldNotStart, .gaveUp: return true
+        case .stoppedAgain, .couldNotStart, .gaveUp, .startedStateNotKnown: return true
         }
     }
 
@@ -451,7 +459,9 @@ public struct ReconcileNote: Equatable {
             if ServiceReconcileEngine.isStartable(state) {
                 return ReconcileNote(.stoppedAgain(tries: record.attempts, at: at, next: next))
             }
-            return ReconcileNote(.restarted(at: at))
+            // Not installed,  not in pm2 or not known:  the start worked,  but nobody can see
+            // the service now,  so the note must not read as a success.
+            return ReconcileNote(.startedStateNotKnown(at: at))
         }
     }
 }
