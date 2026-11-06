@@ -8,9 +8,12 @@ command.  The server alone can invoke its configured routine.  The Mac never rea
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import hashlib
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import time
@@ -421,19 +424,38 @@ class MacBridge:
             self._backup_consult = client
         return client
 
-    def _backup_preflight(self) -> bool:
-        """Binding presence only - no network, no Infisical call, no ledger write, no charge."""
+    def _backup_preflight(self) -> str | None:
+        """None when the backup binding is usable, otherwise why not, naming the binding
+        variables so a misconfigured bridge is diagnosable from the hold log alone.  Presence
+        only - no network, no Infisical call, no ledger write, no charge."""
         try:
-            return self._backup_client().key_reader.binding_ready()
-        except MC.ConsultUnavailable:
-            return False
+            ready = self._backup_client().key_reader.binding_ready()
+        except MC.ConsultUnavailable as exc:
+            return (
+                "backup binding unavailable (MUSE_BRIDGE_MINIMAX_TOKEN_FILE + "
+                "MUSE_BRIDGE_MINIMAX_PROJECT): %s" % exc
+            )
+        except (OSError, sqlite3.Error) as exc:
+            return (
+                "backup binding error (MUSE_BRIDGE_MINIMAX_TOKEN_FILE + "
+                "MUSE_BRIDGE_MINIMAX_PROJECT): %s" % type(exc).__name__
+            )
+        if not ready:
+            return (
+                "backup binding missing or incomplete (MUSE_BRIDGE_MINIMAX_TOKEN_FILE + "
+                "MUSE_BRIDGE_MINIMAX_PROJECT)"
+            )
+        return None
 
-    def _consult_backup(self, item: Mapping[str, Any], prompt: str) -> str | None:
+    def _consult_backup(
+        self, item: Mapping[str, Any], prompt: str
+    ) -> dict[str, Any] | None:
         """One backup consult under the declared known-cap mode.
 
-        Returns the answer text, or None when the attempt was CHARGED with an ambiguous outcome
-        (the caller settles the row as a reviewed hold and never retries).  A failure before any
-        charge raises BridgeBackupPending so the row stays pending and the cursor holds."""
+        Returns the parsed decision object the consult produced, or None when the attempt was
+        CHARGED with an ambiguous outcome (the caller settles the row as a reviewed hold and
+        never retries).  A failure before any charge raises BridgeBackupPending so the row
+        stays pending and the cursor holds."""
         client = self._backup_client()
         request_key = backup_request_key(item)
         schema_prompt = (
@@ -476,8 +498,8 @@ class MacBridge:
         if consult_runtime == BM.MINIMAX:
             # The declared known-cap mode:  the capped primary is never invoked, and the backup
             # answers under the same prompt, the same strict schema and the same validation.
-            text = self._consult_backup(item, prompt)
-            if text is None:
+            parsed = self._consult_backup(item, prompt)
+            if parsed is None:
                 # Charged with an ambiguous outcome - the provider may hold an answer we never
                 # read, so the row is NOT final:  it is retained pending review, never retried
                 # (the decisions row below blocks re-consult, and the ledger refuses the same
@@ -497,7 +519,9 @@ class MacBridge:
                     "request_key": backup_request_key(item),
                     "model_attempted": True,
                 }
-            obj, why = W.validate(A.parse_muse_result(text))
+            # The backup returns the parsed decision object; validate it directly.  Routing
+            # it back through the text parser would discard every backup answer.
+            obj, why = W.validate(parsed)
         else:
             wake_dir = os.path.join(L.listener_dir(self.daemon.root), "muse-bridge-wake")
             L.private_dir(wake_dir)
@@ -711,6 +735,8 @@ class MacBridge:
             now=bridge_clock.time() if bridge_clock is not None else time.time(),
         )
         pending_hold = False
+        backup_checked = False  # flips on the first MINIMAX item this envelope
+        backup_hold: str | None = None
         for item in envelope.get("items", []):
             # A malformed item is skipped and reported, never retried:  raising here would leave
             # the cursor behind, and every later tick would re-export the same bad batch.
@@ -739,14 +765,19 @@ class MacBridge:
                         )
                         self._last_backup_hold = backup_hold_reason
                     continue
-                if consult_runtime == BM.MINIMAX and not self._backup_preflight():
-                    pending_hold = True
-                    if getattr(self, "_last_backup_hold", None) != "backup_unavailable":
-                        self.daemon.log.write(
-                            "muse-bridge-backup-held", seat=seat, reason="backup_unavailable"
-                        )
-                        self._last_backup_hold = "backup_unavailable"
-                    continue
+                if consult_runtime == BM.MINIMAX:
+                    if not backup_checked:
+                        # Once per envelope: the binding does not change between rows.
+                        backup_hold = self._backup_preflight()
+                        backup_checked = True
+                    if backup_hold is not None:
+                        pending_hold = True
+                        if getattr(self, "_last_backup_hold", None) != backup_hold:
+                            self.daemon.log.write(
+                                "muse-bridge-backup-held", seat=seat, reason=backup_hold
+                            )
+                            self._last_backup_hold = backup_hold
+                        continue
                 budget_reason = self._budget_reason(item, envelope.get("budget"), decisions)
                 if budget_reason:
                     decision = {"kind": "hold", "reason": budget_reason}
@@ -787,6 +818,11 @@ class MacBridge:
                         str(item.get("channel") or ""), str(item.get("topic") or "")
                     ),
                 )
+                if decision.get("review") == "pending":
+                    # The cursor advances past a retained row; keep the item payload with it
+                    # so operator resolution finalizes from durable state, never re-export.
+                    decisions[key]["item"] = dict(item)
+                    decisions[key]["remote"] = remote
                 self._save(state)  # persist before any remote or chat delivery
                 decision = decisions[key]  # the stored row keeps the budget fields
             if decision.get("delivery") in ("done", "refused"):
@@ -856,6 +892,12 @@ class MacBridge:
             # The marker clears only when the pin itself matches again;  clearing it on a
             # drift proceed would re-log the same drift on the next tick.
             self._last_pin_drift = None
+        with _state_file_lock(self.path):
+            self._run_once_locked(model=model, binary=binary)
+
+    def _run_once_locked(self, *, model: str, binary: str) -> None:
+        """The state read-modify-write of one tick, run under the bridge ledger lock."""
+        cfg = self.daemon.config
         state = self._state()
         cursors = state.setdefault("cursors", {})
         decisions = state.setdefault("decisions", {})
@@ -900,6 +942,59 @@ class MacBridge:
                     self.daemon.log.write(
                         "muse-bridge-source-error", seat=seat, error=type(exc).__name__
                     )
+        self._finalize_resolved_reviews(state, decisions)
+
+    def _finalize_resolved_reviews(
+        self, state: dict[str, Any], decisions: dict[str, Any]
+    ) -> None:
+        """Deliver retained backup rows the operator has resolved.  The cursor already
+        advanced past a retained row, so resolution reaches it here, from the durable state
+        file - never by re-export and never by re-consult."""
+        for key, decision in list(decisions.items()):
+            if not isinstance(decision, dict):
+                continue
+            if decision.get("review") != "resolved" or decision.get("delivery") in (
+                "done",
+                "refused",
+            ):
+                continue
+            item = decision.get("item")
+            if not isinstance(item, dict) or "source_seat" not in item or "id" not in item:
+                self.daemon.log.write(
+                    "muse-bridge-review-undeliverable",
+                    reason="retained row is missing its item payload",
+                )
+                continue
+            try:
+                self._deliver(item, decision, remote=decision.get("remote") is True)
+            except DeliveryRefused as exc:
+                decisions[key] = dict(
+                    decision, delivery="refused", refused_reason=str(exc)[:200]
+                )
+                self._save(state)
+                continue
+            decisions[key] = dict(decisions[key], delivery="done")
+            self._save(state)
+            self.daemon.log.write(
+                "muse-bridge-review-delivered",
+                seat=item.get("source_seat"),
+                id=item.get("id"),
+            )
+
+
+@contextlib.contextmanager
+def _state_file_lock(path: str):
+    """Exclusive advisory lock around one bridge-state read-modify-write - a whole daemon tick
+    or one operator resolve - so the two never interleave their read/save of the durable
+    ledger.  Acquired once per critical section; never re-entered (flock does not nest on a
+    second descriptor in the same process)."""
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    fd = os.open(path + ".lock", os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
 
 
 def list_pending_reviews(root: str) -> list[dict[str, Any]]:
@@ -936,20 +1031,21 @@ def resolve_pending_review(root: str, seat: str, message_id: int) -> dict[str, A
     the decisions row keeps blocking re-consult, and the spend ledger refuses the same request
     key, so no path from here re-charges the provider."""
     path = os.path.join(L.listener_dir(root), STATE_NAME)
-    row = L.read_json(path)
-    decisions = row.get("decisions") if isinstance(row, dict) else None
-    if not isinstance(decisions, dict):
-        raise ValueError("Mac bridge ledger is unreadable")
-    for key, decision in decisions.items():
-        if (
-            isinstance(decision, dict)
-            and decision.get("review") == "pending"
-            and decision.get("source_seat") == seat
-            and decision.get("id") == message_id
-        ):
-            decisions[key] = dict(decision, review="resolved", resolved_at=time.time())
-            L.write_json(path, row)
-            return {"resolved": key, "seat": seat, "id": message_id}
+    with _state_file_lock(path):
+        row = L.read_json(path)
+        decisions = row.get("decisions") if isinstance(row, dict) else None
+        if not isinstance(decisions, dict):
+            raise ValueError("Mac bridge ledger is unreadable")
+        for key, decision in decisions.items():
+            if (
+                isinstance(decision, dict)
+                and decision.get("review") == "pending"
+                and decision.get("source_seat") == seat
+                and decision.get("id") == message_id
+            ):
+                decisions[key] = dict(decision, review="resolved", resolved_at=time.time())
+                L.write_json(path, row)
+                return {"resolved": key, "seat": seat, "id": message_id}
     raise ValueError("no pending-review row for %s/%s" % (seat, message_id))
 
 

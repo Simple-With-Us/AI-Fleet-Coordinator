@@ -161,6 +161,12 @@ class ChargedDistinctionTests(unittest.TestCase):
   with self.assertRaises(ConsultUnavailable) as ctx:ledger.reserve('not-a-key',self.now)
   self.assertNotIsInstance(ctx.exception,ConsultCharged)
   self.assertEqual(ledger.db.execute('select count(*) from spends').fetchone()[0],0)
+ def test_ledger_write_failure_is_not_charged(self):
+  class BadLedger:
+   def reserve(self,key,now): raise sqlite3.OperationalError('database is locked')
+  op=Opener();runner=MiniMaxConsult(BadLedger(),lambda:'fixture',opener=op,clock=lambda:self.now)
+  with self.assertRaises(ConsultUnavailable) as ctx:runner.run('x',request(1))
+  self.assertNotIsInstance(ctx.exception,ConsultCharged)
 
 class ScopedPathTests(unittest.TestCase):
  def setUp(self):

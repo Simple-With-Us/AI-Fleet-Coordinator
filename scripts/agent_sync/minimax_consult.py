@@ -190,7 +190,13 @@ class MiniMaxConsult:
             method="POST",
         )
         # Durable before HTTP. No ambiguous reservation can be replayed or refunded.
-        self.ledger.reserve(request_key, self.clock())
+        # A ledger that cannot write is a pre-charge failure, not an ambiguous charge.
+        try:
+            self.ledger.reserve(request_key, self.clock())
+        except sqlite3.Error as exc:
+            raise ConsultUnavailable(
+                "spend ledger unavailable before consult; reservation not charged"
+            ) from exc
         try:
             with self.opener.open(request, timeout=60) as response:
                 if response.geturl() != URL or response.status != 200:

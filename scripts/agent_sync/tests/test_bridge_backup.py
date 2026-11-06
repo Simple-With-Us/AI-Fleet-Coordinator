@@ -150,16 +150,19 @@ class BridgeBackupTest(unittest.TestCase):
         self.assertEqual(held["reason"], BM.REVIEW_DUE)
 
     def test_active_mode_without_binding_holds_uncharged(self) -> None:
-        self.bridge._backup_preflight = lambda: False
+        self.bridge._backup_preflight = (
+            lambda: "backup binding missing or incomplete "
+            "(MUSE_BRIDGE_MINIMAX_TOKEN_FILE + MUSE_BRIDGE_MINIMAX_PROJECT)"
+        )
         state = self.run_envelope(self.good())
         self.assertEqual(self.decide_calls, [])
         self.assertEqual(state["decisions"], {})
         self.assertNotIn("ECHO", state["cursors"])
         (held,) = self.events("muse-bridge-backup-held")
-        self.assertEqual(held["reason"], "backup_unavailable")
+        self.assertIn("MUSE_BRIDGE_MINIMAX_TOKEN_FILE", held["reason"])
 
     def test_active_mode_stamps_the_backup_runtime_and_advances(self) -> None:
-        self.bridge._backup_preflight = lambda: True
+        self.bridge._backup_preflight = lambda: None
         state = self.run_envelope(self.good())
         self.assertEqual(self.decide_calls, [BM.MINIMAX])
         self.assertEqual(state["cursors"]["ECHO"], 8)
@@ -168,7 +171,7 @@ class BridgeBackupTest(unittest.TestCase):
         self.assertEqual(row["delivery"], "done")
 
     def test_pre_charge_failure_unwinds_the_claim(self) -> None:
-        self.bridge._backup_preflight = lambda: True
+        self.bridge._backup_preflight = lambda: None
 
         def pending(item, binary, model, consult_runtime):
             raise MBM.BridgeBackupPending("scoped credential binding missing")
@@ -183,7 +186,7 @@ class BridgeBackupTest(unittest.TestCase):
         self.bridge._backup_preflight = lambda: False
         first = self.run_envelope(self.good())
         self.assertEqual(first["decisions"], {})
-        self.bridge._backup_preflight = lambda: True
+        self.bridge._backup_preflight = lambda: None
         self.bridge.daemon.config = _cfg(self.good())
         envelope = {
             "gap": False,
@@ -236,7 +239,7 @@ class ConsultBackupUnitTest(unittest.TestCase):
 
             def run(self, prompt, key):
                 seen.append(key)
-                return '{"action":"none"}'
+                return {"action": "none"}
 
         self.bridge._backup_consult = Capture()
         self.bridge._consult_backup(_item(message_id=42), "prompt")
@@ -247,6 +250,55 @@ class ConsultBackupUnitTest(unittest.TestCase):
         self.bridge._backup_consult = again
         self.bridge._consult_backup(_item(message_id=42), "prompt")
         self.assertEqual(again.calls if hasattr(again, "calls") else seen[2], seen[0])
+
+
+class BackupAnswerShapeTest(unittest.TestCase):
+    """The backup consult returns a parsed decision object; the bridge validates THAT object
+    directly.  A JSON text answer is not the contract and must fail closed as invalid."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.now = time.time()
+        bridge = MBM.MacBridge.__new__(MBM.MacBridge)
+        bridge.daemon = types.SimpleNamespace(
+            root=self.tmp.name,
+            log=types.SimpleNamespace(write=lambda event, **fields: None),
+            clock=types.SimpleNamespace(time=lambda: self.now),
+            env={},
+            home=self.tmp.name,
+            wake_path=self.tmp.name,
+            scrub=lambda text: text,
+            config=_cfg(
+                {
+                    "runtime": "minimax",
+                    "reason": "owner declared the primary capped",
+                    "declared_at": self.now - 60,
+                    "review_by": self.now + 3600,
+                }
+            ),
+        )
+        bridge.path = os.path.join(L.listener_dir(self.tmp.name), MBM.STATE_NAME)
+        bridge._resources = lambda item: []
+        self.bridge = bridge
+
+    def test_parsed_backup_answer_validates_directly(self) -> None:
+        self.bridge._consult_backup = lambda item, prompt: {
+            "action": "none",
+            "board": None,
+            "owner_note": None,
+            "reply": None,
+            "risk": None,
+        }
+        decision = self.bridge._decide_inner(_item(message_id=78), "muse", "m", BM.MINIMAX)
+        self.assertEqual(decision["reason"], "no_target")
+
+    def test_text_backup_answer_is_invalid_not_routed(self) -> None:
+        self.bridge._consult_backup = (
+            lambda item, prompt: '{"action":"none","board":null,"owner_note":null,"reply":null,"risk":null}'
+        )
+        decision = self.bridge._decide_inner(_item(message_id=77), "muse", "m", BM.MINIMAX)
+        self.assertEqual(decision["reason"], "invalid_decision")
 
 
 class ChargedReviewTest(unittest.TestCase):
@@ -307,15 +359,16 @@ class ChargedReviewTest(unittest.TestCase):
             )
         )
         bridge._resources = lambda item: []
-        bridge._backup_preflight = lambda: True
+        bridge._backup_preflight = lambda: None
         consult_calls = self.consult_calls
 
         def fake_consult(item, prompt):
             consult_calls.append(item["id"])
             if item["id"] == 42:  # charged, ambiguous
                 return None
-            # 43: answered, validates (strict shape) to a no_target hold
-            return '{"action":"none","board":null,"owner_note":null,"reply":null,"risk":null,"route":null}'
+            # 43: answered with the parsed decision object (the real consult shape),
+            # validating to a no_target hold
+            return {"action": "none", "board": None, "owner_note": None, "reply": None, "risk": None}
 
         bridge._consult_backup = fake_consult
         return bridge
@@ -330,6 +383,31 @@ class ChargedReviewTest(unittest.TestCase):
             "items": [_item(seq=7, message_id=42), _item(seq=8, message_id=43)],
             "budget": dict(C.BUDGET_DEFAULTS),
         }
+
+    def test_preflight_runs_once_per_envelope(self) -> None:
+        calls: list = []
+        self.bridge._backup_preflight = lambda: calls.append(1) or None
+        state: dict = {"cursors": {}, "decisions": {}}
+        self.bridge._process_envelope(
+            state, state["cursors"], state["decisions"], "ECHO", self._envelope(),
+            remote=True, binary="muse", model="m",
+        )
+        self.assertEqual(len(calls), 1)  # two rows, one binding check
+
+    def test_missing_binding_holds_with_a_named_reason(self) -> None:
+        self.bridge._backup_preflight = (
+            lambda: "backup binding missing or incomplete "
+            "(MUSE_BRIDGE_MINIMAX_TOKEN_FILE + MUSE_BRIDGE_MINIMAX_PROJECT)"
+        )
+        state: dict = {"cursors": {}, "decisions": {}}
+        self.bridge._process_envelope(
+            state, state["cursors"], state["decisions"], "ECHO", self._envelope(),
+            remote=True, binary="muse", model="m",
+        )
+        self.assertEqual(state["decisions"], {})  # nothing claimed, nothing charged
+        self.assertNotIn("ECHO", state["cursors"])  # cursor held behind the held rows
+        (hold,) = self.events("muse-bridge-backup-held")
+        self.assertIn("MUSE_BRIDGE_MINIMAX_TOKEN_FILE", hold["reason"])
 
     def test_charged_row_pending_review_independent_row_unaffected(self) -> None:
         state: dict = {"cursors": {}, "decisions": {}}
@@ -444,7 +522,7 @@ class ReviewLocatorTest(unittest.TestCase):
             or {"receipt": "r1"}
         )
         bridge._resources = lambda item: []
-        bridge._backup_preflight = lambda: True
+        bridge._backup_preflight = lambda: None
         consult_calls = self.consult_calls
 
         def fake_consult(item, prompt):
@@ -504,6 +582,45 @@ class ReviewLocatorTest(unittest.TestCase):
         (row,) = readback["decisions"].values()
         self.assertEqual(row["review"], "resolved")
         self.assertEqual(row["delivery"], "done")
+
+    def test_resolve_finalizes_from_state_without_reexport(self) -> None:
+        self._run_one()
+        key = MBM.MacBridge._key(_item(message_id=42))
+        row = self.bridge._state()["decisions"][key]
+        # The retained row carries the item payload: the cursor has passed it, so resolution
+        # must reach it from durable state, never from a re-export.
+        self.assertEqual(row["item"]["id"], 42)
+        self.assertIs(row["remote"], True)
+        MBM.resolve_pending_review(self.root, "ECHO", 42)
+        restarted = self._new_bridge()
+        state = restarted._state()
+        self.consult_calls.clear()
+        restarted._finalize_resolved_reviews(state, state["decisions"])
+        self.assertEqual(self.consult_calls, [])  # never re-consulted
+        self.assertEqual([body["id"] for body in self.submits], [42])
+        self.assertEqual(state["decisions"][key]["delivery"], "done")
+        # Idempotent: a later pass over the same state does not deliver twice.
+        self.submits.clear()
+        restarted._finalize_resolved_reviews(state, state["decisions"])
+        self.assertEqual(self.submits, [])
+
+    def test_resolve_waits_for_the_tick_lock(self) -> None:
+        import threading
+
+        self._run_one()
+        outcome: dict = {}
+        with MBM._state_file_lock(self.bridge.path):
+            worker = threading.Thread(
+                target=lambda: outcome.setdefault(
+                    "result", MBM.resolve_pending_review(self.root, "ECHO", 42)
+                )
+            )
+            worker.start()
+            worker.join(0.5)
+            self.assertTrue(worker.is_alive())  # blocked behind the tick's lock
+        worker.join(5)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(outcome["result"]["id"], 42)
 
     def test_resolve_unknown_row_refuses(self) -> None:
         with self.assertRaises(ValueError):
