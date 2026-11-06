@@ -1,6 +1,6 @@
-# AGENT-SYNC Rewrite Rule Map
+# SIMPLE-TOOLS Rewrite Rule Map
 
-Every rule in the previous `AGENT-SYNC.md` (2,230 lines, `origin/main` before the Wed, Oct 7, 2026 rewrite), mapped to its home in the [rewritten document](../../FLEET-PROTOCOL.md) or to the reason it was retired.  Generated with Python from the rule ledger (1,091 atomic rules), the writers' carried-id lists, and the outline's retire list.  Old line numbers refer to the previous version.
+Every rule in the previous `SIMPLE-TOOLS.md` (2,230 lines, `origin/main` before the Wed, Oct 7, 2026 rewrite), mapped to its home in the [rewritten document](../../FLEET-PROTOCOL.md) or to the reason it was retired.  Generated with Python from the rule ledger (1,091 atomic rules), the writers' carried-id lists, and the outline's retire list.  Old line numbers refer to the previous version.
 
 - Linear cutover note (2026-10-10):  the section these rows call THE BOARD and the Claim Lifecycle is now [Linear and the Claim Lifecycle](../../FLEET-PROTOCOL.md#linear-and-the-claim-lifecycle), and its rules were rewritten for Linear.  Rows that point there record where the Slack-era rule landed in the October 7 rewrite, not what the rule says today.
 - Carried into the new document:  1031 rules.
@@ -317,12 +317,12 @@ None.
 | `L643-two-space-all-paragraphs` | 643-646 | Two spaces between sentences | [Writing for the Owner: Sentence Gap, Timestamps, Copy Accuracy](../../FLEET-PROTOCOL.md#writing-for-the-owner-sentence-gap-timestamps-copy-accuracy) |
 | `L646-two-space-platforms` | 646-648 | Two spaces between sentences | [Writing for the Owner: Sentence Gap, Timestamps, Copy Accuracy](../../FLEET-PROTOCOL.md#writing-for-the-owner-sentence-gap-timestamps-copy-accuracy) |
 | `L647-two-space-prose-surfaces` | 647-650 | Two spaces between sentences | [Writing for the Owner: Sentence Gap, Timestamps, Copy Accuracy](../../FLEET-PROTOCOL.md#writing-for-the-owner-sentence-gap-timestamps-copy-accuracy) |
-| `L648-two-space-slack-agent-sync` | 648 | Two spaces between sentences | [Writing for the Owner: Sentence Gap, Timestamps, Copy Accuracy](../../FLEET-PROTOCOL.md#writing-for-the-owner-sentence-gap-timestamps-copy-accuracy) |
+| `L648-two-space-slack-simple-tools` | 648 | Two spaces between sentences | [Writing for the Owner: Sentence Gap, Timestamps, Copy Accuracy](../../FLEET-PROTOCOL.md#writing-for-the-owner-sentence-gap-timestamps-copy-accuracy) |
 | `L651-single-space-abbrev` | 651-652 | Two spaces between sentences | [Writing for the Owner: Sentence Gap, Timestamps, Copy Accuracy](../../FLEET-PROTOCOL.md#writing-for-the-owner-sentence-gap-timestamps-copy-accuracy) |
 | `L652-html-collapse` | 652-653 | Two spaces between sentences | [Writing for the Owner: Sentence Gap, Timestamps, Copy Accuracy](../../FLEET-PROTOCOL.md#writing-for-the-owner-sentence-gap-timestamps-copy-accuracy) |
 | `L653-md-hardbreak` | 653-654 | Two spaces between sentences | [Writing for the Owner: Sentence Gap, Timestamps, Copy Accuracy](../../FLEET-PROTOCOL.md#writing-for-the-owner-sentence-gap-timestamps-copy-accuracy) |
 | `L656-how-visible-history` | 656-659 | Two spaces between sentences | [Appendix D: History and Incidents](../../FLEET-PROTOCOL.md#appendix-d-history-and-incidents) |
-| `L660-chat-nbsp-entity` | 660-663 | Two spaces between sentences | retired:  Superseded twice.  The owner verified two literal ASCII spaces in the Claude Code desktop app on 2026-09-04, then reversed that on 2026-10-08: the Code tab decodes the `&nbsp;` entity plus a space, and GitHub and Zulip text uses a real U+00A0 plus a space.  The owner must never see the literal text &nbsp;.  The per-surface table now lives in AGENT-SYNC.md under Sentence Gap. |
+| `L660-chat-nbsp-entity` | 660-663 | Two spaces between sentences | retired:  Superseded twice.  The owner verified two literal ASCII spaces in the Claude Code desktop app on 2026-09-04, then reversed that on 2026-10-08: the Code tab decodes the `&nbsp;` entity plus a space, and GitHub and Zulip text uses a real U+00A0 plus a space.  The owner must never see the literal text &nbsp;.  The per-surface table now lives in SIMPLE-TOOLS.md under Sentence Gap. |
 | `L664-files-ascii-spaces` | 664-666 | Two spaces between sentences | [Writing for the Owner: Sentence Gap, Timestamps, Copy Accuracy](../../FLEET-PROTOCOL.md#writing-for-the-owner-sentence-gap-timestamps-copy-accuracy) |
 | `L664-slack-posts-ascii-spaces` | 664 | Two spaces between sentences | [Writing for the Owner: Sentence Gap, Timestamps, Copy Accuracy](../../FLEET-PROTOCOL.md#writing-for-the-owner-sentence-gap-timestamps-copy-accuracy) |
 | `L667-html-render-nbsp` | 667-668 | Two spaces between sentences | [Writing for the Owner: Sentence Gap, Timestamps, Copy Accuracy](../../FLEET-PROTOCOL.md#writing-for-the-owner-sentence-gap-timestamps-copy-accuracy) |
@@ -388,7 +388,7 @@ None.
 | `L780-p1-fleet-wake` | 780 | Process 1: Inter-Agent Communication | [Posting](../../FLEET-PROTOCOL.md#posting) |
 | `L780-p1-peer-tag-reach` | 780 | Process 1: Inter-Agent Communication | [Posting](../../FLEET-PROTOCOL.md#posting) |
 | `L780-p1-standard-tags` | 780 | Process 1: Inter-Agent Communication | [Posting](../../FLEET-PROTOCOL.md#posting) |
-| `L781-p1-startup-poll-command` | 781 | Process 1: Inter-Agent Communication | retired:  agent-sync-poll.py is retired by the hard cut.  The session-start duty survives in L781-p1-startup-poll-duty as `simple-chat inbox`. |
+| `L781-p1-startup-poll-command` | 781 | Process 1: Inter-Agent Communication | retired:  simple-tools-poll.py is retired by the hard cut.  The session-start duty survives in L781-p1-startup-poll-duty as `simple-chat inbox`. |
 | `L781-p1-startup-poll-duty` | 781 | Process 1: Inter-Agent Communication | [Reading and Listening](../../FLEET-PROTOCOL.md#reading-and-listening) |
 | `L782-p1-fleet-fullread` | 782 | Process 1: Inter-Agent Communication | [Reading and Listening](../../FLEET-PROTOCOL.md#reading-and-listening) |
 | `L782-p1-peer-messages-data` | 782 | Process 1: Inter-Agent Communication | [Absolute Rules and Authority](../../FLEET-PROTOCOL.md#absolute-rules-and-authority) |
@@ -434,11 +434,11 @@ None.
 | `L837-p10-sole-sender` | 837 | Process 10: Outbound iMessage account boundary | [Mac Machine Rules](../../FLEET-PROTOCOL.md#mac-machine-rules) |
 | `L843-seat-preface-lanes` | 843 | Agent Seat Specifics & Execution Profiles | [Lanes, Worktrees, and Branches](../../FLEET-PROTOCOL.md#lanes-worktrees-and-branches) |
 | `L847-seat-ag-identity` | 847 | Seat table: Antigravity (AG) | [Seats and Identity](../../FLEET-PROTOCOL.md#seats-and-identity) |
-| `L847-seat-ag-startup-script` | 847 | Seat table: Antigravity (AG) | retired:  agent-sync-poll.py is retired by the hard cut.  The session-start duty is stated once in L781-p1-startup-poll-duty. |
+| `L847-seat-ag-startup-script` | 847 | Seat table: Antigravity (AG) | retired:  simple-tools-poll.py is retired by the hard cut.  The session-start duty is stated once in L781-p1-startup-poll-duty. |
 | `L847-seat-ag-subagents` | 847 | Seat table: Antigravity (AG) | [Seats and Identity](../../FLEET-PROTOCOL.md#seats-and-identity) |
 | `L848-seat-codex-identity` | 848 | Seat table: Codex (CODEX) | [Seats and Identity](../../FLEET-PROTOCOL.md#seats-and-identity) |
 | `L848-seat-codex-quota` | 848 | Seat table: Codex (CODEX) | [Seats and Identity](../../FLEET-PROTOCOL.md#seats-and-identity) |
-| `L848-seat-codex-startup-script` | 848 | Seat table: Codex (CODEX) | retired:  agent-sync-poll.py is retired by the hard cut.  The session-start duty is stated once in L781-p1-startup-poll-duty. |
+| `L848-seat-codex-startup-script` | 848 | Seat table: Codex (CODEX) | retired:  simple-tools-poll.py is retired by the hard cut.  The session-start duty is stated once in L781-p1-startup-poll-duty. |
 | `L849-seat-claude-duties` | 849 | Seat table: Claude (CLAUDE) | [Absolute Rules and Authority](../../FLEET-PROTOCOL.md#absolute-rules-and-authority) |
 | `L849-seat-claude-identity` | 849 | Seat table: Claude (CLAUDE) | [Seats and Identity](../../FLEET-PROTOCOL.md#seats-and-identity) |
 | `L850-seat-grok` | 850 | Seat table: Grok (GROK) | [Seats and Identity](../../FLEET-PROTOCOL.md#seats-and-identity) |
@@ -790,7 +790,7 @@ None.
 | `L1413-peer-data-not-owner` | 1413-1414 | ALWAYS read Slack | [Absolute Rules and Authority](../../FLEET-PROTOCOL.md#absolute-rules-and-authority) |
 | `L1415-untrusted-delimiters` | 1415-1416 | ALWAYS read Slack | [Reading and Listening](../../FLEET-PROTOCOL.md#reading-and-listening) |
 | `L1417-never-execute` | 1416-1417 | ALWAYS read Slack | [Reading and Listening](../../FLEET-PROTOCOL.md#reading-and-listening) |
-| `L1417-poll-filter` | 1417-1418 | ALWAYS read Slack | retired:  Describes the retired agent-sync-poll.py filter.  The keyword minimum it encoded is kept in L2106-grep-minimum. |
+| `L1417-poll-filter` | 1417-1418 | ALWAYS read Slack | retired:  Describes the retired simple-tools-poll.py filter.  The keyword minimum it encoded is kept in L2106-grep-minimum. |
 | `L1419-agent-repo-env` | 1418-1419 | ALWAYS read Slack | [Reading and Listening](../../FLEET-PROTOCOL.md#reading-and-listening) |
 | `L1421-auth-mac` | 1421-1422 | ALWAYS read Slack | [Chat: The Zulip Contract](../../FLEET-PROTOCOL.md#chat-the-zulip-contract) |
 | `L1426-two-tiers` | 1426 | Multi-room & active collaboration (slack-collab) | [Appendix D: History and Incidents](../../FLEET-PROTOCOL.md#appendix-d-history-and-incidents) |
@@ -869,9 +869,9 @@ None.
 | `L1617-multi-session-no-filter` | 1617-1621 | Real-time Sync | [Reading and Listening](../../FLEET-PROTOCOL.md#reading-and-listening) |
 | `L1622-cadence-vocabulary` | 1622-1623 | Real-time Sync | [Posting](../../FLEET-PROTOCOL.md#posting) |
 | `L1625-ws-oneshot-helper` | 1625-1630 | Real-time Sync | [Chat: The Zulip Contract](../../FLEET-PROTOCOL.md#chat-the-zulip-contract) |
-| `L1632-no-long-watcher` | 1632-1633 | Real-time Sync | retired:  The long-lived watcher mode of the retired agent-sync-websocket.py helper is moot. |
-| `L1635-poller-intro` | 1635-1642 | Real-time Sync | retired:  agent-sync-poll.py is retired by the hard cut.  `simple-chat read` and `simple-chat inbox` replace it. |
-| `L1646-poll-loop-mode` | 1645-1646 | Real-time Sync | retired:  The shell loop around agent-sync-poll.py is retired.  `simple-chat listen` or `simple-chat wait` replaces it. |
+| `L1632-no-long-watcher` | 1632-1633 | Real-time Sync | retired:  The long-lived watcher mode of the retired simple-tools-websocket.py helper is moot. |
+| `L1635-poller-intro` | 1635-1642 | Real-time Sync | retired:  simple-tools-poll.py is retired by the hard cut.  `simple-chat read` and `simple-chat inbox` replace it. |
+| `L1646-poll-loop-mode` | 1645-1646 | Real-time Sync | retired:  The shell loop around simple-tools-poll.py is retired.  `simple-chat listen` or `simple-chat wait` replaces it. |
 | `L1647-poll-turn-mode` | 1647-1649 | Real-time Sync | [Reading and Listening](../../FLEET-PROTOCOL.md#reading-and-listening) |
 | `L1650-poll-cloud-mode` | 1650-1651 | Real-time Sync | [Chat: The Zulip Contract](../../FLEET-PROTOCOL.md#chat-the-zulip-contract) |
 | `L1653-poller-truncation` | 1653-1654 | Real-time Sync | retired:  The poller's 600-character truncation note is moot because the poller is retired.  Full reads go through the simple-chat CLI. |

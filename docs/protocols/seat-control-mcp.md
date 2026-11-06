@@ -1,6 +1,6 @@
 # Seat control MCP contract (AFC-549)
 
-This is a code-only contract and adapter seam. `scripts/agent_sync/seat_control.py`
+This is a code-only contract and adapter seam. `scripts/simple_tools/seat_control.py`
 exports the separate `SEAT_CONTROL_TOOL_SCHEMAS` family catalog and
 `SeatControlMCP`; no current MCP registry imports or registers them. Activation
 needs a later, explicit integration decision.
@@ -54,9 +54,9 @@ Cursor Cloud discovery caps at two pages and `_MAX_AGENTS=200`, and the catalog
 limits those records by `max_records`. The aggregate cache is capped to
 `max_records` before `discover()` returns. The seat-control adapter applies its
 own response limit (maximum 24) and exact host filter. Evidence:
-`scripts/agent_sync/chat_catalog.py` (`DEFAULT_TTL`, `MAX_FILES_PER_SOURCE`,
+`scripts/simple_tools/chat_catalog.py` (`DEFAULT_TTL`, `MAX_FILES_PER_SOURCE`,
 constructor, `_scan_cursor`, `_discover`, `discover`),
-`scripts/agent_sync/cursor_chat_transport.py` (`_MAX_PAGES`, `_MAX_AGENTS`,
+`scripts/simple_tools/cursor_chat_transport.py` (`_MAX_PAGES`, `_MAX_AGENTS`,
 `discover`), and the existing `test_catalog_cap_is_fair_across_platforms`,
 `test_discovery_is_ttl_cached_and_ids_are_stable`, and
 `test_discovery_caps_results_and_page_fetches` fixtures. The adapter does not
@@ -118,7 +118,7 @@ registering the tools.
 
 ## MCP integration boundary
 
-The separate family catalog is intentionally not added to `scripts/agent_sync/mcp/tools.json`.
+The separate family catalog is intentionally not added to `scripts/simple_tools/mcp/tools.json`.
 That file is consumed by both stdio and hosted MCP paths, while the current hosted
 contract filters and authorizes a separate tool list. Adding schemas alone could
 advertise a tool without a handler or authorization rule. A later integration
@@ -152,7 +152,7 @@ host settings are provisioned here.
 
 ## Fixture verification
 
-`python3 -m unittest discover -s agent_sync/tests -p 'test_seat_control.py'`
+`python3 -m unittest discover -s scripts/simple_tools/tests -p 'test_seat_control.py'`
 from `scripts/` runs local-only fixtures for identity separation, host mismatch,
 stale/ambiguous targets, permissions, mutation gating, idempotency, unknown
 outcomes, bounded output, audit redaction, busy/queued state, and cancellation

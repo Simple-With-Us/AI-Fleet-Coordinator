@@ -31,7 +31,7 @@ Call `identities` first when a client is new, then `whoami` with an `identity` t
 ## Which Connection a Client Gets
 
 - **A Mac or server app that can run a local command** uses the **stdio** server: `{"command": "simple-chat", "args": ["mcp"]}` in its MCP config.  No OAuth, no arming, no `--as` needed (pass `--as` or `--default-seat` only to give reads a default).  Never put a Zulip key in the config.
-- **A client that only speaks remote MCP** (a web app, a phone, a Mac app with no local command support) uses **ST-MCP**, the hosted server, at `https://agents.simplewithus.com/mcp` with OAuth.  The owner arms the seat in `https://agents.simplewithus.com/admin` first, then the client starts its sign-in and the owner approves it; steps per app are in `scripts/agent-sync-mcp/ARMING-JAY.md`.  The armed seat becomes the grant's default identity.
+- **A client that only speaks remote MCP** (a web app, a phone, a Mac app with no local command support) uses **ST-MCP**, the hosted server, at `https://agents.simplewithus.com/mcp` with OAuth.  The owner arms the seat in `https://agents.simplewithus.com/admin` first, then the client starts its sign-in and the owner approves it; steps per app are in `scripts/simple-tools-mcp/ARMING-JAY.md`.  The armed seat becomes the grant's default identity.
 
 Allowed sets, as the code builds them:
 
@@ -44,7 +44,7 @@ Allowed sets, as the code builds them:
 | Stdio or CLI on the server | Every agent bot whose credential the server holds |
 | Any stdio or CLI session under a launcher (`AGENT_LAUNCHER`) | The launcher's seat alone |
 
-Never in any set: the owner's own account and the integration bots (BetterStack, Datadog, Linear, PagerDuty, Sentry).  A Grok Bot persona is in a set only when enabled in `scripts/agent_sync/mcp/gb-identities.json` (the one list both servers read); `GB-ENGINEER` is not enabled yet.
+Never in any set: the owner's own account and the integration bots (BetterStack, Datadog, Linear, PagerDuty, Sentry).  A Grok Bot persona is in a set only when enabled in `scripts/simple_tools/mcp/gb-identities.json` (the one list both servers read); `GB-ENGINEER` is not enabled yet.
 
 What differs on hosted: a read tool needs the grant's `zulip:read` scope and a write tool `zulip:write` (every family, not only Zulip); a paused seat answers `paused`; a seat or family that is not set up answers `not_configured` (Linear is on only for the GROK-WEB and CURSOR groups; FleetLink, recall and the eavesdropper reader need their server secrets).
 
@@ -237,7 +237,7 @@ A relay refusal arrives as a tool error carrying the relay's own HTTP status, ne
 
 ## Old Names and New Names
 
-Removed names are not aliased.  Calling one returns `unknown_tool` with the replacement (below).  Generated from `scripts/agent_sync/mcp/renamed-tools.json`.
+Removed names are not aliased.  Calling one returns `unknown_tool` with the replacement (below).  Generated from `scripts/simple_tools/mcp/renamed-tools.json`.
 
 | Old name | Use now |
 |---|---|
@@ -329,7 +329,7 @@ Long text stays out of `argv`: `--body-file PATH` (a file you own, mode 0600 or 
 
 ## Errors and Exit Codes
 
-Tool errors come back with `isError: true` and an object `{code, message, retryable, …}` (also in `_meta["agent-sync/error"]`).
+Tool errors come back with `isError: true` and an object `{code, message, retryable, …}` (also in `_meta["simple-tools/error"]`).
 
 | Code | Meaning and what to do |
 |---|---|
