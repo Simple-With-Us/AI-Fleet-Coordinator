@@ -544,8 +544,7 @@ def _continue_for_mentions(
         wanted = [
             i
             for i in fresh
-            if "eligible" in (i.get("classes") or [])
-            and "no_wake" not in (i.get("classes") or [])
+            if "eligible" in (i.get("classes") or []) and "no_wake" not in (i.get("classes") or [])
         ]
         if wanted and len(recent) < L.STOP_CONTINUE_PER_HOUR:
             # Only a continuation moves the cursor:  a row left behind (an ineligible sender, or the
