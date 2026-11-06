@@ -50,15 +50,17 @@ struct FleetServicesPanel: View {
 
     private var header: some View {
         HStack {
-            Text("Services \(FleetHost.mac.onTitle)")
+            // The sidebar's name,  under the strip that says On The Mac.
+            Text(MusterDestination.services.title)
                 .font(.largeTitle.weight(.semibold))
             Spacer()
             Button {
                 Task { await admin.refresh() }
             } label: {
-                Label("Refresh", systemImage: "arrow.clockwise")
+                Label("Check The Mac's Services", systemImage: "arrow.clockwise")
             }
             .disabled(admin.reading)
+            .help("Asks pm2, launchd and BotFleet on the Mac for each service's state.")
         }
     }
 
@@ -207,8 +209,17 @@ struct FleetServicesPanel: View {
         return HStack(alignment: .firstTextBaseline, spacing: 12) {
             ServiceStateBadge(marker: entry.marker)
             VStack(alignment: .leading, spacing: 2) {
-                Text(entry.title)
-                    .font(.body.weight(.medium))
+                HStack(spacing: 6) {
+                    Text(entry.title)
+                        .font(.body.weight(.medium))
+                    // How the Mac runs it,  in words.
+                    Text(Self.runnerWord(entry.kind))
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(Color.secondary.opacity(0.12), in: Capsule())
+                }
                 Text(entry.summary)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -251,6 +262,14 @@ struct FleetServicesPanel: View {
         .padding(.horizontal, 10)
         .background(Color.secondary.opacity(0.05))
         .cornerRadius(8)
+    }
+
+    /// What runs a service on the Mac.
+    private static func runnerWord(_ kind: FleetServiceKind) -> String {
+        switch kind {
+        case .pm2: return "pm2"
+        case .launchAgent: return "LaunchAgent"
+        }
     }
 
     /// Why a row shows fewer buttons than its state offers,  or nil when it shows them all.

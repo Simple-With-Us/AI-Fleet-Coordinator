@@ -63,7 +63,7 @@ struct FleetHostsView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("Fleet Hosts")
+                Text(MusterDestination.hosts.title)
                     .font(.largeTitle.weight(.semibold))
                 Spacer()
                 Button {
@@ -341,9 +341,10 @@ struct FleetHostsView: View {
                         .foregroundStyle(bundle == "ok" ? Color.secondary : Color.red)
                 }
             }
-            Text("The Worker's Linear token for each hosted seat, from its signed health route.")
+            Text("The Worker's Linear token for each hosted seat, from its signed health route.\u{00A0} The Worker runs hosted, on neither machine, and the Mac checks it every fifteen minutes.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             if let problem = health.problem {
                 problemBox(problem)
             } else if !health.isCurrent {

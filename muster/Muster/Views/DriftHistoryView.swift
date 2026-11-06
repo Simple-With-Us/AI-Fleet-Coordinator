@@ -39,7 +39,7 @@ struct DriftHistoryView: View {
     private var header: some View {
         HStack(alignment: .firstTextBaseline) {
             VStack(alignment: .leading, spacing: 6) {
-                Text("Drift History")
+                Text(MusterDestination.driftHistory.title)
                     .font(.largeTitle.weight(.semibold))
                 Text("Every cell that turned red,  newest first.")
                     .font(.callout)

@@ -1558,6 +1558,9 @@ struct OpsAllowlist: Equatable {
     struct Entry: Equatable {
         let name: String
         let actions: [String]
+        /// The scope a server unit is run in,  `user` or `system`,  when the allowlist says.
+        /// The helper acts on a unit in this scope only,  whatever a row says.
+        var scope: String? = nil
     }
 
     struct Update: Equatable, Identifiable {
@@ -1567,6 +1570,9 @@ struct OpsAllowlist: Equatable {
 
         var id: String { name }
     }
+
+    /// The two scopes a server unit can run in.
+    static let serverScopes: Set<String> = ["user", "system"]
 
     var macAgents: [Entry] = []
     var pm2Apps: [Entry] = []
@@ -1589,6 +1595,12 @@ struct OpsAllowlist: Equatable {
         verbs(in: serverUnits, named: unit)
     }
 
+    /// The scope the allowlist runs a unit in,  or nil when it does not name the unit or
+    /// gives no scope.
+    func scope(forServerUnit unit: String) -> String? {
+        serverUnits.first(where: { $0.name == unit })?.scope
+    }
+
     private func verbs(in entries: [Entry], named name: String) -> [OpsVerb] {
         guard let entry = entries.first(where: { $0.name == name }) else { return [] }
         return OpsVerb.allCases.filter { entry.actions.contains($0.rawValue) }
@@ -1605,39 +1617,114 @@ struct OpsAllowlist: Equatable {
         return parse(data)
     }
 
-    /// Parse the allowlist.  A version this app does not know is not read:  the buttons
+    /// Parse the allowlist.  A version this app does not know is not read:  the buttons
     /// it would draw could name verbs that mean something else.
+    ///
+    /// The server refuses the whole file when any entry is malformed, so that a typo can
+    /// never widen what is allowed (`validate_config` in fleet-ops-control.py).  This read
+    /// refuses it for the same structural faults, and returns nil:  buttons drawn from a
+    /// file the server will not accept would only ever fail, and a value the file never
+    /// gave is never filled in.  The faults are a list that is not a list of objects, a
+    /// LaunchAgent without a string label, a pm2 application without a string name, a unit
+    /// without a string name or with a scope other than `user` or `system`, an update
+    /// without a string name, a string unit ending in `.service` and a scope of those two,
+    /// actions that are empty, not a list, or not `start`, `stop` and `restart`, a `mac`,
+    /// `server` or `server.coolify` given as something other than an object, and a
+    /// `server.coolify.redeploy` or `server.resourcePolicy` given as something other than a
+    /// boolean.  The
+    /// server's name patterns and its refusal of a name used twice are not repeated here,
+    /// and the server still checks every run against its own copy.
     static func parse(_ data: Data) -> OpsAllowlist? {
         guard
             let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
             (object["schemaVersion"] as? NSNumber)?.intValue == 1
         else { return nil }
         var list = OpsAllowlist()
-        let mac = object["mac"] as? [String: Any]
-        let server = object["server"] as? [String: Any]
-        for item in (mac?["agents"] as? [[String: Any]]) ?? [] {
-            guard let label = item["label"] as? String else { continue }
-            list.macAgents.append(Entry(name: label, actions: (item["actions"] as? [String]) ?? []))
+        // The server reads an absent or empty value as an empty section (`or {}`), and
+        // refuses any other value that is not an object.
+        guard
+            let mac = section(object["mac"]),
+            let server = section(object["server"]),
+            let coolify = section(server["coolify"])
+        else { return nil }
+        // `redeploy` and `resourcePolicy`, when present, must be JSON booleans:  the server
+        // refuses a string such as "true", a number and a null alike.
+        if let redeploy = coolify["redeploy"], !isJSONBool(redeploy) { return nil }
+        if let policy = server["resourcePolicy"], !isJSONBool(policy) { return nil }
+        guard
+            let agents = rows(mac["agents"]),
+            let pm2 = rows(mac["pm2Apps"]),
+            let units = rows(server["units"]),
+            let updates = rows(server["updates"])
+        else { return nil }
+        for item in agents {
+            guard let label = item["label"] as? String, let actions = verbWords(item) else { return nil }
+            list.macAgents.append(Entry(name: label, actions: actions))
         }
-        for item in (mac?["pm2Apps"] as? [[String: Any]]) ?? [] {
-            guard let name = item["name"] as? String else { continue }
-            list.pm2Apps.append(Entry(name: name, actions: (item["actions"] as? [String]) ?? []))
+        for item in pm2 {
+            guard let name = item["name"] as? String, let actions = verbWords(item) else { return nil }
+            list.pm2Apps.append(Entry(name: name, actions: actions))
         }
-        for item in (server?["units"] as? [[String: Any]]) ?? [] {
-            guard let unit = item["unit"] as? String else { continue }
-            list.serverUnits.append(Entry(name: unit, actions: (item["actions"] as? [String]) ?? []))
+        for item in units {
+            guard
+                let unit = item["unit"] as? String,
+                let scope = item["scope"] as? String, serverScopes.contains(scope),
+                let actions = verbWords(item)
+            else { return nil }
+            list.serverUnits.append(Entry(name: unit, actions: actions, scope: scope))
         }
-        for item in (server?["updates"] as? [[String: Any]]) ?? [] {
-            guard let name = item["name"] as? String else { continue }
-            list.updates.append(Update(
-                name: name,
-                unit: (item["unit"] as? String) ?? "",
-                scope: (item["scope"] as? String) ?? "system"
-            ))
+        for item in updates {
+            guard
+                let name = item["name"] as? String,
+                let unit = item["unit"] as? String, unit.hasSuffix(".service"),
+                let scope = item["scope"] as? String, serverScopes.contains(scope)
+            else { return nil }
+            list.updates.append(Update(name: name, unit: unit, scope: scope))
         }
-        let coolify = server?["coolify"] as? [String: Any]
-        list.coolifyRedeploy = (coolify?["redeploy"] as? Bool) == true
+        list.coolifyRedeploy = (coolify["redeploy"] as? Bool) == true
         return list
+    }
+
+    /// A section's entries:  none when the value is absent or empty, as the server's
+    /// `or []` reads it, and nil when it is anything else that is not a list of objects.
+    private static func rows(_ value: Any?) -> [[String: Any]]? {
+        guard isPresent(value) else { return [] }
+        return value as? [[String: Any]]
+    }
+
+    /// An object section:  empty when the value is absent or empty, as the server's `or {}`
+    /// reads it, and nil when it is anything else that is not an object.
+    private static func section(_ value: Any?) -> [String: Any]? {
+        guard isPresent(value) else { return [:] }
+        return value as? [String: Any]
+    }
+
+    /// Whether a JSON value counts as given, by Python's truth rule, which the server's
+    /// `or` defaults use:  null, false, zero and an empty string, list or object do not.
+    private static func isPresent(_ value: Any?) -> Bool {
+        guard let value, !(value is NSNull) else { return false }
+        if let number = value as? NSNumber { return number.doubleValue != 0 }
+        if let text = value as? String { return !text.isEmpty }
+        if let list = value as? [Any] { return !list.isEmpty }
+        if let object = value as? [String: Any] { return !object.isEmpty }
+        return true
+    }
+
+    /// Whether a JSON value is `true` or `false` and not a number:  Foundation hands both
+    /// back as `NSNumber`, so `as? Bool` alone would take 1 and 0 as well.
+    private static func isJSONBool(_ value: Any) -> Bool {
+        guard let number = value as? NSNumber else { return false }
+        return CFGetTypeID(number) == CFBooleanGetTypeID()
+    }
+
+    /// An entry's verbs as written, or nil when they are not a non-empty list of `start`,
+    /// `stop` and `restart`.
+    private static func verbWords(_ item: [String: Any]) -> [String]? {
+        guard
+            let words = item["actions"] as? [String], !words.isEmpty,
+            words.allSatisfy({ OpsVerb(rawValue: $0) != nil })
+        else { return nil }
+        return words
     }
 }
 

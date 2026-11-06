@@ -269,13 +269,17 @@ enum MachineMenuCopy {
         return count == 0 ? .ok : .attention(count, someUnread: false)
     }
 
-    private static func isPM2Row(_ entry: FleetServiceEntry) -> Bool {
+    /// True for a row pm2 answers for.  When pm2 does not answer,  these rows are not known,
+    /// and they are said once as not known rather than counted.  The sidebar's Services
+    /// badge uses this rule too.
+    static func isPM2Row(_ entry: FleetServiceEntry) -> Bool {
         if case .pm2 = entry.kind { return entry.policy == .alwaysOn }
         return false
     }
 
     /// A failure,  a state nobody can read,  or a service Muster tried to start and gave up on.
-    private static func isProblem(_ entry: FleetServiceEntry) -> Bool {
+    /// The sidebar's Services badge uses this rule too.
+    static func isProblem(_ entry: FleetServiceEntry) -> Bool {
         entry.needsAttention
     }
 
