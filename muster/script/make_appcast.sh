@@ -6,8 +6,9 @@
 # The appcast has exactly one item:  the archive, at <download-url-prefix><archive name>,
 # with its EdDSA signature and length.  Sparkle only ever needs the newest item, so there is
 # no history to merge.  generate_appcast reads the version and the minimum macOS from the app
-# inside the archive, and refuses an archive whose SUPublicEDKey does not match the signing
-# key, so a key mix-up fails here and not on the owner's Mac.
+# inside the archive.  It signs with whatever key it is given, so before it runs, the public
+# key derived from the signing key (sparkle_public_key.swift) is compared with the
+# SUPublicEDKey inside the archive, and a mismatch fails here and not on the owner's Mac.
 #
 # The EdDSA private key is read from the file $MUSTER_SPARKLE_KEY_PATH (the workflow writes
 # it there, mode 600, and it never reaches an argument or the log).  generate_appcast comes
@@ -35,8 +36,27 @@ NOTES="${4:-}"
 GENERATE_APPCAST="$SPARKLE_TOOLS_DIR/generate_appcast"
 [[ -x "$GENERATE_APPCAST" ]] || { echo "error: generate_appcast not found under $SPARKLE_TOOLS_DIR" >&2; exit 1; }
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 work="$(mktemp -d "${TMPDIR:-/tmp}/muster-appcast.XXXXXX")"
-trap 'rm -rf "$work"' EXIT
+unpacked="$(mktemp -d "${TMPDIR:-/tmp}/muster-appcast-app.XXXXXX")"
+trap 'rm -rf "$work" "$unpacked"' EXIT
+
+# The key built into the app must be the public half of the key that signs it.  Installed
+# copies refuse an update whose signature does not match their SUPublicEDKey, so a mismatch
+# published here would strand every one of them.
+/usr/bin/ditto -x -k "$ARCHIVE" "$unpacked"
+plist="$(/usr/bin/find "$unpacked" -maxdepth 3 -path '*.app/Contents/Info.plist' | /usr/bin/head -n 1)"
+[[ -n "$plist" ]] || { echo "error: no app Info.plist inside $ARCHIVE" >&2; exit 1; }
+built_key="$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$plist" 2>/dev/null || true)"
+[[ -n "$built_key" ]] || { echo "error: the archived app carries no SUPublicEDKey" >&2; exit 1; }
+signing_key="$(/usr/bin/swift "$SCRIPT_DIR/sparkle_public_key.swift" "$MUSTER_SPARKLE_KEY_PATH")"
+if [[ "$signing_key" != "$built_key" ]]; then
+  echo "error: the archived app's SUPublicEDKey ($built_key) is not the public half of the signing key ($signing_key)." >&2
+  echo "error: see muster/docs/AUTO-UPDATE.md, Keys;  nothing was published." >&2
+  exit 1
+fi
+echo "key pair: the signing key matches the app's SUPublicEDKey"
+
 cp -- "$ARCHIVE" "$work/"
 archive_name="$(basename -- "$ARCHIVE")"
 # generate_appcast pairs release notes with an archive by file name.
