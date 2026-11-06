@@ -1885,6 +1885,7 @@ class StableDirOwnershipTests(World):
             sorted(p.name for p in stable.iterdir()),
             [
                 "VERSION",
+                "claude-file-guard-hook",
                 "clutch",
                 "fleet-apps.json",
                 "fleet-guard-hook",
