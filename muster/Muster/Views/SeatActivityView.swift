@@ -107,7 +107,7 @@ struct SeatActivityView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("Seat Activity")
+                Text(MusterDestination.seats.title)
                     .font(.largeTitle.weight(.semibold))
                 Spacer()
                 Button {

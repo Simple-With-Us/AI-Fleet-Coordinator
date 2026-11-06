@@ -5,12 +5,21 @@ import SwiftUI
 /// The sidebar names every panel the window holds, which the tab bar it replaced did
 /// not:  at the window's usual width the tabs past the first few folded into an
 /// overflow menu, and a panel inside it was a panel the owner had to know to look for.
+///
+/// The sidebar files each panel under the place its data and actions live, The Mac, The
+/// Server or Across The Fleet, and the files come from `MusterDestination.place` alone,
+/// so a heading can never hold a panel that belongs to another machine.
 struct FleetOverviewView: View {
     @EnvironmentObject private var store: FleetStore
     @EnvironmentObject private var monitor: DriftMonitor
+    @EnvironmentObject private var admin: FleetAdmin
+    @EnvironmentObject private var watch: PlaceWatch
+    @EnvironmentObject private var router: ServiceActionRouter
     @AppStorage(MusterSettings.themeDefaultsKey) private var theme: ThemeChoice = .system
     @AppStorage(MusterSettings.sidebarSelectionDefaultsKey) private var storedDestination = MusterDestination.overview.rawValue
     @State private var destination: MusterDestination
+    /// The filter an Overview card asked the grid to open on,  held by this window only.
+    @State private var gridRequest: GridStateFilter?
 
     init() {
         let saved = UserDefaults.standard.string(forKey: MusterSettings.sidebarSelectionDefaultsKey)
@@ -24,25 +33,26 @@ struct FleetOverviewView: View {
     }
 
     var body: some View {
+        let menu = MachineMenu(MachineMenuInputs(admin: admin, monitor: monitor, watch: watch, router: router))
         NavigationSplitView {
             List(selection: $destination) {
                 Section {
-                    sidebarRow(.overview)
+                    sidebarRow(.overview, menu: menu)
                 }
-                Section("Fleet") {
-                    ForEach(MusterDestination.fleet) { sidebarRow($0) }
-                }
-                Section("This Mac") {
-                    ForEach(MusterDestination.thisMac) { sidebarRow($0) }
-                }
-                Section("Server") {
-                    ForEach(MusterDestination.server) { sidebarRow($0) }
+                ForEach(MusterDestination.sidebarPlaces, id: \.sectionHeading) { place in
+                    Section(place.sectionHeading) {
+                        ForEach(MusterDestination.listed(under: place)) { sidebarRow($0, menu: menu) }
+                    }
                 }
             }
             .navigationTitle("Muster")
             .navigationSplitViewColumnWidth(min: 200, ideal: 230, max: 300)
         } detail: {
             VStack(spacing: 0) {
+                if let place = destination.place {
+                    PlaceStrip(place: place, source: destination.sourceLine(sourceInputs))
+                    Divider()
+                }
                 if case .failed(let reason) = store.phase {
                     FailureBanner(reason: reason)
                 }
@@ -59,30 +69,34 @@ struct FleetOverviewView: View {
                     )
                 }
                 detail
-                // The footer and the fix activity describe the run and its cells, so
-                // they sit under the two places that read those cells and nowhere
-                // else:  under every panel they read as belonging to it, including
-                // panels an engine failure says nothing about.
+                // The fix activity describes the run and its cells, so it sits under the
+                // two places that read those cells and nowhere else.  The footer, with
+                // the command the app ran, is the grid's alone:  the Overview shows the
+                // verdict once, in its own words.
                 if destination == .overview || destination == .complianceGrid {
                     Divider()
                     ApplyActivityView()
+                }
+                if destination == .complianceGrid {
                     footer
                 }
             }
             .navigationTitle(destination.title)
+            .navigationSubtitle(destination.subtitle)
             .toolbar {
                 ToolbarItem {
-                    // The one refresh the window keeps is the engine's.  Panels with a
-                    // source of their own keep their own refresh beside their rows,
-                    // which names what it rereads;  this one ran the engine when it
-                    // stood over the tabs and still does.
-                    Button {
-                        store.refresh()
-                    } label: {
-                        Label("Refresh", systemImage: "arrow.clockwise")
+                    // The engine's run is the Overview's and the grid's.  Every other panel
+                    // keeps its own button, named for what it rereads, so the toolbar never
+                    // offers a refresh that leaves the panel in view unchanged.
+                    if destination == .overview || destination == .complianceGrid {
+                        Button {
+                            store.refresh()
+                        } label: {
+                            Label("Check Seat Setup", systemImage: "checkmark.shield")
+                        }
+                        .disabled(store.phase == .running)
+                        .help("Checks the seats' setup on the Mac again.")
                     }
-                    .disabled(store.phase == .running)
-                    .help("Run the engine again")
                 }
             }
         }
@@ -90,12 +104,13 @@ struct FleetOverviewView: View {
         // The plan sheet hangs off the window root,  so the apply flow can present a
         // plan from any view that holds a red cell.
         .applyPlanSheet()
-        // The operations sheet hangs off the root the same way,  so the Server Status,
-        // Operations and Controls panels share one plan,  one Touch ID question and one
-        // action in flight.
+        // The operations sheet hangs off the root the same way,  so every panel that starts
+        // an action shares one plan,  one Touch ID question and one action in flight.
         .opsActionSheet()
         .onChange(of: destination) { _, chosen in
             storedDestination = chosen.rawValue
+            // A card's request is for the visit it started,  and no later one.
+            if chosen != .complianceGrid { gridRequest = nil }
         }
         // The menu chooses a place by writing the saved one,  so an open window follows it.
         .onChange(of: storedDestination) { _, saved in
@@ -105,21 +120,48 @@ struct FleetOverviewView: View {
         .background(MusterWindowTracker())
     }
 
-    /// One place in the sidebar.  The two compliance places carry the drift count,
-    /// which is the monitor's own number:  nil reads unknown, never nothing.
+    /// What the window knows about each panel's source,  for the line under its badge.
+    private var sourceInputs: PlaceSourceInputs {
+        PlaceSourceInputs(
+            servicesReadAt: admin.lastReadAt,
+            serverStatus: watch.status,
+            seatCheckAt: store.generatedAt
+        )
+    }
+
+    /// One place in the sidebar,  with the badge its own reader gives,  or none.
     @ViewBuilder
-    private func sidebarRow(_ place: MusterDestination) -> some View {
+    private func sidebarRow(_ place: MusterDestination, menu: MachineMenu) -> some View {
         let label = Label(place.title, systemImage: place.systemImage).tag(place)
-        if place == .complianceGrid || place == .driftHistory {
-            if let redCount = monitor.redCount, redCount > 0 {
-                label.badge(redCount)
-            } else if monitor.redCount == nil {
-                label.badge(Text("?"))
-            } else {
-                label
-            }
+        if let badge = sidebarBadge(place, menu: menu) {
+            label.badge(Text(badge))
         } else {
             label
+        }
+    }
+
+    /// The badge a row carries.  Each one is its own reader's number:  nil reads unknown,
+    /// never nothing.
+    ///
+    /// Drift History carries none:  the current red count belongs to the grid, and the
+    /// history's own number is on the Overview's card.
+    private func sidebarBadge(_ place: MusterDestination, menu: MachineMenu) -> String? {
+        switch place {
+        case .complianceGrid:
+            guard let redCount = monitor.redCount else { return "?" }
+            return redCount > 0 ? "\(redCount)" : nil
+        case .services:
+            // Measured against the watch's tick,  the clock the Mac card and the menu use,  so
+            // the window and the menu never disagree about one read.  The tick is a minute at
+            // most behind,  and the menu's own window allows for it.
+            return SidebarBadges.services(admin.entries, pm2Answered: admin.pm2Answered ?? true,
+                                          readAt: admin.lastReadAt, now: watch.now)
+        case .serverStatus:
+            return PlaceHealthWords.badge(menu.server.health)
+        case .overview, .macAgents, .driftHistory, .wakeAndListener, .seatDetail,
+             .serverResourceLimits, .serverUpdates, .appsAndWork, .seats, .controls,
+             .hosts, .virtualMachines, .actionHistory:
+            return nil
         }
     }
 
@@ -127,9 +169,9 @@ struct FleetOverviewView: View {
     private var detail: some View {
         switch destination {
         case .overview:
-            OverviewView(selection: $destination)
+            OverviewView(selection: $destination, gridRequest: $gridRequest)
         case .complianceGrid:
-            FleetGridView()
+            FleetGridView(request: $gridRequest)
         case .appsAndWork:
             FleetView()
         case .seats:
@@ -138,6 +180,8 @@ struct FleetOverviewView: View {
             DriftHistoryView()
         case .services:
             FleetServicesPanel()
+        case .macAgents:
+            OperationsView(part: .agents)
         case .wakeAndListener:
             WakeSettingsView()
         case .controls:
@@ -153,86 +197,84 @@ struct FleetOverviewView: View {
                     OpsController.shared.plan(.serverResource(field: field, value: value, revision: revision))
                 }
             )
+        case .serverUpdates:
+            OperationsView(part: .updates)
         case .hosts:
             FleetHostsView()
         case .virtualMachines:
             VirtualMachinesView()
-        case .operations:
-            OperationsView()
+        case .actionHistory:
+            OperationsView(part: .history)
         }
     }
 
-    /// The bar under the panels:  the verdict, the command the app ran, and the clock.
+    /// The bar under the grid:  the verdict, the command the app ran, and the clock.
     private var footer: some View {
-        HStack(spacing: 14) {
-            verdict
-            Divider().frame(height: 14)
-            Text(store.commandLine.isEmpty ? "no engine located" : store.commandLine)
-                .font(.system(size: 10, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .textSelection(.enabled)
-                .help(store.commandLine)
-            Spacer(minLength: 8)
-            Text(generatedText)
-                .font(.system(size: 10, design: .monospaced))
-                .foregroundStyle(.secondary)
-        }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 9)
-        .background(.bar)
-    }
-
-    private var verdict: some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(verdictColor)
-                .frame(width: 8, height: 8)
-            Text(verdictText)
-                .font(.system(size: 11, weight: .semibold, design: .monospaced))
-            if let summary = store.summary {
-                Text("\(summary.failing) failing of \(summary.total)")
+        let verdict = RunVerdict.make(phase: store.phase, verdict: store.summary?.overallVerdict)
+        return VStack(spacing: 0) {
+            Divider()
+            HStack(spacing: 14) {
+                RunVerdictLabel(verdict: verdict, font: .system(size: 11, weight: .semibold))
+                    // The footer's verdict is the grid's PASS,  and the tooltip says what that is.
+                    // Only a verdict the engine returned has a meaning to state,  as the overview says.
+                    .help(RunVerdict.meaning(phase: store.phase, verdict: store.summary?.overallVerdict) ?? "")
+                if let failing = RunVerdict.failingText(store.summary) {
+                    Text(failing)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+                Divider().frame(height: 14)
+                Text(store.commandLine.isEmpty ? "no engine located" : store.commandLine)
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+                    .help(store.commandLine)
+                Spacer(minLength: 8)
+                Text(generatedText)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
             }
-        }
-        .foregroundStyle(verdictColor)
-        // The footer's verdict is the grid's PASS,  and the tooltip says what that is.
-        // Only a verdict the engine returned has a meaning to state,  as the overview says.
-        .help(
-            store.phase == .loaded
-                ? (store.summary.map { "\(PassMeaning.verdict($0.overallVerdict))\u{00A0} \(PassMeaning.everywhere)" } ?? "")
-                : ""
-        )
-    }
-
-    private var verdictText: String {
-        switch store.phase {
-        case .idle: return "IDLE"
-        case .running: return "RUNNING"
-        case .loaded: return store.summary?.overallVerdict ?? "UNKNOWN"
-        case .failed: return "UNKNOWN"
-        }
-    }
-
-    private var verdictColor: Color {
-        switch store.phase {
-        case .idle: return .secondary
-        case .running: return .secondary
-        case .loaded:
-            switch store.summary?.overallVerdict {
-            case "PASS": return .green
-            case "FAIL": return .red
-            default: return .orange
-            }
-        case .failed: return .red
+            .padding(.horizontal, 18)
+            .padding(.vertical, 9)
+            .background(.bar)
         }
     }
 
     private var generatedText: String {
-        guard let generatedAt = store.generatedAt else { return "—" }
-        return "read at " + FleetTime.clock(generatedAt)
+        guard let generatedAt = store.generatedAt else { return "\u{2014}" }
+        return "Checked at " + FleetTime.clock(generatedAt)
+    }
+}
+
+/// The run's verdict:  a symbol and the words, in the tone's colour.  The words carry it.
+struct RunVerdictLabel: View {
+    let verdict: RunVerdict
+    var font: Font = .title2.weight(.semibold)
+
+    var body: some View {
+        Label(verdict.words, systemImage: symbol)
+            .font(font)
+            .foregroundStyle(color)
+    }
+
+    private var symbol: String {
+        switch verdict.tone {
+        case .neutral: return "circle.dashed"
+        case .pass: return "checkmark.circle.fill"
+        case .fail: return "xmark.octagon.fill"
+        case .notKnown: return "questionmark.circle.fill"
+        }
+    }
+
+    private var color: Color {
+        switch verdict.tone {
+        case .neutral: return .secondary
+        case .pass: return .green
+        case .fail: return .red
+        case .notKnown: return .orange
+        }
     }
 }
 
@@ -272,10 +314,4 @@ extension ThemeChoice {
         case .dark: return .dark
         }
     }
-}
-
-#Preview {
-    FleetOverviewView()
-        .environmentObject(FleetStore())
-        .environmentObject(DriftMonitor(grid: PreviewGrid.shared))
 }

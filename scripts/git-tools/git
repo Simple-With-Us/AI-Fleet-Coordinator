@@ -324,26 +324,59 @@ def _remote_post(url: str, headers: dict, body: bytes, timeout: float) -> tuple[
     try:
         with op.open(req, timeout=timeout) as r:
             chunks, total = [], 0
+            content_length = r.headers.get("Content-Length")
+            try:
+                expected = int(content_length) if content_length is not None else None
+            except ValueError:
+                expected = None
+            if expected is not None and expected < 0:
+                expected = None
+            if getattr(r, "chunked", False) or r.headers.get("Transfer-Encoding"):
+                expected = None
             sock = getattr(getattr(getattr(r, "fp", None), "raw", None), "_sock", None)
             if sock is None:
                 # Without the socket the remaining budget cannot be applied to each read, so a stalled body could
                 # outlast the deadline:  fail closed rather than read unbounded.
                 raise _TransportError(True, "transport")
             while True:
+                if expected is not None and total >= expected:
+                    break
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise _TransportError(True, "deadline")
-                sock.settimeout(remaining)
                 try:
-                    chunk = r.read1(65536)
+                    sock.settimeout(remaining)
+                except OSError:
+                    if expected is None and total > 0:
+                        break
+                    if expected is not None and total > 0:
+                        raise _TransportError(True, "truncated response") from None
+                    raise _TransportError(True, "transport") from None
+                read_size = 65536
+                if expected is not None:
+                    read_size = min(read_size, expected - total)
+                try:
+                    chunk = r.read1(read_size)
                 except AttributeError:
                     # read1's partial-read semantics serve the slow-drip deadline and an ordinary
                     # http.client.HTTPResponse provides it;  a wrapped response that cannot read this
                     # way is a transport failure here, never a traceback.
                     raise _TransportError(True, "transport") from None
+                except OSError as exc:
+                    closed_after_body = (
+                        getattr(exc, "errno", None) == 9
+                        or isinstance(exc, (http.client.RemoteDisconnected, ssl.SSLEOFError))
+                    )
+                    if expected is None and total > 0 and closed_after_body:
+                        break
+                    if expected is not None and total > 0:
+                        raise _TransportError(True, "truncated response") from None
+                    raise
                 if time.monotonic() > deadline:
                     raise _TransportError(True, "deadline")
                 if not chunk:
+                    if expected is not None and total < expected:
+                        raise _TransportError(True, "truncated response")
                     break
                 total += len(chunk)
                 if total > REMOTE_MAX_BYTES:
@@ -490,6 +523,12 @@ def _rpc_result(ctype: str, raw: bytes, write: bool):
 
 
 def _failure(exc: "_TransportError", write: bool) -> str:
+    if exc.reason == "truncated response":
+        return (
+            "the hosted endpoint closed the answer before its declared length"
+            + (_REMOTE_UNKNOWN if write and exc.sent else "")
+            + " (no direct fallback)"
+        )
     if write and exc.sent:
         return (
             "the hosted endpoint did not answer"

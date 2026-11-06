@@ -192,7 +192,7 @@ enum MacServicesReportReader {
                 return reading
             }
         } else {
-            reading.problem = "No saved Mac LaunchAgents report exists at \(url.path).\(gap)Choose Read Current Agents to collect a read-only snapshot; the scheduled collector may not be installed or running."
+            reading.problem = "No saved Mac LaunchAgents report exists at \(url.path).\(gap)Choose Read The Mac's Agents in Background Agents to collect a read-only snapshot; the scheduled collector may not be installed or running."
             return reading
         }
 

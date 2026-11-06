@@ -176,7 +176,7 @@ struct WakeSettingsView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("Wake Settings")
+                Text(MusterDestination.wakeAndListener.title)
                     .font(.largeTitle.weight(.semibold))
                 Spacer()
                 Button {
