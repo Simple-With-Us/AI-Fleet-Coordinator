@@ -7,7 +7,7 @@ import tempfile
 import unittest
 import urllib.error
 
-from agent_sync import wake_alerter as WA
+from simple_tools import wake_alerter as WA
 
 KEY = "r" * 40
 SEAT = "ECHO"
@@ -15,7 +15,7 @@ BASE = "http://listener.example.ts.net:8788"
 
 
 def payload(items):
-    return {"contract": "agent-sync-read/1", "seat": SEAT, "record": "wakes",
+    return {"contract": "simple-tools-read/1", "seat": SEAT, "record": "wakes",
             "view": {"seat": SEAT, "total": len(items), "by_state": {}, "items": items}}
 
 
@@ -92,10 +92,10 @@ class AlerterTests(unittest.TestCase):
         self.poll(opener=opener)
         req = seen_req[0]
         path = "/listener/v1/ECHO/wakes"
-        stamp = req.headers["X-agent-sync-timestamp"]
-        from agent_sync.listener_api import sign
+        stamp = req.headers["X-simple-tools-timestamp"]
+        from simple_tools.listener_api import sign
 
-        self.assertEqual(req.headers["X-agent-sync-signature"], sign(KEY, path, WA.QUERY, stamp))
+        self.assertEqual(req.headers["X-simple-tools-signature"], sign(KEY, path, WA.QUERY, stamp))
         self.assertTrue(req.full_url.endswith(path + "?" + WA.QUERY))
 
 

@@ -25,11 +25,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from agent_sync import chat_catalog as CC
-from agent_sync import operator_candidates as OC
-from agent_sync import operator_registry as OR
-from agent_sync import wakes as W
-from agent_sync.tests.test_daemon import DaemonHarness
+from simple_tools import chat_catalog as CC
+from simple_tools import operator_candidates as OC
+from simple_tools import operator_registry as OR
+from simple_tools import wakes as W
+from simple_tools.tests.test_daemon import DaemonHarness
 
 IDENTITY = {
     "platform": "minimax",
@@ -690,7 +690,7 @@ class WakeLetterTests(DaemonHarness):
         p = W.Pending(
             "wake",
             "CLAUDE",
-            {"channel": "agent-sync", "topic": "work"},
+            {"channel": "simple-tools", "topic": "work"},
             owner=True,
             now=self.clock.time(),
             due=self.clock.time(),
@@ -827,7 +827,7 @@ class DirectMessageLetterTests(DaemonHarness):
         p = W.Pending(
             "wake",
             "CLAUDE",
-            {"type": "private" if private else "stream", "channel": "agent-sync", "topic": "work"},
+            {"type": "private" if private else "stream", "channel": "simple-tools", "topic": "work"},
             owner=True,
             now=self.clock.time(),
             due=self.clock.time(),
@@ -896,7 +896,7 @@ class AddressedRowTests(DaemonHarness):
         p = W.Pending(
             "wake",
             "CLAUDE",
-            {"channel": "agent-sync", "topic": "work"},
+            {"channel": "simple-tools", "topic": "work"},
             owner=True,
             now=self.clock.time(),
             due=self.clock.time(),
@@ -1322,7 +1322,7 @@ class AskOperatorTests(DaemonHarness):
 
     def pending(self, sender_id):
         p = W.Pending(
-            "w1", "CLAUDE", {"channel": "agent-sync", "topic": "AFC-412"}, owner=True,
+            "w1", "CLAUDE", {"channel": "simple-tools", "topic": "AFC-412"}, owner=True,
             now=1.0, due=2.0,
         )
         p.sender_id = sender_id
@@ -1488,7 +1488,7 @@ class PendingSenderTests(unittest.TestCase):
 
     def test_sender_id_survives_a_row_and_a_reload(self) -> None:
         pending = W.Pending(
-            "w1", "MM", {"channel": "agent-sync", "topic": "AFC-412"}, owner=True,
+            "w1", "MM", {"channel": "simple-tools", "topic": "AFC-412"}, owner=True,
             now=1.0, due=2.0,
         )
         pending.add({"id": 5, "sender_id": 4242}, True)
