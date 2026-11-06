@@ -141,8 +141,9 @@ def header_error(text: str, seat: str):
         )
     intro = _own_intro_re(seat).match(first)
     has_folder_repos = False
-    # Folder-tag intros: close ], then validate 📁 list on its own (body repo: cannot salvage).
-    if intro and "📁" in first[intro.start() :]:
+    # Folder-tag intros: only treat 📁 inside the matched intro span as a folder list
+    # (a 📁 later on the first line, e.g. in a legacy-tag subject, must not trigger this).
+    if intro and "📁" in intro.group():
         if first.find("]", intro.start()) < 0:
             return "folder-tag intro must close with ] on the first line"
         tag_end = first.find("]", intro.start())

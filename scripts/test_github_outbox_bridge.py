@@ -469,6 +469,20 @@ class RuleTests(unittest.TestCase):
         self.assertFalse(bridge.skim_match("[JET 📁AFC → @**MMC**, CLAUDE]", "MC"))
         self.assertTrue(bridge.skim_match("[JET 📁AFC → @**INSTINCT**, CLAUDE]", SEAT))
 
+    def test_legacy_intro_folder_emoji_in_subject_ok(self):
+        """Sentry #1404: 📁 outside a legacy intro tag must not false-reject with repo:."""
+        self.assertIsNone(
+            bridge.header_error("[INSTINCT] Subject with 📁 emoji\nrepo: AFC", SEAT)
+        )
+        self.assertIsNone(
+            bridge.header_error("[INSTINCT->JET] note 📁 later\nrepo: AFC", SEAT)
+        )
+        # Still reject a real empty folder-tag intro.
+        self.assertEqual(
+            bridge.header_error("[INSTINCT 📁]\nclaim: empty", SEAT),
+            "repo: <project> must be the first body line",
+        )
+
     def test_empty_folder_and_unclosed_intro_rejected(self):
         """Bugs 2+3 / OPS-1035: empty 📁 / unclosed [ must not pass header_error."""
         for bad in (
