@@ -280,8 +280,10 @@ def _service_token_status() -> tuple[str, str]:
     command = [
         SECURITY_BIN,
         "find-generic-password",
-        "-s", KEYCHAIN_SERVICE,
-        "-a", KEYCHAIN_ACCOUNT,
+        "-s",
+        KEYCHAIN_SERVICE,
+        "-a",
+        KEYCHAIN_ACCOUNT,
         "-w",
     ]
     try:
@@ -294,7 +296,10 @@ def _service_token_status() -> tuple[str, str]:
     detail = (result.stderr or "").lower()
     if result.returncode == SECURITY_ITEM_NOT_FOUND or "could not be found" in detail:
         return "", "no-token"
-    if result.returncode == SECURITY_INTERACTION_NOT_ALLOWED or "interaction is not allowed" in detail:
+    if (
+        result.returncode == SECURITY_INTERACTION_NOT_ALLOWED
+        or "interaction is not allowed" in detail
+    ):
         return "", "keychain-locked"
     return "", "token-unreadable"
 
