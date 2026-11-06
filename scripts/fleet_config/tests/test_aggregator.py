@@ -355,6 +355,29 @@ class AggregatorTests(unittest.TestCase):
         self.assertIs(result.reason_code, ReasonCode.UNSUPPORTED)
         self.assertIsNot(report.summary.overall_verdict, OverallVerdict.PASS)
 
+    def test_a_proof_that_does_not_apply_keeps_its_reason_so_the_verdict_leaves_it_out(self):
+        rule = make_rule(
+            "cursor-hooks-file",
+            ConfigKind.HOOKS,
+            check_type=CheckType.HOOK_REGISTERED,
+            proof=ProofLevel.L1,
+        )
+        manifest = make_manifest([rule])
+        registry = registry_with({CheckType.HOOK_REGISTERED: result_check(CheckState.PASS)})
+        report = aggregator.run_status(
+            manifest,
+            registry=registry,
+            ctx=context(),
+            proof_runner=lambda rule, platform, ctx, prove: aggregator.ProofOutcome(
+                None, "file guarding does not apply", ReasonCode.NOT_APPLICABLE
+            ),
+        )
+        result = report.results[0]
+        self.assertIs(result.state, CheckState.UNSUPPORTED)
+        self.assertIs(result.reason_code, ReasonCode.NOT_APPLICABLE)
+        self.assertFalse(contract.is_failing(result))
+        self.assertTrue(contract.is_not_applicable(result))
+
     def test_a_proof_that_could_not_complete_is_a_failing_unknown(self):
         # The design's step 4:  a check that raised, timed out or returned unparseable
         # output is UNKNOWN and it counts against the run.  A proof that cannot start is

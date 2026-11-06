@@ -367,14 +367,16 @@ def _apply_proof(
             reason_code=outcome.reason_code,
             proof_level_achieved=outcome.level if outcome.level is not None else achieved,
         )
-    if outcome.reason_code is ReasonCode.UNSUPPORTED:
-        # A proof that cannot exist for this platform is unsupported,  not unrun:
-        # relabelling it unproven would say a proof is on its way.
+    if outcome.reason_code in (ReasonCode.UNSUPPORTED, ReasonCode.NOT_APPLICABLE):
+        # A proof that cannot exist for this platform is unsupported,  and one that the
+        # platform has no surface for does not apply:  neither is unrun,  and relabelling
+        # either as unproven would say a proof is on its way.  The reason code is kept,
+        # because the verdict leaves a not-applicable result out.
         return replace(
             result,
             state=CheckState.UNSUPPORTED,
             reason=outcome.reason or "no proof exists for this platform",
-            reason_code=ReasonCode.UNSUPPORTED,
+            reason_code=outcome.reason_code,
             proof_level_achieved=outcome.level if outcome.level is not None else achieved,
         )
     return replace(

@@ -433,11 +433,39 @@ class L1ScopeTests(FakeHookCase):
         self.assertIn("exited", outcome.reason)
         self.assertNotIn("did not deny", outcome.reason)
 
-    def test_a_file_rule_is_unsupported_where_the_payload_has_no_file_tool(self):
+    def test_a_file_rule_does_not_apply_where_the_payload_has_no_file_tool(self):
+        """The proof path says what the L0 check says,  so the verdict leaves both out."""
         command = self.hook("deny") + " --format claude"
         outcome = proof.run_l1_probe("cursor", self.ctx, hook_command=command, guards=("file",))
         self.assertIs(outcome.state, CheckState.UNSUPPORTED)
-        self.assertIs(outcome.reason_code, ReasonCode.UNSUPPORTED)
+        self.assertIs(outcome.reason_code, ReasonCode.NOT_APPLICABLE)
+        self.assertIn("does not apply", outcome.reason)
+
+    def test_a_hook_rules_detail_is_its_event_and_no_other_rules_is(self):
+        captured = {}
+
+        def fake_probe(platform, ctx, **kwargs):
+            captured.update(kwargs)
+            return proof.L1Outcome(
+                level=ProofLevel.L1,
+                passed=True,
+                state=CheckState.PASS,
+                reason="ok",
+                reason_code=ReasonCode.OK,
+                detail="",
+                achieved=ProofLevel.L1,
+            )
+
+        rule = make_rule()
+        hook_rule = replace(rule, check=replace(rule.check, detail="beforeTool"))
+        other = replace(
+            rule, check=replace(rule.check, type=CheckType.MCP_SERVERS_REGISTERED, detail="free text")
+        )
+        with mock.patch.object(proof, "run_l1_probe", side_effect=fake_probe):
+            proof.prove_rule(hook_rule, "minimax", self.ctx)
+            self.assertEqual(captured["event"], "beforeTool")
+            proof.prove_rule(other, "minimax", self.ctx)
+            self.assertIsNone(captured["event"])
 
     def test_a_shell_rule_passes_on_a_platform_with_no_file_tool(self):
         command = self.hook("deny") + " --format claude"
@@ -628,6 +656,14 @@ class TargetCommandTests(FakeHookCase):
             proof.resolve_target_command("kimi", target, self.ctx),
             "/opt/x/fleet-guard-hook --format kimi",
         )
+
+    def test_a_kimi_table_with_no_event_is_a_config_this_reader_cannot_vouch_for(self):
+        for bad in ('command = "/opt/x/fleet-guard-hook"\n', 'event = ""\ncommand = "/x"\n'):
+            with self.subTest(table=bad):
+                target = self._write("kimi.toml", "[[hooks]]\n" + bad)
+                with self.assertRaises(CheckError) as caught:
+                    proof.resolve_target_command("kimi", target, self.ctx)
+                self.assertIs(caught.exception.reason_code, ReasonCode.UNPARSEABLE)
 
     def test_zcode_is_read_from_its_nested_event_map(self):
         doc = {

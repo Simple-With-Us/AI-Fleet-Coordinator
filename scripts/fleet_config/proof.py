@@ -46,6 +46,7 @@ from .checks import CheckContext, CheckError, build_result, expand_target, kill_
 from .types import (
     CheckResult,
     CheckState,
+    CheckType,
     ObservedState,
     ProofLevel,
     ReasonCode,
@@ -664,7 +665,15 @@ def _commands_from_event_list(
                 ReasonCode.UNPARSEABLE,
             )
         name = entry.get("event")
-        if isinstance(name, str) and _event_key(name) == wanted:
+        if not isinstance(name, str) or not name.strip():
+            # A table names its event or it is not a hook table,  and a table this reader
+            # cannot place is a config it cannot vouch for,  not one to skip.
+            raise CheckError(
+                "a hook table in the hook config %s for the platform %s names no event"
+                % (path, platform),
+                ReasonCode.UNPARSEABLE,
+            )
+        if _event_key(name) == wanted:
             matching.append(entry)
     _assert_bounded(matching, platform, path)
     found: list[str] = []
@@ -1386,11 +1395,11 @@ def run_l1_probe(
                     "the shell sentinel was denied,  but the file surface of this "
                     "platform is not probed,  because its hook carries no file tool"
                     if asked_shell
-                    else "file guarding cannot be probed for this platform,  because its "
+                    else "file guarding does not apply to this platform,  because its "
                     "hook carries no file tool"
                 ),
                 reason_code=(
-                    ReasonCode.PROOF_NOT_RUN if asked_shell else ReasonCode.UNSUPPORTED
+                    ReasonCode.PROOF_NOT_RUN if asked_shell else ReasonCode.NOT_APPLICABLE
                 ),
                 detail="no file tool was probed",
                 achieved=None,
@@ -1727,7 +1736,11 @@ def prove_rule(
         ctx,
         guards=tuple(rule.expected.guards) or None,
         config_target=rule.check.target,
-        event=rule.check.detail or None,
+        # The detail of a hook rule is its event.  It is free text for every other kind of
+        # rule,  and none of those reaches an L1 proof,  but only a hook rule's is an event.
+        event=(
+            rule.check.detail or None if rule.check.type is CheckType.HOOK_REGISTERED else None
+        ),
     )
     return _with_achieved(outcome)
 

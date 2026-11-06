@@ -80,9 +80,9 @@ PACK_SKILLS_DIR = "docs/fleet-skills"
 NAMED_GROUP_HOOK = "lane-guard"  # the antigravity group, and the muse plugin hook
 
 # The platforms with a guard hook and no file-guard rule yet.  Z Code's hook is
-# Claude-shaped, but no file tool name is pinned for it, so a file rule would only ever
-# read unsupported and hold the fleet verdict off PASS for a proof nobody can run.  The
-# shell rule says what it covers, and the file rule lands with the tool names.
+# Claude-shaped, but no file tool name is pinned for it, so there is no file payload a
+# rule could send and no tool name it could check the matcher against.  The shell rule
+# says what it covers, and the file rule lands with the tool names.
 NO_FILE_GUARD_RULE = ("zcode",)
 
 # The seat to platform mapping.  Nothing in the registry maps a seat tag to a
