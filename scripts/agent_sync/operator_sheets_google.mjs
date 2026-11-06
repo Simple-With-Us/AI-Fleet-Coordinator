@@ -6,6 +6,75 @@ const SCOPE = 'https://www.googleapis.com/auth/spreadsheets';
 const MAX_ROWS = 500;
 const MAX_COLUMNS = 256;
 const MAX_ROW_NUMBER = 10_000_000;
+const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
+const MAX_RESPONSE_DEPTH = 32;
+const MAX_RESPONSE_NODES = 100_000;
+
+// Credential shapes mirrored from the fleet scanner (scripts/agent_sync/secretscan.py
+// _PATTERNS).  Outbound cell text is refused before any request, never persisted externally.
+const CELL_CREDENTIAL_PATTERNS = Object.freeze([
+  [/-----BEGIN [A-Z ]*PRIVATE KEY-----/, 'private key block'],
+  [/\b(AKIA|ASIA)[0-9A-Z]{16}\b/, 'AWS access key'],
+  [/\b(gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,})\b/, 'GitHub token'],
+  [/\bsk-(ant-)?[A-Za-z0-9_-]{20,}\b/, 'Anthropic or OpenAI key'],
+  [/\bxox[abposr]-[A-Za-z0-9-]{10,}\b/, 'Slack token'],
+  [/\bglpat-[A-Za-z0-9_-]{20,}\b/, 'GitLab token'],
+  [/\bAIza[0-9A-Za-z_-]{35}\b/, 'Google API key'],
+  [/\b(sk|rk)_(live|test)_[A-Za-z0-9]{16,}\b/, 'Stripe key'],
+  [/\blin_(api|oauth|wh)_[A-Za-z0-9]{20,}/, 'Linear API key'],
+  [/\blinear[\w -]{0,24}secret\s*[=:]\s*['"]?[A-Za-z0-9]{24,}/i, 'Linear client secret'],
+  [/\bsntry[su]_[A-Za-z0-9+/=_-]{20,}/, 'Sentry token'],
+  [/\bxai-[A-Za-z0-9]{20,}/, 'xAI key'],
+  [/\bst\.[A-Za-z0-9]{8,}\.[A-Za-z0-9]{8,}\.[A-Za-z0-9]{8,}/, 'Infisical service token'],
+  [/\binfisical[\w .-]{0,40}?(token|secret)['"]?\s*[=:]\s*['"]?[A-Za-z0-9+/=._-]{24,}/i, 'Infisical credential'],
+  [/\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/, 'access token (JWT)'],
+  [/\bcf(ut|at|k)_[A-Za-z0-9]{30,}/, 'Cloudflare token'],
+  [/\bcloudflare[\w ]{0,24}(token|key)\s*[=:]\s*['"]?[A-Za-z0-9_-]{37,}/i, 'Cloudflare token'],
+  [/(?<![A-Za-z0-9])\d{1,5}\|[A-Za-z0-9]{36,}(?![A-Za-z0-9])/, 'Coolify token'],
+  [/\b[A-Z][A-Z0-9_]*(SECRET|TOKEN|PASSWORD|API_?KEY)\s*=\s*['"]?[A-Za-z0-9+/=._-]{16,}/, 'assigned credential'],
+  [/\bauthorization:\s*(basic|bearer)\s+[A-Za-z0-9+/=._-]{16,}/i, 'bearer token'],
+  [/\b(api[_-]?key|secret|token|password)\s*[=:]\s*['"]?[A-Za-z0-9+/=._-]{16,}/i, 'assigned secret'],
+]);
+
+function scanCellText(text) {
+  for (const [pattern, label] of CELL_CREDENTIAL_PATTERNS) {
+    if (pattern.test(text)) return label;
+  }
+  return null;
+}
+
+// Iterative so a hostile payload cannot exhaust the stack before the depth check runs.
+function assertShapeLimits(value) {
+  const stack = [[value, 0]];
+  let nodes = 0;
+  while (stack.length) {
+    const [node, depth] = stack.pop();
+    nodes += 1;
+    if (depth > MAX_RESPONSE_DEPTH || nodes > MAX_RESPONSE_NODES) return false;
+    if (node && typeof node === 'object') {
+      for (const child of Object.values(node)) stack.push([child, depth + 1]);
+    }
+  }
+  return true;
+}
+
+async function readCappedBody(response, mutation) {
+  const reader = response.body?.getReader?.();
+  if (!reader) fail('invalid_response', { uncertain: mutation });
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > MAX_RESPONSE_BYTES) {
+      await reader.cancel().catch(() => {});
+      fail('response_too_large', { uncertain: mutation });
+    }
+    chunks.push(value);
+  }
+  return new TextDecoder().decode(Buffer.concat(chunks.map(c => Buffer.from(c))));
+}
 
 export const SESSION_HEADERS = Object.freeze([
   'Record ID', 'Label', 'Seat', 'Platform', 'Host', 'Native Session ID',
@@ -58,7 +127,10 @@ function retryAfter(response) {
   return /^\d+$/.test(value ?? '') ? Math.min(Number(value), 3600) : null;
 }
 
-async function requestJSON(fetchImpl, url, init, timeoutMs, mutation = false) {
+// Every endpoint passes its own schema:  the decoded body is validated before any caller sees
+// it, so a missing or malformed field fails closed here instead of surfacing downstream.
+async function requestJSON(fetchImpl, url, init, timeoutMs, mutation = false, validate = null,
+  invalidCode = 'invalid_response') {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -74,9 +146,16 @@ async function requestJSON(fetchImpl, url, init, timeoutMs, mutation = false) {
         retryAfterSeconds: retryAfter(response),
       });
     }
-    const body = await response.json();
-    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    let body;
+    try {
+      body = JSON.parse(await readCappedBody(response, mutation));
+    } catch (error) {
+      if (error instanceof OperatorSheetsError) throw error;
       fail('invalid_response', { uncertain: mutation });
+    }
+    if (!body || typeof body !== 'object' || Array.isArray(body) ||
+        !assertShapeLimits(body) || (validate !== null && !validate(body))) {
+      fail(invalidCode, { uncertain: mutation });
     }
     return body;
   } catch (error) {
@@ -86,6 +165,13 @@ async function requestJSON(fetchImpl, url, init, timeoutMs, mutation = false) {
     clearTimeout(timer);
   }
 }
+
+const TOKEN_RESPONSE = body => typeof body.access_token === 'string' &&
+  typeof body.token_type === 'string' && Number.isFinite(body.expires_in);
+const METADATA_RESPONSE = body => Array.isArray(body.sheets);
+const VALUES_RESPONSE = body => body.values === undefined || Array.isArray(body.values);
+const WRITE_RESPONSE = body => typeof body.spreadsheetId === 'string' &&
+  (body.updates === undefined || (body.updates && typeof body.updates === 'object'));
 
 /**
  * Credential loading is supplied by the authorized runtime, never a guessed path.
@@ -122,7 +208,7 @@ export function createServiceAccountTokenProvider({
         body: new URLSearchParams({
           grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion,
         }).toString(),
-      }, timeoutMs);
+      }, timeoutMs, false, TOKEN_RESPONSE, 'invalid_token_response');
       if (typeof response.access_token !== 'string' || !response.access_token ||
           /[\r\n]/.test(response.access_token) ||
           response.token_type?.toLowerCase() !== 'bearer' ||
@@ -173,10 +259,14 @@ export class OperatorSheetsGoogle {
     this.#timeoutMs = timeoutMs;
   }
 
-  async #request(path, { method = 'GET', body } = {}) {
+  async #request(path, { method = 'GET', body, schema = null } = {}) {
     let accessToken;
     try { accessToken = await this.#token(); }
-    catch { fail('token_unavailable'); }
+    catch (error) {
+      // An OperatorSheetsError already carries its status and retry metadata;  keep them.
+      if (error instanceof OperatorSheetsError) throw error;
+      fail('token_unavailable');
+    }
     if (typeof accessToken !== 'string' || !accessToken || /[\r\n]/.test(accessToken)) {
       fail('invalid_access_token');
     }
@@ -184,12 +274,12 @@ export class OperatorSheetsGoogle {
     return requestJSON(this.#fetch, url, {
       method, headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    }, this.#timeoutMs, method !== 'GET');
+    }, this.#timeoutMs, method !== 'GET', schema);
   }
 
   async #values(table, coordinates) {
     return this.#request(`/values/${encodeURIComponent(rangeFor(table, coordinates))}` +
-      '?majorDimension=ROWS&valueRenderOption=UNFORMATTED_VALUE');
+      '?majorDimension=ROWS&valueRenderOption=UNFORMATTED_VALUE', { schema: VALUES_RESPONSE });
   }
 
   /** Check immutable tab IDs, exact ordered headers, and absence of extra headers. */
@@ -200,7 +290,7 @@ export class OperatorSheetsGoogle {
 
   /** Physical grid bounds for complete ID reconciliation, including blank pages. */
   async inspect() {
-    const metadata = await this.#request('?fields=sheets(properties(sheetId,title,gridProperties(rowCount,columnCount)))');
+    const metadata = await this.#request('?fields=sheets(properties(sheetId,title,gridProperties(rowCount,columnCount)))', { schema: METADATA_RESPONSE });
     if (!Array.isArray(metadata.sheets)) fail('invalid_metadata');
     const bounds = {};
     for (const [table, definition] of Object.entries(TABLES)) {
@@ -225,13 +315,18 @@ export class OperatorSheetsGoogle {
   }
 
   /** Row numbers are physical, one-based Sheet rows; the first data row is 2. */
-  async readRows(table, { startRow = 2, limit = MAX_ROWS } = {}) {
+  async readRows(table, { startRow = 2, limit = MAX_ROWS, rowCount = null } = {}) {
     const definition = tableDefinition(table);
     integer(startRow, 2, MAX_ROW_NUMBER, 'invalid_start_row');
     integer(limit, 1, MAX_ROWS, 'invalid_read_limit');
-    integer(startRow + limit - 1, 2, MAX_ROW_NUMBER, 'invalid_end_row');
+    if (rowCount !== null) integer(rowCount, 1, MAX_ROW_NUMBER, 'invalid_row_count');
+    // A range past the tab's grid is a non-retryable HTTP 400:  clamp to the known bounds
+    // from inspect(), and answer an empty page when the start row is beyond the grid.
+    if (rowCount !== null && startRow > rowCount) return [];
+    const endRow = rowCount === null ? startRow + limit - 1 : Math.min(startRow + limit - 1, rowCount);
+    integer(endRow, 2, MAX_ROW_NUMBER, 'invalid_end_row');
     const body = await this.#values(table,
-      `A${startRow}:${columnName(definition.headers.length)}${startRow + limit - 1}`);
+      `A${startRow}:${columnName(definition.headers.length)}${endRow}`);
     const rows = body.values ?? [];
     if (!Array.isArray(rows) || rows.length > limit || rows.some(row =>
       !Array.isArray(row) || row.length > definition.headers.length ||
@@ -243,23 +338,35 @@ export class OperatorSheetsGoogle {
   }
 
   #row(table, row) {
-    if (!Array.isArray(row) || row.length !== tableDefinition(table).headers.length ||
+    const definition = tableDefinition(table);
+    if (!Array.isArray(row) || row.length !== definition.headers.length ||
         Array.from(row).some(cell => typeof cell !== 'string' || cell.length > 50_000) ||
         !row[0]) fail('invalid_row');
+    // Caller-controlled cell text goes to an external service:  refuse credential-shaped text
+    // before any request.  The refusal names the field, never the value.
+    row.forEach((cell, index) => {
+      if (scanCellText(cell) !== null) {
+        const error = new OperatorSheetsError('credential_in_cell');
+        error.field = definition.headers[index];
+        throw error;
+      }
+    });
     return [...row];
   }
 
-  async #write(table, row, rowNumber = null) {
+  async #write(table, row, rowNumber = null, { validate = true } = {}) {
     const values = this.#row(table, row);
     const endColumn = columnName(values.length);
     const append = rowNumber === null;
     if (!append) integer(rowNumber, 2, MAX_ROW_NUMBER, 'invalid_row_number');
-    // Revalidate each mutation; never create, clear or repair a tab automatically.
-    await this.validateHeaders();
+    // Revalidate each mutation unless the caller already validated this batch (drainOutbox
+    // inspects once per drain); never create, clear or repair a tab automatically.
+    if (validate) await this.validateHeaders();
     const range = rangeFor(table, append ? `A1:${endColumn}` : `A${rowNumber}:${endColumn}${rowNumber}`);
     const result = await this.#request(`/values/${encodeURIComponent(range)}${append ? ':append' : ''}` +
       `?valueInputOption=RAW${append ? '&insertDataOption=INSERT_ROWS' : ''}&includeValuesInResponse=false`, {
       method: append ? 'POST' : 'PUT', body: { majorDimension: 'ROWS', values: [values] },
+      schema: WRITE_RESPONSE,
     });
     const updates = append ? result.updates : result;
     const match = typeof updates?.updatedRange === 'string' && updates.updatedRange.match(
@@ -275,7 +382,7 @@ export class OperatorSheetsGoogle {
     return { rowNumber: confirmedRow };
   }
 
-  appendSession(row) { return this.#write('sessions', row); }
-  updateSessionRow(rowNumber, row) { return this.#write('sessions', row, rowNumber); }
-  appendEvent(row) { return this.#write('events', row); }
+  appendSession(row, options) { return this.#write('sessions', row, null, options); }
+  updateSessionRow(rowNumber, row, options) { return this.#write('sessions', row, rowNumber, options); }
+  appendEvent(row, options) { return this.#write('events', row, null, options); }
 }

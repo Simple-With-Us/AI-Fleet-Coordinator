@@ -40,7 +40,9 @@ RECEIVER_PATH = "scripts/fleet-cli-release.py"
 # (the operator-registry CLI, the platform-letter registry side) use to reach that API.
 # The 149th is fleet_lanes/placement.py, which guard.py imports for the placement mode and exceptions (AFC-618).
 # The 150th is placement-exceptions.json beside it, without which every excused checkout reads as misplaced.
-MAX_FILES = 150
+# The 151st is agent_sync/operator_sheets_google.mjs;  must equal the receiver cap in
+# fleet-cli-release.py or build_bundle() rejects the newly included adapter.
+MAX_FILES = 151
 MAX_BYTES = 8 * 1024 * 1024
 OVERALL_SECONDS = 90
 SSH_SECONDS = 65

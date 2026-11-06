@@ -292,7 +292,8 @@ test("token provider signs a verifiable assertion for the fixed endpoint and cac
     return jsonResponse({ access_token: "ya29.test", token_type: "Bearer", expires_in: 3600 });
   };
   let clock = 1_800_000_000_000;
-  const token = createServiceAccountTokenProvider({ loadServiceAccount: async () => sa, fetch, now: () => clock });
+  const provider = createServiceAccountTokenProvider({ loadServiceAccount: async () => sa, fetch, now: () => clock });
+  const token = provider;
   assert.equal(await token(), "ya29.test");
   assert.equal(await token(), "ya29.test");
   assert.equal(calls, 1);
@@ -321,7 +322,8 @@ test("concurrent token requests share one refresh", async () => {
     await new Promise(r => setTimeout(r, 10));
     return jsonResponse({ access_token: "t", token_type: "bearer", expires_in: 3600 });
   };
-  const token = createServiceAccountTokenProvider({ loadServiceAccount: async () => sa, fetch });
+  const provider = createServiceAccountTokenProvider({ loadServiceAccount: async () => sa, fetch });
+  const token = provider;
   await Promise.all([token(), token(), token()]);
   assert.equal(calls, 1);
 });
@@ -354,7 +356,71 @@ test("a failed refresh is not cached and the next call retries", async () => {
   const fetch = async () => (++calls === 1
     ? new Response("", { status: 500 })
     : jsonResponse({ access_token: "ok", token_type: "Bearer", expires_in: 3600 }));
-  const token = createServiceAccountTokenProvider({ loadServiceAccount: async () => sa, fetch });
+  const provider = createServiceAccountTokenProvider({ loadServiceAccount: async () => sa, fetch });
+  const token = provider;
   await assert.rejects(token(), { code: "http_error" });
   assert.equal(await token(), "ok");
+});
+
+test("credential-shaped cell text is refused before any request, naming the field only", async () => {
+  const fake = fakeSheets();
+  const row = sessionRow();
+  row[6] = "see gh" + "p_" + "x".repeat(36); // built in parts: no credential literal in the fixture
+  const error = await sheetsWith(fake).appendSession(row).catch(e => e);
+  assert.equal(error.code, "credential_in_cell");
+  assert.equal(error.field, "Title");
+  assert.ok(!error.message.includes("x".repeat(36)));
+  assert.equal(fake.requests.length, 0); // refused before validateHeaders or any write
+});
+
+test("readRows clamps the range to the grid and returns an empty page beyond it", async () => {
+  const fake = fakeSheets();
+  const sheets = sheetsWith(fake);
+  const rows = await sheets.readRows("sessions", { startRow: 2, limit: 500, rowCount: 3 });
+  assert.ok(decodeURIComponent(fake.requests.at(-1).url).includes("A2:P3")); // clamped from P501 to the grid height
+  assert.equal(rows.length <= 2, true);
+  const sent = fake.requests.length;
+  const beyond = await sheets.readRows("sessions", { startRow: 60, limit: 10, rowCount: 50 });
+  assert.deepEqual(beyond, []);
+  assert.equal(fake.requests.length, sent); // no request for the empty page
+});
+
+test("token provider errors keep their status and retry metadata", async () => {
+  const fake = fakeSheets();
+  const failing = async () => {
+    throw new OperatorSheetsError("http_error", { status: 429, retryAfterSeconds: 30 });
+  };
+  const error = await sheetsWith(fake, { token: failing }).appendSession(sessionRow()).catch(e => e);
+  assert.equal(error.code, "http_error");
+  assert.equal(error.status, 429);
+  assert.equal(error.retryAfterSeconds, 30);
+});
+
+test("a batch-validated write does not repeat header validation", async () => {
+  const write = () => jsonResponse({
+    spreadsheetId: SPREADSHEET,
+    updates: { updatedRange: "'Operator Sessions'!A3:P3", updatedRows: 1, updatedColumns: 16, updatedCells: 16 },
+  });
+  const fake = fakeSheets({ write });
+  const sheets = sheetsWith(fake);
+  await sheets.validateHeaders();
+  fake.requests.length = 0;
+  await sheets.appendSession(sessionRow(), { validate: false });
+  // No reads of any kind after validation:  the append is the only request, and it is a POST.
+  assert.equal(fake.requests.filter(r => r.method === "GET").length, 0);
+  assert.equal(fake.requests.length, 1);
+  assert.equal(fake.requests[0].method, "POST");
+});
+
+test("oversized, deep or malformed responses fail closed", async () => {
+  const sheets = sheetsWith({ fetch: async () => new Response("x".repeat(4 * 1024 * 1024 + 1), { status: 200 }), requests: [] });
+  await assert.rejects(sheets.readRows("sessions", { startRow: 2, limit: 1 }), { code: "response_too_large" });
+
+  let deep = 1;
+  for (let i = 0; i < 40; i++) deep = { nest: deep };
+  const deepSheets = sheetsWith({ fetch: async () => jsonResponse(deep), requests: [] });
+  await assert.rejects(deepSheets.readRows("sessions", { startRow: 2, limit: 1 }), { code: "invalid_response" });
+
+  const wrongShape = sheetsWith({ fetch: async () => jsonResponse({ values: "not-an-array" }), requests: [] });
+  await assert.rejects(wrongShape.readRows("sessions", { startRow: 2, limit: 1 }), { code: "invalid_response" });
 });

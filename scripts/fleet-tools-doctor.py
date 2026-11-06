@@ -171,6 +171,7 @@ SHIPPED_EXACT = frozenset(
         "scripts/agent_sync/mcp/fleetlink-tools.json",
         # AFC-412 PR2:  mirrors the release EXACT entry for the operator registry outbox exporter.
         "scripts/agent_sync/operator_sheets_export.mjs",
+        "scripts/agent_sync/operator_sheets_google.mjs",
         # AFC-564:  mirrors the release EXACT entry for the OpenCode letter plugin.
         "scripts/agent_sync/opencode_letter_plugin/index.js",
         "docs/protocols/simple-tools-guide.md",

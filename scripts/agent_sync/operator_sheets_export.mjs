@@ -29,13 +29,14 @@ const PAGE_SIZE = 200;
 // Find a sheet row by its first-column id. Returns the 1-based sheet row number or null.
 // Requires ask (a): readRows pages that carry row numbers ({ rowNumber, cells } per row), or a
 // dedicated findSessionRowByRecordId on the adapter for the Sessions tab.
-async function findRowById(adapter, table, id) {
+async function findRowById(adapter, table, id, rowCount = null) {
   if (table === "sessions" && typeof adapter.findSessionRowByRecordId === "function") {
     return adapter.findSessionRowByRecordId(id);
   }
   let startRow = 2; // row 1 is the header
   for (;;) {
-    const page = await adapter.readRows(table, { startRow, limit: PAGE_SIZE });
+    // Clamped to the drain's own inspect bounds: a range past the grid is a non-retryable 400.
+    const page = await adapter.readRows(table, { startRow, limit: PAGE_SIZE, rowCount });
     const rows = page.rows ?? page;
     if (!rows.length) return null;
     for (const r of rows) {
@@ -51,20 +52,20 @@ async function findRowById(adapter, table, id) {
   }
 }
 
-async function upsertSession(adapter, cells) {
-  const rowNumber = await findRowById(adapter, "sessions", cells[0]);
+async function upsertSession(adapter, cells, bounds) {
+  const rowNumber = await findRowById(adapter, "sessions", cells[0], bounds?.sessions?.rowCount ?? null);
   if (rowNumber == null) {
-    await adapter.appendSession(cells);
+    await adapter.appendSession(cells, { validate: false }); // the drain validated once already
     return "appended";
   }
-  await adapter.updateSessionRow(rowNumber, cells);
+  await adapter.updateSessionRow(rowNumber, cells, { validate: false });
   return "updated";
 }
 
-async function appendEventOnce(adapter, cells) {
-  const existing = await findRowById(adapter, "events", cells[0]);
+async function appendEventOnce(adapter, cells, bounds) {
+  const existing = await findRowById(adapter, "events", cells[0], bounds?.events?.rowCount ?? null);
   if (existing != null) return "already-present"; // reconcile by Event ID before append
-  await adapter.appendEvent(cells);
+  await adapter.appendEvent(cells, { validate: false });
   return "appended";
 }
 
@@ -80,14 +81,16 @@ export async function drainOutbox({
   let exported = 0;
   let failed = 0;
   if (!rows.length) return { exported, failed };
-  await adapter.validateHeaders(); // header check before any live write
+  // One inspect per drain: header validation plus the grid bounds that clamp paged reads.
+  // Each write then skips its own revalidation instead of repeating two reads per row.
+  const bounds = await adapter.inspect();
   for (const row of rows) {
     try {
       const payload = typeof row.payload === "string" ? JSON.parse(row.payload) : row.payload;
       if (row.kind === "session_upsert") {
-        await upsertSession(adapter, payload.cells);
+        await upsertSession(adapter, payload.cells, bounds);
       } else if (row.kind === "event_append") {
-        await appendEventOnce(adapter, payload.cells);
+        await appendEventOnce(adapter, payload.cells, bounds);
       } else {
         throw new Error(`unknown outbox kind ${row.kind}`);
       }
