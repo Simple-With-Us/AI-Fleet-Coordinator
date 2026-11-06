@@ -23,6 +23,21 @@ final class NotASeatTests: XCTestCase {
         XCTAssertEqual(registry.liveTags, ["GB-FIXER", "GB-DIRECTOR"])
     }
 
+    /// When the registry cannot be read there are no live tags, and the roster falls back to
+    /// the manifest's seats, which still hold a row for the group.
+    func test_the_group_tag_stays_off_the_roster_when_it_falls_back_to_the_manifest() throws {
+        let json = """
+        {"schemaVersion": 2, "seats": {
+          "CLAUDE": {"platforms": [], "rules": [], "notApplicable": []},
+          "GROK-BOT": {"platforms": [], "rules": [], "notApplicable": []},
+          "GB-FIXER": {"platforms": [], "rules": [], "notApplicable": []}
+        }}
+        """
+        let manifest = try JSONDecoder().decode(SeatManifest.self, from: Data(json.utf8))
+        let emptyRegistry = try manifestRegistry([])
+        XCTAssertEqual(FleetStore.roster(from: emptyRegistry, manifest: manifest), ["CLAUDE", "GB-FIXER"])
+    }
+
     func test_only_the_group_tag_is_set_aside() {
         XCTAssertTrue(NotASeat.contains("GROK-BOT"))
         for seat in ["GB-FIXER", "GROK", "GROK-WEB", "CURSOR", "MM"] {

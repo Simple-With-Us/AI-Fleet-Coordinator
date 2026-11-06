@@ -271,7 +271,9 @@ struct SeatSetupView: View {
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 } else {
-                    ForEach(section.items) { item in
+                    // Rows are told apart by position:  two entries can share a name (a skill
+                    // folder and a `.md` file of the same stem both read as one name).
+                    ForEach(Array(section.items.enumerated()), id: \.offset) { _, item in
                         HStack(alignment: .firstTextBaseline, spacing: 8) {
                             Text(item.name)
                                 .font(.system(size: 12, design: .monospaced))
