@@ -260,20 +260,32 @@ class RuleTests(unittest.TestCase):
         self.assertFalse(bridge.skim_match("[GROK] repo: DealDex\nstate: WIP", SEAT))
         self.assertTrue(bridge.is_own_post("  [INSTINCT->CLAUDE] x", SEAT))
         self.assertFalse(bridge.is_own_post("[CLAUDE->INSTINCT] x", SEAT))
-        # Folder-tag intros (Policy 2026-11-05): spaces, 📁 repos, optional 👀 / multi-thread.
+        # Folder-tag intros (Policy 2026-11-05 FINAL): 📁 repos (no space after), optional 👀 / multi-thread periods or legacy hyphens.
         self.assertTrue(bridge.skim_match("[ INSTINCT 📁 AFC ] hello", SEAT))
         self.assertTrue(bridge.skim_match("👀 [ INSTINCT 📁 AFC, OPS ] quiet", SEAT))
         self.assertTrue(bridge.skim_match("[ INSTINCT: AB-1-M 📁 AFC ] multi", SEAT))
+        self.assertTrue(bridge.skim_match("[INSTINCT 📁AFC] tight", SEAT))
+        self.assertTrue(bridge.skim_match("👀[INSTINCT 📁AFC, OPS] quiet-tight", SEAT))
+        self.assertTrue(bridge.skim_match("[ INSTINCT: AB.1.M 📁AFC ] period-multi", SEAT))
         self.assertFalse(bridge.skim_match("[ CLAUDE 📁 AFC ] unrelated", SEAT))
         self.assertTrue(bridge.is_own_post("[ INSTINCT 📁 AFC ]\nclaim: x", SEAT))
         self.assertTrue(bridge.is_own_post("👀 [ INSTINCT 📁 AFC ]\nclaim: x", SEAT))
         self.assertTrue(bridge.is_own_post("[ INSTINCT: ZZ-2-S 📁 AFC, OPS ]\nx", SEAT))
+        self.assertTrue(bridge.is_own_post("[INSTINCT 📁AFC]\nx", SEAT))
+        self.assertTrue(bridge.is_own_post("[ INSTINCT: ZZ.2.S 📁AFC, OPS ]\nx", SEAT))
         self.assertFalse(bridge.is_own_post("[ CLAUDE 📁 AFC ]\nx", SEAT))
 
     def test_folder_tag_header_accepted(self):
-        self.assertIsNone(bridge.header_error("[ INSTINCT 📁 AFC ]\nclaim: ship it", SEAT))
-        self.assertIsNone(bridge.header_error("👀 [ INSTINCT 📁 AFC, OPS ]\nclaim: quiet", SEAT))
-        self.assertIsNone(bridge.header_error("[ INSTINCT: AB-1-C 📁 AFC ]\nclaim: cloud", SEAT))
+        self.assertIsNone(bridge.header_error("[ INSTINCT 📁 AFC ]
+claim: ship it", SEAT))
+        self.assertIsNone(bridge.header_error("👀 [ INSTINCT 📁 AFC, OPS ]
+claim: quiet", SEAT))
+        self.assertIsNone(bridge.header_error("[ INSTINCT: AB-1-C 📁 AFC ]
+claim: cloud", SEAT))
+        self.assertIsNone(bridge.header_error("[INSTINCT 📁AFC]
+claim: tight", SEAT))
+        self.assertIsNone(bridge.header_error("[ INSTINCT: AB.1.C 📁AFC ]
+claim: period-cloud", SEAT))
         # Folder-tag may still carry a legacy repo: body line.
         self.assertIsNone(bridge.header_error("[ INSTINCT 📁 AFC ]\nrepo: AFC\nstate: WIP", SEAT))
         # Legacy session middle-dot tag still counts as own intro.

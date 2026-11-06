@@ -6,7 +6,7 @@ Such a seat posts to Zulip by commenting on a private "outbox" GitHub issue.  Th
 bridge runs on the Mac, and every tick:
 
   1. reads new comments on the outbox issue (gh api), checks the fleet header shape
-     (legacy [SEAT]/[SEAT->PEER] or folder-tag [ SEAT 📁 repos ] / [ SEAT: LL-#-H 📁 repos ],
+     (legacy [SEAT]/[SEAT->PEER] or folder-tag [SEAT 📁repos] / [SEAT: LL.#.H 📁repos] (legacy hyphen LL-#-H still accepted),
      optional leading 👀; then a repo: line unless 📁 already names repos), and posts each
      good one to #Work-In-Progress with the simple-chat CLI, as that seat's own bot.
      A posted comment
@@ -115,7 +115,7 @@ def _own_intro_re(seat: str):
         r"^(?:👀\s*)?(?:"
         r"\[" + s + r"(?:\]|->|·)"
         r"|"
-        r"\[\s*" + s + r"(?:\s*:\s*[A-Za-z0-9]+-\d+-[MSC])?\s+📁"
+        r"\[\s*" + s + r"(?:\s*:\s*[A-Za-z0-9]+(?:[.-]\d+[.-][MSC]|-\d+-[MSC]))?\s+📁"
         r")"
     )
 
@@ -136,7 +136,8 @@ def header_error(text: str, seat: str):
     if not _own_intro_re(seat).match(first):
         return (
             "first line must start with [%s], [%s->PEER], or folder-tag "
-            "[ %s 📁 repos ] (optional leading 👀)" % (seat, seat, seat)
+            "[%s 📁repos] / [%s: LL.#.H 📁repos] (optional leading 👀)"
+            % (seat, seat, seat, seat)
         )
     has_repo_line = any(re.match(r"^\s*repo:\s*\S", line) for line in lines[1:6])
     has_folder_repos = bool(re.search(r"📁\s*\S", first))
