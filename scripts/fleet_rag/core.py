@@ -145,9 +145,9 @@ def http_json(
     exported, and tests can set/clear them per-case.  A caller that passes `retries` explicitly
     (e.g. the public-fallback REST twin's PUBLIC_RETRIES=1) is never affected by the env var.
 
-    408 (Request Timeout) is retried like 429/5xx: Qdrant's upsert-by-id and delete-by-id are
-    idempotent, so retrying one after a tunnel stall is safe and is exactly what lets a caller
-    behind the SSH tunnel ride out a reconnect instead of failing the whole ingest run.
+    408 (Request Timeout) is retried like 429/5xx: Qdrant's upsert-by-id, set-payload-by-id and
+    delete-by-id/filter calls are idempotent, so retrying one after a tunnel stall replays the
+    exact same bounded point request, never the larger recall operation that planned it.
     """
     if retries is None:
         retries = _env_int(RETRIES_ENV, RETRIES, min_value=0, max_value=MAX_RETRIES)

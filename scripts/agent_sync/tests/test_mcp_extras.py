@@ -857,6 +857,49 @@ class RecallToolTests(FakePrograms):
         self.assertIn("may or may not have landed", retry["message"])
         self.assertEqual(len(self.calls(self.recall_out)), 1)
 
+    def test_disconnected_writes_keep_their_rows_and_retries_are_not_resent(self):
+        cases = [
+            (
+                "recall_contribute",
+                {"text": self.LESSON, "category": "lesson", "idempotency_key": "disconnect-contribute"},
+                "recall: TimeoutError reaching recall.example.test",
+            ),
+            (
+                "recall_correct",
+                {
+                    "doc_id": "contrib/CLAUDE/2026-11-05/472fc36e",
+                    "text": self.LESSON,
+                    "reason": "make the lesson current",
+                    "idempotency_key": "disconnect-correct",
+                },
+                "recall: RemoteDisconnected reaching recall.example.test",
+            ),
+            (
+                "recall_retract",
+                {
+                    "doc_id": "contrib/CLAUDE/2026-11-05/472fc36e",
+                    "reason": "obsolete",
+                    "idempotency_key": "disconnect-retract",
+                },
+                "recall: ConnectionResetError reaching recall.example.test",
+            ),
+        ]
+        for name, args, err in cases:
+            with self.subTest(name=name):
+                before = len(self.calls(self.recall_out))
+                session = self.session(
+                    self.env(RECALL_TEST_EXIT="2", RECALL_TEST_ERR=err, RECALL_TEST_REPLY="{}")
+                )
+                first = self.assert_tool_error(session.call(name, args), "outcome_unknown")
+                retry = self.assert_tool_error(session.call(name, args), "outcome_unknown")
+                self.assertIn("may or may not", first["message"])
+                self.assertIn("may or may not", retry["message"])
+                self.assertEqual(
+                    len(self.calls(self.recall_out)) - before,
+                    1,
+                    "the retained unknown row refused the retry without another write attempt",
+                )
+
     def test_a_rate_limited_mutation_releases_its_idempotency_key(self):
         args = {
             "doc_id": "contrib/CLAUDE/2026-11-05/472fc36e",

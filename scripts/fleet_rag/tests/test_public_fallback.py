@@ -9,6 +9,7 @@ every test that reaches it.
 
 from __future__ import annotations
 
+import http.client
 import os
 import subprocess
 import unittest
@@ -641,7 +642,21 @@ class CallPublicTests(unittest.TestCase):
         self.assertEqual(res, {"hits": [], "mode": "dense"})
 
     def test_mutations_disable_automatic_retries(self):
-        for name in ("recall_correct", "recall_retract"):
+        args = {
+            "recall_contribute": {"text": "x" * 60, "category": "lesson", "seat": "CLAUDE"},
+            "recall_correct": {
+                "doc_id": "contrib/CLAUDE/2026-11-05/472fc36e",
+                "text": "x" * 60,
+                "reason": "make the lesson current",
+                "seat": "CLAUDE",
+            },
+            "recall_retract": {
+                "doc_id": "contrib/CLAUDE/2026-11-05/472fc36e",
+                "reason": "make the lesson current",
+                "seat": "CLAUDE",
+            },
+        }
+        for name, kwargs in args.items():
             seen = {}
 
             def fake_http_json(url, body, headers, method=None, timeout=None, retries=None):
@@ -649,15 +664,32 @@ class CallPublicTests(unittest.TestCase):
                 return {"ok": True, "status": "completed"}
 
             with mock.patch.object(core, "http_json", fake_http_json):
-                public_fallback.call_public(
-                    name,
-                    {
-                        "doc_id": "contrib/CLAUDE/2026-11-05/472fc36e",
-                        "reason": "make the lesson current",
-                        "seat": "CLAUDE",
-                    },
-                )
+                public_fallback.call_public(name, kwargs)
             self.assertEqual(seen["retries"], 0, name)
+
+    def test_a_public_mutation_disconnect_is_one_attempt_not_a_replay(self):
+        kwargs = {
+            "text": "x" * 60,
+            "category": "lesson",
+            "seat": "CLAUDE",
+            "doc_id": "contrib/CLAUDE/2026-11-05/472fc36e",
+            "reason": "make the lesson current",
+        }
+        for name in ("recall_contribute", "recall_correct", "recall_retract"):
+            calls = {"n": 0}
+
+            def disconnected(req, timeout=None):
+                calls["n"] += 1
+                raise http.client.RemoteDisconnected("closed during write")
+
+            with (
+                mock.patch.object(core.urllib.request, "urlopen", disconnected),
+                mock.patch.object(core.time, "sleep") as sleep,
+                self.assertRaisesRegex(FleetRagError, "RemoteDisconnected reaching"),
+            ):
+                public_fallback.call_public(name, kwargs)
+            self.assertEqual(calls["n"], 1, name)
+            sleep.assert_not_called()
 
     def test_stats_is_a_get_with_no_body(self):
         seen = {}
