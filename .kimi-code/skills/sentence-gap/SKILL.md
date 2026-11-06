@@ -564,7 +564,7 @@ A `0` from the first check means the run changed nothing.  Fix it before postin
 A body holds user-supplied text, so it needs the approved credential scan before it is persisted
 and before it leaves the machine.  The scan comes **first**, ahead of every `body*.txt` file: the
 unsaved body reaches the scanner on stdin, so no body file exists while the scan runs and a
-refusal never leaves the text on disk.  The approved scanner is `scripts/agent_sync/secretscan.py`:
+refusal never leaves the text on disk.  The approved scanner is `scripts/simple_tools/secretscan.py`:
 `scan(text, known)` returns the *kind* of secret it found (for example `GitHub token` or `assigned
 secret`) or `None`, and it never returns the matched text, so it is safe to use as the guard.
 `known` is the list of exact values the process has already loaded, if any.
@@ -594,7 +594,7 @@ refusal is not something to work around: do not split the secret, do not edit it
 it in a different surface.
 
 The `simple-chat` CLI is already covered: `_scan_refusal` in
-`scripts/agent_sync/cli.py` refuses a secret-shaped body, topic or channel before the post goes
+`scripts/simple_tools/cli.py` refuses a secret-shaped body, topic or channel before the post goes
 out.  The relay tools `gr_open_pr` and `gr_comment_pr` bypass that CLI, so the
 scan still has to run *before* the relay write.
 
