@@ -15,6 +15,11 @@ import Foundation
 //     allowlist does not name.  Their start and stop are not something an allowlist argv
 //     can say,  so they have no plan,  no Touch ID and no audit row.  Stop still asks,  and
 //     BotFleet Server's Restart asks when a fresh read finds work in flight
+//
+// A start that Muster takes on its own (`ServiceReconciler`) asks `route(forStarting:)` for
+// the same route a Start button would take.  On `.ops` it runs the same helper with the same
+// plan and the same audit row through `OpsController.runUnattended`,  with no sheet and no
+// Touch ID because nobody is there to answer,  and it counts as busy while it runs.
 
 // MARK: - The route
 
@@ -227,12 +232,17 @@ enum FleetActionWords {
 
     /// The line on a row the owner stopped on purpose.  A stop that did not read as landed is
     /// still on the record,  so the line says what the owner asked for and not what happened.
-    static func ownerStopLine(for state: ManagedServiceState) -> String {
+    ///
+    /// With the time the owner stopped it,  the line says so:  "Stopped by you at 2:41 PM".
+    /// Muster never starts a service on this record,  so the line says that too.
+    static func ownerStopLine(for state: ManagedServiceState, at date: Date? = nil) -> String {
+        let when = date.map { " at \(FleetTime.clock($0))" } ?? ""
         switch state {
         case .running, .unknown:
-            return "You asked for this to stop, and it does not read as stopped."
-        case .stopped, .failed, .notInstalled:
-            return "Stopped on purpose;  it stays stopped until it is started again."
+            return "You asked for this to stop\(when), and it does not read as stopped."
+        case .stopped, .failed, .notInstalled, .notInPM2:
+            if date == nil { return "Stopped on purpose;  it stays stopped until it is started again." }
+            return "Stopped by you\(when).\u{00A0} It stays stopped until you start it again, and Muster does not start it."
         }
     }
 
@@ -369,11 +379,31 @@ final class ServiceActionRouter: ObservableObject {
             .dropFirst()
             .sink { [weak self] _ in self?.runCompleted() }
             .store(in: &cancellables)
+        // A start Muster takes on its own stands in the way of the owner's buttons while it
+        // runs,  so the views that read `isBusy` are told when it begins and ends.
+        self.controller.$isRunningUnattended
+            .dropFirst()
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
     }
 
-    /// True while any action,  on either route,  stands in the way of another.
+    /// True while any action,  on either route,  stands in the way of another.  That includes
+    /// a start Muster is taking on its own.
     var isBusy: Bool {
-        directInFlight || admin.busyServiceID != nil || controller.isPresenting
+        directInFlight || admin.busyServiceID != nil || controller.isPresenting || controller.isRunningUnattended
+    }
+
+    /// The route a start of one service would take,  as the owner's own Start would take it,
+    /// for `ServiceReconciler`.
+    func route(forStarting entry: FleetServiceEntry) -> MenuRoute? {
+        MenuRoute.forService(.start, entry: entry, allowlist: allowlist)
+    }
+
+    /// True while an action on the direct route is between its click and its result,  or a
+    /// service is being acted on.  Unlike `isBusy`,  an open plan sheet alone is not counted:
+    /// nothing runs until the owner confirms it.  An update's relaunch waits on this.
+    var hasActionInFlight: Bool {
+        directInFlight || admin.busyServiceID != nil
     }
 
     /// Reads the allowlist again.

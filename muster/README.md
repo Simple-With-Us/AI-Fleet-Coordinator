@@ -14,7 +14,8 @@ An action that ends in … opens a sheet or an alert first.  pm2 rows, allowlis
 
 - `Muster/` contains the app entry point, the Fleet Overview grid (with seat/problem filtering and compliance rules from `fleet-seats.json`), the Fleet View (AFC-394 & AFC-536:  Production/Library/Infra/Marketing apps and Coding Apps from `fleet-apps.json`, plus lanes, open PRs, and Linear claims per seat from `scripts/fleet_view/` and `simple-board`), the Fleet Hosts panel (what the fleet tools doctor's own report says about each host from `~/.local/state/fleet-tools/report.json`, filterable across Coding App CLIs, Fleet Tools, Dev Tools, Services & Harnesses, and Checkouts & Presence), the Server Status panel (AFC-548:  what the server's own collector says about Coolify, its busiest processes, and the drift of the fleet's config files, from `~/.local/state/fleet-tools/server-status.json`), the Seat Activity panel (AFC-395:  where each seat is held, sessions on the Mac, listener state, listener quota and the last Zulip post, per seat), the Wake Settings panel (live Operator status, held-back wake queues, chat nudges, CodeCaps quota, and wake ledger reasons via `scripts/simple-chat`), the Controls panel (Infisical fleet knobs with search and category filters), and the Drift History panel (AFC-390:  every cell that turned red, kept in `~/Library/Application Support/Muster/drift-history.json`).
 - `project.yml` is the XcodeGen source of truth.  The generated Xcode project is ignored.
-- `script/build_and_run.sh` owns local project generation, signing, installation, and launch.
+- Merged changes reach the owner's Mac through Sparkle 2 from releases `.github/workflows/muster-release.yml` signs, notarizes and staples on each merge to main.  `docs/AUTO-UPDATE.md` describes the route, the feed, the gate that holds an install while an action runs, and what is still missing.
+- `script/build_and_run.sh` is the developer route for trying an unmerged lane:  local project generation, signing, installation, and launch.
 - The repository's `.codex/environments/environment.toml` exposes the same script through the Codex **Run** action.
 
 The app reads no credentials of its own.  It has no sample fleet records or inferred health state.  The CLIs it runs are `fleet-config` (see Apply Preview below), only when asked, and `simple-chat`, from the Seat Activity panel and Wake Settings panel.  Collector and grid integration remain separate work.
@@ -70,10 +71,12 @@ The script requires exactly one matching valid Developer ID Application identity
 From the repository root:
 
 ```sh
-MUSTER_BUILD_NUMBER="$MERGED_BUILD_NUMBER" ./muster/script/build_and_run.sh --verify
+./muster/script/build_and_run.sh --verify
 ```
 
-`MERGED_BUILD_NUMBER` is the 12-digit `YYYYMMDDHHMM` value derived from the commit's merge-to-main time in America/Chicago, verified against the current installed build before deployment.  The installer requires `MUSTER_BUILD_NUMBER` and passes it to Xcode as `CURRENT_PROJECT_VERSION`; a missing or malformed value refuses before any build or installation.  Marketing version and signing settings remain those in the project.
+This is the developer route, for a lane on a Mac.  The owner's copy is delivered by the release workflow, never by this script.
+
+The build number is the 12-digit `YYYYMMDDHHMM` time of the commit being built, in UTC, read from git.  The script also stamps the commit, its time and a channel into the Info.plist:  `main` for a clean tree whose commit is on `origin/main` as last fetched, `lane` otherwise (Settings and the menu then say Not From Main), and `development` for `--development`.  `MUSTER_BUILD_NUMBER` overrides the number, and a malformed override refuses before anything runs.  A build numbered below the installed copy is refused unless `--allow-older` is given, because Sparkle would then offer the newer release again.  Marketing version and signing settings remain those in the project.
 
 The default Release configuration builds `services.jays.Muster` with Developer ID signing and hardened runtime enabled.  App Sandbox is disabled to leave room for the separately owned CLI integration; the app currently has no capabilities or custom entitlements.
 
@@ -82,7 +85,7 @@ The script installs the sole normal app copy at `~/Applications/Muster.app`, lau
 If Muster is already running, the script stops before building.  Quit it manually, or explicitly authorize this invocation to terminate only the installed copy:
 
 ```sh
-MUSTER_BUILD_NUMBER="$MERGED_BUILD_NUMBER" ./muster/script/build_and_run.sh --verify --relaunch
+./muster/script/build_and_run.sh --verify --relaunch
 ```
 
 The script never force-kills a process.  A second concurrent invocation fails against a local lock; after an interrupted process, inspect whether a build is still active before removing `muster/.build/run.lock`.
@@ -97,7 +100,7 @@ Full local builds follow the repository build coordination protocol.  The scrip
 ./muster/script/build_and_run.sh --development --verify
 ```
 
-Debug uses `services.jays.Muster.dev`, a distinct development bundle ID.  Both configurations deliberately install to the same `~/Applications/Muster.app` path so they cannot leave multiple normal app copies.  Run the default Release command after quitting a development build to replace it with the stable identity.
+Debug uses `services.jays.Muster.dev`, a distinct development bundle ID.  Both configurations deliberately install to the same `~/Applications/Muster.app` path so they cannot leave multiple normal app copies.  Run the default Release command after quitting a development build to replace it with the stable identity.  A Debug build carries no update feed, so it never updates itself;  a Release lane build does, and the next release from main with a larger build number replaces it.
 
 These bundle IDs are scaffold choices pending product identity onboarding.  They are not a finalized fleet registry, Apple portal, or distribution registration.
 
@@ -146,8 +149,12 @@ xcodebuild -project Muster.xcodeproj -scheme Muster -destination 'platform=macOS
 
 The Operations tab shows what the Hog Hunter Mac app says about this Mac: load, CPU, memory, swap, each mounted volume, the busiest processes by name, the last cleanup, the housekeeper lock, the cleaning regimen, the age of the server snapshot Hog Hunter holds, and its version.  The source is one local file the running app writes about once a minute, `~/.local/state/fleet-tools/hoghunter-mac.json` (tool `hoghunter-mac-status`, schemaVersion 1; decoder `Muster/Model/HogHunterMacReport.swift`).  Muster only reads it and has no control of Hog Hunter: no command, no connection and no credential.  The file's authentication is the file system: Muster reads it only when it is a regular file (not a link), owned by the current user and not writable by group or others, and no larger than 256 KB.  A missing file or a report older than 5 minutes reads as unknown, and the panel says Hog Hunter is not running or has not reported.  A file that fails the ownership or link check, a wrong version or tool, or a malformed file reads as unknown too, but states its own reason instead.  Fields the app could not measure are absent and show as Not reported, never as zero.
 
-## Delivery And Onboarding Limits
+## Delivery And Build Identity
 
-Local Developer ID signing is established from the first build.  This scaffold does not implement notarization, stapling, release packaging, an updater, hosted CI signing, or a public release.  A locally verified signature is not evidence of notarization or completed product onboarding.
+Muster updates itself through Sparkle 2.  `.github/workflows/muster-release.yml` builds, signs, notarizes and staples each merge to main that changes `muster/`, and installed copies read Muster's own feed, the fixed `muster-feed` release, once an hour.  An automatic install waits until no apply, operations run or service action is in flight and Muster is no longer the app in front.  An Install And Relaunch the owner chooses waits only for work in flight.  `docs/AUTO-UPDATE.md` has the whole route.
+
+Settings ▸ This Build and the foot of the menu show the version, the build number and the short commit, with Development Build or Not From Main when that applies, and the commit of the checkout Muster runs its Python from, saying plainly when the two differ.
+
+What is not done yet:  Muster's own Sparkle key does not exist, and the release's read tokens may not exist in this repository, so the workflow builds and verifies and publishes nothing until they do (it names what is missing).  The copy on the owner's Mac predates Sparkle and needs one Sparkle-enabled install by a Mac seat.  Both are in `docs/AUTO-UPDATE.md`.
 
 Muster currently lives inside an existing application repository.  The current onboarding flow does not directly fit this nested product; use the existing product registry rather than creating duplicate infrastructure.  Product identity, registration applicability, and future onboarding remain pending.  Only authorized maintainers may perform that setup.

@@ -104,7 +104,7 @@ does it today.
 | The Zulip to Linear mirror | `scripts/agent_sync/linear_relay.py`: one comment per `(issue, topic)`, edited in place, ten minute batching, direct messages and private streams excluded | built (AFC-502, PR #899) |
 | The listener's read API the eavesdropper reads | `scripts/agent_sync/listener_api.py`: five signed GET endpoints under `/listener/v1/<SEAT>/<record>` | built (AFC-330 part B) |
 | The Operator waking MM on Lark | `docs/protocols/lark-mm-bridge.md`: the Operator runs the bridge with `--signal` and the text, and the bridge, the only holder of the Lark bot identity, sends it, runs the seat turn and puts the answer back in the same chat | built |
-| The Fleet Reference sheet adapter | the exporter depends on an adapter surface (`inspect()`, `validateHeaders()`, `readRows()`, `appendSession()`, `updateSessionRow()`, `appendEvent()`) that is deliberately another seat's slice, so the exporter is written against it rather than owning it | built, owned elsewhere |
+| The Fleet Reference sheet adapter | `scripts/agent_sync/operator_sheets_google.mjs`: the Google Sheets transport behind the exporter's adapter surface (`inspect()`, `validateHeaders()`, `readRows()`, `appendSession()`, `updateSessionRow()`, `appendEvent()`), with `SESSION_HEADERS` and `EVENT_HEADERS` as the authoritative header contract | built (AFC-428) |
 
 Two facts about the existing code shape the discussion below.
 
@@ -312,12 +312,38 @@ summary and not for itself.
 The Sessions tab already carries a Host column for the location, so the tab needs one new
 column and not two.
 
-**The sheet adapter is not in this repository.**  `scripts/agent_sync/operator_sheets_export.mjs`
-writes the Sessions and Events tabs and depends on an adapter surface  (`inspect()`,
-`validateHeaders()`, `readRows()`, `appendSession()`, `updateSessionRow()`, `appendEvent()`)  that its
-own header records as deliberately another seat's slice.  So the new column is a request to that
-adapter's owner, not a change made here, and the sheet's own header list and validation have to
-accept it before a row can carry it.
+**The sheet adapter is `scripts/agent_sync/operator_sheets_google.mjs`.**  It is the Google
+Sheets transport the exporter writes through (`inspect()`, `validateHeaders()`, `readRows()`,
+`appendSession()`, `updateSessionRow()`, `appendEvent()`), and its `SESSION_HEADERS` and
+`EVENT_HEADERS` are the authoritative header contract the tabs are validated against.  So the new
+column is a change to that header contract first:  the sheet's own header list and validation have
+to accept it before a row can carry it.
+
+**Exporter adapter contract.** `inspect()` returns
+`{ sessions: { rowCount }, events: { rowCount } }`. Each `rowCount` is the positive
+safe-integer physical grid row count, including the header. `readRows(table,
+{ startRow, limit })` returns an array, or `{ rows: [...] }`, of
+`{ rowNumber, cells }` records with 1-based physical row numbers inside the requested
+page. The exporter also accepts `row` and `values` aliases. Empty or short values
+pages do not end the physical grid scan. Duplicate matching Record IDs or Event IDs
+refuse a write. `findSessionRowByRecordId` and optional fast lookups are unsupported:
+they cannot prove destination uniqueness.
+
+The runner MUST hold one exclusive cross-process writer lease across reconciliation,
+write and acknowledgement, with no concurrent manual row restructuring. An error
+keeps the earliest outbox row pending and stops the batch so later snapshots cannot
+overtake it. After a confirmed Sheets append and failed registry acknowledgement,
+replay first scans the immutable ID: an existing event is acknowledged without
+another append. A truly unknown Sheets transport outcome can commit late. An
+exclusive writer alone does not prove that an ID absent from a read will stay
+absent, so the runner must not automatically resume such an uncertain drain until
+the outstanding request is settled or safely reconciled. The exporter does not
+persist a general durable `ok`/`unknown`/`refused` mutation ledger; the required
+runner handling of truly unknown Sheets writes remains an integration gap.
+A duplicate needs destination repair before draining resumes; skipping it or adding
+a failure/quarantine state would require a separate ordering and schema design.
+Repeated full-grid scans are an explicit safety/performance tradeoff; a reusable
+index needs a separately qualified runner lease and destination-mutation contract.
 
 **The citations for the pieces this discussion rests on.**
 

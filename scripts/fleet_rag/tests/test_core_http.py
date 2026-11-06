@@ -9,6 +9,7 @@ test actually waits out a backoff.
 """
 from __future__ import annotations
 
+import http.client
 import io
 import json
 import os
@@ -102,6 +103,86 @@ class Http408RetryTests(unittest.TestCase):
             with self.assertRaisesRegex(FleetRagError, "HTTP 404"):
                 core.http_json("https://x.test/path")
         self.assertEqual(calls["n"], 1)
+
+
+class HttpWriteRetryTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.env = mock.patch.dict(os.environ, {}, clear=False)
+        self.env.start()
+        os.environ.pop(core.RETRIES_ENV, None)
+        os.environ.pop(core.BACKOFF_MAX_ENV, None)
+        self.sleep = mock.patch.object(core.time, "sleep")
+        self.sleep.start()
+
+    def tearDown(self) -> None:
+        self.sleep.stop()
+        self.env.stop()
+
+    def test_a_disconnect_retries_the_same_bounded_write_and_counts_attempts(self) -> None:
+        attempts = []
+
+        def flaky(req, timeout=None):
+            attempts.append(req.data)
+            if len(attempts) < 3:
+                raise http.client.RemoteDisconnected("closed during write")
+            return FakeResponse({"status": "ok"})
+
+        with mock.patch.object(core.urllib.request, "urlopen", flaky):
+            result = core.http_json(
+                "https://qdrant.example.test/collections/fleet/points?wait=true",
+                {"points": [{"id": "point-1", "payload": {"doc_id": "x"}}]},
+                method="PUT",
+                retries=2,
+            )
+        self.assertEqual(result, {"status": "ok"})
+        self.assertEqual(len(attempts), 3)
+        self.assertTrue(all(body == attempts[0] for body in attempts))
+
+    def test_an_exhausted_reset_reports_the_shape_after_counted_write_attempts(self) -> None:
+        calls = {"n": 0}
+
+        def reset(req, timeout=None):
+            calls["n"] += 1
+            raise ConnectionResetError("connection reset by peer")
+
+        with mock.patch.object(core.urllib.request, "urlopen", reset):
+            with self.assertRaisesRegex(FleetRagError, "ConnectionResetError reaching"):
+                core.http_json(
+                    "https://qdrant.example.test/collections/fleet/points/payload?wait=true",
+                    {"points": ["point-1"], "payload": {"retracted": True}},
+                    method="POST",
+                    retries=2,
+                )
+        self.assertEqual(calls["n"], 3)
+
+
+class QdrantRetrieveValidationTests(unittest.TestCase):
+    def qdrant(self):
+        return core.Qdrant({
+            "QDRANT_URL": "https://qdrant.example.test",
+            "QDRANT_API_KEY": "key",
+            "QDRANT_FLEET_COLLECTION": "fleet",
+        })
+
+    def test_retrieve_validates_the_third_party_envelope(self):
+        q = self.qdrant()
+        point = {"id": "point-1", "payload": {"doc_id": "x"}, "vector": [0.1, 0.2]}
+        with mock.patch.object(core.Qdrant, "_call", return_value={"result": point}):
+            self.assertEqual(q.retrieve("point-1"), point)
+
+    def test_retrieve_fails_closed_on_malformed_third_party_shapes(self):
+        q = self.qdrant()
+        cases = [
+            ("malformed response", []),
+            ("malformed point", {"result": None}),
+            ("valid id", {"result": {"id": "", "payload": {}}}),
+            ("invalid payload", {"result": {"id": "point-1", "payload": []}}),
+            ("invalid vector", {"result": {"id": "point-1", "payload": {}, "vector": "bad"}}),
+        ]
+        for message, response in cases:
+            with self.subTest(message=message), mock.patch.object(core.Qdrant, "_call", return_value=response):
+                with self.assertRaisesRegex(FleetRagError, message):
+                    q.retrieve("point-1")
 
 
 class RetryEnvOverrideTests(unittest.TestCase):
