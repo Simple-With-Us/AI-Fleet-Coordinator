@@ -1,6 +1,6 @@
 """A stand-in `simple-chat` for the needs-owner tests.
 
-It parses argv with the REAL parser of scripts/agent_sync/cli.py (so a wrong flag, or a flag in the wrong
+It parses argv with the REAL parser of scripts/simple_tools/cli.py (so a wrong flag, or a flag in the wrong
 place, fails as it would for real), keeps topics and messages in a JSON file, and records every call with
 its standard input.
 
@@ -19,7 +19,7 @@ Besides post, reply and read it answers whoami, verify-owner-msg (the real rule:
 topic, newer than --after), topics and channels.  `read --json` prints the keys of the real `message_json`, with the
 real `message_reactions` and the real seat_app lookup.
 
-`read --json` prints one line per message with the keys of the real `message_json` in scripts/agent_sync/cli.py
+`read --json` prints one line per message with the keys of the real `message_json` in scripts/simple_tools/cli.py
 (a test compares the two key sets), so a filter on `is_bot` or `seat` passes or fails here as it would for real.
 """
 import json
@@ -33,7 +33,7 @@ ZULIP_JSON = os.path.join(STATE, "zulip.json")
 CALLS = os.path.join(STATE, "calls.jsonl")
 sys.path.insert(0, SCRIPTS)
 
-from agent_sync import cli as C  # noqa: E402
+from simple_tools import cli as C  # noqa: E402
 
 
 def load():
@@ -93,8 +93,8 @@ def message_json(m):
 
 def main():
     argv = sys.argv[1:]
-    # The fake realm is "work-in-progress" (the renamed #agent-sync):  pin it the way
-    # agent_sync/tests/harness.py pins its own, or channel-less commands lose the realm.
+    # The fake realm is "work-in-progress" (the renamed #simple-tools):  pin it the way
+    # simple_tools/tests/harness.py pins its own, or channel-less commands lose the realm.
     args = C.build_parser(channel_default="work-in-progress").parse_args(argv)
     stdin = ""
     if getattr(args, "text", None) == ["-"]:

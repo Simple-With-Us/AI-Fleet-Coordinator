@@ -121,7 +121,7 @@ from urllib.parse import urlparse
 
 here, tag, short = sys.argv[1:4]
 sys.path.insert(0, str(Path(here) / "scripts"))
-from agent_sync.zulip import UsageError, credential_file_name, normalise_seat  # noqa: E402
+from simple_tools.zulip import UsageError, credential_file_name, normalise_seat  # noqa: E402
 
 try:
     seat = normalise_seat(tag)
@@ -235,7 +235,7 @@ echo "  5. Intro, once per session, before the first claim:"
 echo "       AGENT_SEAT=$TAG simple-chat post --topic \"roll call\" \"online  |  <platform>  |  cadence:  <listen|wait|per-turn read>"
 echo "       can:  <what this session can do>\""
 echo "     The CLI writes the [${TAG}·session8] tag itself.  Read the room first:  simple-chat inbox"
-echo "  6. Listener: docs/protocols/agent-sync-partition.toml must list $TAG as mac or server, in the"
+echo "  6. Listener: docs/protocols/simple-tools-partition.toml must list $TAG as mac or server, in the"
 echo "     PR that enables it and with Jay's OK.  A listener refuses a seat the file does not give to"
 echo "     its own instance, and a seat must never be in both."
 echo "  7. Add the seat to the Who's Here roster in docs/protocols/zulip-fleet-guide.md (mention, bot"

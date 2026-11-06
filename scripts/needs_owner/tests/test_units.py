@@ -219,14 +219,14 @@ class F3Tests(unittest.TestCase):
         self.assertEqual(f3.textsafe.render_untrusted("@x", 10, code_span=False), "＠x")
         self.assertIsNone(f3.secretscan.scan("plain words"))
 
-    def test_the_package_never_imports_agent_sync(self) -> None:
+    def test_the_package_never_imports_simple_tools(self) -> None:
         import subprocess
         import sys
 
         from .world import SCRIPTS
 
         code = ("import sys; sys.path.insert(0, %r); import needs_owner.cli, needs_owner.verbs; "
-                "bad = [m for m in sys.modules if m == 'agent_sync' or m.startswith('agent_sync.')]; "
+                "bad = [m for m in sys.modules if m == 'simple_tools' or m.startswith('simple_tools.')]; "
                 "sys.exit(1 if bad else 0)" % str(SCRIPTS))
         self.assertEqual(subprocess.run([sys.executable, "-I", "-c", code]).returncode, 0)
 

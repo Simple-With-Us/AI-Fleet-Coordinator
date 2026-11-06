@@ -15,7 +15,7 @@ from typing import NamedTuple
 from .errors import Refusal
 
 DEFAULT_REALM = "https://simplewithus.zulipchat.com"
-DEFAULT_CHANNEL = "work-in-progress"  # the realm renamed #agent-sync;  AGENT_SYNC_CHANNEL overrides
+DEFAULT_CHANNEL = "work-in-progress"  # AGENT_SYNC_CHANNEL overrides
 
 
 def resolve_channel(environ: dict | None = None) -> str:

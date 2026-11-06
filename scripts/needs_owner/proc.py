@@ -137,7 +137,7 @@ class Runner:
         except ValueError:
             raise BoardFailed("board %s did not return JSON" % args[0]) from None
 
-    def agent_sync(self, *args: str, stdin: str | None = None) -> Result:
+    def simple_tools(self, *args: str, stdin: str | None = None) -> Result:
         return self._run("simple-chat", args, stdin, AGENT_SYNC_TIMEOUT)
 
     def require_board(self) -> None:
