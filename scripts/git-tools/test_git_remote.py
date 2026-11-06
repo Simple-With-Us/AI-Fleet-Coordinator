@@ -1901,12 +1901,27 @@ PUBLISH_TOOLS = [
     ),
     make_tool(
         "gr_wf_branch_get",
-        {"type": "object", "properties": {"repo": {"type": "string"}, "branch": {"type": "string"}, "identity": {"type": "string"}}},
+        {
+            "type": "object",
+            "properties": {
+                "repo": {"type": "string"},
+                "branch": {"type": "string"},
+                "identity": {"type": "string"},
+            },
+        },
         "branch get",
     ),
     make_tool(
         "gr_wf_tree",
-        {"type": "object", "properties": {"repo": {"type": "string"}, "sha": {"type": "string"}, "recursive": {"type": "boolean"}, "identity": {"type": "string"}}},
+        {
+            "type": "object",
+            "properties": {
+                "repo": {"type": "string"},
+                "sha": {"type": "string"},
+                "recursive": {"type": "boolean"},
+                "identity": {"type": "string"},
+            },
+        },
         "tree",
     ),
 ]
@@ -1916,7 +1931,11 @@ PUBLISH_COMMIT = "2" * 40
 
 
 def _ok_result(structured):
-    return {"structuredContent": structured, "content": [{"type": "text", "text": "done"}], "isError": False}
+    return {
+        "structuredContent": structured,
+        "content": [{"type": "text", "text": "done"}],
+        "isError": False,
+    }
 
 
 def _publish_setup(testcase, tree_entries, include_tree_tool=True):
@@ -1930,7 +1949,11 @@ def _publish_setup(testcase, tree_entries, include_tree_tool=True):
     key = git._publish_key("o/r", "feature", "main", "m", files)
     store = {key: {"batches": {"branch": "ok", "1": "ok"}}}
     (Path(tmp.name) / "publish-outcomes.json").write_text(json.dumps(store))
-    tools = list(PUBLISH_TOOLS) if include_tree_tool else [t for t in PUBLISH_TOOLS if t["name"] != "gr_wf_tree"]
+    tools = (
+        list(PUBLISH_TOOLS)
+        if include_tree_tool
+        else [t for t in PUBLISH_TOOLS if t["name"] != "gr_wf_tree"]
+    )
     transport = FakeTransport(
         pages=[tools],
         seat="CODEX",
@@ -1943,11 +1966,16 @@ def _publish_setup(testcase, tree_entries, include_tree_tool=True):
     code, out, err = run_cli(
         [
             "publish",
-            "--repo", "o/r",
-            "--branch", "feature",
-            "--base", "main",
-            "--message", "m",
-            "--file", f"{local}=docs/x.md",
+            "--repo",
+            "o/r",
+            "--branch",
+            "feature",
+            "--base",
+            "main",
+            "--message",
+            "m",
+            "--file",
+            f"{local}=docs/x.md",
         ],
         env={"SIMPLE_TOOLS_BEARER": BEARER, "SIMPLE_GIT_STATE_DIR": tmp.name},
         transport=transport,
