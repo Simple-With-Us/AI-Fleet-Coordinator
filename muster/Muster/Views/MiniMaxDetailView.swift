@@ -16,6 +16,8 @@ struct MiniMaxDetailView: View {
     /// a list is empty are not drawn until a reading exists.
     @State private var surface: MiniMaxSurface?
     @State private var reading = false
+    /// The number of the latest reading, so an older one cannot overwrite a newer one.
+    @State private var generation = 0
     @State private var showPlugins = false
     @State private var showSettings = false
     @State private var showChannels = false
@@ -46,8 +48,13 @@ struct MiniMaxDetailView: View {
     }
 
     private func reload() async {
+        // Each reading takes a number.  A reading that was cancelled or overtaken by a
+        // later one is not allowed to clear `reading` or replace the newer surface: its
+        // detached disk read still finishes, so a `defer` would unlock Read Again while
+        // the newer reading is in flight.
+        generation += 1
+        let mine = generation
         reading = true
-        defer { reading = false }
         let roster = Set(store.roster)
         let home = FileManager.default.homeDirectoryForCurrentUser
         let proofs = store.hookProofs(seat: seat)
@@ -66,6 +73,8 @@ struct MiniMaxDetailView: View {
                 proofs: proofs
             )
         }.value
+        guard mine == generation else { return }
+        reading = false
         guard !Task.isCancelled else { return }
         surface = loaded
     }
@@ -192,7 +201,7 @@ struct MiniMaxDetailView: View {
             } else {
                 VStack(alignment: .leading, spacing: 12) {
                     ForEach(surface.hooks) { hook in
-                        HookRow(hook: hook)
+                        HookRow(hook: hook, engineAnswered: store.phase == .loaded)
                         if hook.id != surface.hooks.last?.id {
                             Divider()
                         }
@@ -326,6 +335,7 @@ struct MiniMaxDetailView: View {
 /// selected and copied.
 private struct HookRow: View {
     let hook: MiniMaxSurface.Hook
+    let engineAnswered: Bool
 
     var body: some View {
         let needsLook = MiniMaxCopy.needsLook(hook.proof)
@@ -341,7 +351,7 @@ private struct HookRow: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            Text(MiniMaxCopy.proofText(hook.proof))
+            Text(MiniMaxCopy.proofText(hook.proof, engineAnswered: engineAnswered))
                 .font(.callout.weight(needsLook ? .semibold : .regular))
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)

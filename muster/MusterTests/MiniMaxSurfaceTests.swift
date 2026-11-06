@@ -782,6 +782,16 @@ final class MiniMaxSurfaceTests: XCTestCase {
         XCTAssertTrue(items.contains("The engine has not answered, so nothing on this panel is proved."))
         XCTAssertFalse(items.contains { $0.contains("no row for seat") })
 
+        // A hook with no proof before the engine answers is not called "no rule" either.
+        XCTAssertEqual(
+            MiniMaxCopy.proofText(nil, engineAnswered: false),
+            "Not proved: the engine has not answered yet."
+        )
+        XCTAssertTrue(
+            items.contains("The PreToolUse hook fleet-guard-hook is not proved: the engine has not answered.")
+        )
+        XCTAssertFalse(items.contains { $0.contains("has no rule") })
+
         XCTAssertEqual(
             MiniMaxCopy.verdictsEmptyText(phase: .running, seat: "MM"),
             "The engine has not answered yet, so there is no answer to show."

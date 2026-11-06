@@ -1070,9 +1070,17 @@ enum MiniMaxCopy {
     ///
     /// A hook with no proof reads as unproved rather than as fine:  "installed" and
     /// "protecting" are different states.
-    static func proofText(_ proof: MiniMaxSurface.HookProof?, now: Date = Date()) -> String {
+    static func proofText(
+        _ proof: MiniMaxSurface.HookProof?,
+        engineAnswered: Bool = true,
+        now: Date = Date()
+    ) -> String {
         guard let proof else {
-            return "Not proved: the engine has no rule for this hook."
+            // The store holds no proofs until the engine has answered, so "no rule" is
+            // only true after it has.
+            return engineAnswered
+                ? "Not proved: the engine has no rule for this hook."
+                : "Not proved: the engine has not answered yet."
         }
         let checked: String
         if let checkedAt = proof.checkedAt {
@@ -1267,9 +1275,8 @@ enum MiniMaxAttention {
                 }
             } else {
                 // No proof is "installed" without "protecting", never fine.
-                items.append(
-                    "The \(hook.event) hook \(hook.hookId) is not proved: the engine has no rule for it."
-                )
+                let why = engineAnswered ? "the engine has no rule for it" : "the engine has not answered"
+                items.append("The \(hook.event) hook \(hook.hookId) is not proved: \(why).")
             }
             if !hook.enabled {
                 items.append("The \(hook.event) hook \(hook.hookId) is switched off in its manifest.")
