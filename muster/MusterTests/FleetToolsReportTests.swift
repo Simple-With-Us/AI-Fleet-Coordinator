@@ -102,8 +102,8 @@ final class FleetToolsReportTests: XCTestCase {
 
     /// Each host carries its own time,  which the panel shows beside the report's.
     ///
-    /// The server's doctor runs on its own timer,  so its half of the report is
-    /// routinely older than the Mac's,  and the panel says so instead of hiding it.
+    /// The Mac's doctor reads the server's half live on each run,  so the two times are
+    /// normally close,  and the panel shows each one instead of hiding a difference.
     func test_a_host_carries_its_own_age() throws {
         let now = Date()
         let json = report(

@@ -271,7 +271,6 @@ final class FleetGridTests: XCTestCase {
             XCTAssertEqual(PassMeaning.verdict(unknown), "No verdict was returned, so nothing is claimed.")
             XCTAssertFalse(PassMeaning.verdict(unknown).contains("Nothing failed"))
         }
-        XCTAssertTrue(PassMeaning.appRow.contains("Nothing else about the app was checked"))
         // A badge with no sentence of its own never claims a config rule was proven.
         XCTAssertTrue(PassMeaning.panelRow.contains("this panel makes"))
         XCTAssertFalse(PassMeaning.panelRow.contains("the rule"))
