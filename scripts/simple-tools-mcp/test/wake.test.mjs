@@ -76,7 +76,7 @@ test("a stale or future sent_at is refused", async () => {
 test("the body's seat must be the path's seat, and the contract must match", async () => {
   const other = wakeBody({ seat: "GROK-WEB" });
   assert.equal((await verifyWake({ bytes: other, signature: pySig(KEY, other), key: KEY, seat: "JET", now: NOW })).reason, "seat_mismatch");
-  const contract = wakeBody({ contract: "agent-sync-wake/2" });
+  const contract = wakeBody({ contract: "simple-tools-wake/2" });
   assert.equal((await verifyWake({ bytes: contract, signature: pySig(KEY, contract), key: KEY, seat: "JET", now: NOW })).reason, "bad_contract");
   const badId = wakeBody({ wake_id: "../../etc" });
   assert.equal((await verifyWake({ bytes: badId, signature: pySig(KEY, badId), key: KEY, seat: "JET", now: NOW })).reason, "bad_wake_id");

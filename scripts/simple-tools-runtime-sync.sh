@@ -1,5 +1,5 @@
 #!/bin/bash
-# agent-sync-runtime-sync.sh  --  keep the agent-sync runtime checkout on AFC origin/main.
+# simple-tools-runtime-sync.sh  --  keep the simple-tools runtime checkout on AFC origin/main.
 #
 # The always-on Zulip listener (com.jay.operator) and the `simple-chat` CLI run from a
 # dedicated managed checkout, never from the human integration tree ~/Code/AI-Fleet-Coordinator:
@@ -12,15 +12,15 @@
 #      origin/main detached;
 #   3. smoke-tests the new code (`simple-chat --version`); on failure it goes back to the old commit and
 #      remembers the bad commit so it is not retried until origin/main moves again;
-#   4. if the change touched scripts/agent_sync/, scripts/simple-chat, plugins/simple-chat/, .claude-plugin/
-#      or docs/protocols/agent-sync-partition.toml, kickstarts the listener so it loads the new code.
+#   4. if the change touched scripts/simple_tools/, scripts/simple-chat, plugins/simple-chat/, .claude-plugin/
+#      or docs/protocols/simple-tools-partition.toml, kickstarts the listener so it loads the new code.
 # A dirty runtime worktree is logged and skipped.  It is never reset, cleaned or stashed.
 #
 # Pause:   touch ~/.agent-sync/runtime-sync.pause   (resume: rm it)
 #          or  launchctl bootout gui/$(id -u)/com.jay.agent-sync-runtime-sync
-# Log:     ~/apps/logs/agent-sync-runtime-sync.log   (no-op runs are silent)
-# Tracked copy: scripts/agent-sync-runtime-sync.sh in AI-Fleet-Coordinator.  The live copy is a regular file
-# at ~/apps/agent-sync-runtime-sync.sh, never a symlink into the checkout it updates (a checkout would
+# Log:     ~/apps/logs/simple-tools-runtime-sync.log   (no-op runs are silent)
+# Tracked copy: scripts/simple-tools-runtime-sync.sh in AI-Fleet-Coordinator.  The live copy is a regular file
+# at ~/apps/simple-tools-runtime-sync.sh, never a symlink into the checkout it updates (a checkout would
 # rewrite the script while bash is reading it).
 set -u
 
@@ -30,9 +30,9 @@ STATE_DIR="$HOME/.agent-sync"
 LOCK_DIR="$STATE_DIR/runtime-sync.lock"
 PAUSE_FILE="$STATE_DIR/runtime-sync.pause"
 BAD_FILE="$STATE_DIR/runtime-sync.bad-sha"
-LOG="${AGENT_SYNC_RUNTIME_SYNC_LOG:-$HOME/apps/logs/agent-sync-runtime-sync.log}"
+LOG="${AGENT_SYNC_RUNTIME_SYNC_LOG:-$HOME/apps/logs/simple-tools-runtime-sync.log}"
 GIT_TIMEOUT=60
-RESTART_RE='^(scripts/agent_sync/|scripts/simple-chat$|plugins/simple-chat/|\.claude-plugin/|docs/protocols/agent-sync-partition\.toml$)'
+RESTART_RE='^(scripts/simple_tools/|scripts/simple-chat$|plugins/simple-chat/|\.claude-plugin/|docs/protocols/simple-tools-partition\.toml$)'
 PLUGIN_RE='^(plugins/simple-chat/|\.claude-plugin/)'
 
 export PATH="/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"

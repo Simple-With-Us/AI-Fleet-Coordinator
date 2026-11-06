@@ -19,7 +19,7 @@ import { ROOT, testEnv } from "./helpers.mjs";
 
 const config = loadConfig(testEnv());
 const MARKER_RE = /(BEGIN|END)[^\p{L}\p{N}]*UNTRUSTED[^\p{L}\p{N}]*ZULIP/iu;
-const FIXTURES_PATH = path.join(ROOT, "../agent_sync/mcp/fixtures.jsonl");
+const FIXTURES_PATH = path.join(ROOT, "../simple_tools/mcp/fixtures.jsonl");
 const fixtures = (kind) =>
   readFileSync(FIXTURES_PATH, "utf8").split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("//"))
     .map((l) => JSON.parse(l)).filter((c) => c.kind === kind && (c.transports ?? ["hosted"]).includes("hosted"));

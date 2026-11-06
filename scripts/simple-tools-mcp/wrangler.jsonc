@@ -1,5 +1,5 @@
 {
-  // Hosted ST-MCP server (docs/protocols/agent-sync-mcp.md section 3).
+  // Hosted ST-MCP server (docs/protocols/simple-tools-mcp.md section 3).
   // Account Usage.Jays.Services, hostname agents.simplewithus.com (decision D1;
   // hard cutover from agent-sync.jays.services, owner ruling Oct 22, 2026).
   // Deploy by hand from DEPLOY.md.  Never from CI and never on merge:  agents
@@ -168,7 +168,7 @@
       "JET": {
         // ChatGPT's newer connectors send their own callback and client metadata
         // document.  The first pair is the older shared one;  the second pair is
-        // Jay's Agent-Sync connector, copied from the refusal log (Fri, Oct 9,
+        // Jay's Simple-Tools connector, copied from the refusal log (Fri, Oct 9,
         // 8:05pm).  Add each connector's pair by hand as exact strings, never a
         // pattern, so another ChatGPT user's connector id stays refused.
         "redirect_uris": [
