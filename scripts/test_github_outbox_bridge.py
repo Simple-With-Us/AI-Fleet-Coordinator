@@ -280,7 +280,9 @@ class RuleTests(unittest.TestCase):
         self.assertIsNone(bridge.header_error("👀 [ INSTINCT 📁 AFC, OPS ]\nclaim: quiet", SEAT))
         self.assertIsNone(bridge.header_error("[ INSTINCT: AB-1-C 📁 AFC ]\nclaim: cloud", SEAT))
         self.assertIsNone(bridge.header_error("[INSTINCT 📁AFC]\nclaim: tight", SEAT))
-        self.assertIsNone(bridge.header_error("[ INSTINCT: AB.1.C 📁AFC ]\nclaim: period-cloud", SEAT))
+        self.assertIsNone(
+            bridge.header_error("[ INSTINCT: AB.1.C 📁AFC ]\nclaim: period-cloud", SEAT)
+        )
         # Folder-tag may still carry a legacy repo: body line.
         self.assertIsNone(bridge.header_error("[ INSTINCT 📁 AFC ]\nrepo: AFC\nstate: WIP", SEAT))
         # Legacy session middle-dot tag still counts as own intro.

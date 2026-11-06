@@ -136,8 +136,7 @@ def header_error(text: str, seat: str):
     if not _own_intro_re(seat).match(first):
         return (
             "first line must start with [%s], [%s->PEER], or folder-tag "
-            "[%s 📁repos] / [%s: LL.#.H 📁repos] (optional leading 👀)"
-            % (seat, seat, seat, seat)
+            "[%s 📁repos] / [%s: LL.#.H 📁repos] (optional leading 👀)" % (seat, seat, seat, seat)
         )
     has_repo_line = any(re.match(r"^\s*repo:\s*\S", line) for line in lines[1:6])
     has_folder_repos = bool(re.search(r"📁\s*\S", first))
