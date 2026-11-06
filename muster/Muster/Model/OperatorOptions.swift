@@ -2,12 +2,14 @@ import Foundation
 
 /// The Operator's own options.
 ///
-/// The Operator is a service seat:  a bot that would carry fleet operations under its own
-/// name and issue the fleet's session letters.  It is not provisioned yet.
+/// The Operator is the fleet's service bot:  the eavesdropper posts its digest, its notices and
+/// its typing through the Operator's own Zulip identity, and builds that client on first use from
+/// Fleet-OPS `/zulip_operator` (`docs/protocols/agent-sync-listener.md`).  The Mac needs no
+/// `[seat.OPERATOR]` section for that, so a file without one is not a fault.
 ///
 /// The app reads no credentials,  so it cannot say whether the Operator's key exists.  What
-/// it shows is the identity the Operator must have,  where each name lives,  and whether the
-/// configuration file gives it one.
+/// it shows is the identity the Operator must have,  where each name lives,  and whether a
+/// section the file does hold keeps the rules the runtime enforces.
 struct OperatorOptions: Equatable {
     /// One name the Operator needs.
     struct Name: Equatable, Identifiable {
@@ -55,9 +57,6 @@ struct OperatorOptions: Equatable {
         ),
     ]
 
-    /// The letters the Operator issues session letters from.
-    static let letterPool = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-
     /// Whether the configuration file has a section for the Operator.
     var isConfigured: Bool = false
     /// The bot name the configuration file gives it.
@@ -68,7 +67,7 @@ struct OperatorOptions: Equatable {
     var wake: String?
     /// The rules the configuration file breaks.
     var brokenRules: [String] = []
-    /// The one thing that is wrong,  when the Operator cannot be provisioned.
+    /// The one thing that is wrong with a section the file holds,  or nil when nothing is.
     var problem: String?
 
     /// Whether the configuration file gives the Operator the identity the runtime requires.
@@ -76,6 +75,17 @@ struct OperatorOptions: Equatable {
     /// This says nothing about the credentials:  the app reads none,  and says so.
     var hasRequiredIdentity: Bool {
         isConfigured && brokenRules.isEmpty
+    }
+
+    /// The Operator's state, in one line.
+    var summary: String {
+        if !isConfigured {
+            return "The Mac's file has no [seat.OPERATOR] section, and the Mac needs none:  the eavesdropper builds the Operator's client from Fleet-OPS /zulip_operator on first use."
+        }
+        if brokenRules.isEmpty {
+            return "The Mac's file holds a [seat.OPERATOR] section, and it keeps the rules the runtime enforces (bot \(Self.requiredBot), creds \(Self.requiredCreds), wake \(Self.requiredWake))."
+        }
+        return "The Mac's file holds a [seat.OPERATOR] section that breaks the rules the runtime enforces:  " + brokenRules.joined(separator: ", ") + "."
     }
 
     /// The options the configuration file gives the Operator.
@@ -89,7 +99,7 @@ struct OperatorOptions: Equatable {
                 creds: nil,
                 wake: nil,
                 brokenRules: [],
-                problem: "The configuration file has no [seat.\(seatTag)] section,  so the Operator is not provisioned."
+                problem: nil
             )
         }
         let bot = config.value(section: section, key: "bot")?.scalarText
