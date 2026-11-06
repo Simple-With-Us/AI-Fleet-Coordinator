@@ -189,9 +189,7 @@ def _looks_like_status_body(first_line: str, body_lines) -> bool:
     early = body_lines[:6]
     if any(re.match(r"^\s*state:\s*", ln) for ln in early):
         return True
-    status_re = re.compile(
-        r"(?:^|[\s|])(?:CLAIMED|DONE|IN PROGRESS)(?:\s|$|[\|])", re.IGNORECASE
-    )
+    status_re = re.compile(r"(?:^|[\s|])(?:CLAIMED|DONE|IN PROGRESS)(?:\s|$|[\|])", re.IGNORECASE)
     if after and status_re.search(after):
         return True
     for ln in early:

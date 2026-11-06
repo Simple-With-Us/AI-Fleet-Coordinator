@@ -540,22 +540,17 @@ class RuleTests(unittest.TestCase):
     def test_status_plus_claim_still_requires_repo(self):
         """Jet remaining #1: status block always needs repo: even with claim/closeout."""
         self.assertEqual(
-            bridge.header_error(
-                "[JET 📁AFC] sync-1\nclaim: work\nstate: WIP", "JET"
-            ),
+            bridge.header_error("[JET 📁AFC] sync-1\nclaim: work\nstate: WIP", "JET"),
             "repo: <project> must be the first body line",
         )
         # Same fields with an explicit repo: line are fine.
         self.assertIsNone(
-            bridge.header_error(
-                "[JET 📁AFC] sync-1\nrepo: AFC\nclaim: work\nstate: WIP", "JET"
-            )
+            bridge.header_error("[JET 📁AFC] sync-1\nrepo: AFC\nclaim: work\nstate: WIP", "JET")
         )
         # Non-status claim/closeout may still omit repo: when 📁 lists real repos.
         self.assertIsNone(bridge.header_error("[JET 📁AFC]\nclaim: work", "JET"))
 
     def test_reject_guidance_mentions_folder_tag(self):
-
         """Rejection reply text names folder-tag form and status/repo rules."""
         issue = FakeIssue([comment(42, "[INSTINCT] hello\nstate: WIP")])
         poster = FakePoster()
