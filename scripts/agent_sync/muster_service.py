@@ -219,7 +219,10 @@ def connect(
 
 def users(reader: ReadOnlyClient, limit: int) -> list[dict[str, Any]]:
     """Every user, deactivated ones included, sorted by display name:  `users --json --inactive`."""
-    members = reader.get("users").get("members")
+    data = reader.get("users")
+    if not isinstance(data, dict):
+        raise Refused("malformed-response")
+    members = data.get("members")
     if not isinstance(members, list) or not all(isinstance(m, dict) for m in members):
         raise Refused("malformed-response")
     rows = [user_row(m) for m in members]
@@ -252,7 +255,7 @@ def last_post(reader: ReadOnlyClient, sender: str) -> list[dict[str, Any]]:
             "apply_markdown": "false",
         },
     )
-    messages = data.get("messages")
+    messages = data.get("messages") if isinstance(data, dict) else None
     if not isinstance(messages, list):
         raise Refused("malformed-response")
     found = [

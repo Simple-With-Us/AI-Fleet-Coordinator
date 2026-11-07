@@ -141,6 +141,16 @@ class Tests(unittest.TestCase):
     def test_malformed_responses_are_refused(self):
         self.client.members = "nope"
         self.refused("malformed-response")
+        # A response that is not an object at all is malformed too, never a generic failure.
+        original = self.client.request
+
+        def not_an_object(method, path, params=None, **kw):
+            return original(method, path, params, **kw) if path == "users/me" else ["x"]
+
+        self.client.request = not_an_object
+        self.refused("malformed-response")
+        self.refused("malformed-response", action="last-post", sender="claude-bot@example.test")
+        self.client.request = original
         self.client.messages = None
         self.refused("malformed-response", action="last-post", sender="claude-bot@example.test")
 
