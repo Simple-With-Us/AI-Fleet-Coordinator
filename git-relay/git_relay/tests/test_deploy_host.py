@@ -305,8 +305,10 @@ class LinuxHostTests(unittest.TestCase):
             self.assertEqual(self.h.signal_state(expected), (True, False))
             with self.assertRaises(TransactionError):
                 self.h.process_identity()
-        with patch.object(
-            self.h, "properties", return_value={"MainPID": "43", "ActiveState": "deactivating"}
+        with (
+            patch.object(
+                self.h, "properties", return_value={"MainPID": "43", "ActiveState": "deactivating"}
+            ),
+            self.assertRaises((TransactionError, FileNotFoundError)),
         ):
-            with self.assertRaises((TransactionError, FileNotFoundError)):
-                self.h.signal_state(expected)
+            self.h.signal_state(expected)
