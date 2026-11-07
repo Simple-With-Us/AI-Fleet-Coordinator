@@ -8,6 +8,7 @@ import stat
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SPEC = importlib.util.spec_from_file_location("fms", os.path.join(HERE, "fleet-mac-services.py"))
@@ -332,6 +333,23 @@ class Writing(unittest.TestCase):
             os.symlink(real, link)
             with self.assertRaises(OSError):
                 fms.write_atomic(os.path.join(link, "mac-services.json"), {})
+            self.assertEqual(os.listdir(real), [])
+
+    def test_the_folder_is_fsynced_after_the_rename(self):
+        # BACKEND-36:  the rename only survives a power cut once the folder itself is synced.
+        synced = []
+        real_fsync = os.fsync
+
+        def record(fd):
+            synced.append(os.fstat(fd).st_ino)
+            return real_fsync(fd)
+
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "state", "mac-services.json")
+            with mock.patch.object(fms.os, "fsync", side_effect=record):
+                fms.write_atomic(path, {"tool": "fleet-mac-services"})
+            self.assertIn(os.stat(os.path.dirname(path)).st_ino, synced)
+            self.assertIn(os.stat(path).st_ino, synced)
 
     def test_dry_run_prints_and_writes_nothing(self):
         with tempfile.TemporaryDirectory() as root:
