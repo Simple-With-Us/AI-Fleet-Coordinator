@@ -119,6 +119,8 @@ targets:
       - path: Muster/Model/OpsControl.swift
       - path: Muster/Model/KnobRegistry.swift
       - path: Muster/Model/MachineStatus.swift
+      # Report age and verdict at a moment, and the words for them (ReportFreshnessTests).
+      - path: Muster/Model/ReportFreshness.swift
       - path: Muster/Model/PlaceWatch.swift
       - path: Muster/Model/ServiceActionRouter.swift
       - path: Muster/Model/BuildIdentity.swift
