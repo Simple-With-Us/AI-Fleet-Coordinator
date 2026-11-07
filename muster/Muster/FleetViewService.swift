@@ -23,7 +23,7 @@ enum FleetViewService {
         var errorDescription: String? {
             switch self {
             case .scriptsNotFound:
-                return "Muster could not find the fleet scripts on the Mac.\u{00A0} Check that ~/Code/AI-Fleet-Coordinator/scripts is there, or choose that scripts folder under Scripts Directory in Settings."
+                return "Muster could not find the fleet scripts on the Mac.\u{00A0} Check that ~/Code/AI-Fleet-Coordinator/scripts is there, or in Settings, open Folders and choose the fleet scripts folder."
             case .cliFailed:
                 return "The fleet-view command stopped with an error on the Mac, so no lanes, pull requests or claims were read.\u{00A0} Copy the details and send them to an agent."
             case .unparseable:
@@ -62,27 +62,59 @@ enum FleetViewService {
     static let maximumOutputBytes = 4 * 1024 * 1024
     static let killGrace: TimeInterval = 2
 
-    /// Candidate scripts directories, first hit wins.  `MUSTER_SCRIPTS_DIR`
-    /// overrides for a lane;  the integration tree is the merged default.
-    static func scriptsDirectory() -> URL? {
-        let fileManager = FileManager.default
-        var candidates: [String] = []
-        if let override = ProcessInfo.processInfo.environment["MUSTER_SCRIPTS_DIR"] {
-            candidates.append(override)
-        }
-        if let saved = UserDefaults.standard.string(forKey: MusterSettings.scriptsDirectoryDefaultsKey), !saved.isEmpty {
-            candidates.append((saved as NSString).expandingTildeInPath)
-        }
-        let home = fileManager.homeDirectoryForCurrentUser.path
-        candidates.append("\(home)/Code/AI-Fleet-Coordinator/scripts")
-        for candidate in candidates {
-            let marker = "\(candidate)/fleet_view/__main__.py"
-            if fileManager.fileExists(atPath: marker) {
-                return URL(fileURLWithPath: candidate)
-            }
-        }
-        return nil
+    /// The scripts folder, where it came from, and whether a folder chosen in Settings was passed over.
+    struct ScriptsResolution: Equatable {
+        var directory: URL?
+        var source: SettingSource?
+        /// The folder saved in Settings, expanded, when one is saved.
+        var chosen: String?
+        var chosenButUnused: Bool
+        /// True when `MUSTER_SCRIPTS_DIR` was set but held no scripts, so it was passed over.
+        var environmentSkipped: Bool
     }
+
+    /// One spelling per folder, so a trailing slash, a `..` or a symlink cannot make one folder
+    /// look like two.
+    static func canonicalPath(_ path: String) -> String {
+        URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath().path
+    }
+
+    /// Candidate scripts directories, first one holding the collector wins:  `MUSTER_SCRIPTS_DIR`
+    /// overrides for a lane, then the folder saved in Settings, then the integration tree.
+    static func resolveScripts(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        defaults: UserDefaults = .standard,
+        home: String = FileManager.default.homeDirectoryForCurrentUser.path,
+        fileManager: FileManager = .default
+    ) -> ScriptsResolution {
+        var candidates: [(String, SettingSource)] = []
+        var environmentSet = false
+        // A blank or whitespace-only value counts as unset, as the Zulip seat's does.
+        if let override = environment[MusterSettings.scriptsDirectoryEnvironmentKey],
+           !override.trimmingCharacters(in: .whitespaces).isEmpty {
+            // Expanded like every other folder setting, so `~/...` works here too.
+            candidates.append(((override as NSString).expandingTildeInPath, .environment))
+            environmentSet = true
+        }
+        var chosen: String?
+        if let saved = defaults.string(forKey: MusterSettings.scriptsDirectoryDefaultsKey), !saved.isEmpty {
+            let expanded = (saved as NSString).expandingTildeInPath
+            chosen = expanded
+            candidates.append((expanded, .chosen))
+        }
+        candidates.append(("\(home)/Code/AI-Fleet-Coordinator/scripts", .standard))
+        for (candidate, source) in candidates
+        where fileManager.fileExists(atPath: "\(candidate)/fleet_view/__main__.py") {
+            return ScriptsResolution(directory: URL(fileURLWithPath: candidate), source: source,
+                                     chosen: chosen,
+                                     chosenButUnused: chosen.map { canonicalPath($0) != canonicalPath(candidate) } ?? false,
+                                     environmentSkipped: environmentSet && source != .environment)
+        }
+        return ScriptsResolution(directory: nil, source: nil, chosen: chosen, chosenButUnused: chosen != nil,
+                                 environmentSkipped: environmentSet)
+    }
+
+    static func scriptsDirectory() -> URL? { resolveScripts().directory }
 
     static func load() async throws -> FleetViewEnvelope {
         guard let scripts = scriptsDirectory() else {
