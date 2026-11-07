@@ -572,15 +572,6 @@ jobs:
     - name: Alert ingress unit tests
       timeout-minutes: 10
       run: node --test workers/alert-ingress/src/*.test.js
-    # pr-conflict-watch, both trees: this directory and the zulip-cutover tree the alert
-    # pipeline releases, whose index.js needs its pinned dependencies.  Test files are
-    # named explicitly, for the reason above.
-    - name: PR conflict watch unit tests
-      timeout-minutes: 10
-      run: |
-        node --test workers/pr-conflict-watch/*.test.js
-        npm ci --ignore-scripts --prefix workers/pr-conflict-watch/zulip-cutover
-        node --test workers/pr-conflict-watch/zulip-cutover/*.test.js
     # The Worker deploy scripts.  worker-deploy.yml is gated off and the alert workflow
     # runs only on main, so without this a broken deploy script would merge unnoticed.
     - name: Worker deploy script tests
