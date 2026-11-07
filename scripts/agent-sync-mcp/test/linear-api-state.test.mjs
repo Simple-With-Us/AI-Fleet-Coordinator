@@ -137,3 +137,11 @@ test("rejects invalid keys and cached data larger than 8192 UTF-8 bytes", async 
   await assert.rejects(state.linearApiSet(store, { storageKey: created.storageKey, changes: { state: "sent", data: "é".repeat(4100) } }, 60 * DAY), /exceeds 8192 bytes/);
   assert.equal((await store.get(created.storageKey)).state, "pending");
 });
+
+test("a cleanup pass that finds nothing expired writes no marker row", async () => {
+  const store = new FullStore();
+  const now = 60 * DAY;
+  await state.linearApiBegin(store, { key, request_sha: requestSha, operation: "projectUpdate" }, now);
+  assert.equal(store.listCalls.length, 1);
+  assert.equal(store.values.has("linear-api-cleanup-at"), false);
+});

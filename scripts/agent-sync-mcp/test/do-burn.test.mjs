@@ -83,17 +83,111 @@ test("a batch writes each changed key once, however many rows it holds", async (
   const { store, writes } = countingStore();
   const row = { seat: "ECHO", tool: "whoami", outcome: "ok", grant_ref: "abcdef012345", asn: 13335, country: "US" };
   await S.auditCallBatch(store, Array.from({ length: 50 }, (_, i) => ({ row, at: T0 + i })));
-  assert.deepEqual(writes, { call_days: 1, [`calls:2026-10-09`]: 1, [`calls_bytes:2026-10-09`]: 1, grant_geo: 1 });
+  // First write of the day:  the day list, the index, the head chunk and the geo row.
+  assert.deepEqual(writes, { call_days: 1, "cidx:2026-10-09": 1, "cchunk:2026-10-09:000000": 1, grant_geo: 1 });
   assert.equal((await S.callTail(store, 100)).length, 50);
 });
 
-test("a later batch on the same day and grant writes only the call rows", async () => {
+test("a later batch on the same day and grant writes only the head chunk:  one row", async () => {
   const { store, writes } = countingStore();
   const row = { seat: "ECHO", tool: "whoami", outcome: "ok", grant_ref: "abcdef012345", asn: 13335, country: "US" };
   await S.auditCallBatch(store, [{ row, at: T0 }]);
   for (const key of Object.keys(writes)) delete writes[key];
   await S.auditCallBatch(store, [{ row, at: T0 + 1000 }, { row, at: T0 + 2000 }]);
-  assert.deepEqual(writes, { [`calls:2026-10-09`]: 1, [`calls_bytes:2026-10-09`]: 1 });
+  assert.deepEqual(writes, { "cchunk:2026-10-09:000000": 1 });
+});
+
+test("a full head chunk seals into the index:  the index is written once per chunk", async () => {
+  const { store, writes } = countingStore();
+  const row = { seat: "ECHO", tool: "whoami", outcome: "ok" };
+  const n = 2 * S.CALL_CHUNK_ROWS + 50;
+  for (let i = 0; i < n; i++) await S.auditCallBatch(store, [{ row: { ...row, message_id: i }, at: T0 + i }]);
+  assert.equal(writes["cidx:2026-10-09"], 3); // created, then sealed twice
+  const tail = await S.callTail(store, 10000);
+  assert.equal(tail.length, n);
+  assert.deepEqual(tail.map((r) => r.message_id), Array.from({ length: n }, (_, i) => n - 1 - i));
+});
+
+test("the day cap drops whole oldest chunks and keeps the newest rows", async () => {
+  const { store, writes } = countingStore();
+  const row = { seat: "ECHO", tool: "whoami", outcome: "ok" };
+  const entries = Array.from({ length: 5250 }, (_, i) => ({ row: { ...row, message_id: i }, at: T0 + i }));
+  for (let i = 0; i < entries.length; i += 50) await S.auditCallBatch(store, entries.slice(i, i + 50));
+  const tail = await S.callTail(store, 10000);
+  assert.ok(tail.length <= 5000 && tail.length > 5000 - S.CALL_CHUNK_ROWS, `kept ${tail.length}`);
+  assert.equal(tail[0].message_id, 5249, "the newest row is kept");
+  assert.deepEqual(tail.map((r) => r.message_id), Array.from({ length: tail.length }, (_, i) => 5249 - i), "contiguous newest rows");
+  const chunkKeys = [...store.map.keys()].filter((k) => k.startsWith("cchunk:"));
+  assert.ok(chunkKeys.length <= 51, `${chunkKeys.length} chunk keys`);
+});
+
+const blobRows = (n, from, tool) => Array.from({ length: n }, (_, i) => ({ ts: T0 + from + i, seat: "ECHO", tool, outcome: "ok", message_id: from + i }));
+
+test("an old-layout day is folded into chunks on the next flush and capped 200 rows at a time", async () => {
+  const store = S.memoryStore();
+  const day = "2026-10-09";
+  await store.put(`calls:${day}`, blobRows(4950, 0, "old"));
+  await store.put(`calls_bytes:${day}`, { count: 4950, bytes: 1 });
+  await store.put("call_days", [day]);
+  // Before any new flush callTail still reads the blob.
+  assert.deepEqual((await S.callTail(store, 2)).map((r) => r.message_id), [4949, 4948]);
+  await S.auditCall(store, { seat: "ECHO", tool: "new", outcome: "ok", message_id: 99999 }, T0 + 10_000);
+  assert.equal(store.map.has(`calls:${day}`), false);
+  assert.equal(store.map.has(`calls_bytes:${day}`), false);
+  let tail = await S.callTail(store, 10000);
+  assert.equal(tail.length, 4951);
+  assert.deepEqual(tail.slice(0, 3).map((r) => r.message_id), [99999, 4949, 4948]);
+  // Past the cap the oldest whole chunk goes, never the whole pre-deploy day.
+  for (let i = 0; i < 60; i++) await S.auditCall(store, { seat: "ECHO", tool: "new", outcome: "ok", message_id: 100000 + i }, T0 + 20_000 + i);
+  tail = await S.callTail(store, 10000);
+  assert.ok(tail.length <= 5000 && tail.length > 5000 - S.CALL_CHUNK_ROWS, `kept ${tail.length}`);
+  assert.equal(tail[0].message_id, 100059);
+});
+
+test("a full 5000-row old-layout day keeps its newest rows when the first chunked row lands", async () => {
+  const store = S.memoryStore();
+  await store.put("calls:2026-10-09", blobRows(5000, 0, "old"));
+  await store.put("call_days", ["2026-10-09"]);
+  await S.auditCallBatch(store, [{ row: { seat: "ECHO", tool: "new", outcome: "ok", message_id: 99999 }, at: T0 + 10_000 }]);
+  const tail = await S.callTail(store, 10000);
+  assert.ok(tail.length > 5000 - S.CALL_CHUNK_ROWS, `kept ${tail.length}`);
+  assert.deepEqual(tail.slice(0, 2).map((r) => r.message_id), [99999, 4999]);
+});
+
+test("rows a same-day rollback wrote to the blob are shown, then folded in order", async () => {
+  const store = S.memoryStore();
+  const day = "2026-10-09";
+  for (let i = 0; i < 3; i++) await S.auditCall(store, { seat: "ECHO", tool: "new", outcome: "ok", message_id: i }, T0 + i);
+  // The rollback's code appends to calls:<day> next to the chunks.
+  await store.put(`calls:${day}`, blobRows(4, 10, "rollback"));
+  assert.deepEqual((await S.callTail(store, 10)).map((r) => r.message_id), [13, 12, 11, 10, 2, 1, 0]);
+  await S.auditCall(store, { seat: "ECHO", tool: "new", outcome: "ok", message_id: 20 }, T0 + 100);
+  assert.equal(store.map.has(`calls:${day}`), false);
+  assert.deepEqual((await S.callTail(store, 10)).map((r) => r.message_id), [20, 13, 12, 11, 10, 2, 1, 0]);
+});
+
+test("an in-use grant is never the one evicted from the geo map", async () => {
+  const store = S.memoryStore();
+  const geo = (ref, asn = 13335) => ({ seat: "ECHO", tool: "whoami", outcome: "ok", grant_ref: ref, asn, country: "US" });
+  await S.auditCall(store, geo("a00000000000"), T0);
+  for (let i = 0; i < 60; i++) {
+    await S.auditCall(store, geo("a00000000000"), T0 + 1000 + i * 1000); // used every second, skipped within the hour
+    await S.auditCall(store, geo(`b${String(i).padStart(11, "0")}`), T0 + 1500 + i * 1000);
+  }
+  assert.ok((await store.get("grant_geo")).a00000000000, "the busy grant survives 60 new grants");
+  await S.auditCall(store, geo("a00000000000", 4134), T0 + 70_000);
+  assert.ok((await S.tail(store, 10)).some((e) => e.event === "geo_change" && e.grant_ref === "a00000000000"));
+});
+
+test("auditCallBatch matches sequential auditCall across chunk boundaries", async () => {
+  const rows = Array.from({ length: 333 }, (_, i) => ({ seat: "ECHO", tool: "t", outcome: i % 37 === 0 ? "error" : "ok", error_code: i % 37 === 0 ? "boom" : undefined, message_id: i, grant_ref: "abcdef012345", asn: i % 100 === 0 ? 7018 : 13335, country: "US" }));
+  const batched = S.memoryStore();
+  await S.auditCallBatch(batched, rows.map((row, i) => ({ row, at: T0 + i })));
+  const sequential = S.memoryStore();
+  for (const [i, row] of rows.entries()) await S.auditCall(sequential, row, T0 + i);
+  assert.deepEqual(await S.callTail(batched, 1000), await S.callTail(sequential, 1000));
+  assert.deepEqual(await S.errorTail(batched, 100, T0 + 1000), await S.errorTail(sequential, 100, T0 + 1000));
+  assert.deepEqual(new Map([...batched.map].sort()), new Map([...sequential.map].sort()));
 });
 
 test("a geo change still writes the geo row and audits it", async () => {
@@ -107,10 +201,50 @@ test("a geo change still writes the geo row and audits it", async () => {
 test("expired call rows are deleted, not stored as null", async () => {
   const store = S.memoryStore();
   await S.auditCall(store, { seat: "ECHO", tool: "whoami", outcome: "ok" }, T0);
-  const day = [...store.map.keys()].find((key) => key.startsWith("calls:"));
-  assert.ok(day);
+  const oldKeys = [...store.map.keys()].filter((key) => key.startsWith("cidx:") || key.startsWith("cchunk:"));
+  assert.equal(oldKeys.length, 2);
   await S.auditCall(store, { seat: "ECHO", tool: "whoami", outcome: "ok" }, T0 + 400 * 24 * 3600 * 1000);
-  assert.equal(store.map.has(day), false);
-  assert.equal(store.map.has(day.replace("calls:", "calls_bytes:")), false);
+  for (const key of oldKeys) assert.equal(store.map.has(key), false, key);
   assert.equal((await store.get("call_days")).length, 1);
+});
+
+test("two grants of one seat alternating do not rewrite the geo row every flush", async () => {
+  const { store, writes } = countingStore();
+  const a = { seat: "ECHO", tool: "whoami", outcome: "ok", grant_ref: "aaaaaaaaaaaa", asn: 13335, country: "US" };
+  const b = { ...a, grant_ref: "bbbbbbbbbbbb" };
+  for (let i = 0; i < 40; i++) await S.auditCallBatch(store, [{ row: i % 2 ? b : a, at: T0 + i * 6000 }]);
+  assert.equal(writes.grant_geo, 2, "one write per grant, then none for the rest of the hour");
+  // After an hour the newest-order position is refreshed at most once per grant.
+  for (let i = 0; i < 4; i++) await S.auditCallBatch(store, [{ row: i % 2 ? b : a, at: T0 + 3_700_000 + i * 6000 }]);
+  assert.ok(writes.grant_geo <= 4, `${writes.grant_geo} geo writes`);
+  // A change of place is still caught at once.
+  await S.auditCallBatch(store, [{ row: { ...a, asn: 7018 }, at: T0 + 3_800_000 }]);
+  assert.ok((await S.tail(store, 10)).some((entry) => entry.event === "geo_change" && entry.grant_ref === "aaaaaaaaaaaa"));
+});
+
+test("chunked days left behind by a rollback to the blob layout are swept once past retention", async () => {
+  const store = S.memoryStore();
+  await S.auditCall(store, { seat: "ECHO", tool: "whoami", outcome: "ok" }, T0);
+  // A rollback's retention dropped the day from call_days but knew nothing of cidx:/cchunk:.
+  await store.put("call_days", []);
+  assert.ok([...store.map.keys()].some((k) => k.startsWith("cchunk:2026-10-09")));
+  await S.auditCall(store, { seat: "ECHO", tool: "whoami", outcome: "ok" }, T0 + 100 * 24 * 3600 * 1000);
+  assert.deepEqual([...store.map.keys()].filter((k) => k.includes("2026-10-09")), []);
+  assert.equal((await S.callTail(store, 10)).length, 1);
+});
+
+test("an audit flush at the day cap stays well under a millisecond of work", async () => {
+  const store = S.memoryStore();
+  const row = { seat: "ECHO", tool: "gr_wf_checks", outcome: "ok", grant_ref: "abcdef012345", asn: 13335, country: "US", latency_ms: 700, client_id: "c".repeat(40) };
+  const all = Array.from({ length: 5000 }, (_, i) => ({ row: { ...row, message_id: i }, at: T0 + i }));
+  for (let i = 0; i < all.length; i += 100) await S.auditCallBatch(store, all.slice(i, i + 100));
+  const times = [];
+  for (let i = 0; i < 50; i++) {
+    const t = performance.now();
+    await S.auditCallBatch(store, [{ row: { ...row, message_id: 10_000 + i }, at: T0 + 6000 + i }]);
+    times.push(performance.now() - t);
+  }
+  times.sort((x, y) => x - y);
+  // memoryStore clones every value on get and put, as the DO's serializer does, so this bounds the real cost.
+  assert.ok(times[25] < 1, `median ${times[25].toFixed(3)} ms`);
 });
