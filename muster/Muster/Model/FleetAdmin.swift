@@ -643,6 +643,8 @@ final class FleetAdmin: ObservableObject {
     /// work the server would have refused a stop for.  Only an answer that names work asks:
     /// a server that does not answer is one a restart is there to repair.
     func restartWarning(for serviceID: String) async -> String? {
+        // A service whose restart always asks (the Mac's eavesdropper) asks with no read.
+        if let body = FleetServices.restartAlwaysAsksBody(forServiceID: serviceID) { return body }
         guard serviceID == FleetServiceRegistry.server.id else { return nil }
         guard case .answered(.some(let work)) = await readServerAPI() else { return nil }
         return FleetServices.restartBody(work: work)
