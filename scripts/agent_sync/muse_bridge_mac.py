@@ -522,9 +522,7 @@ class MacBridge:
                     "model_attempted": True,
                 }
             expected = list(backup_expected_models) if backup_expected_models else []
-            if expected and (
-                not served or any(entry not in expected for entry in served)
-            ):
+            if expected and (not served or any(entry not in expected for entry in served)):
                 # Charged with an answer from a model outside the declared expectation - a
                 # dashboard-side edit changed what the preset serves.  Same discipline as a
                 # charged ambiguous outcome:  retained pending review, never retried, never
