@@ -458,6 +458,70 @@ final class ReportFreshnessTests: XCTestCase {
         XCTAssertEqual(shown.source, .savedFile)
     }
 
+    func test_taking_a_saved_read_says_whether_the_rows_are_now_that_read() {
+        var shown = MacAgentsShown()
+        XCTAssertTrue(shown.takeSaved(agents(at: written)), "the first read is what is shown")
+        XCTAssertTrue(shown.takeSaved(agents(at: written)), "the same report read again confirms the rows")
+        let newer = written.addingTimeInterval(5 * 60)
+        XCTAssertTrue(shown.takeSaved(agents(at: newer)))
+        XCTAssertFalse(shown.takeSaved(agents(at: written)), "an older file is discarded")
+        XCTAssertFalse(shown.takeSaved(agents(at: written, problem: "The file could not be read.")),
+                       "a file that could not be read is discarded beside good rows")
+        XCTAssertEqual(shown.reading?.generatedAt, newer)
+
+        // Reading the same saved report again keeps a failed collection's note.
+        shown.takeCollected(agents(at: now, problem: "The collector failed."))
+        XCTAssertTrue(shown.takeSaved(agents(at: newer)))
+        XCTAssertEqual(shown.collectProblem, "The collector failed.")
+
+        // Rows from a live collection are not confirmed by an older saved file.
+        shown.takeCollected(agents(at: now))
+        XCTAssertFalse(shown.takeSaved(agents(at: newer)))
+        XCTAssertEqual(shown.source, .collectedLive)
+    }
+
+    func test_a_discarded_read_after_a_wake_leaves_the_rows_checking() {
+        var shown = MacAgentsShown()
+        var readAt: Date?
+        if shown.takeSaved(agents(at: written)) { readAt = written.addingTimeInterval(60) }
+        let woke = written.addingTimeInterval(3 * 60)
+
+        // The re-read after the wake could not read the file,  so the rows are not re-read.
+        if shown.takeSaved(agents(at: written, problem: "The file could not be read.")) {
+            readAt = written.addingTimeInterval(4 * 60)
+        }
+        let moment = written.addingTimeInterval(4 * 60)
+        XCTAssertEqual(shown.reading?.freshness(now: moment, readAt: readAt, wokeAt: woke).verdict, .checking)
+
+        // A good re-read clears it.
+        if shown.takeSaved(agents(at: written)) { readAt = moment }
+        XCTAssertEqual(shown.reading?.freshness(now: moment, readAt: readAt, wokeAt: woke).verdict, .current)
+    }
+
+    func test_hog_hunter_goes_stale_between_two_reads() {
+        var reading = HogHunterMacReading()
+        reading.generatedAt = written
+        reading.isCurrent = true
+        reading.state = .passed
+
+        let early = reading.freshness(now: written.addingTimeInterval(4 * 60))
+        let current = reading.aged(by: early)
+        XCTAssertTrue(early.verdict.isCurrent)
+        XCTAssertTrue(current.isCurrent)
+        XCTAssertNil(current.problem)
+        XCTAssertEqual(ReportFreshnessCopy.ageLine(.macCollector("Hog Hunter"), early),
+                       "Written by Hog Hunter on this Mac 4 minutes ago.")
+
+        // Past its five minute window,  with no new read,  it reads as the reader reads a stale report.
+        let late = reading.freshness(now: written.addingTimeInterval(6 * 60))
+        let lapsed = reading.aged(by: late)
+        XCTAssertFalse(late.verdict.isCurrent)
+        XCTAssertFalse(lapsed.isCurrent)
+        XCTAssertEqual(lapsed.state, .unknown)
+        XCTAssertEqual(lapsed.problem, HogHunterMacReading.notReportingText)
+        XCTAssertTrue(lapsed.rows.isEmpty)
+    }
+
     func test_a_failed_first_collection_shows_its_problem() {
         var shown = MacAgentsShown()
         shown.takeCollected(agents(at: now, problem: "The collector failed."))

@@ -7,12 +7,28 @@ import SwiftUI
 /// no control of Hog Hunter at all.  Hog Hunter closed,  or a file that fails the ownership
 /// check,  reads as unknown with a sentence that says so.
 struct HogHunterMacPanel: View {
-    @State private var reading: HogHunterMacReading?
-    /// When the report was last read,  which is the moment its age is said for.
-    @State private var readAt: Date?
+    /// The last read,  as the reader gave it.  It is aged again on every tick below.
+    @State private var lastRead: HogHunterMacReading?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        // The age and the verdict are worked out again on every tick from the clock,  so a report
+        // that crosses its window between two reads stops reading as current at once.
+        TimelineView(.periodic(from: .now, by: ReportFreshness.tickInterval)) { context in
+            panel(at: context.date)
+        }
+        // The report is small and local:  read it again every half minute,  and at once when
+        // the Mac wakes,  so a report from before the sleep is not shown as current.
+        .rereadsOnTickAndWake(every: ReportFreshness.tickInterval, onWake: { lastRead = nil }) {
+            let now = Date()
+            let read = await Task.detached(priority: .utility) { HogHunterMacReportReader.readDefault(now: now) }.value
+            lastRead = read
+        }
+    }
+
+    private func panel(at now: Date) -> some View {
+        let freshness = lastRead?.freshness(now: now)
+        let reading = freshness.flatMap { lastRead?.aged(by: $0) }
+        return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
                 Text("Hog Hunter On This Mac")
                     .font(.headline)
@@ -20,14 +36,9 @@ struct HogHunterMacPanel: View {
                     FleetToolsStateBadge(state: reading.state, width: 92)
                 }
                 Spacer()
-                // The report's own age,  said as who wrote it.  It is read again every half
-                // minute,  so the words move with it.
-                if let reading, reading.isCurrent,
-                   let line = ReportFreshnessCopy.ageLine(
-                       .macCollector("Hog Hunter"),
-                       ReportFreshness(generatedAt: reading.generatedAt,
-                                       maxAge: TimeInterval(HogHunterMacContract.maxAgeSeconds),
-                                       now: readAt ?? Date())) {
+                // The report's own age,  said as who wrote it,  at this tick.
+                if let reading, let freshness, reading.problem == nil, freshness.verdict.isCurrent,
+                   let line = ReportFreshnessCopy.ageLine(.macCollector("Hog Hunter"), freshness) {
                     Text(line)
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -62,14 +73,6 @@ struct HogHunterMacPanel: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
-        }
-        // The report is small and local:  read it again every half minute,  and at once when
-        // the Mac wakes,  so a report from before the sleep is not shown as current.
-        .rereadsOnTickAndWake(every: ReportFreshness.tickInterval, onWake: { reading = nil }) {
-            let now = Date()
-            let read = await Task.detached(priority: .utility) { HogHunterMacReportReader.readDefault(now: now) }.value
-            reading = read
-            readAt = now
         }
     }
 

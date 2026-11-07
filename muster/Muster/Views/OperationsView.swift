@@ -495,8 +495,11 @@ struct OperationsView: View {
                 }.value
                 // A newer saved file replaces older rows,  and a file that could not be read
                 // never replaces good ones.
-                agents.takeSaved(readServices)
-                readAt = Date()
+                // Only a read that the rows now come from counts as read after a wake:  a file
+                // that was discarded leaves the rows checking.
+                if agents.takeSaved(readServices) {
+                    readAt = Date()
+                }
                 allowlist = readAllowlist
                 allowlistPath = allowlistURL.path
                 audit = readAudit

@@ -516,19 +516,34 @@ struct MacAgentsShown {
     var collectProblem: String?
 
     /// Takes a read of the saved file when it is newer than what is shown.
-    mutating func takeSaved(_ saved: MacServicesReading) {
+    ///
+    /// Returns true when the rows shown are now this read's:  it replaced them,  or it is the
+    /// same report the rows came from,  read again.  Only then has the shown reading been read
+    /// just now,  so only then may a panel count it as read after a wake.  A read that was
+    /// discarded,  such as a file that could not be read beside good rows,  returns false and
+    /// leaves the rows to read as checking.
+    @discardableResult
+    mutating func takeSaved(_ saved: MacServicesReading) -> Bool {
         guard let shown = reading else {
             reading = saved
             source = .savedFile
-            return
+            return true
         }
         // A file that could not be read does not replace good rows.
-        if saved.problem != nil, shown.problem == nil { return }
+        if saved.problem != nil, shown.problem == nil { return false }
         if shown.problem != nil || Self.isNewer(saved, than: shown) {
             reading = saved
             source = .savedFile
             collectProblem = nil
+            return true
         }
+        // The same saved report,  read again:  the shown rows are confirmed,  and a failed
+        // collection's note stays.
+        if source == .savedFile, let savedAt = saved.generatedAt, savedAt == shown.generatedAt {
+            reading = saved
+            return true
+        }
+        return false
     }
 
     /// Takes a live collection.  A failed one keeps the rows that are shown.
@@ -556,6 +571,27 @@ struct MacAgentsShown {
 }
 
 // MARK: - The readings,  aged at a moment
+
+extension HogHunterMacReading {
+    func freshness(now: Date) -> ReportFreshness {
+        ReportFreshness(generatedAt: generatedAt, maxAge: TimeInterval(HogHunterMacContract.maxAgeSeconds), now: now)
+    }
+
+    /// The reading as it stands at the freshness's moment.  Ageing only takes a verdict away:
+    /// past its window it reads as the reader reads a stale report,  Hog Hunter not reporting,
+    /// with no rows.
+    func aged(by freshness: ReportFreshness) -> HogHunterMacReading {
+        var reading = self
+        guard problem == nil, generatedAt != nil else { return reading }
+        reading.age = freshness.ageShort
+        if !freshness.verdict.isCurrent {
+            reading.isCurrent = false
+            reading.state = .unknown
+            reading.problem = HogHunterMacReading.notReportingText
+        }
+        return reading
+    }
+}
 
 extension MacServicesReading {
     /// The reading's freshness at a moment.
