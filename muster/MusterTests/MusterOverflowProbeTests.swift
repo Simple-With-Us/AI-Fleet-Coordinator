@@ -748,7 +748,32 @@ final class MusterOverflowProbeTests: XCTestCase {
 
     /// One stale-frame run:  seed (or not) the owner's saved frames, forget them (or not) the
     /// way MusterApp.init does, then host the root in a window with the app's kind of autosave name.
-    private func staleProbe(_ kind: Kind, _ root: Root, height: CGFloat, seed: Bool, forget: Bool, nameFirst: Bool) {
+    /// What AppKit does when it restores a split view:  name it, then give its columns the
+    /// saved frames.  Used because in a plain window SwiftUI's split view has no autosave name
+    /// and never reads the saved frames (round 3).  Nothing saved means nothing applied.
+    private func forceRestore(_ split: NSSplitView, label: String) {
+        split.autosaveName = "\(Self.staleWindowName), SidebarNavigationSplitView"
+        guard let frames = UserDefaults.standard.stringArray(forKey: Self.staleSplitKey) else {
+            print("PROBEFORCE variant=\(label) applied=none")
+            return
+        }
+        var applied: [String] = []
+        let columns = split.arrangedSubviews
+        for (index, text) in frames.enumerated() where index < columns.count {
+            let numbers: [Double] = text.split(separator: ",").compactMap {
+                Double($0.trimmingCharacters(in: .whitespaces))
+            }
+            guard numbers.count >= 4 else { continue }
+            let rect = NSRect(x: numbers[0], y: numbers[1], width: numbers[2], height: numbers[3])
+            columns[index].frame = rect
+            applied.append(fmt(rect))
+        }
+        split.needsLayout = true
+        print("PROBEFORCE variant=\(label) applied=\(applied.joined(separator: ";")) split=\(fmt(windowRect(split)))")
+    }
+
+    private func staleProbe(_ kind: Kind, _ root: Root, height: CGFloat, seed: Bool, forget: Bool, nameFirst: Bool,
+                            force: Bool = false) {
         _ = NSApplication.shared
         clearStaleKeys()
         let defaults = UserDefaults.standard
@@ -757,7 +782,7 @@ final class MusterOverflowProbeTests: XCTestCase {
             defaults.set(staleColumns(1085), forKey: Self.staleSplitKey)
         }
         let order = nameFirst ? "nameFirst" : "nameLast"
-        let tag = "stale-\(seed ? "seeded" : "clean")\(forget ? "-forgot" : "")-\(order)"
+        let tag = "stale-\(seed ? "seeded" : "clean")\(forget ? "-forgot" : "")\(force ? "-forced" : "")-\(order)"
         if forget {
             let screens: [CGFloat] = NSScreen.screens.map { $0.frame.height }
             let removed = MusterWindowLayout.forgetOversizedSplitViewFrames(in: defaults, screenHeight: screens.max())
@@ -780,6 +805,10 @@ final class MusterOverflowProbeTests: XCTestCase {
         }
         window.orderFrontRegardless()
         window.layoutIfNeeded()
+        if force, let split = descendants(window.contentView ?? NSView()).compactMap({ $0 as? NSSplitView }).first {
+            forceRestore(split, label: "\(tag)-\(kind.rawValue)-\(root.rawValue)")
+            window.layoutIfNeeded()
+        }
         // The split view as it first comes up, before SwiftUI has had a second pass.
         if let split = descendants(window.contentView ?? NSView()).compactMap({ $0 as? NSSplitView }).first {
             let early: [String] = split.arrangedSubviews.map { fmt(windowRect($0)) }
@@ -800,16 +829,18 @@ final class MusterOverflowProbeTests: XCTestCase {
         splitKeysLine("start")
         // Discovery:  what does SwiftUI's split view call itself, and what does it write?
         staleProbe(.baseline, .A, height: 760, seed: false, forget: false, nameFirst: true)
+        // Round 3 (seeding alone, the window named before and after its content) showed the
+        // seed never reaches the split view:  its autosave name is nil.  Round 4 forces the
+        // restore the way AppKit applies it, on a panel with no content trigger (baseline) and on
+        // the real Seat Setup strip, and with the merged code's forget step first.
         let kinds: [Kind] = [.baseline, .stripSeatSetup]
-        for nameFirst in [true, false] {
-            for kind in kinds {
-                for root in [Root.A, .B, .C, .W] {
-                    staleProbe(kind, root, height: 760, seed: true, forget: false, nameFirst: nameFirst)
-                }
-                for root in [Root.A, .B] {
-                    staleProbe(kind, root, height: 760, seed: true, forget: true, nameFirst: nameFirst)
-                    staleProbe(kind, root, height: 760, seed: false, forget: false, nameFirst: nameFirst)
-                }
+        for kind in kinds {
+            for root in [Root.A, .B, .C, .W] {
+                staleProbe(kind, root, height: 760, seed: true, forget: false, nameFirst: true, force: true)
+            }
+            for root in [Root.A, .B] {
+                staleProbe(kind, root, height: 760, seed: true, forget: true, nameFirst: true, force: true)
+                staleProbe(kind, root, height: 760, seed: false, forget: false, nameFirst: true, force: true)
             }
         }
         clearStaleKeys()
@@ -851,7 +882,8 @@ final class MusterOverflowProbeTests: XCTestCase {
     }
 
     /// Every variant under every root, in a 1160 x 700 window.
-    func test2_AllVariantsAt700() {
+    func test2_AllVariantsAt700() throws {
+        throw XCTSkip("Measured in rounds 1 to 3 (runs 42347503275, 42349021230, 42349727105).")
         environmentLine("all700")
         for kind in Kind.allCases {
             for root in Root.allCases {
@@ -861,7 +893,8 @@ final class MusterOverflowProbeTests: XCTestCase {
     }
 
     /// The strip and Seat Setup variants in taller windows, near the owner's screen and above it.
-    func test3_WorstVariantsTall() {
+    func test3_WorstVariantsTall() throws {
+        throw XCTSkip("Measured in rounds 2 and 3 (runs 42349021230, 42349727105).")
         environmentLine("tall")
         let kinds: [Kind] = [.baseline, .stripSeatSetup, .stripTools, .seatSetupComposite, .everything]
         for height in [CGFloat(860), CGFloat(1300)] {
