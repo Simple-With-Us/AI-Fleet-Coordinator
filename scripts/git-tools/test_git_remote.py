@@ -1027,6 +1027,32 @@ class TestOutcomes(unittest.TestCase):
         self.assertIn("failed on the hosted server: relay_refused", err)
         self.assertNotIn("reason=", err)
 
+    def test_reason_from_another_candidate_is_not_attributed(self):
+        # structuredContent says relay_refused with no reason;  a reason in a different object
+        # (the first text part) must not be shown as this refusal's cause.
+        t = FakeTransport(
+            call_results={
+                "gr_wf_issue_create": {
+                    "isError": True,
+                    "structuredContent": {"code": "relay_refused"},
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json.dumps({"code": "upstream_error", "reason": "seat_policy"}),
+                        }
+                    ],
+                }
+            }
+        )
+        code, out, err = run_cli(
+            ["call", "gr_wf_issue_create", "--args-json", '{"title":"t"}'],
+            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            transport=t,
+        )
+        self.assertEqual(code, 1, err)
+        self.assertIn("relay_refused", err)
+        self.assertNotIn("reason=", err)
+
     def test_reason_is_shown_only_for_relay_refused(self):
         err = self._refused({"code": "upstream_error", "reason": "seat_policy"})
         self.assertNotIn("reason=", err)

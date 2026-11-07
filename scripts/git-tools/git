@@ -474,6 +474,10 @@ def _refusal_detail_of(result: dict) -> str:
                 candidates.append(obj)
                 break
     for cand in candidates:
+        # The reason must come from the same object that carries the relay_refused code, never
+        # from a different candidate (a sibling object could name another refusal's cause).
+        if cand.get("code") != "relay_refused":
+            continue
         reason = cand.get("reason")
         if isinstance(reason, str) and reason in _REFUSAL_REASONS:
             status = cand.get("github_status")
