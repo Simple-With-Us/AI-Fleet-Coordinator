@@ -255,11 +255,15 @@ final class MusterNavigationTests: XCTestCase {
 
     /// The Services badge is never a bare digit:  it has words that say what it counts.
     func test_services_badge_has_words() {
-        XCTAssertEqual(SidebarBadges.servicesWords("1"),
+        XCTAssertEqual(SidebarBadges.servicesWords("1", readIsCurrent: true),
                        "1 service needs attention (failed, could not be read, or started and given up on).")
-        XCTAssertEqual(SidebarBadges.servicesWords("3+"),
+        XCTAssertEqual(SidebarBadges.servicesWords("3+", readIsCurrent: true),
                        "3 services need attention (failed, could not be read, or started and given up on), and some could not be read.")
-        XCTAssertTrue(SidebarBadges.servicesWords("?").hasPrefix("Not known"))
+        XCTAssertTrue(SidebarBadges.servicesWords("?", readIsCurrent: false).contains("not been read recently"))
+        XCTAssertTrue(SidebarBadges.servicesWords("?", readIsCurrent: true).contains("pm2 on the Mac did not answer"))
+        XCTAssertTrue(SidebarBadges.readIsCurrent(readAt: now, now: now))
+        XCTAssertFalse(SidebarBadges.readIsCurrent(readAt: nil, now: now))
+        XCTAssertFalse(SidebarBadges.readIsCurrent(readAt: now.addingTimeInterval(-(MachineMenuCopy.macReadWindow + 1)), now: now))
     }
 
     /// When pm2 does not answer, its rows are not known and are not counted, as the menu
