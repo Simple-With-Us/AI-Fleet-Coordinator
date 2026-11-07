@@ -1123,18 +1123,48 @@ private struct WakeGridHeader: View {
     let labels: [String]
 
     var body: some View {
-        HStack(spacing: 12) {
-            ForEach(labels, id: \.self) { label in
-                Text(label)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 12) {
+                ForEach(labels, id: \.self) { label in
+                    Text(label)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                Text("State")
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(width: 108, alignment: .leading)
             }
-            Text("State")
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 108, alignment: .leading)
+            WakeStateLegend()
         }
+    }
+}
+
+// MARK: - The legend
+
+/// What each state means, in words that stay on screen (A11Y-37):  a state's meaning used to
+/// live only in the badge's tooltip.  Folded until opened, so it costs one line.
+private struct WakeStateLegend: View {
+    var body: some View {
+        DisclosureGroup("What The States Mean") {
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(WakeSettingState.legendOrder, id: \.self) { state in
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Label(state.label, systemImage: state.symbol)
+                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(state.tint)
+                            .frame(width: 130, alignment: .leading)
+                        Text(state.note)
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+            .padding(.top, 4)
+        }
+        .font(.caption2)
     }
 }
 
@@ -1206,6 +1236,13 @@ private struct WakeSettingRow: View {
                     .font(.system(size: 10))
                     .foregroundStyle(setting.state.isProblem ? Color.orange : Color.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+            } else if setting.state.isProblem {
+                // A state that needs explaining says so in visible words, not only on hover
+                // (A11Y-37).
+                Text(setting.state.note)
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color.orange)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             if moved {
                 Label(
@@ -1238,11 +1275,15 @@ private struct WakeStateBadge: View {
 
     var body: some View {
         HStack(spacing: 5) {
-            Circle()
-                .fill(state.tint)
-                .frame(width: 7, height: 7)
+            // A symbol for each state, so the colour only repeats what the shape and word say.
+            Image(systemName: state.symbol)
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(state.tint)
+                .accessibilityHidden(true)
             Text(state.label)
                 .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 7)
@@ -1254,6 +1295,8 @@ private struct WakeStateBadge: View {
         }
         .contentShape(Rectangle())
         .help(state.note)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(state.label.capitalized):  \(state.note)")
     }
 }
 
@@ -1274,7 +1317,30 @@ private extension WakeSettingState {
         }
     }
 
-    /// The badge's tooltip.
+    /// The badge's symbol, one per meaning, so no state is told apart by colour alone.
+    var symbol: String {
+        switch self {
+        case .match: return "checkmark.circle"
+        case .drift: return "arrow.left.arrow.right.circle"
+        case .stale: return "clock.badge.exclamationmark"
+        case .unproven: return "questionmark.diamond"
+        case .notOwned: return "minus.circle"
+        case .unpublished: return "eye.slash"
+        case .unset: return "circle.dashed"
+        case .off: return "power"
+        case .unknown: return "questionmark.circle"
+        case .heldElsewhere: return "arrow.up.right.circle"
+        case .seatOff: return "pause.circle"
+        }
+    }
+
+    /// The legend's order:  the states that need a look first, then the quiet ones.
+    static let legendOrder: [WakeSettingState] = [
+        .drift, .unknown, .stale, .unproven, .match, .unset, .off, .seatOff, .heldElsewhere,
+        .notOwned, .unpublished,
+    ]
+
+    /// The badge's tooltip, the legend's words, and the line under a row whose state needs it.
     var note: String {
         switch self {
         case .match: return "The eavesdropper is using the value the file holds.\u{00A0} This compares two values, and it does not prove the setting works."
