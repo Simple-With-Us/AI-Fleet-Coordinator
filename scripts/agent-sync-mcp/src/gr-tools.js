@@ -19,8 +19,9 @@
 import { z } from "zod";
 import { callTypedV1 } from "./gr-typed-v1.js";
 import { ASSERTION_FAMILY_RE } from "./gr-assert.js";
-import { WF_V1_READ_ACTIONS, WF_V1_ACTIONS, workflowInputLimit, validWfV1Args, boundedWorkflowInput, parseWfV1Args, validWfV1Response } from "./gr-workflow-v1.js";
+import { WF_V1_READ_ACTIONS, WF_V1_ACTIONS, workflowInputLimit, validWfV1Args, boundedWorkflowInput, parseWfV1Args, validWfV1Response, utf8Bytes } from "./gr-workflow-v1.js";
 import { resolveSecret } from "./infisical.js";
+import { classifyRelayRefusal } from "./gr-refusal.js";
 
 /** The relay's response envelope (kody discussion_r4372745180):  every body
  * is decoded as UNKNOWN and validated with RelayResponseSchema.parse before
@@ -154,12 +155,12 @@ export class GrRelayClient {
     ) {
       return {status: 400, body: {error: "invalid_workflow_args"}};
     }
-    if (new TextEncoder().encode(JSON.stringify(args)).length > limit) return {status:400,body:{error:"workflow_request_too_large"}};
+    if (utf8Bytes(JSON.stringify(args)) > limit) return {status:400,body:{error:"workflow_request_too_large"}};
     const parsedArgs=parseWfV1Args(action,args);
     if(parsedArgs===null)return {status:400,body:{error:"invalid_workflow_args"}};
     args=parsedArgs;
     const serialized = JSON.stringify(args);
-    if (new TextEncoder().encode(serialized).length > limit) return {status:400,body:{error:"workflow_request_too_large"}};
+    if (utf8Bytes(serialized) > limit) return {status:400,body:{error:"workflow_request_too_large"}};
     const write = !WF_V1_READ_ACTIONS.includes(action);
     const unavailable = () => ({status:502,body:{error:"upstream_unavailable", ...(write ? {outcome:"unknown",retryable:false} : {retryable:true})}});
     const credential = await this.#credential(action, serialized);
@@ -219,7 +220,11 @@ export class GrRelayClient {
         && (parsed.error.startsWith("credential-shaped")
           || parsed.error === "environment name contains credential pattern"
           || /^[^\n]{1,200} looks like it contains a credential \([A-Za-z0-9_]{1,60}\); refusing to relay it$/.test(parsed.error));
-      return {status:response.status,body:{error:"workflow_request_refused", ...(credentialMarker ? {reason:"credential_scan"} : {}), ...(parsed.retryable===true ? {retryable:true} : {})}};
+      // The cause class, from the relay's exact fixed strings and numeric
+      // github_status only (src/gr-refusal.js):  a closed reason or nothing,
+      // never the relay's prose.  An unmatched refusal keeps the flat answer.
+      const classified=credentialMarker?{reason:"credential_scan"}:classifyRelayRefusal(parsed.error, body.github_status);
+      return {status:response.status,body:{error:"workflow_request_refused", ...(classified ? classified : {}), ...(parsed.retryable===true ? {retryable:true} : {})}};
     } catch {return unavailable();}
   }
 
