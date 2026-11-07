@@ -50,9 +50,7 @@ import time
 from collections.abc import Mapping
 from typing import Any, TextIO
 
-from . import identity as I
 from . import platform_letter as PL
-from . import session_ids as SI
 
 PLATFORM = "zcode"
 SEAT = "ZC"
@@ -316,13 +314,21 @@ def _sync_wrapper(env: Mapping[str, str], stdout: TextIO) -> bool:
         body = open(source, "rb").read()
     except OSError as exc:
         stdout.write(
-            json.dumps({"error": "the wrapper copy in this checkout is unreadable (%s)" % type(exc).__name__})
+            json.dumps(
+                {
+                    "error": "the wrapper copy in this checkout is unreadable (%s)"
+                    % type(exc).__name__
+                }
+            )
             + "\n"
         )
         return False
     if os.path.isfile(target):
         try:
-            if os.path.realpath(target) == os.path.realpath(source) or open(target, "rb").read() == body:
+            if (
+                os.path.realpath(target) == os.path.realpath(source)
+                or open(target, "rb").read() == body
+            ):
                 return True
         except OSError:
             pass
@@ -339,7 +345,8 @@ def _sync_wrapper(env: Mapping[str, str], stdout: TextIO) -> bool:
         return True
     except OSError as exc:
         stdout.write(
-            json.dumps({"error": "the wrapper could not be installed (%s)" % type(exc).__name__}) + "\n"
+            json.dumps({"error": "the wrapper could not be installed (%s)" % type(exc).__name__})
+            + "\n"
         )
         return False
 
@@ -388,9 +395,13 @@ def sweep_main(argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int:
         ).fetchall()
         conn.close()
     except sqlite3.Error as exc:
-        stdout.write(json.dumps({"error": "the store could not be read (%s)" % type(exc).__name__}) + "\n")
+        stdout.write(
+            json.dumps({"error": "the store could not be read (%s)" % type(exc).__name__}) + "\n"
+        )
         return 2
-    gone = [r[0] for r in rows if isinstance(r[0], str) and re.fullmatch(r"[A-Za-z0-9._-]{1,128}", r[0])]
+    gone = [
+        r[0] for r in rows if isinstance(r[0], str) and re.fullmatch(r"[A-Za-z0-9._-]{1,128}", r[0])
+    ]
     closed = []
     failed = []
     import io
