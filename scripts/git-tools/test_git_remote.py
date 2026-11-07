@@ -959,6 +959,57 @@ class TestOutcomes(unittest.TestCase):
         self.assertIn("outcome_unknown", err)
         self.assertNotIn("may or may not have been applied", err)
 
+    def _refused(self, sc):
+        t = FakeTransport(
+            call_results={
+                "gr_wf_issue_create": {
+                    "isError": True,
+                    "structuredContent": sc,
+                    "content": [{"type": "text", "text": "x"}],
+                }
+            }
+        )
+        code, out, err = run_cli(
+            ["call", "gr_wf_issue_create", "--args-json", '{"title":"t"}'],
+            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            transport=t,
+        )
+        self.assertEqual(code, 1, err)
+        return err
+
+    def test_relay_refused_shows_closed_reason_and_github_status(self):
+        err = self._refused(
+            {"code": "relay_refused", "reason": "github_refused", "github_status": 404,
+             "message": "SECRETBODY"}
+        )
+        self.assertIn("relay_refused (reason=github_refused, github_status=404)", err)
+        self.assertNotIn("SECRETBODY", err)
+
+    def test_relay_refused_seat_policy_reason_without_status(self):
+        err = self._refused({"code": "relay_refused", "reason": "seat_policy"})
+        self.assertIn("relay_refused (reason=seat_policy)", err)
+        self.assertNotIn("github_status", err)
+
+    def test_relay_refused_unknown_reason_and_bad_status_are_not_shown(self):
+        err = self._refused({"code": "relay_refused", "reason": "echo SECRETINPUT"})
+        self.assertNotIn("SECRETINPUT", err)
+        self.assertNotIn("reason=", err)
+        for bad in (200, 429, 500, True, "404", 99999):
+            err = self._refused(
+                {"code": "relay_refused", "reason": "github_refused", "github_status": bad}
+            )
+            self.assertIn("(reason=github_refused)", err)
+            self.assertNotIn("github_status", err)
+
+    def test_relay_refused_without_reason_is_unchanged(self):
+        err = self._refused({"code": "relay_refused"})
+        self.assertIn("failed on the hosted server: relay_refused", err)
+        self.assertNotIn("reason=", err)
+
+    def test_reason_is_shown_only_for_relay_refused(self):
+        err = self._refused({"code": "upstream_error", "reason": "seat_policy"})
+        self.assertNotIn("reason=", err)
+
     def test_rate_limited_shows_bounded_retry_after(self):
         t = FakeTransport(
             call_results={
