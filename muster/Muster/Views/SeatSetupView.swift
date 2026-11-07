@@ -24,7 +24,11 @@ struct SeatSetupView: View {
     /// What the platform has installed, for the seat it was read for.
     @State private var inventory: SeatInventoryReading?
     @State private var inventorySeat: String?
+    @State private var inventoryHost: SeatSetupHost?
     @State private var openInventory: Set<String> = []
+    /// Which host's setup is shown.  The engine's answers are the Mac's only, so the server's
+    /// side is what the platform has installed there, read over the restricted route.
+    @State private var host: SeatSetupHost = .mac
 
     /// MiniMax's seat tag, the one seat with extra files of its own to show.
     private static let miniMaxSeat = "MM"
@@ -47,16 +51,27 @@ struct SeatSetupView: View {
             VStack(alignment: .leading, spacing: 24) {
                 chooser
                 if let seat {
-                    attention(seat)
-                    answers(seat)
-                    ForEach(ConfigKind.columnOrder, id: \.self) { kind in
-                        kindPanel(kind, seat: seat)
-                    }
-                    if seat != Self.miniMaxSeat {
+                    switch host {
+                    case .mac:
+                        attention(seat)
+                        answers(seat)
+                        ForEach(ConfigKind.columnOrder, id: \.self) { kind in
+                            kindPanel(kind, seat: seat)
+                        }
+                        if seat != Self.miniMaxSeat {
+                            installed(seat)
+                        }
+                        if seat == Self.miniMaxSeat {
+                            MiniMaxDetailView(embedded: true)
+                        }
+                    case .server:
+                        SectionPanel(title: "The Server", subtitle: "Seat \(seat), on the server") {
+                            Text("The engine checks the Mac only today, so it has no answers for the server.  This shows what the seat's platform has installed there, as names and counts.")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                         installed(seat)
-                    }
-                    if seat == Self.miniMaxSeat {
-                        MiniMaxDetailView(embedded: true)
                     }
                 } else {
                     EmptyNote(text: "The engine has no seats to show yet.  Run it from the Compliance Grid or the Overview.")
@@ -67,7 +82,7 @@ struct SeatSetupView: View {
         }
         // The files are read again when the seat changes and when the engine finishes a run,
         // so a panel opened before the engine answered fills in when it does.
-        .task(id: "\(seat ?? "")/\(String(describing: store.phase))") { await loadArtifacts() }
+        .task(id: "\(seat ?? "")/\(host.rawValue)/\(String(describing: store.phase))") { await loadArtifacts() }
     }
 
     // MARK: - the seat
@@ -81,6 +96,14 @@ struct SeatSetupView: View {
             }
             .frame(maxWidth: 220)
             .disabled(store.roster.isEmpty)
+            Picker("Host", selection: $host) {
+                ForEach(SeatSetupHost.allCases) { item in
+                    Text(item.title).tag(item)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
             if let platform = SeatSetup.platform(of: cells) {
                 Text("runs on \(platform)")
                     .font(.callout)
@@ -232,8 +255,8 @@ struct SeatSetupView: View {
     /// as names and counts.  MiniMax's seat has its own, richer section below instead.
     @ViewBuilder
     private func installed(_ seat: String) -> some View {
-        SectionPanel(title: "What Is Installed", subtitle: "Names and counts only, read on the Mac") {
-            if inventorySeat != seat {
+        SectionPanel(title: "What Is Installed", subtitle: "Names and counts only, read \(host.inProse)") {
+            if inventorySeat != seat || inventoryHost != host {
                 HStack(spacing: 8) {
                     ProgressView()
                         .controlSize(.small)
@@ -332,6 +355,27 @@ struct SeatSetupView: View {
         }
         let fleetStore = store
         let wanted = ConfigKind.columnOrder.compactMap { fleetStore.cell(seat: seat, kind: $0) }
+        let readHost = host
+
+        // The server's side is the platform's inventory over the restricted read-only route.
+        // The platform is the one the engine's rules name for this seat.
+        if readHost == .server {
+            guard let platform = SeatSetup.platform(of: wanted) else {
+                inventory = .unavailable("No platform is known for this seat, so nothing was read on the server.")
+                inventorySeat = seat
+                inventoryHost = readHost
+                return
+            }
+            inventory = nil
+            inventorySeat = nil
+            let reading = await ServerSeatInventoryReader().read(platform: platform)
+            guard !Task.isCancelled else { return }
+            inventory = reading
+            inventorySeat = seat
+            inventoryHost = readHost
+            return
+        }
+
         let loaded = await Task.detached(priority: .userInitiated) {
             var byKind: [ConfigKind: FleetStore.CellArtifacts] = [:]
             for cell in wanted { byKind[cell.kind] = fleetStore.artifacts(for: cell) }
@@ -346,6 +390,7 @@ struct SeatSetupView: View {
         guard let platform = SeatSetup.platform(of: wanted), platform != "minimax" else {
             inventory = nil
             inventorySeat = seat
+            inventoryHost = readHost
             return
         }
         let repoRoot = FleetConfigLocation.resolve().repoRoot
@@ -353,5 +398,6 @@ struct SeatSetupView: View {
         guard !Task.isCancelled else { return }
         inventory = reading
         inventorySeat = seat
+        inventoryHost = readHost
     }
 }
