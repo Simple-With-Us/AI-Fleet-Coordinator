@@ -4433,6 +4433,7 @@ class Daemon:
         seat's normal lag, or a replay after a restart) finds the done kind and starts
         nothing - the audit reminder above all, which no other fence dedupes.  Boot prunes
         all-done rows older than BROADCAST_LEDGER_DONE_KEEP_SECONDS."""
+
         def mutate(data: dict[str, Any]) -> None:
             row = data.get(mid)
             if not isinstance(row, dict) or kind not in (row.get("claims") or {}):
@@ -4536,7 +4537,9 @@ class Daemon:
                             "topic": orow.get("topic"),
                             "stream_id": orow.get("stream_id"),
                             "origin_seat": orow.get("seat"),
-                            "admitted_at": orow.get("ts") if isinstance(orow.get("ts"), (int, float)) else now,
+                            "admitted_at": orow.get("ts")
+                            if isinstance(orow.get("ts"), (int, float))
+                            else now,
                             "snapshot": {},
                             "effects": {},
                             "claims": {},
@@ -4562,7 +4565,9 @@ class Daemon:
             # operator;  nothing rolls the ledger back.
             try:
                 L.update_json(ledger, migrate)
-                os.replace(self._deferred_broadcasts_path(), self._deferred_broadcasts_path() + ".migrated")
+                os.replace(
+                    self._deferred_broadcasts_path(), self._deferred_broadcasts_path() + ".migrated"
+                )
             except OSError:
                 self.log.write("broadcast-ledger-migration-failed", rows=len(old))
         reparked = 0
@@ -4606,8 +4611,7 @@ class Daemon:
                 if (
                     effects
                     and all(
-                        isinstance(e, dict) and e.get("state") == "done"
-                        for e in effects.values()
+                        isinstance(e, dict) and e.get("state") == "done" for e in effects.values()
                     )
                     and isinstance(admitted_at, (int, float))
                     and admitted_at < self.clock.time() - BROADCAST_LEDGER_DONE_KEEP_SECONDS
@@ -4879,8 +4883,6 @@ class Daemon:
             return
         self.log.write("broadcast-effect-terminal", id=mid, effect=kind, state=state, reason=reason)
 
-
-
     def _fleet_seat_tags(self) -> frozenset[str]:
         """The seat tags this instance knows:  the partition's seats and the fleet's own list.
 
@@ -4969,9 +4971,7 @@ class Daemon:
                     error=type(exc).__name__,
                 )
 
-    def _run_broadcast_audit(
-        self, mid: str, broadcast: BAUD.Broadcast, attempt: int = 0
-    ) -> None:
+    def _run_broadcast_audit(self, mid: str, broadcast: BAUD.Broadcast, attempt: int = 0) -> None:
         """Check one fleet bot's `@all` and, when nobody explained it, DM the owner.
 
         Runs off the event thread.  The check reads the SENDER bot's own Zulip account, with
@@ -5000,9 +5000,7 @@ class Daemon:
             with self._fanout_lock:
                 self._audit_in_flight.discard(message_id)
 
-    def _run_broadcast_audit_body(
-        self, mid: str, broadcast: BAUD.Broadcast, attempt: int
-    ) -> None:
+    def _run_broadcast_audit_body(self, mid: str, broadcast: BAUD.Broadcast, attempt: int) -> None:
         message_id = broadcast.message_id
         seat = broadcast.sender_seat or "unknown"
         owner_id = int(self.config.owner_user_id)
@@ -5082,9 +5080,7 @@ class Daemon:
         # R5:  the send-attempt marker lands BEFORE the send.  A crash between the send and
         # the ack leaves the marker without a completion, and boot turns the kind UNKNOWN:
         # nothing proves the reminder did not reach the owner, so it is never sent twice.
-        self._update_broadcast_effect_detail(
-            mid, "audit", {"send_attempted_at": self.clock.time()}
-        )
+        self._update_broadcast_effect_detail(mid, "audit", {"send_attempted_at": self.clock.time()})
         try:
             result = self._operator_send({"type": "direct", "to": [owner_id], "content": text})
         except Exception as exc:  # noqa: BLE001 - a failed DM is logged and kept, never swallowed
@@ -5159,8 +5155,6 @@ class Daemon:
             reminder_id=int(reminder_id) if isinstance(reminder_id, int) else None,
             posted_by=OPV.VOICE,
         )
-
-
 
     def _owner_email(self) -> str:
         """The owner's own account email, when a seat's realm user list knows it.
@@ -5321,8 +5315,7 @@ class Daemon:
                         % (
                             len(INBOX_RETRY_BACKOFF),
                             ", ".join(
-                                "%s=%s" % (s, state.outcomes.get(s, IDEL.UNKNOWN))
-                                for s in gave_up
+                                "%s=%s" % (s, state.outcomes.get(s, IDEL.UNKNOWN)) for s in gave_up
                             ),
                         ),
                         dict(state.outcomes),
