@@ -91,13 +91,9 @@ def install(source_directory):
             'fleet-ops-control.json',
             'fleet_resource_control.py',
             'fleet_seat_inventory.py',
+            'reduced_status.py',
         ):
             payload[name] = read_source(source, name)
-        # The eavesdropper-status reducer lives in the agent_sync folder of the checkout and is
-        # installed flat, beside the helper, which loads it by file from there.
-        agent_sync = os.open('agent_sync', DIRECTORY_FLAGS, dir_fd=source)
-        stack.callback(os.close, agent_sync)
-        payload['reduced_status.py'] = read_source(agent_sync, 'reduced_status.py')
         config = json.loads(payload['fleet-ops-control.json'])
         if not isinstance(config, dict) or config.get('schemaVersion') != 1:
             raise RuntimeError('the broker allowlist has an invalid schema')

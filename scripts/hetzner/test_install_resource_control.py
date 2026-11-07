@@ -132,10 +132,9 @@ class InstallerTests(unittest.TestCase):
             "fleet-ops-control.py",
             "fleet_resource_control.py",
             "fleet_seat_inventory.py",
+            "reduced_status.py",
         ):
             (source / name).write_text("pass\n")
-        (source / "agent_sync").mkdir()
-        (source / "agent_sync" / "reduced_status.py").write_text("pass\n")
         (source / "fleet-ops-control.json").write_text(json.dumps({"schemaVersion": 1}))
         (source / "fleet_secrets").symlink_to(SCRIPTS / "fleet_secrets", target_is_directory=True)
         with self.assertRaises(OSError):
@@ -159,24 +158,22 @@ class InstallerTests(unittest.TestCase):
             (source / package).mkdir()
             for name in names:
                 (source / package / name).write_text("pass\n")
-        real = self.root / "real-agent-sync"
-        real.mkdir()
-        (real / "reduced_status.py").write_text("pass\n")
-        (source / "agent_sync").symlink_to(real, target_is_directory=True)
+        real = self.root / "real-reduced-status.py"
+        real.write_text("pass\n")
+        (source / "reduced_status.py").symlink_to(real)
         with self.assertRaises(OSError):
             self.install(source)
         self.assertFalse(self.destination.exists())
-        (source / "agent_sync").unlink()
-        (source / "agent_sync").mkdir()
-        (source / "agent_sync" / "reduced_status.py").symlink_to(real / "reduced_status.py")
-        with self.assertRaises(OSError):
-            self.install(source)
-        self.assertFalse(self.destination.exists())
-        # The same source with a plain file installs, so both refusals were the symlinks.
-        (source / "agent_sync" / "reduced_status.py").unlink()
-        (source / "agent_sync" / "reduced_status.py").write_text("pass\n")
+        # The same source with a plain file installs, so the refusal was the symlink.
+        (source / "reduced_status.py").unlink()
+        (source / "reduced_status.py").write_text("pass\n")
         self.install(source)
         self.assertEqual((self.destination / "reduced_status.py").read_text(), "pass\n")
+
+    def test_the_reducer_sits_beside_the_helper_in_the_scripts_folder(self):
+        self.assertTrue((SCRIPTS / "reduced_status.py").is_file())
+        self.assertTrue((SCRIPTS / "fleet-ops-control.py").is_file())
+        self.assertFalse((SCRIPTS / "agent_sync" / "reduced_status.py").exists())
 
     def test_nonroot_or_nonlinux_refused_before_any_destination_write(self):
         for uid, platform in ((1, "linux"), (0, "darwin")):

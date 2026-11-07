@@ -12,18 +12,36 @@ from __future__ import annotations
 
 import copy
 import datetime
+import importlib.util
 import json
 import os
+import random
 import re
-import unicodedata
 import unittest
+from pathlib import Path
 from typing import Any
 from unittest import mock
 
 from agent_sync import daemon as D
 from agent_sync import live as L
-from agent_sync import reduced_status as RS
 from agent_sync.tests.test_daemon import DaemonHarness
+
+SCRIPTS = Path(__file__).resolve().parents[2]
+
+
+def load_reducer():
+    """scripts/reduced_status.py, by file path.  It sits beside fleet-ops-control.py and not in the
+    agent_sync package, which the fleet CLI release ships under a file budget, so it is not
+    importable as `agent_sync.reduced_status`.  The module is not put in sys.modules."""
+    spec = importlib.util.spec_from_file_location(
+        "reduced_status_under_test", SCRIPTS / "reduced_status.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+RS = load_reducer()
 
 NOW = 1_800_000_000.0
 
@@ -44,7 +62,10 @@ HUGE = "x" * 100_000
 CONTROL = "ok\x00\x1b[31m‮​\ud800go"
 
 # Strings that must never be in the output, wherever they were put in the input.
-PROBES = (PATH, WINDOWS, TILDE, EMAIL, URL, WWW, UUID, USER_ID, KEY, KEY2, VALUE, HUGE[:50])
+PROBES = (
+    PATH, WINDOWS, TILDE, EMAIL, URL, WWW, UUID, USER_ID, KEY, KEY2, VALUE, HUGE[:50],
+    "Letters Work",
+)  # fmt: skip
 HOSTILE_STRINGS = (
     PATH,
     WINDOWS,
@@ -98,7 +119,6 @@ ISO = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
 TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,23}")
 SEAT = re.compile(r"[A-Z0-9][A-Z0-9_-]{0,31}")
 CODE = re.compile(r"[a-z][a-z0-9_]{0,47}")
-TITLE_KEEP = frozenset(" .,:;!?'\"()[]&+-_#=%*")
 UNSAFE = re.compile(
     "[\x00-\x1f\x7f-\x9f\u00ad\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff\ud800-\udfff\ue000-\uf8ff]"
 )
@@ -148,7 +168,6 @@ LEASE = {
     "platform",
     "alive",
     "pending",
-    "title",
     "verified_host",
     "why",
     "topics",
@@ -240,7 +259,6 @@ def check_shape(case: unittest.TestCase, doc: Any) -> None:
             optional(lease["platform"], is_token)
             optional(lease["alive"], is_bool)
             optional(lease["pending"], is_count)
-            optional(lease["title"], lambda v: check_title(case, v))
             case.assertIn(lease["verified_host"], ("mac", "server", "cloud", None))
             optional(lease["why"], is_token)
             optional(lease["topics"], is_count)
@@ -266,17 +284,6 @@ def check_shape(case: unittest.TestCase, doc: Any) -> None:
             case.fail("unsafe character in " + repr(string)[:80])
     for probe in PROBES:
         case.assertNotIn(probe, text)
-
-
-def check_title(case: unittest.TestCase, title: str) -> None:
-    case.assertIsInstance(title, str)
-    case.assertTrue(0 < len(title) <= RS.TITLE_MAX, repr(title))
-    for char in title:
-        case.assertTrue(
-            unicodedata.category(char)[0] in "LN" or char in TITLE_KEEP, repr((char, title))
-        )
-    for forbidden in "/\\@~<>|`$":
-        case.assertNotIn(forbidden, title)
 
 
 def strings(node: Any):
@@ -650,7 +657,7 @@ class StatusDocumentTests(unittest.TestCase):
             out = seats_by_name(self.reduce(document))["CLAUDE"]["quota"]
             self.assertEqual(out["remaining"], expected, value)
 
-    def test_leases_carry_names_and_a_scrubbed_title_and_no_ids(self) -> None:
+    def test_leases_carry_names_and_no_title_and_no_ids(self) -> None:
         leases = seats_by_name(self.reduce())["CLAUDE"]["leases"]
         self.assertEqual(
             leases,
@@ -660,7 +667,6 @@ class StatusDocumentTests(unittest.TestCase):
                     "platform": "claude-code",
                     "alive": True,
                     "pending": 1,
-                    "title": "Letters Work",
                     "verified_host": "server",
                     "why": "ok",
                     "topics": 2,
@@ -671,7 +677,6 @@ class StatusDocumentTests(unittest.TestCase):
                     "platform": "cursor",
                     "alive": False,
                     "pending": 1,
-                    "title": None,
                     "verified_host": None,
                     "why": "pid_gone",
                     "topics": 2,
@@ -775,6 +780,127 @@ class StatusDocumentTests(unittest.TestCase):
         self.assertEqual(self.reduce(status_document(instance="mac"), instance=None)["instance"], "mac")
         self.assertEqual(self.reduce(status_document(instance="elsewhere"), instance=5)["instance"], None)
         self.assertEqual(self.reduce(status_document(instance=PATH), instance="SERVER")["instance"], None)
+
+
+class FindingsTests(unittest.TestCase):
+    """The review's findings on `disabled`, on how fresh a document must be, and on flags."""
+
+    def reduce(self, document: Any, now: float = NOW) -> dict[str, Any]:
+        out = RS.reduce_status(document, now, "server")
+        check_shape(self, out)
+        return out
+
+    # ---- `disabled` is deduplicated and sorted before it is capped -------------------------
+
+    def test_a_long_unordered_list_keeps_the_smallest_names(self) -> None:
+        names = ["S%04d" % n for n in range(400)]
+        shuffled = names + names[::3] + ["bad name", "../x", "lower", "", 5, None, ["S0000"]]
+        random.Random(7).shuffle(shuffled)
+        # The smallest name is last, far past any early slice of the list.
+        shuffled.remove("S0000")
+        shuffled.extend(["S0000", "S0000"])
+        out = self.reduce(status_document(disabled=shuffled))
+        self.assertEqual(out["disabled"], names[: RS.MAX_NAMES])
+        self.assertEqual(out["disabled"][0], "S0000")
+        self.assertEqual(len(out["disabled"]), RS.MAX_NAMES)
+
+    def test_disabled_is_each_valid_name_once_in_order(self) -> None:
+        out = self.reduce(status_document(disabled=["Z", "B", "B", "a", "A", "-X", "B", "9", "M"]))
+        self.assertEqual(out["disabled"], ["A", "B", "M", "Z"])
+        self.assertEqual(self.reduce(status_document(disabled=[]))["disabled"], [])
+        self.assertEqual(self.reduce(status_document(disabled="B"))["disabled"], [])
+
+    # ---- freshness: at most 5 seconds ahead, at most 300 seconds old --------------------
+
+    def test_a_document_is_current_from_5_seconds_ahead_to_300_seconds_old(self) -> None:
+        self.assertEqual((RS.FUTURE_SKEW_SECONDS, RS.STALE_AFTER_SECONDS), (5.0, 300.0))
+        for age, running in (
+            (-6, "unknown"),
+            (-5.5, "unknown"),
+            (-5, "running"),
+            (-1, "running"),
+            (0, "running"),
+            (2, "running"),
+            (300, "running"),
+            (300.5, "unknown"),
+            (301, "unknown"),
+            (3600, "unknown"),
+            (-3600, "unknown"),
+        ):
+            with self.subTest(age=age):
+                out = self.reduce(status_document(updated=NOW - age))
+                states = {seat["seat"]: seat["running"] for seat in out["seats"]}
+                if running == "unknown":
+                    self.assertEqual(set(states.values()), {"unknown"}, age)
+                else:
+                    self.assertEqual((states["MA"], states["DOWN"]), ("running", "stopped"), age)
+                # The time itself is reported either way, so a reader can see how old it is.
+                self.assertEqual(out["status_updated"], iso(NOW - age))
+
+    # ---- a flag is a JSON boolean or it is malformed -------------------------------------------
+
+    NOT_BOOLEANS = (1, 0, 1.0, 0.0, 2, -1, "true", "false", "1", "0", [True], {"a": True})
+
+    def test_integers_floats_and_strings_are_never_flags(self) -> None:
+        for value in self.NOT_BOOLEANS:
+            with self.subTest(value=repr(value)):
+                document = status_document()
+                seat = document["seats"]["MA"]
+                seat.update(connected=value, paused=value, wakes_paused=value)
+                seat["quota"] = {
+                    "known": value,
+                    "exhausted": value,
+                    "remaining": 10,
+                    "source": "codecaps",
+                }
+                seat["fallback"] = {"stands_in": value}
+                seat["leases"] = [lease_row(alive=value, watcher=value)]
+                document["pause"] = {"*": {"wakes_only": value, "by": "cli", "ts": NOW - 5}}
+                document["operator_voice"] = {"available": value, "code": None, "since": None}
+                out = self.reduce(document)
+                got = seats_by_name(out)["MA"]
+                self.assertEqual((got["connected"], got["running"]), (None, "unknown"))
+                self.assertIsNone(got["paused"])
+                self.assertEqual(got["quota"]["known"], False)
+                self.assertIsNone(got["quota"]["exhausted"])
+                self.assertEqual(got["wake"], "inbox", "a fallback that is not `true` stands in for nothing")
+                self.assertEqual(
+                    (got["leases"][0]["alive"], got["leases"][0]["watcher"]), (None, None)
+                )
+                self.assertEqual(out["pause"]["paused"], True)
+                self.assertIsNone(out["pause"]["wakes_only"])
+                self.assertIsNone(out["operator_voice"]["available"])
+
+    def test_one_flag_that_is_not_a_boolean_makes_the_seats_pause_null(self) -> None:
+        # `wakes_paused` once slipped through `in (False, None)`, which is true of 0 and 0.0.
+        for value in self.NOT_BOOLEANS:
+            for paused, wakes in ((False, value), (value, False), (value, value), (value, None)):
+                with self.subTest(paused=repr(paused), wakes_paused=repr(wakes)):
+                    document = status_document()
+                    document["seats"]["MA"].update(paused=paused, wakes_paused=wakes)
+                    got = seats_by_name(self.reduce(document))["MA"]
+                    self.assertIsNone(got["paused"])
+
+    def test_real_booleans_are_read_as_they_are(self) -> None:
+        for paused, wakes, expected in (
+            (False, False, False),
+            (False, None, False),
+            (True, False, True),
+            (False, True, True),
+            (True, True, True),
+            (None, False, None),
+            (None, None, None),
+        ):
+            with self.subTest(paused=paused, wakes_paused=wakes):
+                document = status_document()
+                document["seats"]["MA"].update(paused=paused, wakes_paused=wakes)
+                self.assertIs(seats_by_name(self.reduce(document))["MA"]["paused"], expected)
+        document = status_document()
+        document["seats"]["MA"].pop("wakes_paused")
+        self.assertIs(seats_by_name(self.reduce(document))["MA"]["paused"], False)
+        document = status_document()
+        document["seats"]["MM"]["fallback"]["stands_in"] = True
+        self.assertEqual(seats_by_name(self.reduce(document))["MM"]["wake"], "fallback")
 
 
 ABSENT = object()
@@ -884,257 +1010,89 @@ class OperatorVoiceTests(unittest.TestCase):
         self.assertEqual(len(out["seats"]), 7)
 
 
-class TitleTests(unittest.TestCase):
-    def test_an_ordinary_title_is_kept(self) -> None:
-        for title in ("Fix the login flow", "Review PR #1446 for AFC-607", "v1.2.3 (beta): ok?"):
-            self.assertEqual(RS._title(title), title)
+class LeaseTitleTests(unittest.TestCase):
+    """Lease titles are never emitted (the design owner's privacy ruling)."""
 
-    def test_paths_emails_urls_keys_and_ids_become_a_marker(self) -> None:
-        for hostile in (PATH, WINDOWS, TILDE, EMAIL, URL, WWW, UUID, USER_ID, KEY, KEY2, VALUE):
-            with self.subTest(hostile=hostile[:20]):
-                title = RS._title("Fix " + hostile + " today")
-                self.assertEqual(title, "Fix [hidden] today")
+    TITLES = (
+        PATH,
+        EMAIL,
+        VALUE,
+        UUID,
+        "Letters Work",
+        URL,
+        WINDOWS,
+        TILDE,
+        KEY,
+        KEY2,
+        USER_ID,
+        "claude-eavesdropper-status",
+        "Fix " + PATH + " for " + EMAIL,
+        "Review PR #1446 for AFC-607",
+        HUGE,
+        CONTROL,
+    )
+    NOT_TITLES = ("", " ", None, 5, 1.5, True, ["Letters Work"], {"a": "Letters Work"})
 
-    def test_look_alike_and_invisible_characters_cannot_hide_a_path(self) -> None:
-        self.assertEqual(RS._title("／etc／passwd"), "[hidden]")
-        self.assertEqual(RS._title("/ho​me/owner"), "[hidden]")
-        self.assertEqual(RS._title("owner＠example.invalid"), "[hidden]")
-        self.assertEqual(RS._title("a‮b​c"), "abc")
+    def reduce_with(self, title: Any) -> tuple[dict[str, Any], str]:
+        document = status_document()
+        for seat in document["seats"].values():
+            for lease in seat["leases"]:
+                lease["title"] = title
+        # The title-like text is also in keys the daemon does not write, on more leases than one.
+        document["seats"]["MA"]["leases"] = [
+            lease_row(title=title, letter=letter, name=title, session_title=title, summary=title)
+            for letter in ("A", "B", None)
+        ]
+        out = RS.reduce_status(document, NOW, "server")
+        check_shape(self, out)
+        return out, json.dumps(out, ensure_ascii=False)
 
-    def test_control_characters_and_markup_do_not_survive(self) -> None:
-        self.assertEqual(RS._title("line1\nline2\ttab\x00end"), "line1 line2 tab end")
-        self.assertEqual(RS._title("a<b>c"), "abc")
-        self.assertEqual(RS._title("<script>x</script>"), "[hidden]")
-        self.assertEqual(RS._title("emoji \U0001f600 ok"), "emoji ok")
-        self.assertEqual(RS._title("`rm` $HOME | {x}"), "rm [hidden] x")
+    def test_no_title_like_string_from_the_source_appears_anywhere_in_the_output(self) -> None:
+        for title in self.TITLES:
+            with self.subTest(title=title[:30]):
+                out, text = self.reduce_with(title)
+                self.assertNotIn(title[:60], text)
+                for words in title.split():
+                    if len(words) > 4:
+                        self.assertNotIn(words[:40], text)
+                self.assertNotIn('"title"', text)
 
-    def test_a_long_title_is_cut_and_a_long_word_is_hidden(self) -> None:
-        cut = RS._title("word " * 100)
-        self.assertEqual(len(cut), RS.TITLE_MAX)
-        self.assertTrue(cut.endswith("..."))
-        self.assertEqual(RS._title(HUGE), "[hidden]")
-        self.assertEqual(RS._title(("ab " * 10_000)).count("ab"), 26)
+    def test_a_title_of_any_other_kind_changes_nothing_either(self) -> None:
+        baseline = self.reduce_with("Letters Work")[0]
+        for title in self.NOT_TITLES:
+            with self.subTest(title=repr(title)):
+                self.assertEqual(self.reduce_with(title)[0], baseline)
 
-    def test_nothing_left_is_null_and_a_non_string_is_null(self) -> None:
-        for value in ("", "   ", "\n\t", "​", None, 5, [], {"a": "b"}, b"bytes", True):
-            self.assertIsNone(RS._title(value), value)
+    def test_the_lease_objects_have_exactly_the_fields_without_a_title(self) -> None:
+        out, _ = self.reduce_with("Letters Work")
+        leases = [lease for seat in out["seats"] for lease in seat["leases"]]
+        self.assertTrue(leases)
+        for lease in leases:
+            self.assertEqual(set(lease), LEASE)
+            self.assertNotIn("title", lease)
+        self.assertEqual(len(LEASE), 8)
 
-    def test_the_hidden_marker_is_not_repeated(self) -> None:
-        self.assertEqual(RS._title(PATH + " " + EMAIL + " " + URL), "[hidden]")
-
-
-# Characters a secret can be cut by:  the first five are the ones the title drops (so the pieces
-# look harmless until they are joined), the rest are ones it keeps.
-SPLITTERS = (
-    "|",
-    "^",
-    "$",
-    "͏",  # combining grapheme joiner
-    "️",  # variation selector 16
-    "​",
-    "‍",
-    "⁠",
-    "~",
-    "`",
-    "<",
-    ">",
-    "{",
-    "}",
-    ".",
-    ":",
-    "-",
-    "_",
-    "*",
-    "#",
-    "(",
-    ")",
-    "[",
-    "]",
-    "&",
-    "+",
-    "=",
-    ",",
-    ";",
-    "!",
-    "?",
-    "'",
-    '"',
-    "%",
-)
-UUID_CHUNKS = tuple(UUID[i : i + 7] for i in range(0, len(UUID), 7))
-SLUGS = (
-    "claude-eavesdropper-status",
-    "fix-the-login-flow-for-everyone",
-    "reduced-status-verb-hardening",
-    "eavesdropper-status-verb",
-    "muster-seat-setup-reads-the-server-too",
-    "fleet-ops-control-docker-read",
-    "investigate-the-failing-installer-test",
-    "afc-eavesdropper-status-hardening",
-    "afc-607-eavesdropper-status",
-    "v2-release-candidate-notes-final",
-    "ClaudeEavesdropperStatusHardening",
-    "Muster-Seat-Setup-Reads-The-Server-Too",
-    "refactor-the-quota-reducer-and-add-tests",
-    "internationalization-and-localization",
-    "strengthen-the-length-checks-in-scripts",
-    "shipping-the-weekly-strengths-report-today",
-    "add-eavesdropper-status-to-the-muster-dashboard",
-    "pnpm-workspace-typescript-eslint-upgrade",
-    "straightforward-schedule-throughput-review",
-)
-LOOKS_RANDOM = (
-    "xkqzptwvbnmrjhgfdsclzxkq",  # no vowels
-    "zxqvbnmkjhgfdsaplokijuhy",  # few vowels
-    "qWeRtYuIoPaSdFgHjKlZxCvB",  # case alternating
-    "abcdefghij0123456789klmnop",  # digits among letters
-    "bcdfghjklmnpqrstvwxzbcdf",
-    "x" * 30,
-)
+    def test_the_module_has_no_title_scrubber_left(self) -> None:
+        for gone in ("_title", "_hidden_word", "_kept", "_variants", "_marked", "TITLE_MAX"):
+            self.assertFalse(hasattr(RS, gone), gone)
 
 
-def alphanumerics(text: str) -> str:
-    return re.sub("[^A-Za-z0-9]", "", text)
-
-
-class SplitSecretTests(unittest.TestCase):
-    """A secret cut into pieces by characters the title drops or keeps is still hidden whole."""
-
-    def test_a_key_or_a_uuid_cut_by_any_character_is_hidden_in_a_title(self) -> None:
-        for chunks in (KEY_CHUNKS, UUID_CHUNKS):
-            secret = "".join(chunks)
-            for splitter in SPLITTERS:
-                with self.subTest(splitter=repr(splitter), secret=secret[:6]):
-                    word = splitter.join(chunks)
-                    title = RS._title("Fix " + word + " now")
-                    self.assertEqual(title, "Fix [hidden] now")
-                    self.assertNotIn(secret, alphanumerics(title))
-
-    def test_the_same_through_a_whole_document(self) -> None:
-        for chunks in (KEY_CHUNKS, UUID_CHUNKS):
-            secret = "".join(chunks)
-            for splitter in SPLITTERS:
-                with self.subTest(splitter=repr(splitter), secret=secret[:6]):
-                    document = status_document()
-                    document["seats"]["CLAUDE"]["leases"][0]["title"] = (
-                        "Fix " + splitter.join(chunks) + " now"
-                    )
-                    out = RS.reduce_status(document, NOW, "server")
-                    check_shape(self, out)
-                    title = seats_by_name(out)["CLAUDE"]["leases"][0]["title"]
-                    self.assertEqual(title, "Fix [hidden] now")
-                    text = json.dumps(out, ensure_ascii=False)
-                    self.assertNotIn(secret, text)
-                    self.assertNotIn(secret, alphanumerics(text))
-
-    def test_pieces_cut_every_other_character_and_every_third_are_hidden_too(self) -> None:
-        for size in (2, 3, 4, 5, 6, 7, 8, 11):
-            for secret in (VALUE, UUID):
-                for splitter in ("|", "͏", "️", "^", "$"):
-                    pieces = [secret[i : i + size] for i in range(0, len(secret), size)]
-                    title = RS._title(splitter.join(pieces))
-                    self.assertEqual(title, "[hidden]", (size, splitter))
-
-    def test_percent_escapes_cannot_hide_a_path_an_email_or_a_url(self) -> None:
-        for word in (
-            "x%2Fhome%2Fjay%2F.ssh",
-            "%2Fetc%2Fpasswd",
-            "owner%40example.invalid",
-            "x%252Fhome%252Fjay",
-            "x%25252Fhome",
-            "https%3A%2F%2Fexample.invalid%2Fx",
-            "a%5Cb%5Cc",
-        ):
-            with self.subTest(word=word):
-                self.assertEqual(RS._title("see " + word), "see [hidden]")
-        # A percent sign that is not an escape is just text.
-        for word in ("100%", "50%-off", "a%zz", "rate%"):
-            self.assertEqual(RS._title("save " + word), "save " + word)
-
-    def test_key_prefixes_are_found_in_any_case_and_after_a_label(self) -> None:
-        # Short tails (ten characters, under every other rule's reach), so that only the prefix
-        # rule can hide these words.
-        tail = "A1b2C3d4E5"
-        for word in (
-            "sk-" + tail,
-            "SK-" + tail,
-            "Sk_" + tail,
-            "pk." + tail,
-            "Bearer." + tail,
-            "BEARER_" + tail,
-            "bearer-" + tail,
-            "tok_" + tail,
-            "secret_" + tail,
-            "key:sk-" + tail,
-            "KEY=sk-" + tail,
-            "token=Bearer-" + tail,
-            "Authorization=Bearer-" + tail,
-            "token=eyJhbGciO",
-            "Token:EYJhbGciO",
-            "x-api-key=ghp_a1B2c3",
-            "TOKEN=GHP_a1B2c3",
-            "gho_a1B2c3",
-            "github_pat_a1B2c3",
-            "glpat-a1B2c3",
-            "xoxb-123456",
-            "AKIAABCDEF",
-            "AIzaabcdef",
-            "ST." + tail + "H8i9J0",
-            "st." + tail + "H8i9J0",
-        ):
-            with self.subTest(word=word):
-                self.assertEqual(RS._title("use " + word + " here"), "use [hidden] here")
-
-    def test_a_word_that_only_starts_like_a_prefix_is_not_hidden(self) -> None:
-        for word in (
-            "key-rotation-plan",
-            "Key-Manager",
-            "secret-santa-plan",
-            "Secret.Santa",
-            "bearer-of-bad-news-today",
-            "pat-the-dog-notes",
-            "st.louis-trip",
-            "sk-learn-notes",
-            "token=Alpha",
-            "key:value",
-            "npm-install-steps",
-            "ghost-writer-notes",
-            "asia-pacific-review",
-            "Authorization=Bearer-token",
-        ):
-            with self.subTest(word=word):
-                self.assertEqual(RS._title("use " + word + " here"), "use " + word + " here")
-
-    def test_an_ordinary_hyphenated_slug_is_not_hidden_for_being_long(self) -> None:
-        for slug in SLUGS:
-            with self.subTest(slug=slug):
-                self.assertEqual(RS._title(slug), slug)
-                self.assertEqual(RS._title("Work on " + slug + " today"), "Work on " + slug + " today")
-        self.assertEqual(RS._title("claude-eavesdropper-status"), "claude-eavesdropper-status")
-
-    def test_a_long_run_that_looks_like_a_secret_is_hidden(self) -> None:
-        for run in LOOKS_RANDOM:
-            with self.subTest(run=run):
-                self.assertEqual(RS._title("see " + run), "see [hidden]")
-                if run.isalpha():
-                    # Cut into single letters by hyphens, it is still the same run of letters.
-                    self.assertEqual(RS._title("-".join(run)), "[hidden]")
-
-    def test_numbers_and_versions_inside_a_slug_do_not_make_it_a_key(self) -> None:
-        for slug in ("afc-607-eavesdropper-status", "release-v2-1-notes-for-the-server", "pr-1446-review-notes-final"):
-            self.assertEqual(RS._title(slug), slug)
-        # ... but a word that is one long mixed run is a key, hyphens or not.
-        self.assertEqual(RS._title("afc607eavesdropperstatus"), "[hidden]")
-        self.assertEqual(RS._title("tok3n-a1b2c3d4e5f6g7h8i9j0k1"), "[hidden]")
-
+class ScalarTests(unittest.TestCase):
     def test_tokens_and_names_use_the_same_prefix_rule(self) -> None:
         for good in ("Key-Manager", "BF-Compiler", "SK-FOO-BARBAZ", "Secret-Santa"):
             self.assertEqual(RS._token(good), good)
         for bad in ("SK-A1b2C3d4E5f6G7", "Bearer-A1b2C3d4", "ghp_a1B2c3D4a1B2c3"):
             self.assertIsNone(RS._token(bad), bad)
 
+    def test_key_shaped_tokens_are_dropped_in_any_case(self) -> None:
+        tail = "A1b2C3d4E5"
+        for word in ("sk-" + tail, "SK-" + tail, "Sk_" + tail, "Bearer-" + tail, "tok_" + tail):
+            self.assertIsNone(RS._token(word), word)
+        for word in ("ghp_a1B2c3", "GHP_a1B2c3", "xoxb-123456", "AKIAABCDEF", "glpat-a1B2c3"):
+            self.assertIsNone(RS._token(word), word)
+        for word in ("key-rotation", "Key-Manager", "ghost-writer", "npm-install", "asia-pacific"):
+            self.assertEqual(RS._token(word), word)
 
-class ScalarTests(unittest.TestCase):
     def test_times(self) -> None:
         self.assertEqual(RS._when(NOW), iso(NOW))
         self.assertEqual(RS._when(int(NOW)), iso(NOW))
@@ -1332,16 +1290,6 @@ class HostileInputTests(unittest.TestCase):
         RS.reduce_status(document, NOW, "server")
         self.assertEqual(document, before)
 
-    def test_hostile_text_in_a_title_is_scrubbed_in_place(self) -> None:
-        document = status_document()
-        document["seats"]["CLAUDE"]["leases"][0]["title"] = (
-            "Fix " + PATH + " for " + EMAIL + " at " + URL + " with " + KEY + " " + USER_ID
-        )
-        out = RS.reduce_status(document, NOW, "server")
-        check_shape(self, out)
-        title = seats_by_name(out)["CLAUDE"]["leases"][0]["title"]
-        self.assertEqual(title, "Fix [hidden] for [hidden] at [hidden] with [hidden]")
-
 
 class FromRealDaemonStatusTests(DaemonHarness):
     """A document written by a real daemon, not one assembled here."""
@@ -1395,9 +1343,13 @@ class FromRealDaemonStatusTests(DaemonHarness):
         lettered = [lease for lease in seat["leases"] if lease["letter"]]
         self.assertEqual(len(lettered), 1)
         self.assertEqual(
-            (lettered[0]["letter"], lettered[0]["title"], lettered[0]["verified_host"]),
-            ("AA", "Letters Work", "mac"),
+            (lettered[0]["letter"], lettered[0]["verified_host"]), ("AA", "mac")
         )
+        # The registry title ("Letters Work") reached the daemon's own status, and never this.
+        self.assertIn("Letters Work", json.dumps(document))
+        self.assertNotIn("Letters Work", text)
+        for lease in seat["leases"]:
+            self.assertNotIn("title", lease)
         self.assertEqual(
             {lease["platform"] for lease in seat["leases"]}, {"claude-code"}
         )

@@ -47,7 +47,7 @@ What it promises:
     with `docker exec --user agentsync eavesdropper /bin/cat /data/listener/status.json` (docker
     group membership, no sudo, run as the container's own unprivileged account, a pinned
     environment with an empty private docker config, at most 1 MiB, 15 seconds) and answers it
-    reduced to names, counts, tokens and times by `scripts/agent_sync/reduced_status.py`.  It
+    reduced to names, counts, tokens and times by `scripts/reduced_status.py`.  It
     takes no lock, writes no audit row for a plan and refuses `--yes`.  When the status cannot be
     read the result is `unavailable` with an `errorCode` word (never a path or docker's own
     text) and the exit status is 1, although no command failed.
@@ -155,18 +155,19 @@ DOCKER_NOT_RUNNING_PHRASES = ("is not running", "no such container", "is restart
 # How long to wait for a child to be reaped after it was killed, so a child that will not die
 # cannot hold this helper forever.
 KILL_WAIT_SECONDS = 5
-# The reducer module is loaded from one of two fixed layouts below the helper's own folder.
-# "installed" is the flat file beside the helper (the copy under /usr/local/lib/fleet-resource-control)
-# and "checkout" is scripts/agent_sync/ of a source tree.  Each is opened without following a
-# symlink and judged by fstat on the open descriptor, never by a path check.  The installed layout
-# needs the file and its folder owned by TRUSTED_MODULE_UID (root) and writable by neither group
-# nor others.  The checkout layout also accepts the calling account as the owner, and still allows
-# no group or other write bit.  Nothing in the request or the environment selects a place.
+# The reducer module sits beside the helper, in the helper's own folder: `scripts/` in a source
+# checkout, the root-owned /usr/local/lib/fleet-resource-control on the server.  It is opened
+# without following a symlink and judged by fstat on the open descriptor, never by a path
+# check.  The layout is read from who owns that folder.  A folder owned by TRUSTED_MODULE_UID (root)
+# is the installed layout: the file must be root's too, and neither may be writable by group or
+# others.  Any other folder is a checkout: the file may also be owned by the calling account,
+# the folder must be that account's too, and still no group or other write bit is allowed.  A
+# checkout owned by another account is refused.  Nothing in the request or the environment
+# selects a place.
 HELPER_DIR = Path(__file__).resolve().parent
 TRUSTED_MODULE_UID = 0
 REDUCED_STATUS_NAME = "reduced_status.py"
 REDUCED_STATUS_MAX_BYTES = 256 * 1024
-REDUCED_STATUS_LAYOUTS = (("installed", ()), ("checkout", ("agent_sync",)))
 # The reason words an unavailable answer may carry, each with the plain sentence for `detail`.
 EAVESDROPPER_UNAVAILABLE = {
     "docker_unavailable": "docker could not be run",
@@ -759,22 +760,23 @@ def _docker():
     return DOCKER_CANDIDATES[0]
 
 
-def _module_trusted(info, layout, ctx):
-    """True when an opened module file or folder has an owner this layout trusts and no group
-    or other write bit.  Root's is always trusted; the calling account's only in a checkout."""
-    if info.st_uid != TRUSTED_MODULE_UID and not (layout == "checkout" and info.st_uid == ctx.uid):
-        return False
-    return not info.st_mode & 0o022
+def _module_trusted(info, owners):
+    """True when an opened module file or folder is owned by one of `owners` and neither group
+    nor others can write it."""
+    return info.st_uid in owners and not info.st_mode & 0o022
 
 
-def _read_module_source(ctx, layout, parts):
-    """The reducer module's bytes for one layout, or None when it is missing or not trusted.
+def _read_module_source(ctx):
+    """The reducer module's bytes from the helper's own folder, or None when it is missing or
+    not trusted.
 
-    The helper's folder, any folder below it and the file are each opened with O_NOFOLLOW (so a
-    symlink anywhere in the chain is refused), the folder and the file are judged by fstat on the
-    descriptor that was opened, and the bytes are read from that same descriptor: the path is
-    never looked at again, so a file swapped in afterwards changes nothing.  The file is opened
-    non-blocking, so a pipe put in its place is refused by its type instead of waiting."""
+    The folder and then the file are opened with O_NOFOLLOW (so a symlink is refused), both are
+    judged by fstat on the descriptor that was opened, and the bytes are read from that same
+    descriptor: the path is never looked at again, so a file swapped in afterwards changes
+    nothing.  A folder owned by TRUSTED_MODULE_UID is the installed layout (the file must be that
+    owner's as well); any other folder is a checkout and may also be the calling account's,
+    file and folder both.  The file is opened non-blocking, so a pipe put in its place is refused
+    by its type instead of waiting."""
     nofollow = getattr(os, "O_NOFOLLOW", 0)
     cloexec = getattr(os, "O_CLOEXEC", 0)
     directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | nofollow | cloexec
@@ -782,18 +784,20 @@ def _read_module_source(ctx, layout, parts):
     try:
         fd = os.open(str(HELPER_DIR), directory_flags)
         opened.append(fd)
-        for part in parts:
-            fd = os.open(part, directory_flags, dir_fd=fd)
-            opened.append(fd)
         info = os.fstat(fd)
-        if not stat.S_ISDIR(info.st_mode) or not _module_trusted(info, layout, ctx):
+        if not stat.S_ISDIR(info.st_mode):
+            return None
+        installed = info.st_uid == TRUSTED_MODULE_UID
+        owners = (TRUSTED_MODULE_UID,) if installed else (TRUSTED_MODULE_UID, ctx.uid)
+        # A checkout folder must be the calling account's own, or root's: nobody else's.
+        if not _module_trusted(info, (TRUSTED_MODULE_UID, ctx.uid)):
             return None
         file_fd = os.open(
             REDUCED_STATUS_NAME, os.O_RDONLY | os.O_NONBLOCK | nofollow | cloexec, dir_fd=fd
         )
         opened.append(file_fd)
         info = os.fstat(file_fd)
-        if not stat.S_ISREG(info.st_mode) or not _module_trusted(info, layout, ctx):
+        if not stat.S_ISREG(info.st_mode) or not _module_trusted(info, owners):
             return None
         if info.st_size > REDUCED_STATUS_MAX_BYTES:
             return None
@@ -821,21 +825,18 @@ def _load_reduced_status(ctx):
     """The reduced_status module, or None when it cannot be trusted or loaded.
 
     The bytes come from `_read_module_source` and are compiled and run in memory into a fresh
-    module object: no import system, no sys.path (the scripts/agent_sync folder holds modules
-    named like the standard library's), no __pycache__ and no second open of the path."""
-    for layout, parts in REDUCED_STATUS_LAYOUTS:
-        source = _read_module_source(ctx, layout, parts)
-        if source is None:
-            continue
-        try:
-            code = compile(source, REDUCED_STATUS_NAME, "exec", dont_inherit=True)
-            module = types.ModuleType("reduced_status")
-            exec(code, module.__dict__)  # noqa: S102 - the bytes were just judged trusted
-        except (Exception, SystemExit):  # noqa: BLE001 - any load failure is the same answer
-            continue
-        if callable(getattr(module, "reduce_status", None)):
-            return module
-    return None
+    module object: no import system, no sys.path (so no module of the same name can be put
+    in front of it), no __pycache__ and no second open of the path."""
+    source = _read_module_source(ctx)
+    if source is None:
+        return None
+    try:
+        code = compile(source, REDUCED_STATUS_NAME, "exec", dont_inherit=True)
+        module = types.ModuleType("reduced_status")
+        exec(code, module.__dict__)  # noqa: S102 - the bytes were just judged trusted
+    except (Exception, SystemExit):  # noqa: BLE001 - any load failure is the same answer
+        return None
+    return module if callable(getattr(module, "reduce_status", None)) else None
 
 
 def _docker_env(config_dir):

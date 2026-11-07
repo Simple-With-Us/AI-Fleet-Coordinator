@@ -1870,14 +1870,13 @@ class EavesdropperStatusDispatchTests(Base):
 
     def setUp(self):
         super().setUp()
-        # A checkout-shaped copy of the real reducer with modes the loader trusts, whatever the
-        # modes of this working tree are (a lane on the server is group-writable).
+        # A copy of the real reducer beside a pretend helper, with modes the loader trusts,
+        # whatever the modes of this working tree are (a lane on the server is group-writable).
         scripts = self.home / "scripts"
-        (scripts / "agent_sync").mkdir(parents=True)
-        real = Path(HERE) / "agent_sync" / "reduced_status.py"
-        (scripts / "agent_sync" / "reduced_status.py").write_bytes(real.read_bytes())
-        (scripts / "agent_sync" / "reduced_status.py").chmod(0o644)
-        (scripts / "agent_sync").chmod(0o755)
+        scripts.mkdir()
+        real = Path(HERE) / "reduced_status.py"
+        (scripts / "reduced_status.py").write_bytes(real.read_bytes())
+        (scripts / "reduced_status.py").chmod(0o644)
         scripts.chmod(0o755)
         self.enterContext(mock.patch.object(foc, "HELPER_DIR", scripts))
 
@@ -2015,7 +2014,7 @@ class EavesdropperStatusDispatchTests(Base):
                     "alive": True,
                     "why": self.PATH,
                     "letter": "A",
-                    "title": "Fix " + self.PATH + " for " + self.EMAIL + " " + self.VALUE,
+                    "title": "Letters Work: " + self.PATH + " for " + self.EMAIL + " " + self.VALUE,
                 }
             ],
             red=[self.PATH, self.EMAIL, self.VALUE],
@@ -2035,6 +2034,12 @@ class EavesdropperStatusDispatchTests(Base):
         for hidden in (self.VALUE, self.PATH, self.EMAIL, self.SESSION, str(self.USER_ID)):
             self.assertNotIn(hidden, text)
         self.assertNotIn("/data/listener", text)
+        # Lease titles are never emitted, a plain one included, and there is no title key.
+        self.assertNotIn("Letters Work", text)
+        self.assertNotIn('"title"', text)
+        (lease,) = json.loads(text)["status"]["seats"][0]["leases"]
+        self.assertEqual(lease["letter"], "A")
+        self.assertNotIn("title", lease)
 
     def test_the_operator_voice_block_is_read_and_a_bad_one_is_null(self):
         block = {
@@ -2393,37 +2398,45 @@ class EavesdropperStatusDispatchTests(Base):
 
 
 class ReducerModuleTests(Base):
-    """The module the verb runs is read through descriptors and judged by fstat, never imported."""
+    """The module the verb runs is read through descriptors and judged by fstat, never imported.
 
-    def build(self, layout="installed", dir_mode=0o755, file_mode=0o644, text=GOOD_MODULE):
-        root = self.home / "helper"
-        folder = root / "agent_sync" if layout == "checkout" else root
-        folder.mkdir(parents=True)
+    It sits beside the helper, and the layout is read from who owns that folder.  A folder owned
+    by TRUSTED_MODULE_UID (root, in production) is the installed layout.  These tests stand in for
+    it by naming this account the trusted one (`installed`); a folder owned by the calling
+    account while root is the trusted one is a checkout (`checkout`)."""
+
+    def build(self, dir_mode=0o755, file_mode=0o644, text=GOOD_MODULE):
+        folder = self.home / "helper"
+        folder.mkdir()
         path = folder / "reduced_status.py"
         path.write_text(text, encoding="utf-8")
         path.chmod(file_mode)
         folder.chmod(dir_mode)
-        root.chmod(0o755 if layout == "checkout" else dir_mode)
-        return root, folder, path
+        return folder, path
 
-    def load(self, root, uid=None, trusted=None):
+    def load(self, folder, uid=None, trusted=0):
         context = self.ctx()
         if uid is not None:
             context.uid = uid
-        trusted = os.getuid() if trusted is None else trusted
         with (
-            mock.patch.object(foc, "HELPER_DIR", root),
+            mock.patch.object(foc, "HELPER_DIR", folder),
             mock.patch.object(foc, "TRUSTED_MODULE_UID", trusted),
         ):
             return foc._load_reduced_status(context)
 
+    def installed(self, folder, **kwargs):
+        return self.load(folder, trusted=os.getuid(), **kwargs)
+
+    def checkout(self, folder, **kwargs):
+        return self.load(folder, trusted=0, **kwargs)
+
     def not_root(self):
         if os.getuid() == 0:
-            self.skipTest("running as root, so every file here is trusted")
+            self.skipTest("running as root, so every file here is the trusted owner's")
 
     def test_a_trusted_module_is_compiled_in_memory(self):
-        root, folder, _ = self.build()
-        module = self.load(root)
+        folder, _ = self.build()
+        module = self.installed(folder)
         self.assertEqual(module.reduce_status(None, 0, "server"), {"schema": 1, "from": "good"})
         self.assertEqual(module.__name__, "reduced_status")
         self.assertNotIn("reduced_status", sys.modules)
@@ -2433,54 +2446,84 @@ class ReducerModuleTests(Base):
     def test_the_installed_layout_refuses_a_file_that_group_or_others_can_write(self):
         for mode in (0o666, 0o664, 0o646, 0o626, 0o622):
             with self.subTest(mode=oct(mode)):
-                root, folder, _ = self.build(file_mode=mode)
-                self.assertIsNone(self.load(root))
-                shutil.rmtree(root)
+                folder, _ = self.build(file_mode=mode)
+                self.assertIsNone(self.installed(folder))
+                shutil.rmtree(folder)
 
     def test_the_installed_layout_refuses_a_folder_that_group_or_others_can_write(self):
         for mode in (0o777, 0o775, 0o757, 0o722, 0o702):
             with self.subTest(mode=oct(mode)):
-                root, folder, _ = self.build(dir_mode=mode)
-                self.assertIsNone(self.load(root))
-                shutil.rmtree(root)
+                folder, _ = self.build(dir_mode=mode)
+                self.assertIsNone(self.installed(folder))
+                shutil.rmtree(folder)
 
-    def test_the_installed_layout_needs_root_as_the_owner_never_the_calling_account(self):
+    def fake_file_owner(self, uid):
+        """os.fstat answering `uid` as the owner of every regular file (folders unchanged)."""
+        real = os.fstat
+
+        def fstat(fd):
+            info = real(fd)
+            if not stat.S_ISREG(info.st_mode):
+                return info
+            fields = tuple(info)
+            return os.stat_result(fields[:4] + (uid,) + fields[5:])
+
+        return mock.patch.object(foc.os, "fstat", fstat)
+
+    def test_the_installed_layout_needs_the_trusted_owner_not_the_calling_account(self):
+        folder, _ = self.build()
+        other = os.getuid() + 1000
+        # The folder is the trusted owner's, so this is the installed layout, and the file is
+        # the calling account's: refused, although the account may own a checkout's file.
+        with self.fake_file_owner(other):
+            self.assertIsNone(self.installed(folder, uid=other))
+            self.assertIsNone(self.installed(folder))
+        self.assertIsNotNone(self.installed(folder))
+
+    def test_a_folder_owned_by_neither_the_trusted_owner_nor_the_calling_account_is_refused(self):
         self.not_root()
-        root, _, _ = self.build()
-        # Owned by this account, which is also the calling account: still refused.
-        self.assertIsNone(self.load(root, trusted=0))
-        self.assertIsNone(self.load(root, trusted=os.getuid() + 1))
-        self.assertIsNotNone(self.load(root, trusted=os.getuid()))
+        folder, _ = self.build()
+        self.assertIsNone(self.checkout(folder, uid=os.getuid() + 1000))
+        self.assertIsNone(self.load(folder, uid=os.getuid() + 1000, trusted=os.getuid() + 1001))
+        self.assertIsNotNone(self.checkout(folder))
 
     def test_a_symlinked_module_is_refused(self):
-        root = self.home / "helper"
-        root.mkdir()
+        folder = self.home / "helper"
+        folder.mkdir()
         elsewhere = self.home / "elsewhere.py"
         elsewhere.write_text(GOOD_MODULE)
         elsewhere.chmod(0o644)
-        (root / "reduced_status.py").symlink_to(elsewhere)
-        root.chmod(0o755)
-        self.assertIsNone(self.load(root))
+        (folder / "reduced_status.py").symlink_to(elsewhere)
+        folder.chmod(0o755)
+        self.assertIsNone(self.installed(folder))
+        self.not_root()
+        self.assertIsNone(self.checkout(folder))
 
     def test_a_symlinked_folder_is_refused(self):
-        root, _, _ = self.build()
+        folder, _ = self.build()
         link = self.home / "link"
-        link.symlink_to(root, target_is_directory=True)
-        self.assertIsNotNone(self.load(root))
-        self.assertIsNone(self.load(link))
+        link.symlink_to(folder, target_is_directory=True)
+        self.assertIsNotNone(self.installed(folder))
+        self.assertIsNone(self.installed(link))
+        self.not_root()
+        self.assertIsNone(self.checkout(link))
 
     def test_a_pipe_in_place_of_the_module_is_refused_without_waiting(self):
-        root = self.home / "helper"
-        root.mkdir()
-        os.mkfifo(root / "reduced_status.py", 0o644)
-        root.chmod(0o755)
-        self.assertIsNone(self.load(root))
+        folder = self.home / "helper"
+        folder.mkdir()
+        os.mkfifo(folder / "reduced_status.py", 0o644)
+        folder.chmod(0o755)
+        self.assertIsNone(self.installed(folder))
 
-    def test_an_oversized_module_is_refused(self):
-        root, _, _ = self.build(text=GOOD_MODULE + "#" * (foc.REDUCED_STATUS_MAX_BYTES + 1) + "\n")
-        self.assertIsNone(self.load(root))
+    def test_a_missing_module_and_an_oversized_module_are_refused(self):
+        empty = self.home / "empty"
+        empty.mkdir()
+        empty.chmod(0o755)
+        self.assertIsNone(self.installed(empty))
+        folder, _ = self.build(text=GOOD_MODULE + "#" * (foc.REDUCED_STATUS_MAX_BYTES + 1) + "\n")
+        self.assertIsNone(self.installed(folder))
 
-    def swap(self, root, path, before, text):
+    def swap(self, folder, path, before, text):
         """Run the loader while the module file is replaced by an evil one `before` the open
         of it or after it.  Returns (module, whether the evil code ran)."""
         marker = self.home / "evil-ran"
@@ -2499,69 +2542,51 @@ class ReducerModuleTests(Base):
             return descriptor
 
         with mock.patch.object(foc.os, "open", hook):
-            module = self.load(root)
+            module = self.installed(folder)
         return module, marker.exists()
 
     def test_a_file_swapped_in_before_the_open_is_judged_by_what_was_opened(self):
-        root, _, path = self.build()
-        module, ran = self.swap(root, path, before=True, text=GOOD_MODULE)
+        folder, path = self.build()
+        module, ran = self.swap(folder, path, before=True, text=GOOD_MODULE)
         self.assertIsNone(module)
         self.assertFalse(ran)
 
     def test_a_file_swapped_in_after_the_open_is_never_read(self):
-        root, _, path = self.build()
-        module, ran = self.swap(root, path, before=False, text=GOOD_MODULE.replace("good", "evil"))
+        folder, path = self.build()
+        module, ran = self.swap(
+            folder, path, before=False, text=GOOD_MODULE.replace("good", "evil")
+        )
         self.assertEqual(module.reduce_status(None, 0, "x")["from"], "good")
         self.assertFalse(ran)
         self.assertIn("evil", path.read_text(), "the swap did happen")
 
-    def test_the_checkout_layout_accepts_the_calling_account_and_still_no_group_or_other_write(
-        self,
-    ):
+    def test_a_checkout_accepts_the_calling_accounts_files_and_still_no_group_or_other_write(self):
         self.not_root()
-        root, folder, path = self.build("checkout")
-        self.assertIsNotNone(self.load(root, trusted=0))
-        self.assertIsNone(self.load(root, uid=os.getuid() + 1, trusted=0))
+        folder, path = self.build()
+        self.assertIsNotNone(self.checkout(folder))
         for file_mode, dir_mode in ((0o664, 0o755), (0o646, 0o755), (0o644, 0o775), (0o644, 0o757)):
             with self.subTest(file=oct(file_mode), folder=oct(dir_mode)):
                 path.chmod(file_mode)
                 folder.chmod(dir_mode)
-                self.assertIsNone(self.load(root, trusted=0))
+                self.assertIsNone(self.checkout(folder))
         path.chmod(0o644)
         folder.chmod(0o755)
-        self.assertIsNotNone(self.load(root, trusted=0))
+        self.assertIsNotNone(self.checkout(folder))
 
-    def test_the_checkout_layout_refuses_a_symlinked_folder_or_file(self):
-        root, folder, path = self.build("checkout")
-        real = self.home / "real-agent-sync"
-        folder.rename(real)
-        folder.symlink_to(real, target_is_directory=True)
-        self.assertIsNone(self.load(root))
-        folder.unlink()
-        real.rename(folder)
-        self.assertIsNotNone(self.load(root))
-        copy = self.home / "copy.py"
-        copy.write_text(GOOD_MODULE)
-        copy.chmod(0o644)
-        path.unlink()
-        path.symlink_to(copy)
-        self.assertIsNone(self.load(root))
-
-    def test_the_real_module_loads_through_the_loader_from_a_checkout_layout(self):
-        real = Path(HERE) / "agent_sync" / "reduced_status.py"
-        root, _, path = self.build("checkout", text=real.read_text(encoding="utf-8"))
-        module = self.load(root)
+    def test_the_real_module_loads_through_the_loader(self):
+        real = Path(HERE) / "reduced_status.py"
+        folder, path = self.build(text=real.read_text(encoding="utf-8"))
+        module = self.installed(folder)
         out = module.reduce_status(
             {"updated": NOW, "instance": "server", "seats": {}}, NOW, "server"
         )
         self.assertEqual((out["schema"], out["instance"], out["seats"]), (1, "server", []))
-        self.assertFalse((path.parent / "__pycache__").exists())
+        self.assertFalse((folder / "__pycache__").exists())
 
-    def test_the_layouts_name_the_places_the_repo_and_the_installer_use(self):
-        self.assertTrue((foc.HELPER_DIR / "agent_sync" / foc.REDUCED_STATUS_NAME).is_file())
-        self.assertEqual(
-            foc.REDUCED_STATUS_LAYOUTS, (("installed", ()), ("checkout", ("agent_sync",)))
-        )
+    def test_the_reducer_sits_beside_the_helper_and_there_is_one_place(self):
+        self.assertTrue((foc.HELPER_DIR / foc.REDUCED_STATUS_NAME).is_file())
+        self.assertFalse((foc.HELPER_DIR / "agent_sync" / foc.REDUCED_STATUS_NAME).exists())
+        self.assertFalse(hasattr(foc, "REDUCED_STATUS_LAYOUTS"))
         self.assertEqual(foc.TRUSTED_MODULE_UID, 0)
 
 
