@@ -411,10 +411,16 @@ final class MusterWindowLayoutTests: XCTestCase {
         XCTAssertLessThan(real.height, 80, "the app's strip claims more than three caption lines")
     }
 
+    /// Room taken from the detail column besides the sidebar:  the split view's divider and
+    /// any inset.  This test does not measure them, so it allows far more than a divider's
+    /// width (Kody, PR 1443).
+    private static let detailChromeAllowance: CGFloat = 20
+
     /// Every panel's source line fits on one line at the narrowest detail column (the window's
-    /// minimum width less the sidebar's maximum), with its sources unread and read, the
-    /// server's line with both of its times.  So the three-line limit cuts none of them:  the
-    /// app's strip is also as tall there as the old strip, which never cut a line.
+    /// minimum width less the sidebar's maximum, less `detailChromeAllowance`), with its
+    /// sources unread and read, the server's line with both of its times.  So the three-line
+    /// limit cuts none of them:  the app's strip is also as tall there as the old strip, which
+    /// never cut a line.
     func testEverySourceLineFitsOnOneLineAtTheNarrowestDetail() {
         var server = ServerStatusReading()
         server.generatedAt = Date()
@@ -423,7 +429,7 @@ final class MusterWindowLayoutTests: XCTestCase {
             PlaceSourceInputs(),
             PlaceSourceInputs(servicesReadAt: Date(), serverStatus: server, seatCheckAt: Date()),
         ]
-        let narrowest = MusterWindowLayout.minWidth - MusterWindowLayout.sidebarMaxWidth
+        let narrowest = MusterWindowLayout.minWidth - MusterWindowLayout.sidebarMaxWidth - Self.detailChromeAllowance
         let proposal = NSSize(width: narrowest, height: 2000)
         var checked = 0
         for inputs in inputSets {

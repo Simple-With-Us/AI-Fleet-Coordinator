@@ -15,7 +15,9 @@ enum MusterWindowLayout {
     /// so no column can ask the window for more room than that minimum.
     static let columnIdealHeight: CGFloat = 400
     /// The sidebar's widths.  The narrowest detail column is the window's minimum width less
-    /// the sidebar's maximum (`MusterWindowLayoutTests` measures the place strip there).
+    /// the sidebar's maximum, less the split view's divider and any inset.
+    /// `MusterWindowLayoutTests` measures the place strip 20 pt narrower than the first two
+    /// alone, so the divider or an inset cannot let its check pass where the app would wrap.
     static let sidebarMinWidth: CGFloat = 200
     static let sidebarIdealWidth: CGFloat = 230
     static let sidebarMaxWidth: CGFloat = 300
