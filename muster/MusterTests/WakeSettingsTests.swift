@@ -173,9 +173,6 @@ final class WakeSettingsTests: XCTestCase {
             XCTAssertEqual(partition.host(of: seat), .server, seat)
         }
         XCTAssertEqual(partition.host(of: "BF-BUILDER"), .noListener)
-        for seat in ["GROK-BOT"] {
-            XCTAssertEqual(partition.host(of: seat), .unlisted, seat)
-        }
     }
 
     /// A tag is one the eavesdropper accepts,  or it never reaches a `[seat.X]` header.

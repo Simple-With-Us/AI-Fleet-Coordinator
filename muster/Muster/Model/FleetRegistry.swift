@@ -64,7 +64,22 @@ struct FleetRegistryDocument: Decodable, Equatable {
     let seatApps: SeatAppsSection?
 
     var liveSeats: [SeatEntry] {
-        seats.filter(\.isLive)
+        seats.filter { $0.isLive && !NotASeat.contains($0.tag) }
+    }
+}
+
+/// Registry tags that name a group and are never a seat.
+///
+/// Grok Bots are a group of seats, each with its own name (`GB-<NAME>`), and no seat is ever
+/// called `GROK-BOT` or carries it as a branch or pull request prefix.  The registry still
+/// has a row for the group, so the app leaves it out of every list of seats:  the roster the
+/// engine's grid and Seat Setup show, and the seats an app row names.  The group's own
+/// members come in through the `GB-*` pattern.
+enum NotASeat {
+    static let tags: Set<String> = ["GROK-BOT"]
+
+    static func contains(_ tag: String) -> Bool {
+        tags.contains(tag)
     }
 }
 
@@ -369,7 +384,7 @@ enum FleetRegistryReader {
         "antigravity": CodingAppMetadata(title: "Antigravity", cli: "agy", runsOn: ""),
         "grok-terminal": CodingAppMetadata(title: "Grok Terminal", cli: "grok", runsOn: ""),
         "grok-web": CodingAppMetadata(title: "Grok Web", cli: nil, runsOn: "Hosted, no local tool"),
-        "grok-bot": CodingAppMetadata(title: "Grok Bot", cli: nil, runsOn: "Hosted, through Cursor cloud agents"),
+        "grok-bot": CodingAppMetadata(title: "Grok Bots", cli: nil, runsOn: "Hosted, through Cursor cloud agents"),
         "muse-code": CodingAppMetadata(title: "Muse Code", cli: "muse", runsOn: ""),
         "muse-assist": CodingAppMetadata(title: "Muse Assist", cli: nil, runsOn: FleetRegistryReader.notTracked),
         "minimax-code": CodingAppMetadata(title: "MiniMax Code", cli: "mcode", runsOn: ""),
