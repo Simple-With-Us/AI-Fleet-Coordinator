@@ -61,11 +61,34 @@ at least 35s apart to bound observability lag):
   in-flight; they persist and do not block)
 - `drain.linear_projects_queued` is false (when the hook is configured)
 
-The wait is BOUNDED. If the cursor never reaches the high-water, a native event was
-lost by Zulip's queue: reconnect the seat (backfill advances the cursor through ring
-dedup) or ABORT. Under sustained native traffic the spool only drains on
+The wait is BOUNDED: if the full condition is not met within 15 minutes of arming,
+take the Abort path below. If the cursor never reaches the high-water, a native event
+was lost by Zulip's queue: reconnect the seat (backfill advances the cursor through
+ring dedup) or ABORT. Under sustained native traffic the spool only drains on
 webhook-arrival or queue-empty iterations, so a stall can be starvation, not loss -
 the abort path covers it. Never stop with the condition unmet.
+
+## Abort (cancel the drain)
+
+Take this path when the 15-minute bound expires, or any check says the window should
+not proceed. The abort returns to normal operation WITHOUT a restart:
+
+1. If step 2 already disabled the outgoing webhook: restore the prior listener.toml
+   bytes and SIGHUP; verify `drain.outgoing_webhook.listening` is true.
+2. Restore the prior pause.json bytes, removing ONLY the drain marker and preserving
+   any pre-drain user pause. Do NOT bare `daemon resume`: a blanket resume wipes a
+   user pause that predates the drain.
+3. Verify recovery (two snapshots at least 35s apart):
+   - deferred wakes fire (the parked re-arms finalize once the marker is gone)
+   - `drain.deferred_broadcasts` drains to 0 (re-drive runs on tick)
+   - the Linear hook answers 200 queued again (if configured)
+   - ingress healthy: cursors advance, spool drains or stays 0
+4. A parked effect whose payload proof is inconclusive STAYS parked and visible as a
+   nonzero `drain.deferred_broadcasts`. Investigate the named message; never delete
+   the file to make the gauge read zero.
+
+An abandoned marker is loud, not silent: the hook keeps answering 503 and wakes keep
+deferring. Supervise the window; if it cannot complete inside the bound, abort.
 
 ## 4. Stop and recreate
 

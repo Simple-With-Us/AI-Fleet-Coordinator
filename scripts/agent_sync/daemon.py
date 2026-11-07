@@ -2029,18 +2029,18 @@ class Daemon:
         # A fleet bot's `@all` takes the same road (owner, Oct 27 2026):  it wakes like the
         # owner's, under the peer budgets.
         if self._broadcast_all(c):
-            self.start_fanout(message, c)
+            self.start_fanout(message, c, seat=runner.seat)
         # The owner's channel-wide note also belongs UNREAD in every fleet bot's own Zulip
         # inbox (AFC-938).  This is a second copy, not a replacement:  the `@**all**` wake path
         # above is untouched, and `@**everyone**` keeps waking nobody.
         if self._inbox_broadcast(c):
-            self.start_inbox_delivery(message, c)
+            self.start_inbox_delivery(message, c, seat=runner.seat)
         # A fleet bot's `@all` has to be explained to the owner (owner, Oct 27 2026):  the audit
         # asks, ten minutes later, whether Jay asked for it or the bot told him why.  The gate is
         # the message itself, not the routing verdict, and the audit keeps one entry per message
         # id, so every seat that sees the broadcast agrees on one reminder.
         if self._peer_broadcast_audit(message, c, runner):
-            self.schedule_broadcast_audit(message, c)
+            self.schedule_broadcast_audit(message, c, seat=runner.seat)
         # The seats this listener holds that cannot take a routine/headless wake for a
         # channel-wide `@all`.  This is not owner-only bookkeeping:  a fleet bot's `@all` wakes
         # exactly like the owner's now (owner, Oct 27 2026), so the same seats are blocked, and
@@ -3981,7 +3981,9 @@ class Daemon:
         if blocked:
             self.log.write("broadcast-wake-unsupported", id=message_id, seats=blocked)
 
-    def start_fanout(self, message: Mapping[str, Any], c: R.Classes) -> None:
+    def start_fanout(
+        self, message: Mapping[str, Any], c: R.Classes, seat: str | None = None
+    ) -> None:
         """The owner's channel-wide mention reaches the recently active chats (chat_fanout), once per message
         whichever seat saw it first.  The catalog walk can take seconds, so it runs off the event thread."""
         message_id = message.get("id")
@@ -3992,7 +3994,7 @@ class Daemon:
             # effect durably instead of starting work a stop could silently cut.  The gate
             # sits before the seen-ring mark, so the marker never claims the id.  An ordinary
             # pause carries no marker and keeps its pre-drain admission behavior exactly.
-            self._defer_broadcast_effect(message, c, "fanout")
+            self._defer_broadcast_effect(message, c, "fanout", seat=seat)
             return
         with self._fanout_lock:
             if message_id in self._fanout_seen:
@@ -4039,7 +4041,9 @@ class Daemon:
             c.peer_broadcast and not c.owner_topic and not c.dm and not c.stale and not c.no_wake
         )
 
-    def start_inbox_delivery(self, message: Mapping[str, Any], c: R.Classes) -> None:
+    def start_inbox_delivery(
+        self, message: Mapping[str, Any], c: R.Classes, seat: str | None = None
+    ) -> None:
         """Put the owner's channel-wide note UNREAD in every fleet bot's own Zulip inbox.
 
         One delivery per message, whichever seat saw it first:  the id stays in the seen ring
@@ -4053,7 +4057,7 @@ class Daemon:
             return
         if drain_deferred(self.root):
             # F2 (AFC-652):  parked durably while a drain window covers admission (see fanout).
-            self._defer_broadcast_effect(message, c, "inbox")
+            self._defer_broadcast_effect(message, c, "inbox", seat=seat)
             return
         with self._fanout_lock:
             if message_id in self._inbox_seen:
@@ -4096,7 +4100,9 @@ class Daemon:
                 pass
             self._inbox_pending.pop(message_id, None)
 
-    def schedule_broadcast_audit(self, message: Mapping[str, Any], c: R.Classes) -> None:
+    def schedule_broadcast_audit(
+        self, message: Mapping[str, Any], c: R.Classes, seat: str | None = None
+    ) -> None:
         """Remember a fleet bot's `@all` so the listener can ask the owner for a reason.
 
         One audit per message id:  the first seat that routes the message owns it, and a second
@@ -4112,7 +4118,7 @@ class Daemon:
             return
         if drain_deferred(self.root):
             # F2 (AFC-652):  parked durably while a drain window covers admission (see fanout).
-            self._defer_broadcast_effect(message, c, "audit")
+            self._defer_broadcast_effect(message, c, "audit", seat=seat)
             return
         seat = BAUD.sender_seat_for(
             str(message.get("sender_email") or ""), seats=self._fleet_seat_tags()
@@ -4154,7 +4160,9 @@ class Daemon:
     def _deferred_broadcasts_path(self) -> str:
         return os.path.join(L.listener_dir(self.root), "deferred_broadcasts.json")
 
-    def _defer_broadcast_effect(self, message: Mapping[str, Any], c: R.Classes, kind: str) -> None:
+    def _defer_broadcast_effect(
+        self, message: Mapping[str, Any], c: R.Classes, kind: str, seat: str | None = None
+    ) -> None:
         message_id = message.get("id")
         if not isinstance(message_id, int):
             return
@@ -4166,6 +4174,7 @@ class Daemon:
                     "channel": c.channel,
                     "topic": c.topic,
                     "stream_id": message.get("stream_id"),
+                    "seat": seat,
                     "ts": self.clock.time(),
                     "effects": {},
                     "claims": {},
@@ -4218,25 +4227,27 @@ class Daemon:
             pass
 
     def _fetch_deferred_message(
-        self, mid: str
+        self, mid: str, origin_seat: str | None
     ) -> tuple[str, SeatRunner | None, Mapping[str, Any] | None]:
         """("ok", runner, message) | ("gone", None, None) | ("unknown", None, None) for a parked
         broadcast's payload, re-fetched by id through the same REST read the spool drain uses.
 
-        Every connected runner votes (AFC-652 GATE 2):  a bot that cannot see the parked
-        message's channel gets a 4xx for it, so one runner's "not found" is not proof the
-        payload is gone.  Only a unanimous definite absence (every connected runner answers a
-        non-429 4xx) expires the deferral;  any ok wins at once, and any transient or
-        uncertain answer (5xx, 429, network, a malformed body) keeps the kind parked, where it
-        surfaces as a nonzero drain.deferred_broadcasts instead of a silent drop."""
+        Any connected runner that still fetches the payload proves it exists and re-drives it.
+        Expiry needs a witness, not a vote (AFC-652 GATE 2):  Zulip answers an inaccessible
+        message with the same 4xx as a deleted one, so a runner that cannot see the parked
+        message's channel proves nothing and abstains.  The origin seat - recorded when the
+        effect parked - demonstrably could see the message (it routed the event), so a
+        definite miss from the ORIGIN runner is the only expiry proof.  401/403/429 from the
+        origin are access-class answers (its own credential or rate limit broke), not
+        evidence about the payload;  a disconnected or unrecorded origin, every blind-runner
+        answer, and every transient failure keep the kind parked, where it surfaces as a
+        nonzero drain.deferred_broadcasts instead of a silent drop."""
         runners = [
             r
             for r in self.seats.values()
             if r.connected and r.client is not None and r.me is not None
         ]
-        if not runners:
-            return "unknown", None, None
-        definite_misses = 0
+        origin_miss = False
         for runner in runners:
             try:
                 response = runner.client.get(
@@ -4245,17 +4256,21 @@ class Daemon:
                     timeout=min(5.0, self.http_timeout),
                 )
             except Z.ApiError as exc:
-                if exc.status is not None and exc.status < 500 and exc.status != 429:
-                    definite_misses += 1
-                    continue
-                return "unknown", None, None
+                if (
+                    origin_seat is not None
+                    and getattr(runner, "seat", None) == origin_seat
+                    and exc.status is not None
+                    and exc.status < 500
+                    and exc.status not in (401, 403, 429)
+                ):
+                    origin_miss = True
+                continue
             except (Z.NetworkError, OSError):
-                return "unknown", None, None
+                continue
             message = response.get("message") if isinstance(response, dict) else None
-            if not isinstance(message, dict) or str(message.get("id")) != str(mid):
-                return "unknown", None, None
-            return "ok", runner, message
-        if definite_misses == len(runners):
+            if isinstance(message, dict) and str(message.get("id")) == str(mid):
+                return "ok", runner, message
+        if origin_miss:
             return "gone", None, None
         return "unknown", None, None
 
@@ -4278,7 +4293,7 @@ class Daemon:
             parked = [k for k, v in (row.get("effects") or {}).items() if v is False]
             if not parked:
                 continue
-            state, runner, message = self._fetch_deferred_message(mid)
+            state, runner, message = self._fetch_deferred_message(mid, row.get("seat"))
             if state == "unknown":
                 continue  # no connected seat or a transient fetch failure:  stay parked
             if state == "gone":

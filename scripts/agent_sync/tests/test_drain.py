@@ -139,7 +139,7 @@ class BroadcastDeferralTests(DaemonHarness):
     def test_redrive_expires_a_message_that_is_gone(self) -> None:
         daemon = self.started()
         c = types.SimpleNamespace(channel="fleet", topic="t")
-        daemon._defer_broadcast_effect({"id": 99999999}, c, "fanout")
+        daemon._defer_broadcast_effect({"id": 99999999}, c, "fanout", seat="CLAUDE")
         daemon._redrive_deferred_broadcasts()
         self.assertEqual(L.read_json(daemon._deferred_broadcasts_path()), {})
 
@@ -182,32 +182,46 @@ class BroadcastDeferralTests(DaemonHarness):
         self.assertFalse(L.read_json(daemon._deferred_broadcasts_path()))
         clear_pause(daemon.root, None)
 
-    def test_redrive_expires_only_on_unanimous_absence(self) -> None:
-        """A runner that cannot see the parked message's channel 404s for it;  that alone is
-        not proof the payload is gone (GATE 2).  Expiry takes a unanimous definite absence
-        across every connected runner;  a transient answer keeps the deferral parked."""
+    def test_redrive_expires_only_on_origin_miss(self) -> None:
+        """Zulip answers an inaccessible message with the same 4xx as a deleted one, so a
+        runner that cannot see the parked message's channel abstains (GATE 2).  Only a
+        definite miss from the ORIGIN seat - the runner that routed the broadcast and so
+        could see it - expires the deferral;  access-class answers, a disconnected origin,
+        and transient failures all keep it parked."""
         daemon = self.started()
         runner = daemon.seats["CLAUDE"]
-        blind = types.SimpleNamespace(connected=True, client=mock.Mock(), me=runner.me)
+        blind = types.SimpleNamespace(
+            connected=True, client=mock.Mock(), me=runner.me, seat="BLIND"
+        )
         blind.client.get.side_effect = Z.ApiError("not found", code="BAD_MSG_ID", status=404)
         daemon.seats["BLIND"] = blind
+        c = types.SimpleNamespace(channel="fleet", topic="t")
         try:
-            c = types.SimpleNamespace(channel="fleet", topic="t")
-            daemon._defer_broadcast_effect({"id": 99999998}, c, "fanout")
-            # One definite 404 + one transient failure:  not unanimous, stays parked.
+            # A blind runner's 404 plus an origin network failure:  no witness, stays parked.
+            daemon._defer_broadcast_effect({"id": 99999998}, c, "fanout", seat="CLAUDE")
             runner.client = mock.Mock()
             runner.client.get.side_effect = Z.NetworkError("boom")
             daemon._redrive_deferred_broadcasts()
             self.assertIn("99999998", L.read_json(daemon._deferred_broadcasts_path()))
-            # Every connected runner answers a definite absence:  the deferral expires.
-            runner.client.get.side_effect = Z.ApiError(
-                "not found", code="BAD_MSG_ID", status=404
-            )
+            # An access-class answer from the origin (its own credential broke):  not evidence.
+            runner.client.get.side_effect = Z.ApiError("forbidden", code="UNAUTHORIZED", status=403)
+            daemon._redrive_deferred_broadcasts()
+            self.assertIn("99999998", L.read_json(daemon._deferred_broadcasts_path()))
+            # The origin disconnected at re-drive time:  blind runners alone cannot expire.
+            runner.connected = False
+            runner.client.get.side_effect = Z.ApiError("not found", code="BAD_MSG_ID", status=404)
+            daemon._redrive_deferred_broadcasts()
+            self.assertIn("99999998", L.read_json(daemon._deferred_broadcasts_path()))
+            runner.connected = True
+            # The origin itself reports the definite miss:  the deferral expires.
             daemon._redrive_deferred_broadcasts()
             self.assertNotIn("99999998", L.read_json(daemon._deferred_broadcasts_path()) or {})
+            # A row without a recorded origin never expires on blind votes.
+            daemon._defer_broadcast_effect({"id": 99999997}, c, "fanout")
+            daemon._redrive_deferred_broadcasts()
+            self.assertIn("99999997", L.read_json(daemon._deferred_broadcasts_path()))
         finally:
             daemon.seats.pop("BLIND", None)
-
 
 class RunWakeDrainTests(DaemonHarness):
     """The run-time recheck (F7 extension):  a wake admitted before the drain whose turn
