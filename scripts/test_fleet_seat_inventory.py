@@ -3,6 +3,7 @@
 import io
 import json
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -225,6 +226,16 @@ class InventoryTests(unittest.TestCase):
             ["simple-tools"],
         )
 
+    def test_minimax_lists_its_servers_plugins_skills_and_agents_for_the_server(self):
+        write(self.home, ".minimax/mcp.json", json.dumps({"mcpServers": {"sentry": {"url": "u"}}}))
+        mkdirs(self.home, ".minimax/plugins/fleet-guard", ".minimax/skills/board-ops")
+        write(self.home, ".minimax/agents/mavis/agent.md", "x")
+        sections = inv.read_platform("minimax", self.home)
+        self.assertEqual(names(section(sections, "MCP Servers")), ["sentry"])
+        self.assertEqual(names(section(sections, "Plugins")), ["fleet-guard"])
+        self.assertEqual(names(section(sections, "Skills")), ["board-ops"])
+        self.assertEqual(names(section(sections, "Agents")), ["mavis"])
+
     def test_muse_code_reads_the_same_files_as_muse(self):
         write(
             self.home,
@@ -405,6 +416,16 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(inv.inventory("fx", self.home, host="server")["host"], "server")
         self.assertEqual(inv.inventory("nope", self.home, host="server")["host"], "server")
         self.assertEqual(inv.inventory("fx", self.home)["host"], inv.host_label())
+
+    def test_each_platform_is_listed_once_in_the_source_table(self):
+        # A repeated key in a dict literal keeps the last block and drops the first silently, so
+        # an edit to the first would be lost.
+        with open(inv.__file__, encoding="utf-8") as handle:
+            source = handle.read()
+        keys = re.findall(r'^    "([a-z-]+)": \[$', source, flags=re.MULTILINE)
+        self.assertTrue(keys)
+        self.assertEqual(sorted(keys), sorted(set(keys)))
+        self.assertEqual(set(keys) - {"muse-code"}, set(inv.SOURCES) - {"muse-code"})
 
     def test_the_module_stays_readable_by_the_macs_python_3_9(self):
         # `datetime.UTC` is Python 3.11, and the Mac runs this file with its system Python 3.9,
