@@ -388,8 +388,9 @@ class MacBridge:
         prompt is NOT assumed here:  the documented preset shallow merge covers config fields
         (model, temperature, provider, tools) and `messages` is transient - no config field -
         so whether the preset's system prompt applies alongside the request's system message is
-        verified with a single probe call at activation, not claimed in code.  Either way the
-        contract text must not also be embedded in the user message."""
+        left UNVERIFIED here and confirmed against live behavior before anyone relies on either
+        source - code claims nothing.  Either way the contract text must not also be embedded in
+        the user message."""
         trusted = {
             "source_seat": item["source_seat"],
             "message_id": item["id"],
