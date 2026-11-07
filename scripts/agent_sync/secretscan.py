@@ -49,24 +49,50 @@ _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     # The fleet's own services (open-loops F3).  Specific kinds come before the generic assignment rows
     # below, so the answer names the service.
     ("Linear API key", re.compile(r"\blin_(api|oauth|wh)_[A-Za-z0-9]{20,}")),
-    ("Linear client secret", re.compile(r"(?i)\blinear[\w -]{0,24}secret\s*[=:]\s*['\"]?[A-Za-z0-9]{24,}")),
+    ("Linear client secret", re.compile(r"(?i)\blinear[\w -]{0,24}secret\s*[=:]\s*['\"]?(?P<value>[A-Za-z0-9]{24,})")),
     ("Sentry token", re.compile(r"\bsntry[su]_[A-Za-z0-9+/=_-]{20,}")),
     ("xAI key", re.compile(r"\bxai-[A-Za-z0-9]{20,}")),
     ("Infisical service token", re.compile(r"\bst\.[A-Za-z0-9]{8,}\.[A-Za-z0-9]{8,}\.[A-Za-z0-9]{8,}")),
-    ("Infisical credential", re.compile(r"(?i)\binfisical[\w .-]{0,40}?(token|secret)['\"]?\s*[=:]\s*['\"]?[A-Za-z0-9+/=._-]{24,}")),
+    ("Infisical credential", re.compile(r"(?i)\binfisical[\w .-]{0,40}?(token|secret)['\"]?\s*[=:]\s*['\"]?(?P<value>[A-Za-z0-9+/=._-]{24,})")),
     ("access token (JWT)", re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}")),
     ("Cloudflare token", re.compile(r"\bcf(ut|at|k)_[A-Za-z0-9]{30,}")),
-    ("Cloudflare token", re.compile(r"(?i)\bcloudflare[\w ]{0,24}(token|key)\s*[=:]\s*['\"]?[A-Za-z0-9_-]{37,}")),
+    ("Cloudflare token", re.compile(r"(?i)\bcloudflare[\w ]{0,24}(token|key)\s*[=:]\s*['\"]?(?P<value>[A-Za-z0-9_-]{37,})")),
     ("Coolify token", re.compile(r"(?<![A-Za-z0-9])\d{1,5}\|[A-Za-z0-9]{36,}(?![A-Za-z0-9])")),
-    ("assigned credential", re.compile(r"\b[A-Z][A-Z0-9_]*(SECRET|TOKEN|PASSWORD|API_?KEY)\s*=\s*['\"]?[A-Za-z0-9+/=._-]{16,}")),
+    ("assigned credential", re.compile(r"\b[A-Z][A-Z0-9_]*(SECRET|TOKEN|PASSWORD|API_?KEY)\s*=\s*['\"]?(?P<value>[A-Za-z0-9+/=._-]{16,})")),
     ("bearer token", re.compile(r"(?i)\bauthorization:\s*(basic|bearer)\s+[A-Za-z0-9+/=._-]{16,}")),
-    ("assigned secret", re.compile(r"(?i)\b(api[_-]?key|secret|token|password)\s*[=:]\s*['\"]?[A-Za-z0-9+/=._-]{16,}")),
+    ("assigned secret", re.compile(r"(?i)\b(api[_-]?key|secret|token|password)\s*[=:]\s*['\"]?(?P<value>[A-Za-z0-9+/=._-]{16,})")),
 ]
 _ZULIP_SHAPED = re.compile(r"(?<![A-Za-z0-9])[A-Za-z0-9]{32}(?![A-Za-z0-9])")
 
 
 def _zulip_shaped(token: str) -> bool:
     return any(c.isupper() for c in token) and any(c.islower() for c in token) and any(c.isdigit() for c in token)
+
+
+# Only complete, unquoted expressions after a source assignment can be nonliteral.
+# Bare identifiers, quoted values, prose and bearer headers remain secret candidates.
+# The separate routine checker fallback intentionally remains stricter.
+_SOURCE_RHS = re.compile(
+    r"(?:process\.env\.[A-Z][A-Z0-9_]*|import\.meta\.env\.[A-Z][A-Z0-9_]*|"
+    r"[a-z][A-Za-z0-9_]*\([a-z][A-Za-z0-9_]*(?:, *[a-z][A-Za-z0-9_]*)*\))"
+    r"(?= *[;,)\n]| *$)"
+)
+
+
+def _source_assignment(text: str, match: re.Match[str]) -> bool:
+    start = match.start("value")
+    # An optional quote consumed by the detector means this is a literal, always.
+    if start and text[start - 1] in "\"'":
+        return False
+    line = text[text.rfind("\n", 0, start) + 1:start]
+    # A source line containing quotes or template delimiters is conservatively scanned.
+    if any(c in line for c in "\"'`"):
+        return False
+    # Existing `if (...) cfg.key =` lines use the assignment's exact suffix.
+    assignment = re.search(r"(?:^|[;{} )])((?:(?:const|let|var) +)?[A-Za-z_$][A-Za-z0-9_$.]*) *= *$", line)
+    if assignment is None:
+        return False
+    return _SOURCE_RHS.match(text, start) is not None
 
 
 def scan(text: str, known: Iterable[str] = ()) -> str | None:
@@ -76,7 +102,10 @@ def scan(text: str, known: Iterable[str] = ()) -> str | None:
         if value and len(value) >= 8 and value in text:
             return "a loaded credential"
     for label, pattern in _PATTERNS:
-        if pattern.search(text):
+        if "value" in pattern.groupindex:
+            if any(not _source_assignment(text, match) for match in pattern.finditer(text)):
+                return label
+        elif pattern.search(text):
             return label
     for match in _ZULIP_SHAPED.finditer(text):
         if _zulip_shaped(match.group()):
