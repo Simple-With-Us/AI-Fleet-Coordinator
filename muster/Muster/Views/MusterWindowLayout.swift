@@ -20,13 +20,13 @@ enum MusterWindowLayout {
     /// The saved split-view column frames that are taller than the window they belong to.
     ///
     /// AppKit saves the split view's column frames in the app's defaults, under
-    /// `NSSplitView Subview Frames <window>, <split view>`, and restores them when the window
-    /// opens.  On the owner's Mac (read November 6, 2026) the window's saved frame was 760 pt
-    /// tall but its columns were saved at 1085 pt.  A split view restored that tall overflows
-    /// the window, and the root then placed it centred, so both columns' first rows sat above
-    /// the window's top, under the title bar, where no scrolling reaches.  That matches the
-    /// owner's screenshot.  A column is never meant to be taller than its window, so such a
-    /// frame is stale.
+    /// `NSSplitView Subview Frames <window>, <split view>`.  On the owner's Mac (read
+    /// November 6, 2026) the window's saved frame was 760 pt tall but its columns were saved
+    /// at 1085 pt:  exactly the height the split view took while it overflowed (PR 1442), so
+    /// the frames were most likely saved by the bug, not its cause.  Seeding them in PR 1442's
+    /// harness changed nothing.  A column is never meant to be taller than its window, so
+    /// such a frame is stale, and forgetting it only clears what older builds saved.  The fix
+    /// is the column cap (`musterColumnHeight`).
     ///
     /// - Parameters:
     ///   - saved: the app's defaults, as `UserDefaults.dictionaryRepresentation()` gives them.
@@ -80,12 +80,14 @@ enum MusterWindowLayout {
 extension View {
     /// A split-view column's height comes from the window, never from its content.
     ///
-    /// This is a guard, not the confirmed cause of the owner's November 6 report:  the CI
-    /// harness measured the same layout with and without it (`MusterWindowLayoutTests`).  The
-    /// cause the evidence points to is a stale saved column frame
-    /// (`MusterWindowLayout.forgetOversizedSplitViewFrames`).  The cap keeps a column from
-    /// asking the split view for its content's natural height, which for a ScrollView is its
-    /// whole content.
+    /// This is the fix for the owner's November 6 report (AFC-616), where both columns sat
+    /// under the title bar.  Text that wraps with a vertical `fixedSize` outside a panel's
+    /// ScrollView (the place strip's line, a failure banner's reason) is measured at zero
+    /// width, wraps about one character per line, and claims a huge minimum:  1032 pt for
+    /// Seat Setup's strip line.  Uncapped, the column passed that minimum to the split view,
+    /// which grew past the window (PR 1442 measured 1085 pt in a 760-pt window).  The cap
+    /// makes each column's minimum zero.  It is load-bearing:  without it even the
+    /// top-aligned root runs the split view off the bottom (`MusterWindowLayoutTests`).
     func musterColumnHeight() -> some View {
         frame(minHeight: 0, idealHeight: MusterWindowLayout.columnIdealHeight,
               maxHeight: .infinity, alignment: .top)
@@ -96,9 +98,10 @@ extension View {
     /// asks for, and it sets the window's minimum through `.windowResizability(.contentMinSize)`.
     ///
     /// It aligns the split view to the top, so if the split view still ends up taller than
-    /// the window, the overflow goes off the bottom, which a taller window shows, and the
-    /// columns' first rows and the toolbar's title stay where they belong.  Centred, as the
-    /// earlier root placed it, the overflow went off the top as well, under the title bar.
+    /// the window, the overflow goes off the bottom and the columns' first rows and the
+    /// toolbar's title stay where they belong.  Centred, as the earlier root placed it, the
+    /// overflow went off the top as well, under the title bar.  This alone does not keep the
+    /// columns inside the window;  the column cap does.
     func musterWindowSize() -> some View {
         frame(minWidth: MusterWindowLayout.minWidth, idealWidth: MusterWindowLayout.minWidth,
               maxWidth: .infinity,

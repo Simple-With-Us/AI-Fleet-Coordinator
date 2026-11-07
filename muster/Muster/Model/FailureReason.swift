@@ -56,12 +56,15 @@ enum FailureReason {
     }
 
     /// What the banner shows, and whether that leaves part of `reason` out (so the banner
-    /// offers the full text to copy), worked out once.
-    static func display(_ reason: String) -> (text: String, isShortened: Bool) {
+    /// offers the full text to copy), worked out once with the same limits as `shown`, so
+    /// the flag always describes the text it comes with.
+    static func display(_ reason: String,
+                        lines maxLines: Int = shownLines,
+                        characters maxCharacters: Int = shownCharacters) -> (text: String, isShortened: Bool) {
         let trimmed = reason
             .replacingOccurrences(of: "\r\n", with: "\n")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        let text = shown(reason)
+        let text = shown(reason, lines: maxLines, characters: maxCharacters)
         return (text, text != trimmed)
     }
 }

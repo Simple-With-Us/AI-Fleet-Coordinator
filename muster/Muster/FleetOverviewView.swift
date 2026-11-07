@@ -34,19 +34,20 @@ struct FleetOverviewView: View {
     }
 
     /// The window's size is the window's own, and not the natural height of whichever panel is
-    /// showing.  Several panels are as tall as their content (Tools And Worker Health is 1449
-    /// points, Seats 1345).  The root frame (`musterWindowSize`) keeps the window's minimum,
+    /// showing.  PR 1414 recorded panels asking for 1449 points (Tools And Worker Health) and
+    /// 1345 (Seats).  PR 1442 showed the 1449 comes from the place strip's line measured at
+    /// zero width (a 1344-point strip), not from the panel's content.  The root frame
+    /// (`musterWindowSize`) keeps the window's minimum,
     /// wide enough for every panel's columns and short enough for any laptop screen, so the
     /// window never grows to a panel's natural height, and it holds the split view to the
     /// window's top.
     ///
     /// The owner's November 6 report (AFC-616) was both columns' first rows sitting above the
-    /// window's top, under the title bar, with no way to scroll to them.  The evidence points
-    /// to a split-view column frame saved taller than the window, which the app now forgets
-    /// before the window opens (`MusterWindowLayout.forgetOversizedSplitViewFrames`).  The
-    /// column cap (`musterColumnHeight`) and the top alignment are guards against the same
-    /// overflow from any other cause;  CI could not reproduce the overflow, so neither is
-    /// proven to be needed.
+    /// window's top, under the title bar, with no way to scroll to them.  The trigger was text
+    /// with a vertical `fixedSize` above the panel's ScrollView (the place strip's line, a
+    /// failure banner's reason):  measured at zero width it claimed a minimum taller than the
+    /// window, and the split view grew to it (PR 1442).  The column cap (`musterColumnHeight`)
+    /// on both columns is the fix, and `MusterWindowLayoutTests` fails without it.
     var body: some View {
         splitView
             .musterWindowSize()
@@ -302,11 +303,15 @@ struct RunVerdictLabel: View {
 
 /// The banner that says why the last run cannot be trusted.
 ///
-/// It shows only the end of a long reason (`FailureReason`), so a traceback cannot make one
-/// banner more than about 220 points tall, however long it is.  Up to three banners can
-/// stack over the panel (a failed run, the manifest and the registry), so at the window's
-/// smallest height all three together can still leave the panel little room.  The full
-/// reason is one click away.
+/// It shows only the end of a long reason (`FailureReason`), so at the detail column's width
+/// a traceback cannot make one banner more than about 220 points tall, however long it is.
+/// Up to three banners can stack over the panel (a failed run, the manifest and the
+/// registry), so at the window's smallest height all three together can still leave the
+/// panel little room.  The full reason is one click away.
+///
+/// The reason keeps its vertical `fixedSize` so none of it is cut.  Measured at zero width
+/// it claims a minimum far taller than the window (PR 1442), and the detail column's cap
+/// (`musterColumnHeight`) is what keeps that out of the window's layout (AFC-616).
 struct FailureBanner: View {
     let reason: String
     var title: String = "The engine did not answer, so every cell reads unknown."
