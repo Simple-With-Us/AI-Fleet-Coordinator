@@ -270,7 +270,7 @@ def _epoch(value: Any) -> float | None:
 
 
 def _stamp(epoch: float) -> str:
-    moment = datetime.datetime.fromtimestamp(int(epoch), datetime.timezone.utc)
+    moment = datetime.datetime.fromtimestamp(int(epoch), datetime.UTC)
     return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -289,7 +289,7 @@ def _when_iso(text: str) -> str | None:
     try:
         year, month, day, hour, minute, second = (int(found.group(i)) for i in range(1, 7))
         moment = datetime.datetime(
-            year, month, day, hour, minute, second, tzinfo=datetime.timezone.utc
+            year, month, day, hour, minute, second, tzinfo=datetime.UTC
         )
         if found.group(7):
             hours, minutes = int(found.group(8)), int(found.group(9))
