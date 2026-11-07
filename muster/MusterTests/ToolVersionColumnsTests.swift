@@ -179,6 +179,28 @@ final class ToolVersionColumnsTests: XCTestCase {
         XCTAssertNil(ToolVersionColumns.make(for: decoded))
     }
 
+    /// A skew that names a host but carries no version is not a version reading,  so the
+    /// row gets no columns and keeps its old look.
+    func test_a_skew_with_a_host_but_no_version_gets_no_columns() throws {
+        let decoded = try row("""
+        {"check": "tool:gh", "status": "WARN", "state": "unknown", "category": "dev-tool", "skew": {"host": "server"}}
+        """)
+        XCTAssertEqual(decoded.otherHostName, "server")
+        XCTAssertNil(decoded.otherHostVersion)
+        XCTAssertNil(ToolVersionColumns.make(for: decoded))
+    }
+
+    /// The same skew on a row that does carry a version reads "Not known" for the other
+    /// host,  because the host name alone is not its version.
+    func test_a_skew_with_a_host_but_no_version_reads_not_known_beside_a_reading() throws {
+        let result = try columns("""
+        {"check": "tool:gh", "status": "OK", "state": "current", "category": "dev-tool", "version": "2.62.0", "skew": {"host": "server"}}
+        """)
+        XCTAssertEqual(result.installed.text, "2.62.0")
+        XCTAssertEqual(result.otherHost.text, "Not known")
+        XCTAssertFalse(result.otherHost.isKnown)
+    }
+
     // MARK: - The narrowest pane
 
     /// Three columns and their gaps fit the narrowest row,  with room left for the tool

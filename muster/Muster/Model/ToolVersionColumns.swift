@@ -69,6 +69,9 @@ struct ToolVersionColumns: Equatable {
 
     /// The columns for one row,  or nil when the row carries no version reading at all
     /// (a fleet tool,  a checkout,  a service or a harness row),  which keeps its old look.
+    ///
+    /// A host name with no version is not a reading:  it names the other machine but says
+    /// nothing about any version,  so on its own it builds no columns.
     static func make(for row: FleetToolsRow) -> ToolVersionColumns? {
         let installedValue = row.installedVersion
         let latestValue = row.latestVersion
@@ -76,7 +79,7 @@ struct ToolVersionColumns: Equatable {
         let otherName = row.otherHostName
         let basisText = row.basisText
         guard installedValue != nil || latestValue != nil || otherVersion != nil
-            || otherName != nil || basisText != nil
+            || basisText != nil
         else { return nil }
 
         let installed = ToolVersionCell(
