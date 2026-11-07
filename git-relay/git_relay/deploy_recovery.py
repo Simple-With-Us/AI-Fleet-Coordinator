@@ -110,7 +110,6 @@ def supervisor_unit(runner):
         "Type": "oneshot",
         "User": "root",
         "TimeoutStartSec": "120s",
-        "RuntimeMaxSec": "120s",
         "TimeoutStopSec": "90s",
         "KillMode": "control-group",
         "ExecStopPost": "/usr/bin/python3 -I " + runner + " recover",

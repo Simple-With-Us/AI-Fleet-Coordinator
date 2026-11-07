@@ -37,7 +37,6 @@ class RecoveryTests(unittest.TestCase):
         properties = supervisor_unit("/opt/recovery/run.py")
         self.assertEqual(properties["User"], "root")
         self.assertEqual(properties["TimeoutStartSec"], "120s")
-        self.assertEqual(properties["RuntimeMaxSec"], "120s")
         self.assertTrue(properties["ExecStopPost"].endswith("run.py recover"))
         for path in ["relative", "/tmp/a b", "/tmp/a%I", "/tmp/$(x)"]:
             with self.assertRaises(TransactionError):

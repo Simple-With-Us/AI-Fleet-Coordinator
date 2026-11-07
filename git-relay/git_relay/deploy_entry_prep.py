@@ -5,10 +5,14 @@ from pathlib import Path
 
 root = Path(__file__).parent
 package = root / "runner-package"
+if not package.is_dir():
+    raise SystemExit("assemble the independently reviewed runner-package first")
 hashes = {
     str(p.relative_to(package)): hashlib.sha256(p.read_bytes()).hexdigest()
     for p in package.rglob("*.py")
 }
+if len(hashes) < 9:
+    raise SystemExit("incomplete runner-package")
 # Manifest digest is supplied only after host policy derivation and independent
 # review. This explicit sentinel refuses use of an unfinished local artifact.
 text = """#!/usr/bin/python3

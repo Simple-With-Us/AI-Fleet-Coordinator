@@ -76,6 +76,8 @@ def load_manifest(directory, digest):
             or hashlib.sha256(raw).hexdigest() != source["after"]
         ):
             raise TransactionError("candidate drift")
+        if source["before"] == source["after"]:
+            raise TransactionError("no-op image row refused")
         changes.append(dict(source, data=raw))
     if not changes:
         raise TransactionError("empty manifest")
@@ -123,13 +125,13 @@ class Runner:
             "systemctl",
             "show",
             self.doc["unit"],
-            "--property=User,Type,TimeoutStartUSec,RuntimeMaxUSec,TimeoutStopUSec,KillMode,ControlGroup,ExecStopPost",
+            "--property=User,Type,TimeoutStartUSec,TimeoutStopUSec,KillMode,ControlGroup,ExecStopPost",
         )
         observed = dict(line.split("=", 1) for line in raw.splitlines())
         for key in ["User", "Type", "KillMode"]:
             if observed.get(key) != required[key]:
                 raise TransactionError("executor unit drift")
-        if [observed.get(k) for k in ["TimeoutStartUSec", "RuntimeMaxUSec", "TimeoutStopUSec"]] != [
+        if [observed.get(k) for k in ["TimeoutStartUSec", "TimeoutStopUSec"]] != [
             "2min",
             "2min",
             "1min 30s",

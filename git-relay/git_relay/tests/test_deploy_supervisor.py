@@ -170,3 +170,24 @@ class SupervisorTests(unittest.TestCase):
                 Supervisor(h, FakeTransaction(h), []).run()
             self.assertNotIn("aborted", h.events)
             self.assertNotIn("finish", h.events)
+
+    def test_abort_window_after_stop_restarts_verifies_old_and_only_then_disarms(self):
+        for fail_proof in [False, True]:
+            h = FakeHost()
+            original_stop = h.stop_without_kill
+
+            def stop(expected, original_stop=original_stop):
+                original_stop(expected)
+                raise RuntimeError("deadline after successful stop")
+
+            h.stop_without_kill = stop
+            if fail_proof:
+                h.prove_old_runtime = lambda rows: False
+            with self.subTest(fail_proof=fail_proof), self.assertRaises(RuntimeError):
+                Supervisor(h, FakeTransaction(h), []).run()
+            self.assertNotIn("apply", h.events)
+            self.assertLess(h.events.index("aborted"), h.events.index("start"))
+            self.assertEqual(h.armed, fail_proof)
+            if not fail_proof:
+                self.assertLess(h.events.index("start"), h.events.index("prove_old"))
+                self.assertLess(h.events.index("prove_old"), h.events.index("finish"))
