@@ -473,9 +473,16 @@ HELPER_COMMANDS = {
     "scripts/simple-chat": "simple-chat",
     "scripts/simple-board": "simple-board",
     "scripts/recall": "recall",
-    # NOT scripts/simple-git:  each Git CLI user supplies their OWN bearer (env or the hidden prompt)
-    # and the server decides identity and permissions from it, so its wrapper never reads or runs the
-    # host seat helper on any path.  The helper stays wired for the commands above.
+    # simple-git: a process that DECLARES a seat (AGENT_SEAT, AGENT_TAG or the launcher seat) gets that
+    # seat's OWN bearer from the host helper, the same as the commands above.  A process that declares
+    # no seat gets nothing from the helper and supplies its own bearer (env or the hidden prompt), and
+    # the server still decides identity and permissions from the bearer it receives.  The helper refuses
+    # an inherited bearer that is not the declared seat's own, and conflicting declarations, and the
+    # implementation then checks the declared seat against the seat the server reports.  The helper
+    # must carry the simple-git entry (scripts/git-tools/testdata/seat-remote-defaults.capture.py);  a
+    # helper without it refuses the command, so a host whose helper is older keeps its existing plain
+    # wrapper until the helper is updated and the wrapper is installed again.
+    "scripts/simple-git": "simple-git",
 }
 HELPER_PATH = ".config/fleet-cli/seat-remote-defaults.py"
 
