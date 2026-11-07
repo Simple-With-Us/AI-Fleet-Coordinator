@@ -52,6 +52,7 @@ class InstallerTests(unittest.TestCase):
             "fleet-ops-control.json",
             "fleet_resource_control.py",
             "fleet_seat_inventory.py",
+            "reduced_status.py",
             "hetzner/__init__.py",
             "hetzner/fleet_coding_memory.py",
             "hetzner/coding_resources.py",
@@ -82,7 +83,7 @@ class InstallerTests(unittest.TestCase):
         (trap / "fleet_resource_control.py").write_text("raise RuntimeError('untrusted import')")
         code = (
             "import sys,runpy;sys.path.insert(0,sys.argv[1]);"
-            "import fleet_resource_control,fleet_seat_inventory,fleet_secrets.core,hetzner.fleet_coding_memory;"
+            "import fleet_resource_control,fleet_seat_inventory,reduced_status,fleet_secrets.core,hetzner.fleet_coding_memory;"
             "runpy.run_path(sys.argv[1]+'/fleet-ops-control.py');print('imports-ok')"
         )
         result = subprocess.run(
@@ -133,11 +134,49 @@ class InstallerTests(unittest.TestCase):
             "fleet_seat_inventory.py",
         ):
             (source / name).write_text("pass\n")
+        (source / "agent_sync").mkdir()
+        (source / "agent_sync" / "reduced_status.py").write_text("pass\n")
         (source / "fleet-ops-control.json").write_text(json.dumps({"schemaVersion": 1}))
         (source / "fleet_secrets").symlink_to(SCRIPTS / "fleet_secrets", target_is_directory=True)
         with self.assertRaises(OSError):
             self.install(source)
         self.assertFalse(self.destination.exists())
+
+    def test_symlinked_reducer_source_refused_before_destination_created(self):
+        source = self.root / "source"
+        source.mkdir()
+        for name in (
+            "fleet-ops-control.py",
+            "fleet_resource_control.py",
+            "fleet_seat_inventory.py",
+        ):
+            (source / name).write_text("pass\n")
+        (source / "fleet-ops-control.json").write_text(json.dumps({"schemaVersion": 1}))
+        for package, names in (
+            ("fleet_secrets", ("__init__.py", "core.py")),
+            ("hetzner", ("fleet_coding_memory.py", "coding_resources.py")),
+        ):
+            (source / package).mkdir()
+            for name in names:
+                (source / package / name).write_text("pass\n")
+        real = self.root / "real-agent-sync"
+        real.mkdir()
+        (real / "reduced_status.py").write_text("pass\n")
+        (source / "agent_sync").symlink_to(real, target_is_directory=True)
+        with self.assertRaises(OSError):
+            self.install(source)
+        self.assertFalse(self.destination.exists())
+        (source / "agent_sync").unlink()
+        (source / "agent_sync").mkdir()
+        (source / "agent_sync" / "reduced_status.py").symlink_to(real / "reduced_status.py")
+        with self.assertRaises(OSError):
+            self.install(source)
+        self.assertFalse(self.destination.exists())
+        # The same source with a plain file installs, so both refusals were the symlinks.
+        (source / "agent_sync" / "reduced_status.py").unlink()
+        (source / "agent_sync" / "reduced_status.py").write_text("pass\n")
+        self.install(source)
+        self.assertEqual((self.destination / "reduced_status.py").read_text(), "pass\n")
 
     def test_nonroot_or_nonlinux_refused_before_any_destination_write(self):
         for uid, platform in ((1, "linux"), (0, "darwin")):
