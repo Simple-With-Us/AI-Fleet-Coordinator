@@ -53,6 +53,13 @@ def decide(payload: dict, ctx=None, secret_guard=None):
     Fails closed for Claude's own file tools:  when the policy itself raises (the fleet rule "fail closed when
     required configuration or registry is unavailable"), a Read, Write, Edit, MultiEdit or NotebookEdit is refused
     and the reason says the guard could not check it.  Any other payload is not this hook's to judge and allows.
+
+    Why this cannot brick file tools on a transient error:  the resolver's ValueError and OSError are handled in
+    file_guard.path_reason, and a missing secret table or registry is a refusal inside file_reason, so what can
+    still raise here is building the context, roots and registry (guard.make_context, layout.make_roots), which is
+    configuration.  The policy makes no network call and reads only path metadata, so a failure is deterministic
+    and shows at once in `install_tools verify claude` and Muster's L1 probe;  Bash stays available for repair.
+    MiniMax keeps its fail-open contract (review on #1423).
     """
     try:
         return file_reason(payload, ctx, secret_guard), ""
