@@ -88,12 +88,14 @@ struct FleetRegistryDocument: Decodable, Equatable {
 
     /// The seats a family pattern names one by one:  `GB-*` with its roles is GB-COMPILER,
     /// GB-DEPLOYER and the rest,  in the registry's own order.  A pattern with no roles names
-    /// no seat,  because a tag with a `*` in it is never a seat.
+    /// no seat,  because a tag with a `*` in it is never a seat.  A pattern that is only `*`
+    /// names no family,  so it names no seat either:  its bare roles are not seat tags.
     var familySeats: [String] {
         var found: [String] = []
         for pattern in seatApps?.patterns ?? [] {
             guard pattern.match.hasSuffix("*") else { continue }
             let prefix = String(pattern.match.dropLast()).uppercased()
+            guard !prefix.trimmingCharacters(in: .whitespaces).isEmpty else { continue }
             for role in pattern.lane?.roles ?? [] {
                 let name = role.trimmingCharacters(in: .whitespaces).uppercased()
                 guard !name.isEmpty else { continue }

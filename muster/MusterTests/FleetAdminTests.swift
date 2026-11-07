@@ -1,3 +1,4 @@
+import Combine
 import XCTest
 
 /// The fleet admin:  the control the standalone BotFleet Control app used to carry,
@@ -68,6 +69,85 @@ final class FleetAdminTests: XCTestCase {
         XCTAssertNotNil(admin.lastReadAt)
         XCTAssertEqual(admin.localServiceState, .running)
         XCTAssertEqual(admin.pm2Answered, true)
+    }
+
+    /// Two routine reads asked for at once are one read:  the second waits for the first
+    /// rather than running pm2 and launchctl again beside it.
+    func testTwoReadsAskedForAtOnceShareOneRead() async {
+        let commands = FleetAdminCommands()
+        let admin = makeAdmin(commands: commands, server: FleetAdminServer())
+        await waitForTheFleet(admin)
+        await admin.refresh()
+        commands.listingDelay = 0.2
+        let before = commands.calls.filter { $0.arguments.contains("jlist") }.count
+
+        let first = Task { await admin.refresh() }
+        let second = Task { await admin.refresh() }
+        await first.value
+        await second.value
+
+        let reads = commands.calls.filter { $0.arguments.contains("jlist") }.count - before
+        XCTAssertEqual(reads, 1, "Two reads asked for at once ran pm2 \(reads) times.")
+    }
+
+    /// A read that began before a change is not joined by the read the change asks for:
+    /// that caller wants to see what the change did.
+    func testAReadAfterAControllerRunIsNotJoinedToAnOlderRead() async {
+        let commands = FleetAdminCommands()
+        let admin = makeAdmin(commands: commands, server: FleetAdminServer())
+        await waitForTheFleet(admin)
+        await admin.refresh()
+        commands.listingDelay = 0.2
+        let before = commands.calls.filter { $0.arguments.contains("jlist") }.count
+
+        let older = Task { await admin.refresh() }
+        await Task.yield()
+        admin.beginControllerAction(.stop, serviceID: "shellular")
+        admin.endControllerAction(serviceID: "shellular", succeeded: true)
+        let after = Task { await admin.refresh() }
+        await older.value
+        await after.value
+
+        let reads = commands.calls.filter { $0.arguments.contains("jlist") }.count - before
+        XCTAssertEqual(reads, 2, "The read after the run joined a read that began before it.")
+    }
+
+    /// A controller run with no sheet behind it (a start Muster takes on its own) is a change
+    /// too:  the read its end asks for does not join a routine read that began before it.
+    func testAReadAfterAnUnattendedRunIsNotJoinedToAnOlderRead() async {
+        let commands = FleetAdminCommands()
+        let runs = PassthroughSubject<Int, Never>()
+        let admin = makeAdmin(commands: commands, server: FleetAdminServer(),
+                              runsCompleted: runs.eraseToAnyPublisher())
+        await waitForTheFleet(admin)
+        await admin.refresh()
+        commands.listingDelay = 0.2
+        let before = commands.calls.filter { $0.arguments.contains("jlist") }.count
+
+        let older = Task { await admin.refresh() }
+        await Task.yield()
+        runs.send(1)
+        let after = Task { await admin.refresh() }
+        await older.value
+        await after.value
+
+        let reads = commands.calls.filter { $0.arguments.contains("jlist") }.count - before
+        XCTAssertEqual(reads, 2, "The read after an unattended run joined a read that began before it.")
+    }
+
+    /// A visit to the panel shortly after a read shows that read and does not read again.
+    func testAVisitSoonAfterAReadDoesNotReadAgain() async {
+        let commands = FleetAdminCommands()
+        let admin = makeAdmin(commands: commands, server: FleetAdminServer())
+        await waitForTheFleet(admin)
+        await admin.refresh()
+        let before = commands.calls.count
+
+        await admin.refreshIfOlder(than: 60)
+        XCTAssertEqual(commands.calls.count, before, "A visit a moment after a read read the Mac again.")
+
+        await admin.refreshIfOlder(than: 0)
+        XCTAssertGreaterThan(commands.calls.count, before, "A visit after the window did not read.")
     }
 
     /// A menu that was true at launch is not true days later.
@@ -603,7 +683,8 @@ final class FleetAdminTests: XCTestCase {
                             wrapperInstalled: Bool = false,
                             stopWait: ServerPortWait = .stop,
                             startWait: ServerPortWait = ServerPortWait(attempts: 8, interval: 0),
-                            ownerStopStore: OwnerStopStoring? = nil) -> FleetAdmin {
+                            ownerStopStore: OwnerStopStoring? = nil,
+                            runsCompleted: AnyPublisher<Int, Never>? = nil) -> FleetAdmin {
         // The startup policy looks for the installed wrapper and the launch agents
         // under the home it is given,  so a home of its own keeps the test away
         // from the real Mac.
@@ -641,7 +722,8 @@ final class FleetAdminTests: XCTestCase {
                           stopWait: stopWait,
                           startWait: startWait,
                           ownerStopStore: ownerStopStore,
-                          refreshInterval: refreshInterval)
+                          refreshInterval: refreshInterval,
+                          runsCompleted: runsCompleted ?? Empty<Int, Never>().eraseToAnyPublisher())
     }
 
     // MARK: - The owner's stops outlive the app

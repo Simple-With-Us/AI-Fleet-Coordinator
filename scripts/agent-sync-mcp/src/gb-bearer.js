@@ -46,9 +46,16 @@ function base64url(bytes) {
   return btoa(s).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
 }
 
+// Two hex digits per byte from a table:  the spread, map and padStart this replaced
+// ran several times on every /mcp request (AFC-617).
+const HEX = Array.from({ length: 256 }, (_, byte) => byte.toString(16).padStart(2, "0"));
+const ENCODER = new TextEncoder();
+
 export async function sha256Hex(text) {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", ENCODER.encode(text)));
+  let hex = "";
+  for (let i = 0; i < digest.length; i++) hex += HEX[digest[i]];
+  return hex;
 }
 
 /** A fresh token for `identity` and its hash.  The token is returned once, to the caller, and never stored. */

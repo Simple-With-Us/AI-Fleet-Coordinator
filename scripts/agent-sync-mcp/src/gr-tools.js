@@ -19,7 +19,7 @@
 import { z } from "zod";
 import { callTypedV1 } from "./gr-typed-v1.js";
 import { ASSERTION_FAMILY_RE } from "./gr-assert.js";
-import { WF_V1_READ_ACTIONS, WF_V1_ACTIONS, workflowInputLimit, validWfV1Args, boundedWorkflowInput, parseWfV1Args, validWfV1Response } from "./gr-workflow-v1.js";
+import { WF_V1_READ_ACTIONS, WF_V1_ACTIONS, workflowInputLimit, validWfV1Args, boundedWorkflowInput, parseWfV1Args, validWfV1Response, utf8Bytes } from "./gr-workflow-v1.js";
 import { resolveSecret } from "./infisical.js";
 import { classifyRelayRefusal } from "./gr-refusal.js";
 
@@ -155,12 +155,12 @@ export class GrRelayClient {
     ) {
       return {status: 400, body: {error: "invalid_workflow_args"}};
     }
-    if (new TextEncoder().encode(JSON.stringify(args)).length > limit) return {status:400,body:{error:"workflow_request_too_large"}};
+    if (utf8Bytes(JSON.stringify(args)) > limit) return {status:400,body:{error:"workflow_request_too_large"}};
     const parsedArgs=parseWfV1Args(action,args);
     if(parsedArgs===null)return {status:400,body:{error:"invalid_workflow_args"}};
     args=parsedArgs;
     const serialized = JSON.stringify(args);
-    if (new TextEncoder().encode(serialized).length > limit) return {status:400,body:{error:"workflow_request_too_large"}};
+    if (utf8Bytes(serialized) > limit) return {status:400,body:{error:"workflow_request_too_large"}};
     const write = !WF_V1_READ_ACTIONS.includes(action);
     const unavailable = () => ({status:502,body:{error:"upstream_unavailable", ...(write ? {outcome:"unknown",retryable:false} : {retryable:true})}});
     const credential = await this.#credential(action, serialized);

@@ -209,9 +209,100 @@ final class SeatsRosterTests: XCTestCase {
         XCTAssertEqual(decoded.seats.count, 6)
     }
 
+    /// A pattern that is only `*` names no family,  so its bare roles are never seat tags and
+    /// never rows.
+    func test_a_bare_star_pattern_names_no_seat() throws {
+        let json = """
+        {
+          "apps": [],
+          "seats": [{"tag": "CLAUDE"}],
+          "seatApps": {
+            "patterns": [
+              {"match": "*", "app": "anything", "lane": {"roles": ["COMPILER", "FIXER"]}},
+              {"match": " *", "app": "spaced", "lane": {"roles": ["DIRECTOR"]}},
+              {"match": "BF-*", "app": "botfleet", "lane": {"roles": ["ENGINEER"]}}
+            ]
+          }
+        }
+        """
+        let registry = try JSONDecoder().decode(FleetRegistryDocument.self, from: Data(json.utf8))
+        XCTAssertEqual(registry.familySeats, ["BF-ENGINEER"])
+        let roster = SeatActivityRoster.seats(gridRoster: ["CLAUDE"], registry: registry, partition: nil)
+        for role in ["COMPILER", "FIXER", "DIRECTOR", " DIRECTOR"] {
+            XCTAssertFalse(roster.contains(role), "\(role) is a role,  not a seat:  \(roster)")
+        }
+        XCTAssertTrue(roster.contains("BF-ENGINEER"), "\(roster)")
+    }
+
+    // MARK: Reading the files
+
+    /// A checkout in a temporary folder,  holding a registry and a seat partition.
+    private func checkout(registry: String, partition: String) throws -> EngineLocation {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("muster-roster-\(UUID().uuidString)", isDirectory: true)
+        let protocols = root.appendingPathComponent("docs/protocols", isDirectory: true)
+        try FileManager.default.createDirectory(at: protocols, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let location = EngineLocation(root: root, interpreter: root.appendingPathComponent("python3"))
+        try write(registry, to: location.registryURL, modified: Date(timeIntervalSince1970: 1_000_000))
+        try write(partition, to: root.appendingPathComponent(ListenerPartition.relativePath),
+                  modified: Date(timeIntervalSince1970: 1_000_000))
+        return location
+    }
+
+    /// Writes a file and sets its modification time,  so a rewrite always reads as a change.
+    private func write(_ text: String, to url: URL, modified: Date) throws {
+        try text.write(to: url, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.modificationDate: modified], ofItemAtPath: url.path)
+    }
+
+    /// The panel asks for the roster on every refresh:  an unchanged registry or partition is
+    /// not read or decoded again,  and a changed one is,  and its change shows in the roster.
+    func test_an_unchanged_registry_or_partition_is_not_read_again() throws {
+        let firstRegistry = #"{"apps": [], "seats": [{"tag": "CLAUDE"}, {"tag": "MA"}]}"#
+        let firstPartition = "version = 1\n\n[seats]\nCLAUDE = \"mac\"\nMA = \"server\"\n"
+        let location = try checkout(registry: firstRegistry, partition: firstPartition)
+        let cache = SeatRosterFileCache()
+
+        let first = SeatActivityRoster.current(gridRoster: ["CLAUDE"], engine: location, cache: cache)
+        XCTAssertEqual(first, ["CLAUDE", "MA"])
+        XCTAssertEqual(cache.registryReads, 1)
+        XCTAssertEqual(cache.partitionReads, 1)
+
+        // Unchanged:  the same roster,  and neither file is read again.
+        let again = SeatActivityRoster.current(gridRoster: ["CLAUDE"], engine: location, cache: cache)
+        XCTAssertEqual(again, first)
+        XCTAssertEqual(cache.registryReads, 1)
+        XCTAssertEqual(cache.partitionReads, 1)
+
+        // The registry changes:  it is read again,  and the partition is not.
+        let secondRegistry = #"{"apps": [], "seats": [{"tag": "CLAUDE"}, {"tag": "MA"}, {"tag": "MM"}]}"#
+        try write(secondRegistry, to: location.registryURL, modified: Date(timeIntervalSince1970: 2_000_000))
+        let withMM = SeatActivityRoster.current(gridRoster: ["CLAUDE"], engine: location, cache: cache)
+        XCTAssertEqual(withMM, ["CLAUDE", "MA", "MM"])
+        XCTAssertEqual(cache.registryReads, 2)
+        XCTAssertEqual(cache.partitionReads, 1)
+
+        // The partition changes:  it is read again,  and the registry is not.
+        let secondPartition = firstPartition + "WISE = \"server\"\n"
+        try write(secondPartition, to: location.root.appendingPathComponent(ListenerPartition.relativePath),
+                  modified: Date(timeIntervalSince1970: 2_000_000))
+        let withWise = SeatActivityRoster.current(gridRoster: ["CLAUDE"], engine: location, cache: cache)
+        XCTAssertEqual(withWise, ["CLAUDE", "MA", "MM", "WISE"])
+        XCTAssertEqual(cache.registryReads, 2)
+        XCTAssertEqual(cache.partitionReads, 2)
+
+        // A file that goes away adds nothing,  and the grid's seats are still there.
+        try FileManager.default.removeItem(at: location.registryURL)
+        let gone = SeatActivityRoster.current(gridRoster: ["CLAUDE"], engine: location, cache: cache)
+        XCTAssertEqual(gone, ["CLAUDE", "MA", "WISE"])
+    }
+
     /// The real registry and partition:  AMP,  JET and every Grok Bot and BotFleet seat the
     /// partition holds have a row,  once each.  The counts come from the files themselves,  so
-    /// a role the owner adds or retires does not fail this test.
+    /// a role the owner adds or retires does not fail this test.  A tag that is never a Seats
+    /// row (the Operator,  a service the partition holds on the Mac) is left out of the "has a
+    /// row" checks,  and checked to have none.
     func test_the_checkouts_registry_and_partition_give_every_server_seat_a_row() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
@@ -229,11 +320,17 @@ final class SeatsRosterTests: XCTestCase {
         XCTAssertTrue(roster.contains("AMP"))
         XCTAssertTrue(roster.contains("JET"))
         for (seat, instance) in held where instance != "none" {
+            if SeatActivityRoster.notSeatRows.contains(seat.uppercased()) {
+                XCTAssertFalse(roster.contains(seat), "\(seat) is never a Seats row")
+                continue
+            }
             XCTAssertTrue(roster.contains(seat), "\(seat) is held by \(instance) and has no row")
         }
         for seat in registry.familySeats {
             let holder = held[seat]
-            if holder == "mac" || holder == "server" {
+            if SeatActivityRoster.notSeatRows.contains(seat.uppercased()) {
+                XCTAssertFalse(roster.contains(seat), "\(seat) is never a Seats row")
+            } else if holder == "mac" || holder == "server" {
                 XCTAssertTrue(roster.contains(seat), "\(seat) is held by \(holder ?? "") and has no row")
             } else {
                 XCTAssertFalse(roster.contains(seat), "\(seat) is not held and has a row")

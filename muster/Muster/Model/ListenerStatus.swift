@@ -363,8 +363,9 @@ enum OperatorVoiceReading: Equatable {
     /// The Operator cannot post.  `code` is the eavesdropper's own code,  safe to show.
     case unavailable(code: String?, since: Date?, sinceText: String?)
     /// The status is not current or the eavesdropper is not running,  so whether the Operator
-    /// can post now is not known.  `lastAvailable` is what the last status said.
-    case notCurrent(why: String, lastAvailable: Bool, since: Date?, sinceText: String?)
+    /// can post now is not known.  `lastAvailable` is what the last status said,  and `code` is
+    /// the eavesdropper's own code when that status said the Operator could not post.
+    case notCurrent(why: String, lastAvailable: Bool, since: Date?, sinceText: String?, code: String? = nil)
 
     /// The reading from a status.
     init(_ state: ListenerStatus.State?) {
@@ -420,8 +421,8 @@ enum OperatorVoiceReading: Equatable {
         switch reading {
         case .available(let since, let sinceText):
             return .notCurrent(why: why, lastAvailable: true, since: since, sinceText: sinceText)
-        case .unavailable(_, let since, let sinceText):
-            return .notCurrent(why: why, lastAvailable: false, since: since, sinceText: sinceText)
+        case .unavailable(let code, let since, let sinceText):
+            return .notCurrent(why: why, lastAvailable: false, since: since, sinceText: sinceText, code: code)
         case .notRead, .notReported, .unreadable, .notTriedYet, .notCurrent:
             return reading
         }
@@ -437,7 +438,7 @@ enum OperatorVoiceReading: Equatable {
     var isProblem: Bool {
         switch self {
         case .unavailable, .unreadable: return true
-        case .notCurrent(_, let lastAvailable, _, _): return !lastAvailable
+        case .notCurrent(_, let lastAvailable, _, _, _): return !lastAvailable
         case .notRead, .notReported, .notTriedYet, .available: return false
         }
     }
@@ -476,10 +477,11 @@ enum OperatorVoiceReading: Equatable {
             return "The Operator cannot post to Zulip, and has not been able to since \(Self.whenText(since, now: now))." + cause
         case .notTriedYet:
             return "The Mac's eavesdropper has not tried the Operator yet.\u{00A0} It tries once soon after it starts."
-        case .notCurrent(let why, let lastAvailable, let since, _):
+        case .notCurrent(let why, let lastAvailable, let since, _, let code):
             let said = lastAvailable ? "could post" : "could not post"
             let from = since.map { " from \(Self.whenText($0, now: now))" } ?? ""
-            return "\(why), so whether the Operator can post now is not known.\u{00A0} Its last status said the Operator \(said)\(from)."
+            let cause = lastAvailable ? "" : (code.flatMap(Self.cause).map { "\u{00A0} " + $0 } ?? "")
+            return "\(why), so whether the Operator can post now is not known.\u{00A0} Its last status said the Operator \(said)\(from)." + cause
         case .notReported:
             return "The Mac's eavesdropper does not report whether the Operator can post."
         case .unreadable:
@@ -498,8 +500,9 @@ enum OperatorVoiceReading: Equatable {
         case .unavailable(let code, let since, let sinceText):
             return "From status.operator_voice:  available is false, code \(code ?? "not given")"
                 + Self.sinceClause(since, sinceText, now: now) + "."
-        case .notCurrent(_, let lastAvailable, let since, let sinceText):
-            return "From a status.operator_voice that is not current:  available was \(lastAvailable)"
+        case .notCurrent(_, let lastAvailable, let since, let sinceText, let code):
+            let codeClause = lastAvailable ? "" : ", code \(code ?? "not given")"
+            return "From a status.operator_voice that is not current:  available was \(lastAvailable)" + codeClause
                 + Self.sinceClause(since, sinceText, now: now) + "."
         case .notTriedYet:
             return "From status.operator_voice:  available is null, which the eavesdropper writes until its first Operator build since it started has finished."
@@ -544,7 +547,7 @@ enum OperatorVoiceReading: Equatable {
     func problemLines(seats: [WakeSeat], now: Date = Date()) -> [String] {
         switch self {
         case .unavailable: break
-        case .notCurrent(_, let lastAvailable, _, _) where !lastAvailable: break
+        case .notCurrent(_, let lastAvailable, _, _, _) where !lastAvailable: break
         default: return []
         }
         var text = sentence(now: now)
@@ -928,13 +931,6 @@ struct AgentSyncCLI: AgentSyncRunning {
         }
     }
 
-    private final class TimeoutFlag: @unchecked Sendable {
-        private let lock = NSLock()
-        private var value = false
-        func set() { lock.lock(); value = true; lock.unlock() }
-        var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
-    }
-
     private static func runBlocking(
         _ invocation: AgentSyncInvocation,
         at location: EngineLocation,
@@ -965,6 +961,8 @@ struct AgentSyncCLI: AgentSyncRunning {
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = stdoutHandle
         process.standardError = stderrHandle
+        let finished = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in finished.signal() }
         do {
             try process.run()
         } catch {
@@ -973,25 +971,44 @@ struct AgentSyncCLI: AgentSyncRunning {
             throw AgentSyncError.launchFailed(error.localizedDescription)
         }
 
-        let flag = TimeoutFlag()
-        let timer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
-        timer.schedule(deadline: .now() + invocation.timeout)
-        timer.setEventHandler {
-            flag.set()
-            if process.isRunning { process.terminate() }
-        }
-        timer.resume()
-        process.waitUntilExit()
-        timer.cancel()
+        // The deadline is enforced the way the fleet-view read enforces it:  SIGTERM first,
+        // then SIGKILL when the child is still there after the grace period,  and every wait
+        // is bounded,  so a child that ignores SIGTERM cannot hold this thread for ever.
+        let exited = waitBounded(for: process, finished: finished, timeout: invocation.timeout)
         try? stdoutHandle.close()
         try? stderrHandle.close()
 
         return AgentSyncCLIResult(
-            exitCode: process.terminationStatus,
+            // A child that outlived even SIGKILL has no exit status to read,  and asking
+            // Process for one would trap;  the run reads as timed out either way.
+            exitCode: exited.stillRunning ? -1 : process.terminationStatus,
             stdout: try read(stdoutURL),
             stderr: try read(stderrURL),
-            timedOut: flag.isSet
+            timedOut: exited.timedOut
         )
+    }
+
+    /// How long a child that was sent SIGTERM gets before SIGKILL,  and how long after
+    /// SIGKILL before the run stops waiting for it.
+    static let killGrace: TimeInterval = 2
+
+    /// Waits for the child to end,  for no longer than the timeout and two grace periods.
+    private static func waitBounded(
+        for process: Process,
+        finished: DispatchSemaphore,
+        timeout: TimeInterval
+    ) -> (timedOut: Bool, stillRunning: Bool) {
+        guard finished.wait(timeout: .now() + timeout) == .timedOut else {
+            return (timedOut: false, stillRunning: false)
+        }
+        if process.isRunning { process.terminate() }
+        if finished.wait(timeout: .now() + killGrace) == .timedOut, process.isRunning {
+            Darwin.kill(process.processIdentifier, SIGKILL)
+            if finished.wait(timeout: .now() + killGrace) == .timedOut, process.isRunning {
+                return (timedOut: true, stillRunning: true)
+            }
+        }
+        return (timedOut: true, stillRunning: false)
     }
 
     private static func read(_ url: URL) throws -> String {

@@ -200,17 +200,52 @@ final class OperatorVoiceTests: XCTestCase {
     }
 
     /// An old status whose last word was that the Operator could not post still says so in the
-    /// problem box,  as not known now.
+    /// problem box,  as not known now,  and keeps its cause:  the cause in words in the sentence
+    /// and the eavesdropper's own code in the tooltip.
     func test_an_old_status_that_could_not_post_says_it_is_not_current() throws {
         let voice = #"{"available": false, "code": "credential-rejected", "since": "\#(since)"}"#
         let model = try panel(envelope(running: true, updated: sinceDate, voice: voice),
                               readAt: sinceDate.addingTimeInterval(3_600))
         XCTAssertEqual(model.operatorVoice.label, "Not known")
         XCTAssertTrue(model.operatorVoice.isProblem)
+        XCTAssertEqual(model.operatorVoice, .notCurrent(
+            why: "The eavesdropper's status is not current", lastAvailable: false,
+            since: sinceDate, sinceText: since, code: "credential-rejected"
+        ))
         let lines = model.operatorVoice.problemLines(seats: [], now: sinceDate)
         XCTAssertEqual(lines.count, 1)
         XCTAssertTrue(lines[0].contains("not current"), lines[0])
         XCTAssertTrue(lines[0].contains("could not post from 2:14 PM"), lines[0])
+        // A code Muster does not know adds nothing to the sentence,  and stays in the tooltip.
+        XCTAssertTrue(lines[0].hasSuffix("could not post from 2:14 PM."), lines[0])
+        XCTAssertFalse(lines[0].contains("credential-rejected"), lines[0])
+        XCTAssertTrue(model.operatorVoice.tooltip(now: sinceDate).contains("code credential-rejected"),
+                      model.operatorVoice.tooltip(now: sinceDate))
+
+        // A known code survives the status going stale:  its cause is in the sentence,  after the
+        // sentence gap,  and the code itself is in the tooltip,  never the sentence.
+        let known = #"{"available": false, "code": "operator_credential_rejected", "since": "\#(since)"}"#
+        let stale = try panel(envelope(running: false, updated: sinceDate, voice: known),
+                              readAt: sinceDate.addingTimeInterval(5))
+        XCTAssertFalse(stale.statusIsCurrent)
+        XCTAssertEqual(stale.operatorVoice.label, "Not known")
+        let sentence = stale.operatorVoice.sentence(now: sinceDate)
+        XCTAssertEqual(
+            sentence,
+            "The eavesdropper is not running, so whether the Operator can post now is not known.\u{00A0} "
+                + "Its last status said the Operator could not post from 2:14 PM.\u{00A0} "
+                + "Zulip refused the Operator's credential."
+        )
+        XCTAssertFalse(sentence.contains("operator_credential_rejected"), sentence)
+        let tooltip = stale.operatorVoice.tooltip(now: sinceDate)
+        XCTAssertTrue(tooltip.contains("available was false, code operator_credential_rejected"), tooltip)
+        XCTAssertEqual(stale.operatorVoice.problemLines(seats: [], now: sinceDate), [sentence])
+
+        // A stale status that said the Operator could post names no code and no cause.
+        let able = OperatorVoiceReading.notCurrent(why: "The eavesdropper is not running", lastAvailable: true,
+                                                   since: nil, sinceText: nil, code: "operator_credential_rejected")
+        XCTAssertFalse(able.sentence().contains("Zulip refused"), able.sentence())
+        XCTAssertFalse(able.tooltip().contains("code"), able.tooltip())
     }
 
     /// No status at all,  or another instance's,  is not known.

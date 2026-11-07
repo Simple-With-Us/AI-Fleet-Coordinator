@@ -255,8 +255,7 @@ async function logRefusal(env, { where, reason, clientId, redirectUri, resource,
 }
 
 async function sha256Ref(text) {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(String(text)));
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 12);
+  return (await sha256Hex(String(text))).slice(0, 12);
 }
 
 // ---------------------------------------------------------------- provider
@@ -546,7 +545,7 @@ function safeHost(origin) {
  * only as that persona (allowedIdentities for a non-shared seat is just itself).  Every refusal is the same
  * generic 401.  Paused personas, an unset credential bundle and an expired bearer all refuse.
  */
-async function serveGbBearerMcp(request, env, token, ctx) {
+async function serveGbBearerMcp(request, env, token, ctx, credential = null) {
   const config = configFor(env);
   const refuse = () => invalidToken("This token is not valid.");
   const parsed = parseGbBearer(token);
@@ -556,7 +555,9 @@ async function serveGbBearerMcp(request, env, token, ctx) {
   // R4:  a fresh cached verification for this exact bearer stands in for
   // gbBearerCheck (src/identity-cache.js states the window's terms).  The
   // key is the same hash the check itself uses;  the token is never stored.
-  const bearerHash = await sha256Hex(parsed.token);
+  // `credential` is serveRequest's hash of this same header token (the guard's key);  it
+  // is the same SHA-256, so it is not computed twice (AFC-617).
+  const bearerHash = credential ?? await sha256Hex(parsed.token);
   const identityEntry = IDENTITY_CACHE.get(bearerHash);
   let checked;
   // A refusal this isolate records after the live check starts beats it.
@@ -659,7 +660,7 @@ async function serveGbBearerMcp(request, env, token, ctx) {
  * An unhosted seat or a missing key can still answer lifecycle frames, which use
  * no credential, and refuses at its first tool call.
  */
-async function serveSbtBearerMcp(request, env, token, ctx) {
+async function serveSbtBearerMcp(request, env, token, ctx, credential = null) {
   const config = configFor(env);
   const refuse = () => invalidToken("This token is not valid.");
   const parsed = parseSbtBearer(token);
@@ -669,7 +670,8 @@ async function serveSbtBearerMcp(request, env, token, ctx) {
   // R4:  a fresh cached verification for this exact bearer stands in for
   // gbBearerCheck (src/identity-cache.js states the window's terms).  The
   // key is the same hash the check itself uses;  the token is never stored.
-  const bearerHash = await sha256Hex(parsed.token);
+  // `credential` is serveRequest's hash of this same header token, so it is not computed twice.
+  const bearerHash = credential ?? await sha256Hex(parsed.token);
   const identityEntry = IDENTITY_CACHE.get(bearerHash);
   let checked;
   // A refusal this isolate records after the live check starts beats it.
@@ -1707,9 +1709,9 @@ async function serveRequest(request, env, ctx) {
     const sbtBearer = route === "mcp" && !gbBearer ? sbtBearerFromRequest(request) : null;
     const hasAuthorization = request.headers.has("authorization");
     const response = gbBearer
-      ? await serveGbBearerMcp(request, env, gbBearer, ctx)
+      ? await serveGbBearerMcp(request, env, gbBearer, ctx, credential)
       : sbtBearer
-        ? await serveSbtBearerMcp(request, env, sbtBearer, ctx)
+        ? await serveSbtBearerMcp(request, env, sbtBearer, ctx, credential)
         : await fetchProvider(request, env, ctx);
     // A failed authentication counts against its IP, and past the limit it writes nothing.
     const writeRow = !(route === "mcp" && response.status === 401 && hasAuthorization) || await noteAuthFailure(request, env, credential);
