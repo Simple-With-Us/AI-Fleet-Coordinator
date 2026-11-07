@@ -145,15 +145,37 @@ function isQuotaRefusal(err) {
 }
 
 // shouldStop: when it answers true (SIGTERM or the run deadline), a 429 is handed
-// back at once instead of sleeping for a retry; it was a certain refusal, so the
-// row simply stays pending. A write that needed retries returns its result with
-// rateLimitRetries set, and drainOutbox notes it in the fence detail.
+// back instead of being retried; it was a certain refusal, so the row simply stays
+// pending. The back-off sleep (up to 60 s) is taken in slices of stopPollMs and
+// re-checks shouldStop between them, so a stop is honoured within about a second
+// and no further write is sent. The pacing wait before a write is at most
+// writeIntervalMs (1.1 s) and is not cut short: the stop then lands at the next
+// row, without turning the write it was spacing into a failure. A write that
+// needed retries returns its result with rateLimitRetries set, and drainOutbox
+// notes it in the fence detail.
 export function pacedAdapter(adapter, {
-  sleep = realSleep, now = Date.now, log = () => {}, shouldStop = () => false, ...overrides
+  sleep = realSleep, now = Date.now, log = () => {}, shouldStop = null, stopPollMs = 1_000,
+  ...overrides
 } = {}) {
-  if (typeof sleep !== "function" || typeof now !== "function" || typeof shouldStop !== "function") {
+  if (typeof sleep !== "function" || typeof now !== "function" ||
+      (shouldStop !== null && typeof shouldStop !== "function")) {
     throw new Error("pacing sleep, now and shouldStop must be functions");
   }
+  const stopping = shouldStop ?? (() => false);
+  const pollMs = pacingOption({ stopPollMs }, "stopPollMs", 1, 60_000);
+  // Sleep ms, waking every pollMs to check for a stop when there is a stop check to
+  // make. Answers false when a stop cut the sleep short.
+  const stoppableSleep = async (ms) => {
+    if (shouldStop === null) {
+      await sleep(ms);
+      return true;
+    }
+    for (let left = ms; left > 0; left -= pollMs) {
+      if (stopping()) return false;
+      await sleep(Math.min(left, pollMs));
+    }
+    return !stopping();
+  };
   const options = { ...PACING_DEFAULTS, ...overrides };
   const writeIntervalMs = pacingOption(options, "writeIntervalMs", 0, 60_000);
   const retries = pacingOption(options, "rateLimitRetries", 0, 10);
@@ -172,10 +194,13 @@ export function pacedAdapter(adapter, {
       try {
         return { result: await call(), retried: attempt };
       } catch (err) {
-        if (!isQuotaRefusal(err) || attempt >= retries || shouldStop()) throw err;
+        if (!isQuotaRefusal(err) || attempt >= retries || stopping()) throw err;
         const delay = backoffMs(attempt, err.retryAfterSeconds);
         log(`${name}: HTTP 429 quota refusal, nothing written; retry ${attempt + 1} of ${retries} in ${delay} ms`);
-        await sleep(delay);
+        if (!(await stoppableSleep(delay))) {
+          log(`${name}: stop requested during the back-off; not retrying`);
+          throw err; // the refusal stands: nothing was written, the row stays pending
+        }
       }
     }
   };
@@ -228,9 +253,10 @@ export async function acquireLease(lockPath) {
           process.kill(pid, 0);
           holderAlive = true;
         } catch (probe) {
-          // EPERM: the process exists but belongs to another user, so it is alive.
           // ESRCH (no such process) is the only answer that proves the holder is gone.
-          holderAlive = probe.code === "EPERM";
+          // EPERM means it exists under another user; any other error proves nothing,
+          // so the lock is kept rather than risk two drains writing at once.
+          holderAlive = probe?.code !== "ESRCH";
         }
       }
       if (holderAlive) return null;
@@ -301,17 +327,29 @@ export async function drainOnce({
   let totals = { exported: 0, failed: 0 };
   for (let pass = 0; pass < maxPasses; pass += 1) {
     if (stopNow()) break;
-    const res = await drain({
-      outbox: registry.outbox,
-      attempts: registry.attempts,
-      destination: profile.spreadsheetId,
-      layout: LAYOUT,
-      adapter: sheets,
-      limit,
-      log,
-      shouldStop: stopNow,
-    });
+    let res;
+    try {
+      res = await drain({
+        outbox: registry.outbox,
+        attempts: registry.attempts,
+        destination: profile.spreadsheetId,
+        layout: LAYOUT,
+        adapter: sheets,
+        limit,
+        log,
+        shouldStop: stopNow,
+      });
+    } catch (err) {
+      // A failure outside drainOutbox's per-row handling (the registry bridge's
+      // pending read or its 120 s timeout, the header check before any write)
+      // ends the run with a summary like any failed pass: the rows stay pending
+      // and the next run starts over from the store.
+      log(`pass ${pass} failed before or outside the row loop: ${err?.message ?? err}`);
+      totals = { ...totals, failed: totals.failed + 1, error: String(err?.message ?? err) };
+      break;
+    }
     totals = {
+      ...totals,
       exported: totals.exported + res.exported,
       failed: totals.failed + res.failed,
     };
@@ -355,6 +393,9 @@ async function main() {
     for (;;) {
       const totals = await drainOnce({ shouldStop: () => stopRequested });
       console.log(JSON.stringify({ done: true, ...totals }));
+      // A pass that failed outside the row loop (a wedged registry call, a header
+      // mismatch) is an operational failure: report it to systemd as one.
+      if (totals.error) process.exitCode = 1;
       if (!intervalSec || stopRequested) break;
       await new Promise((resolve) => {
         const timer = setTimeout(resolve, intervalSec * 1000);

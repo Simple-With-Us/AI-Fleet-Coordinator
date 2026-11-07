@@ -274,6 +274,31 @@ test("pacing: shouldStop hands a 429 straight back instead of sleeping for a ret
   assert.deepEqual(clock.sleeps, []);
 });
 
+test("pacing: a stop during the 429 back-off cuts the sleep short and sends no retry", async () => {
+  const clock = fakeClock();
+  const { adapter, calls } = scriptedAdapter({ appendEvent: [quota(30), { rowNumber: 2 }] });
+  let stop = false;
+  const sleep = async (ms) => { await clock.sleep(ms); stop = true; }; // SIGTERM arrives mid back-off
+  const logs = [];
+  const paced = pacedAdapter(adapter, {
+    sleep, now: clock.now, shouldStop: () => stop, log: (m) => logs.push(m),
+  });
+  const error = await paced.appendEvent(["e1"]).catch((e) => e);
+  assert.equal(error.status, 429);
+  assert.equal(calls.length, 1); // no write after the stop
+  assert.deepEqual(clock.sleeps, [1_000]); // one 1 s slice of the 30 s back-off, not all of it
+  assert.ok(logs.some((m) => /stop requested during the back-off/.test(m)));
+});
+
+test("pacing: with a stop check the back-off sleeps in slices and still retries when no stop comes", async () => {
+  const clock = fakeClock();
+  const { adapter, calls } = scriptedAdapter({ appendEvent: [quota(3), { rowNumber: 2 }] });
+  const paced = pacedAdapter(adapter, { sleep: clock.sleep, now: clock.now, shouldStop: () => false });
+  assert.deepEqual(await paced.appendEvent(["e1"]), { rowNumber: 2, rateLimitRetries: 1 });
+  assert.equal(calls.length, 2);
+  assert.deepEqual(clock.sleeps, [1_000, 1_000, 1_000]);
+});
+
 // ---- registry bridge and writer lease ----
 
 test("registry bridge: every docker exec carries a timeout", async () => {
@@ -295,7 +320,7 @@ test("registry bridge: every docker exec carries a timeout", async () => {
   }
 });
 
-test("writer lease: EPERM means the holder exists (alive); only ESRCH proves it gone", async () => {
+test("writer lease: only ESRCH proves the holder gone; EPERM and any other probe error keep the lock", async () => {
   const dir = await mkdtemp(join(tmpdir(), "drain-lease-"));
   const lock = join(dir, "drain.lock");
   const realKill = process.kill;
@@ -309,9 +334,12 @@ test("writer lease: EPERM means the holder exists (alive); only ESRCH proves it 
   };
   try {
     await writeFile(lock, "4242");
-    probeWith("EPERM");
-    assert.equal(await acquireLease(lock), null); // another user's live process keeps the lease
-    assert.equal((await readFile(lock, "utf8")).trim(), "4242");
+    // EPERM (another user's live process) and any other probe error keep the lease.
+    for (const code of ["EPERM", "EINVAL", "EACCES", undefined]) {
+      probeWith(code);
+      assert.equal(await acquireLease(lock), null, `probe error ${code} must not steal the lock`);
+      assert.equal((await readFile(lock, "utf8")).trim(), "4242");
+    }
     probeWith("ESRCH");
     const stolen = await acquireLease(lock);
     assert.ok(stolen);
@@ -438,6 +466,47 @@ test("drainOnce: running out of 429 retries on the first of several rows stops t
   assert.deepEqual(state.marked, []);
   assert.equal(state.fence.length, 1);
   assert.equal(state.fence[0].outcome, "failed");
+});
+
+test("drainOnce: a registry or header failure outside the row loop returns failed totals, not a rejection", async () => {
+  const timedOut = Object.assign(new Error("Command failed: docker exec (killed after 120000 ms)"), {
+    killed: true, signal: "SIGKILL",
+  });
+  const cases = [
+    ["pending read", (bridge, adapter) => { bridge.outbox.pending = async () => { throw timedOut; }; }],
+    ["header check", (bridge, adapter) => {
+      adapter.validateHeaders = async () => { throw new OperatorSheetsError("header_mismatch"); };
+    }],
+  ];
+  for (const [label, breakIt] of cases) {
+    const { bridge, state } = fakeRegistry(["r1", "r2"]);
+    const { adapter, appends } = fakeSheet();
+    breakIt(bridge, adapter);
+    const logs = [];
+    const totals = await drainOnce({ env: RUN_ENV, bridge, adapter, log: (m) => logs.push(m) });
+    assert.equal(totals.exported, 0, label);
+    assert.equal(totals.failed, 1, label);
+    assert.ok(totals.error, label);
+    assert.deepEqual(appends, [], label);
+    assert.deepEqual(state.marked, [], label); // rows stay pending for the next run
+    assert.ok(logs.some((m) => /failed before or outside the row loop/.test(m)), label);
+  }
+});
+
+test("drainOnce: a failure after earlier passes keeps their totals", async () => {
+  const { bridge } = fakeRegistry(["r1", "r2", "r3"]);
+  const { adapter } = fakeSheet();
+  const pending = bridge.outbox.pending;
+  let reads = 0;
+  bridge.outbox.pending = async (limit) => {
+    reads += 1;
+    if (reads === 2) throw new Error("registry call timed out");
+    return pending(limit);
+  };
+  const totals = await drainOnce({
+    env: { ...RUN_ENV, OPERATOR_SHEETS_PAGE_LIMIT: "2" }, bridge, adapter, log: () => {},
+  });
+  assert.deepEqual(totals, { exported: 2, failed: 1, error: "registry call timed out" });
 });
 
 test("drainOnce: a write that needed a 429 retry says so in its fence detail", async () => {
