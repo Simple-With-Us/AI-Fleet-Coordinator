@@ -979,8 +979,12 @@ class TestOutcomes(unittest.TestCase):
 
     def test_relay_refused_shows_closed_reason_and_github_status(self):
         err = self._refused(
-            {"code": "relay_refused", "reason": "github_refused", "github_status": 404,
-             "message": "SECRETBODY"}
+            {
+                "code": "relay_refused",
+                "reason": "github_refused",
+                "github_status": 404,
+                "message": "SECRETBODY",
+            }
         )
         self.assertIn("relay_refused (reason=github_refused, github_status=404)", err)
         self.assertNotIn("SECRETBODY", err)
