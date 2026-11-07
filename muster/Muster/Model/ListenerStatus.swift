@@ -620,13 +620,6 @@ struct AgentSyncCLI: AgentSyncRunning {
         }
     }
 
-    private final class TimeoutFlag: @unchecked Sendable {
-        private let lock = NSLock()
-        private var value = false
-        func set() { lock.lock(); value = true; lock.unlock() }
-        var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
-    }
-
     private static func runBlocking(
         _ invocation: AgentSyncInvocation,
         at location: EngineLocation,
@@ -657,6 +650,8 @@ struct AgentSyncCLI: AgentSyncRunning {
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = stdoutHandle
         process.standardError = stderrHandle
+        let finished = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in finished.signal() }
         do {
             try process.run()
         } catch {
@@ -665,25 +660,44 @@ struct AgentSyncCLI: AgentSyncRunning {
             throw AgentSyncError.launchFailed(error.localizedDescription)
         }
 
-        let flag = TimeoutFlag()
-        let timer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
-        timer.schedule(deadline: .now() + invocation.timeout)
-        timer.setEventHandler {
-            flag.set()
-            if process.isRunning { process.terminate() }
-        }
-        timer.resume()
-        process.waitUntilExit()
-        timer.cancel()
+        // The deadline is enforced the way the fleet-view read enforces it:  SIGTERM first,
+        // then SIGKILL when the child is still there after the grace period,  and every wait
+        // is bounded,  so a child that ignores SIGTERM cannot hold this thread for ever.
+        let exited = waitBounded(for: process, finished: finished, timeout: invocation.timeout)
         try? stdoutHandle.close()
         try? stderrHandle.close()
 
         return AgentSyncCLIResult(
-            exitCode: process.terminationStatus,
+            // A child that outlived even SIGKILL has no exit status to read,  and asking
+            // Process for one would trap;  the run reads as timed out either way.
+            exitCode: exited.stillRunning ? -1 : process.terminationStatus,
             stdout: try read(stdoutURL),
             stderr: try read(stderrURL),
-            timedOut: flag.isSet
+            timedOut: exited.timedOut
         )
+    }
+
+    /// How long a child that was sent SIGTERM gets before SIGKILL,  and how long after
+    /// SIGKILL before the run stops waiting for it.
+    static let killGrace: TimeInterval = 2
+
+    /// Waits for the child to end,  for no longer than the timeout and two grace periods.
+    private static func waitBounded(
+        for process: Process,
+        finished: DispatchSemaphore,
+        timeout: TimeInterval
+    ) -> (timedOut: Bool, stillRunning: Bool) {
+        guard finished.wait(timeout: .now() + timeout) == .timedOut else {
+            return (timedOut: false, stillRunning: false)
+        }
+        if process.isRunning { process.terminate() }
+        if finished.wait(timeout: .now() + killGrace) == .timedOut, process.isRunning {
+            Darwin.kill(process.processIdentifier, SIGKILL)
+            if finished.wait(timeout: .now() + killGrace) == .timedOut, process.isRunning {
+                return (timedOut: true, stillRunning: true)
+            }
+        }
+        return (timedOut: true, stillRunning: false)
     }
 
     private static func read(_ url: URL) throws -> String {

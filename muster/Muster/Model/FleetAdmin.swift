@@ -183,15 +183,29 @@ final class FleetAdmin: ObservableObject {
     private var apiAvailable = false
     /// How many reads are in flight,  so an older read ending does not say none is.
     private var readsInFlight = 0
+    /// The read a routine caller joins instead of starting another:  its number,  the change
+    /// count it began under,  and the read itself.
+    private var sharedRead: (number: Int, changes: Int, task: Task<Void, Never>)?
+    /// How many shared reads have been started,  which numbers them.
+    private var sharedReadsStarted = 0
+    /// Counts the changes the admin knows the owner made.  A read that began before a change
+    /// is never joined by a caller that comes after it,  because that caller wants to see
+    /// what the change did.
+    private var changeCount = 0
     /// How long a stop waits for the server's port to close.
     private let stopWait: ServerPortWait
     /// How long a start or a restart waits for the server's port to answer.
     private let startWait: ServerPortWait
     /// The repeating read.
     private var refreshLoop: Task<Void, Never>?
+    /// What the admin listens to.
+    private var cancellables: Set<AnyCancellable> = []
 
     /// How often the fleet is read again.
     nonisolated static let refreshInterval: TimeInterval = 120
+    /// How young a read has to be for a visit to the Services panel to show it as it is
+    /// rather than read the Mac again.
+    nonisolated static let visitFreshness: TimeInterval = 15
     /// How long a routine read waits for BotFleet Server's own status,  so a wedged server
     /// does not hold up every other row.
     static let statusTimeout: TimeInterval = 3
@@ -203,7 +217,8 @@ final class FleetAdmin: ObservableObject {
          stopWait: ServerPortWait = .stop,
          startWait: ServerPortWait = .start,
          ownerStopStore: OwnerStopStoring? = nil,
-         refreshInterval: TimeInterval? = FleetAdmin.refreshInterval) {
+         refreshInterval: TimeInterval? = FleetAdmin.refreshInterval,
+         runsCompleted: AnyPublisher<Int, Never>? = nil) {
         let mcp = try? McpServerControl()
         self.mcpServer = mcp
         self.ownerStopStore = ownerStopStore
@@ -237,6 +252,12 @@ final class FleetAdmin: ObservableObject {
                 ownerStopProblem = why
             }
         }
+        // Every controller run that ends is a change,  the ones with no sheet behind them
+        // included (a start Muster takes on its own):  the read the run's end asks for must
+        // not join a routine read that began before the run ended.
+        (runsCompleted ?? OpsController.shared.$completedRuns.dropFirst().eraseToAnyPublisher())
+            .sink { [weak self] _ in self?.controllerRunEnded() }
+            .store(in: &cancellables)
         // The fleet is read as the admin comes up,  so the menu bar carries the
         // services before the owner opens the window.
         Task { await self.refresh() }
@@ -266,9 +287,54 @@ final class FleetAdmin: ObservableObject {
     ///
     /// The read is off the main thread,  so the menu never waits for pm2 and launchctl.
     ///
+    /// One read at a time serves every routine caller:  the timer,  a panel visit,  a wake
+    /// and the Check button all wait for the read in flight when there is one,  rather than
+    /// each running pm2 and launchctl again beside it.  A read that began before a change the
+    /// admin knows about is not joined:  the caller after the change gets a read of its own.
+    func refresh() async {
+        if let shared = sharedRead, shared.changes == changeCount {
+            await shared.task.value
+            return
+        }
+        sharedReadsStarted += 1
+        let number = sharedReadsStarted
+        // The read runs in a task of its own,  so a caller that goes away (a panel that
+        // closes) does not call off the read every other caller is waiting on.
+        // The read lets go of itself before it ends,  so no caller can join a read that has
+        // already finished and come away with nothing new.
+        let task = Task { [weak self] in
+            await self?.readFleet()
+            if self?.sharedRead?.number == number { self?.sharedRead = nil }
+        }
+        sharedRead = (number: number, changes: changeCount, task: task)
+        await task.value
+    }
+
+    /// Reads unless the last read landed less than `maximumAge` ago,  which is what a visit
+    /// to the Services panel wants:  coming back to it does not run pm2 and launchctl again
+    /// over a read a few seconds old.
+    func refreshIfOlder(than maximumAge: TimeInterval = FleetAdmin.visitFreshness) async {
+        if let lastReadAt, Date().timeIntervalSince(lastReadAt) < maximumAge { return }
+        await refresh()
+    }
+
+    /// A controller run ended.  The publisher calls this before any caller the run's end
+    /// wakes can ask for a read,  so that read begins after the run.
+    private func controllerRunEnded() {
+        changeCount += 1
+    }
+
+    /// Reads after a change the owner made,  never joining a read that began before it.
+    private func refreshAfterAChange() async {
+        changeCount += 1
+        await refresh()
+    }
+
+    /// One read of the fleet.
+    ///
     /// The generation is taken first and the server's answer travels with the read,  so
     /// a read that began before an action and finished after it cannot write what it saw.
-    func refresh() async {
+    private func readFleet() async {
         readsInFlight += 1
         reading = true
         defer {
@@ -508,7 +574,7 @@ final class FleetAdmin: ObservableObject {
         let result = FleetActionResult(serviceID: serviceID, title: service.title, action: action,
                                        succeeded: reason == nil, reason: reason, notKnown: notKnown, at: Date())
         lastResult = result
-        await refresh()
+        await refreshAfterAChange()
         return result
     }
 
@@ -532,6 +598,8 @@ final class FleetAdmin: ObservableObject {
     /// controller action at a time, like the sheet itself.
     func beginControllerAction(_ action: ManagedServiceAction, serviceID: String) {
         guard controllerActionPrevious == nil else { return }
+        // A read that began before the action is not one a later caller may join.
+        changeCount += 1
         // A new action on either route clears the last one's problem,  as `perform` does.
         problem = nil
         controllerActionPrevious = (serviceID, ownerStops)
@@ -545,6 +613,8 @@ final class FleetAdmin: ObservableObject {
     func endControllerAction(serviceID: String, succeeded: Bool) {
         guard let pending = controllerActionPrevious, pending.serviceID == serviceID else { return }
         controllerActionPrevious = nil
+        // The run has ended,  so the next read has to begin after it.
+        changeCount += 1
         guard !succeeded else {
             // The stop is a stop now,  so it is written.  The row says so after the read the
             // run's end asks for,  not before it can say whether the service stopped.
@@ -614,7 +684,7 @@ final class FleetAdmin: ObservableObject {
         } catch {
             problem = "The startup policy did not change:  \(error.localizedDescription)"
         }
-        await refresh()
+        await refreshAfterAChange()
     }
 
     /// What the owner is told before a stop,  and asked to confirm.
