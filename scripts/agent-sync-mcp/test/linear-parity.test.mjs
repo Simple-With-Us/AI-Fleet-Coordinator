@@ -203,8 +203,8 @@ test("the Infisical /linear names are the live LINEAR_<SEAT>_CLIENT_* names for 
 });
 
 // MA: its cached token was refused (401) at check time;  BF-ENGINEER and BF-TRADER had no token to read.
-const HELD_BACK = Object.freeze(["BF-ENGINEER", "BF-TRADER"]); // prepared but not enabled until their own viewer is qualified;  the other 21 are on
-test("the 23 own-app seats have prepared names, 21 are enabled (BF-ENGINEER and BF-TRADER held back), and none share a pair", async () => {
+const HELD_BACK = Object.freeze(["BF-ENGINEER", "BF-TRADER", "OPERATOR"]); // BF pair: prepared but not enabled until their own viewer is qualified;  OPERATOR: viewer qualified but no hosted auth route (not in KNOWN_SEATS or the bearer tables), so nothing can sign in as it;  the other 20 are on
+test("the 23 own-app seats have prepared names, 20 are enabled (BF-ENGINEER, BF-TRADER and OPERATOR held back), and none share a pair", async () => {
   const L = await import("../src/linear.js");
   const own = Object.keys(L.OWN_APP_LINEAR_PREFIXES);
   assert.equal(own.length, 23);

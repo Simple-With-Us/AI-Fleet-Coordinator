@@ -239,7 +239,6 @@ export const LINEAR_OWN_APP_ENABLED = Object.freeze([
   "OPENCODE",
   "AMP",
   "KIMI",
-  "OPERATOR",
   "BF-COMPILER",
   "BF-DEPLOYER",
   "BF-DESIGNER",
