@@ -797,6 +797,9 @@ struct WakeSettingsModel: Equatable {
     var configPath: String = ""
     /// What the Mac's eavesdropper itself reports is wrong with its configuration.
     var listenerErrors: [String] = []
+    /// Whether the Operator can post (`status.operator_voice`),  from the same status as the
+    /// rest of the panel and judged by the same currency.
+    var operatorVoice: OperatorVoiceReading = .notRead("Muster has not read the eavesdropper yet.")
 
     /// Every seat that has something wrong.
     var seatsWithProblems: [WakeSeat] {
@@ -900,6 +903,8 @@ enum WakeSettingsBuilder {
         model.reportingSeats = reporting.count
         model.connectedSeats = reporting.filter { $0.connected == true }.count
         model.daemonSettings = daemonSettings(sources)
+        model.operatorVoice = OperatorVoiceReading.current(
+            sources.status, runState: model.runState, statusIsCurrent: model.statusIsCurrent)
         return model
     }
 
