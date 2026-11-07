@@ -149,6 +149,35 @@ def scan(text: str, known: Iterable[str] = ()) -> str | None:
     return None
 
 
+# Exact generic-fixture approvals are release code, never caller input. Each
+# entry requires immutable full-content review and a durable review record in
+# the source change. Empty until that review is completed and findings fixed.
+_REVIEWED_GENERIC_FIXTURES: frozenset[tuple[str, str, str]] = frozenset()
+_GENERIC_ASSIGNMENTS = frozenset({"assigned credential", "assigned secret"})
+
+
+def scan_file(repo: str, path: str, text: str, known: Iterable[str] = ()) -> str | None:
+    """Normal scan, except exact reviewed full-file generic assignment fixtures.
+
+    Dedicated shapes and every loaded value remain absolute, even if short.
+    No basename/path prefix, caller approval flag or renamed/corrupt-file waiver.
+    """
+    import hashlib
+
+    key = (repo, path, hashlib.sha256(text.encode("utf-8")).hexdigest())
+    if key not in _REVIEWED_GENERIC_FIXTURES:
+        return scan(text, known)
+    for value in known:
+        if value and value in text:
+            return "a loaded credential"
+    for label, pattern in _PATTERNS:
+        if label not in _GENERIC_ASSIGNMENTS and pattern.search(text):
+            return label
+    if any(_zulip_shaped(match.group()) for match in _ZULIP_SHAPED.finditer(text)):
+        return "a Zulip-shaped API key"
+    return None
+
+
 def basic_forms(email: str, key: str) -> list[str]:
     """The key and its base64 Basic-auth token, for `known`."""
     return [key, base64.b64encode(("%s:%s" % (email, key)).encode("utf-8")).decode("ascii")]
