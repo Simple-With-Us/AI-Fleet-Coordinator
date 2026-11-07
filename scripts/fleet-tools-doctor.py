@@ -3390,14 +3390,79 @@ def stable_failing(line: str) -> str:
     return re.sub(r"\b\d+ minutes ago\b", "<N> minutes ago", line)
 
 
-def post_changes(report: Report, runner: Callable = subprocess.run) -> bool:
-    """Post once per change in the failing set, so a standing problem is not repeated every run."""
-    failing = sorted(f"{r['check']}: {r['detail']}" for r in report.rows if r["status"] == "FAIL")
+def posted_message_id(stdout: object) -> int | None:
+    """The message id from `simple-chat post --json`, which prints one JSON object with an `id`.
+
+    The object may be on one line among others, or pretty-printed over several lines, so each
+    line is tried and then the whole output."""
+    text = str(stdout or "")
+    candidates = [line.strip() for line in text.splitlines() if line.strip().startswith("{")]
+    candidates.append(text.strip())
+    for candidate in candidates:
+        try:
+            doc = json.loads(candidate)
+        except ValueError:
+            continue
+        if isinstance(doc, dict):
+            message_id = doc.get("id")
+            if type(message_id) is int and message_id > 0:
+                return message_id
+    return None
+
+
+# simple-chat exit codes (scripts/agent_sync/cli.py):  2 usage, 3 credential, realm or refusal,
+# 5 Zulip answered with an error.  Those mean the edit was not applied.  6 is a network error that
+# may have reached Zulip, and 1 an internal error, so neither proves the edit did not happen.
+EDIT_REFUSED_CODES = frozenset({2, 3, 5})
+# A proxy status in front of Zulip says nothing about whether the edit was stored.
+GATEWAY_STATUS_RE = re.compile(r"\bHTTP 50[234]\b")
+
+
+def edit_outcome(argv: list[str], runner: Callable) -> str:
+    """Return "edited", "refused" (clearly not applied) or "unknown" (it may have been applied)."""
     try:
-        previous = json.loads(STATE.read_text()).get("failing", [])
+        result = runner(argv, capture_output=True, text=True, timeout=60, check=False)
+    except OSError:  # simple-chat is missing from PATH:  nothing was sent
+        return "refused"
+    except subprocess.SubprocessError:  # timed out:  the edit may already be on Zulip
+        return "unknown"
+    if result.returncode == 0:
+        return "edited"
+    if result.returncode in EDIT_REFUSED_CODES and not GATEWAY_STATUS_RE.search(
+        f"{result.stdout or ''}\n{result.stderr or ''}"
+    ):
+        return "refused"
+    return "unknown"
+
+
+def post_changes(report: Report, runner: Callable = subprocess.run) -> bool:
+    """Report the failing set to Zulip without repeating a standing problem every run.
+
+    A new message goes out on the first run and whenever the set of failing checks changes (a check
+    fails or clears, including the all-clear), and its id is kept in STATE.  When the same checks
+    still fail but a line's text changed (beyond the elapsed-minute counter), the kept message is
+    edited instead, so the topic shows the current text without a new notification.  An edit Zulip
+    refused falls back to a new post;  an edit that timed out or hit a network error may have been
+    applied, so nothing is posted and the next run tries the edit again.  A new post that timed out or
+    hit a network error may have landed too, so its set is remembered without an id:  the next run
+    does not post the same text again, and a later change posts a new message.  A STATE with no
+    message id (an older doctor) posts as before."""
+    rows = [r for r in report.rows if r["status"] == "FAIL"]
+    failing = sorted(f"{r['check']}: {r['detail']}" for r in rows)
+    checks = sorted(str(r["check"]) for r in rows)
+    try:
+        state = json.loads(STATE.read_text())
     except (OSError, ValueError):
-        previous = []
-    if [stable_failing(f) for f in failing] == [stable_failing(p) for p in previous]:
+        state = {}
+    if not isinstance(state, dict):
+        state = {}
+    previous = state.get("failing")
+    previous = previous if isinstance(previous, list) else []
+    previous_checks = state.get("checks")
+    message_id = state.get("message_id")
+    if not (type(message_id) is int and message_id > 0):
+        message_id = None
+    if [stable_failing(f) for f in failing] == [stable_failing(str(p)) for p in previous]:
         return False
     host = os.uname().nodename
     if failing:
@@ -3407,31 +3472,55 @@ def post_changes(report: Report, runner: Callable = subprocess.run) -> bool:
         )
     else:
         body = f"fleet-tools-doctor on {host}:  every check passes again."
+
+    def remember(kept_id: int | None) -> None:
+        doc: dict = {"failing": failing, "checks": checks}
+        if kept_id is not None:
+            doc["message_id"] = kept_id
+        STATE.parent.mkdir(parents=True, exist_ok=True)
+        STATE.write_text(json.dumps(doc))
+
+    if failing and message_id is not None and previous_checks == checks:
+        outcome = edit_outcome(["simple-chat", "edit", "--id", str(message_id), body], runner)
+        if outcome == "edited":
+            remember(message_id)
+            return True
+        if outcome == "unknown":
+            # A timeout or network error may have applied the edit, and a new post on top of it
+            # would repeat the same text in the topic.  Keep STATE as it is, so the next run edits
+            # the same message again.
+            return False
+        # Zulip refused the edit (the message is gone or past its edit window) or simple-chat is
+        # missing:  post a new message instead and keep its id.
+    argv = [
+        "simple-chat",
+        "post",
+        "--channel",
+        "Work-In-Progress",
+        "--topic",
+        "fleet tools doctor",
+        "--json",
+        body,
+    ]
     try:
-        result = runner(
-            [
-                "simple-chat",
-                "post",
-                "--channel",
-                "Work-In-Progress",
-                "--topic",
-                "fleet tools doctor",
-                body,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=60,
-            check=False,
-        )
+        result = runner(argv, capture_output=True, text=True, timeout=60, check=False)
     except (
-        OSError,
-        subprocess.SubprocessError,
-    ):  # simple-chat missing from PATH (check_commands reports it) or hung
+        OSError
+    ):  # simple-chat is missing from PATH:  nothing was sent, so the next run tries again
+        return False
+    except subprocess.SubprocessError:
+        # Timed out:  the post may already be on Zulip.  Remember this set without an id, so the
+        # next run does not post the same text again;  a later text change posts a new message.
+        remember(None)
         return False
     if result.returncode == 0:
-        STATE.parent.mkdir(parents=True, exist_ok=True)
-        STATE.write_text(json.dumps({"failing": failing}))
+        remember(posted_message_id(result.stdout))
         return True
+    if result.returncode not in EDIT_REFUSED_CODES or GATEWAY_STATUS_RE.search(
+        f"{result.stdout or ''}\n{result.stderr or ''}"
+    ):
+        # A network or internal error that may have reached Zulip:  the same rule as a timeout.
+        remember(None)
     return False
 
 
@@ -3456,7 +3545,7 @@ def run(
     parser.add_argument(
         "--post",
         action="store_true",
-        help="when the set of failing checks changes, post it with simple-chat to #Work-In-Progress, topic 'fleet tools doctor' (the seat comes from AGENT_SEAT in the environment, as simple-chat resolves it)",
+        help="when the set of failing checks changes, post it with simple-chat to #Work-In-Progress, topic 'fleet tools doctor';  when only a failing line's text changes, edit that post instead (the seat comes from AGENT_SEAT in the environment, as simple-chat resolves it)",
     )
     parser.add_argument(
         "--no-registry",

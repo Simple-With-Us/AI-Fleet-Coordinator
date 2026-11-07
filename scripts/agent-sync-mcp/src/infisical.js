@@ -19,9 +19,11 @@
 //   "required" - Infisical only.  A miss or fetch failure throws
 //                InfisicalError; nothing silently falls back.  Steady state.
 //
-// Rotation semantics: values cache for CACHE_TTL_MS per (path, name), so an
-// Infisical-side rotation propagates within a minute with no redeploy.  The
-// token itself is never cached here beyond the env binding, never logged.
+// Rotation semantics: values cache for the INFISICAL_CACHE_TTL_S window (60
+// seconds when unset) per (path, name), so an Infisical-side rotation
+// propagates within that window with no redeploy.  The isolated mint-key reads
+// and failed listings always use 60 seconds.  The token itself is never cached
+// here beyond the env binding, never logged.
 
 import { z } from "zod";
 import { INFISICAL_EXPECT_DEFAULT } from "./infisical-manifest.js";
@@ -90,7 +92,19 @@ export class InfisicalError extends Error {
   }
 }
 
+// The default window, and the fixed one for a failed listing and for the isolated
+// (mint-capable) reads below:  a failure heals and a signing key rotates within a minute.
 const CACHE_TTL_MS = 60_000;
+// AFC-617:  a refresh costs about 5 subrequests and 8 ms of Worker CPU per isolate, and
+// every isolate paid it every minute.  INFISICAL_CACHE_TTL_S (10 to 3600) widens only the
+// window for successful values, folder listings and remembered 404s;  unset or invalid
+// keeps 60 seconds.  A rotation then reaches an isolate within that window, not within a minute.
+const TTL_MIN_S = 10;
+const TTL_MAX_S = 3600;
+function ttlMs(env) {
+  const seconds = Number(env?.INFISICAL_CACHE_TTL_S);
+  return Number.isFinite(seconds) && seconds >= TTL_MIN_S && seconds <= TTL_MAX_S ? Math.floor(seconds) * 1000 : CACHE_TTL_MS;
+}
 const cache = new Map(); // "path\0name" -> { value, at }
 const stats = { fetched: 0, cacheHits: 0, fallbacks: 0, absent: 0 };
 // Folder listings warm the same per-name cache; while a folder's listing is
@@ -135,7 +149,7 @@ export function _resetInfisicalForTests() {
   fallbackLogged.clear();
 }
 
-const fresh = (at) => at !== undefined && Date.now() - at < CACHE_TTL_MS;
+const fresh = (at, ttl = CACHE_TTL_MS) => at !== undefined && Date.now() - at < ttl;
 
 /** Declared-configured secrets:  comma list of `path:name` (e.g.
  * "/wake:WAKE_HMAC_KEY_JET").  A genuine 404 for a DECLARED secret throws
@@ -194,7 +208,7 @@ async function fetchRaw(env, path, name, { tokenOverride, tokenBinding = "INFISI
 export async function prefetchFolder(env, path) {
   const m = mode(env);
   if (m === "off") return;
-  if (fresh(folderWarm.get(path))) return;
+  if (fresh(folderWarm.get(path), ttlMs(env))) return;
   if (m === "fallback" && fresh(folderFailed.get(path))) return;
   const token = typeof env.INFISICAL_SERVICE_TOKEN === "string" ? env.INFISICAL_SERVICE_TOKEN.trim() : "";
   const workspace = String(env.INFISICAL_WORKSPACE_ID ?? "").trim();
@@ -249,17 +263,18 @@ export async function resolveSecret(env, { name, path, envName, optional = false
   };
   if (m === "off") return legacyValue();
   const cacheKey = `${path}${name}`;
+  const ttl = ttlMs(env);
   const hit = cache.get(cacheKey);
-  if (hit && Date.now() - hit.at < CACHE_TTL_MS) {
+  if (hit && Date.now() - hit.at < ttl) {
     stats.cacheHits++;
     return hit.value;
   }
   // A fresh folder listing is authoritative for absence: no subrequest.
-  const listed = fresh(folderWarm.get(path));
+  const listed = fresh(folderWarm.get(path), ttl);
   // Fallback mode, folder listing just failed:  no per-name subrequest either.
   const unusable = m === "fallback" && !listed && fresh(folderFailed.get(path));
   try {
-    if (listed || fresh(missed.get(cacheKey))) throw new InfisicalError(`Infisical has no ${name} at ${path}`, { code: "not_found", status: 404 });
+    if (listed || fresh(missed.get(cacheKey), ttl)) throw new InfisicalError(`Infisical has no ${name} at ${path}`, { code: "not_found", status: 404 });
     if (unusable) throw new InfisicalError(`Infisical listing for ${path} failed recently`, { code: "infisical_unavailable" });
     let value;
     try {
