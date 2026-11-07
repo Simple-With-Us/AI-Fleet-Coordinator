@@ -187,7 +187,7 @@ manual full source rebuild/redeploy, plus restoring the exact captured
 config/pause bytes again - NOT a prior-image rollback, which is unverified. A
 rollback has its own stop window with the same one-time loss classes above.
 
-## Named residuals (explicit, accepted)## Named residuals (explicit, accepted)## Named residuals (explicit, accepted)
+## Named residuals (explicit; owner acceptance pending)
 
 - An event acknowledged 200 by the Linear hook and held only in memory is lost on an
   UNPLANNED stop; reconcile is read-idempotent and self-heals on the next project
@@ -201,7 +201,7 @@ rollback has its own stop window with the same one-time loss classes above.
   (F4), and only when a re-drive happens.
 - Re-drive does not re-run the route's admission predicates (including the stale
   exclusions) on the parked message. Parked effects are bounded to the drain window,
-  so this is an explicit accept, not an age fence: keep the window short.
+  so this is an explicit design choice, not an age fence: keep the window short.
 - A crash mid-re-drive can re-send a bot its unread inbox copy (duplicate, cosmetic,
   attempt-capped); nudge re-delivery is fenced durably by dedupe key; a double wake
   hand-off is fenced by the ledger trigger-id check (F4).

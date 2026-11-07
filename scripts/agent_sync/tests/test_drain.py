@@ -146,6 +146,69 @@ class BroadcastDeferralTests(DaemonHarness):
         daemon._redrive_deferred_broadcasts()
         self.assertIn("99999999", L.read_json(daemon._deferred_broadcasts_path()))
 
+    def test_redrive_bounds_fetches_per_tick(self) -> None:
+        """F8:  N parked ids must not block one tick on N synchronous fetches.  The bound
+        caps the probes a single pass performs;  the rest wait for a later tick."""
+        from agent_sync.daemon import REDRIVE_FETCHES_PER_TICK
+
+        daemon = self.started()
+        c = types.SimpleNamespace(channel="fleet", topic="t")
+        for i in range(REDRIVE_FETCHES_PER_TICK + 2):
+            daemon._defer_broadcast_effect({"id": 90000000 + i}, c, "fanout", seat="CLAUDE")
+        runner = daemon.seats["CLAUDE"]
+        with mock.patch.object(
+            daemon, "_fetch_deferred_message", return_value=("unknown", None, None)
+        ) as fetch:
+            daemon._redrive_deferred_broadcasts()
+            self.assertEqual(fetch.call_count, REDRIVE_FETCHES_PER_TICK)
+        parked = L.read_json(daemon._deferred_broadcasts_path())
+        self.assertEqual(len(parked), REDRIVE_FETCHES_PER_TICK + 2)
+
+    def test_redrive_backs_off_unknown_probes(self) -> None:
+        """F8:  an id whose payload stays unknown is not re-probed every tick.  The backoff
+        paces the next probe (doubling to the cap);  it never expires the durable row."""
+        daemon = self.started()
+        c = types.SimpleNamespace(channel="fleet", topic="t")
+        daemon._defer_broadcast_effect({"id": 90000010}, c, "fanout", seat="CLAUDE")
+        with mock.patch.object(
+            daemon, "_fetch_deferred_message", return_value=("unknown", None, None)
+        ) as fetch:
+            daemon._redrive_deferred_broadcasts()
+            self.assertEqual(fetch.call_count, 1)
+            # Inside the 30s base backoff:  no new probe.
+            self.clock.advance(29)
+            daemon._redrive_deferred_broadcasts()
+            self.assertEqual(fetch.call_count, 1)
+            # Past it:  one probe, and the backoff doubles.
+            self.clock.advance(2)
+            daemon._redrive_deferred_broadcasts()
+            self.assertEqual(fetch.call_count, 2)
+            self.clock.advance(59)
+            daemon._redrive_deferred_broadcasts()
+            self.assertEqual(fetch.call_count, 2)
+            self.clock.advance(2)
+            daemon._redrive_deferred_broadcasts()
+            self.assertEqual(fetch.call_count, 3)
+        self.assertIn("90000010", L.read_json(daemon._deferred_broadcasts_path()))
+
+    def test_redrive_skips_probe_with_no_connected_runner(self) -> None:
+        """F8:  with no connected seat a pass performs no fetch and sets no backoff."""
+        daemon = self.started()
+        c = types.SimpleNamespace(channel="fleet", topic="t")
+        daemon._defer_broadcast_effect({"id": 90000020}, c, "fanout", seat="CLAUDE")
+        runner = daemon.seats["CLAUDE"]
+        runner.connected = False
+        try:
+            with mock.patch.object(
+                daemon, "_fetch_deferred_message", return_value=("unknown", None, None)
+            ) as fetch:
+                daemon._redrive_deferred_broadcasts()
+                self.assertEqual(fetch.call_count, 0)
+            self.assertFalse(getattr(daemon, "_deferred_redrive_retry_at", {}))
+        finally:
+            runner.connected = True
+        self.assertIn("90000020", L.read_json(daemon._deferred_broadcasts_path()))
+
     def test_inbox_and_audit_park_under_drain(self) -> None:
         daemon = self.started()
         mid, message, c = self._owner_broadcast(daemon)
@@ -208,8 +271,10 @@ class BroadcastDeferralTests(DaemonHarness):
             )
             daemon._redrive_deferred_broadcasts()
             self.assertIn(str(mid), L.read_json(daemon._deferred_broadcasts_path()))
-            # A runner that CAN still fetch the payload re-drives it normally.
+            # A runner that CAN still fetch the payload re-drives it normally, once the
+            # unknown-probe backoff (F8) has passed.
             runner.client = orig_client
+            self.clock.advance(31)
             with mock.patch.object(daemon, "fanout") as fan:
                 daemon._redrive_deferred_broadcasts()
                 self.assertTrue(wait_for(lambda: fan.called))

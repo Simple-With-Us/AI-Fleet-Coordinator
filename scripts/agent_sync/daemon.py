@@ -111,6 +111,13 @@ POST_SPACING = 3.0
 # exist to prevent -- and a seat that cannot answer is the worst possible time to add traffic.
 QUOTA_HOLD_TELL_WINDOW = 3600.0
 HELD_TICK_SECONDS = 30.0  # held-back upkeep:  expiry, the owner digest and the catch-up check
+# AFC-652 F8 (re-drive liveness):  one tick blocks on at most this many synchronous payload
+# fetches, and a parked id whose payload stays unknown backs off exponentially (the base
+# doubling to the cap).  Backoff delays only the next PROBE:  the durable record and the
+# no-expiry rule (GATE 2) are unchanged, and the row stays parked and visible.
+REDRIVE_FETCHES_PER_TICK = 3
+REDRIVE_UNKNOWN_BACKOFF_SECONDS = 30.0
+REDRIVE_UNKNOWN_BACKOFF_CAP_SECONDS = 300.0
 #:  How often the status file is rewritten.  The muse wake-PATH memo has to outlive this period,
 #:  or the memo expires between two ticks and every tick still pays the full scan (Kody, #880).
 STATUS_TICK_SECONDS = 2.0
@@ -4262,7 +4269,13 @@ class Daemon:
         return "unknown", None, None
 
     def _redrive_deferred_broadcasts(self) -> None:
-        """Re-drive parked broadcast effects once no global pause covers them (boot and tick)."""
+        """Re-drive parked broadcast effects once no drain window covers them (boot and tick).
+
+        Liveness (F8):  one tick performs at most REDRIVE_FETCHES_PER_TICK synchronous
+        fetches, and an id whose payload stays unknown backs off exponentially
+        (REDRIVE_UNKNOWN_BACKOFF_SECONDS doubling to REDRIVE_UNKNOWN_BACKOFF_CAP_SECONDS,
+        in memory only).  A re-driven id leaves the backoff, and an id whose row is gone
+        drops out of it."""
         try:
             data = L.read_json(self._deferred_broadcasts_path())
         except Exception:
@@ -4273,19 +4286,48 @@ class Daemon:
             # Parked kinds only exist from a drain window;  re-drive once the marker lifts.
             # An ordinary pause does not hold them:  it never parked them.
             return
+        if not any(
+            r.connected and r.client is not None and r.me is not None
+            for r in self.seats.values()
+        ):
+            # Nobody can fetch a payload, so a pass would only cost backoff state.
+            return
+        now = self.clock.time()
+        retry = getattr(self, "_deferred_redrive_retry_at", None)
+        if not isinstance(retry, dict):
+            retry = {}
+            self._deferred_redrive_retry_at = retry
+        for stale in list(retry):
+            if stale not in data:
+                retry.pop(stale, None)
+        fetched = 0
         for mid in sorted(data):
+            if fetched >= REDRIVE_FETCHES_PER_TICK:
+                # The bound keeps N parked ids from blocking the tick N x runners x timeout.
+                break
             row = data.get(mid)
             if not isinstance(row, dict):
                 continue
             parked = [k for k, v in (row.get("effects") or {}).items() if v is False]
             if not parked:
                 continue
+            next_at, delay = retry.get(mid, (0.0, 0.0))
+            if next_at > now:
+                continue
             state, runner, message = self._fetch_deferred_message(mid, row.get("seat"))
+            fetched += 1
             if state != "ok":
                 # No connected runner could still fetch the payload.  That is ambiguous
                 # (deleted, or simply invisible to every connected bot), and the daemon
                 # never expires a parked effect on its own:  stay parked and visible.
+                # The in-memory backoff only paces the next probe;  it expires nothing.
+                delay = min(
+                    max(delay * 2.0, REDRIVE_UNKNOWN_BACKOFF_SECONDS),
+                    REDRIVE_UNKNOWN_BACKOFF_CAP_SECONDS,
+                )
+                retry[mid] = (now + delay, delay)
                 continue
+            retry.pop(mid, None)
             c, _d = R.route(message, runner.me, self.context(runner), self.lease_views(runner))
             for kind in parked:
                 if not self._claim_broadcast_effect(mid, kind):
