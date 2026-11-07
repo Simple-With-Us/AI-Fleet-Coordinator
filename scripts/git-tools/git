@@ -571,11 +571,20 @@ def _scanner():
     return module
 
 
-def _scan_arguments(arguments, bearer: str) -> str | None:
+def _scan_arguments(arguments, bearer: str, tool: str | None = None) -> str | None:
     """The first argument field the fleet secret scanner flags, as `secret_scan:<field>` (the field name only,
     never the text or any part of it), or None.  Every string at any depth is checked, and the bearer itself
     always matches."""
     scanner = _scanner()
+    files = {}
+    if isinstance(arguments, dict) and tool in {"gr_wf_file_put", "gr_wf_files_put"}:
+        repo = arguments.get("repo")
+        rows = [arguments] if tool == "gr_wf_file_put" else arguments.get("files", [])
+        if isinstance(repo, str) and isinstance(rows, list):
+            for i, row in enumerate(rows):
+                if isinstance(row, dict) and isinstance(row.get("path"), str):
+                    field = "content_b64" if tool == "gr_wf_file_put" else f"files[{i}].content_b64"
+                    files[field] = (repo, row["path"])
     stack = [("", arguments)]
     while stack:
         path, value = stack.pop()
@@ -587,7 +596,12 @@ def _scan_arguments(arguments, bearer: str) -> str | None:
                     value = base64.b64decode(value, validate=True).decode("utf-8", "replace")
                 except (binascii.Error, ValueError):
                     pass
-            if scanner.scan(value, known=[bearer] if bearer else []) is not None:
+            known = [bearer] if bearer else []
+            if path in files and callable(getattr(scanner, "scan_file", None)):
+                hit = scanner.scan_file(*files[path], value, known)
+            else:
+                hit = scanner.scan(value, known=known)
+            if hit is not None:
                 return "secret_scan:" + (path or "arguments")
         elif isinstance(value, dict):
             stack.extend((f"{path}.{k}" if path else str(k), v) for k, v in value.items())
@@ -646,7 +660,7 @@ def _rpc(bearer: str, method: str, params: dict, write: bool, deadline: float | 
 
 def remote_call(tool: str, arguments: dict, write: bool, bearer: str, deadline: float | None = None) -> dict:
     """One tools/call.  Returns {"structured":..., "text":...}.  Never retried."""
-    hit = _scan_arguments(arguments, bearer)
+    hit = _scan_arguments(arguments, bearer, tool)
     if hit:
         die(f"refused before sending: {hit}", EXIT_USAGE)
     result = _rpc(
@@ -1897,7 +1911,7 @@ def cmd_publish(tools: dict, a, bearer: str, seat: str, deadline: float) -> int:
             _publish_path_check(path)
         payload = _publish_payload(a.repo, a.branch, a.message, number, len(batches), batch)
         validate_arguments(entry, {**payload, "expected_head_sha": "0" * 40}, deadline)
-        hit = _scan_arguments(payload, bearer)
+        hit = _scan_arguments(payload, bearer, "gr_wf_files_put")
         if hit is not None:
             die(f"refused before sending:  {hit}", EXIT_USAGE)
         del payload
