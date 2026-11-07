@@ -1,17 +1,20 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// The Settings window's sizes.  Every pane is one fixed size, so the window is the same on
-/// every Mac, never taller than a short screen, and never resized to a stale saved frame.
+/// The Settings window's sizes.  Every pane is one fixed size, so the window should be the
+/// same on every Mac and no taller than a short screen (not measured on a real Mac:  the
+/// tests host each pane in a plain window, see MusterSettingsLayoutTests).
 enum MusterSettingsLayout {
     static let paneWidth: CGFloat = 520
-    /// Tall enough for the Folders pane with every warning showing (595 pt on the CI runner)
-    /// and the worst-case This Build pane (606 pt), so no pane hides anything below the fold.
+    /// Tall enough for the Folders pane with every warning showing and the worst-case This
+    /// Build pane (606 pt on the CI runner), so no pane hides anything below the fold.
     static let paneHeight: CGFloat = 640
     /// The title bar and the tab toolbar of the Settings scene.  No test runs the scene, so
     /// this is an allowance, not a measurement (MusterSettingsLayoutTests).
     static let chromeAllowance: CGFloat = 110
-    /// The shortest screen the window must fit:  1280 by 800 less the menu bar.
+    /// The shortest screen the window must fit:  1280 by 800 less the menu bar.  The Dock is
+    /// left out on purpose:  with a bottom Dock on such a screen, the last lines of the
+    /// worst-case Folders pane can sit under the Dock (not measured).
     static let shortestWindow: CGFloat = 768
 }
 
@@ -40,8 +43,12 @@ enum SettingsCopy {
     static let notFound = "Not Found"
     static let chosen = "You chose this folder."
     static let opened = "Set when Muster was opened, because no folder is chosen here."
-    static let openedOverChoice = "Set when Muster was opened, so the folder chosen here is not used."
+    static let openedOverChoice = join(
+        "Set when Muster was opened, so the folder chosen here is not used.",
+        "The folder chosen here is used once Muster is opened without that setting.")
     static let openedSameAsChoice = "Set when Muster was opened, and the same as the folder chosen here."
+    /// Said before the row's own line when a folder set at launch had no scripts and was passed over.
+    static let openedSkipped = "A folder was set when Muster was opened, but it has no fleet scripts."
     static let usual = "The usual place, because no folder is chosen here."
     static let chosenSkipped = "The folder you chose has no fleet scripts, so Muster uses the usual place."
     static let chosenMissing = "The folder you chose has no fleet scripts."
@@ -79,7 +86,18 @@ enum SettingsCopy {
         "Saved as \(MusterSettings.zulipSeatDefaultsKey).",
         "\(MusterSettings.zulipSeatEnvironmentKey), when set, comes first.")
     static func zulipOverridden(_ seat: String) -> String {
-        "Set when Muster was opened, so Muster reads as \(seat), not the seat chosen here."
+        join("Set when Muster was opened, so Muster reads as \(seat), not the seat chosen here.",
+             "The seat chosen here is used once Muster is opened without that setting.")
+    }
+
+    /// The Zulip note, shown only when a seat set at launch (`MUSTER_ZULIP_SEAT`) is not the
+    /// seat chosen here.  The CLI takes seat names in any case, so case does not count.
+    static func zulipNote(environmentSeat: String?, chosen: String) -> String? {
+        let fromLaunch = (environmentSeat ?? "").trimmingCharacters(in: .whitespaces)
+        guard !fromLaunch.isEmpty,
+              fromLaunch.caseInsensitiveCompare(chosen.trimmingCharacters(in: .whitespaces)) != .orderedSame
+        else { return nil }
+        return zulipOverridden(fromLaunch)
     }
 
     static let servicesHelper = join(
@@ -99,15 +117,22 @@ enum SettingsCopy {
         case .standard: line = usual
         }
         var note: String?
-        if let engine = engineRoot?.standardizedFileURL.path, engine != path { note = checksElsewhere(engine) }
+        // Compared by canonical path, as the scripts row is, so a symlink or a trailing slash
+        // is not called another folder.
+        if let engine = engineRoot?.standardizedFileURL.path,
+           FleetViewService.canonicalPath(engine) != FleetViewService.canonicalPath(path) {
+            note = checksElsewhere(engine)
+        }
         return FolderRowModel(path: path, sourceLine: line, problem: usable ? nil : checkoutProblem,
                               note: note, hasChoice: resolution.source == .chosen)
     }
 
     static func scriptsRow(_ resolution: FleetViewService.ScriptsResolution) -> FolderRowModel {
         let hasChoice = resolution.chosen != nil
+        // A folder set at launch that has no scripts is passed over;  say so before the rest.
+        func said(_ line: String) -> String { resolution.environmentSkipped ? join(openedSkipped, line) : line }
         guard let directory = resolution.directory, let source = resolution.source else {
-            return FolderRowModel(path: nil, sourceLine: hasChoice ? chosenMissing : usualMissing,
+            return FolderRowModel(path: nil, sourceLine: said(hasChoice ? chosenMissing : usualMissing),
                                   problem: scriptsProblem, note: nil, hasChoice: hasChoice)
         }
         let line: String
@@ -118,7 +143,7 @@ enum SettingsCopy {
         case (.standard, true): line = chosenSkipped
         case (.standard, false): line = usual
         }
-        return FolderRowModel(path: directory.path, sourceLine: line, problem: nil, note: nil, hasChoice: hasChoice)
+        return FolderRowModel(path: directory.path, sourceLine: said(line), problem: nil, note: nil, hasChoice: hasChoice)
     }
 }
 
@@ -204,8 +229,8 @@ struct MusterFoldersPane: View {
 struct MusterZulipServicesPane: View {
     @Binding var seat: String
     let seatChoices: [String]
-    /// The seat Muster really reads as;  an environment value set at launch can override the choice.
-    let effectiveSeat: String
+    /// `MUSTER_ZULIP_SEAT` as Muster was opened with it, or nil;  when set, it wins over the choice.
+    let environmentSeat: String?
     @Binding var keepServicesRunning: Bool
 
     var body: some View {
@@ -214,8 +239,8 @@ struct MusterZulipServicesPane: View {
                 Picker("Read Zulip As", selection: $seat) {
                     ForEach(seatChoices, id: \.self) { Text($0).tag($0) }
                 }
-                if effectiveSeat != seat {
-                    Label(SettingsCopy.zulipOverridden(effectiveSeat), systemImage: "info.circle")
+                if let note = SettingsCopy.zulipNote(environmentSeat: environmentSeat, chosen: seat) {
+                    Label(note, systemImage: "info.circle")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Text(SettingsCopy.zulipHelper).font(.caption).foregroundStyle(.secondary)

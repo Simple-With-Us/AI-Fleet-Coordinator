@@ -73,8 +73,9 @@ struct MusterApp: App {
             CommandGroup(after: .appInfo) { CheckForUpdatesButton() }
         }
 
-        // Settings keeps Apple's default, `.contentSize`:  the window is exactly the size of
-        // its fixed-size panes, so it cannot be resized or restored to a stale saved height.
+        // Settings keeps Apple's default, `.contentSize`, so the window should be the size of
+        // its fixed-size panes and not resizable (not measured on a real Mac;  a source
+        // guard in MusterSettingsLayoutTests keeps this scene free of `windowResizability`).
         Settings {
             MusterSettingsView()
                 .environmentObject(store)
@@ -108,20 +109,29 @@ struct MusterSettingsView: View {
     @AppStorage(MusterSettings.shortMenuBarTextDefaultsKey) private var shortMenuBarText = false
     @AppStorage(MusterSettings.keepServicesRunningDefaultsKey) private var keepServicesRunning = true
 
+    /// The saved seat as the reader takes it:  trimmed, and the default when nothing is saved,
+    /// so the picker always has a matching choice.
+    private var chosenSeat: Binding<String> {
+        Binding(get: {
+            let saved = zulipSeat.trimmingCharacters(in: .whitespaces)
+            return saved.isEmpty ? MusterSettings.defaultZulipSeat : saved
+        }, set: { zulipSeat = $0 })
+    }
+
     private var seatChoices: [String] {
         var seats = store.roster
-        for seat in [zulipSeat, MusterSettings.defaultZulipSeat] where !seat.isEmpty && !seats.contains(seat) {
+        for seat in [chosenSeat.wrappedValue, MusterSettings.defaultZulipSeat] where !seats.contains(seat) {
             seats.append(seat)
         }
-        return seats.isEmpty ? [MusterSettings.defaultZulipSeat] : seats
+        return seats
     }
 
     var body: some View {
         TabView {
             MusterFoldersTab()
                 .tabItem { Label("Folders", systemImage: "folder") }
-            MusterZulipServicesPane(seat: $zulipSeat, seatChoices: seatChoices,
-                                    effectiveSeat: MusterSettings.zulipSeat(),
+            MusterZulipServicesPane(seat: chosenSeat, seatChoices: seatChoices,
+                                    environmentSeat: ProcessInfo.processInfo.environment[MusterSettings.zulipSeatEnvironmentKey],
                                     keepServicesRunning: $keepServicesRunning)
                 .tabItem { Label("Zulip And Services", systemImage: "bubble.left.and.text.bubble.right") }
             MusterAppearancePane(theme: $theme, shortMenuBarText: $shortMenuBarText)

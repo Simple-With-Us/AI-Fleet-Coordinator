@@ -8,13 +8,13 @@ private enum SettingsFixture {
     static let checkoutPath = "/tmp/fixture-home/Code/fixture-repository"
     static let longPath = "/tmp/fixture-home/apps/lanes/fixture-repository/seat-a-long-lane-slug-for-the-worst-case"
 
-    /// Every optional line shown at once.
+    /// Every optional line shown at once, with the long path wherever a path wraps.
     static let worstCheckout = FolderRowModel(
         path: longPath, sourceLine: SettingsCopy.chosen, problem: SettingsCopy.checkoutProblem,
-        note: SettingsCopy.checksElsewhere(checkoutPath), hasChoice: true)
+        note: SettingsCopy.checksElsewhere(longPath), hasChoice: true)
     static let worstScripts = FolderRowModel(
-        path: nil, sourceLine: SettingsCopy.chosenMissing, problem: SettingsCopy.scriptsProblem,
-        note: nil, hasChoice: true)
+        path: nil, sourceLine: SettingsCopy.join(SettingsCopy.openedSkipped, SettingsCopy.chosenMissing),
+        problem: SettingsCopy.scriptsProblem, note: nil, hasChoice: true)
 }
 
 /// BuildIdentitySettingsSection needs Sparkle, which the test bundle does not compile, so this
@@ -45,8 +45,8 @@ private struct WorstCaseBuildSection: View {
     }
 }
 
-/// Today's Settings form (MusterApp.swift at 3c4d023fa), section for section, with the
-/// worst-case build section.  The control.
+/// The old Settings form (MusterApp.swift at 3c4d023fa), section for section, with the
+/// worst-case build section, so its heights are an upper bound.  The control.
 private struct LegacySettingsForm: View {
     var body: some View {
         Form {
@@ -92,15 +92,16 @@ private struct LegacySettingsForm: View {
 
 /// The Settings window (owner's report, November 7, 2026:  only three sections showed, with no
 /// scroller).  Each pane is hosted in a plain window, not the app's Settings scene, which no
-/// test runs, with the worst-case content.  Two controls host today's single Form and must
-/// fail the same checks:  they are strict expected failures, so if today's Form passes,
-/// the cause is not the layout (or the harness does not reproduce it) and CI says so.
+/// test runs, with the worst-case content.  A source guard keeps the scene itself as the fix
+/// left it.  Two controls host the old single Form and must fail the same checks:  they are
+/// strict expected failures, so if the old Form passes, CI says so.  They show the old form
+/// is taller than an assumed laptop screen;  neither reproduces the three-section screenshot.
 ///
 /// Every run prints `PROBE settings` lines with the measurements behind each assertion.
 @MainActor
 final class MusterSettingsLayoutTests: XCTestCase {
-    /// The owner's laptop screen less the menu bar.
-    private static let ownerScreen: CGFloat = 923
+    /// An assumed laptop screen less the menu bar.  Not measured on the owner's Mac.
+    private static let assumedScreen: CGFloat = 923
     /// A plain title bar;  today's single Form has no tab toolbar.
     private static let titleBar: CGFloat = 28
 
@@ -205,7 +206,7 @@ final class MusterSettingsLayoutTests: XCTestCase {
 
     func testTheZulipAndServicesPaneShowsEveryLineWithoutScrolling() throws {
         let m = try layOut("zulip-services", MusterZulipServicesPane(
-            seat: .constant("CLAUDE"), seatChoices: ["CLAUDE", "MM"], effectiveSeat: "MM",
+            seat: .constant("CLAUDE"), seatChoices: ["CLAUDE", "MM"], environmentSeat: "MM",
             keepServicesRunning: .constant(true)))
         XCTAssertEqual(m.fitting.height, MusterSettingsLayout.paneHeight, accuracy: 1, "the pane is not its fixed size")
         assertNothingHidden(m)
@@ -224,23 +225,50 @@ final class MusterSettingsLayoutTests: XCTestCase {
         assertNothingHidden(m)
     }
 
-    // MARK: Controls:  today's form must fail the same checks
+    // MARK: The scene itself
 
-    /// Reading (a):  sized to its content (Settings' own `.contentSize`), today's form is taller
-    /// than the owner's screen.
-    func testTodaysFormIsTallerThanTheOwnersScreen() throws {
-        let m = try layOut("legacy-fitting", LegacySettingsForm())
-        XCTExpectFailure("Today's Settings form does not fit a 923-pt screen.", strict: true) {
-            XCTAssertLessThanOrEqual(m.fitting.height + Self.titleBar, Self.ownerScreen,
-                                     "today's form fits the owner's screen")
+    /// No test runs the Settings scene, so its source is checked:  the scene carries no
+    /// `windowResizability`, and its root is the TabView of the four fixed-size panes, not a Form.
+    func testTheSettingsSceneKeepsItsFixedSizeTabs() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Muster/MusterApp.swift")
+        let source = try String(contentsOf: url, encoding: .utf8)
+        let sceneStart = try XCTUnwrap(source.range(of: "\n        Settings {"), "no Settings scene in MusterApp.swift")
+        let sceneEnd = try XCTUnwrap(source.range(of: "MenuBarExtra", range: sceneStart.upperBound..<source.endIndex))
+        let scene = source[sceneStart.lowerBound..<sceneEnd.lowerBound]
+        XCTAssertTrue(scene.contains("MusterSettingsView()"), String(scene))
+        XCTAssertFalse(scene.contains("windowResizability"), "the Settings scene sets windowResizability again")
+        let viewStart = try XCTUnwrap(source.range(of: "struct MusterSettingsView: View {"))
+        let viewEnd = try XCTUnwrap(source.range(of: "struct MusterFoldersTab: View {",
+                                                 range: viewStart.upperBound..<source.endIndex))
+        let view = source[viewStart.upperBound..<viewEnd.lowerBound]
+        XCTAssertTrue(view.contains("TabView {"), "the Settings root is no longer a TabView")
+        XCTAssertFalse(view.contains("Form {"), "the Settings root is a single Form again")
+        for pane in ["MusterFoldersTab()", "MusterZulipServicesPane(", "MusterAppearancePane(",
+                     "MusterSettingsPane { BuildIdentitySettingsSection() }"] {
+            XCTAssertTrue(view.contains(pane), "the Settings TabView lost \(pane)")
         }
     }
 
-    /// Reading (b):  in any window the owner's screen can hold, which `.contentMinSize` allows
-    /// and a saved frame restores, today's form hides its lower sections below an unseen scroller.
-    func testTodaysFormHidesSectionsInAWindowTheScreenHolds() throws {
-        let m = try layOut("legacy-screen", LegacySettingsForm(), contentHeight: Self.ownerScreen - Self.titleBar)
-        XCTExpectFailure("Today's Settings form hides sections in a window as tall as the owner's screen.",
+    // MARK: Controls:  the old form must fail the same checks
+
+    /// Reading (a):  sized to its content (Settings' own `.contentSize`), the old form with a
+    /// worst-case build section is taller than the assumed screen.
+    func testTheOldFormIsTallerThanAnAssumedScreen() throws {
+        let m = try layOut("legacy-fitting", LegacySettingsForm())
+        XCTExpectFailure("The old Settings form does not fit an assumed 923-pt screen.", strict: true) {
+            XCTAssertLessThanOrEqual(m.fitting.height + Self.titleBar, Self.assumedScreen,
+                                     "the old form fits the assumed screen")
+        }
+    }
+
+    /// Reading (b):  in a window as tall as the assumed screen, which `.contentMinSize` allowed
+    /// and a saved frame restores, the old form hides content below an unseen scroller.  This
+    /// window shows more sections than the screenshot did, so it proves overflow, not a match.
+    func testTheOldFormHidesContentInAWindowTheScreenHolds() throws {
+        let m = try layOut("legacy-screen", LegacySettingsForm(), contentHeight: Self.assumedScreen - Self.titleBar)
+        XCTExpectFailure("The old Settings form hides content in a window as tall as an assumed screen.",
                          strict: true) {
             assertNothingHidden(m)
         }

@@ -23,7 +23,7 @@ enum FleetViewService {
         var errorDescription: String? {
             switch self {
             case .scriptsNotFound:
-                return "Muster could not find the fleet scripts on the Mac.\u{00A0} Check that ~/Code/AI-Fleet-Coordinator/scripts is there, or choose the scripts folder under Fleet Scripts in Settings."
+                return "Muster could not find the fleet scripts on the Mac.\u{00A0} Check that ~/Code/AI-Fleet-Coordinator/scripts is there, or in Settings, open Folders and choose the fleet scripts folder."
             case .cliFailed:
                 return "The fleet-view command stopped with an error on the Mac, so no lanes, pull requests or claims were read.\u{00A0} Copy the details and send them to an agent."
             case .unparseable:
@@ -69,6 +69,14 @@ enum FleetViewService {
         /// The folder saved in Settings, expanded, when one is saved.
         var chosen: String?
         var chosenButUnused: Bool
+        /// True when `MUSTER_SCRIPTS_DIR` was set but held no scripts, so it was passed over.
+        var environmentSkipped: Bool
+    }
+
+    /// One spelling per folder, so a trailing slash, a `..` or a symlink cannot make one folder
+    /// look like two.
+    static func canonicalPath(_ path: String) -> String {
+        URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath().path
     }
 
     /// Candidate scripts directories, first one holding the collector wins:  `MUSTER_SCRIPTS_DIR`
@@ -79,15 +87,12 @@ enum FleetViewService {
         home: String = FileManager.default.homeDirectoryForCurrentUser.path,
         fileManager: FileManager = .default
     ) -> ScriptsResolution {
-        /// One spelling per folder, so a trailing slash, a `..` or a symlink cannot make the
-        /// chosen folder look unused.
-        func canonical(_ path: String) -> String {
-            URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath().path
-        }
         var candidates: [(String, SettingSource)] = []
+        var environmentSet = false
         if let override = environment[MusterSettings.scriptsDirectoryEnvironmentKey], !override.isEmpty {
             // Expanded like every other folder setting, so `~/...` works here too.
             candidates.append(((override as NSString).expandingTildeInPath, .environment))
+            environmentSet = true
         }
         var chosen: String?
         if let saved = defaults.string(forKey: MusterSettings.scriptsDirectoryDefaultsKey), !saved.isEmpty {
@@ -100,9 +105,11 @@ enum FleetViewService {
         where fileManager.fileExists(atPath: "\(candidate)/fleet_view/__main__.py") {
             return ScriptsResolution(directory: URL(fileURLWithPath: candidate), source: source,
                                      chosen: chosen,
-                                     chosenButUnused: chosen.map { canonical($0) != canonical(candidate) } ?? false)
+                                     chosenButUnused: chosen.map { canonicalPath($0) != canonicalPath(candidate) } ?? false,
+                                     environmentSkipped: environmentSet && source != .environment)
         }
-        return ScriptsResolution(directory: nil, source: nil, chosen: chosen, chosenButUnused: chosen != nil)
+        return ScriptsResolution(directory: nil, source: nil, chosen: chosen, chosenButUnused: chosen != nil,
+                                 environmentSkipped: environmentSet)
     }
 
     static func scriptsDirectory() -> URL? { resolveScripts().directory }

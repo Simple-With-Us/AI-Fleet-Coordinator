@@ -109,7 +109,7 @@ enum FleetConfigCLIError: Error, Equatable, LocalizedError {
         case .engineNotFound(let path):
             return ApplyCopy.join(
                 "The fleet-config engine was not found at \(path).",
-                "Choose the fleet checkout under Fleet Checkout in Settings."
+                "In Settings, open Folders and choose the fleet checkout."
             )
         case .launchFailed(let detail):
             return "The fleet-config engine could not be started: \(detail)"
@@ -155,19 +155,8 @@ enum MusterSettings {
         defaults.object(forKey: keepServicesRunningDefaultsKey) as? Bool ?? true
     }
 
-    static func scriptsDirectory(
-        defaults: UserDefaults = .standard,
-        environment: [String: String] = ProcessInfo.processInfo.environment,
-        home: URL = FileManager.default.homeDirectoryForCurrentUser
-    ) -> URL {
-        if let env = environment[scriptsDirectoryEnvironmentKey], !env.isEmpty {
-            return URL(fileURLWithPath: (env as NSString).expandingTildeInPath, isDirectory: true)
-        }
-        if let saved = defaults.string(forKey: scriptsDirectoryDefaultsKey), !saved.isEmpty {
-            return URL(fileURLWithPath: (saved as NSString).expandingTildeInPath, isDirectory: true)
-        }
-        return home.appendingPathComponent("Code/AI-Fleet-Coordinator/scripts", isDirectory: true)
-    }
+    // The scripts folder has one resolver, `FleetViewService.resolveScripts`, which also checks
+    // each candidate for the scripts.
 
     static func zulipSeat(
         defaults: UserDefaults = .standard,
