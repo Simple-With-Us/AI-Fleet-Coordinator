@@ -457,9 +457,59 @@ class SeatAndMcpTests(unittest.TestCase):
         doctor.post_changes(self.failing_report(("tool:gh", "behind by 2")), runner)
         self.assertEqual([c[1] for c in calls], ["post", "post"])
 
+    def test_a_post_that_may_have_landed_is_not_posted_again(self):
+        # Kody on PR 1467:  a post that timed out, or failed with a network or internal error, may
+        # already be on Zulip.  Its set is remembered without an id, so the next run posts nothing.
+        def timing_out(argv, **kw):
+            raise subprocess.TimeoutExpired(argv, 60)
+
+        def exiting(code, err):
+            return lambda argv, **kw: subprocess.CompletedProcess(argv, code, "", err)
+
+        for name, runner in [
+            ("timeout", timing_out),
+            ("network", exiting(6, "timed out")),
+            ("internal", exiting(1, "internal error")),
+            ("gateway", exiting(5, "HTTP 502")),
+        ]:
+            with self.subTest(name):
+                (self.home / "state.json").unlink(missing_ok=True)
+                report = self.failing_report(("tool:gh", "behind by 1"))
+                self.assertFalse(doctor.post_changes(report, runner))
+                self.assertEqual(self.state(), {"failing": ["tool:gh: behind by 1"], "checks": ["tool:gh"]})
+                calls = []
+                self.assertFalse(doctor.post_changes(report, self.chat_runner(calls, [4101])))
+                self.assertEqual(calls, [])
+                # A later text change posts a new message, because there is no id to edit.
+                self.assertTrue(
+                    doctor.post_changes(
+                        self.failing_report(("tool:gh", "behind by 2")), self.chat_runner(calls, [4101])
+                    )
+                )
+                self.assertEqual([c[1] for c in calls], ["post"])
+
+    def test_a_refused_or_impossible_post_is_tried_again_next_run(self):
+        # Zulip refused it (exit 3), or simple-chat is missing:  nothing was posted, so nothing is
+        # remembered and the next run posts.
+        def missing(argv, **kw):
+            raise FileNotFoundError(argv[0])
+
+        refused = lambda argv, **kw: subprocess.CompletedProcess(argv, 3, "", "refused")  # noqa: E731
+        for name, runner in [("refused", refused), ("missing", missing)]:
+            with self.subTest(name):
+                (self.home / "state.json").unlink(missing_ok=True)
+                report = self.failing_report(("tool:gh", "behind by 1"))
+                self.assertFalse(doctor.post_changes(report, runner))
+                self.assertFalse((self.home / "state.json").exists())
+                calls = []
+                self.assertTrue(doctor.post_changes(report, self.chat_runner(calls, [4101])))
+                self.assertEqual([c[1] for c in calls], ["post"])
+
     def test_posted_message_id_reads_only_a_positive_integer_id(self):
         self.assertEqual(doctor.posted_message_id('{"id": 7, "channel": "c"}\n'), 7)
         self.assertEqual(doctor.posted_message_id('noise\n{"id": 8}\n'), 8)
+        # Kody on PR 1467:  a pretty-printed object over several lines.
+        self.assertEqual(doctor.posted_message_id('{\n  "id": 9,\n  "channel": "c"\n}\n'), 9)
         self.assertIsNone(doctor.posted_message_id('{"id": "7"}'))
         self.assertIsNone(doctor.posted_message_id('{"id": true}'))
         self.assertIsNone(doctor.posted_message_id("posted id 7"))

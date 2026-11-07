@@ -3371,13 +3371,16 @@ def stable_failing(line: str) -> str:
 
 
 def posted_message_id(stdout: object) -> int | None:
-    """The message id from `simple-chat post --json`, which prints one JSON object with an `id`."""
-    for line in str(stdout or "").splitlines():
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
+    """The message id from `simple-chat post --json`, which prints one JSON object with an `id`.
+
+    The object may be on one line among others, or pretty-printed over several lines, so each
+    line is tried and then the whole output."""
+    text = str(stdout or "")
+    candidates = [line.strip() for line in text.splitlines() if line.strip().startswith("{")]
+    candidates.append(text.strip())
+    for candidate in candidates:
         try:
-            doc = json.loads(line)
+            doc = json.loads(candidate)
         except ValueError:
             continue
         if isinstance(doc, dict):
@@ -3385,17 +3388,6 @@ def posted_message_id(stdout: object) -> int | None:
             if type(message_id) is int and message_id > 0:
                 return message_id
     return None
-
-
-def _run_chat(argv: list[str], runner: Callable):
-    """One simple-chat call;  None when it could not run at all."""
-    try:
-        return runner(argv, capture_output=True, text=True, timeout=60, check=False)
-    except (
-        OSError,
-        subprocess.SubprocessError,
-    ):  # simple-chat missing from PATH (check_commands reports it) or hung
-        return None
 
 
 # simple-chat exit codes (scripts/agent_sync/cli.py):  2 usage, 3 credential, realm or refusal,
@@ -3431,8 +3423,10 @@ def post_changes(report: Report, runner: Callable = subprocess.run) -> bool:
     still fail but a line's text changed (beyond the elapsed-minute counter), the kept message is
     edited instead, so the topic shows the current text without a new notification.  An edit Zulip
     refused falls back to a new post;  an edit that timed out or hit a network error may have been
-    applied, so nothing is posted and the next run tries the edit again.  A STATE with no message id
-    (an older doctor) posts as before."""
+    applied, so nothing is posted and the next run tries the edit again.  A new post that timed out or
+    hit a network error may have landed too, so its set is remembered without an id:  the next run
+    does not post the same text again, and a later change posts a new message.  A STATE with no
+    message id (an older doctor) posts as before."""
     rows = [r for r in report.rows if r["status"] == "FAIL"]
     failing = sorted(f"{r['check']}: {r['detail']}" for r in rows)
     checks = sorted(str(r["check"]) for r in rows)
@@ -3478,22 +3472,24 @@ def post_changes(report: Report, runner: Callable = subprocess.run) -> bool:
             return False
         # Zulip refused the edit (the message is gone or past its edit window) or simple-chat is
         # missing:  post a new message instead and keep its id.
-    result = _run_chat(
-        [
-            "simple-chat",
-            "post",
-            "--channel",
-            "Work-In-Progress",
-            "--topic",
-            "fleet tools doctor",
-            "--json",
-            body,
-        ],
-        runner,
-    )
-    if result is not None and result.returncode == 0:
+    argv = ["simple-chat", "post", "--channel", "Work-In-Progress", "--topic", "fleet tools doctor", "--json", body]
+    try:
+        result = runner(argv, capture_output=True, text=True, timeout=60, check=False)
+    except OSError:  # simple-chat is missing from PATH:  nothing was sent, so the next run tries again
+        return False
+    except subprocess.SubprocessError:
+        # Timed out:  the post may already be on Zulip.  Remember this set without an id, so the
+        # next run does not post the same text again;  a later text change posts a new message.
+        remember(None)
+        return False
+    if result.returncode == 0:
         remember(posted_message_id(result.stdout))
         return True
+    if result.returncode not in EDIT_REFUSED_CODES or GATEWAY_STATUS_RE.search(
+        f"{result.stdout or ''}\n{result.stderr or ''}"
+    ):
+        # A network or internal error that may have reached Zulip:  the same rule as a timeout.
+        remember(None)
     return False
 
 
