@@ -52,13 +52,13 @@ One line per check, OK, WARN or FAIL, and exit 1 on a FAIL on this host.  It co
 - each named seat's credentials (key names in Infisical, through `fleet-secrets`);
 - each client's MCP registrations.
 
-On the server, `fleet-tools-doctor.timer` runs it every hour as the `jay` login with `AGENT_SEAT=CLAUDE` and `--post`, from the same managed-runtime checkout as `fleet-cli-git-update` (`~/.local/share/fleet-cli/repo`).  It posts to #Work-In-Progress, topic `fleet tools doctor`, only when the set of failing checks changes, including the all-clear.  Since AFC-461 that set also holds a required registry tool the server lacks (`gitleaks` today) and a fleet tool that is behind past its grace window.
+On the server, `fleet-tools-doctor.timer` runs it every hour as the `jay` login with `AGENT_SEAT=CLAUDE` and `--post`, from the same managed-runtime checkout as `fleet-cli-git-update` (`~/.local/share/fleet-cli/repo`).  It posts a new message to #Work-In-Progress, topic `fleet tools doctor`, only when the set of failing checks changes (a check fails or clears, including the all-clear), and keeps that message's id in `~/.local/state/fleet-tools-doctor.json`.  When the same checks still fail but a line's text changes (a newer latest version, say;  the elapsed-minute counter alone never counts), it edits that message with `simple-chat edit` instead of posting again, so a standing problem stays one current message (owner, Oct 22).  If Zulip refuses the edit, for example past its edit window, it posts a new message and keeps the new id;  if the edit times out or hits a network error, it may already be applied, so nothing is posted and the next run edits the same message again.  Since AFC-461 the failing set also holds a required registry tool the server lacks (`gitleaks` today) and a fleet tool that is behind past its grace window.
 
 ### States
 
 `--no-registry` skips the registry (no `--version` probes) for a caller with a short time budget.
 
-Every row keeps `check`, `status` and `detail` and adds `state`, `category`, `tool`, `installed`, `expectedRev`, `behindCommits` and `reason`;  registry rows add `version`, `latest`, `latestSource`, `required`, `path` and `basis`.
+Every row keeps `check`, `status` and `detail` and adds `state`, `category`, `tool`, `installed`, `expectedRev`, `behindCommits` and `reason`;  registry rows add `version`, `latest`, `latestSource`, `required`, `path` and `basis` (`latest`, `skew` or `presence`), and in the combined report a tool older than the same tool on the other host adds `skew`, an object `{"host", "version"}` naming the other host and its newer version.
 
 | `state` | `status` | Means |
 | --- | --- | --- |
