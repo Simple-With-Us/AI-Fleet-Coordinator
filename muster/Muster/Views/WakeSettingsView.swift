@@ -1323,7 +1323,7 @@ private extension WakeSettingState {
         case .match: return "checkmark.circle"
         case .drift: return "arrow.left.arrow.right.circle"
         case .stale: return "clock.badge.exclamationmark"
-        case .unproven: return "questionmark.diamond"
+        case .unproven: return "questionmark.square"
         case .notOwned: return "minus.circle"
         case .unpublished: return "eye.slash"
         case .unset: return "circle.dashed"
