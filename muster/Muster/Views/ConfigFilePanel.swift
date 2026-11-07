@@ -41,7 +41,11 @@ struct ConfigFilePanel: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 20) {
                         ForEach(Array(artifacts.rules.enumerated()), id: \.offset) { index, rule in
-                            ruleBlock(rule: rule, view: artifacts.views.indices.contains(index) ? artifacts.views[index] : nil)
+                            RuleArtifactView(
+                                rule: rule,
+                                view: artifacts.views.indices.contains(index) ? artifacts.views[index] : nil,
+                                source: sources[rule.ruleId]
+                            )
                         }
                     }
                     .padding(18)
@@ -92,6 +96,24 @@ struct ConfigFilePanel: View {
         .padding(.vertical, 12)
     }
 
+}
+
+/// One rule of a cell, with the facts the engine measured and the artifact it checks as it
+/// is on this Mac.
+///
+/// The grid's detail panel and the Seat Setup panel both show a rule this way, so a rule
+/// reads the same wherever it is opened.  The same read-only and no-credential rules apply:
+/// nothing here edits, and a credential rule shows key names and presence only.
+struct RuleArtifactView: View {
+    let rule: CheckResult
+    let view: ConfigFileView?
+    /// The citation the manifest carries for the rule, when it has one.
+    let source: String?
+
+    var body: some View {
+        ruleBlock(rule: rule, view: view)
+    }
+
     @ViewBuilder
     private func ruleBlock(rule: CheckResult, view: ConfigFileView?) -> some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -125,7 +147,7 @@ struct ConfigFilePanel: View {
             // the panel says so rather than showing a blank line.
             ProofLine(
                 label: "Source",
-                value: sources[rule.ruleId].flatMap { $0.isEmpty ? nil : $0 } ?? "not cited yet"
+                value: source.flatMap { $0.isEmpty ? nil : $0 } ?? "not cited yet"
             )
 
             HStack(alignment: .top, spacing: 18) {

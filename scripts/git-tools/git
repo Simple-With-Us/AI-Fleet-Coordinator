@@ -2046,6 +2046,188 @@ def _remote_tree_shas(tools: dict, repo: str, head: str, bearer: str, seat: str,
     }
 
 
+# A report, never a merge authorization. Only existing reviewed read tools are used.
+class ReadinessUnknown(ValueError):
+    pass
+
+
+def collect_readiness(read, repo, number, expected_head=None, max_pages=20):
+    """Bounded, non-atomic observations. Missing coverage never becomes zero findings."""
+    report = {"repo": repo, "number": number, "report_only": True,
+              "merge_authorized": False, "complete": False, "verdict": "unknown",
+              "blockers": [], "unknowns": [], "coverage": {}}
+
+    def require(ok, reason):
+        if not ok:
+            raise ReadinessUnknown(reason)
+
+    def pull():
+        p = read("gr_wf_pr_get", {"repo": repo, "number": number}).get("pull")
+        require(isinstance(p, dict) and type(p.get("number")) is int and p["number"] == number,
+                "PR identity missing or mismatched")
+        require(p.get("state") in ("open", "closed") and type(p.get("draft")) is bool
+                and type(p.get("merged")) is bool, "PR lifecycle incomplete")
+        for side in ("head", "base"):
+            require(isinstance(p.get(side), dict)
+                    and isinstance(p[side].get("sha"), str)
+                    and re.fullmatch(r"[0-9a-f]{40}", p[side]["sha"]), "PR head/base missing")
+        return p
+
+    try:
+        require(isinstance(repo, str) and REPO_PATTERN.fullmatch(repo) is not None and ".." not in repo
+                and type(number) is int and 0 < number <= 1000000000000, "invalid repo or PR number")
+        require(expected_head is None or (isinstance(expected_head, str)
+                and re.fullmatch(r"[0-9a-f]{40}", expected_head)), "expected head must be a full SHA")
+        first = pull()
+        head, base = first["head"]["sha"], first["base"]["sha"]
+        report.update(head=head, base=base, state=first["state"], draft=first["draft"],
+                      merged=first["merged"])
+        require(expected_head is None or expected_head == head, "expected head no longer current")
+        # This action is review THREADS, not issue comments or line-comment lists.
+        threads, seen, cursors, cursor = [], set(), set(), None
+        for _ in range(max_pages):
+            args = {"repo": repo, "number": number}
+            if cursor is not None:
+                args["cursor"] = cursor
+            connection = read("gr_wf_review_threads", args).get("threads")
+            require(isinstance(connection, dict) and isinstance(connection.get("nodes"), list)
+                    and isinstance(connection.get("pageInfo"), dict), "review-thread connection incomplete")
+            page = connection["pageInfo"]
+            require(type(page.get("hasNextPage")) is bool, "review-thread pagination unknown")
+            for row in connection["nodes"]:
+                require(isinstance(row, dict) and isinstance(row.get("id"), str)
+                        and row["id"] and row["id"] not in seen
+                        and type(row.get("isResolved")) is bool
+                        and type(row.get("isOutdated")) is bool, "review-thread row missing or duplicate")
+                seen.add(row["id"])
+                # No external prose is emitted as instructions or authorization.
+                threads.append({k: row[k] for k in ("id", "isResolved", "isOutdated")})
+            if page["hasNextPage"] is False:
+                break
+            cursor = page.get("endCursor")
+            require(isinstance(cursor, str) and re.fullmatch(r"[A-Za-z0-9_/=+-]{1,256}", cursor)
+                    and cursor not in cursors, "review-thread cursor missing or repeated")
+            cursors.add(cursor)
+        else:
+            raise ReadinessUnknown("review-thread page bound reached")
+        report["review_threads"] = {"total": len(threads),
+                                    "unresolved": [r for r in threads if not r["isResolved"]]}
+        report["coverage"]["review_threads"] = "complete"
+        if report["review_threads"]["unresolved"]:
+            report["blockers"].append("unresolved_review_threads")
+
+        checked = read("gr_wf_checks", {"repo": repo, "ref": head, "per_page": 50})
+        require(checked.get("complete") is True and isinstance(checked.get("checks"), list),
+                "check-run census incomplete or unknown")
+        check_rows, ids = [], set()
+        for c in checked["checks"]:
+            require(isinstance(c, dict) and type(c.get("id")) is int and c["id"] not in ids
+                    and c.get("head_sha") == head and isinstance(c.get("name"), str)
+                    and c.get("status") in ("queued", "in_progress", "completed", "waiting", "pending", "requested"),
+                    "check-run row missing, duplicate or wrong head")
+            ids.add(c["id"])
+            require(c["status"] != "completed" or c.get("conclusion") in
+                    ("success", "failure", "neutral", "cancelled", "skipped", "timed_out", "action_required", "stale", "startup_failure"),
+                    "check-run conclusion unknown")
+            check_rows.append({k: c.get(k) for k in ("id", "name", "status", "conclusion")})
+        report["checks"] = check_rows
+        report["coverage"]["check_runs"] = "complete"
+        if not check_rows:
+            report["unknowns"].append("no_check_runs_observed")
+        if any(c["status"] != "completed" or c["conclusion"] not in ("success", "neutral", "skipped") for c in check_rows):
+            report["blockers"].append("checks_incomplete_or_unsuccessful")
+
+        statuses = read("gr_wf_commit_statuses", {"repo": repo, "sha": head, "per_page": 50})
+        require(statuses.get("complete") is True and isinstance(statuses.get("statuses"), list),
+                "commit-status history incomplete")
+        # REST statuses are newest first. Older failures must not override their latest context.
+        latest = {}
+        for s in statuses["statuses"]:
+            require(isinstance(s, dict) and isinstance(s.get("context"), str) and s["context"]
+                    and s.get("state") in ("pending", "success", "error", "failure"), "commit-status row unknown")
+            latest.setdefault(s["context"], s["state"])
+        report["commit_statuses"] = latest
+        report["coverage"]["commit_statuses"] = "complete"
+        if any(v != "success" for v in latest.values()):
+            report["blockers"].append("commit_statuses_unsuccessful")
+
+        reviews, review_ids = [], set()
+        for page_num in range(1, max_pages + 1):
+            page = read("gr_wf_pr_reviews_page", {"repo": repo, "number": number,
+                        "expected_head_sha": head, "page": page_num, "per_page": 50})
+            require(page.get("head_sha") == head and page.get("number") == number
+                    and page.get("page") == page_num and type(page.get("has_more")) is bool
+                    and isinstance(page.get("reviews"), list), "review page incomplete or wrong head")
+            for r in page["reviews"]:
+                require(isinstance(r, dict) and type(r.get("id")) is int and r["id"] not in review_ids
+                        and isinstance(r.get("author"), dict) and type(r["author"].get("id")) is int
+                        and r.get("state") in ("APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED", "PENDING")
+                        and isinstance(r.get("commit_id"), str) and re.fullmatch(r"[0-9a-f]{40}", r["commit_id"]),
+                        "review identity/state missing or duplicate")
+                review_ids.add(r["id"])
+                reviews.append({"id": r["id"], "author_id": r["author"]["id"],
+                                "state": r["state"], "commit_id": r["commit_id"]})
+            if not page["has_more"]:
+                break
+        else:
+            raise ReadinessUnknown("review page bound reached")
+        report["reviews"] = reviews
+        report["coverage"]["review_records"] = "complete"
+        if not any(r["commit_id"] == head and r["state"] in ("APPROVED", "COMMENTED") for r in reviews):
+            report["unknowns"].append("no_completed_current_head_review_observed")
+        # Latest decisive review per author, including old-head requests still requiring attention.
+        decisions, latest_ids = {}, {}
+        for r in reviews:
+            if r["state"] in ("APPROVED", "CHANGES_REQUESTED", "DISMISSED"):
+                if r["id"] > latest_ids.get(r["author_id"], -1):
+                    latest_ids[r["author_id"]] = r["id"]
+                    decisions[r["author_id"]] = r["state"]
+        if "CHANGES_REQUESTED" in decisions.values() or any(r["state"] == "PENDING" for r in reviews):
+            report["blockers"].append("review_changes_requested_or_pending")
+
+        last = pull()
+        require((last["head"]["sha"], last["base"]["sha"], last["state"], last["draft"], last["merged"])
+                == (head, base, first["state"], first["draft"], first["merged"]), "PR changed during report; re-read needed")
+        report["coverage"]["head_base_rechecked"] = True
+        state = last.get("mergeable_state")
+        report["github_merge_state"] = state if isinstance(state, str) else "unknown"
+        report["github_block_reason"] = "unknown"  # REST exposes state, not the UI's exact rule reason.
+        if first["state"] != "open" or first["draft"] or first["merged"]:
+            report["blockers"].append("PR_not_open_non_draft")
+        if last.get("mergeable") is False or state in ("blocked", "dirty", "behind", "draft"):
+            report["blockers"].append("github_merge_state_" + str(state))
+        elif last.get("mergeable") is not True or state != "clean":
+            report["unknowns"].append("github_merge_state_not_clean")
+        report["complete"] = True
+    except ReadinessUnknown as exc:
+        report["unknowns"].append(str(exc))
+    report["limitations"] = ["Observations are not atomic; changes after the final read are possible.",
+        "Repository rules, required reviewer identity and owner authority are not evaluated.",
+        "GitHub exact block reason is unavailable from these approved reads; never infer a policy waiver."]
+    report["verdict"] = "blocked" if report["blockers"] else "unknown" if report["unknowns"] or not report["complete"] else "observed_checks_passed"
+    return report
+
+
+def cmd_readiness(tools, a, bearer, server_seat, deadline):
+    def read(name, args):
+        entry = tools.get(name)
+        if not entry or entry.get("read") is not True or name not in READ_TOOLS:
+            raise ReadinessUnknown("required read unavailable: " + name)
+        try:
+            validate_arguments(entry, args, deadline)
+            args = resolve_actor(entry, args, bearer, server_seat, deadline)
+            out = remote_call(name, args, False, bearer, deadline)
+        except SystemExit:
+            raise ReadinessUnknown("required read failed: " + name) from None
+        value = out.get("structured")
+        if not isinstance(value, dict) or not value:
+            raise ReadinessUnknown("structured read unavailable: " + name)
+        return value
+    report = collect_readiness(read, a.repo, a.number, a.expected_head)
+    print(json.dumps(report, indent=2))
+    return 0 if report["verdict"] == "observed_checks_passed" else 1
+
+
 # ----------------------------------------------------------------- parser / main
 
 
@@ -2073,6 +2255,10 @@ def build_parser() -> argparse.ArgumentParser:
         "whoami", help="show the identity the hosted server reports for this bearer", allow_abbrev=False
     )
     pw.add_argument("--json", action="store_true")
+    pr = sub.add_parser("readiness", help="read-only PR report; never merge authorization", allow_abbrev=False)
+    pr.add_argument("repo")
+    pr.add_argument("number", type=int)
+    pr.add_argument("--expected-head", help="fail closed if the current full head SHA differs")
     pc = sub.add_parser(
         "call", help="call one tool:  call NAME --args-json JSON|@FILE|-", allow_abbrev=False
     )
@@ -2155,6 +2341,8 @@ def main(argv: list[str] | None = None) -> int:
         # The identities answer above already proved this bearer;  git needs no tool discovery.
         return transfer[a.cmd](a, bearer)
     tools = discover_tools(bearer, overall_deadline)
+    if a.cmd == "readiness":
+        return cmd_readiness(tools, a, bearer, server_seat, overall_deadline)
     if a.cmd == "publish":
         return cmd_publish(tools, a, bearer, server_seat, overall_deadline)
     if a.cmd == "list":

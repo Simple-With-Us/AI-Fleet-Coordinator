@@ -169,7 +169,9 @@ final class FleetStore: ObservableObject {
         let live = registry?.liveTags ?? []
         guard let manifest = manifest else { return live }
         let known = live.filter { manifest.seats[$0] != nil }
-        return known.isEmpty ? Array(manifest.seats.keys).sorted() : known
+        // The manifest still holds a row for the Grok Bot group, which is not a seat, so the
+        // fallback leaves it out as the registry's list does.
+        return known.isEmpty ? manifest.seats.keys.filter { !NotASeat.contains($0) }.sorted() : known
     }
 
     /// The cell for one seat and kind.
