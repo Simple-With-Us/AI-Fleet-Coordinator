@@ -123,8 +123,8 @@ final class OperatorVoiceTests: XCTestCase {
     func test_known_reason_codes_read_as_their_cause() throws {
         let causes = [
             "operator_credential_rejected": "Zulip refused the Operator's credential.",
-            "operator_owner_not_pinned": "The owner is not pinned in the eavesdropper's settings, so the Operator does not post.",
-            "operator_unavailable": "The eavesdropper could not get the Operator ready to post.",
+            "operator_owner_not_pinned": "The owner is not pinned in the listener's settings, so the Operator does not post.",
+            "operator_unavailable": "The listener could not get the Operator ready to post.",
         ]
         for (code, cause) in causes {
             let reading = OperatorVoiceReading.unavailable(code: code, since: sinceDate, sinceText: since)

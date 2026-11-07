@@ -501,9 +501,11 @@ enum OperatorVoiceReading: Equatable {
         case "operator_credential_rejected":
             return "Zulip refused the Operator's credential."
         case "operator_owner_not_pinned":
-            return "The owner is not pinned in the eavesdropper's settings, so the Operator does not post."
+            return "The owner is not pinned in the listener's settings, so the Operator does not post."
         case "operator_unavailable":
-            return "The eavesdropper could not get the Operator ready to post."
+            // The catch-all for any failed build of the Operator client:  an unreadable
+            // credential, not the pinned bot, or an identity it could not confirm.
+            return "The listener could not get the Operator ready to post."
         default:
             return nil
         }
