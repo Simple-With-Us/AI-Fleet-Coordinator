@@ -337,3 +337,25 @@ Unverifiable post-write receipts/GraphQL partial errors are UNKNOWN and must not
 blindly retried. Registration, least-privilege seat policy and rollout are separate
 from source merge. Mutation docs: https://docs.github.com/en/graphql/reference/commits
 and file input docs: https://docs.github.com/en/graphql/reference/git .
+
+### Guarded patch bootstrap closure
+
+The existing canonical seat policy predates `wf_file_patch`. The pure
+`git_relay.patch_policy.prepare` transform appends only that action to each
+existing file-write seat, after matching the full policy digest. It changes no
+seat, App, repository, mint permission, private field or existing action order.
+Its regression uses the actual canonical policy and proves exact delta,
+idempotence, stale-input refusal and no input mutation. It performs no I/O.
+
+Activation must put the reviewed code and this exact transformed live policy in
+one bounded administrative deployment transaction with quiescence, pinned
+source/live digests, durable before-images, atomic writes and verified recovery.
+The old env-only seat installer does not qualify the live seats-file route.
+Code-only live/action-denied activation is not completion. No activation is
+implemented or implied by the pure transform.
+
+Canonical consolidation remains owned by this change: after successful own-App
+patch qualification, apply only the three existing profile action additions and
+update the existing canonical digest regression to its computed new digest,
+then verify rendered canonical policy equals the transformed policy. Until that
+lands, this bootstrap transform and its durable tests record the exact delta.
