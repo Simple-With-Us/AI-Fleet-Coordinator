@@ -104,18 +104,16 @@ enum PlatformVariants {
     /// The platforms the analysis can name,  derived from the app's own seat-app registry
     /// so the names cannot drift from it:  each row's words are the registry title,  plus
     /// the slug itself when the slug is hyphenated (a config-file spelling,  like
-    /// `claude-code`).  A registry row with no folder in the table above still names
-    /// platforms in prose;  the test bundle pins the two lists together.
-    /// Internal for the test bundle, which pins it to the seat-app registry.
+    /// `claude-code`),  plus a guarded first word of a multi-word title ("Claude" from
+    /// "Claude Code";  "Z" from "Z Code" stays out,  one letter marks too much).  A
+    /// registry row with no folder in the table above names no instruction file and is
+    /// left out;  the test bundle pins the two lists together.
     static let platformWords: [(platform: String, words: [String], folders: [String])] = {
         var rows: [(platform: String, words: [String], folders: [String])] = []
         for (slug, meta) in FleetRegistryReader.codingAppMetadata {
             guard let folders = configFolders[slug] else { continue }
             var words = [meta.title]
             if slug.contains("-") { words.append(slug) }
-            // A multi-word title's first word is also the platform's name in prose
-            // ("Claude desktop"),  when the word is long enough to mean the platform
-            // by itself:  "Z Code" keeps "Z" out of every line it appears in.
             let parts = meta.title.split(separator: " ")
             if parts.count > 1, parts[0].count >= 3 {
                 let first = String(parts[0])
@@ -128,116 +126,6 @@ enum PlatformVariants {
         }
         return rows
     }()
-
-    /// A placeholder the file itself marks as variable,  like `<SEAT>`.
-            case placeholder
-            /// A seat tag,  like `ZC` or `CLAUDE`.
-            case seatTag
-            /// A config folder a platform reads,  like `~/.claude/`.
-            case configFolder
-            /// A platform's name in prose,  like `Claude` or `Z Code`.
-            case platformName
-        }
-
-        /// The span,  in UTF-16 offsets inside its own line,  so the same numbers an
-        /// `NSString` sees are the numbers the preview paints.
-        let range: NSRange
-        let kind: Kind
-        /// The platform a `platformName` or `configFolder` span belongs to,  or nil.
-        let platform: String?
-    }
-
-    /// One line that carries at least one span.
-    struct MarkedLine: Equatable {
-        /// The line's index,  zero-based,  counting every line of the file.
-        let number: Int
-        let spans: [Span]
-        /// True when the line usually changes with the platform:  it holds a placeholder,
-        /// a seat tag or a config folder.  A line whose only spans are platform names is
-        /// shared prose that mentions platforms,  and is not a customization point.
-        let usuallyChanges: Bool
-    }
-
-    /// One markdown section whose body holds customization points.
-    struct MarkedSection: Equatable {
-        /// The heading line's index,  zero-based.
-        let headingNumber: Int
-        /// The heading's text with its `#` marks removed.
-        let title: String
-        /// The lines the section covers,  as line indexes,  endpoints exclusive.
-        let bodyRange: Range<Int>
-        /// How many lines in the section usually change.
-        let changingLines: Int
-    }
-
-    /// What analyzing one file found.
-    struct Analysis: Equatable {
-        /// The platform whose file the preview shows.
-        let platform: String
-        /// Every line that carries a span,  in file order.
-        let lines: [MarkedLine]
-        /// Every section that holds at least one changing line.
-        let sections: [MarkedSection]
-
-        /// The line indexes that usually change,  for a checklist read.
-        var changingLineNumbers: Set<Int> {
-            Set(lines.filter(\.usuallyChanges).map(\.number))
-        }
-    }
-
-    /// The guidance the preview carries beside the highlights.  It says what the marks
-    /// are for and,  in words,  that they do not limit where a new platform may edit.
-    static let guidance = "Highlights mark places that usually change for a platform:  "
-        + "placeholders,  seat tags,  platform names and config folders.\u{00A0} They are "
-        + "reminders,  not limits:  a new platform may need edits anywhere in the file,  and "
-        + "the whole file still needs review.\u{00A0} The preview is read-only and changes "
-        + "nothing."
-
-    /// The ASCII code of a one-character literal,  as the unichar comparisons read it.
-    private static func ascii(_ literal: Character) -> unichar {
-        guard let value = literal.asciiValue else { return 0 }
-        return unichar(value)
-    }
-
-    private static func placeholders(in line: String) -> [NSRange] {
-        // A unichar is a plain UInt16,  so every comparison names its ASCII constant
-        // instead of leaning on a String literal the type cannot take.
-        let lt = ascii("<"), gt = ascii(">"), dash = ascii("-")
-        let hay = line as NSString
-        var found: [NSRange] = []
-        var index = 0
-        while index < hay.length {
-            guard hay.character(at: index) == lt else {
-                index += 1
-                continue
-            }
-            var end = index + 1
-            while end < hay.length {
-                let c = hay.character(at: end)
-                if c == gt { break }
-                if !isLetter(c) && !isDigit(c) && c != dash { break }
-                end += 1
-            }
-            let inner = end - index - 1
-            if end < hay.length, hay.character(at: end) == gt, inner >= 2,
-               isLetter(hay.character(at: index + 1)) {
-                found.append(NSRange(location: index, length: end - index + 1))
-                index = end + 1
-            } else {
-                index += 1
-            }
-        }
-        return found
-    }
-
-    private static func isLetter(_ c: unichar) -> Bool {
-        (c >= ascii("a") && c <= ascii("z"))
-            || (c >= ascii("A") && c <= ascii("Z"))
-    }
-
-    private static func isDigit(_ c: unichar) -> Bool {
-        c >= ascii("0") && c <= ascii("9")
-    }
 
     /// Find the customization points in `text` as the preview of `platform`'s file shows
     /// them.  `seatTags` are the roster's seat tags,  so a tag is marked wherever it
@@ -256,8 +144,8 @@ enum PlatformVariants {
         return Analysis(platform: platform, lines: marked, sections: sections(of: allLines, marked: marked))
     }
 
-    /// The spans of one line,  leftmost first,  never overlapping:  a placeholder keeps
-    /// its whole angle brackets even when a word inside it names a platform.
+    /// The spans of one line,  never overlapping:  at the same start the longest span
+    /// wins and a strong kind beats a weak one,  so `resolveOverlaps` below decides.
     private static func spans(in line: String, seatTags: [String]) -> [Span] {
         var found: [Span] = []
         for range in placeholders(in: line) {
@@ -324,15 +212,61 @@ enum PlatformVariants {
         }
     }
 
-    /// Anything a word may not be glued to and still be its own word.
+    /// The ASCII code of a one-character literal,  as the unichar comparisons read it.
+    private static func ascii(_ literal: Character) -> unichar {
+        guard let value = literal.asciiValue else { return 0 }
+        return unichar(value)
+    }
+
+    /// A placeholder the file itself marks as variable:  `<SEAT>`,  `<APP-SLUG>`,  and the
+    /// same shape in any mix of letters,  digits and dashes.  Scanned by hand,  so no
+    /// pattern has to compile at run time.
+    private static func placeholders(in line: String) -> [NSRange] {
+        // A unichar is a plain UInt16,  so every comparison names its ASCII constant
+        // instead of leaning on a String literal the type cannot take.
+        let lt = ascii("<"), gt = ascii(">"), dash = ascii("-")
+        let hay = line as NSString
+        var found: [NSRange] = []
+        var index = 0
+        while index < hay.length {
+            guard hay.character(at: index) == lt else {
+                index += 1
+                continue
+            }
+            var end = index + 1
+            while end < hay.length {
+                let c = hay.character(at: end)
+                if c == gt { break }
+                if !isLetter(c) && !isDigit(c) && c != dash { break }
+                end += 1
+            }
+            let inner = end - index - 1
+            if end < hay.length, hay.character(at: end) == gt, inner >= 2,
+               isLetter(hay.character(at: index + 1)) {
+                found.append(NSRange(location: index, length: end - index + 1))
+                index = end + 1
+            } else {
+                index += 1
+            }
+        }
+        return found
+    }
+
+    private static func isLetter(_ c: unichar) -> Bool {
+        (c >= ascii("a") && c <= ascii("z")) || (c >= ascii("A") && c <= ascii("Z"))
+    }
+
+    private static func isDigit(_ c: unichar) -> Bool {
+        c >= ascii("0") && c <= ascii("9")
+    }
+
+    /// Anything a word may not be glued to and still be its own word.  A seat tag is
+    /// marked inside a longer identifier the tag begins,  like `ZC_ZULIP_*`,  because the
+    /// identifier is the tag's own variable,  so the underscore breaks only there.
     private static func isTokenBreak(_ character: unichar, underscoreBreaks: Bool = false) -> Bool {
         if isLetter(character) || isDigit(character) { return false }
         if character == ascii("-") || character == ascii("/") { return false }
-        if character == ascii("_") {
-            // A seat tag is marked inside a longer identifier the tag begins,  like
-            // `ZC_ZULIP_*`,  because the identifier is the tag's own variable.
-            return underscoreBreaks
-        }
+        if character == ascii("_") { return underscoreBreaks }
         return true
     }
 
@@ -364,7 +298,8 @@ enum PlatformVariants {
 
     /// The markdown sections that hold at least one changing line,  so an onboarding
     /// read can jump by section.  A heading is a line of `#` marks;  a section runs to
-    /// the next heading of the same or higher level.
+    /// the next heading of the same or higher level,  through any child headings inside
+    /// it,  so a parent's count includes its children.
     private static func sections(of lines: [String], marked: [MarkedLine]) -> [MarkedSection] {
         let changing = Set(marked.filter(\.usuallyChanges).map(\.number))
         guard !changing.isEmpty else { return [] }
@@ -380,7 +315,7 @@ enum PlatformVariants {
         var result: [MarkedSection] = []
         for (position, heading) in headings.enumerated() {
             // The next heading of the same or higher level ends the section,  not the
-            // first child heading inside it,  so a parent's count includes its children.
+            // first child heading inside it.
             var end = lines.count
             for later in headings[(position + 1)...] where later.level <= heading.level {
                 end = later.number
