@@ -8,6 +8,11 @@
   Standard, not throttled:  with LowPriorityIO most `version` probes missed their 5 second cap.
   The server half needs the read-only `fleet-tools-ro` SSH key (docs/protocols/fleet-tool-parity.md);
   until it exists, the doctor reports the server as unknown, "no read-only route to the server".
+  The vms flag (two hyphens, which an XML comment cannot hold) also pulls each VM named in ~/.config/fleet-tools/vm-hosts.json into
+  ~/.local/state/fleet-tools/vms/, which Muster's Virtual Machines panel reads (AFC-576).  With
+  no config it does nothing, and a VM that fails never fails the run (docs/protocols/fleet-vm-status.md).
+  The runtime is simple-tools-runtime, the managed checkout com.jay.simple-tools-runtime-sync
+  keeps on main;  the older agent-sync-runtime path no longer exists.
   Install:  cp this file to ~/Library/LaunchAgents/ and
             launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.jay.fleet-tools-doctor.plist
   Stop:     launchctl bootout gui/$(id -u)/com.jay.fleet-tools-doctor
@@ -20,9 +25,10 @@
   <array>
     <string>/usr/bin/python3</string>
     <string>-I</string>
-    <string>/Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime/scripts/fleet-tools-doctor.py</string>
+    <string>/Users/jay/apps/lanes/_managed/fleet/simple-tools-runtime/scripts/fleet-tools-doctor.py</string>
     <string>--remote</string>
     <string>fleet-tools-ro</string>
+    <string>--vms</string>
     <string>--write</string>
     <string>/Users/jay/.local/state/fleet-tools/report.json</string>
   </array>
