@@ -351,7 +351,7 @@ const SECRET_PATTERNS = [
 const ZULIP_SHAPED_RE = /(?<![A-Za-z0-9])[A-Za-z0-9]{32}(?![A-Za-z0-9])/g;
 
 // Complete unquoted source assignments only. Quotes, bare identifiers and bearer values never qualify.
-const SOURCE_RHS = /^(?:process\.env\.[A-Z][A-Z0-9_]*|import\.meta\.env\.[A-Z][A-Z0-9_]*|[a-z][A-Za-z0-9_]*\([a-z][A-Za-z0-9_]*(?:, *[a-z][A-Za-z0-9_]*)*\))(?= *[;,)\n]| *$)/;
+const SOURCE_RHS = /^(?:process\.env\.[A-Z][A-Z0-9_]*|import\.meta\.env\.[A-Z][A-Z0-9_]*)(?= *[;,)\n]| *$)/;
 function sourceAssignment(text, start) {
   if (start && /["']/.test(text[start - 1])) return false;
   const line = text.slice(text.lastIndexOf("\n", start - 1) + 1, start);

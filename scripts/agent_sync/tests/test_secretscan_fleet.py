@@ -80,7 +80,6 @@ def source_expressions():
     rows = [
         ("cfg.composio.apiKey", "process.env.COMPOSIO_API_KEY"),
         ("if (process.env.BOX_TOKEN !== undefined) cfg.box.token", "process.env.BOX_TOKEN"),
-        ("const apiKey", "stsProviderCredential(provider)"),
         ("cfg.secret", "import.meta.env.PROVIDER_SECRET"),
     ]
     return [f"{lhs} = {rhs};" for lhs, rhs in rows]
@@ -96,6 +95,12 @@ def assignment_literals():
         ("const token", chr(34) + "stsProviderCredential(provider)" + chr(34)),
         ("apiKey", "stsProviderCredential(provider) + 'literal'"),
         ("x", repr("token" + " = " + "process.env.COMPOSIO_API_KEY") + ";"),
+    ]
+    # Calls do not prove a nonliteral value: a credential can carry a call suffix.
+    rows += [
+        ("token", alnum(24).lower() + "(a)"),
+        ("const apiKey", "stsProviderCredential(provider)"),
+        ("token", "auth." + alnum(24).lower() + "(a)"),
     ]
     out = [f"{lhs} = {rhs}" for lhs, rhs in rows]
     out += ["Authorization: " + "Bearer " + values[-1], "token" + ": " + values[-1]]

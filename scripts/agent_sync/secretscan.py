@@ -108,8 +108,7 @@ def _zulip_shaped(token: str) -> bool:
 # Bare identifiers, quoted values, prose and bearer headers remain secret candidates.
 # The separate routine checker fallback intentionally remains stricter.
 _SOURCE_RHS = re.compile(
-    r"(?:process\.env\.[A-Z][A-Z0-9_]*|import\.meta\.env\.[A-Z][A-Z0-9_]*|"
-    r"[a-z][A-Za-z0-9_]*\([a-z][A-Za-z0-9_]*(?:, *[a-z][A-Za-z0-9_]*)*\))"
+    r"(?:process\.env\.[A-Z][A-Z0-9_]*|import\.meta\.env\.[A-Z][A-Z0-9_]*)"
     r"(?= *[;,)\n]| *$)"
 )
 
