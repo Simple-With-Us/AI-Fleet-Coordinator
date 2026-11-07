@@ -27,11 +27,13 @@ SCRIPT = HERE / "agent_sync" / "server" / "install-operator-sheets-drain.sh"
 FAKE_TOKEN = "st" + "." + "fixture" + "-not-a-real-token-" + "0123456789"
 PEM_BEGIN = "-----BEGIN " + "PRIVATE KEY-----"
 PEM_END = "-----END " + "PRIVATE KEY-----"
-FAKE_SA = json.dumps({
-    "type": "service_account",
-    "client_email": "drain@example.invalid",
-    "private_key": PEM_BEGIN + "\nfixture-key-body\n" + PEM_END + "\n",
-})
+FAKE_SA = json.dumps(
+    {
+        "type": "service_account",
+        "client_email": "drain@example.invalid",
+        "private_key": PEM_BEGIN + "\nfixture-key-body\n" + PEM_END + "\n",
+    }
+)
 
 
 def load_python_block():
@@ -85,8 +87,9 @@ class ShellTests(unittest.TestCase):
         base.update({k: v for k, v in env.items() if v is not None})
         for key in [k for k, v in env.items() if v is None]:
             base.pop(key, None)
-        return subprocess.run(["bash", str(SCRIPT), *args], env=base, capture_output=True,
-                              text=True, timeout=60)
+        return subprocess.run(
+            ["bash", str(SCRIPT), *args], env=base, capture_output=True, text=True, timeout=60
+        )
 
     def test_bash_syntax(self):
         result = subprocess.run(["bash", "-n", str(SCRIPT)], capture_output=True, text=True)
@@ -102,15 +105,23 @@ class ShellTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         out = result.stdout
         self.assertIn("dry run: nothing will be changed", out)
-        for name in ("operator_sheets_export.mjs", "operator_sheets_google.mjs", "operator_sheets_drain.mjs"):
-            self.assertRegex(out, r"(would install|unchanged) /usr/local/lib/operator-sheets-drain/" + name)
+        for name in (
+            "operator_sheets_export.mjs",
+            "operator_sheets_google.mjs",
+            "operator_sheets_drain.mjs",
+        ):
+            self.assertRegex(
+                out, r"(would install|unchanged) /usr/local/lib/operator-sheets-drain/" + name
+            )
         self.assertIn("Fleet-OPS prod /operator-thread-registry", out)
         self.assertIn("the token is not read in a dry run", out)
         self.assertIn("OPERATOR_SHEETS_WORKBOOK_ID=workbook_FIXTURE-1", out)
         self.assertIn("OPERATOR_SHEETS_SESSIONS_SHEET_ID=20964676", out)
         self.assertIn("OPERATOR_SHEETS_EVENTS_SHEET_ID=1449318075", out)
         self.assertIn("pending-outbox", out)
-        self.assertRegex(out, r"(would install|unchanged) /etc/systemd/system/operator-sheets-drain.timer")
+        self.assertRegex(
+            out, r"(would install|unchanged) /etc/systemd/system/operator-sheets-drain.timer"
+        )
         self.assertIn("not enabled or started by this script", out)
         self.assertNotIn("installed /", out.replace("would install", ""))
         self.assertNotIn("fixture-not-a-real-token", out + result.stderr)
@@ -119,7 +130,10 @@ class ShellTests(unittest.TestCase):
         cases = [
             ({"OPERATOR_SHEETS_WORKBOOK_ID": None}, "OPERATOR_SHEETS_WORKBOOK_ID"),
             ({"OPERATOR_SHEETS_WORKBOOK_ID": "bad id!"}, "OPERATOR_SHEETS_WORKBOOK_ID"),
-            ({"OPERATOR_SHEETS_SESSIONS_SHEET_ID": "5", "OPERATOR_SHEETS_EVENTS_SHEET_ID": "5"}, "must differ"),
+            (
+                {"OPERATOR_SHEETS_SESSIONS_SHEET_ID": "5", "OPERATOR_SHEETS_EVENTS_SHEET_ID": "5"},
+                "must differ",
+            ),
             ({"OPERATOR_SHEETS_EVENTS_SHEET_ID": "12x"}, "whole numbers"),
             ({"OPERATOR_REGISTRY_DB": "relative/path"}, "absolute path"),
             ({"OPERATOR_SHEETS_TOKEN_FILE": None}, "OPERATOR_SHEETS_TOKEN_FILE"),
@@ -193,13 +207,18 @@ class PythonBlockTests(unittest.TestCase):
         core, calls = fake_core()
         value = self.block.fetch_service_account(core, FAKE_TOKEN, {"HOME": str(self.tmp)})
         self.assertEqual(value, FAKE_SA)
-        self.assertEqual(calls, [{
-            "project": "00000000-0000-4000-8000-000000000000",
-            "path": "/operator-thread-registry",
-            "env": {},  # no caller variable can redirect the API or widen the folders
-            "token": FAKE_TOKEN,
-            "names": ["OPERATOR_GOOGLE_SHEETS_SA"],
-        }])
+        self.assertEqual(
+            calls,
+            [
+                {
+                    "project": "00000000-0000-4000-8000-000000000000",
+                    "path": "/operator-thread-registry",
+                    "env": {},  # no caller variable can redirect the API or widen the folders
+                    "token": FAKE_TOKEN,
+                    "names": ["OPERATOR_GOOGLE_SHEETS_SA"],
+                }
+            ],
+        )
 
     def test_fetch_failures_name_keys_never_values(self):
         core, _ = fake_core(error="token-scope-mismatch")
@@ -217,9 +236,20 @@ class PythonBlockTests(unittest.TestCase):
         bad = [
             ("not json fixture-key-body", "is not JSON"),
             (json.dumps({"type": "user", "private_key": "fixture-key-body"}), "(type)"),
-            (json.dumps({"type": "service_account", "private_key": PEM_BEGIN}), "missing client_email"),
-            (json.dumps({"type": "service_account", "client_email": "a@b", "private_key": "fixture-key-body"}),
-             "not a PEM key"),
+            (
+                json.dumps({"type": "service_account", "private_key": PEM_BEGIN}),
+                "missing client_email",
+            ),
+            (
+                json.dumps(
+                    {
+                        "type": "service_account",
+                        "client_email": "a@b",
+                        "private_key": "fixture-key-body",
+                    }
+                ),
+                "not a PEM key",
+            ),
         ]
         for text, message in bad:
             with self.subTest(message=message):
@@ -229,17 +259,26 @@ class PythonBlockTests(unittest.TestCase):
                 self.assertNotIn("fixture-key-body", str(caught.exception))
 
     def test_render_env(self):
-        text = self.block.render_env("/etc/operator-sheets", "wb_1", "20964676", "1449318075",
-                                     "eavesdropper", "/data/operator/registry.sqlite3").decode()
+        text = self.block.render_env(
+            "/etc/operator-sheets",
+            "wb_1",
+            "20964676",
+            "1449318075",
+            "eavesdropper",
+            "/data/operator/registry.sqlite3",
+        ).decode()
         lines = [line for line in text.splitlines() if not line.startswith("#")]
-        self.assertEqual(lines, [
-            "OPERATOR_SHEETS_SA_FILE=/etc/operator-sheets/sa.json",
-            "OPERATOR_SHEETS_WORKBOOK_ID=wb_1",
-            "OPERATOR_SHEETS_SESSIONS_SHEET_ID=20964676",
-            "OPERATOR_SHEETS_EVENTS_SHEET_ID=1449318075",
-            "OPERATOR_REGISTRY_CONTAINER=eavesdropper",
-            "OPERATOR_REGISTRY_DB=/data/operator/registry.sqlite3",
-        ])
+        self.assertEqual(
+            lines,
+            [
+                "OPERATOR_SHEETS_SA_FILE=/etc/operator-sheets/sa.json",
+                "OPERATOR_SHEETS_WORKBOOK_ID=wb_1",
+                "OPERATOR_SHEETS_SESSIONS_SHEET_ID=20964676",
+                "OPERATOR_SHEETS_EVENTS_SHEET_ID=1449318075",
+                "OPERATOR_REGISTRY_CONTAINER=eavesdropper",
+                "OPERATOR_REGISTRY_DB=/data/operator/registry.sqlite3",
+            ],
+        )
 
     def test_private_directory_and_files_are_0700_and_0600_and_idempotent(self):
         etc = self.tmp / "etc-operator-sheets"
@@ -248,11 +287,15 @@ class PythonBlockTests(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(etc.stat().st_mode), 0o700)
             self.assertTrue(self.block.write_private(fd, "sa.json", b"one"))
             self.assertEqual(stat.S_IMODE((etc / "sa.json").stat().st_mode), 0o600)
-            self.assertFalse(self.block.write_private(fd, "sa.json", b"one"))  # unchanged: untouched
+            self.assertFalse(
+                self.block.write_private(fd, "sa.json", b"one")
+            )  # unchanged: untouched
             self.assertTrue(self.block.write_private(fd, "sa.json", b"two"))
             self.assertEqual((etc / "sa.json").read_bytes(), b"two")
             (etc / "sa.json").chmod(0o644)
-            self.assertTrue(self.block.write_private(fd, "sa.json", b"two"))  # mode drift is repaired
+            self.assertTrue(
+                self.block.write_private(fd, "sa.json", b"two")
+            )  # mode drift is repaired
             self.assertEqual(stat.S_IMODE((etc / "sa.json").stat().st_mode), 0o600)
             outside = self.tmp / "outside"
             outside.write_text("untouched")
@@ -278,10 +321,24 @@ class PythonBlockTests(unittest.TestCase):
         out = io.StringIO()
         path_before = list(sys.path)
         try:
-            with mock.patch.dict(sys.modules, {"fleet_secrets": package, "fleet_secrets.core": core}), \
-                    redirect_stdout(out):
-                self.block.main([str(self.tmp), str(etc), str(token), "wb_1", "20964676", "1449318075",
-                                 "eavesdropper", "/data/operator/registry.sqlite3"])
+            with (
+                mock.patch.dict(
+                    sys.modules, {"fleet_secrets": package, "fleet_secrets.core": core}
+                ),
+                redirect_stdout(out),
+            ):
+                self.block.main(
+                    [
+                        str(self.tmp),
+                        str(etc),
+                        str(token),
+                        "wb_1",
+                        "20964676",
+                        "1449318075",
+                        "eavesdropper",
+                        "/data/operator/registry.sqlite3",
+                    ]
+                )
         finally:
             sys.path[:] = path_before
         self.assertEqual((etc / "sa.json").read_text(), FAKE_SA)
