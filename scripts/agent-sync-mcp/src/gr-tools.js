@@ -21,6 +21,7 @@ import { callTypedV1 } from "./gr-typed-v1.js";
 import { ASSERTION_FAMILY_RE } from "./gr-assert.js";
 import { WF_V1_READ_ACTIONS, WF_V1_ACTIONS, workflowInputLimit, validWfV1Args, boundedWorkflowInput, parseWfV1Args, validWfV1Response } from "./gr-workflow-v1.js";
 import { resolveSecret } from "./infisical.js";
+import { classifyRelayRefusal } from "./gr-refusal.js";
 
 /** The relay's response envelope (kody discussion_r4372745180):  every body
  * is decoded as UNKNOWN and validated with RelayResponseSchema.parse before
@@ -219,7 +220,11 @@ export class GrRelayClient {
         && (parsed.error.startsWith("credential-shaped")
           || parsed.error === "environment name contains credential pattern"
           || /^[^\n]{1,200} looks like it contains a credential \([A-Za-z0-9_]{1,60}\); refusing to relay it$/.test(parsed.error));
-      return {status:response.status,body:{error:"workflow_request_refused", ...(credentialMarker ? {reason:"credential_scan"} : {}), ...(parsed.retryable===true ? {retryable:true} : {})}};
+      // The cause class, from the relay's exact fixed strings and numeric
+      // github_status only (src/gr-refusal.js):  a closed reason or nothing,
+      // never the relay's prose.  An unmatched refusal keeps the flat answer.
+      const classified=credentialMarker?{reason:"credential_scan"}:classifyRelayRefusal(parsed.error, body.github_status);
+      return {status:response.status,body:{error:"workflow_request_refused", ...(classified ? classified : {}), ...(parsed.retryable===true ? {retryable:true} : {})}};
     } catch {return unavailable();}
   }
 
