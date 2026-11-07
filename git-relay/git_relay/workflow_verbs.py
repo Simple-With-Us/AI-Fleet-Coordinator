@@ -6183,8 +6183,11 @@ class WorkflowVerbs:
             ):
                 raise ValueError()
             result = apply_patch(raw, args.get("edits"), known=[self.bearer])
-            if find_secret(result.decode("utf-8")) or self._provider_token_text(
-                result.decode("utf-8")
+            if (
+                find_secret(result.decode("utf-8"))
+                or self._provider_token_text(result.decode("utf-8"))
+                or self.bearer
+                and self.bearer in result.decode("utf-8")
             ):
                 raise ValueError()
         except (ValueError, TypeError, KeyError, UnicodeError):

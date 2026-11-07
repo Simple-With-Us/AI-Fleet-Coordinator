@@ -16,3 +16,7 @@ test('patch response is bound to requested branch and path',()=>{
 test('inserted assignment and dedicated tokens still hit normal Worker scanner',()=>{
  for(const text of ['token = '+'a'.repeat(24),'gh'+'p_'+'a'.repeat(40)])assert.ok(scanSecret(text));
 });
+
+test('patch receipt remains inside common bounded envelope',()=>{
+ assert.equal(validWfV1Response('wf_file_patch',{branch:'x'.repeat(1048577),path:args.path,commit:'c'.repeat(40)}),false);
+});

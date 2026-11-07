@@ -518,9 +518,10 @@ const contextCommentsPage=z.object({sha:shaValue,comments:z.array(contextComment
 const contextCommentGet=z.object({comment:contextComment}).strict();
 const requestedReviewers=z.object({number:z.number().int().positive(),head_sha:shaValue,users:z.array(contextAuthor).max(100),teams:z.array(z.object({id:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),slug:z.string().regex(/^[A-Za-z0-9_-]{1,100}$/).refine(v=>!metadataCredential.test(v))}).strict()).max(100),snapshot:z.literal(false)}).strict();
 export function validWfV1Response(action, body, args) {
- if(action==='wf_file_patch')return z.object({branch:z.string().min(1),path:z.string().min(1),commit:shaValue}).strict().safeParse(body).success && (!args || body.branch===args.branch && body.path===args.path);
+
  if(typeof action!=='string')return false;
  if(!boundedWorkflowInput(body,{maxDepth:12,maxNodes:50000,maxBytes:1048576,maxString:1048576,maxKeys:1000}))return false;
+ if(action==='wf_file_patch')return z.object({branch:z.string().min(1),path:z.string().min(1),commit:shaValue}).strict().safeParse(body).success && (!args || body.branch===args.branch && body.path===args.path);
  if(action.startsWith('wf_repo_variable')){
   const name=z.string().regex(/^[A-Z_][A-Z0-9_]{0,99}$/), variable=z.object({name,value:z.string().refine(v=>new TextEncoder().encode(v).length<=8192),created_at:z.string().max(100),updated_at:z.string().max(100)}).strict();
   const ok=(action==='wf_repo_variables'?z.object({variables:z.array(variable).max(50),total_count:z.number().int().nonnegative(),page:z.number().int().min(1).max(1000)}).strict():action==='wf_repo_variable_get'?z.object({variable}).strict():z.object({completed:z.literal(true),name}).strict()).safeParse(body).success;

@@ -6,22 +6,16 @@ Dedicated token shapes and loaded values are refused even in unchanged base byte
 
 from __future__ import annotations
 
-import importlib.util
 from array import array
-from pathlib import Path
+
+from . import patch_secretscan
 
 MAX_BYTES = 2 * 1024 * 1024
 GENERIC = frozenset({"assigned credential", "assigned secret"})
 
 
 def _scanner():
-    path = Path(__file__).resolve().parents[2] / "scripts" / "agent_sync" / "secretscan.py"
-    spec = importlib.util.spec_from_file_location("_patch_scanner", path)
-    if spec is None or spec.loader is None:
-        raise ValueError("scanner unavailable")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    return patch_secretscan
 
 
 def apply_patch(base: bytes, edits: list[dict], known=()) -> bytes:
@@ -31,7 +25,7 @@ def apply_patch(base: bytes, edits: list[dict], known=()) -> bytes:
     base.decode("utf-8", "strict")
     scanner = _scanner()
     base_text = base.decode("utf-8", "strict")
-    if any(value and len(value) >= 8 and value in base_text for value in known):
+    if any(value and value in base_text for value in known):
         raise ValueError("loaded credential in base")
     for label, pattern in scanner._PATTERNS:
         if label not in GENERIC and pattern.search(base_text):
@@ -78,12 +72,20 @@ def apply_patch(base: bytes, edits: list[dict], known=()) -> bytes:
         raise ValueError("patch too large or unchanged")
     result = bytes(output)
     text = result.decode("utf-8", "strict")
-    scanner = _scanner()
-    if any(value and len(value) >= 8 and value in text for value in known):
+    if any(value and value in text for value in known):
         raise ValueError("loaded credential")
+    # One linear UTF-8 offset table, reused for every match.
+    offsets = array("i", [0])
+    for char in text:
+        offsets.append(offsets[-1] + len(char.encode("utf-8")))
+    checked_lines = set()
+    match_count = 0
     # Full-output pattern enumeration, not scan() first-hit or changed-span scans.
     for label, pattern in scanner._PATTERNS:
         for match in pattern.finditer(text):
+            match_count += 1
+            if match_count > 4096:
+                raise ValueError("pattern match budget exceeded")
             # Only assignment patterns have residual baseline semantics. A dedicated
             # Cloudflare token shares its label but not the named assignment capture.
             assignment = label in GENERIC and (
@@ -104,7 +106,10 @@ def apply_patch(base: bytes, edits: list[dict], known=()) -> bytes:
             left = text.rfind("\n", 0, match.start()) + 1
             right = text.find("\n", match.end())
             right = len(text) if right < 0 else right + 1
-            a, b = len(text[:left].encode()), len(text[:right].encode())
+            a, b = offsets[left], offsets[right]
+            if (a, b) in checked_lines:
+                continue
+            checked_lines.add((a, b))
             segment = origins[a:b]
             if (
                 not segment

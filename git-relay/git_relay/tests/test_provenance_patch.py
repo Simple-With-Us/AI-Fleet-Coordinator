@@ -96,3 +96,21 @@ class RemovedSecretTests(unittest.TestCase):
             apply_patch(
                 base, [dict(start=0, end=len(base), text="safe\n")], known=["known-secret-value"]
             )
+
+
+class ReviewRegressionTests(unittest.TestCase):
+    def test_packaged_scanner_is_present_and_byte_identical_to_fleet_source(self):
+        from pathlib import Path
+
+        import git_relay.patch_secretscan as bundled
+
+        original = Path(__file__).resolve().parents[3] / "scripts" / "agent_sync" / "secretscan.py"
+        self.assertEqual(Path(bundled.__file__).read_bytes(), original.read_bytes())
+
+    def test_short_known_and_repeated_match_budget(self):
+        base = b"ordinary\n"
+        with self.assertRaises(ValueError):
+            apply_patch(base, [dict(start=len(base), end=len(base), text="tiny")], known=["tiny"])
+        base = (("token = " + "a" * 24 + ";\n") * 4097).encode()
+        with self.assertRaises(ValueError):
+            apply_patch(base, [dict(start=len(base), end=len(base), text="safe")])
