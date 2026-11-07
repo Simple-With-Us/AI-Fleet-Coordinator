@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// The window's root:  the sidebar's places in one detail column, over one shared run.
@@ -294,6 +295,10 @@ struct RunVerdictLabel: View {
 }
 
 /// The banner that says why the last run cannot be trusted.
+///
+/// It shows only the end of a long reason (`FailureReason`), so a traceback can never make
+/// it taller than the window and squeeze the panel under it to nothing.  The full reason is
+/// one click away.
 struct FailureBanner: View {
     let reason: String
     var title: String = "The engine did not answer, so every cell reads unknown."
@@ -306,11 +311,22 @@ struct FailureBanner: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(.callout.weight(.medium))
-                Text(reason)
+                Text(FailureReason.shown(reason))
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
+                    .lineLimit(FailureReason.wrappedLineLimit)
                     .fixedSize(horizontal: false, vertical: true)
+                if FailureReason.isShortened(reason) {
+                    Button("Copy Full Reason") {
+                        let pasteboard = NSPasteboard.general
+                        pasteboard.clearContents()
+                        pasteboard.setString(reason, forType: .string)
+                    }
+                    .buttonStyle(.link)
+                    .font(.caption)
+                    .help("Copies the whole reason, including the lines the banner leaves out.")
+                }
             }
             Spacer(minLength: 0)
         }

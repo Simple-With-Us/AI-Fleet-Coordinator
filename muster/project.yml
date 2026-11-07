@@ -127,6 +127,7 @@ targets:
       - path: Muster/Model/SeatInventory.swift
       - path: Muster/Model/TrustedCheckout.swift
       - path: Muster/Model/ThemeChoice.swift
+      - path: Muster/Model/FailureReason.swift
       - path: Muster/Model/ListenerConfigFile.swift
       - path: Muster/Model/ListenerStatus.swift
       - path: Muster/Model/OperatorOptions.swift
