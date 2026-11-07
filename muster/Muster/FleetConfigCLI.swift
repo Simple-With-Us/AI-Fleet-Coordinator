@@ -137,14 +137,16 @@ enum MusterSettings {
     static let repoRootDefaultsKey = FleetConfigLocation.defaultsKey
     static let scriptsDirectoryDefaultsKey = "musterScriptsDir"
     static let scriptsDirectoryEnvironmentKey = "MUSTER_SCRIPTS_DIR"
-    static let zulipSeatDefaultsKey = "musterZulipSeat"
-    static let zulipSeatEnvironmentKey = "MUSTER_ZULIP_SEAT"
+    /// The setting and environment variable that once chose the seat the Seats panel read
+    /// Zulip as.  Neither is read:  the panel reads only as the Operator (AFC-654).  The
+    /// names stay so the retired saved value can be removed.
+    static let retiredZulipSeatDefaultsKey = "musterZulipSeat"
+    static let retiredZulipSeatEnvironmentKey = "MUSTER_ZULIP_SEAT"
     static let themeDefaultsKey = "musterTheme"
     /// Whether the menu bar item uses its short text.
     static let shortMenuBarTextDefaultsKey = "musterShortMenuBarText"
     /// The place the window was:  the sidebar destination saved by `FleetOverviewView`.
     static let sidebarSelectionDefaultsKey = "musterSidebarSelection"
-    static let defaultZulipSeat = "CLAUDE"
     /// Whether Muster starts the Mac's services again when they stop.  On unless the owner
     /// turned it off:  `ServiceReconciler` reads this on every pass.
     static let keepServicesRunningDefaultsKey = "musterKeepServicesRunning"
@@ -158,14 +160,10 @@ enum MusterSettings {
     // The scripts folder has one resolver, `FleetViewService.resolveScripts`, which also checks
     // each candidate for the scripts.
 
-    static func zulipSeat(
-        defaults: UserDefaults = .standard,
-        environment: [String: String] = ProcessInfo.processInfo.environment
-    ) -> String {
-        let env = (environment[zulipSeatEnvironmentKey] ?? "").trimmingCharacters(in: .whitespaces)
-        if !env.isEmpty { return env }
-        let saved = (defaults.string(forKey: zulipSeatDefaultsKey) ?? "").trimmingCharacters(in: .whitespaces)
-        return saved.isEmpty ? defaultZulipSeat : saved
+    /// Remove the retired reading-seat setting, so no stale seat name lingers in the app's
+    /// defaults.  Nothing reads it either way.
+    static func removeRetiredZulipSeat(defaults: UserDefaults = .standard) {
+        defaults.removeObject(forKey: retiredZulipSeatDefaultsKey)
     }
 }
 

@@ -24,6 +24,9 @@ struct MusterApp: App {
         // apply that asked on its own path would hold its result until the
         // prompt was answered.
         SystemApplyNotifier.requestPermissionOnce()
+        // The Seats panel reads Zulip only as the Operator (AFC-654):  a seat saved by an
+        // older build is not read,  and is removed so it cannot look like a choice.
+        MusterSettings.removeRetiredZulipSeat()
         let store = FleetStore()
         // The monitor starts here and not with a window:  the menu bar item has to know the
         // Mac before any window has appeared,  and the store's first run is still in flight
@@ -102,37 +105,17 @@ struct MusterApp: App {
 
 /// The app's Settings scene:  four panes of one fixed size,  so the window (which Settings
 /// sizes to its content) fits a short screen and nothing hides below an unseen scroller.
+/// Zulip has no seat to choose:  the Seats panel reads only as the Operator (AFC-654).
 struct MusterSettingsView: View {
-    @EnvironmentObject private var store: FleetStore
-    @AppStorage(MusterSettings.zulipSeatDefaultsKey) private var zulipSeat = MusterSettings.defaultZulipSeat
     @AppStorage(MusterSettings.themeDefaultsKey) private var theme: ThemeChoice = .system
     @AppStorage(MusterSettings.shortMenuBarTextDefaultsKey) private var shortMenuBarText = false
     @AppStorage(MusterSettings.keepServicesRunningDefaultsKey) private var keepServicesRunning = true
-
-    /// The saved seat as the reader takes it:  trimmed, and the default when nothing is saved,
-    /// so the picker always has a matching choice.
-    private var chosenSeat: Binding<String> {
-        Binding(get: {
-            let saved = zulipSeat.trimmingCharacters(in: .whitespaces)
-            return saved.isEmpty ? MusterSettings.defaultZulipSeat : saved
-        }, set: { zulipSeat = $0 })
-    }
-
-    private var seatChoices: [String] {
-        var seats = store.roster
-        for seat in [chosenSeat.wrappedValue, MusterSettings.defaultZulipSeat] where !seats.contains(seat) {
-            seats.append(seat)
-        }
-        return seats
-    }
 
     var body: some View {
         TabView {
             MusterFoldersTab()
                 .tabItem { Label("Folders", systemImage: "folder") }
-            MusterZulipServicesPane(seat: chosenSeat, seatChoices: seatChoices,
-                                    environmentSeat: ProcessInfo.processInfo.environment[MusterSettings.zulipSeatEnvironmentKey],
-                                    keepServicesRunning: $keepServicesRunning)
+            MusterZulipServicesPane(keepServicesRunning: $keepServicesRunning)
                 .tabItem { Label("Zulip And Services", systemImage: "bubble.left.and.text.bubble.right") }
             MusterAppearancePane(theme: $theme, shortMenuBarText: $shortMenuBarText)
                 .tabItem { Label("Appearance", systemImage: "paintbrush") }

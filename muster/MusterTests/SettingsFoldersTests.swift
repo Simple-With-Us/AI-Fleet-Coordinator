@@ -244,17 +244,14 @@ final class SettingsFoldersTests: XCTestCase {
         XCTAssertTrue(row.hasChoice)
     }
 
-    // MARK: The Zulip seat
+    // MARK: Zulip
 
-    /// The note shows only when a seat was set at launch and differs from the one chosen here.
-    func testTheZulipNoteShowsOnlyForADifferentSeatSetAtLaunch() {
-        XCTAssertNil(SettingsCopy.zulipNote(environmentSeat: nil, chosen: "CLAUDE"))
-        XCTAssertNil(SettingsCopy.zulipNote(environmentSeat: "", chosen: "CLAUDE"))
-        XCTAssertNil(SettingsCopy.zulipNote(environmentSeat: "  ", chosen: "CLAUDE"))
-        XCTAssertNil(SettingsCopy.zulipNote(environmentSeat: "CLAUDE", chosen: "CLAUDE"))
-        XCTAssertNil(SettingsCopy.zulipNote(environmentSeat: " claude ", chosen: "CLAUDE"))
-        XCTAssertEqual(SettingsCopy.zulipNote(environmentSeat: " MM ", chosen: "CLAUDE"),
-                       SettingsCopy.zulipOverridden("MM"))
+    /// Zulip has no seat to choose (AFC-654):  the words say the Operator, and name no seat.
+    func testTheZulipWordsSayTheOperatorAndOfferNoSeat() {
+        XCTAssertTrue(SettingsCopy.zulipHelper.contains("only as the Operator"))
+        XCTAssertTrue(SettingsCopy.zulipHelper.contains("no seat to choose"))
+        XCTAssertFalse(SettingsCopy.zulipHelper.contains("CLAUDE"))
+        XCTAssertTrue(SettingsCopy.zulipTooltip.contains(MusterSettings.retiredZulipSeatEnvironmentKey))
     }
 
     // MARK: The words
@@ -267,10 +264,11 @@ final class SettingsFoldersTests: XCTestCase {
                        SettingsCopy.chosenSkipped, SettingsCopy.chosenMissing, SettingsCopy.usualMissing,
                        SettingsCopy.checkoutHelper, SettingsCopy.checkoutProblem, SettingsCopy.checksElsewhere("/x/y"),
                        SettingsCopy.scriptsHelper, SettingsCopy.scriptsProblem, SettingsCopy.zulipHelper,
-                       SettingsCopy.zulipOverridden("MM"), SettingsCopy.servicesHelper, SettingsCopy.shortMenuBarHelper]
+                       SettingsCopy.servicesHelper, SettingsCopy.shortMenuBarHelper]
         let keys = [FleetConfigLocation.defaultsKey, FleetConfigLocation.environmentKey,
                     MusterSettings.scriptsDirectoryDefaultsKey, MusterSettings.scriptsDirectoryEnvironmentKey,
-                    MusterSettings.zulipSeatDefaultsKey, MusterSettings.zulipSeatEnvironmentKey, "FleetConfigLocation"]
+                    MusterSettings.retiredZulipSeatDefaultsKey, MusterSettings.retiredZulipSeatEnvironmentKey,
+                    "FleetConfigLocation"]
         let plainGap = try NSRegularExpression(pattern: "[.!?] [A-Z]")
         for text in visible {
             for key in keys { XCTAssertFalse(text.contains(key), "\(key) shows in: \(text)") }

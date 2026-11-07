@@ -79,26 +79,15 @@ enum SettingsCopy {
         "Muster cannot find the fleet scripts, so it reads no lanes, pull requests or claims.",
         "Choose the scripts folder inside the fleet checkout.")
 
+    /// Zulip has no seat to choose (AFC-654):  the Seats panel reads only as the Operator.
     static let zulipHelper = join(
-        "The Seats panel reads Zulip as this seat's bot.",
+        "The Seats panel reads Zulip only as the Operator, through simple-chat's read-only Operator service.",
+        "There is no seat to choose, and it never reads as an agent seat or as you.",
+        "When the Operator read is unavailable, the panel says why and reads nothing else.",
         "Muster only reads, and never posts.")
     static let zulipTooltip = join(
-        "Saved as \(MusterSettings.zulipSeatDefaultsKey).",
-        "\(MusterSettings.zulipSeatEnvironmentKey), when set, comes first.")
-    static func zulipOverridden(_ seat: String) -> String {
-        join("Set when Muster was opened, so Muster reads as \(seat), not the seat chosen here.",
-             "The seat chosen here is used once Muster is opened without that setting.")
-    }
-
-    /// The Zulip note, shown only when a seat set at launch (`MUSTER_ZULIP_SEAT`) is not the
-    /// seat chosen here.  The CLI takes seat names in any case, so case does not count.
-    static func zulipNote(environmentSeat: String?, chosen: String) -> String? {
-        let fromLaunch = (environmentSeat ?? "").trimmingCharacters(in: .whitespaces)
-        guard !fromLaunch.isEmpty,
-              fromLaunch.caseInsensitiveCompare(chosen.trimmingCharacters(in: .whitespaces)) != .orderedSame
-        else { return nil }
-        return zulipOverridden(fromLaunch)
-    }
+        "A saved \(MusterSettings.retiredZulipSeatDefaultsKey) is removed at launch.",
+        "\(MusterSettings.retiredZulipSeatEnvironmentKey) is no longer read.")
 
     static let servicesHelper = join(
         "While Muster runs, it starts a service on the Mac again when it stops or fails, waits longer after each try, and stops trying after 3.",
@@ -227,22 +216,12 @@ struct MusterFoldersPane: View {
 }
 
 struct MusterZulipServicesPane: View {
-    @Binding var seat: String
-    let seatChoices: [String]
-    /// `MUSTER_ZULIP_SEAT` as Muster was opened with it, or nil;  when set, it wins over the choice.
-    let environmentSeat: String?
     @Binding var keepServicesRunning: Bool
 
     var body: some View {
         MusterSettingsPane {
             Section {
-                Picker("Read Zulip As", selection: $seat) {
-                    ForEach(seatChoices, id: \.self) { Text($0).tag($0) }
-                }
-                if let note = SettingsCopy.zulipNote(environmentSeat: environmentSeat, chosen: seat) {
-                    Label(note, systemImage: "info.circle")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
+                LabeledContent("Reads As", value: ChatLocator.readingIdentity)
                 Text(SettingsCopy.zulipHelper).font(.caption).foregroundStyle(.secondary)
                     .help(SettingsCopy.zulipTooltip)
             } header: { Text("Zulip").help(SettingsCopy.zulipTooltip) }

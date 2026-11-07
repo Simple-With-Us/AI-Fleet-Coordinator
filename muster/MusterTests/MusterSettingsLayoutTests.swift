@@ -205,9 +205,7 @@ final class MusterSettingsLayoutTests: XCTestCase {
     }
 
     func testTheZulipAndServicesPaneShowsEveryLineWithoutScrolling() throws {
-        let m = try layOut("zulip-services", MusterZulipServicesPane(
-            seat: .constant("CLAUDE"), seatChoices: ["CLAUDE", "MM"], environmentSeat: "MM",
-            keepServicesRunning: .constant(true)))
+        let m = try layOut("zulip-services", MusterZulipServicesPane(keepServicesRunning: .constant(true)))
         XCTAssertEqual(m.fitting.height, MusterSettingsLayout.paneHeight, accuracy: 1, "the pane is not its fixed size")
         assertNothingHidden(m)
     }
