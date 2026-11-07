@@ -5040,36 +5040,47 @@ def verify_claude_files(
                 "NotebookEdit are not guarded; run `apply claude`",
             )
         ]
+    # Claude Code runs every entry it finds, so every entry is checked and every distinct command is probed:  a
+    # stale or narrow duplicate is a FAIL even when the first entry is current.  An exact duplicate of the current
+    # entry runs the same command twice, which is only a WARN.
     out: list[Check] = []
-    entry = entries[0]
-    if entry.problems:
-        return [Check(t, "file-guard", "FAIL", f"{entry.where}: " + "; ".join(entry.problems))]
-    matcher = entry.group.get("matcher") if entry.group else None
-    out.append(Check(t, "file-guard", "PASS", f"{entry.where} matcher={matcher!r}"))
-    if entry.command != claude_file_hook_command(paths):
+    want = claude_file_hook_command(paths)
+    for idx, entry in enumerate(entries):
+        label = "file-guard" if len(entries) == 1 else f"file-guard#{idx + 1}"
+        if entry.problems:
+            out.append(Check(t, label, "FAIL", f"{entry.where}: " + "; ".join(entry.problems)))
+            continue
+        matcher = entry.group.get("matcher") if entry.group else None
+        if entry.command != want:
+            out.append(
+                Check(
+                    t,
+                    label,
+                    "FAIL" if len(entries) > 1 else "WARN",
+                    f"{entry.where} runs {entry.command}, not this install's {want}; re-run `apply claude`"
+                    + ("" if len(entries) == 1 else " and remove the stale entry by hand"),
+                )
+            )
+        else:
+            out.append(Check(t, label, "PASS", f"{entry.where} matcher={matcher!r}"))
+    if len(entries) > 1 and all(e.command == want and not e.problems for e in entries):
         out.append(
-            Check(
-                t,
-                "file-guard command",
-                "WARN",
-                f"{entry.command} is not this install's {claude_file_hook_command(paths)}; re-run `apply claude`",
-            )
+            Check(t, "file-guard duplicates", "WARN", f"{len(entries) - 1} duplicate {CLAUDE_FILE_HOOK_NAME} entries")
         )
-    if len(entries) > 1:
-        out.append(Check(t, "file-guard", "WARN", f"{len(entries) - 1} duplicate {CLAUDE_FILE_HOOK_NAME} entries"))
-    try:
-        out.extend(
-            probe_claude_files(
-                entry.command,
-                paths.home,
-                paths.registry,
-                timeout,
-                minimal_path,
-                volume=_baked_volume(paths.claude_file_shim),
+    for command in dict.fromkeys(e.command for e in entries if not e.problems):
+        try:
+            out.extend(
+                probe_claude_files(
+                    command,
+                    paths.home,
+                    paths.registry,
+                    timeout,
+                    minimal_path,
+                    volume=_baked_volume(paths.claude_file_shim),
+                )
             )
-        )
-    except Refused as exc:
-        out.append(Check(t, "file-guard probes", "FAIL", str(exc)))
+        except Refused as exc:
+            out.append(Check(t, "file-guard probes", "FAIL", str(exc)))
     return out
 
 

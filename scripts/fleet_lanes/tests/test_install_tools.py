@@ -7058,6 +7058,29 @@ class ClaudeFileGuardInstallTests(World):
         write_json(self.config("claude"), doc, 0o600)
         self.assertFails(self.verify("claude"), "Read/probe-placeholder/deny")
 
+    def test_verify_checks_every_file_guard_entry_not_only_the_first(self) -> None:
+        """Claude Code runs every entry, so a stale duplicate fails verify (Kody finding on #1423)."""
+        T.apply_platform(T.PLATFORMS["claude"], self.paths, now=lambda: STAMP, shim_proven=True)
+        doc = self.load("claude")
+        current = copy.deepcopy(self.file_groups()[0])
+        doc["hooks"]["PreToolUse"].append(copy.deepcopy(current))
+        write_json(self.config("claude"), doc, 0o600)
+        checks = self.verify("claude")
+        self.assertNotIn("FAIL", {c.status for c in checks})
+        self.assertIn("file-guard duplicates", {c.name for c in checks if c.status == "WARN"})
+        stale = copy.deepcopy(current)
+        stale["hooks"][0]["command"] = "/bin/true # claude-file-guard-hook"
+        doc["hooks"]["PreToolUse"].append(stale)
+        write_json(self.config("claude"), doc, 0o600)
+        checks = self.verify("claude")
+        self.assertFails(checks, "remove the stale entry by hand")
+        self.assertFails(checks, "Read/probe-placeholder/deny")
+        narrow = copy.deepcopy(current)
+        narrow["matcher"] = "Write"
+        doc["hooks"]["PreToolUse"][-1] = narrow
+        write_json(self.config("claude"), doc, 0o600)
+        self.assertFails(self.verify("claude"), "never matches Read, Edit, MultiEdit, NotebookEdit")
+
     def test_apply_refuses_to_wire_in_a_missing_file_shim(self) -> None:
         os.unlink(self.paths.claude_file_shim)
         r = T.apply_platform(T.PLATFORMS["claude"], self.paths, now=lambda: STAMP)

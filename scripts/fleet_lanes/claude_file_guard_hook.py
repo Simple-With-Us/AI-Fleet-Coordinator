@@ -13,9 +13,10 @@ lane-guard-hook).  The policy is the seat-neutral one in file_guard.py, with the
   * a missing secret table or registry refuses the file operation.
 
 Shell commands are not judged here:  lane-guard-hook and the secret guard hook own the shell.
-A payload that is not one of these file tools, and any crash, allow (the fleet's hooks fail open
-on an exception, the same contract as lane-guard-hook);  `install_tools verify claude` and Muster
-prove the deny path, so a broken install is visible.  The deny is the Claude PreToolUse shape.
+A payload that is not one of these file tools, or that is not JSON, allows.  An exception inside
+the policy for one of these file tools refuses it (fail closed);  a shim that cannot start Python
+at all still exits non-zero, which Claude Code does not treat as a deny, so `install_tools verify
+claude` and Muster prove the deny path.  The deny is the Claude PreToolUse shape.
 """
 
 from __future__ import annotations
@@ -47,10 +48,24 @@ def file_reason(payload: dict, ctx=None, secret_guard=None) -> str | None:
 
 
 def decide(payload: dict, ctx=None, secret_guard=None):
-    """(reason or None, destination).  A crash allows, like every fleet hook."""
+    """(reason or None, destination).
+
+    Fails closed for Claude's own file tools:  when the policy itself raises (the fleet rule "fail closed when
+    required configuration or registry is unavailable"), a Read, Write, Edit, MultiEdit or NotebookEdit is refused
+    and the reason says the guard could not check it.  Any other payload is not this hook's to judge and allows.
+    """
     try:
         return file_reason(payload, ctx, secret_guard), ""
-    except Exception:
+    except Exception as exc:
+        try:
+            ours = file_guard.tool_kind(payload, CLAUDE_FILE_TOOLS) is not None
+        except Exception:
+            ours = False
+        if ours:
+            return (
+                "Claude file tool refused: the file guard could not check this call "
+                f"({type(exc).__name__}).  Run `python3 -m fleet_lanes.install_tools verify claude`."
+            ), ""
         return None, ""
 
 

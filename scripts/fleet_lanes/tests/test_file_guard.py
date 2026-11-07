@@ -221,15 +221,31 @@ class ClaudeAdapterTests(unittest.TestCase):
         self.assertIn("another seat", self.decide("Edit", "apps/lanes/BotFleet/codex-work/f.py"))
         self.assertIn("review lane", self.decide("Write", "apps/lanes/BotFleet/review-pr-3/f.py"))
 
-    def test_shell_and_unknown_tools_are_not_judged_and_crashes_allow(self):
+    def test_shell_and_unknown_tools_are_not_judged(self):
         for payload in (
             {"tool_name": "Bash", "tool_input": {"command": "cat ~/.secrets/x"}},
             {"tool_name": "Glob", "tool_input": {"pattern": "**"}},
             {},
         ):
             self.assertIsNone(claude.decide(payload, self.ctx)[0])
-        with mock.patch.object(claude, "file_reason", side_effect=RuntimeError):
-            self.assertIsNone(claude.decide({"tool_name": "Read", "tool_input": {}})[0])
+
+    def test_a_policy_crash_refuses_claudes_file_tools_and_allows_the_rest(self):
+        """Fail closed when the guard cannot check a file call (Kody rule on #1423)."""
+        with mock.patch.object(claude, "file_reason", side_effect=RuntimeError("boom")):
+            for tool in ("Read", "Write", "Edit", "MultiEdit", "NotebookEdit"):
+                with self.subTest(tool=tool):
+                    reason = claude.decide({"tool_name": tool, "tool_input": {"file_path": "x"}})[0]
+                    self.assertIn("could not check this call", reason)
+                    self.assertIn("RuntimeError", reason)
+            self.assertIsNone(claude.decide({"tool_name": "Bash", "tool_input": {}})[0])
+            out = io.StringIO()
+            payload = {"tool_name": "Write", "tool_input": {"file_path": "x"}}
+            self.assertEqual(claude.main(stdin=io.StringIO(json.dumps(payload)), stdout=out), 0)
+            self.assertEqual(
+                json.loads(out.getvalue())["hookSpecificOutput"]["permissionDecision"], "deny"
+            )
+        with mock.patch.object(fg.layout, "make_roots", side_effect=OSError):
+            self.assertIn("could not check", self.decide("Read", "public/f"))
 
     def test_main_writes_the_claude_deny_shape_and_nothing_on_allow(self):
         out = io.StringIO()
