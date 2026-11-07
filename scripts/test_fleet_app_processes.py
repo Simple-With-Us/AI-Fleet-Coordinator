@@ -35,7 +35,9 @@ import test_fleet_tools_doctor as doctor_tests
 doctor = doctor_tests.doctor
 
 NOW = 1_800_000_000.0  # 2027-01-15T08:00:00Z
-SECRET = "ghp_" + "A1b2C3d4E5f6G7h8I9j0" * 2
+# An obvious placeholder with no provider prefix:  the tests only need a distinctive string
+# that would show up in the output if argv or the environment were ever read.
+SECRET = "FIXTURE-PLACEHOLDER-NOT-A-SECRET"
 APPS = [
     {"acronym": "BF", "displayName": "BotFleet.app", "slug": "botfleet"},
     {"acronym": "AFC", "displayName": "AI Fleet Coordinator", "slug": "aifleetcoordinator"},
@@ -301,6 +303,39 @@ class LinuxScanTests(Fixture):
         for pid in (1, 804, 805, 806):  # systemd, a container's node, dockerd, sshd
             self.assertNotIn(pid, rows)
 
+    def test_a_file_that_is_not_utf8_costs_one_pid_not_the_scan(self):
+        """Kody, PR 1463:  an undecodable cgroup or pm2 pid file must not abort the host."""
+        self.linux_fixture()
+        (self.proc / "805" / "cgroup").write_bytes(b"\xff\xfe\x00\x80 not utf-8\n")
+        (self.proc / "801" / "cgroup").write_bytes(
+            b"1:name=\xff\xfe:/odd\n0::/system.slice/fleet-coding-memory.service\n"
+        )
+        self.pm2({"botfleet-mcp-0.pid": "807", "clutch-web-3.pid": "802"})
+        (self.home / ".pm2" / "pids" / "clutch-web-3.pid").write_bytes(b"\xff\xff8\x8002")
+        section = self.linux_scan()
+        self.assertTrue(section["reachable"])
+        self.assertTrue(section["complete"])
+        rows = by_pid(section)
+        self.assertNotIn(805, rows)  # its unit could not be read, and nothing else names it
+        self.assertEqual(rows[801]["app"], "AFC")  # the readable part still names the unit
+        self.assertEqual(rows[807]["pm2Name"], "botfleet-mcp")  # the good pid file still reads
+        self.assertNotIn("pm2Name", rows[802])  # the bad pid file named nothing
+        self.assertEqual(rows[808]["app"], "AFC")
+
+    def test_a_ps_listing_that_is_not_utf8_still_reads(self):
+        calls = []
+
+        def runner(argv, **kwargs):
+            calls.append(kwargs)
+            raw = b"  900     1 S 00:10 botfleet-\xffapi\n  901     1 S 00:10 sshd\n"
+            text = raw.decode("utf-8", kwargs.get("errors", "strict"))
+            return subprocess.CompletedProcess(argv, 0, text, "")
+
+        section = fap.scan_host("server", runner=runner, home=self.home, proc=self.proc, apps=APPS)
+        self.assertTrue(section["reachable"])
+        self.assertEqual([row["pid"] for row in section["processes"]], [900])
+        self.assertEqual(calls[0]["errors"], "replace")
+
     def test_the_server_asks_ps_for_comm(self):
         self.linux_fixture()
         self.linux_scan()
@@ -448,6 +483,27 @@ class ServerSectionTests(unittest.TestCase):
         self.assertEqual(section["processes"][0]["state"], "unknown")
         self.assertFalse(fap.section_from(self.scan(truncated=True), "server")["complete"])
         self.assertFalse(fap.section_from(self.scan(complete=False), "server")["complete"])
+
+    def test_only_a_json_boolean_counts_as_a_flag(self):
+        """Kody, PR 1463:  the flags are JSON booleans both here and in Muster's Bool decoder,
+        so a 1, a "yes" or a missing flag reads as the cautious answer, never as true."""
+        for odd in (1, "yes", "true", 1.0, None):
+            section = fap.section_from(self.scan(reachable=odd), "server")
+            self.assertFalse(section["reachable"], repr(odd))
+            self.assertEqual(section["processes"], [], repr(odd))
+            complete = fap.section_from(self.scan(complete=odd), "server")["complete"]
+            self.assertFalse(complete, repr(odd))
+        for odd in (0, 1, "no", None):
+            section = fap.section_from(self.scan(truncated=odd), "server")
+            self.assertTrue(section["reachable"], repr(odd))
+            self.assertFalse(section["complete"], repr(odd))
+        doc = self.scan()
+        del doc["truncated"]
+        self.assertFalse(fap.section_from(doc, "server")["complete"])
+        self.assertTrue(fap.section_from(self.scan(), "server")["complete"])
+        self.assertTrue(fap.json_true(True))
+        for value in (1, "true", None, False, [True]):
+            self.assertFalse(fap.json_true(value), repr(value))
 
 
 class KeepTests(Fixture):

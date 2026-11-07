@@ -109,8 +109,8 @@ struct AppProcessesView: View {
             case .read, .reportOld:
                 EmptyView()
             }
-            ForEach(host.notes, id: \.self) { note in
-                Text(note)
+            ForEach(host.numberedNotes) { note in
+                Text(note.text)
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

@@ -250,6 +250,8 @@ def run_text(runner, argv, timeout) -> str | None:
             argv,
             capture_output=True,
             text=True,
+            # One process name that is not UTF-8 must not cost the whole listing.
+            errors="replace",
             timeout=timeout,
             check=False,
             stdin=subprocess.DEVNULL,
@@ -321,8 +323,9 @@ def pm2_names(home: Path) -> dict[int, str]:
         if not dash or not number.isdigit() or not PM2_NAME_RE.fullmatch(name):
             continue
         try:
-            text = entry.read_text()[:32].strip()
-        except OSError:
+            # A pid file that is not UTF-8 costs that file and nothing else.
+            text = entry.read_text(errors="replace")[:32].strip()
+        except (OSError, ValueError):
             continue
         if text.isdigit():
             names[int(text)] = name
@@ -342,8 +345,9 @@ def linux_executable(pid: int, proc: Path) -> str | None:
 def linux_unit(pid: int, proc: Path) -> str | None:
     """The systemd unit a process runs in, from `/proc/<pid>/cgroup`, which names no argument."""
     try:
-        text = (proc / str(pid) / "cgroup").read_text()[:4096]
-    except OSError:
+        # A cgroup file that is not UTF-8 costs this pid its unit, never the whole scan.
+        text = (proc / str(pid) / "cgroup").read_text(errors="replace")[:4096]
+    except (OSError, ValueError):
         return None
     lines = text.strip().splitlines()
     if not lines:
@@ -508,6 +512,13 @@ def section_bytes(section: dict) -> int:
 # --- The Mac's side:  checking the server's section and writing the report -----------------
 
 
+def json_true(value) -> bool:
+    """True only for a JSON `true`.  The scan writes these flags as booleans, and Muster's
+    reader decodes them as Bool, so a 1 or a "yes" is a malformed flag:  it reads as false
+    here exactly as it does there, the cautious answer (not reached, not complete)."""
+    return isinstance(value, bool) and value
+
+
 def sanitized_row(row) -> dict | None:
     """A row rebuilt from ROW_KEYS alone, or None when it is not one."""
     if not isinstance(row, dict):
@@ -553,7 +564,9 @@ def section_from(doc, host: str) -> dict:
     rows = [row for row in (sanitized_row(item) for item in processes[:MAX_ROWS]) if row]
     raw_notes = doc.get("notes") if isinstance(doc.get("notes"), list) else []
     notes = [note for note in (clean(text, 300) for text in raw_notes[:MAX_NOTES]) if note]
-    reachable = doc.get("reachable") is True
+    reachable = json_true(doc.get("reachable"))
+    # Only a JSON false says the list was not cut:  a missing or odd flag reads as partial.
+    not_cut = isinstance(doc.get("truncated"), bool) and not doc["truncated"]
     section = {
         "schemaVersion": SCHEMA_VERSION,
         "tool": TOOL,
@@ -564,10 +577,10 @@ def section_from(doc, host: str) -> dict:
         else (clean(doc.get("error"), 300) or f"the {host} could not scan itself"),
         "generatedAt": doc["generatedAt"],
         "complete": reachable
-        and doc.get("complete") is True
+        and json_true(doc.get("complete"))
         and len(rows) == len(processes)
-        and doc.get("truncated") is not True,
-        "truncated": doc.get("truncated") is True or len(processes) > MAX_ROWS,
+        and not_cut,
+        "truncated": json_true(doc.get("truncated")) or len(processes) > MAX_ROWS,
         "notes": notes,
         "processes": rows if reachable else [],
     }

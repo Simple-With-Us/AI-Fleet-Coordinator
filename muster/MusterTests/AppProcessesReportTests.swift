@@ -132,12 +132,12 @@ final class AppProcessesReportTests: XCTestCase {
 
     func testAnExtraKeyInARowIsNeverKept() throws {
         // The doctor never writes an argv;  if one ever arrived,  the row has nowhere to keep it.
-        let rows = #"[{"app": "BF", "pid": 9, "executable": "node", "argv": ["node", "--token=ghp_x"], "state": "sleeping"}]"#
+        let rows = #"[{"app": "BF", "pid": 9, "executable": "node", "argv": ["node", "--token=FIXTURE-PLACEHOLDER"], "state": "sleeping"}]"#
         let reading = parse(report(hosts: [host("mac", processes: rows)]))
         let row = try XCTUnwrap(app(reading, host: 0, "BF")?.processes.first)
         let labels = Mirror(reflecting: row).children.compactMap(\.label)
         XCTAssertFalse(labels.contains("argv"))
-        XCTAssertFalse(String(describing: row).contains("ghp_x"))
+        XCTAssertFalse(String(describing: row).contains("FIXTURE-PLACEHOLDER"))
     }
 
     // MARK: Every way of not knowing
@@ -200,6 +200,89 @@ final class AppProcessesReportTests: XCTestCase {
             XCTAssertTrue(reading.hosts.isEmpty, why)
             XCTAssertFalse(reading.isCurrent, why)
         }
+    }
+
+    // MARK: Kody's findings on PR 1463
+
+    /// One host document written out by hand,  for the shapes the helper cannot make.
+    private func rawHost(_ fields: String) -> String {
+        #"{"host": "mac", "reachable": true, "error": null, "generatedAt": "\#(time(120))", \#(fields)}"#
+    }
+
+    func testOneBadProcessEntryCostsThatEntryAndTheHostIsPartlyRead() throws {
+        let rows = """
+            [{"app": "BF", "pid": 501, "executable": "node", "state": "sleeping"},
+             "not an object", 42, {"pid": 3, "state": "running"}, {"app": "C", "pid": "x"}]
+            """
+        let reading = parse(report(hosts: [host("mac", processes: rows)]))
+        let mac = reading.hosts[0]
+        XCTAssertEqual(mac.state, .partlyRead, "a dropped entry is never a full read")
+        XCTAssertEqual(app(reading, host: 0, "BF")?.state, .seen(1))
+        // The entry with a bad pid still names its app,  so it is kept with its pid not read.
+        XCTAssertEqual(app(reading, host: 0, "C")?.state, .seen(1))
+        XCTAssertNil(app(reading, host: 0, "C")?.processes.first?.pid)
+        // The dropped entries could have been anyone's:  no app may say No Process Seen.
+        XCTAssertEqual(app(reading, host: 0, "HH")?.state, .notKnown)
+        XCTAssertEqual(app(reading, host: 0, "AFC")?.state, .notKnown)
+    }
+
+    func testAProcessListThatIsMissingOrNotAListIsNotAFullRead() {
+        for fields in [
+            #""complete": true, "truncated": false, "notes": [], "processes": "none""#,
+            #""complete": true, "truncated": false, "notes": [], "processes": null"#,
+            #""complete": true, "truncated": false, "notes": []"#,
+        ] {
+            let reading = parse(report(hosts: [rawHost(fields)]))
+            XCTAssertEqual(reading.hosts[0].state, .partlyRead, fields)
+            XCTAssertEqual(app(reading, host: 0, "BF")?.state, .notKnown, fields)
+        }
+        let whole = parse(report(hosts: [rawHost(#""complete": true, "truncated": false, "notes": [], "processes": []"#)]))
+        XCTAssertEqual(whole.hosts[0].state, .read)
+        XCTAssertEqual(app(whole, host: 0, "BF")?.state, .noProcessSeen)
+    }
+
+    func testOnlyAReadableFalseSaysTheListWasNotCut() {
+        for fields in [
+            #""complete": true, "notes": [], "processes": []"#,
+            #""complete": true, "truncated": 0, "notes": [], "processes": []"#,
+            #""complete": 1, "truncated": false, "notes": [], "processes": []"#,
+        ] {
+            let reading = parse(report(hosts: [rawHost(fields)]))
+            XCTAssertEqual(reading.hosts[0].state, .partlyRead, fields)
+        }
+    }
+
+    func testNotesDecodeOneByOneAndTwoAlikeAreStillTwoRows() {
+        let reading = parse(report(hosts: [
+            rawHost(#""complete": true, "truncated": false, "notes": ["same words", 5, "same words"], "processes": []"#),
+        ]))
+        let mac = reading.hosts[0]
+        XCTAssertEqual(mac.notes, ["same words", "same words"])
+        XCTAssertEqual(mac.numberedNotes.map(\.id), [0, 1])
+        XCTAssertEqual(Set(mac.numberedNotes.map(\.id)).count, mac.notes.count)
+        // A bad note is not a bad process list:  the host is still a full read.
+        XCTAssertEqual(mac.state, .read)
+    }
+
+    func testTheSizeIsCheckedAgainOnTheBytesLoaded() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("muster-app-processes-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent(AppProcessesContract.fileName)
+        try report().write(to: url, atomically: true, encoding: .utf8)
+        // The file on disk is small;  the bytes that arrive are not (it grew,  or was replaced).
+        let grown = AppProcessesReportReader.read(at: url, now: now) { _ in
+            Data(count: AppProcessesContract.maxReportBytes + 1)
+        }
+        XCTAssertTrue(grown.problem?.contains("larger than") ?? false, grown.problem ?? "no problem")
+        XCTAssertTrue(grown.hosts.isEmpty)
+        XCTAssertNil(AppProcessesReportReader.sizeProblem(AppProcessesContract.maxReportBytes))
+        XCTAssertNotNil(AppProcessesReportReader.sizeProblem(AppProcessesContract.maxReportBytes + 1))
+        // The default loader never reads more than one byte past the cap.
+        try Data(count: AppProcessesContract.maxReportBytes * 2).write(to: url)
+        XCTAssertEqual(try AppProcessesReportReader.boundedData(at: url).count,
+                       AppProcessesContract.maxReportBytes + 1)
     }
 
     // MARK: The file

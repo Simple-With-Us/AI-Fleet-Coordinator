@@ -149,16 +149,54 @@ struct AppProcessesHostDocument: Decodable, Equatable {
 
     /// A host decodes field by field.  A field that is missing or of another type reads
     /// as the cautious answer:  not reachable,  not complete.
+    ///
+    /// The process list decodes entry by entry (Kody, PR 1463):  one entry this app cannot
+    /// read costs that entry,  and the host is then not complete,  so its apps with no row
+    /// read Not Known rather than No Process Seen.  A list that is missing or is not a list
+    /// makes the host not complete for the same reason.
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         host = (try? container.decodeIfPresent(String.self, forKey: .host)) ?? ""
         reachable = (try? container.decodeIfPresent(Bool.self, forKey: .reachable)) ?? false
         error = try? container.decodeIfPresent(String.self, forKey: .error)
         generatedAt = try? container.decodeIfPresent(String.self, forKey: .generatedAt)
-        complete = (try? container.decodeIfPresent(Bool.self, forKey: .complete)) ?? false
-        truncated = (try? container.decodeIfPresent(Bool.self, forKey: .truncated)) ?? false
-        notes = (try? container.decodeIfPresent([String].self, forKey: .notes)) ?? []
-        processes = (try? container.decodeIfPresent([AppProcessRow].self, forKey: .processes)) ?? []
+        let saysComplete = (try? container.decodeIfPresent(Bool.self, forKey: .complete)) ?? false
+        let cut = try? container.decodeIfPresent(Bool.self, forKey: .truncated)
+        truncated = cut == true
+        notes = Self.decodeEach(String.self, in: container, forKey: .notes).values
+        let rows = Self.decodeEach(AppProcessRow.self, in: container, forKey: .processes)
+        let kept = rows.values.filter { !$0.app.isEmpty }
+        processes = kept
+        // Only a readable `false` says the list was not cut.
+        complete = saysComplete && cut == false && rows.wholeList && kept.count == rows.values.count
+    }
+
+    /// Every entry of a list that decodes,  and whether the list was there and every entry
+    /// in it decoded.  A non-list or an absent key gives no values and `wholeList` false.
+    static func decodeEach<Value: Decodable>(
+        _ type: Value.Type,
+        in container: KeyedDecodingContainer<CodingKeys>,
+        forKey key: CodingKeys
+    ) -> (values: [Value], wholeList: Bool) {
+        guard var list = try? container.nestedUnkeyedContainer(forKey: key) else {
+            return ([], false)
+        }
+        var values: [Value] = []
+        var dropped = false
+        while !list.isAtEnd {
+            // `superDecoder()` consumes the entry whether or not it decodes,  so a bad entry
+            // never stops the loop.
+            guard let entry = try? list.superDecoder() else {
+                dropped = true
+                break
+            }
+            if let value = try? Value(from: entry) {
+                values.append(value)
+            } else {
+                dropped = true
+            }
+        }
+        return (values, !dropped)
     }
 }
 
@@ -278,6 +316,18 @@ struct AppProcessesHostReading: Identifiable, Equatable {
     var appsSeen: Int {
         apps.filter { $0.state.isSeen }.count
     }
+
+    /// The notes,  each identified by its place in the list (Kody, PR 1463):  two notes with
+    /// the same words are still two rows,  so the list's identities never collide.
+    var numberedNotes: [AppProcessesNote] {
+        notes.enumerated().map { AppProcessesNote(id: $0.offset, text: $0.element) }
+    }
+}
+
+/// One of the doctor's notes about a host,  identified by its position.
+struct AppProcessesNote: Identifiable, Equatable {
+    let id: Int
+    let text: String
 }
 
 /// Everything the panel shows,  from one read of the report.
@@ -309,7 +359,16 @@ enum AppProcessesReportReader {
     }
 
     /// Read the report at a path and say what it means.
-    static func read(at url: URL, now: Date = Date()) -> AppProcessesReading {
+    ///
+    /// The size is checked twice (Kody, PR 1463):  once from the file's attributes,  and
+    /// again on the bytes actually loaded,  so a file that grew or was replaced between the
+    /// two is still refused.  The default loader reads at most one byte past the cap,  so an
+    /// oversized file is never loaded whole.
+    static func read(
+        at url: URL,
+        now: Date = Date(),
+        load: (URL) throws -> Data = AppProcessesReportReader.boundedData(at:)
+    ) -> AppProcessesReading {
         let gap = ServerStatusCopy.sentenceGap
         var reading = AppProcessesReading()
         reading.path = url.path
@@ -318,19 +377,36 @@ enum AppProcessesReportReader {
             return reading
         }
         if let size = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? NSNumber,
-            size.intValue > AppProcessesContract.maxReportBytes
+            let problem = sizeProblem(size.intValue)
         {
-            reading.problem = "The report is \(size.intValue) bytes, more than the \(AppProcessesContract.maxReportBytes) this app reads,\(gap)so it did not come from the doctor."
+            reading.problem = problem
             return reading
         }
         let data: Data
         do {
-            data = try Data(contentsOf: url)
+            data = try load(url)
         } catch {
             reading.problem = "The report could not be read:  \(error.localizedDescription)"
             return reading
         }
+        if let problem = sizeProblem(data.count) {
+            reading.problem = problem
+            return reading
+        }
         return parse(data, path: url.path, now: now)
+    }
+
+    /// Why a report of this many bytes is refused,  or nil when it is within the cap.
+    static func sizeProblem(_ bytes: Int) -> String? {
+        guard bytes > AppProcessesContract.maxReportBytes else { return nil }
+        return "The report is larger than the \(AppProcessesContract.maxReportBytes) bytes this app reads, so it did not come from the doctor."
+    }
+
+    /// The file's bytes,  at most one past the cap:  enough to know it is too big.
+    static func boundedData(at url: URL) throws -> Data {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        return try handle.read(upToCount: AppProcessesContract.maxReportBytes + 1) ?? Data()
     }
 
     /// What the report's bytes say.
