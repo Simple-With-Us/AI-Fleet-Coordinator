@@ -345,8 +345,9 @@ enum OperatorVoiceReading: Equatable {
     /// The Operator cannot post.  `code` is the eavesdropper's own code,  safe to show.
     case unavailable(code: String?, since: Date?, sinceText: String?)
     /// The status is not current or the eavesdropper is not running,  so whether the Operator
-    /// can post now is not known.  `lastAvailable` is what the last status said.
-    case notCurrent(why: String, lastAvailable: Bool, since: Date?, sinceText: String?)
+    /// can post now is not known.  `lastAvailable` is what the last status said,  and `code` is
+    /// the eavesdropper's own code when that status said the Operator could not post.
+    case notCurrent(why: String, lastAvailable: Bool, since: Date?, sinceText: String?, code: String? = nil)
 
     /// The reading from a status.
     init(_ state: ListenerStatus.State?) {
@@ -402,8 +403,8 @@ enum OperatorVoiceReading: Equatable {
         switch reading {
         case .available(let since, let sinceText):
             return .notCurrent(why: why, lastAvailable: true, since: since, sinceText: sinceText)
-        case .unavailable(_, let since, let sinceText):
-            return .notCurrent(why: why, lastAvailable: false, since: since, sinceText: sinceText)
+        case .unavailable(let code, let since, let sinceText):
+            return .notCurrent(why: why, lastAvailable: false, since: since, sinceText: sinceText, code: code)
         case .notRead, .notReported, .unreadable, .notTriedYet, .notCurrent:
             return reading
         }
@@ -419,7 +420,7 @@ enum OperatorVoiceReading: Equatable {
     var isProblem: Bool {
         switch self {
         case .unavailable, .unreadable: return true
-        case .notCurrent(_, let lastAvailable, _, _): return !lastAvailable
+        case .notCurrent(_, let lastAvailable, _, _, _): return !lastAvailable
         case .notRead, .notReported, .notTriedYet, .available: return false
         }
     }
@@ -458,10 +459,11 @@ enum OperatorVoiceReading: Equatable {
             return "The Operator cannot post to Zulip, and has not been able to since \(Self.whenText(since, now: now))." + cause
         case .notTriedYet:
             return "The Mac's eavesdropper has not tried the Operator yet.\u{00A0} It tries once soon after it starts."
-        case .notCurrent(let why, let lastAvailable, let since, _):
+        case .notCurrent(let why, let lastAvailable, let since, _, let code):
             let said = lastAvailable ? "could post" : "could not post"
             let from = since.map { " from \(Self.whenText($0, now: now))" } ?? ""
-            return "\(why), so whether the Operator can post now is not known.\u{00A0} Its last status said the Operator \(said)\(from)."
+            let cause = lastAvailable ? "" : (code.flatMap(Self.cause).map { "\u{00A0} " + $0 } ?? "")
+            return "\(why), so whether the Operator can post now is not known.\u{00A0} Its last status said the Operator \(said)\(from)." + cause
         case .notReported:
             return "The Mac's eavesdropper does not report whether the Operator can post."
         case .unreadable:
@@ -480,8 +482,9 @@ enum OperatorVoiceReading: Equatable {
         case .unavailable(let code, let since, let sinceText):
             return "From status.operator_voice:  available is false, code \(code ?? "not given")"
                 + Self.sinceClause(since, sinceText, now: now) + "."
-        case .notCurrent(_, let lastAvailable, let since, let sinceText):
-            return "From a status.operator_voice that is not current:  available was \(lastAvailable)"
+        case .notCurrent(_, let lastAvailable, let since, let sinceText, let code):
+            let codeClause = lastAvailable ? "" : ", code \(code ?? "not given")"
+            return "From a status.operator_voice that is not current:  available was \(lastAvailable)" + codeClause
                 + Self.sinceClause(since, sinceText, now: now) + "."
         case .notTriedYet:
             return "From status.operator_voice:  available is null, which the eavesdropper writes until its first Operator build since it started has finished."
@@ -526,7 +529,7 @@ enum OperatorVoiceReading: Equatable {
     func problemLines(seats: [WakeSeat], now: Date = Date()) -> [String] {
         switch self {
         case .unavailable: break
-        case .notCurrent(_, let lastAvailable, _, _) where !lastAvailable: break
+        case .notCurrent(_, let lastAvailable, _, _, _) where !lastAvailable: break
         default: return []
         }
         var text = sentence(now: now)

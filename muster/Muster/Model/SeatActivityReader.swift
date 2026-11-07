@@ -601,20 +601,117 @@ enum SeatActivityRoster {
 
     /// The roster from the files the fleet checkout holds:  the registry and the seat
     /// partition beside it.  A file that cannot be read adds nothing,  and the grid's seats
-    /// are always there.
+    /// are always there.  The panel asks for this on every refresh,  so the two files come
+    /// through `cache`,  which reads and decodes a file again only when it has changed.
     static func current(
         gridRoster: [String],
-        engine: EngineLocation? = EngineLocator.locate()
+        engine: EngineLocation? = EngineLocator.locate(),
+        cache: SeatRosterFileCache = .shared
     ) -> [String] {
+        let registry = engine.flatMap { cache.registry(at: $0.registryURL) }
+        let partitionURL = engine?.root.appendingPathComponent(ListenerPartition.relativePath)
+        let partition = cache.partition(at: partitionURL)
+        return seats(gridRoster: gridRoster, registry: registry, partition: partition)
+    }
+}
+
+// MARK: - The roster's files
+
+/// The registry and the seat partition the Seats roster is made from,  kept by path,  so a
+/// file whose size and modification time have not changed is not read or decoded again.
+///
+/// The panel's view asks for the roster on every refresh,  from the main thread,  so the
+/// cache holds a lock.  A file's size and modification time are read before the file is,  so
+/// a file that changes during a read is kept under its older stamp and read again next time,
+/// never kept as the old text under the new stamp.
+final class SeatRosterFileCache: @unchecked Sendable {
+    /// The cache the app's own reads share.
+    static let shared = SeatRosterFileCache()
+
+    private struct RegistryEntry {
+        let stamp: LedgerParseCache.Stamp
+        let registry: FleetRegistryDocument?
+    }
+
+    private struct PartitionEntry {
+        let stamp: LedgerParseCache.Stamp
+        let partition: ListenerPartition
+    }
+
+    private let lock = NSLock()
+    private var registries: [String: RegistryEntry] = [:]
+    private var partitions: [String: PartitionEntry] = [:]
+    private var registryReadCount = 0
+    private var partitionReadCount = 0
+
+    init() {}
+
+    /// How many times a registry file was read and decoded.
+    var registryReads: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return registryReadCount
+    }
+
+    /// How many times a partition file was read and parsed.
+    var partitionReads: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return partitionReadCount
+    }
+
+    /// The registry at `url`,  or nil when it is missing,  too large or cannot be decoded.
+    func registry(at url: URL) -> FleetRegistryDocument? {
+        let path = url.path
+        guard let stamp = LedgerParseCache.stamp(of: url) else {
+            lock.lock()
+            registries[path] = nil
+            lock.unlock()
+            return nil
+        }
+        lock.lock()
+        if let entry = registries[path], entry.stamp == stamp {
+            lock.unlock()
+            return entry.registry
+        }
+        lock.unlock()
+
         var registry: FleetRegistryDocument?
-        if let url = engine?.registryURL,
+        if stamp.size <= UInt64(WakeSettingsReader.maximumFileBytes),
            let data = try? Data(contentsOf: url),
            data.count <= WakeSettingsReader.maximumFileBytes {
             registry = try? JSONDecoder().decode(FleetRegistryDocument.self, from: data)
         }
-        let partitionURL = engine?.root.appendingPathComponent(ListenerPartition.relativePath)
-        let partition = ListenerPartition.load(from: partitionURL)
-        return seats(gridRoster: gridRoster, registry: registry, partition: partition)
+        lock.lock()
+        registryReadCount += 1
+        registries[path] = RegistryEntry(stamp: stamp, registry: registry)
+        lock.unlock()
+        return registry
+    }
+
+    /// The seat partition at `url`,  read as `ListenerPartition.load` reads it.
+    func partition(at url: URL?) -> ListenerPartition {
+        guard let url else { return ListenerPartition.load(from: nil) }
+        let path = url.path
+        guard let stamp = LedgerParseCache.stamp(of: url) else {
+            lock.lock()
+            partitions[path] = nil
+            lock.unlock()
+            return ListenerPartition.load(from: url)
+        }
+        lock.lock()
+        if let entry = partitions[path], entry.stamp == stamp {
+            lock.unlock()
+            return entry.partition
+        }
+        lock.unlock()
+
+        let partition = ListenerPartition.load(from: url)
+        lock.lock()
+        partitionReadCount += 1
+        partitions[path] = PartitionEntry(stamp: stamp, partition: partition)
+        lock.unlock()
+        return partition
     }
 }
 
