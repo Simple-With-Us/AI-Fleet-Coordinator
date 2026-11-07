@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// The window's root:  the sidebar's places in one detail column, over one shared run.
@@ -34,17 +35,15 @@ struct FleetOverviewView: View {
 
     /// The window's size is the window's own, and not the natural height of whichever panel is
     /// showing.  Several panels are as tall as their content (Tools And Worker Health is 1449
-    /// points, Seats 1345) and the window grew to match and kept that as its minimum, so on a
-    /// 923-point laptop screen its bottom edge sat below the display with no way to shrink it.
-    /// The split view sits in an overlay, which is proposed the window's room and takes no part
-    /// in the window's size.  The minimum is wide enough for every panel's columns and
-    /// controls, which overlapped each other in a narrower window (Controls' tabs, the Apps &
-    /// Work filter bar), and short enough for any laptop screen.
+    /// points, Seats 1345).  Each column takes its height from the window
+    /// (`musterColumnHeight`), so a panel taller than the window scrolls inside it instead of
+    /// pushing the split view past the window's top and bottom edges, where neither column
+    /// could be scrolled back to its first rows.  The root frame keeps the window's minimum
+    /// (`musterWindowSize`), wide enough for every panel's columns and short enough for any
+    /// laptop screen, so the window never grows to a panel's natural height either.
     var body: some View {
-        Color.clear
-            .frame(minWidth: 1160, idealWidth: 1160, maxWidth: .infinity,
-                   minHeight: 560, idealHeight: 780, maxHeight: .infinity)
-            .overlay { splitView }
+        splitView
+            .musterWindowSize()
     }
 
     private var splitView: some View {
@@ -60,6 +59,7 @@ struct FleetOverviewView: View {
                     }
                 }
             }
+            .musterColumnHeight()
             .navigationTitle("Muster")
             .navigationSplitViewColumnWidth(min: 200, ideal: 230, max: 300)
         } detail: {
@@ -96,6 +96,7 @@ struct FleetOverviewView: View {
                     footer
                 }
             }
+            .musterColumnHeight()
             .navigationTitle(destination.title)
             .navigationSubtitle(destination.subtitle)
             .toolbar {
@@ -294,11 +295,16 @@ struct RunVerdictLabel: View {
 }
 
 /// The banner that says why the last run cannot be trusted.
+///
+/// It shows only the end of a long reason (`FailureReason`), so a traceback can never make
+/// it taller than the window and squeeze the panel under it to nothing.  The full reason is
+/// one click away.
 struct FailureBanner: View {
     let reason: String
     var title: String = "The engine did not answer, so every cell reads unknown."
 
     var body: some View {
+        let shown = FailureReason.display(reason)
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.red)
@@ -306,11 +312,21 @@ struct FailureBanner: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(.callout.weight(.medium))
-                Text(reason)
+                Text(shown.text)
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
+                if shown.isShortened {
+                    Button("Copy Full Reason") {
+                        let pasteboard = NSPasteboard.general
+                        pasteboard.clearContents()
+                        pasteboard.setString(reason, forType: .string)
+                    }
+                    .buttonStyle(.link)
+                    .font(.caption)
+                    .help("Copies the whole reason, including the lines the banner leaves out.")
+                }
             }
             Spacer(minLength: 0)
         }

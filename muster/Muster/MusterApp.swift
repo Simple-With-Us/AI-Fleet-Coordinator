@@ -54,10 +54,9 @@ struct MusterApp: App {
                 .environmentObject(watch)
         }
         .defaultSize(width: 1160, height: 760)
-        // The window may be as small as its content allows and is never grown to a panel's
-        // natural height.  Without this the window grew to the tallest panel it had shown
-        // (1449 points for Tools And Worker Health) and kept that as its minimum, so on a
-        // laptop screen its bottom edge ended up below the display with no way to shrink it.
+        // The window may be as small as the root's minimum (MusterWindowLayout) and no smaller.
+        // This is a WindowGroup's default, written out so it is visible.  Columns take their
+        // height from the window, so no panel's content can raise this minimum.
         .windowResizability(.contentMinSize)
         // One window:  the menu brings it forward,  and a second copy would show every
         // plan sheet twice.
