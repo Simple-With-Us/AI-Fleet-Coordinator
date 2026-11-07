@@ -168,3 +168,12 @@ class RunnerTests(unittest.TestCase):
                 with self.subTest(key=key), self.assertRaises(TransactionError):
                     r.verify_unit()
                 lines[key] = old
+
+    def test_duration_parser_equivalent_renderings_and_refusals(self):
+        from git_relay.deploy_runner import duration_us
+
+        for s in ["2min", "120s", "120000ms", "120000000us", "1min 60s"]:
+            self.assertEqual(duration_us(s), 120000000)
+        for s in ["infinity", "", "120", "2minjunk", "-120s", "0.1us"]:
+            with self.assertRaises(TransactionError):
+                duration_us(s)

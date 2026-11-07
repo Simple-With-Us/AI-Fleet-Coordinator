@@ -58,7 +58,15 @@ class LinuxHost:
             self.UNIT,
             "--property=MainPID,ActiveState,SubState,Restart,WatchdogUSec",
         )
-        return dict(line.split("=", 1) for line in out.splitlines())
+        props = {}
+        for line in out.splitlines():
+            if "=" not in line:
+                raise TransactionError("invalid systemctl output")
+            key, value = line.split("=", 1)
+            if not key or key in props:
+                raise TransactionError("duplicate or empty systemctl property")
+            props[key] = value
+        return props
 
     def process_identity(self):
         state = self.properties()
@@ -134,8 +142,16 @@ class LinuxHost:
     def preflight(self, rows):
         if os.getuid() != 0:
             raise TransactionError("root-owned supervisor required")
-        for p in [self.CODE, self.STATE]:
-            if p.is_symlink() or not p.is_dir() or p.stat().st_mode & 0o022:
+        for p, uid in [(self.CODE, 0), (self.STATE, 65534)]:
+            # systemd DynamicUser's physical private state anchor is owned by
+            # nobody (65534), not root. Pin the actual independently observed
+            # ownership instead of weakening the check or assuming uid zero.
+            if (
+                p.is_symlink()
+                or not p.is_dir()
+                or p.stat().st_uid != uid
+                or p.stat().st_mode & 0o022
+            ):
                 raise TransactionError("unsafe deployment anchor")
         config = Path("/etc/git-relay/config.env")
         if hashlib.sha256(read_regular(config)[0]).hexdigest() != self.expected_config:
@@ -172,7 +188,7 @@ class LinuxHost:
         try:
             if self.process_identity() == expected:
                 os.kill(expected["pid"], signal.SIGCONT)
-        except (FileNotFoundError, ProcessLookupError, TransactionError):
+        except (TransactionError, ValueError, KeyError, OSError):
             pass
 
     def confirmed_stopped(self, expected):

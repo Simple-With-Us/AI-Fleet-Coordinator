@@ -99,3 +99,17 @@ class LinuxHostTests(unittest.TestCase):
                 self.h.stop_without_kill(expected)
             kill.assert_not_called()
             resume.assert_not_called()
+
+    def test_malformed_property_and_resume_preserves_original_failure(self):
+        with (
+            patch.object(self.h, "command", return_value="MainPID=42\nbad-row"),
+            self.assertRaises(TransactionError),
+        ):
+            self.h.properties()
+        for error in [ValueError(), KeyError(), OSError(), TransactionError()]:
+            with (
+                patch.object(self.h, "process_identity", side_effect=error),
+                patch("os.kill") as kill,
+            ):
+                self.h.resume_if_same({"pid": 42})
+                kill.assert_not_called()

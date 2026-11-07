@@ -8,8 +8,10 @@ caller request may select a manifest, destination, package or command.
 import hashlib
 import json
 import os
+import re
 import stat
 import time
+from decimal import Decimal
 from pathlib import Path
 
 from .deploy_host import LinuxHost
@@ -17,6 +19,17 @@ from .deploy_journal import Journal
 from .deploy_recovery import Recovery, supervisor_unit
 from .deploy_supervisor import Supervisor
 from .deploy_transaction import Transaction, TransactionError, read_regular
+
+
+def duration_us(text):
+    units = {"us": 1, "ms": 1000, "s": 1000000, "min": 60000000, "h": 3600000000, "d": 86400000000}
+    parts = re.findall(r"([0-9]+(?:\.[0-9]+)?)(us|ms|min|s|h|d)", text)
+    if not parts or "".join(n + u for n, u in parts) != "".join(text.split()):
+        raise TransactionError("invalid finite systemd duration")
+    total = sum(Decimal(n) * units[u] for n, u in parts)
+    if total != int(total):
+        raise TransactionError("fractional microsecond timeout")
+    return int(total)
 
 
 def private_anchor(path):
@@ -131,9 +144,9 @@ class Runner:
         for key in ["User", "Type", "KillMode"]:
             if observed.get(key) != required[key]:
                 raise TransactionError("executor unit drift")
-        if [observed.get(k) for k in ["TimeoutStartUSec", "TimeoutStopUSec"]] != [
-            "2min",
-            "1min 30s",
+        if [duration_us(observed.get(k, "")) for k in ["TimeoutStartUSec", "TimeoutStopUSec"]] != [
+            120_000_000,
+            90_000_000,
         ]:
             raise TransactionError("executor deadline drift")
         identity = executor_identity()
