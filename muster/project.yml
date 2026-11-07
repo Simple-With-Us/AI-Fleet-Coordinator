@@ -91,6 +91,9 @@ targets:
       - path: Muster/FleetViewService.swift
       - path: Muster/ApplyPlanModel.swift
       - path: Muster/ApplyCoordinator.swift
+      # The Settings panes and their words.  They take bindings and plain values, not the
+      # store, so the test bundle compiles them (MusterSettingsLayoutTests, SettingsFoldersTests).
+      - path: Muster/Views/MusterSettingsPanes.swift
       - path: Muster/Model/ConfigFileReader.swift
       - path: Muster/Model/DriftAlerts.swift
       - path: Muster/Model/DriftHistory.swift
@@ -127,6 +130,7 @@ targets:
       - path: Muster/Model/SeatInventory.swift
       - path: Muster/Model/TrustedCheckout.swift
       - path: Muster/Model/ThemeChoice.swift
+      - path: Muster/Model/FailureReason.swift
       - path: Muster/Model/ListenerConfigFile.swift
       - path: Muster/Model/ListenerStatus.swift
       - path: Muster/Model/OperatorOptions.swift
@@ -150,6 +154,13 @@ targets:
       - path: Muster/FleetServices/ServiceReconcilePolicy.swift
       - path: Muster/FleetServices/ServerPresence.swift
       - path: Muster/FleetServices/StartupPolicy.swift
+      # The window's layout sizes, the column cap (the fix for AFC-616) and the stale
+      # split-view frame check.  No environment objects, so the test bundle compiles it
+      # (MusterWindowLayoutTests).
+      - path: Muster/Views/MusterWindowLayout.swift
+      # The place strip, so MusterWindowLayoutTests checks the app's own strip.  It needs only
+      # FleetHost, MachineStatus and MusterNavigation, which are compiled above.
+      - path: Muster/Views/PlaceBadge.swift
     settings:
       base:
         PRODUCT_NAME: MusterTests
