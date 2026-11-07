@@ -60,10 +60,19 @@ final class MusterWindowLayoutTests: XCTestCase {
                     Text("Strip").frame(height: 33)
                     Divider()
                     ScrollView {
-                        VStack(spacing: 0) {
+                        // Like the panels:  wrapped paragraphs whose height depends on the
+                        // column's width, then more content than any screen holds.
+                        VStack(alignment: .leading, spacing: 12) {
                             Text("First")
-                            Color.gray.frame(height: 2000)
-                        }.frame(maxWidth: .infinity)
+                            ForEach(0..<12, id: \.self) { _ in
+                                Text(String(repeating: "A paragraph that wraps at the column's width. ", count: 12))
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            Color.gray.frame(height: 1400)
+                        }
+                        .padding(.horizontal, 22)
+                        .padding(.vertical, 18)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
                 .modifier(Cap(on: capped))
@@ -110,6 +119,38 @@ final class MusterWindowLayoutTests: XCTestCase {
         window.layoutIfNeeded()
         report(layout, window)
         return (window, hosting)
+    }
+
+    /// TEMPORARY DIAGNOSTIC:  the root as a plain NSHostingView content view with SwiftUI's
+    /// default sizing, the way a scene window hosts it.  Prints only.
+    func testDiagnosticHostingViewLayouts() {
+        for layout in [Layout.original, Layout.fixed] {
+            for tall in [false, true] {
+                _ = NSApplication.shared
+                let size = NSSize(width: MusterWindowLayout.minWidth, height: height)
+                let window = NSWindow(contentRect: NSRect(origin: .zero, size: size),
+                                      styleMask: [.titled, .closable, .resizable, .fullSizeContentView,
+                                                  .miniaturizable],
+                                      backing: .buffered, defer: false)
+                window.isReleasedWhenClosed = false
+                window.toolbarStyle = .unified
+                window.contentView = NSHostingView(rootView: Harness(layout: layout))
+                if tall {
+                    // A frame taller than the screen, as a window restored from a taller one.
+                    window.setFrame(NSRect(x: 0, y: -600, width: 1160, height: 1449), display: true)
+                } else {
+                    window.setContentSize(size)
+                }
+                window.orderFrontRegardless()
+                window.layoutIfNeeded()
+                RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+                window.layoutIfNeeded()
+                print("[window layout] hosting view, tall \(tall), frame \(window.frame), "
+                      + "screen \(NSScreen.main?.visibleFrame ?? .zero)")
+                report(layout, window)
+                window.close()
+            }
+        }
     }
 
     private func scrollViews(in view: NSView) -> [NSScrollView] {
