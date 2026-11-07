@@ -167,6 +167,11 @@ export function formatCellsForDisplay(kind, cells) {
 // have both landed; a failed flush leaves its rows pending for the next drain's
 // reconcile. When the attempts implementation offers recordBatch(records) it is
 // used; otherwise record() is called per record within the same flush.
+//
+// shouldStop() (OPS-1037) is checked before each row: when it answers true (a
+// SIGTERM or the runner's deadline), the drain flushes what has confirmed and
+// returns with stopped: true and the remaining rows pending. A write result that
+// carries rateLimitRetries (the runner's pacedAdapter) is noted in the fence detail.
 export async function drainOutbox({
   outbox,
   adapter,
@@ -175,10 +180,12 @@ export async function drainOutbox({
   layout = null,
   limit = 50,
   log = () => {},
+  shouldStop = () => false,
 }) {
   const rows = await outbox.pending(limit);
   let exported = 0;
   let failed = 0;
+  let stopped = false;
   if (!rows.length) return { exported, failed };
   await adapter.validateHeaders(); // header check before any live write
 
@@ -255,7 +262,18 @@ export async function drainOutbox({
   // Snapshots superseded inside this batch, held until their winner confirms.
   const pendingSuperseded = new Map();
 
+  // The fence detail for a write the runner had to resend after HTTP 429 refusals.
+  const retryNote = (res) => {
+    const n = res?.rateLimitRetries;
+    return Number.isSafeInteger(n) && n > 0 ? `written after ${n} HTTP 429 quota refusal(s) and retry` : "";
+  };
+
   for (const row of rows) {
+    if (shouldStop()) {
+      stopped = true;
+      log("stop requested: leaving the remaining rows pending for the next run");
+      break;
+    }
     const table = row.kind === "session_upsert" ? "sessions" : row.kind === "event_append" ? "events" : null;
     try {
       if (table === null) throw new Error(`unknown outbox kind ${row.kind}`);
@@ -296,17 +314,20 @@ export async function drainOutbox({
       const existing = matches.length === 1 ? matches[0] : null;
 
       let outcome = "exported";
+      let detail = "";
       if (row.kind === "event_append" && existing != null) {
         outcome = "already_present"; // reconcile by Event ID before append
       } else if (row.kind === "session_upsert" && existing != null) {
-        await adapter.updateSessionRow(existing, writeCells, { validate: false });
+        detail = retryNote(await adapter.updateSessionRow(existing, writeCells, { validate: false }));
       } else if (row.kind === "session_upsert") {
         const res = await adapter.appendSession(writeCells, { validate: false });
+        detail = retryNote(res);
         const rn = res?.rowNumber;
         if (Number.isSafeInteger(rn)) index.set(payload.cells[0], [rn]);
         else stale[table] = true; // append landed but its row is unconfirmed: rescan before reuse
       } else {
         const res = await adapter.appendEvent(writeCells, { validate: false });
+        detail = retryNote(res);
         const rn = res?.rowNumber;
         if (Number.isSafeInteger(rn)) index.set(payload.cells[0], [rn]);
         else stale[table] = true;
@@ -318,7 +339,7 @@ export async function drainOutbox({
           `superseded in batch by ${row.outbox_id}; latest snapshot written once`);
       }
       pendingSuperseded.delete(payload.cells[0]);
-      queueAck(row, table, outcome);
+      queueAck(row, table, outcome, detail);
       if (ackQueue.length >= ACK_BATCH) await flushAcks();
     } catch (err) {
       failed += 1;
@@ -347,5 +368,6 @@ export async function drainOutbox({
   if (unreleased) {
     log(`${unreleased} superseded snapshot(s) left pending: the winning snapshot did not export`);
   }
-  return { exported, failed };
+  // `stopped` appears only when true, so the long-standing { exported, failed } shape holds.
+  return stopped ? { exported, failed, stopped } : { exported, failed };
 }
