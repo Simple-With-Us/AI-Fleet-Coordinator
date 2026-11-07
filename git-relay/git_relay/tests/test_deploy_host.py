@@ -1,0 +1,101 @@
+import tempfile
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from git_relay.deploy_host import LinuxHost
+from git_relay.deploy_transaction import TransactionError
+
+
+class LinuxHostTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.proc = Path(self.temp.name)
+        (self.proc / "sys/kernel/random").mkdir(parents=True)
+        (self.proc / "sys/kernel/random/boot_id").write_text("boot-a")
+        p = self.proc / "42"
+        p.mkdir()
+        (p / "stat").write_text(
+            "42 (python unusual (name)) " + " ".join(["S"] + ["0"] * 18 + ["12345"])
+        )
+        (p / "cgroup").write_text("0::/system.slice/git-relay.service\n")
+        (p / "exe").symlink_to("/usr/bin/python3")
+        self.calls = []
+
+        def run(args, **kw):
+            self.calls.append((args, kw))
+            return SimpleNamespace(
+                returncode=0, stdout="MainPID=42\nActiveState=active\nWatchdogUSec=0\n"
+            )
+
+        self.h = LinuxHost("x", {}, {}, None, lambda *args: True, run=run, proc=self.proc)
+
+    def test_process_identity_parses_parentheses_and_commands_are_bounded(self):
+        x = self.h.process_identity()
+        self.assertEqual(x["pid"], 42)
+        self.assertEqual(x["start_ticks"], "12345")
+        self.assertEqual(x["boot"], "boot-a")
+        self.assertEqual(self.calls[0][1]["timeout"], 20)
+        self.assertNotIn("shell", self.calls[0][1])
+
+    def test_wrong_cgroup_and_executable_refused(self):
+        (self.proc / "42/cgroup").write_text("0::/other.service")
+        with self.assertRaises(TransactionError):
+            self.h.process_identity()
+
+    def test_no_stop_if_busy_recovery(self):
+        expected = {"pid": 42}
+        with (
+            patch.object(self.h, "confirmed_stopped", return_value=False),
+            patch.object(self.h, "process_identity", return_value=expected),
+            patch.object(self.h, "freeze"),
+            patch.object(self.h, "tasks_and_children", return_value=({42: "T", 43: "T"}, [])),
+            patch.object(self.h, "pending_count", return_value=0),
+            patch.object(self.h, "stop_job_exists", return_value=False),
+            patch.object(self.h, "resume_if_same") as resume,
+            patch.object(self.h, "stop_without_kill") as stop,
+        ):
+            with self.assertRaises(TransactionError):
+                self.h.stop_for_recovery()
+            resume.assert_called_once_with(expected)
+            stop.assert_not_called()
+
+    def test_hash_target_anchor(self):
+        with self.assertRaises(TransactionError):
+            self.h.hashes({"code/../other": None})
+
+    def test_default_term_queued_before_resume(self):
+        expected = {"pid": 42}
+        status = self.proc / "42/status"
+        status.write_text("SigCgt: 0000\nSigIgn: 0000\nSigPnd: 0000\nShdPnd: 0000\n")
+        events = []
+
+        def kill(pid, sig):
+            events.append("term")
+            status.write_text("SigCgt: 0000\nSigIgn: 0000\nSigPnd: 0000\nShdPnd: 4000\n")
+
+        with (
+            patch.object(self.h, "command"),
+            patch.object(self.h, "process_identity", return_value=expected),
+            patch("os.kill", side_effect=kill),
+            patch.object(self.h, "resume_if_same", side_effect=lambda _: events.append("resume")),
+            patch.object(self.h, "confirmed_stopped", return_value=True),
+        ):
+            self.h.stop_without_kill(expected)
+        self.assertEqual(events, ["term", "resume"])
+
+    def test_caught_term_never_resumes_accept_loop(self):
+        expected = {"pid": 42}
+        (self.proc / "42/status").write_text("SigCgt: 4000\nSigIgn: 0000\n")
+        with (
+            patch.object(self.h, "command"),
+            patch.object(self.h, "process_identity", return_value=expected),
+            patch("os.kill") as kill,
+            patch.object(self.h, "resume_if_same") as resume,
+        ):
+            with self.assertRaises(TransactionError):
+                self.h.stop_without_kill(expected)
+            kill.assert_not_called()
+            resume.assert_not_called()
