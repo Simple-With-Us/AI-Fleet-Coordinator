@@ -3987,10 +3987,11 @@ class Daemon:
         message_id = message.get("id")
         if not isinstance(message_id, int):
             return
-        if L.paused(self.root, "*"):
-            # F2 (AFC-652):  a global pause (a drain window always sets one) parks the effect
-            # durably instead of starting work a stop could silently cut.  The gate sits
-            # before the seen-ring mark, so the pause never claims the id.
+        if drain_deferred(self.root):
+            # F2 (AFC-652):  a drain window (the pause carrying the defer marker) parks the
+            # effect durably instead of starting work a stop could silently cut.  The gate
+            # sits before the seen-ring mark, so the marker never claims the id.  An ordinary
+            # pause carries no marker and keeps its pre-drain admission behavior exactly.
             self._defer_broadcast_effect(message, c, "fanout")
             return
         with self._fanout_lock:
@@ -4050,8 +4051,8 @@ class Daemon:
         message_id = message.get("id")
         if not isinstance(message_id, int):
             return
-        if L.paused(self.root, "*"):
-            # F2 (AFC-652):  parked durably while a global pause covers admission (see fanout).
+        if drain_deferred(self.root):
+            # F2 (AFC-652):  parked durably while a drain window covers admission (see fanout).
             self._defer_broadcast_effect(message, c, "inbox")
             return
         with self._fanout_lock:
@@ -4109,8 +4110,8 @@ class Daemon:
         message_id = message.get("id")
         if not isinstance(message_id, int) or minutes <= 0:
             return
-        if L.paused(self.root, "*"):
-            # F2 (AFC-652):  parked durably while a global pause covers admission (see fanout).
+        if drain_deferred(self.root):
+            # F2 (AFC-652):  parked durably while a drain window covers admission (see fanout).
             self._defer_broadcast_effect(message, c, "audit")
             return
         seat = BAUD.sender_seat_for(
@@ -4132,12 +4133,23 @@ class Daemon:
         self.log.write("peer-broadcast-audit-scheduled", id=message_id, seat=seat or "unknown")
 
     # ---- deferred broadcast effects (AFC-652, F2) ---------------------------------------------
-    # A broadcast that arrives under a global pause parks each of its effect kinds (fanout,
-    # inbox, audit) in a durable record BEFORE the route moves on, so a stop inside the pause
-    # loses nothing.  Boot and tick re-drive parked kinds through the same gated admission once
-    # no global pause covers them.  Each kind is claimed and finished in one atomic write:  a
-    # pause that lands mid-drive re-parks the kind (the defer write wins over the finish), and
-    # the seen rings fence a duplicate start after a crash between claim and start.
+    # A broadcast that arrives inside a drain window (a pause carrying the defer marker) parks
+    # each of its effect kinds (fanout, inbox, audit) in a durable record BEFORE the route
+    # moves on, so a planned stop inside the window loses nothing.  An ordinary pause has no
+    # marker and does not park:  its broadcast behavior is exactly what it was before AFC-652.
+    # Boot and tick re-drive parked kinds through the same gated admission once the marker
+    # lifts.  Each kind is claimed and finished in one atomic write:  a pause that lands
+    # mid-drive re-parks the kind (the defer write wins over the finish).
+    #
+    # Fencing scope, stated exactly:  ADMISSION is fenced (the durable record exists before any
+    # work starts, and a crash between claim and start re-drives the kind).  A crash MID-EFFECT
+    # is not fenced:  the record marks a kind done when its thread STARTS (start_* spawns async
+    # work and _finish runs immediately), and the seen rings are in-memory, so an unplanned
+    # stop inside the effect leaves a partial broadcast that is never re-driven (missing
+    # nudges for not-yet-enqueued chats, a lost in-memory wake hand-off, a lost inbox copy).
+    # The qualified drain's quiesce (docs/protocols/listener-drain.md step 3) closes that
+    # window for planned stops.  What durably fences re-drive duplicates is the nudge dedupe
+    # key and the F4 ingress fence, and only when a re-drive happens.
 
     def _deferred_broadcasts_path(self) -> str:
         return os.path.join(L.listener_dir(self.root), "deferred_broadcasts.json")
@@ -4153,6 +4165,7 @@ class Daemon:
                 {
                     "channel": c.channel,
                     "topic": c.topic,
+                    "stream_id": message.get("stream_id"),
                     "ts": self.clock.time(),
                     "effects": {},
                     "claims": {},
@@ -4208,33 +4221,43 @@ class Daemon:
         self, mid: str
     ) -> tuple[str, SeatRunner | None, Mapping[str, Any] | None]:
         """("ok", runner, message) | ("gone", None, None) | ("unknown", None, None) for a parked
-        broadcast's payload, re-fetched by id through the same REST read the spool drain uses."""
-        runner = next(
-            (
-                r
-                for r in self.seats.values()
-                if r.connected and r.client is not None and r.me is not None
-            ),
-            None,
-        )
-        if runner is None:
+        broadcast's payload, re-fetched by id through the same REST read the spool drain uses.
+
+        Every connected runner votes (AFC-652 GATE 2):  a bot that cannot see the parked
+        message's channel gets a 4xx for it, so one runner's "not found" is not proof the
+        payload is gone.  Only a unanimous definite absence (every connected runner answers a
+        non-429 4xx) expires the deferral;  any ok wins at once, and any transient or
+        uncertain answer (5xx, 429, network, a malformed body) keeps the kind parked, where it
+        surfaces as a nonzero drain.deferred_broadcasts instead of a silent drop."""
+        runners = [
+            r
+            for r in self.seats.values()
+            if r.connected and r.client is not None and r.me is not None
+        ]
+        if not runners:
             return "unknown", None, None
-        try:
-            response = runner.client.get(
-                "messages/%s" % mid,
-                {"apply_markdown": False},
-                timeout=min(5.0, self.http_timeout),
-            )
-        except Z.ApiError as exc:
-            if exc.status is not None and exc.status < 500 and exc.status != 429:
-                return "gone", None, None
-            return "unknown", None, None
-        except (Z.NetworkError, OSError):
-            return "unknown", None, None
-        message = response.get("message") if isinstance(response, dict) else None
-        if not isinstance(message, dict) or str(message.get("id")) != str(mid):
+        definite_misses = 0
+        for runner in runners:
+            try:
+                response = runner.client.get(
+                    "messages/%s" % mid,
+                    {"apply_markdown": False},
+                    timeout=min(5.0, self.http_timeout),
+                )
+            except Z.ApiError as exc:
+                if exc.status is not None and exc.status < 500 and exc.status != 429:
+                    definite_misses += 1
+                    continue
+                return "unknown", None, None
+            except (Z.NetworkError, OSError):
+                return "unknown", None, None
+            message = response.get("message") if isinstance(response, dict) else None
+            if not isinstance(message, dict) or str(message.get("id")) != str(mid):
+                return "unknown", None, None
+            return "ok", runner, message
+        if definite_misses == len(runners):
             return "gone", None, None
-        return "ok", runner, message
+        return "unknown", None, None
 
     def _redrive_deferred_broadcasts(self) -> None:
         """Re-drive parked broadcast effects once no global pause covers them (boot and tick)."""
@@ -4244,7 +4267,9 @@ class Daemon:
             return
         if not isinstance(data, dict) or not data:
             return
-        if L.paused(self.root, "*"):
+        if drain_deferred(self.root):
+            # Parked kinds only exist from a drain window;  re-drive once the marker lifts.
+            # An ordinary pause does not hold them:  it never parked them.
             return
         for mid in sorted(data):
             row = data.get(mid)

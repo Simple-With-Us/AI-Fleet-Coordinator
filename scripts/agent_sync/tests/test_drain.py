@@ -14,9 +14,11 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from agent_sync import listener_cli as CLI
 from agent_sync import live as L
 from agent_sync import linear_projects_hook as H
 from agent_sync import router as R
+from agent_sync import zulip as Z
 from agent_sync.daemon import Ring, clear_pause, drain_deferred, set_pause
 from agent_sync.tests.test_daemon import MENTION, DaemonHarness
 from agent_sync.tests.test_linear_projects_hook import SECRET, project_event, signed
@@ -141,10 +143,12 @@ class BroadcastDeferralTests(DaemonHarness):
         daemon._redrive_deferred_broadcasts()
         self.assertEqual(L.read_json(daemon._deferred_broadcasts_path()), {})
 
-    def test_inbox_and_audit_park_under_pause(self) -> None:
+    def test_inbox_and_audit_park_under_drain(self) -> None:
         daemon = self.started()
         mid, message, c = self._owner_broadcast(daemon)
-        set_pause(daemon.root, None, wakes_only=False, by="cli", now=self.clock.time())
+        set_pause(
+            daemon.root, None, wakes_only=False, by="drain", now=self.clock.time(), defer=True
+        )
         with mock.patch.object(daemon, "_deliver_inbox"), mock.patch.object(
             daemon, "_run_broadcast_audit"
         ):
@@ -157,6 +161,108 @@ class BroadcastDeferralTests(DaemonHarness):
             parked[str(mid)]["effects"], {"inbox": False, "audit": False}
         )
         clear_pause(daemon.root, None)
+
+
+    def test_ordinary_pause_does_not_park_broadcasts(self) -> None:
+        """An ordinary global pause carries no drain marker:  broadcast admissions keep their
+        pre-AFC-652 behavior and start immediately.  Only the drain window parks."""
+        daemon = self.started()
+        mid, message, c = self._owner_broadcast(daemon)
+        with mock.patch.object(daemon, "fanout") as fan, mock.patch.object(
+            daemon, "_deliver_inbox"
+        ), mock.patch.object(daemon, "_run_broadcast_audit"):
+            set_pause(daemon.root, None, wakes_only=False, by="cli", now=self.clock.time())
+            daemon.start_fanout(message, c)
+            daemon.start_inbox_delivery(message, c)
+            daemon.schedule_broadcast_audit(message, c)
+            self.assertTrue(wait_for(lambda: fan.called))
+        self.assertIn(mid, list(daemon._fanout_seen))
+        self.assertIn(mid, list(daemon._inbox_seen))
+        self.assertIn(mid, daemon._broadcast_audits)
+        self.assertFalse(L.read_json(daemon._deferred_broadcasts_path()))
+        clear_pause(daemon.root, None)
+
+    def test_redrive_expires_only_on_unanimous_absence(self) -> None:
+        """A runner that cannot see the parked message's channel 404s for it;  that alone is
+        not proof the payload is gone (GATE 2).  Expiry takes a unanimous definite absence
+        across every connected runner;  a transient answer keeps the deferral parked."""
+        daemon = self.started()
+        runner = daemon.seats["CLAUDE"]
+        blind = types.SimpleNamespace(connected=True, client=mock.Mock(), me=runner.me)
+        blind.client.get.side_effect = Z.ApiError("not found", code="BAD_MSG_ID", status=404)
+        daemon.seats["BLIND"] = blind
+        try:
+            c = types.SimpleNamespace(channel="fleet", topic="t")
+            daemon._defer_broadcast_effect({"id": 99999998}, c, "fanout")
+            # One definite 404 + one transient failure:  not unanimous, stays parked.
+            runner.client = mock.Mock()
+            runner.client.get.side_effect = Z.NetworkError("boom")
+            daemon._redrive_deferred_broadcasts()
+            self.assertIn("99999998", L.read_json(daemon._deferred_broadcasts_path()))
+            # Every connected runner answers a definite absence:  the deferral expires.
+            runner.client.get.side_effect = Z.ApiError(
+                "not found", code="BAD_MSG_ID", status=404
+            )
+            daemon._redrive_deferred_broadcasts()
+            self.assertNotIn("99999998", L.read_json(daemon._deferred_broadcasts_path()) or {})
+        finally:
+            daemon.seats.pop("BLIND", None)
+
+
+class RunWakeDrainTests(DaemonHarness):
+    """The run-time recheck (F7 extension):  a wake admitted before the drain whose turn
+    lands inside the window re-arms instead of dropping, exactly like the finalize path."""
+
+    def _take_offered(self, daemon):
+        mid = self.fake.add_message("Codex", "agent-sync", "t", MENTION, deliver=False)
+        daemon.route_message(
+            daemon.seats["CLAUDE"], dict(self.fake.messages[-1], flags=["mentioned"])
+        )
+        ready = daemon.coalescer.take_due(self.clock.time() + 60)
+        self.assertEqual(len(ready), 1)
+        return ready[0]
+
+    def test_run_wake_recheck_defers_under_drain(self) -> None:
+        daemon = self.started()
+        runner = daemon.seats["CLAUDE"]
+        pending = self._take_offered(daemon)
+        set_pause(
+            daemon.root, None, wakes_only=False, by="drain", now=self.clock.time(), defer=True
+        )
+        daemon.run_wake(runner, pending)
+        # Re-armed, not dropped:  the pending wake is back in the coalescer, no drop row.
+        self.assertEqual(len(daemon.coalescer.pending), 1)
+        self.assertEqual([r for r in self.ledger() if r["state"] == "dropped"], [])
+        # The re-armed wake runs once the marker lifts.
+        clear_pause(daemon.root, None)
+        self.clock.advance(30)
+        daemon.tick()
+        self.assertEqual(len(daemon.coalescer.pending), 0)
+        self.assertEqual(len(daemon.seats["CLAUDE"].jobs), 1)
+
+    def test_run_wake_recheck_drops_under_an_ordinary_pause(self) -> None:
+        daemon = self.started()
+        runner = daemon.seats["CLAUDE"]
+        pending = self._take_offered(daemon)
+        set_pause(daemon.root, None, wakes_only=False, by="cli", now=self.clock.time())
+        daemon.run_wake(runner, pending)
+        self.assertEqual(len(daemon.coalescer.pending), 0)
+        drops = [r for r in self.ledger() if r["state"] == "dropped"]
+        self.assertEqual([r["reason"] for r in drops], ["paused"])
+        clear_pause(daemon.root, None)
+
+
+class DeferScopeTests(unittest.TestCase):
+    """--defer is fleet-wide drain semantics;  the CLI refuses a per-seat drain marker."""
+
+    def test_defer_with_seat_is_refused(self) -> None:
+        with self.assertRaises(Z.UsageError):
+            CLI._check_defer_scope("CLAUDE", True)
+
+    def test_global_defer_and_plain_seat_pause_pass(self) -> None:
+        CLI._check_defer_scope(None, True)
+        CLI._check_defer_scope("CLAUDE", False)
+        CLI._check_defer_scope(None, False)
 
 
 class HookGateTests(unittest.TestCase):
