@@ -218,7 +218,10 @@ final class ServerEavesdropperAnswerTests: XCTestCase {
         XCTAssertEqual(claude.sessions.count, 2)
         let lettered = claude.sessions[0]
         XCTAssertEqual(lettered.letter, "AA")
-        XCTAssertEqual(lettered.title, "Letters Work")
+        // The fixture comes from an older reducer that still sent a title.  A server lease's
+        // title is never kept on the Mac:  nothing decoded holds it.
+        XCTAssertFalse(String(describing: lettered).contains("Letters Work"), String(describing: lettered))
+        XCTAssertFalse(String(describing: claude).contains("Letters Work"))
         XCTAssertEqual(lettered.platform, "claude-code")
         XCTAssertEqual(lettered.verifiedHostLabel, "The server")
         XCTAssertEqual(lettered.aliveLabel, "Alive")
@@ -227,7 +230,6 @@ final class ServerEavesdropperAnswerTests: XCTestCase {
         XCTAssertEqual(lettered.watcher, true)
         let gone = claude.sessions[1]
         XCTAssertNil(gone.letter)
-        XCTAssertNil(gone.title)
         XCTAssertEqual(gone.alive, false)
         XCTAssertEqual(gone.why, "pid_gone")
         XCTAssertEqual(gone.whyText, "Its process has ended.")
@@ -322,7 +324,6 @@ final class ServerEavesdropperAnswerTests: XCTestCase {
         XCTAssertNil(session.platform)
         XCTAssertNil(session.alive)
         XCTAssertNil(session.pending)
-        XCTAssertNil(session.title)
         XCTAssertNil(session.topics)
         XCTAssertNil(session.watcher)
         XCTAssertNil(session.whyText)

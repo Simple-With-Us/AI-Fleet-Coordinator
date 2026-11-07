@@ -624,6 +624,10 @@ enum ServerSeatLetters: Equatable {
 }
 
 /// One session the server's eavesdropper holds for a seat (a lease row, without its ids).
+///
+/// It has no title, on purpose:  a server lease's title never leaves the server (session BB's
+/// reducer stops emitting it).  An older reducer that still sends `title` is read without it,
+/// because the key is not decoded, so no title is ever stored or shown for a server seat.
 struct ServerSeatSession: Decodable, Equatable {
     /// The session letter, `A` to `ZZ`.
     let letter: String?
@@ -631,8 +635,6 @@ struct ServerSeatSession: Decodable, Equatable {
     let platform: String?
     let alive: Bool?
     let pending: Int?
-    /// The session title, scrubbed on the server.
-    let title: String?
     /// `mac`, `server` or `cloud`.
     let verifiedHost: String?
     /// The liveness reason word.
@@ -641,7 +643,7 @@ struct ServerSeatSession: Decodable, Equatable {
     let watcher: Bool?
 
     enum CodingKeys: String, CodingKey {
-        case letter, platform, alive, pending, title, why, topics, watcher
+        case letter, platform, alive, pending, why, topics, watcher
         case verifiedHost = "verified_host"
     }
 }
@@ -653,7 +655,6 @@ extension ServerSeatSession {
         platform = container.optionalText(.platform, limit: 24)
         alive = container.optionalField(Bool.self, .alive)
         pending = container.optionalCount(.pending)
-        title = container.optionalText(.title, limit: 80)
         verifiedHost = container.optionalText(.verifiedHost, limit: 24)
         why = container.optionalText(.why, limit: 24)
         topics = container.optionalCount(.topics)
