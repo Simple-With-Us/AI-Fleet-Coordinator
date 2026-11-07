@@ -257,3 +257,38 @@ class LinuxHostTests(unittest.TestCase):
             self.assertFalse(self.h.runtime({"code/x": "expected"}, None))
             health.assert_not_called()
             self.h.proof.assert_not_called()
+
+    def test_executable_qualification_requires_complete_interpreter_path(self):
+        from git_relay.deploy_host import StartingProcess
+
+        for exe in ["/usr/bin/python3", "/usr/bin/python3.14", "/usr/bin/python3.9"]:
+            with patch("pathlib.Path.resolve", return_value=Path(exe)):
+                self.assertEqual(self.h.process_identity()["exe"], exe)
+        for exe in [
+            "/usr/bin/python3evil",
+            "/usr/bin/python3.14evil",
+            "/usr/bin/python3.14/other",
+            "/usr/bin/python3.",
+        ]:
+            with (
+                patch("pathlib.Path.resolve", return_value=Path(exe)),
+                self.assertRaises(StartingProcess),
+            ):
+                self.h.process_identity()
+
+    def test_malformed_proc_start_identity_fails_runtime_closed(self):
+        from unittest.mock import MagicMock
+
+        self.h.hashes = lambda _: {}
+        self.h.proof = MagicMock(return_value=True)
+        for text in [
+            "42 (python)",
+            "malformed",
+            "42 (python) S 0",
+            "42 (python) " + " ".join(["S"] + ["0"] * 18 + ["invalid"]),
+        ]:
+            (self.proc / "42/stat").write_text(text)
+            with self.assertRaises(TransactionError):
+                self.h.process_identity()
+            self.assertFalse(self.h.runtime({}, None))
+            self.h.proof.assert_not_called()

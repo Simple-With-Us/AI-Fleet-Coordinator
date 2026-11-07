@@ -12,6 +12,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import signal
 import subprocess
 import time
@@ -84,7 +85,11 @@ class LinuxHost:
             raise TransactionError("relay not active")
         p = self.proc / str(pid)
         # /proc/PID/stat comm may include spaces or parentheses.
-        ticks = (p / "stat").read_text().rsplit(")", 1)[1].split()[19]
+        stat_parts = (p / "stat").read_text().rsplit(")", 1)
+        fields = stat_parts[1].split() if len(stat_parts) == 2 else []
+        if len(fields) < 20 or not fields[19].isdigit():
+            raise TransactionError("invalid process start identity")
+        ticks = fields[19]
         exe = str((p / "exe").resolve(strict=True))
         group = (p / "cgroup").read_text()
         if group != "0::/system.slice/git-relay.service\n":
@@ -96,7 +101,7 @@ class LinuxHost:
             "cgroup": group,
             "boot": (self.proc / "sys/kernel/random/boot_id").read_text().strip(),
         }
-        if not exe.startswith("/usr/bin/python3"):
+        if re.fullmatch(r"/usr/bin/python3(?:\.[0-9]+)?", exe) is None:
             raise StartingProcess(identity)
         return identity
 
