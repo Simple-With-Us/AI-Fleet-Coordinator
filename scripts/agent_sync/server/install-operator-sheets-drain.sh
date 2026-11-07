@@ -117,7 +117,7 @@ UNIT_DIR="$PREFIX/etc/systemd/system"
   die "set OPERATOR_SHEETS_TOKEN_FILE to the file holding the scoped read-only Infisical token" 2
 [[ -f "$TOKEN_FILE" && ! -L "$TOKEN_FILE" ]] ||
   die "OPERATOR_SHEETS_TOKEN_FILE is not a regular file (a symlink is refused)" 2
-token_mode="$(stat -c '%a' -- "$TOKEN_FILE")"
+read -r token_mode token_uid < <(stat -c '%a %u' -- "$TOKEN_FILE")
 [[ "$token_mode" == 600 || "$token_mode" == 400 ]] ||
   die "OPERATOR_SHEETS_TOKEN_FILE must be mode 0600 or 0400 (it is $token_mode)" 2
 
@@ -177,6 +177,10 @@ problem="$(checkout_problem)"
 [[ -z "$problem" ]] || refuse "$problem"
 problem="$(code_problem)"
 [[ -z "$problem" ]] || refuse "$problem"
+# The token file's owner is checked here, not only when step 3 reads the token, so a real run
+# refuses a wrongly owned file before step 1 stops the timer or installs anything (Kody, PR 1458).
+[[ "$token_uid" == "$OWNER_UID" ]] ||
+  refuse "OPERATOR_SHEETS_TOKEN_FILE must be owned by uid $OWNER_UID (it is uid $token_uid)"
 
 if [[ "$DRY" -eq 0 && -z "$TEST_ROOT" ]]; then
   [[ "$(id -u)" -eq 0 ]] || die "run as root (sudo), or pass --dry-run to see the plan"

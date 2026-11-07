@@ -201,6 +201,17 @@ class ShellTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("symlink is refused", result.stderr)
 
+    @unittest.skipIf(os.geteuid() == 0, "the token here is root-owned when the test runs as root")
+    def test_a_token_file_root_does_not_own_is_refused_before_step_1(self):
+        # Kody, PR 1458:  a mode-valid file with the wrong owner used to pass the shell checks and
+        # fail only in step 3, after the timer was stopped and the modules installed.
+        result = self.run_script("--dry-run")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            f"a real run would refuse: OPERATOR_SHEETS_TOKEN_FILE must be owned by uid 0 (it is uid {os.geteuid()})",
+            result.stdout,
+        )
+
     def test_unknown_argument(self):
         result = self.run_script("--once")
         self.assertEqual(result.returncode, 2)
