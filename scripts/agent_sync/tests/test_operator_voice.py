@@ -141,6 +141,48 @@ class VoiceTests(unittest.TestCase):
             voice.client()
         self.assertIn("not configured", caught.exception.reason)
 
+    def test_the_snapshot_says_whether_the_operator_can_speak_and_since_when(self) -> None:
+        wall = [1_700_000_000.0]  # 2023-11-14 22:13:20 UTC
+
+        def vault_down(owner: int) -> Any:
+            raise Z.CredentialError("fleet-secrets is not installed (~/.local/bin/fleet-secrets)")
+
+        voice = OPV.OperatorVoice(
+            env=self.ENV,
+            owner_user_id=lambda: self.owner,
+            factory=self.factory,
+            clock=lambda: self.now,
+            wall=lambda: wall[0],
+        )
+        self.assertEqual(voice.snapshot(), {"available": None, "code": None, "since": None})
+        self.make = vault_down
+        with self.assertRaises(OPV.OperatorUnavailable):
+            voice.client()
+        down = voice.snapshot()
+        self.assertEqual((down["available"], down["code"]), (False, OPV.CODE_UNAVAILABLE))
+        self.assertEqual(down["since"], "2023-11-14T22:13:20Z")
+        self.assertNotIn("fleet-secrets", json.dumps(down), "a code, never the reason sentence")
+        # The same failure retried after its window keeps the time it began.
+        wall[0] += 600
+        self.now += OPV.RETRY_SECONDS + 1
+        with self.assertRaises(OPV.OperatorUnavailable):
+            voice.client()
+        self.assertEqual(voice.snapshot(), down)
+        # It comes back:  reachable, no code, and a new time.
+        self.make = lambda owner: FakeOperatorClient(operator_me())
+        wall[0] += 600
+        self.now += OPV.RETRY_SECONDS + 1
+        voice.client()
+        self.assertEqual(
+            voice.snapshot(), {"available": True, "code": None, "since": "2023-11-14T22:33:20Z"}
+        )
+        # A rejected credential makes it unavailable again, with its own code.
+        wall[0] += 60
+        voice.forget(voice.client())
+        again = voice.snapshot()
+        self.assertEqual((again["available"], again["code"]), (False, "operator_credential_rejected"))
+        self.assertEqual(again["since"], "2023-11-14T22:34:20Z")
+
     def test_an_unpinned_owner_means_no_operator(self) -> None:
         self.owner = 0
         voice = self.voice()
@@ -496,6 +538,33 @@ class NoOperatorTests(OperatorHarness):
         daemon = self.started(env=self.env(OPERATOR_ZULIP_USER_ID=None, OPERATOR_ZULIP_EMAIL=None))
         self.peer_wake(daemon)
         self.assert_not_run()
+
+    def test_a_host_that_pins_the_operator_only_in_listener_toml_still_has_a_voice(self) -> None:
+        """The Mac's LaunchAgent carries no OPERATOR_ZULIP_* names:  the pins the host wrote in
+        `[daemon]` stand in for them, and an environment value still wins over the file."""
+        self.write_config(
+            extra_daemon='operator_user_id = %d\noperator_email = "%s"' % (OPERATOR_USER_ID, OPERATOR_EMAIL)
+        )
+        daemon = self.daemon(env=self.env(OPERATOR_ZULIP_USER_ID=None, OPERATOR_ZULIP_EMAIL=None))
+        self.assertEqual(daemon.env["OPERATOR_ZULIP_USER_ID"], str(OPERATOR_USER_ID))
+        self.assertEqual(daemon.env["OPERATOR_ZULIP_EMAIL"], OPERATOR_EMAIL)
+        self.assertEqual(OPV.pinned_user_id(daemon.env), OPERATOR_USER_ID)
+        winner = self.daemon(env=self.env(OPERATOR_ZULIP_USER_ID="999"))
+        self.assertEqual(winner.env["OPERATOR_ZULIP_USER_ID"], "999", "the environment wins")
+
+    def test_the_status_says_the_operator_cannot_speak_and_since_when(self) -> None:
+        self.operator_available = False
+        daemon = self.started()
+        self.peer_wake(daemon)
+        voice = daemon.status()["operator_voice"]
+        self.assertEqual((voice["available"], voice["code"]), (False, "operator_unavailable"))
+        self.assertRegex(voice["since"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+        self.assertNotIn("fleet-secrets", json.dumps(voice))
+        self.operator_available = True
+        self.clock.advance(OPV.RETRY_SECONDS + 1)
+        self.peer_wake(daemon, "d")
+        voice = daemon.status()["operator_voice"]
+        self.assertEqual((voice["available"], voice["code"]), (True, None))
 
     def test_a_known_outage_is_checked_without_the_network_before_the_wake_is_queued(self) -> None:
         """After one failed build the router-side check (`_wake_block`) knows the Operator is away for the

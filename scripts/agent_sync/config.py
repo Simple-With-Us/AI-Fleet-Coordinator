@@ -398,6 +398,7 @@ class Config:
         # it a seat cannot be told "the Operator opened this DM" from "a seat opened it", and the
         # runtime refuses by name instead of guessing.
         self.operator_user_id = 0
+        self.operator_email = ""
         self.eligible_user_ids: set[int] = set()
         # `[operator] dm_allow`:  the user ids besides the pinned owner that the Operator may hand a
         # tagged address's candidate list to (AFC-412).  The list carries internal session ids and
@@ -681,6 +682,16 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         errors.append("daemon.operator_user_id must be a user id (0 means not pinned yet)")
     else:
         cfg.operator_user_id = operator
+    # The Operator bot's address, pinned beside its id so the voice can tell the pinned bot
+    # without an environment variable (a LaunchAgent that does not carry one still speaks).  Like
+    # the id it is per-host inventory, so none is committed;  "" means not pinned.
+    operator_email = daemon.get("operator_email", "")
+    if not isinstance(operator_email, str) or (
+        operator_email.strip() and "@" not in operator_email
+    ):
+        errors.append("daemon.operator_email must be the Operator bot's address (or empty)")
+    else:
+        cfg.operator_email = operator_email.strip().casefold()
     eligible = daemon.get("eligible_user_ids", [])
     if not isinstance(eligible, list) or not all(
         isinstance(i, int) and not isinstance(i, bool) for i in eligible

@@ -690,6 +690,20 @@ class Daemon:
             str, str
         ] = {}  # seat -> instance, from the last partition check (route checks)
         self.config = C.load(self.root, self.config_path)
+        # The Operator's identity pins are the host's own settings:  the environment wins, and a
+        # host whose LaunchAgent carries no OPERATOR_ZULIP_* names (the Mac's) falls back to the
+        # `[daemon] operator_user_id` and `operator_email` it pinned in listener.toml.  Without
+        # either, the voice is refused by name rather than guessed.
+        if (
+            self.config.operator_user_id > 0
+            and not str(self.env.get("OPERATOR_ZULIP_USER_ID") or "").strip()
+        ):
+            self.env["OPERATOR_ZULIP_USER_ID"] = str(self.config.operator_user_id)
+        if (
+            self.config.operator_email
+            and not str(self.env.get("OPERATOR_ZULIP_EMAIL") or "").strip()
+        ):
+            self.env["OPERATOR_ZULIP_EMAIL"] = self.config.operator_email
         # The Operator's voice (owner ruling, Oct 30 2026): every post the daemon itself composes,
         # and every edit and typing indicator that goes with it, goes out as the pinned Operator bot
         # and never as a seat's bot.  Built on first use and checked against the pinned identity;
@@ -710,6 +724,7 @@ class Daemon:
             clock=self.clock.monotonic,
             log=self.log.write,
             hide=self.hide,
+            wall=self.clock.time,
         )
         # The Operator's posts are kept POST_SPACING apart whichever thread makes them: the next free
         # slot, taken under the lock, so two wake workers and the digest never fire together.
@@ -7841,6 +7856,9 @@ class Daemon:
             "rewake_verified_cli": self.config.rewake_verified_cli,
             "rewake_verified_desktop": self.config.rewake_verified_desktop,
             "pause": L.read_json(pause_path(self.root)),
+            # Whether the Operator itself can speak (AFC-602):  a listener that is up with a dead
+            # Operator voice drops every wake it would have reported, and nothing else says so.
+            "operator_voice": self.operator_voice.snapshot(),
             "seats": seats,
         }
 
