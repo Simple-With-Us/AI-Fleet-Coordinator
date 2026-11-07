@@ -1,6 +1,7 @@
 # Exact generic-fixture publication
 
-This change prepares an empty review registry, not a file publication approval.
+The mechanism was introduced with an empty registry in PR1430. Each later entry
+is a separate exact-file review, not a general file publication approval.
 Ordinary writes keep their existing route and checks. Only `content_b64` in
 `gr_wf_file_put` and `gr_wf_files_put` can use a registry entry, matched on exact
 repository, destination path and SHA256 of the entire decoded UTF-8 file.
@@ -14,26 +15,29 @@ server's dedicated scanner or its existing security-fixture attestations.
 
 ## Registry review and update boundary
 
-The registry is empty in this change. An entry requires a separate normal code
-review that can read the complete immutable proposed file, independently
-recompute its Git blob and SHA256, inspect every flagged match with surrounding
-context and compare the source provenance and intended destination. The review
-must record the exact repository, path, bytes, hash and findings, and fix all real
-findings before the entry can land. Review of this empty mechanism is not review
+A registry entry requires a separate normal code
+review of an auditable full-content inspection record. A named inspector must
+read the complete immutable proposed file, recompute its Git blob and SHA256,
+inspect every flagged match with surrounding context and compare source
+provenance and intended destination. The record names the inspector, date, exact
+repository, path, bytes, hashes, match classifications and findings. Normal entry
+review examines that record and enforcement; it must not be described as a
+reviewer's full-payload inspection unless that reviewer actually had the bytes.
+The exact packet must be retained for authorized inspection and all real
+findings must be fixed before the entry can land. Review of this empty mechanism is not review
 of any future entry. A caller cannot submit approval, a review ID or a hash to
 change the registry at run time. Editing the registry itself remains an ordinary
 source change with normal review and deployment gates.
 
-The pending BotFleet PR1551 config test file is not approved by this change. It
-is a local conflict-resolution candidate and is not an existing remote blob.
-An independent full-content inspection and digest comparison are available,
-but an auditable full-payload source accessible to the normal entry reviewer
-must be established before adding it. No source encoding, fixture obfuscation,
+The BotFleet PR1551 config test entry has a named full-content inspection record
+in `botfleet-1551-config-fixture.md`. It is a local conflict-resolution candidate,
+not an existing remote blob. That entry requires its own normal review and
+release; PR1430's mechanism review did not approve it. No source encoding, fixture obfuscation,
 path-prefix exemption or self-attestation is an acceptable publication route.
 
 ## Tests
 
-Tests pin an empty registry and mock exact synthetic approvals only inside the
-test process. They cover changed bytes, repository/path moves, ordinary scan
+Tests pin the release registry and mock additional synthetic approvals only
+inside the test process. They cover changed bytes, repository/path moves, ordinary scan
 strictness, dedicated/provider/loaded refusal, wrong action scope and message
 refusal. No real fixture approval is installed by a test.
