@@ -1,7 +1,6 @@
 // Static admin diagnostics.  This module contains no client script and only
 // emits escaped values through the renderers supplied by pages.js.
 
-import { HOSTED_READ_TOOLS } from "./hosted-tools.js";
 
 // Successful reads write no call row (owner ruling 2026-11-06), so a failed
 // read row can never be followed by the success that cleared it.  It counts
@@ -81,7 +80,12 @@ export function callSeatLabel(record, missing = "—") {
   return caller !== actor ? `${actor} via ${caller}` : record.seat ?? caller;
 }
 
-function seatSummary(seat, calls, diagnostics, generatedAt, diagnosticsUnavailable, e) {
+// The read classification arrives as data (index.js passes HOSTED_READ_TOOLS),
+// so this module stays free of the tool modules and their dependencies:  the
+// visual tests load it through pages.js without the Worker's packages.
+const NO_READ_TOOLS = new Set();
+
+function seatSummary(seat, calls, diagnostics, generatedAt, diagnosticsUnavailable, e, readTools = NO_READ_TOOLS) {
   const ordered = [...calls].filter((c) => (c.authenticated_seat ?? c.seat) === seat.seat).sort((a, b) => (b.ts ?? 0) - (a.ts ?? 0));
   const last = ordered[0];
   const success = ordered.find((c) => !failure(c));
@@ -104,7 +108,7 @@ function seatSummary(seat, calls, diagnostics, generatedAt, diagnosticsUnavailab
   // A failed READ call row older than READ_FAILURE_CURRENT_MS cannot say the
   // seat is still failing:  the successful reads after it left no row.
   // Only call rows qualify (a refusal or wake row is never a read call).
-  const staleReadFailure = (row) => (row.kind === undefined || row.kind === "Tool Call") && HOSTED_READ_TOOLS.has(row.tool) && failure(row) && Number.isFinite(generatedAt) && generatedAt - (row.ts ?? 0) > READ_FAILURE_CURRENT_MS;
+  const staleReadFailure = (row) => (row.kind === undefined || row.kind === "Tool Call") && readTools.has(row.tool) && failure(row) && Number.isFinite(generatedAt) && generatedAt - (row.ts ?? 0) > READ_FAILURE_CURRENT_MS;
   const diagnosticAfterSuccess = seatDiagnostics.some((row) => (!success || row.ts >= success.ts) && !staleReadFailure(row));
   const currentError = hasRecent && ((failure(last) && !staleReadFailure(last)) || diagnosticAfterSuccess);
   const earlierReadFailure = hasRecent && !currentError && failure(last);
@@ -168,6 +172,7 @@ function recentErrors(rows, e) {
 export function renderStatusOverview(data, e) {
   const { seats = [], statusCalls = [], statusErrors = [], refusals = [], tokenRefusals = [], audits = [], runtimeErrors = [], generatedAt } = data;
   const globalDiagnosticsUnavailable = Boolean(data.diagnosticsUnavailable);
+  const readTools = data.readTools instanceof Set ? data.readTools : NO_READ_TOOLS;
   const diagnosticsUnavailable = Boolean(globalDiagnosticsUnavailable || seats.some((s) => s.diagnosticsUnavailable || (s.unavailableFields ?? []).length));
   const collectedErrors = dedupeErrors(collectErrorRows({ statusCalls, statusErrors, refusals, tokenRefusals, audits, runtimeErrors }));
   const noTraffic = statusCalls.length === 0;
@@ -178,7 +183,7 @@ export function renderStatusOverview(data, e) {
     : noTraffic
       ? `No calls appear in the retained sample.${e.gap} A quiet seat is not verified healthy.`
       : `${statusCalls.length} retained tool calls; ${recentFailures ? "failure or refusal records are present" : "no failure records are present"}.${e.gap} A successful past call does not guarantee current readiness.`;
-  const seatCards = seats.map((s) => seatSummary(s, statusCalls, collectedErrors, generatedAt, globalDiagnosticsUnavailable || Boolean(s.diagnosticsUnavailable), e)).join("") || "<p>No seats are configured.</p>";
+  const seatCards = seats.map((s) => seatSummary(s, statusCalls, collectedErrors, generatedAt, globalDiagnosticsUnavailable || Boolean(s.diagnosticsUnavailable), e, readTools)).join("") || "<p>No seats are configured.</p>";
   const errors = recentErrors(collectedErrors, e);
   // Folded by default (AFC-347):  the summary line carries the verdict, so the owner sees it without scrolling.
   const tone = recentFailures || noTraffic || diagnosticsUnavailable ? "state-attention" : "state-neutral";

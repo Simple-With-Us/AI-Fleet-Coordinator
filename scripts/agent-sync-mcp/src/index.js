@@ -73,7 +73,7 @@ import { grAssertionMinter } from "./gr-assert.js";
 import { resolveGrSecrets, grClientFromResolved } from "./gr-tools.js";
 import { isGitPath, serveGit } from "./git-route.js";
 import { serveMcpRequest } from "./mcp.js";
-import { HostedTools } from "./hosted-tools.js";
+import { HostedTools, HOSTED_READ_TOOLS } from "./hosted-tools.js";
 import { IdentityRouter, resolveDelegatedCredentials, adminDelegatedReadiness, GB_IDENTITIES } from "./delegated-identities.js";
 import { gate, linearQuotaFromEnv } from "./gate.js";
 import { ToolError } from "./contract.js";
@@ -1391,6 +1391,7 @@ async function serveAdmin(request, env, config, oauth, email) {
         audits: audits.slice(0, 40),
         calls: calls.slice(0, 40),
         statusCalls: calls,
+        readTools: HOSTED_READ_TOOLS,
         statusErrors,
         infisical,
         runtimeErrors,

@@ -38,14 +38,24 @@ class AuditsTest(unittest.TestCase):
         self.assertTrue(SeatPolicy.audits(write_wf, "ok"))
         self.assertTrue(SeatPolicy.audits("comment_pr", "ok"))
         self.assertTrue(SeatPolicy.audits("open_pr", "ok"))
-        self.assertTrue(SeatPolicy.audits("mint_token", "ok"), "issuing a credential is always logged")
-        self.assertTrue(SeatPolicy.audits("no_such_action", "ok"), "an unknown name counts as a write")
+        self.assertTrue(
+            SeatPolicy.audits("mint_token", "ok"), "issuing a credential is always logged"
+        )
+        self.assertTrue(
+            SeatPolicy.audits("no_such_action", "ok"), "an unknown name counts as a write"
+        )
 
     def test_handle_records_writes_and_failures_but_not_ok_reads(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "a.jsonl")
             relay = Relay(SeatPolicy(SEATS_JSON), StubClient(), AuditLog(path))
-            args = {"repo": "example/fixture-repo", "base": "main", "head": "b", "title": "t", "body": "hello"}
+            args = {
+                "repo": "example/fixture-repo",
+                "base": "main",
+                "head": "b",
+                "title": "t",
+                "body": "hello",
+            }
             self.assertEqual(relay.handle(SEAT_TOKEN, "open_pr", args)[0], 200)
             self.assertEqual([r["result"] for r in _rows(path)], ["ok"], "a write records")
             # The same wiring with the action classified as a read:  no row on success.
@@ -54,7 +64,9 @@ class AuditsTest(unittest.TestCase):
                 self.assertEqual(len(_rows(path)), 1, "a successful read leaves no row")
                 denied = dict(args, repo="elsewhere/repo", head="d")
                 self.assertEqual(relay.handle(SEAT_TOKEN, "open_pr", denied)[0], 403)
-            self.assertEqual([r["result"] for r in _rows(path)], ["ok", "denied"], "a denied read records")
+            self.assertEqual(
+                [r["result"] for r in _rows(path)], ["ok", "denied"], "a denied read records"
+            )
 
 
 if __name__ == "__main__":

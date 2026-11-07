@@ -288,7 +288,7 @@ export function gbBearerMintRefusedPage({ identity, reason = "stale" }) {
 }
 
 /** /admin (spec 3.9):  seat state, keys, grants, clients, refusals, tool calls, audit. */
-export function adminPage({ gbBearers = [], mintId = "", email, seats, clients, clientsDeferred = false, clientsUnavailable = false, clientsCheckedAt = null, refusals, tokenRefusals = [], audits, calls = [], statusCalls = calls, statusErrors = [], statusAudits = audits, runtimeErrors = [], generatedAt, diagnosticsUnavailable = false, csrf, notice, manualSeats = [], infisical = null }, headers) {
+export function adminPage({ gbBearers = [], mintId = "", email, seats, clients, clientsDeferred = false, clientsUnavailable = false, clientsCheckedAt = null, refusals, tokenRefusals = [], audits, calls = [], statusCalls = calls, statusErrors = [], statusAudits = audits, runtimeErrors = [], generatedAt, diagnosticsUnavailable = false, csrf, notice, manualSeats = [], infisical = null, readTools }, headers) {
   const seatRows = seats
     .map((s) => {
       const unavailable = new Set(s.unavailableFields ?? []);
@@ -356,7 +356,7 @@ export function adminPage({ gbBearers = [], mintId = "", email, seats, clients, 
         .map((a) => `<tr><td>${escapeHtml(ownerTime(a.ts))}</td><td>${escapeHtml(a.seat)}</td><td>${escapeHtml(a.event)}</td><td><code>${escapeHtml(JSON.stringify(a.detail ?? {}))}</code></td></tr>`)
         .join("")
     : `<tr><td colspan="4">No events yet.</td></tr>`;
-  const statusOverview = renderStatusOverview({ seats, statusCalls, statusErrors, refusals, tokenRefusals, audits: statusAudits, runtimeErrors, generatedAt, diagnosticsUnavailable }, {
+  const statusOverview = renderStatusOverview({ seats, statusCalls, statusErrors, refusals, tokenRefusals, audits: statusAudits, runtimeErrors, generatedAt, diagnosticsUnavailable, readTools }, {
     escape: escapeHtml,
     time: ownerTime,
     gap: SENTENCE_GAP,

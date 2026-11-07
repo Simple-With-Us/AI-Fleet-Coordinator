@@ -216,7 +216,9 @@ class VerifierTest(unittest.TestCase):
         self.assertEqual(v.resolve(other), IDENTITY)
         self.assertEqual(len(v._transport.calls), 2, "another token is another key")
         self.assertIsNone(v.resolve(TOKEN + "x"))
-        self.assertEqual(len(v._transport.calls), 2, "a malformed token never reaches the cache or the Worker")
+        self.assertEqual(
+            len(v._transport.calls), 2, "a malformed token never reaches the cache or the Worker"
+        )
 
     def test_a_worker_cached_answer_does_not_start_a_second_hour(self):
         # The Worker may answer from its own cache;  its verified_at says when
@@ -243,14 +245,22 @@ class VerifierTest(unittest.TestCase):
         self.assertLessEqual(entry[1], start - 3000 + 3600 + 0.001)
         with mock.patch.object(time, "time", return_value=start + 601):
             self.assertEqual(v.resolve(TOKEN), IDENTITY)
-        self.assertEqual(len(v._transport.calls), 2, "past the Worker check's hour the relay asks again")
+        self.assertEqual(
+            len(v._transport.calls), 2, "past the Worker check's hour the relay asks again"
+        )
 
     def test_a_future_or_missing_verified_at_never_stretches_the_window(self):
         start = time.time()
         for extra in ({"verified_at": int((start + 86400) * 1000)}, {}, {"verified_at": True}):
+
             def answer(body, extra=extra):
                 return 200, json.dumps(
-                    {"ok": True, "identity": IDENTITY, "expires_at": int((start + 90 * 86400) * 1000), **extra}
+                    {
+                        "ok": True,
+                        "identity": IDENTITY,
+                        "expires_at": int((start + 90 * 86400) * 1000),
+                        **extra,
+                    }
                 ).encode()
 
             with mock.patch.dict(os.environ):
@@ -291,7 +301,9 @@ class VerifierTest(unittest.TestCase):
         results["B"] = v.resolve(TOKEN)
         a_may_return.set()
         ta.join(5)
-        self.assertEqual(results["A"], IDENTITY, "A's own in-flight call still answers what it was told")
+        self.assertEqual(
+            results["A"], IDENTITY, "A's own in-flight call still answers what it was told"
+        )
         self.assertIsNone(results["B"])
         self.assertIsNone(v.resolve(TOKEN), "the newer refusal stands")
         self.assertEqual(len(calls), 2, "the refusal is served from the cache, with no third ask")
