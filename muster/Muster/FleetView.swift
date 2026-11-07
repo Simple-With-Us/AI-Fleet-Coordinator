@@ -749,22 +749,26 @@ struct FleetView: View {
     }
 
     /// Reads the page through the app's store:  a visit reads only when the reading on hand is
-    /// older than `visitFreshness` (`force` false), and the Refresh button always reads.  The
-    /// store keeps one read in flight, fails closed, and rebuilds the rows with the work read
-    /// before it sets the envelope, so pending never ends while the rows still hold counts that
-    /// were not read (Sentry, PR 1450).
+    /// older than `visitFreshness` (`force` false), and the Refresh button always reads.  A
+    /// visit after the checkout changed always reads too, since the store's window counts only
+    /// age (Kody, PR 1481).  The store keeps one read in flight, fails closed, and rebuilds the
+    /// rows with the work read before it sets the envelope, so pending never ends while the rows
+    /// still hold counts that were not read (Sentry, PR 1450).
     @MainActor
     private func load(force: Bool) async {
         let reading = self.reading
         let named = store.engineRoot
+        let checkoutChanged = FleetViewReadingOrigin.checkoutChanged(to: named)
+        FleetViewReadingOrigin.record(named)
+        let mustRead = force || checkoutChanged
         // The work read (`fleet_view status`) is the slow one:  it reads pull requests across the
         // fleet's repos, Linear claims and every lane, and took 8.5 s on the server.  It is asked
         // for first and runs while the local reads below finish, so the page never waits on it
         // to list the apps.  (The store reads the tools report, a local file, just before it
-        // starts `fleet_view`.)  A visit inside the window starts nothing, and one during a read
-        // joins it.
+        // starts `fleet_view`.)  A visit inside the window to the same checkout starts nothing,
+        // and one during a read of the same checkout joins it.
         let work = Task { @MainActor in
-            if force {
+            if mustRead {
                 await reading.refresh(engineRoot: named)
             } else {
                 await reading.refreshIfOlder(than: Self.visitFreshness, engineRoot: named)
@@ -773,16 +777,47 @@ struct FleetView: View {
         // With no work read on screen yet, the apps and coding apps show at once from
         // fleet-apps.json and the tools report.  Their lane, pull request and claim counts say
         // they are being read (`countsPending`), never zero, until the work read comes back.
-        // An earlier listing stays until this one lands, so a second Refresh does not flash
-        // the spinner over apps already on screen.
+        // A listing from an earlier load is dropped first, so another checkout's apps never
+        // show under this load's pending counts (Kody, PR 1481).
+        if reading.envelope == nil || checkoutChanged {
+            earlyRegistry = nil
+        }
         if reading.envelope == nil, let root = named ?? EngineLocator.locate()?.root {
             let tools = await Task.detached(priority: .userInitiated) {
                 FleetToolsReportReader.readDefault()
             }.value
-            earlyRegistry = await Task.detached(priority: .userInitiated) {
+            let listed = await Task.detached(priority: .userInitiated) {
                 FleetRegistryReader.read(repoRoot: root, viewOutput: nil, toolsReading: tools)
             }.value
+            // A later load for another checkout may have started while this listing was read;
+            // its listing, not this one, belongs on screen.
+            if !FleetViewReadingOrigin.checkoutChanged(to: named) {
+                earlyRegistry = listed
+            }
         }
         await work.value
+    }
+}
+
+/// The checkout the page last asked the store to read, kept for the app's life like the
+/// store's reading itself.  `FleetViewStore.refreshIfOlder` counts only the reading's age, so
+/// without this a return to the page inside the window after the checkout changed would show
+/// the old checkout's apps, pull requests, claims and lanes (Kody, PR 1481).
+@MainActor
+private enum FleetViewReadingOrigin {
+    /// Whether the page has asked for a read yet in this run of the app.
+    private static var asked = false
+    /// The checkout that read was asked for, or nil when the store was left to find it.
+    private static var engineRoot: URL?
+
+    /// Whether `named` is another checkout than the one the last read was asked for.  Before
+    /// any read there is nothing to differ from.
+    static func checkoutChanged(to named: URL?) -> Bool {
+        asked && engineRoot != named
+    }
+
+    static func record(_ named: URL?) {
+        asked = true
+        engineRoot = named
     }
 }

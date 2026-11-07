@@ -127,6 +127,14 @@ final class FleetViewFilterBarTests: XCTestCase {
         // when its read lands, so a failed read still clears the page.
         XCTAssertTrue(source.contains("if countsPending, let earlyRegistry { return earlyRegistry }\n        return reading.registrySummary"))
         XCTAssertTrue(source.contains("private var countsPending: Bool { loading && envelope == nil }"))
+        // Another checkout's reading never stands in for this one (Kody, PR 1481):  a visit after
+        // the checkout changed reads even inside the window, and an earlier load's listing is
+        // dropped before this load lists its apps.
+        XCTAssertTrue(source.contains("let mustRead = force || checkoutChanged"))
+        XCTAssertTrue(source.contains("if mustRead {\n                await reading.refresh(engineRoot: named)"))
+        let dropListing = try position("if reading.envelope == nil || checkoutChanged {\n            earlyRegistry = nil")
+        XCTAssertLessThan(dropListing, readTools, "the old listing must go before this load lists its apps")
+        XCTAssertTrue(source.contains("if !FleetViewReadingOrigin.checkoutChanged(to: named) {\n                earlyRegistry = listed"))
 
         // The rows are rebuilt with the work read before `envelope` is set, so pending never
         // ends while the rows still hold counts that were not read (Sentry, PR 1450).
