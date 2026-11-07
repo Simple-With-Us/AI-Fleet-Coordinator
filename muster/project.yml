@@ -154,9 +154,13 @@ targets:
       - path: Muster/FleetServices/ServiceReconcilePolicy.swift
       - path: Muster/FleetServices/ServerPresence.swift
       - path: Muster/FleetServices/StartupPolicy.swift
-      # The window's layout sizes, the column cap and the stale split-view frame check.  No
-      # environment objects, so the test bundle compiles it (MusterWindowLayoutTests).
+      # The window's layout sizes, the column cap (the fix for AFC-616) and the stale
+      # split-view frame check.  No environment objects, so the test bundle compiles it
+      # (MusterWindowLayoutTests).
       - path: Muster/Views/MusterWindowLayout.swift
+      # The place strip, so MusterWindowLayoutTests checks the app's own strip.  It needs only
+      # FleetHost, MachineStatus and MusterNavigation, which are compiled above.
+      - path: Muster/Views/PlaceBadge.swift
     settings:
       base:
         PRODUCT_NAME: MusterTests

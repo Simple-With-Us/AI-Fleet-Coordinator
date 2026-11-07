@@ -125,8 +125,9 @@ export async function serveGrBearerVerify(request, env, gates, { resolveKey = re
   if (!checked.ok) return jsonResponse({ ok: false, reason: checked.reason }, checked.status);
 
   const { identity, hash } = checked.query;
-  // Off unless the GR_VERIFY_CACHE_MS var sets `cacheMs`:  with 0 nothing is stored,
-  // so this lookup always misses and every call verifies live.
+  // `cacheMs` is config.grVerifyCacheMs (an hour by default, owner ruling
+  // 2026-11-06);  with 0 nothing is stored, so this lookup always misses and
+  // every call verifies live.
   // The route's own key space in the identity cache:  an entry here says only
   // "this bearer verifies for Git" (a GR-only bearer can earn one), so /mcp must
   // never read it, and this route never reads /mcp's.  The seat is the entry's,
@@ -135,8 +136,15 @@ export async function serveGrBearerVerify(request, env, gates, { resolveKey = re
   const cacheKey = `gr-verify:${hash}`;
   const cached = identityCache?.get(cacheKey);
   if (cached?.seat === identity && cached.expires_at > Date.now() && !eventsOnlySeats.includes(identity)) {
-    return jsonResponse({ ok: true, identity, expires_at: cached.expires_at }, 200);
+    // verified_at is when the gate last checked this bearer live, so the
+    // relay can end its own window an hour after THAT check, not an hour
+    // after this cached answer:  the two layers together stay within one
+    // window (owner ruling 2026-11-06:  an hour after checking the token).
+    return jsonResponse({ ok: true, identity, expires_at: cached.expires_at, verified_at: cached.verifiedAt }, 200);
   }
+  // When the live check starts, on the cache's clock:  a refusal or eviction
+  // recorded after this point wins over this call's (older) positive answer.
+  const since = identityCache?.now();
   const identityGate = gates(env, identity);
   let verdict;
   try {
@@ -171,6 +179,12 @@ export async function serveGrBearerVerify(request, env, gates, { resolveKey = re
   // surface;  lifting the var restores access without a re-mint.
   if (eventsOnlySeats.includes(identity)) return jsonResponse({ ok: false, reason: "events_only" }, 200);
   const expiresAt = verdict.expires_at ?? 0;
-  identityCache?.set(cacheKey, { seat: identity, via: "gr-verify", expires_at: expiresAt }, cacheMs);
-  return jsonResponse({ ok: true, identity, expires_at: expiresAt }, 200);
+  // The window never runs past the bearer's own expiry.  One clock reading
+  // (the cache's own clock, Date.now in production) both caps the window and
+  // starts it, so the entry ends no later than the bearer even when the
+  // millisecond ticks in between.
+  const now = identityCache ? identityCache.now() : Date.now();
+  const ttlMs = Math.min(cacheMs, expiresAt - now);
+  if (ttlMs > 0) identityCache?.set(cacheKey, { seat: identity, via: "gr-verify", expires_at: expiresAt }, ttlMs, now, { since });
+  return jsonResponse({ ok: true, identity, expires_at: expiresAt, verified_at: now }, 200);
 }

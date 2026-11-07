@@ -71,6 +71,24 @@ final class FailureReasonTests: XCTestCase {
         }
     }
 
+    func testDisplayUsesTheLimitsItIsGiven() {
+        // Ten short lines:  shortened under the default six-line limit and a three-line one,
+        // whole under a roomier one.  The flag must follow the limits the text was made with
+        // (Kody, PR 1442).
+        let reason = (1...10).map { "line \($0)" }.joined(separator: "\n")
+        XCTAssertTrue(FailureReason.display(reason).isShortened)
+        let fewLines = FailureReason.display(reason, lines: 3)
+        XCTAssertEqual(fewLines.text, FailureReason.shown(reason, lines: 3))
+        XCTAssertTrue(fewLines.text.hasPrefix("\u{2026} 7 earlier lines not shown\n"))
+        XCTAssertTrue(fewLines.isShortened)
+        let roomy = FailureReason.display(reason, lines: 20, characters: 1000)
+        XCTAssertEqual(roomy.text, reason)
+        XCTAssertFalse(roomy.isShortened)
+        let fewCharacters = FailureReason.display("short reason", characters: 5)
+        XCTAssertEqual(fewCharacters.text, FailureReason.shown("short reason", characters: 5))
+        XCTAssertTrue(fewCharacters.isShortened)
+    }
+
     func testWindowsLineEndingsCountAsOneLineBreak() {
         let reason = (1...6).map { "line \($0)" }.joined(separator: "\r\n")
         XCTAssertEqual(FailureReason.shown(reason).components(separatedBy: "\n").count, 6)

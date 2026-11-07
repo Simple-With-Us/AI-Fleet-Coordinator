@@ -186,6 +186,15 @@ const FULL_READ_NAMES = FULL_NAMES.filter((name) => !Object.hasOwn(FULL_WRITE_KI
 const FULL_WRITE_NAMES = FULL_NAMES.filter((name) => Object.hasOwn(FULL_WRITE_KIND, ZULIP_LEGACY_NAMES[name]));
 export const HOSTED_READ_TOOLS = Object.freeze(new Set(["identities", "guide", "catalog", ...ZULIP_READ_NAMES, ...RECALL_READ_TOOLS, ...LINEAR_READ_TOOLS, ...FLEETLINK_READ_TOOLS, ...FULL_READ_NAMES, ...EAVESDROPPER_READ_TOOLS, ...NOTES_READ_TOOLS, "whatsapp_read", "gr_v1_pr_state", "gr_v1_pr_hold_state", ...WF_V1_TOOLS.filter((t) => WF_V1_READ_ACTIONS.includes(t.name.slice(3))).map((t) => t.name)]));
 export const HOSTED_WRITE_TOOLS = Object.freeze(new Set([...ZULIP_WRITE_NAMES, ...RECALL_WRITE_TOOLS, ...LINEAR_WRITE_TOOLS, ...FLEETLINK_WRITE_TOOLS, ...FULL_WRITE_NAMES, ...NOTES_WRITE_TOOLS, ...GR_TOOL_NAMES, "whatsapp_reply", "whatsapp_send_status", "gr_v1_pr_automerge_disable", ...WF_V1_TOOLS.filter((t) => !WF_V1_READ_ACTIONS.includes(t.name.slice(3))).map((t) => t.name)]));
+/**
+ * Whether a finished call writes a spec-3.9 audit row (owner ruling
+ * 2026-11-06:  successful reads leave the audit log).  A call audits unless
+ * it is a read (HOSTED_READ_TOOLS, the same classification the scope check
+ * uses) that ended "ok".  Errors, unknown names and every write audit.
+ */
+export function auditsCall(name, outcome) {
+  return outcome !== "ok" || !HOSTED_READ_TOOLS.has(name);
+}
 export const RECALL_IDEM_TTL_MS = 10 * 60 * 1000;
 // Team and state ids are cached per isolate for an hour:  long enough to keep
 // a seat inside Linear's request budget, short enough that a team rename or a
@@ -605,14 +614,20 @@ export class HostedTools {
       country: typeof this.cf.country === "string" ? this.cf.country.slice(0, 2) : null,
       ...audit,
     };
-    await this.safely(() => this.auditRow(this.gate, row));
-    if (this.callerGate !== this.gate) await this.safely(() => this.auditRow(this.callerGate, row));
+    // A successful read leaves no call row and so starts no audit flush
+    // (owner ruling 2026-11-06);  read errors and every write still audit.
+    // The Workers Logs "tool" line below stays for every call.
+    if (auditsCall(publicName, audit.outcome)) {
+      await this.safely(() => this.auditRow(this.gate, row));
+      if (this.callerGate !== this.gate) await this.safely(() => this.auditRow(this.callerGate, row));
+    }
     this.log({ event: "tool", seat: this.seat, authenticated_seat: this.callerSeat, acting_identity: this.seat, tool: publicName, outcome: row.error_code ?? "ok", latency_ms: latency, grant_ref: this.grantRef });
     return result;
   }
 
   /**
-   * One per-call audit row for one gate (spec 3.9).  Direct to the gate,
+   * One audit row for one gate (spec 3.9:  a write, or any call that
+   * failed;  a successful read writes none).  Direct to the gate,
    * unless the Worker installed its isolate audit buffer as this
    * instance's sink (R2, DO burn reduction):  the sink keys the row by the
    * gate's own name - the acting seat for this gate, the caller seat for

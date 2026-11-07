@@ -239,9 +239,10 @@ test("catalog refuses a cursor tagged for a different tool list", async () => {
   assert.match(JSON.stringify(bare), /invalid cursor/);
 });
 
-test("catalog audits exactly one row per execution, success and failure", async () => {
+test("catalog and identities write no audit row on success (owner 2026-11-06), one row on failure, and log every success", async () => {
   const rows = [];
-  const tools = new HostedTools({ seat: "CODEX", scopes: ["zulip:read"], config, gate: {}, clientId: "t", grantRef: "r" });
+  const logs = [];
+  const tools = new HostedTools({ seat: "CODEX", scopes: ["zulip:read"], config, gate: {}, clientId: "t", grantRef: "r", log: (row) => logs.push(row) });
   tools.auditRow = async (gate, row) => { rows.push(row); };
   const reserves = [];
   tools.reserve = async (kind) => { reserves.push(kind); };
@@ -249,12 +250,17 @@ test("catalog audits exactly one row per execution, success and failure", async 
   const ok = await router.call("catalog", { identity: "CODEX" });
   assert.ok(!ok.isError);
   assert.deepEqual(reserves, ["read"], "a successful catalog call consumes read budget like identities()");
-  assert.equal(rows.length, 1);
-  assert.equal(rows[0].outcome, "ok");
-  assert.equal(rows[0].tool, "catalog");
+  assert.equal(rows.length, 0, "a successful catalog read writes no row");
+  assert.ok(!(await router.call("identities", {})).isError);
+  assert.equal(rows.length, 0, "a successful identities read writes no row");
+  assert.deepEqual(logs.map((l) => [l.event, l.tool, l.outcome]), [["tool", "catalog", "ok"], ["tool", "identities", "ok"]]);
   const bad = await router.call("catalog", { identity: "CODEX", cursor: "bogus" });
   assert.ok(bad.isError);
-  assert.equal(rows.length, 2);
-  assert.equal(rows[1].outcome, "error");
-  assert.equal(rows[1].error_code, "invalid_argument");
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].outcome, "error");
+  assert.equal(rows[0].error_code, "invalid_argument");
+  const badIds = await router.call("identities", { unexpected: 1 });
+  assert.ok(badIds.isError);
+  assert.equal(rows.length, 2, "a failed identities read still audits");
+  assert.equal(rows[1].tool, "identities");
 });
