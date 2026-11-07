@@ -346,3 +346,27 @@ class LinuxHostTests(unittest.TestCase):
             ):
                 self.h.stop_for_recovery()
             cleanup.assert_called_once_with(expected)
+
+    def test_interrupt_is_not_suppressed_by_stopped_cleanup(self):
+        expected = {"pid": 42}
+        for result in ["running", "stopped"]:
+            for error in [KeyboardInterrupt(), SystemExit(7)]:
+                with (
+                    patch.object(self.h, "confirmed_stopped", return_value=False),
+                    patch.object(self.h, "process_identity", return_value=expected),
+                    patch.object(self.h, "freeze", side_effect=error),
+                    patch.object(self.h, "reconcile_frozen_stop", return_value=result),
+                    self.assertRaises(type(error)),
+                ):
+                    self.h.stop_for_recovery()
+        with (
+            patch.object(self.h, "confirmed_stopped", return_value=False),
+            patch.object(self.h, "process_identity", return_value=expected),
+            patch.object(self.h, "freeze", side_effect=KeyboardInterrupt()),
+            patch.object(
+                self.h, "reconcile_frozen_stop", side_effect=TransactionError("guard retained")
+            ),
+            self.assertRaises(TransactionError) as caught,
+        ):
+            self.h.stop_for_recovery()
+        self.assertIsInstance(caught.exception.__context__, KeyboardInterrupt)

@@ -356,8 +356,11 @@ class LinuxHost:
             ):
                 raise TransactionError("busy recovery image; no unsafe stop")
             self.stop_without_kill(expected)
-        except BaseException:
-            if self.reconcile_frozen_stop(expected) == "stopped":
+        except BaseException as original:
+            result = self.reconcile_frozen_stop(expected)
+            # Cancellation still propagates after safe cleanup; never convert
+            # SystemExit/KeyboardInterrupt to successful recovery.
+            if result == "stopped" and isinstance(original, Exception):
                 return
             raise
 
