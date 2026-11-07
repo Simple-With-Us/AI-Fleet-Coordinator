@@ -7081,6 +7081,22 @@ class ClaudeFileGuardInstallTests(World):
         write_json(self.config("claude"), doc, 0o600)
         self.assertFails(self.verify("claude"), "never matches Read, Edit, MultiEdit, NotebookEdit")
 
+    def test_verify_probes_at_most_the_current_and_one_stale_command(self) -> None:
+        """A settings file bloated with stale entries must not multiply the probe matrix (Kody on #1423)."""
+        T.apply_platform(T.PLATFORMS["claude"], self.paths, now=lambda: STAMP, shim_proven=True)
+        doc = self.load("claude")
+        current = copy.deepcopy(self.file_groups()[0])
+        for n in range(4):
+            stale = copy.deepcopy(current)
+            stale["hooks"][0]["command"] = f"/old/{n}/claude-file-guard-hook"
+            doc["hooks"]["PreToolUse"].append(stale)
+        write_json(self.config("claude"), doc, 0o600)
+        with mock.patch.object(T, "probe_claude_files", return_value=[]) as probe:
+            checks = self.verify("claude")
+        probed = [c.args[0] for c in probe.call_args_list]
+        self.assertEqual(probed, [T.claude_file_hook_command(self.paths), "/old/0/claude-file-guard-hook"])
+        self.assertEqual(sum(1 for c in checks if "remove the stale entry by hand" in c.detail), 4)
+
     def test_apply_refuses_to_wire_in_a_missing_file_shim(self) -> None:
         os.unlink(self.paths.claude_file_shim)
         r = T.apply_platform(T.PLATFORMS["claude"], self.paths, now=lambda: STAMP)

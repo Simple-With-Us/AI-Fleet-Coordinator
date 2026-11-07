@@ -5067,7 +5067,13 @@ def verify_claude_files(
         out.append(
             Check(t, "file-guard duplicates", "WARN", f"{len(entries) - 1} duplicate {CLAUDE_FILE_HOOK_NAME} entries")
         )
-    for command in dict.fromkeys(e.command for e in entries if not e.problems):
+    # Probe the current command and at most one stale one:  every stale entry already FAILs above, and a settings
+    # file bloated with stale entries must not turn verify into N full probe matrices.
+    commands = list(dict.fromkeys(e.command for e in entries if not e.problems))
+    if len(commands) > 2:
+        stale = [c for c in commands if c != want]
+        commands = ([want] if want in commands else []) + stale[: 2 - (want in commands)]
+    for command in commands:
         try:
             out.extend(
                 probe_claude_files(
