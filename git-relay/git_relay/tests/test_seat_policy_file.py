@@ -52,8 +52,8 @@ NOT_SWU_IDENTITY = {
 # Explicit policy exclusions, documented in the deployed policy's header.
 # Original Jet is wake-only and has no GitHub App entry.  BF-BUILDER is dropped (owner
 # 2026-11-01 4:41pm CT:  BF-ENGINEER replaced it), so the relay admits no bearer for it.
-# KIMI and ZC are newly added seats that do not have deployed GitHub Apps yet.
-EXCLUDED = {"JET", "BF-BUILDER", "KIMI", "ZC"}
+# KIMI is a newly added seat that does not have a deployed GitHub App yet.
+EXCLUDED = {"JET", "BF-BUILDER", "KIMI"}
 # Every GB seat and every BF bot (owner 2026-11-01 4:41pm CT:  "all 12" of each, including
 # the new BF-TRADER and BF-ENGINEER) reaches every repository in both namespaces.
 GB_SEATS = {
@@ -285,7 +285,7 @@ class SeatPolicyFile(unittest.TestCase):
         # seat's repositories, actions or permission ceiling fails until this line is edited
         # too, so a widening can never ride in on the policy file alone.  When a policy
         # change is meant, run `seat_policy.py install` for the new digest and update it here.
-        self.assertEqual(seat_policy.digest(SEATS), "3eca9f013dcacb42")
+        self.assertEqual(seat_policy.digest(SEATS), "4fe63e3e32e90998")
 
     def test_render_refuses_a_malformed_file(self):
         good = json.loads(json.dumps(DOC))
