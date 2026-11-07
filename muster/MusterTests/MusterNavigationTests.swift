@@ -253,6 +253,15 @@ final class MusterNavigationTests: XCTestCase {
         XCTAssertNil(SidebarBadges.services(clean.entries, pm2Answered: clean.pm2Answered, readAt: now, now: now))
     }
 
+    /// The Services badge is never a bare digit:  it has words that say what it counts.
+    func test_services_badge_has_words() {
+        XCTAssertEqual(SidebarBadges.servicesWords("1"),
+                       "1 service needs attention (failed, could not be read, or started and given up on).")
+        XCTAssertEqual(SidebarBadges.servicesWords("3+"),
+                       "3 services need attention (failed, could not be read, or started and given up on), and some could not be read.")
+        XCTAssertTrue(SidebarBadges.servicesWords("?").hasPrefix("Not known"))
+    }
+
     /// When pm2 does not answer, its rows are not known and are not counted, as the menu
     /// says:  the badge is `?` with nothing else wrong, and the count with a plus beside a
     /// real problem, the same as the Mac's card and the menu bar for the same read.

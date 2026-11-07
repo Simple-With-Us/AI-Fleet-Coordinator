@@ -306,6 +306,19 @@ enum SidebarBadges {
         }
         return problems == 0 ? nil : "\(problems)"
     }
+
+    /// The Services badge in words, for the row's help and for VoiceOver, so the number is
+    /// never left to be guessed:  what it counts, and what `?` and a plus mean.
+    static func servicesWords(_ badge: String) -> String {
+        if badge == "?" {
+            return "Not known: the Mac's services have not been read recently."
+        }
+        let unread = badge.hasSuffix("+")
+        let count = Int(badge.dropLast(unread ? 1 : 0)) ?? 0
+        let things = count == 1 ? "1 service needs attention" : "\(count) services need attention"
+        let ending = unread ? ", and some could not be read." : "."
+        return "\(things) (failed, could not be read, or started and given up on)\(ending)"
+    }
 }
 
 // MARK: - Server Status when the report is not current

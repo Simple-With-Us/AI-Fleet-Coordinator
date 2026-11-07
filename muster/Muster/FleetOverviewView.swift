@@ -157,12 +157,15 @@ struct FleetOverviewView: View {
     /// One place in the sidebar,  with the badge its own reader gives,  or none.
     @ViewBuilder
     private func sidebarRow(_ place: MusterDestination, menu: MachineMenu) -> some View {
-        let label = Label(place.title, systemImage: place.systemImage).tag(place)
-        if let badge = sidebarBadge(place, menu: menu) {
-            label.badge(Text(badge))
-        } else {
-            label
-        }
+        // One view for every row, with the tag outermost:  the list selects by the tag it finds
+        // on the row, so a row with a badge and a row without one are built the same way.
+        let badge = sidebarBadge(place, menu: menu)
+        let words = place == .services ? badge.map(SidebarBadges.servicesWords) : nil
+        Label(place.title, systemImage: place.systemImage)
+            .badge(badge.map { Text($0) })
+            .help(words ?? "")
+            .accessibilityValue(Text(words ?? ""))
+            .tag(place)
     }
 
     /// The badge a row carries.  Each one is its own reader's number:  nil reads unknown,
