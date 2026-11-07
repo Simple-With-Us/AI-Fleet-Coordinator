@@ -24,6 +24,10 @@ The runtime supplies approved service-account credentials and destination config
 
 Node 20 or newer is required.  Both constructors accept an injected `fetch` transport and a bounded `timeoutMs` (default 15 seconds, maximum 60 seconds).  The token provider also accepts `now`, in milliseconds, for clock injection.
 
+## Workbook Profiles (OPS-1037)
+
+The constructor accepts an optional `tables` option — `{sessions: {title, headers}, events: {title, headers}}` — describing the destination workbook's real tabs.  It defaults to the canonical `Operator Sessions` / `Operator Events` layout; a workbook whose tabs carry other titles or a narrower header set (the live SWU Operator workbook: tabs `Sessions` / `Events`, a 10-column Sessions layout) passes its own profile, and identity, header validation, and write confirmation all check against it.  Tab titles are configuration, never renamed by the adapter.  When a profile's headers are narrower than the canonical payload, the exporter projects cells by header name before writing (see `docs/protocols/operator-sheets-export.md`).
+
 ## Exporter Interface
 
 | Method | Result / Contract |
