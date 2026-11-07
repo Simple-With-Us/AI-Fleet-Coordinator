@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 @main
@@ -12,6 +13,11 @@ struct MusterApp: App {
 
     @MainActor
     init() {
+        // Before the window opens:  a split-view column frame saved taller than its window
+        // would be restored and push both columns' first rows off the window's top
+        // (MusterWindowLayout.oversizedSplitViewFrameKeys).
+        MusterWindowLayout.forgetOversizedSplitViewFrames(
+            in: .standard, screenHeight: NSScreen.screens.map(\.frame.height).max())
         // The owner is asked once,  here,  whether this app may notify them.  An
         // apply that asked on its own path would hold its result until the
         // prompt was answered.
@@ -54,10 +60,9 @@ struct MusterApp: App {
                 .environmentObject(watch)
         }
         .defaultSize(width: 1160, height: 760)
-        // The window may be as small as its content allows and is never grown to a panel's
-        // natural height.  Without this the window grew to the tallest panel it had shown
-        // (1449 points for Tools And Worker Health) and kept that as its minimum, so on a
-        // laptop screen its bottom edge ended up below the display with no way to shrink it.
+        // The window may be as small as the root's minimum and no smaller.  This is a
+        // WindowGroup's default, written out so it is visible.  The root's own min/max frame
+        // (musterWindowSize) sets that minimum, whatever the panel inside it asks for.
         .windowResizability(.contentMinSize)
         // One window:  the menu brings it forward,  and a second copy would show every
         // plan sheet twice.

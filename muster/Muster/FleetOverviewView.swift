@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// The window's root:  the sidebar's places in one detail column, over one shared run.
@@ -34,17 +35,21 @@ struct FleetOverviewView: View {
 
     /// The window's size is the window's own, and not the natural height of whichever panel is
     /// showing.  Several panels are as tall as their content (Tools And Worker Health is 1449
-    /// points, Seats 1345) and the window grew to match and kept that as its minimum, so on a
-    /// 923-point laptop screen its bottom edge sat below the display with no way to shrink it.
-    /// The split view sits in an overlay, which is proposed the window's room and takes no part
-    /// in the window's size.  The minimum is wide enough for every panel's columns and
-    /// controls, which overlapped each other in a narrower window (Controls' tabs, the Apps &
-    /// Work filter bar), and short enough for any laptop screen.
+    /// points, Seats 1345).  The root frame (`musterWindowSize`) keeps the window's minimum,
+    /// wide enough for every panel's columns and short enough for any laptop screen, so the
+    /// window never grows to a panel's natural height, and it holds the split view to the
+    /// window's top.
+    ///
+    /// The owner's November 6 report (AFC-616) was both columns' first rows sitting above the
+    /// window's top, under the title bar, with no way to scroll to them.  The evidence points
+    /// to a split-view column frame saved taller than the window, which the app now forgets
+    /// before the window opens (`MusterWindowLayout.forgetOversizedSplitViewFrames`).  The
+    /// column cap (`musterColumnHeight`) and the top alignment are guards against the same
+    /// overflow from any other cause;  CI could not reproduce the overflow, so neither is
+    /// proven to be needed.
     var body: some View {
-        Color.clear
-            .frame(minWidth: 1160, idealWidth: 1160, maxWidth: .infinity,
-                   minHeight: 560, idealHeight: 780, maxHeight: .infinity)
-            .overlay { splitView }
+        splitView
+            .musterWindowSize()
     }
 
     private var splitView: some View {
@@ -60,6 +65,7 @@ struct FleetOverviewView: View {
                     }
                 }
             }
+            .musterColumnHeight()
             .navigationTitle("Muster")
             .navigationSplitViewColumnWidth(min: 200, ideal: 230, max: 300)
         } detail: {
@@ -96,6 +102,7 @@ struct FleetOverviewView: View {
                     footer
                 }
             }
+            .musterColumnHeight()
             .navigationTitle(destination.title)
             .navigationSubtitle(destination.subtitle)
             .toolbar {
@@ -294,11 +301,18 @@ struct RunVerdictLabel: View {
 }
 
 /// The banner that says why the last run cannot be trusted.
+///
+/// It shows only the end of a long reason (`FailureReason`), so a traceback cannot make one
+/// banner more than about 220 points tall, however long it is.  Up to three banners can
+/// stack over the panel (a failed run, the manifest and the registry), so at the window's
+/// smallest height all three together can still leave the panel little room.  The full
+/// reason is one click away.
 struct FailureBanner: View {
     let reason: String
     var title: String = "The engine did not answer, so every cell reads unknown."
 
     var body: some View {
+        let shown = FailureReason.display(reason)
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.red)
@@ -306,11 +320,21 @@ struct FailureBanner: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(.callout.weight(.medium))
-                Text(reason)
+                Text(shown.text)
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
+                if shown.isShortened {
+                    Button("Copy Full Reason") {
+                        let pasteboard = NSPasteboard.general
+                        pasteboard.clearContents()
+                        pasteboard.setString(reason, forType: .string)
+                    }
+                    .buttonStyle(.link)
+                    .font(.caption)
+                    .help("Copies the whole reason, including the lines the banner leaves out.")
+                }
             }
             Spacer(minLength: 0)
         }

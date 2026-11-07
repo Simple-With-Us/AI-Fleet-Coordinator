@@ -127,6 +127,7 @@ targets:
       - path: Muster/Model/SeatInventory.swift
       - path: Muster/Model/TrustedCheckout.swift
       - path: Muster/Model/ThemeChoice.swift
+      - path: Muster/Model/FailureReason.swift
       - path: Muster/Model/ListenerConfigFile.swift
       - path: Muster/Model/ListenerStatus.swift
       - path: Muster/Model/OperatorOptions.swift
@@ -150,6 +151,9 @@ targets:
       - path: Muster/FleetServices/ServiceReconcilePolicy.swift
       - path: Muster/FleetServices/ServerPresence.swift
       - path: Muster/FleetServices/StartupPolicy.swift
+      # The window's layout sizes, the column cap and the stale split-view frame check.  No
+      # environment objects, so the test bundle compiles it (MusterWindowLayoutTests).
+      - path: Muster/Views/MusterWindowLayout.swift
     settings:
       base:
         PRODUCT_NAME: MusterTests
