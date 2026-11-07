@@ -204,6 +204,11 @@ class OperatorCredentialsFromEnvironmentTests(unittest.TestCase):
             SI.operator_credentials(self.env(ZULIP_OPERATOR_API_KEY="${folder.key}"))
         self.assertIn("unresolved reference", str(caught.exception))
 
+    def test_a_partial_reference_is_refused_too(self) -> None:
+        with self.assertRaises(Z.CredentialError) as caught:
+            SI.operator_credentials(self.env(ZULIP_OPERATOR_API_KEY="abc${folder.key}def"))
+        self.assertIn("unresolved reference", str(caught.exception))
+
     def test_with_no_pair_in_the_environment_the_reader_is_asked_as_before(self) -> None:
         env = self.env()
         env.pop("ZULIP_OPERATOR_EMAIL")

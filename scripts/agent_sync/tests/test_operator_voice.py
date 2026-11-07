@@ -188,7 +188,14 @@ class VoiceTests(unittest.TestCase):
         first = voice.client()
         voice.update_env(dict(self.ENV))  # nothing moved:  the same client stays
         self.assertIs(voice.client(), first)
+        self.assertTrue(voice.snapshot()["available"])
         voice.update_env(dict(self.ENV, OPERATOR_ZULIP_EMAIL="other-bot@zulip.test"))
+        moved = voice.snapshot()
+        self.assertEqual(
+            (moved["available"], moved["code"]),
+            (None, None),
+            "the published state is about the old pin too:  not known until a build answers",
+        )
         with self.assertRaises(OPV.OperatorUnavailable) as caught:
             voice.client()  # rebuilt (the fake still answers as the old bot), judged against the new pin
         self.assertIn("not the pinned Operator", caught.exception.reason)

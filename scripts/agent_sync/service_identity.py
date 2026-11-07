@@ -80,7 +80,9 @@ def operator_credentials(env, home=None, fetch=None):
     if any(held.values()):
         if not all(held.values()):
             raise Z.CredentialError(f"{where}: only one of the two names is set")
-        if any(re.fullmatch(r"\$\{[^}]+\}", value) for value in held.values()):
+        # Any "${" is refused, not only a whole-value reference:  the loader's own rule
+        # (server/infisical_env.py), so a partial reference never goes out as a credential.
+        if any("${" in value for value in held.values()):
             raise Z.CredentialError("Operator unresolved reference: " + ", ".join(names))
         creds = Z.env_credentials(
             dict(held, ZULIP_SITE=env.get("ZULIP_SITE", "")),

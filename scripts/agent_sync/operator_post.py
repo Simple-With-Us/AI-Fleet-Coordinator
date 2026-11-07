@@ -274,6 +274,12 @@ class OperatorVoice:
                 self._flight = None
                 self._failure = ""
                 self._failed_until = -1e18
+                # What `snapshot` reports is about the old pin too, so it goes back to "not known
+                # yet" (dated now) until the next build answers for the new one.
+                if self._available is not None or self._code is not None:
+                    self._since = self._wall()
+                    self._available = None
+                    self._code = None
 
     def _note_state(self, available: bool, code: str | None) -> None:
         """Remember whether the Operator can speak and since when (caller holds the lock).
