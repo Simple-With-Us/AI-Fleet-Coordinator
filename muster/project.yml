@@ -110,6 +110,7 @@ targets:
       - path: Muster/Model/MusterNavigation.swift
       - path: Muster/Model/ResourcePolicy.swift
       - path: Muster/Model/FleetToolsReport.swift
+      - path: Muster/Model/ToolVersionColumns.swift
       - path: Muster/Model/ServerStatusReport.swift
       - path: Muster/Model/VmStatusReport.swift
       - path: Muster/Model/WorkerHealthReport.swift
