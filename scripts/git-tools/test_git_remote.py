@@ -1015,8 +1015,8 @@ class TestOutcomes(unittest.TestCase):
         if not src_path.exists():
             self.skipTest("hosted front source not in this checkout")
         src = src_path.read_text(encoding="utf-8")
-        base = re.search(r"REFUSAL_BASE_REASONS = Object\.freeze\(\[(.*?)\]\)", src, re.S)
-        bad = re.search(r"BAD_REQUEST_REASONS = new Map\(\[(.*?)\]\);", src, re.S)
+        base = re.search(r"REFUSAL_BASE_REASONS = Object\.freeze\(\[(.*?)\]\)", src, re.DOTALL)
+        bad = re.search(r"BAD_REQUEST_REASONS = new Map\(\[(.*?)\]\);", src, re.DOTALL)
         self.assertTrue(base and bad)
         want = set(re.findall(r'"([a-z_]+)"', base.group(1)))
         want |= set(re.findall(r'"[^"]+",\s*"(bad_request_[a-z_]+)"', bad.group(1)))
