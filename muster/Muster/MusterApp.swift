@@ -71,11 +71,12 @@ struct MusterApp: App {
             CommandGroup(after: .appInfo) { CheckForUpdatesButton() }
         }
 
+        // Settings keeps Apple's default, `.contentSize`:  the window is exactly the size of
+        // its fixed-size panes, so it cannot be resized or restored to a stale saved height.
         Settings {
             MusterSettingsView()
                 .environmentObject(store)
         }
-        .windowResizability(.contentMinSize)
 
         // The menu bar item names both places,  so the owner sees what needs attention and
         // where without opening the window.
@@ -96,7 +97,8 @@ struct MusterApp: App {
     }
 }
 
-/// The app's Settings scene: the places on disk and the seat it reads Zulip as.
+/// The app's Settings scene:  four panes of one fixed size,  so the window (which Settings
+/// sizes to its content) fits a short screen and nothing hides below an unseen scroller.
 struct MusterSettingsView: View {
     @EnvironmentObject private var store: FleetStore
     @AppStorage(MusterSettings.repoRootDefaultsKey) private var repoRoot = ""
@@ -105,8 +107,6 @@ struct MusterSettingsView: View {
     @AppStorage(MusterSettings.themeDefaultsKey) private var theme: ThemeChoice = .system
     @AppStorage(MusterSettings.shortMenuBarTextDefaultsKey) private var shortMenuBarText = false
     @AppStorage(MusterSettings.keepServicesRunningDefaultsKey) private var keepServicesRunning = true
-    @State private var pickingRepoRoot = false
-    @State private var pickingScriptsDir = false
 
     private var seatChoices: [String] {
         var seats = store.roster
@@ -117,59 +117,37 @@ struct MusterSettingsView: View {
     }
 
     var body: some View {
-        Form {
-            Section("Fleet-Config Repository") {
-                HStack {
-                    TextField("Repository Root", text: $repoRoot)
-                        .font(.system(size: 11, design: .monospaced))
-                    Button("Choose\u{2026}") { pickingRepoRoot = true }
-                }
-                Text("Saved as \(MusterSettings.repoRootDefaultsKey), the key FleetConfigLocation reads.\u{00A0} The MUSTER_REPO_ROOT environment variable is read only when nothing is saved.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            Section("Scripts Directory") {
-                HStack {
-                    TextField("Scripts Directory", text: $scriptsDir)
-                        .font(.system(size: 11, design: .monospaced))
-                    Button("Choose\u{2026}") { pickingScriptsDir = true }
-                }
-                Text("Saved as \(MusterSettings.scriptsDirectoryDefaultsKey).\u{00A0} MUSTER_SCRIPTS_DIR, when set, still wins over the saved folder.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            Section("Zulip") {
-                Picker("Seat To Read As", selection: $zulipSeat) {
-                    ForEach(seatChoices, id: \.self) { seat in Text(seat).tag(seat) }
-                }
-                Text("Saved as \(MusterSettings.zulipSeatDefaultsKey).\u{00A0} MUSTER_ZULIP_SEAT, when set, still wins over the saved seat.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            Section("Services") {
-                Toggle("Keep Services Running", isOn: $keepServicesRunning)
-                Text("While Muster runs, it starts a service on the Mac again when it stops or fails, waits longer after each try, and stops trying after 3.\u{00A0} It never stops a service, and it never starts one you stopped from Muster.\u{00A0} The Services panel says what it does for each service.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            Section("Appearance") {
-                Picker("Theme", selection: $theme) {
-                    ForEach(ThemeChoice.allCases) { choice in Text(choice.title).tag(choice) }
-                }
-                .pickerStyle(.segmented)
-                Toggle("Short Menu Bar Text", isOn: $shortMenuBarText)
-                Text("Reads M OK \u{00B7} S ? in place of Mac OK \u{00B7} Server ?, for a crowded menu bar.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            BuildIdentitySettingsSection()
+        // Read here so the panes are rebuilt when a folder is chosen or reset:  the resolvers
+        // below read the same defaults these properties write.
+        let _ = (repoRoot, scriptsDir)
+        TabView {
+            MusterFoldersPane(
+                checkout: SettingsCopy.checkoutRow(FleetConfigLocation.resolveWithSource(),
+                                                   engineRoot: EngineLocator.locate()?.root),
+                scripts: SettingsCopy.scriptsRow(FleetViewService.resolveScripts()),
+                choose: { folder, path in
+                    switch folder {
+                    case .checkout: repoRoot = path
+                    case .scripts: scriptsDir = path
+                    }
+                },
+                useDefault: { folder in
+                    switch folder {
+                    case .checkout: repoRoot = ""
+                    case .scripts: scriptsDir = ""
+                    }
+                })
+                .tabItem { Label("Folders", systemImage: "folder") }
+            MusterZulipServicesPane(seat: $zulipSeat, seatChoices: seatChoices,
+                                    effectiveSeat: MusterSettings.zulipSeat(),
+                                    keepServicesRunning: $keepServicesRunning)
+                .tabItem { Label("Zulip And Services", systemImage: "bubble.left.and.text.bubble.right") }
+            MusterAppearancePane(theme: $theme, shortMenuBarText: $shortMenuBarText)
+                .tabItem { Label("Appearance", systemImage: "paintbrush") }
+            MusterSettingsPane { BuildIdentitySettingsSection() }
+                .tabItem { Label("This Build", systemImage: "info.circle") }
         }
-        .formStyle(.grouped)
-        // The Settings window follows the same stored theme as the main
-        // window;  without this it stayed on the system scheme while Dark
-        // was chosen (AFC-592).
+        // The Settings window follows the same stored theme as the main window (AFC-592).
         .preferredColorScheme(theme.colorScheme)
-        .frame(width: 520)
-        .fileImporter(isPresented: $pickingRepoRoot, allowedContentTypes: [.folder]) { result in
-            if case .success(let url) = result { repoRoot = url.path }
-        }
-        .fileImporter(isPresented: $pickingScriptsDir, allowedContentTypes: [.folder]) { result in
-            if case .success(let url) = result { scriptsDir = url.path }
-        }
     }
 }

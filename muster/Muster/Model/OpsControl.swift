@@ -448,7 +448,7 @@ enum OpsControlError: Error, Equatable, LocalizedError {
         case .helperNotFound(let path):
             return ApplyCopy.join(
                 "The helper was not found at \(path).",
-                "Set the fleetConfigRepoRoot default or the MUSTER_REPO_ROOT variable to the repository root."
+                "Choose the fleet checkout under Fleet Checkout in Settings."
             )
         case .launchFailed(let detail):
             return "The helper could not be started: \(detail)"

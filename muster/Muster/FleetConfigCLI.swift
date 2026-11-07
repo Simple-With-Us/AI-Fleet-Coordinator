@@ -109,7 +109,7 @@ enum FleetConfigCLIError: Error, Equatable, LocalizedError {
         case .engineNotFound(let path):
             return ApplyCopy.join(
                 "The fleet-config engine was not found at \(path).",
-                "Set the fleetConfigRepoRoot default or the MUSTER_REPO_ROOT variable to the repository root."
+                "Choose the fleet checkout under Fleet Checkout in Settings."
             )
         case .launchFailed(let detail):
             return "The fleet-config engine could not be started: \(detail)"
@@ -195,23 +195,36 @@ struct FleetConfigLocation: Equatable {
         scriptsDirectory.appendingPathComponent("fleet_config/__main__.py")
     }
 
+    /// The repository root and where it came from.  `resolve` is this without the source.
+    struct Resolution: Equatable {
+        var location: FleetConfigLocation
+        var source: SettingSource
+    }
+
+    static func resolveWithSource(
+        defaults: UserDefaults = .standard,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        home: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> Resolution {
+        func expanded(_ raw: String) -> URL {
+            URL(fileURLWithPath: (raw as NSString).expandingTildeInPath, isDirectory: true)
+        }
+        if let saved = defaults.string(forKey: defaultsKey), !saved.isEmpty {
+            return Resolution(location: FleetConfigLocation(repoRoot: expanded(saved)), source: .chosen)
+        }
+        if let fromEnvironment = environment[environmentKey], !fromEnvironment.isEmpty {
+            return Resolution(location: FleetConfigLocation(repoRoot: expanded(fromEnvironment)), source: .environment)
+        }
+        return Resolution(location: FleetConfigLocation(
+            repoRoot: home.appendingPathComponent("Code/AI-Fleet-Coordinator", isDirectory: true)), source: .standard)
+    }
+
     static func resolve(
         defaults: UserDefaults = .standard,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         home: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> FleetConfigLocation {
-        func expanded(_ raw: String) -> URL {
-            URL(fileURLWithPath: (raw as NSString).expandingTildeInPath, isDirectory: true)
-        }
-        if let saved = defaults.string(forKey: defaultsKey), !saved.isEmpty {
-            return FleetConfigLocation(repoRoot: expanded(saved))
-        }
-        if let fromEnvironment = environment[environmentKey], !fromEnvironment.isEmpty {
-            return FleetConfigLocation(repoRoot: expanded(fromEnvironment))
-        }
-        return FleetConfigLocation(
-            repoRoot: home.appendingPathComponent("Code/AI-Fleet-Coordinator", isDirectory: true)
-        )
+        resolveWithSource(defaults: defaults, environment: environment, home: home).location
     }
 
     func validate(fileManager: FileManager = .default) throws {
@@ -219,6 +232,16 @@ struct FleetConfigLocation: Equatable {
             throw FleetConfigCLIError.engineNotFound(engineEntryPoint.path)
         }
     }
+}
+
+/// Where a Settings value came from, so the window can say it in plain words.
+enum SettingSource: Equatable, Sendable {
+    /// Saved in Settings.
+    case chosen
+    /// An environment variable set when Muster was opened.
+    case environment
+    /// The usual place, because nothing else is set.
+    case standard
 }
 
 // MARK: - Runner
