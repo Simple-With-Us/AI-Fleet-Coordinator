@@ -368,7 +368,9 @@ class SeatAndMcpTests(unittest.TestCase):
         calls = []
         runner = self.chat_runner(calls, [4101, 4102], edit_code=5)
         doctor.post_changes(self.failing_report(("tool:gh", "behind by 1")), runner)
-        self.assertTrue(doctor.post_changes(self.failing_report(("tool:gh", "behind by 2")), runner))
+        self.assertTrue(
+            doctor.post_changes(self.failing_report(("tool:gh", "behind by 2")), runner)
+        )
         self.assertEqual([c[1] for c in calls], ["post", "edit", "post"])
         self.assertEqual(self.state()["message_id"], 4102)
         self.assertEqual(self.state()["failing"], ["tool:gh: behind by 2"])
@@ -431,12 +433,16 @@ class SeatAndMcpTests(unittest.TestCase):
         calls = []
         runner = self.chat_runner(calls, [4101])
         (self.home / "state.json").write_text(json.dumps({"failing": ["tool:gh: behind by 1"]}))
-        self.assertTrue(doctor.post_changes(self.failing_report(("tool:gh", "behind by 2")), runner))
+        self.assertTrue(
+            doctor.post_changes(self.failing_report(("tool:gh", "behind by 2")), runner)
+        )
         self.assertEqual([c[1] for c in calls], ["post"])
         self.assertEqual(self.state()["message_id"], 4101)
         # An unchanged set against the old state is still silent.
         (self.home / "state.json").write_text(json.dumps({"failing": ["tool:gh: behind by 2"]}))
-        self.assertFalse(doctor.post_changes(self.failing_report(("tool:gh", "behind by 2")), runner))
+        self.assertFalse(
+            doctor.post_changes(self.failing_report(("tool:gh", "behind by 2")), runner)
+        )
         self.assertEqual(len(calls), 1)
 
     def test_a_post_without_json_output_keeps_no_id(self):
