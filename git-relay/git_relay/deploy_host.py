@@ -23,6 +23,14 @@ from .deploy_guard import freeze_qualified
 from .deploy_transaction import TransactionError, read_regular
 
 
+class StartingProcess(TransactionError):
+    """An exact service process whose executable has not qualified yet."""
+
+    def __init__(self, identity):
+        super().__init__("relay executable not ready")
+        self.identity = identity
+
+
 class LinuxHost:
     UNIT = "git-relay.service"
     CODE = Path("/opt/git-relay/git-relay/git_relay")
@@ -79,15 +87,18 @@ class LinuxHost:
         ticks = (p / "stat").read_text().rsplit(")", 1)[1].split()[19]
         exe = str((p / "exe").resolve(strict=True))
         group = (p / "cgroup").read_text()
-        if "git-relay.service" not in group or not exe.startswith("/usr/bin/python3"):
-            raise TransactionError("unexpected relay process")
-        return {
+        if group != "0::/system.slice/git-relay.service\n":
+            raise TransactionError("unexpected relay cgroup")
+        identity = {
             "pid": pid,
             "start_ticks": ticks,
             "exe": exe,
             "cgroup": group,
             "boot": (self.proc / "sys/kernel/random/boot_id").read_text().strip(),
         }
+        if not exe.startswith("/usr/bin/python3"):
+            raise StartingProcess(identity)
+        return identity
 
     def tasks_and_children(self, expected):
         tasks, children = {}, []
@@ -272,17 +283,38 @@ class LinuxHost:
         self.recovery.finish()
 
     def runtime(self, expected, prior):
-        identity = self.process_identity()
-        if prior is not None and identity == prior:
-            return False
-        if self.hashes(expected) != expected:
-            return False
+        identity = None
+        starting = None
         # Health is only one signal. Separate proof must perform actual own-App
         # negative patch validation and read-only action against the new process.
         healthy = False
         deadline = self.clock() + 8
         while self.clock() < deadline:
-            if self.process_identity() != identity or self.hashes(expected) != expected:
+            if self.hashes(expected) != expected:
+                return False
+            try:
+                observed = self.process_identity()
+            except StartingProcess as pending:
+                # Type=simple can report a live PID before its exec completes.
+                # Only its executable may settle: PID/start/boot/cgroup stay pinned.
+                core = {k: v for k, v in pending.identity.items() if k != "exe"}
+                if identity is not None or (starting is not None and core != starting):
+                    return False
+                starting = core
+                self.sleep(0.1)
+                continue
+            except (TransactionError, OSError, ValueError, KeyError):
+                return False
+            if (
+                starting is not None
+                and {k: v for k, v in observed.items() if k != "exe"} != starting
+            ):
+                return False
+            if identity is None:
+                if prior is not None and observed == prior:
+                    return False
+                identity = observed
+            elif observed != identity:
                 return False
             try:
                 with urlopen(self.HEALTH, timeout=1) as response:
@@ -294,7 +326,12 @@ class LinuxHost:
             self.sleep(0.1)
         # Only loopback readiness is polled. Own-App provider probes are never
         # retried and remain bounded by their individual HTTP timeouts.
-        return healthy and self.proof(identity, expected) and self.process_identity() == identity
+        if not healthy or not self.proof(identity, expected):
+            return False
+        try:
+            return self.process_identity() == identity and self.hashes(expected) == expected
+        except (TransactionError, OSError, ValueError, KeyError):
+            return False
 
     def prove_new_runtime(self, prior, rows):
         return self.runtime(self.new_hashes, prior)
