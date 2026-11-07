@@ -74,15 +74,22 @@ Take this path when the 15-minute bound expires, or any check says the window sh
 not proceed. The abort returns to normal operation WITHOUT a restart:
 
 1. If step 2 already disabled the outgoing webhook: restore the prior listener.toml
-   bytes and SIGHUP; verify `drain.outgoing_webhook.listening` is true.
+   bytes and SIGHUP; verify `drain.outgoing_webhook.listening` matches the PRIOR
+   configured state (true only if the restored config enabled it - a deployment whose
+   webhook was already off must read false again).
 2. Restore the prior pause.json bytes, removing ONLY the drain marker and preserving
    any pre-drain user pause. Do NOT bare `daemon resume`: a blanket resume wipes a
    user pause that predates the drain.
-3. Verify recovery (two snapshots at least 35s apart):
-   - deferred wakes fire (the parked re-arms finalize once the marker is gone)
-   - `drain.deferred_broadcasts` drains to 0 (re-drive runs on tick)
-   - the Linear hook answers 200 queued again (if configured)
-   - ingress healthy: cursors advance, spool drains or stays 0
+3. Verify recovery against the restored prior state (two snapshots at least 35s
+   apart):
+   - with no pre-drain user pause restored: deferred wakes fire (the parked re-arms
+     finalize once the marker is gone). With a prior pause restored, they stay
+     deferred under it - that is their correct behavior, not a failed check.
+   - `drain.deferred_broadcasts` drains to 0 (re-drive runs on tick once the marker
+     lifts), except rows whose payload fetch stays inconclusive - item 4.
+   - the Linear hook answers 200 queued again (only if it was configured and enabled
+     in the prior state)
+   - ingress healthy per the prior config: cursors advance, spool drains or stays 0
 4. A parked effect whose payload proof is inconclusive STAYS parked and visible as a
    nonzero `drain.deferred_broadcasts`. Investigate the named message; never delete
    the file to make the gauge read zero.
@@ -112,9 +119,12 @@ mandatory for fidelity: the restored pause state must be the one the owner set.
 ## 6. Post-boot checks
 
 - seats connected, cursors advancing
-- `drain.deferred_broadcasts` drains to 0 (re-drive runs at boot and on tick)
-- deferred wakes fire (their parked re-arms finalize once the marker is gone)
-- the Linear hook accepts new events again (200 queued)
+- `drain.deferred_broadcasts` drains to 0 (re-drive runs at boot and on tick);
+  rows whose payload fetch stays inconclusive remain parked and visible
+- deferred wakes fire once the marker is gone - unless the restored prior pause.json
+  carried a user pause, under which they correctly stay deferred
+- the Linear hook accepts new events again (200 queued), if it is configured and
+  enabled in the restored prior config
 
 ## Named residuals (explicit, accepted)
 

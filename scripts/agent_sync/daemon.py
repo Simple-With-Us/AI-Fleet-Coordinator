@@ -4229,25 +4229,24 @@ class Daemon:
     def _fetch_deferred_message(
         self, mid: str, origin_seat: str | None
     ) -> tuple[str, SeatRunner | None, Mapping[str, Any] | None]:
-        """("ok", runner, message) | ("gone", None, None) | ("unknown", None, None) for a parked
-        broadcast's payload, re-fetched by id through the same REST read the spool drain uses.
+        """("ok", runner, message) | ("unknown", None, None) for a parked broadcast's payload,
+        re-fetched by id through the same REST read the spool drain uses.
 
-        Any connected runner that still fetches the payload proves it exists and re-drives it.
-        Expiry needs a witness, not a vote (AFC-652 GATE 2):  Zulip answers an inaccessible
-        message with the same 4xx as a deleted one, so a runner that cannot see the parked
-        message's channel proves nothing and abstains.  The origin seat - recorded when the
-        effect parked - demonstrably could see the message (it routed the event), so a
-        definite miss from the ORIGIN runner is the only expiry proof.  401/403/429 from the
-        origin are access-class answers (its own credential or rate limit broke), not
-        evidence about the payload;  a disconnected or unrecorded origin, every blind-runner
-        answer, and every transient failure keep the kind parked, where it surfaces as a
-        nonzero drain.deferred_broadcasts instead of a silent drop."""
+        Any connected runner that still fetches the payload proves it exists and re-drives
+        it.  There is NO expiry proof (AFC-652 GATE 2):  Zulip answers an inaccessible
+        message with the same 4xx as a deleted one, a runner that cannot see the parked
+        message's channel proves nothing, and even the origin seat's historical access does
+        not prove CURRENT access (the bot can lose a private channel mid-window).  No
+        response class distinguishes "deleted" from "cannot see", so the daemon never
+        expires a parked effect on its own:  every miss, access-class answer, and transient
+        failure keeps the kind parked, where it surfaces as a nonzero
+        drain.deferred_broadcasts until the operator investigates the named message (the
+        record carries its channel/topic/stream_id/origin seat for exactly that)."""
         runners = [
             r
             for r in self.seats.values()
             if r.connected and r.client is not None and r.me is not None
         ]
-        origin_miss = False
         for runner in runners:
             try:
                 response = runner.client.get(
@@ -4255,23 +4254,11 @@ class Daemon:
                     {"apply_markdown": False},
                     timeout=min(5.0, self.http_timeout),
                 )
-            except Z.ApiError as exc:
-                if (
-                    origin_seat is not None
-                    and getattr(runner, "seat", None) == origin_seat
-                    and exc.status is not None
-                    and exc.status < 500
-                    and exc.status not in (401, 403, 429)
-                ):
-                    origin_miss = True
-                continue
-            except (Z.NetworkError, OSError):
+            except (Z.ApiError, Z.NetworkError, OSError):
                 continue
             message = response.get("message") if isinstance(response, dict) else None
             if isinstance(message, dict) and str(message.get("id")) == str(mid):
                 return "ok", runner, message
-        if origin_miss:
-            return "gone", None, None
         return "unknown", None, None
 
     def _redrive_deferred_broadcasts(self) -> None:
@@ -4294,14 +4281,10 @@ class Daemon:
             if not parked:
                 continue
             state, runner, message = self._fetch_deferred_message(mid, row.get("seat"))
-            if state == "unknown":
-                continue  # no connected seat or a transient fetch failure:  stay parked
-            if state == "gone":
-                # The payload no longer exists:  a logged done-with-reason, never silence.
-                for kind in parked:
-                    if self._claim_broadcast_effect(mid, kind):
-                        self._finish_broadcast_effect(mid, kind)
-                    self.log.write("broadcast-deferral-expired", id=mid, effect=kind)
+            if state != "ok":
+                # No connected runner could still fetch the payload.  That is ambiguous
+                # (deleted, or simply invisible to every connected bot), and the daemon
+                # never expires a parked effect on its own:  stay parked and visible.
                 continue
             c, _d = R.route(message, runner.me, self.context(runner), self.lease_views(runner))
             for kind in parked:

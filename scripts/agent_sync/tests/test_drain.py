@@ -136,12 +136,15 @@ class BroadcastDeferralTests(DaemonHarness):
             daemon._redrive_deferred_broadcasts()
             self.assertFalse(wait_for(lambda: fan.called, seconds=0.3))
 
-    def test_redrive_expires_a_message_that_is_gone(self) -> None:
+    def test_redrive_never_expires_on_its_own(self) -> None:
+        """No response class proves deletion:  Zulip answers an inaccessible message with
+        the same 4xx as a deleted one, so even a definite miss from the origin keeps the
+        kind parked and visible (GATE 2; the operator investigates the named message)."""
         daemon = self.started()
         c = types.SimpleNamespace(channel="fleet", topic="t")
         daemon._defer_broadcast_effect({"id": 99999999}, c, "fanout", seat="CLAUDE")
         daemon._redrive_deferred_broadcasts()
-        self.assertEqual(L.read_json(daemon._deferred_broadcasts_path()), {})
+        self.assertIn("99999999", L.read_json(daemon._deferred_broadcasts_path()))
 
     def test_inbox_and_audit_park_under_drain(self) -> None:
         daemon = self.started()
@@ -182,12 +185,10 @@ class BroadcastDeferralTests(DaemonHarness):
         self.assertFalse(L.read_json(daemon._deferred_broadcasts_path()))
         clear_pause(daemon.root, None)
 
-    def test_redrive_expires_only_on_origin_miss(self) -> None:
-        """Zulip answers an inaccessible message with the same 4xx as a deleted one, so a
-        runner that cannot see the parked message's channel abstains (GATE 2).  Only a
-        definite miss from the ORIGIN seat - the runner that routed the broadcast and so
-        could see it - expires the deferral;  access-class answers, a disconnected origin,
-        and transient failures all keep it parked."""
+    def test_redrive_stays_parked_when_origin_loses_channel_access(self) -> None:
+        """The access-revoked private-channel case:  the origin bot is removed from the
+        channel mid-window, so its 4xx now means "cannot see", not "deleted".  With every
+        other runner blind too, the re-drive must keep the real broadcast parked."""
         daemon = self.started()
         runner = daemon.seats["CLAUDE"]
         blind = types.SimpleNamespace(
@@ -196,31 +197,25 @@ class BroadcastDeferralTests(DaemonHarness):
         blind.client.get.side_effect = Z.ApiError("not found", code="BAD_MSG_ID", status=404)
         daemon.seats["BLIND"] = blind
         c = types.SimpleNamespace(channel="fleet", topic="t")
+        mid, message, _c = self._owner_broadcast(daemon)
+        orig_client = runner.client
         try:
-            # A blind runner's 404 plus an origin network failure:  no witness, stays parked.
-            daemon._defer_broadcast_effect({"id": 99999998}, c, "fanout", seat="CLAUDE")
+            daemon._defer_broadcast_effect(message, c, "fanout", seat="CLAUDE")
+            # The origin now answers the same 400 an inaccessible private message gets.
             runner.client = mock.Mock()
-            runner.client.get.side_effect = Z.NetworkError("boom")
+            runner.client.get.side_effect = Z.ApiError(
+                "invalid message", code="BAD_REQUEST", status=400
+            )
             daemon._redrive_deferred_broadcasts()
-            self.assertIn("99999998", L.read_json(daemon._deferred_broadcasts_path()))
-            # An access-class answer from the origin (its own credential broke):  not evidence.
-            runner.client.get.side_effect = Z.ApiError("forbidden", code="UNAUTHORIZED", status=403)
-            daemon._redrive_deferred_broadcasts()
-            self.assertIn("99999998", L.read_json(daemon._deferred_broadcasts_path()))
-            # The origin disconnected at re-drive time:  blind runners alone cannot expire.
-            runner.connected = False
-            runner.client.get.side_effect = Z.ApiError("not found", code="BAD_MSG_ID", status=404)
-            daemon._redrive_deferred_broadcasts()
-            self.assertIn("99999998", L.read_json(daemon._deferred_broadcasts_path()))
-            runner.connected = True
-            # The origin itself reports the definite miss:  the deferral expires.
-            daemon._redrive_deferred_broadcasts()
-            self.assertNotIn("99999998", L.read_json(daemon._deferred_broadcasts_path()) or {})
-            # A row without a recorded origin never expires on blind votes.
-            daemon._defer_broadcast_effect({"id": 99999997}, c, "fanout")
-            daemon._redrive_deferred_broadcasts()
-            self.assertIn("99999997", L.read_json(daemon._deferred_broadcasts_path()))
+            self.assertIn(str(mid), L.read_json(daemon._deferred_broadcasts_path()))
+            # A runner that CAN still fetch the payload re-drives it normally.
+            runner.client = orig_client
+            with mock.patch.object(daemon, "fanout") as fan:
+                daemon._redrive_deferred_broadcasts()
+                self.assertTrue(wait_for(lambda: fan.called))
+            self.assertNotIn(str(mid), L.read_json(daemon._deferred_broadcasts_path()) or {})
         finally:
+            runner.client = orig_client
             daemon.seats.pop("BLIND", None)
 
 class RunWakeDrainTests(DaemonHarness):
