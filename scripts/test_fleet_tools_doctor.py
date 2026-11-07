@@ -1780,6 +1780,7 @@ class ReportAndRunTests(HomeCase):
                 if stat.S_ISDIR(os.fstat(fd).st_mode):
                     raise OSError(code, os.strerror(code))
                 return real_fsync(fd)
+
             return fsync
 
         with mock.patch.object(doctor.os, "fsync", side_effect=folder_fails(errno.EINVAL)):
