@@ -41,7 +41,9 @@ MAX_BUNDLE_BYTES = 8 * 1024 * 1024
 # AFC-412 PR2 exporter as a data file (AFC-412 PR3, this PR).
 # The 154th is agent_sync/operator_sheets_drain.mjs, the OPS-1037 production drain runner shipped beside the
 # exporter it calls (its systemd units stay repo-only under agent_sync/server/).
-MAX_FILES = 154
+# The 155th is agent_sync/muster_service.py (AFC-654), the read-only Operator service `simple-chat`
+# dispatches for Muster's Seats panel.
+MAX_FILES = 155
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MARKER = "# fleet-cli managed wrapper v1"
 # Retention:  a receive keeps the newest KEEP_RELEASES releases and deletes older ones, but never `current`,
