@@ -41,6 +41,7 @@ enum SettingsCopy {
     static let chosen = "You chose this folder."
     static let opened = "Set when Muster was opened, because no folder is chosen here."
     static let openedOverChoice = "Set when Muster was opened, so the folder chosen here is not used."
+    static let openedSameAsChoice = "Set when Muster was opened, and the same as the folder chosen here."
     static let usual = "The usual place, because no folder is chosen here."
     static let chosenSkipped = "The folder you chose has no fleet scripts, so Muster uses the usual place."
     static let chosenMissing = "The folder you chose has no fleet scripts."
@@ -112,7 +113,7 @@ enum SettingsCopy {
         let line: String
         switch (source, resolution.chosenButUnused) {
         case (.environment, true): line = openedOverChoice
-        case (.environment, false): line = opened
+        case (.environment, false): line = hasChoice ? openedSameAsChoice : opened
         case (.chosen, _): line = chosen
         case (.standard, true): line = chosenSkipped
         case (.standard, false): line = usual

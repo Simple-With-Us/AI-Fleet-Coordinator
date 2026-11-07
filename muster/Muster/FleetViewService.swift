@@ -79,9 +79,15 @@ enum FleetViewService {
         home: String = FileManager.default.homeDirectoryForCurrentUser.path,
         fileManager: FileManager = .default
     ) -> ScriptsResolution {
+        /// One spelling per folder, so a trailing slash, a `..` or a symlink cannot make the
+        /// chosen folder look unused.
+        func canonical(_ path: String) -> String {
+            URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath().path
+        }
         var candidates: [(String, SettingSource)] = []
         if let override = environment[MusterSettings.scriptsDirectoryEnvironmentKey], !override.isEmpty {
-            candidates.append((override, .environment))
+            // Expanded like every other folder setting, so `~/...` works here too.
+            candidates.append(((override as NSString).expandingTildeInPath, .environment))
         }
         var chosen: String?
         if let saved = defaults.string(forKey: MusterSettings.scriptsDirectoryDefaultsKey), !saved.isEmpty {
@@ -93,7 +99,8 @@ enum FleetViewService {
         for (candidate, source) in candidates
         where fileManager.fileExists(atPath: "\(candidate)/fleet_view/__main__.py") {
             return ScriptsResolution(directory: URL(fileURLWithPath: candidate), source: source,
-                                     chosen: chosen, chosenButUnused: chosen != nil && candidate != chosen)
+                                     chosen: chosen,
+                                     chosenButUnused: chosen.map { canonical($0) != canonical(candidate) } ?? false)
         }
         return ScriptsResolution(directory: nil, source: nil, chosen: chosen, chosenButUnused: chosen != nil)
     }

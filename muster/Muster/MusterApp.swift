@@ -101,8 +101,6 @@ struct MusterApp: App {
 /// sizes to its content) fits a short screen and nothing hides below an unseen scroller.
 struct MusterSettingsView: View {
     @EnvironmentObject private var store: FleetStore
-    @AppStorage(MusterSettings.repoRootDefaultsKey) private var repoRoot = ""
-    @AppStorage(MusterSettings.scriptsDirectoryDefaultsKey) private var scriptsDir = ""
     @AppStorage(MusterSettings.zulipSeatDefaultsKey) private var zulipSeat = MusterSettings.defaultZulipSeat
     @AppStorage(MusterSettings.themeDefaultsKey) private var theme: ThemeChoice = .system
     @AppStorage(MusterSettings.shortMenuBarTextDefaultsKey) private var shortMenuBarText = false
@@ -117,26 +115,8 @@ struct MusterSettingsView: View {
     }
 
     var body: some View {
-        // Read here so the panes are rebuilt when a folder is chosen or reset:  the resolvers
-        // below read the same defaults these properties write.
-        let _ = (repoRoot, scriptsDir)
         TabView {
-            MusterFoldersPane(
-                checkout: SettingsCopy.checkoutRow(FleetConfigLocation.resolveWithSource(),
-                                                   engineRoot: EngineLocator.locate()?.root),
-                scripts: SettingsCopy.scriptsRow(FleetViewService.resolveScripts()),
-                choose: { folder, path in
-                    switch folder {
-                    case .checkout: repoRoot = path
-                    case .scripts: scriptsDir = path
-                    }
-                },
-                useDefault: { folder in
-                    switch folder {
-                    case .checkout: repoRoot = ""
-                    case .scripts: scriptsDir = ""
-                    }
-                })
+            MusterFoldersTab()
                 .tabItem { Label("Folders", systemImage: "folder") }
             MusterZulipServicesPane(seat: $zulipSeat, seatChoices: seatChoices,
                                     effectiveSeat: MusterSettings.zulipSeat(),
@@ -149,5 +129,35 @@ struct MusterSettingsView: View {
         }
         // The Settings window follows the same stored theme as the main window (AFC-592).
         .preferredColorScheme(theme.colorScheme)
+    }
+}
+
+/// The Folders tab.  It is its own view, with no store, so a store refresh never runs the
+/// folder checks again:  they run when the tab is built and when a folder setting changes.
+/// The checks are a few file-existence stats on the local disk.
+struct MusterFoldersTab: View {
+    @AppStorage(MusterSettings.repoRootDefaultsKey) private var repoRoot = ""
+    @AppStorage(MusterSettings.scriptsDirectoryDefaultsKey) private var scriptsDir = ""
+
+    var body: some View {
+        // Read here so the tab is rebuilt when a folder is chosen or reset:  the resolvers
+        // below read the same defaults these properties write.
+        let _ = (repoRoot, scriptsDir)
+        MusterFoldersPane(
+            checkout: SettingsCopy.checkoutRow(FleetConfigLocation.resolveWithSource(),
+                                               engineRoot: EngineLocator.locate()?.root),
+            scripts: SettingsCopy.scriptsRow(FleetViewService.resolveScripts()),
+            choose: { folder, path in
+                switch folder {
+                case .checkout: repoRoot = path
+                case .scripts: scriptsDir = path
+                }
+            },
+            useDefault: { folder in
+                switch folder {
+                case .checkout: repoRoot = ""
+                case .scripts: scriptsDir = ""
+                }
+            })
     }
 }

@@ -4,12 +4,14 @@ import XCTest
 
 /// The worst-case content the Settings panes can show, shared by the tests below.
 private enum SettingsFixture {
-    static let longPath = "/Users/jay/apps/lanes/AI-Fleet-Coordinator/claude-a-long-lane-slug-for-the-worst-case"
+    /// Synthetic paths, as long as the real ones.
+    static let checkoutPath = "/tmp/fixture-home/Code/fixture-repository"
+    static let longPath = "/tmp/fixture-home/apps/lanes/fixture-repository/seat-a-long-lane-slug-for-the-worst-case"
 
     /// Every optional line shown at once.
     static let worstCheckout = FolderRowModel(
         path: longPath, sourceLine: SettingsCopy.chosen, problem: SettingsCopy.checkoutProblem,
-        note: SettingsCopy.checksElsewhere("/Users/jay/Code/AI-Fleet-Coordinator"), hasChoice: true)
+        note: SettingsCopy.checksElsewhere(checkoutPath), hasChoice: true)
     static let worstScripts = FolderRowModel(
         path: nil, sourceLine: SettingsCopy.chosenMissing, problem: SettingsCopy.scriptsProblem,
         note: nil, hasChoice: true)
@@ -31,7 +33,7 @@ private struct WorstCaseBuildSection: View {
             LabeledContent("Commit", value: "abc1234, committed Nov 7, 2026 at 1:42 AM")
             LabeledContent("Source", value: "Not From Main:  built from a lane or with uncommitted changes")
             Text("Built from a lane with uncommitted changes").font(.caption.weight(.semibold))
-            ForEach(["/Users/jay/Code/AI-Fleet-Coordinator", SettingsFixture.longPath], id: \.self) { root in
+            ForEach([SettingsFixture.checkoutPath, SettingsFixture.longPath], id: \.self) { root in
                 LabeledContent("Checkout", value: "\(root) at def5678 on claude/a-long-branch-name")
                 Text(Self.comparison).font(.caption).foregroundStyle(.secondary)
             }

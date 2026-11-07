@@ -111,6 +111,24 @@ final class SettingsFoldersTests: XCTestCase {
         XCTAssertEqual(SettingsCopy.scriptsRow(alone).sourceLine, SettingsCopy.chosen)
     }
 
+    /// The same folder spelled another way, with a trailing slash or through a symlink, is the
+    /// folder chosen here, not a different one.
+    func testTheChosenFolderSpelledAnotherWayIsNotCalledUnused() throws {
+        let chosenScripts = root.appendingPathComponent("chosen-scripts")
+        try touch("fleet_view/__main__.py", in: chosenScripts)
+        let link = root.appendingPathComponent("linked-scripts")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: chosenScripts)
+        let d = try suite()
+        d.set(chosenScripts.path, forKey: MusterSettings.scriptsDirectoryDefaultsKey)
+        for spelling in [chosenScripts.path + "/", link.path] {
+            let r = FleetViewService.resolveScripts(
+                environment: [MusterSettings.scriptsDirectoryEnvironmentKey: spelling], defaults: d, home: home.path)
+            XCTAssertEqual(r.source, .environment, spelling)
+            XCTAssertFalse(r.chosenButUnused, spelling)
+            XCTAssertEqual(SettingsCopy.scriptsRow(r).sourceLine, SettingsCopy.openedSameAsChoice, spelling)
+        }
+    }
+
     func testNoScriptsAnywhereIsNotFoundWithAProblem() throws {
         let r = FleetViewService.resolveScripts(environment: [:], defaults: try suite(), home: home.path)
         XCTAssertNil(r.directory)
@@ -127,7 +145,8 @@ final class SettingsFoldersTests: XCTestCase {
     /// Owner copy rules:  no internal key names outside tooltips, and a real no-break space
     /// plus a space between sentences.
     func testTheWindowsWordsUseNoKeyNamesAndTheSentenceGap() throws {
-        let visible = [SettingsCopy.chosen, SettingsCopy.opened, SettingsCopy.openedOverChoice, SettingsCopy.usual,
+        let visible = [SettingsCopy.chosen, SettingsCopy.opened, SettingsCopy.openedOverChoice,
+                       SettingsCopy.openedSameAsChoice, SettingsCopy.usual,
                        SettingsCopy.chosenSkipped, SettingsCopy.chosenMissing, SettingsCopy.usualMissing,
                        SettingsCopy.checkoutHelper, SettingsCopy.checkoutProblem, SettingsCopy.checksElsewhere("/x/y"),
                        SettingsCopy.scriptsHelper, SettingsCopy.scriptsProblem, SettingsCopy.zulipHelper,
