@@ -139,6 +139,20 @@ final class SeatSetupTests: XCTestCase {
         XCTAssertEqual(SeatSetup.attention(for: placeholders, answered: false), [])
     }
 
+    /// A cell that carries rules is a real observation from an earlier run, so a run in flight
+    /// does not hide it:  only the empty placeholders are held back.
+    func test_findings_from_an_earlier_run_are_still_raised_while_a_run_is_in_flight() {
+        let observed = cells(seat: "CODEX", platform: "codex", [
+            .mcp: Spec(state: "DRIFT", reasonCode: "drift", reason: "mcp.json differs"),
+        ], leaving: [.skills])
+        // Skills has no rule (a placeholder);  MCP carries a drifting rule.
+        let raised = SeatSetup.attention(for: observed, answered: false)
+        XCTAssertEqual(raised.map(\.kind), [.mcp])
+        XCTAssertEqual(raised.first?.text, "mcp.json differs")
+        // Once answered, the placeholder is raised as a hole in the coverage too.
+        XCTAssertEqual(SeatSetup.attention(for: observed, answered: true).map(\.kind), [.mcp, .skills])
+    }
+
     func test_a_kind_with_no_answer_yet_says_it_is_waiting_not_that_no_rule_exists() throws {
         let placeholders = GridBuilder.build(roster: ["CLAUDE"], manifest: nil, results: [])
         let hooks = try cell(placeholders, .hooks)

@@ -304,6 +304,19 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(inv.toml_headers('[a.b."c.d"]\n[e]\n[[f]]\n'), [["a", "b", "c.d"], ["e"]])
         self.assertEqual(inv.toml_headers("[a]\n[[f]]\n[[f]]\n", arrays=True), [["f"], ["f"]])
 
+    def test_a_header_with_a_trailing_comment_still_counts(self):
+        text = (
+            "[mcp_servers.fleet-tools]  # the fleet's tools\n"
+            '[plugins."a#b@source"] # a # inside quotes is part of the name\n'
+            "# [mcp_servers.commented-out]\n"
+            "[[hooks]]  # first\n"
+        )
+        self.assertEqual(
+            inv.toml_headers(text),
+            [["mcp_servers", "fleet-tools"], ["plugins", "a#b@source"]],
+        )
+        self.assertEqual(inv.toml_headers(text, arrays=True), [["hooks"]])
+
     def test_kimi_hooks_are_counted_from_array_tables(self):
         write(
             self.home,
@@ -347,6 +360,31 @@ class InventoryTests(unittest.TestCase):
         rules = section(inv.read_platform("cursor", self.home), "Rules")
         self.assertEqual(names(rules), ["fleet-lane-map.mdc", "fleet-policy.mdc"])
         self.assertEqual(rules["note"], "1 backup copy is not listed.")
+
+    def test_real_backup_names_are_backups_and_names_that_only_contain_the_letters_are_not(self):
+        # Names seen beside live files on the owner's Mac.
+        for backup in (
+            "settings.json.bak",
+            "config.toml.bak-fleet-rag-20260901203618",
+            "hooks.json.bak-lane-guard-20261007-223357",
+            "opencode.json.before-own-tools-20261029-2012",
+            "worktree-create.sh.disabled-20260705",
+            "fleet-lane-map.mdc.bak-lane-map-20261102-033041",
+            "x.orig",
+            "download.tmp",
+        ):
+            with self.subTest(backup=backup):
+                self.assertTrue(inv.is_backup(backup))
+        for kept in (
+            "template.tmpl",
+            "foo.bakery",
+            "origin.md",
+            "board-ops",
+            "disabled-notes",
+            "bak",
+        ):
+            with self.subTest(kept=kept):
+                self.assertFalse(inv.is_backup(kept))
 
     def test_a_long_list_is_cut_and_says_how_many_there_were(self):
         mkdirs(self.home, ".fx/skills")

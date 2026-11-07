@@ -80,7 +80,7 @@ import { recallClientFromResolved, resolveRecallSecrets } from "./recall.js";
 import { fleetlinkClientFromSecret, resolveFleetlinkSeatTokens } from "./fleetlink.js";
 import { LinearClient, linearClientFromPair, resolveLinearPair, LINEAR_SEATS, linearSecretNames, seatTagForSeat } from "./linear.js";
 import { ZulipClient } from "./zulip.js";
-import { listenerClientFromEnv } from "./eavesdropper.js";
+import { listenerClientFromEnv, listenerSecretName } from "./eavesdropper.js";
 import { operatorNotesClientFromEnv } from "./notes.js";
 import { ConsentForm, AdminForm, CONSENT_ARRAY_KEYS, parseForm } from "./forms.js";
 import { SeatEvents, deliverWake, wakeReply, WAKE_BUDGET_MS, EVENT_NAME } from "./events.js";
@@ -437,8 +437,9 @@ async function serveMcp(request, env, ctx) {
 
   // The eavesdropper key resolves through Infisical too (optional:  no wake key
   // means no eavesdropper tools, never a 500 - src/eavesdropper.js).
-  const listenerWakeKey = Object.hasOwn(WAKE_SECRETS, seat)
-    ? await resolveSecret(env, { name: WAKE_SECRETS[seat], path: "/wake", envName: WAKE_SECRETS[seat], optional: true })
+  const listenerSecret = listenerSecretName(seat);
+  const listenerWakeKey = listenerSecret
+    ? await resolveSecret(env, { name: listenerSecret, path: "/wake", envName: listenerSecret, optional: true })
     : "";
   const tools = new HostedTools({
     seat,
@@ -704,8 +705,9 @@ async function serveSbtBearerMcp(request, env, token, ctx) {
   const recallSecrets = await resolveRecallSecrets(env);
   // The eavesdropper key resolves through Infisical too (optional:  no wake key
   // means no eavesdropper tools, never a 500 - src/eavesdropper.js).
-  const listenerWakeKey = Object.hasOwn(WAKE_SECRETS, seat)
-    ? await resolveSecret(env, { name: WAKE_SECRETS[seat], path: "/wake", envName: WAKE_SECRETS[seat], optional: true })
+  const listenerSecret = listenerSecretName(seat);
+  const listenerWakeKey = listenerSecret
+    ? await resolveSecret(env, { name: listenerSecret, path: "/wake", envName: listenerSecret, optional: true })
     : "";
   const grSecrets = await resolveGrSecrets(env);
   const tools = new HostedTools({

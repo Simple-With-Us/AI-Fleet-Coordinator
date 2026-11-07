@@ -37,8 +37,11 @@ MAX_FILE_BYTES = 2_000_000
 MAX_NAMES = 300
 MAX_NAME_LENGTH = 100
 
-# Markers of a saved copy of another file, which a listing leaves out and counts.
-BACKUP_MARKERS = (".bak", ".before-", ".disabled", ".orig", ".tmp")
+# A saved copy of another file, which a listing leaves out and counts.  The marker is a whole
+# dot-separated word that ends the name or is followed by more text after a `-`, `.` or `_`
+# (`settings.json.bak`, `config.toml.bak-fleet-rag-20260901`, `hooks.json.before-lane-guard`),
+# so a name that only contains the letters (`template.tmpl`, `foo.bakery`, `origin.md`) is kept.
+BACKUP_RE = re.compile(r"\.(?:bak|before|disabled|orig|tmp)(?:$|[-._])")
 
 
 # MARK: - what each platform keeps
@@ -243,7 +246,21 @@ def _mcp_transport(entry):
 
 
 def is_backup(name):
-    return any(marker in name for marker in BACKUP_MARKERS)
+    return BACKUP_RE.search(name) is not None
+
+
+def _strip_toml_comment(line):
+    """The line without a trailing ``# comment``.  A ``#`` inside quotes is part of a name."""
+    quote = None
+    for position, char in enumerate(line):
+        if quote:
+            if char == quote:
+                quote = None
+        elif char in ('"', "'"):
+            quote = char
+        elif char == "#":
+            return line[:position]
+    return line
 
 
 def toml_headers(text, arrays=False):
@@ -254,7 +271,7 @@ def toml_headers(text, arrays=False):
     line is read."""
     headers = []
     for raw in text.splitlines():
-        line = raw.strip()
+        line = _strip_toml_comment(raw).strip()
         is_array = line.startswith("[[") and line.endswith("]]")
         is_table = (not is_array) and line.startswith("[") and line.endswith("]")
         if not ((arrays and is_array) or (not arrays and is_table)):
