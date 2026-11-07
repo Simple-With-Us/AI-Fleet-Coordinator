@@ -15,6 +15,23 @@ from agent_sync.tests.harness import TAG, Harness
 
 
 class MessageCommandTests(Harness):
+    def test_post_edit_and_scheduled_own_intro_parity(self) -> None:
+        intro = "[CLAUDE: HH.1.M 📁AFC, OPS]"
+        made = self.run_cli("post", "--topic", "t", "--to", "CODEX", intro + " status", "--json")
+        self.assertEqual(made.code, 0, made.err)
+        mid = json.loads(made.out)["id"]
+        self.assertEqual(self.fake._find(mid)["content"], "[CLAUDE·%s: HH.1.M 📁AFC, OPS →CODEX] @**Codex** status" % TAG)
+        edited = self.run_cli("edit", "--id", str(mid), "[CLAUDE·old12345 📁OPS] edited")
+        self.assertEqual(edited.code, 0, edited.err)
+        self.assertEqual(self.fake._find(mid)["content"], "[CLAUDE·%s 📁OPS] edited" % TAG)
+        scheduled = self.run_cli("scheduled", "create", "--topic", "later", "--at", str(int(time.time()) + 3600), "👀 " + intro + " later", "--json")
+        self.assertEqual(scheduled.code, 0, scheduled.err)
+        sid = json.loads(scheduled.out)["id"]
+        self.assertEqual(self.fake.scheduled[sid]["content"], "👀 [CLAUDE·%s: HH.1.M 📁AFC, OPS] later" % TAG)
+        changed = self.run_cli("scheduled", "edit", "--id", str(sid), "[MA 📁OPS] quoted")
+        self.assertEqual(changed.code, 0, changed.err)
+        self.assertEqual(self.fake.scheduled[sid]["content"], "[CLAUDE·%s] [MA 📁OPS] quoted" % TAG)
+
     def test_show_prints_one_message_with_its_flags(self) -> None:
         mid = self.fake.add_message("Codex", "agent-sync", "t", "hello @**Claude**")
         result = self.run_cli("show", "--id", str(mid), "--json")

@@ -366,6 +366,18 @@ class LeaseRoutingTests(unittest.TestCase):
         self.assertEqual(d.lease_items[0][1], "passive")
         self.assertEqual(d.throttled, [("A", "per_hour")])
 
+    def test_folder_lane_intro_preserves_own_session_correlation(self) -> None:
+        own = lease("own", topics=[("agent-sync", "t")], prefix="[CLAUDE·aaaa1111")
+        sibling = lease("other", topics=[("agent-sync", "t")], prefix="[CLAUDE·bbbb2222")
+        for content in ("[CLAUDE·aaaa1111 📁OPS] status", "[CLAUDE·aaaa1111: HH.1.M 📁OPS] status", "👀 [CLAUDE·aaaa1111 📁OPS] status"):
+            with self.subTest(content=content):
+                self.assertTrue(own.posted_this({"content": content}))
+                self.assertFalse(sibling.posted_this({"content": content}))
+        for content in ("[CLAUDE·aaaa1111extra 📁OPS] status", "[MA·aaaa1111 📁OPS] status"):
+            self.assertFalse(own.posted_this({"content": content}))
+        c, d = R.route(msg(sender=10, content="[CLAUDE·aaaa1111 📁OPS] status"), ME, ctx(), [own, sibling])
+        self.assertEqual(d.lease_items, [("other", "passive", "sibling")])
+
     def test_own_posts_go_to_sibling_leases_only(self) -> None:
         poster = lease("A", topics=[("agent-sync", "t")], posted=[500])
         tagged = lease("B", topics=[("agent-sync", "t")], prefix="[CLAUDE·aaaa1111")

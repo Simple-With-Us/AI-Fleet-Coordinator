@@ -1656,10 +1656,12 @@ def _compose(
     mentions: Sequence[str],
     no_tag: bool,
     quiet: bool = False,
+    preserve_compact: bool = False,
 ) -> str:
-    if not no_tag:
-        # A seat that already wrote the folder intro keeps it as the first line.
-        # Raw text with no intro still gets the legacy [SEAT·session→…] tag.
+    compact = ROUTER.parse_leading_compact_intro(text)
+    if preserve_compact and not no_tag and compact and compact["seat"] != agent.seat:
+        # Preserve canonical compact intros; main's complete-own-intro handling
+        # below still covers legacy and session-tagged messages.
         led = _compose_intro_lead(text, labels=labels, mentions=mentions, quiet=quiet)
         if led is not None:
             if len(led) > MAX_CONTENT_LENGTH:
@@ -1668,19 +1670,43 @@ def _compose(
                     % (len(led), MAX_CONTENT_LENGTH)
                 )
             return led
-    parts: list[str] = []
-    if quiet:
-        # The owner's per-message no-wake signal:  the message stays readable in Zulip and wakes
-        # nobody.  It goes before the seat tag, because the tag is what the runtime prepends and
-        # the marker has to be the first thing the reader sees (AFC-468).
-        parts.append(ROUTER.NO_WAKE_MARKER)
-    if not no_tag:
-        parts.append(
-            agent.tag_prefix + ("\u2192" + ",".join(labels) if labels else "") + "]"
-        )  # → canonical, -> accepted
-    parts.extend(mentions)
-    parts.append(text)
-    body = " ".join(parts)
+    # Same complete-own-intro rule as the hosted composeBody transport.
+    leading = re.match(r"^(?:👀\s*)?\s*", text).group(0)
+    start = len(leading)
+    seat_end = start + 1 + len(agent.seat)
+    end = text.find("]", start)
+    own = (
+        not no_tag
+        and text.startswith("[" + agent.seat, start)
+        and text[seat_end : seat_end + 1] in ("]", " ", ":", "·", "→", "\t")
+        and end >= 0
+        and not re.search(r"[\r\n\[]", text[start + 1 : end])
+    )
+    if own:
+        intro = text[:end]
+        if "·" in agent.tag_prefix:
+            suffix = re.sub(r"^·[^\s:→\]]*", "", intro[seat_end:])
+            intro = intro[:seat_end] + agent.tag_prefix[agent.tag_prefix.index("·") :] + suffix
+        arrow = intro.find("→")
+        existing = [] if arrow < 0 else [v.strip() for v in intro[arrow + 1 :].split(",")]
+        added = list(dict.fromkeys(label for label in labels if label not in existing))
+        if added:
+            intro += (" →" if arrow < 0 else ",") + ",".join(added)
+        tail = text[end + 1 :]
+        if tail and not tail[0].isspace():
+            tail = " " + tail
+        body = intro + "]" + (" " + " ".join(mentions) if mentions else "") + tail
+        if quiet and not leading.startswith(ROUTER.NO_WAKE_MARKER):
+            body = ROUTER.NO_WAKE_MARKER + " " + body
+    else:
+        parts: list[str] = []
+        if quiet:
+            parts.append(ROUTER.NO_WAKE_MARKER)
+        if not no_tag:
+            parts.append(agent.tag_prefix + ("→" + ",".join(labels) if labels else "") + "]")
+        parts.extend(mentions)
+        parts.append(text)
+        body = " ".join(parts)
     if len(body) > MAX_CONTENT_LENGTH:
         raise UsageError(
             "the message is %d characters; Zulip allows at most %d"
@@ -1828,6 +1854,7 @@ def cmd_post(agent: Agent, args: argparse.Namespace) -> int:
     body = _compose(
         agent,
         text,
+        preserve_compact=True,
         labels=labels,
         mentions=mentions,
         no_tag=args.no_tag,
@@ -2139,6 +2166,7 @@ def cmd_dm(agent: Agent, args: argparse.Namespace) -> int:
     body = _compose(
         agent,
         text,
+        preserve_compact=True,
         labels=to.labels,
         mentions=[],
         no_tag=args.no_tag,
@@ -2385,6 +2413,7 @@ def cmd_reply(agent: Agent, args: argparse.Namespace) -> int:
     body = _compose(
         agent,
         text,
+        preserve_compact=True,
         labels=labels,
         mentions=mentions,
         no_tag=args.no_tag,

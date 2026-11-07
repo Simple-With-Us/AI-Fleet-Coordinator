@@ -252,6 +252,7 @@ SPECS = {
     "wf_run_approve": ({"actions": "write"}, True),
     "wf_file_put": ({"contents": "write"}, True),
     "wf_files_put": ({"contents": "write"}, True),
+    "wf_file_patch": ({"contents": "write"}, True),
     "wf_merge_guarded": ({"contents": "write", "pull_requests": "write"}, True),
 }
 ACTIONS = tuple(SPECS)
@@ -6121,6 +6122,117 @@ class WorkflowVerbs:
                 return None
             sha = entry["sha"]
         return None
+
+    def wf_file_patch(self, repo, args):
+        """Pinned same-path patch. Existing generic matches remain a residual risk."""
+        from .provenance_patch import apply_patch
+
+        _only(
+            args,
+            ("repo", "branch", "path", "message", "expected_head_sha", "base_blob_sha", "edits"),
+        )
+        branch, head, blob_sha = (
+            _ref(args, "branch"),
+            _sha(args, "expected_head_sha"),
+            _sha(args, "base_blob_sha"),
+        )
+        path = _path(args)
+        message = args.get("message")
+        if self._write_path_denied(path) or _workflow_path(path):
+            raise Refused("patch path refused")
+        if (
+            not isinstance(message, str)
+            or not 1 <= len(message) <= 500
+            or "\x00" in message
+            or find_secret(message)
+            or self._provider_token_text(message)
+        ):
+            raise Refused("invalid patch message")
+        default = _obj(self._get(f"/repos/{repo}")).get("default_branch")
+        if not isinstance(default, str) or not default or branch == default:
+            raise Refused("default branch is not writable")
+        ref_path = f"/repos/{repo}/git/ref/heads/{quote(branch, safe='/')}"
+        if _sub(_obj(self._get(ref_path)), "object").get("sha") != head:
+            raise Refused("branch head moved")
+        base_commit = _obj(self._get(f"/repos/{repo}/git/commits/{head}"))
+        tree = _sub(base_commit, "tree").get("sha")
+        if base_commit.get("sha") != head or not isinstance(tree, str) or not _SHA.fullmatch(tree):
+            raise Refused("base commit unverifiable")
+        # Contents receipt pins path AND commit; caller's blob id is only a check.
+        content = _obj(self._get(f"/repos/{repo}/contents/{quote(path, safe='/')}?ref={head}"))
+        if (
+            content.get("type") != "file"
+            or content.get("path") != path
+            or content.get("sha") != blob_sha
+            or content.get("encoding") != "base64"
+        ):
+            raise Refused("base file unverifiable")
+        try:
+            raw = base64.b64decode("".join(content["content"].split()), validate=True)
+            if (
+                len(raw) > MAX_FILE_RAW
+                or hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+                != blob_sha
+            ):
+                raise ValueError()
+            # Full base/output dedicated/provider scans are never baseline-exempt.
+            if (
+                find_secret(raw.decode("utf-8"))
+                or self._provider_token_text(raw.decode("utf-8"))
+                or self.bearer in raw.decode("utf-8")
+            ):
+                raise ValueError()
+            result = apply_patch(raw, args.get("edits"), known=[self.bearer])
+            if (
+                find_secret(result.decode("utf-8"))
+                or self._provider_token_text(result.decode("utf-8"))
+                or self.bearer
+                and self.bearer in result.decode("utf-8")
+            ):
+                raise ValueError()
+        except (ValueError, TypeError, KeyError, UnicodeError):
+            raise Refused("credential-shaped or invalid patch content") from None
+        mode = self._entry_mode(repo, tree, path, {})
+        if mode != "100644":
+            # GraphQL FileAddition cannot encode executable/symlink modes.
+            raise Refused("patch supports regular non-executable files only")
+        query = "mutation($input:CreateCommitOnBranchInput!){createCommitOnBranch(input:$input){commit{oid parents(first:2){nodes{oid}}}ref{name target{oid}}}}"
+        variables = {
+            "input": {
+                "branch": {"repositoryNameWithOwner": repo, "branchName": branch},
+                "expectedHeadOid": head,
+                "message": {"headline": message},
+                "fileChanges": {
+                    "additions": [{"path": path, "contents": base64.b64encode(result).decode()}]
+                },
+            }
+        }
+        made = self._fixed_graph(query, variables, "createCommitOnBranch")
+        commit = _sub(made, "commit")
+        new_head = commit.get("oid")
+        if (
+            not isinstance(new_head, str)
+            or not _SHA.fullmatch(new_head)
+            or _sub(commit, "parents").get("nodes") != [{"oid": head}]
+            or _sub(made, "ref").get("name") != branch
+            or _sub(_sub(made, "ref"), "target").get("oid") != new_head
+        ):
+            raise WriteOutcomeUnknown("patch commit receipt unverifiable")
+        if _sub(_obj(self._get(ref_path)), "object").get("sha") != new_head:
+            raise WriteOutcomeUnknown("patch ref receipt unverifiable")
+        published = _obj(
+            self._get(f"/repos/{repo}/contents/{quote(path, safe='/')}?ref={new_head}")
+        )
+        expected_blob = hashlib.sha1(
+            b"blob " + str(len(result)).encode() + b"\0" + result
+        ).hexdigest()
+        if (
+            published.get("path") != path
+            or published.get("sha") != expected_blob
+            or published.get("type") != "file"
+        ):
+            raise WriteOutcomeUnknown("patch content receipt unverifiable")
+        return {"branch": branch, "path": path, "commit": new_head}
 
     def wf_files_put(self, repo, args):
         """One commit changing several files on a non-default branch, via git-data."""

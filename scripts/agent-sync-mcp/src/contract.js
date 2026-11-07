@@ -335,20 +335,30 @@ const SECRET_PATTERNS = [
   // Python suite's samples through both scanners.  Grok Bot's cloud routines post through this Worker, and
   // they are the ones holding the read-only Linear, GitHub and fleet-loops-data tokens.
   ["Linear API key", /\blin_(api|oauth|wh)_[A-Za-z0-9]{20,}/],
-  ["Linear client secret", /\blinear[\w -]{0,24}secret\s*[=:]\s*['"]?[A-Za-z0-9]{24,}/i],
+  ["Linear client secret", /\blinear[\w -]{0,24}secret\s*[=:]\s*['"]?(?<value>[A-Za-z0-9]{24,})/i],
   ["Sentry token", /\bsntry[su]_[A-Za-z0-9+/=_-]{20,}/],
   ["xAI key", /\bxai-[A-Za-z0-9]{20,}/],
   ["Infisical service token", /\bst\.[A-Za-z0-9]{8,}\.[A-Za-z0-9]{8,}\.[A-Za-z0-9]{8,}/],
-  ["Infisical credential", /\binfisical[\w .-]{0,40}?(token|secret)['"]?\s*[=:]\s*['"]?[A-Za-z0-9+/=._-]{24,}/i],
+  ["Infisical credential", /\binfisical[\w .-]{0,40}?(token|secret)['"]?\s*[=:]\s*['"]?(?<value>[A-Za-z0-9+/=._-]{24,})/i],
   ["access token (JWT)", /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/],
   ["Cloudflare token", /\bcf(ut|at|k)_[A-Za-z0-9]{30,}/],
-  ["Cloudflare token", /\bcloudflare[\w ]{0,24}(token|key)\s*[=:]\s*['"]?[A-Za-z0-9_-]{37,}/i],
+  ["Cloudflare token", /\bcloudflare[\w ]{0,24}(token|key)\s*[=:]\s*['"]?(?<value>[A-Za-z0-9_-]{37,})/i],
   ["Coolify token", /(?<![A-Za-z0-9])\d{1,5}\|[A-Za-z0-9]{36,}(?![A-Za-z0-9])/],
-  ["assigned credential", /\b[A-Z][A-Z0-9_]*(SECRET|TOKEN|PASSWORD|API_?KEY)\s*=\s*['"]?[A-Za-z0-9+/=._-]{16,}/],
+  ["assigned credential", /\b[A-Z][A-Z0-9_]*(SECRET|TOKEN|PASSWORD|API_?KEY)\s*=\s*['"]?(?<value>[A-Za-z0-9+/=._-]{16,})/],
   ["bearer token", /\bauthorization:\s*(basic|bearer)\s+[A-Za-z0-9+/=._-]{16,}/i],
-  ["assigned secret", /\b(api[_-]?key|secret|token|password)\s*[=:]\s*['"]?[A-Za-z0-9+/=._-]{16,}/i],
+  ["assigned secret", /\b(api[_-]?key|secret|token|password)\s*[=:]\s*['"]?(?<value>[A-Za-z0-9+/=._-]{16,})/i],
 ];
 const ZULIP_SHAPED_RE = /(?<![A-Za-z0-9])[A-Za-z0-9]{32}(?![A-Za-z0-9])/g;
+
+// Complete unquoted source assignments only. Quotes, bare identifiers and bearer values never qualify.
+const SOURCE_RHS = /^(?:process\.env\.[A-Z][A-Z0-9_]*|import\.meta\.env\.[A-Z][A-Z0-9_]*)(?= *[;,)\n]| *$)/;
+function sourceAssignment(text, start) {
+  if (start && /["']/.test(text[start - 1])) return false;
+  const line = text.slice(text.lastIndexOf("\n", start - 1) + 1, start);
+  if (/["'`]/.test(line)) return false;
+  if (!/(?:^|[;{} )])(?:(?:const|let|var) +)?[A-Za-z_$][A-Za-z0-9_$.]* *= *$/.test(line)) return false;
+  return SOURCE_RHS.test(text.slice(start));
+}
 
 /**
  * The kind of secret in `text`, or null.  JS `\b` is ASCII-only where
@@ -360,7 +370,12 @@ export function scanSecret(text, known = []) {
     if (value && value.length >= 8 && text.includes(value)) return "a loaded credential";
   }
   for (const [kind, pattern] of SECRET_PATTERNS) {
-    if (pattern.test(text)) return kind;
+    if (pattern.source.includes("(?<value>")) {
+      const all = new RegExp(pattern.source, pattern.flags + "gd");
+      for (const match of text.matchAll(all)) {
+        if (!sourceAssignment(text, match.indices.groups.value[0])) return kind;
+      }
+    } else if (pattern.test(text)) return kind;
   }
   for (const match of text.matchAll(ZULIP_SHAPED_RE)) {
     const token = match[0];
@@ -375,6 +390,7 @@ export function redactSecret(text, known = []) {
   for (const value of known) if (value && value.length >= 8) out = out.split(value).join("[redacted:loaded credential]");
   for (const [kind, pattern] of SECRET_PATTERNS) {
     const all = new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : pattern.flags + "g");
+    // Keep redaction conservative even for source expressions: scanning precision never weakens masking.
     out = out.replace(all, () => `[redacted:${kind}]`);
   }
   return out.replace(ZULIP_SHAPED_RE, token => /[A-Z]/.test(token) && /[a-z]/.test(token) && /[0-9]/.test(token) ? "[redacted:Zulip-shaped key]" : token);
@@ -440,10 +456,41 @@ export function tagPrefix(seat, tag) {
   return tag ? `[${seat}·${tag}` : `[${seat}`;
 }
 
-/** The posted body:  tag (with →LABELS), mentions, text.  Over 10,000 characters is a usage error. */
+/** Locate a complete, single-line own-seat intro. Foreign-seat and malformed markers are content. */
+function ownIntro(prefix, text) {
+  const seat = prefix.slice(1).split("·", 1)[0];
+  const leading = text.match(/^(?:👀\s*)?\s*/u)[0];
+  const start = leading.length;
+  if (!text.startsWith(`[${seat}`, start)) return null;
+  if (!["]", " ", ":", "·", "→", "\t"].includes(text.charAt(start + seat.length + 1))) return null;
+  const end = text.indexOf("]", start);
+  if (end < 0 || /[\r\n\[]/.test(text.slice(start + 1, end))) return null;
+  return { end, intro: text.slice(0, end), rest: text.slice(end + 1) };
+}
+
+/** Preserve an existing own-seat intro, adding resolved recipients without a second attribution.
+ * Raw mentions have already been neutralized by normalizeText; only resolved mentions can notify.
+ * Untagged/foreign-seat text retains the generated attribution. */
 export function composeBody(prefix, text, { labels = [], mentions = [] } = {}) {
-  const parts = [`${prefix}${labels.length ? `→${labels.join(",")}` : ""}]`, ...mentions, text];
-  const body = parts.join(" ");
+  const own = ownIntro(prefix, text);
+  let parts;
+  if (own) {
+    let intro = own.intro;
+    const seatEnd = intro.indexOf("[") + 1 + prefix.slice(1).split("·", 1)[0].length;
+    const suffix = intro.slice(seatEnd).replace(/^·[^\s:→\]]*/u, "");
+    const session = prefix.includes("·") ? prefix.slice(prefix.indexOf("·")) : "";
+    // Supplied session is operational attribution and overrides a stale text session.
+    if (session) intro = intro.slice(0, seatEnd) + session + suffix;
+    const arrow = intro.indexOf("→");
+    const existing = arrow < 0 ? [] : intro.slice(arrow + 1).split(",").map((v) => v.trim());
+    const added = [...new Set(labels)].filter((label) => !existing.includes(label));
+    if (added.length) intro += `${arrow < 0 ? " →" : ","}${added.join(",")}`;
+    const tail = own.rest && !/^\s/u.test(own.rest) ? ` ${own.rest}` : own.rest;
+    parts = [`${intro}]${mentions.length ? ` ${mentions.join(" ")}` : ""}${tail}`];
+  } else {
+    parts = [`${prefix}${labels.length ? `→${labels.join(",")}` : ""}]`, ...mentions, text];
+  }
+  const body = parts.filter(Boolean).join(" ");
   const length = codePoints(body).length;
   if (length > MAX_CONTENT_LENGTH) throw new UsageError(`the message is ${length} characters; Zulip allows at most ${MAX_CONTENT_LENGTH}`);
   return body;
