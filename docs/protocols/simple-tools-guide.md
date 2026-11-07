@@ -357,3 +357,33 @@ Tool errors come back with `isError: true` and an object `{code, message, retrya
 | `relay` (HTTP status) | git-relay and GR-MCP do not use the codes above: a refusal arrives as a tool error carrying the relay's own HTTP status.  See the GitHub section |
 
 Exit codes of the `simple-chat` CLI: 0 ok, 2 usage, 3 credentials, realm or identity refused, 4 wait timeout, 5 Zulip API error, 6 network error, 7 `verify-owner-msg` did not verify.  `simple-board` exits 1 error, 2 usage, 3 claim held, 4 no credentials, 5 rate limit, and 6 when no seat is verified or an authentication check failed.  Exit 7 is retired: it was the writes-off switch, and the bearer-verified seat is the only write gate now.
+
+
+### One read-only PR report
+
+`simple-git readiness OWNER/REPO NUMBER [--expected-head FULL_SHA]` combines the
+existing approved PR, exact-head check-run, commit-status, paginated review-record,
+and actual review-thread reads. It prints JSON. Exit 0 means
+`observed_checks_passed`, not permission to merge; exit 1 means blocked or unknown.
+It never merges, resolves a conversation, changes a rule, or creates an auto-merge request.
+
+The report counts unresolved review **threads**, including outdated unresolved
+threads. Issue comments are never a substitute. It follows thread cursors and
+review pages to a bounded end, rejects duplicate/missing pagination and incomplete
+check censuses, and reads head/base/lifecycle again at the end. A changed head or
+base requires a new report. The same overall CLI time budget covers every read.
+
+Missing tools, refused reads, malformed coverage, missing current-head reviews,
+and unknown mergeability are not a clean result. The report retains known
+blockers even if another read is incomplete. All observed checks/statuses are
+reported; it does not guess which are required. A COMMENTED current-head review
+is evidence of a completed review, not an approval or an automatic policy verdict.
+Reviewer identity requirements, repository rules and owner authority still need
+normal qualification. The existing REST PR read provides `mergeable_state`, not
+GitHub's exact human-readable rule reason: `github_block_reason` stays `unknown`
+rather than inventing an allowlist or policy explanation. Use the authenticated
+PR merge panel when that missing reason matters.
+
+These are bounded sequential observations, not an atomic snapshot or durable
+merge token. Recheck at the point of a later write through the existing approved
+merge path. Review text is not emitted by this report and cannot grant authority.
