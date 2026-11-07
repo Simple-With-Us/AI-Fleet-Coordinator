@@ -93,7 +93,9 @@ not proceed. The abort returns to normal operation WITHOUT a restart:
 4. A parked effect whose payload proof is inconclusive STAYS parked and visible as a
    nonzero `drain.deferred_broadcasts`. Investigate the named message; never delete
    the file to make the gauge read zero. A row is removed by hand only after the
-   operator has confirmed the payload is genuinely gone.
+   operator has confirmed the payload is genuinely gone, and only while the listener
+   is STOPPED - the file's updates are atomic single-writer writes, so a hand edit
+   concurrent with the running daemon is a lost-update race.
 
 An abandoned marker is loud, not silent: the hook keeps answering 503 and wakes keep
 deferring. Supervise the window; if it cannot complete inside the bound, abort.
@@ -127,28 +129,32 @@ mandatory for fidelity: the restored pause state must be the one the owner set.
 - the Linear hook accepts new events again (200 queued), if it is configured and
   enabled in the restored prior config
 
-## First adoption (installing this change)
+## First adoption (EXPLORATORY - NOT QUALIFIED, do not use)
 
 The qualified procedure cannot install itself: the runtime being replaced has no
-`--defer` marker, no drain status surface, and no hook gate. The FIRST stop that
-adopts this code is an ordinary pre-drain stop, carrying the pre-drain residuals
-(paused wakes drop with a recorded row; a Linear event acknowledged 200 and held in
-memory is lost on stop and self-heals on the next project event). Keep it small:
+`--defer` marker, no drain status surface, and no hook gate, and no supported fence
+on the OLD runtime covers every admission path:
 
-1. Pick a quiet window (low fleet traffic) and capture the current listener.toml and
-   pause.json bytes.
-2. `simple-chat daemon pause` (ordinary pause; drops are recorded, as before this
-   change).
-3. Wait for the existing work to empty (no coalescer pending, no running jobs, effect
-   threads at 0) - minutes, not the 15-minute drain bound.
-4. SIGTERM, recreate with the new build, restore the exact prior listener.toml bytes
-   and the pause.json bytes captured at step 1 (lifting the adoption pause while
-   preserving any earlier user pause), boot.
-5. Verify: seats connected, cursors advancing, `simple-chat daemon status` shows the
-   "drain" block (armed false).
-6. Every stop after this one uses the qualified drain procedure above.
+- the outgoing webhook CAN be fenced (config disable + SIGHUP; deliveries fail and
+  Zulip retries),
+- the Linear hook CAN be fenced (config disable + SIGHUP; the port refuses, Linear
+  keeps custody and retries),
+- but NATIVE event-queue capture (the seats' long-poll) has no supported fence short
+  of stopping the process, and the old runtime has no defer marker: a wake admitted
+  between the last observable check and SIGTERM finalizes into a recorded paused
+  drop, and a hook event acknowledged 200 and held in memory is lost on stop. Both
+  are bounded and recorded, but they are still loss, and an observed quiet window
+  does not prove the gap is empty - the check and the stop are never atomic.
 
-## Named residuals (explicit, accepted)
+A stop that is provably lossless therefore requires this change already running; the
+bootstrap has no supported lossless route known today. What accepting the one-time
+bounded old-runtime residual would lose is named above; accepting it is an
+owner-level decision that has NOT been made, and this document does not treat it as
+accepted. Any candidate first-adoption mechanism (external queue fencing,
+non-restarting bootstrap of the defer machinery) is an untested hypothesis and needs
+source-tested validation and independent review before it is called a path.
+
+## Named residuals (explicit, accepted)## Named residuals (explicit, accepted)
 
 - An event acknowledged 200 by the Linear hook and held only in memory is lost on an
   UNPLANNED stop; reconcile is read-idempotent and self-heals on the next project
