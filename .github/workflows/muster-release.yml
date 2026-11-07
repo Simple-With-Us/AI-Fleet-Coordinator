@@ -279,15 +279,19 @@ jobs:
         env:
           FEED: ${{ steps.version.outputs.feed }}
           BUILD: ${{ steps.version.outputs.build }}
+        # The feed is a release asset behind GitHub's download cache, which has served the
+        # old appcast for over a minute after the upload (PR 1443's release, November 7, 2026:
+        # this step failed at one minute, and the feed named the build when checked afterwards).
+        # So it waits up to five minutes, asking caches not to answer from a stored copy.
         run: |
-          for _ in 1 2 3 4 5 6 7 8 9 10; do
-            if curl -fsSL "$FEED" | grep -q "<sparkle:version>$BUILD</sparkle:version>"; then
+          for _ in $(seq 1 30); do
+            if curl -fsSL -H 'Cache-Control: no-cache' "$FEED" | grep -q "<sparkle:version>$BUILD</sparkle:version>"; then
               echo "live feed names build $BUILD: $FEED"
               exit 0
             fi
-            sleep 6
+            sleep 10
           done
-          echo "::error::$FEED does not name build $BUILD after a minute."
+          echo "::error::$FEED does not name build $BUILD after five minutes."
           exit 1
 
       - name: Remove the signing keychain and keys

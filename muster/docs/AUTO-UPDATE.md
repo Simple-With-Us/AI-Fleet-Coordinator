@@ -6,7 +6,7 @@ Owner ruling, Tue, Sep 29, 2026:  every fleet Mac app updates itself through Spa
 
 1. A PR that changes `muster/` merges to main.
 2. `.github/workflows/muster-release.yml` runs on a GitHub-hosted Mac.  It builds a universal Release bundle, stamps it, signs it with the Developer ID certificate (hardened runtime, secure timestamp, Sparkle's helpers signed inside-out), notarizes and staples the app and the DMG, and writes an appcast whose one item is the new ZIP, signed with Muster's own EdDSA key.
-3. It publishes a release tagged `muster-v<version>-build.<N>` with the ZIP, the DMG and their `.sha256` files, never marked latest.  Then it replaces the one asset of the fixed `muster-feed` release, `appcast.xml`, and confirms the live feed names build N.
+3. It publishes a release tagged `muster-v<version>-build.<N>` with the ZIP, the DMG and their `.sha256` files, never marked latest.  Then it replaces the one asset of the fixed `muster-feed` release, `appcast.xml`, and confirms the live feed names build N, waiting up to five minutes for GitHub's download cache.
 4. Every installed copy reads `https://github.com/Simple-With-Us/AI-Fleet-Coordinator/releases/download/muster-feed/appcast.xml` once an hour, downloads the new ZIP in the background, checks its EdDSA signature before unpacking it, and checks that the new app is signed by the same Developer ID team.
 5. The install waits in `UpdateInstallGate` until nothing Muster started is still running and Muster is not the app in front.  Then Sparkle installs it and relaunches Muster.
 
