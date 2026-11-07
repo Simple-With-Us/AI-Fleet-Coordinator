@@ -216,11 +216,10 @@ final class MusterSettingsLayoutTests: XCTestCase {
         assertNothingHidden(m)
     }
 
-    /// This Build may scroll in its worst case, but only inside a window that fits.
-    func testTheBuildPaneFitsAndScrollsWhatItCannotShow() throws {
+    func testTheBuildPaneShowsEveryLineWithoutScrolling() throws {
         let m = try layOut("build", MusterSettingsPane { WorstCaseBuildSection() })
-        XCTAssertEqual(m.content.height, MusterSettingsLayout.paneHeight, accuracy: 1, "the pane is not its fixed size")
-        if m.hidden > 2 { XCTAssertGreaterThan(m.visibleHeight, 0, "the build pane cannot scroll") }
+        XCTAssertEqual(m.fitting.height, MusterSettingsLayout.paneHeight, accuracy: 1, "the pane is not its fixed size")
+        assertNothingHidden(m)
     }
 
     // MARK: Controls:  today's form must fail the same checks
@@ -235,12 +234,12 @@ final class MusterSettingsLayoutTests: XCTestCase {
         }
     }
 
-    /// Reading (b):  in a 560-pt window, which `.contentMinSize` allows and a stale saved frame
-    /// restores, today's form hides its lower sections below an unseen scroller.
-    func testTodaysFormHidesSectionsInAShortWindow() throws {
-        let m = try layOut("legacy-560", LegacySettingsForm(),
-                           contentHeight: MusterSettingsLayout.shortestWindow - Self.titleBar)
-        XCTExpectFailure("Today's Settings form hides sections in a 560-pt window.", strict: true) {
+    /// Reading (b):  in any window the owner's screen can hold, which `.contentMinSize` allows
+    /// and a saved frame restores, today's form hides its lower sections below an unseen scroller.
+    func testTodaysFormHidesSectionsInAWindowTheScreenHolds() throws {
+        let m = try layOut("legacy-screen", LegacySettingsForm(), contentHeight: Self.ownerScreen - Self.titleBar)
+        XCTExpectFailure("Today's Settings form hides sections in a window as tall as the owner's screen.",
+                         strict: true) {
             assertNothingHidden(m)
         }
     }

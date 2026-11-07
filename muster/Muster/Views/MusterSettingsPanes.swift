@@ -5,12 +5,14 @@ import UniformTypeIdentifiers
 /// every Mac, never taller than a short screen, and never resized to a stale saved frame.
 enum MusterSettingsLayout {
     static let paneWidth: CGFloat = 520
-    static let paneHeight: CGFloat = 440
+    /// Tall enough for the Folders pane with every warning showing (595 pt on the CI runner)
+    /// and the worst-case This Build pane (606 pt), so no pane hides anything below the fold.
+    static let paneHeight: CGFloat = 640
     /// The title bar and the tab toolbar of the Settings scene.  No test runs the scene, so
     /// this is an allowance, not a measurement (MusterSettingsLayoutTests).
     static let chromeAllowance: CGFloat = 110
-    /// The shortest window every pane must fit.
-    static let shortestWindow: CGFloat = 560
+    /// The shortest screen the window must fit:  1280 by 800 less the menu bar.
+    static let shortestWindow: CGFloat = 768
 }
 
 /// Which folder setting a button acts on.
