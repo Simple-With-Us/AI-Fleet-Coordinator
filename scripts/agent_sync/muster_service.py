@@ -23,8 +23,9 @@ import json
 import os
 import sys
 import time
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from . import live as L
 from . import service_identity as SI
@@ -75,7 +76,7 @@ class Refused(Exception):
 class ReadOnlyClient:
     """The only Zulip surface the service has:  `get` on three paths.  No post, patch or delete exists."""
 
-    __slots__ = ("_request", "_deadline")
+    __slots__ = ("_deadline", "_request")
 
     def __init__(self, client: Any, deadline: float) -> None:
         self._request = client.request
@@ -84,9 +85,7 @@ class ReadOnlyClient:
     def get(self, path: str, params: Mapping[str, Any] | None = None) -> dict[str, Any]:
         if path not in ALLOWED_GETS:
             raise Refused("bad-request")
-        return self._request(
-            "GET", path, params, timeout=REQUEST_TIMEOUT, deadline=self._deadline
-        )
+        return self._request("GET", path, params, timeout=REQUEST_TIMEOUT, deadline=self._deadline)
 
 
 # --------------------------------------------------------------------------------------------
@@ -186,7 +185,9 @@ def operator_credentials(env: dict[str, str], site: str) -> Z.Credentials:
     return creds
 
 
-def connect(env: Mapping[str, str], *, client: Any = None, credentials: Any = None) -> ReadOnlyClient:
+def connect(
+    env: Mapping[str, str], *, client: Any = None, credentials: Any = None
+) -> ReadOnlyClient:
     """A verified read-only Operator client, or Refused.  `client` and `credentials` are for tests."""
     env = dict(env)
     if (
@@ -197,9 +198,7 @@ def connect(env: Mapping[str, str], *, client: Any = None, credentials: Any = No
         raise Refused("launched-or-remote")
     operator_id, email, owner_id = read_pins(env)
     site = _realm(env)
-    env.update(
-        OPERATOR_ZULIP_USER_ID=str(operator_id), OPERATOR_ZULIP_EMAIL=email, ZULIP_SITE=site
-    )
+    env.update(OPERATOR_ZULIP_USER_ID=str(operator_id), OPERATOR_ZULIP_EMAIL=email, ZULIP_SITE=site)
     if credentials is None and client is None:
         credentials = operator_credentials(env, site)
     if credentials is not None and credentials.site.rstrip("/") != site.rstrip("/"):
@@ -297,7 +296,13 @@ def _sender(value: str) -> str:
     return text.casefold()
 
 
-def execute(args: argparse.Namespace, *, env: Mapping[str, str] | None = None, client: Any = None, credentials: Any = None) -> list[dict[str, Any]]:
+def execute(
+    args: argparse.Namespace,
+    *,
+    env: Mapping[str, str] | None = None,
+    client: Any = None,
+    credentials: Any = None,
+) -> list[dict[str, Any]]:
     env = dict(os.environ if env is None else env)
     if args.action == "users":
         limit = args.limit
