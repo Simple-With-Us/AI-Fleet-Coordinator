@@ -15,7 +15,7 @@ The Operator's session registry (sqlite store in the `eavesdropper` container) m
 
 ## Install (Coolify host)
 
-`scripts/agent_sync/server/install-operator-sheets-drain.sh` does the whole install, and is safe to run again.  Run it as root from an AI-Fleet-Coordinator checkout at `origin/main`.  Run it with `--dry-run` first, which prints the plan and changes nothing.
+`scripts/agent_sync/server/install-operator-sheets-drain.sh` does the whole install, and is safe to run again.  Run it as root from a clean AI-Fleet-Coordinator checkout at `origin/main`, after the reviewed drain (PR 1456) has merged.  The script refuses a checkout with uncommitted changes, one not at `origin/main`, or one whose drain predates the review (no `pacedAdapter`, no run deadline, or a timer without `OnUnitInactiveSec`).  Run it with `--dry-run` first, which prints the plan, reports anything a real run would refuse, and changes nothing.
 
 ```
 sudo OPERATOR_SHEETS_WORKBOOK_ID=<workbook id> \
@@ -30,16 +30,17 @@ Then run the same command without `--dry-run`.  The caller supplies:
 - `OPERATOR_SHEETS_TOKEN_FILE`: a root-owned file, mode 0600 or 0400, holding a scoped read-only Infisical service token for Fleet-OPS prod `/operator-thread-registry`.  Minting it needs the owner's approval, and the script never mints, prints or echoes it, or puts it on a command line.  The script refuses a token whose grant is wider than that folder or can write.
 - `INFISICAL_FLEET_OPS_PROJECT_ID`, unless root's `~/.agent-sync/fleet-ops-project-id` already holds it.
 - Optional: `OPERATOR_SHEETS_SESSIONS_SHEET_ID` (default 20964676), `OPERATOR_SHEETS_EVENTS_SHEET_ID` (default 1449318075), `OPERATOR_REGISTRY_CONTAINER` (default `eavesdropper`) and `OPERATOR_REGISTRY_DB` (default `/data/operator/registry.sqlite3`).  A swapped pair of sheet ids fails closed, because the transport checks each sheet id's tab title before any write.
+- Optional drain knobs: `OPERATOR_SHEETS_PAGE_LIMIT` (1 to 5000) and `OPERATOR_SHEETS_LOCK`.  When one is not set, a value already in `drain.env` is kept, so a hand-set knob survives a rerun.
 
-In order, the script:
+Before step 1 the script checks that `/etc/operator-sheets`, if it exists, is root-owned with no group or other access, so a loose directory stops the install before anything changes.  Then, in order, it:
 
-1. installs the three drain modules (`operator_sheets_export.mjs`, `operator_sheets_google.mjs`, `operator_sheets_drain.mjs`) into `/usr/local/lib/operator-sheets-drain/` (0644, root);
+1. stops `operator-sheets-drain.timer` if it is running, so no run starts on a half-copied set of modules, and installs the three drain modules (`operator_sheets_export.mjs`, `operator_sheets_google.mjs`, `operator_sheets_drain.mjs`) into `/usr/local/lib/operator-sheets-drain/` (0644, root; a file whose content, mode or owner differs is replaced);
 2. reads `OPERATOR_GOOGLE_SHEETS_SA` from Infisical Fleet-OPS prod `/operator-thread-registry` inside its own process through `scripts/fleet_secrets/core.py`, checks it is a service-account key, and writes `/etc/operator-sheets/sa.json` (0600, root, in a 0700 directory);
-3. writes `/etc/operator-sheets/drain.env` (0600) with `OPERATOR_SHEETS_SA_FILE`, the workbook id, both sheet ids and the registry container and store;
-4. runs a preflight to check that the registry's `pending-outbox` read inside the container returns JSON (it prints only the row count), and stops before the units if it does not;
-5. installs `operator-sheets-drain.service` and `operator-sheets-drain.timer` into `/etc/systemd/system/` and runs `systemctl daemon-reload`.  It never enables or starts the timer.
+3. writes `/etc/operator-sheets/drain.env` (0600) with `OPERATOR_SHEETS_SA_FILE`, the workbook id, both sheet ids, the registry container and store, and the knobs, and prints the names (never the values) of settings that changed, were kept or were dropped;
+4. runs a preflight, with a 120 s limit on each read, to check that the registry's `pending-outbox` and `export-attempts` reads inside the container return JSON lists (it prints only the row counts).  The second read fails on an image without the export fence CLI or a store not yet at schema v2.  On a failure it prints one line and stops before the units, and leaves a timer it stopped in step 1 stopped;
+5. installs `operator-sheets-drain.service` and `operator-sheets-drain.timer` into `/etc/systemd/system/` and runs `systemctl daemon-reload` when a unit changed.  It never enables the timer, and starts it again only if step 1 stopped it.
 
-An unchanged file is left alone.  When the first live drain is cleared, enable the timer by hand with `systemctl enable --now operator-sheets-drain.timer`.  Tests: `python3 scripts/test_install_operator_sheets_drain.py` (offline, with no Infisical, docker or systemd change).
+An unchanged file is left alone.  When the first live drain is cleared, enable the timer by hand with `systemctl enable --now operator-sheets-drain.timer`.  Tests: `python3 scripts/test_install_operator_sheets_drain.py` (offline, and run in CI).  They cover the inputs and the dry run, and the Python block with Infisical faked.  They also run steps 1, 4 and 5 for real in the script's test mode (`OPERATOR_SHEETS_INSTALL_TEST_ROOT`), which puts every destination under a temporary root and refuses to run unless `docker` and `systemctl` there are stubs.
 
 The app redeploy (Eavesdropper image) must land before the first fenced drain: the fence CLI (`record-export-attempt`) ships in the image's copy of `operator_registry.py`, and the store migrates to schema v2 on the app's next write-open.
 
