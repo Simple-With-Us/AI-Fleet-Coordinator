@@ -32,8 +32,13 @@ struct SeatSetupView: View {
     @State private var inventoryReads: [SeatInventoryCache.Key] = []
     /// Whether the reader is running for the seat and host shown.
     private var readingInventory: Bool {
-        guard let seat else { return false }
-        return inventoryReads.contains(SeatInventoryCache.Key(seat: seat, host: host))
+        guard let shown = shownKey else { return false }
+        return inventoryReads.contains(shown)
+    }
+
+    /// The seat and host the panel shows now.
+    private var shownKey: SeatInventoryCache.Key? {
+        seat.map { SeatInventoryCache.Key(seat: $0, host: host) }
     }
     @State private var openInventory: Set<String> = []
     /// Which host's setup is shown.  The engine's answers are the Mac's only, so the server's
@@ -396,6 +401,7 @@ struct SeatSetupView: View {
 
     // MARK: - reading
 
+    @MainActor
     private func loadArtifacts() async {
         guard let seat else {
             artifacts = [:]
@@ -432,7 +438,10 @@ struct SeatSetupView: View {
         await loadInventory(seat: seat, host: readHost, platform: platform, force: false)
     }
 
-    /// The Read Again button:  reads the seat and host shown now, whatever is held.
+    /// The Read Again button:  reads the seat and host shown now, whatever is held.  The task
+    /// is not tied to the seat or host:  when the owner switches while it runs, its reading is
+    /// cached and never drawn over the new seat or host (`showInventory`).
+    @MainActor
     private func readInventoryNow() async {
         guard let seat else { return }
         let wanted = ConfigKind.columnOrder.compactMap { store.cell(seat: seat, kind: $0) }
@@ -441,6 +450,7 @@ struct SeatSetupView: View {
 
     /// What the platform has installed, from the reading held for this seat and host when it is
     /// still good (SeatInventoryCache.decide), and from the reader otherwise.
+    @MainActor
     private func loadInventory(seat: String, host readHost: SeatSetupHost, platform: String?, force: Bool) async {
         let cacheStore = SeatInventoryCacheStore.shared
         let held = cacheStore.cache.entry(seat: seat, host: readHost)
@@ -472,6 +482,7 @@ struct SeatSetupView: View {
 
         let readKey = SeatInventoryCache.Key(seat: seat, host: readHost)
         inventoryReads.append(readKey)
+        let startedAt = Date()
         let reading: SeatInventoryReading
         switch readHost {
         case .server:
@@ -484,7 +495,8 @@ struct SeatSetupView: View {
         // A reading that came back is kept even when the panel has moved on, so it is not run
         // again on the way back.  A failed one is not kept.
         cacheStore.cache.record(
-            reading, seat: seat, host: readHost, platform: platform, runStamp: runStamp, at: readAt
+            reading, seat: seat, host: readHost, platform: platform, runStamp: runStamp,
+            startedAt: startedAt, at: readAt
         )
         if let index = inventoryReads.firstIndex(of: readKey) {
             inventoryReads.remove(at: index)
@@ -497,7 +509,15 @@ struct SeatSetupView: View {
         }
     }
 
+    /// Put a reading on screen, only when the panel still shows the seat and host it is for.
+    /// A read that came back after the owner switched seat or host is dropped here, so it
+    /// never leaves the panel labelled for one seat and host while showing another, or stuck
+    /// on its spinner.
+    @MainActor
     private func showInventory(_ reading: SeatInventoryReading?, readAt: Date?, seat: String, host readHost: SeatSetupHost) {
+        guard SeatInventoryCache.belongsOnScreen(
+            readFor: SeatInventoryCache.Key(seat: seat, host: readHost), shown: shownKey
+        ) else { return }
         inventory = reading
         inventoryReadAt = readAt
         inventorySeat = seat

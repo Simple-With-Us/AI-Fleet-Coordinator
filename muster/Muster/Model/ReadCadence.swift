@@ -80,12 +80,17 @@ struct SeatInventoryCache {
 
     /// Keep a reading that succeeded.  A failed one is not kept, and it drops the reading held
     /// before it, so the failure is what the panel last saw and the next visit reads again.
+    ///
+    /// Two reads of one seat and host can overlap (Read Again while the panel's own read runs).
+    /// A failure drops only a reading taken before it started (`startedAt`), so a slow failure
+    /// never throws away a success that landed while it ran.
     mutating func record(
         _ reading: SeatInventoryReading,
         seat: String,
         host: SeatSetupHost,
         platform: String,
         runStamp: Date?,
+        startedAt: Date,
         at readAt: Date
     ) {
         let key = Key(seat: seat, host: host)
@@ -93,6 +98,7 @@ struct SeatInventoryCache {
         case .loaded:
             entries[key] = Entry(platform: platform, reading: reading, readAt: readAt, runStamp: runStamp)
         case .unavailable:
+            if let held = entries[key], held.readAt > startedAt { return }
             entries[key] = nil
         }
     }
@@ -101,54 +107,83 @@ struct SeatInventoryCache {
     static func readLine(readAt: Date) -> String {
         "Read at \(FleetTime.clock(readAt)).\u{00A0} This reading is shown again for up to \(freshWords);  Read Again reads now."
     }
+
+    /// Whether a read that has just come back may go on screen:  only when the panel still
+    /// shows the seat and host it was read for.  A read the panel has moved on from (the owner
+    /// switched seat or host while it ran) is kept in the cache by `record` and never drawn
+    /// over the seat and host shown now.
+    static func belongsOnScreen(readFor: Key, shown: Key?) -> Bool {
+        readFor == shown
+    }
 }
 
 /// The one cache the app keeps, so a reading outlives the panel being closed and opened.
-/// Only the main actor touches it.
+/// It is the main actor's alone, so two reads that overlap never touch it at once.
+@MainActor
 final class SeatInventoryCacheStore {
     static let shared = SeatInventoryCacheStore()
     var cache = SeatInventoryCache()
 }
 
-/// Whether a page's timer reads, and whether the app coming back to the front reads once.
+/// When a page that polls reads next, so it reads only while the app is in front.
 ///
-/// A page that polls (Resource Limits reads the server over ssh every 30 seconds) reads only
-/// while the app is in front.  A tick that came while it was not is owed, and the page reads
-/// once when the app comes back, so the values shown are never older than the timer allows
-/// while anyone is looking.  Coming back with nothing owed reads nothing:  the reading on
-/// screen is younger than the timer's interval.
+/// A page that polls (Resource Limits reads the server over ssh every 30 seconds) runs no
+/// timer at all while the app is not in front:  `nextStep` says `.stop`, the page's loop ends,
+/// and nothing wakes until the app comes back.  Coming back starts the loop again, and it
+/// reads at once when the last read is at least an interval old, so it reads once to catch up
+/// and otherwise waits out the rest of the interval.  Something that wants a read while the
+/// app is away (an action finishing) is held until it comes back.
 struct ForegroundPolling: Equatable {
-    /// Whether the app is in front (`scenePhase == .active`).
-    private(set) var active = true
-    /// Whether a tick was skipped while the app was not in front.
-    private(set) var owed = false
+    enum Step: Equatable {
+        /// The app is not in front:  the timer stops until it is.
+        case stop
+        /// Read now.
+        case read
+        /// Wait this many seconds, then ask again.
+        case wait(TimeInterval)
+    }
 
-    init(active: Bool = true) {
+    /// How often the page reads while the app is in front.
+    let interval: TimeInterval
+    /// Whether the app is in front (`scenePhase == .active`).
+    private(set) var active: Bool
+    /// When the last read finished, or nil when none has or a read is owed.
+    private(set) var lastReadAt: Date?
+
+    init(interval: TimeInterval, active: Bool = true) {
+        self.interval = interval
         self.active = active
     }
 
-    /// One tick of the timer:  whether the page reads now.  A busy page skips the tick, as it
-    /// always has, and a busy page in front owes nothing.
-    mutating func tick(busy: Bool) -> Bool {
-        guard active else {
-            owed = true
-            return false
-        }
-        return !busy
-    }
-
-    /// The app's phase changed:  whether the page reads once now.
-    mutating func phaseChanged(active nowActive: Bool) -> Bool {
-        let wasActive = active
+    /// The app's phase changed.
+    mutating func setActive(_ nowActive: Bool) {
         active = nowActive
-        guard nowActive, !wasActive, owed else { return false }
-        owed = false
-        return true
     }
 
-    /// A read happened some other way (the page's own button, an action finishing), so
-    /// nothing is owed any more.
-    mutating func didRead() {
-        owed = false
+    /// What the timer does next.  A busy page (an action running, or a read already in flight)
+    /// waits a whole interval rather than reading, as the timer always has.
+    func nextStep(now: Date, busy: Bool) -> Step {
+        guard active else { return .stop }
+        if let lastReadAt {
+            let age = now.timeIntervalSince(lastReadAt)
+            // A clock that went back cannot say how old the reading is, so it reads.
+            if age >= 0 && age < interval {
+                return .wait(max(1, interval - age))
+            }
+        }
+        return busy ? .wait(interval) : .read
+    }
+
+    /// A read finished, however it was started.
+    mutating func didRead(at readAt: Date) {
+        lastReadAt = readAt
+    }
+
+    /// An action finished and the page wants the server's new values:  whether it reads now.
+    /// While the app is away it does not, and the read is owed for when the app comes back.
+    mutating func actionFinished() -> Bool {
+        if active { return true }
+        lastReadAt = nil
+        return false
     }
 }
