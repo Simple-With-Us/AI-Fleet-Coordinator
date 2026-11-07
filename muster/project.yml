@@ -161,6 +161,9 @@ targets:
       # The place strip, so MusterWindowLayoutTests checks the app's own strip.  It needs only
       # FleetHost, MachineStatus and MusterNavigation, which are compiled above.
       - path: Muster/Views/PlaceBadge.swift
+      # Apps & Work's filter row.  It takes a binding and no store, so FleetViewFilterBarTests
+      # hosts the row itself at the narrowest pane.
+      - path: Muster/Views/FleetViewFilterBar.swift
     settings:
       base:
         PRODUCT_NAME: MusterTests
