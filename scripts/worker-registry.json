@@ -23,18 +23,6 @@
       "health": "GET /health, plus the */5 sweep showing no exceptions and a real vendor delivery reaching Zulip.",
       "deploy": "alert-workers-deploy.yml is the intended path.  It has been failing, so the last deploys were by hand, and a wrangler.toml change always needs a manual reconcile."
     },
-    "pr-conflict-watch": {
-      "repo": "Simple-With-Us/AI-Fleet-Coordinator",
-      "config": "workers/pr-conflict-watch/zulip-cutover/wrangler.toml",
-      "extra_configs": ["workers/pr-conflict-watch/wrangler.toml"],
-      "status": "gated",
-      "workers_dev": true,
-      "limits": { "cpu_ms": 50, "subrequests": 20 },
-      "head_sampling_rate": 0.1,
-      "health": "A real conflict alert in Zulip.  GET only answers ok with no dependency check, and every GitHub call has returned 401 since Oct 21.",
-      "deploy": "alert-workers-deploy.yml skips it until docs/releases/pr-conflict-zulip-verified.json exists.  Whether to retire it is an open owner decision.",
-      "note": "The first config is the live source.  The extra one is a never-deployed variant that worker-targets.json still names."
-    },
     "expenses-jays-services": {
       "repo": "Simple-With-Us/Usage-Monitor",
       "config": "workers/expenses-site/wrangler.jsonc",

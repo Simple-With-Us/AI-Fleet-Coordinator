@@ -78,10 +78,11 @@ class LinuxHost:
             props[key] = value
         return props
 
-    def process_identity(self):
+    def process_identity(self, *, allow_stopping=False):
         state = self.properties()
         pid = int(state["MainPID"])
-        if pid <= 0 or state["ActiveState"] != "active":
+        allowed = {"active", "deactivating"} if allow_stopping else {"active"}
+        if pid <= 0 or state["ActiveState"] not in allowed:
             raise TransactionError("relay not active")
         p = self.proc / str(pid)
         # /proc/PID/stat comm may include spaces or parentheses.
@@ -229,7 +230,11 @@ class LinuxHost:
             if ":" in line
         )
         term_bit = 1 << (signal.SIGTERM - 1)
-        if (int(status["SigCgt"].strip(), 16) | int(status["SigIgn"].strip(), 16)) & term_bit:
+        if (
+            int(status["SigCgt"].strip(), 16)
+            | int(status["SigIgn"].strip(), 16)
+            | int(status.get("SigBlk", "0").strip(), 16)
+        ) & term_bit:
             raise TransactionError("SIGTERM is not default termination")
         os.kill(expected["pid"], signal.SIGTERM)
         status = dict(
@@ -250,24 +255,130 @@ class LinuxHost:
             self.sleep(0.05)
         raise TransactionError("service stop timeout")
 
+    def signal_state(self, expected):
+        if self.process_identity(allow_stopping=True) != expected:
+            raise TransactionError("stop reconciliation identity drift")
+        status = dict(
+            line.split(":", 1)
+            for line in (self.proc / str(expected["pid"]) / "status").read_text().splitlines()
+            if ":" in line
+        )
+        bit = 1 << (signal.SIGTERM - 1)
+        try:
+            masks = {
+                key: int(status[key], 16)
+                for key in ["SigPnd", "ShdPnd", "SigCgt", "SigIgn", "SigBlk"]
+            }
+        except (KeyError, ValueError):
+            raise TransactionError("unverified signal masks; frozen guard retained") from None
+        pending = (masks["SigPnd"] | masks["ShdPnd"]) & bit
+        unsafe = any(masks[key] & bit for key in ["SigCgt", "SigIgn", "SigBlk"])
+        return bool(pending), bool(unsafe)
+
+    def accepted_stop(self):
+        if self.properties().get("ActiveState") == "deactivating":
+            return True
+        rows = self.command("systemctl", "list-jobs", "--no-legend", "--plain")
+        return any(
+            len(parts) >= 3 and parts[1] == self.UNIT and parts[2] == "stop"
+            for parts in (line.split() for line in rows.splitlines())
+        )
+
+    def vanished_stop(self, expected):
+        deadline = self.clock() + 2
+        while self.clock() < deadline:
+            if self.confirmed_stopped(expected):
+                return "stopped"
+            self.sleep(0.02)
+        raise TransactionError("vanished process not confirmed stopped; guard retained")
+
+    def reconcile_frozen_stop(self, expected):
+        try:
+            return self._reconcile_frozen_stop(expected)
+        except (ProcessLookupError, FileNotFoundError):
+            # A default pending TERM can win the race with /proc or SIGCONT.
+            # Only a full stopped-service proof may turn ESRCH into success.
+            return self.vanished_stop(expected)
+
+    def _reconcile_frozen_stop(self, expected):
+        # No file writes occur here. A pre-termination refusal thaws the unchanged
+        # process even with a custom TERM disposition. Once TERM is queued, CONT
+        # requires default/unblocked TERM plus an accepted stop job.
+        if self.confirmed_stopped(expected):
+            return "stopped"
+        pending, unsafe = self.signal_state(expected)
+        stop = self.accepted_stop()
+        if not pending and not stop:
+            # No termination/stop side effect occurred. Safe to restore service.
+            if self.process_identity() != expected:
+                raise TransactionError("abort identity drift; guard retained")
+            os.kill(expected["pid"], signal.SIGCONT)
+            deadline = self.clock() + 2
+            while self.clock() < deadline:
+                if self.confirmed_stopped(expected):
+                    return "stopped"
+                try:
+                    observed = self.process_identity()
+                except TransactionError:
+                    return self.vanished_stop(expected)
+                if observed != expected:
+                    raise TransactionError("abort identity drift; guard retained")
+                tasks, _ = self.tasks_and_children(expected)
+                if tasks and all(state != "T" for state in tasks.values()):
+                    return "running"
+                self.sleep(0.02)
+            raise TransactionError("thaw unconfirmed; guard retained")
+        if unsafe:
+            raise TransactionError("unsafe termination disposition; frozen guard retained")
+        if not stop:
+            # An earlier local stop request may have failed before or after
+            # acceptance. One bounded idempotent service-manager reconciliation.
+            try:
+                self.command("systemctl", "stop", "--no-block", self.UNIT)
+            except TransactionError:
+                pass
+        deadline = self.clock() + 10
+        continued = False
+        while self.clock() < deadline:
+            if self.confirmed_stopped(expected):
+                return "stopped"
+            if not self.accepted_stop():
+                self.sleep(0.05)
+                continue
+            pending, unsafe = self.signal_state(expected)
+            if unsafe:
+                raise TransactionError("termination disposition drift; frozen guard retained")
+            if pending and not continued:
+                os.kill(expected["pid"], signal.SIGCONT)
+                continued = True
+            self.sleep(0.05)
+        raise TransactionError("stop unconfirmed; frozen guard retained")
+
     def stop_for_recovery(self):
         if self.confirmed_stopped(None):
             return
         expected = self.process_identity()
-        self.freeze(expected)
-        tasks, children = self.tasks_and_children(expected)
-        if not freeze_qualified(
-            expected,
-            self.process_identity(),
-            self.process_identity(),
-            tasks,
-            children,
-            self.pending_count(),
-            self.stop_job_exists(),
-        ):
-            self.resume_if_same(expected)
-            raise TransactionError("busy recovery image; no unsafe stop")
-        self.stop_without_kill(expected)
+        try:
+            self.freeze(expected)
+            tasks, children = self.tasks_and_children(expected)
+            if not freeze_qualified(
+                expected,
+                self.process_identity(),
+                self.process_identity(),
+                tasks,
+                children,
+                self.pending_count(),
+                self.stop_job_exists(),
+            ):
+                raise TransactionError("busy recovery image; no unsafe stop")
+            self.stop_without_kill(expected)
+        except BaseException as original:
+            result = self.reconcile_frozen_stop(expected)
+            # Cancellation still propagates after safe cleanup; never convert
+            # SystemExit/KeyboardInterrupt to successful recovery.
+            if result == "stopped" and isinstance(original, Exception):
+                return
+            raise
 
     def allow_new_start(self, rows):
         self.recovery.allow_new(rows)

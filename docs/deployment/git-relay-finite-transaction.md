@@ -74,3 +74,37 @@ matching /proc/self/cgroup. The existing relay stayed active with the same PID
 and start time. This checks host rendering and finite execution, not the real
 recovery hook or production entry. The strict parser has a direct successful
 rendering regression and refusals for drifted deadline/type/kill/hook/cgroup.
+
+
+## Stop-failure reconciliation follow-up
+
+A frozen-stop error must not quietly leave a healthy unchanged process frozen,
+including recovery and Supervisor's own exception branch. Before any termination
+or accepted stop, an exact-process thaw must be confirmed with every observed
+task non-T; busy handlers and children do not prevent this unchanged-image thaw.
+After a default SIGTERM is queued, SIGCONT requires pending TERM, no TERM block,
+no catch/ignore disposition and an accepted stop job. Ambiguous signal delivery
+is inspected rather than inferred from the command exception. A disappearing
+PID is success only after MainPID=0, inactive service and the original PID gone.
+An unconfirmed stop or identity drift retains the guard with an explicit error.
+A broken service manager cannot be made available safely by an unconditional
+resume; bounded cleanup can still require operator follow-through.
+
+Actual existing-host settings read November 6: KillMode=control-group,
+KillSignal=15, SendSIGKILL=yes, FinalKillSignal=9 and TimeoutStopUSec=1min 30s.
+An accepted systemctl stop can escalate to SIGKILL after that timeout. This is
+not a non-force guarantee. No active handler may be intentionally stopped:
+initial stop still requires the complete frozen, single-task, no-child and
+zero-pending proof. The host settings were observed, not changed by this fix.
+
+
+### Disposable actual-systemd stop qualification, November 6
+
+Two isolated ephemeral root Type=simple units used the same explicit kill and
+90-second stop settings, no credentials, network or production targets. A frozen
+process with proven default, unblocked, pending TERM exited in 18ms without
+executing userspace after CONT. A deliberately TERM-blocked disposable process
+resumed userspace and was removed at the 90.049-second stop timeout. Both units
+were collected and their disposable root was removed. This proves the safety
+predicate matters and that manager escalation is real. It is not a guarantee
+against forced termination in production, nor approval to accept that risk.

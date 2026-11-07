@@ -35,7 +35,7 @@ jobs:
       max-parallel: 1
       fail-fast: false
       matrix:
-        # alert-ingress and pr-conflict-watch are released by alert-workers-deploy.yml.
+        # alert-ingress is released by alert-workers-deploy.yml.
         worker: ["simple-tools-mcp"]
     steps:
       - uses: actions/checkout@v7

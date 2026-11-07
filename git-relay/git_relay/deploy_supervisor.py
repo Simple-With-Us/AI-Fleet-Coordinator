@@ -98,7 +98,7 @@ class Supervisor:
                     raise
                 if frozen:
                     # Resume only the exact frozen PID/start/boot identity.
-                    self.host.resume_if_same(expected)
+                    self.host.reconcile_frozen_stop(expected)
                 if not applying and not stopped:
                     # An aborted busy freeze changed no service image. Resume
                     # the original process without stopping its live handlers.
