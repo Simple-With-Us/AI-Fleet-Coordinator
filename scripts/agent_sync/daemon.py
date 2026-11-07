@@ -620,7 +620,7 @@ def merge_routine_env(seats, env, home, *, fetch=None):
     if not names:
         return []
     if fetch is None:
-        fetch = lambda ns: Z._fetch_from_fleet_secrets(ns, env, home)  # noqa: E731
+        fetch = lambda ns: Z._fetch_from_fleet_secrets(ns, env, home)
     for name, value in dict(fetch(tuple(names))).items():
         if value:
             env[name] = value
