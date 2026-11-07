@@ -2001,6 +2001,272 @@ class TestRealSharedScanner(unittest.TestCase):
         self.assertEqual(code, 0, err)
 
 
+class TestReadiness(unittest.TestCase):
+    def fixture(self):
+        self.head = "a" * 40
+        self.base = "b" * 40
+        self.calls = []
+        self.data = {
+            "gr_wf_pr_get": {
+                "pull": {
+                    "number": 1,
+                    "head": {"sha": self.head},
+                    "base": {"sha": self.base},
+                    "state": "open",
+                    "merged": False,
+                    "draft": False,
+                    "mergeable": True,
+                    "mergeable_state": "clean",
+                }
+            },
+            "gr_wf_review_threads": {
+                "threads": {"nodes": [], "pageInfo": {"hasNextPage": False, "endCursor": None}}
+            },
+            "gr_wf_checks": {
+                "checks": [
+                    {
+                        "id": 1,
+                        "name": "ci",
+                        "head_sha": self.head,
+                        "status": "completed",
+                        "conclusion": "success",
+                    }
+                ],
+                "complete": True,
+            },
+            "gr_wf_commit_statuses": {"statuses": [], "complete": True},
+            "gr_wf_pr_reviews_page": {
+                "number": 1,
+                "head_sha": self.head,
+                "page": 1,
+                "has_more": False,
+                "reviews": [
+                    {"id": 1, "author": {"id": 9}, "state": "APPROVED", "commit_id": self.head}
+                ],
+            },
+        }
+
+        def read(name, args):
+            self.calls.append((name, args))
+            value = self.data[name]
+            if callable(value):
+                return value(args)
+            return value
+
+        self.read = read
+        return self
+
+    def run_report(self):
+        return git.collect_readiness(self.read, "Owner/Repo", 1)
+
+    def test_clean_report_is_not_merge_authority(self):
+        self.fixture()
+        r = self.run_report()
+        self.assertEqual(r["verdict"], "observed_checks_passed")
+        self.assertTrue(r["complete"])
+        self.assertFalse(r["merge_authorized"])
+        self.assertEqual(r["github_block_reason"], "unknown")
+        self.assertTrue(all(name in git.READ_TOOLS for name, _ in self.calls))
+
+    def test_issue_comments_cannot_be_threads(self):
+        self.fixture()
+        self.data["gr_wf_review_threads"] = {"comments": []}
+        r = self.run_report()
+        self.assertEqual(r["verdict"], "unknown")
+        self.assertNotIn("review_threads", r)
+
+    def test_exhausts_review_thread_connection_and_counts_outdated_open(self):
+        self.fixture()
+
+        def threads(args):
+            second = args.get("cursor") == "next"
+            return {
+                "threads": {
+                    "nodes": [
+                        {
+                            "id": "t2" if second else "t1",
+                            "isResolved": not second,
+                            "isOutdated": second,
+                        }
+                    ],
+                    "pageInfo": {
+                        "hasNextPage": not second,
+                        "endCursor": None if second else "next",
+                    },
+                }
+            }
+
+        self.data["gr_wf_review_threads"] = threads
+        r = self.run_report()
+        self.assertEqual(r["review_threads"]["total"], 2)
+        self.assertEqual(r["review_threads"]["unresolved"][0]["id"], "t2")
+        self.assertEqual(r["verdict"], "blocked")
+
+    def test_duplicate_thread_and_cursor_fail_closed(self):
+        self.fixture()
+        self.data["gr_wf_review_threads"] = {
+            "threads": {"nodes": [], "pageInfo": {"hasNextPage": True, "endCursor": "loop"}}
+        }
+        self.assertEqual(self.run_report()["verdict"], "unknown")
+        self.data["gr_wf_review_threads"]["threads"]["nodes"] = [
+            {"id": "t", "isResolved": True, "isOutdated": False}
+        ] * 2
+        self.assertEqual(self.run_report()["verdict"], "unknown")
+
+    def test_page_bound_fails_closed(self):
+        self.fixture()
+
+        def threads(args):
+            return {
+                "threads": {
+                    "nodes": [],
+                    "pageInfo": {
+                        "hasNextPage": True,
+                        "endCursor": (args.get("cursor") or "") + "x",
+                    },
+                }
+            }
+
+        self.data["gr_wf_review_threads"] = threads
+        r = git.collect_readiness(self.read, "Owner/Repo", 1, max_pages=2)
+        self.assertFalse(r["complete"])
+        self.assertIn("review-thread page bound reached", r["unknowns"])
+
+    def test_checks_incomplete_unknown_wrong_head_and_empty(self):
+        for value in (False, "unknown", 1):
+            self.fixture()
+            self.data["gr_wf_checks"]["complete"] = value
+            self.assertEqual(self.run_report()["verdict"], "unknown")
+        self.fixture()
+        self.data["gr_wf_checks"]["checks"][0]["head_sha"] = self.base
+        self.assertEqual(self.run_report()["verdict"], "unknown")
+        self.fixture()
+        self.data["gr_wf_checks"]["checks"] = []
+        self.assertEqual(self.run_report()["verdict"], "unknown")
+
+    def test_pending_and_failure_checks_block(self):
+        for status, conclusion in [("in_progress", None), ("completed", "failure")]:
+            self.fixture()
+            self.data["gr_wf_checks"]["checks"][0].update(status=status, conclusion=conclusion)
+            self.assertEqual(self.run_report()["verdict"], "blocked")
+
+    def test_head_or_base_change_requires_new_report(self):
+        import copy
+
+        for side in ("head", "base"):
+            self.fixture()
+            count = [0]
+            original = self.data["gr_wf_pr_get"]
+
+            def pull(args):
+                count[0] += 1
+                value = copy.deepcopy(original)
+                if count[0] > 1:
+                    value["pull"][side]["sha"] = "c" * 40
+                return value
+
+            self.data["gr_wf_pr_get"] = pull
+            self.assertEqual(self.run_report()["verdict"], "unknown")
+
+    def test_expected_head_mismatch_stops_before_threads(self):
+        self.fixture()
+        r = git.collect_readiness(self.read, "Owner/Repo", 1, "c" * 40)
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(r["verdict"], "unknown")
+
+    def test_reviews_paginate_and_changes_requested_block(self):
+        self.fixture()
+
+        def reviews(args):
+            p = args["page"]
+            return {
+                "number": 1,
+                "head_sha": self.head,
+                "page": p,
+                "has_more": p == 1,
+                "reviews": [
+                    {
+                        "id": p,
+                        "author": {"id": p},
+                        "commit_id": self.head,
+                        "state": "APPROVED" if p == 1 else "CHANGES_REQUESTED",
+                    }
+                ],
+            }
+
+        self.data["gr_wf_pr_reviews_page"] = reviews
+        self.assertEqual(self.run_report()["verdict"], "blocked")
+
+    def test_no_current_review_and_truncated_statuses_unknown(self):
+        self.fixture()
+        self.data["gr_wf_pr_reviews_page"]["reviews"][0]["commit_id"] = self.base
+        self.assertEqual(self.run_report()["verdict"], "unknown")
+        self.fixture()
+        self.data["gr_wf_commit_statuses"]["complete"] = False
+        self.assertEqual(self.run_report()["verdict"], "unknown")
+
+    def test_newest_status_context_wins(self):
+        self.fixture()
+        self.data["gr_wf_commit_statuses"]["statuses"] = [
+            {"context": "ci", "state": "success"},
+            {"context": "ci", "state": "failure"},
+        ]
+        self.assertEqual(self.run_report()["verdict"], "observed_checks_passed")
+
+    def test_github_blocked_does_not_invent_specific_reason(self):
+        self.fixture()
+        self.data["gr_wf_pr_get"]["pull"]["mergeable_state"] = "blocked"
+        r = self.run_report()
+        self.assertEqual(r["verdict"], "blocked")
+        self.assertEqual(r["github_block_reason"], "unknown")
+
+    def test_closed_and_draft_block(self):
+        for field, value in [("state", "closed"), ("draft", True), ("merged", True)]:
+            self.fixture()
+            self.data["gr_wf_pr_get"]["pull"][field] = value
+            self.assertEqual(self.run_report()["verdict"], "blocked")
+
+    def test_decisive_review_uses_id_not_fetch_order(self):
+        for reverse in (True, False):
+            self.fixture()
+            rows = [
+                dict(id=10, author={"id": 9}, state="APPROVED", commit_id=self.head),
+                dict(id=20, author={"id": 9}, state="CHANGES_REQUESTED", commit_id=self.head),
+            ]
+            self.data["gr_wf_pr_reviews_page"]["reviews"] = (
+                list(reversed(rows)) if reverse else rows
+            )
+            self.assertEqual(self.run_report()["verdict"], "blocked")
+
+    def test_validation_and_actor_refusals_produce_unknown_json(self):
+        from types import SimpleNamespace
+
+        for failed in ("validate_arguments", "resolve_actor", "remote_call"):
+            with (
+                mock.patch.object(git, "validate_arguments"),
+                mock.patch.object(git, "resolve_actor", side_effect=lambda e, a, *x: a),
+                mock.patch.object(git, "remote_call"),
+                mock.patch.object(git, failed, side_effect=SystemExit(1)),
+            ):
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    status = git.cmd_readiness(
+                        {"gr_wf_pr_get": {"read": True}},
+                        SimpleNamespace(repo="Owner/Repo", number=1, expected_head=None),
+                        "bearer",
+                        "WISE",
+                        None,
+                    )
+                self.assertEqual(status, 1)
+                self.assertEqual(json.loads(output.getvalue())["verdict"], "unknown")
+
+    def test_parser_report_only(self):
+        a = git.build_parser().parse_args(
+            ["readiness", "Owner/Repo", "1", "--expected-head", "a" * 40]
+        )
+        self.assertEqual(a.cmd, "readiness")
+
+
 if __name__ == "__main__":
     unittest.main()
 

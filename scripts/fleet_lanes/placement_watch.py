@@ -82,7 +82,7 @@ MAINTAIN_REPORT = "Library/Application Support/HogHunter/Maintain/lane-doctor-re
 EXIT_OK, EXIT_STALE, EXIT_FILING, EXIT_UNREADABLE = 0, 3, 4, 5
 COVERAGE_FULL, COVERAGE_UNREADABLE = "full", "external-unreadable"
 STATUS_FRESH_HOURS = 3  # as long as fleet-tools-doctor gives a watcher before it calls it stale
-BEARER_LOCATOR = "SIMPLE_BOARD_BEARER_LOCATOR"
+BEARER_FILE = "SIMPLE_BOARD_BEARER_FILE"
 # What a send can come to.  Only a refusal the CLI made before sending anything is safe to repeat.
 OK, REFUSED, UNKNOWN = "ok", "refused", "unknown"
 # The two CLIs number their exits differently (linear-board/board EXIT_*, agent_sync/zulip.py exit_code).
@@ -888,10 +888,10 @@ def run_once(*, home: str, env: Mapping[str, str], apply: bool, seat: str, sessi
         errors.append(f"{hold}, so nothing was sent.  Check it, then run once with --reset-state.")
     active = filer
     if active is None and apply and not hold:
-        if env.get(BEARER_LOCATOR):
+        if env.get(BEARER_FILE):
             active = Filer(seat, session, board_env(host))
         else:
-            errors.append(f"{BEARER_LOCATOR} is not set, so nothing was filed.")
+            errors.append(f"{BEARER_FILE} is not set, so nothing was filed.")
     findings: list[Finding] = []
     if report is not None:
         findings += findings_from_report(report, roots, registry)

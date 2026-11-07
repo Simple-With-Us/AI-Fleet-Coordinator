@@ -538,7 +538,14 @@ def _continue_for_mentions(
             if isinstance(t, (int, float)) and now - t < 3600
         ]
         data["stop_continues"] = recent
-        wanted = [i for i in fresh if "eligible" in (i.get("classes") or [])]
+        # A no-wake marker row never counts (OPS-1036):  it is in the inbox to be read, and a
+        # continuation is a wake, so it waits for the next prompt's headline like an ineligible
+        # sender's mention does.
+        wanted = [
+            i
+            for i in fresh
+            if "eligible" in (i.get("classes") or []) and "no_wake" not in (i.get("classes") or [])
+        ]
         if wanted and len(recent) < L.STOP_CONTINUE_PER_HOUR:
             # Only a continuation moves the cursor:  a row left behind (an ineligible sender, or the
             # hourly cap) still gets its headline at the next prompt.
