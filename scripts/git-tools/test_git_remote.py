@@ -2229,20 +2229,36 @@ class TestReadiness(unittest.TestCase):
     def test_decisive_review_uses_id_not_fetch_order(self):
         for reverse in (True, False):
             self.fixture()
-            rows = [dict(id=10, author={'id':9}, state='APPROVED', commit_id=self.head),
-                    dict(id=20, author={'id':9}, state='CHANGES_REQUESTED', commit_id=self.head)]
-            self.data['gr_wf_pr_reviews_page']['reviews'] = list(reversed(rows)) if reverse else rows
-            self.assertEqual(self.run_report()['verdict'], 'blocked')
+            rows = [
+                dict(id=10, author={"id": 9}, state="APPROVED", commit_id=self.head),
+                dict(id=20, author={"id": 9}, state="CHANGES_REQUESTED", commit_id=self.head),
+            ]
+            self.data["gr_wf_pr_reviews_page"]["reviews"] = (
+                list(reversed(rows)) if reverse else rows
+            )
+            self.assertEqual(self.run_report()["verdict"], "blocked")
 
     def test_validation_and_actor_refusals_produce_unknown_json(self):
         from types import SimpleNamespace
-        for failed in ('validate_arguments', 'resolve_actor', 'remote_call'):
-            with mock.patch.object(git, 'validate_arguments'), mock.patch.object(git, 'resolve_actor', side_effect=lambda e,a,*x:a), mock.patch.object(git, 'remote_call'), mock.patch.object(git, failed, side_effect=SystemExit(1)):
+
+        for failed in ("validate_arguments", "resolve_actor", "remote_call"):
+            with (
+                mock.patch.object(git, "validate_arguments"),
+                mock.patch.object(git, "resolve_actor", side_effect=lambda e, a, *x: a),
+                mock.patch.object(git, "remote_call"),
+                mock.patch.object(git, failed, side_effect=SystemExit(1)),
+            ):
                 output = io.StringIO()
                 with contextlib.redirect_stdout(output):
-                    status = git.cmd_readiness({'gr_wf_pr_get':{'read':True}}, SimpleNamespace(repo='Owner/Repo',number=1,expected_head=None), 'bearer', 'WISE', None)
+                    status = git.cmd_readiness(
+                        {"gr_wf_pr_get": {"read": True}},
+                        SimpleNamespace(repo="Owner/Repo", number=1, expected_head=None),
+                        "bearer",
+                        "WISE",
+                        None,
+                    )
                 self.assertEqual(status, 1)
-                self.assertEqual(json.loads(output.getvalue())['verdict'], 'unknown')
+                self.assertEqual(json.loads(output.getvalue())["verdict"], "unknown")
 
     def test_parser_report_only(self):
         a = git.build_parser().parse_args(
