@@ -726,7 +726,7 @@ struct SeatActivityModel: Equatable, Sendable {
     var rows: [SeatActivityRow] = []
     /// When the panel read its sources.
     var readAt: Date?
-    /// The seat the panel read Zulip as.
+    /// Who the panel read Zulip as:  always the Operator (`ChatLocator.readingIdentity`).
     var readingSeat: String = ""
     /// How many CLI calls the last refresh made.
     var requestsMade: Int = 0
@@ -873,7 +873,7 @@ enum SeatActivityBuilder {
         var userProblem: String?
         /// Each seat's last post answer.
         var lastPosts: [String: SeatFact<SeatLastPost>] = [:]
-        /// The seat the panel read Zulip as.
+        /// Who the panel read Zulip as:  always the Operator.
         var readingSeat: String = ""
         /// How many CLI calls were made.
         var requestsMade: Int = 0

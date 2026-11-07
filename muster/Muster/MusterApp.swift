@@ -16,6 +16,9 @@ struct MusterApp: App {
         // apply that asked on its own path would hold its result until the
         // prompt was answered.
         SystemApplyNotifier.requestPermissionOnce()
+        // The Seats panel reads Zulip only as the Operator (AFC-654):  a seat saved by an
+        // older build is not read,  and is removed so it cannot look like a choice.
+        MusterSettings.removeRetiredZulipSeat()
         let store = FleetStore()
         // The monitor starts here and not with a window:  the menu bar item has to know the
         // Mac before any window has appeared,  and the store's first run is still in flight
@@ -91,25 +94,16 @@ struct MusterApp: App {
     }
 }
 
-/// The app's Settings scene: the places on disk and the seat it reads Zulip as.
+/// The app's Settings scene: the places on disk, and how the Seats panel reads Zulip.
 struct MusterSettingsView: View {
     @EnvironmentObject private var store: FleetStore
     @AppStorage(MusterSettings.repoRootDefaultsKey) private var repoRoot = ""
     @AppStorage(MusterSettings.scriptsDirectoryDefaultsKey) private var scriptsDir = ""
-    @AppStorage(MusterSettings.zulipSeatDefaultsKey) private var zulipSeat = MusterSettings.defaultZulipSeat
     @AppStorage(MusterSettings.themeDefaultsKey) private var theme: ThemeChoice = .system
     @AppStorage(MusterSettings.shortMenuBarTextDefaultsKey) private var shortMenuBarText = false
     @AppStorage(MusterSettings.keepServicesRunningDefaultsKey) private var keepServicesRunning = true
     @State private var pickingRepoRoot = false
     @State private var pickingScriptsDir = false
-
-    private var seatChoices: [String] {
-        var seats = store.roster
-        for seat in [zulipSeat, MusterSettings.defaultZulipSeat] where !seat.isEmpty && !seats.contains(seat) {
-            seats.append(seat)
-        }
-        return seats.isEmpty ? [MusterSettings.defaultZulipSeat] : seats
-    }
 
     var body: some View {
         Form {
@@ -132,10 +126,8 @@ struct MusterSettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Zulip") {
-                Picker("Seat To Read As", selection: $zulipSeat) {
-                    ForEach(seatChoices, id: \.self) { seat in Text(seat).tag(seat) }
-                }
-                Text("Saved as \(MusterSettings.zulipSeatDefaultsKey).\u{00A0} MUSTER_ZULIP_SEAT, when set, still wins over the saved seat.")
+                LabeledContent("Reads As", value: ChatLocator.readingIdentity)
+                Text("The Seats panel reads Zulip only as the Operator, through simple-chat's read-only Operator service.\u{00A0} There is no seat to choose, and it never reads as an agent seat or as you.\u{00A0} When the Operator read is unavailable, the panel says why and reads nothing else.\u{00A0} \(MusterSettings.retiredZulipSeatEnvironmentKey) is no longer read.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Services") {
