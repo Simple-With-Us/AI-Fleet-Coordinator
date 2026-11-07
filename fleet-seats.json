@@ -540,10 +540,10 @@
               "file"
             ],
             "names": [
-              "lane-guard-hook"
+              "claude-file-guard-hook"
             ],
             "present": true,
-            "timeoutSeconds": 5
+            "timeoutSeconds": 10
           },
           "id": "claude-hooks-file-guard",
           "kind": "hooks",

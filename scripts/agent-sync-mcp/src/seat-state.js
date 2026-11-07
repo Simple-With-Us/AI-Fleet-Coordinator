@@ -157,6 +157,7 @@ export const MAX_WAIT_MS = 6000; // a call waits at most this long for its slot
 export const PENDING_FRESH_MS = 30_000; // a pending row younger than this is a write in flight
 const LINEAR_API_DATA_MAX_BYTES = 8192;
 const LINEAR_API_CLEANUP_INTERVAL_MS = MINUTE_MS;
+const LINEAR_API_IDLE_CLEANUP_INTERVAL_MS = 60 * MINUTE_MS;
 export const ROLE_TTL_MS = 10 * MINUTE_MS; // spec 3.6:  users/me on first use and every 10 minutes
 export const CALL_RETENTION_DAYS = 90; // spec 3.9
 const CALLS_PER_DAY_CAP = 5000;
@@ -165,6 +166,7 @@ export const CALLS_STORAGE_MAX_BYTES = 1024 * 1024;
 export const ERRORS_STORAGE_MAX_BYTES = 256 * 1024;
 const ERROR_MESSAGE_MAX = 300;
 const GEO_CAP = 50;
+const GEO_REFRESH_MS = 60 * 60 * 1000;
 
 // D5 budgets, per seat.  `write` is post and reply, `react` is reactions,
 // `recall` is recall_contribute (spec 1.1;  it takes the write spacing too).
@@ -396,12 +398,22 @@ function validLinearApiKey(key) {
 
 async function cleanupLinearApiRows(store, day, now) {
   if (typeof store.list !== "function" || typeof store.delete !== "function") return;
+  // A number:  the last pass that deleted rows (more may follow, so look again
+  // in a minute).  {at, idle: true}:  the last pass found nothing expired, and
+  // rows only expire a day after they are written, so look again in an hour.
+  // Rows written per seat are then at most one an hour while Linear is busy,
+  // where the marker used to be rewritten every minute.
   const last = await store.get("linear-api-cleanup-at");
   if (Number.isFinite(last) && now - last < LINEAR_API_CLEANUP_INTERVAL_MS) return;
+  if (last?.idle === true && Number.isFinite(last.at) && now >= last.at && now - last.at < LINEAR_API_IDLE_CLEANUP_INTERVAL_MS) return;
   const end = linearApiStorageKey(day - 1, "");
   const rows = await store.list({ prefix: linearApiPrefix, end, limit: 64 });
   const keys = [...rows.keys()];
-  if (keys.length) await store.delete(keys);
+  if (!keys.length) {
+    await store.put("linear-api-cleanup-at", { at: now, idle: true });
+    return;
+  }
+  await store.delete(keys);
   await store.put("linear-api-cleanup-at", now);
 }
 
@@ -590,6 +602,114 @@ const CALL_FIELDS = ["seat", "authenticated_seat", "acting_identity", "grant_ref
 const utf8JsonBytes = (value) => new TextEncoder().encode(JSON.stringify(value)).byteLength;
 const arrayJsonBytes = (rows) => 2 + rows.reduce((bytes, row) => bytes + utf8JsonBytes(row), 0) + Math.max(0, rows.length - 1);
 
+// ---- chunked call rows (DO rows-written + CPU reduction)
+//
+// A day's call rows live in chunks of at most CALL_CHUNK_ROWS rows:
+//   cidx:<day>            {v: 2, head: <seq>, sealed: [{seq, count, bytes}]}
+//   cchunk:<day>:<seq>    {rows: [...], bytes}   (bytes = sum of each row's UTF-8 JSON size + 1)
+// A flush writes ONE key, the head chunk;  the index is written only when the
+// head fills (once per CALL_CHUNK_ROWS rows) or when the caps drop the oldest
+// chunk.  A flush of more rows than the head has room for also writes the
+// chunk it sealed, so a burst of 100 rows costs 3 to 4 rows instead of the old
+// layout's 2;  at the usual 1 to 50 rows per flush it costs 1.  The caps
+// (CALLS_PER_DAY_CAP rows, CALLS_STORAGE_MAX_BYTES bytes) are enforced by
+// dropping WHOLE oldest chunks, so a full day keeps between
+// cap - CALL_CHUNK_ROWS + 1 and cap rows (always the newest), never more.
+//
+// Rows the single-blob layout wrote today (calls:<day> + calls_bytes:<day>,
+// before this layout deployed, or during a rollback to it) are older than the
+// rows being appended:  the next flush folds them into chunks ahead of its own
+// rows and deletes the blob, once.  Until then callTail reads the blob too.
+export const CALL_CHUNK_ROWS = 200;
+const cidxKey = (day) => `cidx:${day}`;
+const chunkKey = (day, seq) => `cchunk:${day}:${String(seq).padStart(6, "0")}`;
+const blobKeys = (day) => [`calls:${day}`, `calls_bytes:${day}`];
+
+async function appendCallRows(store, day, rows) {
+  const stored = await store.get(cidxKey(day));
+  const idx = stored && stored.v === 2 ? stored : { v: 2, head: 0, sealed: [] };
+  let idxChanged = idx !== stored;
+  // A get that misses on every normal flush:  one row read, no write.
+  const blob = await store.get(blobKeys(day)[0]);
+  const older = Array.isArray(blob) ? blob.filter((row) => row && typeof row === "object") : [];
+  if (blob !== undefined) await store.delete(blobKeys(day));
+  let head = (await store.get(chunkKey(day, idx.head))) ?? { rows: [], bytes: 0 };
+  for (const row of older.length ? [...older, ...rows] : rows) {
+    if (head.rows.length >= CALL_CHUNK_ROWS) {
+      // Seal the full head into the index and start a new one.
+      await store.put(chunkKey(day, idx.head), head);
+      idx.sealed.push({ seq: idx.head, count: head.rows.length, bytes: head.bytes });
+      idx.head += 1;
+      idxChanged = true;
+      head = { rows: [], bytes: 0 };
+    }
+    head.rows.push(row);
+    head.bytes += utf8JsonBytes(row) + 1;
+  }
+  const total = () => {
+    let count = head.rows.length, bytes = head.bytes;
+    for (const c of idx.sealed) { count += c.count; bytes += c.bytes; }
+    return { count, bytes };
+  };
+  // + 2:  the day read back as one JSON array (brackets) never exceeds the old cap either.
+  for (let t = total(); t.count > CALLS_PER_DAY_CAP || t.bytes + 2 > CALLS_STORAGE_MAX_BYTES; t = total()) {
+    if (idx.sealed.length) {
+      await store.delete(chunkKey(day, idx.sealed.shift().seq));
+      idxChanged = true;
+    } else {
+      // Only the head is left:  trim its oldest rows (a sanitized row is far below the byte cap).
+      if (head.rows.length <= 1) break;
+      head.bytes -= utf8JsonBytes(head.rows.shift()) + 1;
+    }
+  }
+  await store.put(chunkKey(day, idx.head), head);
+  if (idxChanged) await store.put(cidxKey(day), idx);
+}
+
+async function deleteCallDay(store, day) {
+  const idx = await store.get(cidxKey(day));
+  const keys = [`calls:${day}`, `calls_bytes:${day}`];
+  if (idx && idx.v === 2) {
+    keys.push(cidxKey(day));
+    for (const c of idx.sealed) keys.push(chunkKey(day, c.seq));
+    keys.push(chunkKey(day, idx.head));
+  }
+  await store.delete(keys);
+}
+
+/**
+ * Chunked days older than the retention cutoff that call_days no longer names.
+ * They only exist if a rollback to the single-blob layout ran:  that code drops
+ * an expired day from call_days and deletes calls:<day>, but never knew about
+ * cidx: or cchunk: keys.  Runs when call_days changes (about once a day per
+ * seat), lists at most a few index keys, and is skipped by stores without list.
+ */
+async function sweepOrphanCallDays(store, cutoff) {
+  if (typeof store.list !== "function") return;
+  const stale = await store.list({ prefix: "cidx:", end: cidxKey(cutoff), limit: 8 });
+  for (const key of stale.keys()) {
+    // A day deleted earlier in this transaction still lists (the list reads past the memo).
+    if (await store.get(key)) await deleteCallDay(store, key.slice("cidx:".length));
+  }
+}
+
+/** A day's rows, newest first, at most `limit` (for callTail). */
+async function dayRowsNewestFirst(store, day, limit, out) {
+  const idx = await store.get(cidxKey(day));
+  const push = (rows) => { for (let i = rows.length - 1; i >= 0 && out.length < limit; i--) out.push(rows[i]); };
+  // A blob next to an index was written by a rollback after the chunks, so it is
+  // newer;  without an index it is the whole day.  The next flush folds it in.
+  const blob = await store.get(blobKeys(day)[0]);
+  if (Array.isArray(blob)) push(blob);
+  if (!(idx && idx.v === 2)) return;
+  const head = await store.get(chunkKey(day, idx.head));
+  if (head && out.length < limit) push(head.rows);
+  for (let i = idx.sealed.length - 1; i >= 0 && out.length < limit; i--) {
+    const c = await store.get(chunkKey(day, idx.sealed[i].seq));
+    if (c) push(c.rows);
+  }
+}
+
 /**
  * One row per tool call.  Only the spec 3.9 fields are kept (never a body, a
  * key, a token or a header), and a change of ASN or country within one grant
@@ -649,26 +769,17 @@ async function auditCallInner(store, row, now) {
   const keep = [];
   for (const d of days.sort()) {
     if (d < cutoff) {
-      await store.delete([`calls:${d}`, `calls_bytes:${d}`]);
+      await deleteCallDay(store, d);
       daysChanged = true;
     }
     else keep.push(d);
   }
   // Written only when the list changes:  a row a call on a list that changes once a day.
-  if (daysChanged) await store.put("call_days", keep);
-  const bucket = (await store.get(`calls:${day}`)) ?? [];
-  const meta = await store.get(`calls_bytes:${day}`);
-  let encodedBytes = meta && meta.count === bucket.length && Number.isSafeInteger(meta.bytes) && meta.bytes >= 0
-    ? meta.bytes
-    : arrayJsonBytes(bucket);
-  bucket.push(clean);
-  encodedBytes += utf8JsonBytes(clean) + (bucket.length > 1 ? 1 : 0);
-  while (bucket.length > CALLS_PER_DAY_CAP || encodedBytes > CALLS_STORAGE_MAX_BYTES) {
-    if (bucket.length <= 1) break; // A single sanitized audit row is far below the byte cap.
-    encodedBytes -= utf8JsonBytes(bucket.shift()) + 1;
+  if (daysChanged) {
+    await store.put("call_days", keep);
+    await sweepOrphanCallDays(store, cutoff);
   }
-  await store.put(`calls:${day}`, bucket);
-  await store.put(`calls_bytes:${day}`, { count: bucket.length, bytes: encodedBytes });
+  await appendCallRows(store, day, [clean]);
 
   if (clean.outcome === "error") {
     const cutoffMs = now - CALL_RETENTION_DAYS * DAY_MS;
@@ -694,13 +805,27 @@ async function auditCallInner(store, row, now) {
       geoChanged = true;
       await audit(store, { event: "geo_change", grant_ref: clean.grant_ref, from_asn: prior.asn, to_asn: clean.asn ?? null, from_country: prior.country, to_country: clean.country ?? null }, now);
     }
-    // The newest grant last, same place same values:  nothing to write.
-    const current = prior && !geoChanged && Object.keys(geo).at(-1) === clean.grant_ref;
+    // Same place, same values, and either already the newest grant or moved to
+    // the newest place within the last hour:  nothing to write.  Without the
+    // hour, two sessions of one seat on different grants rewrote this key on
+    // every flush just to swap the eviction order.
+    const seen = prior?.seen;
+    // Only while the map has room:  once it is full, every use refreshes `seen`,
+    // so eviction by last seen can never pick a grant that is still in use.
+    const recent = Number.isFinite(seen) && now >= seen && now - seen < GEO_REFRESH_MS && Object.keys(geo).length < GEO_CAP;
+    const current = prior && !geoChanged && (Object.keys(geo).at(-1) === clean.grant_ref || recent);
     if (!current) {
       delete geo[clean.grant_ref];
-      geo[clean.grant_ref] = { asn: clean.asn ?? null, country: clean.country ?? null };
+      geo[clean.grant_ref] = { asn: clean.asn ?? null, country: clean.country ?? null, seen: now };
+      // Evict the grants seen longest ago, not the first inserted:  a grant
+      // skipped above stays early in insertion order while it is in use.
+      // Rows without `seen` (written before it existed) count as oldest.
       const refs = Object.keys(geo);
-      while (refs.length > GEO_CAP) delete geo[refs.shift()];
+      if (refs.length > GEO_CAP) {
+        const age = (ref) => (Number.isFinite(geo[ref]?.seen) ? geo[ref].seen : -Infinity);
+        const order = refs.map((ref, i) => [ref, i]).sort(([a, i], [b, j]) => age(a) - age(b) || i - j);
+        for (const [ref] of order.slice(0, refs.length - GEO_CAP)) delete geo[ref];
+      }
       await store.put("grant_geo", geo);
     }
   }
@@ -732,6 +857,9 @@ function coalescedStore(txn) {
         dirty.add(key);
       }
     },
+    // Only the orphan sweep lists, and only keys this transaction never wrote
+    // (index keys of days past retention), so the memo needs no merge.
+    list: typeof txn.list === "function" ? (options) => txn.list(options) : undefined,
     async commit() {
       for (const key of dirty) {
         const value = memo.get(key);
@@ -779,8 +907,7 @@ export async function callTail(store, limit = 40) {
   const days = ((await store.get("call_days")) ?? []).filter((d) => typeof d === "string").sort().reverse();
   const out = [];
   for (const d of days) {
-    const bucket = (await store.get(`calls:${d}`)) ?? [];
-    for (let i = bucket.length - 1; i >= 0 && out.length < limit; i--) out.push(bucket[i]);
+    await dayRowsNewestFirst(store, d, limit, out);
     if (out.length >= limit) break;
   }
   return out;

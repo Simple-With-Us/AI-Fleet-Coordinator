@@ -25,8 +25,16 @@
     <string>1</string>
     <key>FLEET_APPS_JSON</key>
     <string>@HOME@/apps/lane-tools/fleet-apps.json</string>
-    <key>SIMPLE_BOARD_BEARER_LOCATOR</key>
-    <string>@BEARER_LOCATOR@</string>
+    <key>SIMPLE_BOARD_BEARER_FILE</key>
+    <string>@BEARER_FILE@</string>
+    <key>SIMPLE_BOARD_TOOLS_TOKEN_FILE</key>
+    <string>@TOOLS_TOKEN_FILE@</string>
+    <key>SIMPLE_BOARD_TOOLS_PROJECT_ID</key>
+    <string>@TOOLS_PROJECT_ID@</string>
+    <key>LINEAR_BOARD_INFISICAL_READ_TOKEN_FILE</key>
+    <string>@INFISICAL_READ_TOKEN_FILE@</string>
+    <key>LINEAR_BOARD_INFISICAL_PROJECT_ID</key>
+    <string>@INFISICAL_PROJECT_ID@</string>
   </dict>
   <key>StartInterval</key>
   <integer>3600</integer>
