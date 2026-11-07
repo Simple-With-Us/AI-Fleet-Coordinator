@@ -6435,6 +6435,106 @@ class MinimaxBundleTests(World):
         hooks.unlink()
         self.assertFails(self.verify_mm(), "hooks.json")
 
+    def test_a_hook_path_in_another_users_home_is_refused_and_fails_verify(self) -> None:
+        # The server incident:  the installer ran as root for jay's home and wrote
+        # /root/apps/lane-tools/minimax-guard-hook into jay's hooks.json.  Root's own probes ran it
+        # fine, but jay's MiniMax got Permission denied and so let every tool call through.
+        self.assertEqual(self.apply().status, "added")
+        healthy = self.verify_mm()
+        self.assertTrue(
+            any(c.name == "hook runnable by home owner" and c.status == "PASS" for c in healthy),
+            healthy,
+        )
+        other_home = str(Path(self.paths.stable).parent)
+        root_like = mock.Mock(pw_name="root", pw_uid=0, pw_dir=other_home)
+        with mock.patch.object(T, "_login_users", return_value=[root_like]):
+            checks = self.verify_mm()
+            r = self.apply()
+        failed = [c for c in checks if c.name == "hook runnable by home owner"]
+        self.assertEqual([c.status for c in failed], ["FAIL"], checks)
+        self.assertIn("inside root's home", failed[0].detail)
+        self.assertEqual(r.status, "refused", r)
+        self.assertIn("inside root's home", r.detail)
+
+    def test_a_hook_the_home_owner_cannot_execute_is_refused(self) -> None:
+        self.assertEqual(self.apply().status, "added")
+        shim = Path(self.paths.stable) / T.MINIMAX_HOOK_NAME
+        mode = shim.stat().st_mode
+        shim.chmod(0o644)
+        self.addCleanup(shim.chmod, mode)
+        problem = T.hook_home_problem(str(shim), str(self.home))
+        self.assertIsNotNone(problem)
+        self.assertIn("not executable", problem)
+
+    @unittest.skipIf(
+        os.geteuid() == 0, "root passes every search and owner check, so the mode bits cannot deny it"
+    )
+    def test_the_mode_bit_check_answers_for_the_target_user_not_the_caller(self) -> None:
+        # Root's os.access says yes to almost anything, so a check for another user reads the mode bits.
+        me = os.getuid()
+        gids = {os.getgid()}
+        inner = self.tmp / "inner"
+        inner.mkdir()
+        hook = inner / "hook"
+        hook.write_text("#!/bin/sh\n")
+        hook.chmod(0o700)
+        self.assertIsNone(T._runnable_by(str(hook), me, gids))
+        hook.chmod(0o070)  # group can run it, the owner cannot:  owner bits decide for the owner
+        self.assertIn("not executable", T._runnable_by(str(hook), me, gids) or "")
+        hook.chmod(0o300)  # execute without read:  the kernel cannot read a script's interpreter line
+        self.assertIn("not readable", T._runnable_by(str(hook), me, gids) or "")
+        hook.chmod(0o700)
+        inner.chmod(0o600)  # the owner cannot search the directory on the way
+        self.addCleanup(inner.chmod, 0o700)
+        self.assertIn(str(inner), T._runnable_by(str(hook), me, gids) or "")
+
+    def test_an_account_whose_home_holds_the_target_home_still_guards_its_other_paths(self) -> None:
+        # An account whose home contains the target home covers only paths inside the target home.
+        outside = self.tmp / "elsewhere" / "hook"
+        outside.parent.mkdir()
+        outside.write_text("#!/bin/sh\n")
+        outside.chmod(0o755)
+        inside = self.home / "hook"
+        inside.write_text("#!/bin/sh\n")
+        inside.chmod(0o755)
+        parent = mock.Mock(pw_name="parent", pw_uid=1500, pw_dir=str(self.tmp))
+        with mock.patch.object(T, "_login_users", return_value=[parent]):
+            self.assertIn("inside parent's home", T.hook_home_problem(str(outside), str(self.home)) or "")
+            self.assertIsNone(T.hook_home_problem(str(inside), str(self.home)))
+
+    def test_a_home_reached_through_a_symlink_gets_the_same_verdict(self) -> None:
+        real_homes = self.tmp / "real-homes"
+        (real_homes / "seat").mkdir(parents=True)
+        (real_homes / "elsewhere").mkdir()
+        link = self.tmp / "homes"
+        link.symlink_to(real_homes)
+        for rel in ("seat/hook", "elsewhere/hook"):
+            (real_homes / rel).write_text("#!/bin/sh\n")
+            (real_homes / rel).chmod(0o755)
+        parent = mock.Mock(pw_name="parent", pw_uid=1500, pw_dir=str(real_homes))
+        with mock.patch.object(T, "_login_users", return_value=[parent]):
+            for home, base in ((link / "seat", link), (real_homes / "seat", real_homes)):
+                with self.subTest(home=str(home)):
+                    self.assertIsNone(T.hook_home_problem(str(base / "seat" / "hook"), str(home)))
+                    self.assertIn(
+                        "inside parent's home",
+                        T.hook_home_problem(str(base / "elsewhere" / "hook"), str(home)) or "",
+                    )
+
+    def test_login_accounts_outside_the_regular_uid_range_still_count(self) -> None:
+        def account(name: str, uid: int, shell: str) -> mock.Mock:
+            return mock.Mock(pw_name=name, pw_uid=uid, pw_dir=f"/srv/{name}", pw_shell=shell)
+
+        users = [
+            account("svc", 200, "/bin/bash"),
+            account("daemon", 1, "/usr/sbin/nologin"),
+            account("nobody", 65534, "/usr/bin/false"),
+            account("person", 1001, "/bin/zsh"),
+        ]
+        with mock.patch.object(T.pwd, "getpwall", return_value=users):
+            names = [u.pw_name for u in T._login_users()]
+        self.assertEqual(names, ["svc", "person"])
+
     def test_an_unwired_bundle_is_a_skip_unless_the_platform_is_named(self) -> None:
         checks = self.verify_mm()
         self.assertEqual([(c.name, c.status) for c in checks], [("bundle", "SKIP")])

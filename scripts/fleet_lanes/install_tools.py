@@ -220,10 +220,12 @@ import copy
 import difflib
 import fcntl
 import functools
+import grp
 import hashlib
 import json
 import math
 import os
+import pwd
 import re
 import shlex
 import shutil
@@ -5817,6 +5819,122 @@ def minimax_hook_command(paths: Paths) -> str:
     return shlex.quote(os.path.join(paths.stable, MINIMAX_HOOK_NAME))
 
 
+def _login_users() -> list[pwd.struct_passwd]:
+    """Accounts that own a real home:  root, the regular uid range, and any account with a login shell."""
+    try:
+        users = pwd.getpwall()
+    except OSError:
+        return []
+
+    def login_shell(shell: str) -> bool:
+        base = os.path.basename((shell or "").strip()).lower()
+        return bool(base) and base not in ("false", "nologin", "sync", "shutdown", "halt")
+
+    return [
+        u for u in users if u.pw_uid == 0 or 500 <= u.pw_uid < 65534 or login_shell(u.pw_shell)
+    ]
+
+
+def _within(path: str, root: str) -> bool:
+    return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
+
+
+def _mode_allows(st: os.stat_result, uid: int, gids: set[int], bit: int) -> bool:
+    """Whether the mode bits give `uid` (with `gids`) the permission `bit` (4 read, 2 write, 1 execute)."""
+    if st.st_uid == uid:
+        return bool(st.st_mode & (bit << 6))
+    if st.st_gid in gids:
+        return bool(st.st_mode & (bit << 3))
+    return bool(st.st_mode & bit)
+
+
+def _runnable_by(path: str, uid: int, gids: set[int]) -> str | None:
+    """None when `uid` can run `path` by its mode bits (search on every directory on the way, execute on the
+    file), else why not.  This is the check for a user other than the one running the installer, where
+    os.access would answer for the wrong user:  root can run what the target user cannot."""
+    real = os.path.realpath(path)
+    parts = real.split(os.sep)[1:]
+    current = os.sep
+    for part in parts[:-1]:
+        current = os.path.join(current, part)
+        try:
+            st = os.stat(current)
+        except OSError as exc:
+            return f"{current} cannot be checked: {type(exc).__name__}"
+        if uid != 0 and not _mode_allows(st, uid, gids, 1):
+            return f"{current} does not let uid {uid} reach {path}"
+    try:
+        st = os.stat(real)
+    except OSError as exc:
+        return f"{real} cannot be checked: {type(exc).__name__}"
+    if not stat.S_ISREG(st.st_mode):
+        return f"{real} is not a regular file"
+    if uid == 0:
+        return None if st.st_mode & 0o111 else f"{real} has no execute bit"
+    if not _mode_allows(st, uid, gids, 1):
+        return f"{real} is not executable by uid {uid}"
+    # The hook is a script:  the kernel reads it to find the interpreter, so execute alone is not enough.
+    if not _mode_allows(st, uid, gids, 4):
+        return f"{real} is not readable by uid {uid}"
+    return None
+
+
+def hook_home_problem(executable: str, home: str) -> str | None:
+    """None when the user who owns `home` can run the hook at `executable`, else why not.
+
+    A runtime runs its hook as the user whose home holds the config.  An installer run as another
+    user (root installing for a seat account, say) can write a hook path from its own home, such as
+    /root/apps/lane-tools/..., which its own probes run without trouble while the seat's runtime gets
+    Permission denied, and MiniMax Code lets every tool call through when its hook cannot run.  So
+    the path must not sit in another account's home, and the home's owner must be able to run it.
+    """
+    # Each path is compared both as written and resolved, so a home reached through a symlink gets the
+    # same verdict as the same home spelled out.
+    homes = {os.path.abspath(home), os.path.realpath(home)}
+    candidates = {os.path.abspath(executable), os.path.realpath(executable)}
+
+    def in_target_home(path: str) -> bool:
+        return any(_within(path, h) for h in homes)
+
+    for user in _login_users():
+        if not user.pw_dir:
+            continue
+        others = {os.path.abspath(user.pw_dir), os.path.realpath(user.pw_dir)} - {os.sep}
+        if not others or others & homes:
+            continue
+        # An account whose home holds the target home covers only the paths inside the target home.
+        holds_target = any(_within(h, o) for h in homes for o in others)
+        for candidate in candidates:
+            if holds_target and in_target_home(candidate):
+                continue
+            inside = next((o for o in others if _within(candidate, o)), None)
+            if inside:
+                return (
+                    f"the hook {executable} is inside {user.pw_name}'s home {inside}, not {home}; "
+                    f"run the installer as the user who owns {home}"
+                )
+    try:
+        owner = os.stat(home).st_uid
+    except OSError as exc:
+        return f"{home} cannot be checked: {type(exc).__name__}"
+    if owner == os.geteuid():
+        if os.path.isfile(executable) and os.access(executable, os.R_OK | os.X_OK):
+            return None
+        return (
+            f"the hook {executable} is missing, unreadable or not executable by the owner of {home}; "
+            "run `apply tools` first"
+        )
+    try:
+        entry = pwd.getpwuid(owner)
+        gids = {entry.pw_gid} | {g.gr_gid for g in grp.getgrall() if entry.pw_name in g.gr_mem}
+    except (KeyError, OSError):
+        gids = set()
+    problem = _runnable_by(executable, owner, gids)
+    if problem:
+        return f"the owner of {home} cannot run the hook: {problem}"
+    return None
+
+
 def render_minimax_hooks(paths: Paths) -> str:
     """hooks/hooks.json.  Only `type: command` exists; `timeout` is whole seconds, 1 to 10."""
     doc = {
@@ -6097,6 +6215,11 @@ def apply_minimax(
         return Result("minimax", "skipped", mp.reason)
     if mp.state == "refuse":
         return Result("minimax", "refused", mp.reason)
+    # MiniMax lets every tool call through when its hook cannot run, so a hook path the home's owner cannot
+    # execute is no guard at all, however well it passes probes run as the installer's own user.
+    home_problem = hook_home_problem(os.path.join(paths.stable, MINIMAX_HOOK_NAME), paths.home)
+    if home_problem:
+        return Result("minimax", "refused", home_problem)
     if not shim_proven:
         if not (
             os.path.isfile(os.path.join(paths.stable, MINIMAX_HOOK_NAME))
@@ -6317,6 +6440,21 @@ def verify_minimax(
         )
         return out
     out.append(Check(t, "hook command", "PASS", cmd))
+    try:
+        argv = shlex.split(cmd)
+    except ValueError:
+        argv = []
+    home_problem = (
+        hook_home_problem(argv[0], paths.home) if argv else f"{cmd!r} is not a parseable command"
+    )
+    out.append(
+        Check(
+            t,
+            "hook runnable by home owner",
+            "FAIL" if home_problem else "PASS",
+            home_problem or f"the owner of {paths.home} can run {argv[0]}",
+        )
+    )
     out.extend(
         probe_command(
             cmd,
