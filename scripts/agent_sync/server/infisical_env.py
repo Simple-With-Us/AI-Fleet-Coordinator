@@ -29,6 +29,10 @@ The allowlist is built from the seat partition (every seat it gives to "server")
                                                          Operator opened (dm_policy.py)
     OPERATOR_NOTES_{WORKER,SERVER,RUNNER}_KEY            the notes queue's three keys, from the folder /operator
                                                          (AFC-486), with the same login
+    ZULIP_OPERATOR_EMAIL, ZULIP_OPERATOR_API_KEY         the Operator bot's own address and key (AFC-602), from
+                                                         Fleet-OPS prod /zulip_operator, read with their own
+                                                         read-only token (INFISICAL_OPERATOR_VOICE_TOKEN);  a
+                                                         failed read never stops the listener
 
 CODE is the seat with hyphens as underscores.  An Infisical value wins over a container variable of the same
 name, so a rotation in Infisical takes effect on the next restart even if Coolify still holds an old copy.
@@ -61,10 +65,20 @@ from datetime import UTC, datetime
 API_DEFAULT = "https://app.infisical.com/api"
 TOKEN = "INFISICAL_TOKEN"
 LISTENER_READ_TOKEN = "INFISICAL_LISTENER_READ_TOKEN"
+#: The Operator's own voice (AFC-602):  a third, separate read-only token, scoped to exactly the
+#: Fleet-OPS prod folder that holds the Operator bot's address and key.  Its project is the one the
+#: container already names in INFISICAL_FLEET_OPS_PROJECT_ID.  The image ships no fleet-secrets and
+#: carries no machine identity (this loader strips them), so this is the Operator's only route to
+#: its credential on the server;  without the token the Operator stays unavailable, visibly.
+OPERATOR_VOICE_TOKEN = "INFISICAL_OPERATOR_VOICE_TOKEN"
+OPERATOR_VOICE_PROJECT = "INFISICAL_FLEET_OPS_PROJECT_ID"
+OPERATOR_VOICE_PATH = "/zulip_operator"
+OPERATOR_VOICE_NAMES = frozenset({"ZULIP_OPERATOR_EMAIL", "ZULIP_OPERATOR_API_KEY"})
 AUTH_ENV_VARS = frozenset(
     {
         TOKEN,
         LISTENER_READ_TOKEN,
+        OPERATOR_VOICE_TOKEN,
         "INFISICAL_AI_FLEET_COORDINATOR_TOKEN",
         "INFISICAL_WRITE_TOKEN",
         "INFISICAL_CLIENT_ID",
@@ -415,6 +429,48 @@ def listener_read_keys(env: Mapping[str, str], codes: set[str], **kw) -> tuple[d
         return {}, "; listener read keys not loaded (%s)" % exc
 
 
+def operator_voice_keys(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
+    """The Operator bot's own address and key, read with their own exact-scope token binding.
+
+    Never fatal:  the listener runs without them and the Operator then says so in its status
+    (`operator_voice`), so a missing token, a wrong scope or an outage only shortens the log line."""
+    token = (env.get(OPERATOR_VOICE_TOKEN) or "").strip()
+    if not token:
+        return {}, "; operator voice keys not loaded (no dedicated token)"
+    project = (env.get(OPERATOR_VOICE_PROJECT) or "").strip()
+    if not PROJECT_ID_RE.fullmatch(project):
+        return {}, "; operator voice keys not loaded (invalid project id)"
+    if not SERVICE_TOKEN_RE.fullmatch(token):
+        return {}, "; operator voice keys not loaded (dedicated service token is invalid)"
+    source = dict(env, INFISICAL_PROJECT_ID=project, INFISICAL_ENVIRONMENT="prod")
+    try:
+        found = fetch(
+            source,
+            path=OPERATOR_VOICE_PATH,
+            token=token,
+            expected_paths=(OPERATOR_VOICE_PATH,),
+            stage="read operator voice",
+            **kw,
+        )
+    except LoadError as exc:
+        return {}, "; operator voice keys not loaded (%s)" % exc
+    keys = {
+        name: value.strip()
+        for name, value in found.items()
+        if name in OPERATOR_VOICE_NAMES and value.strip() and "${" not in value
+    }
+    if set(keys) != OPERATOR_VOICE_NAMES:
+        return {}, "; operator voice keys not loaded (%d of %d names present)" % (
+            len(keys),
+            len(OPERATOR_VOICE_NAMES),
+        )
+    return keys, "; operator voice keys from %s: %d of %d" % (
+        OPERATOR_VOICE_PATH,
+        len(keys),
+        len(OPERATOR_VOICE_NAMES),
+    )
+
+
 def build_env(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
     """(the environment to exec with, the one log line).  Bootstrap credentials are removed."""
     out = {k: v for k, v in env.items() if k not in AUTH_ENV_VARS}
@@ -471,8 +527,9 @@ def build_env(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
     read_keys, read_note = listener_read_keys(env, codes, **kw)
     if (env.get(LISTENER_READ_PROJECT) or "").strip():
         found = {name: value for name, value in found.items() if name not in secondary_names}
-    found = dict(found, **operator, **read_keys)
-    allowed = allowed | set(operator)
+    voice_keys, voice_note = operator_voice_keys(env, **kw)
+    found = dict(found, **operator, **read_keys, **voice_keys)
+    allowed = allowed | set(operator) | set(voice_keys)
     loaded = sorted(name for name in found if name in allowed)
     replaced = sum(1 for name in loaded if name in env)
     for name in loaded:
@@ -499,7 +556,7 @@ def build_env(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
     ignored = len(found) - len(loaded)
     return out, (
         f"loaded {len(loaded)} variables from Infisical ({where}; {replaced} replaced a container value, "
-        f"{ignored} other names in the folder ignored){coverage}{operator_note}{read_note}"
+        f"{ignored} other names in the folder ignored){coverage}{operator_note}{read_note}{voice_note}"
     )
 
 

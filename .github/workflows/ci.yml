@@ -201,7 +201,8 @@ jobs:
       # read, so a test that hangs would hold the job open with nothing to
       # report.  The step ends on its own after five minutes instead.
       timeout-minutes: 5
-      run: cd scripts && python3 test-lark-mm-bridge.py
+      # test_lark_bridge_runtime.py pins where the bridge finds the fleet runtime (AFC-490).
+      run: cd scripts && python3 test-lark-mm-bridge.py && python3 -m unittest test_lark_bridge_runtime -v
     # Keeps the docs/PR-AUTOFIX.md caller template's permissions and secrets
     # block in step with what the pr-autofix reusable declares and consumes.
     - name: Autofix caller template guard
@@ -617,6 +618,13 @@ jobs:
     - name: Fleet Reference Sheet registry sync tests
       timeout-minutes: 10
       run: node --test scripts/fleet-apps-sheet-sync.format.test.mjs scripts/fleet-apps-sheet-sync.tabs.test.mjs scripts/fleet-apps-sheet-sync.ingest.test.mjs
+    # The Operator registry -> Sheets drain (OPS-1037):  the exporter, the Google Sheets
+    # transport and the drain runner (pass loop, run deadline, stop signal, write pacing
+    # and HTTP 429 back-off).  No network:  fetch, the registry bridge and the clock are
+    # injected, and nothing sleeps for real.
+    - name: Operator Sheets drain tests
+      timeout-minutes: 10
+      run: node --test scripts/test_operator_sheets_export.mjs scripts/test_operator_sheets_google.mjs scripts/test_operator_sheets_drain.mjs
     # The TestFlight freshness deploy check (AFC-341).  App Store Connect, gh, build-window.sh,
     # the state file and Zulip are stubbed;  the last test validates testflight-apps.json.
     - name: TestFlight freshness check tests

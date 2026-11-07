@@ -35,6 +35,7 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Callable, Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -161,7 +162,13 @@ class OperatorVoice:
         retry_seconds: float = RETRY_SECONDS,
         log: Callable[..., None] | None = None,
         hide: Callable[[str, str], None] | None = None,
+        wall: Callable[[], float] = time.time,
     ) -> None:
+        self._wall = wall
+        # What `snapshot` reports: nothing is known until a build has finished once.
+        self._available: bool | None = None
+        self._code: str | None = None
+        self._since: float | None = None
         self._env = dict(env)
         self._owner_user_id = owner_user_id
         self._factory = factory
@@ -249,12 +256,63 @@ class OperatorVoice:
                 return self._failure
         return None
 
+    def update_env(self, env: Mapping[str, str]) -> None:
+        """The host's environment changed under a running voice (a reload moved a pin).
+
+        The voice keeps its own copy of the environment, so it is told:  when the Operator's pinned
+        id or address differs, the cached client was checked against a pin that is no longer the pin
+        and is dropped, a remembered failure is forgotten so the next call builds again at once, and
+        a build still running is not published (it would be judged against the old pin)."""
+        fresh = dict(env)
+        names = ("OPERATOR_ZULIP_USER_ID", "OPERATOR_ZULIP_EMAIL")
+        with self._lock:
+            moved = any(fresh.get(n) != self._env.get(n) for n in names)
+            self._env = fresh
+            if moved:
+                self._client = None
+                self._user_id = 0
+                self._flight = None
+                self._failure = ""
+                self._failed_until = -1e18
+                # What `snapshot` reports is about the old pin too, so it goes back to "not known
+                # yet" (dated now) until the next build answers for the new one.
+                if self._available is not None or self._code is not None:
+                    self._since = self._wall()
+                    self._available = None
+                    self._code = None
+
+    def _note_state(self, available: bool, code: str | None) -> None:
+        """Remember whether the Operator can speak and since when (caller holds the lock).
+
+        `since` moves only when the answer changes (reachable to unreachable or back) or the
+        failure code changes, so a failure retried every two minutes keeps its first time."""
+        if self._available != available or self._code != code:
+            self._since = self._wall()
+        self._available, self._code = available, code
+
+    def snapshot(self) -> dict[str, Any]:
+        """The Operator's own voice, as `status.json` reports it (`operator_voice`).
+
+        `available` is True or False once a build has finished, and None before the first one;
+        `code` is the failure's reason token (never a reason sentence, never a value), None when
+        the Operator can speak; `since` is when this answer began, as ISO-8601 UTC.  Pure state:
+        no network, no thread, safe on the status path."""
+        with self._lock:
+            available, code, since = self._available, self._code, self._since
+        stamp = (
+            datetime.fromtimestamp(since, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+            if isinstance(since, (int, float))
+            else None
+        )
+        return {"available": available, "code": code, "since": stamp}
+
     def forget(self, client: Any) -> None:
         """Drop the cached client if it is this one (its credential was rejected)."""
         with self._lock:
             if self._client is client:
                 self._client = None
                 self._user_id = 0
+                self._note_state(False, "operator_credential_rejected")
 
     def _owner_now(self) -> int:
         try:
@@ -295,10 +353,12 @@ class OperatorVoice:
                 self._client, self._user_id, self._owner = client, user_id, flight.owner
                 self._failure = ""
                 self._failed_until = -1e18
+                self._note_state(True, None)
                 event, fields = "operator-voice-connected", {"operator_id": user_id}
             if failed_build and error is not None and current:
                 self._failure = error.reason
                 self._failed_until = self._clock() + self._retry
+                self._note_state(False, error.code)
                 event, fields = (
                     "operator-voice-unavailable",
                     {

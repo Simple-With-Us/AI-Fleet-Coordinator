@@ -642,75 +642,61 @@ enum KnobStatusReader {
         home: URL = FileManager.default.homeDirectoryForCurrentUser,
         timeout: TimeInterval = 40
     ) async -> KnobLiveReading {
-        let process = Process()
-        let output = Pipe()
-        let errors = Pipe()
-        process.executableURL = location.interpreter
-        process.arguments = arguments
-        process.currentDirectoryURL = URL(fileURLWithPath: "/")
-        process.standardInput = FileHandle.nullDevice
-        process.standardOutput = output
-        process.standardError = errors
-        process.environment = EngineRunner.childEnvironment(location: location, home: home)
-        let collected = Collected()
-        let group = DispatchGroup()
-        // Wait for the process to end without holding a thread:  the termination handler
-        // resumes this call,  and a timer ends the process when it runs past the timeout.
-        var startFailure: String?
-        await withCheckedContinuation { (finished: CheckedContinuation<Void, Never>) in
-            process.terminationHandler = { _ in finished.resume() }
-            // Both readers are counted before the process starts, so the notify below can
-            // never fire before they have run, however quickly the process ends.
-            group.enter()
-            group.enter()
-            do {
-                try process.run()
-            } catch {
-                // A process that did not start never calls the termination handler.
-                startFailure = error.localizedDescription
-                group.leave()
-                group.leave()
-                finished.resume()
-                return
-            }
-            DispatchQueue.global().async {
-                collected.output = output.fileHandleForReading.readDataToEndOfFile()
-                group.leave()
-            }
-            DispatchQueue.global().async {
-                collected.errors = errors.fileHandleForReading.readDataToEndOfFile()
-                group.leave()
-            }
-            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
-                if process.isRunning {
-                    collected.timedOut = true
-                    process.terminate()
-                }
+        let environment = EngineRunner.childEnvironment(location: location, home: home)
+        // The run blocks a thread while it waits,  so it waits on a dispatch thread and never
+        // on one of the threads Swift's tasks share.
+        let outcome: Result<FleetViewService.ProcessOutcome, Error> = await withCheckedContinuation { finished in
+            DispatchQueue.global(qos: .userInitiated).async {
+                // The same bounded run the fleet-view read uses:  SIGTERM at the deadline,
+                // SIGKILL after a grace period,  capped reads,  and a drain wait bounded by
+                // the grace,  so a child that ignores SIGTERM,  or a grandchild that holds a
+                // pipe open,  cannot leave the Controls page checking for ever.
+                finished.resume(returning: Result {
+                    try FleetViewService.runProcess(
+                        executable: location.interpreter,
+                        arguments: KnobStatusReader.arguments,
+                        currentDirectory: URL(fileURLWithPath: "/"),
+                        environment: environment,
+                        timeout: timeout
+                    )
+                })
             }
         }
-        if let startFailure {
-            return .failed("Muster could not start the knob engine (\(startFailure)).")
+        return reading(from: outcome, timeout: timeout)
+    }
+
+    /// What a run came to,  in the owner's words.
+    static func reading(
+        from outcome: Result<FleetViewService.ProcessOutcome, Error>,
+        timeout: TimeInterval
+    ) -> KnobLiveReading {
+        let run: FleetViewService.ProcessOutcome
+        switch outcome {
+        case .success(let value):
+            run = value
+        case .failure(let error):
+            let detail: String
+            if let serviceError = error as? FleetViewService.ServiceError,
+               case .launchFailed(let why) = serviceError {
+                detail = why
+            } else {
+                detail = error.localizedDescription
+            }
+            return .failed("Muster could not start the knob engine (\(detail)).")
         }
-        // The pipes close when the process ends, so the two reads finish at once.
-        await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
-            group.notify(queue: .global()) { done.resume() }
-        }
-        if collected.timedOut {
+        if run.timedOut {
             return .failed("The knob engine did not answer within \(Int(timeout)) seconds.")
         }
-        if let status = KnobLiveStatus.parse(collected.output) {
+        if run.stdoutExceeded {
+            return .failed("The knob engine's answer was larger than Muster will read.")
+        }
+        if let status = KnobLiveStatus.parse(run.stdout) {
             return .read(status)
         }
-        let complaint = String(data: collected.errors, encoding: .utf8) ?? ""
+        let complaint = String(decoding: run.stderr, as: UTF8.self)
         let first = complaint.split(separator: "\n").last.map(String.init) ?? ""
         let because = first.isEmpty ? "" : " (\(first.prefix(160)))"
         return .failed("The knob engine's answer could not be read\(because).")
-    }
-
-    private final class Collected: @unchecked Sendable {
-        var output = Data()
-        var errors = Data()
-        var timedOut = false
     }
 }
 

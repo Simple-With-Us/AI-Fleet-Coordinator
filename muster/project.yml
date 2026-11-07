@@ -131,6 +131,9 @@ targets:
       - path: Muster/Model/SeatManifest.swift
       - path: Muster/Model/SeatSetup.swift
       - path: Muster/Model/SeatInventory.swift
+      # When Seat Setup reads an inventory again and when a polling page reads while the app
+      # is not in front (ReadCadenceTests, in the MusterTests directory above).
+      - path: Muster/Model/ReadCadence.swift
       - path: Muster/Model/TrustedCheckout.swift
       - path: Muster/Model/ThemeChoice.swift
       - path: Muster/Model/FailureReason.swift
@@ -140,6 +143,7 @@ targets:
       - path: Muster/Model/SeatActivity.swift
       - path: Muster/Model/SeatActivityReader.swift
       - path: Muster/Model/SeatActivityStore.swift
+      - path: Muster/Model/FleetViewStore.swift
       - path: Muster/Model/WakeLedger.swift
       - path: Muster/Model/WakeSettings.swift
       - path: Muster/Model/WakeSettingsReader.swift
@@ -164,6 +168,9 @@ targets:
       # The place strip, so MusterWindowLayoutTests checks the app's own strip.  It needs only
       # FleetHost, MachineStatus and MusterNavigation, which are compiled above.
       - path: Muster/Views/PlaceBadge.swift
+      # Apps & Work's filter row.  It takes a binding and no store, so FleetViewFilterBarTests
+      # hosts the row itself at the narrowest pane.
+      - path: Muster/Views/FleetViewFilterBar.swift
     settings:
       base:
         PRODUCT_NAME: MusterTests

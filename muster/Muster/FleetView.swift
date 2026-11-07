@@ -31,6 +31,10 @@ struct FleetView: View {
 
     private var failed: Bool { failure != nil }
 
+    /// The apps are listed but this refresh's work read has not come back:  their lane, pull
+    /// request and claim counts are being read, which is neither zero nor a failure.
+    private var countsPending: Bool { loading && envelope == nil }
+
     private var searching: Bool {
         !filter.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
@@ -68,28 +72,7 @@ struct FleetView: View {
                 .disabled(loading)
             }
 
-            HStack(spacing: 12) {
-                Picker("App Kind", selection: $filter.kind) {
-                    ForEach(FleetAppKindFilter.allCases) { item in
-                        Text(item.rawValue).tag(item)
-                    }
-                }
-                .pickerStyle(.segmented)
-                // The segmented options name themselves;  a visible label
-                // was squeezed into a 16pt column and wrapped letter by
-                // letter beside them (AFC-592).  The title stays as the
-                // accessibility label.
-                .labelsHidden()
-                .frame(maxWidth: 460)
-                TextField("Filter apps, tools, seats, lanes, pull requests, or claims…", text: $filter.query)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 11, design: .monospaced))
-                    .frame(maxWidth: 340)
-                Toggle("Needs Attention Only", isOn: $filter.attentionOnly)
-                    .toggleStyle(.checkbox)
-                    .help("Shows only what needs someone:  pull requests that need action, expired claims, lanes git could not read, and tools that are missing or behind.")
-                Spacer()
-            }
+            FleetViewFilterBar(filter: $filter)
 
             if let failure {
                 failureBanner(failure)
@@ -111,6 +94,15 @@ struct FleetView: View {
                 Spacer()
             } else {
                 List {
+                    if countsPending {
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small)
+                            Text("Reading pull requests, claims and lanes\u{2026}\u{00A0} The apps below are listed from fleet-apps.json, and their counts fill in when the read finishes.")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
                     if let envelope {
                         attentionSection(envelope)
                         pullRequestSection(envelope)
@@ -221,9 +213,19 @@ struct FleetView: View {
 
     private var appSection: some View {
         let rows = registrySummary.apps.filter { filter.includes($0) }
+        // The apps the kind and text filters keep, before Needs Attention Only.  When none, the
+        // ordinary no-match state applies even while the counts are read (Kody, PR 1450).
+        var withoutAttention = filter
+        withoutAttention.attentionOnly = false
+        let matchBesidesAttention = registrySummary.apps.contains { withoutAttention.includes($0) }
         return Section {
             if !collapsed.contains(.apps), registrySummary.problem == nil {
-                if rows.isEmpty {
+                if rows.isEmpty, countsPending, filter.attentionOnly, matchBesidesAttention {
+                    // Which apps need attention depends on the counts being read, so the filter
+                    // has nothing to match yet (Sentry, PR 1450).
+                    Text("Which apps need attention is still being read.")
+                        .foregroundStyle(.secondary)
+                } else if rows.isEmpty {
                     emptyRow(FleetSectionEmpty.state(
                         total: registrySummary.apps.count, shown: 0, isKnown: !failed,
                         reason: "The last refresh failed.", noneText: "No apps are listed in fleet-apps.json."
@@ -413,13 +415,38 @@ struct FleetView: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            countCell(app.lanes, extra: app.dirtyLanes > 0 ? "\(app.dirtyLanes) with changes" : nil, problem: false, width: 120)
-            countCell(app.pullRequests, extra: app.actionPullRequests > 0 ? "\(app.actionPullRequests) need action" : nil, problem: true, width: 110)
-            countCell(app.claims, extra: app.expiredClaims > 0 ? "\(app.expiredClaims) expired" : nil, problem: true, width: 90)
-            workBadge(app.state)
-                .frame(width: 140, alignment: .leading)
+            if countsPending {
+                pendingCell(width: 120)
+                pendingCell(width: 110)
+                pendingCell(width: 90)
+                Label("Reading", systemImage: "hourglass")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(Color.secondary.opacity(0.12), in: Capsule())
+                    .frame(width: 140, alignment: .leading)
+            } else {
+                countCell(app.lanes, extra: app.dirtyLanes > 0 ? "\(app.dirtyLanes) with changes" : nil, problem: false, width: 120)
+                countCell(app.pullRequests, extra: app.actionPullRequests > 0 ? "\(app.actionPullRequests) need action" : nil, problem: true, width: 110)
+                countCell(app.claims, extra: app.expiredClaims > 0 ? "\(app.expiredClaims) expired" : nil, problem: true, width: 90)
+                workBadge(app.state)
+                    .frame(width: 140, alignment: .leading)
+            }
         }
-        .help(app.reasons.joined(separator: "\n"))
+        .help(countsPending ? Self.pendingHelp : app.reasons.joined(separator: "\n"))
+    }
+
+    private static let pendingHelp = "Lanes, pull requests and claims are still being read."
+
+    /// A count this refresh is still reading:  a dash in the secondary colour, never zero and
+    /// never the red of a count that could not be read.
+    private func pendingCell(width: CGFloat) -> some View {
+        Text("\u{2013}")
+            .font(.callout.monospacedDigit())
+            .foregroundStyle(.secondary)
+            .frame(width: width, alignment: .trailing)
+            .accessibilityLabel("Still being read")
     }
 
     private func codingAppRow(_ codingApp: CodingAppStatus) -> some View {
@@ -449,12 +476,18 @@ struct FleetView: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            Text("\(codingApp.lanes.phrase("lane", "lanes")) · \(codingApp.pullRequests.phrase("pull request", "pull requests")) · \(codingApp.claims.phrase("claim", "claims"))")
-                .font(.caption.monospaced())
-                .foregroundStyle(
-                    codingApp.lanes.complete && codingApp.pullRequests.complete && codingApp.claims.complete
-                        ? Color.secondary : Color.red
-                )
+            if countsPending {
+                Text("Lanes, pull requests and claims:  reading\u{2026}")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("\(codingApp.lanes.phrase("lane", "lanes")) · \(codingApp.pullRequests.phrase("pull request", "pull requests")) · \(codingApp.claims.phrase("claim", "claims"))")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(
+                        codingApp.lanes.complete && codingApp.pullRequests.complete && codingApp.claims.complete
+                            ? Color.secondary : Color.red
+                    )
+            }
         }
     }
 
@@ -703,25 +736,49 @@ struct FleetView: View {
         loading = true
         defer { loading = false }
         let root = store.engineRoot ?? EngineLocator.locate()?.root
+        // The work read (`fleet_view status`) is the slow one:  it reads pull requests across the
+        // fleet's repos, Linear claims and every lane, and took 8.5 s on the server.  It starts
+        // first and runs while the local reads below finish, so the page never waits on it to
+        // list the apps.
+        let work = Task.detached(priority: .userInitiated) { () -> Result<FleetViewEnvelope, Error> in
+            do {
+                return .success(try await FleetViewService.load())
+            } catch {
+                return .failure(error)
+            }
+        }
         let tools = await Task.detached(priority: .userInitiated) {
             FleetToolsReportReader.readDefault()
         }.value
+        // With no work read on screen yet, the apps and coding apps show at once from
+        // fleet-apps.json and the tools report.  Their lane, pull request and claim counts say
+        // they are being read (`countsPending`), never zero, until the work read comes back.
+        if envelope == nil, let root {
+            registrySummary = await Task.detached(priority: .userInitiated) {
+                FleetRegistryReader.read(repoRoot: root, viewOutput: nil, toolsReading: tools)
+            }.value
+        }
         do {
-            let loaded = try await FleetViewService.load()
-            envelope = loaded
-            failure = nil
-            refreshClock.recordSuccess(generatedAt: loaded.generatedAt)
+            let loaded = try await work.value.get()
+            // The rows are rebuilt with the work read before either goes on screen, then both
+            // are set together:  setting `envelope` first ends `countsPending` while the rows
+            // still hold the counts that were not read, which flashed them red (Sentry, PR 1450).
+            let summary: FleetRegistrySummary
             if let root {
-                registrySummary = await Task.detached(priority: .userInitiated) {
+                summary = await Task.detached(priority: .userInitiated) {
                     FleetRegistryReader.read(repoRoot: root, viewOutput: loaded, toolsReading: tools)
                 }.value
             } else {
                 // Never leave the last run's rows beside a fresh one, and never let a checkout
                 // Muster cannot find read as a filter that hides every app (FLEETVIEW-30).
-                registrySummary = FleetRegistrySummary(
+                summary = FleetRegistrySummary(
                     problem: "Muster could not find the AI-Fleet-Coordinator checkout, so apps and coding apps cannot be listed.\u{00A0} The pull requests, claims and lanes on this page are from this refresh."
                 )
             }
+            envelope = loaded
+            registrySummary = summary
+            failure = nil
+            refreshClock.recordSuccess(generatedAt: loaded.generatedAt)
         } catch {
             // Fail closed:  clear the lists, never show the last green.  The registry
             // rows go with them:  read back without the run's answer they carry lane,
