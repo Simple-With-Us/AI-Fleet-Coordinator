@@ -601,6 +601,224 @@ final class DriftMonitorTests: XCTestCase {
         XCTAssertEqual(grid.refreshCount, 1)
     }
 
+    /// A monitor whose floor is measured on a clock the test moves by hand.
+    private func makeFloorMonitor(
+        grid: FakeGrid,
+        watcher: FakeWatcher,
+        scheduler: ManualScheduler,
+        ticker: ManualTicker = ManualTicker(),
+        clock: DriftTestClock
+    ) -> DriftMonitor {
+        DriftMonitor(
+            grid: grid,
+            notifier: DriftRecordingNotifier(),
+            history: DriftHistoryStore(url: historyURL),
+            watcher: watcher,
+            scheduler: scheduler,
+            ticker: ticker,
+            home: home,
+            watcherRunFloor: 60,
+            clock: { clock.now }
+        )
+    }
+
+    /// One watched change,  carried through the debounce to its run.
+    private func change(_ watcher: FakeWatcher, _ scheduler: ManualScheduler) async {
+        watcher.fire()
+        await settle()
+        scheduler.fireDebounce()
+        await settle()
+    }
+
+    /// A file written all the time costs one run a gap:  the changes inside the gap wait
+    /// for one run at its end,  and never start several.
+    func test_watched_changes_inside_the_floor_wait_for_one_run_at_its_end() async throws {
+        let grid = FakeGrid()
+        let watcher = FakeWatcher()
+        let scheduler = ManualScheduler()
+        let clock = DriftTestClock()
+        let monitor = makeFloorMonitor(grid: grid, watcher: watcher, scheduler: scheduler, clock: clock)
+        monitor.start()
+
+        await change(watcher, scheduler)
+        XCTAssertEqual(grid.refreshCount, 1, "the first change runs once the window ends")
+        grid.finish(cells: [], trusted: true)
+        await settle()
+
+        clock.advance(by: 10)
+        await change(watcher, scheduler)
+        XCTAssertEqual(grid.refreshCount, 1, "a change inside the gap does not run at once")
+        XCTAssertEqual(scheduler.liveDelays.count, 1, "one run waits for the end of the gap")
+        XCTAssertEqual(scheduler.liveDelays.first ?? 0, 50, accuracy: 0.001)
+
+        clock.advance(by: 5)
+        await change(watcher, scheduler)
+        clock.advance(by: 5)
+        await change(watcher, scheduler)
+        XCTAssertEqual(grid.refreshCount, 1)
+        XCTAssertEqual(scheduler.liveDelays.count, 1, "later changes in the gap join the waiting run")
+
+        clock.advance(by: 40)
+        scheduler.fireFloor()
+        await settle()
+        XCTAssertEqual(grid.refreshCount, 2, "the waiting run starts when the gap ends")
+        XCTAssertTrue(scheduler.liveDelays.isEmpty)
+    }
+
+    /// A change once the gap has passed runs as soon as the window ends.
+    func test_a_watched_change_after_the_floor_runs_after_the_window() async throws {
+        let grid = FakeGrid()
+        let watcher = FakeWatcher()
+        let scheduler = ManualScheduler()
+        let clock = DriftTestClock()
+        let monitor = makeFloorMonitor(grid: grid, watcher: watcher, scheduler: scheduler, clock: clock)
+        monitor.start()
+
+        await change(watcher, scheduler)
+        grid.finish(cells: [], trusted: true)
+        await settle()
+
+        clock.advance(by: 61)
+        await change(watcher, scheduler)
+        XCTAssertEqual(grid.refreshCount, 2)
+        XCTAssertTrue(scheduler.liveDelays.isEmpty, "nothing waits once the gap has passed")
+    }
+
+    /// A change during a run no longer starts the next run the moment it lands:  it waits
+    /// for the gap,  which is what kept the engine running back to back.
+    func test_a_watched_change_during_a_run_waits_for_the_floor() async throws {
+        let grid = FakeGrid()
+        let watcher = FakeWatcher()
+        let scheduler = ManualScheduler()
+        let clock = DriftTestClock()
+        let monitor = makeFloorMonitor(grid: grid, watcher: watcher, scheduler: scheduler, clock: clock)
+        monitor.start()
+
+        // A run the owner started is in flight,  so the first change waits for it to land.
+        grid.isRunning = true
+        await change(watcher, scheduler)
+        XCTAssertEqual(grid.refreshCount, 0)
+        grid.isRunning = false
+        grid.finish(cells: [], trusted: true)
+        await settle()
+        XCTAssertEqual(grid.refreshCount, 1, "the change that waited runs when the run lands")
+
+        // The watched run is in flight,  and the file is written again.
+        grid.isRunning = true
+        clock.advance(by: 2)
+        await change(watcher, scheduler)
+        grid.isRunning = false
+        clock.advance(by: 3)
+        grid.finish(cells: [], trusted: true)
+        await settle()
+        XCTAssertEqual(grid.refreshCount, 1, "the run that lands does not start another at once")
+        XCTAssertEqual(scheduler.liveDelays.count, 1)
+
+        clock.advance(by: 55)
+        scheduler.fireFloor()
+        await settle()
+        XCTAssertEqual(grid.refreshCount, 2)
+    }
+
+    /// The safety net is not held by the floor.
+    func test_the_safety_net_is_not_held_by_the_floor() async throws {
+        let grid = FakeGrid()
+        let watcher = FakeWatcher()
+        let scheduler = ManualScheduler()
+        let ticker = ManualTicker()
+        let clock = DriftTestClock()
+        let monitor = makeFloorMonitor(
+            grid: grid, watcher: watcher, scheduler: scheduler, ticker: ticker, clock: clock
+        )
+        monitor.start()
+
+        await change(watcher, scheduler)
+        grid.finish(cells: [], trusted: true)
+        await settle()
+
+        clock.advance(by: 5)
+        ticker.fire()
+        await settle()
+        XCTAssertEqual(grid.refreshCount, 2, "the safety net runs inside the gap")
+    }
+
+    /// The watcher keeps its streams when a run leaves the watch list as it was,  and is
+    /// armed again when a path appears or moves.
+    func test_the_watcher_is_armed_again_only_when_the_list_changes() async throws {
+        let grid = FakeGrid()
+        let watcher = FakeWatcher()
+        let first = URL(fileURLWithPath: "/tmp/muster-floor/first.json")
+        let second = URL(fileURLWithPath: "/tmp/muster-floor/second.json")
+        var target = first
+        let monitor = DriftMonitor(
+            grid: grid,
+            notifier: DriftRecordingNotifier(),
+            history: DriftHistoryStore(url: historyURL),
+            watcher: watcher,
+            scheduler: ManualScheduler(),
+            ticker: ManualTicker(),
+            home: home,
+            buildWatchList: { _, _ in
+                let watch = DriftWatchList.Watch(
+                    root: target, target: target, targetIsDirectory: false, rootIsTheTarget: true
+                )
+                return DriftWatchList(watches: [watch], targetPaths: [target], seats: ["MM"])
+            }
+        )
+        monitor.start()
+        XCTAssertEqual(watcher.startCount, 1)
+
+        grid.finish(cells: [], trusted: true)
+        await settle()
+        grid.finish(cells: [], trusted: true)
+        await settle()
+        XCTAssertEqual(watcher.startCount, 1, "an unchanged list keeps its streams")
+
+        target = second
+        grid.finish(cells: [], trusted: true)
+        await settle()
+        XCTAssertEqual(watcher.startCount, 2, "a path that moved is armed again")
+        XCTAssertEqual(watcher.list?.watches.first?.root, second)
+    }
+
+    /// A list where a stream could not be made is not taken as armed,  so the next run
+    /// tries it again even though the list itself has not changed.
+    func test_a_watch_that_failed_to_arm_is_tried_again() async throws {
+        let grid = FakeGrid()
+        let watcher = FakeWatcher()
+        watcher.armable = 0
+        let target = URL(fileURLWithPath: "/tmp/muster-floor/first.json")
+        let monitor = DriftMonitor(
+            grid: grid,
+            notifier: DriftRecordingNotifier(),
+            history: DriftHistoryStore(url: historyURL),
+            watcher: watcher,
+            scheduler: ManualScheduler(),
+            ticker: ManualTicker(),
+            home: home,
+            buildWatchList: { _, _ in
+                let watch = DriftWatchList.Watch(
+                    root: target, target: target, targetIsDirectory: false, rootIsTheTarget: true
+                )
+                return DriftWatchList(watches: [watch], targetPaths: [target], seats: ["MM"])
+            }
+        )
+        monitor.start()
+        XCTAssertEqual(watcher.startCount, 1)
+
+        grid.finish(cells: [], trusted: true)
+        await settle()
+        XCTAssertEqual(watcher.startCount, 2, "a list that did not fully arm is tried again")
+
+        watcher.armable = nil
+        grid.finish(cells: [], trusted: true)
+        await settle()
+        XCTAssertEqual(watcher.startCount, 3)
+        grid.finish(cells: [], trusted: true)
+        await settle()
+        XCTAssertEqual(watcher.startCount, 3, "once every watch is armed the list is kept")
+    }
+
     /// The safety net is minutes,  not seconds.
     func test_the_safety_net_is_slow() {
         let ticker = ManualTicker()
@@ -897,12 +1115,17 @@ final class FakeWatcher: DriftWatching {
     private(set) var startCount: Int = 0
     /// The list the watcher was given.
     private(set) var list: DriftWatchList?
+    /// How many watches a start can arm,  or nil for all of them.  A test sets it to make
+    /// a stream fail to be created.
+    var armable: Int?
     private var onChange: ([URL]) -> Void = { _ in }
 
-    func start(_ list: DriftWatchList, onChange: @escaping ([URL]) -> Void) {
+    @discardableResult
+    func start(_ list: DriftWatchList, onChange: @escaping ([URL]) -> Void) -> Int {
         startCount += 1
         self.list = list
         self.onChange = onChange
+        return min(list.watches.count, armable ?? list.watches.count)
     }
 
     func stop() {}
@@ -922,7 +1145,7 @@ final class ManualScheduler: DriftScheduling {
     var liveCount: Int { pending.filter { !$0.isCancelled }.count }
 
     func schedule(after delay: TimeInterval, work: @escaping () -> Void) -> DriftScheduledWork {
-        let item = ManualScheduledWork(work: work)
+        let item = ManualScheduledWork(work: work, delay: delay)
         pending.append(item)
         return item
     }
@@ -932,6 +1155,28 @@ final class ManualScheduler: DriftScheduling {
         let work = pending
         pending.removeAll()
         for item in work where !item.isCancelled { item.work() }
+    }
+
+    /// The delays of the jobs that are waiting and have not been taken back.
+    var liveDelays: [TimeInterval] {
+        pending.filter { !$0.isCancelled }.map(\.delay)
+    }
+
+    /// Run only the waiting jobs whose delay passes the test,  and keep the rest waiting.
+    func fire(where shouldRun: (TimeInterval) -> Bool) {
+        let chosen = pending.filter { shouldRun($0.delay) }
+        pending.removeAll { shouldRun($0.delay) }
+        for item in chosen where !item.isCancelled { item.work() }
+    }
+
+    /// Run the debounce windows only,  and keep any longer wait waiting.
+    func fireDebounce() {
+        fire { $0 <= DriftDebouncer.interval }
+    }
+
+    /// Run the longer waits only,  which is the floor's run.
+    func fireFloor() {
+        fire { $0 > DriftDebouncer.interval }
     }
 
     /// Run everything that is waiting.
@@ -944,15 +1189,27 @@ final class ManualScheduler: DriftScheduling {
 final class ManualScheduledWork: DriftScheduledWork {
     /// The work itself.
     let work: () -> Void
+    /// How long the work was asked to wait.
+    let delay: TimeInterval
     /// Whether the work was taken back.
     private(set) var isCancelled = false
 
-    init(work: @escaping () -> Void) {
+    init(work: @escaping () -> Void, delay: TimeInterval = 0) {
         self.work = work
+        self.delay = delay
     }
 
     func cancel() {
         isCancelled = true
+    }
+}
+
+/// A clock the test moves by hand.
+final class DriftTestClock {
+    private(set) var now = Date(timeIntervalSince1970: 1_800_000_000)
+
+    func advance(by seconds: TimeInterval) {
+        now = now.addingTimeInterval(seconds)
     }
 }
 

@@ -12,7 +12,11 @@ protocol DriftWatching: AnyObject {
     ///
     /// The callback runs on the watcher's own queue,  not on the main one,  and it
     /// must not block:  the file system daemon is delivering events here.
-    func start(_ list: DriftWatchList, onChange: @escaping ([URL]) -> Void)
+    ///
+    /// - Returns:  How many of the list's watches were armed.  A watch whose stream could
+    ///   not be made is left out,  and the caller tries the whole list again later.
+    @discardableResult
+    func start(_ list: DriftWatchList, onChange: @escaping ([URL]) -> Void) -> Int
     /// Stop watching and release every stream.
     func stop()
 }
@@ -40,9 +44,10 @@ final class FSEventsDriftWatcher: DriftWatching {
         stop()
     }
 
-    func start(_ list: DriftWatchList, onChange: @escaping ([URL]) -> Void) {
+    @discardableResult
+    func start(_ list: DriftWatchList, onChange: @escaping ([URL]) -> Void) -> Int {
         stop()
-        guard !list.watches.isEmpty else { return }
+        guard !list.watches.isEmpty else { return 0 }
         let context = WatchContext()
         context.deliver = onChange
         self.context = context
@@ -51,6 +56,7 @@ final class FSEventsDriftWatcher: DriftWatching {
             context.set(watch, for: stream)
             streams.append(stream)
         }
+        return streams.count
     }
 
     func stop() {
