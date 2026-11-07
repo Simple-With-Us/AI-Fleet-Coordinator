@@ -131,3 +131,40 @@ class RunnerTests(unittest.TestCase):
         r.reconcile_commit = lambda: False
         self.assertEqual(r.recover(), "aborted")
         self.assertEqual(events, ["aborted", "resume", "proof", "finish"])
+
+    def test_verify_unit_exact_realistic_renderings_and_drift(self):
+        r = Runner.__new__(Runner)
+        r.doc = {"runner": "/opt/recovery/run.py", "unit": "git-relay-patch-1429.service"}
+        lines = {
+            "User": "root",
+            "Type": "oneshot",
+            "TimeoutStartUSec": "2min",
+            "TimeoutStopUSec": "1min 30s",
+            "KillMode": "control-group",
+            "ControlGroup": "/system.slice/git-relay-patch-1429.service",
+            "ExecStopPost": "{ path=/usr/bin/python3 ; argv[]=/usr/bin/python3 -I /opt/recovery/run.py recover ; ignore_errors=no ; }",
+        }
+
+        class Host:
+            def command(self, *args):
+                return "\n".join(k + "=" + v for k, v in lines.items())
+
+        r.host = Host()
+        with patch(
+            "git_relay.deploy_runner.executor_identity",
+            return_value={"cgroup": "0::/system.slice/git-relay-patch-1429.service\n"},
+        ):
+            r.verify_unit()
+            for key, value in [
+                ("TimeoutStartUSec", "infinity"),
+                ("TimeoutStopUSec", "2min"),
+                ("Type", "simple"),
+                ("KillMode", "process"),
+                ("ExecStopPost", ""),
+                ("ControlGroup", "/other"),
+            ]:
+                old = lines[key]
+                lines[key] = value
+                with self.subTest(key=key), self.assertRaises(TransactionError):
+                    r.verify_unit()
+                lines[key] = old

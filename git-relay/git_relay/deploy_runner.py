@@ -133,7 +133,6 @@ class Runner:
                 raise TransactionError("executor unit drift")
         if [observed.get(k) for k in ["TimeoutStartUSec", "TimeoutStopUSec"]] != [
             "2min",
-            "2min",
             "1min 30s",
         ]:
             raise TransactionError("executor deadline drift")

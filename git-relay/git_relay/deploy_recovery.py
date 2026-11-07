@@ -66,7 +66,7 @@ class Recovery:
         atomic(self.dropin, text.encode(), {"uid": 0, "gid": 0, "mode": 0o644})
         self.command("systemctl", "daemon-reload")
         # No separate timer is needed: root runner is itself launched under
-        # finite RuntimeMaxSec and ExecStopPost=...recover. Its unit is verified
+        # finite TimeoutStartSec and ExecStopPost=...recover. Its unit is verified
         # independently before this method may run.
         self.journal.guard_installed()
 
