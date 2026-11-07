@@ -303,44 +303,22 @@ struct MacServicesCollector {
     static let timeout: TimeInterval = 150
 
     func invocation(fileManager: FileManager = .default) throws -> OpsInvocation {
-        guard let resolvedPath = realpath(repoRoot.path, nil) else {
-            throw OpsControlError.helperNotFound(repoRoot.appendingPathComponent("scripts/fleet-mac-services.py").path)
-        }
-        let root = URL(fileURLWithPath: String(cString: resolvedPath), isDirectory: true)
-        free(resolvedPath)
-        let script = root.appendingPathComponent("scripts/fleet-mac-services.py")
-        // This route runs the owner's configured, trusted checkout, like the other
-        // app engines; it is not a sandbox for arbitrary Python supplied by callers.
-        // Protect the file and both checkout directories from other-user replacement.
-        let scripts = root.appendingPathComponent("scripts")
-        func trusted(_ url: URL, type: FileAttributeType, stickyParent: Bool = false) -> Bool {
-            guard let attributes = try? fileManager.attributesOfItem(atPath: url.path),
-                  attributes[.type] as? FileAttributeType == type,
-                  let owner = attributes[.ownerAccountID] as? NSNumber,
-                  owner.uint32Value == getuid() || owner.uint32Value == 0,
-                  let permissions = attributes[.posixPermissions] as? NSNumber else { return false }
-            return permissions.intValue & 0o022 == 0
-                || (stickyParent && permissions.intValue & 0o1000 != 0)
-        }
-        var parent = root.deletingLastPathComponent()
-        var trustedParents = true
-        while parent.path != "/" {
-            if !trusted(parent, type: .typeDirectory, stickyParent: true) { trustedParents = false; break }
-            parent.deleteLastPathComponent()
-        }
-        guard trusted(root, type: .typeDirectory), trusted(scripts, type: .typeDirectory),
-              trusted(script, type: .typeRegular), trustedParents else {
+        switch TrustedCheckout.lookup(repoRoot: repoRoot, script: "scripts/fleet-mac-services.py", fileManager: fileManager) {
+        case .missing(let path):
+            throw OpsControlError.helperNotFound(path)
+        case .unsafe(let path):
             throw OpsControlError.launchFailed(
-                "The Mac services collector is missing or unsafe at \(script.path).\(ServerStatusCopy.sentenceGap)Choose a repository containing scripts/fleet-mac-services.py in Settings."
+                "The Mac services collector is missing or unsafe at \(path).\(ServerStatusCopy.sentenceGap)Choose a repository containing scripts/fleet-mac-services.py in Settings."
+            )
+        case .found(let root, let script):
+            return OpsInvocation(
+                executable: OpsControlRoute.interpreter,
+                arguments: ["-I", script.path, "--dry-run", "--agents-dir", home.appendingPathComponent("Library/LaunchAgents").path],
+                workingDirectory: root.path,
+                environment: ["HOME": home.path, "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"],
+                timeout: Self.timeout
             )
         }
-        return OpsInvocation(
-            executable: OpsControlRoute.interpreter,
-            arguments: ["-I", script.path, "--dry-run", "--agents-dir", home.appendingPathComponent("Library/LaunchAgents").path],
-            workingDirectory: root.path,
-            environment: ["HOME": home.path, "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"],
-            timeout: Self.timeout
-        )
     }
 
     func collect(now: Date? = nil) async -> MacServicesReading {
