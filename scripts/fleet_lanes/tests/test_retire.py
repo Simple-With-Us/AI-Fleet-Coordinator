@@ -418,6 +418,10 @@ class AllowlistTests(unittest.TestCase):
             ["git", "merge-base", "--is-ancestor", "HEAD", "refs/remotes/origin/main"],
             ["git", "symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD"],
             ["git", "ls-remote", "--heads", "origin"],
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            ["git", "hash-object", "--", "docs/a b.md"],
+            ["git", "checkout", "--", "docs/a.md"],
+            ["git", "rev-parse", "--verify", "-q", "refs/remotes/origin/main:docs/a.md"],
             [
                 "gh",
                 "pr",
@@ -519,6 +523,17 @@ class AllowlistTests(unittest.TestCase):
             ["git", "config", "branch.x.merge", "y"],
             ["git", "merge-base", "--is-ancestor", "HEAD", "main"],
             ["git", "ls-remote", "origin"],
+            ["git", "hash-object", "-w", "--", "a.md"],
+            ["git", "hash-object", "--", "../a.md"],
+            ["git", "hash-object", "--", "/etc/passwd"],
+            ["git", "hash-object", "--", "-x"],
+            ["git", "checkout", "--", ".."],
+            ["git", "checkout", "--", "."],
+            ["git", "checkout", "main"],
+            ["git", "checkout", "-f", "--", "a.md"],
+            ["git", "rev-parse", "--verify", "-q", "refs/remotes/origin/main:../a"],
+            ["git", "rev-parse", "--verify", "-q", "refs/heads/main:a.md"],
+            ["git", "status", "--porcelain", "--untracked-files=all", "--ignored"],
             ["git", "fetch", "origin"],
             ["gh", "pr", "merge", "1"],
             ["gh", "pr", "list", "--repo", "a/b"],
@@ -1212,6 +1227,80 @@ class RetireTests(WorldCase):
         self.assertIn("Would remove", dry.err)
         self.assertEqual(self.w.run("retire", str(lane)).rc, 0)
         self.assertFalse(lane.exists())
+
+    # A lane whose edits went out through the GitHub API (gr_wf_files_put) keeps them as uncommitted files.
+    def publish(self, files: dict[str, str]) -> None:
+        tree = self.w.trees["DealDex"]
+        for name, text in files.items():
+            (tree / name).write_text(text, encoding="utf-8")
+            self.w.git(["add", name], tree)
+        self.w.git(["commit", "-q", "-m", "published"], tree)
+        self.w.git(["push", "-q", "origin", "HEAD:main"], tree)
+
+    def api_lane(self, slug: str, files: dict[str, str], same: dict[str, str]) -> Path:
+        """A lane with `files` written in it, while origin/main got `same` (the published copy)."""
+        lane = self.w.new_lane(slug)
+        for name, text in files.items():
+            (lane / name).write_text(text, encoding="utf-8")
+        self.publish(same)
+        return lane
+
+    def test_retire_accepts_a_tracked_edit_identical_to_origin_main(self) -> None:
+        edit = {"one.txt": "published\n"}
+        lane = self.api_lane("apitracked", edit, edit)
+        res = self.w.run("retire", "apitracked")
+        self.assertEqual(res.rc, 0, res.err)
+        self.assertFalse(lane.exists())
+        self.assertFalse(any("--force" in v or "-D" in v for v in res.verbs))
+
+    def test_retire_accepts_an_untracked_file_identical_to_origin_main(self) -> None:
+        new = {"docs/new.md": "published\n"}
+        lane = self.w.new_lane("apiuntracked")
+        (lane / "docs").mkdir()
+        (lane / "docs" / "new.md").write_text("published\n", encoding="utf-8")
+        (self.w.trees["DealDex"] / "docs").mkdir()
+        self.publish(new)
+        res = self.w.run("retire", "apiuntracked")
+        self.assertEqual(res.rc, 0, res.err)
+        self.assertFalse(lane.exists())
+
+    def test_one_differing_file_keeps_the_lane_and_restores_nothing(self) -> None:
+        lane = self.api_lane(
+            "apimixed",
+            {"one.txt": "published\n", "new.txt": "published\n", "two.txt": "mine\n"},
+            {"one.txt": "published\n", "new.txt": "published\n", "two.txt": "theirs\n"},
+        )
+        res = self.w.run("retire", "apimixed")
+        self.assertEqual(res.rc, 64)
+        self.assertIn("1 uncommitted or untracked file", res.err)
+        self.assertEqual((lane / "one.txt").read_text(encoding="utf-8"), "published\n")
+        self.assertEqual((lane / "new.txt").read_text(encoding="utf-8"), "published\n")
+        self.assertEqual((lane / "two.txt").read_text(encoding="utf-8"), "mine\n")
+        self.assertFalse(res.has("worktree", "remove"))
+
+    def test_a_deletion_or_staged_change_is_never_published(self) -> None:
+        lane = self.api_lane("apidelete", {}, {"one.txt": "published\n"})
+        (lane / "two.txt").unlink()
+        res = self.w.run("retire", "apidelete")
+        self.assertEqual(res.rc, 64)
+        self.assertIn("uncommitted or untracked", res.err)
+        self.assertFalse((lane / "two.txt").exists())
+        self.assertFalse(res.has("worktree", "remove"))
+        staged = self.api_lane("apistaged", {"one.txt": "again\n"}, {"one.txt": "again\n"})
+        self.w.git(["add", "one.txt"], staged)
+        res = self.w.run("retire", "apistaged")
+        self.assertEqual(res.rc, 64)
+        self.assertTrue(staged.exists())
+
+    def test_identical_files_do_not_count_when_head_is_not_merged(self) -> None:
+        lane = self.w.new_lane("apiunmerged")
+        self.w.commit(lane)  # a local commit that is on no remote ref
+        (lane / "one.txt").write_text("published\n", encoding="utf-8")
+        self.publish({"one.txt": "published\n"})
+        res = self.w.run("retire", "apiunmerged")
+        self.assertEqual(res.rc, 64)
+        self.assertTrue(lane.exists())
+        self.assertEqual((lane / "one.txt").read_text(encoding="utf-8"), "published\n")
 
     def test_retire_refuses_what_is_not_removable(self) -> None:
         lane = self.w.new_lane("busywork")
