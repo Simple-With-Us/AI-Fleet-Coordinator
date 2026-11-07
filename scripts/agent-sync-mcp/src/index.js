@@ -42,6 +42,7 @@ import {
   SEAT_LABELS,
   WAKE_SECRETS,
   KNOWN_SEATS,
+  GRANT_MAX_AGE_MS,
 } from "./config.js";
 import {
   hostAllowed,
@@ -91,7 +92,7 @@ import { resolveSecret, resolveWakeKeys, infisicalStats, infisicalMode, prefetch
 import { verifySpike, spikePathSeat, spikeKey, deliverSpike, spikeReply, SPIKE_SIGNATURE_HEADER, SPIKE_MAX_BODY, SPIKE_RATE_LIMIT, SPIKE_RATE_WINDOW_MS } from "./spike.js";
 import { serveLinearWake, LINEAR_WAKE_PATH } from "./linear-wake.js";
 import { AuditBatcher, AUDIT_FLUSH_MS } from "./audit-batch.js";
-import { IdentityCache } from "./identity-cache.js";
+import { IdentityCache, bearerCacheMs } from "./identity-cache.js";
 import { answerLifecycle } from "./mcp-lifecycle.js";
 import { BudgetExceeded, guardOff, guardOffResponse } from "./budget-guard.mjs";
 import { countedFetch, diagnosticRowAllowed, logLimited, runInvocation, spend, withinLimit } from "./invocation.js";
@@ -115,7 +116,8 @@ function configFor(env) {
 
 // The isolate's per-call audit buffer (R2, DO burn reduction):  one
 // AuditBatcher per isolate, shared by every HostedTools this Worker
-// builds, so tool-call audit rows flush to each seat's gate in batches
+// builds, so tool-call audit rows (writes and failed calls;  a successful
+// read writes none, owner ruling 2026-11-06) flush to each seat's gate in batches
 // instead of one Durable Object RPC per call.  The trade is stated in
 // src/audit-batch.js:  rows land seconds late, and an isolate evicted
 // mid-buffer loses its unflushed tail - audit only, never a control.
@@ -134,8 +136,10 @@ function auditSinkFor(ctx) {
 const IDENTITY_CACHE = new IdentityCache();
 
 // The OAuth Git callback's live-grant window (AFC-617, stated in
-// src/identity-cache.js).  The bearer verify window is config.grVerifyCacheMs.
-const GRANT_EXISTS_CACHE_MS = 5 * 60_000;
+// src/identity-cache.js):  an hour, capped by GATE_IDENTITY_CACHE_MS and by
+// the grant's own expiry (owner ruling 2026-11-06).  The bearer verify window
+// is config.grVerifyCacheMs.
+const GRANT_EXISTS_CACHE_MS = 60 * 60_000;
 
 // Request guards (AFC-617).  Both limits are per Cloudflare location and
 // eventually consistent, so they stop a runaway rather than meter exactly.
@@ -351,6 +355,8 @@ async function serveMcp(request, env, ctx) {
   if (identityEntry) {
     result = { code: "ok" };
   } else {
+    // A refusal this isolate records after the check starts beats the check.
+    const since = IDENTITY_CACHE.now();
     result = await seatGate.check({ epoch: props.epoch, approvedAt: props.approved_at, phase: props.phase });
     if (result.code === "ok") {
       // Only a fully positive verification is cached;  a paused seat
@@ -358,8 +364,13 @@ async function serveMcp(request, env, ctx) {
       // seat is never cached:  its calls are refused downstream
       // regardless, so the cache would buy nothing there and would only
       // rent out that seat's instant revocation.
-      if (!config.eventsOnlySeats.includes(seat)) {
-        IDENTITY_CACHE.set(identityKey, { seat, via: "oauth", epoch: props.epoch, approvedAt: props.approved_at, phase: props.phase }, config.gateIdentityCacheMs);
+      // The window never runs past the grant's own 90-day age limit, and
+      // one clock reading both caps the window and starts it.
+      const now = Date.now();
+      const grantLeftMs = Number(props.approved_at) + GRANT_MAX_AGE_MS - now;
+      const ttlMs = Number.isFinite(grantLeftMs) ? Math.min(config.gateIdentityCacheMs, grantLeftMs) : 0;
+      if (!config.eventsOnlySeats.includes(seat) && ttlMs > 0) {
+        IDENTITY_CACHE.set(identityKey, { seat, via: "oauth", epoch: props.epoch, approvedAt: props.approved_at, phase: props.phase }, ttlMs, now, { since });
       }
     } else {
       // A gate refusal for this credential evicts whatever this isolate
@@ -547,6 +558,8 @@ async function serveGbBearerMcp(request, env, token, ctx) {
   const bearerHash = await sha256Hex(parsed.token);
   const identityEntry = IDENTITY_CACHE.get(bearerHash);
   let checked;
+  // A refusal this isolate records after the live check starts beats it.
+  const since = IDENTITY_CACHE.now();
   if (identityEntry) {
     checked = { ok: true, mcp_accept: true, paused: false };
   } else {
@@ -577,7 +590,8 @@ async function serveGbBearerMcp(request, env, token, ctx) {
   // The gate's verification is fully positive at this point (the bundle
   // resolution below is isolate config, re-run on every request either
   // way):  remember it for this isolate's window (R4).
-  if (!identityEntry) IDENTITY_CACHE.set(bearerHash, { seat: identity, via: "gb-bearer", mcp_accept: true }, config.gateIdentityCacheMs);
+  // One clock reading caps the window at the bearer's expiry and starts it.
+  if (!identityEntry) { const now = Date.now(); IDENTITY_CACHE.set(bearerHash, { seat: identity, via: "gb-bearer", mcp_accept: true }, bearerCacheMs(config, checked, now), now, { since }); }
   const lifecycle = await answerLifecycle(request, { seat: identity, config });
   if (lifecycle.response) return lifecycle.response;
   request = lifecycle.request;
@@ -657,6 +671,8 @@ async function serveSbtBearerMcp(request, env, token, ctx) {
   const bearerHash = await sha256Hex(parsed.token);
   const identityEntry = IDENTITY_CACHE.get(bearerHash);
   let checked;
+  // A refusal this isolate records after the live check starts beats it.
+  const since = IDENTITY_CACHE.now();
   if (identityEntry) {
     checked = { ok: true, mcp_accept: true, paused: false };
   } else {
@@ -684,7 +700,8 @@ async function serveSbtBearerMcp(request, env, token, ctx) {
   // for this isolate's window (R4) - unless the seat is events-only, whose
   // calls are refused downstream regardless and are never cached (serveMcp
   // states the reasoning in full).
-  if (!identityEntry && !config.eventsOnlySeats.includes(seat)) IDENTITY_CACHE.set(bearerHash, { seat, via: "sbt-bearer", mcp_accept: true }, config.gateIdentityCacheMs);
+  // One clock reading caps the window at the bearer's expiry and starts it.
+  if (!identityEntry && !config.eventsOnlySeats.includes(seat)) { const now = Date.now(); IDENTITY_CACHE.set(bearerHash, { seat, via: "sbt-bearer", mcp_accept: true }, bearerCacheMs(config, checked, now), now, { since }); }
   // This route passes no events, so lifecycle frames need no secret on any seat.
   const lifecycle = await answerLifecycle(request, { seat, config });
   if (lifecycle.response) return lifecycle.response;
@@ -958,9 +975,10 @@ async function serveApp(request, env, _ctx) {
     // live rows - the library lists expired KV rows until their TTL sweeps
     // them (grantSummaryIsLive, src/gr-assert-verify.js).
     // A positive answer holds for GRANT_EXISTS_CACHE_MS in this isolate (AFC-617:
-    // one KV list per OAuth Git call was 921 of the Free 1,000 a day).  A deleted
-    // grant can lag that long;  the epoch and pause check in claimGrAssert stays
-    // live on every call, and an admin action on the seat evicts this entry.
+    // one KV list per OAuth Git call was 921 of the Free 1,000 a day), never past
+    // the grant's own expiry.  A deleted grant can lag that long;  the epoch and
+    // pause check in claimGrAssert stays live on every call, and an admin action
+    // on the seat evicts this entry.
     grantExists: (seat, grantRef) => cachedGrantExists(IDENTITY_CACHE, {
       seat,
       grantRef,
@@ -968,7 +986,7 @@ async function serveApp(request, env, _ctx) {
       lookup: async () => {
         spend("kvList");
         for (const g of await listAllGrants(env.OAUTH_PROVIDER, seat)) {
-          if (grantSummaryIsLive(g) && (await sha256Ref(g.id) === grantRef)) return true;
+          if (grantSummaryIsLive(g) && (await sha256Ref(g.id) === grantRef)) return { expiresAt: g.expiresAt };
         }
         return false;
       },
