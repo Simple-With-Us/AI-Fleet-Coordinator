@@ -96,3 +96,15 @@ An accepted systemctl stop can escalate to SIGKILL after that timeout. This is
 not a non-force guarantee. No active handler may be intentionally stopped:
 initial stop still requires the complete frozen, single-task, no-child and
 zero-pending proof. The host settings were observed, not changed by this fix.
+
+
+### Disposable actual-systemd stop qualification, November 6
+
+Two isolated ephemeral root Type=simple units used the same explicit kill and
+90-second stop settings, no credentials, network or production targets. A frozen
+process with proven default, unblocked, pending TERM exited in 18ms without
+executing userspace after CONT. A deliberately TERM-blocked disposable process
+resumed userspace and was removed at the 90.049-second stop timeout. Both units
+were collected and their disposable root was removed. This proves the safety
+predicate matters and that manager escalation is real. It is not a guarantee
+against forced termination in production, nor approval to accept that risk.
