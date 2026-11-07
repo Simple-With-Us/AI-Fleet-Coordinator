@@ -131,30 +131,56 @@ mandatory for fidelity: the restored pause state must be the one the owner set.
 
 ## First adoption (EXPLORATORY - NOT QUALIFIED, do not use)
 
-The qualified procedure cannot install itself: the runtime being replaced has no
-`--defer` marker, no drain status surface, and no hook gate, and no supported fence
-on the OLD runtime covers every admission path:
+PRECISE BLOCKER: native long-poll ingress has no supported fence short of stopping
+the process, and no observation is atomic with the stop, so a provably lossless
+first adoption does not exist on the old runtime. Every zero-loss alternative needs
+authority or mutations worse than the restart: stopping hosted Zulip (not
+available), rotating 26 bot credentials to force reconnect loops (a larger
+production mutation than the restart, itself moratorium-covered), or hotpatching
+the defer machinery into the running process (untestable). Accepting a one-time
+bounded residual is an OWNER-LEVEL decision that has NOT been made, and this
+document does not treat it as accepted.
 
-- the outgoing webhook CAN be fenced (config disable + SIGHUP; deliveries fail and
-  Zulip retries),
-- the Linear hook CAN be fenced (config disable + SIGHUP; the port refuses, Linear
-  keeps custody and retries),
-- but NATIVE event-queue capture (the seats' long-poll) has no supported fence short
-  of stopping the process, and the old runtime has no defer marker: a wake admitted
-  between the last observable check and SIGTERM finalizes into a recorded paused
-  drop, and a hook event acknowledged 200 and held in memory is lost on stop. Both
-  are bounded and recorded, but they are still loss, and an observed quiet window
-  does not prove the gap is empty - the check and the stop are never atomic.
+Fence claims, stated exactly:
 
-A stop that is provably lossless therefore requires this change already running; the
-bootstrap has no supported lossless route known today. What accepting the one-time
-bounded old-runtime residual would lose is named above; accepting it is an
-owner-level decision that has NOT been made, and this document does not treat it as
-accepted. Any candidate first-adoption mechanism (external queue fencing,
-non-restarting bootstrap of the defer machinery) is an untested hypothesis and needs
-source-tested validation and independent review before it is called a path.
+- The outgoing webhook CAN be fenced (config disable + SIGHUP) - not because Zulip
+  retries (its retry behavior is limited), but because webhook-triggering messages
+  also arrive on the native event queue, which is cursor-tracked and replays
+  post-boot under this change's F4/dedupe fences. Disabling the webhook does NOT
+  reduce native-path admissions during the window.
+- The Linear hook toggle does NOT give a clean fence: config-disable leaves the
+  listener API serving an error status (404-class) at /linear/v1/, and Linear's
+  retry/auto-disable behavior for that status is unverified - a disabled-in-Linear
+  webhook would be worse than the residual it tries to avoid. Until verified, the
+  honest option is to LEAVE THE HOOK ENABLED and name the bounded loss below. (The
+  new runtime's 503 gate is the right fence precisely because 503 has unambiguous
+  retry semantics.)
 
-## Named residuals (explicit, accepted)## Named residuals (explicit, accepted)
+Loss classes in the one-time stop (all bounded to the planned window):
+
+- a wake admitted between the last observable check and SIGTERM finalizes into a
+  RECORDED paused drop (pre-existing semantics);
+- a Linear event acknowledged 200 and held in memory is lost on stop; reconcile is
+  read-idempotent and self-heals on the next project event;
+- the SILENT class: a native-path broadcast (an owner or fleet-bot channel-wide
+  mention landing inside the gap) starts fanout/inbox/audit effects with no gate
+  and no durable record on the old runtime, and a stop mid-effect is a silent
+  partial broadcast (missing nudges for un-enqueued chats, lost inbox copies, lost
+  in-memory wake hand-off). Controllable on the owner side by not sending a
+  channel-wide mention during the window; a fleet-bot @all is the remaining tail.
+
+Candidate minimal-loss route (for the owner's decision - NOT qualified, not a
+drain): quiet window; capture listener.toml + pause.json bytes; disable the
+outgoing webhook via config + SIGHUP (native redundancy above); leave the Linear
+hook enabled; ordinary pause (new wake admissions become RECORDED drops, the
+pre-existing semantics); wait for per-seat jobs 0 / running null plus log
+quiescence (the only gauges the old status has); SIGTERM; recreate on the CI-green
+head; restore exact prior bytes (lifting the adoption pause, preserving any
+pre-existing user pause); boot; verify seats connected, cursors advancing, drain
+block present with armed false. After this stop, every later stop uses the
+qualified procedure above.
+
+## Named residuals (explicit, accepted)## Named residuals (explicit, accepted)## Named residuals (explicit, accepted)
 
 - An event acknowledged 200 by the Linear hook and held only in memory is lost on an
   UNPLANNED stop; reconcile is read-idempotent and self-heals on the next project
