@@ -34,7 +34,7 @@ synthetic test constants. No actual credential or unrelated private content was
 found. This conclusion comes from test setup, assertions, temporary-file use,
 negative-path behavior and source comparison, not placeholder names alone.
 
-The full candidate has 18 generic matches: 10 assigned secret and 8 assigned
+The full candidate has 18 generic matches: 9 assigned secret and 9 assigned
 credential. Nine whole match lines occur byte-for-byte in main; nine are new.
 Neither the full candidate nor main has a dedicated or Zulip-shaped match.
 
