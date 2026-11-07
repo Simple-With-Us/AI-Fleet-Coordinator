@@ -25,6 +25,10 @@ struct ResourceLimitsView: View {
     private let readReport: ReportReader
     private let onReviewChange: ReviewChange
     @ObservedObject private var controller = OpsController.shared
+    @Environment(\.scenePhase) private var scenePhase
+    /// Whether the timer reads,  which it does only while the app is in front,  and whether a
+    /// read is owed for when it comes back (ForegroundPolling).
+    @State private var polling = ForegroundPolling()
     @State private var reading = ResourcePolicyReading.loading
     @State private var drafts = ResourceDrafts()
     /// The custom CPU weight as typed,  while the owner is typing one.
@@ -62,8 +66,17 @@ struct ResourceLimitsView: View {
             .padding(.vertical, 20)
             .frame(maxWidth: .infinity, alignment: .center)
         }
+        .onAppear {
+            _ = polling.phaseChanged(active: scenePhase == .active)
+        }
         .task { await keepReading() }
         .onChange(of: controller.completedRuns) { _, _ in
+            Task { await refresh() }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            // Each read is an ssh to the server,  so the timer does not read while the app is
+            // in the background.  Coming back reads once,  when a tick was skipped meanwhile.
+            guard polling.phaseChanged(active: phase == .active) else { return }
             Task { await refresh() }
         }
         .toolbar {
@@ -136,7 +149,7 @@ struct ResourceLimitsView: View {
         if let reason = reading.reason(at: now) { return reason }
         guard let checkedAt = reading.directReceiptAt else { return nil }
         let age = max(0, Int(now.timeIntervalSince(checkedAt)))
-        return "Checked at \(FleetTime.clock(checkedAt)), \(age) seconds ago.\u{00A0} The page reads the server again every \(Self.autoRefreshSeconds) seconds while it is open."
+        return "Checked at \(FleetTime.clock(checkedAt)), \(age) seconds ago.\u{00A0} The page reads the server again every \(Self.autoRefreshSeconds) seconds while it is open and Muster is in front."
     }
 
     /// No values at all.  The reason above already says why,  with its own next step,  so
@@ -605,15 +618,17 @@ struct ResourceLimitsView: View {
 
     // MARK: - Reading
 
-    /// Reads now,  then again every 30 seconds while the page is open.  `.task` ends the loop
-    /// when the page closes,  and no read starts while an action is running.
+    /// Reads now,  then again every 30 seconds while the page is open and the app is in front.
+    /// `.task` ends the loop when the page closes,  no read starts while an action is running,
+    /// and a tick while the app is in the background reads nothing and is made up once when it
+    /// comes back (the `scenePhase` change above).
     @MainActor
     private func keepReading() async {
         await refresh()
         while !Task.isCancelled {
             try? await Task.sleep(nanoseconds: Self.autoRefreshSeconds * 1_000_000_000)
             if Task.isCancelled { return }
-            if controller.isBusy { continue }
+            guard polling.tick(busy: controller.isBusy) else { continue }
             await refresh()
         }
     }
@@ -631,6 +646,7 @@ struct ResourceLimitsView: View {
         }
         reading = next
         loading = false
+        polling.didRead()
         if let snapshot = next.snapshot {
             drafts.follow(snapshot)
         }
