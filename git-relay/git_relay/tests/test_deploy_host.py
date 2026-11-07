@@ -148,3 +148,147 @@ class LinuxHostTests(unittest.TestCase):
             self.assertFalse(self.h.runtime({"code/x": "new"}, {"pid": 42}))
             self.assertLess(ticks[0], 8.2)
             proof.assert_not_called()
+
+    def test_initial_exec_transition_waits_without_accepting_identity_drift(self):
+        import io
+        from unittest.mock import MagicMock
+
+        from git_relay.deploy_host import StartingProcess
+
+        identity = {
+            "pid": 43,
+            "start_ticks": "1",
+            "boot": "boot",
+            "cgroup": "exact",
+            "exe": "/usr/bin/python3.14",
+        }
+        pending = dict(identity, exe="/usr/lib/systemd/systemd")
+        ticks = [0.0]
+        self.h.clock = lambda: ticks[0]
+        self.h.sleep = lambda n: ticks.__setitem__(0, ticks[0] + n)
+        response = MagicMock()
+        response.__enter__.return_value.status = 200
+        response.__enter__.return_value.read = io.BytesIO(b'{"ok":true}').read
+        self.h.proof = MagicMock(return_value=True)
+        with (
+            patch.object(
+                self.h,
+                "process_identity",
+                side_effect=[StartingProcess(pending), identity, identity],
+            ),
+            patch.object(self.h, "hashes", return_value={}),
+            patch("git_relay.deploy_host.urlopen", return_value=response) as health,
+        ):
+            self.assertTrue(self.h.runtime({}, {"pid": 42}))
+            health.assert_called_once()
+            self.h.proof.assert_called_once()
+        for field in ["pid", "start_ticks", "boot", "cgroup"]:
+            self.h.proof.reset_mock()
+            changed = dict(identity, **{field: "drift"})
+            with (
+                patch.object(
+                    self.h, "process_identity", side_effect=[StartingProcess(pending), changed]
+                ),
+                patch.object(self.h, "hashes", return_value={}),
+                patch("git_relay.deploy_host.urlopen") as health,
+            ):
+                self.assertFalse(self.h.runtime({}, None))
+                health.assert_not_called()
+                self.h.proof.assert_not_called()
+
+    def test_persistent_unqualified_exec_and_wrong_cgroup_fail_closed(self):
+        from unittest.mock import MagicMock
+
+        from git_relay.deploy_host import StartingProcess
+
+        ticks = [0.0]
+        self.h.clock = lambda: ticks[0]
+        self.h.sleep = lambda n: ticks.__setitem__(0, ticks[0] + n)
+        self.h.proof = MagicMock(return_value=True)
+        with (
+            patch.object(
+                self.h, "process_identity", side_effect=StartingProcess({"pid": 43, "exe": "other"})
+            ),
+            patch.object(self.h, "hashes", return_value={}),
+            patch("git_relay.deploy_host.urlopen") as health,
+        ):
+            self.assertFalse(self.h.runtime({}, None))
+            self.assertLess(ticks[0], 8.2)
+            health.assert_not_called()
+            self.h.proof.assert_not_called()
+        (self.proc / "42/cgroup").write_text("0::/system.slice/not-git-relay.service\n")
+        with self.assertRaises(TransactionError) as error:
+            self.h.process_identity()
+        self.assertNotIsInstance(error.exception, StartingProcess)
+
+    def test_qualified_identity_or_hash_drift_after_proof_refused(self):
+        import io
+        from unittest.mock import MagicMock
+
+        identity = {
+            "pid": 43,
+            "start_ticks": "1",
+            "boot": "boot",
+            "cgroup": "exact",
+            "exe": "/usr/bin/python3.14",
+        }
+        for field in ["pid", "start_ticks", "boot", "cgroup", "exe"]:
+            response = MagicMock()
+            response.__enter__.return_value.status = 200
+            response.__enter__.return_value.read = io.BytesIO(b'{"ok":true}').read
+            self.h.proof = MagicMock(return_value=True)
+            with (
+                patch.object(
+                    self.h,
+                    "process_identity",
+                    side_effect=[identity, dict(identity, **{field: "drift"})],
+                ),
+                patch.object(self.h, "hashes", return_value={}),
+                patch("git_relay.deploy_host.urlopen", return_value=response),
+            ):
+                self.assertFalse(self.h.runtime({}, None))
+                self.h.proof.assert_called_once()
+        self.h.proof.reset_mock()
+        with (
+            patch.object(self.h, "process_identity", return_value=identity),
+            patch.object(self.h, "hashes", return_value={"code/x": "drift"}),
+            patch("git_relay.deploy_host.urlopen") as health,
+        ):
+            self.assertFalse(self.h.runtime({"code/x": "expected"}, None))
+            health.assert_not_called()
+            self.h.proof.assert_not_called()
+
+    def test_executable_qualification_requires_complete_interpreter_path(self):
+        from git_relay.deploy_host import StartingProcess
+
+        for exe in ["/usr/bin/python3", "/usr/bin/python3.14", "/usr/bin/python3.9"]:
+            with patch("pathlib.Path.resolve", return_value=Path(exe)):
+                self.assertEqual(self.h.process_identity()["exe"], exe)
+        for exe in [
+            "/usr/bin/python3evil",
+            "/usr/bin/python3.14evil",
+            "/usr/bin/python3.14/other",
+            "/usr/bin/python3.",
+        ]:
+            with (
+                patch("pathlib.Path.resolve", return_value=Path(exe)),
+                self.assertRaises(StartingProcess),
+            ):
+                self.h.process_identity()
+
+    def test_malformed_proc_start_identity_fails_runtime_closed(self):
+        from unittest.mock import MagicMock
+
+        self.h.hashes = lambda _: {}
+        self.h.proof = MagicMock(return_value=True)
+        for text in [
+            "42 (python)",
+            "malformed",
+            "42 (python) S 0",
+            "42 (python) " + " ".join(["S"] + ["0"] * 18 + ["invalid"]),
+        ]:
+            (self.proc / "42/stat").write_text(text)
+            with self.assertRaises(TransactionError):
+                self.h.process_identity()
+            self.assertFalse(self.h.runtime({}, None))
+            self.h.proof.assert_not_called()
