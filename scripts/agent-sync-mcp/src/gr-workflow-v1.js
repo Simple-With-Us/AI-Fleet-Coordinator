@@ -206,6 +206,7 @@ const SPECS = {
   wf_run_cancel: ['Cancel a workflow run.', obj(['repo', 'run_id'], { repo: REPO, run_id: INT })],
   wf_run_approve: ['Approve a pending workflow run.', obj(['repo', 'run_id'], { repo: REPO, run_id: INT })],
   wf_file_put: ['Write one file to a branch.', obj(['repo', 'path', 'branch', 'message', 'content_b64'], { repo: REPO, path: PATH, branch: REF, message: STR, content_b64: FILE_CONTENT, prior_sha: SHA })],
+  wf_file_patch: ['Patch one existing nondefault-branch file using server-verified same-path base provenance. UTF-8 byte offsets, sorted nonoverlapping edits; residual unchanged generic assignments permitted, dedicated/loaded credentials always refused. No raw output bypass.', obj(['repo','branch','path','message','expected_head_sha','base_blob_sha','edits'], {repo:REPO,branch:REF,path:PATH,message:STR,expected_head_sha:SHA,base_blob_sha:SHA,edits:{type:'array',minItems:1,maxItems:32,items:obj(['start','end','text'],{start:{type:'integer',minimum:0,maximum:2097152},end:{type:'integer',minimum:0,maximum:2097152},text:{type:'string',maxLength:32768}})}})],
   wf_files_put: ['Write up to 20 files in one commit, fenced on the branch head.', obj(['repo', 'branch', 'message', 'expected_head_sha', 'files'], {
     repo: REPO, branch: REF, message: STR, expected_head_sha: SHA,
     files: { type: 'array', minItems: 1, maxItems: 20, items: obj(['path'], { path: PATH, content_b64: FILE_CONTENT, delete: { type: 'boolean' } }) } })],
@@ -406,7 +407,7 @@ const RESPONSE_KEYS = {
   wf_run_jobs: ['jobs','complete'], wf_checks: ['checks','complete'],
   wf_update_branch: ['accepted','message'], wf_run_rerun: ['requested','run_id'],
   wf_run_cancel: ['requested','run_id'], wf_run_approve: ['requested','run_id'],
-  wf_file_put: ['path','branch','commit'], wf_files_put: ['branch','commit','files'],
+  wf_file_patch: ['path','branch','commit'], wf_file_put: ['path','branch','commit'], wf_files_put: ['branch','commit','files'],
   wf_merge_guarded: ['merged','sha'],
   wf_pr_create: ['pull'], wf_pr_edit: ['pull'], wf_pr_close: ['pull'],
 };
@@ -517,6 +518,7 @@ const contextCommentsPage=z.object({sha:shaValue,comments:z.array(contextComment
 const contextCommentGet=z.object({comment:contextComment}).strict();
 const requestedReviewers=z.object({number:z.number().int().positive(),head_sha:shaValue,users:z.array(contextAuthor).max(100),teams:z.array(z.object({id:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),slug:z.string().regex(/^[A-Za-z0-9_-]{1,100}$/).refine(v=>!metadataCredential.test(v))}).strict()).max(100),snapshot:z.literal(false)}).strict();
 export function validWfV1Response(action, body, args) {
+ if(action==='wf_file_patch')return z.object({branch:z.string().min(1),path:z.string().min(1),commit:shaValue}).strict().safeParse(body).success && (!args || body.branch===args.branch && body.path===args.path);
  if(typeof action!=='string')return false;
  if(!boundedWorkflowInput(body,{maxDepth:12,maxNodes:50000,maxBytes:1048576,maxString:1048576,maxKeys:1000}))return false;
  if(action.startsWith('wf_repo_variable')){
@@ -684,7 +686,7 @@ export function validWfV1Response(action, body, args) {
  const keysBeforeParse=RESPONSE_KEYS[action];
  if(!keysBeforeParse)return false;
  const shape=Object.fromEntries(keysBeforeParse.map(k=>[k,jsonValue]));
- if(action==='wf_file_put'||action==='wf_files_put'){shape.branch=z.string().min(1);shape.commit=shaValue;if(action==='wf_file_put')shape.path=z.string().min(1);else shape.files=z.number().int().min(1).max(20);}
+ if(action==='wf_file_patch'||action==='wf_file_put'||action==='wf_files_put'){shape.branch=z.string().min(1);shape.commit=shaValue;if(action==='wf_file_patch'||action==='wf_file_put')shape.path=z.string().min(1);else shape.files=z.number().int().min(1).max(20);}
  const parsed=z.object(shape).strict().safeParse(body);
  if(!parsed.success)return false;
  body=parsed.data;
@@ -730,7 +732,7 @@ export function validWfV1Response(action, body, args) {
   if (action.startsWith('wf_assignees_') && (!Number.isInteger(body.result?.number) || !Array.isArray(body.result?.assignees) || !body.result.assignees.every(x => typeof x?.login === 'string'))) return false;
   if (action === 'wf_label_create' && (typeof body.result?.name !== 'string' || !/^[0-9a-fA-F]{6}$/.test(body.result?.color))) return false;
   for (const k of ['pull','commit','comparison','branch','repository','workflows','run','artifacts']) {
-    if ((action === 'wf_file_put' || action === 'wf_files_put' || action === 'wf_file_delete') && (k === 'branch' || k === 'commit')) { if (typeof body[k] !== 'string' || body[k].length === 0) return false; continue; }
+    if ((action === 'wf_file_patch' || action === 'wf_file_put' || action === 'wf_files_put' || action === 'wf_file_delete') && (k === 'branch' || k === 'commit')) { if (typeof body[k] !== 'string' || body[k].length === 0) return false; continue; }
     if (k in body && (!body[k] || typeof body[k] !== 'object' || Array.isArray(body[k]))) return false;
   }
   if ('completed' in body && body.completed !== true) return false;

@@ -309,3 +309,31 @@ cd git-relay && python3 -m unittest discover -s git_relay/tests -t . -v
 ```
 
 Fakes only: no network, no real token.
+
+### Guarded same-path file patches
+
+`wf_file_patch` is a separate operation, not an exemption for whole-file writes.
+It accepts up to 32 sorted, disjoint UTF-8 byte-offset edits against a server-fetched
+file bound to repository, path, branch head and verified Git blob SHA-1. Every caller
+string, including inserted text, remains normally scanned. The full reconstructed
+file is scanned too: dedicated token patterns, provider tokens and loaded bearer
+values are refused even when present in the base. Only generic assigned-secret and
+assigned-credential matches can retain baseline provenance. Their entire containing
+line must map to a contiguous, identical original interval. Inserted/copied/replaced
+bytes never inherit provenance, even if identical text occurs elsewhere.
+
+Residual risk is explicit: a pre-existing generic assignment may be a real secret
+and remains in that same source file. This operation does not certify such content
+as secret-free. It cannot relocate the content or admit a newly assembled match.
+Security fixtures with dedicated token patterns still require reviewed attestations.
+
+The target must be a non-executable regular file (100644) on a nondefault branch,
+not a workflow path. GitHub GraphQL `createCommitOnBranch` atomically checks
+`expectedHeadOid`, creates the commit and advances the branch under the same own-App
+contents:write credential. FileAddition carries the full server-reconstructed base64
+content. Its API cannot preserve other file modes, so those are refused, not changed.
+The receipt must bind the sole parent, branch, new head and exact published blob.
+Unverifiable post-write receipts/GraphQL partial errors are UNKNOWN and must not be
+blindly retried. Registration, least-privilege seat policy and rollout are separate
+from source merge. Mutation docs: https://docs.github.com/en/graphql/reference/commits
+and file input docs: https://docs.github.com/en/graphql/reference/git .

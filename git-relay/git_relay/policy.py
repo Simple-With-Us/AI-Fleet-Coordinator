@@ -271,6 +271,7 @@ class SeatPolicy:
         "wf_run_approve",
         "wf_file_put",
         "wf_files_put",
+        "wf_file_patch",
         "wf_merge_guarded",
     )
     ALL_ACTIONS = VALID_ACTIONS + APP_ACTIONS + REGISTERED_ACTIONS + WORKFLOW_ACTIONS
