@@ -113,15 +113,15 @@ function seatSummary(seat, calls, diagnostics, generatedAt, diagnosticsUnavailab
   const currentError = hasRecent && ((failure(last) && !staleReadFailure(last)) || diagnosticAfterSuccess);
   const earlierReadFailure = hasRecent && !currentError && failure(last);
   const recentSuccess = configured && hasRecent && !currentError && !earlierReadFailure && !diagnosticsUnavailable;
-  const readiness = seat.grantsDeferred && !diagnosticsUnavailable && !fieldUnavailable("state") && !fieldUnavailable("role") ? (seat.paused ? "Paused; grant not checked" : !seat.keyInstalled ? "Needs setup: Zulip key; grant not checked" : seat.role && !seat.role.ok ? "Role refused; grant not checked" : currentError ? "Recent failure; grant not checked" : "Grant not checked") : readsUnknown ? "Diagnostics unavailable" : seat.paused ? "Paused" : !configured ? `Needs setup: ${missing.join(", ")}` : currentError ? "Recent failure" : earlierReadFailure ? "Last recorded call was a failed read; successful reads are not recorded" : recentSuccess ? "Recent success" : roleUnchecked ? "Configured; role not checked yet" : "Configured; no recent traffic";
+  const readiness = seat.grantsDeferred && !diagnosticsUnavailable && !fieldUnavailable("state") && !fieldUnavailable("role") ? (seat.paused ? "Paused; grant not checked" : !seat.keyInstalled ? "Needs setup: Zulip key; grant not checked" : seat.role && !seat.role.ok ? "Role refused; grant not checked" : currentError ? "Recent failure; grant not checked" : "Grant not checked") : readsUnknown ? "Diagnostics unavailable" : seat.paused ? "Paused" : !configured ? `Needs setup: ${missing.join(", ")}` : currentError ? "Recent failure" : earlierReadFailure ? "Last recorded call was a failed read; successful reads are not recorded" : recentSuccess ? "Recent success" : roleUnchecked ? "Configured; role not checked yet" : "Configured; no recorded writes or failures";
   const tone = recentSuccess ? "state-ready" : earlierReadFailure && configured && !diagnosticsUnavailable ? "state-neutral" : "state-attention";
   return `<article class="status-card"><h3>${e.escape(e.seatLabel ? e.seatLabel(seat.seat) : seat.seat)}</h3><p class="status-state ${tone}">${e.escape(readiness)}</p>
 <dl><dt>Seat</dt><dd>${fieldUnavailable("state") ? "Unknown" : seat.paused ? "Paused" : "Unpaused"}</dd>
 <dt>Zulip Key</dt><dd>${seat.keyInstalled ? "Installed" : "Missing"}</dd>
 <dt>Member Role</dt><dd>${fieldUnavailable("role") ? "Unknown" : roleUnchecked ? "Not checked yet (checked on the seat's next call)" : seat.role.ok ? `Verified (${e.escape(seat.role.role ?? "member")})` : `Refused${seat.role.reason ? `: ${e.escape(seat.role.reason)}` : ""}`}</dd>
 <dt>Grant</dt><dd>${seat.grantsDeferred ? "Not checked" : fieldUnavailable("grants") ? "Unknown" : (seat.grants ?? []).length ? `${(seat.grants ?? []).length} present` : "Missing"}</dd>
-<dt>Last Call</dt><dd>${last ? `${e.escape(e.time(last.ts))} · ${e.escape(last.tool ?? "unknown tool")}` : "No recent traffic"}</dd>
-<dt>Last Success</dt><dd>${success ? e.escape(e.time(success.ts)) : "None in retained sample"}</dd>
+<dt>Last Call</dt><dd>${last ? `${e.escape(e.time(last.ts))} · ${e.escape(last.tool ?? "unknown tool")}` : "No recorded writes or failures"}</dd>
+<dt>Last Success</dt><dd>${success ? e.escape(e.time(success.ts)) : "No recorded write"}</dd>
 <dt>Last Error</dt><dd>${error ? `${e.escape(e.time(error.ts))} · ${e.escape(error.error_code ?? error.outcome ?? error.verdict ?? "error")}` : "None in retained sample"}</dd>
 <dt>Linear</dt><dd>${seat.linearEnabled ? "Enabled" : "Disabled"}; ${seat.linearConfigured ? "credential configured" : "credential missing"}; ${seat.linearWrites ? "writes enabled" : "writes disabled"}</dd>
 <dt>Fleet Recall</dt><dd>${seat.recallConfigured ? "credential configured" : "not configured"}</dd></dl></article>`;
@@ -177,7 +177,7 @@ export function renderStatusOverview(data, e) {
   const collectedErrors = dedupeErrors(collectErrorRows({ statusCalls, statusErrors, refusals, tokenRefusals, audits, runtimeErrors }));
   const noTraffic = statusCalls.length === 0;
   const recentFailures = collectedErrors.length;
-  const heading = diagnosticsUnavailable ? "Diagnostics Unavailable" : recentFailures ? "Recorded Failures" : noTraffic ? "No Recent Traffic" : "Recent Calls; No Recorded Failures";
+  const heading = diagnosticsUnavailable ? "Diagnostics Unavailable" : recentFailures ? "Recorded Failures" : noTraffic ? "No Recorded Calls" : "Recent Calls; No Recorded Failures";
   const status = diagnosticsUnavailable
     ? `The diagnostic sample could not be loaded.${e.gap} Configuration fields do not verify service health.`
     : noTraffic
@@ -189,6 +189,6 @@ export function renderStatusOverview(data, e) {
   const tone = recentFailures || noTraffic || diagnosticsUnavailable ? "state-attention" : "state-neutral";
   return `<details id="status-overview" class="status-overview fold"><summary><h2>Status Overview</h2> <span class="status-state ${tone}">${e.escape(heading)}</span></summary><header class="overview-heading"><div><p class="status-state ${tone}">${e.escape(heading)}</p></div><form method="get" action="/admin"><button type="submit">Refresh Status</button></form></header>
 <p>${e.escape(status)}${generatedAt ? `${e.gap}Generated ${e.escape(e.time(generatedAt))}.` : ""}</p>
-<p class="coverage">History Coverage: latest per-seat writes and failed calls (up to 100;  successful reads are not recorded, so a read-only seat shows no recent traffic), separately retained errors, refusal counters, and retained audit events.${e.gap} Cloudflare Access denials and client-local errors that never reach the Worker are not included.${e.gap} Detailed error messages are available only for calls recorded after diagnostic logging was added.${e.gap} Older events may not appear.</p>
+<p class="coverage">History Coverage: latest per-seat writes and failed calls (up to 100;  successful reads are not recorded, so a seat that only reads shows no recorded calls), separately retained errors, refusal counters, and retained audit events.${e.gap} Cloudflare Access denials and client-local errors that never reach the Worker are not included.${e.gap} Detailed error messages are available only for calls recorded after diagnostic logging was added.${e.gap} Older events may not appear.</p>
 <div class="status-grid">${seatCards}</div><h3>Recent Errors And Refusals</h3><div class="error-list">${errors}</div></details>`;
 }

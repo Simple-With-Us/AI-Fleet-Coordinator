@@ -365,8 +365,9 @@ async function serveMcp(request, env, ctx) {
       // regardless, so the cache would buy nothing there and would only
       // rent out that seat's instant revocation.
       // The window never runs past the grant's own 90-day age limit, and
-      // one clock reading both caps the window and starts it.
-      const now = Date.now();
+      // one clock reading (the cache's own, the clock its expiry and `since`
+      // checks use) both caps the window and starts it.
+      const now = IDENTITY_CACHE.now();
       const grantLeftMs = Number(props.approved_at) + GRANT_MAX_AGE_MS - now;
       const ttlMs = Number.isFinite(grantLeftMs) ? Math.min(config.gateIdentityCacheMs, grantLeftMs) : 0;
       if (!config.eventsOnlySeats.includes(seat) && ttlMs > 0) {
@@ -591,7 +592,7 @@ async function serveGbBearerMcp(request, env, token, ctx) {
   // resolution below is isolate config, re-run on every request either
   // way):  remember it for this isolate's window (R4).
   // One clock reading caps the window at the bearer's expiry and starts it.
-  if (!identityEntry) { const now = Date.now(); IDENTITY_CACHE.set(bearerHash, { seat: identity, via: "gb-bearer", mcp_accept: true }, bearerCacheMs(config, checked, now), now, { since }); }
+  if (!identityEntry) { const now = IDENTITY_CACHE.now(); IDENTITY_CACHE.set(bearerHash, { seat: identity, via: "gb-bearer", mcp_accept: true }, bearerCacheMs(config, checked, now), now, { since }); }
   const lifecycle = await answerLifecycle(request, { seat: identity, config });
   if (lifecycle.response) return lifecycle.response;
   request = lifecycle.request;
@@ -701,7 +702,7 @@ async function serveSbtBearerMcp(request, env, token, ctx) {
   // calls are refused downstream regardless and are never cached (serveMcp
   // states the reasoning in full).
   // One clock reading caps the window at the bearer's expiry and starts it.
-  if (!identityEntry && !config.eventsOnlySeats.includes(seat)) { const now = Date.now(); IDENTITY_CACHE.set(bearerHash, { seat, via: "sbt-bearer", mcp_accept: true }, bearerCacheMs(config, checked, now), now, { since }); }
+  if (!identityEntry && !config.eventsOnlySeats.includes(seat)) { const now = IDENTITY_CACHE.now(); IDENTITY_CACHE.set(bearerHash, { seat, via: "sbt-bearer", mcp_accept: true }, bearerCacheMs(config, checked, now), now, { since }); }
   // This route passes no events, so lifecycle frames need no secret on any seat.
   const lifecycle = await answerLifecycle(request, { seat, config });
   if (lifecycle.response) return lifecycle.response;

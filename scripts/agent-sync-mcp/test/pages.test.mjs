@@ -186,7 +186,7 @@ test("admin status distinguishes no traffic, mixed outcomes, readiness, and reta
     seats: [{ seat: "JET", paused: false, keyInstalled: true, role: { ok: true }, grants: [], linearEnabled: true, linearConfigured: true, linearWrites: false, recallConfigured: false }],
     statusCalls: [], statusErrors: [], generatedAt: Date.parse("2026-10-09T20:05:00Z"),
   }).text();
-  assert.match(noTraffic, /No Recent Traffic/);
+  assert.match(noTraffic, /No Recorded Calls/);
   assert.match(noTraffic, /quiet seat is not verified healthy/);
   assert.match(noTraffic, /Needs setup: grant/);
   assert.match(noTraffic, /credential configured/);
@@ -195,7 +195,7 @@ test("admin status distinguishes no traffic, mixed outcomes, readiness, and reta
     seats: [{ seat: "JET", paused: false, keyInstalled: true, role: { ok: true }, grants: [{ client: "Client", scope: [], createdAt: 0 }] }],
     statusCalls: [], generatedAt: Date.parse("2026-10-09T20:05:00Z"),
   }).text();
-  assert.match(configuredQuiet, /Configured; no recent traffic/);
+  assert.match(configuredQuiet, /Configured; no recorded writes or failures/);
   assert.doesNotMatch(configuredQuiet, /class="status-state state-ready"/);
 
   const mixed = await adminPage({

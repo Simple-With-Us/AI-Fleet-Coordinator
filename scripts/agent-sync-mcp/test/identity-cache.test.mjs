@@ -14,6 +14,16 @@ import { ApiError } from "../src/contract.js";
 
 const KEY = "a".repeat(64);
 
+test("index.js starts every identity entry on the cache's own clock", async () => {
+  // Expiry and the `since` race guard both run on IDENTITY_CACHE.now();  an entry
+  // started on Date.now() would put them on two clocks (Kody, PR 1441).
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
+  const starts = [...src.matchAll(/const now = ([A-Za-z_.]+)\(\);[^\n]*IDENTITY_CACHE\.set|const now = ([A-Za-z_.]+)\(\);(?:[^\n]*\n){0,6}?[^\n]*IDENTITY_CACHE\.set\(/g)];
+  assert.ok(starts.length >= 3, `found ${starts.length} cache writes`);
+  for (const m of starts) assert.equal(m[1] ?? m[2], "IDENTITY_CACHE.now", m[0].slice(0, 120));
+});
+
 test("a positive answer older than a refusal or seat eviction is not stored, and the maps stay bounded", () => {
   let now = 1000;
   const cache = new IdentityCache({ now: () => now, max: 2 });
