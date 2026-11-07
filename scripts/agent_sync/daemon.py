@@ -4238,9 +4238,7 @@ class Daemon:
         except OSError:
             pass
 
-    def _probe_deferred_payload(
-        self, runner: "SeatRunner", mid: str
-    ) -> Mapping[str, Any] | None:
+    def _probe_deferred_payload(self, runner: "SeatRunner", mid: str) -> Mapping[str, Any] | None:
         """ONE re-drive probe attempt:  the parked broadcast's payload from this runner, or
         None on any miss, access-class answer, or transient failure.
 
