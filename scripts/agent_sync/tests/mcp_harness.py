@@ -35,13 +35,9 @@ from agent_sync.tests import bearer_stub
 from agent_sync.tests.fake_zulip import BOT_EMAIL, EPOCH, FAKE_CHANNEL, FAKE_OWNER_ID
 
 
-def seat_bearer_locator(seat: str) -> str:
-    """The locator a seat's bearer lives at:  a FOLDER:KEY_NAME location and never a value.
-
-    The key part allows only uppercase letters, digits and underscores, so a seat name with a hyphen
-    is underscored there.
-    """
-    return "/fleet-seats:%s_SEAT_BEARER" % re.sub(r"[^A-Z0-9]", "_", seat.upper())
+def seat_bearer_file(seat: str) -> str:
+    """The path the seat's own private bearer file lives at:  an absolute path, never the bearer itself."""
+    return "/run/seat-bearers/%s" % re.sub(r"[^a-z0-9]", "_", seat.lower())
 from agent_sync.tests.harness import SESSION, Harness, write_rc
 
 SCRIPT = Path(__file__).resolve().parents[2] / "simple-chat"
@@ -292,23 +288,23 @@ class McpHarness(Harness):
         L.private_dir(str(self.state_dir))
         (self.state_dir / "listener.toml").write_text("[daemon]\nowner_user_id = %d\n" % user_id)
 
-    def pin_seat_bearers(self, locators: dict[str, str]) -> None:
-        """Give seats their own bearer locators in the installed listener.toml, the way a host does.
+    def pin_seat_bearers(self, files: dict[str, str]) -> None:
+        """Give seats their own bearer files in the installed listener.toml, the way a host does.
 
-        board proves its seat from the bearer at SIMPLE_BOARD_BEARER_LOCATOR and never reads AGENT_SEAT,
-        so the locator a seat writes with comes from its own trusted daemon config.  A locator is a
-        FOLDER:KEY_NAME location and never a value.  Only the seat sections are written, so the owner
-        stays unpinned exactly as it was.
+        board proves its seat from the bearer at SIMPLE_BOARD_BEARER_FILE and never reads AGENT_SEAT,
+        so the file a seat writes with comes from its own trusted daemon config:  an absolute path to
+        the seat's private bearer file, never the bearer itself.  Only the seat sections are written,
+        so the owner stays unpinned exactly as it was.
         """
         if self.state_dir.is_symlink():
             raise AssertionError("the state directory is a symlink:  %s" % self.state_dir)
         L.private_dir(str(self.state_dir))
         body: list[str] = []
-        for seat, locator in sorted(locators.items()):
+        for seat, bearer_file in sorted(files.items()):
             body += [
                 "[seat.%s]" % seat,
                 'bot = "%s"' % seat.capitalize(),
-                'bearer_locator = "%s"' % locator,
+                'bearer_file = "%s"' % bearer_file,
                 "",
             ]
         (self.state_dir / "listener.toml").write_text("\n".join(body))
@@ -330,10 +326,10 @@ class McpHarness(Harness):
             # are about tagging, grouping, the secret scan and idempotency, not the rule, so they run
             # with it off;  the rule's own tests are agent_sync/tests/test_dm_rule.py.
             "AGENT_SYNC_DM_RULE": "off",
-            # board proves its seat from the bearer at SIMPLE_BOARD_BEARER_LOCATOR and never reads
-            # AGENT_SEAT, so a Linear write through this server needs the seat's own locator.  It is a
-            # FOLDER:KEY_NAME location and never a value.
-            "SIMPLE_BOARD_BEARER_LOCATOR": seat_bearer_locator("CLAUDE"),
+            # board proves its seat from the bearer at SIMPLE_BOARD_BEARER_FILE and never reads
+            # AGENT_SEAT, so a Linear write through this server needs the seat's own file:  an absolute
+            # path to the seat's private bearer file, never the bearer itself.
+            "SIMPLE_BOARD_BEARER_FILE": seat_bearer_file("CLAUDE"),
         }
         base.update({k: v for k, v in overrides.items() if v is not None})
         for name, value in overrides.items():

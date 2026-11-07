@@ -22,6 +22,17 @@ def _fill(text: str, placeholders: dict[str, str]) -> str:
 
 
 class FullZulipToolTests(McpHarness):
+    def test_own_intro_post_edit_and_schedule_keep_one_session_attribution(self):
+        session = self.session()
+        made = self.assert_structured("zulip_post", session.call("zulip_post", {"topic": "t", "text": "[CLAUDE 📁OPS] status", "to": ["CODEX"]}))
+        self.assertEqual(self.fake._find(made["id"])["content"], "[CLAUDE·%s 📁OPS →CODEX] @**Codex** status" % TAG)
+        self.assert_structured("zulip_edit_message", session.call("zulip_edit_message", {"message_id": made["id"], "text": "[CLAUDE: HH.1.M 📁OPS] changed"}))
+        self.assertEqual(self.fake._find(made["id"])["content"], "[CLAUDE·%s: HH.1.M 📁OPS] changed" % TAG)
+        later = self.assert_structured("zulip_scheduled_create", session.call("zulip_scheduled_create", {"topic": "later", "text": "👀 [CLAUDE 📁OPS] later", "deliver_at": int(time.time()) + 3600}))
+        self.assertEqual(self.fake.scheduled[later["id"]]["content"], "👀 [CLAUDE·%s 📁OPS] later" % TAG)
+        self.assert_structured("zulip_scheduled_edit", session.call("zulip_scheduled_edit", {"scheduled_message_id": later["id"], "text": "[MA 📁OPS] quoted"}))
+        self.assertEqual(self.fake.scheduled[later["id"]]["content"], "[CLAUDE·%s] [MA 📁OPS] quoted" % TAG)
+
     def test_write_secret_fixtures_refuse_before_any_request(self):
         basic = base64.b64encode(("%s:%s" % (BOT_EMAIL, self.key)).encode()).decode()
         placeholders = {"$FIXTURE_KEY": self.key, "$FIXTURE_BASIC": basic, "$FIXTURE_ZULIP_SHAPED": zulip_shaped()}

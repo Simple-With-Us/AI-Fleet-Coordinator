@@ -43,6 +43,15 @@ The controller keeps its separate existing read-only systemd credential.  The b
 
 See [Muster Resource Controls](docs/muster-resource-controls.md) for validation, receipt status, concurrent-writer limits and guarded rollback.
 
+## Muster Release (Sparkle)
+
+`.github/workflows/muster-release.yml` signs every Muster update with Muster's own EdDSA key.  Each folder is read in CI through its own read-only service token (`muster/docs/AUTO-UPDATE.md`, Secrets and Keys).
+
+| Key | Folder | Kind And Consumer |
+| --- | --- | --- |
+| `MUSTER_SPARKLE_ED_PRIVATE_KEY` | `/muster-sparkle` | Secret Sparkle EdDSA private key (base64 32-byte seed);  read by the release job with `INFISICAL_MUSTER_SPARKLE_READ_TOKEN` |
+| `INFISICAL_MAC_CERTS_READ_TOKEN`, `INFISICAL_ASC_READ_TOKEN`, `INFISICAL_MUSTER_SPARKLE_READ_TOKEN` | `/github-actions` | Secret service tokens (`muster-ci-mac-certs-read`, `muster-ci-asc-read`, `muster-ci-sparkle-read`), read-only, expire May 5, 2027;  the secret sync `ai-fleet-coordinator-gh-actions` copies them to this repository's Actions secrets |
+
 ## Hosted Agent-Sync: Cursor Cloud
 
 The CURSOR seat uses the existing `cursor-bot@simplewithus.zulipchat.com` member

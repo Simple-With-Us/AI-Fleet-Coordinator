@@ -81,7 +81,7 @@ final class MusterNavigationTests: XCTestCase {
         XCTAssertEqual(MusterDestination.serverUpdates.title, "Server Updates")
         XCTAssertEqual(MusterDestination.actionHistory.title, "Action History")
         XCTAssertEqual(MusterDestination.hosts.title, "Tools And Worker Health")
-        XCTAssertEqual(MusterDestination.seatDetail.title, "MiniMax On The Mac")
+        XCTAssertEqual(MusterDestination.seatDetail.title, "Seat Setup")
     }
 
     /// The window's subtitle is the badge's own words, so the two cannot disagree.

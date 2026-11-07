@@ -604,7 +604,8 @@ class SeededManifestTests(unittest.TestCase):
 
         return {
             "claude": install_tools.hook_command(paths, "claude"),
-            "codex": install_tools.hook_command(paths, "codex"),
+            "claude-file": install_tools.claude_file_hook_command(paths),
+            "codex":install_tools.hook_command(paths, "codex"),
             "grok": install_tools.hook_command(paths, "grok"),
             "cursor": install_tools.hook_command(paths, "cursor"),
             "kimi": install_tools.fleet_hook_command(paths, "kimi"),
@@ -630,14 +631,17 @@ class SeededManifestTests(unittest.TestCase):
                 platform = rule.platforms[0]
                 if platform not in commands:
                     continue
-                written = command_id(commands[platform])
+                key = platform
+                if platform == "claude" and rule.id.endswith("-hooks-file-guard"):
+                    key = "claude-file"
+                written = command_id(commands[key])
                 for name in rule.expected.names:
                     self.assertEqual(
                         hook_key(name),
                         hook_key(written),
                         "rule %s expects %r but the installer writes %r" % (rule.id, name, written),
                     )
-                checked.add(platform)
+                checked.add(key)
         self.assertEqual(checked, set(commands))
 
     def test_the_minimax_rule_expects_minimax_guard_hook(self) -> None:
@@ -662,8 +666,21 @@ class SeededManifestTests(unittest.TestCase):
             file = ids["%s-hooks-file-guard" % tag]
             self.assertEqual(file.expected.guards, ("file",), seat.seat)
             self.assertEqual(file.proof_level.value, "L1")
-            self.assertEqual(shell.expected.names, file.expected.names)
+            if list(shell.platforms) == ["claude"]:
+                # Claude Code's file guard is its own hook in the same settings file.
+                self.assertEqual(file.expected.names, ("claude-file-guard-hook",), seat.seat)
+            else:
+                self.assertEqual(shell.expected.names, file.expected.names)
             self.assertEqual(shell.check.target, file.check.target)
+
+    def test_the_claude_file_rule_expects_its_own_file_guard_hook(self) -> None:
+        """The shell rule names lane-guard-hook and the file rule the separate file guard."""
+        rules = {rule.id: rule for seat in self.manifest.seats for rule in seat.rules}
+        self.assertEqual(rules["claude-hooks-lane-guard"].expected.names, ("lane-guard-hook",))
+        self.assertEqual(
+            rules["claude-hooks-file-guard"].expected.names, ("claude-file-guard-hook",)
+        )
+        self.assertEqual(rules["claude-hooks-file-guard"].expected.timeout_seconds, 10)
 
     def test_every_rule_id_is_unique_and_well_formed(self) -> None:
         seen = set()

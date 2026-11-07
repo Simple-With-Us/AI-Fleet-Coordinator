@@ -60,9 +60,10 @@ targets:
           # Muster's own feed:  a fixed release tag that only the Muster release workflow
           # writes, so no other release in this repository can stand in for it.
           MUSTER_SPARKLE_FEED_URL: https://github.com/Simple-With-Us/AI-Fleet-Coordinator/releases/download/muster-feed/appcast.xml
-          # The public half of Muster's own Sparkle EdDSA key.  Empty until the key is made
-          # (muster/docs/AUTO-UPDATE.md, Keys);  until then updates read Off and nothing publishes.
-          MUSTER_SPARKLE_PUBLIC_KEY: ""
+          # The public half of Muster's own Sparkle EdDSA key (muster/docs/AUTO-UPDATE.md, Keys).
+          # The private half is MUSTER_SPARKLE_ED_PRIVATE_KEY in AI Fleet Coordinator prod
+          # /muster-sparkle.  Changing this value strands every installed copy:  see Keys first.
+          MUSTER_SPARKLE_PUBLIC_KEY: "xRQ61nZn8q+qGSSSy+9WMFsBOAzjc7ETYtLKsfAZQIU="
     scheme:
       gatherCoverageData: false
       buildImplicitDependencies: true
@@ -122,6 +123,9 @@ targets:
       - path: Muster/Model/ServiceReconciler.swift
       - path: Muster/Model/MiniMaxSurface.swift
       - path: Muster/Model/SeatManifest.swift
+      - path: Muster/Model/SeatSetup.swift
+      - path: Muster/Model/SeatInventory.swift
+      - path: Muster/Model/TrustedCheckout.swift
       - path: Muster/Model/ThemeChoice.swift
       - path: Muster/Model/ListenerConfigFile.swift
       - path: Muster/Model/ListenerStatus.swift
