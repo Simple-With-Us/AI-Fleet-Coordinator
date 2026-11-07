@@ -209,9 +209,13 @@ done / failed / unknown.
 
 - The drain marker gates DRIVING only. Admission is durable with or without it, so
   an ordinary crash fences exactly the same as a planned drain.
-- Boot reconciles: stale claims are cleared, driving effects re-park as pending,
-  and a broadcast-audit effect driving with send_attempted_at set becomes UNKNOWN
-  (the send already happened or was attempted; re-sending would duplicate).
+- Boot reconciles: stale claims are cleared, driving fanout/inbox effects re-park as
+  pending, and a broadcast-audit effect driving with send_attempted_at set becomes
+  UNKNOWN (the send already happened or was attempted; re-sending would duplicate). A
+  driving audit with NO send attempt stays driving - nothing was sent and its due time
+  is durable; the due pass re-claims the kind atomically before running the real body,
+  because every body write (marker, finish, retry) is claim-guarded and would no-op
+  otherwise.
 - A parked kind never expires (GATE 2). Re-drive runs at boot and on tick (when the
   marker is gone) with budgeted rotated payload probes (F8). A payload that stays
   inconclusive keeps the kind parked and visible; it is never dropped.

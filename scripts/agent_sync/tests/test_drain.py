@@ -895,6 +895,47 @@ class BroadcastLedgerCrashTests(DaemonHarness):
             daemon._start_due_broadcast_audits(self.clock.time() + 10**9)
             self.assertFalse(run.called)
 
+    def test_due_pass_after_boot_runs_the_real_body_exactly_once(self) -> None:
+        """Regression (#1462 review):  boot clears the stale claim of a driving audit with
+        no send attempt.  The due pass must re-claim the kind before running the REAL
+        body - without the claim every body write no-ops, and the reminder is sent on
+        every tick forever with no marker.  Exactly one send, terminal done, marker
+        durable."""
+        daemon = self.started()
+        mid = 424245
+        self._plant(
+            daemon,
+            mid,
+            [
+                (
+                    "audit",
+                    "driving",
+                    {
+                        "due_at": 2.0,
+                        "attempts": 0,
+                        "sender_seat": None,
+                        "sender_email": "codex@zulip.test",
+                        "timestamp": 1.0,
+                    },
+                )
+            ],
+            claims={"audit": 1.0},
+        )
+        daemon._broadcast_ledger_boot()
+        self.assertEqual(self._effect(daemon, mid, "audit")["state"], "driving")
+        with mock.patch.object(daemon, "_operator_send", return_value={"id": 7}) as send:
+            for _ in range(3):
+                daemon._start_due_broadcast_audits(self.clock.time() + 10**9)
+                self.assertTrue(
+                    wait_for(lambda: mid not in daemon._audit_in_flight)
+                )
+            self.assertEqual(send.call_count, 1)
+        effect = self._effect(daemon, mid, "audit")
+        self.assertEqual(effect["state"], "done")
+        self.assertIn("send_attempted_at", effect["detail"])  # the marker is durable
+        self.assertEqual(effect["detail"]["receipt"]["outcome"], BAUD.REMINDED)
+        self.assertEqual(effect["detail"]["receipt"]["reminder_id"], 7)
+
     def test_inbox_partial_terminal_lands_per_target_receipts(self) -> None:
         """R2/R4, partial:  one seat delivered, one terminal - the kind ends FAILED with the
         terminal seat named and every seat's outcome in the durable receipts."""

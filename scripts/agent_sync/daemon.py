@@ -4502,6 +4502,36 @@ class Daemon:
         except OSError:
             pass
 
+    def _claim_due_broadcast_audit(self, mid: str, now: float) -> bool:
+        """Hold the audit kind's claim before its real body runs.
+
+        Admission claims a driving audit for the whole wait and the claim sits in the
+        ledger;  boot clears every claim as stale (the claiming thread died with the
+        process), so a driving audit WITHOUT a send attempt can come due with no claim
+        held.  Every body write (the send-attempt marker, finish, fail, retry) is
+        claim-guarded and no-ops without it, so a claimless body would send the
+        reminder, record nothing, and send again on every later tick forever.  This
+        write restores exactly the admission claim - same kind, still driving, never a
+        terminal or re-parked row - or reports that the kind is not ours to run."""
+
+        claimed: list[bool] = []
+
+        def mutate(data: dict[str, Any]) -> None:
+            row = data.get(mid)
+            if not isinstance(row, dict):
+                return
+            effect = (row.get("effects") or {}).get("audit")
+            if not isinstance(effect, dict) or effect.get("state") != "driving":
+                return
+            row.setdefault("claims", {}).setdefault("audit", now)
+            claimed.append(True)
+
+        try:
+            L.update_json(self._broadcast_ledger_path(), mutate)
+        except OSError:
+            return False
+        return bool(claimed)
+
     def _broadcast_ledger_boot(self) -> None:
         """Migrate the pre-#1462 park store, then reconcile the ledger with the dead process.
 
@@ -4513,13 +4543,28 @@ class Daemon:
           - an audit kind in driving WITH a send attempt but no completion is UNKNOWN (R5:
             the reminder may have reached the owner;  it is never resent automatically);
           - an audit kind in driving WITHOUT a send attempt stays driving:  nothing was
-            sent, its due time is durable, and the next due tick runs it.
+            sent and its due time is durable.  The claim is stale like every other, so
+            the due pass re-claims the kind atomically before running the real body -
+            without that, the claim-guarded marker/finish writes would no-op and the
+            reminder would re-send on every tick.
         Migrated rows park their unfinished kinds pending;  all-done rows drop."""
         ledger = self._broadcast_ledger_path()
-        try:
-            old = L.read_json(self._deferred_broadcasts_path())
-        except Exception:  # noqa: BLE001 - a corrupt old store migrates as empty, never fatal
-            old = {}
+        old_path = self._deferred_broadcasts_path()
+        old = L.read_json(old_path)
+        if not old and os.path.exists(old_path):
+            # read_json answers a corrupt store with {}, which would migrate as empty
+            # SILENTLY while the rows sit unrenamed forever.  Distinguish a genuinely
+            # empty store from an unreadable one and surface the latter:  the file is
+            # left in place for the operator, never renamed, never dropped.
+            try:
+                with open(old_path, encoding="utf-8") as fh:
+                    raw_old = json.load(fh)
+            except (OSError, ValueError):
+                raw_old = None
+            if not isinstance(raw_old, dict) or raw_old:
+                self.log.write(
+                    "broadcast-ledger-migration-unreadable", path=os.path.basename(old_path)
+                )
         migrated = 0
         if isinstance(old, dict) and old:
             now = self.clock.time()
@@ -4938,6 +4983,12 @@ class Daemon:
                     )
                 )
         for mid, broadcast, attempt in due:
+            if not self._claim_due_broadcast_audit(mid, now):
+                # A re-park or terminal transition landed between the scan and the claim:
+                # the kind is not ours to run.
+                with self._fanout_lock:
+                    self._audit_in_flight.discard(broadcast.message_id)
+                continue
             try:
                 threading.Thread(
                     target=self._run_broadcast_audit,
