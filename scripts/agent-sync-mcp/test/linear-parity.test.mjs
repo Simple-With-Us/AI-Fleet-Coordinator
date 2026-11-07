@@ -203,11 +203,11 @@ test("the Infisical /linear names are the live LINEAR_<SEAT>_CLIENT_* names for 
 });
 
 // MA: its cached token was refused (401) at check time;  BF-ENGINEER and BF-TRADER had no token to read.
-const HELD_BACK = Object.freeze(["BF-ENGINEER", "BF-TRADER"]); // prepared but not enabled until their own viewer is qualified;  the other 19 are on
-test("the 21 own-app seats have prepared names, 19 are enabled (BF-ENGINEER and BF-TRADER held back), and none share a pair", async () => {
+const HELD_BACK = Object.freeze(["BF-ENGINEER", "BF-TRADER", "GB-COMPILER", "GB-DEPLOYER", "GB-DESIGNER", "GB-DIRECTOR", "GB-ENGINEER", "GB-FIXER", "GB-HOUSEKEEPER", "GB-MONITOR", "GB-ORACLE", "GB-PLUMBER", "GB-PUBLISHER", "GB-TRADER"]); // prepared but not enabled until each own viewer is qualified;  the other 19 are on
+test("the 33 own-app seats have prepared names, 19 are enabled (BF-ENGINEER, BF-TRADER and the twelve GB personas held back), and none share a pair", async () => {
   const L = await import("../src/linear.js");
   const own = Object.keys(L.OWN_APP_LINEAR_PREFIXES);
-  assert.equal(own.length, 21);
+  assert.equal(own.length, 33);
   assert.ok(!own.includes("BF-BUILDER") && !Object.hasOwn(L.LINEAR_SECRETS, "BF-BUILDER") && !L.LINEAR_SEATS.includes("BF-BUILDER"));
   for (const seat of own) {
     assert.ok(Object.hasOwn(L.LINEAR_SECRETS, seat) && Object.hasOwn(L.LINEAR_INFISICAL, seat), seat);
