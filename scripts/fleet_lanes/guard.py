@@ -90,6 +90,7 @@ from urllib.parse import urlsplit
 
 from . import layout as L
 from . import placement as P
+from . import temp_build as TB
 
 __all__ = [
     "ALLOW",
@@ -111,6 +112,8 @@ __all__ = [
     "RULE_PLACEMENT_ELSEWHERE",
     "RULE_PLACEMENT_HOME",
     "RULE_TARBALL",
+    "RULE_TEMP_BUILD",
+    "RULE_TEMP_CLONE",
     "RULE_WORKTREE_ADD",
     "RULE_WORKTREE_ADD_CODE",
     "RULE_WORKTREE_MOVE",
@@ -118,6 +121,7 @@ __all__ = [
     "Decision",
     "GuardContext",
     "evaluate",
+    "evaluate_build_argv",
     "evaluate_git_argv",
     "evaluate_shell_text",
     "lane_name_reads_back",
@@ -152,6 +156,9 @@ RULE_PLACEMENT_APPS = "placement-apps"  # a fleet checkout under ~/apps but outs
 RULE_PLACEMENT_CLONE_IN_LANES = "placement-clone-in-lanes"  # a full clone inside a lane folder
 RULE_PLACEMENT_ELSEWHERE = "placement-elsewhere"  # a fleet checkout anywhere else on the disk
 RULE_ISOLATION = "isolation-from-integration-tree"  # a harness worktree spawned from the integration tree
+RULE_TEMP_BUILD = "build-into-temp"  # xcodebuild, swift, cargo or a node package manager writing its output into temp
+RULE_TEMP_CLONE = "third-party-clone-into-temp"  # a clone of a repo outside the fleet into temp, typed by an agent
+TEMP_BUILD_RULES = (RULE_TEMP_BUILD, RULE_TEMP_CLONE)
 PLACEMENT_RULES = {
     P.CLASS_HOME: RULE_PLACEMENT_HOME,
     P.CLASS_APPS: RULE_PLACEMENT_APPS,
@@ -176,6 +183,8 @@ DENY_RULES = (
     RULE_PLACEMENT_CLONE_IN_LANES,
     RULE_PLACEMENT_ELSEWHERE,
     RULE_ISOLATION,
+    RULE_TEMP_BUILD,
+    RULE_TEMP_CLONE,
 )
 
 # Allow outcomes, so a caller (and the tests) can tell why a command passed.
@@ -197,7 +206,7 @@ _MAX_DEPTH = 6  # nesting of $(...), bash -c, eval and heredoc-to-shell evaluati
 # Words that must appear before any deny rule can fire.  A command without one is allowed
 # without being parsed.
 _TRIGGER = re.compile(
-    r"clone|worktree|archive|codeload|tarball|zipball|fetch|pull|remote|checkout-index",
+    r"clone|worktree|archive|codeload|tarball|zipball|fetch|pull|remote|checkout-index|xcodebuild|swift|cargo|npm|yarn|bun",
     re.IGNORECASE,
 )
 
@@ -877,6 +886,8 @@ def _detail(ev: _Evaluator, hit: _Hit, cls: str) -> dict[str, str]:
 
 def _rule_class(rule: str) -> str:
     """The mode file's word for a rule."""
+    if rule in TEMP_BUILD_RULES:
+        return P.CLASS_TEMP_BUILD
     for cls, name in PLACEMENT_RULES.items():
         if name == rule:
             return cls
@@ -939,6 +950,25 @@ def evaluate_shell_text(
         st.vars[str(i)] = arg
     ev.run(command, st)
     return _shim_verdict(ev, others)
+
+
+def evaluate_build_argv(
+    tool: str,
+    args: Sequence[str],
+    cwd: str,
+    ctx: GuardContext,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> tuple[str, Decision] | None:
+    """The build shim's question:  judge one real build argv (`tool` is a word from temp_build.TOOLS, or `xcrun`).  Returns
+    (temp-build, a DENY Decision ready to print) when its output lands in temp outside the scratchpad, (CLASS_EXCUSED, an ALLOW
+    naming the row) when a row covers it, and None otherwise.  The caller applies the mode.  `env` is the build's own
+    environment, read for CARGO_TARGET_DIR."""
+    ev = _Evaluator(ctx, None, via="shim")
+    st = _State(_norm(cwd) if cwd.startswith("/") else _UNK)
+    cargo_dir = (env or {}).get("CARGO_TARGET_DIR")
+    ev._build(tool, list(args), {"CARGO_TARGET_DIR": cargo_dir} if cargo_dir else {}, st)
+    return _shim_verdict(ev)
 
 
 def _shim_verdict(ev: _Evaluator, others: list[tuple[str, Decision]] | None = None) -> tuple[str, Decision] | None:
@@ -2251,11 +2281,17 @@ class _Evaluator:
             for name, value in assigns:
                 st.vars[name] = value
             return None
+        start = i
         i = self._skip_wrappers(args, i)
         if i >= n:
             return None
         name = os.path.basename(args[i])
         rest = args[i + 1 :]
+        if name in TB.TOOLS or name == "xcrun":
+            # `env NAME=VALUE tool` sets the variable for the tool as surely as `NAME=VALUE tool` does.
+            assigns += [(m.group(1), a[m.end():]) for a in args[start:i] if (m := _ASSIGN_RE.match(a)) and not m.group(2)]
+            self._build(name, rest, dict(assigns), st)
+            return None
         if name in ("cd", "chdir"):
             self._cd(rest, st)
         elif name == "pushd":
@@ -2388,6 +2424,40 @@ class _Evaluator:
             elif r[1] == "<<<" and r[2] is not None:
                 self._recurse(self._expand(r[2], st), st.scoped_copy())
 
+    # ---- temp-build
+
+    def _temp_build(self, rule: str, target: str, src: _Src, what: str) -> None:
+        """Record build output or a third-party clone bound for temp.  The scratchpad is excused (`_where` calls it scratch), so is
+        an in-date temp-build, package-temp, service or backup row, and the mode file decides the rest."""
+        if self._where(target) != "temp":
+            return
+        if target.startswith("/") and _UNK not in target:
+            row = self.ctx.in_date_exception(target)
+            if row is not None and P.row_excuses_build(row):
+                self.excused.append((row, target, src))
+                return
+        self.placement.append((P.CLASS_TEMP_BUILD, _Hit(rule, target, src, what)))
+
+    def _third_party_clone(self, repo: str, target: str, what: str) -> None:
+        """A clone the fleet rules pass because its source is someone else's.  Only an agent's own command counts:  through the
+        shim the same argv is pip, Homebrew or SwiftPM cloning a dependency into a temp folder it cleans itself."""
+        if self.via != "hook":
+            return
+        label = "<unknown>" if repo.startswith(_UNK) else redact_url(repo)
+        self._temp_build(RULE_TEMP_CLONE, target, _Src(label, kind="clone"), what)
+
+    def _build(self, name: str, rest: list[str], assigns: Mapping[str, str], st: _State) -> None:
+        """xcodebuild, swift, cargo, npm, pnpm, Yarn or Bun, directly or through `xcrun`."""
+        tool: str | None = name
+        if name == "xcrun":
+            tool, rest = TB.unwrap_xcrun(rest)
+        if tool is None:
+            return
+        env = {k: v for k, v in st.vars.items() if k == "CARGO_TARGET_DIR"}
+        env.update(assigns)
+        for out in TB.build_outputs(tool, rest, env):
+            self._temp_build(RULE_TEMP_BUILD, self._path(out.path, st), _Src(tool, kind="build"), out.what)
+
     # ---- git
 
     def _check_placement(self, rule: str, target: str, src: _Src, what: str, where: str) -> None:
@@ -2503,11 +2573,12 @@ class _Evaluator:
             return
         self.mirror_or_local = bare or "://" not in pos[0] and not re.match(r"^[^/:]+:", pos[0])
         src = self._source(pos[0], eff)
-        if src is None:
-            return
         target = (
             _join(eff, pos[1]) if len(pos) > 1 else _child(eff, _humanish(pos[0], bare))
         )
+        if src is None:
+            self._third_party_clone(pos[0], target, "a bare clone" if bare else "a clone")
+            return
         self._check(RULE_CLONE, target, src, "a bare clone" if bare else "a clone")
         if sep_dir and not self._stop():
             self._check(RULE_CLONE, _join(eff, sep_dir), src, "the git directory of a clone")
@@ -2701,13 +2772,14 @@ class _Evaluator:
         if not pos:
             return
         src = self._gh_source(pos[0])
-        if src is None:
-            return
         target = (
             self._path(pos[1], st)
             if len(pos) > 1
             else _child(st.cwd, _humanish(pos[0], False))
         )
+        if src is None:
+            self._third_party_clone(pos[0], target, "a clone")
+            return
         self._check(RULE_GH_CLONE, target, src, "a clone")
 
     def _download(self, src: _Src, target: str | None, st: _State) -> Any:
@@ -3103,6 +3175,16 @@ class _Evaluator:
         return text
 
     def _reason_text(self, hit: _Hit) -> str:
+        if hit.rule in TEMP_BUILD_RULES:
+            tool = "git" if hit.rule == RULE_TEMP_CLONE else hit.src.label
+            subject = f"a clone of {hit.src.label}" if hit.rule == RULE_TEMP_CLONE else f"{hit.what} from {tool}"
+            return "  ".join((
+                f"Blocked: this would put {subject} in system temp at {self.display(hit.target)}.",
+                "Build trees and clones in temp outlive the session, no cleaner tracks them, and they drained about 43 GB "
+                "in one week.",
+                TB.alternative(tool, self.ctx.host),
+                "Throwaway work can use the session scratchpad (/private/tmp/claude-<uid>/), which is allowed.",
+            ))
         src = hit.src
         app = src.app
         prefix = app.prefix if app is not None else src.prefix

@@ -99,7 +99,7 @@ DM_MAX_CHARS = 9000  # under Zulip's 10,000
 OWNER_DM_HOURS = 24
 MAX_GENERATIONS = 16
 # Judged against the exception rows, so none of them means anything while those rows cannot be read.
-_JUDGED_BY_ROWS = frozenset({"MISPLACED", "SHIM-EVENT", "MAIN-CLONE"})
+_JUDGED_BY_ROWS = frozenset({"MISPLACED", "SHIM-EVENT", "MAIN-CLONE", "TEMP-BUILD", "TEMP-BUILD-EVENT"})
 CLOSED_STATUSES = frozenset({"completed", "deployed", "wontfix", "duplicate", "canceled"})
 _REPO_LOCAL_WORKTREES = ("/.claude/worktrees/", "/.muse/worktrees/")
 _ISSUE_ID = re.compile(r"\b[A-Z][A-Z0-9]{1,9}-\d+\b")
@@ -109,8 +109,16 @@ _ISSUE_ID = re.compile(r"\b[A-Z][A-Z0-9]{1,9}-\d+\b")
 RULE_CLASSES = {
     "MISPLACED": "misplaced", "SHIM-EVENT": "misplaced", "MAIN-CLONE": "main-clone", "CODE-WORK": "code-work",
     "EXPIRED-EXCEPTION": "exceptions", "EXPIRING-EXCEPTION": "exceptions", "EXCEPTIONS-UNUSABLE": "exceptions-file",
-    "MODE-FILE": "mode-file",
+    "MODE-FILE": "mode-file", "TEMP-BUILD": "temp-build", "TEMP-BUILD-EVENT": "temp-build",
 }
+# Temp build trees (the temp-build class):  a tree this big and this idle is reported, never removed.
+TEMP_TREE_MIN_BYTES = 1 << 30
+TEMP_TREE_MIN_AGE_HOURS = 24
+ENV_TEMP_SCAN_ROOTS = "FLEET_TEMP_BUILD_SCAN_ROOTS"  # colon-separated folders to scan instead of the host's temp roots
+# A name at the top of a tree, or one level down, that says a build or a checkout made it.
+_BUILD_MARKS = frozenset({"Build", "Logs", "ModuleCache.noindex", "SourcePackages", "info.plist", ".build", "target",
+                          "node_modules", "Package.swift", "Cargo.toml", "package.json", ".git", "DerivedData", "build",
+                          "dist", "Intermediates.noindex", "Products", "CACHEDIR.TAG"})
 
 
 @dataclass(frozen=True)
@@ -242,7 +250,8 @@ def findings_from_events(events: Iterable[Mapping[str, Any]], since: str, roots:
         newest = max(newest, at)
         if ev.get("action") == "fail-open":
             detail = str(ev.get("detail") or "unknown")
-            out.append(Finding(f"fail-open:{detail}", f"git shim, {detail}", "hook-coverage", host or P.host_kind(), "FAIL-OPEN",
+            shim = "build shim" if ev.get("via") == "build-shim" else "git shim"
+            out.append(Finding(f"fail-open:{detail}", f"{shim}, {detail}", "hook-coverage", host or P.host_kind(), "FAIL-OPEN",
                                "the shim let a command through without judging it"))
             continue
         dest = str(ev.get("dest") or "")
@@ -251,9 +260,103 @@ def findings_from_events(events: Iterable[Mapping[str, Any]], since: str, roots:
         expanded = os.path.expanduser(dest) if dest.startswith("~") else dest
         creator = _creator_from_seat(str(ev.get("seat") or ""), registry)
         repo = str(ev.get("source") or "unknown-repo").rsplit("/", 1)[-1]
-        out.append(Finding(expanded, public_path(expanded, roots), creator, repo, "SHIM-EVENT",
-                           f"{ev.get('action')} {ev.get('class')} via {ev.get('via')}"))
+        kind = "TEMP-BUILD-EVENT" if ev.get("class") == P.CLASS_TEMP_BUILD else "SHIM-EVENT"
+        public = temp_public_path(expanded) if kind == "TEMP-BUILD-EVENT" else public_path(expanded, roots)
+        out.append(Finding(expanded, public, creator, repo, kind, f"{ev.get('action')} {ev.get('class')} via {ev.get('via')}"))
     return out, newest
+
+
+def temp_public_path(path: str) -> str:
+    """A temp path as it may be posted:  `{temp}/` and the top folder's name, which is enough to find it from the state file."""
+    parts = [p for p in path.split("/") if p]
+    for i, part in enumerate(parts):
+        if part in ("tmp", "T") and i + 1 < len(parts):
+            return "{temp}/" + "/".join(parts[i + 1:i + 2])
+    return "{temp}/" + os.path.basename(path.rstrip("/"))
+
+
+def temp_scan_roots(env: Mapping[str, str]) -> list[str]:
+    """The temp folders whose top-level trees the watcher measures:  the override when set, none in a test run without one (the
+    suite must not walk the real temp folders), and otherwise /private/tmp (or /tmp), /var/tmp and TMPDIR, each once."""
+    raw = env.get(ENV_TEMP_SCAN_ROOTS)
+    if raw is not None:
+        candidates = [p for p in raw.split(":") if p]
+    elif P._test_run(env):
+        return []
+    else:
+        candidates = ["/tmp", "/var/tmp", (env.get("TMPDIR") or "").strip()]
+    out: list[str] = []
+    for cand in candidates:
+        if not cand.startswith("/") or not os.path.isdir(cand):
+            continue
+        real = os.path.realpath(cand)
+        if real not in out:
+            out.append(real)
+    return out
+
+
+def _tree_facts(top: str, *, stop_bytes: int, max_entries: int = 200_000) -> tuple[int, float, bool]:
+    """(bytes on disk, counted only up to stop_bytes;  the newest mtime of the top and the two levels under it;  whether a build mark
+    is at the top or one level down).  It never follows a symlink or leaves the device."""
+    try:
+        dev = os.lstat(top).st_dev
+    except OSError:
+        return 0, 0.0, False
+    total, newest, marked, seen = 0, 0.0, False, 0
+    stack = [(top, 0)]
+    while stack and seen < max_entries:
+        here, depth = stack.pop()
+        try:
+            with os.scandir(here) as it:
+                entries = list(it)
+        except OSError:
+            continue
+        for entry in entries:
+            seen += 1
+            try:
+                st = entry.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            if depth <= 1:
+                marked = marked or entry.name in _BUILD_MARKS
+            if depth <= 2:
+                newest = max(newest, st.st_mtime)
+            if entry.is_dir(follow_symlinks=False):
+                if st.st_dev == dev and (total < stop_bytes or depth < 2):
+                    stack.append((entry.path, depth + 1))
+            elif total < stop_bytes:
+                total += getattr(st, "st_blocks", 0) * 512 or st.st_size
+    return total, newest, marked
+
+
+def temp_build_findings(roots: Sequence[str], now: _dt.datetime, *, min_bytes: int = TEMP_TREE_MIN_BYTES,
+                        min_age_hours: float = TEMP_TREE_MIN_AGE_HOURS, exceptions=(), host: str = "",
+                        layout_roots: L.Roots | None = None) -> list[Finding]:
+    """Build trees and checkouts at the top of a temp folder that hold at least `min_bytes` and that nothing has touched for
+    `min_age_hours`.  The session scratchpad (claude-<uid>) and anything an in-date temp-build or package-temp row covers are
+    passed over.  It reports;  it never removes."""
+    out: list[Finding] = []
+    limit = now.timestamp() - min_age_hours * 3600
+    for root in roots:
+        try:
+            names = sorted(os.listdir(root))
+        except OSError:
+            continue
+        for name in names:
+            path = os.path.join(root, name)
+            if re.fullmatch(r"claude-\d+", name) or os.path.islink(path) or not os.path.isdir(path):
+                continue
+            if exceptions and layout_roots is not None:
+                hit = P.find_exception([path], layout_roots, exceptions, host=host or P.host_kind(), today=now.date())
+                if hit is not None and not hit.expired and P.row_excuses_build(hit.row):
+                    continue
+            size, newest, marked = _tree_facts(path, stop_bytes=min_bytes)
+            if not marked or size < min_bytes or not newest or newest > limit:
+                continue
+            idle_days = int((now.timestamp() - newest) // 86400)
+            out.append(Finding(path, "{temp}/" + name, "temp-build", "AI-Fleet-Coordinator", "TEMP-BUILD",
+                               f"at least {size / (1 << 30):.1f} GB, untouched for {idle_days} day(s)"))
+    return out
 
 
 def _hook_nodes(rel: str, data: Any) -> Any:
@@ -900,6 +1003,11 @@ def run_once(*, home: str, env: Mapping[str, str], apply: bool, seat: str, sessi
     findings += events
     findings += hook_findings(home, roots, host, stable if verify_hooks else None)
     findings += mode_findings(home, env)
+    try:
+        rows = P.load_exceptions(env=env)
+        findings += temp_build_findings(temp_scan_roots(env), now, exceptions=rows, host=host, layout_roots=roots)
+    except Exception as exc:  # noqa: BLE001 - a temp folder that cannot be read never stops the rest of the run
+        errors.append(f"temp scan failed: {type(exc).__name__}")
     unverified = any(f.kind == VERIFY_UNAVAILABLE for f in findings)
     if unverified:
         errors.append("install_tools verify could not run, so the hooks are unverified.")
