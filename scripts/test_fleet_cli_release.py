@@ -357,9 +357,9 @@ class ReleaseTests(unittest.TestCase):
         # Nothing new to add:  a further update writes no wrapper.
         self.assertEqual(release.new_wrapper_plan(self.home), {})
 
-    def test_helper_wiring_is_generated_for_chat_board_and_recall_only(self):
+    def test_helper_wiring_is_generated_for_chat_board_git_and_recall_only(self):
         helper = str(self.home / ".config/fleet-cli/seat-remote-defaults.py")
-        for name in ("simple-chat", "simple-board", "recall"):
+        for name in ("simple-chat", "simple-board", "simple-git", "recall"):
             text = release.wrapper(self.home, "scripts/" + name).decode()
             line = f"import runpy\nrunpy.run_path({helper!r}, init_globals={{'fleet_command': {name!r}}})\n"
             self.assertIn(line, text, name)
@@ -367,7 +367,7 @@ class ReleaseTests(unittest.TestCase):
             self.assertLess(text.index("from pathlib import Path"), text.index(line), name)
             self.assertLess(text.index(line), text.index("release = Path("), name)
         for script in (
-            "scripts/simple-git",
+            "scripts/git-tools/git",
             "scripts/simple-notes",
             "scripts/fleet-mode",
             "scripts/fleet_lanes/bin/lane",
@@ -378,24 +378,35 @@ class ReleaseTests(unittest.TestCase):
         self.assertNotIn("runpy", mcp)
         self.assertNotIn("seat-remote-defaults", mcp)
         # no credential value or secret path component is generated
-        for name in ("simple-chat", "simple-board", "recall"):
+        for name in ("simple-chat", "simple-board", "simple-git", "recall"):
             self.assertNotIn(".secrets", release.wrapper(self.home, "scripts/" + name).decode())
 
-    def test_simple_git_wrapper_never_runs_the_helper(self):
-        # The canonical generated simple-git wrapper carries no helper read or run - even on a host
-        # that HAS the helper installed (this suite's fake home does) and with a seat declared in the
-        # caller's environment.  A declared seat passes through for the server-side identity check;
-        # it never re-enables the helper.  The helper stays wired for chat/board/recall (above).
+    def test_simple_git_wrapper_runs_the_helper_only_when_a_trusted_one_is_installed(self):
+        # A host that HAS the helper (this suite's fake home does) gets simple-git wired like chat, board
+        # and recall:  the helper runs first, with the command name, and fails closed.  A seat declared in
+        # the generating process's environment changes nothing:  the wrapper text is the same.
+        helper = str(self.home / ".config/fleet-cli/seat-remote-defaults.py")
+        line = f"import runpy\nrunpy.run_path({helper!r}, init_globals={{'fleet_command': 'simple-git'}})\n"
         with mock.patch.dict(os.environ, {"AGENT_SEAT": "KELVIN"}):
             text = release.wrapper(self.home, "scripts/simple-git").decode()
-        self.assertNotIn("runpy", text)
-        self.assertNotIn("seat-remote-defaults", text)
+        self.assertIn(line, text)
+        self.assertLess(text.index("from pathlib import Path"), text.index(line))
+        self.assertLess(text.index(line), text.index("release = Path("))
+        self.assertEqual(text, release.wrapper(self.home, "scripts/simple-git").decode())
         self.assertNotIn(".secrets", text)
+        # No helper, or a symlinked one:  the plain wrapper, with no helper read and no credential path.
+        helper_file = self.home / ".config/fleet-cli/seat-remote-defaults.py"
+        helper_file.unlink()
+        plain = release.wrapper(self.home, "scripts/simple-git").decode()
+        self.assertNotIn("runpy", plain)
+        self.assertIn("os.execv(argv[0], argv)", plain)
+        helper_file.symlink_to(self.home / "elsewhere")
+        self.assertNotIn("runpy", release.wrapper(self.home, "scripts/simple-git").decode())
 
     def test_a_host_without_the_helper_keeps_plain_wrappers(self):
         helper = self.home / ".config/fleet-cli/seat-remote-defaults.py"
         helper.unlink()
-        for name in ("simple-chat", "simple-board", "recall"):
+        for name in ("simple-chat", "simple-board", "simple-git", "recall"):
             text = release.wrapper(self.home, "scripts/" + name).decode()
             self.assertNotIn("runpy", text, name)
             self.assertIn("os.execv(argv[0], argv)", text, name)
@@ -1251,11 +1262,12 @@ class ShippedDataFilesTests(unittest.TestCase):
             with self.assertRaisesRegex(release.Refused, "bad_file_set"):
                 release.decode_bundle(json.dumps(bundle).encode())
 
-    def test_git_tools_are_not_helper_commands(self):
-        # Each simple-git user supplies their OWN bearer and the server decides identity and
-        # permissions from it:  simple-git is not a helper command.  The generated-wrapper half of
-        # this contract is ReleaseTests.test_simple_git_wrapper_never_runs_the_helper.
-        self.assertNotIn("scripts/simple-git", release.HELPER_COMMANDS)
+    def test_only_the_git_entry_wrapper_is_a_helper_command(self):
+        # A seat that declares itself gets its OWN bearer from the host helper; an undeclared caller
+        # supplies its own, and the server decides identity and permissions from the bearer.  The
+        # implementation file is never wired:  only the installed entry command is.  The generated-wrapper
+        # half is ReleaseTests.test_simple_git_wrapper_runs_the_helper_only_when_a_trusted_one_is_installed.
+        self.assertEqual(release.HELPER_COMMANDS.get("scripts/simple-git"), "simple-git")
         self.assertNotIn("scripts/git-tools/git", release.HELPER_COMMANDS)
 
 
