@@ -203,11 +203,11 @@ test("the Infisical /linear names are the live LINEAR_<SEAT>_CLIENT_* names for 
 });
 
 // MA: its cached token was refused (401) at check time;  BF-ENGINEER and BF-TRADER had no token to read.
-const HELD_BACK = Object.freeze(["BF-ENGINEER", "BF-TRADER"]); // prepared but not enabled until their own viewer is qualified;  the other 20 are on
-test("the 22 own-app seats have prepared names, 20 are enabled (BF-ENGINEER and BF-TRADER held back), and none share a pair", async () => {
+const HELD_BACK = Object.freeze(["BF-ENGINEER", "BF-TRADER", "OPERATOR"]); // BF pair: prepared but not enabled until their own viewer is qualified;  OPERATOR: viewer qualified but no hosted auth route (not in KNOWN_SEATS or the bearer tables), so nothing can sign in as it;  the other 21 are on
+test("the 24 own-app seats have prepared names, 21 are enabled (BF-ENGINEER, BF-TRADER and OPERATOR held back), and none share a pair", async () => {
   const L = await import("../src/linear.js");
   const own = Object.keys(L.OWN_APP_LINEAR_PREFIXES);
-  assert.equal(own.length, 22);
+  assert.equal(own.length, 24);
   assert.ok(!own.includes("BF-BUILDER") && !Object.hasOwn(L.LINEAR_SECRETS, "BF-BUILDER") && !L.LINEAR_SEATS.includes("BF-BUILDER"));
   for (const seat of own) {
     assert.ok(Object.hasOwn(L.LINEAR_SECRETS, seat) && Object.hasOwn(L.LINEAR_INFISICAL, seat), seat);
@@ -215,7 +215,7 @@ test("the 22 own-app seats have prepared names, 20 are enabled (BF-ENGINEER and 
     assert.deepEqual({ ...L.LINEAR_SECRETS[seat] }, { ...L.LINEAR_INFISICAL[seat] }, `${seat}: Worker and Infisical names agree`);
     assert.deepEqual({ ...L.linearSecretNames(seat) }, { ...L.LINEAR_SECRETS[seat] });
   }
-  assert.deepEqual([...L.LINEAR_OWN_APP_ENABLED].sort(), own.filter((x) => !HELD_BACK.includes(x)).sort(), "every own-app seat but the held-back two is switched on");
+  assert.deepEqual([...L.LINEAR_OWN_APP_ENABLED].sort(), own.filter((x) => !HELD_BACK.includes(x)).sort(), "every own-app seat but the held-back three is switched on");
   const ids = new Map();
   for (const [seat, names] of Object.entries(L.LINEAR_INFISICAL)) {
     if (seat === "JET-CHAT") continue; // the one deliberate JET/JET-CHAT share, unchanged
