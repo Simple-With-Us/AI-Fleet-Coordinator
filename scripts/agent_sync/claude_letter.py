@@ -1064,10 +1064,15 @@ def on_start(chat: Chat, data: Mapping[str, Any], stdout: TextIO, home: str) -> 
     fix = _agent_title_fix(chat, note)
     chat.write(note)
     settable = source in TITLE_SOURCES and title != current
+    # A concrete rename (the app record's own title, read back) says exactly what to set, so it
+    # replaces the generic check-the-title line;  without one, the generic line still fires.
     _hook_out(
         stdout,
         "SessionStart",
-        context=_reissued(answer) + reminder(note) + _title_check(answer, label),
+        context=_join_context(
+            _reissued(answer) + reminder(note) + ("" if fix else _title_check(answer, label)),
+            fix,
+        ),
         title=title if settable else None,
     )
     return 0
