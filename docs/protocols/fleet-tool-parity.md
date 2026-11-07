@@ -93,6 +93,20 @@ What "current" means for a vendor CLI is one constant, `VENDOR_CURRENCY_POLICY`,
 
 Each host document carries `schemaVersion` 1, `host`, `generatedAt`, `doctorCommit`, `expected` (the tip and how it was read) and its rows.  A reader treats a report older than 45 minutes, a missing or malformed file, or any other `schemaVersion` as unknown, and leaves `harness`, `human-tree` and `presence` rows out of its verdict.  A `presence` row (`command:`, `tool-file:`, and `catalog:` on the server) only says a command or file exists, so its `current` means present;  every fleet tool's currency, a missing one included, is on its `tool:` row.
 
+### The app-process report (AFC-576)
+
+The same run also writes `~/.local/state/fleet-tools/app-processes.json` beside the report, 0600 and atomically:  every fleet app's processes on the Mac and on the server, which Muster's App Processes panel reads.  The scan is `scripts/fleet_app_processes.py`, which the doctor loads by path.  There is no second scheduler and no second route.  The server's forced command runs the doctor with `--json` and nothing else, so on the server `--json` always carries the scan as `appProcesses`;  the Mac takes it out of the server's half, so it never enters `report.json`, and writes it beside the Mac's own scan.
+
+```json
+{"schemaVersion": 1, "tool": "fleet-app-processes", "generatedAt": "<UTC>",
+ "apps": [{"acronym": "BF", "displayName": "BotFleet.app"}],
+ "hosts": [{"host": "mac", "reachable": true, "error": null, "generatedAt": "<UTC>", "complete": true, "truncated": false, "notes": [],
+            "processes": [{"app": "BF", "pid": 501, "executable": "node", "launchdLabel": "app.botfleet.server", "state": "sleeping", "startedAt": "<UTC>", "matchedBy": "launchd label"}]},
+           {"host": "server", "reachable": false, "error": "the server's doctor does not carry a process scan yet (its runtime may be behind)", "processes": []}]}
+```
+
+A row carries only the app, pid, executable, launchd label, pm2 name or systemd unit, state, start time and what matched it.  A process's argv and environment are never read:  `ps` is asked for the kernel's short command name (`comm`, or `ucomm` on the Mac), the executable comes from `/proc/<pid>/exe` on Linux, a pm2 name from pm2's pid files rather than `pm2 jlist`, and the Mac rebuilds every row the server sends from that list of keys.  A process belongs to an app by an identity in the module's rules, by the app's own name at the start of one of those identities, or because its parent does;  a process that matches no app is not written down.  Apps that run in Coolify containers are under Server Status, not here.  A reader treats a report older than 45 minutes, a missing or malformed file, or any other `schemaVersion` as not known;  a host that was not reached, or was read only in part (`complete` false), says so, and an app with no process there reads as not known rather than as having none.  A scan that fails never fails the doctor.
+
 ### Changing A Report's Format
 
 Muster and the collectors it reads update on different tracks.  A collector moves within minutes of a merge:  the Mac's LaunchAgents run the managed runtime, which follows main every 120 seconds, and the server follows main on merge.  Muster moves when its release reaches the Mac through Sparkle (`muster/docs/AUTO-UPDATE.md`), up to an hour after the release is published and only once nothing in Muster is running.  A reader that accepts one version alone goes dark for that whole gap.  So a format change goes in this order, and never in one pull request:

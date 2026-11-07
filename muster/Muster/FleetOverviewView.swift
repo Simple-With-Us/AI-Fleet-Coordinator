@@ -189,7 +189,7 @@ struct FleetOverviewView: View {
             return PlaceHealthWords.badge(menu.server.health)
         case .overview, .macAgents, .driftHistory, .wakeAndListener, .seatDetail,
              .serverResourceLimits, .serverUpdates, .appsAndWork, .seats, .controls,
-             .hosts, .virtualMachines, .actionHistory:
+             .hosts, .appProcesses, .virtualMachines, .actionHistory:
             return nil
         }
     }
@@ -230,6 +230,8 @@ struct FleetOverviewView: View {
             OperationsView(part: .updates)
         case .hosts:
             FleetHostsView()
+        case .appProcesses:
+            AppProcessesView()
         case .virtualMachines:
             VirtualMachinesView()
         case .actionHistory:

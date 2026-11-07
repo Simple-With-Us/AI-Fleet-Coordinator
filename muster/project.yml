@@ -112,6 +112,7 @@ targets:
       - path: Muster/Model/FleetToolsReport.swift
       - path: Muster/Model/ServerStatusReport.swift
       - path: Muster/Model/VmStatusReport.swift
+      - path: Muster/Model/AppProcessesReport.swift
       - path: Muster/Model/WorkerHealthReport.swift
       - path: Muster/Model/MacServicesReport.swift
       - path: Muster/Model/HogHunterMacReport.swift
