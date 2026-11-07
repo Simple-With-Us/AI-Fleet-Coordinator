@@ -212,8 +212,10 @@ test("admin status distinguishes no traffic, mixed outcomes, readiness, and reta
     generatedAt: Date.parse("2026-10-09T20:07:00Z"),
   }).text();
   assert.match(mixed, /Recorded Failures/);
-  assert.match(mixed, /Last Recorded Success/);
-  assert.match(mixed, /Last Recorded Call/);
+  // Short labels on purpose:  the History Coverage line says successful reads are not
+  // recorded, and longer labels squeeze the card's value column at desktop width.
+  assert.match(mixed, /Last Success/);
+  assert.match(mixed, /Last Call/);
   assert.match(mixed, /Fri, Oct 9, 3:00pm/);
   assert.match(mixed, /Wait until the displayed reset time/);
   assert.match(mixed, /Retryable/);

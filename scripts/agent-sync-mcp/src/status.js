@@ -120,8 +120,8 @@ function seatSummary(seat, calls, diagnostics, generatedAt, diagnosticsUnavailab
 <dt>Zulip Key</dt><dd>${seat.keyInstalled ? "Installed" : "Missing"}</dd>
 <dt>Member Role</dt><dd>${fieldUnavailable("role") ? "Unknown" : roleUnchecked ? "Not checked yet (checked on the seat's next call)" : seat.role.ok ? `Verified (${e.escape(seat.role.role ?? "member")})` : `Refused${seat.role.reason ? `: ${e.escape(seat.role.reason)}` : ""}`}</dd>
 <dt>Grant</dt><dd>${seat.grantsDeferred ? "Not checked" : fieldUnavailable("grants") ? "Unknown" : (seat.grants ?? []).length ? `${(seat.grants ?? []).length} present` : "Missing"}</dd>
-<dt>Last Recorded Call</dt><dd>${last ? `${e.escape(e.time(last.ts))} · ${e.escape(last.tool ?? "unknown tool")}` : "No recent traffic"}</dd>
-<dt>Last Recorded Success</dt><dd>${success ? e.escape(e.time(success.ts)) : "None in retained sample"}</dd>
+<dt>Last Call</dt><dd>${last ? `${e.escape(e.time(last.ts))} · ${e.escape(last.tool ?? "unknown tool")}` : "No recent traffic"}</dd>
+<dt>Last Success</dt><dd>${success ? e.escape(e.time(success.ts)) : "None in retained sample"}</dd>
 <dt>Last Error</dt><dd>${error ? `${e.escape(e.time(error.ts))} · ${e.escape(error.error_code ?? error.outcome ?? error.verdict ?? "error")}` : "None in retained sample"}</dd>
 <dt>Linear</dt><dd>${seat.linearEnabled ? "Enabled" : "Disabled"}; ${seat.linearConfigured ? "credential configured" : "credential missing"}; ${seat.linearWrites ? "writes enabled" : "writes disabled"}</dd>
 <dt>Fleet Recall</dt><dd>${seat.recallConfigured ? "credential configured" : "not configured"}</dd></dl></article>`;
