@@ -38,6 +38,25 @@ final class FailureReasonTests: XCTestCase {
         XCTAssertTrue(FailureReason.display(reason).isShortened)
     }
 
+    func testLinesTheCharacterCapRemovesWholeAreCounted() {
+        // Six lines, within the line cap, but 1805 characters:  the last 600 hold the end of
+        // line 5 and all of line 6, so lines 1 to 4 are gone and line 5 is cut.
+        let reason = (1...6).map { String(repeating: "\($0)", count: 300) }.joined(separator: "\n")
+        let shownLines = FailureReason.shown(reason).components(separatedBy: "\n")
+        XCTAssertEqual(shownLines.count, 3)
+        XCTAssertEqual(shownLines[0], "\u{2026} 4 earlier lines not shown")
+        XCTAssertEqual(shownLines[1], "\u{2026}" + String(repeating: "5", count: 299))
+        XCTAssertEqual(shownLines[2], String(repeating: "6", count: 300))
+    }
+
+    func testALineTheCapRemovesUpToItsLineBreakIsCountedAndNotCut() {
+        // 299 + 1 + 299 + 1 + 299 characters:  the last 299 are line 3 alone, so the removed
+        // part ends exactly at line 2's end and both earlier lines are counted.
+        let reason = (1...3).map { String(repeating: "\($0)", count: 299) }.joined(separator: "\n")
+        let shown = FailureReason.shown(reason, characters: 300)
+        XCTAssertEqual(shown, "\u{2026} 2 earlier lines not shown\n" + String(repeating: "3", count: 299))
+    }
+
     func testWhatIsShownIsBoundedHoweverTheReasonIsShaped() {
         let reasons = [
             String(repeating: "y", count: 20_000),

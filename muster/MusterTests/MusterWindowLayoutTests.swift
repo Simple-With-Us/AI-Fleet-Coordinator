@@ -2,26 +2,28 @@ import AppKit
 import SwiftUI
 import XCTest
 
-/// The main window's layout:  a panel taller than the window scrolls inside its column, and the
-/// tops of both columns stay reachable.
+/// The main window's layout, and the stale saved split-view frames the app forgets.
 ///
 /// The owner's report (November 6, 2026):  both the sidebar and the detail were pushed up off
 /// the window's top, under the title bar, and neither could be scrolled back to its first rows.
-/// The harness hosts the window root's shape (a sidebar List, a detail column with a strip
-/// over a ScrollView far taller than the window) in a real window, in two layouts:
+/// The owner's Mac had the split view's columns saved at 1085 pt for a 760-pt window, and the
+/// `oversizedSplitViewFrameKeys` tests below check that the app forgets exactly such frames.
+/// Those are the only tests here that fail without the fix.
+///
+/// The layout tests host the window root's shape (a sidebar List, a detail column with a strip
+/// over a ScrollView far taller than the window) in a plain window with stand-in panels, not
+/// the app's `WindowGroup` window, and with no saved split-view frames, in two layouts:
 ///
 /// - `original`:  the root the bug was reported on, the split view in an overlay of a sized
-///   `Color.clear`, with no column cap.  This is the control:  it should show the overflow.
+///   `Color.clear`, with no column cap.  This is the control.
 /// - `fixed`:  the root `FleetOverviewView` uses now, the split view itself sized by
 ///   `musterWindowSize`, each column capped by `musterColumnHeight`.
 ///
-/// On the CI runner (macOS 26) the control does NOT show the overflow:  the original root lays
-/// out exactly as the fixed one does, hosted by an NSHostingController or an NSHostingView, at
-/// the window's size or restored from a frame taller than the screen.  So this harness does
-/// not reproduce the owner's bug, the fixed run proves only that the new root keeps its
-/// columns inside the window, and the control is recorded as an expected failure until a
-/// harness reproduces the bug.  Each run prints its measurements (`[window layout]` in the test
-/// log), and attaches a screenshot to the test results when a run keeps a result bundle.
+/// On the CI runner (macOS 26) the two lay out exactly the same and neither overflows, so the
+/// layout tests check that the new root is sound (its columns stay inside the window, scroll,
+/// and start below the title bar), not that it fixes the bug.  They are not a regression guard
+/// for it.  Each run prints its measurements (`[window layout]` in the test log), and attaches a
+/// screenshot to the test results when a run keeps a result bundle.
 @MainActor
 final class MusterWindowLayoutTests: XCTestCase {
     private enum Layout: String {
@@ -101,19 +103,25 @@ final class MusterWindowLayoutTests: XCTestCase {
     /// A window height that fits the runner's screen, so the window server does not shrink it.
     private var height: CGFloat {
         let screen = NSScreen.main?.visibleFrame.height ?? 700
-        return max(MusterWindowLayout.minHeight + 60, min(700, screen - 40)).rounded(.down)
+        return min(700, screen - 40).rounded(.down)
     }
 
-    private func host(_ layout: Layout) -> (NSWindow, NSHostingController<Harness>) {
+    private func host(_ layout: Layout) throws -> (NSWindow, NSHostingController<Harness>) {
         _ = NSApplication.shared
+        // The window must fit above the root's minimum plus the title bar, or the window
+        // server and the minimum disagree and every measurement is off.
+        guard height >= MusterWindowLayout.minHeight + 60 else {
+            throw XCTSkip("The runner's screen is too short (\(height) pt) for a window above the minimum.")
+        }
         let size = NSSize(width: MusterWindowLayout.minWidth, height: height)
         let window = NSWindow(contentRect: NSRect(origin: .zero, size: size),
                               styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
                               backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         let hosting = NSHostingController(rootView: Harness(layout: layout))
-        // Like the app's window, which opens at its default size and keeps it:  the hosting
-        // controller enforces the root's minimum and does not resize the window to its ideal.
+        // Chosen to match the app's window, which opens at its default size and keeps it, and
+        // not verified against the scene's window:  the hosting controller enforces the root's
+        // minimum and does not resize the window to its ideal.
         hosting.sizingOptions = [.minSize]
         window.contentViewController = hosting
         window.setContentSize(size)
@@ -173,8 +181,17 @@ final class MusterWindowLayoutTests: XCTestCase {
         add(attachment)
     }
 
-    func testWindowTakesItsOwnMinimumNotAPanelsHeight() throws {
-        let (window, hosting) = host(.fixed)
+    /// The sidebar's scroll view is the narrowest one.
+    private func sidebarScroll(_ window: NSWindow) throws -> NSScrollView {
+        let content = try XCTUnwrap(window.contentView)
+        return try XCTUnwrap(scrollViews(in: content).min { $0.frame.width < $1.frame.width },
+                             "no NSScrollView found for the sidebar")
+    }
+
+    /// The root frame sets the window's minimum, with a 1400-pt stand-in panel inside.  The
+    /// original root passes this too, so it says nothing about the owner's bug.
+    func testRootFrameSetsTheWindowMinimum() throws {
+        let (window, hosting) = try host(.fixed)
         defer { window.close() }
         let content = try XCTUnwrap(window.contentView)
         XCTAssertEqual(content.bounds.height, height, accuracy: 1, "the window did not keep the size it was given")
@@ -182,12 +199,12 @@ final class MusterWindowLayoutTests: XCTestCase {
         let titleBar = content.bounds.height - window.contentLayoutRect.height
         let minimum = hosting.sizeThatFits(in: .zero)
         XCTAssertEqual(minimum.height, MusterWindowLayout.minHeight + titleBar, accuracy: 2,
-                       "the root's minimum height is not the window's own, whatever the panel's height")
+                       "the root's minimum height is not the window's own")
         XCTAssertEqual(minimum.width, MusterWindowLayout.minWidth, accuracy: 1)
     }
 
     func testFixedColumnsStayInsideTheWindowAndScroll() throws {
-        let (window, _) = host(.fixed)
+        let (window, _) = try host(.fixed)
         defer { window.close() }
         attachScreenshot(window, "fixed")
         let content = try XCTUnwrap(window.contentView)
@@ -202,18 +219,82 @@ final class MusterWindowLayoutTests: XCTestCase {
         let top = try documentTop(detail)
         XCTAssertLessThanOrEqual(top, window.contentLayoutRect.maxY + 1, "the panel's top is under the title bar")
         XCTAssertGreaterThan(top, window.contentLayoutRect.minY)
+        // The sidebar may run under the title bar, but its first row must start below it
+        // (the document's top already counts the scroll view's top inset).
+        let sidebarTop = try documentTop(try sidebarScroll(window))
+        XCTAssertLessThanOrEqual(sidebarTop, window.contentLayoutRect.maxY + 1,
+                                 "the sidebar's first row is under the title bar")
+        XCTAssertGreaterThan(sidebarTop, window.contentLayoutRect.minY)
     }
 
-    /// Control:  the root the bug was reported on should show it.  It does not on the CI runner
-    /// (see the type's comment), so the failure is expected and not strict:  if a later harness
-    /// or runner does reproduce the overflow, this passes too, and the expectation can go.
-    func testOriginalRootReproducesTheOverflow() throws {
-        let (window, _) = host(.original)
+    /// Control:  the root the bug was reported on, laid out the same way.  On the CI runner it
+    /// does not overflow (see the type's comment), so the overflow assertion is an expected
+    /// failure, and a strict one:  if a later runner or harness does reproduce the overflow,
+    /// this test fails and says so, and the harness can then guard the fix.
+    func testOriginalRootControl() throws {
+        let (window, _) = try host(.original)
         defer { window.close() }
         attachScreenshot(window, "original")
-        XCTExpectFailure("The harness does not reproduce the owner's overflow on the CI runner.", strict: false)
+        // Found before the expected failure, so a harness that finds no scroll view still fails.
         let top = try documentTop(try detailScroll(window))
+        XCTExpectFailure("The harness does not reproduce the owner's overflow on the CI runner.", strict: true)
         XCTAssertGreaterThan(top, window.contentLayoutRect.maxY + 1,
                              "the original root did not overflow; the harness does not reproduce the bug")
+    }
+
+    // MARK: - Stale saved split-view frames
+
+    private let splitKey = "NSSplitView Subview Frames muster-main-AppWindow-1, SidebarNavigationSplitView"
+    private let windowKey = "NSWindow Frame muster-main-AppWindow-1"
+
+    private func columns(height: Int) -> [String] {
+        ["0.000000, 0.000000, 230.000000, \(height).000000, NO, NO",
+         "230.000000, 0.000000, 930.000000, \(height).000000, NO, NO"]
+    }
+
+    /// The owner's Mac on November 6:  a 760-pt window with its columns saved at 1085 pt.
+    func testAColumnFrameSavedTallerThanItsWindowIsStale() {
+        let saved: [String: Any] = [windowKey: "176 102 1160 760 0 0 1512 944 ", splitKey: columns(height: 1085)]
+        XCTAssertEqual(MusterWindowLayout.oversizedSplitViewFrameKeys(in: saved, screenHeight: 944), [splitKey])
+    }
+
+    func testAColumnFrameThatFitsItsWindowIsKept() {
+        let saved: [String: Any] = [windowKey: "176 102 1160 760 0 0 1512 944 ", splitKey: columns(height: 760)]
+        XCTAssertEqual(MusterWindowLayout.oversizedSplitViewFrameKeys(in: saved, screenHeight: 944), [])
+    }
+
+    func testWithNoSavedWindowTheTallestScreenIsTheLimit() {
+        XCTAssertEqual(MusterWindowLayout.oversizedSplitViewFrameKeys(
+            in: [splitKey: columns(height: 1085)], screenHeight: 944), [splitKey])
+        XCTAssertEqual(MusterWindowLayout.oversizedSplitViewFrameKeys(
+            in: [splitKey: columns(height: 900)], screenHeight: 944), [])
+        XCTAssertEqual(MusterWindowLayout.oversizedSplitViewFrameKeys(
+            in: [splitKey: columns(height: 1085)], screenHeight: nil), [])
+    }
+
+    func testValuesOfAnotherShapeAreLeftAlone() {
+        let saved: [String: Any] = [windowKey: "not a frame", splitKey: ["garbage"],
+                                    "NSSplitView Subview Frames other": 42]
+        XCTAssertEqual(MusterWindowLayout.oversizedSplitViewFrameKeys(in: saved, screenHeight: 944), [])
+    }
+
+    func testForgettingRemovesOnlyTheStaleFrame() throws {
+        let suite = "MusterWindowLayoutTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        // A window name of the test's own, and `contains`, not equality:  a suite's search list
+        // also reaches domains this test does not own, which the test host may write to.
+        let split = "NSSplitView Subview Frames layout-test-AppWindow-1, SidebarNavigationSplitView"
+        let frame = "NSWindow Frame layout-test-AppWindow-1"
+        defaults.set("176 102 1160 760 0 0 1512 944 ", forKey: frame)
+        defaults.set(columns(height: 1085), forKey: split)
+        defaults.set("overview", forKey: "layoutTestSelection")
+        XCTAssertTrue(MusterWindowLayout.forgetOversizedSplitViewFrames(in: defaults, screenHeight: 944)
+            .contains(split))
+        XCTAssertNil(defaults.object(forKey: split))
+        XCTAssertNotNil(defaults.object(forKey: frame))
+        XCTAssertEqual(defaults.string(forKey: "layoutTestSelection"), "overview")
+        XCTAssertFalse(MusterWindowLayout.forgetOversizedSplitViewFrames(in: defaults, screenHeight: 944)
+            .contains(split))
     }
 }
