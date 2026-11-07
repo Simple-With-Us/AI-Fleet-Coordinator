@@ -7,23 +7,26 @@ import XCTest
 ///
 /// The report:  both columns came up shifted up by about 100 to 140 pt, their first rows under
 /// the title bar, where no scrolling reached.  PR 1442 (an experiment on the CI runner, never
-/// merged) found the trigger:  wrapping text with a vertical `fixedSize` outside the panel's
-/// ScrollView, such as the place strip's source line.  Measured at a zero-width proposal it
-/// wraps about one character per line, so the strip's minimum height was 1032 pt for Seat
-/// Setup's line.  The split view took that minimum (1085 pt in all), and the old root centred
-/// it over the window, so its top ran above the title bar.  The column cap
-/// (`musterColumnHeight`) keeps each column's minimum at zero, and that is the fix.  The
-/// top-aligned root alone is not:  without the cap the split view still runs off the bottom.
+/// merged) reproduced that in this kind of harness, with wrapping text with a vertical
+/// `fixedSize` outside the panel's ScrollView, such as the place strip's source line.
+/// Measured at a zero-width proposal it wraps about one character per line, so the strip's
+/// minimum height was 1032 pt for Seat Setup's line.  The split view took that minimum (1085
+/// pt in all, the column height saved on the owner's Mac), and the old root centred it over
+/// the window, so its top ran above the title bar.  The column cap (`musterColumnHeight`)
+/// keeps each column's minimum at zero, and that is the fix.  The top-aligned root alone is
+/// not:  without the cap the split view still runs off the bottom.
 ///
-/// The harness hosts a copy of the window's root in a plain window at the app's default size
+/// The harness hosts the window's root in a plain window at the app's default size
 /// (1160 x 760), with stand-in panels and the strip as it was before this fix.  It is not the
-/// app's `WindowGroup` scene, which no test here runs.  Three roots:
+/// app's `WindowGroup` scene, which no test here runs, and the test bundle does not compile
+/// `FleetOverviewView`.  Three roots:
 ///
 /// - `original`:  the root the bug was reported on, the split view in an overlay of a sized
 ///   `Color.clear`, with no column cap.  It must overflow:  this is the control that shows the
 ///   harness reproduces the bug.
-/// - `production`:  the root `FleetOverviewView` uses, `musterWindowSize` with each column
-///   capped by `musterColumnHeight`.  It must keep both columns inside the window.
+/// - `production`:  `MusterMainSplit` (which caps each column with `musterColumnHeight`)
+///   inside `musterWindowSize`, the same two pieces `FleetOverviewView` builds its window
+///   from.  It must keep both columns inside the window.
 /// - `uncapped`:  `musterWindowSize` without the cap.  It must overflow off the bottom, which
 ///   shows the cap is load-bearing.
 ///
@@ -137,40 +140,45 @@ final class MusterWindowLayoutTests: XCTestCase {
                            maxWidth: .infinity,
                            minHeight: MusterWindowLayout.minHeight, idealHeight: MusterWindowLayout.idealHeight,
                            maxHeight: .infinity)
-                    .overlay { split(capped: false) }
+                    .overlay { uncappedSplit }
             case .production:
-                split(capped: true)
-                    .musterWindowSize()
+                // The app's own split view and root frame (Views/MusterWindowLayout.swift).
+                MusterMainSplit {
+                    Sidebar()
+                        .navigationTitle("Muster")
+                } detail: {
+                    detail
+                }
+                .musterWindowSize()
             case .uncapped:
-                split(capped: false)
+                uncappedSplit
                     .musterWindowSize()
             }
         }
 
-        private func split(capped: Bool) -> some View {
+        /// `MusterMainSplit` without the column cap:  the counterfactual the control and the
+        /// guard need, which the app never builds.
+        private var uncappedSplit: some View {
             NavigationSplitView {
                 Sidebar()
-                    .modifier(Cap(on: capped))
                     .navigationTitle("Muster")
-                    .navigationSplitViewColumnWidth(min: 200, ideal: 230, max: 300)
+                    .navigationSplitViewColumnWidth(min: MusterWindowLayout.sidebarMinWidth,
+                                                    ideal: MusterWindowLayout.sidebarIdealWidth,
+                                                    max: MusterWindowLayout.sidebarMaxWidth)
             } detail: {
-                Detail(strip: strip, place: place, source: source)
-                    .modifier(Cap(on: capped))
-                    .navigationTitle("Seat Setup")
-                    .navigationSubtitle("On The Mac")
-                    .toolbar {
-                        ToolbarItem {
-                            Button {} label: { Label("Check Seat Setup", systemImage: "checkmark.shield") }
-                        }
-                    }
+                detail
             }
         }
-    }
 
-    private struct Cap: ViewModifier {
-        let on: Bool
-        @ViewBuilder func body(content: Content) -> some View {
-            if on { content.musterColumnHeight() } else { content }
+        private var detail: some View {
+            Detail(strip: strip, place: place, source: source)
+                .navigationTitle("Seat Setup")
+                .navigationSubtitle("On The Mac")
+                .toolbar {
+                    ToolbarItem {
+                        Button {} label: { Label("Check Seat Setup", systemImage: "checkmark.shield") }
+                    }
+                }
         }
     }
 
@@ -403,21 +411,39 @@ final class MusterWindowLayoutTests: XCTestCase {
         XCTAssertLessThan(real.height, 80, "the app's strip claims more than three caption lines")
     }
 
-    /// Every panel's source line fits the strip at the narrowest detail column (the window's
-    /// 1160-pt minimum less the sidebar's 300-pt maximum) without being cut:  the app's strip,
-    /// held to three lines, is as tall there as the old strip, which never cut a line.
-    func testEverySourceLineFitsTheStripAtTheNarrowestDetail() {
-        let inputs = PlaceSourceInputs(servicesReadAt: Date(), serverStatus: nil, seatCheckAt: Date())
-        let proposal = NSSize(width: MusterWindowLayout.minWidth - 300, height: 2000)
-        for destination in MusterDestination.allCases {
-            guard let place = destination.place, let source = destination.sourceLine(inputs) else { continue }
-            let old = NSHostingController(rootView: OldPlaceStrip(place: place, source: source))
-                .sizeThatFits(in: proposal)
-            let real = NSHostingController(rootView: PlaceStrip(place: place, source: source))
-                .sizeThatFits(in: proposal)
-            XCTAssertEqual(real.height, old.height, accuracy: 1,
-                           "\(destination.rawValue)'s source line is cut at the narrowest detail column")
+    /// Every panel's source line fits on one line at the narrowest detail column (the window's
+    /// minimum width less the sidebar's maximum), with its sources unread and read, the
+    /// server's line with both of its times.  So the three-line limit cuts none of them:  the
+    /// app's strip is also as tall there as the old strip, which never cut a line.
+    func testEverySourceLineFitsOnOneLineAtTheNarrowestDetail() {
+        var server = ServerStatusReading()
+        server.generatedAt = Date()
+        server.copiedAt = Date()
+        let inputSets = [
+            PlaceSourceInputs(),
+            PlaceSourceInputs(servicesReadAt: Date(), serverStatus: server, seatCheckAt: Date()),
+        ]
+        let narrowest = MusterWindowLayout.minWidth - MusterWindowLayout.sidebarMaxWidth
+        let proposal = NSSize(width: narrowest, height: 2000)
+        var checked = 0
+        for inputs in inputSets {
+            for destination in MusterDestination.allCases {
+                guard let place = destination.place, let source = destination.sourceLine(inputs) else { continue }
+                let oneLine = NSHostingController(rootView: PlaceStrip(place: place, source: "One line."))
+                    .sizeThatFits(in: proposal)
+                let old = NSHostingController(rootView: OldPlaceStrip(place: place, source: source))
+                    .sizeThatFits(in: proposal)
+                let real = NSHostingController(rootView: PlaceStrip(place: place, source: source))
+                    .sizeThatFits(in: proposal)
+                XCTAssertEqual(real.height, oneLine.height, accuracy: 1,
+                               "\(destination.rawValue)'s line wraps at the narrowest detail column: \(source)")
+                XCTAssertEqual(real.height, old.height, accuracy: 1,
+                               "\(destination.rawValue)'s source line is cut at the narrowest detail column")
+                checked += 1
+            }
         }
+        print("[window layout] source lines checked at \(fmt(proposal.width)) pt: \(checked)")
+        XCTAssertGreaterThan(checked, 20, "too few source lines were checked")
     }
 
     /// The root frame sets the window's minimum, whatever the panel inside asks for.
@@ -437,8 +463,9 @@ final class MusterWindowLayoutTests: XCTestCase {
     // The owner's Mac had its split view's columns saved at 1085 pt for a 760-pt window.  That
     // is the height the overflowing split view took (1032 pt of strip and about 52 more), so
     // those frames were most likely saved while the window was overflowing:  a consequence of
-    // the bug, not its cause (PR 1442 seeded them in a harness and nothing changed).  The app
-    // still forgets such frames at launch, which only clears what older builds saved.
+    // the bug, not its cause.  PR 1442 seeded them in its harness, with the split view's
+    // autosave name set, and the window did not overflow.  The app still forgets such frames
+    // at launch, which only clears what older builds saved.
 
     private let splitKey = "NSSplitView Subview Frames muster-main-AppWindow-1, SidebarNavigationSplitView"
     private let windowKey = "NSWindow Frame muster-main-AppWindow-1"

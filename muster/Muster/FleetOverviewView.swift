@@ -35,19 +35,23 @@ struct FleetOverviewView: View {
 
     /// The window's size is the window's own, and not the natural height of whichever panel is
     /// showing.  PR 1414 recorded panels asking for 1449 points (Tools And Worker Health) and
-    /// 1345 (Seats).  PR 1442 showed the 1449 comes from the place strip's line measured at
-    /// zero width (a 1344-point strip), not from the panel's content.  The root frame
-    /// (`musterWindowSize`) keeps the window's minimum,
-    /// wide enough for every panel's columns and short enough for any laptop screen, so the
-    /// window never grows to a panel's natural height, and it holds the split view to the
-    /// window's top.
+    /// 1345 (Seats).  In PR 1442's test harness the 1449 came from the place strip's line
+    /// measured at zero width (a 1344-point strip), not from the panel's content;  PR 1442 did
+    /// not measure the Seats figure.  The root frame (`musterWindowSize`) keeps the window's
+    /// minimum, wide enough for every panel's columns and short enough for any laptop screen,
+    /// so the window never grows to a panel's natural height, and it holds the split view to
+    /// the window's top.
     ///
     /// The owner's November 6 report (AFC-616) was both columns' first rows sitting above the
-    /// window's top, under the title bar, with no way to scroll to them.  The trigger was text
-    /// with a vertical `fixedSize` above the panel's ScrollView (the place strip's line, a
-    /// failure banner's reason):  measured at zero width it claimed a minimum taller than the
-    /// window, and the split view grew to it (PR 1442).  The column cap (`musterColumnHeight`)
-    /// on both columns is the fix, and `MusterWindowLayoutTests` fails without it.
+    /// window's top, under the title bar, with no way to scroll to them.  PR 1442 reproduced
+    /// this in a test harness, and its 1085-point split view matches the column height saved
+    /// on the owner's Mac:  text with a vertical `fixedSize` outside the panel's ScrollView
+    /// (for example the place strip's line before AFC-616, a failure banner's reason, or the
+    /// label above Apps & Work's list), measured at zero width, claimed a minimum taller than
+    /// the window, and the split view grew to it.  The column cap (`musterColumnHeight`) on
+    /// both columns is the fix.  `MusterWindowLayoutTests` hosts `MusterMainSplit` with
+    /// `musterWindowSize`, so it fails if either stops doing its part, but it does not compile
+    /// this view:  keep both here.
     var body: some View {
         splitView
             .musterWindowSize()
@@ -55,7 +59,8 @@ struct FleetOverviewView: View {
 
     private var splitView: some View {
         let menu = MachineMenu(MachineMenuInputs(admin: admin, monitor: monitor, watch: watch, router: router))
-        return NavigationSplitView {
+        // MusterMainSplit caps both columns (musterColumnHeight) and sets the sidebar's widths.
+        return MusterMainSplit {
             List(selection: $destination) {
                 Section {
                     sidebarRow(.overview, menu: menu)
@@ -66,9 +71,7 @@ struct FleetOverviewView: View {
                     }
                 }
             }
-            .musterColumnHeight()
             .navigationTitle("Muster")
-            .navigationSplitViewColumnWidth(min: 200, ideal: 230, max: 300)
         } detail: {
             VStack(spacing: 0) {
                 if let place = destination.place {
@@ -103,7 +106,6 @@ struct FleetOverviewView: View {
                     footer
                 }
             }
-            .musterColumnHeight()
             .navigationTitle(destination.title)
             .navigationSubtitle(destination.subtitle)
             .toolbar {

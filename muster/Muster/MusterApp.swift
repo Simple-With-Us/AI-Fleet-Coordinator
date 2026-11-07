@@ -14,8 +14,9 @@ struct MusterApp: App {
     @MainActor
     init() {
         // Before the window opens:  forget any split-view column frame saved taller than its
-        // window.  Older builds saved such frames while the window overflowed (AFC-616);  they
-        // were a consequence, not the cause, and this only clears them
+        // window.  Older builds most likely saved such frames while the window overflowed
+        // (AFC-616);  they were most likely a consequence, not the cause, and this only
+        // clears them
         // (MusterWindowLayout.oversizedSplitViewFrameKeys).
         MusterWindowLayout.forgetOversizedSplitViewFrames(
             in: .standard, screenHeight: NSScreen.screens.map(\.frame.height).max())

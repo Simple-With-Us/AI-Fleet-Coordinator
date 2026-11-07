@@ -17,10 +17,11 @@ struct PlaceBadge: View {
 ///
 /// The line is held to three lines,  never sized to its full wrapped height.  The strip sits
 /// above the panel's ScrollView,  and a vertical `fixedSize` there let the line,  measured at
-/// zero width,  claim about one character per line:  1032 points for Seat Setup's line,
-/// which pushed the main window's columns under the title bar (AFC-616,  measured in PR 1442).
-/// Every panel's line fits on one line at the narrowest detail column,  so three is room to
-/// spare (`MusterWindowLayoutTests`).
+/// zero width,  claim about one character per line:  1032 points for Seat Setup's line.  In
+/// PR 1442's test harness that pushed the main window's columns under the title bar,  as the
+/// owner saw (AFC-616).  At the narrowest detail column every panel's line fits on one line,
+/// so three is room to spare.  `MusterWindowLayoutTests` checks this for each panel,  with
+/// the sources unread and read (the server's line with both of its times).
 struct PlaceStrip: View {
     let place: FleetPlace
     let source: String?

@@ -14,6 +14,11 @@ enum MusterWindowLayout {
     /// A column's natural height.  It stays under the window's minimum less the toolbar,
     /// so no column can ask the window for more room than that minimum.
     static let columnIdealHeight: CGFloat = 400
+    /// The sidebar's widths.  The narrowest detail column is the window's minimum width less
+    /// the sidebar's maximum (`MusterWindowLayoutTests` measures the place strip there).
+    static let sidebarMinWidth: CGFloat = 200
+    static let sidebarIdealWidth: CGFloat = 230
+    static let sidebarMaxWidth: CGFloat = 300
 
     private static let splitViewFramesPrefix = "NSSplitView Subview Frames "
 
@@ -22,9 +27,10 @@ enum MusterWindowLayout {
     /// AppKit saves the split view's column frames in the app's defaults, under
     /// `NSSplitView Subview Frames <window>, <split view>`.  On the owner's Mac (read
     /// November 6, 2026) the window's saved frame was 760 pt tall but its columns were saved
-    /// at 1085 pt:  exactly the height the split view took while it overflowed (PR 1442), so
-    /// the frames were most likely saved by the bug, not its cause.  Seeding them in PR 1442's
-    /// harness changed nothing.  A column is never meant to be taller than its window, so
+    /// at 1085 pt:  exactly the height the split view took while it overflowed in PR 1442's
+    /// test harness, so the frames were most likely saved by the bug, not its cause.  Seeding
+    /// them in that harness, with the split view's autosave name set, did not make the window
+    /// overflow.  A column is never meant to be taller than its window, so
     /// such a frame is stale, and forgetting it only clears what older builds saved.  The fix
     /// is the column cap (`musterColumnHeight`).
     ///
@@ -77,17 +83,48 @@ enum MusterWindowLayout {
     }
 }
 
+/// The main window's split view:  the sidebar and the detail column, each capped by
+/// `musterColumnHeight`, with the sidebar's widths.  `FleetOverviewView` builds its window
+/// from this, and `MusterWindowLayoutTests` hosts this same view, so the tests fail if either
+/// column loses its cap here.  They do not see `FleetOverviewView` itself, which the test
+/// bundle does not compile:  it must keep using this view and `musterWindowSize`.
+struct MusterMainSplit<Sidebar: View, Detail: View>: View {
+    private let sidebar: Sidebar
+    private let detail: Detail
+
+    init(@ViewBuilder sidebar: () -> Sidebar, @ViewBuilder detail: () -> Detail) {
+        self.sidebar = sidebar()
+        self.detail = detail()
+    }
+
+    var body: some View {
+        NavigationSplitView {
+            sidebar
+                .musterColumnHeight()
+                .navigationSplitViewColumnWidth(min: MusterWindowLayout.sidebarMinWidth,
+                                                ideal: MusterWindowLayout.sidebarIdealWidth,
+                                                max: MusterWindowLayout.sidebarMaxWidth)
+        } detail: {
+            detail
+                .musterColumnHeight()
+        }
+    }
+}
+
 extension View {
     /// A split-view column's height comes from the window, never from its content.
     ///
     /// This is the fix for the owner's November 6 report (AFC-616), where both columns sat
     /// under the title bar.  Text that wraps with a vertical `fixedSize` outside a panel's
-    /// ScrollView (the place strip's line, a failure banner's reason) is measured at zero
-    /// width, wraps about one character per line, and claims a huge minimum:  1032 pt for
-    /// Seat Setup's strip line.  Uncapped, the column passed that minimum to the split view,
-    /// which grew past the window (PR 1442 measured 1085 pt in a 760-pt window).  The cap
-    /// makes each column's minimum zero.  It is load-bearing:  without it even the
-    /// top-aligned root runs the split view off the bottom (`MusterWindowLayoutTests`).
+    /// ScrollView is measured at zero width, wraps about one character per line, and claims a
+    /// huge minimum.  Examples are the place strip's line before AFC-616 (1032 pt for Seat
+    /// Setup's), a failure banner's reason and the label above Apps & Work's list;  others
+    /// may exist.  Uncapped, the column passed that minimum to the split view, which grew past
+    /// the window.  PR 1442 reproduced this in a test harness, and its 1085-pt split view in a
+    /// 760-pt window matches the column height saved on the owner's Mac.  The cap makes each
+    /// column's minimum zero.  It is load-bearing:  without it even the top-aligned root runs
+    /// the split view off the bottom.  `MusterWindowLayoutTests` fails if this stops capping or
+    /// if `MusterMainSplit` stops applying it.
     func musterColumnHeight() -> some View {
         frame(minHeight: 0, idealHeight: MusterWindowLayout.columnIdealHeight,
               maxHeight: .infinity, alignment: .top)
