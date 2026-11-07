@@ -277,10 +277,12 @@ class SSHExchange:
 
 
 def backup_request_key(item: Mapping[str, Any]) -> str:
-    """The durable, deterministic reservation key for one bridge row's backup consult.
+    """The durable, deterministic review key for one bridge row's backup consult.
 
-    Single-use across restarts:  the ledger refuses it on any later attempt, which is the
-    second layer of the never-retry rule for a charged ambiguous outcome."""
+    It names the row in pending-review listings and logs.  It is NOT a reservation and reaches
+    neither the provider nor the spend ledger:  the never-reconsult fence for a charged row is
+    the decisions row's existence alone, so a row deleted by hand would be consulted (and
+    charged) again."""
     return hashlib.sha256(
         ("afc-649:%s:%s" % (item["source_seat"], item["id"])).encode()
     ).hexdigest()
@@ -382,8 +384,12 @@ class MacBridge:
 
     def _prompt_body(self, item: Mapping[str, Any], resources: list[dict[str, Any]]) -> str:
         """The consult prompt without the contract:  the OpenRouter backup sends the contract as
-        the request's system message (a request field wins over preset config per the documented
-        shallow merge), so the contract text must not also be embedded in the user message."""
+        the request's system message.  How that message combines with the preset's own system
+        prompt is NOT assumed here:  the documented preset shallow merge covers config fields
+        (model, temperature, provider, tools) and `messages` is transient - no config field -
+        so whether the preset's system prompt applies alongside the request's system message is
+        verified with a single probe call at activation, not claimed in code.  Either way the
+        contract text must not also be embedded in the user message."""
         trusted = {
             "source_seat": item["source_seat"],
             "message_id": item["id"],
@@ -408,18 +414,23 @@ class MacBridge:
     def _prompt(self, item: Mapping[str, Any], resources: list[dict[str, Any]]) -> str:
         return CONTRACT.read_text(encoding="utf-8") + self._prompt_body(item, resources)
 
-    def _consult_backup(self, item: Mapping[str, Any], model: str) -> tuple[str, Any]:
+    def _consult_backup(self, item: Mapping[str, Any], model: str) -> tuple[str, Any, list]:
         """One backup consult under the declared known-cap mode:  a tool-less OpenRouter call.
 
-        ("answered", parsed) - a definitive response came back (parsed may be None, which the
-            caller's validator settles as an invalid answer - a hold, never a retry).
-        ("ambiguous", None)  - the request was sent but no definitive response came back (a
-            timeout, a network failure, or a 5xx):  the caller retains the row pending review
+        ("answered", parsed, served) - a definitive response came back (parsed may be None,
+            which the caller's validator settles as an invalid answer - a hold, never a retry);
+            served is the response's served-model list, recorded and checked by the caller.
+        ("ambiguous", None, served)  - the request was sent but no definitive response came back
+            (a timeout, a network failure, or a 5xx):  the caller retains the row pending review
             and never retries, exactly the charged-ambiguous discipline the mode requires.
         A failure before any request reached the provider (the Operator key cannot be read, or a
         4xx rejection) raises BridgeBackupPending so the row stays pending and the cursor holds.
-        The backup never sends tools, and a preset-referencing model pins "tools": [] into the
-        request body so a dashboard-side edit cannot arm server-side tools for this call."""
+        The request never offers tools;  per the documented preset semantics a request's empty
+        tools array CANNOT disarm a preset's server-side tools (request and preset tools union),
+        so tools-off rests on the preset's own zero-tool configuration - verified by a person
+        with an authenticated preset read at activation, not by this code - backstopped by the
+        response-side refusal of any tool call."""
+        self._backup_served = []
         try:
             key = self.daemon.openrouter_key.get()
         except A.OpenRouterUnavailable as exc:
@@ -432,12 +443,14 @@ class MacBridge:
             key,
             system=CONTRACT.read_text(encoding="utf-8"),
         )
+        served = [m for m in (getattr(result, "models", None) or []) if isinstance(m, str) and m]
+        self._backup_served = served
         if result.error is None:
-            return "answered", result.parsed
+            return "answered", result.parsed, served
         status = result.http_status
         if status is not None and 400 <= status < 500:
             raise BridgeBackupPending("openrouter HTTP %d" % status)
-        return "ambiguous", None
+        return "ambiguous", None, served
 
     def _decide(
         self,
@@ -447,12 +460,21 @@ class MacBridge:
         *,
         consult_runtime: str = BM.MUSE,
         backup_model: str | None = None,
+        backup_expected_models: tuple | None = None,
     ) -> dict[str, Any]:
-        decision = self._decide_inner(item, binary, model, consult_runtime, backup_model)
+        decision = self._decide_inner(
+            item, binary, model, consult_runtime, backup_model, backup_expected_models
+        )
         if consult_runtime != BM.MUSE:
-            # The ledger and the log name which runtime answered, so a wake answered by the
-            # backup is never mistaken for one answered by the primary.
-            decision = dict(decision, runtime=consult_runtime)
+            # The ledger and the log name which runtime answered and which model served it, so a
+            # wake answered by the backup is never mistaken for one answered by the primary, and
+            # a preset silently serving a different model is visible in the durable row.  The
+            # bridge is serial, so the consult's served-model stash belongs to this decision.
+            decision = dict(
+                decision,
+                runtime=consult_runtime,
+                served_models=list(getattr(self, "_backup_served", None) or []),
+            )
         return decision
 
     def _decide_inner(
@@ -462,6 +484,7 @@ class MacBridge:
         model: str,
         consult_runtime: str,
         backup_model: str | None = None,
+        backup_expected_models: tuple | None = None,
     ) -> dict[str, Any]:
         source = item["source_seat"]
         if item.get("blocked") is True:
@@ -475,13 +498,14 @@ class MacBridge:
         if consult_runtime == BM.OPENROUTER:
             # The declared known-cap mode:  the capped primary is never invoked, and the backup
             # answers under the same contract, the same strict schema and the same validation.
-            outcome, parsed = self._consult_backup(item, backup_model or "")
+            outcome, parsed, served = self._consult_backup(item, backup_model or "")
             if outcome == "ambiguous":
                 # Charged with an ambiguous outcome - the provider may hold an answer we never
                 # read, so the row is NOT final:  it is retained pending review, never retried
-                # (the decisions row below blocks re-consult, and the ledger refuses the same
-                # request key), and never delivered.  The cursor can move past it because the
-                # state file is the durable retention;  independent rows are unaffected.
+                # (the decisions row below is the whole never-reconsult fence;  deleting that
+                # row by hand would re-charge), and never delivered.  The cursor can move past
+                # it because the state file is the durable retention;  independent rows are
+                # unaffected.
                 self.daemon.log.write(
                     "muse-bridge-backup-review-required",
                     seat=source,
@@ -494,6 +518,31 @@ class MacBridge:
                     "reason": "backup_consult_charged_ambiguous",
                     "review": "pending",
                     "request_key": backup_request_key(item),
+                    "model_attempted": True,
+                }
+            expected = list(backup_expected_models) if backup_expected_models else []
+            if expected and (
+                not served or any(entry not in expected for entry in served)
+            ):
+                # Charged with an answer from a model outside the declared expectation - a
+                # dashboard-side edit changed what the preset serves.  Same discipline as a
+                # charged ambiguous outcome:  retained pending review, never retried, never
+                # delivered;  the decisions row is the never-reconsult fence.
+                self.daemon.log.write(
+                    "muse-bridge-backup-review-required",
+                    seat=source,
+                    id=item["id"],
+                    reason="served_model_unexpected",
+                    served_models=served,
+                    request_key=backup_request_key(item),
+                    ledger=self.path,
+                )
+                return {
+                    "kind": "hold",
+                    "reason": "backup_consult_served_model_unexpected",
+                    "review": "pending",
+                    "request_key": backup_request_key(item),
+                    "served_models": list(served),
                     "model_attempted": True,
                 }
             # The backup returns the parsed decision object; validate it directly.  Routing
@@ -766,6 +815,9 @@ class MacBridge:
                             model,
                             consult_runtime=consult_runtime,
                             backup_model=decl.model if decl is not None else None,
+                            backup_expected_models=(
+                                decl.expected_models if decl is not None else None
+                            ),
                         )
                     except BridgeBackupPending as exc:
                         # A pre-charge backup failure after the claim:  unwind the claim so the
@@ -996,8 +1048,8 @@ def resolve_pending_review(root: str, seat: str, message_id: int) -> dict[str, A
 
     Reviewed means the operator accepts the row will not be answered by the backup:  the next
     tick finalizes it through the normal hold delivery path.  The consult is NEVER re-issued:
-    the decisions row keeps blocking re-consult, and the spend ledger refuses the same request
-    key, so no path from here re-charges the provider."""
+    the decisions row keeps blocking re-consult, which is the only fence - no request key
+    reaches the provider, so deleting the row by hand would consult (and charge) again."""
     path = os.path.join(L.listener_dir(root), STATE_NAME)
     with _state_file_lock(path):
         row = L.read_json(path)

@@ -2186,9 +2186,18 @@ def openrouter_request_body(model: str, system: str, user: str, schema: str) -> 
     No `tools`, no `tool_choice`, no `stream` and no plugin:  the model is offered nothing to call.
     `provider.require_parameters` makes OpenRouter refuse a provider that cannot honor the strict
     `response_format` (or the reasoning setting) instead of quietly dropping it.  A preset-referencing
-    model (`@preset/<slug>`) also pins "tools": []:  a preset can carry tools server-side, the
-    documented shallow merge lets a request field override the preset's, and an empty array is the
-    only request-side shape that keeps this call tool-less no matter how the dashboard is edited."""
+    model (`@preset/<slug>`) also sends "tools": [], which keeps the REQUEST tool-free but cannot
+    disarm a tooled preset:  per the documented preset semantics request tools UNION with preset
+    tools (a same-identity request tool overrides one preset entry, and an empty array overrides
+    nothing), and the latest preset version is always served with no immutable version binding at
+    inference.  No request-side mechanism can enforce a preset's tools-off, so that property rests
+    on the preset's own zero-tool configuration, verified by a person through an authenticated
+    preset read (a management-key endpoint - it cannot live in this runtime without handing the
+    runtime a workspace admin credential, and even a per-call read would race a dashboard edit).
+    The code-side backstop is the response path:  a completion carrying a tool call is a
+    fixed-phrase failure, so the consult settles as a hold and nothing is delivered.  That bounds
+    delivery, not server-side execution during the completion - the named residual if a preset is
+    ever mutated to add tools."""
     body = {
         "model": model,
         "messages": [

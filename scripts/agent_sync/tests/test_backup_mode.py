@@ -13,10 +13,12 @@ from agent_sync.backup_mode import (
 )
 
 NOW = 1_760_000_000.0
+EXPECTED = ["meta/muse-spark-1.3-contributor", "minimax/minimax-m3.1"]
 GOOD = {
     "runtime": "openrouter",
     "model": "@preset/operator-inbox-router",
-    "reason": "owner declared Muse at cap 2026-11-06, OpenRouter backup directed",
+    "expected_models": EXPECTED,
+    "reason": "owner reported Muse at cap 2026-11-06; OpenRouter selected for this case",
     "declared_at": NOW - 60,
     "review_by": NOW + 3600,
 }
@@ -28,10 +30,37 @@ class ParseTest(unittest.TestCase):
         self.assertIsInstance(decl, BackupDeclaration)
         self.assertEqual(decl.runtime, "openrouter")
         self.assertEqual(decl.model, "@preset/operator-inbox-router")
+        self.assertEqual(decl.expected_models, tuple(EXPECTED))
+
+    def test_a_preset_declaration_requires_expected_models(self):
+        # The served-model expectation is the only code-side fingerprint of what a mutable
+        # preset serves, so a preset declaration without it is misconfigured (fail closed).
+        for broken in (
+            {k: v for k, v in GOOD.items() if k != "expected_models"},
+            {**GOOD, "expected_models": []},
+            {**GOOD, "expected_models": "meta/muse-spark-1.3-contributor"},
+            {**GOOD, "expected_models": ["@preset/other"]},
+            {**GOOD, "expected_models": ["$(id)/x"]},
+            {**GOOD, "expected_models": [""]},
+            {**GOOD, "expected_models": [5]},
+        ):
+            self.assertIsNone(parse_declaration(broken), broken)
 
     def test_a_plain_model_id_is_accepted(self):
-        decl = parse_declaration({**GOOD, "model": "~deepseek/deepseek-flash-latest"})
+        plain = {k: v for k, v in GOOD.items() if k != "expected_models"}
+        decl = parse_declaration({**plain, "model": "~deepseek/deepseek-flash-latest"})
         self.assertIsNotNone(decl)
+        # A plain model's expectation defaults to itself;  an explicit list is also accepted.
+        self.assertEqual(decl.expected_models, ("~deepseek/deepseek-flash-latest",))
+        decl = parse_declaration(
+            {**GOOD, "model": "~deepseek/deepseek-flash-latest", "expected_models": EXPECTED}
+        )
+        self.assertEqual(decl.expected_models, tuple(EXPECTED))
+        self.assertIsNone(
+            parse_declaration(
+                {**GOOD, "model": "~deepseek/deepseek-flash-latest", "expected_models": ["bad"]}
+            )
+        )
 
     def test_missing_keys_rejected(self):
         for key in GOOD:

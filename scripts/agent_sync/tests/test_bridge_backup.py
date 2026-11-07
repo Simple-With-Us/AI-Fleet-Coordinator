@@ -55,13 +55,16 @@ def _item(seq: int = 7, message_id: int = 42) -> dict:
 
 
 GOOD_MODEL = "@preset/operator-inbox-router"
+EXPECTED_MODELS = ["meta/muse-spark-1.3-contributor"]
+SERVED = "meta/muse-spark-1.3-contributor"
 
 
 def _good(now: float) -> dict:
     return {
         "runtime": "openrouter",
         "model": GOOD_MODEL,
-        "reason": "owner declared the primary capped",
+        "expected_models": EXPECTED_MODELS,
+        "reason": "owner reported the primary at cap",
         "declared_at": now - 60,
         "review_by": now + 3600,
     }
@@ -89,9 +92,13 @@ class _FakeRunner:
         return self.result
 
 
-def _result(error=None, http_status=None, parsed=None, killed=False):
+def _result(error=None, http_status=None, parsed=None, killed=False, models=None):
     return types.SimpleNamespace(
-        error=error, http_status=http_status, parsed=parsed, killed=killed
+        error=error,
+        http_status=http_status,
+        parsed=parsed,
+        killed=killed,
+        models=[SERVED] if models is None else models,
     )
 
 
@@ -132,8 +139,13 @@ class BridgeBackupTest(unittest.TestCase):
         bridge.path = os.path.join(L.listener_dir(self.root), MBM.STATE_NAME)
         bridge.exchange = FakeExchange()
 
-        def fake_decide_inner(item, binary, model, consult_runtime, backup_model=None):
-            self.decide_calls.append((consult_runtime, backup_model))
+        def fake_decide_inner(
+            item, binary, model, consult_runtime, backup_model=None,
+            backup_expected_models=None,
+        ):
+            self.decide_calls.append(
+                (consult_runtime, backup_model, backup_expected_models)
+            )
             return {"kind": "hold", "reason": "no_target", "model_attempted": True}
 
         bridge._decide_inner = fake_decide_inner
@@ -159,7 +171,7 @@ class BridgeBackupTest(unittest.TestCase):
 
     def test_absent_declaration_runs_primary_unchanged(self) -> None:
         state = self.run_envelope(None)
-        self.assertEqual(self.decide_calls, [(BM.MUSE, None)])
+        self.assertEqual(self.decide_calls, [(BM.MUSE, None, None)])
         self.assertEqual(state["cursors"]["ECHO"], 8)
         (row,) = state["decisions"].values()
         self.assertNotIn("runtime", row)
@@ -187,14 +199,19 @@ class BridgeBackupTest(unittest.TestCase):
 
     def test_active_mode_stamps_the_backup_runtime_and_advances(self) -> None:
         state = self.run_envelope(_good(self.now))
-        self.assertEqual(self.decide_calls, [(BM.OPENROUTER, GOOD_MODEL)])
+        self.assertEqual(
+            self.decide_calls, [(BM.OPENROUTER, GOOD_MODEL, tuple(EXPECTED_MODELS))]
+        )
         self.assertEqual(state["cursors"]["ECHO"], 8)
         (row,) = state["decisions"].values()
         self.assertEqual(row["runtime"], "openrouter")
         self.assertEqual(row["delivery"], "done")
 
     def test_pre_charge_failure_unwinds_the_claim(self) -> None:
-        def pending(item, binary, model, consult_runtime, backup_model=None):
+        def pending(
+            item, binary, model, consult_runtime, backup_model=None,
+            backup_expected_models=None,
+        ):
             raise MBM.BridgeBackupPending("openrouter key unavailable")
 
         self.bridge._decide_inner = pending
@@ -223,11 +240,16 @@ class BridgeBackupTest(unittest.TestCase):
         # A second tick with the mode repaired decides the same row exactly once.
         outcomes = [MBM.BridgeBackupPending("openrouter key unavailable"), None]
 
-        def flaky(item, binary, model, consult_runtime, backup_model=None):
+        def flaky(
+            item, binary, model, consult_runtime, backup_model=None,
+            backup_expected_models=None,
+        ):
             out = outcomes.pop(0)
             if out is not None:
                 raise out
-            self.decide_calls.append((consult_runtime, backup_model))
+            self.decide_calls.append(
+                (consult_runtime, backup_model, backup_expected_models)
+            )
             return {"kind": "hold", "reason": "no_target", "model_attempted": True}
 
         self.bridge._decide_inner = flaky
@@ -244,8 +266,56 @@ class BridgeBackupTest(unittest.TestCase):
             first, first["cursors"], first["decisions"], "ECHO", envelope,
             remote=True, binary="muse", model="m",
         )
-        self.assertEqual(self.decide_calls, [(BM.OPENROUTER, GOOD_MODEL)])
+        self.assertEqual(
+            self.decide_calls, [(BM.OPENROUTER, GOOD_MODEL, tuple(EXPECTED_MODELS))]
+        )
         self.assertEqual(first["cursors"]["ECHO"], 8)
+
+
+    def test_an_unexpected_served_model_is_a_charged_hold(self) -> None:
+        # The preset serves a model outside the declared expectation (a dashboard-side edit):
+        # the row is retained pending review, never retried, never delivered, and the durable
+        # decision records what actually served.
+        del self.bridge._decide_inner
+        self.bridge._resources = lambda item: []
+        self.bridge.daemon.openrouter_runner = _FakeRunner(
+            _result(parsed={"action": "none"}, models=["evil/provider-model"])
+        )
+        state = self.run_envelope(_good(self.now))
+        self.assertEqual(state["cursors"]["ECHO"], 8)
+        (row,) = state["decisions"].values()
+        self.assertEqual(row["reason"], "backup_consult_served_model_unexpected")
+        self.assertEqual(row["review"], "pending")
+        self.assertEqual(row["served_models"], ["evil/provider-model"])
+        self.assertEqual(row["runtime"], "openrouter")
+        (event,) = self.events("muse-bridge-backup-review-required")
+        self.assertEqual(event["reason"], "served_model_unexpected")
+        self.assertEqual(event["served_models"], ["evil/provider-model"])
+
+    def test_the_declared_served_model_passes_through_validation(self) -> None:
+        # Served model inside the expectation:  no served-model hold;  the answer reaches the
+        # ordinary validator (an unparsable decision here becomes the usual invalid_decision).
+        del self.bridge._decide_inner
+        self.bridge._resources = lambda item: []
+        self.bridge.daemon.openrouter_runner = _FakeRunner(_result(parsed=None))
+        state = self.run_envelope(_good(self.now))
+        (row,) = state["decisions"].values()
+        self.assertEqual(row["reason"], "invalid_decision")
+        self.assertNotIn("review", row)
+        self.assertEqual(row["served_models"], [SERVED])
+        self.assertEqual(self.events("muse-bridge-backup-review-required"), [])
+
+    def test_a_missing_served_model_fails_closed(self) -> None:
+        # A response that names no model cannot be checked against the expectation, so it is
+        # held for review rather than trusted.
+        del self.bridge._decide_inner
+        self.bridge._resources = lambda item: []
+        self.bridge.daemon.openrouter_runner = _FakeRunner(
+            _result(parsed={"action": "none"}, models=[])
+        )
+        state = self.run_envelope(_good(self.now))
+        (row,) = state["decisions"].values()
+        self.assertEqual(row["reason"], "backup_consult_served_model_unexpected")
 
 
 class ConsultBackupUnitTest(unittest.TestCase):
@@ -265,12 +335,13 @@ class ConsultBackupUnitTest(unittest.TestCase):
         bridge._resources = lambda item: []
         self.bridge = bridge
 
-    def test_answered_returns_the_parsed_decision(self) -> None:
+    def test_answered_returns_the_parsed_decision_and_served_model(self) -> None:
         parsed = {"action": "none", "board": None, "owner_note": None, "reply": None, "risk": None}
         self.bridge.daemon.openrouter_runner = _FakeRunner(_result(parsed=parsed))
-        outcome, got = self.bridge._consult_backup(_item(message_id=42), GOOD_MODEL)
+        outcome, got, served = self.bridge._consult_backup(_item(message_id=42), GOOD_MODEL)
         self.assertEqual(outcome, "answered")
         self.assertEqual(got, parsed)
+        self.assertEqual(served, [SERVED])
 
     def test_the_contract_is_the_system_message_not_the_prompt(self) -> None:
         runner = _FakeRunner(_result(parsed={"action": "none"}))
@@ -290,13 +361,15 @@ class ConsultBackupUnitTest(unittest.TestCase):
         self.bridge.daemon.openrouter_runner = _FakeRunner(
             _result(error="timed out after 60 seconds", killed=True)
         )
-        self.assertEqual(self.bridge._consult_backup(_item(), GOOD_MODEL), ("ambiguous", None))
+        outcome, parsed, served = self.bridge._consult_backup(_item(), GOOD_MODEL)
+        self.assertEqual((outcome, parsed), ("ambiguous", None))
 
     def test_a_5xx_is_ambiguous(self) -> None:
         self.bridge.daemon.openrouter_runner = _FakeRunner(
             _result(error="provider error", http_status=502)
         )
-        self.assertEqual(self.bridge._consult_backup(_item(), GOOD_MODEL), ("ambiguous", None))
+        outcome, parsed, served = self.bridge._consult_backup(_item(), GOOD_MODEL)
+        self.assertEqual((outcome, parsed), ("ambiguous", None))
 
     def test_a_4xx_is_pre_charge(self) -> None:
         self.bridge.daemon.openrouter_runner = _FakeRunner(
@@ -349,6 +422,7 @@ class BackupAnswerShapeTest(unittest.TestCase):
         self.bridge._consult_backup = lambda item, model: (
             "answered",
             {"action": "none", "board": None, "owner_note": None, "reply": None, "risk": None},
+            [SERVED],
         )
         decision = self.bridge._decide_inner(
             _item(message_id=78), "muse", "m", BM.OPENROUTER, GOOD_MODEL
@@ -359,6 +433,7 @@ class BackupAnswerShapeTest(unittest.TestCase):
         self.bridge._consult_backup = lambda item, model: (
             "answered",
             '{"action":"none","board":null,"owner_note":null,"reply":null,"risk":null}',
+            [SERVED],
         )
         decision = self.bridge._decide_inner(
             _item(message_id=77), "muse", "m", BM.OPENROUTER, GOOD_MODEL
@@ -407,7 +482,7 @@ class ChargedReviewTest(unittest.TestCase):
         def fake_consult(item, model):
             consult_calls.append(item["id"])
             if item["id"] == 42:  # sent, ambiguous
-                return "ambiguous", None
+                return "ambiguous", None, []
             # 43: answered with the parsed decision object (the real consult shape),
             # validating to a no_target hold
             return "answered", {
@@ -416,7 +491,7 @@ class ChargedReviewTest(unittest.TestCase):
                 "owner_note": None,
                 "reply": None,
                 "risk": None,
-            }
+            }, [SERVED]
 
         bridge._consult_backup = fake_consult
         return bridge
@@ -542,7 +617,7 @@ class ReviewLocatorTest(unittest.TestCase):
 
         def fake_consult(item, model):
             consult_calls.append(item["id"])
-            return "ambiguous", None  # every consult: sent, ambiguous
+            return "ambiguous", None, []  # every consult: sent, ambiguous
 
         bridge._consult_backup = fake_consult
         return bridge

@@ -1,13 +1,16 @@
 """AFC-649 known-cap mode: an explicit, reversible bridge consult switch.
 
-WHY THIS EXISTS.  The owner has declared the primary consult runtime capped and directed the
-inbox-routing consult to a tool-less OpenRouter call (2026-11-06:  the 'operator-inbox-router'
-preset on the existing OPERATOR_OPENROUTER_API_KEY;  the earlier MiniMax PAYG-direct design is
-withdrawn).  Automatic cap detection is NOT part of this module:  the installed Muse 1.4.14 exec
-stream does not expose the typed quota signal (the only verified embedding is MSP turn/completed
-params.error.quota, and the bridge's headless exec runs never see it), so nothing here tries to
-infer a cap from error text, exit codes, or record shapes.  The mode is entered only by explicit
-operator declaration and exited only by explicit removal or by its own stated review time.
+WHY THIS EXISTS.  On 2026-11-06 the owner reported the primary consult runtime at its
+subscription cap - a then-current observation, not a standing statement about later capacity or
+any reset time - and selected an OpenRouter call for this one inbox-routing consult case,
+supplying the 'operator-inbox-router' preset reference on the existing OPERATOR_OPENROUTER_API_KEY
+(the earlier MiniMax PAYG-direct design is withdrawn).  The tool-less request shape and the gates
+below are the integration's own safety properties.  Automatic cap detection is NOT part of this
+module:  the installed Muse 1.4.14 exec stream does not expose the typed quota signal (the only
+verified embedding is MSP turn/completed params.error.quota, and the bridge's headless exec runs
+never see it), so nothing here tries to infer a cap from error text, exit codes, or record
+shapes.  The mode is entered only by explicit operator declaration and exited only by explicit
+removal or by its own stated review time.
 
 EXPIRY IS A HOLD, NOT A REVERT.  When the declared review time passes, consults HOLD:  pending rows
 stay pending, no cursor advances, no runtime is invoked at all, and a review-due signal is logged.
@@ -29,7 +32,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from .config import OPENROUTER_MODEL_PATTERN
+from .config import (
+    OPENROUTER_MODEL_OR_PRESET_PATTERN,
+    OPENROUTER_MODEL_PATTERN,
+    OPENROUTER_PRESET_PATTERN,
+)
 
 MUSE = "muse"
 OPENROUTER = "openrouter"
@@ -44,8 +51,15 @@ class BackupDeclaration:
 
     runtime:    the approved backup runtime id;  only "openrouter" is recognised.
     model:      the OpenRouter model the backup consult calls;  an `@preset/<slug>` reference
-                (the owner-selected 'operator-inbox-router' preset for this case) or a plain
-                `provider/name`, validated against the same pattern the seat validator uses.
+                (the reference the owner supplied for this case) or a plain `provider/name`,
+                validated against the consult-backup pattern (seat validation stays preset-free:
+                a preset's latest version is always served, so a slug pins nothing for a seat).
+    expected_models:  the plain `provider/name` ids the declaration expects the preset to serve.
+                REQUIRED with an `@preset/` model and checked against the response's served model
+                on every answered consult (a mismatch is a charged hold, never silent acceptance):
+                a dashboard edit to the preset's model list changes what runs without changing
+                any slug, and this set is the only code-side fingerprint of it.  Optional with a
+                plain model, where it defaults to that model itself.
     reason:     the operator's own words for why the mode was entered (logged verbatim).
     declared_at / review_by: epoch seconds.  review_by is REQUIRED - the mode must state the
                 condition it lives under, and that condition includes when it is re-examined."""
@@ -55,6 +69,7 @@ class BackupDeclaration:
     reason: str
     declared_at: float
     review_by: float
+    expected_models: tuple
 
 
 def parse_declaration(raw: Any) -> BackupDeclaration | None:
@@ -70,7 +85,21 @@ def parse_declaration(raw: Any) -> BackupDeclaration | None:
     review_by = raw["review_by"]
     if runtime != OPENROUTER:
         return None
-    if not isinstance(model, str) or not re.fullmatch(OPENROUTER_MODEL_PATTERN, model):
+    if not isinstance(model, str) or not re.fullmatch(OPENROUTER_MODEL_OR_PRESET_PATTERN, model):
+        return None
+    expected_raw = raw.get("expected_models")
+    if re.fullmatch(OPENROUTER_PRESET_PATTERN, model):
+        # A preset's model list lives on the dashboard;  without a declared expectation the
+        # code has no fingerprint of what the preset serves, so a preset declaration without a
+        # valid expected_models is misconfigured and fails closed.
+        if not isinstance(expected_raw, list) or not expected_raw:
+            return None
+    elif expected_raw is None:
+        expected_raw = [model]
+    if not isinstance(expected_raw, list) or any(
+        not isinstance(entry, str) or not re.fullmatch(OPENROUTER_MODEL_PATTERN, entry)
+        for entry in expected_raw
+    ):
         return None
     if not isinstance(reason, str) or not reason.strip():
         return None
@@ -85,6 +114,7 @@ def parse_declaration(raw: Any) -> BackupDeclaration | None:
         reason=reason.strip(),
         declared_at=float(declared_at),
         review_by=float(review_by),
+        expected_models=tuple(expected_raw),
     )
 
 

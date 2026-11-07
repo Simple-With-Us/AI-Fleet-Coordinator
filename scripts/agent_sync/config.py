@@ -114,10 +114,14 @@ OPENROUTER_DEFAULT_MODEL = "meta/muse-spark-1.3-contributor"
 OPENROUTER_FALLBACK_MODEL = "~deepseek/deepseek-flash-latest"
 # `provider/name`, with an optional leading `~`.  No `:` suffix on purpose:  OpenRouter's `:online`
 # adds web search and `:nitro` or `:floor` re-route, and an unattended no-tools wake wants none of them.
-OPENROUTER_MODEL_PATTERN = r"^(~?[A-Za-z0-9][A-Za-z0-9._-]{0,39}/[A-Za-z0-9][A-Za-z0-9._-]{0,79}|@preset/[A-Za-z0-9][A-Za-z0-9._-]{0,79})$"
-# An `@preset/<slug>` reference is accepted too:  the preset then supplies the model list and any
-# system prompt, and the slug itself is what the pin fingerprints, so an edit on the dashboard
-# changes behavior without changing the fingerprint.
+OPENROUTER_MODEL_PATTERN = r"^~?[A-Za-z0-9][A-Za-z0-9._-]{0,39}/[A-Za-z0-9][A-Za-z0-9._-]{0,79}$"
+# An `@preset/<slug>` reference.  A preset is a mutable dashboard-side configuration whose LATEST
+# version is always served, so the slug fingerprints nothing about what runs:  seats never accept
+# one.  The only consumer is the bridge consult-backup declaration (agent_sync.backup_mode), which
+# compensates with its own gates (a declared expected-model set checked against the served model,
+# response-side refusal of any tool call, and a human activation readback).
+OPENROUTER_PRESET_PATTERN = r"^@preset/[A-Za-z0-9][A-Za-z0-9._-]{0,79}$"
+OPENROUTER_MODEL_OR_PRESET_PATTERN = r"^(~?[A-Za-z0-9][A-Za-z0-9._-]{0,39}/[A-Za-z0-9][A-Za-z0-9._-]{0,79}|@preset/[A-Za-z0-9][A-Za-z0-9._-]{0,79})$"
 # Wakes the budget holds back (heldback.py), per seat:  `held_back = { max = 200, overflow_max = 1000,
 # ttl_hours = 24, items_in_wake = 20, owner_digest_minutes = 60, catch_up = true }`.  max is the records
 # with names;  past it the oldest move to a compact overflow tier (still listed by id), and only past
@@ -1082,7 +1086,7 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
             # An OpenRouter model id is `provider/name` (and may start with `~`), not a CLI alias.
             if not isinstance(model, str) or not re.fullmatch(OPENROUTER_MODEL_PATTERN, model):
                 wake_problems.append(
-                    "seat.%s.model must be an OpenRouter model such as %s or an @preset/ reference"
+                    "seat.%s.model must be an OpenRouter model such as %s"
                     % (seat_name, OPENROUTER_DEFAULT_MODEL)
                 )
         elif not isinstance(model, str) or not re.fullmatch(r"[a-z0-9.\-\[\]]{1,60}", model):
@@ -1170,7 +1174,7 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
             OPENROUTER_MODEL_PATTERN, fallback_model
         ):
             wake_problems.append(
-                "seat.%s.fallback_model must be an OpenRouter model such as %s or an @preset/ reference"
+                "seat.%s.fallback_model must be an OpenRouter model such as %s"
                 % (seat_name, OPENROUTER_FALLBACK_MODEL)
             )
         elif fallback == "openrouter" and wake == "openrouter" and fallback_model == model:
