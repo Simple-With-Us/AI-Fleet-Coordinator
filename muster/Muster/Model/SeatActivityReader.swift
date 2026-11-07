@@ -515,6 +515,109 @@ struct ChatCLI: ChatRunning {
     }
 }
 
+// MARK: - The panel's own roster
+
+/// The seats the Seats panel shows.
+///
+/// This list is the panel's own,  and it is wider than the compliance grid's on purpose:  the
+/// grid shows the seats the engine checks on this Mac,  and this panel shows every seat the
+/// fleet runs,  wherever its eavesdropper is.  The grid's roster is never changed by it.
+///
+/// The seats come from five places,  each seat once,  in this order:
+///
+///   * the grid's roster,  as the app already holds it,  so a Mac seat keeps today's row
+///   * the registry's live seats (`fleet-apps.json` `seats`,  less retired names and aliases)
+///   * the registry's extra seats (`seatApps.extraSeats`),  real seats with no row in `seats`
+///   * the family seats a pattern names role by role (`BF-<ROLE>`,  `GB-<ROLE>`)
+///   * every seat the seat partition gives to an eavesdropper (`mac` or `server`)
+///
+/// Beyond the grid's own seats,  a seat the partition marks `none` is never a row:  the
+/// partition keeps only retired names there.  When the partition was read,  an extra seat or a
+/// family seat it does not list is not a row either:  the partition never leaves a live seat
+/// with no holder,  so such a name is another login of a listed seat (`JET-CHAT` is Jet's
+/// second login,  one bot with two seats),  not a seat of its own.  The Operator (`OPERATOR`)
+/// is a service,  not a seat with a queue:  its health is the Operator's voice in Wake &
+/// Listener and the Operator Eavesdropper's row in Services,  so it is never a row here.  A tag
+/// that names a group (`GROK-BOT`),  holds a `*`,  or is not a seat name the eavesdropper
+/// accepts is never a row.
+enum SeatActivityRoster {
+    /// Tags that are never a Seats row:  the Operator,  which is a service and holds no queue.
+    static let notSeatRows: Set<String> = [OperatorOptions.seatTag]
+
+    /// The roster,  from what was read.
+    static func seats(
+        gridRoster: [String],
+        registry: FleetRegistryDocument?,
+        partition: ListenerPartition?
+    ) -> [String] {
+        var roster: [String] = []
+        var seen: Set<String> = []
+        let retired = registry?.retiredTags ?? []
+        let held = partition?.seats
+
+        // The grid's seats are added as they are,  so their rows read exactly as before.
+        for tag in gridRoster {
+            let key = tag.uppercased()
+            guard !tag.isEmpty, !seen.contains(key) else { continue }
+            seen.insert(key)
+            roster.append(tag)
+        }
+
+        // Every other seat is added by its upper-cased tag,  the name the eavesdropper and the
+        // partition use for it.  `mustBeHeld` asks that a partition that was read gives the
+        // seat to an eavesdropper.
+        func add(_ tag: String, mustBeHeld: Bool = false) {
+            let key = tag.trimmingCharacters(in: .whitespaces).uppercased()
+            guard !key.isEmpty,
+                  !seen.contains(key),
+                  !key.contains("*"),
+                  !NotASeat.contains(key),
+                  !notSeatRows.contains(key),
+                  !retired.contains(key),
+                  ListenerPartition.isSeatName(key),
+                  held?[key] != "none"
+            else { return }
+            if mustBeHeld, let held, held[key] == nil { return }
+            seen.insert(key)
+            roster.append(key)
+        }
+
+        for seat in registry?.liveSeats ?? [] where seat.aliasOf == nil {
+            add(seat.tag)
+        }
+        for tag in (registry?.seatApps?.extraSeats ?? [:]).keys.sorted() {
+            add(tag, mustBeHeld: true)
+        }
+        for tag in registry?.familySeats ?? [] {
+            add(tag, mustBeHeld: true)
+        }
+        if let held {
+            for tag in held.keys.sorted() {
+                add(tag)
+            }
+        }
+        return roster
+    }
+
+    /// The roster from the files the fleet checkout holds:  the registry and the seat
+    /// partition beside it.  A file that cannot be read adds nothing,  and the grid's seats
+    /// are always there.
+    static func current(
+        gridRoster: [String],
+        engine: EngineLocation? = EngineLocator.locate()
+    ) -> [String] {
+        var registry: FleetRegistryDocument?
+        if let url = engine?.registryURL,
+           let data = try? Data(contentsOf: url),
+           data.count <= WakeSettingsReader.maximumFileBytes {
+            registry = try? JSONDecoder().decode(FleetRegistryDocument.self, from: data)
+        }
+        let partitionURL = engine?.root.appendingPathComponent(ListenerPartition.relativePath)
+        let partition = ListenerPartition.load(from: partitionURL)
+        return seats(gridRoster: gridRoster, registry: registry, partition: partition)
+    }
+}
+
 // MARK: - The gate
 
 /// A counting gate:  a refresh never opens more child processes than it says it will.

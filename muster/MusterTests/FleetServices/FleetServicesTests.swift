@@ -20,7 +20,45 @@ final class FleetServicesTests: XCTestCase {
         // The launchd agents.
         XCTAssertTrue(ids.contains("app.botfleet.server"))
         XCTAssertTrue(ids.contains("app.botfleet.companion"))
-        XCTAssertEqual(ids.count, 12)
+        XCTAssertTrue(ids.contains("com.jay.operator"))
+        XCTAssertEqual(ids.count, 13)
+    }
+
+    /// The Mac's eavesdropper (`com.jay.operator`) is on the Services list as a LaunchAgent,
+    /// so its state is launchd's and its restart takes the LaunchAgent route.  The wake
+    /// alerter is not:  whether it should run is the owner's call.
+    func testTheOperatorEavesdropperIsALaunchAgentServiceAndTheWakeAlerterIsNot() {
+        let descriptor = FleetServiceRegistry.descriptor(for: "com.jay.operator")
+        XCTAssertEqual(descriptor?.kind, .launchAgent(label: "com.jay.operator"))
+        XCTAssertEqual(descriptor?.policy, .alwaysOn)
+        XCTAssertEqual(descriptor?.host, .mac)
+        XCTAssertEqual(descriptor, FleetServiceRegistry.operatorEavesdropper)
+        XCTAssertNil(FleetServiceRegistry.descriptor(for: "com.jay.operator-wake-alerter"))
+        let labels = FleetServiceRegistry.all.compactMap { descriptor -> String? in
+            if case .launchAgent(let label) = descriptor.kind { return label }
+            return nil
+        }
+        XCTAssertTrue(labels.contains("com.jay.operator"))
+        XCTAssertFalse(labels.contains("com.jay.operator-wake-alerter"))
+        // Muster never starts it on its own:  launchd keeps it alive.
+        XCTAssertEqual(ServicePolicyTable.policy(for: "com.jay.operator"), .leaveAlone)
+        XCTAssertEqual(ServicePolicyTable.row(for: "com.jay.operator")?.source, .servicesList)
+    }
+
+    /// Its row reads launchd's state and offers the restart a running LaunchAgent gets.
+    func testTheOperatorEavesdropperRowCarriesItsLaunchdStateAndOffersARestart() {
+        let running = FleetServices(serverState: .running, states: ["com.jay.operator": .running])
+        let entry = running.entries.first { $0.id == "com.jay.operator" }
+        XCTAssertEqual(entry?.state, .running)
+        XCTAssertEqual(entry?.summary, "running")
+        XCTAssertEqual(entry?.availableActions, [.stop, .restart])
+        let failed = FleetServices(serverState: .running, states: ["com.jay.operator": .failed])
+        let failedEntry = failed.entries.first { $0.id == "com.jay.operator" }
+        XCTAssertEqual(failedEntry?.availableActions, [.start, .restart])
+        XCTAssertEqual(failedEntry?.needsAttention, true)
+        // A state nobody read is not known,  never running.
+        let unread = FleetServices(serverState: .running, states: [:])
+        XCTAssertEqual(unread.entries.first { $0.id == "com.jay.operator" }?.state, .unknown)
     }
 
     func testTheMCPServerIsSupervisedByPM2AndFollowsTheBotFleetServer() {
@@ -182,9 +220,9 @@ final class FleetServicesTests: XCTestCase {
 
     func testTheFleetServicesMenuHasOneRowPerService() {
         let services = FleetServices(serverState: .running, states: [:])
-        XCTAssertEqual(services.menuItems.count, 12)
+        XCTAssertEqual(services.menuItems.count, 13)
         XCTAssertEqual(services.menuItems.first?.id, "botfleet-mcp")
-        XCTAssertEqual(services.menuTitle, "Services On The Mac (12)")
+        XCTAssertEqual(services.menuTitle, "Services On The Mac (13)")
     }
 
     func testEachMenuRowShowsTheStateAndTheActions() {
