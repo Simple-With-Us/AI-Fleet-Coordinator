@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the Operator Sheets export drain every 5 minutes (OPS-1037)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Persistent=true
+Unit=operator-sheets-drain.service
+
+[Install]
+WantedBy=timers.target

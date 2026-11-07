@@ -1,5 +1,19 @@
 # Agent coordination
 
+## Temporary owner review limit (November 6-8, 2026)
+
+From November 6, 2026 at 8:02pm America/Chicago through November 8, 2026 at
+8:02pm America/Chicago, request only one Kody review per PR. Do not request another
+review after fixes or new commits. During this window this instruction overrides
+repeat-review and per-ready-head request guidance below. Read and address every
+existing finding, verify fixes and required tests, and preserve all other merge
+conditions. A failed attempt is not permission to retry: ask the owner if a new
+request is needed. This limit expires at the stated time; it is not permanent.
+
+Source: Jay's direct November 6 instruction, "Raised it but please tell all 1 review
+only per pr", followed by "For the next 2 days"; fleet announcement message638301219.
+
+
 This repository contains shared engineering tools.  Keep private inventory and credentials outside public source and generated assets.
 
 ## Working rules (owner — ALL agents, ALL platforms, 2026-10-21)
