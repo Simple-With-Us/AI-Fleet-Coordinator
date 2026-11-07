@@ -273,6 +273,12 @@ jobs:
               --notes "Muster's Sparkle feed.  Only .github/workflows/muster-release.yml writes this release." \
               --target "$GITHUB_SHA" --latest=false
           fi
+          # `--latest=false` on the build's release does not keep Muster off releases/latest
+          # by itself:  with no release pinned, GitHub falls back to the newest published
+          # release, which is a Muster build (observed Nov 7, 2026).  The feed release is
+          # pinned latest instead, so the repository's latest release is the feed, never a
+          # build.
+          gh release edit "$FEED_TAG" --latest
 
       # A cache in front of the release asset can keep serving the previous
       # appcast for a while after `gh release upload --clobber` replaces it

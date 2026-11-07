@@ -204,6 +204,6 @@ Muster updates itself through Sparkle 2.  `.github/workflows/muster-release.yml
 
 Settings ▸ This Build and the foot of the menu show the version, the build number and the short commit, with Development Build or Not From Main when that applies, and the commit of the checkout Muster runs its Python from, saying plainly when the two differ.
 
-What is not done yet:  Muster's own Sparkle key does not exist, and the release's read tokens may not exist in this repository, so the workflow builds and verifies and publishes nothing until they do (it names what is missing).  The copy on the owner's Mac predates Sparkle and needs one Sparkle-enabled install by a Mac seat.  Both are in `docs/AUTO-UPDATE.md`.
+The route is proven end to end:  Muster's own Sparkle key and its read tokens exist, every merge to main that changes `muster/` publishes a signed release, and on Nov 7, 2026 the installed copy adopted published build 202611071913 on its own.  The feed release, `muster-feed`, is pinned as the repository's latest release, so a Muster build never is.  The receipts and the rotation dates are in `docs/AUTO-UPDATE.md`.
 
 Muster currently lives inside an existing application repository.  The current onboarding flow does not directly fit this nested product; use the existing product registry rather than creating duplicate infrastructure.  Product identity, registration applicability, and future onboarding remain pending.  Only authorized maintainers may perform that setup.
