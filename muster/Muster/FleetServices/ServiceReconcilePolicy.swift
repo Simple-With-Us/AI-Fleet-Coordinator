@@ -79,6 +79,8 @@ public enum ServicePolicyTable {
             "Starting it clears BotFleet's deliberate-stop marker, so only the owner starts it."),
         row("app.botfleet.companion", .leaveAlone,
             "It only serves BotFleet Server, which Muster leaves alone, so Muster leaves it alone too."),
+        row("com.jay.operator", .leaveAlone,
+            "launchd keeps the Mac's eavesdropper alive itself, so a stop is deliberate and Muster never starts it on its own."),
         row("shellular", .keepRunning,
             "A long-running job in the pm2 ecosystem file, and starting it again is safe."),
         row("code-main-keeper", .keepRunning,
