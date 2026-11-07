@@ -108,6 +108,12 @@ final class FleetViewFilterBarTests: XCTestCase {
         XCTAssertLessThan(startWork, readTools, "the work read must start before the local reads")
         XCTAssertLessThan(readTools, listApps)
         XCTAssertLessThan(listApps, awaitWork, "the apps must be listed before the page waits on the work read")
+        // The rows are rebuilt with the work read before `envelope` is set, so pending never
+        // ends while the rows still hold counts that were not read (Sentry, PR 1450).
+        let rebuild = try position("summary = await Task.detached(priority: .userInitiated) {\n                    FleetRegistryReader.read(repoRoot: root, viewOutput: loaded")
+        let setEnvelope = try position("envelope = loaded\n            registrySummary = summary")
+        XCTAssertLessThan(awaitWork, rebuild)
+        XCTAssertLessThan(rebuild, setEnvelope, "the rows must be rebuilt before the envelope goes on screen")
         // A pending count is a dash, never a zero.
         XCTAssertTrue(source.contains("if countsPending {\n                pendingCell(width: 120)"))
     }

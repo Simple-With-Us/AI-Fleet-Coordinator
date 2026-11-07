@@ -215,7 +215,12 @@ struct FleetView: View {
         let rows = registrySummary.apps.filter { filter.includes($0) }
         return Section {
             if !collapsed.contains(.apps), registrySummary.problem == nil {
-                if rows.isEmpty {
+                if rows.isEmpty, countsPending, filter.attentionOnly {
+                    // Which apps need attention depends on the counts being read, so the filter
+                    // has nothing to match yet (Sentry, PR 1450).
+                    Text("Which apps need attention is still being read.")
+                        .foregroundStyle(.secondary)
+                } else if rows.isEmpty {
                     emptyRow(FleetSectionEmpty.state(
                         total: registrySummary.apps.count, shown: 0, isKnown: !failed,
                         reason: "The last refresh failed.", noneText: "No apps are listed in fleet-apps.json."
@@ -750,20 +755,25 @@ struct FleetView: View {
         }
         do {
             let loaded = try await work.value.get()
-            envelope = loaded
-            failure = nil
-            refreshClock.recordSuccess(generatedAt: loaded.generatedAt)
+            // The rows are rebuilt with the work read before either goes on screen, then both
+            // are set together:  setting `envelope` first ends `countsPending` while the rows
+            // still hold the counts that were not read, which flashed them red (Sentry, PR 1450).
+            let summary: FleetRegistrySummary
             if let root {
-                registrySummary = await Task.detached(priority: .userInitiated) {
+                summary = await Task.detached(priority: .userInitiated) {
                     FleetRegistryReader.read(repoRoot: root, viewOutput: loaded, toolsReading: tools)
                 }.value
             } else {
                 // Never leave the last run's rows beside a fresh one, and never let a checkout
                 // Muster cannot find read as a filter that hides every app (FLEETVIEW-30).
-                registrySummary = FleetRegistrySummary(
+                summary = FleetRegistrySummary(
                     problem: "Muster could not find the AI-Fleet-Coordinator checkout, so apps and coding apps cannot be listed.\u{00A0} The pull requests, claims and lanes on this page are from this refresh."
                 )
             }
+            envelope = loaded
+            registrySummary = summary
+            failure = nil
+            refreshClock.recordSuccess(generatedAt: loaded.generatedAt)
         } catch {
             // Fail closed:  clear the lists, never show the last green.  The registry
             // rows go with them:  read back without the run's answer they carry lane,
