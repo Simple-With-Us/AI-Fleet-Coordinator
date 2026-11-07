@@ -211,7 +211,8 @@ test("admin status distinguishes no traffic, mixed outcomes, readiness, and reta
     generatedAt: Date.parse("2026-10-09T20:07:00Z"),
   }).text();
   assert.match(mixed, /Recorded Failures/);
-  assert.match(mixed, /Last Success/);
+  assert.match(mixed, /Last Recorded Success/);
+  assert.match(mixed, /Last Recorded Call/);
   assert.match(mixed, /Fri, Oct 9, 3:00pm/);
   assert.match(mixed, /Wait until the displayed reset time/);
   assert.match(mixed, /Retryable/);
@@ -263,6 +264,23 @@ test("later seat failures and unavailable diagnostics override a successful call
   }).text();
   assert.match(unavailable, /Diagnostics unavailable/);
   assert.doesNotMatch(unavailable, /<p class="status-state state-ready">Recent success/);
+});
+
+test("a failed read is current only briefly, because the successful reads after it leave no row", async () => {
+  const seat = { seat: "CODEX", paused: false, keyInstalled: true, role: { ok: true }, grants: [{ client: "Client", scope: [], createdAt: 0 }] };
+  const failedRead = { ts: Date.parse("2026-10-09T16:00:00Z"), seat: "CODEX", tool: "zulip_read_topic", error_code: "rate_limited", retryable: true };
+  const card = (html) => html.match(/<h3>CODEX<\/h3><p class="status-state ([^"]+)">([^<]+)</)?.slice(1);
+  const fresh = await adminPage({ ...adminFacts, seats: [seat], statusCalls: [failedRead], generatedAt: failedRead.ts + 5 * 60_000 }).text();
+  assert.deepEqual(card(fresh), ["state-attention", "Recent failure"], "inside ten minutes the failed read is current");
+  const later = await adminPage({ ...adminFacts, seats: [seat], statusCalls: [failedRead], generatedAt: failedRead.ts + 2 * 60 * 60_000 }).text();
+  const [tone, state] = card(later);
+  assert.equal(tone, "state-neutral", "an old failed read is neither current failure nor verified success");
+  assert.match(state, /Last recorded call was a failed read; successful reads are not recorded/);
+  assert.match(later, /Recent Errors And Refusals[\s\S]*rate_limited/, "the error itself is still listed");
+  // A failed WRITE stays current, as before.
+  const failedWrite = { ...failedRead, tool: "zulip_send" };
+  const write = await adminPage({ ...adminFacts, seats: [seat], statusCalls: [failedWrite], generatedAt: failedRead.ts + 2 * 60 * 60_000 }).text();
+  assert.deepEqual(card(write), ["state-attention", "Recent failure"]);
 });
 
 test("wake release retries are visible with actionable callback guidance", async () => {
