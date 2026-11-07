@@ -350,9 +350,9 @@ class LeaseView:
     def posted_this(self, message: Mapping[str, Any]) -> bool:
         if message.get("id") in self.posted:
             return True
-        content = str(message.get("content") or "")
+        content = re.sub(r"^(?:👀\s*)?\s*", "", str(message.get("content") or ""))
         return bool(self.prefix) and any(
-            content.startswith(self.prefix + end) for end in ("]", "→", "->")
+            content.startswith(self.prefix + end) for end in ("]", "→", "->", " ", ":", "\t")
         )
 
 
