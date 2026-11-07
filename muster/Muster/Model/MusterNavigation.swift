@@ -43,7 +43,7 @@ enum MusterDestination: String, CaseIterable, Identifiable {
         case .complianceGrid: return "Compliance Grid"
         case .driftHistory: return "Drift History"
         case .wakeAndListener: return "Wake & Listener"
-        case .seatDetail: return "MiniMax On The Mac"
+        case .seatDetail: return "Seat Setup"
         case .serverStatus: return "Server Status"
         case .serverResourceLimits: return "Resource Limits"
         case .serverUpdates: return "Server Updates"
@@ -64,7 +64,7 @@ enum MusterDestination: String, CaseIterable, Identifiable {
         case .complianceGrid: return "square.grid.3x3"
         case .driftHistory: return "exclamationmark.triangle"
         case .wakeAndListener: return "bell.badge"
-        case .seatDetail: return "bolt.shield"
+        case .seatDetail: return "checklist"
         case .serverStatus: return "cpu"
         case .serverResourceLimits: return "dial.low"
         case .serverUpdates: return "arrow.down.circle"
@@ -170,7 +170,7 @@ extension MusterDestination {
         case .wakeAndListener:
             return "The wake settings file on the Mac, beside what the listener reports."
         case .seatDetail:
-            return "MiniMax's seat setup, read on the Mac."
+            return "One seat's setup on the Mac, for any platform:  the engine's answers and the files behind them."
         case .serverStatus:
             return Self.serverSourceLine(inputs.serverStatus)
         case .serverResourceLimits:
