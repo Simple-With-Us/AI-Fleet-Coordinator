@@ -1,4 +1,5 @@
 """Relay blocked_values stay in lockstep with scripts/agent_sync/secretscan.py."""
+
 from __future__ import annotations
 
 import re
@@ -9,7 +10,7 @@ from pathlib import Path
 from relay_common import SCRIPTS, block, config_text
 
 sys.path.insert(0, str(SCRIPTS))
-from agent_sync.secretscan import scan  # noqa: E402
+from agent_sync.secretscan import scan
 
 
 def _canon(pattern: str) -> str:
