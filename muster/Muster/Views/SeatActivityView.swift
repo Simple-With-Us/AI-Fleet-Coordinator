@@ -208,7 +208,7 @@ struct SeatActivityView: View {
                 Text("This read made \(model.requestsMade) of at most \(model.requestCeiling) Zulip calls.")
                 if !model.readingSeat.isEmpty {
                     Text(ApplyCopy.join(
-                        "It read Zulip as the \(model.readingSeat) bot, through the read-only Operator service.",
+                        "It read Zulip as the \(model.readingSeat), through the read-only service.",
                         "The panel never reads as an agent seat or as Jay."
                     ))
                 }
