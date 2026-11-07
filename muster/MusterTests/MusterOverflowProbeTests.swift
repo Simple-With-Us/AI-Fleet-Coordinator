@@ -540,6 +540,27 @@ final class MusterOverflowProbeTests: XCTestCase {
         return found
     }
 
+    /// The visible scroll views under `column` that are not inside another scroll view there.
+    private func outermostScrolls(in column: NSView) -> [NSScrollView] {
+        let all = descendants(column).compactMap { $0 as? NSScrollView }.filter { !$0.isHidden }
+        return all.filter { scroll in
+            var parent = scroll.superview
+            while let view = parent, view !== column {
+                if view is NSScrollView { return false }
+                parent = view.superview
+            }
+            return true
+        }
+    }
+
+    /// A window the window server does not shrink to the runner's 1024 x 768 screen, so a probe
+    /// can ask for the owner's window height and taller.
+    final class UnconstrainedWindow: NSWindow {
+        override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
+            frameRect
+        }
+    }
+
     private func windowRect(_ view: NSView) -> NSRect {
         view.convert(view.bounds, to: nil)
     }
@@ -560,9 +581,9 @@ final class MusterOverflowProbeTests: XCTestCase {
     private func probe(_ kind: Kind, _ root: Root, height: CGFloat) {
         _ = NSApplication.shared
         let size = NSSize(width: MusterWindowLayout.minWidth, height: height)
-        let window = NSWindow(contentRect: NSRect(origin: NSPoint(x: 20, y: 20), size: size),
-                              styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
-                              backing: .buffered, defer: false)
+        let window = UnconstrainedWindow(contentRect: NSRect(origin: NSPoint(x: 20, y: 20), size: size),
+                                         styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+                                         backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         let hosting = NSHostingController(rootView: ProbeRoot(root: root, kind: kind))
         hosting.sizingOptions = [.minSize]
@@ -592,14 +613,18 @@ final class MusterOverflowProbeTests: XCTestCase {
         let contentHeight = content.bounds.height
         let layoutTop = window.contentLayoutRect.maxY
         let views = descendants(content)
-        let scrolls = views.compactMap { $0 as? NSScrollView }.filter { !$0.isHidden }
-        let detail = scrolls
-            .filter { windowRect($0).minX >= 150 }
-            .max { ($0.documentView?.frame.height ?? 0) < ($1.documentView?.frame.height ?? 0) }
-        let sidebar = scrolls
-            .filter { windowRect($0).minX < 150 }
-            .max { windowRect($0).height < windowRect($1).height }
         let split = views.compactMap { $0 as? NSSplitView }.first
+        // On macOS 26 the detail column runs under the floating sidebar (both start at x 0), so
+        // a scroll view's column comes from the split view's arranged subviews, not its x.
+        let arranged = split?.arrangedSubviews ?? []
+        let sidebarColumn: NSView? = arranged.count >= 2 ? arranged[0] : nil
+        let detailColumn: NSView? = arranged.count >= 2 ? arranged[arranged.count - 1] : nil
+        let detailScrolls: [NSScrollView] = detailColumn.map { outermostScrolls(in: $0) } ?? []
+        let sidebarScrolls: [NSScrollView] = sidebarColumn.map { outermostScrolls(in: $0) } ?? []
+        let detail = detailScrolls
+            .max { ($0.documentView?.frame.height ?? 0) < ($1.documentView?.frame.height ?? 0) }
+        let sidebar = sidebarScrolls
+            .max { windowRect($0).height < windowRect($1).height }
         let splitRect = split.map { windowRect($0) }
         var columns = "none"
         if let split {
@@ -627,8 +652,11 @@ final class MusterOverflowProbeTests: XCTestCase {
             if frame.maxY > contentHeight + 1 || frame.minY < -1 { reasons.append("scrollOutsideWindow") }
             let topText: String = top.map { fmt($0) } ?? "none"
             let scrollable: String = docHeight > visible + 1 ? "yes" : "no"
+            // The top of the scroll view's visible area, below any inset it keeps for the bar.
+            let visibleTop = frame.maxY - detail.contentInsets.top
             let parts: [String] = [
                 "scrollFrame=\(fmt(frame))",
+                "visTop=\(fmt(visibleTop))",
                 "docTop=\(topText)",
                 "docH=\(fmt(docHeight))",
                 "visH=\(fmt(visible))",
@@ -717,7 +745,7 @@ final class MusterOverflowProbeTests: XCTestCase {
     func test3_WorstVariantsTall() {
         environmentLine("tall")
         let kinds: [Kind] = [.baseline, .stripSeatSetup, .stripTools, .seatSetupComposite, .everything]
-        for height in [CGFloat(880), CGFloat(1300)] {
+        for height in [CGFloat(860), CGFloat(1300)] {
             for kind in kinds {
                 for root in [Root.A, .B, .C, .W] {
                     probe(kind, root, height: height)
