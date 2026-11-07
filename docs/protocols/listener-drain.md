@@ -20,10 +20,13 @@ The defer marker makes this pause a drain window:
 - Wakes whose quiet window ends inside the window RE-ARM into the coalescer instead
   of dropping (the "queued" ledger row already exists; no row per re-arm). An
   ordinary pause keeps its recorded-drop semantics; only the marker defers.
-- Broadcast admissions (chat fan-out, DM inbox copies, broadcast audits) park in
-  `listener/deferred_broadcasts.json` before their seen-rings are touched, and
-  re-drive at boot and on tick once the marker lifts. Only the marker parks them: an
-  ordinary pause (no `--defer`) leaves broadcast behavior exactly as it was.
+- Broadcast admissions (chat fan-out, DM inbox copies, broadcast audits) are claimed
+  atomically against `listener/broadcast_effects.json` - the durable effect ledger -
+  before any seen-ring is touched, and park as pending under the marker instead of
+  driving. They re-drive at boot and on tick once the marker lifts. Admission is
+  durable with or without the marker (a plain crash is fenced the same way); the
+  marker only gates DRIVING. An ordinary pause (no `--defer`) leaves broadcast
+  driving behavior exactly as it was.
 - The Linear projects hook answers new Project events with 503, so Linear keeps
   custody and retries. (Notes/registry POSTs are internal durable state and are not
   gated.)
@@ -44,7 +47,9 @@ at least 35s apart to bound observability lag):
 
 - `drain.outgoing_webhook.spool.pending` is 0
 - per seat: `seats.X.cursor >= seats.X.webhook_high_water`
-- `drain.broadcasts`: wake_handoffs, inbox_pending, audits all 0
+- `drain.broadcasts`: wake_handoffs, inbox_pending, audits all 0 (audits counts
+  DRIVING audit reminders from the ledger; a pre-window audit due inside the window
+  still fires on tick, so wait for it)
 - `drain.effect_threads`: chat-fanout, inbox-delivery, inbox-delivery-retry,
   broadcast-audit, broadcast-wake-unsupported all 0
 - `drain.armed` is true. An owner DM pause mid-drain overwrites the `"*"` pause entry
@@ -54,6 +59,9 @@ at least 35s apart to bound observability lag):
   coalescer and stay nonzero until the resume. A nonzero value is EXPECTED and does
   NOT block the stop - those wakes are durable "queued" ledger rows and recover
   post-restart. (The `drain.armed` check above, not this gauge, covers them.)
+- `drain.broadcast_effects`: pending 0 and driving 0 (the durable ledger gauges;
+  terminal rows do not block: `broadcast_effects_terminal` names any failed/unknown
+  effects for the operator)
 - `drain.router_queue` is 0
 - `drain.children` is 0
 - per seat: `jobs` 0, `running` null
@@ -85,13 +93,13 @@ not proceed. The abort returns to normal operation WITHOUT a restart:
    - with no pre-drain user pause restored: deferred wakes fire (the parked re-arms
      finalize once the marker is gone). With a prior pause restored, they stay
      deferred under it - that is their correct behavior, not a failed check.
-   - `drain.deferred_broadcasts` drains to 0 (re-drive runs on tick once the marker
-     lifts), except rows whose payload fetch stays inconclusive - item 4.
+   - `drain.broadcast_effects.pending` drains to 0 (re-drive runs on tick once the
+     marker lifts), except rows whose payload fetch stays inconclusive - item 4.
    - the Linear hook answers 200 queued again (only if it was configured and enabled
      in the prior state)
    - ingress healthy per the prior config: cursors advance, spool drains or stays 0
 4. A parked effect whose payload proof is inconclusive STAYS parked and visible as a
-   nonzero `drain.deferred_broadcasts`. Investigate the named message; never delete
+   nonzero `drain.broadcast_effects.pending`. Investigate the named message; never delete
    the file to make the gauge read zero. A row is removed by hand only after the
    operator has confirmed the payload is genuinely gone, and only while the listener
    is STOPPED - the file's updates are atomic single-writer writes, so a hand edit
@@ -122,8 +130,9 @@ mandatory for fidelity: the restored pause state must be the one the owner set.
 ## 6. Post-boot checks
 
 - seats connected, cursors advancing
-- `drain.deferred_broadcasts` drains to 0 (re-drive runs at boot and on tick);
-  rows whose payload fetch stays inconclusive remain parked and visible
+- `drain.broadcast_effects.pending` drains to 0 (re-drive runs at boot and on tick);
+  rows whose payload fetch stays inconclusive remain parked and visible;
+  `broadcast_effects_terminal` lists any effect that finished failed/unknown
 - deferred wakes fire once the marker is gone - unless the restored prior pause.json
   carried a user pause, under which they correctly stay deferred
 - the Linear hook accepts new events again (200 queued), if it is configured and
@@ -187,6 +196,52 @@ manual full source rebuild/redeploy, plus restoring the exact captured
 config/pause bytes again - NOT a prior-image rollback, which is unverified. A
 rollback has its own stop window with the same one-time loss classes above.
 
+## Broadcast effect ledger (durable admission and completion)
+
+Every broadcast (owner or fleet-bot channel-wide mention) is claimed against
+`listener/broadcast_effects.json` at admission, before any seen-ring or ring of any
+kind is touched, with a sha256 snapshot of the message at admission. The claim is
+atomic with a seen-marker: the SAME message id is only admitted when it was not
+claimed before (done/failed/unknown rows are durable and never resurrect).
+
+Each row carries a per-kind state machine: pending -> driving ->
+done / failed / unknown.
+
+- The drain marker gates DRIVING only. Admission is durable with or without it, so
+  an ordinary crash fences exactly the same as a planned drain.
+- Boot reconciles: stale claims are cleared, driving effects re-park as pending,
+  and a broadcast-audit effect driving with send_attempted_at set becomes UNKNOWN
+  (the send already happened or was attempted; re-sending would duplicate).
+- A parked kind never expires (GATE 2). Re-drive runs at boot and on tick (when the
+  marker is gone) with budgeted rotated payload probes (F8). A payload that stays
+  inconclusive keeps the kind parked and visible; it is never dropped.
+- A crash mid-effect is fenced per class:
+  - chat fan-out / nudges: the nudge dedupe key is durable and actual, so a
+    re-driven walk never double-nudges; a walk that ends with catalog failure or
+    failed enqueues finishes FAILED with the per-target reasons, never done.
+  - inbox copies: every inbox write is idempotent (a subscription and a read
+    flag), so a crash after the effect but before the completion receipt
+    re-delivers safely; a delivery that exhausts its retry bound finishes FAILED
+    and is surfaced. Per-seat receipts are recorded durably.
+  - wake hand-offs: re-offers pass through the F4 trigger-id fence, so a re-drive
+    can never double a wake.
+  - audit reminders: send_attempted_at is written durably BEFORE the send call. A
+    crash after that write but before the call can LOSE one reminder - the row
+    becomes UNKNOWN, is surfaced, and is never resent. A crash after the call is
+    the same class. UNKNOWN is unresolved loss: it is surfaced in status, not
+    hidden.
+- Terminal rows are never pruned by age except rows whose EVERY kind is done, after
+  30 days (BROADCAST_LEDGER_DONE_KEEP_SECONDS). Failed, unknown and pending rows
+  never age out. Pruned all-done rows drop the seen-fence with them; re-admission
+  after 30 days requires a genuinely new event with the same message id, which no
+  current route can produce (message edits never re-admit broadcasts).
+- On first boot after this change, the legacy `deferred_broadcasts.json` store is
+  copied into the ledger, then renamed to `.migrated` only after the durable write
+  completes. If the copy fails or is partial, the legacy file is left in place and
+  no migration is recorded, so the next boot retries (fail-closed). Parked legacy
+  entries re-drive through the same gate; completed broadcast ids keep their
+  seen-marker.
+
 ## Named residuals (explicit; owner acceptance pending)
 
 - An event acknowledged 200 by the Linear hook and held only in memory is lost on an
@@ -194,28 +249,27 @@ rollback has its own stop window with the same one-time loss classes above.
   event arrives - with no later event the loss persists indefinitely, and an
   interrupted reconcile can leave partial linkifier changes (see First adoption). The
   503 gate removes the planned-stop case.
-- Admission is fenced, a mid-effect crash is not: the deferred-broadcast record marks
-  an effect done when its thread STARTS, so an unplanned stop inside a
-  fanout/inbox/audit effect can leave it partial (missing nudges for not-yet-enqueued
-  chats, a lost in-memory wake hand-off, a lost inbox copy) and it is never
-  re-driven. Step 3's quiesce closes this window for the planned stop. What durably
-  fences re-drive duplicates is the nudge dedupe key and the ledger trigger-id fence
-  (F4), and only when a re-drive happens.
 - Re-drive probes are budgeted and rotated (F8): a payload only fetchable by a subset
   of runners can wait successive rotated probes at backoff pace (30s doubling to a 5
-  minute cap per id; with many parked ids or a large fleet that can add up to hours)
-  before its effects re-drive. The parked record is retained visibly throughout
-  (nonzero drain.deferred_broadcasts naming the message) rather than lost.
+  minute cap per id; with many parked kinds or a large fleet that can add up to
+  hours) before its effects re-drive. The parked kind is retained visibly throughout
+  (nonzero drain.broadcast_effects.pending naming the message) rather than lost.
 - Re-drive does not re-run the route's admission predicates (including the stale
-  exclusions) on the parked message. Parked effects are bounded to the drain window,
-  so this is an explicit design choice, not an age fence: keep the window short.
-- A crash mid-re-drive can re-send a bot its unread inbox copy (duplicate, cosmetic,
-  attempt-capped); nudge re-delivery is fenced durably by dedupe key; a double wake
-  hand-off is fenced by the ledger trigger-id check (F4).
-- Broadcast-audit reminders are lost on an unplanned stop: one unexplained
-  broadcast, never a wrong wake (documented upstream).
-- SIGKILL/crash can duplicate a seat-INBOX row (append has no id dedup; cosmetic).
+  exclusions) on the parked message; it re-routes only to recover the parked
+  classification. A parked kind can now be old (kinds never expire), so the
+  admission-time judgment is preserved rather than re-evaluated - an explicit
+  design choice.
+- A crash between the audit marker write and the send call can LOSE one audit
+  reminder (the row is UNKNOWN and never resent); a crash between the send and the
+  receipt lands in the same class, so a reminder is never duplicated. Both are
+  surfaced via drain.broadcast_effects_terminal.
+- SIGKILL/crash can duplicate a seat-INBOX row only for a replay older than the
+  dedup window (the last 2000 keys or 256KB of the file): the chunked flush keeps
+  crash-time loss far inside that window, and no current caller replays from beyond
+  it. Torn lines (partial chunk at tail) are skipped on read and deduped on the
+  re-append. Duplication beyond that boundary is not claimed.
 - Passive unleased-chatter rows in the router queue at stop are lost, as with any
   crash; every wake/nudge-relevant class is fenced by post-restart backfill.
 - The spool can starve under sustained native load and stall step 3 into its abort
   path (safe).
+
