@@ -293,3 +293,20 @@ class LinuxHostTests(unittest.TestCase):
                 self.assertRaisesRegex(TransactionError, "guard retained"),
             ):
                 self.h.reconcile_frozen_stop(expected)
+
+    def test_signal_state_accepts_exact_deactivating_process_only_for_cleanup(self):
+        expected = self.h.process_identity()
+        (self.proc / "42/status").write_text(
+            "SigCgt: 0000\nSigIgn: 0000\nSigBlk: 0000\nSigPnd: 4000\nShdPnd: 0000\n"
+        )
+        with patch.object(
+            self.h, "properties", return_value={"MainPID": "42", "ActiveState": "deactivating"}
+        ):
+            self.assertEqual(self.h.signal_state(expected), (True, False))
+            with self.assertRaises(TransactionError):
+                self.h.process_identity()
+        with patch.object(
+            self.h, "properties", return_value={"MainPID": "43", "ActiveState": "deactivating"}
+        ):
+            with self.assertRaises((TransactionError, FileNotFoundError)):
+                self.h.signal_state(expected)

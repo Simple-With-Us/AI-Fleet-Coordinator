@@ -69,10 +69,11 @@ class LinuxHost:
             props[key] = value
         return props
 
-    def process_identity(self):
+    def process_identity(self, *, allow_stopping=False):
         state = self.properties()
         pid = int(state["MainPID"])
-        if pid <= 0 or state["ActiveState"] != "active":
+        allowed = {"active", "deactivating"} if allow_stopping else {"active"}
+        if pid <= 0 or state["ActiveState"] not in allowed:
             raise TransactionError("relay not active")
         p = self.proc / str(pid)
         # /proc/PID/stat comm may include spaces or parentheses.
@@ -239,7 +240,7 @@ class LinuxHost:
         raise TransactionError("service stop timeout")
 
     def signal_state(self, expected):
-        if self.process_identity() != expected:
+        if self.process_identity(allow_stopping=True) != expected:
             raise TransactionError("stop reconciliation identity drift")
         status = dict(
             line.split(":", 1)
