@@ -107,12 +107,12 @@ class World:
                # same per-world folder here and the leak check covers it too.
                "TMPDIR": str(self.tmp), "TEMP": str(self.tmp), "TMP": str(self.tmp)}
         env.update(extra)
-        # The harness plays the trusted launcher:  a seat binds the run to a bearer locator and the fake board
+        # The harness plays the trusted launcher:  a seat binds the run to a bearer file and the fake board
         # proves that seat (FAKE_BEARER_SEAT).  AGENT_SEAT itself is never an identity any more, so it is not
-        # passed on;  no seat means no locator and the run refuses.
+        # passed on;  no seat means no bearer file and the run refuses.
         seat = env.pop("AGENT_SEAT", None)
         if seat:
-            env["SIMPLE_BOARD_BEARER_LOCATOR"] = "/fleet-seats:%s_SEAT_BEARER" % seat.replace("-", "_")
+            env["SIMPLE_BOARD_BEARER_FILE"] = "/run/seat-bearers/%s" % seat.replace("-", "_").lower()
             env["FAKE_BEARER_SEAT"] = seat
         return {k: v for k, v in env.items() if v is not None}
 

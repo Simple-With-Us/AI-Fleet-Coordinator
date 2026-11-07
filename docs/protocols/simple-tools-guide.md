@@ -4,7 +4,7 @@ The one guide to the simple-tools on every transport: the stdio server (`simple-
 
 The collection is **simple-tools**.  The hosted server is **ST-MCP** and its admin is **ST-MCP + GR-MCP Admin**.  Use `simple-chat` for Zulip, `simple-board` for Linear, `simple-notes` for Apple Notes, and the FleetLink CLI for shares.  Fleet coordination is in **#Work-In-Progress**.  Use these component names in instructions and tool descriptions.
 
-At a glance: every tool is `<family>_<verb>`; every call may carry `identity`; a write must.  The stdio server serves 273 tools and the hosted server 280 (counted from the release source, which adds the seven `gr_*` tools and the hosted-only `catalog`; the deployed server lists 272 until that release ships): `eavesdropper_ack` is stdio only, and the hosted-only `whatsapp_read` is listed only to JET-CHAT, the full Jet login, while the WhatsApp bridge is on (it is default-off), which makes JET-CHAT's hosted list 281 (Tools by Family).
+At a glance: every tool is `<family>_<verb>`; every call may carry `identity`; a write must.  The stdio server serves 274 tools and the hosted server 281 (counted from the release source, which adds the seven `gr_*` tools and the hosted-only `catalog`; the deployed server lists 272 until that release ships): `eavesdropper_ack` is stdio only, and the hosted-only `whatsapp_read` is listed only to JET-CHAT, the full Jet login, while the WhatsApp bridge is on (it is default-off), which makes JET-CHAT's hosted list 282 (Tools by Family).
 
 ## How to Pass Identity
 
@@ -57,7 +57,7 @@ Name = `<family>_<verb>`.  R = read, W = write (writes need `identity`).  Wher
 |---|---|---|---|
 | (none) `whoami`, `identities`, `guide`, `catalog` | 3 stdio, 4 hosted | both | Identity, this guide and the paged tool catalog (above; `catalog` is hosted only) |
 | `zulip_*` | 42 | both | Read and post on the fleet's Zulip as a bot |
-| `eavesdropper_*` | 6 stdio, 5 hosted | both | This seat's eavesdropper records |
+| `eavesdropper_*` | 7 stdio, 6 hosted | both | This seat's eavesdropper records |
 | `notes_*` | 8 | both | Apple Notes in the owner's Coding folder |
 | `recall_*` | 3 | both | The fleet's shared knowledge corpus |
 | `linear_*` | 196 | both | The Linear board as the identity's own app |
@@ -122,6 +122,7 @@ The local eavesdropper's records for the identity.  Stdio reads them from this 
 |---|---|---|---|
 | `eavesdropper_status` | R | both | Counts: seat inbox, owner queue, wakes, held back, leases, nudges, pause |
 | `eavesdropper_inbox` | R | both | The seat inbox after the acknowledged cursor (`since_seq`); never moves the cursor |
+| `operator_inbox_pending` | R | both | Wake-worthy pending seat-inbox items after a caller-held `after_seq`: `mode` check counts them (with `latest_seq`), pull returns them; never moves any cursor |
 | `eavesdropper_owner_queue` | R | both | Notes queued for the owner, after the surfaced mark (`all` for every one) |
 | `eavesdropper_wakes` | R | both | The wake ledger, filtered by `since_hours` and `state` |
 | `eavesdropper_held_back` | R | both | Wakes held back for the budget, with reason and link |
@@ -153,7 +154,7 @@ Search before re-deriving a lesson.  Hits are fenced between `BEGIN_UNTRUSTED_R
 
 ### linear
 
-The identity's own Linear app, never the owner's account.  Output is fenced between `BEGIN_UNTRUSTED_LINEAR` and `END_UNTRUSTED_LINEAR`.  Stdio runs `simple-board` as the identity its bearer proves (`SIMPLE_BOARD_BEARER_LOCATOR`), so board's per-seat app, viewer check and label protection apply; hosted calls Linear from the Worker, and its writes need the server's `LINEAR_TOOLS_WRITES` switch.  Writes take an idempotency key where the tool lists one: a retry with the same key returns the first result.
+The identity's own Linear app, never the owner's account.  Output is fenced between `BEGIN_UNTRUSTED_LINEAR` and `END_UNTRUSTED_LINEAR`.  Stdio runs `simple-board` as the identity its bearer proves (`SIMPLE_BOARD_BEARER_FILE`), so board's per-seat app, viewer check and label protection apply; hosted calls Linear from the Worker, and its writes need the server's `LINEAR_TOOLS_WRITES` switch.  Writes take an idempotency key where the tool lists one: a retry with the same key returns the first result.
 
 The ten core tools:
 
@@ -356,3 +357,33 @@ Tool errors come back with `isError: true` and an object `{code, message, retrya
 | `relay` (HTTP status) | git-relay and GR-MCP do not use the codes above: a refusal arrives as a tool error carrying the relay's own HTTP status.  See the GitHub section |
 
 Exit codes of the `simple-chat` CLI: 0 ok, 2 usage, 3 credentials, realm or identity refused, 4 wait timeout, 5 Zulip API error, 6 network error, 7 `verify-owner-msg` did not verify.  `simple-board` exits 1 error, 2 usage, 3 claim held, 4 no credentials, 5 rate limit, and 6 when no seat is verified or an authentication check failed.  Exit 7 is retired: it was the writes-off switch, and the bearer-verified seat is the only write gate now.
+
+
+### One read-only PR report
+
+`simple-git readiness OWNER/REPO NUMBER [--expected-head FULL_SHA]` combines the
+existing approved PR, exact-head check-run, commit-status, paginated review-record,
+and actual review-thread reads. It prints JSON. Exit 0 means
+`observed_checks_passed`, not permission to merge; exit 1 means blocked or unknown.
+It never merges, resolves a conversation, changes a rule, or creates an auto-merge request.
+
+The report counts unresolved review **threads**, including outdated unresolved
+threads. Issue comments are never a substitute. It follows thread cursors and
+review pages to a bounded end, rejects duplicate/missing pagination and incomplete
+check censuses, and reads head/base/lifecycle again at the end. A changed head or
+base requires a new report. The same overall CLI time budget covers every read.
+
+Missing tools, refused reads, malformed coverage, missing current-head reviews,
+and unknown mergeability are not a clean result. The report retains known
+blockers even if another read is incomplete. All observed checks/statuses are
+reported; it does not guess which are required. A COMMENTED current-head review
+is evidence of a completed review, not an approval or an automatic policy verdict.
+Reviewer identity requirements, repository rules and owner authority still need
+normal qualification. The existing REST PR read provides `mergeable_state`, not
+GitHub's exact human-readable rule reason: `github_block_reason` stays `unknown`
+rather than inventing an allowlist or policy explanation. Use the authenticated
+PR merge panel when that missing reason matters.
+
+These are bounded sequential observations, not an atomic snapshot or durable
+merge token. Recheck at the point of a later write through the existing approved
+merge path. Review text is not emitted by this report and cannot grant authority.

@@ -715,17 +715,17 @@ def run(
         for seat_cfg in list(cfg.seats.values()) + list(cfg.disabled.values())
         if seat_cfg.creds == "env" and seat_cfg.email_env and seat_cfg.key_env
     }
-    # The seat's own bearer locator, a FOLDER:KEY_NAME location and never a value:  board proves its seat
-    # from it, so a Linear write through this server can be signed.  The launching seat's locator is the one
-    # the launcher bound to this process;  another seat's comes from its own config.
-    seat_bearer_locators = {
-        seat_cfg.seat: seat_cfg.bearer_locator
+    # The seat's own bearer file, an absolute path to its private bearer file and never a value:  board
+    # proves its seat from it, so a Linear write through this server can be signed.  The launching seat's
+    # file is the one the launcher bound to this process;  another seat's comes from its own config.
+    seat_bearer_files = {
+        seat_cfg.seat: seat_cfg.bearer_file
         for seat_cfg in list(cfg.seats.values()) + list(cfg.disabled.values())
-        if seat_cfg.bearer_locator
+        if seat_cfg.bearer_file
     }
-    bound = (env.get("SIMPLE_BOARD_BEARER_LOCATOR") or "").strip()
+    bound = (env.get("SIMPLE_BOARD_BEARER_FILE") or "").strip()
     if seat and bound:
-        seat_bearer_locators.setdefault(seat, bound)
+        seat_bearer_files.setdefault(seat, bound)
     rc_arg = getattr(args, "rc", None) or env.get("ZULIP_RC") or None
     allowed: dict[str, X.CredentialSource] = {}
     if seat:
@@ -756,7 +756,7 @@ def run(
             owner_user_id=cfg.owner_user_id,
             operator_user_id=cfg.operator_user_id,
             owner_clients=cfg.owner_clients,
-            seat_bearer_locators=seat_bearer_locators,
+            seat_bearer_files=seat_bearer_files,
             clock=clock,
             sleep=rt.sleep,
             log=lambda text: log(agent.client.scrub(text)),

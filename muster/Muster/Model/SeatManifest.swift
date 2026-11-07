@@ -175,7 +175,7 @@ struct FleetRegistry: Decodable {
     /// the same call the engine's own loader makes.
     var liveTags: [String] {
         seats
-            .filter { ($0.retired ?? false) == false && $0.aliasOf == nil }
+            .filter { ($0.retired ?? false) == false && $0.aliasOf == nil && !NotASeat.contains($0.tag) }
             .map { $0.tag }
     }
 }

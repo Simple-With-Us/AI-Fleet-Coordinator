@@ -81,7 +81,10 @@ test("enforces expanded selection depth and field-count bounds", () => {
 
 test("enforces document and JSON variable size and nesting limits", () => {
   rejected(`query Q { field(arg: "${"x".repeat(24000)}") }`);
-  rejected("query Q { field }", { value: "x".repeat(24000) });
+  assert.equal(prepareGraphql("query Q { field }", { value: "x".repeat(30000) }).variables.value.length, 30000);
+  assert.equal(prepareGraphql("query Q { field }", { value: "x".repeat(99988) }).variables.value.length, 99988);
+  rejected("query Q { field }", { value: "x".repeat(99989) });
+  assert.equal([...prepareGraphql("query Q { field }", { value: "\u{1F600}".repeat(60000) }).variables.value].length, 60000);
   let nested = "leaf";
   for (let i = 0; i < 17; i++) nested = { child: nested };
   rejected("query Q { field }", { value: nested });
