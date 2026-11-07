@@ -476,14 +476,17 @@ class SeatAndMcpTests(unittest.TestCase):
                 (self.home / "state.json").unlink(missing_ok=True)
                 report = self.failing_report(("tool:gh", "behind by 1"))
                 self.assertFalse(doctor.post_changes(report, runner))
-                self.assertEqual(self.state(), {"failing": ["tool:gh: behind by 1"], "checks": ["tool:gh"]})
+                self.assertEqual(
+                    self.state(), {"failing": ["tool:gh: behind by 1"], "checks": ["tool:gh"]}
+                )
                 calls = []
                 self.assertFalse(doctor.post_changes(report, self.chat_runner(calls, [4101])))
                 self.assertEqual(calls, [])
                 # A later text change posts a new message, because there is no id to edit.
                 self.assertTrue(
                     doctor.post_changes(
-                        self.failing_report(("tool:gh", "behind by 2")), self.chat_runner(calls, [4101])
+                        self.failing_report(("tool:gh", "behind by 2")),
+                        self.chat_runner(calls, [4101]),
                     )
                 )
                 self.assertEqual([c[1] for c in calls], ["post"])
@@ -494,7 +497,7 @@ class SeatAndMcpTests(unittest.TestCase):
         def missing(argv, **kw):
             raise FileNotFoundError(argv[0])
 
-        refused = lambda argv, **kw: subprocess.CompletedProcess(argv, 3, "", "refused")  # noqa: E731
+        refused = lambda argv, **kw: subprocess.CompletedProcess(argv, 3, "", "refused")
         for name, runner in [("refused", refused), ("missing", missing)]:
             with self.subTest(name):
                 (self.home / "state.json").unlink(missing_ok=True)

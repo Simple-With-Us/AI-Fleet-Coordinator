@@ -3472,10 +3472,21 @@ def post_changes(report: Report, runner: Callable = subprocess.run) -> bool:
             return False
         # Zulip refused the edit (the message is gone or past its edit window) or simple-chat is
         # missing:  post a new message instead and keep its id.
-    argv = ["simple-chat", "post", "--channel", "Work-In-Progress", "--topic", "fleet tools doctor", "--json", body]
+    argv = [
+        "simple-chat",
+        "post",
+        "--channel",
+        "Work-In-Progress",
+        "--topic",
+        "fleet tools doctor",
+        "--json",
+        body,
+    ]
     try:
         result = runner(argv, capture_output=True, text=True, timeout=60, check=False)
-    except OSError:  # simple-chat is missing from PATH:  nothing was sent, so the next run tries again
+    except (
+        OSError
+    ):  # simple-chat is missing from PATH:  nothing was sent, so the next run tries again
         return False
     except subprocess.SubprocessError:
         # Timed out:  the post may already be on Zulip.  Remember this set without an id, so the
