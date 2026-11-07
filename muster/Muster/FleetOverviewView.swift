@@ -304,6 +304,7 @@ struct FailureBanner: View {
     var title: String = "The engine did not answer, so every cell reads unknown."
 
     var body: some View {
+        let shown = FailureReason.display(reason)
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.red)
@@ -311,13 +312,12 @@ struct FailureBanner: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(.callout.weight(.medium))
-                Text(FailureReason.shown(reason))
+                Text(shown.text)
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
-                    .lineLimit(FailureReason.wrappedLineLimit)
                     .fixedSize(horizontal: false, vertical: true)
-                if FailureReason.isShortened(reason) {
+                if shown.isShortened {
                     Button("Copy Full Reason") {
                         let pasteboard = NSPasteboard.general
                         pasteboard.clearContents()

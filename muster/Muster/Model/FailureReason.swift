@@ -9,10 +9,10 @@ import Foundation
 enum FailureReason {
     /// The most lines of the reason the banner shows.
     static let shownLines = 6
-    /// The most characters it shows, for a reason that is one very long line.
+    /// The most characters it shows, for a reason that is one very long line.  With the
+    /// line cap this bounds the banner's height however the text wraps, so the banner needs
+    /// no line limit of its own, which would hide the end of the reason this keeps.
     static let shownCharacters = 600
-    /// The banner's cap on wrapped lines, so even wrapped text keeps the banner short.
-    static let wrappedLineLimit = 9
 
     /// The part of `reason` the banner shows:  its last lines, after a line that says how many
     /// earlier lines were left out, and an ellipsis where a line was cut.
@@ -43,11 +43,13 @@ enum FailureReason {
         return head + body
     }
 
-    /// True when the banner leaves part of `reason` out, so it offers the full text to copy.
-    static func isShortened(_ reason: String) -> Bool {
+    /// What the banner shows, and whether that leaves part of `reason` out (so the banner
+    /// offers the full text to copy), worked out once.
+    static func display(_ reason: String) -> (text: String, isShortened: Bool) {
         let trimmed = reason
             .replacingOccurrences(of: "\r\n", with: "\n")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        return shown(reason) != trimmed
+        let text = shown(reason)
+        return (text, text != trimmed)
     }
 }
