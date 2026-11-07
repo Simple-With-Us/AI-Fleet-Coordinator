@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { STYLE, STYLE_HASH, PAGE_CSP, SENTENCE_GAP, REFERRER_POLICY, escapeHtml, ownerTime, consentPage, adminPage, errorPage, gapped, noConnectionPage, withReferrerPolicy } from "../src/pages.js";
 import { sameOriginPost } from "../src/policy.js";
+import { HOSTED_READ_TOOLS } from "../src/hosted-tools.js";
 import { browserPostOrigin, ISSUER } from "./helpers.mjs";
 
 test("the stylesheet hash in the CSP matches the stylesheet", () => {
@@ -185,7 +186,7 @@ test("admin status distinguishes no traffic, mixed outcomes, readiness, and reta
     seats: [{ seat: "JET", paused: false, keyInstalled: true, role: { ok: true }, grants: [], linearEnabled: true, linearConfigured: true, linearWrites: false, recallConfigured: false }],
     statusCalls: [], statusErrors: [], generatedAt: Date.parse("2026-10-09T20:05:00Z"),
   }).text();
-  assert.match(noTraffic, /No Recent Traffic/);
+  assert.match(noTraffic, /No Recorded Calls/);
   assert.match(noTraffic, /quiet seat is not verified healthy/);
   assert.match(noTraffic, /Needs setup: grant/);
   assert.match(noTraffic, /credential configured/);
@@ -194,7 +195,7 @@ test("admin status distinguishes no traffic, mixed outcomes, readiness, and reta
     seats: [{ seat: "JET", paused: false, keyInstalled: true, role: { ok: true }, grants: [{ client: "Client", scope: [], createdAt: 0 }] }],
     statusCalls: [], generatedAt: Date.parse("2026-10-09T20:05:00Z"),
   }).text();
-  assert.match(configuredQuiet, /Configured; no recent traffic/);
+  assert.match(configuredQuiet, /Configured; no recorded writes or failures/);
   assert.doesNotMatch(configuredQuiet, /class="status-state state-ready"/);
 
   const mixed = await adminPage({
@@ -211,7 +212,10 @@ test("admin status distinguishes no traffic, mixed outcomes, readiness, and reta
     generatedAt: Date.parse("2026-10-09T20:07:00Z"),
   }).text();
   assert.match(mixed, /Recorded Failures/);
+  // Short labels on purpose:  the History Coverage line says successful reads are not
+  // recorded, and longer labels squeeze the card's value column at desktop width.
   assert.match(mixed, /Last Success/);
+  assert.match(mixed, /Last Call/);
   assert.match(mixed, /Fri, Oct 9, 3:00pm/);
   assert.match(mixed, /Wait until the displayed reset time/);
   assert.match(mixed, /Retryable/);
@@ -263,6 +267,35 @@ test("later seat failures and unavailable diagnostics override a successful call
   }).text();
   assert.match(unavailable, /Diagnostics unavailable/);
   assert.doesNotMatch(unavailable, /<p class="status-state state-ready">Recent success/);
+});
+
+test("a failed read is current only briefly, because the successful reads after it leave no row", async () => {
+  const seat = { seat: "CODEX", paused: false, keyInstalled: true, role: { ok: true }, grants: [{ client: "Client", scope: [], createdAt: 0 }] };
+  const failedRead = { ts: Date.parse("2026-10-09T16:00:00Z"), seat: "CODEX", tool: "zulip_read_topic", error_code: "rate_limited", retryable: true };
+  const card = (html) => html.match(/<h3>CODEX<\/h3><p class="status-state ([^"]+)">([^<]+)</)?.slice(1);
+  // index.js passes the read classification in, as here.
+  const facts = { ...adminFacts, readTools: HOSTED_READ_TOOLS };
+  const fresh = await adminPage({ ...facts, seats: [seat], statusCalls: [failedRead], generatedAt: failedRead.ts + 5 * 60_000 }).text();
+  assert.deepEqual(card(fresh), ["state-attention", "Recent failure"], "inside ten minutes the failed read is current");
+  const later = await adminPage({ ...facts, seats: [seat], statusCalls: [failedRead], generatedAt: failedRead.ts + 2 * 60 * 60_000 }).text();
+  const [tone, state] = card(later);
+  assert.equal(tone, "state-neutral", "an old failed read is neither current failure nor verified success");
+  assert.match(state, /Last recorded call was a failed read; successful reads are not recorded/);
+  assert.match(later, /Recent Errors And Refusals[\s\S]*rate_limited/, "the error itself is still listed");
+  // A failed WRITE stays current, as before.
+  const failedWrite = { ...failedRead, tool: "zulip_send" };
+  const write = await adminPage({ ...facts, seats: [seat], statusCalls: [failedWrite], generatedAt: failedRead.ts + 2 * 60 * 60_000 }).text();
+  assert.deepEqual(card(write), ["state-attention", "Recent failure"]);
+});
+
+test("status.js and pages.js load without the Worker's tool modules", async () => {
+  // The visual tests import pages.js with only Playwright installed (no zod):  status.js
+  // must not import hosted-tools.js, which pulls in zod.
+  const { readFileSync } = await import("node:fs");
+  for (const file of ["../src/status.js", "../src/pages.js"]) {
+    const src = readFileSync(new URL(file, import.meta.url), "utf8");
+    assert.doesNotMatch(src, /from "\.\/hosted-tools\.js"/, file);
+  }
 });
 
 test("wake release retries are visible with actionable callback guidance", async () => {

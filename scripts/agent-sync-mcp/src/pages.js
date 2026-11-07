@@ -288,7 +288,7 @@ export function gbBearerMintRefusedPage({ identity, reason = "stale" }) {
 }
 
 /** /admin (spec 3.9):  seat state, keys, grants, clients, refusals, tool calls, audit. */
-export function adminPage({ gbBearers = [], mintId = "", email, seats, clients, clientsDeferred = false, clientsUnavailable = false, clientsCheckedAt = null, refusals, tokenRefusals = [], audits, calls = [], statusCalls = calls, statusErrors = [], statusAudits = audits, runtimeErrors = [], generatedAt, diagnosticsUnavailable = false, csrf, notice, manualSeats = [], infisical = null }, headers) {
+export function adminPage({ gbBearers = [], mintId = "", email, seats, clients, clientsDeferred = false, clientsUnavailable = false, clientsCheckedAt = null, refusals, tokenRefusals = [], audits, calls = [], statusCalls = calls, statusErrors = [], statusAudits = audits, runtimeErrors = [], generatedAt, diagnosticsUnavailable = false, csrf, notice, manualSeats = [], infisical = null, readTools }, headers) {
   const seatRows = seats
     .map((s) => {
       const unavailable = new Set(s.unavailableFields ?? []);
@@ -356,7 +356,7 @@ export function adminPage({ gbBearers = [], mintId = "", email, seats, clients, 
         .map((a) => `<tr><td>${escapeHtml(ownerTime(a.ts))}</td><td>${escapeHtml(a.seat)}</td><td>${escapeHtml(a.event)}</td><td><code>${escapeHtml(JSON.stringify(a.detail ?? {}))}</code></td></tr>`)
         .join("")
     : `<tr><td colspan="4">No events yet.</td></tr>`;
-  const statusOverview = renderStatusOverview({ seats, statusCalls, statusErrors, refusals, tokenRefusals, audits: statusAudits, runtimeErrors, generatedAt, diagnosticsUnavailable }, {
+  const statusOverview = renderStatusOverview({ seats, statusCalls, statusErrors, refusals, tokenRefusals, audits: statusAudits, runtimeErrors, generatedAt, diagnosticsUnavailable, readTools }, {
     escape: escapeHtml,
     time: ownerTime,
     gap: SENTENCE_GAP,
@@ -397,7 +397,7 @@ ${fold("Refused Authorize Requests", `${refusals.length} logged`, `<p>${sentence
 <table><tr><th>When</th><th>Signed In As</th><th>Reason</th><th>Client ID</th><th>Redirect URI</th><th>Resource</th></tr>${refusalRows}</table>`)}
 ${fold("Refused Token Requests (Unauthenticated, Counted)", `${tokenRefusals.length} reasons`, `<p>${sentences("Anyone on the internet can send these, so they are counted per reason and client ID and kept apart from the authorize log.")}</p>
 <table><tr><th>Last Seen</th><th>Count</th><th>Reason</th><th>Client ID</th></tr>${tokenRefusalRows}</table>`)}
-${fold("Tool Calls", `${calls.length} calls`, `<p>${sentences("One row per call, newest first.", "Bodies, keys and tokens are never stored.", "A topic that looked like a secret shows as its hash.")}</p>
+${fold("Tool Calls", `${calls.length} calls`, `<p>${sentences("One row per write or failed call, newest first.", "Successful reads are not recorded (owner ruling, Nov 6, 2026).","Bodies, keys and tokens are never stored.", "A topic that looked like a secret shows as its hash.")}</p>
 <table><tr><th>When</th><th>Seat</th><th>Tool</th><th>Outcome</th><th>Stream</th><th>Topic</th><th>Message</th><th>Ms</th><th>Grant</th><th>Network</th></tr>${callRows}</table>`)}
 ${fold("Audit", `${audits.length} events`, `<table><tr><th>When</th><th>Seat</th><th>Event</th><th>Detail</th></tr>${auditRows}</table>`)}`;
   return htmlResponse("Fleet MCP Admin", body, { headers });

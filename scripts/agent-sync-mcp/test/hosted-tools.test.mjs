@@ -714,14 +714,15 @@ test("a budget refusal surfaces as budget_exhausted with reset_at, and a duplica
 
 // ---------------------------------------------------------------- audit and leaks
 
-test("audit:  one row per call with the spec 3.9 fields, no body, no key, a secret-looking topic hashed", async () => {
+test("audit:  one row per write and per error with the spec 3.9 fields, no body, no key, a secret-looking topic hashed;  a successful read writes none", async () => {
   const { fake, tools, gate, logs } = harness();
   structured(await tools.call("zulip_post", { channel: "sandbox", topic: "audited", text: "body text that must not be stored" }), "zulip_post");
   toolError(await tools.call("zulip_post", { channel: "sandbox", topic: `k ${fake.key}`, text: "x" }), "refused_secret");
-  structured(await tools.call("zulip_read_topic", { topic: `k ${zulipShapedKey(9)}` }), "zulip_read_topic");
+  const secretTopic = `k ${zulipShapedKey(9)}`;
+  structured(await tools.call("zulip_read_topic", { topic: secretTopic }), "zulip_read_topic");
   const rows = await S.callTail(gate.store, 10);
-  assert.equal(rows.length, 3);
-  const [read, refused, post] = rows;
+  assert.equal(rows.length, 2, "the successful read left no row (owner 2026-11-06)");
+  const [refused, post] = rows;
   assert.equal(post.tool, "zulip_post");
   assert.equal(post.topic, "audited");
   assert.equal(post.channel_id, STREAMS.sandbox);
@@ -732,10 +733,10 @@ test("audit:  one row per call with the spec 3.9 fields, no body, no key, a secr
   assert.ok(Number.isInteger(post.body_len) && Number.isInteger(post.message_id) && /^[0-9a-f]{12}$/.test(post.idem_ref));
   assert.equal(refused.error_code, "refused_secret");
   assert.match(refused.topic, /^sha256:[0-9a-f]{12}$/);
-  assert.match(read.topic, /^sha256:[0-9a-f]{12}$/, "a read's topic is hashed too when it looks like a secret");
+  assert.ok(logs.some((line) => /"tool":"zulip_read_topic"/.test(line) && /"outcome":"ok"/.test(line)), "the read still has its Workers Logs line");
   const everything = JSON.stringify([rows, logs, await S.tail(gate.store, 50)]);
   const [, basic] = basicForms(BOT_EMAIL, fake.key);
-  for (const leak of [fake.key, basic, "body text that must not be stored"]) assert.ok(!everything.includes(leak), `leaked:  ${leak.slice(0, 6)}`);
+  for (const leak of [fake.key, basic, "body text that must not be stored", secretTopic]) assert.ok(!everything.includes(leak), `leaked:  ${leak.slice(0, 6)}`);
 });
 
 test("an ASN or country change within one grant is flagged", async () => {

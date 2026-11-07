@@ -575,7 +575,10 @@ class Relay:
             detail = {"exception": type(exc).__name__}
             return 500, {"error": "internal relay error"}
         finally:
-            self.audit.record(seat, action, repo, outcome, detail)
+            # Successful reads leave no row (SeatPolicy.audits);  every denial,
+            # error and write still records exactly one.
+            if SeatPolicy.audits(action, outcome):
+                self.audit.record(seat, action, repo, outcome, detail)
 
     def _release(self, key: str | None, state: str) -> None:
         if key is not None:
