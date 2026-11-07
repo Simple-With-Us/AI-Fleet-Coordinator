@@ -71,13 +71,18 @@ const LAYOUT = { sessions: SESSIONS_HEADERS, events: EVENTS_HEADERS };
 
 // --- registry bridge: the store's own CLI, inside the container -----------------
 
-export function makeRegistryBridge({ container, db }) {
+// A wedged docker exec must not hold the writer lease for the whole run: each
+// registry call is killed after this long and fails like any other bridge error
+// (the rows it covered stay pending and reconcile by ID next run).
+export const REGISTRY_CALL_TIMEOUT_MS = 120_000;
+
+export function makeRegistryBridge({ container, db, exec = run, timeoutMs = REGISTRY_CALL_TIMEOUT_MS }) {
   const call = async (args) => {
-    const { stdout } = await run(
+    const { stdout } = await exec(
       "docker",
       ["exec", "-w", "/app/scripts", container, "python3", "-m",
         "agent_sync.operator_registry", ...args],
-      { maxBuffer: 256 * 1024 * 1024 },
+      { maxBuffer: 256 * 1024 * 1024, timeout: timeoutMs, killSignal: "SIGKILL" },
     );
     return JSON.parse(stdout);
   };
@@ -139,11 +144,15 @@ function isQuotaRefusal(err) {
   return err?.code === "http_error" && err.status === 429 && err.uncertain !== true;
 }
 
+// shouldStop: when it answers true (SIGTERM or the run deadline), a 429 is handed
+// back at once instead of sleeping for a retry; it was a certain refusal, so the
+// row simply stays pending. A write that needed retries returns its result with
+// rateLimitRetries set, and drainOutbox notes it in the fence detail.
 export function pacedAdapter(adapter, {
-  sleep = realSleep, now = Date.now, log = () => {}, ...overrides
+  sleep = realSleep, now = Date.now, log = () => {}, shouldStop = () => false, ...overrides
 } = {}) {
-  if (typeof sleep !== "function" || typeof now !== "function") {
-    throw new Error("pacing sleep and now must be functions");
+  if (typeof sleep !== "function" || typeof now !== "function" || typeof shouldStop !== "function") {
+    throw new Error("pacing sleep, now and shouldStop must be functions");
   }
   const options = { ...PACING_DEFAULTS, ...overrides };
   const writeIntervalMs = pacingOption(options, "writeIntervalMs", 0, 60_000);
@@ -157,30 +166,36 @@ export function pacedAdapter(adapter, {
     const hinted = Number.isFinite(retryAfterSeconds) ? retryAfterSeconds * 1000 : 0;
     return Math.min(Math.max(exponential, hinted), maxMs);
   };
+  // Answers { result, retried }: the call's result and how many 429 retries it took.
   const withQuotaRetry = async (name, call) => {
     for (let attempt = 0; ; attempt += 1) {
       try {
-        return await call();
+        return { result: await call(), retried: attempt };
       } catch (err) {
-        if (!isQuotaRefusal(err) || attempt >= retries) throw err;
+        if (!isQuotaRefusal(err) || attempt >= retries || shouldStop()) throw err;
         const delay = backoffMs(attempt, err.retryAfterSeconds);
         log(`${name}: HTTP 429 quota refusal, nothing written; retry ${attempt + 1} of ${retries} in ${delay} ms`);
         await sleep(delay);
       }
     }
   };
-  const read = (name) => (...args) => withQuotaRetry(name, () => adapter[name](...args));
-  const write = (name) => (...args) => withQuotaRetry(name, async () => {
-    if (writeIntervalMs > 0 && lastWriteAt !== null) {
-      const wait = lastWriteAt + writeIntervalMs - now();
-      if (wait > 0) await sleep(Math.min(wait, writeIntervalMs));
-    }
-    try {
-      return await adapter[name](...args);
-    } finally {
-      lastWriteAt = now();
-    }
-  });
+  const read = (name) => async (...args) =>
+    (await withQuotaRetry(name, () => adapter[name](...args))).result;
+  const write = (name) => async (...args) => {
+    const { result, retried } = await withQuotaRetry(name, async () => {
+      if (writeIntervalMs > 0 && lastWriteAt !== null) {
+        const wait = lastWriteAt + writeIntervalMs - now();
+        if (wait > 0) await sleep(Math.min(wait, writeIntervalMs));
+      }
+      try {
+        return await adapter[name](...args);
+      } finally {
+        lastWriteAt = now();
+      }
+    });
+    if (retried > 0 && result && typeof result === "object") return { ...result, rateLimitRetries: retried };
+    return result;
+  };
   return {
     inspect: read("inspect"),
     validateHeaders: read("validateHeaders"),
@@ -201,15 +216,22 @@ export async function acquireLease(lockPath) {
       return handle;
     } catch (err) {
       if (err.code !== "EEXIST") throw err;
-      let holderAlive = false;
+      let pid = null;
       try {
-        const pid = Number((await readFile(lockPath, "utf8")).trim());
-        if (Number.isSafeInteger(pid) && pid > 0) {
+        pid = Number((await readFile(lockPath, "utf8")).trim());
+      } catch {
+        pid = null; // unreadable: the lock is stale
+      }
+      let holderAlive = false;
+      if (Number.isSafeInteger(pid) && pid > 0) {
+        try {
           process.kill(pid, 0);
           holderAlive = true;
+        } catch (probe) {
+          // EPERM: the process exists but belongs to another user, so it is alive.
+          // ESRCH (no such process) is the only answer that proves the holder is gone.
+          holderAlive = probe.code === "EPERM";
         }
-      } catch {
-        holderAlive = false; // unreadable or dead holder: the lock is stale
       }
       if (holderAlive) return null;
       await unlink(lockPath).catch(() => {});
@@ -228,42 +250,81 @@ async function loadServiceAccount(env) {
   throw new Error("OPERATOR_SHEETS_SA_FILE or OPERATOR_SHEETS_SA_JSON is required");
 }
 
-export async function drainOnce({ env = process.env, log = (m) => console.log(m) } = {}) {
-  const bridge = makeRegistryBridge({
+// One run ends on its own well inside the unit's TimeoutStartSec backstop, so a
+// long backfill stops cleanly between rows and the timer resumes it, instead of
+// systemd killing node mid-request.
+export const RUN_DEADLINE_MS = 25 * 60 * 1000;
+
+// Passes repeat only while the previous pass exported rows AND failed none. Any
+// failure ends the run: an uncertain write may still commit late, and a pass
+// started at once could rescan before it lands and append the row again. The
+// next run, at least the timer's OnUnitInactiveSec (5 min) later, is the cooldown
+// before that row is reconciled by ID.
+//
+// bridge, adapter, now and drain are injectable for tests; production builds them
+// from env. shouldStop is the SIGTERM flag from main().
+export async function drainOnce({
+  env = process.env,
+  log = (m) => console.log(m),
+  shouldStop = () => false,
+  now = Date.now,
+  deadlineMs = RUN_DEADLINE_MS,
+  maxPasses = 100,
+  bridge = null,
+  adapter = null,
+  drain = drainOutbox,
+} = {}) {
+  const deadline = now() + deadlineMs;
+  let stopReason = null;
+  const stopNow = () => {
+    if (stopReason === null) {
+      if (shouldStop()) stopReason = "signal";
+      else if (now() >= deadline) stopReason = "deadline";
+    }
+    return stopReason !== null;
+  };
+  const registry = bridge ?? makeRegistryBridge({
     container: env.OPERATOR_REGISTRY_CONTAINER || "eavesdropper",
     db: env.OPERATOR_REGISTRY_DB || "/data/operator/registry.sqlite3",
   });
   const limit = Number(env.OPERATOR_SHEETS_PAGE_LIMIT || 1000);
   const profile = workbookProfileFromEnv(env);
   // One paced adapter for the whole run, so the write spacing holds across passes.
-  const adapter = pacedAdapter(new OperatorSheetsGoogle({
+  const sheets = adapter ?? pacedAdapter(new OperatorSheetsGoogle({
     spreadsheetId: profile.spreadsheetId,
     sheetIds: profile.sheetIds,
     tables: TABLES,
     token: createServiceAccountTokenProvider({
       loadServiceAccount: () => loadServiceAccount(env),
     }),
-  }), { log });
+  }), { log, shouldStop: stopNow });
   let totals = { exported: 0, failed: 0 };
-  // Passes continue while a pass still exports rows: the backfill is several
-  // thousand rows and one pass is capped. A pass that exports nothing ends the
-  // run (remaining rows are failures or refusals, visible in the fence).
-  for (let pass = 0; pass < 100; pass += 1) {
-    const res = await drainOutbox({
-      outbox: bridge.outbox,
-      attempts: bridge.attempts,
+  for (let pass = 0; pass < maxPasses; pass += 1) {
+    if (stopNow()) break;
+    const res = await drain({
+      outbox: registry.outbox,
+      attempts: registry.attempts,
       destination: profile.spreadsheetId,
       layout: LAYOUT,
-      adapter,
+      adapter: sheets,
       limit,
       log,
+      shouldStop: stopNow,
     });
     totals = {
       exported: totals.exported + res.exported,
       failed: totals.failed + res.failed,
     };
     log(JSON.stringify({ pass, ...res }));
-    if (res.exported === 0) break;
+    if (res.failed > 0) {
+      log("a row failed this pass: ending the run so any uncertain write settles before it is reconciled");
+      break;
+    }
+    if (res.exported === 0 || res.stopped) break;
+  }
+  if (stopReason !== null) {
+    log(`stopping early (${stopReason}): remaining rows stay pending for the next run`);
+    totals.stopped = stopReason;
   }
   return totals;
 }
@@ -273,6 +334,18 @@ async function main() {
   const intervalArg = args.indexOf("--interval");
   const intervalSec = intervalArg >= 0 ? Number(args[intervalArg + 1]) : 0;
   const lockPath = process.env.OPERATOR_SHEETS_LOCK || "/tmp/operator-sheets-drain.lock";
+  // SIGTERM (systemctl stop, the unit's timeout) and SIGINT stop the drain between
+  // rows: the in-flight request finishes, confirmed rows are acknowledged, and the
+  // lease is released, instead of node dying mid-request.
+  let stopRequested = false;
+  let wake = () => {};
+  const onSignal = (signal) => {
+    if (!stopRequested) console.log(`${signal}: stopping after the current row`);
+    stopRequested = true;
+    wake();
+  };
+  process.on("SIGTERM", onSignal);
+  process.on("SIGINT", onSignal);
   const lease = await acquireLease(lockPath);
   if (lease === null) {
     console.log("another drain holds the writer lease; exiting");
@@ -280,10 +353,14 @@ async function main() {
   }
   try {
     for (;;) {
-      const totals = await drainOnce({});
+      const totals = await drainOnce({ shouldStop: () => stopRequested });
       console.log(JSON.stringify({ done: true, ...totals }));
-      if (!intervalSec) break;
-      await new Promise((resolve) => setTimeout(resolve, intervalSec * 1000));
+      if (!intervalSec || stopRequested) break;
+      await new Promise((resolve) => {
+        const timer = setTimeout(resolve, intervalSec * 1000);
+        wake = () => { clearTimeout(timer); resolve(); };
+      });
+      if (stopRequested) break;
     }
   } finally {
     await lease.close().catch(() => {});

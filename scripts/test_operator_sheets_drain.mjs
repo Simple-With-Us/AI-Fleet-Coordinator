@@ -13,7 +13,8 @@ import {
 } from "./agent_sync/operator_sheets_export.mjs";
 import { OperatorSheetsError, OperatorSheetsGoogle } from "./agent_sync/operator_sheets_google.mjs";
 import {
-  acquireLease, PACING_DEFAULTS, pacedAdapter, TABLES, workbookProfileFromEnv,
+  acquireLease, drainOnce, makeRegistryBridge, PACING_DEFAULTS, pacedAdapter,
+  REGISTRY_CALL_TIMEOUT_MS, RUN_DEADLINE_MS, TABLES, workbookProfileFromEnv,
 } from "./agent_sync/operator_sheets_drain.mjs";
 
 test("runner profile: workbook identity resolves from env and fails closed", () => {
@@ -117,7 +118,8 @@ test("429: a quota refusal sleeps, then the same write is retried and succeeds",
   const { adapter, calls } = scriptedAdapter({ appendEvent: [quota(3), { rowNumber: 7 }] });
   const logs = [];
   const paced = pacedAdapter(adapter, { sleep: clock.sleep, now: clock.now, log: (m) => logs.push(m) });
-  assert.deepEqual(await paced.appendEvent(["e1"], { validate: false }), { rowNumber: 7 });
+  // The retry count rides on the result, for the fence detail.
+  assert.deepEqual(await paced.appendEvent(["e1"], { validate: false }), { rowNumber: 7, rateLimitRetries: 1 });
   assert.deepEqual(calls, ["appendEvent", "appendEvent"]);
   assert.deepEqual(clock.sleeps, [3_000]); // Retry-After (3 s) beats the 2 s base
   assert.match(logs[0], /429 quota refusal, nothing written; retry 1 of 5 in 3000 ms/);
@@ -260,4 +262,193 @@ test("drain: a genuinely uncertain write still stops the drain for reconcile-by-
   assert.deepEqual(state.marked, []); // left pending: the next drain reconciles by Record ID
   assert.equal(book.appends.length, 1); // never resent blind
   assert.deepEqual(clock.sleeps, []);
+});
+
+test("pacing: shouldStop hands a 429 straight back instead of sleeping for a retry", async () => {
+  const clock = fakeClock();
+  const { adapter, calls } = scriptedAdapter({ appendEvent: [quota(), { rowNumber: 2 }] });
+  const paced = pacedAdapter(adapter, { sleep: clock.sleep, now: clock.now, shouldStop: () => true });
+  const error = await paced.appendEvent(["e1"]).catch((e) => e);
+  assert.equal(error.status, 429);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(clock.sleeps, []);
+});
+
+// ---- registry bridge and writer lease ----
+
+test("registry bridge: every docker exec carries a timeout", async () => {
+  const seen = [];
+  const exec = async (file, args, options) => {
+    seen.push({ file, args, options });
+    return { stdout: "[]" };
+  };
+  const bridge = makeRegistryBridge({ container: "c1", db: "/data/x.sqlite3", exec });
+  assert.deepEqual(await bridge.outbox.pending(5), []);
+  await bridge.outbox.markExported(["a"]);
+  await bridge.attempts.recordBatch([{ outboxId: "a", destination: "d", tab: "sessions", kind: "k", outcome: "exported" }]);
+  assert.equal(REGISTRY_CALL_TIMEOUT_MS, 120_000);
+  assert.equal(seen.length, 3);
+  for (const call of seen) {
+    assert.equal(call.file, "docker");
+    assert.equal(call.options.timeout, 120_000);
+    assert.equal(call.options.killSignal, "SIGKILL");
+  }
+});
+
+test("writer lease: EPERM means the holder exists (alive); only ESRCH proves it gone", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "drain-lease-"));
+  const lock = join(dir, "drain.lock");
+  const realKill = process.kill;
+  const probeWith = (code) => {
+    process.kill = (pid, signal) => {
+      if (signal !== 0) return realKill.call(process, pid, signal);
+      const error = new Error("probe");
+      error.code = code;
+      throw error;
+    };
+  };
+  try {
+    await writeFile(lock, "4242");
+    probeWith("EPERM");
+    assert.equal(await acquireLease(lock), null); // another user's live process keeps the lease
+    assert.equal((await readFile(lock, "utf8")).trim(), "4242");
+    probeWith("ESRCH");
+    const stolen = await acquireLease(lock);
+    assert.ok(stolen);
+    await stolen.close();
+  } finally {
+    process.kill = realKill;
+  }
+});
+
+// ---- drainOnce: the pass loop, the run deadline and the stop signal ----
+
+const RUN_ENV = {
+  OPERATOR_SHEETS_WORKBOOK_ID: "wb_1",
+  OPERATOR_SHEETS_SESSIONS_SHEET_ID: "11",
+  OPERATOR_SHEETS_EVENTS_SHEET_ID: "12",
+};
+
+const sessionCells = (id) => [id, ...Array(SESSIONS_HEADERS.length - 1).fill("")];
+
+// A registry fake: pending() answers the unexported rows in order, like the store.
+function fakeRegistry(ids) {
+  const state = { marked: [], fence: [] };
+  const rows = ids.map((id) => ({ outbox_id: `ob-${id}`, kind: "session_upsert", payload: { cells: sessionCells(id) } }));
+  return {
+    state,
+    bridge: {
+      outbox: {
+        pending: async (limit) => rows.filter((r) => !state.marked.includes(r.outbox_id)).slice(0, limit),
+        markExported: async (ids2) => { state.marked.push(...ids2); },
+      },
+      attempts: { recordBatch: async (records) => { state.fence.push(...records); } },
+    },
+  };
+}
+
+// A Sheets fake with an empty grid; failures and side effects per record id.
+function fakeSheet({ fail = {}, onWrite = () => {} } = {}) {
+  const appends = [];
+  const adapter = {
+    validateHeaders: async () => true,
+    inspect: async () => ({ sessions: { rowCount: 1 }, events: { rowCount: 1 } }),
+    readRows: async () => [],
+    appendSession: async (cells) => {
+      appends.push(cells[0]);
+      onWrite(cells[0]);
+      const queue = fail[cells[0]];
+      const next = Array.isArray(queue) ? queue.shift() : undefined;
+      if (next instanceof Error) throw next;
+      return { rowNumber: appends.length + 1 };
+    },
+    updateSessionRow: async () => ({ rowNumber: 2 }),
+    appendEvent: async () => ({ rowNumber: 2 }),
+  };
+  return { adapter, appends };
+}
+
+test("drainOnce: a failed row ends the run, so an uncertain write is never re-sent by the next pass", async () => {
+  const { bridge, state } = fakeRegistry(["r1", "r2", "r3", "r4", "r5", "r6", "r7"]);
+  const uncertain = new OperatorSheetsError("transport_or_response_error", { uncertain: true });
+  const { adapter, appends } = fakeSheet({ fail: { r6: [uncertain] } });
+  const logs = [];
+  const totals = await drainOnce({ env: RUN_ENV, bridge, adapter, log: (m) => logs.push(m) });
+  assert.deepEqual(totals, { exported: 5, failed: 1 });
+  assert.deepEqual(appends, ["r1", "r2", "r3", "r4", "r5", "r6"]); // r6 sent once; no second pass
+  assert.deepEqual(state.marked, ["ob-r1", "ob-r2", "ob-r3", "ob-r4", "ob-r5"]);
+  assert.ok(logs.some((m) => /ending the run/.test(m)));
+});
+
+test("drainOnce: passes repeat while every row exports, then stop when nothing is left", async () => {
+  const { bridge, state } = fakeRegistry(["r1", "r2", "r3", "r4", "r5"]);
+  const { adapter, appends } = fakeSheet();
+  const passes = [];
+  const totals = await drainOnce({
+    env: { ...RUN_ENV, OPERATOR_SHEETS_PAGE_LIMIT: "2" }, bridge, adapter,
+    log: (m) => { if (m.startsWith("{")) passes.push(JSON.parse(m)); },
+  });
+  assert.deepEqual(totals, { exported: 5, failed: 0 });
+  assert.deepEqual(passes.map((p) => p.exported), [2, 2, 1, 0]);
+  assert.equal(appends.length, 5);
+  assert.equal(state.marked.length, 5);
+});
+
+test("drainOnce: the run deadline stops between rows and leaves the rest pending", async () => {
+  const clock = fakeClock(0);
+  const { bridge, state } = fakeRegistry(["r1", "r2", "r3", "r4", "r5"]);
+  const { adapter, appends } = fakeSheet({ onWrite: () => { clock.t += 1_000; } });
+  const totals = await drainOnce({ env: RUN_ENV, bridge, adapter, now: clock.now, deadlineMs: 2_500, log: () => {} });
+  assert.deepEqual(totals, { exported: 3, failed: 0, stopped: "deadline" });
+  assert.deepEqual(appends, ["r1", "r2", "r3"]);
+  assert.deepEqual(state.marked, ["ob-r1", "ob-r2", "ob-r3"]); // confirmed rows are still acknowledged
+  assert.equal(RUN_DEADLINE_MS, 25 * 60 * 1000);
+});
+
+test("drainOnce: a stop signal (SIGTERM) ends the run after the current row", async () => {
+  const { bridge, state } = fakeRegistry(["r1", "r2", "r3", "r4"]);
+  let writes = 0;
+  const { adapter } = fakeSheet({ onWrite: () => { writes += 1; } });
+  const totals = await drainOnce({ env: RUN_ENV, bridge, adapter, shouldStop: () => writes >= 2, log: () => {} });
+  assert.deepEqual(totals, { exported: 2, failed: 0, stopped: "signal" });
+  assert.deepEqual(state.marked, ["ob-r1", "ob-r2"]);
+});
+
+test("drainOnce: write pacing holds across passes", async () => {
+  const clock = fakeClock();
+  const { bridge } = fakeRegistry(["r1", "r2", "r3"]);
+  const { adapter: sheet } = fakeSheet();
+  const adapter = pacedAdapter(sheet, { sleep: clock.sleep, now: clock.now });
+  const totals = await drainOnce({
+    env: { ...RUN_ENV, OPERATOR_SHEETS_PAGE_LIMIT: "1" }, bridge, adapter, now: clock.now, log: () => {},
+  });
+  assert.deepEqual(totals, { exported: 3, failed: 0 });
+  assert.deepEqual(clock.sleeps, [1_100, 1_100]); // one write per pass, still 1.1 s apart
+});
+
+test("drainOnce: running out of 429 retries on the first of several rows stops the run, nothing else sent", async () => {
+  const clock = fakeClock();
+  const { bridge, state } = fakeRegistry(["r1", "r2", "r3"]);
+  const { adapter: sheet, appends } = fakeSheet({ fail: { r1: [quota(), quota()] } });
+  const adapter = pacedAdapter(sheet, { sleep: clock.sleep, now: clock.now, rateLimitRetries: 1 });
+  const totals = await drainOnce({ env: RUN_ENV, bridge, adapter, now: clock.now, log: () => {} });
+  assert.deepEqual(totals, { exported: 0, failed: 1 });
+  assert.deepEqual(appends, ["r1", "r1"]); // the first try and one retry; r2 and r3 never sent
+  assert.deepEqual(clock.sleeps, [2_000]);
+  assert.deepEqual(state.marked, []);
+  assert.equal(state.fence.length, 1);
+  assert.equal(state.fence[0].outcome, "failed");
+});
+
+test("drainOnce: a write that needed a 429 retry says so in its fence detail", async () => {
+  const clock = fakeClock();
+  const { bridge, state } = fakeRegistry(["r1", "r2"]);
+  const { adapter: sheet } = fakeSheet({ fail: { r1: [quota()] } });
+  const adapter = pacedAdapter(sheet, { sleep: clock.sleep, now: clock.now });
+  const totals = await drainOnce({ env: RUN_ENV, bridge, adapter, now: clock.now, log: () => {} });
+  assert.deepEqual(totals, { exported: 2, failed: 0 });
+  const byId = Object.fromEntries(state.fence.map((r) => [r.outboxId, r]));
+  assert.equal(byId["ob-r1"].outcome, "exported");
+  assert.match(byId["ob-r1"].detail, /written after 1 HTTP 429 quota refusal/);
+  assert.equal(byId["ob-r2"].detail, "");
 });

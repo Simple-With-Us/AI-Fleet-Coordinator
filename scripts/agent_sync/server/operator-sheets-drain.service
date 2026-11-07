@@ -8,11 +8,15 @@ Wants=network-online.target
 Type=oneshot
 EnvironmentFile=/etc/operator-sheets/drain.env
 ExecStart=/usr/bin/node /usr/local/lib/operator-sheets-drain/operator_sheets_drain.mjs
-# Writes are paced about 1.1 s apart, so a several-thousand-row backfill takes
-# an hour or more; a steady-state run takes seconds. While this oneshot runs the
-# timer does not start another, and a runner started by hand finds the writer
-# lease held and exits.
-TimeoutStartSec=6h
+# The runner ends itself after 25 minutes (RUN_DEADLINE_MS), stopping between
+# rows, and the timer resumes a long backfill on its next run. Each registry
+# call is killed after 120 s. This start timeout is only a backstop above that;
+# on it systemd sends SIGTERM, which the runner also answers by stopping between
+# rows, and TimeoutStopSec covers one in-flight registry call before SIGKILL.
+# While this oneshot runs the timer does not start another, and a runner
+# started by hand finds the writer lease held and exits.
+TimeoutStartSec=35min
+TimeoutStopSec=150
 Nice=10
 
 [Install]
