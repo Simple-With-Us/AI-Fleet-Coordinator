@@ -32,6 +32,7 @@ READER_SEATS = [
     "FX",
     "MM",
     "MC",
+    "OPENCODE",
 ]  # the Mac seats (partition "mac")
 NO_READER = [
     "BF-BUILDER",

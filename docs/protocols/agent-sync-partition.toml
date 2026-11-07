@@ -39,6 +39,7 @@ CLUTCH = "mac"
 FX = "mac"
 MM = "mac"
 MC = "mac"
+OPENCODE = "mac"
 
 # Cloud seats
 MA = "server"

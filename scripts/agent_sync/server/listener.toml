@@ -31,7 +31,12 @@
 instance = "server"
 # Sender eligibility also includes the eleven BF bots.  That allowlist does not enable a queue:
 # only BF-DIRECTOR has a server section, and it stays disabled.
-outgoing_webhook_seats = ["ECHO", "INSTINCT", "JET", "GB-COMPILER", "GB-DIRECTOR", "GB-TRADER", "GB-DEPLOYER", "GB-DESIGNER", "GB-ORACLE", "GB-PUBLISHER", "GB-PLUMBER", "GB-FIXER", "GB-HOUSEKEEPER", "GB-MONITOR", "GB-ENGINEER", "BF-BUILDER", "BF-COMPILER", "BF-DEPLOYER", "BF-DESIGNER", "BF-DIRECTOR", "BF-FIXER", "BF-HOUSEKEEPER", "BF-MONITOR", "BF-ORACLE", "BF-PLUMBER", "BF-PUBLISHER"]
+# WISE is the canonical seat name (identity.py:  INSTINCT is an accepted alias spelling of it, and
+# config.py only upper-cases this list, it does not canonicalize aliases), so the list names WISE:
+# an INSTINCT entry here would never match the [seat.WISE] runner or its bot.  The live volume
+# still carries INSTINCT in this list and keeps its state under /data/INSTINCT with no [seat.WISE]
+# section at all;  aligning the live volume is a separate, owner-approved migration, not this sample.
+outgoing_webhook_seats = ["ECHO", "WISE", "JET", "GB-COMPILER", "GB-DIRECTOR", "GB-TRADER", "GB-DEPLOYER", "GB-DESIGNER", "GB-ORACLE", "GB-PUBLISHER", "GB-PLUMBER", "GB-FIXER", "GB-HOUSEKEEPER", "GB-MONITOR", "GB-ENGINEER", "BF-BUILDER", "BF-COMPILER", "BF-DEPLOYER", "BF-DESIGNER", "BF-DIRECTOR", "BF-FIXER", "BF-HOUSEKEEPER", "BF-MONITOR", "BF-ORACLE", "BF-PLUMBER", "BF-PUBLISHER"]
 owner_user_id = 0                 # pinned by `simple-chat daemon init`, never derived at runtime
 eligible_user_ids = []            # optional extra pins:  every fleet bot is eligible at runtime (owner 2026-10-09)
 owner_clients = ["website", "ZulipMobile", "ZulipFlutter", "ZulipElectron", "ZulipDesktop"]
