@@ -25,7 +25,7 @@ from pathlib import Path
 
 DEFAULT_SOURCE = "/Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime"
 RECEIVER_PATH = "scripts/fleet-cli-release.py"
-# The reviewed allowlisted runtime contains 152 files.  Keep the exact minimum
+# The reviewed allowlisted runtime contains 154 files.  Keep the exact minimum
 # ceiling in sender and receiver: a new file still needs an explicit policy review.
 # The 132nd file is storage_guard.py (from main);  the 133rd is platform_letter.py (AFC-564, the shared session-letter
 # library);  the 134th is platform_letter_codex.py (the Codex adapter);  the 135th and 136th are
@@ -41,7 +41,8 @@ RECEIVER_PATH = "scripts/fleet-cli-release.py"
 # (the operator-registry CLI, the platform-letter registry side) use to reach that API.
 # The 153rd is agent_sync/operator_sheets_google.mjs;  must equal the receiver cap in
 # fleet-cli-release.py or build_bundle() rejects the newly included adapter.
-MAX_FILES = 153
+# The 154th is agent_sync/backup_mode.py (AFC-649).
+MAX_FILES = 154
 MAX_BYTES = 8 * 1024 * 1024
 OVERALL_SECONDS = 90
 SSH_SECONDS = 65

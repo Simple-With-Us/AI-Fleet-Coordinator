@@ -2185,8 +2185,22 @@ def openrouter_request_body(model: str, system: str, user: str, schema: str) -> 
 
     No `tools`, no `tool_choice`, no `stream` and no plugin:  the model is offered nothing to call.
     `provider.require_parameters` makes OpenRouter refuse a provider that cannot honor the strict
-    `response_format` (or the reasoning setting) instead of quietly dropping it."""
-    return {
+    `response_format` (or the reasoning setting) instead of quietly dropping it.  A preset-referencing
+    model (`@preset/<slug>`) also sends "tools": [], which keeps the REQUEST tool-free but cannot
+    disarm a tooled preset:  per the documented preset semantics request tools UNION with preset
+    tools (a same-identity request tool overrides one preset entry, and an empty array overrides
+    nothing), and the latest preset version is always served with no immutable version binding at
+    inference.  No request-side mechanism can enforce a preset's tools-off, so that property rests
+    on the preset's own zero-tool configuration, verified by a person through an authenticated
+    preset read (a management-key endpoint - it cannot live in this runtime without handing the
+    runtime a workspace admin credential, and even a per-call read would race a dashboard edit).
+    The code-side backstops are "tool_choice": "none" (documented to disable tool use) and the
+    response path:  a completion carrying a tool call is a fixed-phrase failure, so the consult
+    settles as a hold and nothing is delivered.  Those bound model tool use and delivery, not
+    server-side execution that needs no tool call (plugin prompt augmentation) - the named
+    residual if a preset is ever mutated to add tools or plugins.  A request that is tool-free is
+    not thereby server tool-free."""
+    body = {
         "model": model,
         "messages": [
             {"role": "system", "content": system},
@@ -2206,6 +2220,18 @@ def openrouter_request_body(model: str, system: str, user: str, schema: str) -> 
         "reasoning": dict(OPENROUTER_REASONING),
         "stream": False,
     }
+    if model.startswith("@preset/"):
+        # Request tool-free is NOT server tool-free.  Request tools UNION with preset tools
+        # (documented OpenRouter preset semantics), so the empty array cannot disarm a tooled
+        # preset;  "tool_choice": "none" is the documented request-side disable for tool USE,
+        # which stops the model calling any tool a mutated preset might union in - but neither
+        # field stops provider-side prompt augmentation that needs no tool call (the Exa-backed
+        # web plugin family), so a tooled/augmented preset is still detected, not prevented, by
+        # the response path.  Server tool-free rests on the preset's own zero-tool, zero-plugin
+        # configuration, verified by a person at activation.
+        body["tools"] = []
+        body["tool_choice"] = "none"
+    return body
 
 
 def openrouter_http_reason(status: int) -> str:

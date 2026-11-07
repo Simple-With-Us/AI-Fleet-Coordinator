@@ -23,7 +23,7 @@ import uuid
 from pathlib import Path, PurePosixPath
 
 MAX_BUNDLE_BYTES = 8 * 1024 * 1024
-# The reviewed allowlisted runtime contains 153 files.  Keep the exact minimum
+# The reviewed allowlisted runtime contains 154 files.  Keep the exact minimum
 # ceiling in sender and receiver: a new file still needs an explicit policy review.
 # The 132nd file is storage_guard.py (from main);  the 133rd is platform_letter.py (AFC-564, the shared session-letter
 # library);  the 134th is platform_letter_codex.py (the Codex adapter);  the 135th and 136th are
@@ -39,7 +39,8 @@ MAX_BUNDLE_BYTES = 8 * 1024 * 1024
 # (the operator-registry CLI, the platform-letter registry side) use to reach that API.
 # The 153rd is agent_sync/operator_sheets_google.mjs, the Google Sheets operator adapter shipped beside the
 # AFC-412 PR2 exporter as a data file (AFC-412 PR3, this PR).
-MAX_FILES = 153
+# The 154th is agent_sync/backup_mode.py, the bridge consult declaration model (AFC-649).
+MAX_FILES = 154
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MARKER = "# fleet-cli managed wrapper v1"
 # Retention:  a receive keeps the newest KEEP_RELEASES releases and deletes older ones, but never `current`,

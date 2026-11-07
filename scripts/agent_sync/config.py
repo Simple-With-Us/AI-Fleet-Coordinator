@@ -115,6 +115,13 @@ OPENROUTER_FALLBACK_MODEL = "~deepseek/deepseek-flash-latest"
 # `provider/name`, with an optional leading `~`.  No `:` suffix on purpose:  OpenRouter's `:online`
 # adds web search and `:nitro` or `:floor` re-route, and an unattended no-tools wake wants none of them.
 OPENROUTER_MODEL_PATTERN = r"^~?[A-Za-z0-9][A-Za-z0-9._-]{0,39}/[A-Za-z0-9][A-Za-z0-9._-]{0,79}$"
+# An `@preset/<slug>` reference.  A preset is a mutable dashboard-side configuration whose LATEST
+# version is always served, so the slug fingerprints nothing about what runs:  seats never accept
+# one.  The only consumer is the bridge consult-backup declaration (agent_sync.backup_mode), which
+# compensates with its own gates (a declared expected-model set checked against the served model,
+# response-side refusal of any tool call, and a human activation readback).
+OPENROUTER_PRESET_PATTERN = r"^@preset/[A-Za-z0-9][A-Za-z0-9._-]{0,79}$"
+OPENROUTER_MODEL_OR_PRESET_PATTERN = r"^(~?[A-Za-z0-9][A-Za-z0-9._-]{0,39}/[A-Za-z0-9][A-Za-z0-9._-]{0,79}|@preset/[A-Za-z0-9][A-Za-z0-9._-]{0,79})$"
 # Wakes the budget holds back (heldback.py), per seat:  `held_back = { max = 200, overflow_max = 1000,
 # ttl_hours = 24, items_in_wake = 20, owner_digest_minutes = 60, catch_up = true }`.  max is the records
 # with names;  past it the oldest move to a compact overflow tier (still listed by id), and only past
@@ -386,6 +393,7 @@ class Config:
         # The production application the Mac bridge reaches, from the operator's
         # own config.  Empty when the bridge is off.
         self.muse_bridge_remote_app = ""
+        self.muse_bridge_consult_backup: dict[str, Any] | None = None
         self.errors: list[str] = []
         # Seats a config problem kept out entirely (AFC-358):  seat -> why.  They have no runner, so
         # status shows them as a red row instead of letting them vanish.
@@ -660,6 +668,13 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         errors.append("muse_bridge.remote_seats must be unique canonical seat names")
     else:
         cfg.muse_bridge_remote_seats = tuple(remote_seats)
+    # AFC-649 known-cap mode:  an explicit operator declaration that the primary consult runtime
+    # is capped and the approved backup serves consults.  Stored raw and validated at consult
+    # time (agent_sync.backup_mode):  absent/null means never enabled and the primary runs as
+    # today;  a configured-but-malformed declaration fails CLOSED there, holding consults and
+    # preserving pending work instead of erroring the whole config load.
+    backup = bridge.get("consult_backup")
+    cfg.muse_bridge_consult_backup = backup if backup is None or isinstance(backup, dict) else {}
     daemon = raw.get("daemon") or {}
     if not isinstance(daemon, dict):
         errors.append("[daemon] must be a table")
