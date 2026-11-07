@@ -12,6 +12,8 @@ from __future__ import annotations
 import importlib.util
 import os
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -55,6 +57,22 @@ class RuntimePathTests(unittest.TestCase):
     def test_no_runtime_is_none_not_a_guess(self):
         home = self.home_with()
         self.assertIsNone(bridge._runtime_scripts_dir(home=home, here="/nonexistent"))
+
+    def test_with_no_runtime_the_bridge_exits_with_a_clear_message(self):
+        # Kody, PR 1455:  fail closed, naming where it looked, rather than a bare traceback.
+        # A copy of the script outside the checkout, with a home that holds no runtime.
+        home = self.home_with()
+        copy = Path(home) / "lark-mm-bridge.py"
+        shutil.copyfile(SCRIPT, copy)
+        result = subprocess.run(
+            [sys.executable, "-I", str(copy), "--help"],
+            env={"HOME": home, "PATH": os.environ.get("PATH", "/usr/bin:/bin")},
+            capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("agent_sync.secretscan not found", result.stderr)
+        self.assertIn("simple-tools-runtime", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
 
 
 if __name__ == "__main__":

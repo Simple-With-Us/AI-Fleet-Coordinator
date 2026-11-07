@@ -80,7 +80,17 @@ _AGENT_SYNC_SCRIPTS = _runtime_scripts_dir()
 if _AGENT_SYNC_SCRIPTS and _AGENT_SYNC_SCRIPTS not in sys.path:
     sys.path.insert(0, _AGENT_SYNC_SCRIPTS)
 
-from agent_sync.secretscan import scan as scan_secret
+try:
+    from agent_sync.secretscan import scan as scan_secret
+except ModuleNotFoundError:
+    # Fail closed with a message that names where it looked.  The scanner is what stops a
+    # credential-shaped reply reaching Lark, so there is no stub to fall back on.
+    sys.stderr.write(
+        "lark-mm-bridge: agent_sync.secretscan not found;  looked in this script's folder and in "
+        + " and ".join(_RUNTIME_SCRIPTS)
+        + ".  Install or update the fleet runtime, then restart the bridge.\n"
+    )
+    raise SystemExit(1)
 
 LARK_EVENT_KEY = "im.message.receive_v1"
 DEFAULT_LARK_CLI = os.path.expanduser("~/.local/npm-global/bin/lark-cli")
