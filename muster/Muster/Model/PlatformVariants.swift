@@ -103,10 +103,16 @@ enum PlatformVariants {
     /// A placeholder the file itself marks as variable:  `<SEAT>`,  `<APP-SLUG>`,  and the
     /// same shape in any mix of letters,  digits and dashes.  Scanned by hand,  so no
     /// pattern has to compile at run time.
+    /// The ASCII code of a one-character literal,  as the unichar comparisons read it.
+    private static func ascii(_ literal: Character) -> unichar {
+        guard let value = literal.asciiValue else { return 0 }
+        return unichar(value)
+    }
+
     private static func placeholders(in line: String) -> [NSRange] {
         // A unichar is a plain UInt16,  so every comparison names its ASCII constant
         // instead of leaning on a String literal the type cannot take.
-        let lt = UInt16(ascii: "<"), gt = UInt16(ascii: ">"), dash = UInt16(ascii: "-")
+        let lt = ascii("<"), gt = ascii(">"), dash = ascii("-")
         let hay = line as NSString
         var found: [NSRange] = []
         var index = 0
@@ -135,12 +141,12 @@ enum PlatformVariants {
     }
 
     private static func isLetter(_ c: unichar) -> Bool {
-        (c >= UInt16(ascii: "a") && c <= UInt16(ascii: "z"))
-            || (c >= UInt16(ascii: "A") && c <= UInt16(ascii: "Z"))
+        (c >= ascii("a") && c <= ascii("z"))
+            || (c >= ascii("A") && c <= ascii("Z"))
     }
 
     private static func isDigit(_ c: unichar) -> Bool {
-        c >= UInt16(ascii: "0") && c <= UInt16(ascii: "9")
+        c >= ascii("0") && c <= ascii("9")
     }
 
     /// Find the customization points in `text` as the preview of `platform`'s file shows
@@ -228,8 +234,8 @@ enum PlatformVariants {
     /// Anything a word may not be glued to and still be its own word.
     private static func isTokenBreak(_ character: unichar, underscoreBreaks: Bool = false) -> Bool {
         if isLetter(character) || isDigit(character) { return false }
-        if character == UInt16(ascii: "-") || character == UInt16(ascii: "/") { return false }
-        if character == UInt16(ascii: "_") {
+        if character == ascii("-") || character == ascii("/") { return false }
+        if character == ascii("_") {
             // A seat tag is marked inside a longer identifier the tag begins,  like
             // `ZC_ZULIP_*`,  because the identifier is the tag's own variable.
             return underscoreBreaks
