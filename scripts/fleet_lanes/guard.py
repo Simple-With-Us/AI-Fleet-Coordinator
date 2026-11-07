@@ -113,7 +113,6 @@ __all__ = [
     "RULE_PLACEMENT_HOME",
     "RULE_TARBALL",
     "RULE_TEMP_BUILD",
-    "RULE_TEMP_CLONE",
     "RULE_WORKTREE_ADD",
     "RULE_WORKTREE_ADD_CODE",
     "RULE_WORKTREE_MOVE",
@@ -157,8 +156,7 @@ RULE_PLACEMENT_CLONE_IN_LANES = "placement-clone-in-lanes"  # a full clone insid
 RULE_PLACEMENT_ELSEWHERE = "placement-elsewhere"  # a fleet checkout anywhere else on the disk
 RULE_ISOLATION = "isolation-from-integration-tree"  # a harness worktree spawned from the integration tree
 RULE_TEMP_BUILD = "build-into-temp"  # xcodebuild, swift, cargo or a node package manager writing its output into temp
-RULE_TEMP_CLONE = "third-party-clone-into-temp"  # a clone of a repo outside the fleet into temp, typed by an agent
-TEMP_BUILD_RULES = (RULE_TEMP_BUILD, RULE_TEMP_CLONE)
+TEMP_BUILD_RULES = (RULE_TEMP_BUILD,)
 PLACEMENT_RULES = {
     P.CLASS_HOME: RULE_PLACEMENT_HOME,
     P.CLASS_APPS: RULE_PLACEMENT_APPS,
@@ -184,7 +182,6 @@ DENY_RULES = (
     RULE_PLACEMENT_ELSEWHERE,
     RULE_ISOLATION,
     RULE_TEMP_BUILD,
-    RULE_TEMP_CLONE,
 )
 
 # Allow outcomes, so a caller (and the tests) can tell why a command passed.
@@ -204,9 +201,17 @@ MAX_COMMAND_CHARS = 256 * 1024
 _MAX_DEPTH = 6  # nesting of $(...), bash -c, eval and heredoc-to-shell evaluation
 
 # Words that must appear before any deny rule can fire.  A command without one is allowed
-# without being parsed.
+# without being parsed.  install_tools turns them into the hook shims' `sh` prefilter, so an ordinary
+# `xcodebuild` or `npm run build` must never match:  the temp-build words are the output options
+# alone (-derivedDataPath, -resultBundlePath, SYMROOT=, OBJROOT=, --target-dir, --build-path and
+# --scratch-path), and -archivePath already holds `archive`.  A word may hold only lower-case letters
+# and `-`, and none of these holds an `s`, because U+017F folds onto it and would add a lookalike the
+# prefilter must spell out;  so `cratch-path` and `ymroot` stand for --scratch-path and SYMROOT.  A
+# build that writes into temp only because it runs there, or through CARGO_TARGET_DIR, names none of
+# them, and the build shim and the watcher see it instead.
 _TRIGGER = re.compile(
-    r"clone|worktree|archive|codeload|tarball|zipball|fetch|pull|remote|checkout-index|xcodebuild|swift|cargo|npm|yarn|bun",
+    r"clone|worktree|archive|codeload|tarball|zipball|fetch|pull|remote|checkout-index"
+    r"|deriveddatapath|bundlepath|ymroot|objroot|target-dir|build-path|cratch-path",
     re.IGNORECASE,
 )
 
@@ -2427,7 +2432,7 @@ class _Evaluator:
     # ---- temp-build
 
     def _temp_build(self, rule: str, target: str, src: _Src, what: str) -> None:
-        """Record build output or a third-party clone bound for temp.  The scratchpad is excused (`_where` calls it scratch), so is
+        """Record build output bound for temp.  The scratchpad is excused (`_where` calls it scratch), so is
         an in-date temp-build, package-temp, service or backup row, and the mode file decides the rest."""
         if self._where(target) != "temp":
             return
@@ -2437,14 +2442,6 @@ class _Evaluator:
                 self.excused.append((row, target, src))
                 return
         self.placement.append((P.CLASS_TEMP_BUILD, _Hit(rule, target, src, what)))
-
-    def _third_party_clone(self, repo: str, target: str, what: str) -> None:
-        """A clone the fleet rules pass because its source is someone else's.  Only an agent's own command counts:  through the
-        shim the same argv is pip, Homebrew or SwiftPM cloning a dependency into a temp folder it cleans itself."""
-        if self.via != "hook":
-            return
-        label = "<unknown>" if repo.startswith(_UNK) else redact_url(repo)
-        self._temp_build(RULE_TEMP_CLONE, target, _Src(label, kind="clone"), what)
 
     def _build(self, name: str, rest: list[str], assigns: Mapping[str, str], st: _State) -> None:
         """xcodebuild, swift, cargo, npm, pnpm, Yarn or Bun, directly or through `xcrun`."""
@@ -2573,12 +2570,11 @@ class _Evaluator:
             return
         self.mirror_or_local = bare or "://" not in pos[0] and not re.match(r"^[^/:]+:", pos[0])
         src = self._source(pos[0], eff)
+        if src is None:
+            return
         target = (
             _join(eff, pos[1]) if len(pos) > 1 else _child(eff, _humanish(pos[0], bare))
         )
-        if src is None:
-            self._third_party_clone(pos[0], target, "a bare clone" if bare else "a clone")
-            return
         self._check(RULE_CLONE, target, src, "a bare clone" if bare else "a clone")
         if sep_dir and not self._stop():
             self._check(RULE_CLONE, _join(eff, sep_dir), src, "the git directory of a clone")
@@ -2772,14 +2768,13 @@ class _Evaluator:
         if not pos:
             return
         src = self._gh_source(pos[0])
+        if src is None:
+            return
         target = (
             self._path(pos[1], st)
             if len(pos) > 1
             else _child(st.cwd, _humanish(pos[0], False))
         )
-        if src is None:
-            self._third_party_clone(pos[0], target, "a clone")
-            return
         self._check(RULE_GH_CLONE, target, src, "a clone")
 
     def _download(self, src: _Src, target: str | None, st: _State) -> Any:
@@ -3176,12 +3171,11 @@ class _Evaluator:
 
     def _reason_text(self, hit: _Hit) -> str:
         if hit.rule in TEMP_BUILD_RULES:
-            tool = "git" if hit.rule == RULE_TEMP_CLONE else hit.src.label
-            subject = f"a clone of {hit.src.label}" if hit.rule == RULE_TEMP_CLONE else f"{hit.what} from {tool}"
+            tool = hit.src.label
             return "  ".join((
-                f"Blocked: this would put {subject} in system temp at {self.display(hit.target)}.",
-                "Build trees and clones in temp outlive the session, no cleaner tracks them, and they drained about 43 GB "
-                "in one week.",
+                f"Blocked: this would put {hit.what} from {tool} in system temp at {self.display(hit.target)}.",
+                "Build trees in temp outlive the session, no cleaner tracks them, and with clones they drained about "
+                "43 GB in one week.",
                 TB.alternative(tool, self.ctx.host),
                 "Throwaway work can use the session scratchpad (/private/tmp/claude-<uid>/), which is allowed.",
             ))

@@ -24,8 +24,8 @@ enforcement turns on one rule class at a time and rolls back by editing a file. 
 `detect` and isolation is `off`.  `FLEET_LANE_GUARD=off` in the environment still switches everything off.
 
 The hook rules that deny temp and ~/Code destinations predate this file and are not affected by it: only the shim
-reads `temp` and `code` here.  `temp-build` (build output, and a clone of a repo outside the fleet, pointed into system temp
-outside the session scratchpad) is new and obeys this file everywhere:  detect logs, and only `block` or `block temp-build`
+reads `temp` and `code` here.  `temp-build` (build output pointed into system temp outside the session scratchpad;  a fleet
+clone there is the temp class, and the watcher reports any big idle checkout left in temp) is new and obeys this file everywhere:  detect logs, and only `block` or `block temp-build`
 refuses.
 
 What a row excuses depends on its class and on who is asking (`row_excuses`), because a pattern says only where and a
@@ -83,7 +83,7 @@ CLASS_HOME = "home"
 CLASS_APPS = "apps"
 CLASS_CLONE_IN_LANES = "clone-in-lanes"
 CLASS_ELSEWHERE = "elsewhere"
-CLASS_TEMP_BUILD = "temp-build"  # build output or a third-party clone pointed into system temp, outside the session scratchpad
+CLASS_TEMP_BUILD = "temp-build"  # build output pointed into system temp, outside the session scratchpad
 RULE_CLASSES = (CLASS_TEMP, CLASS_CODE, CLASS_HOME, CLASS_APPS, CLASS_CLONE_IN_LANES, CLASS_ELSEWHERE, CLASS_TEMP_BUILD)
 
 HOST_MAC = "mac"
@@ -282,7 +282,7 @@ def row_excuses(row: ExceptionRow, *, via: str, clone: bool, in_temp: bool, in_c
 
 
 def row_excuses_build(row: ExceptionRow) -> bool:
-    """Whether a row excuses build output (or a third-party clone) pointed into temp, the temp-build rule class."""
+    """Whether a row excuses build output pointed into temp, the temp-build rule class."""
     return row.cls in ("temp-build", "package-temp", "service", "backup")
 
 

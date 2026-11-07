@@ -206,7 +206,4 @@ def alternative(tool: str, host: str) -> str:
         return f"Build inside your lane (its target/ stays there), or pass --target-dir {caches}/cargo-target/<App>."
     if tool in ("npm", "pnpm", "yarn", "bun"):
         return "Run it in your lane under ~/apps/lanes, where node_modules is cleaned with the lane."
-    if tool == "git":
-        return (f"Clone into your lane, into {caches}/<tool>/<repo> for a tool's own cache, or make a lane with "
-                "`~/apps/lane new <app> <slug>` for a fleet repo.")
     return "Build inside your lane under ~/apps/lanes instead."

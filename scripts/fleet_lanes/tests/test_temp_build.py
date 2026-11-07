@@ -1,4 +1,4 @@
-"""The temp-build rule class (AFC-618):  build output and third-party clones pointed into system temp.
+"""The temp-build rule class (AFC-618):  build output pointed into system temp.
 
 Covers the argv reader (temp_build.py), the hook (guard.evaluate), the build shim (build_shim.py and shims/build), the
 exception rows that excuse a build, and the watcher's temp tree report.  Every row runs in detect, where it must allow and
@@ -48,24 +48,30 @@ def row(pattern: str, cls: str = "temp-build") -> P.ExceptionRow:
     return P.ExceptionRow("r", pattern, cls, "t", "why", "CLAUDE", "2026-11-07", "2099-01-01", ("mac", "server"))
 
 
-# (command, cwd, the destination the hook must name)
+# (command, cwd, the destination the hook must name).  Each names an output option, so it passes the hook shims'
+# prefilter (guard._TRIGGER).
 CAUGHT = (
     ("xcodebuild -scheme HogHunter -derivedDataPath /private/tmp/hh-dd build", None, "/private/tmp/hh-dd"),
     ("xcrun xcodebuild -derivedDataPath=/tmp/dd test", None, "/tmp/dd"),
     ("xcodebuild -archivePath $TMPDIR/hh.xcarchive archive", None, "/private/var/folders/ab/xyz/T/hh.xcarchive"),
+    ("xcodebuild -resultBundlePath /tmp/r.xcresult test", None, "/tmp/r.xcresult"),
     ("xcodebuild SYMROOT=/private/tmp/sym build", None, "/private/tmp/sym"),
     ("swift build --scratch-path /tmp/spm", None, "/tmp/spm"),
-    ("swift test --package-path /private/tmp/pkg", None, "/private/tmp/pkg/.build"),
-    ("cd /private/tmp/wise-hh-build && cargo build --release", None, "/private/tmp/wise-hh-build/target"),
-    ("CARGO_TARGET_DIR=/tmp/ct cargo test", None, "/tmp/ct"),
-    ("env CARGO_TARGET_DIR=/tmp/ct2 cargo check", None, "/tmp/ct2"),
+    ("swift test --build-path /private/tmp/pkg/b", None, "/private/tmp/pkg/b"),
     ("cargo build --target-dir=/var/tmp/t", None, "/var/tmp/t"),
-    ("npm ci", "/private/tmp/web", "/private/tmp/web"),
-    ("npm --prefix /tmp/site run build", None, "/tmp/site"),
-    ("pnpm -C /tmp/p install", None, "/tmp/p"),
-    ("yarn", "/tmp/y", "/tmp/y"),
-    (f"git clone {THIRD} /private/tmp/nio", None, "/private/tmp/nio"),
-    ("gh repo clone apple/swift-nio /tmp/nio2", None, "/tmp/nio2"),
+    ("d=$(mktemp -d) && cargo test --target-dir $d", None, "/private/var/folders/ab/xyz/T/tmp.XXXXXXXXXX"),
+)
+
+# (tool, argv, cwd, environment, destination):  output that lands in temp only because of where the build runs or what its
+# environment says.  The command text names no trigger word, so the hook never parses it;  the build shim judges the argv.
+IMPLICIT = (
+    ("cargo", ["build", "--release"], "/private/tmp/wise-hh-build", {}, "/private/tmp/wise-hh-build/target"),
+    ("cargo", ["test"], "/Users/x", {"CARGO_TARGET_DIR": "/tmp/ct"}, "/tmp/ct"),
+    ("swift", ["test", "--package-path", "/private/tmp/pkg"], "/Users/x", {}, "/private/tmp/pkg/.build"),
+    ("npm", ["ci"], "/private/tmp/web", {}, "/private/tmp/web"),
+    ("npm", ["--prefix", "/tmp/site", "run", "build"], "/Users/x", {}, "/tmp/site"),
+    ("pnpm", ["-C", "/tmp/p", "install"], "/Users/x", {}, "/tmp/p"),
+    ("yarn", [], "/tmp/y", {}, "/tmp/y"),
 )
 
 # Never named, in any mode.
@@ -74,15 +80,16 @@ PASSED = (
     (f"xcodebuild -derivedDataPath {SCRATCH}/dd build", None),
     ("xcodebuild -derivedDataPath /private/tmp/claude-501/dd build", None),
     (f"xcodebuild -derivedDataPath {HOME}/Library/Caches/HogHunterDerivedData build", None),
-    ("cargo build", None),
+    ("cargo build --target-dir target", None),
     ("cargo --version", None),
     ("swift --version", None),
     ("swift package resolve", "/private/tmp/pkg"),
     ("npm run lint", "/private/tmp/web"),
     ("npm install -g typescript", "/private/tmp/web"),
-    ("npm ci", SCRATCH),
+    ("cargo build --target-dir target", SCRATCH),
     (f"git clone {THIRD} {HOME}/apps/lanes/_tools/nio", None),
     (f"git clone {THIRD} {SCRATCH}/nio", None),
+    (f"git clone {THIRD} /private/tmp/nio", None),  # a third-party clone to read stays allowed (lane-map.md)
     ("ls /private/tmp", None),
 )
 
@@ -112,7 +119,7 @@ class Reader(unittest.TestCase):
         self.assertEqual(TB.unwrap_xcrun(["clang", "-v"]), (None, []))
 
     def test_each_alternative_names_a_place(self) -> None:
-        for tool in (*TB.TOOLS, "git"):
+        for tool in TB.TOOLS:
             with self.subTest(tool=tool):
                 text = TB.alternative(tool, "mac")
                 self.assertTrue("~/Library/Caches" in text or "lane" in text, text)
@@ -140,6 +147,19 @@ class Hook(unittest.TestCase):
                     self.assertIn("scratchpad", d.reason)
                     self.assertTrue("~/Library/Caches" in d.reason or "lane" in d.reason, d.reason)
 
+    def test_the_shim_question_sees_what_the_text_does_not_name(self) -> None:
+        c = ctx("detect")
+        for tool, args, cwd, env, dest in IMPLICIT:
+            with self.subTest(tool=tool, args=args):
+                cls, d = G.evaluate_build_argv(tool, args, cwd, c, env=env)
+                self.assertEqual((cls, d.rule_id, d.destination), (P.CLASS_TEMP_BUILD, G.RULE_TEMP_BUILD, dest))
+                self.assertIsNone(G._TRIGGER.search(" ".join([tool, *args])))
+
+    def test_ordinary_builds_never_reach_the_parser(self) -> None:
+        for command in ("xcodebuild -scheme App build", "npm run build && npm test", "cargo build --release", "swift test"):
+            with self.subTest(command=command):
+                self.assertIsNone(G._TRIGGER.search(command))
+
     def test_blocking_another_class_leaves_builds_alone(self) -> None:
         c = ctx("block temp,code,home")
         d = G.evaluate(payload("xcodebuild -derivedDataPath /private/tmp/hh-dd build"), c)
@@ -162,11 +182,12 @@ class Hook(unittest.TestCase):
     def test_a_row_excuses_a_build_and_only_a_build(self) -> None:
         brew = row("**/tmp/*-20??????-*")
         c = ctx("block", rows=(brew,))
-        d = G.evaluate(payload("cargo build", "/private/tmp/ripgrep-20261107-123-abc"), c)
+        d = G.evaluate(payload("cargo build --target-dir target", "/private/tmp/ripgrep-20261107-123-abc"), c)
         self.assertEqual(d.action, G.ALLOW)
         self.assertEqual(d.detected_detail["class"], G.CLASS_EXCUSED)
         cache = row("**/tmp/*-20??????-*", "tool-cache")
-        d = G.evaluate(payload("cargo build", "/private/tmp/ripgrep-20261107-123-abc"), ctx("block", rows=(cache,)))
+        d = G.evaluate(payload("cargo build --target-dir target", "/private/tmp/ripgrep-20261107-123-abc"),
+                       ctx("block", rows=(cache,)))
         self.assertEqual(d.action, G.DENY)
         self.assertFalse(P.row_excuses_checkout(brew, linked_worktree=False, registered_app=True))
         self.assertFalse(P.row_excuses(brew, via="shim", clone=True, in_temp=True, in_code=False, mirror_or_local=False))
@@ -177,8 +198,9 @@ class Hook(unittest.TestCase):
         rows = tuple(r for r in P.parse_rows(data) if r.cls == "temp-build")
         self.assertEqual({r.id for r in rows}, {"temp-build-homebrew-source", "temp-build-cargo-install"})
         c = ctx("block", rows=rows)
-        self.assertEqual(G.evaluate(payload("cargo build", "/private/tmp/ripgrep-20261107-123-abc"), c).action, G.ALLOW)
-        self.assertEqual(G.evaluate(payload("cargo build", "/private/tmp/wise-hh-build"), c).action, G.DENY)
+        self.assertEqual(G.evaluate_build_argv("cargo", ["build"], "/private/tmp/ripgrep-20261107-123-abc", c)[0],
+                         G.CLASS_EXCUSED)
+        self.assertEqual(G.evaluate_build_argv("cargo", ["build"], "/private/tmp/wise-hh-build", c)[0], P.CLASS_TEMP_BUILD)
 
     def test_the_mode_file_knows_the_class(self) -> None:
         self.assertIn(P.CLASS_TEMP_BUILD, P.RULE_CLASSES)
