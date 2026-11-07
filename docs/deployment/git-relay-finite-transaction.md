@@ -62,3 +62,15 @@ Actual host property rendering for the transaction unit still needs verification
 before any activation. The prep-to-final manifest transform is tested pure code:
 five exact merged code rows plus an append-only 41-seat policy row, with exact
 byte digest compiled into the disabled fixed entry only after review.
+
+## Controlled host rendering qualification, November 6, 2026
+
+A separate ephemeral root oneshot qualification unit ran for 113ms and exited
+successfully. It printed only systemd properties and its own cgroup, used a noop
+ExecStopPost=/usr/bin/true, and was collected (LoadState=not-found afterwards).
+Actual host values were Type=oneshot, User=root, TimeoutStartUSec=2min,
+TimeoutStopUSec=1min 30s, KillMode=control-group, with the expected control group
+matching /proc/self/cgroup. The existing relay stayed active with the same PID
+and start time. This checks host rendering and finite execution, not the real
+recovery hook or production entry. The strict parser has a direct successful
+rendering regression and refusals for drifted deadline/type/kill/hook/cgroup.
