@@ -750,4 +750,15 @@ jobs:
         run: |
           xcodebuild -project Muster.xcodeproj -scheme Muster -configuration Debug \
             -destination 'platform=macOS' -derivedDataPath .build/CITest \
+            -resultBundlePath "$RUNNER_TEMP/MusterTests.xcresult" \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= test
+      # The result bundle carries the window layout tests' screenshots (MusterWindowLayoutTests),
+      # so a reviewer can see the hosted window, capped and uncapped, without a Mac.
+      - name: Upload the Muster test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: muster-test-results
+          path: ${{ runner.temp }}/MusterTests.xcresult
+          if-no-files-found: ignore
+          retention-days: 14

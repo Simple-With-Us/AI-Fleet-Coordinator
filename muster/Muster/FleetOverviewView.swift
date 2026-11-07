@@ -34,17 +34,15 @@ struct FleetOverviewView: View {
 
     /// The window's size is the window's own, and not the natural height of whichever panel is
     /// showing.  Several panels are as tall as their content (Tools And Worker Health is 1449
-    /// points, Seats 1345) and the window grew to match and kept that as its minimum, so on a
-    /// 923-point laptop screen its bottom edge sat below the display with no way to shrink it.
-    /// The split view sits in an overlay, which is proposed the window's room and takes no part
-    /// in the window's size.  The minimum is wide enough for every panel's columns and
-    /// controls, which overlapped each other in a narrower window (Controls' tabs, the Apps &
-    /// Work filter bar), and short enough for any laptop screen.
+    /// points, Seats 1345).  Each column takes its height from the window
+    /// (`musterColumnHeight`), so a panel taller than the window scrolls inside it instead of
+    /// pushing the split view past the window's top and bottom edges, where neither column
+    /// could be scrolled back to its first rows.  The root frame keeps the window's minimum
+    /// (`musterWindowSize`), wide enough for every panel's columns and short enough for any
+    /// laptop screen, so the window never grows to a panel's natural height either.
     var body: some View {
-        Color.clear
-            .frame(minWidth: 1160, idealWidth: 1160, maxWidth: .infinity,
-                   minHeight: 560, idealHeight: 780, maxHeight: .infinity)
-            .overlay { splitView }
+        splitView
+            .musterWindowSize()
     }
 
     private var splitView: some View {
@@ -60,6 +58,7 @@ struct FleetOverviewView: View {
                     }
                 }
             }
+            .musterColumnHeight()
             .navigationTitle("Muster")
             .navigationSplitViewColumnWidth(min: 200, ideal: 230, max: 300)
         } detail: {
@@ -96,6 +95,7 @@ struct FleetOverviewView: View {
                     footer
                 }
             }
+            .musterColumnHeight()
             .navigationTitle(destination.title)
             .navigationSubtitle(destination.subtitle)
             .toolbar {

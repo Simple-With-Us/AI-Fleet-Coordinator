@@ -150,6 +150,9 @@ targets:
       - path: Muster/FleetServices/ServiceReconcilePolicy.swift
       - path: Muster/FleetServices/ServerPresence.swift
       - path: Muster/FleetServices/StartupPolicy.swift
+      # The window's layout sizes and the column cap.  No environment objects, so the test
+      # bundle hosts the same layout the window uses (MusterWindowLayoutTests).
+      - path: Muster/Views/MusterWindowLayout.swift
     settings:
       base:
         PRODUCT_NAME: MusterTests
