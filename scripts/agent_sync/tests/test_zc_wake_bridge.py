@@ -69,12 +69,16 @@ class Base(unittest.TestCase):
         with open(self.key_file, "w", encoding="utf-8") as fh:
             fh.write(self.key + "\n")
         os.chmod(self.key_file, 0o600)
+        # The fake delivery writes to a path baked into the template:  the bridge runs its
+        # child with a minimal environment (HOME, PATH, the launcher marks), so nothing else
+        # crosses, exactly as it will not in production.
+        self.fake_path = os.path.join(self.tmp.name, "fake-out.txt")
         self.config = {
             "delivery_enabled": True,
             "command_template": [
                 "/bin/sh", "-c",
-                "printenv AGENT_LAUNCHER >> \"$ZC_FAKE_OUT\"; "
-                "printf '%s %s\\n' \"$1\" \"$2\" >> \"$ZC_FAKE_OUT\"",
+                "printenv AGENT_LAUNCHER >> '%s'; "
+                "printf '%%s %%s\n' \"$1\" \"$2\" >> '%s'" % (self.fake_path, self.fake_path),
                 "bridge", "{session_id}", "{wake_text}",
             ],
             "timeout_seconds": 30,
@@ -102,7 +106,7 @@ class Base(unittest.TestCase):
         return env
 
     def fake_out(self) -> str:
-        return os.path.join(self.tmp.name, "fake-out.txt")
+        return self.fake_path
 
     def rows(self, *rows: dict) -> list[dict]:
         return list(rows)
@@ -177,9 +181,6 @@ class Receiver(Base):
              "verified_host": "server", "state": "open", "assigned_at": 2, "retired_at": None,
              "closed_at": None},
         )))
-        with open(self.fake_out(), "w") as fh:
-            fh.write("")
-        env["ZC_FAKE_OUT"] = self.fake_out()
         status, answer = self.post(self.wake(), env, key=self.key)
         self.assertEqual(status, 200)
         self.assertTrue(answer["delivered"], answer)
@@ -210,19 +211,69 @@ class Receiver(Base):
         status, _ = self.post(self.wake(wake_id="bad id!"), env, key=self.key)
         self.assertEqual(status, 400)
 
+    def test_failed_delivery_is_503_and_not_marked_seen(self) -> None:
+        # The delivery command fails (the fake writes nowhere and exits 3):  the answer is
+        # 503, the id stays unmarked, and a retry delivers again instead of hitting
+        # already-seen forever.
+        failing = dict(self.config)
+        failing["command_template"] = ["/bin/sh", "-c", "exit 3"]
+        env = self.env(**self.registry_env(self.rows(
+            {"native_session_id": "sess_retry", "title": "Retry me", "verified_host": "server",
+             "state": "open", "assigned_at": 1, "retired_at": None, "closed_at": None},
+        )))
+        status, answer = self.post(self.wake(wake_id="w-retry"), env, key=self.key, config=failing)
+        self.assertEqual(status, 503, answer)
+        self.assertEqual(answer["reason"], "command-failed-3")
+        status, answer = self.post(self.wake(wake_id="w-retry"), env, key=self.key, config=failing)
+        self.assertEqual(status, 503, answer)
+        self.assertNotEqual(answer.get("reason"), "already-seen")
+
+    def test_topic_target_never_starts_without_sess_prefix(self) -> None:
+        # A crafted registry row whose native id is argv-shaped ("-p") is not a target.
+        env = self.env(**self.registry_env(self.rows(
+            {"native_session_id": "-p", "title": "Evil", "verified_host": "server",
+             "state": "open", "assigned_at": 9, "retired_at": None, "closed_at": None},
+        )))
+        status, answer = self.post(self.wake(), env, key=self.key)
+        self.assertEqual(status, 503, answer)
+        self.assertIn(answer.get("reason"), ("no-live-session", "command-failed"))
+        self.assertFalse(os.path.exists(self.fake_path))
+
     def test_disabled_delivery_answers_without_running(self) -> None:
         disabled = dict(self.config, delivery_enabled=False)
         self.config_file = os.path.join(self.state, "config-off.json")
         with open(self.config_file, "w", encoding="utf-8") as fh:
             json.dump(disabled, fh)
         env = self.env(**self.registry_env([]))
-        with open(self.fake_out(), "w") as fh:
-            fh.write("")
-        env["ZC_FAKE_OUT"] = self.fake_out()
         status, answer = self.post(self.wake(), env, key=self.key, config=disabled)
         self.assertEqual(status, 200)
         self.assertEqual(answer["reason"], "delivery-disabled")
-        self.assertEqual(open(self.fake_out()).read(), "")
+        self.assertFalse(os.path.exists(self.fake_path))  # nothing ran
+
+
+class ConfigLoad(Base):
+    def test_explicit_missing_config_refuses(self) -> None:
+        with self.assertRaises(SystemExit):
+            B.load_config(Path(self.tmp.name) / "nope.json", required=True)
+
+    def test_default_missing_config_is_defaults(self) -> None:
+        config = B.load_config(Path(self.tmp.name) / "nope.json")
+        self.assertFalse(config["delivery_enabled"])
+
+    def test_mistyped_fields_refuse(self) -> None:
+        bad = Path(self.tmp.name) / "bad.json"
+        bad.write_text(json.dumps({"delivery_enabled": "yes"}), encoding="utf-8")
+        with self.assertRaises(SystemExit):
+            B.load_config(bad)
+        bad.write_text(json.dumps({"command_template": []}), encoding="utf-8")
+        with self.assertRaises(SystemExit):
+            B.load_config(bad)
+        bad.write_text(json.dumps({"timeout_seconds": -1}), encoding="utf-8")
+        with self.assertRaises(SystemExit):
+            B.load_config(bad)
+        bad.write_text(json.dumps({"target_host": "cloud"}), encoding="utf-8")
+        with self.assertRaises(SystemExit):
+            B.load_config(bad)
 
 
 class TargetPick(Base):
@@ -282,12 +333,7 @@ class DeliverCli(Base):
             json.dump({"items": [{"native_session_id": "sess_cli", "title": "Letters",
                                   "verified_host": "server", "state": "open", "assigned_at": 1,
                                   "retired_at": None, "closed_at": None}], "count": 1}, fh)
-        with open(self.fake_out(), "w") as fh:
-            fh.write("")
-        env = self.env(
-            ZC_WAKE_HISTORY_FILE=history,
-            ZC_FAKE_OUT=self.fake_out(),
-        )
+        env = self.env(ZC_WAKE_HISTORY_FILE=history)
         result = run_bridge(
             ["deliver", "--wake-id", "w-cli-1", "--topic", "Letters", "--config", self.config_file],
             env,

@@ -82,30 +82,49 @@ def wrapper_path(env: Mapping[str, str] | None = None) -> str:
 
 
 class _Store:
-    """One read-only connection to the session store for the life of one hook, reused by every lookup."""
+    """One read-only connection to the session store for one lookup, closed by the context
+    manager:  a hook run opens a handful of short-lived readers and leaves no descriptor
+    behind.  Errors are the caller\'s empty answers, never exceptions a chat could see."""
 
     def __init__(self, env: Mapping[str, str]) -> None:
         self.path = store_file(env)
         self._conn: sqlite3.Connection | None = None
 
-    def row(self, sid: str) -> dict[str, Any] | None:
-        if not sid or not os.path.isfile(self.path):
-            return None
-        if self._conn is None:
+    def __enter__(self) -> "_Store":
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        if self._conn is not None:
             try:
-                self._conn = sqlite3.connect("file:%s?mode=ro" % self.path, uri=True, timeout=5)
+                self._conn.close()
             except sqlite3.Error:
-                return None
+                pass
+            self._conn = None
+
+    def _connect(self) -> bool:
+        if self._conn is not None:
+            return True
+        if not os.path.isfile(self.path):
+            return False
+        try:
+            self._conn = sqlite3.connect("file:%s?mode=ro" % self.path, uri=True, timeout=5)
+            return True
+        except sqlite3.Error:
+            return False
+
+    def row(self, sid: str) -> dict[str, Any] | None:
+        if not sid or not self._connect():
+            return None
         try:
             cur = self._conn.execute(
                 "SELECT id, parent_id, title, title_source, task_type, directory,"
                 " time_archived, time_deleted FROM session WHERE id = ?",
                 (sid,),
             )
-            row = cur.fetchone()
+            fetched = cur.fetchone()
         except sqlite3.Error:
             return None
-        if row is None:
+        if fetched is None:
             return None
         keys = (
             "id",
@@ -117,7 +136,22 @@ class _Store:
             "time_archived",
             "time_deleted",
         )
-        return dict(zip(keys, row))
+        return dict(zip(keys, fetched))
+
+    def subagent_ids(self, sids: list[str]) -> set[str]:
+        """The ids among `sids` the store calls sub-agent children, in one query."""
+        if not sids or not self._connect():
+            return set()
+        placeholders = ",".join("?" * len(sids))
+        try:
+            rows = self._conn.execute(
+                "SELECT id FROM session WHERE task_type = 'subagent_child'"
+                " AND id IN (%s)" % placeholders,
+                sids,
+            ).fetchall()
+        except sqlite3.Error:
+            return set()
+        return {str(r[0]) for r in rows if r and r[0]}
 
 
 def _sid_of(payload: Mapping[str, Any]) -> str:
@@ -134,7 +168,8 @@ def zcode_session_id(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
 
 def zcode_parent(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
     """The parent chat's native id, from the store's `parent_id` (a sub-agent's row names it)."""
-    row = _Store(env).row(_sid_of(payload))
+    with _Store(env) as store:
+        row = store.row(_sid_of(payload))
     if row and isinstance(row.get("parent_id"), str):
         return row["parent_id"]
     return ""
@@ -142,14 +177,16 @@ def zcode_parent(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
 
 def zcode_kind(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
     """chat, subagent or headless, from the store's `task_type`; an unknown session is a chat."""
-    row = _Store(env).row(_sid_of(payload))
+    with _Store(env) as store:
+        row = store.row(_sid_of(payload))
     if row:
         return _TASK_KINDS.get(str(row.get("task_type") or ""), "headless")
     return "chat"
 
 
 def zcode_stored_title(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
-    row = _Store(env).row(_sid_of(payload))
+    with _Store(env) as store:
+        row = store.row(_sid_of(payload))
     if row and isinstance(row.get("title"), str):
         return row["title"]
     return ""
@@ -191,7 +228,8 @@ def zcode_rename(request: Any) -> bool:
     path = store_file(env)
     if not os.path.isfile(path):
         return False
-    row = _Store(env).row(sid)
+    with _Store(env) as store:
+        row = store.row(sid)
     if row and row.get("title_source") == "custom":
         current = str(row.get("title") or "")
         if current and not current.startswith(str(request.label or "") + ":"):
@@ -258,9 +296,12 @@ def zcode_entry(command: str, timeout: int, event: str) -> dict[str, Any]:
     a hook process inherits no profile, and the wrapper is what sources the registry env.
     The wrapper keeps the name `platform-letter`, which is what the installer's idempotence
     matcher checks, and the rest of the words (hook, --platform, --location, --remote) pass
-    through unchanged."""
+    through unchanged.  The wrapper path is derived from the command's own prefix, so the
+    home the install ran under decides it, never the home of whichever process builds the
+    entry later."""
     parts = shlex.split(command)
-    parts[0] = wrapper_path()
+    home_prefix = os.path.dirname(os.path.dirname(parts[0]))  # <home>/.local/bin/platform-letter
+    parts[0] = os.path.join(home_prefix, "zc-letter", "platform-letter")
     return PL.command_entry(" ".join(parts), timeout, event)
 
 
@@ -353,13 +394,36 @@ def _sync_wrapper(env: Mapping[str, str], stdout: TextIO) -> bool:
 
 def install(opts: PL.InstallOptions, env: Mapping[str, str], stdout: TextIO) -> int:
     """`platform-letter install --platform zcode`:  the wrapper copy first, then the shared JSON
-    installer.  `--remove` leaves the wrapper copy in place (it is a file the user keeps and
-    may source from elsewhere) and takes out only this adapter's entries."""
+    installer.  `--check` writes nothing anywhere:  it reports whether the wrapper copy and the
+    hook entries are current, the way the shared installer's own check does.  `--remove` leaves
+    the wrapper copy in place (it is a file the user keeps and may source from elsewhere) and
+    takes out only this adapter's entries."""
     import io
 
     if opts.remove:
         return PL.install_json_hooks(INSTALL, opts, env, stdout)
     buf = io.StringIO()
+    if opts.check:
+        target = wrapper_path(env)
+        source = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
+            "zcode-letter-hook",
+            "platform-letter",
+        )
+        current = False
+        try:
+            current = os.path.isfile(target) and open(target, "rb").read() == open(source, "rb").read()
+        except OSError:
+            current = False
+        code = PL.install_json_hooks(INSTALL, opts, env, buf)
+        answer = PL._last_json(buf.getvalue())
+        if answer is not None and "error" not in answer:
+            answer["wrapper"] = target
+            answer["wrapper_current"] = current
+            stdout.write(json.dumps(answer, sort_keys=True) + "\n")
+            return code if current else 1
+        stdout.write(buf.getvalue())
+        return code
     if not _sync_wrapper(env, buf):
         stdout.write(buf.getvalue())
         return 2
@@ -402,8 +466,27 @@ def sweep_main(argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int:
     gone = [
         r[0] for r in rows if isinstance(r[0], str) and re.fullmatch(r"[A-Za-z0-9._-]{1,128}", r[0])
     ]
+    # Registrations whose session row the store has dropped outright (a hard delete) fire no
+    # flag to sweep on:  the live registrations answer what the store no longer knows about.
+    from . import registry_api as RA
+
+    if RA.base_url(env):
+        answer = RA.call(env, "history", {"platform": PLATFORM, "limit": 200})
+        history = answer.get("items") if isinstance(answer, dict) else None
+        if isinstance(history, list):
+            known = {r[0] for r in rows} if rows else set()
+            for row in history:
+                sid = str((row or {}).get("native_session_id") or "")
+                if (
+                    re.fullmatch(r"[A-Za-z0-9._-]{1,128}", sid)
+                    and not (row or {}).get("closed_at")
+                    and str((row or {}).get("state") or "") != "closed"
+                    and sid not in known
+                ):
+                    gone.append(sid)
     closed = []
     failed = []
+    absent = []
     import io
 
     for sid in gone:
@@ -416,14 +499,28 @@ def sweep_main(argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int:
             env=env,
             stdout=buf,
         )
-        stdout.write(buf.getvalue())
-        # registry_main writes its own JSON line; a nonzero code means the close did not land.
-        if answer != 0:
+        # A session the Operator never registered (or has already closed) is swept by this
+        # very run:  the not-registered answer is the happy no-op, not a failure, so a sweep
+        # re-run is idempotent.  Any other nonzero close is a failure.
+        line = PL._last_json(buf.getvalue())
+        text = str((line or {}).get("error") or "")
+        if answer != 0 and PL._NOT_REGISTERED_MARK not in text and "no session with this identity" not in text:
+            stdout.write(buf.getvalue())
             failed.append(sid)
+        elif answer != 0:
+            absent.append(sid)
         else:
             closed.append({"session_id": sid, "closed": True})
     stdout.write(
-        json.dumps({"platform": PLATFORM, "found": len(gone), "closed": closed, "failed": failed})
+        json.dumps(
+            {
+                "platform": PLATFORM,
+                "found": len(gone),
+                "closed": closed,
+                "absent": absent,
+                "failed": failed,
+            }
+        )
         + "\n"
     )
     return 0 if not failed else 1
