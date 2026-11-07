@@ -92,7 +92,8 @@ not proceed. The abort returns to normal operation WITHOUT a restart:
    - ingress healthy per the prior config: cursors advance, spool drains or stays 0
 4. A parked effect whose payload proof is inconclusive STAYS parked and visible as a
    nonzero `drain.deferred_broadcasts`. Investigate the named message; never delete
-   the file to make the gauge read zero.
+   the file to make the gauge read zero. A row is removed by hand only after the
+   operator has confirmed the payload is genuinely gone.
 
 An abandoned marker is loud, not silent: the hook keeps answering 503 and wakes keep
 deferring. Supervise the window; if it cannot complete inside the bound, abort.
@@ -125,6 +126,27 @@ mandatory for fidelity: the restored pause state must be the one the owner set.
   carried a user pause, under which they correctly stay deferred
 - the Linear hook accepts new events again (200 queued), if it is configured and
   enabled in the restored prior config
+
+## First adoption (installing this change)
+
+The qualified procedure cannot install itself: the runtime being replaced has no
+`--defer` marker, no drain status surface, and no hook gate. The FIRST stop that
+adopts this code is an ordinary pre-drain stop, carrying the pre-drain residuals
+(paused wakes drop with a recorded row; a Linear event acknowledged 200 and held in
+memory is lost on stop and self-heals on the next project event). Keep it small:
+
+1. Pick a quiet window (low fleet traffic) and capture the current listener.toml and
+   pause.json bytes.
+2. `simple-chat daemon pause` (ordinary pause; drops are recorded, as before this
+   change).
+3. Wait for the existing work to empty (no coalescer pending, no running jobs, effect
+   threads at 0) - minutes, not the 15-minute drain bound.
+4. SIGTERM, recreate with the new build, restore the exact prior listener.toml bytes
+   and the pause.json bytes captured at step 1 (lifting the adoption pause while
+   preserving any earlier user pause), boot.
+5. Verify: seats connected, cursors advancing, `simple-chat daemon status` shows the
+   "drain" block (armed false).
+6. Every stop after this one uses the qualified drain procedure above.
 
 ## Named residuals (explicit, accepted)
 
