@@ -294,7 +294,9 @@ jobs:
           tries=20
           wait=15
           for attempt in $(seq 1 "$tries"); do
-            if curl -fsSL "$FEED" | grep -q "<sparkle:version>$BUILD</sparkle:version>"; then
+            # The no-cache header asks any cache in front of the asset not to answer from
+            # a stored copy, so the wait measures the feed, not the cache's timer.
+            if curl -fsSL -H 'Cache-Control: no-cache' "$FEED" | grep -q "<sparkle:version>$BUILD</sparkle:version>"; then
               echo "live feed names build $BUILD after $(( (attempt - 1) * wait ))s of waiting: $FEED"
               exit 0
             fi
