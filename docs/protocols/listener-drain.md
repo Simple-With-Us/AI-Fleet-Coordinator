@@ -160,8 +160,10 @@ Loss classes in the one-time stop (all bounded to the planned window):
 
 - a wake admitted between the last observable check and SIGTERM finalizes into a
   RECORDED paused drop (pre-existing semantics);
-- a Linear event acknowledged 200 and held in memory is lost on stop; reconcile is
-  read-idempotent and self-heals on the next project event;
+- a Linear event acknowledged 200 and held in memory is lost on stop. Recovery is
+  CONTINGENT: reconcile is read-idempotent and self-heals only when a LATER project
+  event arrives; if none arrives the loss persists indefinitely, and a reconcile
+  interrupted mid-write can itself leave partial linkifier changes;
 - the SILENT class: a native-path broadcast (an owner or fleet-bot channel-wide
   mention landing inside the gap) starts fanout/inbox/audit effects with no gate
   and no durable record on the old runtime, and a stop mid-effect is a silent
@@ -179,6 +181,11 @@ head; restore exact prior bytes (lifting the adoption pause, preserving any
 pre-existing user pause); boot; verify seats connected, cursors advancing, drain
 block present with armed false. After this stop, every later stop uses the
 qualified procedure above.
+
+Rollback of the adoption itself: the supported route is reverting main and a
+manual full source rebuild/redeploy, plus restoring the exact captured
+config/pause bytes again - NOT a prior-image rollback, which is unverified. A
+rollback has its own stop window with the same one-time loss classes above.
 
 ## Named residuals (explicit, accepted)## Named residuals (explicit, accepted)## Named residuals (explicit, accepted)
 
