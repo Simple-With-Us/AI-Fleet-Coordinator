@@ -18,8 +18,11 @@ class ReviewedGenericTests(unittest.TestCase):
             (self.repo, self.path, hashlib.sha256(body.encode()).hexdigest())
         }))
 
-    def test_empty_registry_never_approves(self):
-        self.assertFalse(secretscan._REVIEWED_GENERIC_FIXTURES)
+    def test_release_registry_only_has_reviewed_exact_botfleet_entry(self):
+        self.assertEqual(secretscan._REVIEWED_GENERIC_FIXTURES, frozenset({
+            ("Simple-With-Us/BotFleet", "server/config.test.ts",
+             "466868a395827bb284e392b277dff7e0f16adad66fe68306a5dfc22fff28bf19")
+        }))
         self.assertIsNotNone(secretscan.scan_file(self.repo, self.path, self.body))
 
     def test_only_exact_bytes_repo_path(self):
