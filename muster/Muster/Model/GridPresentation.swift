@@ -34,18 +34,38 @@ enum GridPresentation {
         return "Checked on the Mac at \(FleetTime.clock(at)),  \(FleetTime.ageText(since: at, now: now)) ago"
     }
 
-    /// The time a rule's result stops counting as current, when the engine gave one.
+    /// The clock the grid measures against:  the timeline's tick, or the moment the Mac woke
+    /// when that is later.
+    ///
+    /// The wake time only counts while it is ahead of the timeline, which is the first tick
+    /// after a wake, so it can never hold the clock back once the timeline moves on.
+    static func effectiveNow(timelineDate: Date, wokeAt: Date?) -> Date {
+        guard let wokeAt, wokeAt > timelineDate else { return timelineDate }
+        return wokeAt
+    }
+
+    /// The time a rule's result stops counting as current, when the engine gave one this
+    /// app can read.
     static func expiry(of rule: CheckResult) -> Date? {
         guard let text = rule.expiresAt, !text.isEmpty else { return nil }
         return FleetTime.parse(text)
     }
 
+    /// True when the engine gave the rule a time limit that this app cannot read.
+    static func hasUnreadableLimit(_ rule: CheckResult) -> Bool {
+        guard let text = rule.expiresAt, !text.isEmpty else { return false }
+        return FleetTime.parse(text) == nil
+    }
+
     /// True when at least one rule behind the cell is past the time limit the engine set.
     ///
     /// After a long sleep every result is past it, and the grid dims the cell rather than
-    /// let an old green read as current.
+    /// let an old green read as current.  A limit the engine gave and this app cannot read
+    /// counts as past:  an unreadable limit is not proof the result is current.  A rule
+    /// with no limit at all is never past one.
     static func isPastLimit(_ cell: GridCell, now: Date) -> Bool {
         cell.rules.contains { rule in
+            if hasUnreadableLimit(rule) { return true }
             guard let limit = expiry(of: rule) else { return false }
             return limit < now
         }
@@ -457,5 +477,15 @@ struct GridSelection: Hashable {
     /// True while the seat's row is on screen, so a filter that hides it closes the panel.
     func isShown(in visibleRoster: [String]) -> Bool {
         visibleRoster.contains(seat)
+    }
+
+    /// Whether the panel should close.
+    ///
+    /// A run rebuilds every cell as unknown until it lands, so a filter such as Drifted
+    /// briefly shows no seat at all.  The panel is kept while a run is in flight, and once
+    /// it lands it closes only when the cell is gone or its row is not shown.
+    func shouldClose(visibleRoster: [String], isRunning: Bool, cellExists: Bool) -> Bool {
+        guard !isRunning else { return false }
+        return !cellExists || !isShown(in: visibleRoster)
     }
 }

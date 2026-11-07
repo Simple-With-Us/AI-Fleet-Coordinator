@@ -35,7 +35,7 @@ final class GridPresentationTests: XCTestCase {
         return try JSONDecoder().decode(CheckResult.self, from: Data(json.utf8))
     }
 
-    private func cell(_ rules: [CheckResult], kind: ConfigKind = .hooks, state: CellState? = nil) -> GridCell {
+    private func makeCell(_ rules: [CheckResult], kind: ConfigKind = .hooks, state: CellState? = nil) -> GridCell {
         GridCell(
             seat: "CLAUDE",
             kind: kind,
@@ -98,13 +98,13 @@ final class GridPresentationTests: XCTestCase {
                              checkType: "credential_key_present")
         let file = try result(ruleId: "claude-permissions-zulip-retired-file", kind: "permissions",
                               checkType: "credential_stat")
-        let both = cell([key, file], kind: .permissions)
+        let both = makeCell([key, file], kind: .permissions)
         XCTAssertEqual(GridPresentation.locationLine(for: both), "Read on the Mac and from the secret store (Infisical).")
         XCTAssertEqual(
-            GridPresentation.locationLine(for: cell([key], kind: .permissions)),
+            GridPresentation.locationLine(for: makeCell([key], kind: .permissions)),
             "Read from the secret store (Infisical), asked from the Mac."
         )
-        XCTAssertEqual(GridPresentation.locationLine(for: cell([try result()])), "Read on the Mac.")
+        XCTAssertEqual(GridPresentation.locationLine(for: makeCell([try result()])), "Read on the Mac.")
         let tooltip = GridPresentation.tooltip(for: both)
         XCTAssertTrue(tooltip.hasPrefix("Read on the Mac and from the secret store (Infisical).\n"))
         XCTAssertTrue(tooltip.hasSuffix(both.tooltip))
@@ -169,7 +169,7 @@ final class GridPresentationTests: XCTestCase {
     /// A result past its limit is noticed without a new run:  the same cell crosses the
     /// line as the clock moves.
     func test_a_cell_crosses_its_limit_without_a_rerun() throws {
-        let cell = cell([try result()])
+        let cell = makeCell([try result()])
         let expiry = date("2026-10-19T14:45:00Z")
         XCTAssertFalse(GridPresentation.isPastLimit(cell, now: expiry.addingTimeInterval(-1)))
         XCTAssertTrue(GridPresentation.isPastLimit(cell, now: expiry.addingTimeInterval(1)))
@@ -184,15 +184,44 @@ final class GridPresentationTests: XCTestCase {
 
     /// A rule with no limit never reads as past it.
     func test_a_rule_with_no_limit_is_never_past_it() throws {
-        let cell = cell([try result(expiresAt: nil)])
+        let cell = makeCell([try result(expiresAt: nil)])
         XCTAssertFalse(GridPresentation.isPastLimit(cell, now: .distantFuture))
+        let blank = makeCell([try result(expiresAt: "")])
+        XCTAssertFalse(GridPresentation.isPastLimit(blank, now: .distantFuture))
+    }
+
+    /// A limit the engine gave and this app cannot read counts as past, so a green with an
+    /// unreadable limit never reads as current, and the banner counts it.
+    func test_an_unreadable_limit_counts_as_past() throws {
+        let rule = try result(state: "PASS", expiresAt: "not a time")
+        XCTAssertTrue(GridPresentation.hasUnreadableLimit(rule))
+        let cell = makeCell([rule])
+        let early = date("2026-10-19T14:31:00Z")
+        XCTAssertTrue(GridPresentation.isPastLimit(cell, now: early))
+        XCTAssertEqual(
+            GridPresentation.pastLimitBanner(cells: [cell], now: early),
+            "1 cell is past the time limit the engine set for the results."
+                + "\(gap)Read them as not current until the seat setup is checked again."
+        )
+        XCTAssertFalse(GridPresentation.hasUnreadableLimit(try result()))
+    }
+
+    /// The wake time moves the clock forward for the first tick after a wake, and never
+    /// holds it back once the timeline is past it.
+    func test_the_wake_time_only_counts_while_it_is_ahead() {
+        let tick = date("2026-10-19T14:30:00Z")
+        let woke = tick.addingTimeInterval(20)
+        XCTAssertEqual(GridPresentation.effectiveNow(timelineDate: tick, wokeAt: woke), woke)
+        let later = tick.addingTimeInterval(3600)
+        XCTAssertEqual(GridPresentation.effectiveNow(timelineDate: later, wokeAt: woke), later)
+        XCTAssertEqual(GridPresentation.effectiveNow(timelineDate: tick, wokeAt: nil), tick)
     }
 
     // MARK: The detail panel
 
     /// The panel's read is keyed on the cell and the run, so a new run reads again.
     func test_the_panels_read_key_changes_with_the_run() throws {
-        let selection = GridSelection(cell([try result()]))
+        let selection = GridSelection(makeCell([try result()]))
         XCTAssertEqual(selection.cellID, "CLAUDE/hooks")
         let first = selection.readKey(generatedAt: date("2026-10-19T14:30:00Z"))
         let second = selection.readKey(generatedAt: date("2026-10-19T14:40:00Z"))
@@ -218,6 +247,17 @@ final class GridPresentationTests: XCTestCase {
         let selection = GridSelection(seat: "CLAUDE", kind: .hooks)
         XCTAssertTrue(selection.isShown(in: ["CLAUDE", "ECHO"]))
         XCTAssertFalse(selection.isShown(in: ["ECHO"]))
+    }
+
+    /// A run that empties the filter for a moment keeps the panel open, and once the run
+    /// lands the panel closes only when the cell is gone or its row is hidden.
+    func test_a_run_in_flight_never_closes_the_panel() {
+        let selection = GridSelection(seat: "CLAUDE", kind: .hooks)
+        XCTAssertFalse(selection.shouldClose(visibleRoster: [], isRunning: true, cellExists: true))
+        XCTAssertFalse(selection.shouldClose(visibleRoster: [], isRunning: true, cellExists: false))
+        XCTAssertFalse(selection.shouldClose(visibleRoster: ["CLAUDE"], isRunning: false, cellExists: true))
+        XCTAssertTrue(selection.shouldClose(visibleRoster: ["ECHO"], isRunning: false, cellExists: true))
+        XCTAssertTrue(selection.shouldClose(visibleRoster: ["CLAUDE"], isRunning: false, cellExists: false))
     }
 
     /// The panel says which run it shows.

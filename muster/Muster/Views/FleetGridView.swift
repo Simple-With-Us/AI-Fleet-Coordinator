@@ -145,7 +145,7 @@ struct FleetGridView: View {
                 // grid is drawn inside a timeline:  an open grid ages, and a grid left open
                 // through a sleep reads its results as past their limit when it wakes.
                 TimelineView(.everyMinute) { context in
-                    let now = max(context.date, wokeAt ?? .distantPast)
+                    let now = GridPresentation.effectiveNow(timelineDate: context.date, wokeAt: wokeAt)
                     VStack(alignment: .leading, spacing: 0) {
                         scopeBlock
                             .padding(.bottom, 12)
@@ -213,14 +213,33 @@ struct FleetGridView: View {
             }
         }
         // A filter that hides the open cell's row closes the panel, so the panel never
-        // explains a cell the grid is not showing.
+        // explains a cell the grid is not showing.  A run in flight rebuilds every cell as
+        // unknown for a moment, so the panel waits for the run to land before it decides.
         .onChange(of: visibleRoster) { _, roster in
-            if let selection, !selection.isShown(in: roster) {
-                self.selection = nil
-            }
+            closePanelIfGone(roster: roster)
+        }
+        .onChange(of: store.isRunning) { _, running in
+            if !running { closePanelIfGone(roster: visibleRoster) }
         }
         .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didWakeNotification)) { _ in
             wokeAt = Date()
+        }
+        // The wake time is for the first tick after a wake only:  once the timeline has
+        // ticked past it, it is cleared, so it never holds the grid's clock.
+        .task(id: wokeAt) {
+            guard let woke = wokeAt else { return }
+            try? await Task.sleep(nanoseconds: 61_000_000_000)
+            guard !Task.isCancelled, wokeAt == woke else { return }
+            wokeAt = nil
+        }
+    }
+
+    /// Close the panel when its cell is gone or its row is hidden, but never in the middle
+    /// of a run (`GridSelection.shouldClose`).
+    private func closePanelIfGone(roster: [String]) {
+        guard let selection else { return }
+        if selection.shouldClose(visibleRoster: roster, isRunning: store.isRunning, cellExists: selectedCell != nil) {
+            self.selection = nil
         }
     }
 
