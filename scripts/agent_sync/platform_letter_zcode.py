@@ -90,10 +90,10 @@ class _Store:
         self.path = store_file(env)
         self._conn: sqlite3.Connection | None = None
 
-    def __enter__(self) -> "_Store":
+    def __enter__(self) -> _Store:
         return self
 
-    def __exit__(self, *exc: Any) -> None:
+    def __exit__(self, *exc: object) -> None:
         if self._conn is not None:
             try:
                 self._conn.close()
@@ -412,7 +412,9 @@ def install(opts: PL.InstallOptions, env: Mapping[str, str], stdout: TextIO) -> 
         )
         current = False
         try:
-            current = os.path.isfile(target) and open(target, "rb").read() == open(source, "rb").read()
+            current = (
+                os.path.isfile(target) and open(target, "rb").read() == open(source, "rb").read()
+            )
         except OSError:
             current = False
         code = PL.install_json_hooks(INSTALL, opts, env, buf)
@@ -504,7 +506,11 @@ def sweep_main(argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int:
         # re-run is idempotent.  Any other nonzero close is a failure.
         line = PL._last_json(buf.getvalue())
         text = str((line or {}).get("error") or "")
-        if answer != 0 and PL._NOT_REGISTERED_MARK not in text and "no session with this identity" not in text:
+        if (
+            answer != 0
+            and PL._NOT_REGISTERED_MARK not in text
+            and "no session with this identity" not in text
+        ):
             stdout.write(buf.getvalue())
             failed.append(sid)
         elif answer != 0:
