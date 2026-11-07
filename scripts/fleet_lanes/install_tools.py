@@ -103,6 +103,8 @@ Layout written under --home (default $HOME):
         fleet-apps.json               the registry the shims point FLEET_APPS_JSON at
         VERSION                       sha=, package=, files=, tree= (digest of every file above)
         lane-guard-hook               executable shim; takes --format FMT, reads the hook JSON on stdin
+        claude-file-guard-hook        executable shim for Claude Code's file tools (fleet_lanes/claude_file_guard_hook.py,
+                                      the seat-neutral policy in fleet_lanes/file_guard.py); no prefilter
         muse-seat                     executable shim: AGENT_SEAT=MC and AGENT_TAG=MC, then the real `muse`
         muse-plugin/fleet-lane-guard/ the Muse Code plugin bundle (.muse-plugin/plugin.json, hooks/lane-guard.sh)
     apps/lane                         executable shim for `python3 -m fleet_lanes.lane`; written only when
@@ -287,6 +289,13 @@ PACKAGE = "fleet_lanes"
 RULES_DIRNAME = "rules"  # the templates install_rules reads beside itself;  they travel with the package
 HOOK_NAME = "lane-guard-hook"
 MINIMAX_HOOK_NAME = "minimax-guard-hook"
+# Claude Code's file guard (fleet_lanes/claude_file_guard_hook.py over file_guard.py).  It is a second PreToolUse
+# group in ~/.claude/settings.json, beside the shell group that runs lane-guard-hook, so the shell group and its
+# prefilter stay exactly as they are.  No prefilter: every file path needs Python.
+CLAUDE_FILE_HOOK_NAME = "claude-file-guard-hook"
+CLAUDE_FILE_MATCHER = "Read|Write|Edit|MultiEdit|NotebookEdit"
+CLAUDE_FILE_TOOLS = ("Read", "Write", "Edit", "MultiEdit", "NotebookEdit")
+CLAUDE_FILE_HOOK_TIMEOUT_S = 10  # seconds.  A timeout fails open, and this hook starts Python on every file call
 FLEET_HOOK_NAME = "fleet-guard-hook"  # the lane guard and the secret guard in one command
 SECRET_GUARD_MODULE = "secret_guard.py"  # fleet_lanes/secret_guard.py in the stable copy
 SECRET_GUARD_SOURCE = ("hooks", "secret-guard-pretooluse.py")  # under the source's scripts dir
@@ -346,6 +355,8 @@ REQUIRED_MODULES = (
     "lane_guard_hook.py",
     "fleet_guard_hook.py",
     "minimax_guard_hook.py",
+    "file_guard.py",
+    "claude_file_guard_hook.py",
 )
 LANE_MODULE = "lane.py"
 EXCEPTIONS_FILE = "placement-exceptions.json"
@@ -442,6 +453,11 @@ _OURS_RE = re.compile(
 )
 
 
+_CLAUDE_FILE_RE = re.compile(
+    r"(?:^|[\s/'\"=])" + re.escape(CLAUDE_FILE_HOOK_NAME) + r"(?=$|[\s'\"])"
+)
+
+
 class Refused(Exception):
     """A safe refusal.  Nothing was written."""
 
@@ -480,6 +496,10 @@ class Paths:
     @property
     def fleet_shim(self) -> str:
         return os.path.join(self.stable, FLEET_HOOK_NAME)
+
+    @property
+    def claude_file_shim(self) -> str:
+        return os.path.join(self.stable, CLAUDE_FILE_HOOK_NAME)
 
     @property
     def clutch_hooks(self) -> str:
@@ -1786,6 +1806,26 @@ def render_minimax_hook_shim(*, volume: str | None = None) -> str:
     )
 
 
+def render_claude_file_hook_shim(*, volume: str | None = None) -> str:
+    """Claude Code's file guard.  No shell prefilter:  every file path needs Python.  `volume` as for
+    render_hook_shim."""
+    return render_hook_shim(
+        GuardFacts(),
+        module=f"{PACKAGE}.claude_file_guard_hook",
+        purpose=(
+            "# Claude Code file guard (Read, Write, Edit, MultiEdit, NotebookEdit) from THIS directory's copy of",
+            "# fleet_lanes, never from the caller's working directory (-I).  It allows on any internal error, so",
+            "# `install_tools verify claude` is the proof that it denies.",
+        ),
+        volume=volume,
+    )
+
+
+def claude_file_hook_command(paths: Paths) -> str:
+    """The exact string written into the Claude file-guard group.  It takes no --format:  the deny is Claude's."""
+    return shlex.quote(paths.claude_file_shim)
+
+
 def fleet_hook_command(paths: Paths, fmt: str) -> str:
     """The fleet hook (lane guard plus secret guard) as a command string."""
     return f"{shlex.quote(paths.fleet_shim)} --format {fmt}"
@@ -1793,6 +1833,11 @@ def fleet_hook_command(paths: Paths, fmt: str) -> str:
 
 def is_ours(command: object) -> bool:
     return isinstance(command, str) and bool(_OURS_RE.search(command))
+
+
+def is_claude_file_hook(command: object) -> bool:
+    """The Claude file-guard command.  It is kept out of is_ours, so the shell entry's merge never sees it."""
+    return isinstance(command, str) and bool(_CLAUDE_FILE_RE.search(command))
 
 
 # --------------------------------------------------------------------------- the stable dir
@@ -1912,6 +1957,7 @@ def build_files(src: Source, paths: Paths) -> dict[str, bytes]:
     files[HOOK_NAME] = render_hook_shim(facts).encode("utf-8")
     files[FLEET_HOOK_NAME] = render_fleet_hook_shim(facts).encode("utf-8")
     files[MINIMAX_HOOK_NAME] = render_minimax_hook_shim().encode("utf-8")
+    files[CLAUDE_FILE_HOOK_NAME] = render_claude_file_hook_shim().encode("utf-8")
     secret_src = os.path.join(src.scripts_dir, *SECRET_GUARD_SOURCE)
     try:
         files[f"{PACKAGE}/{SECRET_GUARD_MODULE}"] = _read_bytes(secret_src)
@@ -1934,7 +1980,16 @@ def build_files(src: Source, paths: Paths) -> dict[str, bytes]:
 def file_mode(rel: str) -> int:
     return (
         0o755
-        if rel in (HOOK_NAME, FLEET_HOOK_NAME, MINIMAX_HOOK_NAME, MUSE_SEAT_NAME, MUSE_WRAPPER, GIT_SHIM_FILE)
+        if rel
+        in (
+            HOOK_NAME,
+            FLEET_HOOK_NAME,
+            MINIMAX_HOOK_NAME,
+            CLAUDE_FILE_HOOK_NAME,
+            MUSE_SEAT_NAME,
+            MUSE_WRAPPER,
+            GIT_SHIM_FILE,
+        )
         else 0o644
     )
 
@@ -1961,6 +2016,7 @@ _TOP_FILES = (
     HOOK_NAME,
     FLEET_HOOK_NAME,
     MINIMAX_HOOK_NAME,
+    CLAUDE_FILE_HOOK_NAME,
     CLUTCH_HOOKS_FILE,
     OPENCODE_PLUGIN_FILE,
     GIT_SHIM_FILE,
@@ -2532,6 +2588,9 @@ PLATFORMS: dict[str, Platform] = {
             notes=(
                 "New last group under hooks.PreToolUse, matcher CLAUDE_MATCHER (Bash plus the spawn and other shell tools).  "
                 "Existing groups, order and formatting stay.",
+                "A second group, matcher CLAUDE_FILE_MATCHER (Read, Write, Edit, MultiEdit, NotebookEdit), runs "
+                "claude-file-guard-hook:  secret paths refused for reads and writes, the integration tree, review lanes "
+                "and other seats' lanes refused for writes.",
                 "Keeps the file's mode (settings.json is 0600 and its env block can hold secrets).",
                 "Start a new session after applying: a running session may keep the hooks it started with.",
             ),
@@ -3220,6 +3279,105 @@ def merge_document(doc: dict, plat: Platform, command: str) -> tuple[dict, str, 
     return new, "added", notes
 
 
+def locate_claude_files(doc: dict) -> list[Entry]:
+    """The Claude file-guard entries under hooks.PreToolUse, with the problems that stop Claude Code from sending
+    every file tool to them (a matcher that misses one, a hook type that is not `command`)."""
+    plat = PLATFORMS["claude"]
+    hooks = doc.get("hooks")
+    if hooks is None:
+        return []
+    if not isinstance(hooks, dict):
+        raise ShapeError("'hooks' is not an object")
+    groups = hooks.get(plat.event)
+    if groups is None:
+        return []
+    if not isinstance(groups, list):
+        raise ShapeError(f"'hooks.{plat.event}' is not a list")
+    out: list[Entry] = []
+    for gi, group in enumerate(groups):
+        inner = group.get("hooks") if isinstance(group, dict) else None
+        if not isinstance(inner, list):
+            continue
+        for hi, hook in enumerate(inner):
+            if not (isinstance(hook, dict) and is_claude_file_hook(hook.get("command"))):
+                continue
+            problems: list[str] = []
+            missed = [t for t in CLAUDE_FILE_TOOLS if not _matcher_gates(group.get("matcher"), t)]
+            if missed:
+                problems.append(f"matcher {group.get('matcher')!r} never matches {', '.join(missed)}")
+            if hook.get("type", "command") != "command":
+                problems.append(f"hook type is {hook.get('type')!r}, not 'command'")
+            out.append(
+                Entry(hook["command"], f"hooks.{plat.event}[{gi}].hooks[{hi}]", problems, hook, group, gi, hi)
+            )
+    return out
+
+
+def merge_claude_files(doc: dict, command: str) -> tuple[dict, str, list[str]]:
+    """(new document, action, notes) for the Claude file-guard group.  action is added, updated or unchanged.  It
+    appends its own group (CLAUDE_FILE_MATCHER) or corrects its own entry, and never touches another hook."""
+    new = copy.deepcopy(doc)
+    entries = locate_claude_files(new)
+    notes: list[str] = []
+    if entries:
+        first = entries[0]
+        changed = False
+        if first.holder.get("command") != command:
+            first.holder["command"] = command
+            notes.append("file-guard hook command updated to the current path")
+            changed = True
+        if first.group is not None and first.group.get("matcher") != CLAUDE_FILE_MATCHER:
+            if len(first.group.get("hooks") or ()) == 1:
+                first.group["matcher"] = CLAUDE_FILE_MATCHER
+                notes.append(f"file-guard group matcher set to {CLAUDE_FILE_MATCHER}")
+                changed = True
+            elif first.problems:
+                notes.append(
+                    f"file-guard group matcher left at {first.group.get('matcher')!r}, because the group is shared:  "
+                    "fix it by hand"
+                )
+        if len(entries) > 1:
+            notes.append(f"{len(entries) - 1} duplicate {CLAUDE_FILE_HOOK_NAME} entr{'y' if len(entries) == 2 else 'ies'} left in place")
+        return new, ("updated" if changed else "unchanged"), notes
+    hooks = new.setdefault("hooks", {})
+    groups = hooks.get(PLATFORMS["claude"].event)
+    if groups is None:
+        groups = hooks[PLATFORMS["claude"].event] = []
+    groups.append(
+        {
+            "matcher": CLAUDE_FILE_MATCHER,
+            "hooks": [
+                {
+                    "type": "command",
+                    "command": command,
+                    "timeout": CLAUDE_FILE_HOOK_TIMEOUT_S,
+                    "statusMessage": "Checking file path",
+                }
+            ],
+        }
+    )
+    return new, "added", notes
+
+
+def _claude_files_ok(doc: dict, paths: Paths) -> bool:
+    """True when `doc` holds the current Claude file-guard command where Claude Code sends every file tool to it."""
+    try:
+        found = locate_claude_files(doc)
+    except Refused:
+        return False
+    return bool(found) and found[0].command == claude_file_hook_command(paths) and not found[0].problems
+
+
+def _combine_actions(first: str, second: str) -> str:
+    """One action for two merges into the same file:  unchanged only when both are, added when nothing existing
+    changed, else updated."""
+    if first == second:
+        return first
+    if "updated" in (first, second):
+        return "updated"
+    return "added"
+
+
 def _is_extension(old: object, new: object) -> bool:
     """True when `new` is `old` plus appended list items and new dict keys (the only change a merge 'add' may make)."""
     if isinstance(old, dict):
@@ -3322,7 +3480,7 @@ def _ours_view(hook: dict) -> dict:
 
 
 def _is_our_hook(h: object) -> bool:
-    return isinstance(h, dict) and is_ours(h.get("command"))
+    return isinstance(h, dict) and (is_ours(h.get("command")) or is_claude_file_hook(h.get("command")))
 
 
 def _hook_list_view(lst: object) -> tuple[object, int]:
@@ -3677,6 +3835,11 @@ def plan_platform(plat: Platform, paths: Paths, *, follow_symlinks: bool = False
     try:
         cfg = load_config(path)
         new_doc, action, notes = merge_document(cfg.doc, plat, cmd)
+        if plat.key == "claude":
+            # The file guard is its own group in the same file, so one plan writes both, once.
+            new_doc, file_action, file_notes = merge_claude_files(new_doc, claude_file_hook_command(paths))
+            action = _combine_actions(action, file_action)
+            notes.extend(file_notes)
     except Refused as exc:
         return PlatformPlan(plat, path, "refuse", cmd, str(exc))
     if action != "unchanged":
@@ -3861,6 +4024,7 @@ def apply_tools(
             paths.hook_shim,
             paths.fleet_shim,
             os.path.join(paths.stable, MINIMAX_HOOK_NAME),
+            paths.claude_file_shim,
             paths.muse_seat,
             paths.muse_wrapper,
         )
@@ -3935,6 +4099,22 @@ def apply_tools(
                     )
                     if c.status == "FAIL"
                 )
+            # Claude Code's file guard has its own adapter too:  prove the staged copy denies and allows the file
+            # payloads, or a broken file_guard could be swapped in and fail open.
+            staged_claude = os.path.join(stage, CLAUDE_FILE_HOOK_NAME)
+            bad.extend(
+                c
+                for c in probe_claude_files(
+                    shlex.quote(staged_claude),
+                    paths.home,
+                    os.path.join(stage, REGISTRY_NAME),
+                    timeout,
+                    minimal_path,
+                    source_registry=src.registry,
+                    volume=_baked_volume(staged_claude),
+                )
+                if c.status == "FAIL"
+            )
             if bad:
                 for c in bad:
                     emit(c.line())
@@ -4178,6 +4358,32 @@ def apply_platform(
                 "the installed hook shim fails its probes, so it will not be wired in: "
                 + bad[0].detail,
             )
+        if plat.key == "claude":
+            if not (os.path.isfile(paths.claude_file_shim) and os.access(paths.claude_file_shim, os.X_OK)):
+                return Result(
+                    plat.key,
+                    "refused",
+                    f"the file-guard shim {paths.claude_file_shim} is missing or not executable; run `apply tools` first",
+                )
+            bad = [
+                c
+                for c in probe_claude_files(
+                    claude_file_hook_command(paths),
+                    paths.home,
+                    paths.registry,
+                    timeout,
+                    minimal_path,
+                    volume=_baked_volume(paths.claude_file_shim),
+                )
+                if c.status == "FAIL"
+            ]
+            if bad:
+                return Result(
+                    plat.key,
+                    "refused",
+                    "the installed file-guard shim fails its probes, so it will not be wired in: "
+                    + bad[0].detail,
+                )
     if plan.action == "unchanged":
         note = "".join("; " + n for n in plan.notes)
         return Result(plat.key, "unchanged", f"{plan.path} already has the hook{note}")
@@ -4196,6 +4402,12 @@ def apply_platform(
             plat.key,
             "refused",
             "the merged document does not hold the hook where the platform reads it",
+        )
+    if plat.key == "claude" and not _claude_files_ok(reparsed, paths):
+        return Result(
+            plat.key,
+            "refused",
+            "the merged document does not hold the file-guard hook where Claude Code reads it",
         )
     if plan.action == "add" and not _is_extension(cfg.doc, reparsed):
         return Result(
@@ -4227,6 +4439,8 @@ def apply_platform(
     try:
         after = json.loads(_read_bytes(real).decode("utf-8"))
         ok = bool(locate(after, plat)) and locate(after, plat)[0].command == plan.command
+        if ok and plat.key == "claude":
+            ok = _claude_files_ok(after, paths)
     except (OSError, ValueError):
         ok = False
     if not ok:
@@ -4350,6 +4564,14 @@ def verify_tools(paths: Paths, *, timeout: float = PROBE_TIMEOUT_S) -> list[Chec
             MINIMAX_HOOK_NAME,
             os.path.join(paths.stable, MINIMAX_HOOK_NAME),
             _shim_renderings(render_minimax_hook_shim, os.path.join(paths.stable, MINIMAX_HOOK_NAME)),
+        )
+    )
+    out.append(
+        _check_shim(
+            t,
+            CLAUDE_FILE_HOOK_NAME,
+            paths.claude_file_shim,
+            _shim_renderings(render_claude_file_hook_shim, paths.claude_file_shim),
         )
     )
     if f"{PACKAGE}/{SECRET_GUARD_MODULE}" in have:
@@ -4689,6 +4911,8 @@ def verify_platform(
                     "other shells are not gated, so `isolation block` does nothing on this host",
                 )
             )
+    if plat.key == "claude":
+        out.extend(verify_claude_files(cfg.doc, paths, path, timeout=timeout, minimal_path=minimal_path))
     for problem in _switch_warnings(cfg.doc):
         out.append(
             Check(
@@ -4714,6 +4938,157 @@ def verify_platform(
         out.extend(
             _codex_checks(paths, os.path.join(paths.home, ".codex", "hooks.json"), entries[0])
         )
+    return out
+
+
+# --------------------------------------------------------------------------- Claude Code: the file guard
+
+
+def probe_claude_files(
+    command: str,
+    home: str,
+    registry: str,
+    timeout: float,
+    minimal_path: bool = True,
+    source_registry: str | None = None,
+    volume: str = "",
+) -> list[Check]:
+    """Run Claude Code's file payloads through `command` (the file-guard shim) and check each answer.
+
+    Denied:  Read, Edit, MultiEdit and NotebookEdit of a path under ~/.secrets, a Read of ~/.env, and a Write
+    into the first registered integration tree.  Allowed (empty stdout and stderr):  a Read and a Write of a
+    public path in the home, and a Read inside the integration tree (Claude sessions open there).  A deny must be
+    the Claude PreToolUse shape and name the "Claude" label;  an answer that blames a missing secret table or
+    registry is a failure, because the policy behind it is not there.  `volume` is the one the shim carries, so
+    the integration path is the one the guard watches (see _guard_code_root).  Nothing is created:  the hook is
+    only handed the path as text.
+    """
+    try:
+        tree = registry_tree(registry)
+    except Refused as exc:
+        detail = str(exc)
+        if source_registry and source_registry != registry:
+            detail = f"{detail}; source registry: {source_registry}"
+        return [Check("claude", "registry-tree", "FAIL", detail)]
+    out: list[Check] = []
+    for vname, vpath in _variants(minimal_path):
+        env = probe_env(home, vpath)
+        root_env = dict(env)
+        if volume and not (root_env.get(ENV_SERVER_VOLUME) or "").strip():
+            root_env[ENV_SERVER_VOLUME] = volume
+        integration = os.path.join(host_code_root(home, root_env), tree, "probe-placeholder")
+        secret = os.path.join(home, ".secrets", "probe-placeholder")
+        public = os.path.join(home, "public-placeholder")
+        for tool, field_name, path, deny in (
+            ("Read", "file_path", secret, True),
+            ("Read", "file_path", os.path.join(home, ".env"), True),
+            ("Write", "file_path", integration, True),
+            ("Edit", "file_path", secret, True),
+            ("MultiEdit", "file_path", secret, True),
+            ("NotebookEdit", "notebook_path", secret + ".ipynb", True),
+            ("Read", "file_path", integration, False),
+            ("Read", "file_path", public, False),
+            ("Write", "file_path", public, False),
+        ):
+            payload = {
+                "session_id": "lane-verify",
+                "hook_event_name": "PreToolUse",
+                "tool_name": tool,
+                "tool_input": {field_name: path},
+                "cwd": home,
+            }
+            res = run_shell(command, json.dumps(payload).encode("utf-8"), env, timeout)
+            problem = res.error or (f"timed out after {timeout:g}s" if res.timed_out else None)
+            if not problem and res.returncode != 0:
+                problem = f"exit {res.returncode}, expected 0"
+            if not problem:
+                problem = (
+                    check_deny_output("claude", res.stdout, "Claude")
+                    if deny
+                    else ("unexpected output" if res.stdout.strip() or res.stderr.strip() else None)
+                )
+            missing = [s.decode("ascii") for s in (b"SECRET_FILE_PATTERNS", b"FLEET_APPS_JSON") if s in res.stdout]
+            if not problem and missing:
+                problem = "required file policy is unavailable or invalid: " + ", ".join(missing)
+            where = "integration" if path == integration else os.path.basename(path)
+            out.append(
+                Check(
+                    "claude",
+                    f"{tool}/{where}/{'deny' if deny else 'allow'}/{vname}",
+                    "FAIL" if problem else "PASS",
+                    (f"{problem}; " if problem else "") + f"exit={res.returncode} stdout={_brief(res.stdout)}",
+                )
+            )
+    return out
+
+
+def verify_claude_files(
+    doc: dict, paths: Paths, path: str, *, timeout: float = PROBE_TIMEOUT_S, minimal_path: bool = True
+) -> list[Check]:
+    """The file-guard group of ~/.claude/settings.json:  present, a matcher that sends every file tool, the current
+    command, and a command that denies and allows what it must (probe_claude_files)."""
+    t = "claude"
+    try:
+        entries = locate_claude_files(doc)
+    except Refused as exc:
+        return [Check(t, "file-guard", "FAIL", str(exc))]
+    if not entries:
+        return [
+            Check(
+                t,
+                "file-guard",
+                "FAIL",
+                f"no {CLAUDE_FILE_HOOK_NAME} hook under PreToolUse in {path}, so Read, Write, Edit, MultiEdit and "
+                "NotebookEdit are not guarded; run `apply claude`",
+            )
+        ]
+    # Claude Code runs every entry it finds, so every entry is checked and every distinct command is probed:  a
+    # stale or narrow duplicate is a FAIL even when the first entry is current.  An exact duplicate of the current
+    # entry runs the same command twice, which is only a WARN.
+    out: list[Check] = []
+    want = claude_file_hook_command(paths)
+    for idx, entry in enumerate(entries):
+        label = "file-guard" if len(entries) == 1 else f"file-guard#{idx + 1}"
+        if entry.problems:
+            out.append(Check(t, label, "FAIL", f"{entry.where}: " + "; ".join(entry.problems)))
+            continue
+        matcher = entry.group.get("matcher") if entry.group else None
+        if entry.command != want:
+            out.append(
+                Check(
+                    t,
+                    label,
+                    "FAIL" if len(entries) > 1 else "WARN",
+                    f"{entry.where} runs {entry.command}, not this install's {want}; re-run `apply claude`"
+                    + ("" if len(entries) == 1 else " and remove the stale entry by hand"),
+                )
+            )
+        else:
+            out.append(Check(t, label, "PASS", f"{entry.where} matcher={matcher!r}"))
+    if len(entries) > 1 and all(e.command == want and not e.problems for e in entries):
+        out.append(
+            Check(t, "file-guard duplicates", "WARN", f"{len(entries) - 1} duplicate {CLAUDE_FILE_HOOK_NAME} entries")
+        )
+    # Probe the current command and at most one stale one:  every stale entry already FAILs above, and a settings
+    # file bloated with stale entries must not turn verify into N full probe matrices.
+    commands = list(dict.fromkeys(e.command for e in entries if not e.problems))
+    if len(commands) > 2:
+        stale = [c for c in commands if c != want]
+        commands = ([want] if want in commands else []) + stale[: 2 - (want in commands)]
+    for command in commands:
+        try:
+            out.extend(
+                probe_claude_files(
+                    command,
+                    paths.home,
+                    paths.registry,
+                    timeout,
+                    minimal_path,
+                    volume=_baked_volume(paths.claude_file_shim),
+                )
+            )
+        except Refused as exc:
+            out.append(Check(t, "file-guard probes", "FAIL", str(exc)))
     return out
 
 
