@@ -678,7 +678,9 @@ final class WakePanelTruthTests: XCTestCase {
     func test_a_full_pause_is_not_loosened() async throws {
         let home = try makeHome(config: mmConfig)
         let fake = Fake()
-        fake.status = #"{"running": true, "status": {"seats": {"MM": {"wake": "muse", "paused": true, "wakes_paused": true}}, "pause": {"MM": {"by": "TEST_OWNER", "ts": 1792535804.0}}}}"#
+        // A current status, so it decides the pause:  there is no pause file here, and one that is
+        // not there is no pause.
+        fake.status = #"{"running": true, "status": {"updated": \#(Date().timeIntervalSince1970), "seats": {"MM": {"wake": "muse", "paused": true, "wakes_paused": true}}, "pause": {"MM": {"by": "TEST_OWNER", "ts": 1792535804.0}}}}"#
         let store = await makeStore(fake, home: home)
         let mm = try XCTUnwrap(store.model.seats.first)
         XCTAssertEqual(mm.pauseBy, "TEST_OWNER")
@@ -688,7 +690,8 @@ final class WakePanelTruthTests: XCTestCase {
     }
 
     /// With the status unread, the pause file itself still stops a wakes-only pause over a full
-    /// one, and a pause file that cannot be read stops the pause with its reason.
+    /// one, and a pause file that cannot be read stops the pause with its reason.  The panel shows
+    /// the seat as paused, from the pause file, and never as unpaused.
     @MainActor
     func test_the_pause_file_guards_a_full_pause_when_the_status_is_not_read() async throws {
         let home = try makeHome(config: mmConfig)
@@ -699,7 +702,12 @@ final class WakePanelTruthTests: XCTestCase {
         let fake = Fake()
         fake.statusExit = 1
         let store = await makeStore(fake, home: home)
-        XCTAssertEqual(store.model.seats.first(where: { $0.seat == "MM" })?.paused, false)
+        let shown = try XCTUnwrap(store.model.seats.first(where: { $0.seat == "MM" }))
+        XCTAssertEqual(shown.paused, true)
+        XCTAssertEqual(shown.wakesPaused, true)
+        XCTAssertEqual(shown.pauseScope, "MM")
+        XCTAssertEqual(shown.pauseBy, "owner-dm")
+        XCTAssertEqual(shown.pauseSource, .pauseFile)
         await store.pause(seat: "MM")
         XCTAssertFalse(fake.commands.contains("pause"))
         XCTAssertTrue(store.message?.contains("would loosen it") == true)
@@ -867,7 +875,8 @@ final class WakePanelTruthTests: XCTestCase {
         let fake = Fake()
         fake.statusExit = 1
         let store = await makeStore(fake, home: home)
-        XCTAssertEqual(store.model.seats.first(where: { $0.seat == "MM" })?.everySeatPaused, false)
+        // The status was not read, so the panel reads the pause on every seat from the file too.
+        XCTAssertEqual(store.model.seats.first(where: { $0.seat == "MM" })?.everySeatPaused, true)
         await store.resume(seat: "MM")
         XCTAssertTrue(store.messageIsFailure)
         XCTAssertTrue(store.message?.contains("A pause on every seat is still in force.") == true)
@@ -1041,5 +1050,388 @@ final class WakePanelTruthTests: XCTestCase {
         XCTAssertFalse(none.summary.contains("not provisioned"))
         let broken = OperatorOptions.build(from: ListenerConfigDocument(text: "[seat.OPERATOR]\nbot = \"X\"\ncreds = \"infisical\"\nwake = \"inbox\"\n"))
         XCTAssertTrue(broken.summary.contains("bot must be Operator"))
+    }
+
+    // MARK: The Operator truth audit (F2 to F12)
+
+    /// Saturday, November 7, 2026, at noon on Jay's clock.
+    private let auditNow = FleetTime.parse("2026-11-07T18:00:00Z")!
+
+    /// F2.  A stopped eavesdropper's held-back count, red warnings, chat nudges and quota are its
+    /// last word:  each says when it was published and that it is not current, and none says
+    /// "now".  The file turning a seat off is believed only from a running eavesdropper.
+    func test_a_stopped_eavesdroppers_seat_facts_are_not_called_current() throws {
+        let published = auditNow.timeIntervalSince1970 - 30
+        let body = """
+        "updated": \(published), "disabled": ["QUIET"],
+        "seats": {"MM": {"wake": "muse", "red": ["down for 5 minutes"],
+          "held_back": {"count": 3, "totals": {"held": 9, "surfaced": 6}},
+          "chat_nudges": {"pending": 1},
+          "quota": {"known": true, "exhausted": true, "source": "codecaps"}}}
+        """
+        var stopped = sources(status: "{\"running\": false, \"status\": {\(body)}}")
+        stopped.readAt = auditNow
+        let model = WakeSettingsBuilder.build(stopped)
+        let mm = seat("MM", in: model)
+        XCTAssertFalse(mm.liveIsCurrent)
+        XCTAssertEqual(mm.liveAsOf, Date(timeIntervalSince1970: published))
+        let facts = mm.liveFacts(now: auditNow)
+        XCTAssertFalse(facts.contains { $0.text.contains(" now") }, "\(facts)")
+        let asOf = "as of \(FleetTime.when(Date(timeIntervalSince1970: published), now: auditNow)), not current"
+        for prefix in ["held for later:", "held since start:", "chat nudges:", "quota exhausted"] {
+            let fact = try XCTUnwrap(facts.first { $0.text.hasPrefix(prefix) }, prefix)
+            XCTAssertTrue(fact.text.hasSuffix(asOf), fact.text)
+        }
+        XCTAssertEqual(mm.notCurrentSuffix(now: auditNow), ", " + asOf)
+        XCTAssertFalse(seat("QUIET", in: model).disabledInFile)
+
+        var running = sources(status: "{\"running\": true, \"status\": {\(body)}}")
+        running.readAt = auditNow
+        let current = WakeSettingsBuilder.build(running)
+        let live = seat("MM", in: current)
+        XCTAssertTrue(live.liveIsCurrent)
+        XCTAssertEqual(live.notCurrentSuffix(now: auditNow), "")
+        XCTAssertTrue(live.liveFacts(now: auditNow).contains { $0.text.hasPrefix("held for later now:  3") })
+        XCTAssertTrue(seat("QUIET", in: current).disabledInFile)
+    }
+
+    /// F3.  When the status is not current or not read, the pause comes from the pause file, by
+    /// the eavesdropper's rule.  A pause file that cannot be read leaves the pause not known, and
+    /// never unpaused.  A pause file that is not there is no pause.  Only when the file was not
+    /// read is the last status shown, marked not current.
+    func test_the_pause_file_decides_the_pause_when_the_status_is_not_current() throws {
+        let pausedAt = auditNow.timeIntervalSince1970 - 3 * 86_400
+        var unread = sources(status: nil)
+        unread.pauseFile = .entries(["MM": ListenerStatus.PauseEntry(wakes_only: false, by: "owner-dm", ts: pausedAt)])
+        let mm = seat("MM", in: WakeSettingsBuilder.build(unread))
+        XCTAssertTrue(mm.paused)
+        XCTAssertTrue(mm.wakesPaused)
+        XCTAssertEqual(mm.pauseScope, "MM")
+        XCTAssertEqual(mm.pauseBy, "owner-dm")
+        XCTAssertEqual(mm.pauseSource, .pauseFile)
+        XCTAssertEqual(mm.pauseText(now: auditNow), "Paused by owner-dm at Wed, Nov 4, 12:00 PM, from the pause file")
+        XCTAssertFalse(seat("CLAUDE", in: WakeSettingsBuilder.build(unread)).paused)
+
+        var unreadable = sources(status: nil)
+        unreadable.pauseFile = .unreadable("The pause file at /x could not be read:  denied")
+        let notKnownModel = WakeSettingsBuilder.build(unreadable)
+        let notKnown = seat("MM", in: notKnownModel)
+        XCTAssertFalse(notKnown.paused)
+        XCTAssertEqual(notKnown.pauseSource.notKnownReason, "The pause file at /x could not be read:  denied")
+        XCTAssertTrue(notKnown.pauseText()?.hasPrefix("Pause not known") == true)
+        XCTAssertTrue(notKnown.needsAttention)
+        XCTAssertTrue(notKnownModel.problems.contains { $0.hasPrefix("Whether a pause is in force is not known") })
+
+        // An old status's word gives way to the file.
+        let stale = #"{"running": false, "status": {"pause": {}, "seats": {"MM": {"wake": "muse", "paused": false}}}}"#
+        var old = sources(status: stale)
+        old.pauseFile = .entries(["*": ListenerStatus.PauseEntry(wakes_only: false, by: "owner", ts: pausedAt)])
+        let fromFile = seat("MM", in: WakeSettingsBuilder.build(old))
+        XCTAssertTrue(fromFile.paused)
+        XCTAssertEqual(fromFile.pauseScope, "*")
+        XCTAssertTrue(fromFile.everySeatPaused)
+
+        // No pause file is no pause, as the eavesdropper reads it, whatever an old status lists:
+        // the file was read, and it decides.  Nothing is offered to resume.
+        let lastWord = #"{"running": false, "status": {"updated": \#(auditNow.timeIntervalSince1970 - 60), "pause": {"MM": {"wakes_only": true, "by": "cli"}}, "seats": {"MM": {"wake": "muse", "wakes_paused": true}}}}"#
+        var missing = sources(status: lastWord)
+        missing.pauseFile = .missing
+        let lifted = seat("MM", in: WakeSettingsBuilder.build(missing))
+        XCTAssertEqual(lifted.pauseSource, .pauseFile)
+        XCTAssertFalse(lifted.paused)
+        XCTAssertFalse(lifted.wakesPaused)
+        XCTAssertNil(lifted.pauseScope)
+        XCTAssertNil(lifted.pauseText(now: auditNow))
+
+        // A pause file that was not read leaves the last status, marked as such.
+        let last = seat("MM", in: WakeSettingsBuilder.build(sources(status: lastWord)))
+        XCTAssertEqual(last.pauseSource, .lastStatus)
+        XCTAssertTrue(last.wakesPaused)
+        XCTAssertTrue(last.pauseText(now: auditNow)?.hasSuffix("not current") == true)
+
+        // A current status decides, whatever the file holds.
+        var current = sources(status: #"{"running": true, "status": {"pause": {}, "seats": {"MM": {"wake": "muse", "paused": false}}}}"#)
+        current.pauseFile = .entries(["MM": ListenerStatus.PauseEntry(wakes_only: false, by: "x", ts: pausedAt)])
+        let live = seat("MM", in: WakeSettingsBuilder.build(current))
+        XCTAssertFalse(live.paused)
+        XCTAssertEqual(live.pauseSource, .currentStatus)
+        XCTAssertNil(live.pauseText())
+    }
+
+    /// F3.  The reader reads the pause file:  its entries, a file that is not there, and one
+    /// that cannot be read.
+    func test_the_reader_reads_the_pause_file() async throws {
+        let home = try makeHome(config: mmConfig)
+        let location = ListenerStateLocation(home: home)
+        let reader = WakeSettingsReader(
+            location: location, runner: Fake(), roster: ["MM"],
+            partitionURL: home.appendingPathComponent("partition.toml")
+        )
+        XCTAssertEqual(reader.readPauseFile(), .missing)
+        try FileManager.default.createDirectory(at: location.pauseURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try #"{"MM": {"wakes_only": true, "by": "cli", "ts": 1792535804}, "*": "not an entry"}"#
+            .write(to: location.pauseURL, atomically: true, encoding: .utf8)
+        XCTAssertEqual(reader.readPauseFile(), .entries([
+            "MM": ListenerStatus.PauseEntry(wakes_only: true, by: "cli", ts: 1_792_535_804),
+        ]))
+        let sources = await reader.read()
+        XCTAssertEqual(sources.pauseFile, reader.readPauseFile())
+        try "not json".write(to: location.pauseURL, atomically: true, encoding: .utf8)
+        guard case .unreadable(let why) = reader.readPauseFile() else {
+            return XCTFail("a pause file that is not JSON is not no pause")
+        }
+        XCTAssertTrue(why.contains("not a JSON object"))
+    }
+
+    /// F4.  A configuration file that was not read says nothing about its Operator section, and
+    /// a lower-case `[seat.operator]` section is the Operator's, as it is to the eavesdropper.
+    func test_the_operator_section_is_not_known_when_the_file_was_not_read() async throws {
+        let unread = OperatorOptions.build(from: ListenerConfigDocument(text: ""), configProblem: "It could not be read.")
+        XCTAssertFalse(unread.isKnown)
+        XCTAssertEqual(unread.notRead, "It could not be read.")
+        XCTAssertTrue(unread.summary.contains("was not read"))
+        XCTAssertFalse(unread.summary.contains("has no [seat.OPERATOR] section"))
+        XCTAssertTrue(unread.summary.contains("\u{00A0} "))
+
+        let lower = OperatorOptions.build(from: ListenerConfigDocument(text: "[seat.operator]\nbot = \"X\"\ncreds = \"file\"\nwake = \"inbox\"\n"))
+        XCTAssertTrue(lower.isKnown)
+        XCTAssertTrue(lower.isConfigured)
+        XCTAssertEqual(lower.bot, "X")
+        XCTAssertEqual(lower.brokenRules.count, 2)
+        XCTAssertNotNil(lower.problem)
+        // A table inside another seat is not the Operator's section.
+        XCTAssertFalse(OperatorOptions.build(from: ListenerConfigDocument(text: "[seat.operator.budget]\nx = 1\n")).isConfigured)
+
+        // A file that is not there is known to hold no Operator section, so the reader says so.
+        let home = try makeHome(config: nil)
+        let reader = WakeSettingsReader(
+            location: ListenerStateLocation(home: home), runner: Fake(), roster: ["MM"],
+            partitionURL: home.appendingPathComponent("partition.toml")
+        )
+        let missing = await reader.read()
+        XCTAssertNotNil(missing.configProblem)
+        XCTAssertTrue(missing.operatorOptions.isKnown)
+        XCTAssertFalse(missing.operatorOptions.isConfigured)
+        XCTAssertTrue(WakeSettingsBuilder.build(missing).operatorOptions.summary.contains("has no [seat.OPERATOR] section"))
+
+        // A file that is there and cannot be read leaves the section not known, with why.
+        let configURL = ListenerStateLocation(home: home).configURL
+        try "[seat.MM]\nwake = \"muse\"\n".write(to: configURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: configURL.path)
+        if FileManager.default.isReadableFile(atPath: configURL.path) {
+            throw XCTSkip("This user can read a file of mode 000, so the case cannot be made here.")
+        }
+        let unreadable = await reader.read()
+        XCTAssertFalse(unreadable.operatorOptions.isKnown)
+        XCTAssertEqual(unreadable.operatorOptions.notRead, unreadable.configProblem)
+        XCTAssertFalse(WakeSettingsBuilder.build(unreadable).operatorOptions.summary.contains("has no [seat.OPERATOR] section"))
+    }
+
+    /// F5.  Held-back wakes lost past both caps and still owed are read, shown as a problem, and
+    /// put the seat under Problems Only, with the overflow and the lifetime counts.
+    func test_held_back_wakes_lost_past_the_caps_are_shown() {
+        let json = """
+        {"running": true, "status": {"seats": {"QUIET": {"wake": "inbox",
+          "held_back": {"count": 4, "overflow": 1, "evicted": 2,
+            "totals": {"held": 20, "surfaced": 14, "expired": 3, "evicted": 5}}}}}}
+        """
+        let quiet = seat("QUIET", in: WakeSettingsBuilder.build(sources(status: json)))
+        XCTAssertEqual(quiet.heldBackEvicted, 2)
+        XCTAssertEqual(quiet.heldBackOverflow, 1)
+        XCTAssertEqual(quiet.heldBackExpiredTotal, 3)
+        XCTAssertEqual(quiet.heldBackEvictedTotal, 5)
+        XCTAssertTrue(quiet.needsAttention)
+        let facts = quiet.liveFacts(now: auditNow)
+        XCTAssertTrue(facts.contains(WakeFact(text: "2 held wakes lost past the caps and still owed", emphasised: true)), "\(facts)")
+        XCTAssertTrue(facts.contains { $0.text.contains("1 of them in the overflow") })
+        XCTAssertTrue(facts.contains { $0.text.contains("3 expired") && $0.text.contains("5 lost past the caps") })
+        XCTAssertEqual(quiet.heldBackSummary, ["4 held for later", "2 held wakes lost and still owed"])
+
+        // A stopped eavesdropper's counts are its last word, and the summary line says so for
+        // the lost wakes as for the held ones.
+        let stopped = seat("QUIET", in: WakeSettingsBuilder.build(sources(status: json.replacingOccurrences(of: "\"running\": true", with: "\"running\": false"))))
+        XCTAssertFalse(stopped.liveIsCurrent)
+        XCTAssertEqual(stopped.heldBackSummary, ["4 held for later (not current)", "2 held wakes lost and still owed (not current)"])
+
+        let none = seat("QUIET", in: WakeSettingsBuilder.build(sources(status: #"{"running": true, "status": {"seats": {"QUIET": {"wake": "inbox", "held_back": {"count": 0, "evicted": 0}}}}}"#)))
+        XCTAssertFalse(none.needsAttention)
+    }
+
+    /// F6.  A session with no letter says no letter was reported, which is true whether it never
+    /// registered one or the lookup failed, and never claims it has no registered name.
+    func test_a_session_without_a_letter_says_no_letter_was_reported() throws {
+        let lease = try JSONDecoder().decode(
+            ListenerStateDocument.Lease.self,
+            from: Data(#"{"lease_id": "a", "platform": "claude-code", "alive": true, "watcher": true}"#.utf8)
+        )
+        let line = SeatSession(lease: lease, index: 0).line
+        XCTAssertTrue(line.hasPrefix(SeatActivityText.noLetter), line)
+        XCTAssertEqual(SeatActivityText.noLetter, "No letter reported")
+        XCTAssertFalse(line.contains("registered name"))
+        let titled = try JSONDecoder().decode(
+            ListenerStateDocument.Lease.self,
+            from: Data(#"{"alive": true, "watcher": true, "title": "Fix the panel"}"#.utf8)
+        )
+        XCTAssertTrue(SeatSession(lease: titled, index: 0).line.hasPrefix("No letter reported:  Fix the panel"))
+    }
+
+    /// F7.  A live session whose rewake watcher is gone says so, a watcher the eavesdropper did not
+    /// report is said to be not said, and whether resume-wake is verified on the Mac is read from
+    /// both panels' sources.
+    func test_rewake_state_is_shown() throws {
+        func session(_ json: String) throws -> SeatSession {
+            SeatSession(lease: try JSONDecoder().decode(ListenerStateDocument.Lease.self, from: Data(json.utf8)), index: 0)
+        }
+        let gone = try session(#"{"letter": "B", "alive": true, "watcher": false}"#)
+        XCTAssertEqual(gone.watcher, false)
+        XCTAssertTrue(gone.line.contains("no rewake watcher"))
+        XCTAssertTrue(try session(#"{"letter": "B", "alive": true}"#).line.contains("rewake watcher not said"))
+        XCTAssertFalse(try session(#"{"letter": "B", "alive": true, "watcher": true}"#).line.contains("rewake"))
+        // An ended session is not woken again either way, so its watcher is not named.
+        XCTAssertFalse(try session(#"{"letter": "B", "alive": false, "watcher": false}"#).line.contains("rewake"))
+
+        let document = try JSONDecoder().decode(
+            ListenerStateDocument.self,
+            from: Data(#"{"updated": 1.0, "rewake_verified_cli": true, "rewake_verified_desktop": false}"#.utf8)
+        )
+        XCTAssertEqual(document.rewake, RewakeVerification(terminal: true, desktop: false))
+        XCTAssertTrue(document.rewake.isProblem)
+        XCTAssertEqual(document.rewake.sentence, "Resume-wake on this Mac:  terminal sessions verified, Desktop sessions not verified.")
+        var activity = SeatActivityBuilder.Sources()
+        activity.listener = document
+        XCTAssertEqual(SeatActivityBuilder.build(activity).rewake, document.rewake)
+        XCTAssertNil(SeatActivityBuilder.build(SeatActivityBuilder.Sources()).rewake)
+
+        let legacy = try JSONDecoder().decode(ListenerStateDocument.self, from: Data(#"{"rewake_verified": true}"#.utf8))
+        XCTAssertEqual(legacy.rewake, RewakeVerification(terminal: true, desktop: true))
+        let silent = try JSONDecoder().decode(ListenerStateDocument.self, from: Data("{}".utf8))
+        XCTAssertTrue(silent.rewake.sentence.contains("does not say"))
+        XCTAssertFalse(silent.rewake.isProblem)
+
+        let wake = WakeSettingsBuilder.build(sources(status: #"{"running": true, "status": {"rewake_verified_cli": false, "rewake_verified_desktop": true, "seats": {}}}"#))
+        XCTAssertEqual(wake.rewake, RewakeVerification(terminal: false, desktop: true))
+        XCTAssertNil(WakeSettingsBuilder.build(sources(status: nil)).rewake)
+        // A stopped eavesdropper resumes nothing, and an old status cannot say what resumes a
+        // session now, so neither gives the Wake panel a resume-wake line.
+        let stopped = WakeSettingsBuilder.build(sources(status: #"{"running": false, "status": {"rewake_verified_cli": true, "rewake_verified_desktop": true, "seats": {}}}"#))
+        XCTAssertNil(stopped.rewake)
+        var old = sources(status: #"{"running": true, "status": {"updated": \#(auditNow.timeIntervalSince1970 - 600), "rewake_verified_cli": true, "seats": {}}}"#)
+        old.readAt = auditNow
+        XCTAssertNil(WakeSettingsBuilder.build(old).rewake)
+    }
+
+    /// F8.  With a full pause on every seat and a wakes-only entry for the seat, the panel names
+    /// the pause that has the effect, and Seat Activity's rule picks the same one.
+    func test_the_pause_named_is_the_one_that_has_the_effect() {
+        let json = """
+        {"running": true, "status": {"pause": {"*": {"wakes_only": false, "by": "owner", "ts": 1792535804.0},
+          "MM": {"wakes_only": true, "by": "cli", "ts": 1792539404.0}},
+          "seats": {"MM": {"wake": "muse", "paused": true, "wakes_paused": true}}}}
+        """
+        let mm = seat("MM", in: WakeSettingsBuilder.build(sources(status: json)))
+        XCTAssertEqual(mm.pauseScope, "*")
+        XCTAssertEqual(mm.pauseBy, "owner")
+        XCTAssertEqual(mm.pauseAt, Date(timeIntervalSince1970: 1_792_535_804))
+        XCTAssertTrue(mm.pauseText()?.contains("by the pause on every seat by owner") == true)
+
+        let entries: [String: ListenerStatus.PauseEntry] = [
+            "*": ListenerStatus.PauseEntry(wakes_only: true, by: "a", ts: nil),
+            "MM": ListenerStatus.PauseEntry(wakes_only: nil, by: "b", ts: nil),
+        ]
+        let covering = SeatActivityBuilder.coveringPause(for: "MM", in: entries, wakesOnly: { $0.wakes_only })
+        XCTAssertEqual(covering?.scope, "MM")
+        XCTAssertEqual(covering?.kind, .full)
+        var file = sources(status: nil)
+        file.pauseFile = .entries(entries)
+        XCTAssertEqual(seat("MM", in: WakeSettingsBuilder.build(file)).pauseScope, "MM")
+        XCTAssertNil(SeatActivityBuilder.coveringPause(for: "CLAUDE", in: ["MM": entries["MM"]!], wakesOnly: { $0.wakes_only }))
+    }
+
+    /// F9.  A status another instance wrote is not current here, so its values are NOT CURRENT
+    /// with a reason that names the instance, and no seat is called connected from it.
+    func test_a_status_from_another_instance_is_not_current() {
+        let json = #"{"running": true, "status": {"instance": "server", "disabled": ["QUIET"], "seats": {"MM": {"wake": "muse", "connected": true, "budget": {"wakes_per_hour": 5}}}}}"#
+        var input = sources(status: json)
+        input.readAt = nil
+        let model = WakeSettingsBuilder.build(input)
+        XCTAssertFalse(model.statusIsCurrent)
+        let mm = seat("MM", in: model)
+        XCTAssertNil(mm.connected)
+        XCTAssertEqual(model.reportingSeats, 0)
+        XCTAssertFalse(mm.liveIsCurrent)
+        let row = setting(.wakesPerHour, of: mm)
+        XCTAssertEqual(row.state, .stale)
+        XCTAssertTrue(row.note.contains("server instance"), row.note)
+        XCTAssertNil(model.rewake)
+        // Its list of seats turned off is about its own file, not the Mac's.
+        let quiet = seat("QUIET", in: model)
+        XCTAssertFalse(quiet.disabledInFile)
+        XCTAssertFalse(quiet.settings.contains { $0.state == .seatOff })
+        // The header names the instance as the reason, not the status's age.
+        XCTAssertEqual(model.foreignInstance, "server")
+        XCTAssertTrue(model.notCurrentReason?.contains("server instance") == true, model.notCurrentReason ?? "")
+        XCTAssertFalse(model.notCurrentReason?.contains("every few seconds") == true)
+
+        // The Mac's own status, running and old, keeps the age as its reason.
+        var old = sources(status: #"{"running": true, "status": {"updated": \#(auditNow.timeIntervalSince1970 - 600), "seats": {}}}"#)
+        old.readAt = auditNow
+        let oldModel = WakeSettingsBuilder.build(old)
+        XCTAssertNil(oldModel.foreignInstance)
+        XCTAssertTrue(oldModel.notCurrentReason?.contains("every few seconds") == true)
+        XCTAssertNil(WakeSettingsBuilder.build(sources(status: #"{"running": true, "status": {"seats": {}}}"#)).notCurrentReason)
+    }
+
+    /// F10.  A time that is not today on Jay's clock carries its weekday and date, and its year
+    /// when that differs, so a pause set days ago or a weekly reset never reads as today.
+    func test_a_time_that_is_not_today_carries_its_date() throws {
+        XCTAssertEqual(FleetTime.when(try XCTUnwrap(FleetTime.parse("2026-11-07T21:00:00Z")), now: auditNow), "3:00 PM")
+        // 3:00 AM UTC on the 8th is still the 7th in Chicago.
+        XCTAssertEqual(FleetTime.when(try XCTUnwrap(FleetTime.parse("2026-11-08T03:00:00Z")), now: auditNow), "9:00 PM")
+        XCTAssertEqual(FleetTime.when(try XCTUnwrap(FleetTime.parse("2026-11-09T21:00:00Z")), now: auditNow), "Mon, Nov 9, 3:00 PM")
+        XCTAssertEqual(FleetTime.when(try XCTUnwrap(FleetTime.parse("2027-01-01T15:00:00Z")), now: auditNow), "Fri, Jan 1, 2027, 9:00 AM")
+
+        let json = #"{"running": true, "status": {"seats": {"QUIET": {"wake": "inbox", "quota": {"known": true, "exhausted": false, "remaining": 40, "reset_at": "2026-11-09T21:00:00Z"}}}}}"#
+        let quiet = seat("QUIET", in: WakeSettingsBuilder.build(sources(status: json)))
+        XCTAssertTrue(quiet.liveFacts(now: auditNow).contains { $0.text.contains("resets Mon, Nov 9, 3:00 PM") })
+    }
+
+    /// F11.  While a current status says the OpenRouter fallback answers in the seat's place, the
+    /// panel says so beside the quota, and an exhausted quota is not a problem on its own.  An old
+    /// status's word is only that it was answering.
+    func test_the_fallback_answering_for_a_quota_held_seat_is_shown() {
+        let seatJSON = #""QUIET": {"wake": "inbox", "quota": {"known": true, "exhausted": true, "source": "codecaps"}, "fallback": {"runtime": "openrouter", "ready": true, "stands_in": true, "primary_hold": "quota exhausted until Monday"}}"#
+        let quiet = seat("QUIET", in: WakeSettingsBuilder.build(sources(status: #"{"running": true, "status": {"seats": {\#(seatJSON)}}}"#)))
+        XCTAssertTrue(quiet.fallbackStandsIn)
+        XCTAssertTrue(quiet.fallbackIsAnswering)
+        XCTAssertEqual(quiet.fallbackPrimaryHold, "quota exhausted until Monday")
+        XCTAssertFalse(quiet.needsAttention)
+        let facts = quiet.liveFacts(now: auditNow)
+        XCTAssertTrue(facts.contains(WakeFact(text: "the OpenRouter fallback is answering in this seat's place:  quota exhausted until Monday", emphasised: false)), "\(facts)")
+        XCTAssertTrue(facts.contains { $0.text.hasPrefix("quota exhausted") && !$0.emphasised })
+
+        let stopped = seat("QUIET", in: WakeSettingsBuilder.build(sources(status: #"{"running": false, "status": {"seats": {\#(seatJSON)}}}"#)))
+        XCTAssertFalse(stopped.fallbackIsAnswering)
+        XCTAssertTrue(stopped.needsAttention)
+        XCTAssertTrue(stopped.liveFacts(now: auditNow).contains { $0.text.hasPrefix("the OpenRouter fallback was answering") })
+
+        let held = seat("QUIET", in: WakeSettingsBuilder.build(sources(status: #"{"running": true, "status": {"seats": {"QUIET": {"wake": "inbox", "quota": {"known": true, "exhausted": true}}}}}"#)))
+        XCTAssertTrue(held.needsAttention)
+    }
+
+    /// F12.  A file with no host load gate shows nothing in the file's column, and says the
+    /// eavesdropper's default, off, is in effect.  A file that holds 0 shows it.
+    func test_the_host_load_gate_default_is_not_shown_as_the_files() throws {
+        var input = sources(status: #"{"running": true, "status": {"seats": {}}}"#)
+        input.config = ListenerConfigDocument(text: "[seat.MM]\nwake = \"muse\"\n")
+        let gate = try XCTUnwrap(WakeSettingsBuilder.build(input).daemonSettings.first)
+        XCTAssertNil(gate.configured)
+        XCTAssertEqual(gate.configuredText, WakeSetting.unsetText)
+        XCTAssertEqual(gate.state, .off)
+        XCTAssertTrue(gate.note.contains("holds nothing"), gate.note)
+
+        let held = try XCTUnwrap(WakeSettingsBuilder.build(sources(status: nil)).daemonSettings.first)
+        XCTAssertNotNil(held.configured)
+        XCTAssertEqual(held.state, .off)
+        XCTAssertFalse(held.note.contains("holds nothing"))
     }
 }
