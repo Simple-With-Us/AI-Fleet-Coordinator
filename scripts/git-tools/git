@@ -2176,10 +2176,12 @@ def collect_readiness(read, repo, number, expected_head=None, max_pages=20):
         if not any(r["commit_id"] == head and r["state"] in ("APPROVED", "COMMENTED") for r in reviews):
             report["unknowns"].append("no_completed_current_head_review_observed")
         # Latest decisive review per author, including old-head requests still requiring attention.
-        decisions = {}
+        decisions, latest_ids = {}, {}
         for r in reviews:
             if r["state"] in ("APPROVED", "CHANGES_REQUESTED", "DISMISSED"):
-                decisions[r["author_id"]] = r["state"]
+                if r["id"] > latest_ids.get(r["author_id"], -1):
+                    latest_ids[r["author_id"]] = r["id"]
+                    decisions[r["author_id"]] = r["state"]
         if "CHANGES_REQUESTED" in decisions.values() or any(r["state"] == "PENDING" for r in reviews):
             report["blockers"].append("review_changes_requested_or_pending")
 
@@ -2211,9 +2213,9 @@ def cmd_readiness(tools, a, bearer, server_seat, deadline):
         entry = tools.get(name)
         if not entry or entry.get("read") is not True or name not in READ_TOOLS:
             raise ReadinessUnknown("required read unavailable: " + name)
-        validate_arguments(entry, args, deadline)
-        args = resolve_actor(entry, args, bearer, server_seat, deadline)
         try:
+            validate_arguments(entry, args, deadline)
+            args = resolve_actor(entry, args, bearer, server_seat, deadline)
             out = remote_call(name, args, False, bearer, deadline)
         except SystemExit:
             raise ReadinessUnknown("required read failed: " + name) from None
