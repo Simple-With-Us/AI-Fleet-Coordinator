@@ -288,9 +288,7 @@ def _when_iso(text: str) -> str | None:
         return None
     try:
         year, month, day, hour, minute, second = (int(found.group(i)) for i in range(1, 7))
-        moment = datetime.datetime(
-            year, month, day, hour, minute, second, tzinfo=datetime.UTC
-        )
+        moment = datetime.datetime(year, month, day, hour, minute, second, tzinfo=datetime.UTC)
         if found.group(7):
             hours, minutes = int(found.group(8)), int(found.group(9))
             if hours > 23 or minutes > 59:
