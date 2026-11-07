@@ -53,6 +53,12 @@ enum SeatInventoryDecoder {
         guard let inventory = try? JSONDecoder().decode(SeatInventory.self, from: data) else {
             return .unavailable("The answer could not be read as a seat inventory.")
         }
+        return validated(inventory)
+    }
+
+    /// The inventory when it is this tool's, this schema's and ok;  the reason it cannot be
+    /// trusted otherwise.
+    static func validated(_ inventory: SeatInventory) -> SeatInventoryReading {
         guard inventory.tool == tool else {
             return .unavailable("The answer is from \(inventory.tool), not the seat inventory.")
         }
@@ -63,6 +69,43 @@ enum SeatInventoryDecoder {
             return .unavailable(inventory.detail.isEmpty ? "The reader could not answer for this platform." : inventory.detail)
         }
         return .loaded(inventory)
+    }
+
+    /// The helper's own envelope around the server's inventory:  `ok`, `result`, `detail`, and
+    /// the `inventory` document when it answered.
+    private struct ServerEnvelope: Decodable {
+        let ok: Bool
+        let result: String
+        let detail: String?
+        let inventory: SeatInventory?
+    }
+
+    /// The server's answer to `server seat-inventory PLATFORM --plan --json`.
+    ///
+    /// A refusal gives the helper's own sentence.  An answer for another host or another
+    /// platform than the one asked about is never drawn, so the server's panel can never show
+    /// the Mac's files or another platform's.
+    static func decodeServerAnswer(_ text: String, platform: String, exitCode: Int32) -> SeatInventoryReading {
+        guard let envelope = try? JSONDecoder().decode(ServerEnvelope.self, from: Data(text.utf8)) else {
+            if exitCode != 0 {
+                return .unavailable("The server could not be reached over the fleet-ops-ctl route (exit \(exitCode)).")
+            }
+            return .unavailable("The server's answer could not be read.")
+        }
+        guard envelope.ok else {
+            let said = envelope.detail ?? ""
+            return .unavailable(said.isEmpty ? "The server refused the request." : said)
+        }
+        guard let inventory = envelope.inventory else {
+            return .unavailable("The server answered without an inventory.")
+        }
+        guard inventory.host == "server" else {
+            return .unavailable("The answer is for the \(inventory.host), not the server.")
+        }
+        guard inventory.platform == platform else {
+            return .unavailable("The answer is for \(inventory.platform), not \(platform).")
+        }
+        return validated(inventory)
     }
 
     /// A platform id as the engine spells it:  lower case, digits and dashes.
@@ -113,6 +156,29 @@ struct MacSeatInventoryReader {
                 return .unavailable("The seat inventory reader failed (exit \(result.exitCode)).")
             }
             return SeatInventoryDecoder.decode(Data(result.stdout.utf8))
+        } catch {
+            return .unavailable(error.localizedDescription)
+        }
+    }
+}
+
+/// Reads one platform's inventory on the server, over the existing restricted, read-only
+/// route (`fleet-ops-ctl`, verb `server seat-inventory`).  It changes nothing, so it needs no
+/// confirmation and no Touch ID.
+struct ServerSeatInventoryReader {
+    var runner: OpsRunning = OpsProcessRunner()
+    var makeBuilder: () -> OpsCommandBuilder = {
+        OpsCommandBuilder(repoRoot: FleetConfigLocation.resolve().repoRoot)
+    }
+
+    func read(platform: String) async -> SeatInventoryReading {
+        do {
+            let invocation = try makeBuilder().seatInventoryInvocation(platform: platform)
+            let process = try await runner.run(invocation)
+            if process.timedOut {
+                return .unavailable("The server did not answer in time.")
+            }
+            return SeatInventoryDecoder.decodeServerAnswer(process.stdout, platform: platform, exitCode: process.exitCode)
         } catch {
             return .unavailable(error.localizedDescription)
         }

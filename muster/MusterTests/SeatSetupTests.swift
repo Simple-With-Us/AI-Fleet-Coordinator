@@ -39,6 +39,16 @@ final class SeatSetupTests: XCTestCase {
         try XCTUnwrap(all.first { $0.kind == kind })
     }
 
+    // MARK: - which host
+
+    func test_the_hosts_are_the_mac_and_the_server_with_their_own_words() {
+        XCTAssertEqual(SeatSetupHost.allCases, [.mac, .server])
+        XCTAssertEqual(SeatSetupHost.mac.title, "On The Mac")
+        XCTAssertEqual(SeatSetupHost.server.title, "On The Server")
+        XCTAssertEqual(SeatSetupHost.mac.inProse, "on the Mac")
+        XCTAssertEqual(SeatSetupHost.server.inProse, "on the server")
+    }
+
     // MARK: - which seat
 
     func test_the_seat_chosen_before_is_kept_while_it_is_on_the_roster() {

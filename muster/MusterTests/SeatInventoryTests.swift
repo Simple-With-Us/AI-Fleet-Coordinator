@@ -98,6 +98,108 @@ final class SeatInventoryTests: XCTestCase {
         XCTAssertEqual(section.summary, "Nothing listed.")
     }
 
+    // MARK: - reading on the server
+
+    private func serverAnswer(
+        host: String = "server",
+        platform: String = "claude",
+        ok: Bool = true,
+        detail: String? = nil,
+        withInventory: Bool = true
+    ) -> String {
+        let inventory = sample
+            .replacingOccurrences(of: "\"host\": \"mac\"", with: "\"host\": \"\(host)\"")
+            .replacingOccurrences(of: "\"platform\": \"claude\"", with: "\"platform\": \"\(platform)\"")
+        let detailField = detail.map { "\"detail\": \"\($0)\"," } ?? ""
+        return """
+        {"ok": \(ok), "verb": "server seat-inventory", "target": "claude", "commands": [],
+         "result": "\(ok ? "planned" : "refused")", \(detailField)
+         \(withInventory ? "\"inventory\": \(inventory)" : "\"x\": 0")}
+        """
+    }
+
+    func test_the_server_route_is_the_typed_read_only_plan_over_the_restricted_alias() throws {
+        let builder = OpsCommandBuilder(
+            repoRoot: URL(fileURLWithPath: "/tmp/repo"), home: URL(fileURLWithPath: "/tmp/home"), sshAuthSocket: nil
+        )
+        let invocation = try builder.seatInventoryInvocation(platform: "codex")
+        XCTAssertEqual(invocation.executable, "/usr/bin/ssh")
+        XCTAssertEqual(
+            invocation.arguments,
+            OpsControlRoute.sshOptions + ["fleet-ops-ctl", "--", "server", "seat-inventory", "codex", "--plan", "--json"]
+        )
+        XCTAssertFalse(invocation.arguments.contains("--yes"))
+    }
+
+    func test_the_server_route_refuses_a_platform_that_is_not_a_plain_id() {
+        let builder = OpsCommandBuilder(repoRoot: URL(fileURLWithPath: "/tmp/repo"))
+        for bad in ["", "Claude", "../x", "claude --yes", "a;b", "-x"] {
+            XCTAssertThrowsError(try builder.seatInventoryInvocation(platform: bad), bad)
+        }
+    }
+
+    func test_a_server_answer_for_the_asked_platform_loads() {
+        guard case .loaded(let inventory) = SeatInventoryDecoder.decodeServerAnswer(
+            serverAnswer(), platform: "claude", exitCode: 0
+        ) else { return XCTFail("a good server answer did not load") }
+        XCTAssertEqual(inventory.host, "server")
+        XCTAssertEqual(inventory.sections.count, 3)
+    }
+
+    func test_a_server_answer_for_another_host_or_platform_is_never_drawn() {
+        XCTAssertEqual(
+            SeatInventoryDecoder.decodeServerAnswer(serverAnswer(host: "mac"), platform: "claude", exitCode: 0),
+            .unavailable("The answer is for the mac, not the server.")
+        )
+        XCTAssertEqual(
+            SeatInventoryDecoder.decodeServerAnswer(serverAnswer(platform: "codex"), platform: "claude", exitCode: 0),
+            .unavailable("The answer is for codex, not claude.")
+        )
+    }
+
+    func test_a_server_refusal_gives_the_helpers_own_sentence() {
+        XCTAssertEqual(
+            SeatInventoryDecoder.decodeServerAnswer(
+                serverAnswer(ok: false, detail: "that platform has no seat inventory", withInventory: false),
+                platform: "nope", exitCode: 2
+            ),
+            .unavailable("that platform has no seat inventory")
+        )
+        XCTAssertEqual(
+            SeatInventoryDecoder.decodeServerAnswer(
+                serverAnswer(ok: false, withInventory: false), platform: "nope", exitCode: 2
+            ),
+            .unavailable("The server refused the request.")
+        )
+    }
+
+    func test_a_server_answer_with_no_inventory_or_no_json_says_why() {
+        XCTAssertEqual(
+            SeatInventoryDecoder.decodeServerAnswer(serverAnswer(withInventory: false), platform: "claude", exitCode: 0),
+            .unavailable("The server answered without an inventory.")
+        )
+        XCTAssertEqual(
+            SeatInventoryDecoder.decodeServerAnswer("Connection closed", platform: "claude", exitCode: 255),
+            .unavailable("The server could not be reached over the fleet-ops-ctl route (exit 255).")
+        )
+        XCTAssertEqual(
+            SeatInventoryDecoder.decodeServerAnswer("not json", platform: "claude", exitCode: 0),
+            .unavailable("The server's answer could not be read.")
+        )
+    }
+
+    func test_the_server_reader_runs_the_route_and_reports_a_timeout() async {
+        var reader = ServerSeatInventoryReader()
+        reader.makeBuilder = { OpsCommandBuilder(repoRoot: URL(fileURLWithPath: "/tmp/repo")) }
+        reader.runner = InventoryRunner(result: OpsProcessResult(exitCode: 0, stdout: serverAnswer(), stderr: ""))
+        guard case .loaded = await reader.read(platform: "claude") else { return XCTFail("did not load") }
+        reader.runner = InventoryRunner(result: OpsProcessResult(exitCode: 0, stdout: "", stderr: "", timedOut: true))
+        let reading = await reader.read(platform: "claude")
+        XCTAssertEqual(reading, .unavailable("The server did not answer in time."))
+        let refused = await reader.read(platform: "../x")
+        XCTAssertEqual(refused, .unavailable(OpsControlError.invalidArgument("seat inventory platform").localizedDescription))
+    }
+
     // MARK: - rows with the same name
 
     /// Two entries in one section can share a name (a skill folder and a `.md` file of the same

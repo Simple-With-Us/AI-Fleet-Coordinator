@@ -139,6 +139,12 @@ SOURCES = {
         ("keys", "Plugin Hooks", ".config/muse/settings.json", ("runtime_capabilities",)),
         ("folder", "Skills", ".config/muse/skills", False),
     ],
+    "minimax": [
+        ("mcp", ".minimax/mcp.json", ("mcpServers",)),
+        ("folder", "Plugins", ".minimax/plugins", False),
+        ("folder", "Skills", ".minimax/skills", False),
+        ("folder", "Agents", ".minimax/agents", False),
+    ],
     "clutch": [
         (
             "not_read",

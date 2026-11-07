@@ -10,6 +10,30 @@ import Foundation
 /// how a platform with a different layout is covered without a line of code for it here.
 ///
 /// This is display data and never a verdict:  the states come from the engine.
+/// Which host's setup Seat Setup shows.
+enum SeatSetupHost: String, CaseIterable, Identifiable {
+    case mac
+    case server
+
+    var id: String { rawValue }
+
+    /// The words on the switch.
+    var title: String {
+        switch self {
+        case .mac: return "On The Mac"
+        case .server: return "On The Server"
+        }
+    }
+
+    /// The same host, in a sentence.
+    var inProse: String {
+        switch self {
+        case .mac: return "on the Mac"
+        case .server: return "on the server"
+        }
+    }
+}
+
 enum SeatSetup {
     /// One thing on a seat that needs a look, in plain words.
     struct Attention: Equatable {
