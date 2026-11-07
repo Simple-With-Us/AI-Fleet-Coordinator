@@ -107,9 +107,13 @@ final class PlatformVariantsTests: XCTestCase {
 
     func testSectionsWithChangingLinesAreNamedAndSharedOnesAreAbsent() {
         let sections = PlatformVariants.analyze(fixture, platform: "zcode", seatTags: ["ZC"]).sections
-        XCTAssertEqual(sections.count, 1)
-        XCTAssertEqual(sections[0].title, "Seat Identity")
+        // The parent "Fleet Basics" runs through its "Seat Identity" child to the next
+        // same-or-higher heading, so it counts the child's three changing lines too.
+        XCTAssertEqual(sections.count, 2)
+        XCTAssertEqual(sections[0].title, "Fleet Basics")
         XCTAssertEqual(sections[0].changingLines, 3)
+        XCTAssertEqual(sections[1].title, "Seat Identity")
+        XCTAssertEqual(sections[1].changingLines, 3)
         XCTAssertFalse(sections.contains(where: { $0.title == "Shared Rules" }))
     }
 
@@ -131,5 +135,43 @@ final class PlatformVariantsTests: XCTestCase {
         let analysis = PlatformVariants.analyze("", platform: "zcode", seatTags: ["ZC"])
         XCTAssertTrue(analysis.lines.isEmpty)
         XCTAssertTrue(analysis.sections.isEmpty)
+    }
+
+    // ---- the review findings ----
+
+    func testAFolderFollowedByAFileNameKeepsItsMark() {
+        let line = "settings live in ~/.claude/settings.json and ~/.zcode/AGENTS.md"
+        let hits = spans(onLine: 0, of: line).filter { $0.kind == .configFolder }
+        XCTAssertEqual(hits.count, 2)
+        XCTAssertEqual(substring(line, hits[0]), "~/.claude/")
+        XCTAssertEqual(substring(line, hits[1]), "~/.zcode/")
+    }
+
+    func testTheLongestSpanWinsAtTheSameStart() {
+        let line = "run it through Claude Code today"
+        let names = spans(onLine: 0, of: line).filter { $0.kind == .platformName }
+        XCTAssertEqual(names.count, 1)
+        XCTAssertEqual(substring(line, names[0]), "Claude Code")
+    }
+
+    func testASeatTagBeatsAPlatformNameAtTheSameStart() {
+        let line = "the FX seat is configured"
+        let analysis = PlatformVariants.analyze(line, platform: "fx", seatTags: ["FX"])
+        let marked = analysis.lines.first
+        XCTAssertEqual(marked?.spans.first?.kind, .seatTag)
+        XCTAssertEqual(marked?.usuallyChanges, true)
+    }
+
+    func testTheVocabularyComesFromTheSeatAppRegistry() {
+        let rows = PlatformVariants.platformWords
+        for (slug, meta) in FleetRegistryReader.codingAppMetadata
+        where rows.contains(where: { $0.platform == slug }) {
+            XCTAssertTrue(
+                rows.first(where: { $0.platform == slug })!.words.contains(meta.title),
+                "the row for \(slug) must name the registry title"
+            )
+        }
+        XCTAssertTrue(rows.contains(where: { $0.platform == "gemini" }), "the manifest's gemini target keeps a row")
+        XCTAssertTrue(rows.contains(where: { $0.platform == "claude-code" && $0.words.contains("Claude") }))
     }
 }

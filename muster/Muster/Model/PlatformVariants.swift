@@ -81,28 +81,118 @@ enum PlatformVariants {
         + "the whole file still needs review.\u{00A0} The preview is read-only and changes "
         + "nothing."
 
-    /// The platforms whose names and folders the analysis knows,  with the words each
-    /// one is called by.  The slugs are the seat-app slugs `FleetRegistryReader` carries,
-    /// and the folders are the instruction roots the manifest's targets use today.
-    private static let platformWords: [(platform: String, words: [String], folders: [String])] = [
-        (platform: "claude-code", words: ["Claude Code", "Claude"], folders: ["~/.claude/"]),
-        (platform: "codex", words: ["Codex"], folders: ["~/.codex/"]),
-        (platform: "cursor", words: ["Cursor"], folders: ["~/.cursor/"]),
-        (platform: "antigravity", words: ["Antigravity"], folders: ["~/.antigravity/"]),
-        (platform: "grok", words: ["Grok"], folders: ["~/.grok/"]),
-        (platform: "muse", words: ["Muse"], folders: ["~/.muse/"]),
-        (platform: "minimax", words: ["MiniMax"], folders: ["~/.minimax/"]),
-        (platform: "fx", words: ["FX"], folders: ["~/.fx/"]),
-        (platform: "opencode", words: ["OpenCode"], folders: ["~/.config/opencode/"]),
-        (platform: "clutch", words: ["Clutch"], folders: ["~/.clutch/"]),
-        (platform: "kimi", words: ["Kimi"], folders: ["~/.kimi-code/"]),
-        (platform: "zcode", words: ["Z Code", "ZCode"], folders: ["~/.zcode/"]),
-        (platform: "gemini", words: ["Gemini"], folders: ["~/.gemini/"]),
+    /// The config folders the analysis marks,  keyed by the seat-app slug
+    /// `FleetRegistryReader.codingAppMetadata` carries.  One platform has no registry row:
+    /// `gemini` is an instruction target in the manifest (its `~/.gemini/config/AGENTS.md`)
+    /// and no coding app,  so its folder stands here with its own name.
+    private static let configFolders: [String: [String]] = [
+        "claude-code": ["~/.claude/"],
+        "codex": ["~/.codex/"],
+        "cursor": ["~/.cursor/"],
+        "antigravity": ["~/.antigravity/"],
+        "grok-terminal": ["~/.grok/"],
+        "muse-code": ["~/.muse/"],
+        "minimax-code": ["~/.minimax/"],
+        "fx": ["~/.fx/"],
+        "opencode": ["~/.config/opencode/"],
+        "clutch": ["~/.clutch/"],
+        "kimi-code": ["~/.kimi-code/"],
+        "zcode": ["~/.zcode/"],
+        "gemini": ["~/.gemini/"],
     ]
 
-    /// A placeholder the file itself marks as variable:  `<SEAT>`,  `<APP-SLUG>`,  and the
-    /// same shape in any mix of letters,  digits and dashes.  Scanned by hand,  so no
-    /// pattern has to compile at run time.
+    /// The platforms the analysis can name,  derived from the app's own seat-app registry
+    /// so the names cannot drift from it:  each row's words are the registry title,  plus
+    /// the slug itself when the slug is hyphenated (a config-file spelling,  like
+    /// `claude-code`).  A registry row with no folder in the table above still names
+    /// platforms in prose;  the test bundle pins the two lists together.
+    /// Internal for the test bundle, which pins it to the seat-app registry.
+    static let platformWords: [(platform: String, words: [String], folders: [String])] = {
+        var rows: [(platform: String, words: [String], folders: [String])] = []
+        for (slug, meta) in FleetRegistryReader.codingAppMetadata {
+            guard let folders = configFolders[slug] else { continue }
+            var words = [meta.title]
+            if slug.contains("-") { words.append(slug) }
+            // A multi-word title's first word is also the platform's name in prose
+            // ("Claude desktop"),  when the word is long enough to mean the platform
+            // by itself:  "Z Code" keeps "Z" out of every line it appears in.
+            let parts = meta.title.split(separator: " ")
+            if parts.count > 1, parts[0].count >= 3 {
+                let first = String(parts[0])
+                if !words.contains(first) { words.append(first) }
+            }
+            rows.append((platform: slug, words: words, folders: folders))
+        }
+        if let folders = configFolders["gemini"] {
+            rows.append((platform: "gemini", words: ["Gemini"], folders: folders))
+        }
+        return rows
+    }()
+
+    /// A placeholder the file itself marks as variable,  like `<SEAT>`.
+            case placeholder
+            /// A seat tag,  like `ZC` or `CLAUDE`.
+            case seatTag
+            /// A config folder a platform reads,  like `~/.claude/`.
+            case configFolder
+            /// A platform's name in prose,  like `Claude` or `Z Code`.
+            case platformName
+        }
+
+        /// The span,  in UTF-16 offsets inside its own line,  so the same numbers an
+        /// `NSString` sees are the numbers the preview paints.
+        let range: NSRange
+        let kind: Kind
+        /// The platform a `platformName` or `configFolder` span belongs to,  or nil.
+        let platform: String?
+    }
+
+    /// One line that carries at least one span.
+    struct MarkedLine: Equatable {
+        /// The line's index,  zero-based,  counting every line of the file.
+        let number: Int
+        let spans: [Span]
+        /// True when the line usually changes with the platform:  it holds a placeholder,
+        /// a seat tag or a config folder.  A line whose only spans are platform names is
+        /// shared prose that mentions platforms,  and is not a customization point.
+        let usuallyChanges: Bool
+    }
+
+    /// One markdown section whose body holds customization points.
+    struct MarkedSection: Equatable {
+        /// The heading line's index,  zero-based.
+        let headingNumber: Int
+        /// The heading's text with its `#` marks removed.
+        let title: String
+        /// The lines the section covers,  as line indexes,  endpoints exclusive.
+        let bodyRange: Range<Int>
+        /// How many lines in the section usually change.
+        let changingLines: Int
+    }
+
+    /// What analyzing one file found.
+    struct Analysis: Equatable {
+        /// The platform whose file the preview shows.
+        let platform: String
+        /// Every line that carries a span,  in file order.
+        let lines: [MarkedLine]
+        /// Every section that holds at least one changing line.
+        let sections: [MarkedSection]
+
+        /// The line indexes that usually change,  for a checklist read.
+        var changingLineNumbers: Set<Int> {
+            Set(lines.filter(\.usuallyChanges).map(\.number))
+        }
+    }
+
+    /// The guidance the preview carries beside the highlights.  It says what the marks
+    /// are for and,  in words,  that they do not limit where a new platform may edit.
+    static let guidance = "Highlights mark places that usually change for a platform:  "
+        + "placeholders,  seat tags,  platform names and config folders.\u{00A0} They are "
+        + "reminders,  not limits:  a new platform may need edits anywhere in the file,  and "
+        + "the whole file still needs review.\u{00A0} The preview is read-only and changes "
+        + "nothing."
+
     /// The ASCII code of a one-character literal,  as the unichar comparisons read it.
     private static func ascii(_ literal: Character) -> unichar {
         guard let value = literal.asciiValue else { return 0 }
@@ -180,7 +270,10 @@ enum PlatformVariants {
                 }
             }
             for folder in entry.folders {
-                search(line, for: folder) { range in
+                // A folder needle ends in "/", so it cannot sit inside a longer folder
+                // name, and what follows it is the path it contains:  no boundary check,
+                // or "~/.claude/settings.json" would lose its mark to the "s".
+                search(line, for: folder, wordBoundary: false) { range in
                     found.append(Span(range: range, kind: .configFolder, platform: entry.platform))
                 }
             }
@@ -244,10 +337,25 @@ enum PlatformVariants {
     }
 
     /// Keep the leftmost span when spans overlap,  so a placeholder or a folder keeps its
-    /// whole shape,  and return them in line order.
+    /// whole shape,  and return them in line order.  At the same start the longest span
+    /// wins ("Claude Code",  not the "Claude" inside it),  and a strong kind wins a tie
+    /// with a weak one,  so a seat tag like "FX" is never read as only a platform name.
     private static func resolveOverlaps(_ spans: [Span]) -> [Span] {
+        func rank(_ span: Span) -> Int {
+            switch span.kind {
+            case .placeholder: return 0
+            case .seatTag: return 1
+            case .configFolder: return 2
+            case .platformName: return 3
+            }
+        }
+        let ordered = spans.sorted {
+            if $0.range.location != $1.range.location { return $0.range.location < $1.range.location }
+            if $0.range.length != $1.range.length { return $0.range.length > $1.range.length }
+            return rank($0) < rank($1)
+        }
         var kept: [Span] = []
-        for span in spans.sorted(by: { $0.range.location < $1.range.location }) {
+        for span in ordered {
             if let last = kept.last, span.range.location < last.range.location + last.range.length { continue }
             kept.append(span)
         }
@@ -271,11 +379,12 @@ enum PlatformVariants {
         }
         var result: [MarkedSection] = []
         for (position, heading) in headings.enumerated() {
-            let end: Int
-            if position + 1 < headings.count {
-                end = headings[position + 1].number
-            } else {
-                end = lines.count
+            // The next heading of the same or higher level ends the section,  not the
+            // first child heading inside it,  so a parent's count includes its children.
+            var end = lines.count
+            for later in headings[(position + 1)...] where later.level <= heading.level {
+                end = later.number
+                break
             }
             let bodyRange = (heading.number + 1)..<end
             let count = changing.intersection(Set(bodyRange)).count

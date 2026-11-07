@@ -17,13 +17,26 @@ struct InstructionFilePreview: View {
     /// True when the reader capped the file,  so the marks describe the shown part.
     let truncated: Bool
 
-    private var analysis: PlatformVariants.Analysis {
-        PlatformVariants.analyze(text, platform: platform, seatTags: seatTags)
+    /// Scanned once per view value,  not on every body evaluation:  the body below and
+    /// both summaries read this one result.
+    private let analysis: PlatformVariants.Analysis
+
+    init(text: String, platform: String, seatTags: [String], truncated: Bool) {
+        self.text = text
+        self.platform = platform
+        self.seatTags = seatTags
+        self.truncated = truncated
+        self.analysis = PlatformVariants.analyze(text, platform: platform, seatTags: seatTags)
     }
 
     var body: some View {
-        let analysis = analysis
         VStack(alignment: .leading, spacing: 8) {
+            if text.isEmpty {
+                Text("(the file is empty)")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .padding(10)
+            } else {
             Text(PlatformVariants.guidance)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
@@ -40,6 +53,7 @@ struct InstructionFilePreview: View {
                     .padding(10)
             }
             .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 7))
+            }
         }
     }
 
