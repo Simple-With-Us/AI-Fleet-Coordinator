@@ -111,11 +111,16 @@ POST_SPACING = 3.0
 # exist to prevent -- and a seat that cannot answer is the worst possible time to add traffic.
 QUOTA_HOLD_TELL_WINDOW = 3600.0
 HELD_TICK_SECONDS = 30.0  # held-back upkeep:  expiry, the owner digest and the catch-up check
-# AFC-652 F8 (re-drive liveness):  one tick blocks on at most this many synchronous payload
-# fetches, and a parked id whose payload stays unknown backs off exponentially (the base
-# doubling to the cap).  Backoff delays only the next PROBE:  the durable record and the
-# no-expiry rule (GATE 2) are unchanged, and the row stays parked and visible.
+# AFC-652 F8 (re-drive liveness):  a pass completes probes for at most this many parked ids
+# and spends at most this many synchronous REST attempts overall, each capped at
+# REDRIVE_PROBE_TIMEOUT_SECONDS.  One pass therefore blocks the routing thread on at most
+# attempts x timeout of network work (3 x 2s), independent of the parked count and the
+# runner count.  A parked id whose payload stays unknown backs off exponentially (the base
+# doubling to the cap).  Bounds and backoff delay only PROBES:  the durable record and the
+# no-expiry rule (GATE 2) are unchanged, and a row stays parked and visible.
 REDRIVE_FETCHES_PER_TICK = 3
+REDRIVE_ATTEMPTS_PER_TICK = 3
+REDRIVE_PROBE_TIMEOUT_SECONDS = 2.0
 REDRIVE_UNKNOWN_BACKOFF_SECONDS = 30.0
 REDRIVE_UNKNOWN_BACKOFF_CAP_SECONDS = 300.0
 #:  How often the status file is rewritten.  The muse wake-PATH memo has to outlive this period,
@@ -4233,11 +4238,11 @@ class Daemon:
         except OSError:
             pass
 
-    def _fetch_deferred_message(
-        self, mid: str, origin_seat: str | None
-    ) -> tuple[str, SeatRunner | None, Mapping[str, Any] | None]:
-        """("ok", runner, message) | ("unknown", None, None) for a parked broadcast's payload,
-        re-fetched by id through the same REST read the spool drain uses.
+    def _probe_deferred_payload(
+        self, runner: "SeatRunner", mid: str
+    ) -> Mapping[str, Any] | None:
+        """ONE re-drive probe attempt:  the parked broadcast's payload from this runner, or
+        None on any miss, access-class answer, or transient failure.
 
         Any connected runner that still fetches the payload proves it exists and re-drives
         it.  There is NO expiry proof (AFC-652 GATE 2):  Zulip answers an inaccessible
@@ -4248,34 +4253,37 @@ class Daemon:
         expires a parked effect on its own:  every miss, access-class answer, and transient
         failure keeps the kind parked, where it surfaces as a nonzero
         drain.deferred_broadcasts until the operator investigates the named message (the
-        record carries its channel/topic/stream_id/origin seat for exactly that)."""
-        runners = [
-            r
-            for r in self.seats.values()
-            if r.connected and r.client is not None and r.me is not None
-        ]
-        for runner in runners:
-            try:
-                response = runner.client.get(
-                    "messages/%s" % mid,
-                    {"apply_markdown": False},
-                    timeout=min(5.0, self.http_timeout),
-                )
-            except (Z.ApiError, Z.NetworkError, OSError):
-                continue
-            message = response.get("message") if isinstance(response, dict) else None
-            if isinstance(message, dict) and str(message.get("id")) == str(mid):
-                return "ok", runner, message
-        return "unknown", None, None
+        record carries its channel/topic/stream_id/origin seat for exactly that).
+
+        The attempt is deliberately short (REDRIVE_PROBE_TIMEOUT_SECONDS, not the general
+        http timeout):  it runs on the routing thread inside the per-pass attempt budget
+        (F8), so a hung read costs the pass seconds, never minutes."""
+        try:
+            response = runner.client.get(
+                "messages/%s" % mid,
+                {"apply_markdown": False},
+                timeout=min(REDRIVE_PROBE_TIMEOUT_SECONDS, self.http_timeout),
+            )
+        except (Z.ApiError, Z.NetworkError, OSError):
+            return None
+        message = response.get("message") if isinstance(response, dict) else None
+        if isinstance(message, dict) and str(message.get("id")) == str(mid):
+            return message
+        return None
 
     def _redrive_deferred_broadcasts(self) -> None:
         """Re-drive parked broadcast effects once no drain window covers them (boot and tick).
 
-        Liveness (F8):  one tick performs at most REDRIVE_FETCHES_PER_TICK synchronous
-        fetches, and an id whose payload stays unknown backs off exponentially
-        (REDRIVE_UNKNOWN_BACKOFF_SECONDS doubling to REDRIVE_UNKNOWN_BACKOFF_CAP_SECONDS,
-        in memory only).  A re-driven id leaves the backoff, and an id whose row is gone
-        drops out of it."""
+        Liveness (F8):  a pass completes probes for at most REDRIVE_FETCHES_PER_TICK parked
+        ids and spends at most REDRIVE_ATTEMPTS_PER_TICK synchronous REST attempts overall
+        (each capped at REDRIVE_PROBE_TIMEOUT_SECONDS), so the routing thread never blocks
+        on more than attempts x timeout of network work however many ids are parked and
+        however many runners are connected.  An id whose payload stays unknown backs off
+        exponentially (REDRIVE_UNKNOWN_BACKOFF_SECONDS doubling to
+        REDRIVE_UNKNOWN_BACKOFF_CAP_SECONDS, in memory only).  Probes rotate across parked
+        ids and across the connected runners, so a stuck first id or a dead first runner
+        never starves the rest.  The durable record and the GATE 2 no-expiry rule are
+        unchanged:  bounds and backoff pace probes, they expire nothing."""
         try:
             data = L.read_json(self._deferred_broadcasts_path())
         except Exception:
@@ -4286,10 +4294,12 @@ class Daemon:
             # Parked kinds only exist from a drain window;  re-drive once the marker lifts.
             # An ordinary pause does not hold them:  it never parked them.
             return
-        if not any(
-            r.connected and r.client is not None and r.me is not None
+        runners = [
+            r
             for r in self.seats.values()
-        ):
+            if r.connected and r.client is not None and r.me is not None
+        ]
+        if not runners:
             # Nobody can fetch a payload, so a pass would only cost backoff state.
             return
         now = self.clock.time()
@@ -4300,27 +4310,51 @@ class Daemon:
         for stale in list(retry):
             if stale not in data:
                 retry.pop(stale, None)
-        fetched = 0
-        for mid in sorted(data):
-            if fetched >= REDRIVE_FETCHES_PER_TICK:
-                # The bound keeps N parked ids from blocking the tick N x runners x timeout.
+        cursor = getattr(self, "_deferred_redrive_cursor", None)
+        if not isinstance(cursor, dict):
+            cursor = {"mid": None, "runner": 0}
+            self._deferred_redrive_cursor = cursor
+        parked_ids = [
+            mid
+            for mid in sorted(data)
+            if isinstance(data.get(mid), dict)
+            and any(v is False for v in (data[mid].get("effects") or {}).values())
+        ]
+        if cursor["mid"] in parked_ids:
+            at = parked_ids.index(cursor["mid"]) + 1
+            parked_ids = parked_ids[at:] + parked_ids[:at]
+        attempts = 0
+        probed = 0
+        for mid in parked_ids:
+            if probed >= REDRIVE_FETCHES_PER_TICK or attempts >= REDRIVE_ATTEMPTS_PER_TICK:
                 break
-            row = data.get(mid)
-            if not isinstance(row, dict):
-                continue
-            parked = [k for k, v in (row.get("effects") or {}).items() if v is False]
-            if not parked:
-                continue
             next_at, delay = retry.get(mid, (0.0, 0.0))
             if next_at > now:
                 continue
-            state, runner, message = self._fetch_deferred_message(mid, row.get("seat"))
-            fetched += 1
-            if state != "ok":
-                # No connected runner could still fetch the payload.  That is ambiguous
-                # (deleted, or simply invisible to every connected bot), and the daemon
-                # never expires a parked effect on its own:  stay parked and visible.
-                # The in-memory backoff only paces the next probe;  it expires nothing.
+            # Probe across the connected runners;  the first runner rotates per probe so a
+            # dead or slow runner is never every probe's first cost, and the attempt
+            # budget caps what a pass spends even when every runner hangs.
+            start = cursor["runner"] % len(runners)
+            message = None
+            runner = None
+            for off in range(len(runners)):
+                if attempts >= REDRIVE_ATTEMPTS_PER_TICK:
+                    break
+                candidate = runners[(start + off) % len(runners)]
+                attempts += 1
+                message = self._probe_deferred_payload(candidate, mid)
+                if message is not None:
+                    runner = candidate
+                    break
+            probed += 1
+            cursor["mid"] = mid
+            cursor["runner"] = start + 1
+            if message is None:
+                # No fetched payload:  every attempt missed, errored, or the attempt
+                # budget cut the probe short.  That is ambiguous (deleted, invisible to
+                # every connected bot, or simply unprobed this pass), and the daemon never
+                # expires a parked effect on its own:  stay parked and visible.  The
+                # in-memory backoff only paces the next probe;  it expires nothing.
                 delay = min(
                     max(delay * 2.0, REDRIVE_UNKNOWN_BACKOFF_SECONDS),
                     REDRIVE_UNKNOWN_BACKOFF_CAP_SECONDS,
@@ -4328,6 +4362,8 @@ class Daemon:
                 retry[mid] = (now + delay, delay)
                 continue
             retry.pop(mid, None)
+            row = data[mid]
+            parked = [k for k, v in (row.get("effects") or {}).items() if v is False]
             c, _d = R.route(message, runner.me, self.context(runner), self.lease_views(runner))
             for kind in parked:
                 if not self._claim_broadcast_effect(mid, kind):

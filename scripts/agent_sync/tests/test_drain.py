@@ -147,22 +147,87 @@ class BroadcastDeferralTests(DaemonHarness):
         self.assertIn("99999999", L.read_json(daemon._deferred_broadcasts_path()))
 
     def test_redrive_bounds_fetches_per_tick(self) -> None:
-        """F8:  N parked ids must not block one tick on N synchronous fetches.  The bound
-        caps the probes a single pass performs;  the rest wait for a later tick."""
+        """F8:  N parked ids must not block one pass on N synchronous fetches.  The pass
+        completes at most REDRIVE_FETCHES_PER_TICK probes;  the rest wait, and id rotation
+        reaches them on a later pass once their backoff lets go."""
         from agent_sync.daemon import REDRIVE_FETCHES_PER_TICK
 
         daemon = self.started()
         c = types.SimpleNamespace(channel="fleet", topic="t")
         for i in range(REDRIVE_FETCHES_PER_TICK + 2):
             daemon._defer_broadcast_effect({"id": 90000000 + i}, c, "fanout", seat="CLAUDE")
-        runner = daemon.seats["CLAUDE"]
-        with mock.patch.object(
-            daemon, "_fetch_deferred_message", return_value=("unknown", None, None)
-        ) as fetch:
+        seen = []
+
+        def probe(runner, mid):
+            seen.append(mid)
+            return None
+
+        with mock.patch.object(daemon, "_probe_deferred_payload", side_effect=probe):
             daemon._redrive_deferred_broadcasts()
-            self.assertEqual(fetch.call_count, REDRIVE_FETCHES_PER_TICK)
+            self.assertEqual(len(seen), REDRIVE_FETCHES_PER_TICK)
+            first_pass = list(seen)
+            # Past the backoff, rotation probes the ids the bound skipped FIRST.
+            self.clock.advance(31)
+            seen.clear()
+            daemon._redrive_deferred_broadcasts()
+            skipped = [m for m in seen if m not in first_pass]
+            self.assertEqual(len(skipped), 2)
         parked = L.read_json(daemon._deferred_broadcasts_path())
         self.assertEqual(len(parked), REDRIVE_FETCHES_PER_TICK + 2)
+
+    def test_redrive_attempt_budget_caps_runner_fanout(self) -> None:
+        """F8:  the per-pass bound counts REST ATTEMPTS, not ids:  R connected runners must
+        not multiply one pass's synchronous cost to R x timeout per id."""
+        from agent_sync.daemon import REDRIVE_ATTEMPTS_PER_TICK
+
+        daemon = self.started()
+        runner = daemon.seats["CLAUDE"]
+        for i in range(3):
+            blind = types.SimpleNamespace(
+                connected=True, client=mock.Mock(), me=runner.me, seat="BLIND%d" % i
+            )
+            daemon.seats["BLIND%d" % i] = blind
+        try:
+            c = types.SimpleNamespace(channel="fleet", topic="t")
+            daemon._defer_broadcast_effect({"id": 90000030}, c, "fanout", seat="CLAUDE")
+            with mock.patch.object(
+                daemon, "_probe_deferred_payload", return_value=None
+            ) as fetch:
+                daemon._redrive_deferred_broadcasts()
+                # 4 connected runners, but the pass spends only the attempt budget.
+                self.assertEqual(fetch.call_count, REDRIVE_ATTEMPTS_PER_TICK)
+            self.assertIn("90000030", L.read_json(daemon._deferred_broadcasts_path()))
+        finally:
+            for i in range(3):
+                daemon.seats.pop("BLIND%d" % i, None)
+
+    def test_redrive_rotates_the_first_runner(self) -> None:
+        """F8:  the first probed runner rotates per probe, so a dead or slow first runner
+        is never every pass's opening cost."""
+        daemon = self.started()
+        runner = daemon.seats["CLAUDE"]
+        blind = types.SimpleNamespace(
+            connected=True, client=mock.Mock(), me=runner.me, seat="BLIND"
+        )
+        daemon.seats["BLIND"] = blind
+        try:
+            c = types.SimpleNamespace(channel="fleet", topic="t")
+            daemon._defer_broadcast_effect({"id": 90000040}, c, "fanout", seat="CLAUDE")
+            order = []
+
+            def probe(r, mid):
+                order.append(r.seat)
+                return None
+
+            with mock.patch.object(daemon, "_probe_deferred_payload", side_effect=probe):
+                daemon._redrive_deferred_broadcasts()
+                self.assertEqual(order, ["CLAUDE", "BLIND"])
+                self.clock.advance(31)
+                order.clear()
+                daemon._redrive_deferred_broadcasts()
+                self.assertEqual(order[0], "BLIND")
+        finally:
+            daemon.seats.pop("BLIND", None)
 
     def test_redrive_backs_off_unknown_probes(self) -> None:
         """F8:  an id whose payload stays unknown is not re-probed every tick.  The backoff
@@ -171,7 +236,7 @@ class BroadcastDeferralTests(DaemonHarness):
         c = types.SimpleNamespace(channel="fleet", topic="t")
         daemon._defer_broadcast_effect({"id": 90000010}, c, "fanout", seat="CLAUDE")
         with mock.patch.object(
-            daemon, "_fetch_deferred_message", return_value=("unknown", None, None)
+            daemon, "_probe_deferred_payload", return_value=None
         ) as fetch:
             daemon._redrive_deferred_broadcasts()
             self.assertEqual(fetch.call_count, 1)
@@ -200,7 +265,7 @@ class BroadcastDeferralTests(DaemonHarness):
         runner.connected = False
         try:
             with mock.patch.object(
-                daemon, "_fetch_deferred_message", return_value=("unknown", None, None)
+                daemon, "_probe_deferred_payload", return_value=None
             ) as fetch:
                 daemon._redrive_deferred_broadcasts()
                 self.assertEqual(fetch.call_count, 0)

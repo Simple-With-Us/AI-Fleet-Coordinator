@@ -190,8 +190,10 @@ rollback has its own stop window with the same one-time loss classes above.
 ## Named residuals (explicit; owner acceptance pending)
 
 - An event acknowledged 200 by the Linear hook and held only in memory is lost on an
-  UNPLANNED stop; reconcile is read-idempotent and self-heals on the next project
-  event. The 503 gate removes the planned-stop case.
+  UNPLANNED stop; reconcile is read-idempotent but self-heals only IF a later project
+  event arrives - with no later event the loss persists indefinitely, and an
+  interrupted reconcile can leave partial linkifier changes (see First adoption). The
+  503 gate removes the planned-stop case.
 - Admission is fenced, a mid-effect crash is not: the deferred-broadcast record marks
   an effect done when its thread STARTS, so an unplanned stop inside a
   fanout/inbox/audit effect can leave it partial (missing nudges for not-yet-enqueued
