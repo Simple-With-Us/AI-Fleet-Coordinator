@@ -335,8 +335,7 @@ def linux_executable(pid: int, proc: Path) -> str | None:
         path = os.readlink(str(proc / str(pid) / "exe"))
     except OSError:
         return None
-    if path.endswith(" (deleted)"):
-        path = path[: -len(" (deleted)")]
+    path = path.removesuffix(" (deleted)")
     return clean(path)
 
 
@@ -408,7 +407,9 @@ def _scan(host, *, runner, home, proc, apps, platform, clock, own_pid) -> dict:
     notes: list[str] = []
     complete = True
     if not apps:
-        notes.append("fleet-apps.json could not be read, so only this repository's own rules matched.")
+        notes.append(
+            "fleet-apps.json could not be read, so only this repository's own rules matched."
+        )
     labels: dict[int, str] = {}
     if platform == "darwin":
         read = launchd_labels(runner)
@@ -479,7 +480,9 @@ def _scan(host, *, runner, home, proc, apps, platform, clock, own_pid) -> dict:
         section["truncated"] = True
         section["complete"] = False
     if section["truncated"]:
-        notes.append(f"More processes matched than the report keeps;  the first {len(ordered)} are listed.")
+        notes.append(
+            f"More processes matched than the report keeps;  the first {len(ordered)} are listed."
+        )
     return section
 
 
@@ -530,13 +533,18 @@ def section_from(doc, host: str) -> dict:
     """A host's section as the report keeps it:  checked, with every row rebuilt.  A section
     that is not one becomes an unreachable section that says why."""
     if not isinstance(doc, dict) or doc.get("tool") != TOOL:
-        return unreachable_section(host, f"the {host}'s answer carried no process scan this doctor reads")
+        return unreachable_section(
+            host, f"the {host}'s answer carried no process scan this doctor reads"
+        )
     if doc.get("schemaVersion") != SCHEMA_VERSION:
         return unreachable_section(
-            host, f"the {host}'s process scan is version {doc.get('schemaVersion')!r}, not {SCHEMA_VERSION}"
+            host,
+            f"the {host}'s process scan is version {doc.get('schemaVersion')!r}, not {SCHEMA_VERSION}",
         )
     if doc.get("host") != host:
-        return unreachable_section(host, f"the process scan says it is from {doc.get('host')!r}, not the {host}")
+        return unreachable_section(
+            host, f"the process scan says it is from {doc.get('host')!r}, not the {host}"
+        )
     if parse_utc(doc.get("generatedAt")) is None:
         return unreachable_section(host, f"the {host}'s process scan carries no time")
     processes = doc.get("processes")
@@ -551,7 +559,9 @@ def section_from(doc, host: str) -> dict:
         "tool": TOOL,
         "host": host,
         "reachable": reachable,
-        "error": None if reachable else (clean(doc.get("error"), 300) or f"the {host} could not scan itself"),
+        "error": None
+        if reachable
+        else (clean(doc.get("error"), 300) or f"the {host} could not scan itself"),
         "generatedAt": doc["generatedAt"],
         "complete": reachable
         and doc.get("complete") is True
@@ -562,7 +572,9 @@ def section_from(doc, host: str) -> dict:
         "processes": rows if reachable else [],
     }
     if section_bytes(section) > MAX_SECTION_BYTES:
-        return unreachable_section(host, f"the {host}'s process scan is larger than {MAX_SECTION_BYTES} bytes")
+        return unreachable_section(
+            host, f"the {host}'s process scan is larger than {MAX_SECTION_BYTES} bytes"
+        )
     return section
 
 
@@ -578,7 +590,8 @@ def server_section(server) -> dict:
         )
     if scan is None:
         return unreachable_section(
-            "server", "the server's doctor does not carry a process scan yet (its runtime may be behind)"
+            "server",
+            "the server's doctor does not carry a process scan yet (its runtime may be behind)",
         )
     return section_from(scan, "server")
 
@@ -593,12 +606,17 @@ def build_report(sections: list[dict], apps: list[dict], now: float | None = Non
     }
 
 
-def keep(server, mac: dict, path: Path, writer, apps: list[dict] | None = None, now: float | None = None) -> bool:
+def keep(
+    server, mac: dict, path: Path, writer, apps: list[dict] | None = None, now: float | None = None
+) -> bool:
     """On the Mac:  take the server's scan out of its half, and write the Mac's and the
     server's sections to `path` with the doctor's own atomic 0600 writer.  True when written.
     Never raises:  a failed write leaves the previous file, which Muster ages out."""
     try:
-        sections = [section_from(mac, "mac") if mac.get("reachable") else mac, server_section(server)]
+        sections = [
+            section_from(mac, "mac") if mac.get("reachable") else mac,
+            server_section(server),
+        ]
         report = build_report(sections, load_apps() if apps is None else apps, now)
         writer(path, report)
         return True

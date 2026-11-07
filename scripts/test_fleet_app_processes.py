@@ -8,10 +8,8 @@ pm2's pid files live in a temporary HOME.  Nothing reads this machine's processe
 
 from __future__ import annotations
 
-import contextlib
 import functools
 import importlib.util
-import io
 import json
 import os
 import stat
@@ -26,11 +24,13 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
 sys.path.insert(0, str(HERE))
 
-spec = importlib.util.spec_from_file_location("fleet_app_processes", HERE / "fleet_app_processes.py")
+spec = importlib.util.spec_from_file_location(
+    "fleet_app_processes", HERE / "fleet_app_processes.py"
+)
 fap = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fap)
 
-import test_fleet_tools_doctor as doctor_tests  # noqa: E402  (its doctor, fake runner and HomeCase)
+import test_fleet_tools_doctor as doctor_tests
 
 doctor = doctor_tests.doctor
 
@@ -157,9 +157,15 @@ class Fixture(unittest.TestCase):
 
     def linux_fixture(self):
         self.process(1, cgroup="0::/init.scope\n")
-        self.process(801, exe="/usr/bin/python3.12", cgroup="0::/system.slice/fleet-coding-memory.service\n")
+        self.process(
+            801, exe="/usr/bin/python3.12", cgroup="0::/system.slice/fleet-coding-memory.service\n"
+        )
         self.process(802, cgroup="0::/system.slice/fleet-coding-memory.service\n")
-        self.process(803, exe="/opt/botfleet/bin/botfleet-worker (deleted)", cgroup="0::/system.slice/cron.service\n")
+        self.process(
+            803,
+            exe="/opt/botfleet/bin/botfleet-worker (deleted)",
+            cgroup="0::/system.slice/cron.service\n",
+        )
         self.process(804, cgroup="0::/system.slice/docker-" + "a" * 64 + ".scope\n")
         self.process(805, exe="/usr/bin/dockerd", cgroup="0::/system.slice/docker.service\n")
         self.process(
@@ -191,7 +197,9 @@ class MacScanTests(Fixture):
         section = self.mac_scan()
         self.assertTrue(section["reachable"])
         self.assertTrue(section["complete"])
-        self.assertEqual((section["tool"], section["schemaVersion"], section["host"]), (fap.TOOL, 1, "mac"))
+        self.assertEqual(
+            (section["tool"], section["schemaVersion"], section["host"]), (fap.TOOL, 1, "mac")
+        )
         rows = by_pid(section)
         self.assertEqual(rows[501]["app"], "BF")
         self.assertEqual(rows[501]["launchdLabel"], "app.botfleet.server")
@@ -210,7 +218,10 @@ class MacScanTests(Fixture):
         for pid in (1, 506, 509):  # launchd, an unattributed pm2 app, Chrome
             self.assertNotIn(pid, rows)
         # Every node process is not BotFleet:  only the ones an identity names are.
-        self.assertEqual(sorted(p for p, r in rows.items() if r.get("executable") == "node"), [501, 502, 504, 505])
+        self.assertEqual(
+            sorted(p for p, r in rows.items() if r.get("executable") == "node"),
+            [501, 502, 504, 505],
+        )
 
     def test_the_scans_own_children_are_left_out(self):
         self.assertNotIn(508, by_pid(self.mac_scan()))
@@ -227,7 +238,9 @@ class MacScanTests(Fixture):
         ps = [call for call in self.calls if call[0] == fap.PS]
         self.assertEqual(len(ps), 1)
         self.assertIn("ucomm=", ps[0])
-        self.assertEqual([call for call in self.calls if call[0] == fap.LAUNCHCTL], [[fap.LAUNCHCTL, "list"]])
+        self.assertEqual(
+            [call for call in self.calls if call[0] == fap.LAUNCHCTL], [[fap.LAUNCHCTL, "list"]]
+        )
 
     def test_launchctl_that_does_not_answer_makes_the_read_partial(self):
         section = self.mac_scan({fap.PS: (0, MAC_PS), fap.LAUNCHCTL: (1, "")})
@@ -252,7 +265,9 @@ class MacScanTests(Fixture):
 
     def test_an_unexpected_failure_is_a_section_that_says_so(self):
         with mock.patch.object(fap, "_scan", side_effect=RuntimeError("boom")):
-            section = fap.scan_host("mac", runner=fake_runner({}, self.calls), home=self.home, apps=APPS)
+            section = fap.scan_host(
+                "mac", runner=fake_runner({}, self.calls), home=self.home, apps=APPS
+            )
         self.assertFalse(section["reachable"])
         self.assertIn("RuntimeError", section["error"])
 
@@ -274,9 +289,13 @@ class LinuxScanTests(Fixture):
         self.assertEqual(rows[801]["systemdUnit"], "fleet-coding-memory.service")
         self.assertEqual(rows[801]["executable"], "/usr/bin/python3.12")
         self.assertEqual(rows[801]["matchedBy"], "systemd unit")
-        self.assertEqual(rows[802]["matchedBy"], "systemd unit")  # the unit names it, not its parent
+        self.assertEqual(
+            rows[802]["matchedBy"], "systemd unit"
+        )  # the unit names it, not its parent
         self.assertEqual(rows[802]["executable"], "python3")  # no readable exe:  the short name
-        self.assertEqual((rows[803]["app"], rows[803]["executable"]), ("BF", "/opt/botfleet/bin/botfleet-worker"))
+        self.assertEqual(
+            (rows[803]["app"], rows[803]["executable"]), ("BF", "/opt/botfleet/bin/botfleet-worker")
+        )
         self.assertEqual(rows[807]["systemdUnit"], "fleet-server-status.service")
         self.assertEqual((rows[808]["app"], rows[808]["state"]), ("AFC", "waiting"))
         for pid in (1, 804, 805, 806):  # systemd, a container's node, dockerd, sshd
@@ -342,7 +361,9 @@ class PrivacyTests(Fixture):
             ],
         }
         section = fap.section_from(server_scan, "server")
-        self.assertEqual(set(section["processes"][0]), {"app", "pid", "executable", "state", "matchedBy"})
+        self.assertEqual(
+            set(section["processes"][0]), {"app", "pid", "executable", "state", "matchedBy"}
+        )
         self.assertNotIn(SECRET, json.dumps(section))
         for row in section["processes"]:
             self.assertLessEqual(set(row), set(fap.ROW_KEYS))
@@ -360,7 +381,9 @@ def server_scan_doc(**overrides):
         "complete": True,
         "truncated": False,
         "notes": ["one note"],
-        "processes": [{"app": "AFC", "pid": 7, "state": "sleeping", "startedAt": fap.utc(NOW - 60)}],
+        "processes": [
+            {"app": "AFC", "pid": 7, "state": "sleeping", "startedAt": fap.utc(NOW - 60)}
+        ],
     }
     doc.update(overrides)
     return doc
@@ -382,13 +405,23 @@ class ServerSectionTests(unittest.TestCase):
     def test_every_way_of_not_knowing_is_an_unreachable_section(self):
         cases = (
             (None, "no --remote given"),
-            ({"reachable": False, "error": "ssh fleet-tools-ro exited 255", "appProcesses": self.scan()}, "exited 255"),
+            (
+                {
+                    "reachable": False,
+                    "error": "ssh fleet-tools-ro exited 255",
+                    "appProcesses": self.scan(),
+                },
+                "exited 255",
+            ),
             ({"reachable": True}, "does not carry a process scan yet"),
             ({"reachable": True, "appProcesses": "text"}, "no process scan this doctor reads"),
             ({"reachable": True, "appProcesses": self.scan(tool="other")}, "no process scan"),
             ({"reachable": True, "appProcesses": self.scan(schemaVersion=2)}, "version 2"),
             ({"reachable": True, "appProcesses": self.scan(host="mac")}, "not the server"),
-            ({"reachable": True, "appProcesses": self.scan(generatedAt="yesterday")}, "carries no time"),
+            (
+                {"reachable": True, "appProcesses": self.scan(generatedAt="yesterday")},
+                "carries no time",
+            ),
             ({"reachable": True, "appProcesses": self.scan(processes="none")}, "no process list"),
         )
         for server, why in cases:
@@ -406,7 +439,9 @@ class ServerSectionTests(unittest.TestCase):
         self.assertEqual(section["processes"], [])
 
     def test_a_partial_or_malformed_row_makes_the_section_partial(self):
-        section = fap.section_from(self.scan(processes=[{"app": "AFC", "pid": 7}, {"pid": "x"}]), "server")
+        section = fap.section_from(
+            self.scan(processes=[{"app": "AFC", "pid": 7}, {"pid": "x"}]), "server"
+        )
         self.assertTrue(section["reachable"])
         self.assertFalse(section["complete"])
         self.assertEqual(len(section["processes"]), 1)
@@ -422,8 +457,14 @@ class KeepTests(Fixture):
     def test_the_report_has_both_hosts_and_the_pinned_contract(self):
         written = {}
         server = {"reachable": True, "appProcesses": server_scan_doc()}
-        ok = fap.keep(server, self.mac_section(), Path("/x/app-processes.json"),
-                      lambda path, doc: written.update(path=path, doc=doc), apps=APPS, now=NOW)
+        ok = fap.keep(
+            server,
+            self.mac_section(),
+            Path("/x/app-processes.json"),
+            lambda path, doc: written.update(path=path, doc=doc),
+            apps=APPS,
+            now=NOW,
+        )
         self.assertTrue(ok)
         report = written["doc"]
         self.assertEqual((report["schemaVersion"], report["tool"]), (1, "fleet-app-processes"))
@@ -470,8 +511,16 @@ class AppsAndRulesTests(unittest.TestCase):
             want = "BF" if "botfleet" in label else "AFC"
             self.assertEqual(fap.match_identity("launchd", label, slugs), want, label)
         units = []
-        for folder in ("scripts/systemd", "scripts/host", "scripts/hetzner", "scripts/agent_sync/server"):
-            units += [path.name.replace("@.service", "@instance.service") for path in (REPO / folder).glob("*.service")]
+        for folder in (
+            "scripts/systemd",
+            "scripts/host",
+            "scripts/hetzner",
+            "scripts/agent_sync/server",
+        ):
+            units += [
+                path.name.replace("@.service", "@instance.service")
+                for path in (REPO / folder).glob("*.service")
+            ]
         self.assertIn("fleet-tools-doctor.service", units)
         for unit in units:
             self.assertEqual(fap.match_identity("systemd", unit, slugs), "AFC", unit)
@@ -514,7 +563,9 @@ class DoctorTests(doctor_tests.HomeCase):
             text, _ = self.run_doctor(["--json", "--no-network", "--no-registry"], rules)
         doc = json.loads(text)
         scan = doc["appProcesses"]
-        self.assertEqual((scan["tool"], scan["host"], scan["reachable"]), (fap.TOOL, "server", True))
+        self.assertEqual(
+            (scan["tool"], scan["host"], scan["reachable"]), (fap.TOOL, "server", True)
+        )
         self.assertEqual(scan["processes"][0]["app"], "BF")
         self.assertEqual((doc["schemaVersion"], doc["host"]), (1, "server"))
 
@@ -539,7 +590,9 @@ class DoctorTests(doctor_tests.HomeCase):
         self.assertEqual([h["host"] for h in written["hosts"]], ["mac", "server"])
         self.assertTrue(all(h["reachable"] for h in written["hosts"]))
         self.assertIn(501, [row["pid"] for row in written["hosts"][0]["processes"]])
-        self.assertEqual(written["hosts"][1]["processes"][0], {"app": "BF", "pid": 9, "state": "sleeping"})
+        self.assertEqual(
+            written["hosts"][1]["processes"][0], {"app": "BF", "pid": 9, "state": "sleeping"}
+        )
         self.assertNotIn(SECRET, path.read_text())
         self.assertNotIn(SECRET, report.read_text())
 
@@ -558,7 +611,14 @@ class DoctorTests(doctor_tests.HomeCase):
         rules = [self.CONFIGURED, self.server_answer(self.server_scan())]
         with mock.patch.object(doctor, "app_processes", return_value=None):
             self.run_doctor(
-                ["--no-network", "--no-registry", "--remote", "fleet-tools-ro", "--write", str(report)],
+                [
+                    "--no-network",
+                    "--no-registry",
+                    "--remote",
+                    "fleet-tools-ro",
+                    "--write",
+                    str(report),
+                ],
                 rules,
                 host="mac",
             )
