@@ -5820,12 +5820,19 @@ def minimax_hook_command(paths: Paths) -> str:
 
 
 def _login_users() -> list[pwd.struct_passwd]:
-    """Accounts that own a real home:  root and the regular login users, not the system daemons."""
+    """Accounts that own a real home:  root, the regular uid range, and any account with a login shell."""
     try:
         users = pwd.getpwall()
     except OSError:
         return []
-    return [u for u in users if u.pw_uid == 0 or 500 <= u.pw_uid < 65534]
+
+    def login_shell(shell: str) -> bool:
+        base = os.path.basename((shell or "").strip()).lower()
+        return bool(base) and base not in ("false", "nologin", "sync", "shutdown", "halt")
+
+    return [
+        u for u in users if u.pw_uid == 0 or 500 <= u.pw_uid < 65534 or login_shell(u.pw_shell)
+    ]
 
 
 def _within(path: str, root: str) -> bool:
@@ -5866,6 +5873,9 @@ def _runnable_by(path: str, uid: int, gids: set[int]) -> str | None:
         return None if st.st_mode & 0o111 else f"{real} has no execute bit"
     if not _mode_allows(st, uid, gids, 1):
         return f"{real} is not executable by uid {uid}"
+    # The hook is a script:  the kernel reads it to find the interpreter, so execute alone is not enough.
+    if not _mode_allows(st, uid, gids, 4):
+        return f"{real} is not readable by uid {uid}"
     return None
 
 
@@ -5882,7 +5892,10 @@ def hook_home_problem(executable: str, home: str) -> str | None:
     candidates = {os.path.abspath(executable), os.path.realpath(executable)}
     for user in _login_users():
         other = os.path.realpath(user.pw_dir) if user.pw_dir else ""
-        if not other or other == os.sep or other == home_real or _within(home_real, other):
+        if not other or other == os.sep or other == home_real:
+            continue
+        # An account whose home holds the target home only covers paths inside the target home.
+        if _within(home_real, other) and all(_within(c, home_real) for c in candidates):
             continue
         for candidate in candidates:
             if _within(candidate, other):
@@ -5895,10 +5908,10 @@ def hook_home_problem(executable: str, home: str) -> str | None:
     except OSError as exc:
         return f"{home} cannot be checked: {type(exc).__name__}"
     if owner == os.geteuid():
-        if os.path.isfile(executable) and os.access(executable, os.X_OK):
+        if os.path.isfile(executable) and os.access(executable, os.R_OK | os.X_OK):
             return None
         return (
-            f"the hook {executable} is missing or not executable by the owner of {home}; "
+            f"the hook {executable} is missing, unreadable or not executable by the owner of {home}; "
             "run `apply tools` first"
         )
     try:

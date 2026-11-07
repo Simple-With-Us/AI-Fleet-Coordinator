@@ -6481,10 +6481,40 @@ class MinimaxBundleTests(World):
         self.assertIsNone(T._runnable_by(str(hook), me, gids))
         hook.chmod(0o070)  # group can run it, the owner cannot:  owner bits decide for the owner
         self.assertIn("not executable", T._runnable_by(str(hook), me, gids) or "")
+        hook.chmod(0o300)  # execute without read:  the kernel cannot read a script's interpreter line
+        self.assertIn("not readable", T._runnable_by(str(hook), me, gids) or "")
         hook.chmod(0o700)
         inner.chmod(0o600)  # the owner cannot search the directory on the way
         self.addCleanup(inner.chmod, 0o700)
         self.assertIn(str(inner), T._runnable_by(str(hook), me, gids) or "")
+
+    def test_an_account_whose_home_holds_the_target_home_still_guards_its_other_paths(self) -> None:
+        # An account whose home contains the target home covers only paths inside the target home.
+        outside = self.tmp / "elsewhere" / "hook"
+        outside.parent.mkdir()
+        outside.write_text("#!/bin/sh\n")
+        outside.chmod(0o755)
+        inside = self.home / "hook"
+        inside.write_text("#!/bin/sh\n")
+        inside.chmod(0o755)
+        parent = mock.Mock(pw_name="parent", pw_uid=1500, pw_dir=str(self.tmp))
+        with mock.patch.object(T, "_login_users", return_value=[parent]):
+            self.assertIn("inside parent's home", T.hook_home_problem(str(outside), str(self.home)) or "")
+            self.assertIsNone(T.hook_home_problem(str(inside), str(self.home)))
+
+    def test_login_accounts_outside_the_regular_uid_range_still_count(self) -> None:
+        def account(name: str, uid: int, shell: str) -> mock.Mock:
+            return mock.Mock(pw_name=name, pw_uid=uid, pw_dir=f"/srv/{name}", pw_shell=shell)
+
+        users = [
+            account("svc", 200, "/bin/bash"),
+            account("daemon", 1, "/usr/sbin/nologin"),
+            account("nobody", 65534, "/usr/bin/false"),
+            account("person", 1001, "/bin/zsh"),
+        ]
+        with mock.patch.object(T.pwd, "getpwall", return_value=users):
+            names = [u.pw_name for u in T._login_users()]
+        self.assertEqual(names, ["svc", "person"])
 
     def test_an_unwired_bundle_is_a_skip_unless_the_platform_is_named(self) -> None:
         checks = self.verify_mm()
