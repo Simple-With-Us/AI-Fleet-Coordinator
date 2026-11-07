@@ -21,7 +21,7 @@ import XCTest
 /// not reproduce the owner's bug, the fixed run proves only that the new root keeps its
 /// columns inside the window, and the control is recorded as an expected failure until a
 /// harness reproduces the bug.  Each run prints its measurements (`[window layout]` in the test
-/// log), and attaches a screenshot to the result bundle, which CI uploads.
+/// log), and attaches a screenshot to the test results when a run keeps a result bundle.
 @MainActor
 final class MusterWindowLayoutTests: XCTestCase {
     private enum Layout: String {
