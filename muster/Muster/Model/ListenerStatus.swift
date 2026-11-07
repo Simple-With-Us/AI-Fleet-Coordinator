@@ -166,6 +166,26 @@ struct ListenerStatus: Decodable, Equatable {
         var ts: Double?
     }
 
+    /// Whether the Operator can post to Zulip,  as the eavesdropper last found it
+    /// (`status.operator_voice`).  An eavesdropper from before this block does not publish it.
+    struct OperatorVoice: Decodable, Equatable {
+        /// Whether the Operator can post.  Nil when the block holds no usable answer.
+        var available: Bool?
+        /// The eavesdropper's own code for why it cannot,  when it gave one.
+        var code: String?
+        /// When a failure first began,  as the eavesdropper wrote it (ISO-8601).  The
+        /// eavesdropper retries every two minutes and keeps this as the first failure's time.
+        var since: String?
+        /// True when `available` is present and null:  the eavesdropper has not finished its
+        /// first Operator build since it started,  so it has not tried yet.  A missing key or a
+        /// value of the wrong type is not this.
+        var availableIsNull = false
+
+        enum CodingKeys: String, CodingKey {
+            case available, code, since
+        }
+    }
+
     /// The eavesdropper's own state.
     struct State: Decodable, Equatable {
         /// The seats,  by tag.
@@ -194,10 +214,15 @@ struct ListenerStatus: Decodable, Equatable {
         /// The seat partition file this eavesdropper reads.  An eavesdropper from before this field does
         /// not say.
         var partition_file: String?
+        /// Whether the Operator can post.  Nil when the eavesdropper does not publish the block;
+        /// a block it publishes in a shape Muster cannot read is kept with no answer in it,  so
+        /// it is never mistaken for an eavesdropper too old to say.
+        var operator_voice: OperatorVoice?
 
         enum CodingKeys: String, CodingKey {
             case seats, pause, updated, started, version, instance, disabled, skipped_seats
             case config_errors, reload_refused, reload_at, partition_file
+            case operator_voice
         }
     }
 
@@ -278,6 +303,274 @@ extension ListenerStatus.State {
         reload_refused = container.lenient([String].self, .reload_refused)
         reload_at = container.lenient(Double.self, .reload_at)
         partition_file = container.lenient(String.self, .partition_file)
+        // A missing or null block is an eavesdropper that does not say.  A block of the wrong
+        // shape costs only this block:  it is kept with no answer in it,  never dropped.
+        if container.contains(.operator_voice), (try? container.decodeNil(forKey: .operator_voice)) != true {
+            operator_voice = container.lenient(ListenerStatus.OperatorVoice.self, .operator_voice)
+                ?? ListenerStatus.OperatorVoice(available: nil, code: nil, since: nil)
+        } else {
+            operator_voice = nil
+        }
+    }
+}
+
+extension ListenerStatus.OperatorVoice {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        available = container.lenient(Bool.self, .available)
+        code = container.lenient(String.self, .code)
+        since = container.lenient(String.self, .since)
+        availableIsNull = container.contains(.available)
+            && (try? container.decodeNil(forKey: .available)) == true
+    }
+}
+
+// MARK: - Whether the Operator can post
+
+/// What the eavesdropper says about the Operator's voice:  whether the Operator can post to
+/// Zulip right now.  Muster never fills a gap with a guess:  an eavesdropper that does not
+/// report it reads as not reported,  never as available.
+enum OperatorVoiceReading: Equatable {
+    /// The status could not be read,  and this is why.
+    case notRead(String)
+    /// The eavesdropper does not report it.  An older eavesdropper does not publish the block.
+    case notReported
+    /// The eavesdropper reports it in a shape Muster cannot read.
+    case unreadable
+    /// The eavesdropper has not tried yet:  `available` is null until its first Operator build
+    /// since it started has finished.
+    case notTriedYet
+    /// The Operator can post.
+    case available(since: Date?, sinceText: String?)
+    /// The Operator cannot post.  `code` is the eavesdropper's own code,  safe to show.
+    case unavailable(code: String?, since: Date?, sinceText: String?)
+    /// The status is not current or the eavesdropper is not running,  so whether the Operator
+    /// can post now is not known.  `lastAvailable` is what the last status said,  and `code` is
+    /// the eavesdropper's own code when that status said the Operator could not post.
+    case notCurrent(why: String, lastAvailable: Bool, since: Date?, sinceText: String?, code: String? = nil)
+
+    /// The reading from a status.
+    init(_ state: ListenerStatus.State?) {
+        guard let state else {
+            self = .notRead("The eavesdropper's status was not read, so whether the Operator can post is not known.")
+            return
+        }
+        guard let voice = state.operator_voice else {
+            self = .notReported
+            return
+        }
+        let sinceText = voice.since.map(SeatActivityText.label).flatMap { $0.isEmpty ? nil : $0 }
+        let since = sinceText.flatMap { FleetTime.parse($0) }
+        switch voice.available {
+        case true?:
+            self = .available(since: since, sinceText: sinceText)
+        case false?:
+            let code = voice.code.map(SeatActivityText.label).flatMap { $0.isEmpty ? nil : $0 }
+            self = .unavailable(code: code, since: since, sinceText: sinceText)
+        case nil:
+            self = voice.availableIsNull ? .notTriedYet : .unreadable
+        }
+    }
+
+    /// The reading the Wake & Listener panel shows,  from the same status the rest of the panel
+    /// reads (`simple-chat daemon status --json`) and judged by the same currency.  A status
+    /// that is not current,  or an eavesdropper that is not running,  never reads as Can post or
+    /// Cannot post:  it reads as not known,  with what the last status said.
+    ///
+    /// - Parameters:
+    ///   - status:  The envelope as read,  or nil when it could not be read.
+    ///   - runState:  Whether the eavesdropper is running,  as the panel decided it.
+    ///   - statusIsCurrent:  Whether the status is current,  as the panel decided it.
+    static func current(
+        _ status: ListenerStatus?,
+        runState: ListenerRunState,
+        statusIsCurrent: Bool
+    ) -> OperatorVoiceReading {
+        guard let status else {
+            return .notRead("The eavesdropper's status could not be read, so whether the Operator can post is not known.")
+        }
+        if let instance = status.status?.instance, instance != ListenerPartition.thisInstance {
+            return .notRead("The eavesdropper on this machine says it is the \(instance) instance, not the Mac's, so whether the Operator can post is not known.")
+        }
+        let reading = OperatorVoiceReading(status.status)
+        guard !statusIsCurrent else { return reading }
+        let why: String
+        switch runState {
+        case .running: why = "The eavesdropper's status is not current"
+        case .stopped: why = "The eavesdropper is not running"
+        case .unknown: why = "Whether the eavesdropper is running is not known"
+        }
+        switch reading {
+        case .available(let since, let sinceText):
+            return .notCurrent(why: why, lastAvailable: true, since: since, sinceText: sinceText)
+        case .unavailable(let code, let since, let sinceText):
+            return .notCurrent(why: why, lastAvailable: false, since: since, sinceText: sinceText, code: code)
+        case .notRead, .notReported, .unreadable, .notTriedYet, .notCurrent:
+            return reading
+        }
+    }
+
+    /// Whether the Operator cannot post,  as a current status says.
+    var isUnavailable: Bool {
+        if case .unavailable = self { return true }
+        return false
+    }
+
+    /// Whether the panel shows this as something to look at.
+    var isProblem: Bool {
+        switch self {
+        case .unavailable, .unreadable: return true
+        case .notCurrent(_, let lastAvailable, _, _, _): return !lastAvailable
+        case .notRead, .notReported, .notTriedYet, .available: return false
+        }
+    }
+
+    /// The short answer the Operator section shows.
+    var label: String {
+        switch self {
+        case .available: return "Can post"
+        case .unavailable: return "Cannot post"
+        case .notReported: return "Not reported"
+        case .notTriedYet: return "Not tried yet"
+        case .unreadable, .notRead, .notCurrent: return "Not known"
+        }
+    }
+
+    /// The symbol beside the answer,  never instead of it.
+    var systemImage: String {
+        switch self {
+        case .available: return "checkmark.circle.fill"
+        case .unavailable: return "exclamationmark.triangle.fill"
+        case .notReported: return "info.circle"
+        case .notTriedYet: return "clock"
+        case .unreadable, .notRead, .notCurrent: return "questionmark.circle"
+        }
+    }
+
+    /// The answer in a sentence,  with the time on Jay's clock.
+    func sentence(now: Date = Date()) -> String {
+        switch self {
+        case .available(let since, _):
+            guard let since else { return "The Operator can post to Zulip." }
+            return "The Operator can post to Zulip, and has been able to since \(Self.whenText(since, now: now))."
+        case .unavailable(let code, let since, _):
+            let cause = code.flatMap(Self.cause).map { "\u{00A0} " + $0 } ?? ""
+            guard let since else { return "The Operator cannot post to Zulip." + cause }
+            return "The Operator cannot post to Zulip, and has not been able to since \(Self.whenText(since, now: now))." + cause
+        case .notTriedYet:
+            return "The Mac's eavesdropper has not tried the Operator yet.\u{00A0} It tries once soon after it starts."
+        case .notCurrent(let why, let lastAvailable, let since, _, let code):
+            let said = lastAvailable ? "could post" : "could not post"
+            let from = since.map { " from \(Self.whenText($0, now: now))" } ?? ""
+            let cause = lastAvailable ? "" : (code.flatMap(Self.cause).map { "\u{00A0} " + $0 } ?? "")
+            return "\(why), so whether the Operator can post now is not known.\u{00A0} Its last status said the Operator \(said)\(from)." + cause
+        case .notReported:
+            return "The Mac's eavesdropper does not report whether the Operator can post."
+        case .unreadable:
+            return "The Mac's eavesdropper reports whether the Operator can post in a shape Muster cannot read, so it is not known."
+        case .notRead(let why):
+            return why
+        }
+    }
+
+    /// The tooltip:  where the answer came from,  with the eavesdropper's own code,  and its
+    /// time on Jay's clock.  A time Muster could not read is quoted and said to be so.
+    func tooltip(now: Date = Date()) -> String {
+        switch self {
+        case .available(let since, let sinceText):
+            return "From status.operator_voice:  available is true" + Self.sinceClause(since, sinceText, now: now) + "."
+        case .unavailable(let code, let since, let sinceText):
+            return "From status.operator_voice:  available is false, code \(code ?? "not given")"
+                + Self.sinceClause(since, sinceText, now: now) + "."
+        case .notCurrent(_, let lastAvailable, let since, let sinceText, let code):
+            let codeClause = lastAvailable ? "" : ", code \(code ?? "not given")"
+            return "From a status.operator_voice that is not current:  available was \(lastAvailable)" + codeClause
+                + Self.sinceClause(since, sinceText, now: now) + "."
+        case .notTriedYet:
+            return "From status.operator_voice:  available is null, which the eavesdropper writes until its first Operator build since it started has finished."
+        case .notReported:
+            return "The eavesdropper's status has no operator_voice block.\u{00A0} An older eavesdropper does not report it, so this is not a sign that the Operator can post."
+        case .unreadable:
+            return "The eavesdropper's status has an operator_voice block Muster cannot read, so whether the Operator can post is not known."
+        case .notRead(let why):
+            return why
+        }
+    }
+
+    /// The cause in plain words for a reason code the eavesdropper writes,  or nil for a code
+    /// Muster does not know (that code stays in the tooltip,  never guessed at).
+    static func cause(_ code: String) -> String? {
+        switch code {
+        case "operator_credential_rejected":
+            return "Zulip refused the Operator's credential."
+        case "operator_owner_not_pinned":
+            return "The owner is not pinned in the listener's settings, so the Operator does not post."
+        case "operator_unavailable":
+            // The catch-all for any failed build of the Operator client:  an unreadable
+            // credential, not the pinned bot, or an identity it could not confirm.
+            return "The listener could not get the Operator ready to post."
+        default:
+            return nil
+        }
+    }
+
+    /// `, since 2:14 PM`,  or the raw text when it is not a time Muster can read.
+    private static func sinceClause(_ since: Date?, _ sinceText: String?, now: Date) -> String {
+        if let since { return ", since \(whenText(since, now: now))" }
+        if let sinceText { return ", since a time Muster could not read:  \(sinceText)" }
+        return ""
+    }
+
+    /// The lines for the panel's problem box,  or none when the Operator is not known to be
+    /// unable to post.  Dropped wakes are tied to it only when the ledger says so:  a wake the
+    /// panel shows as dropped with the eavesdropper's own reason `operator_unavailable`.  A
+    /// status that is not current,  whose last word was that the Operator could not post,  says
+    /// so and that it is not current.
+    func problemLines(seats: [WakeSeat], now: Date = Date()) -> [String] {
+        switch self {
+        case .unavailable: break
+        case .notCurrent(_, let lastAvailable, _, _, _) where !lastAvailable: break
+        default: return []
+        }
+        var text = sentence(now: now)
+        let dropped = Self.droppedForVoice(seats)
+        if dropped.count > 0 {
+            let verb = dropped.count == 1 ? "was" : "were"
+            text += "\u{00A0} \(dropped.count) of the last wakes listed for \(dropped.seats.joined(separator: ", ")) \(verb) dropped because the Operator could not post."
+        }
+        return [text]
+    }
+
+    /// The ledger's reason for a wake dropped because the Operator could not post.
+    static let droppedReason = "operator_unavailable"
+
+    /// The recent wakes the panel shows as dropped because the Operator could not post,  and
+    /// the seats they belong to,  in the panel's order.  Only seats the Mac's eavesdropper
+    /// holds have recent wakes here.
+    static func droppedForVoice(_ seats: [WakeSeat]) -> (count: Int, seats: [String]) {
+        var count = 0
+        var named: [String] = []
+        for seat in seats {
+            let dropped = seat.recentWakes.filter { $0.state == "dropped" && $0.reason == Self.droppedReason }.count
+            guard dropped > 0 else { continue }
+            count += dropped
+            named.append(seat.seat)
+        }
+        return (count, named)
+    }
+
+    /// A time on Jay's clock:  the time alone on the same day as `now`,  else the month and
+    /// day with it.
+    static func whenText(_ date: Date, now: Date) -> String {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/Chicago") ?? .current
+        if calendar.isDate(date, inSameDayAs: now) {
+            return FleetTime.clock(date)
+        }
+        let parts = calendar.dateComponents([.month, .day], from: date)
+        let months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+        let month = parts.month.map { months[max(0, min(11, $0 - 1))] } ?? ""
+        return "\(month) \(parts.day ?? 0), \(FleetTime.clock(date))"
     }
 }
 

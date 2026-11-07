@@ -7,7 +7,7 @@ import SwiftUI
 /// is a bot seat.
 ///
 /// Rows sit under the machine whose eavesdropper holds the seat,  from the seat partition.
-/// Muster reads only the Mac's eavesdropper,  so a seat the server holds says "Not read" in
+/// Muster reads only the Mac's eavesdropper,  so a seat the server holds says "Not read here" in
 /// its eavesdropper columns,  in plain text:  that is where the seat lives,  not a fault.
 /// A source that could not be read shows Unknown in that column with the reason under the
 /// row.  A row never shows an empty list or a zero where a source failed.
@@ -32,6 +32,13 @@ struct SeatActivityView: View {
     /// A refresh costs one Zulip lookup per seat,  so switching apps or panels back and
     /// forth does not start a new one each time.  The Refresh button is not held to this.
     static let foregroundMinimumSeconds: TimeInterval = 60
+
+    /// The panel's own roster:  every seat the fleet runs,  the server's and the Mac's extra
+    /// seats included,  and not only the seats the compliance grid checks.  The grid's roster
+    /// is the first part of it and is never changed by it.
+    private var seatsRoster: [String] {
+        SeatActivityRoster.current(gridRoster: store.roster)
+    }
 
     private let seatWidth: CGFloat = 120
     private let sessionWidth: CGFloat = 110
@@ -82,13 +89,13 @@ struct SeatActivityView: View {
             activity.stopReading()
         }
         .task {
-            await activity.refreshIfOlder(than: SeatActivityView.foregroundMinimumSeconds, roster: store.roster)
+            await activity.refreshIfOlder(than: SeatActivityView.foregroundMinimumSeconds, roster: seatsRoster)
             // The slow timer:  it reads only while the app is in front,  and a read that is
             // already running is never started twice.  It stops when the panel goes away.
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: UInt64(SeatActivityView.refreshSeconds) * 1_000_000_000)
                 if Task.isCancelled { break }
-                await activity.timerTick(roster: store.roster, minimumAge: SeatActivityView.foregroundMinimumSeconds)
+                await activity.timerTick(roster: seatsRoster, minimumAge: SeatActivityView.foregroundMinimumSeconds)
             }
         }
         .onChange(of: scenePhase) { _, phase in
@@ -97,7 +104,7 @@ struct SeatActivityView: View {
             activity.setActive(phase == .active)
             guard phase == .active else { return }
             Task {
-                await activity.refreshIfOlder(than: SeatActivityView.foregroundMinimumSeconds, roster: store.roster)
+                await activity.refreshIfOlder(than: SeatActivityView.foregroundMinimumSeconds, roster: seatsRoster)
             }
         }
     }
@@ -111,7 +118,7 @@ struct SeatActivityView: View {
                     .font(.largeTitle.weight(.semibold))
                 Spacer()
                 Button {
-                    Task { await activity.refresh(roster: store.roster) }
+                    Task { await activity.refresh(roster: seatsRoster) }
                 } label: {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }
@@ -474,9 +481,10 @@ struct SeatActivityView: View {
             .foregroundStyle(.orange)
     }
 
-    /// The marker for a column the Mac does not hold:  plain,  because it is not a fault.
+    /// The marker for a column the Mac does not hold:  plain,  because it is not a fault.  The
+    /// tooltip says where the answer lives instead.
     private func notReadText() -> some View {
-        Text("Not read")
+        Text("Not read here")
             .font(.subheadline.monospaced())
             .foregroundStyle(.secondary)
     }

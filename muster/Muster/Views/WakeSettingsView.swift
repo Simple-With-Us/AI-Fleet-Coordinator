@@ -36,6 +36,11 @@ struct WakeSettingsView: View {
     /// owner has not touched is open when it needs attention or holds an edit, and closed
     /// otherwise.  A choice the owner made stays, so typing an edit never folds the field away.
     @State private var seatOpen: [String: Bool] = [:]
+    /// The problem box's lines:  what could not be read,  and the Operator when it cannot post.
+    /// The Operator's voice comes from the same status as the rest of the panel.
+    private var problemLines: [String] {
+        store.model.problems + store.model.operatorVoice.problemLines(seats: store.model.seats)
+    }
 
     private var filteredSeats: [WakeSeat] {
         let base: [WakeSeat]
@@ -71,8 +76,8 @@ struct WakeSettingsView: View {
                         text: store.model.listenerErrors.joined(separator: "\n")
                     )
                 }
-                if !store.model.problems.isEmpty {
-                    problemBox(store.model.problems.joined(separator: "\n"))
+                if !problemLines.isEmpty {
+                    problemBox(problemLines.joined(separator: "\n"))
                 }
                 if let message = store.message {
                     if store.messageIsFailure {
@@ -378,6 +383,7 @@ struct WakeSettingsView: View {
                     .font(.system(size: 11))
                     .fixedSize(horizontal: false, vertical: true)
             }
+            operatorVoiceLine
             DisclosureGroup("Where The Operator's Names Live") {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(OperatorOptions.names) { name in
@@ -396,6 +402,32 @@ struct WakeSettingsView: View {
             }
             .font(.caption)
         }
+    }
+
+    /// Whether the Operator can post to Zulip,  as the Mac's eavesdropper reports it.  An
+    /// eavesdropper that does not report it reads Not reported,  and a status that is not
+    /// current reads Not known,  never as able to post.
+    private var operatorVoiceLine: some View {
+        let voice = store.model.operatorVoice
+        return HStack(alignment: .top, spacing: 8) {
+            Image(systemName: voice.systemImage)
+                .foregroundStyle(voice.isProblem ? Color.orange : Color.secondary)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text("Posting To Zulip")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text(voice.label)
+                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(voice.isProblem ? Color.orange : Color.secondary)
+                }
+                Text(voice.sentence())
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .help(voice.tooltip())
     }
 
     // MARK: One seat
