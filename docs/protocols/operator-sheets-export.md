@@ -15,10 +15,31 @@ The Operator's session registry (sqlite store in the `eavesdropper` container) m
 
 ## Install (Coolify host)
 
-1. Copy `operator_sheets_export.mjs`, `operator_sheets_google.mjs`, and `operator_sheets_drain.mjs` from `scripts/agent_sync/` to `/usr/local/lib/operator-sheets-drain/` on the host (they import only each other and Node builtins).
-2. Fetch the fleet Sheets service account (`OPERATOR_GOOGLE_SHEETS_SA`, Infisical Fleet-OPS prod, `/operator-thread-registry`) in-process and write it to `/etc/operator-sheets/sa.json`, mode 0600, root-owned.  Never print it or pass it as argv.
-3. `/etc/operator-sheets/drain.env` (0600): `OPERATOR_SHEETS_SA_FILE=/etc/operator-sheets/sa.json` plus the target workbook's identity, read from the workbook itself at install time: `OPERATOR_SHEETS_WORKBOOK_ID`, `OPERATOR_SHEETS_SESSIONS_SHEET_ID`, `OPERATOR_SHEETS_EVENTS_SHEET_ID`.  The drain fails closed when any of them is missing.
-4. Install `scripts/agent_sync/server/operator-sheets-drain.service` and `operator-sheets-drain.timer` into `/etc/systemd/system/`, `systemctl daemon-reload`, `systemctl enable --now operator-sheets-drain.timer`.
+`scripts/agent_sync/server/install-operator-sheets-drain.sh` does the whole install, and is safe to run again.  Run it as root from an AI-Fleet-Coordinator checkout at `origin/main`.  Run it with `--dry-run` first, which prints the plan and changes nothing.
+
+```
+sudo OPERATOR_SHEETS_WORKBOOK_ID=<workbook id> \
+  OPERATOR_SHEETS_TOKEN_FILE=<path to the token file> \
+  INFISICAL_FLEET_OPS_PROJECT_ID=<Fleet-OPS project id> \
+  bash scripts/agent_sync/server/install-operator-sheets-drain.sh --dry-run
+```
+
+Then run the same command without `--dry-run`.  The caller supplies:
+
+- `OPERATOR_SHEETS_WORKBOOK_ID`: the SWU Operator workbook id.  It is not in this repository, so the caller sets it.
+- `OPERATOR_SHEETS_TOKEN_FILE`: a root-owned file, mode 0600 or 0400, holding a scoped read-only Infisical service token for Fleet-OPS prod `/operator-thread-registry`.  Minting it needs the owner's approval, and the script never mints, prints or echoes it, or puts it on a command line.  The script refuses a token whose grant is wider than that folder or can write.
+- `INFISICAL_FLEET_OPS_PROJECT_ID`, unless root's `~/.agent-sync/fleet-ops-project-id` already holds it.
+- Optional: `OPERATOR_SHEETS_SESSIONS_SHEET_ID` (default 20964676), `OPERATOR_SHEETS_EVENTS_SHEET_ID` (default 1449318075), `OPERATOR_REGISTRY_CONTAINER` (default `eavesdropper`) and `OPERATOR_REGISTRY_DB` (default `/data/operator/registry.sqlite3`).  A swapped pair of sheet ids fails closed, because the transport checks each sheet id's tab title before any write.
+
+In order, the script:
+
+1. installs the three drain modules (`operator_sheets_export.mjs`, `operator_sheets_google.mjs`, `operator_sheets_drain.mjs`) into `/usr/local/lib/operator-sheets-drain/` (0644, root);
+2. reads `OPERATOR_GOOGLE_SHEETS_SA` from Infisical Fleet-OPS prod `/operator-thread-registry` inside its own process through `scripts/fleet_secrets/core.py`, checks it is a service-account key, and writes `/etc/operator-sheets/sa.json` (0600, root, in a 0700 directory);
+3. writes `/etc/operator-sheets/drain.env` (0600) with `OPERATOR_SHEETS_SA_FILE`, the workbook id, both sheet ids and the registry container and store;
+4. runs a preflight to check that the registry's `pending-outbox` read inside the container returns JSON (it prints only the row count), and stops before the units if it does not;
+5. installs `operator-sheets-drain.service` and `operator-sheets-drain.timer` into `/etc/systemd/system/` and runs `systemctl daemon-reload`.  It never enables or starts the timer.
+
+An unchanged file is left alone.  When the first live drain is cleared, enable the timer by hand with `systemctl enable --now operator-sheets-drain.timer`.  Tests: `python3 scripts/test_install_operator_sheets_drain.py` (offline, with no Infisical, docker or systemd change).
 
 The app redeploy (Eavesdropper image) must land before the first fenced drain: the fence CLI (`record-export-attempt`) ships in the image's copy of `operator_registry.py`, and the store migrates to schema v2 on the app's next write-open.
 
