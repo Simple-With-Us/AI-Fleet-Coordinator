@@ -19,17 +19,33 @@ struct FleetView: View {
         case attention, pullRequests, claims, apps, codingApps, lanes
     }
 
+    /// How old the page's reading may be before a visit reads again.  Inside it, coming back to
+    /// the page shows the reading on hand at once and runs no `fleet-view status` (about 17
+    /// GitHub calls, a Linear call and two git processes a lane);  the Refresh button always reads.
+    static let visitFreshness: TimeInterval = 60
+
     @EnvironmentObject private var store: FleetStore
-    @State private var envelope: FleetViewEnvelope?
-    @State private var registrySummary = FleetRegistrySummary()
+    /// The page's reading, held for the whole app (`FleetViewStore`), so it outlives this view.
+    @ObservedObject private var reading = FleetViewStore.shared
+    /// The apps and coding apps listed from fleet-apps.json while the work read runs.  Shown
+    /// only while the counts are pending:  the store's rows take over when its read lands.
+    @State private var earlyRegistry: FleetRegistrySummary?
     @State private var filter = FleetViewFilter()
-    @State private var failure: FleetViewFailure?
-    @State private var loading = false
-    @State private var refreshClock = FleetViewRefreshClock()
     @State private var collapsed: Set<PageSection> = [.lanes]
     @State private var openRepos: Set<String> = []
 
-    private var failed: Bool { failure != nil }
+    private var envelope: FleetViewEnvelope? { reading.envelope }
+    private var failure: FleetViewFailure? { reading.failure }
+    private var loading: Bool { reading.loading }
+    private var refreshClock: FleetViewRefreshClock { reading.refreshClock }
+    private var failed: Bool { reading.failed }
+
+    /// The rows on screen:  the early listing while the counts are read, else the store's rows,
+    /// which it rebuilds with the work read before it sets the envelope.
+    private var registrySummary: FleetRegistrySummary {
+        if countsPending, let earlyRegistry { return earlyRegistry }
+        return reading.registrySummary
+    }
 
     /// The apps are listed but this refresh's work read has not come back:  their lane, pull
     /// request and claim counts are being read, which is neither zero nor a failure.
@@ -65,7 +81,7 @@ struct FleetView: View {
                         .foregroundStyle(.secondary)
                 }
                 Button {
-                    Task { await refresh() }
+                    Task { await load(force: true) }
                 } label: {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }
@@ -118,7 +134,7 @@ struct FleetView: View {
             }
         }
         .padding(24)
-        .task { await refresh() }
+        .task { await load(force: false) }
     }
 
     // MARK: Sections
@@ -732,69 +748,41 @@ struct FleetView: View {
             .frame(minWidth: 64, alignment: .leading)
     }
 
-    private func refresh() async {
-        loading = true
-        defer { loading = false }
-        let root = store.engineRoot ?? EngineLocator.locate()?.root
+    /// Reads the page through the app's store:  a visit reads only when the reading on hand is
+    /// older than `visitFreshness` (`force` false), and the Refresh button always reads.  The
+    /// store keeps one read in flight, fails closed, and rebuilds the rows with the work read
+    /// before it sets the envelope, so pending never ends while the rows still hold counts that
+    /// were not read (Sentry, PR 1450).
+    @MainActor
+    private func load(force: Bool) async {
+        let reading = self.reading
+        let named = store.engineRoot
         // The work read (`fleet_view status`) is the slow one:  it reads pull requests across the
-        // fleet's repos, Linear claims and every lane, and took 8.5 s on the server.  It starts
-        // first and runs while the local reads below finish, so the page never waits on it to
-        // list the apps.
-        let work = Task.detached(priority: .userInitiated) { () -> Result<FleetViewEnvelope, Error> in
-            do {
-                return .success(try await FleetViewService.load())
-            } catch {
-                return .failure(error)
+        // fleet's repos, Linear claims and every lane, and took 8.5 s on the server.  It is asked
+        // for first and runs while the local reads below finish, so the page never waits on it
+        // to list the apps.  (The store reads the tools report, a local file, just before it
+        // starts `fleet_view`.)  A visit inside the window starts nothing, and one during a read
+        // joins it.
+        let work = Task { @MainActor in
+            if force {
+                await reading.refresh(engineRoot: named)
+            } else {
+                await reading.refreshIfOlder(than: Self.visitFreshness, engineRoot: named)
             }
         }
-        let tools = await Task.detached(priority: .userInitiated) {
-            FleetToolsReportReader.readDefault()
-        }.value
         // With no work read on screen yet, the apps and coding apps show at once from
         // fleet-apps.json and the tools report.  Their lane, pull request and claim counts say
         // they are being read (`countsPending`), never zero, until the work read comes back.
-        if envelope == nil, let root {
-            registrySummary = await Task.detached(priority: .userInitiated) {
+        // An earlier listing stays until this one lands, so a second Refresh does not flash
+        // the spinner over apps already on screen.
+        if reading.envelope == nil, let root = named ?? EngineLocator.locate()?.root {
+            let tools = await Task.detached(priority: .userInitiated) {
+                FleetToolsReportReader.readDefault()
+            }.value
+            earlyRegistry = await Task.detached(priority: .userInitiated) {
                 FleetRegistryReader.read(repoRoot: root, viewOutput: nil, toolsReading: tools)
             }.value
         }
-        do {
-            let loaded = try await work.value.get()
-            // The rows are rebuilt with the work read before either goes on screen, then both
-            // are set together:  setting `envelope` first ends `countsPending` while the rows
-            // still hold the counts that were not read, which flashed them red (Sentry, PR 1450).
-            let summary: FleetRegistrySummary
-            if let root {
-                summary = await Task.detached(priority: .userInitiated) {
-                    FleetRegistryReader.read(repoRoot: root, viewOutput: loaded, toolsReading: tools)
-                }.value
-            } else {
-                // Never leave the last run's rows beside a fresh one, and never let a checkout
-                // Muster cannot find read as a filter that hides every app (FLEETVIEW-30).
-                summary = FleetRegistrySummary(
-                    problem: "Muster could not find the AI-Fleet-Coordinator checkout, so apps and coding apps cannot be listed.\u{00A0} The pull requests, claims and lanes on this page are from this refresh."
-                )
-            }
-            envelope = loaded
-            registrySummary = summary
-            failure = nil
-            refreshClock.recordSuccess(generatedAt: loaded.generatedAt)
-        } catch {
-            // Fail closed:  clear the lists, never show the last green.  The registry
-            // rows go with them:  read back without the run's answer they carry lane,
-            // pull request and claim counts of zero, which reads as a fleet measured
-            // and found idle rather than one this refresh could not see.  The banner
-            // above the list says the counts are unknown;  nothing under it may spell
-            // a number of its own.  The words are worked out off the main thread, because
-            // stderr can be 4 MB, and the lists clear after that, so the page is never empty
-            // with no banner.
-            let described = await Task.detached(priority: .userInitiated) {
-                FleetViewFailure(error: error)
-            }.value
-            envelope = nil
-            failure = described
-            refreshClock.recordFailure()
-            registrySummary = FleetRegistrySummary()
-        }
+        await work.value
     }
 }
