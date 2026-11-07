@@ -274,20 +274,28 @@ jobs:
               --target "$GITHUB_SHA" --latest=false
           fi
 
+      # A cache in front of the release asset can keep serving the previous
+      # appcast for a while after `gh release upload --clobber` replaces it
+      # (AFC-656: a run failed at 60 s while the feed served the build soon
+      # after), so this step waits minutes, not seconds, before it calls the
+      # publish broken, and says how long it waited when it does.
       - name: Confirm the live feed serves this build
         if: steps.gate.outputs.publish == 'true'
         env:
           FEED: ${{ steps.version.outputs.feed }}
           BUILD: ${{ steps.version.outputs.build }}
         run: |
-          for _ in 1 2 3 4 5 6 7 8 9 10; do
+          tries=20
+          wait=15
+          for attempt in $(seq 1 "$tries"); do
             if curl -fsSL "$FEED" | grep -q "<sparkle:version>$BUILD</sparkle:version>"; then
-              echo "live feed names build $BUILD: $FEED"
+              echo "live feed names build $BUILD after $(( (attempt - 1) * wait ))s of waiting: $FEED"
               exit 0
             fi
-            sleep 6
+            echo "attempt $attempt of $tries:  the feed does not name build $BUILD yet;  waiting ${wait}s"
+            sleep "$wait"
           done
-          echo "::error::$FEED does not name build $BUILD after a minute."
+          echo "::error::$FEED does not name build $BUILD after $(( tries * wait ))s ($tries tries, ${wait}s apart)."
           exit 1
 
       - name: Remove the signing keychain and keys
