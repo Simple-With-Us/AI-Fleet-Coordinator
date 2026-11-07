@@ -201,7 +201,8 @@ jobs:
       # read, so a test that hangs would hold the job open with nothing to
       # report.  The step ends on its own after five minutes instead.
       timeout-minutes: 5
-      run: cd scripts && python3 test-lark-mm-bridge.py
+      # test_lark_bridge_runtime.py pins where the bridge finds the fleet runtime (AFC-490).
+      run: cd scripts && python3 test-lark-mm-bridge.py && python3 -m unittest test_lark_bridge_runtime -v
     # Keeps the docs/PR-AUTOFIX.md caller template's permissions and secrets
     # block in step with what the pr-autofix reusable declares and consumes.
     - name: Autofix caller template guard
