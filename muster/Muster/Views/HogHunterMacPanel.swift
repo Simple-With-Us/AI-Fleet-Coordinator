@@ -8,6 +8,8 @@ import SwiftUI
 /// check,  reads as unknown with a sentence that says so.
 struct HogHunterMacPanel: View {
     @State private var reading: HogHunterMacReading?
+    /// When the report was last read,  which is the moment its age is said for.
+    @State private var readAt: Date?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -18,8 +20,15 @@ struct HogHunterMacPanel: View {
                     FleetToolsStateBadge(state: reading.state, width: 92)
                 }
                 Spacer()
-                if let age = reading?.age, reading?.isCurrent == true {
-                    Text("Report read \(age) ago")
+                // The report's own age,  said as who wrote it.  It is read again every half
+                // minute,  so the words move with it.
+                if let reading, reading.isCurrent,
+                   let line = ReportFreshnessCopy.ageLine(
+                       .macCollector("Hog Hunter"),
+                       ReportFreshness(generatedAt: reading.generatedAt,
+                                       maxAge: TimeInterval(HogHunterMacContract.maxAgeSeconds),
+                                       now: readAt ?? Date())) {
+                    Text(line)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -54,13 +63,13 @@ struct HogHunterMacPanel: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .task {
-            // The report is small and local:  read it again every half minute.
-            while !Task.isCancelled {
-                let read = await Task.detached(priority: .utility) { HogHunterMacReportReader.readDefault() }.value
-                reading = read
-                try? await Task.sleep(nanoseconds: 30_000_000_000)
-            }
+        // The report is small and local:  read it again every half minute,  and at once when
+        // the Mac wakes,  so a report from before the sleep is not shown as current.
+        .rereadsOnTickAndWake(every: ReportFreshness.tickInterval, onWake: { reading = nil }) {
+            let now = Date()
+            let read = await Task.detached(priority: .utility) { HogHunterMacReportReader.readDefault(now: now) }.value
+            reading = read
+            readAt = now
         }
     }
 

@@ -79,6 +79,10 @@ final class PlaceWatch: ObservableObject {
                 forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
             ) { [weak self] _ in
                 Task { @MainActor in
+                    // The clock moves at once,  so every window is judged against the time
+                    // after the sleep while the files are read again,  and an old seat check
+                    // stops reading as current before anything else lands.
+                    if let self { self.now = self.clock() }
                     self?.readNow()
                     onWake()
                 }
@@ -144,6 +148,7 @@ extension MachineMenuInputs {
             unprovenCells: monitor.unprovenCells,
             lastRunWasTrusted: monitor.lastRunWasTrusted,
             transitions: monitor.transitions,
+            seatCheckedAt: monitor.lastRunAt,
             status: watch.status,
             tools: watch.tools,
             asked: watch.asked,
