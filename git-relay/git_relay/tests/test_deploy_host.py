@@ -312,3 +312,37 @@ class LinuxHostTests(unittest.TestCase):
             self.assertRaises((TransactionError, FileNotFoundError)),
         ):
             self.h.signal_state(expected)
+
+    def test_thawed_process_exit_is_success_only_with_full_stopped_proof(self):
+        expected = {"pid": 42}
+        with (
+            patch.object(self.h, "confirmed_stopped", side_effect=[False, True]),
+            patch.object(self.h, "signal_state", return_value=(False, True)),
+            patch.object(self.h, "accepted_stop", return_value=False),
+            patch.object(self.h, "process_identity", return_value=expected),
+            patch("os.kill"),
+        ):
+            self.assertEqual(self.h.reconcile_frozen_stop(expected), "stopped")
+        with (
+            patch.object(self.h, "confirmed_stopped", side_effect=[False, False, True]),
+            patch.object(self.h, "signal_state", return_value=(False, False)),
+            patch.object(self.h, "accepted_stop", return_value=False),
+            patch.object(
+                self.h, "process_identity", side_effect=[expected, TransactionError("inactive")]
+            ),
+            patch("os.kill"),
+        ):
+            self.assertEqual(self.h.reconcile_frozen_stop(expected), "stopped")
+
+    def test_interrupt_cleanup_preserves_original_after_safe_thaw(self):
+        expected = {"pid": 42}
+        for error in [KeyboardInterrupt(), SystemExit(7)]:
+            with (
+                patch.object(self.h, "confirmed_stopped", return_value=False),
+                patch.object(self.h, "process_identity", return_value=expected),
+                patch.object(self.h, "freeze", side_effect=error),
+                patch.object(self.h, "reconcile_frozen_stop", return_value="running") as cleanup,
+                self.assertRaises(type(error)),
+            ):
+                self.h.stop_for_recovery()
+            cleanup.assert_called_once_with(expected)

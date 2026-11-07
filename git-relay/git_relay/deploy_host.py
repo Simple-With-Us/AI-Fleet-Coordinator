@@ -285,8 +285,9 @@ class LinuxHost:
             return self.vanished_stop(expected)
 
     def _reconcile_frozen_stop(self, expected):
-        # No file writes occur in this recovery decision. Never resume a replacement process,
-        # a queued termination without an accepted stop, or a blocked handler.
+        # No file writes occur here. A pre-termination refusal thaws the unchanged
+        # process even with a custom TERM disposition. Once TERM is queued, CONT
+        # requires default/unblocked TERM plus an accepted stop job.
         if self.confirmed_stopped(expected):
             return "stopped"
         pending, unsafe = self.signal_state(expected)
@@ -298,7 +299,13 @@ class LinuxHost:
             os.kill(expected["pid"], signal.SIGCONT)
             deadline = self.clock() + 2
             while self.clock() < deadline:
-                if self.process_identity() != expected:
+                if self.confirmed_stopped(expected):
+                    return "stopped"
+                try:
+                    observed = self.process_identity()
+                except TransactionError:
+                    return self.vanished_stop(expected)
+                if observed != expected:
                     raise TransactionError("abort identity drift; guard retained")
                 tasks, _ = self.tasks_and_children(expected)
                 if tasks and all(state != "T" for state in tasks.values()):
