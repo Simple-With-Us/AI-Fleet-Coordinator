@@ -762,3 +762,53 @@ class NoWakeTests(unittest.TestCase):
         c, d = self.route(msg(content="\U0001f440 @**Claude** please look", flags=["mentioned"]))
         self.assertTrue(c.no_wake)
         self.assertEqual((d.drop_reason, d.seat_inbox, d.wake), (None, True, None))
+
+    def test_a_bracket_arrow_without_a_mention_is_not_delivery(self) -> None:
+        # The bracket label wakes nobody.  Delivery follows the @-mention or the DM.
+        codex = R.SeatIdentity("CODEX", CODEX, "Codex", "codex-bot@zulip.test")
+        c, d = self.route(msg(content="👀 [GB-PLUMBER 📁AFC →CODEX] quiet note", sender=JET), me=codex)
+        self.assertTrue(c.no_wake)
+        self.assertFalse(c.direct)
+        self.assertEqual(d.drop_reason, "chatter")
+        self.assertFalse(d.seat_inbox)
+        self.assertFalse(d.wake_worthy)
+
+    def test_a_directed_compact_intro_with_eyes_reaches_the_addressed_seat(self) -> None:
+        codex = R.SeatIdentity("CODEX", CODEX, "Codex", "codex-bot@zulip.test")
+        content = "👀 [GB-PLUMBER 📁AFC →CODEX] @**Codex** please review"
+        c, d = self.route(msg(content=content, flags=["mentioned"], sender=JET,
+                               email="gb-plumber-bot@zulip.test"), me=codex)
+        self.assertTrue(c.no_wake and c.direct)
+        self.assertTrue(d.seat_inbox, "the addressed seat still gets the post")
+        self.assertIsNone(d.wake, "Operator wake stays suppressed")
+        self.assertIsNone(d.drop_reason)
+        self.assertEqual(d.lease_items, [])
+        self.assertFalse(d.wake_worthy)
+
+    def test_a_marker_after_a_compact_intro_is_the_signal(self) -> None:
+        stripped, suppressed = R.strip_no_wake("[JET 📁AFC] :eyes: hello", "JET")
+        self.assertTrue(suppressed)
+        self.assertTrue(stripped.startswith("[JET 📁AFC]"))
+        self.assertNotIn(":eyes:", stripped)
+        _, other = R.strip_no_wake("[JET 📁AFC] :eyes: hello", "CODEX")
+        self.assertFalse(other, "another seat's compact intro is not a tag for this sender")
+        _, threaded = R.strip_no_wake("[MM: HH.1.M 📁AFC,OPS] :eyes: hello", "CODEX")
+        self.assertTrue(threaded, "a multi-thread id is a seat tag on its own")
+
+
+    def test_an_undirected_compact_intro_with_eyes_still_drops(self) -> None:
+        c, d = self.route(msg(content="👀 [GB-DIRECTOR 📁AFC] visibility only", sender=JET,
+                               email="gb-director-bot@zulip.test"))
+        self.assertTrue(c.no_wake)
+        self.assertEqual(d.drop_reason, "chatter")
+        self.assertFalse(d.seat_inbox)
+        self.assertIsNone(d.wake)
+        self.assertFalse(d.wake_worthy)
+
+    def test_the_seats_own_quiet_mention_still_drops(self) -> None:
+        c, d = self.route(msg(sender=10, content="%s @**Claude** please look" % MARKER, flags=["mentioned"]))
+        self.assertTrue(c.no_wake and c.own)
+        self.assertEqual(d.drop_reason, "own")
+        self.assertFalse(d.seat_inbox)
+        self.assertFalse(d.wake_worthy)
+
