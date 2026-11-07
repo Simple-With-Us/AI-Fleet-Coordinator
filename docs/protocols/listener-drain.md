@@ -201,6 +201,11 @@ rollback has its own stop window with the same one-time loss classes above.
   re-driven. Step 3's quiesce closes this window for the planned stop. What durably
   fences re-drive duplicates is the nudge dedupe key and the ledger trigger-id fence
   (F4), and only when a re-drive happens.
+- Re-drive probes are budgeted and rotated (F8): a payload only fetchable by a subset
+  of runners can wait successive rotated probes at backoff pace (30s doubling to a 5
+  minute cap per id; with many parked ids or a large fleet that can add up to hours)
+  before its effects re-drive. The parked record is retained visibly throughout
+  (nonzero drain.deferred_broadcasts naming the message) rather than lost.
 - Re-drive does not re-run the route's admission predicates (including the stale
   exclusions) on the parked message. Parked effects are bounded to the drain window,
   so this is an explicit design choice, not an age fence: keep the window short.
