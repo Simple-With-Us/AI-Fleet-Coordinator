@@ -256,6 +256,25 @@ class OperatorVoice:
                 return self._failure
         return None
 
+    def update_env(self, env: Mapping[str, str]) -> None:
+        """The host's environment changed under a running voice (a reload moved a pin).
+
+        The voice keeps its own copy of the environment, so it is told:  when the Operator's pinned
+        id or address differs, the cached client was checked against a pin that is no longer the pin
+        and is dropped, a remembered failure is forgotten so the next call builds again at once, and
+        a build still running is not published (it would be judged against the old pin)."""
+        fresh = dict(env)
+        names = ("OPERATOR_ZULIP_USER_ID", "OPERATOR_ZULIP_EMAIL")
+        with self._lock:
+            moved = any(fresh.get(n) != self._env.get(n) for n in names)
+            self._env = fresh
+            if moved:
+                self._client = None
+                self._user_id = 0
+                self._flight = None
+                self._failure = ""
+                self._failed_until = -1e18
+
     def _note_state(self, available: bool, code: str | None) -> None:
         """Remember whether the Operator can speak and since when (caller holds the lock).
 

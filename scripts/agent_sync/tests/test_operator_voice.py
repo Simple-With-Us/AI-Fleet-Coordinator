@@ -183,6 +183,21 @@ class VoiceTests(unittest.TestCase):
         self.assertEqual((again["available"], again["code"]), (False, "operator_credential_rejected"))
         self.assertEqual(again["since"], "2023-11-14T22:34:20Z")
 
+    def test_a_moved_pin_drops_the_verified_client_and_a_remembered_failure(self) -> None:
+        voice = self.voice()
+        first = voice.client()
+        voice.update_env(dict(self.ENV))  # nothing moved:  the same client stays
+        self.assertIs(voice.client(), first)
+        voice.update_env(dict(self.ENV, OPERATOR_ZULIP_EMAIL="other-bot@zulip.test"))
+        with self.assertRaises(OPV.OperatorUnavailable) as caught:
+            voice.client()  # rebuilt (the fake still answers as the old bot), judged against the new pin
+        self.assertIn("not the pinned Operator", caught.exception.reason)
+        self.assertEqual(len(self.built), 2, "a new build, not the cached client")
+        # A failure remembered under the old pin is forgotten the moment the pin moves.
+        self.assertIsNotNone(voice.known_unavailable())
+        voice.update_env(dict(self.ENV))
+        self.assertIsNone(voice.known_unavailable())
+
     def test_an_unpinned_owner_means_no_operator(self) -> None:
         self.owner = 0
         voice = self.voice()
@@ -551,6 +566,30 @@ class NoOperatorTests(OperatorHarness):
         self.assertEqual(OPV.pinned_user_id(daemon.env), OPERATOR_USER_ID)
         winner = self.daemon(env=self.env(OPERATOR_ZULIP_USER_ID="999"))
         self.assertEqual(winner.env["OPERATOR_ZULIP_USER_ID"], "999", "the environment wins")
+
+    def test_a_reload_applies_pins_that_came_from_listener_toml_and_never_replaces_the_environment(
+        self,
+    ) -> None:
+        pins = 'operator_user_id = %d\noperator_email = "%s"'
+        self.write_config(extra_daemon=pins % (999, "other-bot@zulip.test"))
+        daemon = self.daemon(env=self.env(OPERATOR_ZULIP_USER_ID=None, OPERATOR_ZULIP_EMAIL=None))
+        self.assertEqual(daemon.env["OPERATOR_ZULIP_USER_ID"], "999")
+        self.write_config(extra_daemon=pins % (OPERATOR_USER_ID, OPERATOR_EMAIL))
+        daemon.reload()
+        self.assertEqual(daemon.env["OPERATOR_ZULIP_USER_ID"], str(OPERATOR_USER_ID))
+        self.assertEqual(daemon.env["OPERATOR_ZULIP_EMAIL"], OPERATOR_EMAIL)
+        self.assertEqual(
+            OPV.pinned_user_id(daemon.operator_voice._env), OPERATOR_USER_ID, "the voice was told"
+        )
+        self.write_config()  # the pins are gone from the file
+        daemon.reload()
+        self.assertNotIn("OPERATOR_ZULIP_USER_ID", daemon.env)
+        self.assertNotIn("OPERATOR_ZULIP_EMAIL", daemon.env)
+        # A name the host's environment set is the host's, whatever the file says.
+        winner = self.daemon(env=self.env(OPERATOR_ZULIP_USER_ID="999"))
+        self.write_config(extra_daemon="operator_user_id = 5")
+        winner.reload()
+        self.assertEqual(winner.env["OPERATOR_ZULIP_USER_ID"], "999")
 
     def test_the_status_says_the_operator_cannot_speak_and_since_when(self) -> None:
         self.operator_available = False
