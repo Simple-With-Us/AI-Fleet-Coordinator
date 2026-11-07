@@ -423,7 +423,11 @@ enum OperatorVoiceReading: Equatable {
             return .notCurrent(why: why, lastAvailable: true, since: since, sinceText: sinceText)
         case .unavailable(let code, let since, let sinceText):
             return .notCurrent(why: why, lastAvailable: false, since: since, sinceText: sinceText, code: code)
-        case .notRead, .notReported, .unreadable, .notTriedYet, .notCurrent:
+        case .notTriedYet:
+            // "Not tried yet" is true only of the status it came from.  An old or stopped
+            // eavesdropper's may have tried since, so it is not known now (Kody on #1469).
+            return .notRead("\(why), and its last status had not tried the Operator yet, so whether the Operator can post is not known.")
+        case .notRead, .notReported, .unreadable, .notCurrent:
             return reading
         }
     }

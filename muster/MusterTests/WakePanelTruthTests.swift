@@ -1,5 +1,24 @@
 import XCTest
 
+/// Kody on #1469:  "not tried yet" from a status that is not current, or a stopped
+/// eavesdropper's, is not known now, and says why.
+final class OperatorVoiceStaleNotTriedTests: XCTestCase {
+    func test_a_stale_not_tried_yet_reads_as_not_known() throws {
+        let json = #"{"running": false, "status": {"instance": "mac", "operator_voice": {"available": null, "code": null, "since": null}}}"#
+        let status = try JSONDecoder().decode(ListenerStatus.self, from: Data(json.utf8))
+        XCTAssertEqual(OperatorVoiceReading(status.status), .notTriedYet)
+        let stopped = OperatorVoiceReading.current(status, runState: .stopped, statusIsCurrent: false)
+        XCTAssertEqual(stopped.label, "Not known")
+        XCTAssertNotEqual(stopped, .notTriedYet)
+        XCTAssertTrue(stopped.sentence().hasPrefix("The eavesdropper is not running, and its last status had not tried the Operator yet"),
+                      stopped.sentence())
+        XCTAssertFalse(stopped.isProblem)
+        // A current status still says Not tried yet.
+        let current = OperatorVoiceReading.current(status, runState: .running, statusIsCurrent: true)
+        XCTAssertEqual(current, .notTriedYet)
+    }
+}
+
 /// The wake panel tells the truth:  a status it could not read is not a stopped eavesdropper, an old
 /// status is not current, each seat's model and pin are judged by its own runtime, a ledger it could
 /// not read is not zero use, edits survive a read, and a test wake's answer is kept for the owner
