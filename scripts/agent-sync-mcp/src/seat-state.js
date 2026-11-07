@@ -157,6 +157,7 @@ export const MAX_WAIT_MS = 6000; // a call waits at most this long for its slot
 export const PENDING_FRESH_MS = 30_000; // a pending row younger than this is a write in flight
 const LINEAR_API_DATA_MAX_BYTES = 8192;
 const LINEAR_API_CLEANUP_INTERVAL_MS = MINUTE_MS;
+const LINEAR_API_IDLE_CLEANUP_INTERVAL_MS = 60 * MINUTE_MS;
 export const ROLE_TTL_MS = 10 * MINUTE_MS; // spec 3.6:  users/me on first use and every 10 minutes
 export const CALL_RETENTION_DAYS = 90; // spec 3.9
 const CALLS_PER_DAY_CAP = 5000;
@@ -397,12 +398,21 @@ function validLinearApiKey(key) {
 
 async function cleanupLinearApiRows(store, day, now) {
   if (typeof store.list !== "function" || typeof store.delete !== "function") return;
+  // A number:  the last pass that deleted rows (more may follow, so look again
+  // in a minute).  {at, idle: true}:  the last pass found nothing expired, and
+  // rows only expire a day after they are written, so look again in an hour.
+  // Rows written per seat are then at most one an hour while Linear is busy,
+  // where the marker used to be rewritten every minute.
   const last = await store.get("linear-api-cleanup-at");
   if (Number.isFinite(last) && now - last < LINEAR_API_CLEANUP_INTERVAL_MS) return;
+  if (last?.idle === true && Number.isFinite(last.at) && now >= last.at && now - last.at < LINEAR_API_IDLE_CLEANUP_INTERVAL_MS) return;
   const end = linearApiStorageKey(day - 1, "");
   const rows = await store.list({ prefix: linearApiPrefix, end, limit: 64 });
   const keys = [...rows.keys()];
-  if (!keys.length) return; // Nothing expired:  a list is a read, the marker would be a written row.
+  if (!keys.length) {
+    await store.put("linear-api-cleanup-at", { at: now, idle: true });
+    return;
+  }
   await store.delete(keys);
   await store.put("linear-api-cleanup-at", now);
 }
@@ -800,7 +810,9 @@ async function auditCallInner(store, row, now) {
     // hour, two sessions of one seat on different grants rewrote this key on
     // every flush just to swap the eviction order.
     const seen = prior?.seen;
-    const recent = Number.isFinite(seen) && now >= seen && now - seen < GEO_REFRESH_MS;
+    // Only while the map has room:  once it is full, every use refreshes `seen`,
+    // so eviction by last seen can never pick a grant that is still in use.
+    const recent = Number.isFinite(seen) && now >= seen && now - seen < GEO_REFRESH_MS && Object.keys(geo).length < GEO_CAP;
     const current = prior && !geoChanged && (Object.keys(geo).at(-1) === clean.grant_ref || recent);
     if (!current) {
       delete geo[clean.grant_ref];

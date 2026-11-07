@@ -170,11 +170,17 @@ test("an in-use grant is never the one evicted from the geo map", async () => {
   const store = S.memoryStore();
   const geo = (ref, asn = 13335) => ({ seat: "ECHO", tool: "whoami", outcome: "ok", grant_ref: ref, asn, country: "US" });
   await S.auditCall(store, geo("a00000000000"), T0);
-  for (let i = 0; i < 60; i++) {
-    await S.auditCall(store, geo("a00000000000"), T0 + 1000 + i * 1000); // used every second, skipped within the hour
+  // The busy grant is used between every new grant, so it is skipped while the map
+  // has room;  the 50th new grant overflows the map and evicts one entry.
+  for (let i = 0; i < 50; i++) {
+    await S.auditCall(store, geo("a00000000000"), T0 + 1000 + i * 1000);
     await S.auditCall(store, geo(`b${String(i).padStart(11, "0")}`), T0 + 1500 + i * 1000);
   }
-  assert.ok((await store.get("grant_geo")).a00000000000, "the busy grant survives 60 new grants");
+  const map = await store.get("grant_geo");
+  assert.equal(Object.keys(map).length, 50);
+  assert.ok(map.a00000000000, "the busy grant is not the one evicted");
+  assert.equal(map.b00000000000, undefined, "the grant seen longest ago is");
+  // Its very next call from a new place is still caught.
   await S.auditCall(store, geo("a00000000000", 4134), T0 + 70_000);
   assert.ok((await S.tail(store, 10)).some((e) => e.event === "geo_change" && e.grant_ref === "a00000000000"));
 });
