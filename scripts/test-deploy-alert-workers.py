@@ -7,11 +7,30 @@ s = importlib.util.spec_from_file_location("release", "scripts/deploy-alert-work
 m = importlib.util.module_from_spec(s)
 s.loader.exec_module(m)
 
+# A second alert target for the tests that prove one target cannot block another.
+# alert-ingress is the only real one since pr-conflict-watch retired on 2026-11-06.
+OTHER = {
+    "deployer": "alert-workers-deploy",
+    "root": "workers/other/",
+    "config": "workers/other/wrangler.toml",
+    "paths": ["workers/other/src/**"],
+    "ignore": ["*.test.*"],
+    "health": "https://other.invalid/health",
+    "ok": True,
+}
+
+
+def two_targets():
+    return patch.dict(m.TARGETS, {"other-worker": OTHER})
+
 
 class Tests(unittest.TestCase):
     def test_targets_cannot_expand_to_shared_workers(self):
-        self.assertEqual(set(m.TARGETS), {"alert-ingress", "pr-conflict-watch"})
-        self.assertIn("zulip-cutover", m.TARGETS["pr-conflict-watch"]["config"])
+        self.assertEqual(set(m.TARGETS), {"alert-ingress"})
+
+    def test_retired_worker_is_not_a_target(self):
+        self.assertNotIn("pr-conflict-watch", m.TARGETS)
+        self.assertNotIn("pr-conflict-watch", m.m.TARGETS)
 
     def test_no_worker_is_mapped_to_both_pipelines(self):
         import re
@@ -30,6 +49,7 @@ class Tests(unittest.TestCase):
             return name == "alert-ingress"
 
         with (
+            two_targets(),
             patch.object(m.subprocess, "check_output", return_value="a" * 40),
             patch.object(m.subprocess, "run") as run,
             patch.object(m, "current_main", return_value="a" * 40),
@@ -43,7 +63,6 @@ class Tests(unittest.TestCase):
                     ]
                 },
             ),
-            patch.object(m, "cutover_receipt", return_value=True),
             patch.object(m, "guard_tripped", side_effect=tripped),
             patch.object(m, "deployed_tag", return_value="a" * 40),
             patch.object(m.m, "worker_changed", return_value=False),
@@ -53,7 +72,7 @@ class Tests(unittest.TestCase):
                 m.main()
             for call in run.call_args_list:
                 self.assertNotIn("deploy", call.args[0])
-        self.assertEqual(order, ["alert-ingress", "pr-conflict-watch"])
+        self.assertEqual(order, ["alert-ingress", "other-worker"])
 
     def test_unrelated_merge_does_not_release(self):
         with (
@@ -70,7 +89,6 @@ class Tests(unittest.TestCase):
                     ]
                 },
             ),
-            patch.object(m, "cutover_receipt", return_value=True),
             patch.object(m, "guard_tripped", return_value=False),
             patch.object(m, "deployed_tag", return_value="b" * 40),
             patch.object(m.m, "worker_changed", return_value=False),
@@ -79,7 +97,7 @@ class Tests(unittest.TestCase):
             m.main()
         for call in run.call_args_list:
             self.assertNotIn("deploy", call.args[0])
-        self.assertEqual(probe.call_count, 2)
+        self.assertEqual(probe.call_count, 1)
 
     def test_release_refuses_to_drop_live_limits(self):
         with (
@@ -88,12 +106,11 @@ class Tests(unittest.TestCase):
         ):
             m.preflight_config({"config": "x"}, {"limits": {"cpu_ms": 200}})
 
-    def test_qualification_skips_uncut_over_target(self):
+    def test_qualification_reads_every_target(self):
         checked = []
         with (
             patch.dict(m.os.environ, {"CLOUDFLARE_API_TOKEN": "offline", "GH_TOKEN": "offline"}),
             patch.object(m, "current_main"),
-            patch.object(m, "cutover_receipt", return_value=False),
             patch.object(m, "guard_tripped", return_value=False),
             patch.object(m, "cloudflare", return_value={}),
             patch.object(m, "preflight_config"),
@@ -110,9 +127,9 @@ class Tests(unittest.TestCase):
         # release step and stop the healthy Worker's release too.
         probed = []
         with (
+            two_targets(),
             patch.dict(m.os.environ, {"CLOUDFLARE_API_TOKEN": "offline", "GH_TOKEN": "offline"}),
             patch.object(m, "current_main"),
-            patch.object(m, "cutover_receipt", return_value=True),
             patch.object(m, "guard_tripped", side_effect=lambda name: name == "alert-ingress"),
             patch.object(m, "cloudflare", return_value={}) as read,
             patch.object(m, "preflight_config") as preflight,
@@ -120,21 +137,22 @@ class Tests(unittest.TestCase):
             patch.object(m, "probe", side_effect=probed.append),
         ):
             m.qualify_credentials()
-        self.assertEqual(probed, [m.TARGETS["pr-conflict-watch"]])
+            names = list(m.TARGETS)
+        self.assertEqual(probed, [OTHER])
         # The receipt's proof holds for the stopped Worker too: only the probe is skipped.
         self.assertEqual(preflight.call_count, 2)
-        self.assertEqual([c.args[0] for c in tag.call_args_list], list(m.TARGETS))
+        self.assertEqual([c.args[0] for c in tag.call_args_list], names)
         reads = [c.args[0] for c in read.call_args_list]
         self.assertIn("/workers/scripts/alert-ingress/settings", reads)
-        self.assertIn("/workers/scripts/pr-conflict-watch/settings", reads)
+        self.assertIn("/workers/scripts/other-worker/settings", reads)
 
     def qualify_with_one_stopped(self, **patches):
-        """Qualify with alert-ingress stopped and pr-conflict-watch running; returns the probes."""
+        """Qualify with alert-ingress stopped and a second target running; returns the probes."""
         probed = []
         with (
+            two_targets(),
             patch.dict(m.os.environ, {"CLOUDFLARE_API_TOKEN": "offline", "GH_TOKEN": "offline"}),
             patch.object(m, "current_main"),
-            patch.object(m, "cutover_receipt", return_value=True),
             patch.object(m, "guard_tripped", side_effect=lambda name: name == "alert-ingress"),
             patch.object(m, "preflight_config", patches.get("preflight", lambda *args: None)),
             patch.object(m, "cloudflare", patches.get("read", lambda path: {})),
@@ -154,7 +172,7 @@ class Tests(unittest.TestCase):
             self.qualify_with_one_stopped(read=read)
 
     def test_a_stopped_targets_preconditions_cannot_block_the_other_target(self):
-        running = [m.TARGETS["pr-conflict-watch"]]
+        running = [OTHER]
 
         def no_baseline(name):
             return None if name == "alert-ingress" else "a" * 40
@@ -177,10 +195,10 @@ class Tests(unittest.TestCase):
 
     def test_a_running_targets_preconditions_still_fail_qualification(self):
         def no_baseline(name):
-            return None if name == "pr-conflict-watch" else "a" * 40
+            return None if name == "other-worker" else "a" * 40
 
         def drifted(target, settings):
-            if target is m.TARGETS["pr-conflict-watch"]:
+            if target is OTHER:
                 raise RuntimeError("Release would drop live limits")
 
         with self.assertRaisesRegex(RuntimeError, "Missing qualified live version baseline"):
@@ -205,7 +223,6 @@ class Tests(unittest.TestCase):
                     ]
                 },
             ),
-            patch.object(m, "cutover_receipt", return_value=False),
             patch.object(m, "guard_tripped", side_effect=guard),
             patch.object(m, "deployed_tag", side_effect=tags),
             patch.object(m.m, "worker_changed", return_value=True),
@@ -273,29 +290,6 @@ class Tests(unittest.TestCase):
             run.assert_not_called()
             current.assert_called_once()
 
-    def test_missing_cutover_proof_skips_only_that_target(self):
-        with patch.object(m.pathlib.Path, "exists", return_value=False):
-            self.assertFalse(m.cutover_receipt())
-
-    def test_synthetic_cutover_proof_fails(self):
-        import json
-
-        receipt = {
-            "sender_id": 1212033,
-            "channel_id": 642233,
-            "source_sha": "a" * 40,
-            "version_id": "verified",
-            "message_id": 123,
-            "message_url": "https://simplewithus.zulipchat.com/#narrow/id/123",
-            "real_conflict_event": False,
-        }
-        with (
-            patch.object(m.pathlib.Path, "exists", return_value=True),
-            patch.object(m.pathlib.Path, "read_text", return_value=json.dumps(receipt)),
-            self.assertRaises(RuntimeError),
-        ):
-            m.cutover_receipt()
-
     def test_review_includes_release_infrastructure(self):
         self.assertIn(".github/workflows/alert-workers-deploy.yml", m.RELEASE_PATHS)
         self.assertIn("scripts/deploy-mapped-worker.py", m.RELEASE_PATHS)
@@ -305,23 +299,23 @@ class Tests(unittest.TestCase):
             patch.object(
                 m.pathlib.Path,
                 "read_text",
-                return_value='[[kv_namespaces]]\nbinding="PR_STATE"\nid="changed"\n',
+                return_value='[[kv_namespaces]]\nbinding="STATE"\nid="changed"\n',
             ),
             self.assertRaises(RuntimeError),
         ):
             m.preflight_config(
                 {"config": "x"},
-                {"bindings": [{"name": "PR_STATE", "namespace_id": "existing"}]},
+                {"bindings": [{"name": "STATE", "namespace_id": "existing"}]},
             )
 
     def test_unchanged_kv_passes(self):
         with patch.object(
             m.pathlib.Path,
             "read_text",
-            return_value='[[kv_namespaces]]\nbinding="PR_STATE"\nid="same"\n',
+            return_value='[[kv_namespaces]]\nbinding="STATE"\nid="same"\n',
         ):
             m.preflight_config(
-                {"config": "x"}, {"bindings": [{"name": "PR_STATE", "namespace_id": "same"}]}
+                {"config": "x"}, {"bindings": [{"name": "STATE", "namespace_id": "same"}]}
             )
 
     def test_old_review_cannot_cover_changed_release_source(self):
@@ -465,25 +459,6 @@ class Tests(unittest.TestCase):
         self.assertNotIn("WORKER_DEPLOY_ENABLED", text)
         self.assertNotIn("agent-sync-mcp/wrangler", text)
         self.assertIn("17,47 * * * *", text)
-
-    def test_numeric_receipt_not_boolean(self):
-        import json
-
-        receipt = {
-            "sender_id": 1212033,
-            "channel_id": 642233,
-            "source_sha": "a" * 40,
-            "version_id": "verified",
-            "message_id": 123,
-            "message_url": "https://simplewithus.zulipchat.com/#narrow/id/123",
-            "real_conflict_event": 1,
-        }
-        with (
-            patch.object(m.pathlib.Path, "exists", return_value=True),
-            patch.object(m.pathlib.Path, "read_text", return_value=json.dumps(receipt)),
-            self.assertRaises(RuntimeError),
-        ):
-            m.cutover_receipt()
 
     def test_redirect_handler_refuses_forward(self):
         self.assertIsNone(
