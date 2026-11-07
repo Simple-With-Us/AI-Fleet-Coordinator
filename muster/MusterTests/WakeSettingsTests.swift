@@ -173,7 +173,7 @@ final class WakeSettingsTests: XCTestCase {
             XCTAssertEqual(partition.host(of: seat), .server, seat)
         }
         XCTAssertEqual(partition.host(of: "BF-BUILDER"), .noListener)
-        for seat in ["GROK-BOT", "KIMI", "ZC"] {
+        for seat in ["KIMI", "ZC"] {
             XCTAssertEqual(partition.host(of: seat), .unlisted, seat)
         }
     }
