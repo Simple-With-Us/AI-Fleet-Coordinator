@@ -314,12 +314,15 @@ WRAPPER_BODY = """#!/bin/sh
 # updates the hook with the checkout and a release move never leaves a dead path.
 # Anything missing is a no-op:  a hook must never break a chat.
 [ -f "$HOME/.local/bin/mm-registry-env" ] && . "$HOME/.local/bin/mm-registry-env"
+# The integration tree is host configuration:  the host names its volume root in
+# FLEET_SERVER_VOLUME (the lane tools read the same variable), so this file carries no path.
+vol_code="${FLEET_SERVER_VOLUME:-}/Code/AI-Fleet-Coordinator/scripts/platform-letter"
 real=
 for candidate in \\
   "$HOME/apps/lanes/_managed/fleet/agent-sync-runtime/scripts/platform-letter" \\
   "$HOME/.local/share/fleet-cli/current/scripts/platform-letter" \\
   "$HOME/Code/AI-Fleet-Coordinator/scripts/platform-letter" \\
-  /mnt/fleet-extra/Code/AI-Fleet-Coordinator/scripts/platform-letter; do
+  "$vol_code"; do
   if [ -f "$candidate" ]; then real="$candidate"; break; fi
 done
 [ -n "$real" ] || exit 0
