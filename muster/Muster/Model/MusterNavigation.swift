@@ -297,7 +297,7 @@ enum SidebarBadges {
     /// and are not counted as problems:  the badge is then `?` with nothing else wrong, or
     /// the count with a plus beside a real problem, as the Mac's card and the menu bar say.
     static func services(_ entries: [FleetServiceEntry], pm2Answered: Bool, readAt: Date?, now: Date) -> String? {
-        guard let readAt, now.timeIntervalSince(readAt) <= MachineMenuCopy.macReadWindow else { return "?" }
+        guard readIsCurrent(readAt: readAt, now: now) else { return "?" }
         let problems = entries.filter { entry in
             MachineMenuCopy.isProblem(entry) && !(MachineMenuCopy.isPM2Row(entry) && !pm2Answered)
         }.count
@@ -305,6 +305,29 @@ enum SidebarBadges {
             return problems == 0 ? "?" : "\(problems)+"
         }
         return problems == 0 ? nil : "\(problems)"
+    }
+
+    /// True when the Services read is recent enough to count, by the menu's own window.
+    static func readIsCurrent(readAt: Date?, now: Date) -> Bool {
+        guard let readAt else { return false }
+        return now.timeIntervalSince(readAt) <= MachineMenuCopy.macReadWindow
+    }
+
+    /// The Services badge in words, for the row's help and for VoiceOver, so the number is
+    /// never left to be guessed:  what it counts, and what `?` and a plus mean.  A `?` has two
+    /// causes, an old or absent read and a recent read that pm2 did not answer, so it is said
+    /// by which one it is.
+    static func servicesWords(_ badge: String, readIsCurrent: Bool) -> String {
+        if badge == "?" {
+            return readIsCurrent
+                ? "Not known: pm2 on the Mac did not answer, so its services could not be read."
+                : "Not known: the Mac's services have not been read recently."
+        }
+        let unread = badge.hasSuffix("+")
+        let count = Int(badge.dropLast(unread ? 1 : 0)) ?? 0
+        let things = count == 1 ? "1 service needs attention" : "\(count) services need attention"
+        let ending = unread ? ", and some could not be read." : "."
+        return "\(things) (failed, could not be read, or started and given up on)\(ending)"
     }
 }
 

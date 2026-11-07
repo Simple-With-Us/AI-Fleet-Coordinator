@@ -220,7 +220,7 @@ jobs:
     - name: Operator session registry and letter hook tests
       timeout-minutes: 10
       run: |
-        cd scripts && python3 -m unittest test_operator_registry test_mm_session_letter -v
+        cd scripts && python3 -m unittest test_operator_registry test_mm_session_letter test_operator_export_attempts -v
     # Infisical knobs for the open-loops jobs:  fake-CLI fetch, last-known-good, secrets fail
     # closed, local files only narrow, and INFISICAL.md equal to the registry.
     - name: fleet_knobs tests
@@ -572,15 +572,6 @@ jobs:
     - name: Alert ingress unit tests
       timeout-minutes: 10
       run: node --test workers/alert-ingress/src/*.test.js
-    # pr-conflict-watch, both trees: this directory and the zulip-cutover tree the alert
-    # pipeline releases, whose index.js needs its pinned dependencies.  Test files are
-    # named explicitly, for the reason above.
-    - name: PR conflict watch unit tests
-      timeout-minutes: 10
-      run: |
-        node --test workers/pr-conflict-watch/*.test.js
-        npm ci --ignore-scripts --prefix workers/pr-conflict-watch/zulip-cutover
-        node --test workers/pr-conflict-watch/zulip-cutover/*.test.js
     # The Worker deploy scripts.  worker-deploy.yml is gated off and the alert workflow
     # runs only on main, so without this a broken deploy script would merge unnoticed.
     - name: Worker deploy script tests

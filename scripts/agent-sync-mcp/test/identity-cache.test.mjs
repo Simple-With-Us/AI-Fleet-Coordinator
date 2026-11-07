@@ -8,11 +8,52 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { IdentityCache } from "../src/identity-cache.js";
+import { IdentityCache, bearerCacheMs } from "../src/identity-cache.js";
 import { HostedTools } from "../src/hosted-tools.js";
 import { ApiError } from "../src/contract.js";
 
 const KEY = "a".repeat(64);
+
+test("index.js starts every identity entry on the cache's own clock", async () => {
+  // Expiry and the `since` race guard both run on IDENTITY_CACHE.now();  an entry
+  // started on Date.now() would put them on two clocks (Kody, PR 1441).
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
+  const starts = [...src.matchAll(/const now = ([A-Za-z_.]+)\(\);[^\n]*IDENTITY_CACHE\.set|const now = ([A-Za-z_.]+)\(\);(?:[^\n]*\n){0,6}?[^\n]*IDENTITY_CACHE\.set\(/g)];
+  assert.ok(starts.length >= 3, `found ${starts.length} cache writes`);
+  for (const m of starts) assert.equal(m[1] ?? m[2], "IDENTITY_CACHE.now", m[0].slice(0, 120));
+});
+
+test("a positive answer older than a refusal or seat eviction is not stored, and the maps stay bounded", () => {
+  let now = 1000;
+  const cache = new IdentityCache({ now: () => now, max: 2 });
+  const since = now;
+  now += 3;
+  cache.evict(KEY);
+  cache.set(KEY, { seat: "ECHO", via: "gb-bearer" }, 60_000, now, { since });
+  assert.equal(cache.get(KEY), null, "a refusal after the check started wins");
+  cache.set(KEY, { seat: "ECHO", via: "gb-bearer" }, 60_000, now, { since: now });
+  assert.ok(cache.get(KEY), "a check that started after the refusal stores");
+  const other = "b".repeat(64);
+  const started = now;
+  now += 2;
+  cache.evictSeat("ECHO");
+  cache.set(other, { seat: "ECHO", via: "gb-bearer" }, 60_000, now, { since: started });
+  assert.equal(cache.get(other), null, "a seat eviction after the check started wins too");
+  cache.set(other, { seat: "ECHO", via: "gb-bearer" }, 60_000, now);
+  assert.ok(cache.get(other), "without since the caller opts out, as before");
+  for (const k of ["c", "d", "e", "f"]) cache.evict(k.repeat(64));
+  assert.ok(cache.refusedAt.size <= 2, "the refusal map is bounded");
+});
+
+test("an entry capped at an expiry and started from the same reading never outlives it", () => {
+  let now = 1000;
+  const cache = new IdentityCache({ now: () => (now += 1) });
+  const read = cache.now();
+  const expiresAt = read + 500;
+  cache.set(KEY, { seat: "ECHO", via: "gb-bearer" }, bearerCacheMs({ gateIdentityCacheMs: 3_600_000 }, { expires_at: expiresAt }, read), read);
+  assert.equal(cache.entries.get(KEY).expiresAt, expiresAt);
+});
 
 test("only positive verifications are stored, and a fresh entry is served until its window closes", () => {
   let now = 1000;
@@ -113,7 +154,17 @@ test("a cached read takes no reserve slot, and a cached whoami takes no roleGet 
   assert.equal(gate.roleGets, 0, "the role came from the cached verdict");
   assert.equal(result.structuredContent?.user_id, 42);
   assert.equal(result.structuredContent?.role, 400);
-  assert.equal(gate.audits.length, 1, "the call still writes its audit row");
+  assert.equal(gate.audits.length, 0, "a successful read writes no audit row (owner 2026-11-06)");
+});
+
+test("bearerCacheMs:  the hour window, never past the bearer's own expiry, and nothing without one", () => {
+  const config = { gateIdentityCacheMs: 3_600_000 };
+  const now = 1_000_000;
+  assert.equal(bearerCacheMs(config, { expires_at: now + 90 * 86_400_000 }, now), 3_600_000, "a long-lived bearer gets the full hour");
+  assert.equal(bearerCacheMs(config, { expires_at: now + 600_000 }, now), 600_000, "a bearer ten minutes from expiry gets ten minutes");
+  assert.equal(bearerCacheMs(config, { expires_at: now - 1 }, now), 0);
+  assert.equal(bearerCacheMs(config, {}, now), 0, "no expiry, no cache");
+  assert.equal(bearerCacheMs({ gateIdentityCacheMs: 0 }, { expires_at: now + 600_000 }, now), 0, "the off switch still holds");
 });
 
 test("a cached write keeps its reserve exactly as an uncached one does", async () => {

@@ -13,10 +13,15 @@ Failure shape:  fail closed.  A malformed token, an unreachable Worker, a bad an
 an expired or paused identity - all resolve to None (the caller answers 401).  Neither
 the bearer nor its hash is ever logged or included in an error string.
 
-A live answer is not reused unless GIT_RELAY_VERIFY_CACHE_S is set, so by default a
-revocation or pause reaches the next Git call.  Only a refusal is remembered as one:  a
-Worker that is down or over its daily limit says nothing about the bearer, so that call
-fails and the next one asks again.
+A live positive answer is reused for up to an hour by default (owner ruling 2026-11-06:
+a checked token may work for an hour, because a seat is never cut off through the
+tools), never past the bearer's own expiry.  So a revocation or pause can reach a
+seat's Git calls, writes included, up to an hour late in one relay process.  The hour
+runs from the Worker's own live check (its answer's verified_at), so a Worker answer
+served from the Worker's cache does not start a second hour.
+GIT_RELAY_VERIFY_CACHE_S sets a shorter window, and 0 turns the reuse off.  Only a
+refusal is remembered as one:  a Worker that is down or over its daily limit says
+nothing about the bearer, so that call fails and the next one asks again.
 """
 
 from __future__ import annotations
@@ -44,12 +49,14 @@ TOKEN_RES = (
 
 MAX_RESPONSE_BYTES = 4096
 REQUEST_TIMEOUT_S = 10
-# Positive answers are NOT cached by default:  a revoked or paused identity must lose GR
-# access with its SeatGate row, not with a cache entry.  The cost is that every Git call
-# is a Worker request and SeatGate RPCs against daily caps.  An operator may accept up to
-# POSITIVE_CACHE_CAP_S of revocation lag to save them, by setting GIT_RELAY_VERIFY_CACHE_S.
-DEFAULT_POSITIVE_CACHE_S = "0"
-POSITIVE_CACHE_CAP_S = 60
+# Positive answers are reused for an hour by default (owner ruling 2026-11-06), so one
+# relay process asks the Worker about a bearer at most once an hour instead of on every
+# Git call (each ask is a Worker request and a SeatGate RPC against daily caps).  The
+# trade:  a revoked or paused identity can keep GR access, writes included, for up to
+# the window.  GIT_RELAY_VERIFY_CACHE_S sets the window in seconds, capped at
+# POSITIVE_CACHE_CAP_S;  0 turns it off.  An entry never outlives the bearer's expiry.
+DEFAULT_POSITIVE_CACHE_S = "3600"
+POSITIVE_CACHE_CAP_S = 3600
 NEGATIVE_CACHE_S = 30  # a wrong guess must not hammer the Worker
 # The verify route answers a bearer's verdict as a 200, so the only non-200s that can be
 # remembered as refusals are its own 400 (an identity it does not know) and 401, and a
@@ -152,16 +159,27 @@ class SharedBearerVerifier:
                 return cached[0]
             resolved = self._verify_remote(identity, digest, now)
             # Positive answers cache for the TTL above, never past the bearer's
-            # own expiry.  Refusals always cache briefly, or a guessing loop costs
-            # one Worker call per request.
+            # own expiry, and never more than the TTL after the Worker's own
+            # live check (verified_at):  the Worker may answer from its cache,
+            # and the two layers together must stay within one window.
+            # Refusals always cache briefly, or a guessing loop costs one
+            # Worker call per request.
             with self._lock:
                 if len(self._cache) >= CACHE_MAX_ENTRIES:
                     oldest = min(self._cache, key=lambda k: self._cache[k][2])
                     del self._cache[oldest]
                 if resolved is not None:
-                    identity_name, expires_at_s = resolved
-                    ttl = min(self._positive_ttl, max(0.0, expires_at_s - now))
-                    if ttl > 0:
+                    identity_name, expires_at_s, verified_at_s = resolved
+                    ttl = min(
+                        self._positive_ttl,
+                        max(0.0, expires_at_s - now),
+                        max(0.0, verified_at_s + self._positive_ttl - now),
+                    )
+                    # A verdict stored by a call that started after this one
+                    # (a refusal, above all) is newer than this answer:  an
+                    # older positive answer never writes over it.
+                    newer = self._cache.get(digest)
+                    if ttl > 0 and not (newer is not None and newer[2] > now):
                         self._cache[digest] = (identity_name, now + ttl, now)
                 else:
                     self._cache[digest] = (None, now + NEGATIVE_CACHE_S, now)
@@ -216,4 +234,13 @@ class SharedBearerVerifier:
         expires_at = answer.get("expires_at")
         if not isinstance(expires_at, (int, float)) or expires_at <= now * 1000:
             return None  # expires_at is epoch milliseconds;  already-expired refuses
-        return identity, expires_at / 1000.0
+        # verified_at (epoch ms) is when the Worker last checked the bearer
+        # live;  an older Worker omits it, and then the check counts as now.
+        # A value from the future counts as now too, so it can never stretch
+        # the window.
+        verified_at = answer.get("verified_at")
+        if isinstance(verified_at, bool) or not isinstance(verified_at, (int, float)):
+            verified_at_s = now
+        else:
+            verified_at_s = min(now, verified_at / 1000.0)
+        return identity, expires_at / 1000.0, verified_at_s
