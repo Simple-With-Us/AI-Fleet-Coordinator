@@ -6502,6 +6502,25 @@ class MinimaxBundleTests(World):
             self.assertIn("inside parent's home", T.hook_home_problem(str(outside), str(self.home)) or "")
             self.assertIsNone(T.hook_home_problem(str(inside), str(self.home)))
 
+    def test_a_home_reached_through_a_symlink_gets_the_same_verdict(self) -> None:
+        real_homes = self.tmp / "real-homes"
+        (real_homes / "seat").mkdir(parents=True)
+        (real_homes / "elsewhere").mkdir()
+        link = self.tmp / "homes"
+        link.symlink_to(real_homes)
+        for rel in ("seat/hook", "elsewhere/hook"):
+            (real_homes / rel).write_text("#!/bin/sh\n")
+            (real_homes / rel).chmod(0o755)
+        parent = mock.Mock(pw_name="parent", pw_uid=1500, pw_dir=str(real_homes))
+        with mock.patch.object(T, "_login_users", return_value=[parent]):
+            for home, base in ((link / "seat", link), (real_homes / "seat", real_homes)):
+                with self.subTest(home=str(home)):
+                    self.assertIsNone(T.hook_home_problem(str(base / "seat" / "hook"), str(home)))
+                    self.assertIn(
+                        "inside parent's home",
+                        T.hook_home_problem(str(base / "elsewhere" / "hook"), str(home)) or "",
+                    )
+
     def test_login_accounts_outside_the_regular_uid_range_still_count(self) -> None:
         def account(name: str, uid: int, shell: str) -> mock.Mock:
             return mock.Mock(pw_name=name, pw_uid=uid, pw_dir=f"/srv/{name}", pw_shell=shell)

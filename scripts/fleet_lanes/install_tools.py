@@ -5888,19 +5888,29 @@ def hook_home_problem(executable: str, home: str) -> str | None:
     Permission denied, and MiniMax Code lets every tool call through when its hook cannot run.  So
     the path must not sit in another account's home, and the home's owner must be able to run it.
     """
-    home_real = os.path.realpath(home)
+    # Each path is compared both as written and resolved, so a home reached through a symlink gets the
+    # same verdict as the same home spelled out.
+    homes = {os.path.abspath(home), os.path.realpath(home)}
     candidates = {os.path.abspath(executable), os.path.realpath(executable)}
+
+    def in_target_home(path: str) -> bool:
+        return any(_within(path, h) for h in homes)
+
     for user in _login_users():
-        other = os.path.realpath(user.pw_dir) if user.pw_dir else ""
-        if not other or other == os.sep or other == home_real:
+        if not user.pw_dir:
             continue
-        # An account whose home holds the target home only covers paths inside the target home.
-        if _within(home_real, other) and all(_within(c, home_real) for c in candidates):
+        others = {os.path.abspath(user.pw_dir), os.path.realpath(user.pw_dir)} - {os.sep}
+        if not others or others & homes:
             continue
+        # An account whose home holds the target home covers only the paths inside the target home.
+        holds_target = any(_within(h, o) for h in homes for o in others)
         for candidate in candidates:
-            if _within(candidate, other):
+            if holds_target and in_target_home(candidate):
+                continue
+            inside = next((o for o in others if _within(candidate, o)), None)
+            if inside:
                 return (
-                    f"the hook {executable} is inside {user.pw_name}'s home {other}, not {home}; "
+                    f"the hook {executable} is inside {user.pw_name}'s home {inside}, not {home}; "
                     f"run the installer as the user who owns {home}"
                 )
     try:
