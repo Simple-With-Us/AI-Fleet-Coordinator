@@ -213,9 +213,14 @@ struct FleetView: View {
 
     private var appSection: some View {
         let rows = registrySummary.apps.filter { filter.includes($0) }
+        // The apps the kind and text filters keep, before Needs Attention Only.  When none, the
+        // ordinary no-match state applies even while the counts are read (Kody, PR 1450).
+        var withoutAttention = filter
+        withoutAttention.attentionOnly = false
+        let matchBesidesAttention = registrySummary.apps.contains { withoutAttention.includes($0) }
         return Section {
             if !collapsed.contains(.apps), registrySummary.problem == nil {
-                if rows.isEmpty, countsPending, filter.attentionOnly {
+                if rows.isEmpty, countsPending, filter.attentionOnly, matchBesidesAttention {
                     // Which apps need attention depends on the counts being read, so the filter
                     // has nothing to match yet (Sentry, PR 1450).
                     Text("Which apps need attention is still being read.")
