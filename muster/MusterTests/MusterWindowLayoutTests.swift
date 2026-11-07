@@ -8,29 +8,53 @@ import XCTest
 /// The owner's report (November 6, 2026):  both the sidebar and the detail were pushed up off
 /// the window's top, under the title bar, and neither could be scrolled back to its first rows.
 /// The harness hosts the window root's shape (a sidebar List, a detail column with a strip
-/// over a ScrollView far taller than the window) in a real window, once with the column cap
-/// (`musterColumnHeight`) and once without it.  The uncapped run is the control:  it must show
-/// the overflow, or the capped run proves nothing.
+/// over a ScrollView far taller than the window) in a real window, in two layouts:
+///
+/// - `original`:  the root the bug was reported on, the split view in an overlay of a sized
+///   `Color.clear`, with no column cap.  This is the control:  it must show the overflow, or
+///   the fixed run proves nothing.
+/// - `fixed`:  the root `FleetOverviewView` uses now, the split view itself sized by
+///   `musterWindowSize`, each column capped by `musterColumnHeight`.
+///
+/// Each run prints its measurements (`[window layout]` in the test log), and attaches a
+/// screenshot to the result bundle, which CI uploads.
 @MainActor
 final class MusterWindowLayoutTests: XCTestCase {
-    private let size = NSSize(width: 1160, height: 700)
-
-    private struct Cap: ViewModifier {
-        let on: Bool
-        @ViewBuilder func body(content: Content) -> some View {
-            if on { content.musterColumnHeight() } else { content }
-        }
+    private enum Layout: String {
+        case original
+        case fixed
     }
 
     /// The window root's shape:  a sidebar List and a detail column with a strip above a
     /// ScrollView far taller than the window.
     private struct Harness: View {
-        let capped: Bool
+        let layout: Layout
+
         var body: some View {
+            switch layout {
+            case .original:
+                // FleetOverviewView's root before this fix, frame for frame.
+                Color.clear
+                    .frame(minWidth: MusterWindowLayout.minWidth, idealWidth: MusterWindowLayout.minWidth,
+                           maxWidth: .infinity,
+                           minHeight: MusterWindowLayout.minHeight, idealHeight: MusterWindowLayout.idealHeight,
+                           maxHeight: .infinity)
+                    .overlay { split(capped: false) }
+            case .fixed:
+                split(capped: true)
+                    .musterWindowSize()
+            }
+        }
+
+        private func split(capped: Bool) -> some View {
             NavigationSplitView {
-                List { ForEach(0..<20, id: \.self) { Text("Row \($0)") } }
-                    .modifier(Cap(on: capped))
-                    .navigationSplitViewColumnWidth(min: 200, ideal: 230, max: 300)
+                List {
+                    Section { Text("Overview") }
+                    Section("The Mac") { ForEach(0..<20, id: \.self) { Text("Row \($0)") } }
+                }
+                .modifier(Cap(on: capped))
+                .navigationTitle("Harness")
+                .navigationSplitViewColumnWidth(min: 200, ideal: 230, max: 300)
             } detail: {
                 VStack(spacing: 0) {
                     Text("Strip").frame(height: 33)
@@ -43,25 +67,48 @@ final class MusterWindowLayoutTests: XCTestCase {
                     }
                 }
                 .modifier(Cap(on: capped))
-                .navigationTitle("Harness")
+                .navigationTitle("Seat Setup")
+                .navigationSubtitle("On The Mac")
+                .toolbar {
+                    ToolbarItem {
+                        Button {} label: { Label("Check", systemImage: "checkmark.shield") }
+                    }
+                }
             }
-            .musterWindowSize()
         }
     }
 
-    private func host(capped: Bool) -> (NSWindow, NSHostingController<Harness>) {
+    private struct Cap: ViewModifier {
+        let on: Bool
+        @ViewBuilder func body(content: Content) -> some View {
+            if on { content.musterColumnHeight() } else { content }
+        }
+    }
+
+    /// A window height that fits the runner's screen, so the window server does not shrink it.
+    private var height: CGFloat {
+        let screen = NSScreen.main?.visibleFrame.height ?? 700
+        return max(MusterWindowLayout.minHeight + 60, min(700, screen - 40)).rounded(.down)
+    }
+
+    private func host(_ layout: Layout) -> (NSWindow, NSHostingController<Harness>) {
         _ = NSApplication.shared
+        let size = NSSize(width: MusterWindowLayout.minWidth, height: height)
         let window = NSWindow(contentRect: NSRect(origin: .zero, size: size),
                               styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
                               backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        let hosting = NSHostingController(rootView: Harness(capped: capped))
+        let hosting = NSHostingController(rootView: Harness(layout: layout))
+        // Like the app's window, which opens at its default size and keeps it:  the hosting
+        // controller enforces the root's minimum and does not resize the window to its ideal.
+        hosting.sizingOptions = [.minSize]
         window.contentViewController = hosting
         window.setContentSize(size)
         window.orderFrontRegardless()
         window.layoutIfNeeded()
         RunLoop.main.run(until: Date().addingTimeInterval(0.5))
         window.layoutIfNeeded()
+        report(layout, window)
         return (window, hosting)
     }
 
@@ -87,6 +134,21 @@ final class MusterWindowLayoutTests: XCTestCase {
         return doc.convert(NSPoint(x: 0, y: doc.isFlipped ? 0 : doc.bounds.maxY), to: nil).y
     }
 
+    /// The measurements behind every assertion, so a failed run says what it saw.
+    private func report(_ layout: Layout, _ window: NSWindow) {
+        guard let content = window.contentView else { return }
+        var lines = ["[window layout] \(layout.rawValue): content \(content.bounds.size), "
+                     + "layout rect \(window.contentLayoutRect), min \(window.contentMinSize)"]
+        for sv in scrollViews(in: content) {
+            let frame = sv.convert(sv.bounds, to: content)
+            let top = (try? documentTop(sv)).map { "\($0)" } ?? "none"
+            lines.append("[window layout] \(layout.rawValue): scroll view \(frame), "
+                         + "document \(sv.documentView?.frame.size ?? .zero), document top \(top), "
+                         + "insets \(sv.contentInsets.top)")
+        }
+        print(lines.joined(separator: "\n"))
+    }
+
     private func attachScreenshot(_ window: NSWindow, _ name: String) {
         guard let view = window.contentView,
               let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
@@ -98,24 +160,23 @@ final class MusterWindowLayoutTests: XCTestCase {
         add(attachment)
     }
 
-    func testWindowTakesItsOwnMinimumNotAPanelsHeight() {
-        let (window, hosting) = host(capped: true)
+    func testWindowTakesItsOwnMinimumNotAPanelsHeight() throws {
+        let (window, hosting) = host(.fixed)
         defer { window.close() }
-        XCTAssertEqual(window.contentView?.bounds.height ?? 0, size.height, accuracy: 1)
-        // The root's own minimum, whatever the panels inside it want.
+        let content = try XCTUnwrap(window.contentView)
+        XCTAssertEqual(content.bounds.height, height, accuracy: 1, "the window did not keep the size it was given")
+        // The content view runs under the title bar, so the root's minimum is measured with it.
+        let titleBar = content.bounds.height - window.contentLayoutRect.height
         let minimum = hosting.sizeThatFits(in: .zero)
-        XCTAssertEqual(minimum.height, MusterWindowLayout.minHeight, accuracy: 1)
+        XCTAssertEqual(minimum.height, MusterWindowLayout.minHeight + titleBar, accuracy: 2,
+                       "the root's minimum height is not the window's own, whatever the panel's height")
         XCTAssertEqual(minimum.width, MusterWindowLayout.minWidth, accuracy: 1)
-        // A plain window may report no minimum of its own;  when it reports one, it is the root's.
-        if window.contentMinSize.height > 0 {
-            XCTAssertLessThanOrEqual(window.contentMinSize.height, MusterWindowLayout.minHeight + 1)
-        }
     }
 
-    func testCappedColumnsStayInsideTheWindowAndScroll() throws {
-        let (window, _) = host(capped: true)
+    func testFixedColumnsStayInsideTheWindowAndScroll() throws {
+        let (window, _) = host(.fixed)
         defer { window.close() }
-        attachScreenshot(window, "capped")
+        attachScreenshot(window, "fixed")
         let content = try XCTUnwrap(window.contentView)
         for sv in scrollViews(in: content) {
             let frame = sv.convert(sv.bounds, to: content)
@@ -130,14 +191,14 @@ final class MusterWindowLayoutTests: XCTestCase {
         XCTAssertGreaterThan(top, window.contentLayoutRect.minY)
     }
 
-    /// Control:  without the cap, the harness must show the reported bug.  If this fails, the
-    /// harness does not reproduce the bug and the test above proves nothing.
-    func testUncappedColumnsReproduceTheOverflow() throws {
-        let (window, _) = host(capped: false)
+    /// Control:  the root the bug was reported on must show it.  If this fails, the harness does
+    /// not reproduce the bug and the test above proves nothing.
+    func testOriginalRootReproducesTheOverflow() throws {
+        let (window, _) = host(.original)
         defer { window.close() }
-        attachScreenshot(window, "uncapped")
+        attachScreenshot(window, "original")
         let top = try documentTop(try detailScroll(window))
         XCTAssertGreaterThan(top, window.contentLayoutRect.maxY + 1,
-                             "uncapped detail did not overflow; the root cause is not what the fix assumes")
+                             "the original root did not overflow; the harness does not reproduce the bug")
     }
 }
