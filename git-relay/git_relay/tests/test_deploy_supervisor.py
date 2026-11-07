@@ -87,6 +87,10 @@ class FakeHost:
     def resume_if_same(self, expected):
         self.step("resume_same")
 
+    def reconcile_frozen_stop(self, expected):
+        self.step("resume_same")
+        return "stopped" if self.stopped else "running"
+
     def stop_for_recovery(self):
         self.step("recovery_stop")
         self.stopped = True
