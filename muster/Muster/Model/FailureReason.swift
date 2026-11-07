@@ -15,7 +15,8 @@ enum FailureReason {
     static let shownCharacters = 600
 
     /// The part of `reason` the banner shows:  its last lines, after a line that says how many
-    /// earlier lines were left out, and an ellipsis where a line was cut.
+    /// earlier lines were left out, and an ellipsis where a line was cut.  The count includes
+    /// the lines the character cap removed whole.
     static func shown(_ reason: String,
                       lines maxLines: Int = shownLines,
                       characters maxCharacters: Int = shownCharacters) -> String {
@@ -23,15 +24,26 @@ enum FailureReason {
             .replacingOccurrences(of: "\r\n", with: "\n")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         var kept = trimmed.components(separatedBy: "\n")
-        let dropped = max(0, kept.count - maxLines)
+        var dropped = max(0, kept.count - maxLines)
         if dropped > 0 {
             kept = Array(kept.suffix(maxLines))
         }
         var body = kept.joined(separator: "\n")
         var cut = false
         if body.count > maxCharacters {
-            body = String(body.suffix(maxCharacters))
-            cut = true
+            let removed = body.prefix(body.count - maxCharacters)
+            var rest = body.suffix(maxCharacters)
+            // Each line break in the removed part ends a line that is gone entirely.
+            dropped += removed.filter { $0 == "\n" }.count
+            if rest.hasPrefix("\n") {
+                // The removed part ended exactly at a line's end, so that line is gone too.
+                dropped += 1
+                rest = rest.dropFirst()
+            } else {
+                // A line is cut only when the removed part stops partway through it.
+                cut = !removed.hasSuffix("\n")
+            }
+            body = String(rest)
         }
         var head = ""
         if dropped > 0 {

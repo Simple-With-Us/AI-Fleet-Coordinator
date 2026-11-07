@@ -6,9 +6,8 @@ Two pipelines deploy this repository's Workers, and each Worker belongs to exact
 | --- | --- | --- |
 | `simple-tools-mcp` | `.github/workflows/worker-deploy.yml` | `WORKER_DEPLOY_ENABLED` and `SIMPLE_TOOLS_MCP_DEPLOY_ENABLED`, both off |
 | `alert-ingress` | `.github/workflows/alert-workers-deploy.yml` | A reviewed credential qualification receipt, plus the per-commit review gate |
-| `pr-conflict-watch` | `.github/workflows/alert-workers-deploy.yml` | The same, plus `docs/releases/pr-conflict-zulip-verified.json` |
 
-`pr-conflict-watch` releases from `workers/pr-conflict-watch/zulip-cutover/`, the tree that is live.
+`pr-conflict-watch` was the alert pipeline's second target until it was retired on 2026-11-06 at the owner's request.  It had posted no alert since Oct 21, and its source, its target entry and its Zulip cutover receipt gate were removed.  `alert-ingress` is now the alert pipeline's only target, and the pipeline keeps its multi-target handling for a future one.
 
 Both pipelines test current main, serialize deployments, recheck main immediately before mutation, tag the Worker version with the exact SHA, verify 100% production routing to that version, then probe it.  Wrangler uses `--keep-vars` and `--strict`.  Existing schema, bindings and migrations remain owned by each Worker's reviewed configuration.  Every probe and API request sends an explicit User-Agent, because Cloudflare answers error 1010 to Python's default one.  No secrets are rotated by either workflow.  `CLOUDFLARE_FLEET_API_TOKEN` (Fleet-OPS, prod, root) is the existing scoped deploy credential.  Do not widen access or publish private receipt data to satisfy a probe.
 
@@ -30,11 +29,11 @@ An upload that does not declare `limits` removes live CPU and subrequest limits:
 
 ## The Budget Guard
 
-The account watchdog stops a Worker by leaving a `workers/message` that starts with `GUARD-TRIPPED`.  Reconciling to main would silently undo that, so both pipelines read the live deployment and version first, and again just before upload, then refuse with a failed run.  In the alert pipeline the other target still proceeds, because qualification does not fail on a stopped Worker's probe.  The settings read must still succeed, so a receipt shows the credential reached it.  Its config and tag baseline are checked but cannot fail the step, because a stopped Worker is not released, and its probe is skipped.  Re-arming is manual:  fix the cause, then deploy by hand with a normal message or run the watchdog's `rearm`, and the next run reconciles as usual.  The refusal reads only the newest deployment.  Any later deployment clears it, including a `wrangler secret put`, so do not change a stopped Worker's secrets by hand before you mean to re-arm it.
+The account watchdog stops a Worker by leaving a `workers/message` that starts with `GUARD-TRIPPED`.  Reconciling to main would silently undo that, so both pipelines read the live deployment and version first, and again just before upload, then refuse with a failed run.  In the alert pipeline any other target still proceeds, because qualification does not fail on a stopped Worker's probe.  The settings read must still succeed, so a receipt shows the credential reached it.  Its config and tag baseline are checked but cannot fail the step, because a stopped Worker is not released, and its probe is skipped.  Re-arming is manual:  fix the cause, then deploy by hand with a normal message or run the watchdog's `rearm`, and the next run reconciles as usual.  The refusal reads only the newest deployment.  Any later deployment clears it, including a `wrangler secret put`, so do not change a stopped Worker's secrets by hand before you mean to re-arm it.
 
 ## Alert Worker Receipts
 
-The alert pipeline needs `docs/releases/alert-credentials-qualified.json` before its first release.  It records one successful nondeployment run, proving the credential reaches the workflow and reads each target that is not awaiting its Zulip cutover, with the release step skipped.
+The alert pipeline needs `docs/releases/alert-credentials-qualified.json` before its first release.  It records one successful nondeployment run, proving the credential reaches the workflow and reads each target, with the release step skipped.
 
 The receipt is void only when what it proved changes: the workflow's two credential steps (matched by name) or `scripts/infisical-fetch.mjs`.  A lockfile, an action bump or a target list change leaves it valid.  Those are not left unguarded: every commit in the release range that touches `RELEASE_PATHS` must still be a merged pull request with a qualified Kody review and resolved threads, or the release refuses.
 

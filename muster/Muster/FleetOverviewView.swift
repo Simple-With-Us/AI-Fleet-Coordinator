@@ -35,12 +35,18 @@ struct FleetOverviewView: View {
 
     /// The window's size is the window's own, and not the natural height of whichever panel is
     /// showing.  Several panels are as tall as their content (Tools And Worker Health is 1449
-    /// points, Seats 1345).  Each column takes its height from the window
-    /// (`musterColumnHeight`), so a panel taller than the window scrolls inside it instead of
-    /// pushing the split view past the window's top and bottom edges, where neither column
-    /// could be scrolled back to its first rows.  The root frame keeps the window's minimum
-    /// (`musterWindowSize`), wide enough for every panel's columns and short enough for any
-    /// laptop screen, so the window never grows to a panel's natural height either.
+    /// points, Seats 1345).  The root frame (`musterWindowSize`) keeps the window's minimum,
+    /// wide enough for every panel's columns and short enough for any laptop screen, so the
+    /// window never grows to a panel's natural height, and it holds the split view to the
+    /// window's top.
+    ///
+    /// The owner's November 6 report (AFC-616) was both columns' first rows sitting above the
+    /// window's top, under the title bar, with no way to scroll to them.  The evidence points
+    /// to a split-view column frame saved taller than the window, which the app now forgets
+    /// before the window opens (`MusterWindowLayout.forgetOversizedSplitViewFrames`).  The
+    /// column cap (`musterColumnHeight`) and the top alignment are guards against the same
+    /// overflow from any other cause;  CI could not reproduce the overflow, so neither is
+    /// proven to be needed.
     var body: some View {
         splitView
             .musterWindowSize()
@@ -296,9 +302,11 @@ struct RunVerdictLabel: View {
 
 /// The banner that says why the last run cannot be trusted.
 ///
-/// It shows only the end of a long reason (`FailureReason`), so a traceback can never make
-/// it taller than the window and squeeze the panel under it to nothing.  The full reason is
-/// one click away.
+/// It shows only the end of a long reason (`FailureReason`), so a traceback cannot make one
+/// banner more than about 220 points tall, however long it is.  Up to three banners can
+/// stack over the panel (a failed run, the manifest and the registry), so at the window's
+/// smallest height all three together can still leave the panel little room.  The full
+/// reason is one click away.
 struct FailureBanner: View {
     let reason: String
     var title: String = "The engine did not answer, so every cell reads unknown."

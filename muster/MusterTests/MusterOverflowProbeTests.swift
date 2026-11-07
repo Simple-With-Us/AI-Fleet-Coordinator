@@ -11,7 +11,11 @@ import XCTest
 ///
 /// Roots:
 /// - `A`:  main before PR 1433, a sized `Color.clear` with the split view in an overlay.
-/// - `B`:  PR 1433, the split view sized by `musterWindowSize`, each column `musterColumnHeight`.
+/// - `B`:  main after PR 1433 merged, the split view sized by `musterWindowSize` (top aligned),
+///   each column `musterColumnHeight`.
+///
+/// `test0_StaleSavedFrames` seeds the owner's saved split-view frames (1085 pt columns for a
+/// 760-pt window) and measures each root with and without `forgetOversizedSplitViewFrames`.
 /// - `C`:  the overlay root of `A` with PR 1433's column cap (the cap alone).
 /// - `W`:  PR 1433's root frame without the column cap (the root change alone).
 /// - `U`:  the bare split view, uncapped (the root before PR 1414).
@@ -604,8 +608,9 @@ final class MusterOverflowProbeTests: XCTestCase {
     }
 
     private func measure(_ kind: Kind, _ root: Root, requested: CGFloat, _ window: NSWindow,
-                         _ hosting: NSHostingController<ProbeRoot>) {
-        let head = "PROBE variant=\(kind.rawValue) root=\(root.rawValue) req=\(Int(requested))"
+                         _ hosting: NSHostingController<ProbeRoot>, tag: String = "") {
+        let variant = tag.isEmpty ? kind.rawValue : "\(tag)-\(kind.rawValue)"
+        let head = "PROBE variant=\(variant) root=\(root.rawValue) req=\(Int(requested))"
         guard let content = window.contentView else {
             print("\(head) content=none")
             return
@@ -614,6 +619,10 @@ final class MusterOverflowProbeTests: XCTestCase {
         let layoutTop = window.contentLayoutRect.maxY
         let views = descendants(content)
         let split = views.compactMap { $0 as? NSSplitView }.first
+        let autosave: String = (split?.autosaveName).map { $0.replacingOccurrences(of: " ", with: "_") } ?? "nil"
+        let splitName: String = autosave.isEmpty ? "empty" : autosave
+        let windowName: String = window.frameAutosaveName.isEmpty ? "empty" : window.frameAutosaveName
+        print("PROBESPLIT variant=\(variant) root=\(root.rawValue) splitAutosave=\(splitName) windowAutosave=\(windowName)")
         // On macOS 26 the detail column runs under the floating sidebar (both start at x 0), so
         // a scroll view's column comes from the split view's arranged subviews, not its x.
         let arranged = split?.arrangedSubviews ?? []
@@ -695,6 +704,116 @@ final class MusterOverflowProbeTests: XCTestCase {
             "overflow=\(overflow)",
         ]
         print(parts.joined(separator: " "))
+    }
+
+    // MARK: - stale saved split-view frames
+
+    /// The window's autosave name, in the app's shape (`muster-main-AppWindow-1` on the owner's Mac).
+    static let staleWindowName = "muster-probe-AppWindow-1"
+    /// The owner's key shape:  "NSSplitView Subview Frames <window>, SidebarNavigationSplitView".
+    static let staleSplitKey = "NSSplitView Subview Frames muster-probe-AppWindow-1, SidebarNavigationSplitView"
+    static let staleWindowKey = "NSWindow Frame muster-probe-AppWindow-1"
+
+    private func staleColumns(_ height: Int) -> [String] {
+        ["0.000000, 0.000000, 230.000000, \(height).000000, NO, NO",
+         "230.000000, 0.000000, 930.000000, \(height).000000, NO, NO"]
+    }
+
+    private func splitKeysLine(_ label: String) {
+        let defaults = UserDefaults.standard
+        let all = defaults.dictionaryRepresentation()
+        let keys = all.keys.filter { $0.contains("NSSplitView") || $0.contains("NSWindow Frame") }.sorted()
+        var parts: [String] = []
+        for key in keys {
+            let value = all[key]
+            var shown = "?"
+            if let list = value as? [String] {
+                shown = list.joined(separator: "|")
+            } else if let text = value as? String {
+                shown = text
+            }
+            parts.append("[\(key)]=[\(shown)]")
+        }
+        let domain = Bundle.main.bundleIdentifier ?? "nil"
+        print("PROBEKEYS at=\(label) domain=\(domain) count=\(keys.count) \(parts.joined(separator: " "))")
+    }
+
+    private func clearStaleKeys() {
+        let defaults = UserDefaults.standard
+        for key in defaults.dictionaryRepresentation().keys
+        where key.contains("NSSplitView") || key.contains("NSWindow Frame muster-probe") {
+            defaults.removeObject(forKey: key)
+        }
+    }
+
+    /// One stale-frame run:  seed (or not) the owner's saved frames, forget them (or not) the
+    /// way MusterApp.init does, then host the root in a window with the app's kind of autosave name.
+    private func staleProbe(_ kind: Kind, _ root: Root, height: CGFloat, seed: Bool, forget: Bool, nameFirst: Bool) {
+        _ = NSApplication.shared
+        clearStaleKeys()
+        let defaults = UserDefaults.standard
+        if seed {
+            defaults.set("20 20 1160 \(Int(height)) 0 0 1512 944 ", forKey: Self.staleWindowKey)
+            defaults.set(staleColumns(1085), forKey: Self.staleSplitKey)
+        }
+        let order = nameFirst ? "nameFirst" : "nameLast"
+        let tag = "stale-\(seed ? "seeded" : "clean")\(forget ? "-forgot" : "")-\(order)"
+        if forget {
+            let screens: [CGFloat] = NSScreen.screens.map { $0.frame.height }
+            let removed = MusterWindowLayout.forgetOversizedSplitViewFrames(in: defaults, screenHeight: screens.max())
+            print("PROBEFORGET variant=\(tag)-\(kind.rawValue) root=\(root.rawValue) removed=\(removed.count) keys=\(removed.joined(separator: "|"))")
+        }
+        let size = NSSize(width: MusterWindowLayout.minWidth, height: height)
+        let window = UnconstrainedWindow(contentRect: NSRect(origin: NSPoint(x: 20, y: 20), size: size),
+                                         styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+                                         backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        if nameFirst {
+            window.setFrameAutosaveName(Self.staleWindowName)
+        }
+        let hosting = NSHostingController(rootView: ProbeRoot(root: root, kind: kind))
+        hosting.sizingOptions = [.minSize]
+        window.contentViewController = hosting
+        window.setContentSize(size)
+        if !nameFirst {
+            window.setFrameAutosaveName(Self.staleWindowName)
+        }
+        window.orderFrontRegardless()
+        window.layoutIfNeeded()
+        // The split view as it first comes up, before SwiftUI has had a second pass.
+        if let split = descendants(window.contentView ?? NSView()).compactMap({ $0 as? NSSplitView }).first {
+            let early: [String] = split.arrangedSubviews.map { fmt(windowRect($0)) }
+            print("PROBEEARLY variant=\(tag)-\(kind.rawValue) root=\(root.rawValue) split=\(fmt(windowRect(split))) cols=\(early.joined(separator: ";"))")
+        }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.8))
+        window.layoutIfNeeded()
+        measure(kind, root, requested: height, window, hosting, tag: tag)
+        splitKeysLine("after-\(tag)-\(kind.rawValue)-\(root.rawValue)")
+        window.orderOut(nil)
+        window.close()
+    }
+
+    /// The owner's Mac on November 6:  a 760-pt window, its split view's columns saved at 1085 pt.
+    /// Does a restored frame reproduce the shift under the old root, and does the merged code fix it?
+    func test0_StaleSavedFrames() {
+        environmentLine("stale")
+        splitKeysLine("start")
+        // Discovery:  what does SwiftUI's split view call itself, and what does it write?
+        staleProbe(.baseline, .A, height: 760, seed: false, forget: false, nameFirst: true)
+        let kinds: [Kind] = [.baseline, .stripSeatSetup]
+        for nameFirst in [true, false] {
+            for kind in kinds {
+                for root in [Root.A, .B, .C, .W] {
+                    staleProbe(kind, root, height: 760, seed: true, forget: false, nameFirst: nameFirst)
+                }
+                for root in [Root.A, .B] {
+                    staleProbe(kind, root, height: 760, seed: true, forget: true, nameFirst: nameFirst)
+                    staleProbe(kind, root, height: 760, seed: false, forget: false, nameFirst: nameFirst)
+                }
+            }
+        }
+        clearStaleKeys()
+        splitKeysLine("end")
     }
 
     // MARK: - the probes

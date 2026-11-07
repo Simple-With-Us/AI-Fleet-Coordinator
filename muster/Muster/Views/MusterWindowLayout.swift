@@ -3,7 +3,7 @@ import SwiftUI
 /// The sizes the main window keeps for itself, apart from any panel's content.
 ///
 /// It holds no environment objects, so the unit-test bundle compiles it and can host the same
-/// layout the window uses (`MusterWindowLayoutTests`).
+/// size modifiers the window uses (`MusterWindowLayoutTests`).
 enum MusterWindowLayout {
     /// Wide enough for every panel's columns and controls, which overlapped each other in a
     /// narrower window (Controls' tabs, the Apps & Work filter bar).
@@ -14,23 +14,95 @@ enum MusterWindowLayout {
     /// A column's natural height.  It stays under the window's minimum less the toolbar,
     /// so no column can ask the window for more room than that minimum.
     static let columnIdealHeight: CGFloat = 400
+
+    private static let splitViewFramesPrefix = "NSSplitView Subview Frames "
+
+    /// The saved split-view column frames that are taller than the window they belong to.
+    ///
+    /// AppKit saves the split view's column frames in the app's defaults, under
+    /// `NSSplitView Subview Frames <window>, <split view>`, and restores them when the window
+    /// opens.  On the owner's Mac (read November 6, 2026) the window's saved frame was 760 pt
+    /// tall but its columns were saved at 1085 pt.  A split view restored that tall overflows
+    /// the window, and the root then placed it centred, so both columns' first rows sat above
+    /// the window's top, under the title bar, where no scrolling reaches.  That matches the
+    /// owner's screenshot.  A column is never meant to be taller than its window, so such a
+    /// frame is stale.
+    ///
+    /// - Parameters:
+    ///   - saved: the app's defaults, as `UserDefaults.dictionaryRepresentation()` gives them.
+    ///   - screenHeight: the tallest screen's height, the limit for a split view whose window
+    ///     has no saved frame.  With neither, nothing is called stale.
+    static func oversizedSplitViewFrameKeys(in saved: [String: Any], screenHeight: CGFloat?) -> [String] {
+        var keys: [String] = []
+        for (key, value) in saved where key.hasPrefix(splitViewFramesPrefix) {
+            guard let frames = value as? [String] else { continue }
+            let heights = frames.compactMap { frame -> CGFloat? in
+                let parts = frame.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+                guard parts.count >= 4, let height = Double(parts[3]) else { return nil }
+                return CGFloat(height)
+            }
+            guard let tallest = heights.max() else { continue }
+            let names = String(key.dropFirst(splitViewFramesPrefix.count))
+            let windowName = names.components(separatedBy: ", ").first ?? names
+            guard let limit = savedWindowHeight(saved["NSWindow Frame \(windowName)"]) ?? screenHeight else {
+                continue
+            }
+            if tallest > limit + 1 {
+                keys.append(key)
+            }
+        }
+        return keys.sorted()
+    }
+
+    /// Removes every saved split-view frame taller than its window
+    /// (`oversizedSplitViewFrameKeys`), before the window opens, so AppKit cannot restore it.
+    /// The split view then starts at the window's height, and only the sidebar's saved width
+    /// is lost.  Returns the keys it removed.
+    @discardableResult
+    static func forgetOversizedSplitViewFrames(in defaults: UserDefaults, screenHeight: CGFloat?) -> [String] {
+        let keys = oversizedSplitViewFrameKeys(in: defaults.dictionaryRepresentation(), screenHeight: screenHeight)
+        for key in keys {
+            defaults.removeObject(forKey: key)
+        }
+        return keys
+    }
+
+    /// The height in a saved `NSWindow Frame` value:  "x y width height" and then the screen's
+    /// frame, all separated by spaces.
+    private static func savedWindowHeight(_ value: Any?) -> CGFloat? {
+        guard let text = value as? String else { return nil }
+        let numbers = text.split(separator: " ").compactMap { Double($0) }
+        guard numbers.count >= 4 else { return nil }
+        return CGFloat(numbers[3])
+    }
 }
 
 extension View {
-    /// A split-view column's height comes from the window, never from its content.  The
-    /// split view keeps a column's natural height as a size it resists going under, and a
-    /// ScrollView's natural height is its whole content, so without this the split view grew
-    /// past the window and its top and bottom could not be reached.
+    /// A split-view column's height comes from the window, never from its content.
+    ///
+    /// This is a guard, not the confirmed cause of the owner's November 6 report:  the CI
+    /// harness measured the same layout with and without it (`MusterWindowLayoutTests`).  The
+    /// cause the evidence points to is a stale saved column frame
+    /// (`MusterWindowLayout.forgetOversizedSplitViewFrames`).  The cap keeps a column from
+    /// asking the split view for its content's natural height, which for a ScrollView is its
+    /// whole content.
     func musterColumnHeight() -> some View {
         frame(minHeight: 0, idealHeight: MusterWindowLayout.columnIdealHeight,
               maxHeight: .infinity, alignment: .top)
     }
 
-    /// The window's own size:  the window's minimum, never a panel's natural height.
+    /// The window's own size:  the window's minimum, never a panel's natural height.  Its
+    /// minimum and maximum make it report the window's size whatever the split view inside
+    /// asks for, and it sets the window's minimum through `.windowResizability(.contentMinSize)`.
+    ///
+    /// It aligns the split view to the top, so if the split view still ends up taller than
+    /// the window, the overflow goes off the bottom, which a taller window shows, and the
+    /// columns' first rows and the toolbar's title stay where they belong.  Centred, as the
+    /// earlier root placed it, the overflow went off the top as well, under the title bar.
     func musterWindowSize() -> some View {
         frame(minWidth: MusterWindowLayout.minWidth, idealWidth: MusterWindowLayout.minWidth,
               maxWidth: .infinity,
               minHeight: MusterWindowLayout.minHeight, idealHeight: MusterWindowLayout.idealHeight,
-              maxHeight: .infinity)
+              maxHeight: .infinity, alignment: .top)
     }
 }
