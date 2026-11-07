@@ -134,7 +134,7 @@ _COMPACT_INTRO_RE = re.compile(
     r"\s+📁(?P<after>[^\]]*)\]"
 )
 _FOLDER_TOKEN_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
-_SESSION_TAG_ENDS = ("]", "\u2192", "->", " ", ":")
+_SESSION_TAG_ENDS = ("]", "\u2192", "->", " ", ":", "\t")
 
 
 def _sender_seat_tag(message: Mapping[str, Any]) -> str | None:
