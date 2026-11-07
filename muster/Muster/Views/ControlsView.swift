@@ -224,24 +224,43 @@ struct ControlsView: View {
             .fixedSize(horizontal: false, vertical: true)
     }
 
+    private var kindTabs: some View {
+        Picker("Kind", selection: $knobFilter) {
+            ForEach(KnobFilter.allCases) { item in
+                Text(item.rawValue).tag(item)
+            }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private var hostPicker: some View {
+        Picker("Read On", selection: $hostFilter) {
+            ForEach(KnobHostFilter.allCases) { item in
+                Text(item.rawValue).tag(item)
+            }
+        }
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
     private func table(_ registry: KnobRegistry) -> some View {
         let rows = registry.filtered(knobFilter, host: hostFilter, query: searchText)
         return VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 12) {
-                Picker("Kind", selection: $knobFilter) {
-                    ForEach(KnobFilter.allCases) { item in
-                        Text(item.rawValue).tag(item)
-                    }
+            // The kind tabs were capped at 520 points, which is narrower than their five names
+            // need, so the last tab ran into the Read On label.  They keep their natural
+            // width, and when both pickers do not fit on one line the Read On picker moves to
+            // a second one.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 12) {
+                    kindTabs
+                    hostPicker
+                    Spacer(minLength: 0)
                 }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(maxWidth: 520)
-                Picker("Read On", selection: $hostFilter) {
-                    ForEach(KnobHostFilter.allCases) { item in
-                        Text(item.rawValue).tag(item)
-                    }
+                VStack(alignment: .leading, spacing: 8) {
+                    kindTabs
+                    hostPicker
                 }
-                .frame(maxWidth: 220)
             }
             HStack(spacing: 12) {
                 TextField("Search by name, job or purpose", text: $searchText)

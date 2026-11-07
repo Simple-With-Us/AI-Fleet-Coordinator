@@ -440,10 +440,41 @@ export function tagPrefix(seat, tag) {
   return tag ? `[${seat}·${tag}` : `[${seat}`;
 }
 
-/** The posted body:  tag (with →LABELS), mentions, text.  Over 10,000 characters is a usage error. */
+/** Locate a complete, single-line own-seat intro. Foreign-seat and malformed markers are content. */
+function ownIntro(prefix, text) {
+  const seat = prefix.slice(1).split("·", 1)[0];
+  const leading = text.match(/^(?:👀\s*)?\s*/u)[0];
+  const start = leading.length;
+  if (!text.startsWith(`[${seat}`, start)) return null;
+  if (!["]", " ", ":", "·", "→", "\t"].includes(text.charAt(start + seat.length + 1))) return null;
+  const end = text.indexOf("]", start);
+  if (end < 0 || /[\r\n\[]/.test(text.slice(start + 1, end))) return null;
+  return { end, intro: text.slice(0, end), rest: text.slice(end + 1) };
+}
+
+/** Preserve an existing own-seat intro, adding resolved recipients without a second attribution.
+ * Raw mentions have already been neutralized by normalizeText; only resolved mentions can notify.
+ * Untagged/foreign-seat text retains the generated attribution. */
 export function composeBody(prefix, text, { labels = [], mentions = [] } = {}) {
-  const parts = [`${prefix}${labels.length ? `→${labels.join(",")}` : ""}]`, ...mentions, text];
-  const body = parts.join(" ");
+  const own = ownIntro(prefix, text);
+  let parts;
+  if (own) {
+    let intro = own.intro;
+    const seatEnd = intro.indexOf("[") + 1 + prefix.slice(1).split("·", 1)[0].length;
+    const suffix = intro.slice(seatEnd).replace(/^·[^\s:→\]]*/u, "");
+    const session = prefix.includes("·") ? prefix.slice(prefix.indexOf("·")) : "";
+    // Supplied session is operational attribution and overrides a stale text session.
+    if (session) intro = intro.slice(0, seatEnd) + session + suffix;
+    const arrow = intro.indexOf("→");
+    const existing = arrow < 0 ? [] : intro.slice(arrow + 1).split(",").map((v) => v.trim());
+    const added = [...new Set(labels)].filter((label) => !existing.includes(label));
+    if (added.length) intro += `${arrow < 0 ? " →" : ","}${added.join(",")}`;
+    const tail = own.rest && !/^\s/u.test(own.rest) ? ` ${own.rest}` : own.rest;
+    parts = [`${intro}]${mentions.length ? ` ${mentions.join(" ")}` : ""}${tail}`];
+  } else {
+    parts = [`${prefix}${labels.length ? `→${labels.join(",")}` : ""}]`, ...mentions, text];
+  }
+  const body = parts.filter(Boolean).join(" ");
   const length = codePoints(body).length;
   if (length > MAX_CONTENT_LENGTH) throw new UsageError(`the message is ${length} characters; Zulip allows at most ${MAX_CONTENT_LENGTH}`);
   return body;

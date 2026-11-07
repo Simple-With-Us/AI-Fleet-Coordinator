@@ -131,6 +131,19 @@ export const WAKE_SECRETS = Object.freeze({
   WISE: "WAKE_HMAC_KEY_INSTINCT",
 });
 
+// Read-only listener keys for seats that have no wake route (OPS-1047).  WAKE_SECRETS above is
+// the wake table:  /internal/wake/<SEAT>, the spike route and MCP Events all consult it, and MA
+// must never gain a wake route (test/ma-seat.test.mjs pins that).  A seat listed here instead
+// gets only a listener read key:  the name resolves like a wake key (Infisical /wake, with the
+// Worker secret of the same name as fallback) but is consulted solely when a ListenerClient is
+// built (src/eavesdropper.js listenerSecretName, called from src/index.js).  MA's daemon side
+// reads the same value as MA_ROUTINE_KEY (listener_api_keys:  a seat with no hmac routine falls
+// back to <CODE>_ROUTINE_KEY), so it is the existing per-seat read-key mechanism, not a new
+// credential family.
+export const LISTENER_READ_SECRETS = Object.freeze({
+  MA: "WAKE_HMAC_KEY_MA",
+});
+
 // The Operator notes API key (AFC-486, docs/protocols/operator-notes.md):  the Worker signs every notes_* request
 // to <LISTENER_API_URL>/notes/v1/ as the principal WORKER with this secret, the Infisical key
 // OPERATOR_NOTES_WORKER_KEY (AI Fleet Coordinator, prod, /operator).  One key for every seat:  the seat comes only

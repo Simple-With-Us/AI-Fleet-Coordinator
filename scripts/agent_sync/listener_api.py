@@ -1,8 +1,9 @@
 """The server listener's read API (AFC-330 part B):  signed GET endpoints for one seat's records, so the
 hosted MCP Worker can answer eavesdropper_status, eavesdropper_inbox, eavesdropper_owner_queue, eavesdropper_wakes and
-eavesdropper_held_back for a hosted seat.
+eavesdropper_held_back for a hosted seat, and operator_inbox_pending (OPS-1047) over the pending-inbox record:
+the seat's wake-worthy seat-inbox items after a caller-held seq, for hosted seats with no wake adapter.
 
-    GET /listener/v1/<SEAT>/<record>?<query>      record:  status, inbox, owner-queue, wakes, held-back
+    GET /listener/v1/<SEAT>/<record>?<query>      record:  status, inbox, pending-inbox, owner-queue, wakes, held-back
 
 Authentication is per seat, with the HMAC key the listener already shares with the Worker for that
 seat's wakes (the listener's routine key_env, default <CODE>_ROUTINE_KEY;  the Worker's
@@ -56,7 +57,7 @@ MAX_QUERY = 512
 REQUEST_TIMEOUT_SECONDS = 5.0
 DEFAULT_PORT = 8788
 _PATH_RE = re.compile(
-    r"^/listener/v1/([A-Z0-9][A-Z0-9_-]{0,31})/(status|inbox|owner-queue|wakes|held-back)$"
+    r"^/listener/v1/([A-Z0-9][A-Z0-9_-]{0,31})/(status|inbox|pending-inbox|owner-queue|wakes|held-back)$"
 )
 # The query parameters each record takes, and how each is checked.
 _INT = re.compile(r"^\d{1,9}$")
@@ -65,6 +66,11 @@ _STATE = re.compile(r"^[a-z_]{1,32}$")
 PARAMS: dict[str, dict[str, Callable[[str], Any]]] = {
     "status": {},
     "inbox": {"since_seq": lambda v: _num(v, 0, 10**9), "limit": lambda v: _num(v, 1, 50)},
+    # limit may be 0:  a count-only check (the view still counts every pending item).
+    "pending-inbox": {
+        "after_seq": lambda v: _num(v, 0, 10**9),
+        "limit": lambda v: _num(v, 0, 50),
+    },
     "owner-queue": {"all": lambda v: _flag(v), "limit": lambda v: _num(v, 1, 50)},
     "wakes": {
         "since_hours": lambda v: _num(v, 1, 720),

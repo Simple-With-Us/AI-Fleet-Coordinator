@@ -188,6 +188,7 @@ jobs:
       timeout-minutes: 10
       run: |
         python3 scripts/test_fleet_mac_services.py
+        python3 scripts/test_fleet_seat_inventory.py
         python3 scripts/test_fleet_ops_control.py
         python3 scripts/test_fleet_resource_control.py
     # The Lark bridge: the eyes marker, the Operator's signal path and the
