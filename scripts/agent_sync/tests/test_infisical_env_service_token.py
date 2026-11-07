@@ -195,7 +195,10 @@ class InfisicalEnvironmentServiceTokenTests(unittest.TestCase):
     def test_standalone_auth_inventory_matches_shared_helper(self):
         from fleet_secrets import core
 
-        self.assertEqual(MODULE.AUTH_ENV_VARS, core.AUTH_ENV_VARS | {MODULE.LISTENER_READ_TOKEN})
+        self.assertEqual(
+            MODULE.AUTH_ENV_VARS,
+            core.AUTH_ENV_VARS | {MODULE.LISTENER_READ_TOKEN, MODULE.OPERATOR_VOICE_TOKEN},
+        )
 
 
 if __name__ == "__main__":
