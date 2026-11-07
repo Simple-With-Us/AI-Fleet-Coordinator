@@ -309,3 +309,53 @@ cd git-relay && python3 -m unittest discover -s git_relay/tests -t . -v
 ```
 
 Fakes only: no network, no real token.
+
+### Guarded same-path file patches
+
+`wf_file_patch` is a separate operation, not an exemption for whole-file writes.
+It accepts up to 32 sorted, disjoint UTF-8 byte-offset edits against a server-fetched
+file bound to repository, path, branch head and verified Git blob SHA-1. Every caller
+string, including inserted text, remains normally scanned. The full reconstructed
+file is scanned too: dedicated token patterns, provider tokens and loaded bearer
+values are refused even when present in the base. Only generic assigned-secret and
+assigned-credential matches can retain baseline provenance. Their entire containing
+line must map to a contiguous, identical original interval. Inserted/copied/replaced
+bytes never inherit provenance, even if identical text occurs elsewhere.
+
+Residual risk is explicit: a pre-existing generic assignment may be a real secret
+and remains in that same source file. This operation does not certify such content
+as secret-free. It cannot relocate the content or admit a newly assembled match.
+Security fixtures with dedicated token patterns still require reviewed attestations.
+
+The target must be a non-executable regular file (100644) on a nondefault branch,
+not a workflow path. GitHub GraphQL `createCommitOnBranch` atomically checks
+`expectedHeadOid`, creates the commit and advances the branch under the same own-App
+contents:write credential. FileAddition carries the full server-reconstructed base64
+content. Its API cannot preserve other file modes, so those are refused, not changed.
+The receipt must bind the sole parent, branch, new head and exact published blob.
+Unverifiable post-write receipts/GraphQL partial errors are UNKNOWN and must not be
+blindly retried. Registration, least-privilege seat policy and rollout are separate
+from source merge. Mutation docs: https://docs.github.com/en/graphql/reference/commits
+and file input docs: https://docs.github.com/en/graphql/reference/git .
+
+### Guarded patch bootstrap closure
+
+The existing canonical seat policy predates `wf_file_patch`. The pure
+`git_relay.patch_policy.prepare` transform appends only that action to each
+existing file-write seat, after matching the full policy digest. It changes no
+seat, App, repository, mint permission, private field or existing action order.
+Its regression uses the actual canonical policy and proves exact delta,
+idempotence, stale-input refusal and no input mutation. It performs no I/O.
+
+Activation must put the reviewed code and this exact transformed live policy in
+one bounded administrative deployment transaction with quiescence, pinned
+source/live digests, durable before-images, atomic writes and verified recovery.
+The old env-only seat installer does not qualify the live seats-file route.
+Code-only live/action-denied activation is not completion. No activation is
+implemented or implied by the pure transform.
+
+Canonical consolidation remains owned by this change: after successful own-App
+patch qualification, apply only the three existing profile action additions and
+update the existing canonical digest regression to its computed new digest,
+then verify rendered canonical policy equals the transformed policy. Until that
+lands, this bootstrap transform and its durable tests record the exact delta.
