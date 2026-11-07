@@ -44,6 +44,25 @@ test("isJsonValue accepts and refuses exactly what the zod union did", () => {
   }
 });
 
+test("isJsonValue is bounded:  depth 12 and 50000 nodes by default, and the limits can be set", () => {
+  const nested = (levels) => { let value = "leaf"; for (let i = 0; i < levels; i++) value = { k: value }; return value; };
+  assert.equal(isJsonValue(nested(12)), true, "12 levels below the root is the limit");
+  assert.equal(isJsonValue(nested(13)), false);
+  const nestedArray = (levels) => { let value = 1; for (let i = 0; i < levels; i++) value = [value]; return value; };
+  assert.equal(isJsonValue(nestedArray(12)), true);
+  assert.equal(isJsonValue(nestedArray(13)), false);
+  assert.equal(isJsonValue(Array.from({ length: 49_999 }, () => 1)), true, "the array itself is one node");
+  assert.equal(isJsonValue(Array.from({ length: 50_000 }, () => 1)), false, "50001 nodes with the array");
+  assert.equal(isJsonValue(nested(3), { maxDepth: 2 }), false);
+  assert.equal(isJsonValue(nested(2), { maxDepth: 2 }), true);
+  assert.equal(isJsonValue([1, 2, 3], { maxNodes: 3 }), false);
+  assert.equal(isJsonValue([1, 2], { maxNodes: 3 }), true);
+  // validWfV1Response bounds the whole body to depth 12 first, so isJsonValue's limits never cut off a body it accepts:
+  // the run's field sits at depth 3, so 9 levels reach depth 12 and 10 levels pass it.
+  assert.equal(validWfV1Response("wf_runs", { runs: [{ a: nested(9) }], complete: true }, { repo: "o/r" }), true);
+  assert.equal(validWfV1Response("wf_runs", { runs: [{ a: nested(10) }], complete: true }, { repo: "o/r" }), false);
+});
+
 // The earlier boundedWorkflowInput, verbatim.
 function referenceBounded(args, { maxDepth = 6, maxNodes = 500, maxBytes = 65536, maxString = 65536, maxKeys = 100 } = {}) {
   const stack = [[args, 0]], seen = new Set(); let nodes = 0, bytes = 0;

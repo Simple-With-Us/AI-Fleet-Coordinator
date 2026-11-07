@@ -32,6 +32,9 @@ const refresh = process.argv.includes("--refresh");
 const cases = arg("--cases", "ping,identities,gr_wf_runs,gr_wf_run_jobs,gr_wf_checks,gr_wf_pr_get").split(",");
 const requests = Number(arg("--requests", "200"));
 
+// The Worker answers only its own configured host (hostAllowed, and the wrangler.jsonc var that must equal
+// it), so a synthetic host would be refused with 404 before any code under test ran.  It is the host
+// wrangler.jsonc and test/mcp-guards.workerd.mjs already publish;  nothing here is a credential.
 const HOST = "https://agents.simplewithus.com";
 const REPO = "Simple-With-Us/AI-Fleet-Coordinator";
 const SHA = "a".repeat(40);
@@ -85,13 +88,14 @@ const options = convertV4MiniflareOptions({
     bindings: testEnv({
       HOSTED_SEATS: "JET,GROK-WEB,CLAUDE", EVENTS_ONLY_SEATS: "JET", ZULIP_CLAUDE_API_KEY: "z".repeat(32),
       INFISICAL_MODE: refresh ? "fallback" : "off", INFISICAL_SERVICE_TOKEN: "st.fixture", INFISICAL_WORKSPACE_ID: "ws-fixture",
-      RECALL_BASE_URL: "https://recall.jays.services", RECALL_API_TOKEN: `rt_${"Q".repeat(40)}`, RECALL_ACCESS_CLIENT_ID: "0123456789abcdef0123456789abcdef.access", RECALL_ACCESS_CLIENT_SECRET: "f".repeat(64),
+      RECALL_API_TOKEN: `rt_${"Q".repeat(40)}`, RECALL_ACCESS_CLIENT_ID: "0123456789abcdef0123456789abcdef.access", RECALL_ACCESS_CLIENT_SECRET: "f".repeat(64),
       GR_ACCESS_CLIENT_ID: "grid".padEnd(32, "a"), GR_ACCESS_CLIENT_SECRET: "grsecret".padEnd(64, "b"),
     }),
     outboundService: (request) => {
       const url = new URL(request.url);
       if (url.hostname === "app.infisical.com") return url.pathname === "/api/v3/secrets/raw" ? json(infisicalListing(url.searchParams.get("secretPath"))) : json({ message: "not found" }, 404);
-      if (url.pathname === "/api/v1/users/me") return json({ result: "success", msg: "", user_id: 4242, email: "claude-bot@simplewithus.zulipchat.com", full_name: "Claude", is_bot: true, is_admin: false, is_owner: false, role: 400 });
+      // users/me answers as the bot whose Basic credential asked, so the seat's own email check passes.
+      if (url.pathname === "/api/v1/users/me") return json({ result: "success", msg: "", user_id: 4242, email: atob((request.headers.get("authorization") ?? "").replace(/^Basic /, "")).split(":")[0], full_name: "Bench", is_bot: true, is_admin: false, is_owner: false, role: 400 });
       const relay = /^\/v1\/(wf_[a-z_]+)$/.exec(url.pathname);
       if (relay && RELAY[relay[1]]) return json(RELAY[relay[1]]);
       return new Response("absent", { status: 404 });

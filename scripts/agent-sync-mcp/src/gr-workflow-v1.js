@@ -431,18 +431,21 @@ const credentialPattern=/(?:github_pat_[A-Za-z0-9_]{20,}|gh[opusr]_[A-Za-z0-9]{2
 const shaValue=z.string().regex(/^[0-9a-f]{40}$/),positive=z.number().int().positive();
 // A JSON value:  a string, a finite number, a boolean, null, or an array or plain object of JSON values.
 // A walk, not the recursive zod union this replaced, which cost most of a response's validation CPU
-// (AFC-617);  it accepts exactly the same values.  The depth is already bounded by boundedWorkflowInput.
-export function isJsonValue(value){
-  const stack=[value];
-  while(stack.length) {
-    const v=stack.pop(), kind=typeof v;
+// (AFC-617);  it accepts exactly the same values.  validWfV1Response already bounds the whole body to
+// depth 12, 50000 nodes and 1 MiB before any schema runs, and the walk keeps the first two as its own
+// limits (the byte cap belongs to that caller), so it is bounded wherever it is used.
+export function isJsonValue(value,{maxDepth=12,maxNodes=50000}={}){
+  const values=[value], depths=[0]; let nodes=0;
+  while(values.length) {
+    const v=values.pop(), depth=depths.pop(), kind=typeof v;
+    if(++nodes>maxNodes || depth>maxDepth) return false;
     if(kind==='string' || kind==='boolean' || v===null) continue;
     if(kind==='number') { if(!Number.isFinite(v)) return false; continue; }
-    if(Array.isArray(v)) { for(let i=0;i<v.length;i++) stack.push(v[i]); continue; }
+    if(Array.isArray(v)) { for(let i=0;i<v.length;i++) { values.push(v[i]); depths.push(depth+1); } continue; }
     if(kind==='object') {
       const prototype=Object.getPrototypeOf(v);
       if(prototype!==Object.prototype && prototype!==null) return false;
-      for(const key of Object.keys(v)) stack.push(v[key]);
+      for(const key of Object.keys(v)) { values.push(v[key]); depths.push(depth+1); }
       continue;
     }
     return false;
