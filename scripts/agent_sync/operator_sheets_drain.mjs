@@ -3,9 +3,17 @@
 // The production caller for drainOutbox: it reads the registry outbox through the
 // registry CLI inside the eavesdropper container (docker exec), writes to the SWU
 // Operator workbook through OperatorSheetsGoogle configured with that workbook's
-// real profile (tabs "Sessions" / "Events", the 10-column Sessions layout), records
+// real profile (tabs "Sessions" / "Events", the canonical 16-column Sessions and
+// 9-column Events layouts, imported from the exporter so there is one copy), records
 // every attempt in the store-side fence (export_attempts), and marks rows exported
 // only after write + fence confirm. See docs/protocols/operator-sheets-export.md.
+//
+// Write pacing and quota back-off live here, on the outbox side, because the
+// transport never retries (OPERATOR-SHEETS-ADAPTER.md, Errors And Retries):
+// pacedAdapter spaces Sheets writes about 1.1 s apart and answers an HTTP 429
+// (a certain quota refusal, nothing written) with a bounded sleep and a retry.
+// Any other failure, and every uncertain write, is left to drainOutbox, which
+// stops and reconciles by ID on the next run.
 //
 // Why the host and not the container: the registry CLI is Python (present in the
 // container), the Sheets adapter is Node (absent there), and the host has both
@@ -30,7 +38,7 @@ import { execFile } from "node:child_process";
 import { open, readFile, unlink } from "node:fs/promises";
 import { promisify } from "node:util";
 
-import { drainOutbox } from "./operator_sheets_export.mjs";
+import { drainOutbox, EVENTS_HEADERS, SESSIONS_HEADERS } from "./operator_sheets_export.mjs";
 import {
   createServiceAccountTokenProvider,
   OperatorSheetsGoogle,
@@ -52,14 +60,8 @@ export function workbookProfileFromEnv(env) {
   return { spreadsheetId, sheetIds: { sessions, events } };
 }
 
-export const SESSIONS_HEADERS = [
-  "Record ID", "Label", "Seat", "Platform", "Host", "Native Session ID",
-  "Title", "Project", "Thread Link", "Apple Note Link",
-];
-export const EVENTS_HEADERS = [
-  "Event ID", "Recorded At", "Session Record ID", "Label", "Event",
-  "Actor", "Outcome", "Source", "Details",
-];
+// The workbook's tabs carry the canonical layouts, so the exporter's header arrays
+// are the single source; the drain keeps no copy of its own.
 export const TABLES = {
   sessions: { title: "Sessions", headers: SESSIONS_HEADERS },
   events: { title: "Events", headers: EVENTS_HEADERS },
@@ -109,6 +111,86 @@ export function makeRegistryBridge({ container, db }) {
   };
 }
 
+// --- write pacing and quota back-off ---------------------------------------------
+//
+// Google Sheets allows about 60 write requests per minute per user; a backfill of
+// thousands of rows trips that quota without pacing. Every value is injectable
+// (sleep and now too) so tests never wait for real.
+
+export const PACING_DEFAULTS = Object.freeze({
+  writeIntervalMs: 1_100, // minimum gap between the end of one write and the start of the next
+  rateLimitRetries: 5, // retries after the first HTTP 429, then the error goes to drainOutbox
+  rateLimitBaseDelayMs: 2_000, // first back-off; doubles each retry
+  rateLimitMaxDelayMs: 60_000, // no single back-off sleeps longer than this
+});
+
+const realSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function pacingOption(options, name, min, max) {
+  const value = options[name];
+  if (!Number.isSafeInteger(value) || value < min || value > max) {
+    throw new Error(`pacing option ${name} must be an integer from ${min} to ${max}`);
+  }
+  return value;
+}
+
+// A quota refusal is retried only when the transport says nothing was written.
+function isQuotaRefusal(err) {
+  return err?.code === "http_error" && err.status === 429 && err.uncertain !== true;
+}
+
+export function pacedAdapter(adapter, {
+  sleep = realSleep, now = Date.now, log = () => {}, ...overrides
+} = {}) {
+  if (typeof sleep !== "function" || typeof now !== "function") {
+    throw new Error("pacing sleep and now must be functions");
+  }
+  const options = { ...PACING_DEFAULTS, ...overrides };
+  const writeIntervalMs = pacingOption(options, "writeIntervalMs", 0, 60_000);
+  const retries = pacingOption(options, "rateLimitRetries", 0, 10);
+  const baseMs = pacingOption(options, "rateLimitBaseDelayMs", 1, 60_000);
+  const maxMs = pacingOption(options, "rateLimitMaxDelayMs", baseMs, 300_000);
+  let lastWriteAt = null;
+
+  const backoffMs = (attempt, retryAfterSeconds) => {
+    const exponential = baseMs * 2 ** attempt;
+    const hinted = Number.isFinite(retryAfterSeconds) ? retryAfterSeconds * 1000 : 0;
+    return Math.min(Math.max(exponential, hinted), maxMs);
+  };
+  const withQuotaRetry = async (name, call) => {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await call();
+      } catch (err) {
+        if (!isQuotaRefusal(err) || attempt >= retries) throw err;
+        const delay = backoffMs(attempt, err.retryAfterSeconds);
+        log(`${name}: HTTP 429 quota refusal, nothing written; retry ${attempt + 1} of ${retries} in ${delay} ms`);
+        await sleep(delay);
+      }
+    }
+  };
+  const read = (name) => (...args) => withQuotaRetry(name, () => adapter[name](...args));
+  const write = (name) => (...args) => withQuotaRetry(name, async () => {
+    if (writeIntervalMs > 0 && lastWriteAt !== null) {
+      const wait = lastWriteAt + writeIntervalMs - now();
+      if (wait > 0) await sleep(Math.min(wait, writeIntervalMs));
+    }
+    try {
+      return await adapter[name](...args);
+    } finally {
+      lastWriteAt = now();
+    }
+  });
+  return {
+    inspect: read("inspect"),
+    validateHeaders: read("validateHeaders"),
+    readRows: read("readRows"),
+    appendSession: write("appendSession"),
+    updateSessionRow: write("updateSessionRow"),
+    appendEvent: write("appendEvent"),
+  };
+}
+
 // --- writer lease: one drain at a time, cross-process ----------------------------
 
 export async function acquireLease(lockPath) {
@@ -153,14 +235,15 @@ export async function drainOnce({ env = process.env, log = (m) => console.log(m)
   });
   const limit = Number(env.OPERATOR_SHEETS_PAGE_LIMIT || 1000);
   const profile = workbookProfileFromEnv(env);
-  const adapter = new OperatorSheetsGoogle({
+  // One paced adapter for the whole run, so the write spacing holds across passes.
+  const adapter = pacedAdapter(new OperatorSheetsGoogle({
     spreadsheetId: profile.spreadsheetId,
     sheetIds: profile.sheetIds,
     tables: TABLES,
     token: createServiceAccountTokenProvider({
       loadServiceAccount: () => loadServiceAccount(env),
     }),
-  });
+  }), { log });
   let totals = { exported: 0, failed: 0 };
   // Passes continue while a pass still exports rows: the backfill is several
   // thousand rows and one pass is capped. A pass that exports nothing ends the

@@ -7,10 +7,12 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 EnvironmentFile=/etc/operator-sheets/drain.env
-ExecStart=/usr/bin/node /usr/local/lib/operator-sheets-drain/operator_sheets_drain.mjs --once
-# A full backfill pass set takes minutes, not seconds; the timer's next run
-# simply finds the writer lease held and exits if one ever overruns.
-TimeoutStartSec=1800
+ExecStart=/usr/bin/node /usr/local/lib/operator-sheets-drain/operator_sheets_drain.mjs
+# Writes are paced about 1.1 s apart, so a several-thousand-row backfill takes
+# an hour or more; a steady-state run takes seconds. While this oneshot runs the
+# timer does not start another, and a runner started by hand finds the writer
+# lease held and exits.
+TimeoutStartSec=6h
 Nice=10
 
 [Install]
