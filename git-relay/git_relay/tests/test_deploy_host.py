@@ -113,3 +113,38 @@ class LinuxHostTests(unittest.TestCase):
             ):
                 self.h.resume_if_same({"pid": 42})
                 kill.assert_not_called()
+
+    def test_startup_health_wait_is_bounded_and_provider_proof_not_retried(self):
+        import io
+        from unittest.mock import MagicMock
+        from urllib.error import URLError
+
+        identity = {"pid": 43}
+        ticks = [0.0]
+        self.h.clock = lambda: ticks[0]
+        self.h.sleep = lambda n: ticks.__setitem__(0, ticks[0] + n)
+        response = MagicMock()
+        response.__enter__.return_value.status = 200
+        response.__enter__.return_value.read = io.BytesIO(b'{"ok":true}').read
+        proof = MagicMock(return_value=True)
+        self.h.proof = proof
+        with (
+            patch.object(self.h, "process_identity", return_value=identity),
+            patch.object(self.h, "hashes", return_value={"code/x": "new"}),
+            patch(
+                "git_relay.deploy_host.urlopen", side_effect=[URLError("not bound"), response]
+            ) as get,
+        ):
+            self.assertTrue(self.h.runtime({"code/x": "new"}, {"pid": 42}))
+            self.assertEqual(get.call_count, 2)
+            proof.assert_called_once()
+        proof.reset_mock()
+        ticks[0] = 0
+        with (
+            patch.object(self.h, "process_identity", return_value=identity),
+            patch.object(self.h, "hashes", return_value={"code/x": "new"}),
+            patch("git_relay.deploy_host.urlopen", side_effect=URLError("not bound")),
+        ):
+            self.assertFalse(self.h.runtime({"code/x": "new"}, {"pid": 42}))
+            self.assertLess(ticks[0], 8.2)
+            proof.assert_not_called()

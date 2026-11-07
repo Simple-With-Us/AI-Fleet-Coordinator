@@ -16,6 +16,7 @@ import signal
 import subprocess
 import time
 from pathlib import Path
+from urllib.error import URLError
 from urllib.request import urlopen
 
 from .deploy_guard import freeze_qualified
@@ -278,8 +279,21 @@ class LinuxHost:
             return False
         # Health is only one signal. Separate proof must perform actual own-App
         # negative patch validation and read-only action against the new process.
-        with urlopen(self.HEALTH, timeout=3) as response:
-            healthy = response.status == 200 and json.load(response) == {"ok": True}
+        healthy = False
+        deadline = self.clock() + 8
+        while self.clock() < deadline:
+            if self.process_identity() != identity or self.hashes(expected) != expected:
+                return False
+            try:
+                with urlopen(self.HEALTH, timeout=1) as response:
+                    healthy = response.status == 200 and json.load(response) == {"ok": True}
+            except (URLError, OSError, ValueError):
+                healthy = False
+            if healthy:
+                break
+            self.sleep(0.1)
+        # Only loopback readiness is polled. Own-App provider probes are never
+        # retried and remain bounded by their individual HTTP timeouts.
         return healthy and self.proof(identity, expected) and self.process_identity() == identity
 
     def prove_new_runtime(self, prior, rows):
