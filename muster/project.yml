@@ -130,6 +130,9 @@ targets:
       - path: Muster/Model/SeatManifest.swift
       - path: Muster/Model/SeatSetup.swift
       - path: Muster/Model/SeatInventory.swift
+      # When Seat Setup reads an inventory again and when a polling page reads while the app
+      # is not in front (ReadCadenceTests, in the MusterTests directory above).
+      - path: Muster/Model/ReadCadence.swift
       - path: Muster/Model/TrustedCheckout.swift
       - path: Muster/Model/ThemeChoice.swift
       - path: Muster/Model/FailureReason.swift
@@ -139,6 +142,7 @@ targets:
       - path: Muster/Model/SeatActivity.swift
       - path: Muster/Model/SeatActivityReader.swift
       - path: Muster/Model/SeatActivityStore.swift
+      - path: Muster/Model/FleetViewStore.swift
       - path: Muster/Model/WakeLedger.swift
       - path: Muster/Model/WakeSettings.swift
       - path: Muster/Model/WakeSettingsReader.swift
