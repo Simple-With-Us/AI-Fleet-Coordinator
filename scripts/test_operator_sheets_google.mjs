@@ -214,8 +214,8 @@ test("a confirmation for the wrong tab is rejected", async () => {
   await assert.rejects(sheetsWith(fake).appendSession(sessionRow()), { code: "write_confirmation_mismatch" });
 });
 
-test("http failures: rejected statuses are certain, server errors are uncertain, body is never leaked", async () => {
-  for (const [status, uncertain] of [[400, false], [403, false], [429, true], [500, true], [503, true]]) {
+test("http failures: rejected statuses (429 included) are certain, server errors are uncertain, body is never leaked", async () => {
+  for (const [status, uncertain] of [[400, false], [403, false], [429, false], [500, true], [503, true]]) {
     const fake = fakeSheets({
       write: () => new Response("SECRET-ECHO cell content", { status, headers: { "retry-after": "12" } }),
     });
@@ -441,14 +441,15 @@ test("the header contract's three copies stay equal (registry, exporter, adapter
 });
 // ---- OPS-1037: workbook-profile tables (the live SWU Operator workbook shape) ----
 
-const WB_SESSIONS_HEADERS = ['Record ID', 'Label', 'Seat', 'Platform', 'Host', 'Native Session ID',
-  'Title', 'Project', 'Thread Link', 'Apple Note Link'];
+// The live workbook's Sessions tab carries all 16 canonical columns (OPS-1037).
+const WB_SESSIONS_HEADERS = [...SESSION_HEADERS];
 const WB_TABLES = {
   sessions: { title: 'Sessions', headers: WB_SESSIONS_HEADERS },
   events: { title: 'Events', headers: EVENT_HEADERS },
 };
 const WB_IDS = { sessions: 1000000001, events: 1000000002 }; // synthetic fixture ids
-const WB_SESSION_ROW = ['r1', 'A', 'MM', 'zulip', 'mac', 'native-1', 'Title', '', '', ''];
+const WB_SESSION_ROW = ['r1', 'A', 'MM', 'zulip', 'mac', 'native-1', 'Title', '', '', '',
+  'open', 'none', '', '', '', 'test'];
 
 function fakeWorkbookFetch({ metadataSheets = null } = {}) {
   const sheets = metadataSheets ?? [
@@ -466,8 +467,8 @@ function fakeWorkbookFetch({ metadataSheets = null } = {}) {
       const sessions = range.includes('Sessions');
       const cols = sessions ? WB_SESSIONS_HEADERS.length : EVENT_HEADERS.length;
       return jsonResponse({ spreadsheetId: SPREADSHEET, updates: {
-        spreadsheetId: SPREADSHEET, tableRange: sessions ? 'Sessions!A1:J1' : 'Events!A1:I1',
-        updatedRange: sessions ? 'Sessions!A2:J2' : "'Events'!A2:I2",
+        spreadsheetId: SPREADSHEET, tableRange: sessions ? 'Sessions!A1:P1' : 'Events!A1:I1',
+        updatedRange: sessions ? 'Sessions!A2:P2' : "'Events'!A2:I2",
         updatedRows: 1, updatedColumns: cols, updatedCells: cols } });
     }
     if (range.startsWith("'Sessions'!") || range.startsWith('Sessions!')) {
@@ -507,9 +508,27 @@ test('workbook profile: a renamed tab fails identity validation', async () => {
   await assert.rejects(adapter.inspect(), /sheet_identity_mismatch/);
 });
 
-test('workbook profile: 16-column canonical rows are refused by the 10-column profile', async () => {
-  const { fetch } = fakeWorkbookFetch();
+test('workbook profile: a 10-column row (the old short layout) is refused by the 16-column profile', async () => {
+  const { fetch, calls } = fakeWorkbookFetch();
   const adapter = new OperatorSheetsGoogle({ spreadsheetId: SPREADSHEET, sheetIds: WB_IDS, tables: WB_TABLES,
     token: async () => 'token', fetch });
-  await assert.rejects(adapter.appendSession(sessionRow()), /invalid_row/);
+  await assert.rejects(adapter.appendSession(WB_SESSION_ROW.slice(0, 10)), /invalid_row/);
+  assert.equal(calls.length, 0); // refused locally, before any request
+});
+
+test('workbook profile: a tab that still has the old 10 headers fails header validation', async () => {
+  const shortHeaders = SESSION_HEADERS.slice(0, 10);
+  const fetch = async (url) => {
+    const path = decodeURIComponent(new URL(url).pathname);
+    if (!path.includes('/values/')) {
+      return jsonResponse({ sheets: [
+        { properties: { sheetId: WB_IDS.sessions, title: 'Sessions', gridProperties: { rowCount: 5, columnCount: 26 } } },
+        { properties: { sheetId: WB_IDS.events, title: 'Events', gridProperties: { rowCount: 5, columnCount: 26 } } },
+      ] });
+    }
+    return jsonResponse({ values: [path.includes('Sessions') ? shortHeaders : [...EVENT_HEADERS]] });
+  };
+  const adapter = new OperatorSheetsGoogle({ spreadsheetId: SPREADSHEET, sheetIds: WB_IDS, tables: WB_TABLES,
+    token: async () => 'token', fetch });
+  await assert.rejects(adapter.validateHeaders(), { code: 'header_mismatch' });
 });
