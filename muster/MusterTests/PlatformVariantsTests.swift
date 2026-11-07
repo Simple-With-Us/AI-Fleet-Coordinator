@@ -1,5 +1,4 @@
 import XCTest
-@testable import Muster
 
 /// The instruction-preview marks (AFC-444):  what the analysis finds,  what it refuses
 /// to call a customization point,  and the words that keep the marks reminders and not
