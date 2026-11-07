@@ -206,6 +206,19 @@ final class SettingsFoldersTests: XCTestCase {
                        SettingsCopy.join(SettingsCopy.openedSkipped, SettingsCopy.usual))
     }
 
+    /// A blank or whitespace-only value set at launch counts as unset, so no passed-over line shows.
+    func testABlankEnvironmentFolderCountsAsUnset() throws {
+        try touch("Code/AI-Fleet-Coordinator/scripts/fleet_view/__main__.py", in: home)
+        for blank in ["", "   ", "\t"] {
+            let r = FleetViewService.resolveScripts(
+                environment: [MusterSettings.scriptsDirectoryEnvironmentKey: blank],
+                defaults: try suite(), home: home.path)
+            XCTAssertEqual(r.source, .standard, "[\(blank)]")
+            XCTAssertFalse(r.environmentSkipped, "[\(blank)]")
+            XCTAssertEqual(SettingsCopy.scriptsRow(r).sourceLine, SettingsCopy.usual, "[\(blank)]")
+        }
+    }
+
     func testAnEnvironmentFolderWithoutScriptsAndNothingElseFound() throws {
         let r = FleetViewService.resolveScripts(
             environment: [MusterSettings.scriptsDirectoryEnvironmentKey: root.appendingPathComponent("no-scripts").path],

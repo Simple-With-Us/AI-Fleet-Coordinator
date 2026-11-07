@@ -89,7 +89,9 @@ enum FleetViewService {
     ) -> ScriptsResolution {
         var candidates: [(String, SettingSource)] = []
         var environmentSet = false
-        if let override = environment[MusterSettings.scriptsDirectoryEnvironmentKey], !override.isEmpty {
+        // A blank or whitespace-only value counts as unset, as the Zulip seat's does.
+        if let override = environment[MusterSettings.scriptsDirectoryEnvironmentKey],
+           !override.trimmingCharacters(in: .whitespaces).isEmpty {
             // Expanded like every other folder setting, so `~/...` works here too.
             candidates.append(((override as NSString).expandingTildeInPath, .environment))
             environmentSet = true
