@@ -244,7 +244,8 @@ final class DriftMonitor: ObservableObject {
     private var lastWatcherRunAt: Date?
     /// The one run waiting for the end of the gap,  when there is one.
     private var floorWork: DriftScheduledWork?
-    /// The watches the watcher holds now,  so an unchanged list is not armed again.
+    /// The watches that hold a stream now,  in the list's order,  so an unchanged list is
+    /// not armed again.  Nil until the first arming after a start.
     private var armedWatches: [DriftWatchList.Watch]?
 
     init(
@@ -303,6 +304,9 @@ final class DriftMonitor: ObservableObject {
         debouncer.cancel()
         floorWork?.cancel()
         floorWork = nil
+        // The gap belongs to the session that is ending:  the first watched change after a
+        // start runs once its window ends,  and never waits out a gap from before the stop.
+        lastWatcherRunAt = nil
         watcherRunPending = false
         otherRunPending = false
     }
@@ -313,26 +317,33 @@ final class DriftMonitor: ObservableObject {
     ///
     /// The list is built again after every run,  because a path that was not there may
     /// be there now and a path that was there may be gone,  and a watch on a path that
-    /// has moved is a watch on nothing.  The watcher is armed again only when the list
-    /// changed:  the comparison takes in each watch's root and whether its target is a
-    /// directory,  so a path that appeared or moved still re-arms,  and an unchanged list
-    /// keeps its streams,  which also keeps the events a restart would have dropped.
+    /// has moved is a watch on nothing.  The watcher is touched only where the list and the
+    /// streams it holds differ:  the comparison takes in each watch's root and whether its
+    /// target is a directory,  so a path that appeared or moved gets a stream of its own,  a
+    /// path that went away loses its stream,  and every other stream keeps running,  which
+    /// also keeps the events a restart would have dropped.  A watch whose stream could not
+    /// be made is asked for again after the next run,  and only that watch:  the streams that
+    /// did arm are kept.
     private func armWatcher() {
         let list = buildWatchList(grid.manifest, home)
         watchedPathCount = list.targetPaths.count
         watchedSeats = list.seats
         if let armedWatches, armedWatches == list.watches { return }
-        Self.log.info("Watching \(list.targetPaths.count, privacy: .public) paths for \(list.seats.count, privacy: .public) seats")
-        let armed = watcher.start(list) { [weak self] _ in
+        let held = armedWatches ?? []
+        let gone = held.filter { !list.watches.contains($0) }
+        if !gone.isEmpty {
+            watcher.disarm(gone)
+        }
+        let kept = held.filter { list.watches.contains($0) }
+        let missing = list.watches.filter { !kept.contains($0) }
+        Self.log.info("Watching \(list.targetPaths.count, privacy: .public) paths for \(list.seats.count, privacy: .public) seats; \(missing.count, privacy: .public) watches to arm, \(gone.count, privacy: .public) let go")
+        let newlyArmed = watcher.arm(missing) { [weak self] _ in
             self?.changeDetected()
         }
-        // The list counts as armed only when every watch got a stream.  When one did not,
-        // nothing is kept,  so the next run tries the whole list again.
-        if armed == list.watches.count {
-            armedWatches = list.watches
-        } else {
-            Self.log.error("Only \(armed, privacy: .public) of \(list.watches.count, privacy: .public) watches were armed; the next run tries again")
-            armedWatches = nil
+        let armed = list.watches.filter { kept.contains($0) || newlyArmed.contains($0) }
+        armedWatches = armed
+        if armed.count < list.watches.count {
+            Self.log.error("Only \(armed.count, privacy: .public) of \(list.watches.count, privacy: .public) watches were armed; the next run tries the rest again")
         }
     }
 

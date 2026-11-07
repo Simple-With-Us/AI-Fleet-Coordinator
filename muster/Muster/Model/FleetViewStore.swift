@@ -6,9 +6,11 @@ import Foundation
 /// The page's view comes and goes as the owner moves around the sidebar,  and a view's own
 /// state goes with it,  so each return to the page used to run `fleet-view status` again from
 /// nothing.  This store keeps the reading for as long as the app runs,  and at most one read
-/// is in flight:
+/// of a checkout is in flight:
 ///
-///   * a second refresh while a read runs waits for that read and starts nothing
+///   * a second refresh of the same checkout while a read runs waits for that read and starts
+///     nothing;  a refresh of another checkout starts its own read,  and only the newest read
+///     writes the page
 ///   * a return to the page shows the last reading at once,  and reads again only when the
 ///     last good read is older than the window the caller names (`refreshIfOlder(than:)`)
 ///
@@ -66,12 +68,32 @@ final class FleetViewStore: ObservableObject {
     /// The header's times:  when the data was collected and when a read last failed.
     @Published private(set) var refreshClock = FleetViewRefreshClock()
     /// When the last good read landed,  by this store's clock.  Nil before one,  and after a
-    /// failed read,  so a page that comes back to a failure reads again.
+    /// failed read,  so a page that comes back to a failure reads again once
+    /// `failureRetryAfter` has passed.
     @Published private(set) var lastSuccessAt: Date?
+    /// When the last read failed,  by this store's clock.  Nil after a good read.
+    @Published private(set) var lastFailureAt: Date?
+    /// After a failed read,  `refreshIfOlder` tries again no sooner than this,  so a page or a
+    /// phone that keeps asking while fleet-view keeps failing does not rerun its GitHub and
+    /// Linear reads every time.  A plain `refresh()` (the Refresh button) is never held back.
+    static let failureRetryAfter: TimeInterval = 60
     /// How many reads this store started.
     private(set) var readsStarted = 0
 
-    private var inFlight: Task<Void, Never>?
+    /// A read that is running,  with the checkout it was asked for and its place in line.
+    private struct Flight {
+        /// The checkout the caller named,  or nil when the loader looks for it.
+        let engineRoot: URL?
+        /// Which read this is.  Only the newest read may write the page.
+        let generation: Int
+        let task: Task<Void, Never>
+    }
+
+    /// The newest read,  while it runs.
+    private var inFlight: Flight?
+    /// The number of the newest read started.  A read whose number is lower has been
+    /// overtaken,  and drops its answer.
+    private var latestGeneration = 0
     private let loader: Loader
     private let now: () -> Date
 
@@ -83,39 +105,59 @@ final class FleetViewStore: ObservableObject {
     /// Whether the last read failed.
     var failed: Bool { failure != nil }
 
-    /// Read now,  unless a read is already running,  in which case wait for that one.
+    /// Read now,  unless a read of the same checkout is already running,  in which case wait
+    /// for that one.
+    ///
+    /// A refresh that names another checkout than the running read does not join it,  since
+    /// that read's registry rows are another checkout's:  it starts a read of its own,  and
+    /// the older read drops its answer when it lands,  so it can never write over the newer
+    /// checkout's rows.
     ///
     /// - Parameter engineRoot:  The checkout the app's own store found,  when it found one.
     ///   Without it the loader looks for the checkout itself,  as the page always has.
     func refresh(engineRoot: URL? = nil) async {
-        if let running = inFlight {
-            await running.value
+        if let running = inFlight, running.engineRoot == engineRoot {
+            await running.task.value
             return
         }
         readsStarted += 1
+        latestGeneration += 1
+        let generation = latestGeneration
         loading = true
         // The read runs in a task of its own,  so the page's own task ending (the owner moving
         // to another page) does not call it off:  the reading is there when the owner comes back.
         let task = Task { [weak self] in
             guard let self else { return }
-            await self.read(engineRoot: engineRoot)
-            self.inFlight = nil
-            self.loading = false
+            await self.read(engineRoot: engineRoot, generation: generation)
+            // An overtaken read leaves the newer one's flight and spinner alone.
+            if self.inFlight?.generation == generation {
+                self.inFlight = nil
+                self.loading = false
+            }
         }
-        inFlight = task
+        inFlight = Flight(engineRoot: engineRoot, generation: generation, task: task)
         await task.value
     }
 
-    /// Read unless the last good read is younger than `maximumAge`.
+    /// Read unless the last good read is younger than `maximumAge`,  or the last read failed
+    /// less than `failureRetryAfter` (or `maximumAge`,  if shorter) ago.
     func refreshIfOlder(than maximumAge: TimeInterval, engineRoot: URL? = nil) async {
         if let lastSuccessAt, now().timeIntervalSince(lastSuccessAt) < maximumAge {
+            return
+        }
+        if let lastFailureAt,
+           now().timeIntervalSince(lastFailureAt) < min(maximumAge, Self.failureRetryAfter) {
             return
         }
         await refresh(engineRoot: engineRoot)
     }
 
     /// One read,  as the page has always made it.
-    private func read(engineRoot: URL?) async {
+    ///
+    /// The answer is worked out in full first and written to the page in one step,  and only
+    /// when this is still the newest read:  a read another checkout's refresh overtook drops
+    /// its answer.
+    private func read(engineRoot: URL?, generation: Int) async {
         let readTools = loader.readTools
         let readRegistry = loader.readRegistry
         let loadView = loader.loadView
@@ -125,19 +167,23 @@ final class FleetViewStore: ObservableObject {
         }.value
         do {
             let loaded = try await loadView()
-            envelope = loaded
-            failure = nil
-            refreshClock.recordSuccess(generatedAt: loaded.generatedAt, at: now())
-            lastSuccessAt = now()
+            let summary: FleetRegistrySummary
             if let root {
-                registrySummary = await Task.detached(priority: .userInitiated) {
+                summary = await Task.detached(priority: .userInitiated) {
                     readRegistry(root, loaded, tools)
                 }.value
             } else {
                 // Never leave the last run's rows beside a fresh one, and never let a checkout
                 // Muster cannot find read as a filter that hides every app (FLEETVIEW-30).
-                registrySummary = FleetRegistrySummary(problem: Self.missingCheckoutProblem)
+                summary = FleetRegistrySummary(problem: Self.missingCheckoutProblem)
             }
+            guard generation == latestGeneration else { return }
+            envelope = loaded
+            failure = nil
+            refreshClock.recordSuccess(generatedAt: loaded.generatedAt, at: now())
+            lastSuccessAt = now()
+            lastFailureAt = nil
+            registrySummary = summary
         } catch {
             // Fail closed:  clear the lists, never show the last green.  The registry
             // rows go with them:  read back without the run's answer they carry lane,
@@ -150,10 +196,12 @@ final class FleetViewStore: ObservableObject {
             let described = await Task.detached(priority: .userInitiated) {
                 FleetViewFailure(error: error)
             }.value
+            guard generation == latestGeneration else { return }
             envelope = nil
             failure = described
             refreshClock.recordFailure(at: now())
             lastSuccessAt = nil
+            lastFailureAt = now()
             registrySummary = FleetRegistrySummary()
         }
     }

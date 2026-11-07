@@ -576,14 +576,14 @@ final class DriftMonitorTests: XCTestCase {
         )
         monitor.start()
         XCTAssertEqual(derivations, 1, "the watch list is built once,  when the app starts")
-        XCTAssertEqual(watcher.startCount, 1)
+        XCTAssertEqual(watcher.armCount, 1)
         // Nothing happens:  no change,  no run,  and no reading of any file.
         await settle()
         scheduler.fireAll()
         await settle()
         XCTAssertEqual(grid.refreshCount, 0, "the quiet path must not run the engine")
         XCTAssertEqual(derivations, 1, "the quiet path must not look at the file system")
-        XCTAssertEqual(watcher.startCount, 1)
+        XCTAssertEqual(watcher.armCount, 1)
     }
 
     /// A change starts the debounce,  and the run happens when the window ends.
@@ -766,19 +766,20 @@ final class DriftMonitorTests: XCTestCase {
             }
         )
         monitor.start()
-        XCTAssertEqual(watcher.startCount, 1)
+        XCTAssertEqual(watcher.armCount, 1)
 
         grid.finish(cells: [], trusted: true)
         await settle()
         grid.finish(cells: [], trusted: true)
         await settle()
-        XCTAssertEqual(watcher.startCount, 1, "an unchanged list keeps its streams")
+        XCTAssertEqual(watcher.armCount, 1, "an unchanged list keeps its streams")
 
         target = second
         grid.finish(cells: [], trusted: true)
         await settle()
-        XCTAssertEqual(watcher.startCount, 2, "a path that moved is armed again")
-        XCTAssertEqual(watcher.list?.watches.first?.root, second)
+        XCTAssertEqual(watcher.armCount, 2, "a path that moved is armed again")
+        XCTAssertEqual(watcher.lastArmed.map(\.root), [second])
+        XCTAssertEqual(watcher.disarmed.map(\.root), [first], "the old path's stream is let go")
     }
 
     /// A list where a stream could not be made is not taken as armed,  so the next run
@@ -786,8 +787,8 @@ final class DriftMonitorTests: XCTestCase {
     func test_a_watch_that_failed_to_arm_is_tried_again() async throws {
         let grid = FakeGrid()
         let watcher = FakeWatcher()
-        watcher.armable = 0
         let target = URL(fileURLWithPath: "/tmp/muster-floor/first.json")
+        watcher.failingRoots = [target]
         let monitor = DriftMonitor(
             grid: grid,
             notifier: DriftRecordingNotifier(),
@@ -804,19 +805,112 @@ final class DriftMonitorTests: XCTestCase {
             }
         )
         monitor.start()
-        XCTAssertEqual(watcher.startCount, 1)
+        XCTAssertEqual(watcher.armCount, 1)
 
         grid.finish(cells: [], trusted: true)
         await settle()
-        XCTAssertEqual(watcher.startCount, 2, "a list that did not fully arm is tried again")
+        XCTAssertEqual(watcher.armCount, 2, "a list that did not fully arm is tried again")
 
-        watcher.armable = nil
+        watcher.failingRoots = []
         grid.finish(cells: [], trusted: true)
         await settle()
-        XCTAssertEqual(watcher.startCount, 3)
+        XCTAssertEqual(watcher.armCount, 3)
         grid.finish(cells: [], trusted: true)
         await settle()
-        XCTAssertEqual(watcher.startCount, 3, "once every watch is armed the list is kept")
+        XCTAssertEqual(watcher.armCount, 3, "once every watch is armed the list is kept")
+    }
+
+    /// When only some watches arm,  the streams that did arm are kept:  the next run asks
+    /// again for the one that failed and only that one,  so a path that keeps failing never
+    /// tears down the healthy streams and never drops their events.
+    func test_a_partly_armed_list_keeps_its_healthy_streams_and_retries_only_the_failed_one() async throws {
+        let grid = FakeGrid()
+        let watcher = FakeWatcher()
+        let scheduler = ManualScheduler()
+        let healthy = URL(fileURLWithPath: "/tmp/muster-partial/healthy.json")
+        let broken = URL(fileURLWithPath: "/tmp/muster-partial/broken.json")
+        watcher.failingRoots = [broken]
+        let healthyWatch = DriftWatchList.Watch(
+            root: healthy, target: healthy, targetIsDirectory: false, rootIsTheTarget: true
+        )
+        let brokenWatch = DriftWatchList.Watch(
+            root: broken, target: broken, targetIsDirectory: false, rootIsTheTarget: true
+        )
+        let monitor = DriftMonitor(
+            grid: grid,
+            notifier: DriftRecordingNotifier(),
+            history: DriftHistoryStore(url: historyURL),
+            watcher: watcher,
+            scheduler: scheduler,
+            ticker: ManualTicker(),
+            home: home,
+            buildWatchList: { _, _ in
+                DriftWatchList(
+                    watches: [healthyWatch, brokenWatch],
+                    targetPaths: [healthy, broken],
+                    seats: ["MM"]
+                )
+            }
+        )
+        monitor.start()
+        XCTAssertEqual(watcher.armCalls, [[healthyWatch, brokenWatch]])
+        XCTAssertEqual(watcher.held, [healthyWatch])
+
+        // Two runs land while the broken path keeps failing.
+        grid.finish(cells: [], trusted: true)
+        await settle()
+        grid.finish(cells: [], trusted: true)
+        await settle()
+        XCTAssertEqual(
+            watcher.armCalls,
+            [[healthyWatch, brokenWatch], [brokenWatch], [brokenWatch]],
+            "each run asks again for the failed watch only"
+        )
+        XCTAssertTrue(watcher.disarmed.isEmpty, "the healthy stream was torn down")
+        XCTAssertEqual(watcher.streamsMade[healthy], 1, "the healthy stream was started again")
+        XCTAssertEqual(watcher.held, [healthyWatch])
+
+        // The healthy stream still reaches the monitor.
+        watcher.fire()
+        await settle()
+        scheduler.fireDebounce()
+        await settle()
+        XCTAssertEqual(grid.refreshCount, 1, "a change on the healthy stream was lost")
+
+        // Once the broken path can be watched,  it arms and the list is kept from then on.
+        watcher.failingRoots = []
+        grid.finish(cells: [], trusted: true)
+        await settle()
+        XCTAssertEqual(watcher.lastArmed, [brokenWatch])
+        XCTAssertEqual(watcher.streamsMade[broken], 1)
+        XCTAssertEqual(watcher.streamsMade[healthy], 1)
+        let calls = watcher.armCount
+        grid.finish(cells: [], trusted: true)
+        await settle()
+        XCTAssertEqual(watcher.armCount, calls, "a fully armed list is not armed again")
+    }
+
+    /// A stop forgets the gap:  the first watched change after a start runs once its window
+    /// ends,  and does not wait out a gap left from before the stop.
+    func test_a_restart_does_not_wait_out_the_old_gap() async throws {
+        let grid = FakeGrid()
+        let watcher = FakeWatcher()
+        let scheduler = ManualScheduler()
+        let clock = DriftTestClock()
+        let monitor = makeFloorMonitor(grid: grid, watcher: watcher, scheduler: scheduler, clock: clock)
+        monitor.start()
+
+        await change(watcher, scheduler)
+        XCTAssertEqual(grid.refreshCount, 1)
+        grid.finish(cells: [], trusted: true)
+        await settle()
+
+        clock.advance(by: 10)
+        monitor.stop()
+        monitor.start()
+        await change(watcher, scheduler)
+        XCTAssertEqual(grid.refreshCount, 2, "the first change after a restart waited out the old gap")
+        XCTAssertTrue(scheduler.liveDelays.isEmpty, "a run was left waiting for the old gap")
     }
 
     /// The safety net is minutes,  not seconds.
@@ -1110,25 +1204,58 @@ final class FakeGrid: DriftGridReading {
 }
 
 /// A watcher that remembers what it was asked to watch,  and can report a change.
+///
+/// It keeps its streams the way the real watcher does:  a watch it holds already is not
+/// started again,  and only `disarm` and `stop` let a stream go.
 final class FakeWatcher: DriftWatching {
-    /// How many times the watches were armed.
-    private(set) var startCount: Int = 0
-    /// The list the watcher was given.
-    private(set) var list: DriftWatchList?
-    /// How many watches a start can arm,  or nil for all of them.  A test sets it to make
-    /// a stream fail to be created.
-    var armable: Int?
+    /// How many times the watcher was asked to arm.
+    private(set) var armCount: Int = 0
+    /// The watches each arm call was given,  in order.
+    private(set) var armCalls: [[DriftWatchList.Watch]] = []
+    /// Every watch whose stream was let go by `disarm`,  in order.
+    private(set) var disarmed: [DriftWatchList.Watch] = []
+    /// The watches that hold a stream now.
+    private(set) var held: [DriftWatchList.Watch] = []
+    /// How many streams were made,  by the watch's root.  A stream that is kept is not made
+    /// again,  so a healthy watch that is never restarted counts one.
+    private(set) var streamsMade: [URL: Int] = [:]
+    /// The roots whose stream cannot be made.  A test sets it to make a stream fail.
+    var failingRoots: Set<URL> = []
     private var onChange: ([URL]) -> Void = { _ in }
 
+    /// The watches the last arm call was given.
+    var lastArmed: [DriftWatchList.Watch] { armCalls.last ?? [] }
+
     @discardableResult
-    func start(_ list: DriftWatchList, onChange: @escaping ([URL]) -> Void) -> Int {
-        startCount += 1
-        self.list = list
+    func arm(
+        _ watches: [DriftWatchList.Watch],
+        onChange: @escaping ([URL]) -> Void
+    ) -> [DriftWatchList.Watch] {
+        armCount += 1
+        armCalls.append(watches)
         self.onChange = onChange
-        return min(list.watches.count, armable ?? list.watches.count)
+        var armed: [DriftWatchList.Watch] = []
+        for watch in watches {
+            if held.contains(watch) {
+                armed.append(watch)
+                continue
+            }
+            if failingRoots.contains(watch.root) { continue }
+            streamsMade[watch.root, default: 0] += 1
+            held.append(watch)
+            armed.append(watch)
+        }
+        return armed
     }
 
-    func stop() {}
+    func disarm(_ watches: [DriftWatchList.Watch]) {
+        disarmed.append(contentsOf: watches)
+        held.removeAll { watches.contains($0) }
+    }
+
+    func stop() {
+        held.removeAll()
+    }
 
     /// A change happened.
     func fire() {

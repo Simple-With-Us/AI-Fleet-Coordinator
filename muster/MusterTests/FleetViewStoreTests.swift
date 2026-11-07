@@ -1,7 +1,7 @@
 import XCTest
 
-/// The Apps & Work store:  one reading for the whole app,  one read in flight,  and the page's
-/// own fail-closed rules.
+/// The Apps & Work store:  one reading for the whole app,  one read of a checkout in flight,
+/// and the page's own fail-closed rules.
 @MainActor
 final class FleetViewStoreTests: XCTestCase {
     private static let envelopeJSON = """
@@ -74,6 +74,65 @@ final class FleetViewStoreTests: XCTestCase {
         XCTAssertFalse(store.loading)
     }
 
+    /// A refresh of another checkout does not join the read in flight,  whose registry rows
+    /// are the first checkout's:  it starts its own read,  and the older read,  landing last,
+    /// cannot write over the newer checkout's rows.
+    func test_a_refresh_of_another_checkout_starts_its_own_read_and_wins() async throws {
+        let script = FleetViewLoadScript(envelope: try envelope(), delay: 0.1)
+        let older = URL(fileURLWithPath: "/tmp/older-checkout")
+        let newer = URL(fileURLWithPath: "/tmp/newer-checkout")
+        let loader = FleetViewStore.Loader(
+            loadView: { try await script.load() },
+            readTools: { FleetToolsReading() },
+            readRegistry: { checkout, _, _ in
+                script.recordRegistry(root: checkout)
+                // The older checkout's rows take longer,  so its read lands after the newer one.
+                if checkout == older {
+                    Thread.sleep(forTimeInterval: 0.3)
+                }
+                return FleetRegistrySummary(zulipChannel: checkout.lastPathComponent)
+            },
+            locateRoot: { nil }
+        )
+        let store = FleetViewStore(loader: loader)
+
+        let first = Task { await store.refresh(engineRoot: older) }
+        while store.readsStarted < 1 {
+            await Task.yield()
+        }
+        let second = Task { await store.refresh(engineRoot: newer) }
+        await second.value
+        XCTAssertEqual(store.registrySummary.zulipChannel, "newer-checkout")
+        await first.value
+
+        XCTAssertEqual(script.loads, 2, "a refresh of another checkout joined the read in flight")
+        XCTAssertEqual(store.readsStarted, 2)
+        XCTAssertEqual(Set(script.registryRoots), [older, newer])
+        XCTAssertEqual(
+            store.registrySummary.zulipChannel,
+            "newer-checkout",
+            "the older checkout's read wrote over the newer one's rows"
+        )
+        XCTAssertNotNil(store.envelope)
+        XCTAssertFalse(store.loading)
+    }
+
+    /// A refresh that names the same checkout as the read in flight still joins it.
+    func test_a_refresh_of_the_same_checkout_joins_the_read_in_flight() async throws {
+        let script = FleetViewLoadScript(envelope: try envelope(), delay: 0.1)
+        let store = makeStore(script: script)
+        let named = URL(fileURLWithPath: "/tmp/named")
+
+        let first = Task { await store.refresh(engineRoot: named) }
+        let second = Task { await store.refresh(engineRoot: named) }
+        await first.value
+        await second.value
+
+        XCTAssertEqual(script.loads, 1)
+        XCTAssertEqual(store.readsStarted, 1)
+        XCTAssertEqual(script.registryRoots, [named])
+    }
+
     /// A failed read fails closed:  the lists clear and the failure is set,  so the last green
     /// report never stays on screen as if it were fresh.
     func test_a_failed_read_clears_the_page() async throws {
@@ -135,7 +194,9 @@ final class FleetViewStoreTests: XCTestCase {
         XCTAssertEqual(script.loads, 2, "a return after the window did not read")
     }
 
-    /// A return to a page that failed reads again:  a failure is nothing worth keeping.
+    /// A return to a page that failed reads again:  a failure is nothing worth keeping.  But
+    /// not at once:  while fleet-view keeps failing,  returns inside `failureRetryAfter` do not
+    /// rerun its reads,  and the Refresh button (a plain refresh) is never held back.
     func test_a_return_after_a_failure_reads_again() async throws {
         let script = FleetViewLoadScript(envelope: try envelope())
         script.fails = true
@@ -143,13 +204,34 @@ final class FleetViewStoreTests: XCTestCase {
         let store = makeStore(script: script, clock: clock)
         await store.refresh()
         XCTAssertTrue(store.failed)
+        XCTAssertNotNil(store.lastFailureAt)
 
         clock.advance(by: 1)
+        await store.refreshIfOlder(than: 600)
+        XCTAssertEqual(script.loads, 1, "a return right after a failure read again")
+
+        await store.refresh()
+        XCTAssertEqual(script.loads, 2, "the Refresh button was held back")
+
+        clock.advance(by: FleetViewStore.failureRetryAfter + 1)
         script.fails = false
-        await store.refreshIfOlder(than: 60)
-        XCTAssertEqual(script.loads, 2)
+        await store.refreshIfOlder(than: 600)
+        XCTAssertEqual(script.loads, 3)
         XCTAssertFalse(store.failed)
+        XCTAssertNil(store.lastFailureAt)
         XCTAssertNotNil(store.envelope)
+    }
+
+    /// A window shorter than `failureRetryAfter` is the shorter gap after a failure too.
+    func test_a_short_window_retries_a_failure_after_that_window() async throws {
+        let script = FleetViewLoadScript(envelope: try envelope())
+        script.fails = true
+        let clock = FleetViewStoreClock()
+        let store = makeStore(script: script, clock: clock)
+        await store.refresh()
+        clock.advance(by: 11)
+        await store.refreshIfOlder(than: 10)
+        XCTAssertEqual(script.loads, 2)
     }
 }
 
