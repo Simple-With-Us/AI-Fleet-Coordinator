@@ -6,7 +6,7 @@ a service. Existing owner deployment authority is not supplied by this document.
 
 The intended one-operation root runner has pinned root-owned source/manifest,
 strict old/new file hashes and exact metadata, an exclusive flock, finite
-systemd timeouts and ExecStopPost recovery. A persistent existing-service
+systemd TimeoutStartSec for the oneshot and bounded recovery timeouts and ExecStopPost recovery. A persistent existing-service
 ExecStartPre guard blocks mixed images and uncommitted starts after executor
 loss or reboot. The supervisor freezes the exact boot/PID/start/executable/
 cgroup process, proves one stopped task with no children or pending operation,
@@ -54,3 +54,11 @@ in the manifest creates an impossible circular hash. Instead the independent
 release record pins the final generated entry and package hashes; all are under
 root-only anchors. The runner captures its regular root-owned entry bytes at
 startup and checks the same hash before arming. No caller supplies a digest.
+
+For Type=oneshot the deployment execution deadline is TimeoutStartSec=120s;
+RuntimeMaxSec is intentionally absent because systemd ignores it for oneshot.
+The exact unit text passed local systemd-analyze verify without warnings.
+Actual host property rendering for the transaction unit still needs verification
+before any activation. The prep-to-final manifest transform is tested pure code:
+five exact merged code rows plus an append-only 41-seat policy row, with exact
+byte digest compiled into the disabled fixed entry only after review.
