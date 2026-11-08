@@ -204,7 +204,12 @@ jobs:
         python3 scripts/test_fleet_seat_inventory.py
         python3 scripts/test_fleet_ops_control.py
         python3 scripts/test_fleet_resource_control.py
-        python3 scripts/test_muster_approval.py
+    # The Muster route's approvals (AFC-654):  389 tests that start the helper's --from-muster
+    # entry as a subprocess, so they get their own step and their own limit, and a slow suite
+    # names itself instead of cancelling the four above.
+    - name: Muster approval tests
+      timeout-minutes: 10
+      run: python3 scripts/test_muster_approval.py
     # The Muster route's vectors (AFC-654):  the checker re-derives every vector printed in
     # section 16 of the route spec from its text alone, and the generator's `--check` proves the
     # fixture the Swift side reads is what the module and helper produce.  Test keys only.
@@ -213,6 +218,34 @@ jobs:
       run: |
         (cd docs/muster-ios && python3 -I check_vectors_v5.py)
         python3 scripts/make_muster_vectors.py --check
+    # The route runs on the server's /usr/bin/python3, which is 3.14, not on the job's Python, so
+    # the approval tests and the vectors run a second time with the interpreter they will run on:
+    # a change that only works on the newer Python must not pass this gate and then leave the
+    # helper unable to load its modules on the server (every request would answer
+    # helper_key_missing).  The same reasoning, and the same shape, as the fleet_view step below.
+    # update-environment is off so every later step keeps the job's own Python.
+    - name: Set up Python 3.14 for the Muster route
+      id: muster-route-py314
+      uses: actions/setup-python@v7
+      with:
+        python-version: '3.14'
+        update-environment: false
+    - name: Install cryptography on Python 3.14 for the Muster route
+      timeout-minutes: 10
+      env:
+        PY314: ${{ steps.muster-route-py314.outputs.python-path }}
+      run: |
+        "$PY314" -c 'import sys; assert sys.version_info[:2] == (3, 14), sys.version; print(sys.version)'
+        "$PY314" -m pip install "cryptography==46.0.5"
+    # The suite alone takes about half a minute here, so the ten minutes belong to it.
+    - name: Muster route on Python 3.14
+      timeout-minutes: 10
+      env:
+        PY314: ${{ steps.muster-route-py314.outputs.python-path }}
+      run: |
+        "$PY314" scripts/test_muster_approval.py
+        (cd docs/muster-ios && "$PY314" -I check_vectors_v5.py)
+        "$PY314" scripts/make_muster_vectors.py --check
     # The Lark bridge: the eyes marker, the Operator's signal path and the
     # durable write of a record.  No job ran this file, so every assertion in
     # it was decoration: the write could lose a record on a crash and CI would
