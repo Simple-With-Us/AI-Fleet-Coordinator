@@ -42,7 +42,11 @@ def enc(v):
     if isinstance(v, int):
         return str(v)
     if isinstance(v, str):
-        assert all(0x20 <= ord(c) <= 0x7E for c in v)
+        # A real error, not an assert, so it still fires under python -O.
+        if not all(0x20 <= ord(c) <= 0x7E for c in v):
+            raise ValueError(
+                "not canonical:  a string holds a character outside printable ASCII: %r" % v[:80]
+            )
         return '"' + v.replace("\\", "\\\\").replace('"', '\\"') + '"'
     if isinstance(v, list):
         return "[" + ",".join(enc(x) for x in v) + "]"
@@ -63,12 +67,17 @@ def unb64u(s):
 
 
 def ok(pub, sig, data):
+    """True only for a valid signature.  Any malformed key, signature or encoding counts as a failure
+    (reported by the caller's check), so one bad vector never stops the rest of the run."""
     try:
         serialization.load_der_public_key(unb64u(pub)).verify(
             unb64u(sig), data, ec.ECDSA(hashes.SHA256())
         )
         return True
-    except (InvalidSignature, ValueError):
+    except InvalidSignature:
+        return False
+    except Exception as error:  # noqa: BLE001 -- a malformed vector must not abort the run
+        print("malformed key or signature:", type(error).__name__, str(error)[:120])
         return False
 
 

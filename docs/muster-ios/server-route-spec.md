@@ -8,7 +8,7 @@ Since version 4, from BB's answers and EE's eighth look:
 
 | # | Change | Where |
 | --- | --- | --- |
-| 1 | The exact plan commands and `auditTarget` per verb, with absolute `argv[0]`.  | §4 |
+| 1 | The exact plan commands and `auditTarget` per verb, as `plan_request` on `main` builds them;  `argv[0]` is resolved on the host, so the app signs the server's own plan hash.  | §4 |
 | 2 | Plan-time refusals have a code, `plan_refused`, with a reason.  | §4, §12 |
 | 3 | An approval fails closed with `clock_unsynced` when `adjtimex(modes=0)` fails, returns `TIME_ERROR`, reports `STA_UNSYNC`, or reports `maxerror` above 1 second;  `--plan` is unaffected.  | §7, §12 |
 | 4 | A fault before the nonce is spent is `internal_error`;  after it, a fault is a signed result with outcome `failed`.  Outcome `unknown` is added.  | §12, §13 |
@@ -21,7 +21,7 @@ Since version 4, from BB's answers and EE's eighth look:
 | 11 | The rule table's "When" column is exclusive;  §15 no longer lists `trust_list_changed` at C3;  refusals carry `helperTrustListVersion` or `null`.  | §8, §13, §15 |
 | 12 | **Wait for §17A before building:**  rule C's record conditions, the final-refusal store, `finalRefusals` and the chain-refusal audit row.  Until then the chain verb answers a rule C entry `chain_refused` with reason `reopen_unavailable` (non-final), records no refusal, and every acknowledgement carries `"finalRefusals":[]`.  | §8, §11, §13 |
 
-Unchanged:  the command line, the verbs and modes, the approval text and its fields, the ledger, OPEN-1 to OPEN-5 as settled in version 3, and the check order.  The approval vectors keep their meaning, but their bytes change because the illustrative plan now has an absolute `argv[0]`.
+Unchanged:  the command line, the verbs and modes, the approval text and its fields, the ledger, OPEN-1 to OPEN-5 as settled in version 3, and the check order.  The approval vectors keep their meaning, but their bytes change because the illustrative plan now has `argv[0]` as the helper resolves it on this server (`/usr/bin/systemctl`, for the user-scope `fleet-server-status.timer`).
 
 ## Changes From Version 4
 
@@ -99,18 +99,20 @@ This line goes in `/home/jay/.ssh/authorized_keys`, beside `fleet-ops-ctl`'s.  
 
 A scope, verb or target word not in this table (including the `mac` and `pm2` scopes and `server eavesdropper-status`) is `bad_command`;  a known verb with a mode the table does not allow is `mode_not_allowed`.
 
-**Plan commands (from BB's build).**  Every `argv[0]` is an absolute path.  Numbers in an argv are strings.
+**Plan commands (from `scripts/fleet-ops-control.py` on `main`, which is authoritative).**  The `--from-muster` branch calls the same `plan_request(ctx, config, scope, action, target)` and hashes what it returns, so these are that function's outputs, read from `main` at `96a7d33f3` (BB confirmed this on November 7).  Numbers in an argv are strings.
 
 | Verb | `commands` | `auditTarget` |
 | --- | --- | --- |
-| `start`, `stop`, `restart` | `[["/usr/bin/systemctl","--user",ACTION,UNIT]]` | The unit |
-| `logs` | `[["/usr/bin/journalctl","--user","-u",UNIT,"-n","200","--no-pager"]]` | The unit |
-| `update`, system scope | `[["/usr/bin/sudo","-n","/usr/bin/systemctl","start","--no-block","fleet-cli-git-update.service"]]` | The update's name |
-| `update`, user scope | `[["/usr/bin/systemctl","--user","start","--no-block",UNIT]]`, `UNIT` being the update's unit | The update's name |
-| `redeploy` | `[["GET","/api/v1/deploy?uuid=UUID"]]`:  one Coolify API request, not an argv, with no host and no token in the plan | The application's name |
+| `start`, `stop`, `restart` | `[[SYSTEMCTL] + ["--user"] (only when the allowlist entry's `scope` is `user`) + [ACTION, UNIT]]` (`_systemctl_argv`) | The unit |
+| `logs` | `[[JOURNALCTL] + ["--user"] (only for `scope` `user`) + ["-u", UNIT, "-n", "200", "--no-pager"]]`;  200 is `LOG_MAX_LINES` (`server_logs_commands`) | The unit |
+| `update`, system scope | `[["/usr/bin/sudo", "-n", "/usr/bin/systemctl", "start", "--no-block", "fleet-cli-git-update.service"]]`:  `update_command` allows only the update named `fleet-cli` with that unit, uses the fixed `UPDATE_SYSTEMCTL` and `SUDO` paths, adds `sudo -n` only when the helper is not running as uid 0, and first probes `sudo -n -l -- <that argv>` | The update's name |
+| `update`, user scope | `[[SYSTEMCTL, "--user", "start", "--no-block", UNIT]]`, `UNIT` being the update's unit (`_systemctl_argv`) | The update's name |
+| `redeploy` | `[["coolify", "GET", "/api/v1/deploy?uuid=UUID"]]`, the query built with `urllib.parse.urlencode`.  `coolify` is a literal pseudo-command:  `execute()` never runs it, and sends an HTTP GET to the Coolify base URL plus `commands[0][2]`, with the token read at run time and never in the plan | The application's name from the report row, with a trailing ` (SERVICE)` removed when the row names that service, capped at 120 characters;  `coolify resource` when the row has no name |
 | `resource-policy` | Not `fleet-ops-plan/1`:  the `fleet-resource-plan/1` object of §13, with `old` and `new` from `fleet_resource_control`'s `before` and `after` | The field name |
 
-**Plan-time refusals.**  The shared planner refuses with `plan_refused` and one of these reasons:  `allowlist_miss` (the target is not on the helper's root-owned allowlist);  `report_stale` (for `redeploy`, `server-status.json` is older than 45 minutes or does not list the uuid);  `update_busy` (the update's unit is active or activating);  `sudo_missing` (for a system-scope update, `sudo -n -l` does not allow the command).  The helper runs that `sudo -n -l` probe at plan time.
+`SYSTEMCTL` is the first of `/usr/bin/systemctl` and `/bin/systemctl` that exists as a file (`_systemctl`), and `JOURNALCTL` the first of `/usr/bin/journalctl` and `/bin/journalctl` (`_journalctl`);  if neither exists, the first is used.  **So `argv[0]` is resolved on the host, and the plan hash is server-local:  the app signs the `planSHA256` that the server's own `--plan` returned (§13's plan check), and never a hash it computed itself.**
+
+**Plan-time refusals.**  The shared planner refuses with `plan_refused`.  Its `reason` is the planner's own `error_code` when it gives one (on `main`:  `update_busy`, `authorization_unavailable`, `update_route_unavailable`, `update_executable_unavailable`, `unit_status_unavailable`, `unit_status_invalid`, `unit_unavailable`, `unit_type_unsupported`), and otherwise `allowlist_miss` (the target, its action or the redeploy permission is not on the helper's root-owned allowlist) or `report_stale` (for `redeploy`, `server-status.json` is missing, unsafe, older than 45 minutes (`STATUS_MAX_AGE_SECONDS`), does not list the uuid, or lists a row that cannot be redeployed).
 
 ## 5.  Standard Input
 
@@ -398,7 +400,7 @@ Rows go to `/home/jay/.local/state/fleet-tools/ops-audit.jsonl`, always appended
 | `action_busy`, `trust_list_changed` | Y7, C4 |
 | `ledger_corrupt`, `replayed_nonce` | Y8 |
 | `plan_mismatch` | Y9 |
-| `plan_refused` | R2, with `reason` one of `allowlist_miss`, `report_stale`, `update_busy`, `sudo_missing` |
+| `plan_refused` | R2, with `reason` the planner's own `error_code` (§4), or `allowlist_miss` or `report_stale` |
 | `internal_error` | Any step before Y8, or R2, C1 to C5, K1 to K3 |
 | `chain_refused` | C3, `reason` one of `version_gap`, `previous_hash`, `owner_key`, `owner_signature`, `duplicate_device`, `countersignature`, `closed_rule`, `first_rule`, `services_changed`, `server_keys_removed`, `reopen_unavailable` (until §17A is settled), and, in the OPEN proposal, `reopen_unrecorded`, `reopen_tag`, `reopen_device` |
 
@@ -1917,4 +1919,5 @@ EE's eighth look, as it touches this spec, and BB's answers.
 | `resource-policy` audit rows;  a plan that fails after Y8 | Fixed in v5 from BB's answers (§12 Faults, §14).  |
 | BB's answers:  plan commands, audit fields, unsynced clock, planner refusals, fault code, `unknown`, rate key, exact window, state directory, empty record, module equality | Made normative (§4, §7, §9, §10, §11, §12, §13, §14).  |
 | Corrections before merge (EE's check of PR 1484, and BB) | The `clock_unsynced` test is normative (§7:  `adjtimex(modes=0)`, `TIME_ERROR`, `STA_UNSYNC`, `maxerror` above 1 second, or a failed call), with two unverified points left in 17B.3;  §16 says Milestone 1 to 4 builders skip the rule C rows or expect `reopen_unavailable`, and adds vector T23 for it;  V11 to V16 state their audit rows, and V11 and V12, being accepted, get one.  The version stays 5:  these settle text the review found unclear, and change no frozen rule.  |
+| Sentry on PR 1484:  plan commands diverge from `scripts/fleet-ops-control.py` | Confirmed against `main` at `96a7d33f3`, and BB confirmed `main` is authoritative:  `--user` only for user-scope units, `SYSTEMCTL` and `JOURNALCTL` resolved on the host, redeploy as `["coolify","GET",…]`, and the update argv exactly as `update_command` builds it.  §4 now quotes `main`, adds that the app signs the server's own plan hash, and takes `plan_refused` reasons from the planner's own error codes.  The illustrative plan's bytes did not change (the timer is user-scope and `/usr/bin/systemctl` exists here).  |
 | Every vector | EE's v4 run held.  v5's approval vectors are re-signed over the new plan with the same outcomes, and `check_vectors_v5.py` re-checks everything.  |
