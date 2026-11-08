@@ -39,7 +39,12 @@ RECEIVER_PATH = "scripts/fleet-cli-release.py"
 # serves over the listener HTTPS API (Path B, operator.simplewithus.com).
 # The 151st is agent_sync/registry_api.py, the signed client the package's own registry callers
 # (the operator-registry CLI, the platform-letter registry side) use to reach that API.
-MAX_FILES = 152
+# The 153rd is agent_sync/operator_sheets_google.mjs;  must equal the receiver cap in
+# fleet-cli-release.py or build_bundle() rejects the newly included adapter.
+# The 154th is agent_sync/operator_sheets_drain.mjs (OPS-1037), the production drain runner.
+# The 155th is agent_sync/muster_service.py (AFC-654), the read-only Operator service `simple-chat`
+# dispatches for Muster's Seats panel.
+MAX_FILES = 155
 MAX_BYTES = 8 * 1024 * 1024
 OVERALL_SECONDS = 90
 SSH_SECONDS = 65
@@ -313,7 +318,9 @@ def ssh_argv(receiver_text: str, *, install: bool = False) -> list[str]:
 
 def receipt(result: subprocess.CompletedProcess, bundle: dict) -> dict:
     if result.returncode:
-        raise SyncError("ssh_failed")
+        # The receiver names its refusal as `fleet-cli: <code>`;  carry it, so the Mac's state shows why.
+        said = re.fullmatch(rb"fleet-cli: ([a-z0-9_]{1,64})\n?", result.stderr or b"")
+        raise SyncError("receiver_" + said.group(1).decode("ascii") if said else "ssh_failed")
     if len(result.stdout) > 8192:
         raise SyncError("receipt_invalid")
     try:

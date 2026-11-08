@@ -1,3 +1,4 @@
+import Combine
 import XCTest
 
 /// The fleet admin:  the control the standalone BotFleet Control app used to carry,
@@ -21,7 +22,8 @@ final class FleetAdminTests: XCTestCase {
         await waitForTheFleet(admin)
 
         XCTAssertNotNil(admin.services, "The admin never read the fleet services.")
-        XCTAssertEqual(admin.entries.count, 12, "The admin did not read every fleet service.")
+        XCTAssertEqual(admin.entries.count, FleetServiceRegistry.all.count, "The admin did not read every fleet service.")
+        XCTAssertEqual(admin.entries.count, 13, "The admin did not read every fleet service.")
     }
 
     /// The read shells out to launchctl and opens a socket,  so it cannot run on the
@@ -69,6 +71,85 @@ final class FleetAdminTests: XCTestCase {
         XCTAssertEqual(admin.pm2Answered, true)
     }
 
+    /// Two routine reads asked for at once are one read:  the second waits for the first
+    /// rather than running pm2 and launchctl again beside it.
+    func testTwoReadsAskedForAtOnceShareOneRead() async {
+        let commands = FleetAdminCommands()
+        let admin = makeAdmin(commands: commands, server: FleetAdminServer())
+        await waitForTheFleet(admin)
+        await admin.refresh()
+        commands.listingDelay = 0.2
+        let before = commands.calls.filter { $0.arguments.contains("jlist") }.count
+
+        let first = Task { await admin.refresh() }
+        let second = Task { await admin.refresh() }
+        await first.value
+        await second.value
+
+        let reads = commands.calls.filter { $0.arguments.contains("jlist") }.count - before
+        XCTAssertEqual(reads, 1, "Two reads asked for at once ran pm2 \(reads) times.")
+    }
+
+    /// A read that began before a change is not joined by the read the change asks for:
+    /// that caller wants to see what the change did.
+    func testAReadAfterAControllerRunIsNotJoinedToAnOlderRead() async {
+        let commands = FleetAdminCommands()
+        let admin = makeAdmin(commands: commands, server: FleetAdminServer())
+        await waitForTheFleet(admin)
+        await admin.refresh()
+        commands.listingDelay = 0.2
+        let before = commands.calls.filter { $0.arguments.contains("jlist") }.count
+
+        let older = Task { await admin.refresh() }
+        await Task.yield()
+        admin.beginControllerAction(.stop, serviceID: "shellular")
+        admin.endControllerAction(serviceID: "shellular", succeeded: true)
+        let after = Task { await admin.refresh() }
+        await older.value
+        await after.value
+
+        let reads = commands.calls.filter { $0.arguments.contains("jlist") }.count - before
+        XCTAssertEqual(reads, 2, "The read after the run joined a read that began before it.")
+    }
+
+    /// A controller run with no sheet behind it (a start Muster takes on its own) is a change
+    /// too:  the read its end asks for does not join a routine read that began before it.
+    func testAReadAfterAnUnattendedRunIsNotJoinedToAnOlderRead() async {
+        let commands = FleetAdminCommands()
+        let runs = PassthroughSubject<Int, Never>()
+        let admin = makeAdmin(commands: commands, server: FleetAdminServer(),
+                              runsCompleted: runs.eraseToAnyPublisher())
+        await waitForTheFleet(admin)
+        await admin.refresh()
+        commands.listingDelay = 0.2
+        let before = commands.calls.filter { $0.arguments.contains("jlist") }.count
+
+        let older = Task { await admin.refresh() }
+        await Task.yield()
+        runs.send(1)
+        let after = Task { await admin.refresh() }
+        await older.value
+        await after.value
+
+        let reads = commands.calls.filter { $0.arguments.contains("jlist") }.count - before
+        XCTAssertEqual(reads, 2, "The read after an unattended run joined a read that began before it.")
+    }
+
+    /// A visit to the panel shortly after a read shows that read and does not read again.
+    func testAVisitSoonAfterAReadDoesNotReadAgain() async {
+        let commands = FleetAdminCommands()
+        let admin = makeAdmin(commands: commands, server: FleetAdminServer())
+        await waitForTheFleet(admin)
+        await admin.refresh()
+        let before = commands.calls.count
+
+        await admin.refreshIfOlder(than: 60)
+        XCTAssertEqual(commands.calls.count, before, "A visit a moment after a read read the Mac again.")
+
+        await admin.refreshIfOlder(than: 0)
+        XCTAssertGreaterThan(commands.calls.count, before, "A visit after the window did not read.")
+    }
+
     /// A menu that was true at launch is not true days later.
     func testTheFleetIsReadAgainOnATimer() async {
         let admin = makeAdmin(commands: FleetAdminCommands(), server: FleetAdminServer(), refreshInterval: 0.05)
@@ -112,6 +193,21 @@ final class FleetAdminTests: XCTestCase {
         XCTAssertEqual(admin.lastResult?.succeeded, true)
         XCTAssertNil(admin.problem)
         XCTAssertEqual(admin.entries.first { $0.id == "app.botfleet.companion" }?.stoppedByOwner, true)
+    }
+
+    /// A call that did nothing answers nil,  so a caller never mistakes the result of an
+    /// older call for its own.
+    func testACallThatDidNothingAnswersNilAndNotAnOlderResult() async {
+        let admin = makeAdmin(commands: FleetAdminCommands(), server: FleetAdminServer())
+        await waitForTheFleet(admin)
+
+        let first = await admin.perform(.start, serviceID: "app.botfleet.companion")
+        XCTAssertEqual(first?.serviceID, "app.botfleet.companion")
+
+        let none = await admin.perform(.start, serviceID: "no-such-service")
+        XCTAssertNil(none)
+        // The older result is still there to read,  which is why callers use the answer.
+        XCTAssertEqual(admin.lastResult?.serviceID, "app.botfleet.companion")
     }
 
     func testAStartThatLandsAMomentLaterIsAStart() async {
@@ -586,7 +682,9 @@ final class FleetAdminTests: XCTestCase {
                             refreshInterval: TimeInterval? = nil,
                             wrapperInstalled: Bool = false,
                             stopWait: ServerPortWait = .stop,
-                            startWait: ServerPortWait = ServerPortWait(attempts: 8, interval: 0)) -> FleetAdmin {
+                            startWait: ServerPortWait = ServerPortWait(attempts: 8, interval: 0),
+                            ownerStopStore: OwnerStopStoring? = nil,
+                            runsCompleted: AnyPublisher<Int, Never>? = nil) -> FleetAdmin {
         // The startup policy looks for the installed wrapper and the launch agents
         // under the home it is given,  so a home of its own keeps the test away
         // from the real Mac.
@@ -623,7 +721,96 @@ final class FleetAdminTests: XCTestCase {
                           api: api,
                           stopWait: stopWait,
                           startWait: startWait,
-                          refreshInterval: refreshInterval)
+                          ownerStopStore: ownerStopStore,
+                          refreshInterval: refreshInterval,
+                          runsCompleted: runsCompleted ?? Empty<Int, Never>().eraseToAnyPublisher())
+    }
+
+    // MARK: - The owner's stops outlive the app
+
+    /// A stop that ran is written to the store,  and an admin that comes up later reads it
+    /// back,  so Muster never starts a service the owner stopped.
+    func testAnOwnerStopIsKeptAndComesBackAtTheNextLaunch() async {
+        let store = FakeOwnerStopStore()
+        let first = makeAdmin(commands: FleetAdminCommands(), server: FleetAdminServer(), ownerStopStore: store)
+        await waitForTheFleet(first)
+        first.beginControllerAction(.stop, serviceID: "shellular")
+        first.endControllerAction(serviceID: "shellular", succeeded: true)
+        XCTAssertEqual(store.saved?.ids, ["shellular"])
+        XCTAssertNotNil(store.saved?.stoppedAt["shellular"])
+
+        let second = makeAdmin(commands: FleetAdminCommands(), server: FleetAdminServer(), ownerStopStore: store)
+        await waitForTheFleet(second)
+        let entry = second.entries.first { $0.id == "shellular" }
+        XCTAssertEqual(entry?.stoppedByOwner, true)
+        XCTAssertNotNil(entry?.stoppedAt)
+        XCTAssertTrue(second.isStoppedByOwner("shellular"))
+    }
+
+    /// A stop whose sheet is still open is not a stop yet,  so it is not written.
+    func testAStopThatIsStillOnTheSheetIsNotWrittenYet() async {
+        let store = FakeOwnerStopStore()
+        let admin = makeAdmin(commands: FleetAdminCommands(), server: FleetAdminServer(), ownerStopStore: store)
+        await waitForTheFleet(admin)
+        admin.beginControllerAction(.stop, serviceID: "shellular")
+        XCTAssertNil(store.saved)
+        // Muster still treats it as the owner's,  so nothing starts it meanwhile.
+        XCTAssertTrue(admin.isStoppedByOwner("shellular"))
+        admin.endControllerAction(serviceID: "shellular", succeeded: false)
+        XCTAssertFalse(admin.isStoppedByOwner("shellular"))
+        XCTAssertEqual(store.saved?.ids, Set<String>())
+    }
+
+    /// A record that cannot be read blocks everything and is never written over.
+    func testARecordThatCannotBeReadIsNeverWrittenOver() async {
+        let store = FakeOwnerStopStore()
+        store.loaded = .unreadable("Muster could not read its record.")
+        let admin = makeAdmin(commands: FleetAdminCommands(), server: FleetAdminServer(), ownerStopStore: store)
+        await waitForTheFleet(admin)
+        XCTAssertTrue(admin.ownerStopsUnreadable)
+        XCTAssertEqual(admin.ownerStopProblem, "Muster could not read its record.")
+        admin.beginControllerAction(.stop, serviceID: "shellular")
+        admin.endControllerAction(serviceID: "shellular", succeeded: true)
+        XCTAssertNil(store.saved)
+    }
+
+    /// A stop that could not be written is said out loud.
+    func testAStopThatCouldNotBeWrittenIsSaid() async {
+        let store = FakeOwnerStopStore()
+        store.saveProblem = "Muster could not save your stop."
+        let admin = makeAdmin(commands: FleetAdminCommands(), server: FleetAdminServer(), ownerStopStore: store)
+        await waitForTheFleet(admin)
+        admin.beginControllerAction(.stop, serviceID: "shellular")
+        admin.endControllerAction(serviceID: "shellular", succeeded: true)
+        XCTAssertEqual(admin.ownerStopProblem, "Muster could not save your stop.")
+    }
+
+    func testNotesAboutWhatMusterDidReachTheServices() async {
+        let admin = makeAdmin(commands: FleetAdminCommands(), server: FleetAdminServer())
+        await waitForTheFleet(admin)
+        let note = ReconcileNote(.gaveUp(tries: 3))
+        admin.setReconcileNotes(["shellular": note])
+        XCTAssertEqual(admin.entries.first { $0.id == "shellular" }?.reconcileNote, note)
+        // A read keeps them.
+        await admin.refresh()
+        XCTAssertEqual(admin.entries.first { $0.id == "shellular" }?.reconcileNote, note)
+    }
+}
+
+/// An owner-stop store that lives in memory.
+private final class FakeOwnerStopStore: OwnerStopStoring {
+    var saved: OwnerStops?
+    var loaded: OwnerStopLoad?
+    var saveProblem: String?
+
+    func load() -> OwnerStopLoad {
+        if let loaded { return loaded }
+        return .stops(saved ?? OwnerStops())
+    }
+
+    func save(_ stops: OwnerStops) -> String? {
+        if saveProblem == nil { saved = stops }
+        return saveProblem
     }
 }
 

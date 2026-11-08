@@ -28,7 +28,7 @@ from agent_sync.mcp import linear_tools as LT
 from agent_sync.mcp import recall_tools as RT
 from agent_sync.mcp import tools as T
 from agent_sync.tests.harness import SESSION
-from agent_sync.tests.mcp_harness import McpHarness, seat_bearer_locator
+from agent_sync.tests.mcp_harness import McpHarness, seat_bearer_file
 from agent_sync.tests.test_mcp_identity import IdentityHarness
 from agent_sync.tests.test_notes import (
     STORED_CONTENT_HTML,
@@ -46,7 +46,7 @@ FAKE_PROGRAM = textwrap.dedent("""\
     import json, os, sys
     out = os.environ["{out_var}"]
     data = {{"argv": sys.argv[1:], "seat": os.environ.get("AGENT_SEAT"), "writes": os.environ.get("LINEAR_BOARD_WRITES"),
-            "bearer": os.environ.get("SIMPLE_BOARD_BEARER_LOCATOR"),
+            "bearer": os.environ.get("SIMPLE_BOARD_BEARER_FILE"),
             "stdin": sys.stdin.read(), "env": sorted(os.environ),
             "files": {{a: {{"text": open(a[1:]).read(), "mode": oct(os.stat(a[1:]).st_mode & 0o777)}}
                       for a in sys.argv[1:] if a.startswith("@") and os.path.isfile(a[1:])}}}}
@@ -424,7 +424,7 @@ class NotesToolTests(McpHarness):
         self.assertEqual(fenced, entries)
         self.assertEqual(len(run.calls), 1, "the log is read from the file, not the script")
 
-    # ---- through the gateway, as this seat's own fleet bearer ----------------------------------------
+    # ---- through the gateway, as this seat's own fleet-bearer identity ----------------------------
     def test_off_a_mac_a_write_goes_through_the_gateway_and_waits_for_the_runner(self):
         gw, sleeps, patches = self.gateway()
         gw.queue("notes_create", {"request_id": "op-create-0001", "action": "create", "status": "running", "transport": "operator"})
@@ -570,9 +570,12 @@ class RecallToolTests(FakePrograms):
         shared = json.loads((Path(T.__file__).parent / "recall-tools.json").read_text())["tools"]
         self.assertEqual([served[t["name"]] for t in shared], shared)
         self.assertEqual(
-            {t["name"] for t in shared}, {"recall_search", "recall_stats", "recall_contribute"}
+            {t["name"] for t in shared},
+            {"recall_search", "recall_stats", "recall_contribute", "recall_correct", "recall_retract"},
         )
-        self.assertIn("recall_contribute", T.WRITE_TOOLS)
+        self.assertLessEqual(
+            {"recall_contribute", "recall_correct", "recall_retract"}, T.WRITE_TOOLS
+        )
         self.assertLessEqual({"recall_search", "recall_stats"}, T.READ_TOOLS)
 
     def test_search_runs_the_recall_cli_and_fences_the_hits(self):
@@ -609,6 +612,13 @@ class RecallToolTests(FakePrograms):
         self.assertEqual(
             call["argv"], ["search", "pm2 env", "--limit", "3", "--json", "--app", "fleet"]
         )
+        audit = self.session(self.env(RECALL_TEST_REPLY=reply)).call(
+            "recall_search", {"query": "pm2 env", "include_retracted": True}
+        )
+        self.assertEqual(audit["structuredContent"]["doc_ids"], ["doc-1"])
+        self.assertEqual(
+            self.calls(self.recall_out)[-1]["argv"][-1], "--include-retracted"
+        )
         self.assertFalse(
             [k for k in call["env"] if k.startswith("ZULIP")], "no Zulip variable reaches recall"
         )
@@ -629,10 +639,323 @@ class RecallToolTests(FakePrograms):
         call = self.calls(self.recall_out)[0]
         self.assertEqual(call["stdin"], text)
         self.assertNotIn(text, " ".join(call["argv"]))
-        self.assertEqual(call["argv"][call["argv"].index("--seat") + 1], "CLAUDE")
+        self.assertIn("--seat=CLAUDE", call["argv"])
         self.assertEqual(call["argv"][:2], ["contribute", "-"])
 
     LESSON = "Always restart pm2 with --update-env after changing the ecosystem file, or the old env stays cached."
+
+    def test_correct_and_retract_run_the_cli_as_the_claimed_identity(self):
+        corrected = json.dumps(
+            {
+                "id": "point-1",
+                "doc_id": "contrib/CLAUDE/2026-11-05/472fc36e",
+                "status": "corrected",
+                "revision": 2,
+                "corrected_at": 1762396800000,
+                "corrected_by": "CLAUDE",
+                "previous_content_hash": "old",
+                "content_hash": "new",
+                "scrubbed": [],
+            }
+        )
+        session = self.session(self.env(RECALL_TEST_REPLY=corrected))
+        args = {
+            "doc_id": "contrib/CLAUDE/2026-11-05/472fc36e",
+            "text": self.LESSON,
+            "reason": "fix the sentence gap",
+            "expected_revision": 1,
+        }
+        data = self.assert_structured("recall_correct", session.call("recall_correct", args))
+        self.assertEqual((data["revision"], data["status"], data["seat"]), (2, "corrected", "CLAUDE"))
+        call = self.calls(self.recall_out)[0]
+        self.assertEqual(call["stdin"], self.LESSON)
+        self.assertEqual(
+            call["argv"][:4],
+            ["correct", args["doc_id"], "-", "--reason=" + args["reason"]],
+        )
+        self.assertIn("--seat=CLAUDE", call["argv"])
+        self.assertIn("--expected-revision=1", call["argv"])
+
+        retracted = json.dumps(
+            {
+                "id": "point-1",
+                "doc_id": args["doc_id"],
+                "status": "retracted",
+                "revision": 2,
+                "retracted": True,
+                "retracted_at": 1762396801000,
+                "retracted_by": "CLAUDE",
+                "retraction_reason": "obsolete",
+            }
+        )
+        session = self.session(self.env(RECALL_TEST_REPLY=retracted))
+        data = self.assert_structured(
+            "recall_retract",
+            session.call(
+                "recall_retract",
+                {"doc_id": args["doc_id"], "reason": "obsolete", "expected_revision": 2},
+            ),
+        )
+        self.assertEqual((data["retracted"], data["status"], data["seat"]), (True, "retracted", "CLAUDE"))
+        call = self.calls(self.recall_out)[-1]
+        self.assertEqual(call["stdin"], "")
+        self.assertEqual(
+            call["argv"],
+            [
+                "retract",
+                args["doc_id"],
+                "--reason=obsolete",
+                "--seat=CLAUDE",
+                "--json",
+                "--expected-revision=2",
+            ],
+        )
+
+    def test_a_mutation_that_times_out_is_unknown_and_the_retry_is_not_resent(self):
+        args = {
+            "doc_id": "contrib/CLAUDE/2026-11-05/472fc36e",
+            "reason": "obsolete",
+            "idempotency_key": "aaaaaaaa-8",
+        }
+
+        def hang(argv, **kwargs):
+            raise subprocess.TimeoutExpired(argv, 1)
+
+        env = self.env(
+            RECALL_TEST_REPLY=json.dumps(
+                {"doc_id": args["doc_id"], "status": "retracted", "retracted": True}
+            )
+        )
+        session = self.session(env)
+        with mock.patch.object(RT.subprocess, "run", hang):
+            first = self.assert_tool_error(session.call("recall_retract", args), "outcome_unknown")
+        self.assertIn("may or may not have landed", first["message"])
+        retry = self.assert_tool_error(session.call("recall_retract", args), "outcome_unknown")
+        self.assertIn("may or may not have landed", retry["message"])
+        self.assertEqual(self.calls(self.recall_out), [], "the retry did not send the mutation again")
+
+    def test_mutation_arguments_are_checked_before_the_cli_runs(self):
+        session = self.session(self.env())
+        for args in (
+            {"doc_id": 123, "reason": "obsolete"},
+            {"doc_id": "", "reason": "obsolete"},
+            {"doc_id": "-bad", "reason": "obsolete"},
+            {"doc_id": "contrib/CLAUDE/2026-11-05/472fc36e", "reason": "obsolete", "expected_revision": "1"},
+            {"doc_id": "contrib/CLAUDE/2026-11-05/472fc36e", "reason": "obsolete", "expected_revision": 1.5},
+            {"doc_id": "contrib/CLAUDE/2026-11-05/472fc36e", "reason": "obsolete", "expected_revision": True},
+        ):
+            self.assert_tool_error(session.call("recall_retract", args), "invalid_argument")
+        self.assertEqual(self.calls(self.recall_out), [])
+
+    def test_mutation_reason_max_is_checked_before_the_cli_runs(self):
+        session = self.session(self.env())
+        self.assert_tool_error(
+            session.call(
+                "recall_retract",
+                {
+                    "doc_id": "contrib/CLAUDE/2026-11-05/472fc36e",
+                    "reason": "x" * (RT.REASON_MAX + 1),
+                },
+            ),
+            "invalid_argument",
+        )
+        self.assertEqual(self.calls(self.recall_out), [])
+
+    def test_failure_classifies_write_outages_as_unknown(self):
+        for err in (
+            "recall: HTTP 500 from qdrant",
+            "recall: HTTP 502 from recall.example.test",
+            "recall: HTTP 408 from recall.example.test",
+            "recall: timeout reaching recall.example.test",
+            "recall: timed out waiting for recall.example.test",
+            "recall: TimeoutError reaching recall.example.test",
+            "recall: RemoteDisconnected reaching recall.example.test",
+            "recall: ConnectionResetError reaching recall.example.test",
+        ):
+            with self.subTest(err=err):
+                exc = RT.failure(2, err, write=True)
+                self.assertEqual(exc.code, "outcome_unknown")
+                self.assertFalse(exc.retryable)
+        self.assertEqual(
+            RT.failure(2, "recall: HTTP 400 bad request", write=True).code,
+            "invalid_argument",
+        )
+
+    def test_failure_classifies_429_as_a_retryable_write_refusal(self):
+        exc = RT.failure(2, "recall: HTTP 429 from recall.example.test", write=True)
+        self.assertEqual(exc.code, "rate_limited")
+        self.assertTrue(exc.retryable)
+
+    def test_failure_classifies_read_outages_as_retryable_unavailability(self):
+        for err in (
+            "recall: HTTP 500 from qdrant",
+            "recall: timeout reaching recall.example.test",
+            "recall: TimeoutError reaching recall.example.test",
+            "recall: RemoteDisconnected reaching recall.example.test",
+        ):
+            with self.subTest(err=err):
+                exc = RT.failure(2, err)
+                self.assertEqual(exc.code, "unavailable")
+                self.assertTrue(exc.retryable)
+
+    def test_failure_classifies_a_rate_limited_read_as_rate_limited(self):
+        exc = RT.failure(2, "recall: HTTP 429 from recall.example.test")
+        self.assertEqual(exc.code, "rate_limited")
+        self.assertTrue(exc.retryable)
+
+    def test_an_unconfigured_owner_token_is_an_authorization_failure(self):
+        session = self.session(
+            self.env(
+                RECALL_TEST_EXIT="2",
+                RECALL_TEST_ERR="owner mutation token not configured; set RECALL_OWNER_TOKEN in Infisical",
+                RECALL_TEST_REPLY="{}",
+            )
+        )
+        self.assert_tool_error(
+            session.call(
+                "recall_retract",
+                {"doc_id": "contrib/CLAUDE/2026-11-05/472fc36e", "reason": "obsolete"},
+            ),
+            "not_authorized",
+        )
+
+    def test_a_malformed_mutation_response_is_unknown_and_not_resent(self):
+        args = {
+            "doc_id": "contrib/CLAUDE/2026-11-05/472fc36e",
+            "reason": "obsolete",
+            "idempotency_key": "aaaaaaaa-9",
+        }
+        malformed = json.dumps(
+            {"id": "point-1", "doc_id": args["doc_id"], "status": "completed",
+             "revision": "2", "retracted": True, "retracted_at": 1,
+             "retracted_by": "CLAUDE", "retraction_reason": "obsolete"}
+        )
+        session = self.session(self.env(RECALL_TEST_REPLY=malformed))
+        first = self.assert_tool_error(session.call("recall_retract", args), "outcome_unknown")
+        self.assertIn("may or may not have landed", first["message"])
+        self.assertEqual(len(self.calls(self.recall_out)), 1)
+
+        retry = self.assert_tool_error(session.call("recall_retract", args), "outcome_unknown")
+        self.assertIn("may or may not have landed", retry["message"])
+        self.assertEqual(len(self.calls(self.recall_out)), 1)
+
+    def test_an_upstream_mutation_error_is_unknown_and_not_resent(self):
+        args = {
+            "doc_id": "contrib/CLAUDE/2026-11-05/472fc36e",
+            "reason": "obsolete",
+        }
+        session = self.session(
+            self.env(
+                RECALL_TEST_EXIT="2",
+                RECALL_TEST_ERR="recall: HTTP 500 from recall.example.test",
+                RECALL_TEST_REPLY="{}",
+            )
+        )
+        first = self.assert_tool_error(session.call("recall_retract", args), "outcome_unknown")
+        self.assertIn("may or may not have landed", first["message"])
+        retry = self.assert_tool_error(session.call("recall_retract", args), "outcome_unknown")
+        self.assertIn("may or may not have landed", retry["message"])
+        self.assertEqual(len(self.calls(self.recall_out)), 1)
+
+    def test_disconnected_writes_keep_their_rows_and_retries_are_not_resent(self):
+        cases = [
+            (
+                "recall_contribute",
+                {"text": self.LESSON, "category": "lesson", "idempotency_key": "disconnect-contribute"},
+                "recall: TimeoutError reaching recall.example.test",
+            ),
+            (
+                "recall_correct",
+                {
+                    "doc_id": "contrib/CLAUDE/2026-11-05/472fc36e",
+                    "text": self.LESSON,
+                    "reason": "make the lesson current",
+                    "idempotency_key": "disconnect-correct",
+                },
+                "recall: RemoteDisconnected reaching recall.example.test",
+            ),
+            (
+                "recall_retract",
+                {
+                    "doc_id": "contrib/CLAUDE/2026-11-05/472fc36e",
+                    "reason": "obsolete",
+                    "idempotency_key": "disconnect-retract",
+                },
+                "recall: ConnectionResetError reaching recall.example.test",
+            ),
+        ]
+        for name, args, err in cases:
+            with self.subTest(name=name):
+                before = len(self.calls(self.recall_out))
+                session = self.session(
+                    self.env(RECALL_TEST_EXIT="2", RECALL_TEST_ERR=err, RECALL_TEST_REPLY="{}")
+                )
+                first = self.assert_tool_error(session.call(name, args), "outcome_unknown")
+                retry = self.assert_tool_error(session.call(name, args), "outcome_unknown")
+                self.assertIn("may or may not", first["message"])
+                self.assertIn("may or may not", retry["message"])
+                self.assertEqual(
+                    len(self.calls(self.recall_out)) - before,
+                    1,
+                    "the retained unknown row refused the retry without another write attempt",
+                )
+
+    def test_a_rate_limited_mutation_releases_its_idempotency_key(self):
+        args = {
+            "doc_id": "contrib/CLAUDE/2026-11-05/472fc36e",
+            "reason": "obsolete",
+            "idempotency_key": "aaaaaaaa-429",
+        }
+        session = self.session(
+            self.env(
+                RECALL_TEST_EXIT="2",
+                RECALL_TEST_ERR="recall: HTTP 429 from recall.example.test",
+                RECALL_TEST_REPLY="{}",
+            )
+        )
+        first = self.assert_tool_error(session.call("recall_retract", args), "rate_limited")
+        self.assertIs(first["retryable"], True)
+        second = self.assert_tool_error(session.call("recall_retract", args), "rate_limited")
+        self.assertIs(second["retryable"], True)
+        self.assertEqual(len(self.calls(self.recall_out)), 2)
+
+    def test_a_read_outage_is_retryable_unavailable_not_an_unknown_write(self):
+        session = self.session(
+            self.env(
+                RECALL_TEST_EXIT="2",
+                RECALL_TEST_ERR="recall: HTTP 500 from recall.example.test",
+                RECALL_TEST_REPLY="{}",
+            )
+        )
+        error = self.assert_tool_error(
+            session.call("recall_search", {"query": "pm2 env"}), "unavailable"
+        )
+        self.assertIs(error["retryable"], True)
+
+    def test_a_rate_limited_read_is_rate_limited_not_an_outage(self):
+        session = self.session(
+            self.env(
+                RECALL_TEST_EXIT="2",
+                RECALL_TEST_ERR="recall: HTTP 429 from recall.example.test",
+                RECALL_TEST_REPLY="{}",
+            )
+        )
+        error = self.assert_tool_error(
+            session.call("recall_search", {"query": "pm2 env"}), "rate_limited"
+        )
+        self.assertIs(error["retryable"], True)
+
+    def test_mutation_reason_is_scanned_before_the_cli_runs(self):
+        session = self.session(self.env())
+        leak = "token ghp_" + "EXAMPLE0" * 5
+        self.assert_tool_error(
+            session.call(
+                "recall_retract",
+                {"doc_id": "contrib/CLAUDE/2026-11-05/472fc36e", "reason": leak},
+            ),
+            "refused_secret",
+        )
+        self.assertEqual(self.calls(self.recall_out), [])
 
     def test_an_idempotency_key_contributes_once_even_when_the_retry_alters_the_text(self):
         reply = json.dumps(
@@ -884,7 +1207,7 @@ class LinearToolTests(FakePrograms):
         # identity's own bearer locator and the seat variables are stripped from the child.
         self.assertEqual(
             call["bearer"],
-            seat_bearer_locator("CLAUDE"),
+            seat_bearer_file("CLAUDE"),
             "the call's own bearer locator is the seat board proves",
         )
         self.assertIsNone(call["seat"], "AGENT_SEAT must not reach board")
@@ -908,8 +1231,8 @@ class LinearToolTests(FakePrograms):
         self.assertEqual(
             [c["bearer"] for c in calls],
             [
-                seat_bearer_locator("CLAUDE"),
-                seat_bearer_locator("CLAUDE"),
+                seat_bearer_file("CLAUDE"),
+                seat_bearer_file("CLAUDE"),
             ],
             "each call runs under the bearer of the identity it names",
         )

@@ -252,6 +252,7 @@ SPECS = {
     "wf_run_approve": ({"actions": "write"}, True),
     "wf_file_put": ({"contents": "write"}, True),
     "wf_files_put": ({"contents": "write"}, True),
+    "wf_file_patch": ({"contents": "write"}, True),
     "wf_merge_guarded": ({"contents": "write", "pull_requests": "write"}, True),
 }
 ACTIONS = tuple(SPECS)
@@ -5449,76 +5450,88 @@ class WorkflowVerbs:
         files = args.get("files")
         if not isinstance(files, list) or not 1 <= len(files) <= 20:
             raise Refused("invalid files")
-        entries, seen, total = [], set(), 0
+        entries, seen, total, referenced_total = [], set(), 0, 0
         for value in files:
             if not isinstance(value, dict):
                 raise Refused("invalid file")
-            if "sha" in value:
-                # An entry referencing a blob already in the repository:  the blob is
-                # fetched, its identity verified against the requested sha, and its decoded
-                # content scanned at the destination path before the reference is used.
-                _only(value, ("path", "sha", "mode"))
-                path = _path(value)
-                if find_secret(path) or self._provider_token_text(path):
-                    raise Refused("credential-shaped file path refused")
-                mode = _enum(value, "mode", ("100644", "100755"))
-                blob_sha = _sha(value, "sha")
-                if (
-                    _workflow_path(path)
-                    or path in seen
-                    or any(path.startswith(x + "/") or x.startswith(path + "/") for x in seen)
-                ):
-                    raise Refused("invalid file content or path")
-                blob = _obj(self._get(f"/repos/{repo}/git/blobs/{blob_sha}"))
-                # Every check below runs BEFORE any write is dispatched, so each
-                # failure is a definite refusal (key released, caller may correct
-                # the reference and retry), never an unknown write outcome.
-                if (
-                    blob.get("sha") != blob_sha
-                    or blob.get("encoding") != "base64"
-                    or type(blob.get("size")) is not int
-                    or not 0 <= blob["size"] <= MAX_WORKFLOW_TEXT_LARGE
-                    or not isinstance(blob.get("content"), str)
-                    or len(blob["content"]) > MAX_WORKFLOW_TEXT_LARGE_B64
-                ):
-                    raise Refused("unverifiable blob reference")
-                try:
-                    raw = base64.b64decode("".join(blob["content"].split()), validate=True)
-                except (ValueError, binascii.Error):
-                    raise Refused("unverifiable blob reference") from None
-                if (
-                    len(raw) != blob["size"]
-                    or hashlib.sha1(
-                        b"blob " + str(len(raw)).encode() + b"\0" + raw, usedforsecurity=False
-                    ).hexdigest()
-                    != blob_sha
-                ):
-                    raise Refused("unverifiable blob reference")
-                try:
-                    raw.decode("utf-8")
-                except UnicodeDecodeError:
-                    # Parity with inline text entries:  only UTF-8 content can
-                    # enter a tree through this verb, referenced or not.
-                    raise Refused("unverifiable blob reference") from None
-                if unreviewed_file_secret(repo, path, raw):
-                    raise Refused("credential-shaped content refused")
-                seen.add(path)
-                entries.append({"path": path, "mode": mode, "type": "blob", "sha": blob_sha})
-                continue
-            _only(value, ("path", "text", "mode"))
+            _only(value, ("path", "text", "sha", "mode"))
             path = _path(value)
             if find_secret(path) or self._provider_token_text(path):
                 raise Refused("credential-shaped file path refused")
             mode = _enum(value, "mode", ("100644", "100755"))
-            text = value.get("text")
+            text, sha = value.get("text"), value.get("sha")
             if (
                 _workflow_path(path)
                 or path in seen
                 or any(path.startswith(x + "/") or x.startswith(path + "/") for x in seen)
-                or not isinstance(text, str)
-                or find_secret(text)
-                or self._provider_token_text(text)
+                or (text is None) == (sha is None)
             ):
+                raise Refused("invalid file content or path")
+            if sha is not None:
+                # An existing-blob reference still carries the attestation: the
+                # blob is fetched and scanned exactly like supplied text, so a
+                # sha entry can never smuggle unscanned content into a tree.
+                # Referenced bytes never cross the MCP body, so they draw from
+                # the raw work budget (MAX_FILES_RAW), not the transport cap.
+                if not isinstance(sha, str) or not _SHA.fullmatch(sha):
+                    raise Refused("invalid file content or path")
+                # The pre-read runs before any dispatch:  a transient upstream
+                # failure here means NO write was attempted, so it releases the
+                # idempotency key as retryable instead of locking it unknown.
+                try:
+                    blob = _obj(self._get(f"/repos/{repo}/git/blobs/{sha}"))
+                except RelayGitHubError as exc:
+                    if exc.code == "response_too_large":
+                        raise Refused("referenced blob exceeds supported response size") from None
+                    if exc.status in (0, 408) or exc.status >= 500:
+                        raise PreReadUnavailable(
+                            "blob pre-read unavailable; no write attempted"
+                        ) from None
+                    raise
+                raw = blob.get("content")
+                if (
+                    blob.get("sha") != sha
+                    or blob.get("encoding") != "base64"
+                    or type(blob.get("size")) is not int
+                    or not 0 <= blob["size"] <= MAX_FILE_RAW
+                    or not isinstance(raw, str)
+                    or len(raw) > ((MAX_FILE_RAW + 2) // 3) * 4 + MAX_FILE_RAW // 30
+                ):
+                    raise Refused("referenced blob unavailable or unsupported")
+                try:
+                    # GitHub wraps blob content base64 at 60 columns; strip the
+                    # whitespace before validating, as the other blob reads do.
+                    decoded_raw = base64.b64decode("".join(raw.split()), validate=True)
+                except (binascii.Error, ValueError):
+                    raise Refused("referenced blob unavailable or unsupported") from None
+                # Budgets measure the decoded bytes, never the receipt's declared
+                # size:  a receipt that understates blob["size"] cannot smuggle
+                # content past the raw work budget.
+                if len(decoded_raw) > MAX_FILE_RAW:
+                    raise Refused("referenced blob exceeds the per-file raw budget")
+                if (
+                    len(decoded_raw) != blob["size"]
+                    or hashlib.sha1(
+                        b"blob " + str(len(decoded_raw)).encode() + b"\0" + decoded_raw,
+                        usedforsecurity=False,
+                    ).hexdigest() != sha
+                ):
+                    raise Refused("unverifiable blob reference")
+                if unreviewed_file_secret(repo, path, decoded_raw):
+                    raise Refused("credential-shaped content refused")
+                try:
+                    decoded = decoded_raw.decode("utf-8")
+                except UnicodeDecodeError:
+                    raise Refused("referenced blob is not utf-8 text") from None
+                if self._provider_token_text(decoded):
+                    raise Refused("credential-shaped content refused")
+                referenced_total += len(decoded_raw)
+                if referenced_total > MAX_FILES_RAW:
+                    raise Refused("file content budget exceeded")
+                seen.add(path)
+                entries.append({"path": path, "mode": mode, "type": "blob", "sha": sha})
+                continue
+            if not isinstance(text, str) or find_secret(text) or self._provider_token_text(text):
                 raise Refused("invalid file content or path")
             try:
                 total += len(text.encode("utf-8"))
@@ -6120,6 +6133,117 @@ class WorkflowVerbs:
                 return None
             sha = entry["sha"]
         return None
+
+    def wf_file_patch(self, repo, args):
+        """Pinned same-path patch. Existing generic matches remain a residual risk."""
+        from .provenance_patch import apply_patch
+
+        _only(
+            args,
+            ("repo", "branch", "path", "message", "expected_head_sha", "base_blob_sha", "edits"),
+        )
+        branch, head, blob_sha = (
+            _ref(args, "branch"),
+            _sha(args, "expected_head_sha"),
+            _sha(args, "base_blob_sha"),
+        )
+        path = _path(args)
+        message = args.get("message")
+        if self._write_path_denied(path) or _workflow_path(path):
+            raise Refused("patch path refused")
+        if (
+            not isinstance(message, str)
+            or not 1 <= len(message) <= 500
+            or "\x00" in message
+            or find_secret(message)
+            or self._provider_token_text(message)
+        ):
+            raise Refused("invalid patch message")
+        default = _obj(self._get(f"/repos/{repo}")).get("default_branch")
+        if not isinstance(default, str) or not default or branch == default:
+            raise Refused("default branch is not writable")
+        ref_path = f"/repos/{repo}/git/ref/heads/{quote(branch, safe='/')}"
+        if _sub(_obj(self._get(ref_path)), "object").get("sha") != head:
+            raise Refused("branch head moved")
+        base_commit = _obj(self._get(f"/repos/{repo}/git/commits/{head}"))
+        tree = _sub(base_commit, "tree").get("sha")
+        if base_commit.get("sha") != head or not isinstance(tree, str) or not _SHA.fullmatch(tree):
+            raise Refused("base commit unverifiable")
+        # Contents receipt pins path AND commit; caller's blob id is only a check.
+        content = _obj(self._get(f"/repos/{repo}/contents/{quote(path, safe='/')}?ref={head}"))
+        if (
+            content.get("type") != "file"
+            or content.get("path") != path
+            or content.get("sha") != blob_sha
+            or content.get("encoding") != "base64"
+        ):
+            raise Refused("base file unverifiable")
+        try:
+            raw = base64.b64decode("".join(content["content"].split()), validate=True)
+            if (
+                len(raw) > MAX_FILE_RAW
+                or hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+                != blob_sha
+            ):
+                raise ValueError()
+            # Full base/output dedicated/provider scans are never baseline-exempt.
+            if (
+                find_secret(raw.decode("utf-8"))
+                or self._provider_token_text(raw.decode("utf-8"))
+                or self.bearer in raw.decode("utf-8")
+            ):
+                raise ValueError()
+            result = apply_patch(raw, args.get("edits"), known=[self.bearer])
+            if (
+                find_secret(result.decode("utf-8"))
+                or self._provider_token_text(result.decode("utf-8"))
+                or self.bearer
+                and self.bearer in result.decode("utf-8")
+            ):
+                raise ValueError()
+        except (ValueError, TypeError, KeyError, UnicodeError):
+            raise Refused("credential-shaped or invalid patch content") from None
+        mode = self._entry_mode(repo, tree, path, {})
+        if mode != "100644":
+            # GraphQL FileAddition cannot encode executable/symlink modes.
+            raise Refused("patch supports regular non-executable files only")
+        query = "mutation($input:CreateCommitOnBranchInput!){createCommitOnBranch(input:$input){commit{oid parents(first:2){nodes{oid}}}ref{name target{oid}}}}"
+        variables = {
+            "input": {
+                "branch": {"repositoryNameWithOwner": repo, "branchName": branch},
+                "expectedHeadOid": head,
+                "message": {"headline": message},
+                "fileChanges": {
+                    "additions": [{"path": path, "contents": base64.b64encode(result).decode()}]
+                },
+            }
+        }
+        made = self._fixed_graph(query, variables, "createCommitOnBranch")
+        commit = _sub(made, "commit")
+        new_head = commit.get("oid")
+        if (
+            not isinstance(new_head, str)
+            or not _SHA.fullmatch(new_head)
+            or _sub(commit, "parents").get("nodes") != [{"oid": head}]
+            or _sub(made, "ref").get("name") != branch
+            or _sub(_sub(made, "ref"), "target").get("oid") != new_head
+        ):
+            raise WriteOutcomeUnknown("patch commit receipt unverifiable")
+        if _sub(_obj(self._get(ref_path)), "object").get("sha") != new_head:
+            raise WriteOutcomeUnknown("patch ref receipt unverifiable")
+        published = _obj(
+            self._get(f"/repos/{repo}/contents/{quote(path, safe='/')}?ref={new_head}")
+        )
+        expected_blob = hashlib.sha1(
+            b"blob " + str(len(result)).encode() + b"\0" + result
+        ).hexdigest()
+        if (
+            published.get("path") != path
+            or published.get("sha") != expected_blob
+            or published.get("type") != "file"
+        ):
+            raise WriteOutcomeUnknown("patch content receipt unverifiable")
+        return {"branch": branch, "path": path, "commit": new_head}
 
     def wf_files_put(self, repo, args):
         """One commit changing several files on a non-default branch, via git-data."""

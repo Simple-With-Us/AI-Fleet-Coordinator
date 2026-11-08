@@ -162,6 +162,22 @@ class InstallTests(ListenerHarness):
         )
         self.assertIn("operator_user_id", " ".join(C.load(self.root).errors))
 
+    def test_the_operator_email_is_pinned_beside_its_id_and_is_optional(self) -> None:
+        # The same per-host inventory as the id:  none committed, "" means not pinned, and a value
+        # that is not an address is an error rather than a guess.
+        base = '[daemon]\nowner_user_id = 7\noperator_user_id = 4242\n{}[seat.CLAUDE]\nbot = "Claude"\n'
+        (self.state_dir / "listener.toml").write_text(
+            base.format('operator_email = " Operator-Bot@Realm.Example.Test "\n')
+        )
+        cfg = C.load(self.root)
+        self.assertEqual(cfg.operator_email, "operator-bot@realm.example.test")
+        self.assertEqual(cfg.errors, [])
+        (self.state_dir / "listener.toml").write_text(base.format(""))
+        cfg = C.load(self.root)
+        self.assertEqual((cfg.operator_email, cfg.errors), ("", []))
+        (self.state_dir / "listener.toml").write_text(base.format('operator_email = "not-an-address"\n'))
+        self.assertIn("operator_email", " ".join(C.load(self.root).errors))
+
     def test_status_displays_per_seat_nudge_counts_and_legacy_snapshot(self):
         path = os.path.join(self.root, "listener", "status.json")
         counts = {"bindings": 2, "pending": 3, "blocked": 4, "unknown": 5, "accepted": 6}

@@ -102,8 +102,8 @@ final class FleetToolsReportTests: XCTestCase {
 
     /// Each host carries its own time,  which the panel shows beside the report's.
     ///
-    /// The server's doctor runs on its own timer,  so its half of the report is
-    /// routinely older than the Mac's,  and the panel says so instead of hiding it.
+    /// The Mac's doctor reads the server's half live on each run,  so the two times are
+    /// normally close,  and the panel shows each one instead of hiding a difference.
     func test_a_host_carries_its_own_age() throws {
         let now = Date()
         let json = report(
@@ -451,5 +451,110 @@ final class FleetToolsReportTests: XCTestCase {
             ["checkout:AI-Fleet-Coordinator", "command:simple-chat"]
         )
         XCTAssertEqual(mac.rows(matching: .all, search: "agy").map(\.check), ["tool:agy"])
+    }
+
+    // MARK: - The version fields of a registry row (AFC-461)
+
+    /// Decode one row on its own.
+    private func decodeRow(_ json: String) throws -> FleetToolsRow {
+        try JSONDecoder().decode(FleetToolsRow.self, from: Data(json.utf8))
+    }
+
+    /// A registry row carries its version,  the latest it was compared with,  and the
+    /// other host's newer copy,  and the helpers give them to a view as plain values.
+    func test_a_registry_row_decodes_its_version_fields() throws {
+        let row = try decodeRow("""
+        {"check": "tool:gh", "status": "WARN", "state": "stale", "category": "dev-tool", "tool": "gh", "version": "2.60.0", "latest": "2.62.0", "latestSource": "brew", "basis": "latest", "required": true, "path": "/opt/homebrew/bin/gh", "skew": {"host": "server", "version": "2.61.0"}}
+        """)
+        XCTAssertEqual(row.version, "2.60.0")
+        XCTAssertEqual(row.latest, "2.62.0")
+        XCTAssertEqual(row.latestSource, "brew")
+        XCTAssertEqual(row.basis, "latest")
+        XCTAssertEqual(row.required, true)
+        XCTAssertEqual(row.path, "/opt/homebrew/bin/gh")
+        XCTAssertEqual(row.skew?.host, "server")
+        XCTAssertEqual(row.skew?.version, "2.61.0")
+        XCTAssertEqual(row.installedVersion, "2.60.0")
+        XCTAssertEqual(row.latestVersion, "2.62.0")
+        XCTAssertEqual(row.otherHostVersion, "2.61.0")
+        XCTAssertEqual(row.otherHostName, "server")
+        XCTAssertEqual(row.basisText, "compared with the latest release")
+        // The verdict is the same as before the fields existed.
+        XCTAssertEqual(row.outcome, .stale)
+    }
+
+    /// A row without the fields (a fleet tool row,  or an older report) reads them as nil.
+    func test_a_row_without_the_version_fields_reads_them_as_nil() throws {
+        let row = try decodeRow("""
+        {"check": "tool:recall", "status": "OK", "state": "current", "category": "fleet-tool", "latest": null, "skew": null}
+        """)
+        XCTAssertNil(row.version)
+        XCTAssertNil(row.latest)
+        XCTAssertNil(row.latestSource)
+        XCTAssertNil(row.basis)
+        XCTAssertNil(row.required)
+        XCTAssertNil(row.path)
+        XCTAssertNil(row.skew)
+        XCTAssertNil(row.installedVersion)
+        XCTAssertNil(row.latestVersion)
+        XCTAssertNil(row.otherHostVersion)
+        XCTAssertNil(row.otherHostName)
+        XCTAssertNil(row.basisText)
+        XCTAssertEqual(row.outcome, .passing)
+    }
+
+    /// A field of the wrong type costs that field and not the row.
+    func test_a_version_field_of_the_wrong_type_costs_only_that_field() throws {
+        let row = try decodeRow("""
+        {"check": "tool:gh", "status": "FAIL", "state": "missing", "category": "dev-tool", "version": 2, "latest": true, "latestSource": [], "basis": 7, "required": "yes", "path": 3, "skew": "server"}
+        """)
+        XCTAssertEqual(row.check, "tool:gh")
+        XCTAssertNil(row.version)
+        XCTAssertNil(row.latest)
+        XCTAssertNil(row.latestSource)
+        XCTAssertNil(row.basis)
+        XCTAssertNil(row.required)
+        XCTAssertNil(row.path)
+        XCTAssertNil(row.skew)
+        XCTAssertNil(row.basisText)
+        XCTAssertEqual(row.outcome, .failing)
+
+        let halfSkew = try decodeRow("""
+        {"check": "tool:node", "status": "WARN", "state": "stale", "skew": {"host": 1, "version": "22.11.0"}, "version": ""}
+        """)
+        XCTAssertNil(halfSkew.otherHostName)
+        XCTAssertEqual(halfSkew.otherHostVersion, "22.11.0")
+        // An empty version is not a version.
+        XCTAssertEqual(halfSkew.version, "")
+        XCTAssertNil(halfSkew.installedVersion)
+    }
+
+    /// The basis reads in plain words,  and a word this app does not know reads as nothing.
+    func test_the_basis_reads_in_plain_words() throws {
+        func basis(_ word: String) throws -> String? {
+            try decodeRow("{\"check\": \"tool:x\", \"basis\": \"\(word)\"}").basisText
+        }
+        XCTAssertEqual(try basis("latest"), "compared with the latest release")
+        XCTAssertEqual(try basis("skew"), "compared with the other machine")
+        XCTAssertEqual(try basis("presence"), "installed, no latest to compare")
+        XCTAssertNil(try basis("wobble"))
+        XCTAssertNil(try basis(""))
+    }
+
+    /// A row behind the other host keeps the host's verdict:  the new fields change no count.
+    func test_a_skewed_row_in_a_report_keeps_the_verdict() throws {
+        let now = Date()
+        let skewed = """
+        {"check": "tool:gh", "status": "WARN", "state": "stale", "category": "dev-tool", "tool": "gh", "detail": "2.60.0 at /usr/bin/gh", "version": "2.60.0", "basis": "skew", "required": true, "path": "/usr/bin/gh", "skew": {"host": "mac", "version": "2.62.0"}}
+        """
+        let json = report(at: now, hosts: [host("server", checks: [skewed, row("tool:recall")])])
+        let reading = try read(json, now: now)
+        let server = reading.hosts.first
+        XCTAssertEqual(server?.state, .drift)
+        XCTAssertEqual(server?.stale, 1)
+        XCTAssertEqual(server?.current, 1)
+        XCTAssertEqual(server?.notableRows.first?.otherHostVersion, "2.62.0")
+        XCTAssertEqual(server?.notableRows.first?.otherHostName, "mac")
+        XCTAssertEqual(server?.notableRows.first?.basisText, "compared with the other machine")
     }
 }

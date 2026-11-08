@@ -2,7 +2,9 @@ import { parse, print, Kind, valueFromASTUntyped } from "graphql";
 import { ToolError } from "./contract.js";
 
 const DOCUMENT_LIMIT = 24000;
-const VARIABLES_LIMIT = 24000;
+// Raised from 24000 (AFC-646):  the shared deficiency log passed 26,729 characters and no seat
+// could update it in place.  Keep in sync with GQL_VARIABLES_LIMIT in scripts/linear-board/board.
+const VARIABLES_LIMIT = 100000;
 const MAX_DEPTH = 16;
 const MAX_FIELDS = 500;
 // Match protected categories anywhere in a root name. Linear's schema includes
@@ -22,7 +24,9 @@ function copyVariables(variables) {
     invalid("variables must be JSON data.");
   }
   if (typeof encoded !== "string") invalid("variables must be a JSON object.");
-  if (encoded.length > VARIABLES_LIMIT) invalid("variables exceed the 24000-character limit.");
+  // Code points, matching Python len() in scripts/linear-board/board:  String.length would count
+  // astral characters (emoji) as two UTF-16 units and diverge from the board client.
+  if ([...encoded].length > VARIABLES_LIMIT) invalid("variables exceed the 100000-character limit.");
 
   let copied;
   try {

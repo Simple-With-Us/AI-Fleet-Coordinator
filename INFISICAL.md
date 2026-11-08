@@ -22,11 +22,12 @@ own store and never go in Infisical.
 | `TEI_EMBED_MODEL` | env config | set in prod |
 | `RECALL_API_TOKEN` | secret | **to be filled by admin** (required; the service refuses to start without it) |
 | `RECALL_ADMIN_TOKEN` | secret | **to be filled by admin** (the admin settings surface answers 403 until it is set) |
+| `RECALL_OWNER_TOKEN` | secret | **to be filled by admin** (OWNER recall mutations answer 403 until it is set; the shared seat bearer never proves OWNER) |
 | `RECALL_SOCKET_TIMEOUT` | tunable knob | set in prod |
 | `SETTINGS_REFRESH_SECONDS` | tunable knob | set in prod (controls the background refresh cadence) |
 | `HOST`, `PORT` | env config | managed keys; currently supplied by the container env |
 
-Secret values are NEVER invented, guessed, or copied from anywhere: the five secret keys above are not yet created in the project and are documented here as "to be filled by admin".  (The Infisical CLI rejects empty values, so they cannot exist as empty placeholders.)
+Secret values are NEVER invented, guessed, or copied from anywhere: the six secret keys above are not yet created in the project and are documented here as "to be filled by admin".  (The Infisical CLI rejects empty values, so they cannot exist as empty placeholders.)
 
 ## Muster Server Resource Policy
 
@@ -41,6 +42,15 @@ This control plane uses the **Fleet-OPS** project, separate from the recall serv
 The controller keeps its separate existing read-only systemd credential.  The broker requires its private dedicated writer binding and never falls back to a general automation or Coolify credential.  Values are never placed in public source or command arguments; deployment copies use private files or standard input.
 
 See [Muster Resource Controls](docs/muster-resource-controls.md) for validation, receipt status, concurrent-writer limits and guarded rollback.
+
+## Muster Release (Sparkle)
+
+`.github/workflows/muster-release.yml` signs every Muster update with Muster's own EdDSA key.  Each folder is read in CI through its own read-only service token (`muster/docs/AUTO-UPDATE.md`, Secrets and Keys).
+
+| Key | Folder | Kind And Consumer |
+| --- | --- | --- |
+| `MUSTER_SPARKLE_ED_PRIVATE_KEY` | `/muster-sparkle` | Secret Sparkle EdDSA private key (base64 32-byte seed);  read by the release job with `INFISICAL_MUSTER_SPARKLE_READ_TOKEN` |
+| `INFISICAL_MAC_CERTS_READ_TOKEN`, `INFISICAL_ASC_READ_TOKEN`, `INFISICAL_MUSTER_SPARKLE_READ_TOKEN` | `/github-actions` | Secret service tokens (`muster-ci-mac-certs-read`, `muster-ci-asc-read`, `muster-ci-sparkle-read`), read-only, expire May 5, 2027;  the secret sync `ai-fleet-coordinator-gh-actions` copies them to this repository's Actions secrets |
 
 ## Hosted Agent-Sync: Cursor Cloud
 
@@ -176,21 +186,11 @@ Jay owns these incoming-webhook bots.  Each key builds a vendor's webhook URL (`
 | `ZULIP_BETTERSTACK_EMAIL` / `ZULIP_BETTERSTACK_API_KEY` | env config / secret | BetterStack outgoing webhook to #alerts (`slack_incoming`) |
 | `ZULIP_DATADOG_EMAIL` / `ZULIP_DATADOG_API_KEY` | env config / secret | Datadog `zulip-alerts` webhook to #alerts (`slack_incoming`) |
 
-## pr-conflict-watch (Cloudflare Worker)
+## pr-conflict-watch (Retired)
 
-`workers/pr-conflict-watch` reads every secret from Infisical at runtime.  The Worker's only secret binding is one read-only Infisical service token; the other five secrets live in the Fleet-OPS project, `prod`, folder `/pr-conflict-watch`.  Names only, no values:
+The `pr-conflict-watch` Cloudflare Worker was retired on 2026-11-06 at the owner's request, and its source was removed from this repository.  It had posted no conflict alert since Oct 21, because every GitHub call returned 401, yet it still took 2,000 to 18,000 webhook requests a day.  Nothing in this repository reads the names below any more.
 
-| Name | Kind | Who reads it |
-|---|---|---|
-| `GITHUB_WEBHOOK_SECRET` | secret | the Worker, to verify `X-Hub-Signature-256` |
-| `GITHUB_TOKEN` | secret | the Worker, for read-only GitHub PR lookups |
-| `ZULIP_SITE` | config (URL) | the Worker, the Zulip site base URL |
-| `ZULIP_BOT_EMAIL` | config | the Worker, the fleet alerts bot (the MA bot) email |
-| `ZULIP_BOT_API_KEY` | secret | the Worker, that bot's API key |
-
-The Zulip pair is the fleet alerts bot, the MA bot: the same credential lives at Fleet-OPS prod `/zulip` as `MA_ZULIP_SITE` / `MA_ZULIP_EMAIL` / `MA_ZULIP_KEY`.  The folder holds plain values, not Infisical references, because expanding a reference would need the service token to read `/zulip` too.
-
-One read-only service token, `pr-conflict-watch-read`, is scoped to exactly `prod` + `/pr-conflict-watch` and is bound to the Worker as the secret `INFISICAL_SERVICE_TOKEN`.  The Worker discovers the project id from the token itself (the repo is public, so the id is not committed) and refuses a token that may write or that is not scoped to that folder (`token_not_read_only`, `token_scope_mismatch`).  See [workers/pr-conflict-watch/README.md](workers/pr-conflict-watch/README.md).
+Its never-deployed Infisical variant was designed to read `GITHUB_WEBHOOK_SECRET`, `GITHUB_TOKEN`, `ZULIP_SITE`, `ZULIP_BOT_EMAIL` and `ZULIP_BOT_API_KEY` from the Fleet-OPS project, `prod`, folder `/pr-conflict-watch`, through one read-only service token named `pr-conflict-watch-read`.  The deployed version bound its GitHub and Zulip values as Worker secrets instead.  When the Worker is deleted, delete that folder and revoke that token too if either exists, and remove the token's row from the service token registry.  The Zulip values were copies of the MA bot's credential at Fleet-OPS prod `/zulip`, which stays.
 
 ## Runtime contract
 
@@ -203,7 +203,7 @@ One read-only service token, `pr-conflict-watch-read`, is scoped to exactly `pro
 
 ## Admin gating
 
-`GET /admin/settings` (key inventory; secret values masked as `set`/`empty`, never returned), `POST /admin/settings` (write-through save), and `POST /admin/reload-settings` require `Authorization: Bearer <RECALL_ADMIN_TOKEN>`.  The seat bearer (`RECALL_API_TOKEN`) gets 401 on these routes; with `RECALL_ADMIN_TOKEN` unset the routes answer 403.  "Admin" is whoever holds the admin token — the fleet operator, not the seats.
+`GET /admin/settings` (key inventory; secret values masked as `set`/`empty`, never returned), `POST /admin/settings` (write-through save), and `POST /admin/reload-settings` require `Authorization: Bearer <RECALL_ADMIN_TOKEN>`.  The seat bearer (`RECALL_API_TOKEN`) gets 401 on these routes; with `RECALL_ADMIN_TOKEN` unset the routes answer 403.  "Admin" is whoever holds the admin token — the fleet operator, not the seats.  OWNER correction/retraction of recall lessons is a separate authority: it requires `Authorization: Bearer <RECALL_OWNER_TOKEN>`, and with that key unset the service refuses the mutation 403.  A client-supplied `seat: "OWNER"` is only a claim, never proof.
 
 ## Per-user boundary (out of scope by design)
 
@@ -222,14 +222,14 @@ This service has no per-user settings: seat identity is passed per-request by th
 
 `scripts/fleet_knobs/` is how the open-loops jobs (LaunchAgents, hooks and CLIs that run for seconds) read their modes, caps and flags.  The values live in this project, `prod`, at the root path, and they are the only place a mode or a cap is set.  A refresh thread does not fit a job that lives a few seconds, so the contract differs from the service above:
 
-1. **Fetch once per process.**  The first `knobs.get()` runs one `infisical export --env=prod --projectId=... --format=json` through the installed CLI, keeps only the names in the registry and drops the rest at once.  A failed fetch is not retried in the same process.  A non-prod `INFISICAL_ENVIRONMENT` or `INFISICAL_ENV` is refused before anything runs.  Auth follows `fleet-secrets` (below), first match wins:  `INFISICAL_TOKEN` already set, else (on Linux) the automation pair `INFISICAL_AUTOMATION_CLIENT_ID` and `INFISICAL_AUTOMATION_CLIENT_SECRET` in the environment, else the machine identity in the login Keychain, then the System keychain, each logged in through fleet-secrets' own helper (loaded from `FLEET_SECRETS_HOME`, the sibling `scripts/fleet_secrets`, or `~/.local/share/fleet-secrets`), else the CLI's own session.  A half-set automation pair is reason `automation-env-incomplete:missing-<var>` (the variable name in lowercase, as the failure marker keeps it) ``, not a keychain fault, and the pair never reaches the export child.  This is what makes a fetch work under pm2, which runs as the system LaunchDaemon `com.pm2.daemon` where the login Keychain and the CLI session are unreachable.  The token goes only into the CLI child's environment, never into a log, an argument list or a file.  The whole fetch (keychain lookups, the machine-identity login and the export) shares one 8 second budget, and running out anywhere is reason `timeout`.  **Fail fast across processes.**  A failed fetch writes `~/.local/state/fleet-knobs/fetch-failed.json` (0600, a timestamp and the reason token only).  For 60 seconds after it, other processes skip the fetch and use the last-known-good copy (reason `recent-<token>`), so a broken auth path costs one timeout across a burst of processes instead of one each.  A good fetch removes the marker, and `knobs.refresh()` ignores it.  A secret still fails closed inside the window.
+1. **Fetch once per process.**  The first `knobs.get()` reads only the registered names, through the scoped REST reader in `fleet_secrets/core.py` (loaded from `FLEET_SECRETS_HOME`, the sibling `scripts/fleet_secrets`, or `~/.local/share/fleet-secrets`), for prod only.  It needs the knob reader's own service token in `FLEET_KNOBS_INFISICAL_TOKEN`;  the token's metadata must prove this project, the prod root folder and read-only permission before any value is fetched, and a missing or malformed token is reason `service-token-required`, with no machine-identity, keychain or CLI-session fallback.  A failed fetch is not retried in the same process.  A non-prod `INFISICAL_ENVIRONMENT` or `INFISICAL_ENV` is refused before anything runs.  The token goes only to the reader, never into a log, an argument list or a file.  The whole read shares one 8 second budget, and running out is reason `timeout`.  **Fail fast across processes.**  A failed fetch writes `~/.local/state/fleet-knobs/fetch-failed.json` (0600, a timestamp and the reason token only), except for the two reasons that belong to one process, `service-token-required` and `scoped-reader-unavailable`:  a process with no usable reader token, or without the reader code, writes no marker, because a sibling process that does hold the token must still be able to fetch.  For 60 seconds after it, other processes skip the fetch and use the last-known-good copy (reason `recent-<token>`), so a broken read costs one timeout across a burst of processes instead of one each.  A good fetch removes the marker, and `knobs.refresh()` ignores it.  A secret still fails closed inside the window.
 2. **Last-known-good.**  After a good fetch the non-secret knobs are copied to `~/.local/state/fleet-knobs/lkg.json` (directory 0700, file 0600, atomic rename).  When Infisical cannot be reached the job reads that copy and its report says `stale`.  A copy older than 48 hours, or one that is a symlink, belongs to someone else or is readable by group or other, is ignored, and the job runs on the defaults below.  A knob unset in Infisical is dropped from the copy, and so is a value that fails validation (a typo), so an outage right after a typo reads the default, the same answer a live read gives, and never an older and possibly wider value.  An export that holds none of the registered names (empty output, or only other keys) is treated as a failed fetch, reason `empty`, while the copy still has knobs:  the copy is kept and every answer is stale, because an empty answer is also what a wrong path or a broken login looks like.  The tradeoff:  deleting every knob on purpose reads as an outage until the copy ages out at 48 hours;  a project that has never had a knob has no such copy and is unaffected.  The 48 hour limit also applies to a pause:  `NEEDS_OWNER_NOTIFY_PAUSED=true` stops holding after 48 hours without a good fetch, and the fallback notifier runs again (owner decision open:  keep the limit, or let the last pause value hold).
 3. **Secrets fail closed.**  `FLEET_FACTS_SIGNING_KEY` is never written to the copy, never defaulted and never exported.  A job that cannot fetch it stops (`SecretUnavailable`).  The value stays in that process's memory for the one fetch, as the service cache does.
 4. **Local files only narrow.**  A job's own config file or a STOP file may lower a cap, remove a list entry, force a mode toward its first choice or set a flag to its safe value.  Anything that would widen the answer is ignored and the report says `local_ignored`.  The owner id and the launch time take no local override.
 5. **Registered names only.**  A name that is not in `scripts/fleet_knobs/registry.py` cannot be read, so a job cannot ask Infisical for an arbitrary secret.
 6. **Names only in logs.**  The CLI's output and stderr are never printed or logged;  a failure is a short reason (`cli-missing`, `timeout`, `exit-1`, `bad-output`).
 
-Until a key is set in Infisical, a job runs on the Default column, which is the value for the component's first live run (modes off, dry-run or report, flags off, shadow on).  The first values are set at live step L5 (and L13, L20, L22, L25, L26, L29 for their own knobs).  To add a knob, add an entry to the registry, run `python3 -m fleet_knobs inventory --write ../INFISICAL.md` from `scripts/` and commit both;  CI fails when the block below and the registry differ.
+Until a key is set in Infisical, a job runs on the Default column, which is the value for the component's first live run (modes off, dry-run or report, flags off, shadow on).  The first values are set at live step L5 (and L13, L20, L22, L25, L26, L29 for their own knobs).  To add a knob, add an entry to the registry (with its group, its plain label, the machines whose jobs read it and those readers), run `python3 -m fleet_knobs inventory --write ../INFISICAL.md` and `python3 -m fleet_knobs inventory --write-json fleet_knobs/registry.json` from `scripts/`, and commit all three;  CI fails when the block below, `scripts/fleet_knobs/registry.json` and the registry differ.  Muster's Controls tab reads `registry.json` for who reads each knob, its default and which way a change moves it, and asks `python3 -m fleet_knobs status --json --values` for the values when Refresh is pressed.  `set` and `unset` with `--plan` refuse a write that cannot run here (no write token), a value Infisical already holds and a reset of a knob Infisical does not hold, so none of them reaches an approval.
 
 <!-- fleet-knobs:begin  generated by `python3 -m fleet_knobs inventory --write ../INFISICAL.md`;  edit scripts/fleet_knobs/registry.py, not this block -->
 

@@ -13,28 +13,40 @@ import SwiftUI
 ///
 /// The panel never runs the collector,  never pulls a report and never controls a VM:
 /// telemetry is read-only by the owner's call,  so there are no buttons that act.
+///
+/// The copies are read again every minute and when the Mac wakes,  and each card works its
+/// age and verdict out again every thirty seconds,  so a card left open goes stale when its
+/// report does instead of keeping the answer it had when the panel opened.
 struct VirtualMachinesView: View {
     @State private var fleet: VmFleetReading?
     @State private var loading = false
+    /// When the copies were last read.
+    @State private var readAt: Date?
+    /// When the Mac last woke,  so a read from before the sleep is not shown as current.
+    @State private var wokeAt: Date?
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 header
                 if loading && fleet == nil {
-                    Text("Reading the VMs' reports…")
+                    Text("Reading the VMs' reports\u{2026}")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 } else if let fleet {
                     if !fleet.directoryExists || fleet.vms.isEmpty {
                         emptyState(fleet)
                     } else {
-                        ForEach(fleet.vms) { reading in
-                            vmCard(reading)
+                        TimelineView(.periodic(from: .now, by: ReportFreshness.tickInterval)) { context in
+                            VStack(alignment: .leading, spacing: 16) {
+                                ForEach(fleet.vms) { reading in
+                                    vmCard(reading, now: context.date)
+                                }
+                            }
                         }
                     }
                 } else {
-                    Text("No reports yet.  Refresh to read them.")
+                    Text("No copies have been read yet.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
@@ -42,7 +54,9 @@ struct VirtualMachinesView: View {
             .padding(.horizontal, 22)
             .padding(.vertical, 18)
         }
-        .task { await load() }
+        .rereadsOnTickAndWake(onWake: { wokeAt = Date() }) {
+            await load()
+        }
     }
 
     // MARK: The header
@@ -50,15 +64,16 @@ struct VirtualMachinesView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("Virtual Machines")
+                Text(MusterDestination.virtualMachines.title)
                     .font(.largeTitle.weight(.semibold))
                 Spacer()
                 Button {
                     Task { await load() }
                 } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
+                    Label("Read The Mac's Copies Again", systemImage: "arrow.clockwise")
                 }
                 .disabled(loading)
+                .help("Reads the VM reports the doctor copied to this Mac.\u{00A0} It asks no VM anything.")
             }
             Text("What each fleet VM's own report says about the machine, its harness processes and sessions, and its checkouts.")
                 .font(.callout)
@@ -82,7 +97,7 @@ struct VirtualMachinesView: View {
         VStack(alignment: .leading, spacing: 8) {
             if let problem = fleet.problem {
                 problemBox(problem)
-                Text("Refresh after fixing the directory, and any reports already pulled show here.")
+                Text("Read the copies again after fixing the directory, and any reports already pulled show here.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -99,14 +114,22 @@ struct VirtualMachinesView: View {
 
     // MARK: One VM
 
-    private func vmCard(_ reading: VmStatusReading) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            cardHeader(reading)
+    /// One VM's card at a moment:  its age and verdict are worked out again for `now`,  so the
+    /// card goes stale while it is on screen when its report does.
+    private func vmCard(_ raw: VmStatusReading, now: Date) -> some View {
+        let freshness = raw.freshness(now: now, readAt: readAt, wokeAt: wokeAt)
+        let reading = raw.aged(by: freshness)
+        return VStack(alignment: .leading, spacing: 10) {
+            cardHeader(reading, freshness: freshness)
             if let problem = reading.problem {
                 problemBox(problem)
+            } else if freshness.verdict == .checking {
+                Text("Reading this copy again, because the Mac woke since it was read\u{2026}")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
             } else if !reading.isCurrent {
-                problemBox(
-                    "This report is stale (older than 45 minutes), so its rows are old evidence, not current health.  The VM reads as unknown until the doctor pulls a fresh report.")
+                problemBox(ReportFreshnessCopy.verdictNote(.vmCopiedByDoctor, freshness)
+                    ?? "This copy is not current, so its rows are old evidence, not current health.")
             } else if let report = reading.report {
                 hostRows(report)
                 if !report.processes.isEmpty { processRows(report) }
@@ -126,7 +149,7 @@ struct VirtualMachinesView: View {
         .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
-    private func cardHeader(_ reading: VmStatusReading) -> some View {
+    private func cardHeader(_ reading: VmStatusReading, freshness: ReportFreshness) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 10) {
                 Text(reading.displayName)
@@ -138,16 +161,19 @@ struct VirtualMachinesView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                if let age = reading.age {
-                    Text("Report read \(age) ago")
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(reading.isCurrent ? Color.secondary : Color.orange)
-                }
                 if let uptime = reading.report?.uptimeText {
                     Text("up \(uptime)")
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(.secondary)
                 }
+            }
+            // The age of the Mac's copy,  in words that say it is a copy.  What a stale copy
+            // means is said in the box below,  so it is not said twice.
+            if let line = ReportFreshnessCopy.ageLine(.vmCopiedByDoctor, freshness) {
+                Text(line)
+                    .font(.caption)
+                    .foregroundStyle(freshness.verdict.isCurrent ? Color.secondary : Color.orange)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             Text(reading.path)
                 .font(.system(size: 10, design: .monospaced))
@@ -387,12 +413,23 @@ struct VirtualMachinesView: View {
         .accessibilityHidden(true)
     }
 
+    /// Reads the copies again,  off the main thread.  A read already in flight is not doubled:
+    /// the tick and the button both land here.
+    ///
+    /// The read is stamped with the time it started,  so bytes read before a sleep are never
+    /// stamped after the wake,  and a wake that lands mid-read gets one more read.
     private func load() async {
+        guard !loading else { return }
         loading = true
         defer { loading = false }
         let url = VmStatusReportReader.directoryURL()
-        fleet = await Task.detached(priority: .userInitiated) {
-            VmStatusReportReader.readDirectory(at: url)
-        }.value
+        var started = Date()
+        repeat {
+            started = Date()
+            fleet = await Task.detached(priority: .utility) {
+                VmStatusReportReader.readDirectory(at: url)
+            }.value
+            readAt = started
+        } while ReadStamp.wokeDuringRead(started: started, wokeAt: wokeAt)
     }
 }

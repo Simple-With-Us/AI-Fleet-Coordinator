@@ -63,6 +63,12 @@ const defaultRespond = (req) => {
   if (req.url.endsWith("/recall/contribute")) {
     return { json: { ok: true, id: "5f0c-uuid", doc_id: `contrib/${req.body.seat}/2026-10-09/abcd1234`, scrubbed: [], status: "completed" } };
   }
+  if (req.url.endsWith("/recall/correct")) {
+    return { json: { ok: true, id: "5f0c-uuid", doc_id: req.body.doc_id, seat: req.body.seat, revision: 2, status: "completed", corrected_at: 1760000000000, corrected_by: req.body.seat, previous_content_hash: "a".repeat(64), content_hash: "b".repeat(64), scrubbed: [] } };
+  }
+  if (req.url.endsWith("/recall/retract")) {
+    return { json: { ok: true, id: "5f0c-uuid", doc_id: req.body.doc_id, seat: req.body.seat, revision: 2, retracted: true, retracted_at: 1760000000100, retracted_by: req.body.seat, retraction_reason: req.body.reason, status: "completed" } };
+  }
   return { status: 404, json: { ok: false, error: "not found" } };
 };
 
@@ -133,7 +139,7 @@ test("the hosted list is the ten original Zulip tools, then recall, then the Lin
   const full = TOOLS.tools.slice(12).map((t) => t.name);  // after whoami, identities, guide and the original nine (AFC-331)
   assert.deepEqual(
     HOSTED_TOOL_LIST.map((t) => t.name),
-    ["whoami", "zulip_topics", "zulip_read_topic", "zulip_inbox", "zulip_post", "zulip_reply", "zulip_react", "zulip_dm_list", "zulip_dm_read", "zulip_dm_send", "recall_search", "recall_stats", "recall_contribute", "linear_whoami", "linear_list", "linear_show", "linear_file", "linear_claim", "linear_comment", "linear_status", "linear_schema", "linear_query", "linear_mutation", ...LINEAR_NAMED_TOOLS.map((t) => t.name), ...LINEAR_MCP_TOOLS.map((t) => t.name), ...FLEETLINK_TOOLS.map((t) => t.name), ...full, "eavesdropper_status", "eavesdropper_inbox", "eavesdropper_owner_queue", "eavesdropper_wakes", "eavesdropper_held_back", ...NOTES_TOOLS.map((t) => t.name), "whatsapp_read", "whatsapp_reply", "whatsapp_send_status", ...GR_TOOLS.map((t) => t.name), ...TYPED_V1_TOOLS.map((t) => t.name), ...WF_V1_TOOLS.map((t) => t.name)],
+    ["whoami", "zulip_topics", "zulip_read_topic", "zulip_inbox", "zulip_post", "zulip_reply", "zulip_react", "zulip_dm_list", "zulip_dm_read", "zulip_dm_send", "recall_search", "recall_stats", "recall_contribute", "recall_correct", "recall_retract", "linear_whoami", "linear_list", "linear_show", "linear_file", "linear_claim", "linear_comment", "linear_status", "linear_schema", "linear_query", "linear_mutation", ...LINEAR_NAMED_TOOLS.map((t) => t.name), ...LINEAR_MCP_TOOLS.map((t) => t.name), ...FLEETLINK_TOOLS.map((t) => t.name), ...full, "eavesdropper_status", "eavesdropper_inbox", "operator_inbox_pending", "eavesdropper_owner_queue", "eavesdropper_wakes", "eavesdropper_held_back", ...NOTES_TOOLS.map((t) => t.name), "whatsapp_read", "whatsapp_reply", "whatsapp_send_status", ...GR_TOOLS.map((t) => t.name), ...TYPED_V1_TOOLS.map((t) => t.name), ...WF_V1_TOOLS.map((t) => t.name)],
   );
   // tools.json, the stdio contract, is untouched:  the Linear tools are hosted-only,
   // the way recall and dm are, because the Python stdio server cannot run them.
@@ -150,7 +156,7 @@ test("the hosted list is the ten original Zulip tools, then recall, then the Lin
     assert.ok(HOSTED_WRITE_TOOLS.has(tool.name) && !HOSTED_READ_TOOLS.has(tool.name), tool.name);
   }
   assert.ok(HOSTED_READ_TOOLS.has("recall_search") && HOSTED_READ_TOOLS.has("recall_stats"));
-  assert.ok(HOSTED_WRITE_TOOLS.has("recall_contribute") && !HOSTED_READ_TOOLS.has("recall_contribute"));
+  for (const name of ["recall_contribute", "recall_correct", "recall_retract"]) assert.ok(HOSTED_WRITE_TOOLS.has(name) && !HOSTED_READ_TOOLS.has(name), name);
   assert.match(hostedInstructions("JET"), /BEGIN_UNTRUSTED_RECALL and END_UNTRUSTED_RECALL/);
   assert.match(hostedInstructions("JET"), /BEGIN_UNTRUSTED_ZULIP and END_UNTRUSTED_ZULIP/);
 });
@@ -183,7 +189,7 @@ test("scopes:  a write-only grant cannot search", async () => {
 
 test("not configured:  every recall tool says not_configured, and whoami still works", async () => {
   const { tools } = harness({ recall: false });
-  for (const [name, args] of [["recall_search", { query: "x" }], ["recall_stats", {}], ["recall_contribute", { text: LESSON, category: "lesson" }]]) {
+  for (const [name, args] of [["recall_search", { query: "x" }], ["recall_stats", {}], ["recall_contribute", { text: LESSON, category: "lesson" }], ["recall_correct", { doc_id: "contrib/GROK-WEB/2026-11-05/abcd1234", text: LESSON, reason: "make it current" }], ["recall_retract", { doc_id: "contrib/GROK-WEB/2026-11-05/abcd1234", reason: "obsolete" }]]) {
     const error = toolError(await tools.call(name, args), "not_configured");
     assert.match(error.message, /RECALL_API_TOKEN/);
   }
@@ -224,6 +230,22 @@ test("search sends the three auth headers, a real User-Agent, no redirects and o
   assert.equal(req.headers["CF-Access-Client-Secret"], ACCESS_SECRET);
   assert.equal(req.headers["User-Agent"], RECALL_USER_AGENT);
   assert.deepEqual(req.body, { query: "agent-sync bridge", limit: 3, app: "fleet", category: "lesson" });
+  ok(await tools.call("recall_search", { query: "old lesson", include_retracted: true }), "recall_search");
+  assert.deepEqual(upstream.requests[1].body, { query: "old lesson", limit: 5, include_retracted: true });
+});
+
+test("recall responses are byte, depth and node bounded before parsing", async () => {
+  const client = new RecallClient({ baseUrl: "https://recall.example.test", token: TOKEN, accessId: ACCESS_ID, accessSecret: ACCESS_SECRET, fetch: async () => new Response('{"ok":true,"text":"' + "é".repeat(500_001) + '"}') });
+  await assert.rejects(() => client.stats(), (error) => error.kind === "too_large");
+
+  let text = '{"ok":true';
+  for (let i = 0; i < 70; i++) text += ',"a":{"b":[';
+  text += "1" + "]}".repeat(70) + "}";
+  const deep = new RecallClient({ baseUrl: "https://recall.example.test", token: TOKEN, accessId: ACCESS_ID, accessSecret: ACCESS_SECRET, fetch: async () => new Response(text) });
+  await assert.rejects(() => deep.stats(), (error) => error.kind === "too_large");
+
+  const wide = new RecallClient({ baseUrl: "https://recall.example.test", token: TOKEN, accessId: ACCESS_ID, accessSecret: ACCESS_SECRET, fetch: async () => new Response(JSON.stringify({ ok: true, values: Array.from({ length: 20_001 }, (_, i) => i) })) });
+  await assert.rejects(() => wide.stats(), (error) => error.kind === "too_large");
 });
 
 test("stats is a GET to /recall/stats and passes back only counts", async () => {
@@ -249,10 +271,155 @@ test("contribute is always the grant's seat:  a client seat is dropped, never se
   }
 });
 
+test("an OWNER mutation uses the distinct owner bearer; other mutations use the shared recall bearer", async () => {
+  const upstream = fakeRecall(defaultRespond);
+  const client = new RecallClient({
+    baseUrl: "https://recall.jays.services", token: TOKEN, accessId: ACCESS_ID, accessSecret: ACCESS_SECRET,
+    ownerToken: "rot_" + "O".repeat(40), fetch: upstream.fetch,
+  });
+  const doc_id = "contrib/CLAUDE/2026-11-05/abcd1234";
+  await client.retract({ doc_id, reason: "obsolete", seat: "OWNER" });
+  await client.retract({ doc_id, reason: "obsolete", seat: "CLAUDE" });
+  assert.equal(upstream.requests[0].headers.Authorization, `Bearer rot_${"O".repeat(40)}`);
+  assert.equal(upstream.requests[1].headers.Authorization, `Bearer ${TOKEN}`);
+  noSecrets(JSON.stringify(client));
+});
+
 test("contribute sends title, url and app when given, and trims the text", async () => {
   const { tools, upstream } = harness();
   ok(await tools.call("recall_contribute", { text: `  ${LESSON}  `, category: "runbook", title: " Refresh tools ", app: "botfleet", url: "https://github.com/x/y/pull/1" }), "recall_contribute");
   assert.deepEqual(upstream.requests[0].body, { text: LESSON, category: "runbook", app: "botfleet", seat: "GROK-WEB", title: "Refresh tools", url: "https://github.com/x/y/pull/1" });
+});
+
+test("correct and retract are always the grant's seat:  a client seat is dropped, never sent", async () => {
+  const doc_id = "contrib/GROK-WEB/2026-11-05/abcd1234";
+  const { tools, upstream } = harness({ seat: "JET" });
+  const corrected = ok(await tools.call("recall_correct", {
+    doc_id, text: LESSON, reason: "make it current", title: "Refresh tools",
+    url: "https://github.com/x/y/pull/1", expected_revision: 1, seat: "CLAUDE",
+  }), "recall_correct");
+  assert.equal(corrected.seat, "JET");
+  assert.equal(corrected.revision, 2);
+  assert.deepEqual(upstream.requests[0].body, {
+    doc_id, text: LESSON, reason: "make it current", title: "Refresh tools",
+    url: "https://github.com/x/y/pull/1", expected_revision: 1, seat: "JET",
+  });
+  const retracted = ok(await tools.call("recall_retract", {
+    doc_id, reason: "obsolete after the bridge rewrite", expected_revision: 2, seat: "CLAUDE",
+  }), "recall_retract");
+  assert.equal(retracted.seat, "JET");
+  assert.equal(retracted.retracted, true);
+  assert.deepEqual(upstream.requests[1].body, {
+    doc_id, reason: "obsolete after the bridge rewrite", expected_revision: 2, seat: "JET",
+  });
+});
+
+test("a malformed hosted mutation response is unknown and is not resent", async () => {
+  const doc_id = "contrib/GROK-WEB/2026-11-05/abcd1234";
+  let malformed = true;
+  const { tools, upstream } = harness({
+    respond: (req) => malformed
+      ? { json: { ok: true, id: "5f0c-uuid", doc_id, seat: req.body.seat, revision: "2", retracted: true, retracted_at: 1, retracted_by: req.body.seat, retraction_reason: req.body.reason, status: "completed" } }
+      : defaultRespond(req),
+  });
+  const args = { doc_id, reason: "obsolete" };
+  const first = toolError(await tools.call("recall_retract", args), "outcome_unknown");
+  assert.match(first.message, /may or may not have landed/);
+  assert.equal(upstream.requests.length, 1);
+  malformed = false;
+  const retry = toolError(await tools.call("recall_retract", args), "outcome_unknown");
+  assert.match(retry.message, /result is unknown/);
+  assert.equal(upstream.requests.length, 1);
+});
+
+test("a hosted mutation response doc_id must be canonical", async () => {
+  const doc_id = "contrib/GROK-WEB/2026-11-05/abcd1234";
+  const { tools, upstream } = harness({
+    respond: (req) => ({ json: { ok: true, id: "5f0c-uuid", doc_id: "lesson:1", seat: req.body.seat, revision: 2, retracted: true, retracted_at: 1, retracted_by: req.body.seat, retraction_reason: req.body.reason, status: "completed" } }),
+  });
+  const first = toolError(await tools.call("recall_retract", { doc_id, reason: "obsolete" }), "outcome_unknown");
+  assert.match(first.message, /could not verify/);
+  assert.equal(upstream.requests.length, 1);
+});
+
+test("a hosted mutation cut off mid-write stays unknown and is not resent", async () => {
+  const { tools, upstream } = harness({ respond: () => ({ status: 502, json: { ok: false } }) });
+  const args = { doc_id: "contrib/GROK-WEB/2026-11-05/abcd1234", reason: "obsolete" };
+  const first = toolError(await tools.call("recall_retract", args), "outcome_unknown");
+  assert.match(first.message, /may or may not have landed/);
+  const retry = toolError(await tools.call("recall_retract", args), "outcome_unknown");
+  assert.match(retry.message, /result is unknown/);
+  assert.equal(upstream.requests.length, 1);
+
+  const network = harness({ respond: () => new Error("network down") });
+  const error = toolError(await network.tools.call("recall_correct", { ...args, text: LESSON }), "outcome_unknown");
+  assert.equal(error.retryable, false);
+  assert.equal(network.upstream.requests.length, 1);
+});
+
+test("an HTTP 408 hosted mutation stays unknown and is not resent", async () => {
+  const { tools, upstream } = harness({ respond: () => ({ status: 408, json: { ok: false } }) });
+  const args = { doc_id: "contrib/GROK-WEB/2026-11-05/abcd1234", reason: "obsolete" };
+  const first = toolError(await tools.call("recall_retract", args), "outcome_unknown");
+  assert.match(first.message, /HTTP 408.*may or may not have landed/);
+  const retry = toolError(await tools.call("recall_retract", args), "outcome_unknown");
+  assert.match(retry.message, /result is unknown/);
+  assert.equal(upstream.requests.length, 1);
+});
+
+test("recall arguments are byte, depth and node bounded before schema validation", async () => {
+  const { tools, upstream } = harness();
+  const doc_id = "contrib/GROK-WEB/2026-11-05/abcd1234";
+  let deep = { value: {} };
+  for (let i = 0; i < 9; i++) deep.value = { child: deep.value };
+  for (const args of [
+    { doc_id, reason: "obsolete", padding: "x".repeat(16 * 1024 + 1) },
+    { doc_id, reason: "obsolete", padding: deep },
+    { doc_id, reason: "obsolete", padding: Object.fromEntries(Array.from({ length: 201 }, (_, i) => [`k${i}`, i])) },
+  ]) {
+    const error = toolError(await tools.call("recall_retract", args), "invalid_argument");
+    assert.equal(error.message, "Recall arguments exceed structural limits.");
+  }
+  assert.equal(upstream.requests.length, 0);
+
+  const emojiLesson = "😀".repeat(4000);
+  const emojiTitle = "😀".repeat(200);
+  const longUrl = "https://example.com/" + "a".repeat(480);
+  assert.ok(new TextEncoder().encode(JSON.stringify({ text: emojiLesson, category: "lesson", title: emojiTitle, url: longUrl })).byteLength > 16 * 1024);
+  const contributed = ok(await tools.call("recall_contribute", { text: emojiLesson, category: "lesson", title: emojiTitle, url: longUrl }), "recall_contribute");
+  assert.equal(contributed.status, "completed");
+  assert.equal(upstream.requests.length, 1);
+});
+
+test("mutation idempotency:  a retry returns the first result;  a reason secret never leaves", async () => {
+  const doc_id = "contrib/GROK-WEB/2026-11-05/abcd1234";
+  const { tools, upstream } = harness();
+  const first = ok(await tools.call("recall_retract", { doc_id, reason: "obsolete" }), "recall_retract");
+  const second = ok(await tools.call("recall_retract", { doc_id, reason: "obsolete" }), "recall_retract");
+  assert.equal(second.duplicate, true);
+  assert.equal(upstream.requests.length, 1);
+  assert.deepEqual({ ...first, duplicate: true }, second);
+  const syntheticGithubToken = ["ghp", "a".repeat(36)].join("_"); // Synthetic scanner fixture, never a credential.
+  const secret = toolError(await tools.call("recall_correct", {
+    doc_id, text: LESSON, reason: `token ${syntheticGithubToken}`,
+  }), "refused_secret");
+  assert.match(secret.message, /reason/);
+  assert.equal(upstream.requests.length, 1);
+});
+
+test("invalid trimmed mutation arguments never reserve an idempotency key", async () => {
+  const doc_id = "contrib/GROK-WEB/2026-11-05/abcd1234";
+  const { tools, upstream, gate } = harness();
+  const cases = [
+    ["recall_correct", { doc_id, text: ` ${"x".repeat(39)} `, reason: "current", idempotency_key: "orphan-check-correct" }],
+    ["recall_retract", { doc_id, reason: " x ", idempotency_key: "orphan-check-retract" }],
+  ];
+  for (const [name, args] of cases) {
+    toolError(await tools.call(name, args), "invalid_argument");
+    toolError(await tools.call(name, args), "invalid_argument");
+    assert.equal(await gate.idemPeek({ key: `rk:${name}:${args.idempotency_key}` }), null);
+  }
+  assert.equal(upstream.requests.length, 0);
 });
 
 test("seat stays a refused argument on every other tool", async () => {
@@ -283,6 +450,9 @@ test("argument checks run before any request", async () => {
     ["recall_contribute", { text: LESSON, category: "lesson", url: "ftp://x" }],
     ["recall_contribute", { text: LESSON, category: "lesson", app: "socratic trade" }],
     ["recall_contribute", { text: LESSON, category: "lesson", idempotency_key: "short" }],
+    ["recall_correct", { doc_id: "docs/not-a-contribution", text: LESSON, reason: "current" }],
+    ["recall_correct", { doc_id: "contrib/GROK-WEB/2026-11-05/abcd1234", text: LESSON, reason: "x".repeat(501) }],
+    ["recall_retract", { doc_id: "contrib/GROK-WEB/2026-11-05/abcd1234", reason: "obsolete", expected_revision: 1.5 }],
   ];
   for (const [name, args] of cases) toolError(await tools.call(name, args), "invalid_argument");
   assert.equal(upstream.requests.length, 0);
@@ -418,17 +588,17 @@ test("paused seats get paused from recall too", async () => {
   assert.equal(upstream.requests.length, 0);
 });
 
-test("audit:  one row per call, no query text, contribute keeps only its length and idem ref", async () => {
+test("audit:  a row per write and per error (a successful read writes none), no query text, contribute keeps only its length and idem ref", async () => {
   const { tools, gate, logs } = harness();
   await tools.call("recall_search", { query: "very private question" });
   await tools.call("recall_contribute", { text: LESSON, category: "lesson" });
   await tools.call("recall_search", { query: "y", limit: 99 });
   const rows = (await gate.callTail(10)).reverse();
-  assert.deepEqual(rows.map((r) => [r.tool, r.outcome]), [["recall_search", "ok"], ["recall_contribute", "ok"], ["recall_search", "error"]]);
-  assert.equal(rows[2].error_code, "invalid_argument");
-  assert.equal(rows[1].body_len, [...LESSON].length);
-  assert.match(rows[1].idem_ref, /^[0-9a-f]{12}$/);
-  assert.equal(rows[1].seat, "GROK-WEB");
+  assert.deepEqual(rows.map((r) => [r.tool, r.outcome]), [["recall_contribute", "ok"], ["recall_search", "error"]]);
+  assert.equal(rows[1].error_code, "invalid_argument");
+  assert.equal(rows[0].body_len, [...LESSON].length);
+  assert.match(rows[0].idem_ref, /^[0-9a-f]{12}$/);
+  assert.equal(rows[0].seat, "GROK-WEB");
   const everything = JSON.stringify(rows) + logs.join("\n");
   assert.ok(!everything.includes("very private question"));
   assert.ok(!everything.includes("Grok on the web caches"));

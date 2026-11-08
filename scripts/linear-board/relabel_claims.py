@@ -11,7 +11,7 @@ In Review issues.
 It is purely additive:  it adds claimed:<SEAT> and removes nothing, so
 attribution (seat: labels) stays as imported.  It skips issues that already
 carry a claimed: label, so it is idempotent and safe to resume after an
-interruption.  It uses the board CLI's own Fleet credentials, token cache,
+interruption.  It uses the board CLI's own app credentials, token cache,
 rate-limit handling and loopback-only URL rule, never a personal or admin key.
 
 Dry run by default.  --apply is a write, so it needs a bearer-verified seat, as
@@ -68,16 +68,17 @@ def main(argv: list[str] | None = None) -> int:
     # A write needs a bearer-verified seat, as every write does:  the script never takes an identity from
     # the environment and never guesses one.  A dry run needs no seat, because it writes nothing, so it
     # must not verify the bearer at all:  that call is a network round trip and can refuse, and a plan
-    # that dies before it prints is not a plan.
+    # that dies before it prints is not a plan.  Its reads use the environment's own pair, like any
+    # seatless read.
     seat = B.current_seat(required=True) if a.apply else ""
     states = B.split_csv(a.states)
-    # The seat is the gate, not the identity:  the script acts as the shared Fleet app, or as the cloud
-    # pair the host operator chose, and never as a seat's own app.  So the identity resolves the way a
-    # read resolves it.
-    ident = B.resolve_identity("") if seat else None
+    # The seat is the gate, and the identity is that seat's own app (or the cloud pair the host
+    # operator chose):  the shared Fleet app was retired by the owner on 2026-11-05, so the script
+    # resolves the verified seat's identity and fails closed when the seat has no credentials.
+    ident = B.resolve_identity(seat) if seat else None
     if ident is not None and ident.kind == "env":
         # The cloud pair may hold the seat's app, which is that host's deliberate configuration:  accept
-        # that name as well as Fleet, so the check below reads as the swap check it is and the pair the
+        # that name, so the check below reads as the swap check it is and the pair the
         # README promises still works.  A pair holding another seat's app is still refused.
         ident.accept = tuple(dict.fromkeys((*ident.accept, *B.seat_app_names(seat))))
     auth = B.Auth(B.endpoint("LINEAR_BOARD_TOKEN_URL", B.TOKEN_URL), ident)

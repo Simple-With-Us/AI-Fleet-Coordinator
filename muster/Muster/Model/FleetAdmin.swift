@@ -102,7 +102,8 @@ private struct FleetAdminSnapshot {
 /// The wanted state of a service is derived and never stored here:  the BotFleet MCP
 /// Server is wanted exactly while the BotFleet Server runs,  and every other service is
 /// wanted on its own.  A stop the owner asked for is remembered until the owner starts
-/// that service again,  so the reconciler does not take it back.
+/// that service again,  and is kept in a file when the app is given one,  so Muster's own
+/// restarts of a service (`ServiceReconciler`) never undo it,  even after Muster relaunches.
 ///
 /// The fleet is read as the admin comes up and every two minutes after that,  so the menu
 /// bar carries the services before the owner opens the window and does not go on showing
@@ -146,6 +147,19 @@ final class FleetAdmin: ObservableObject {
     /// The work in flight that would block a stop,  as the server's last status
     /// said it,  or nil when nothing is in flight or the server did not answer.
     @Published private(set) var blockingWorkSummary: String?
+    /// What Muster did about each service it started when the service was not running,  by
+    /// service id.  `ServiceReconciler` writes it,  and the menu and the panel read it from
+    /// the services.
+    @Published private(set) var reconcileNotes: [String: ReconcileNote] = [:]
+    /// Why the record of the owner's stops cannot be trusted,  or nil when it can.  While it is
+    /// set Muster starts nothing,  because a stop it cannot see is a stop it could undo.
+    @Published private(set) var ownerStopProblem: String?
+    /// True when the record of the owner's stops could not be read,  so it is not written
+    /// over either.
+    private(set) var ownerStopsUnreadable = false
+    /// Called after every read of the fleet lands,  so `ServiceReconciler` looks at what the
+    /// read found.
+    var onRead: (@MainActor () -> Void)?
 
     /// The fleet services the admin watches and changes.
     private let control: FleetServiceControl
@@ -161,21 +175,37 @@ final class FleetAdmin: ObservableObject {
     private var states: [String: ManagedServiceState] = [:]
     /// The services the owner stopped on purpose,  and how that record changes.
     private var ownerStops = OwnerStops()
+    /// Where that record is kept between launches,  or nil when it lives in memory only.
+    private let ownerStopStore: OwnerStopStoring?
     /// Which read may write the states.
     private let sequencer = FleetSnapshotSequencer()
     /// Whether the server's own API answered.
     private var apiAvailable = false
     /// How many reads are in flight,  so an older read ending does not say none is.
     private var readsInFlight = 0
+    /// The read a routine caller joins instead of starting another:  its number,  the change
+    /// count it began under,  and the read itself.
+    private var sharedRead: (number: Int, changes: Int, task: Task<Void, Never>)?
+    /// How many shared reads have been started,  which numbers them.
+    private var sharedReadsStarted = 0
+    /// Counts the changes the admin knows the owner made.  A read that began before a change
+    /// is never joined by a caller that comes after it,  because that caller wants to see
+    /// what the change did.
+    private var changeCount = 0
     /// How long a stop waits for the server's port to close.
     private let stopWait: ServerPortWait
     /// How long a start or a restart waits for the server's port to answer.
     private let startWait: ServerPortWait
     /// The repeating read.
     private var refreshLoop: Task<Void, Never>?
+    /// What the admin listens to.
+    private var cancellables: Set<AnyCancellable> = []
 
     /// How often the fleet is read again.
     nonisolated static let refreshInterval: TimeInterval = 120
+    /// How young a read has to be for a visit to the Services panel to show it as it is
+    /// rather than read the Mac again.
+    nonisolated static let visitFreshness: TimeInterval = 15
     /// How long a routine read waits for BotFleet Server's own status,  so a wedged server
     /// does not hold up every other row.
     static let statusTimeout: TimeInterval = 3
@@ -186,9 +216,12 @@ final class FleetAdmin: ObservableObject {
          api: ControlAPI = ControlAPI(),
          stopWait: ServerPortWait = .stop,
          startWait: ServerPortWait = .start,
-         refreshInterval: TimeInterval? = FleetAdmin.refreshInterval) {
+         ownerStopStore: OwnerStopStoring? = nil,
+         refreshInterval: TimeInterval? = FleetAdmin.refreshInterval,
+         runsCompleted: AnyPublisher<Int, Never>? = nil) {
         let mcp = try? McpServerControl()
         self.mcpServer = mcp
+        self.ownerStopStore = ownerStopStore
         self.startup = startup
         self.presence = presence
         self.api = api
@@ -210,6 +243,21 @@ final class FleetAdmin: ObservableObject {
             }
         )
         self.launchesAtLogin = SMAppService.mainApp.status == .enabled
+        if let ownerStopStore {
+            switch ownerStopStore.load() {
+            case .stops(let stops):
+                ownerStops = stops
+            case .unreadable(let why):
+                ownerStopsUnreadable = true
+                ownerStopProblem = why
+            }
+        }
+        // Every controller run that ends is a change,  the ones with no sheet behind them
+        // included (a start Muster takes on its own):  the read the run's end asks for must
+        // not join a routine read that began before the run ended.
+        (runsCompleted ?? OpsController.shared.$completedRuns.dropFirst().eraseToAnyPublisher())
+            .sink { [weak self] _ in self?.controllerRunEnded() }
+            .store(in: &cancellables)
         // The fleet is read as the admin comes up,  so the menu bar carries the
         // services before the owner opens the window.
         Task { await self.refresh() }
@@ -239,9 +287,54 @@ final class FleetAdmin: ObservableObject {
     ///
     /// The read is off the main thread,  so the menu never waits for pm2 and launchctl.
     ///
+    /// One read at a time serves every routine caller:  the timer,  a panel visit,  a wake
+    /// and the Check button all wait for the read in flight when there is one,  rather than
+    /// each running pm2 and launchctl again beside it.  A read that began before a change the
+    /// admin knows about is not joined:  the caller after the change gets a read of its own.
+    func refresh() async {
+        if let shared = sharedRead, shared.changes == changeCount {
+            await shared.task.value
+            return
+        }
+        sharedReadsStarted += 1
+        let number = sharedReadsStarted
+        // The read runs in a task of its own,  so a caller that goes away (a panel that
+        // closes) does not call off the read every other caller is waiting on.
+        // The read lets go of itself before it ends,  so no caller can join a read that has
+        // already finished and come away with nothing new.
+        let task = Task { [weak self] in
+            await self?.readFleet()
+            if self?.sharedRead?.number == number { self?.sharedRead = nil }
+        }
+        sharedRead = (number: number, changes: changeCount, task: task)
+        await task.value
+    }
+
+    /// Reads unless the last read landed less than `maximumAge` ago,  which is what a visit
+    /// to the Services panel wants:  coming back to it does not run pm2 and launchctl again
+    /// over a read a few seconds old.
+    func refreshIfOlder(than maximumAge: TimeInterval = FleetAdmin.visitFreshness) async {
+        if let lastReadAt, Date().timeIntervalSince(lastReadAt) < maximumAge { return }
+        await refresh()
+    }
+
+    /// A controller run ended.  The publisher calls this before any caller the run's end
+    /// wakes can ask for a read,  so that read begins after the run.
+    private func controllerRunEnded() {
+        changeCount += 1
+    }
+
+    /// Reads after a change the owner made,  never joining a read that began before it.
+    private func refreshAfterAChange() async {
+        changeCount += 1
+        await refresh()
+    }
+
+    /// One read of the fleet.
+    ///
     /// The generation is taken first and the server's answer travels with the read,  so
     /// a read that began before an action and finished after it cannot write what it saw.
-    func refresh() async {
+    private func readFleet() async {
         readsInFlight += 1
         reading = true
         defer {
@@ -281,6 +374,7 @@ final class FleetAdmin: ObservableObject {
         self.states = snapshot.states
         lastReadAt = Date()
         publish(snapshot)
+        onRead?()
     }
 
     /// Whether the server's own API answers,  which is one of the three ways the server
@@ -303,32 +397,78 @@ final class FleetAdmin: ObservableObject {
         services = FleetServices(serverState: snapshot.serverState,
                                 states: snapshot.states,
                                 stoppedByOwner: ownerStops.ids,
-                                startupPolicySupported: snapshot.startupPolicySupported)
+                                stoppedAt: ownerStops.stoppedAt,
+                                startupPolicySupported: snapshot.startupPolicySupported,
+                                reconcileNotes: reconcileNotes)
         startupPolicySupported = snapshot.startupPolicySupported
         startsAtLogin = snapshot.startsAtLogin
         localServiceState = snapshot.serverState
     }
 
+    /// Publishes the services again with the record as it stands now,  without reading the
+    /// fleet:  the states stay as the last read found them.
+    private func republish() {
+        guard let services else { return }
+        self.services = FleetServices(serverState: services.serverState,
+                                      states: services.states,
+                                      stoppedByOwner: ownerStops.ids,
+                                      stoppedAt: ownerStops.stoppedAt,
+                                      startupPolicySupported: services.startupPolicySupported,
+                                      reconcileNotes: reconcileNotes)
+    }
+
+    /// Sets what Muster says about the services it started.
+    func setReconcileNotes(_ notes: [String: ReconcileNote]) {
+        guard notes != reconcileNotes else { return }
+        reconcileNotes = notes
+        republish()
+    }
+
+    /// True when the owner stopped this service on purpose and has not started it again.
+    func isStoppedByOwner(_ serviceID: String) -> Bool {
+        ownerStops.ids.contains(serviceID)
+    }
+
+    /// Writes the owner's stops to the store,  when the app has one.
+    ///
+    /// A record that could not be read is never written over:  the owner fixes or deletes the
+    /// file,  and until then Muster starts nothing.  A record that could not be written is
+    /// said out loud,  because a stop that is not kept does not survive Muster quitting.
+    private func persistOwnerStops() {
+        guard let ownerStopStore, !ownerStopsUnreadable else { return }
+        ownerStopProblem = ownerStopStore.save(ownerStops)
+    }
+
     /// True when pm2 answered the last read.  Nil before the first read.
     var pm2Answered: Bool? { services?.pm2Answered }
+
+    /// True when pm2 is installed on the Mac,  so a pm2 that did not answer can be told from
+    /// one that is not there.
+    var pm2Installed: Bool { control.pm2IsInstalled }
 
     // MARK: Changing
 
     /// Changes one fleet service,  and keeps what the admin can see afterwards.
     ///
-    /// The intent is recorded before the change,  because the reconciler runs as soon as
-    /// the change is done,  and it goes back exactly as it was when the manager refuses
-    /// the change.  A change that did not throw and did not land is treated the same way:
-    /// the owner is told,  and a stop that did not happen is not recorded as one.
-    func perform(_ action: ManagedServiceAction, serviceID: String) async {
-        guard busyServiceID == nil else { return }
-        guard let service = services?.menuItems.first(where: { $0.id == serviceID }) else { return }
+    /// The intent is recorded before the change,  so a read that lands while the change is
+    /// running already sees the owner's stop,  and it goes back exactly as it was when the
+    /// manager refuses the change.  A change that did not throw and did not land is treated
+    /// the same way:  the owner is told,  and a stop that did not happen is not recorded as one.
+    ///
+    /// Returns what this call did,  or nil when it did nothing because another change was
+    /// running or the service is not one the admin can see.  A caller reads the answer from
+    /// here and never from `lastResult`,  which can still hold an older call's result.
+    @discardableResult
+    func perform(_ action: ManagedServiceAction, serviceID: String) async -> FleetActionResult? {
+        guard busyServiceID == nil else { return nil }
+        guard let service = services?.menuItems.first(where: { $0.id == serviceID }) else { return nil }
         busyServiceID = serviceID
         problem = nil
         lastResult = nil
         defer { busyServiceID = nil }
-        let previous = ownerStops.ids
+        let previous = ownerStops
         ownerStops.record(action, id: serviceID)
+        persistOwnerStops()
         var reason: String?
         var notKnown = false
         // True when the change was not what the owner wanted and the stop is lifted anyway.
@@ -419,7 +559,10 @@ final class FleetAdmin: ObservableObject {
             // for stays on the record.  A start or a restart whose launchctl calls landed has
             // cleared the stop marker and the wrapper can bring the server up,  so that stop
             // is lifted,  whatever the port says.
-            if !notKnown && !keepsRecord { ownerStops.restore(previous) }
+            if !notKnown && !keepsRecord {
+                ownerStops.restore(previous)
+                persistOwnerStops()
+            }
             if notKnown {
                 let subject = ServiceActionSubject(title: service.title, host: service.host, action: action)
                 problem = FleetActionWords.line(for: .notKnown(subject, reason: reason))
@@ -428,9 +571,11 @@ final class FleetAdmin: ObservableObject {
                 problem = "\(FleetActionWords.didNot(action, title: service.title, host: service.host)):  \(reason)"
             }
         }
-        lastResult = FleetActionResult(serviceID: serviceID, title: service.title, action: action,
+        let result = FleetActionResult(serviceID: serviceID, title: service.title, action: action,
                                        succeeded: reason == nil, reason: reason, notKnown: notKnown, at: Date())
-        await refresh()
+        lastResult = result
+        await refreshAfterAChange()
+        return result
     }
 
     /// The state an action should leave a service in.
@@ -444,7 +589,7 @@ final class FleetAdmin: ObservableObject {
 
     /// The owner-stop record as it was before a controller action, and which service
     /// that action belongs to.
-    private var controllerActionPrevious: (serviceID: String, previous: Set<String>)?
+    private var controllerActionPrevious: (serviceID: String, previous: OwnerStops)?
 
     /// Records the intent behind an action the router runs through the ops controller.
     ///
@@ -453,9 +598,13 @@ final class FleetAdmin: ObservableObject {
     /// controller action at a time, like the sheet itself.
     func beginControllerAction(_ action: ManagedServiceAction, serviceID: String) {
         guard controllerActionPrevious == nil else { return }
+        // A read that began before the action is not one a later caller may join.
+        changeCount += 1
         // A new action on either route clears the last one's problem,  as `perform` does.
         problem = nil
-        controllerActionPrevious = (serviceID, ownerStops.ids)
+        controllerActionPrevious = (serviceID, ownerStops)
+        // The intent is in memory only until the run ends:  a sheet that is still open is
+        // not a stop,  so it is neither shown on the row nor written to the file yet.
         ownerStops.record(action, id: serviceID)
     }
 
@@ -464,15 +613,18 @@ final class FleetAdmin: ObservableObject {
     func endControllerAction(serviceID: String, succeeded: Bool) {
         guard let pending = controllerActionPrevious, pending.serviceID == serviceID else { return }
         controllerActionPrevious = nil
-        guard !succeeded else { return }
-        ownerStops.restore(pending.previous)
-        // A read may have landed while the sheet was up,  so what it published goes back too.
-        if let services {
-            self.services = FleetServices(serverState: services.serverState,
-                                          states: services.states,
-                                          stoppedByOwner: ownerStops.ids,
-                                          startupPolicySupported: services.startupPolicySupported)
+        // The run has ended,  so the next read has to begin after it.
+        changeCount += 1
+        guard !succeeded else {
+            // The stop is a stop now,  so it is written.  The row says so after the read the
+            // run's end asks for,  not before it can say whether the service stopped.
+            persistOwnerStops()
+            return
         }
+        ownerStops.restore(pending.previous)
+        persistOwnerStops()
+        // A read may have landed while the sheet was up,  so what it published goes back too.
+        republish()
     }
 
     /// Watches the BotFleet Server's port until it reads as wanted,  or the budget runs out,
@@ -532,7 +684,7 @@ final class FleetAdmin: ObservableObject {
         } catch {
             problem = "The startup policy did not change:  \(error.localizedDescription)"
         }
-        await refresh()
+        await refreshAfterAChange()
     }
 
     /// What the owner is told before a stop,  and asked to confirm.
@@ -561,6 +713,8 @@ final class FleetAdmin: ObservableObject {
     /// work the server would have refused a stop for.  Only an answer that names work asks:
     /// a server that does not answer is one a restart is there to repair.
     func restartWarning(for serviceID: String) async -> String? {
+        // A service whose restart always asks (the Mac's eavesdropper) asks with no read.
+        if let body = FleetServices.restartAlwaysAsksBody(forServiceID: serviceID) { return body }
         guard serviceID == FleetServiceRegistry.server.id else { return nil }
         guard case .answered(.some(let work)) = await readServerAPI() else { return nil }
         return FleetServices.restartBody(work: work)

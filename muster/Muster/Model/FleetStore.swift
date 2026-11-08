@@ -17,6 +17,10 @@ final class FleetStore: ObservableObject {
         case failed(String)
     }
 
+    /// How the store runs the engine:  the location,  and the completion to call with
+    /// what the run produced.  The app runs `EngineRunner`;  a test hands in its own.
+    typealias EngineRunning = (EngineLocation, @escaping (EngineRun) -> Void) -> Void
+
     @Published private(set) var phase: Phase = .idle
     @Published private(set) var roster: [String] = []
     @Published private(set) var cells: [GridCell] = []
@@ -24,10 +28,24 @@ final class FleetStore: ObservableObject {
     @Published private(set) var generatedAt: Date?
     @Published private(set) var engineRoot: URL?
     @Published private(set) var commandLine: String = ""
+    /// Whether a run is in flight while the grid shows the last answer.
+    ///
+    /// A run no longer clears the grid when it starts:  the cells,  the summary and the
+    /// clock stay as the last run left them,  each cell is marked as being checked
+    /// (`GridCell.isBeingChecked`),  and the view says so.  A run that fails clears them
+    /// all,  so nothing stale stays on screen as current.  A cell with no answer yet keeps
+    /// the state `unknown`,  and `GridCell.isCheckingWithNoAnswer` lets a view draw it as
+    /// being checked rather than as a red UNKNOWN.
+    @Published private(set) var isChecking: Bool = false
+    /// The surfaces the engine names and does not check,  from the last trusted run.
+    @Published private(set) var uncovered: [UncoveredSurface] = []
+    /// The fleet-wide rules the engine cannot run yet,  from the last trusted run.
+    @Published private(set) var notImplemented: [NotImplementedRule] = []
     /// Why the manifest could not be read,  when it is there and cannot be read.
     ///
-    /// It is kept for the whole session,  because the manifest is read once and a
-    /// refusal does not go away when the next run succeeds.
+    /// The manifest is read again before each run when the file changed,  so the
+    /// problem clears when a later read succeeds.  A changed manifest that cannot be read
+    /// keeps the last copy that could,  with this problem beside it.
     @Published private(set) var manifestProblem: String?
     /// Why the registry could not be read,  when it is there and cannot be read.
     @Published private(set) var registryProblem: String?
@@ -98,11 +116,29 @@ final class FleetStore: ObservableObject {
     private var answerBox: AnswerBox?
     /// The manifest,  which names the paths the seats' rules check.
     ///
-    /// It is read once and kept,  and it is exposed because it is the only place
-    /// that knows where a seat's config lives:  the panel reads the artifacts from
-    /// it and the drift watcher watches the paths it names.
-    let manifest: SeatManifest?
-    private let registry: FleetRegistry?
+    /// It is exposed because it is the only place that knows where a seat's config
+    /// lives:  the panel reads the artifacts from it and the drift watcher watches the
+    /// paths it names.  It is read at launch and again before a run whenever
+    /// `fleet-seats.json` changed size or modification time (SHELL-29),  so a seat added
+    /// while the app runs gets its row,  and the watcher,  which re-arms from it after
+    /// every run,  watches its paths.
+    ///
+    /// It is written on the main thread only.  A reader off the main thread (the panel
+    /// reads a cell's artifacts in a detached task) reads `manifestSnapshot` under
+    /// `inputsLock` instead,  so a re-read during that task is never a data race.
+    @Published private(set) var manifest: SeatManifest?
+    /// The manifest as readers off the main thread see it,  guarded by `inputsLock`.
+    private var manifestSnapshot: SeatManifest?
+    private let inputsLock = NSLock()
+    private var registry: FleetRegistry?
+    /// The size and modification time each file had when it was last read.
+    private var manifestStamp: LedgerParseCache.Stamp?
+    private var registryStamp: LedgerParseCache.Stamp?
+    /// Whether the two files have been read at all.
+    private var inputsRead = false
+    /// Whether the results came from an engine answer,  rather than from nothing.
+    private var answered = false
+    private let runEngine: EngineRunning
     private var results: [CheckResult] = []
     private var cellsByKey: [String: GridCell] = [:]
 
@@ -115,42 +151,100 @@ final class FleetStore: ObservableObject {
     /// Whether a run is in flight.
     var isRunning: Bool { phase == .running }
 
-    init() {
-        let located = EngineLocator.locate()
+    /// The app's store:  the engine this Mac has,  run by `EngineRunner`.
+    convenience init() {
+        self.init(
+            location: EngineLocator.locate(),
+            runEngine: { location, completion in
+                EngineRunner(location: location).run(completion: completion)
+            }
+        )
+    }
+
+    /// A store for an engine location and a way to run it.
+    ///
+    /// `refreshOnStart` runs the engine at once,  as the app does;  a test passes false and
+    /// starts the run itself.
+    init(location located: EngineLocation?, runEngine: @escaping EngineRunning, refreshOnStart: Bool = true) {
         location = located
+        self.runEngine = runEngine
         engineRoot = located?.root
         commandLine = located?.commandLine ?? ""
-        // A manifest that is a version this app does not read is refused,  and the
-        // refusal is kept.  A refused manifest is not the same as no manifest:  the
-        // roster falls back to the registry's tags,  and without the reason the
-        // operator sees a grid of unknown rows and no idea why.
-        var loadedManifest: SeatManifest?
-        var manifestProblem: String?
-        if let located, FileManager.default.fileExists(atPath: located.manifestURL.path) {
-            do {
-                loadedManifest = try FleetDataReader.loadManifest(at: located.manifestURL)
-            } catch {
-                manifestProblem = Self.describe(error)
-            }
-        }
-        manifest = loadedManifest
-        self.manifestProblem = manifestProblem
-        // The registry is read the same way the manifest is:  a file that is there
-        // and cannot be read is a problem to name,  not a file that is not there.
-        var loadedRegistry: FleetRegistry?
-        var registryProblem: String?
-        if let located, FileManager.default.fileExists(atPath: located.registryURL.path) {
-            do {
-                loadedRegistry = try FleetDataReader.loadRegistry(at: located.registryURL)
-            } catch {
-                registryProblem = Self.describe(error, what: "the registry")
-            }
-        }
-        registry = loadedRegistry
-        self.registryProblem = registryProblem
-        roster = Self.roster(from: registry, manifest: manifest)
+        reloadInputsIfChanged()
         rebuild()
-        refresh()
+        if refreshOnStart { refresh() }
+    }
+
+    /// Read the manifest and the registry again,  when either file changed since the last
+    /// read,  and rebuild the roster from them.
+    ///
+    /// The engine reads both files on every run,  so the grid reads them before the run
+    /// that will use them:  a seat added to `fleet-seats.json` gets a row on the next run,
+    /// not on the next launch.  A file is judged changed by its size and modification
+    /// time,  the stamp `LedgerParseCache` keeps for the wake ledger.
+    ///
+    /// A manifest that is a version this app does not read is refused,  and the refusal is
+    /// named in `manifestProblem`.  A refused manifest is not the same as no manifest:
+    /// without the reason the operator sees a grid of unknown rows and no idea why.  When a
+    /// copy was read before,  that copy is kept beside the problem,  so a bad write does
+    /// not take the roster away;  a file that is gone is no manifest,  as at launch.
+    ///
+    /// Returns whether either file was read.
+    @discardableResult
+    func reloadInputsIfChanged() -> Bool {
+        guard let location else { return false }
+        let manifestNow = LedgerParseCache.stamp(of: location.manifestURL)
+        let registryNow = LedgerParseCache.stamp(of: location.registryURL)
+        let manifestChanged = !inputsRead || manifestNow != manifestStamp
+        let registryChanged = !inputsRead || registryNow != registryStamp
+        guard manifestChanged || registryChanged else { return false }
+        inputsRead = true
+        if manifestChanged {
+            manifestStamp = manifestNow
+            let read = Self.readManifest(at: location.manifestURL)
+            // A copy that could not be read leaves the last good copy in place.
+            if read.problem == nil || manifest == nil {
+                inputsLock.lock()
+                manifestSnapshot = read.manifest
+                inputsLock.unlock()
+                manifest = read.manifest
+            }
+            manifestProblem = read.problem
+        }
+        if registryChanged {
+            registryStamp = registryNow
+            let read = Self.readRegistry(at: location.registryURL)
+            if read.problem == nil || registry == nil {
+                registry = read.registry
+            }
+            registryProblem = read.problem
+        }
+        roster = Self.roster(from: registry, manifest: manifest)
+        return true
+    }
+
+    /// The manifest at a path,  or why it could not be read.  A file that is not there is
+    /// neither:  no manifest and no problem.
+    private static func readManifest(at url: URL) -> (manifest: SeatManifest?, problem: String?) {
+        guard FileManager.default.fileExists(atPath: url.path) else { return (nil, nil) }
+        do {
+            let loaded = try FleetDataReader.loadManifest(at: url)
+            return (loaded, nil)
+        } catch {
+            return (nil, describe(error))
+        }
+    }
+
+    /// The registry at a path,  read the same way the manifest is:  a file that is there
+    /// and cannot be read is a problem to name,  not a file that is not there.
+    private static func readRegistry(at url: URL) -> (registry: FleetRegistry?, problem: String?) {
+        guard FileManager.default.fileExists(atPath: url.path) else { return (nil, nil) }
+        do {
+            let loaded = try FleetDataReader.loadRegistry(at: url)
+            return (loaded, nil)
+        } catch {
+            return (nil, describe(error, what: "the registry"))
+        }
     }
 
     /// Why a file could not be read,  in the app's own words.
@@ -169,7 +263,9 @@ final class FleetStore: ObservableObject {
         let live = registry?.liveTags ?? []
         guard let manifest = manifest else { return live }
         let known = live.filter { manifest.seats[$0] != nil }
-        return known.isEmpty ? Array(manifest.seats.keys).sorted() : known
+        // The manifest still holds a row for the Grok Bot group, which is not a seat, so the
+        // fallback leaves it out as the registry's list does.
+        return known.isEmpty ? manifest.seats.keys.filter { !NotASeat.contains($0) }.sorted() : known
     }
 
     /// The cell for one seat and kind.
@@ -189,6 +285,28 @@ final class FleetStore: ObservableObject {
         let views: [ConfigFileView]
         /// Why the pair does not apply,  when a cover says so.
         let coverReason: String?
+        /// What the reader found for each rule,  in the same order as the rules,  with the
+        /// states `views` folds together (not text,  unreadable,  missing) kept apart and
+        /// the words for each.
+        var reads: [ConfigFileRead] = []
+        /// Why the cell has no rule,  when it has none and no cover.
+        var gap: CellGap? = nil
+
+        /// The sentence the panel shows when the cell has no rule to show.
+        ///
+        /// It is the cover's reason when a cover applies,  and otherwise the true reason
+        /// the cell is empty:  "No rule covers this seat and kind." only when the manifest
+        /// was read and names none.
+        var emptyText: String {
+            coverReason ?? gap?.sentence ?? "There is no result for this seat and kind."
+        }
+    }
+
+    /// The manifest,  read under the lock,  for a caller that may be off the main thread.
+    private var currentManifest: SeatManifest? {
+        inputsLock.lock()
+        defer { inputsLock.unlock() }
+        return manifestSnapshot
     }
 
     /// The citation each rule carries in the manifest,  by rule id.
@@ -197,7 +315,7 @@ final class FleetStore: ObservableObject {
     /// that asked for a rule is recorded.  It is empty on every rule today,  and the
     /// panel says that rather than showing a blank line.
     func ruleSources(seat: String, kind: ConfigKind) -> [String: String] {
-        guard let manifest else { return [:] }
+        guard let manifest = currentManifest else { return [:] }
         var sources: [String: String] = [:]
         for rule in manifest.rules(seat: seat, kind: kind) {
             if let source = rule.source { sources[rule.id] = source }
@@ -209,44 +327,71 @@ final class FleetStore: ObservableObject {
     ///
     /// The envelope carries no path,  so the manifest is the only place that knows
     /// which file a seat's rule checks,  and the panel reads the file itself.
+    ///
+    /// It is safe to call off the main thread,  as the panels do from a detached task:  it
+    /// reads the manifest under the lock that its re-read takes.
     func artifacts(for cell: GridCell) -> CellArtifacts {
-        let targets = manifest?.targets(seat: cell.seat, kind: cell.kind) ?? []
+        let targets = currentManifest?.targets(seat: cell.seat, kind: cell.kind) ?? []
         let byRule = Dictionary(
             targets.map { ($0.rule.id, $0) },
             uniquingKeysWith: { first, _ in first }
         )
-        let views = cell.rules.map { rule -> ConfigFileView in
+        let reads = cell.rules.map { rule -> ConfigFileRead in
             guard let entry = byRule[rule.ruleId] else {
-                return .unresolved(reason: "The manifest names no path for \(rule.ruleId).")
+                return ConfigFileRead(
+                    state: .unresolved,
+                    view: .unresolved(reason: "The manifest names no path for \(rule.ruleId).")
+                )
             }
-            return ConfigFileReader.read(
+            return ConfigFileReader.inspect(
                 target: entry.target,
                 checkType: entry.checkType,
                 home: FileManager.default.homeDirectoryForCurrentUser
             )
         }
-        return CellArtifacts(rules: cell.rules, views: views, coverReason: cell.coverReason)
+        return CellArtifacts(
+            rules: cell.rules,
+            views: reads.map { $0.view },
+            coverReason: cell.coverReason,
+            reads: reads,
+            gap: cell.gap
+        )
     }
 
     /// The engine's proof for every hook of one seat.
     ///
     /// A hook rule proves the hook it registered, by the hook's own name, so the
     /// MiniMax panel can say when that hook was last seen to deny.
-    func hookProofs(seat: String) -> [MiniMaxSurface.HookProof] {
+    ///
+    /// While a run is in flight the results are the last run's,  and the MiniMax panel
+    /// says the engine has not answered until it passes `isShowingLastAnswer` along,  so by
+    /// default no proof is handed out during a run:  a hook must not read "Proved by"
+    /// beside "the engine has not answered".  A caller whose words say the answer is the
+    /// last run's passes `includingLastAnswer: true`.
+    func hookProofs(seat: String, includingLastAnswer: Bool = false) -> [MiniMaxSurface.HookProof] {
+        if isChecking && !includingLastAnswer { return [] }
+        return Self.hookProofs(in: results, seat: seat)
+    }
+
+    /// The proofs a run's results carry for one seat's hooks, one per hook a rule names.
+    ///
+    /// A rule may name more than one hook, and each of them is proved by that rule:
+    /// taking only the first name would leave every other hook the rule covers reading
+    /// "not proved" while the engine had proved it.
+    static func hookProofs(in results: [CheckResult], seat: String) -> [MiniMaxSurface.HookProof] {
         results
             .filter { $0.seat == seat && $0.kind == ConfigKind.hooks.rawValue }
-            .compactMap { result in
-                guard
-                    let names = result.expected["names"]?.stringArray,
-                    let name = names.first
-                else { return nil }
-                return MiniMaxSurface.HookProof(
-                    hookName: name,
-                    required: result.proofLevelRequired ?? "L0",
-                    achieved: result.proofLevelAchieved,
-                    checkedAt: FleetTime.parse(result.checkedAt),
-                    state: result.state
-                )
+            .flatMap { result -> [MiniMaxSurface.HookProof] in
+                let names = result.expected["names"]?.stringArray ?? []
+                return names.map { name in
+                    MiniMaxSurface.HookProof(
+                        hookName: name,
+                        required: result.proofLevelRequired ?? "L0",
+                        achieved: result.proofLevelAchieved,
+                        checkedAt: FleetTime.parse(result.checkedAt),
+                        state: result.state
+                    )
+                }
             }
     }
 
@@ -267,14 +412,27 @@ final class FleetStore: ObservableObject {
     /// shares that run instead of starting a second engine, like
     /// `engineAnswer()` above.
     ///
-    /// The old results go before the run starts, so a run that dies halfway leaves the
-    /// grid unknown rather than showing the last good answer.
+    /// The last answer stays on screen while the run is in flight,  marked as being
+    /// checked (`isChecking`,  `GridCell.isBeingChecked`),  because clearing it at the
+    /// start painted every cell a red UNKNOWN for the whole run and protected nothing:
+    /// `apply` clears every result,  the summary and the clock when a run fails or times
+    /// out,  so a run that dies halfway still leaves the grid unknown and never shows the
+    /// last good answer as current.
+    ///
+    /// The manifest and the registry are read again first when either file changed,  so
+    /// the roster matches what the engine is about to read.
     func refresh() {
         guard !refreshInFlight else { return }
+        reloadInputsIfChanged()
         guard let location = location else {
             results = []
             summary = nil
             generatedAt = nil
+            commonCheckedAt = nil
+            uncovered = []
+            notImplemented = []
+            answered = false
+            isChecking = false
             phase = .failed(
                 "no engine checkout was found;  set FLEET_ENGINE_ROOT to a checkout that "
                     + "carries scripts/fleet_config"
@@ -282,14 +440,6 @@ final class FleetStore: ObservableObject {
             rebuild()
             return
         }
-        results = []
-        // The summary and the clock go with the results.  A run in flight must not
-        // leave the previous run's counts and timestamp on the screen,  because the
-        // count is what the operator reads as "current".
-        summary = nil
-        generatedAt = nil
-        rebuild()
-        phase = .running
         let box = RefreshBox()
         refreshLock.lock()
         // A caller on another thread may have started a run since the guard.
@@ -299,8 +449,10 @@ final class FleetStore: ObservableObject {
         }
         refreshBox = box
         refreshLock.unlock()
-        let runner = EngineRunner(location: location)
-        runner.run { [weak self] run in
+        phase = .running
+        isChecking = true
+        rebuild()
+        runEngine(location) { [weak self] run in
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.refreshLock.lock()
@@ -313,11 +465,15 @@ final class FleetStore: ObservableObject {
 
     /// Take what the run produced.
     private func apply(_ run: EngineRun) {
+        isChecking = false
         guard let envelope = run.envelope else {
             results = []
             summary = nil
             generatedAt = nil
             commonCheckedAt = nil
+            uncovered = []
+            notImplemented = []
+            answered = false
             phase = .failed(run.failure ?? "the engine did not answer")
             rebuild()
             // The run could not be trusted,  and a watcher has to hear that:  a run
@@ -329,9 +485,34 @@ final class FleetStore: ObservableObject {
         summary = envelope.summary
         generatedAt = FleetTime.parse(envelope.generatedAt)
         commonCheckedAt = Self.commonCheckTime(in: results)
+        uncovered = envelope.uncoveredSurfaces
+        notImplemented = envelope.notImplementedRules
+        answered = true
         phase = .loaded
         rebuild()
         onRunFinished?(true)
+    }
+
+    /// Whether the cells on screen are the last run's answer while a new run checks them.
+    var isShowingLastAnswer: Bool { isChecking && answered }
+
+    /// The line a view shows while a run is in flight,  or nil when none is.
+    ///
+    /// It says the grid is being checked and,  when the cells hold the last answer,  the
+    /// time that answer is from,  on Jay's clock.
+    var checkingNote: String? {
+        guard isChecking else { return nil }
+        guard answered else { return "Checking now.\u{00A0} The engine has not answered yet." }
+        guard let generatedAt else {
+            return "Checking again now.\u{00A0} These are the answers from the last run."
+        }
+        return "Checking again now.\u{00A0} These are the answers from the run at \(FleetTime.clock(generatedAt))."
+    }
+
+    /// The surfaces the engine names and does not check for one seat,  from the last
+    /// trusted run.
+    func uncoveredSurfaces(seat: String) -> [UncoveredSurface] {
+        uncovered.filter { $0.seat == seat }
     }
 
     /// The check time the run shares,  which is the one most rules carry.
@@ -352,7 +533,15 @@ final class FleetStore: ObservableObject {
 
     /// Rebuild the grid from what is known.
     private func rebuild() {
-        let built = GridBuilder.build(roster: roster, manifest: manifest, results: results)
+        let built = GridBuilder.build(
+            roster: roster,
+            manifest: manifest,
+            results: results,
+            checking: isChecking,
+            answered: answered,
+            // A manifest kept beside a problem is the last good copy of a changed file.
+            manifestCurrent: manifestProblem == nil
+        )
         cells = built
         cellsByKey = Dictionary(uniqueKeysWithValues: built.map { ($0.id, $0) })
     }

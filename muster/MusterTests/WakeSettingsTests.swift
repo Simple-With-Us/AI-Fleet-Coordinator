@@ -166,16 +166,13 @@ final class WakeSettingsTests: XCTestCase {
             .deletingLastPathComponent()
         let partition = ListenerPartition.load(from: root.appendingPathComponent(ListenerPartition.relativePath))
         XCTAssertNil(partition.problem)
-        for seat in ["CLAUDE", "CODEX", "AG", "CURSOR", "GROK", "CLUTCH", "FX", "MM", "MC", "OPERATOR"] {
+        for seat in ["CLAUDE", "CODEX", "AG", "CURSOR", "GROK", "CLUTCH", "FX", "MM", "MC", "OPERATOR", "OPENCODE", "ZC", "KIMI", "AMP"] {
             XCTAssertEqual(partition.host(of: seat), .mac, seat)
         }
-        for seat in ["MA", "ECHO", "WISE", "GROK-WEB", "JET", "GB-FIXER", "BF-DIRECTOR"] {
+        for seat in ["MA", "ECHO", "WISE", "GROK-WEB", "JET", "GB-FIXER", "BF-DIRECTOR", "BF-COMPILER", "BF-ENGINEER", "BF-TRADER"] {
             XCTAssertEqual(partition.host(of: seat), .server, seat)
         }
         XCTAssertEqual(partition.host(of: "BF-BUILDER"), .noListener)
-        for seat in ["GROK-BOT", "KIMI", "OPENCODE", "ZC"] {
-            XCTAssertEqual(partition.host(of: seat), .unlisted, seat)
-        }
     }
 
     /// A tag is one the eavesdropper accepts,  or it never reaches a `[seat.X]` header.
@@ -875,7 +872,8 @@ final class WakeSettingsTests: XCTestCase {
             runner: listener,
             partitionURL: resolved,
             reloadPollInterval: 0,
-            reloadPollAttempts: 2
+            reloadPollAttempts: 2,
+            auditURL: space.home.appendingPathComponent("audit/ops-audit.jsonl")
         )
         await store.refresh(roster: ["MM", "MA"])
         return store
@@ -945,7 +943,9 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertTrue(store.messageIsFailure)
         XCTAssertEqual(store.message, "Nothing was lifted for MM.\u{00A0} No pause names this seat.")
 
-        listener.status = #"{"running": true, "status": {"seats": {}, "pause": {"*": {"wakes_only": true}}}}"#
+        // A current status, so it decides the pause:  with no pause file and an old status, the
+        // panel would read the missing file as no pause.
+        listener.status = #"{"running": true, "status": {"updated": \#(Date().timeIntervalSince1970), "seats": {}, "pause": {"*": {"wakes_only": true}}}}"#
         await store.refresh()
         XCTAssertEqual(store.model.seats.first(where: { $0.seat == "MM" })?.pauseScope, "*")
         await store.resume(seat: "MM")
@@ -960,7 +960,8 @@ final class WakeSettingsTests: XCTestCase {
     func test_a_resume_under_a_pause_on_every_seat_says_so() async throws {
         let space = try makeWorkspace()
         let listener = FakeListener()
-        listener.status = #"{"running": true, "status": {"seats": {}, "pause": {"MM": {}, "*": {}}}}"#
+        // A current status, so it decides the pause there is no pause file for.
+        listener.status = #"{"running": true, "status": {"updated": \#(Date().timeIntervalSince1970), "seats": {}, "pause": {"MM": {}, "*": {}}}}"#
         let store = await makeStore(listener, space: space)
         await store.resume(seat: "MM")
         XCTAssertEqual(listener.actions, ["resume"])
@@ -1257,7 +1258,7 @@ final class WakeSettingsTests: XCTestCase {
     /// The reader and the builder agree on who holds a seat:  a seat the builder shows live data for
     /// has its pins and ledger read,  so no empty reading stands in for one Muster never made.
     func test_the_reader_reads_pins_for_a_seat_the_builder_does_not_call_elsewhere() async throws {
-        let space = try makeWorkspace(config: sample + "\n\n[seat.MA]\nbot = \"MA\"\n")
+        let space = try makeWorkspace(config: sample + "\n\n[seat.MA]\nbot = \"MA\"\nwake = \"muse\"\n")
         let location = ListenerStateLocation(home: space.home)
         let pinURL = location.pinURL(seat: "MA", runtime: "muse")
         try FileManager.default.createDirectory(
@@ -1441,8 +1442,9 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertTrue(setting.state.isProblem)
     }
 
-    /// A fallback its pin proves is a pass.
-    func test_a_pinned_fallback_is_a_pass() {
+    /// A fallback pin file the eavesdropper gives no verdict on is not a pass:  it is NOT REPORTED,
+    /// and the note says the file is there.  The mcode binary its pin names still matches.
+    func test_a_pinned_fallback_is_not_reported() {
         let pins = ["MM": ["mcode": PinEvidence(
             runtime: "mcode",
             binary: "/tmp/fixture-apps/mcode-bin",
@@ -1452,7 +1454,9 @@ final class WakeSettingsTests: XCTestCase {
             why: nil
         )]]
         let setting = row(.fallback, status: statusJSON, pins: pins)
-        XCTAssertEqual(setting.state, .match)
+        XCTAssertEqual(setting.state, .unpublished)
+        XCTAssertNil(setting.live)
+        XCTAssertTrue(setting.note.contains("pin file is there"))
         let mcode = row(.mcodePath, status: statusJSON, pins: pins)
         XCTAssertEqual(mcode.state, .match)
     }
@@ -1532,12 +1536,14 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertEqual(row(.wakesPerHour, status: status).state, .unknown)
     }
 
-    /// A status that reports the seat without a setting really does not publish it.
+    /// A status that reports the seat without a setting really does not publish it.  That is not
+    /// a setting the engine does not enforce, so it is NOT REPORTED, not NOT ENFORCED.
     func test_a_status_that_reports_the_seat_without_the_setting_does_not_publish_it() {
         let status = #"{"running": true, "status": {"seats": {"MM": {"bot": "MM"}}}}"#
         let setting = row(.wakesPerHour, status: status)
-        XCTAssertEqual(setting.state, .notOwned)
+        XCTAssertEqual(setting.state, .unpublished)
         XCTAssertFalse(setting.state.isProblem)
+        XCTAssertFalse(setting.note.contains("enforce"))
     }
 
     /// A running eavesdropper lists a seat the file turns off under `disabled` and not under

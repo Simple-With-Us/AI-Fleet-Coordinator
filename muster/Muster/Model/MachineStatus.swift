@@ -130,9 +130,15 @@ struct MachineMenuInputs {
     /// The red cells,  when the last run could be trusted.
     var redCells: [DriftRedCell]?
     var driftCells: [DriftRedCell] = []
+    /// The cells that read not proven:  neither red nor drifted,  and not a pass either.
+    var unprovenCells: [DriftRedCell] = []
     /// Whether the last run could be trusted,  or nil before any run has landed.
     var lastRunWasTrusted: Bool?
     var transitions: [DriftTransition] = []
+    /// When the engine's last check of the seats landed,  or nil when the caller does not keep
+    /// it.  A check older than `SeatCheckFreshness.window` is not current,  whatever it
+    /// counted:  after a long sleep the counts are from before it.
+    var seatCheckedAt: Date? = nil
     var status: ServerStatusReading?
     var tools: FleetToolsReading?
     var asked: ServerAskResult?
@@ -257,27 +263,37 @@ enum MachineMenuCopy {
 
     private static func macHealth(_ inputs: MachineMenuInputs, problems: Int, fetchStopped: Bool,
                                   macIsCurrent: Bool, pm2Answered: Bool) -> MachineHealth {
-        guard macIsCurrent, let reds = inputs.redCells else { return .notKnown }
+        // An old seat check is not a reading:  the Mac reads not known until a new one lands,
+        // even when its services were just read again.
+        guard macIsCurrent, seatCheckIsCurrent(inputs), let reds = inputs.redCells else { return .notKnown }
         let count = reds.count + inputs.driftCells.count + problems + (fetchStopped ? 1 : 0)
         if !pm2Answered {
             return count == 0 ? .notKnown : .attention(count, someUnread: true)
         }
+        // A Mac with a cell not yet proven is not known to be fine,  so it is never OK.
+        if count == 0, !inputs.unprovenCells.isEmpty { return .notKnown }
         return count == 0 ? .ok : .attention(count, someUnread: false)
     }
 
-    private static func isPM2Row(_ entry: FleetServiceEntry) -> Bool {
+    /// True for a row pm2 answers for.  When pm2 does not answer,  these rows are not known,
+    /// and they are said once as not known rather than counted.  The sidebar's Services
+    /// badge uses this rule too.
+    static func isPM2Row(_ entry: FleetServiceEntry) -> Bool {
         if case .pm2 = entry.kind { return entry.policy == .alwaysOn }
         return false
     }
 
-    private static func isProblem(_ entry: FleetServiceEntry) -> Bool {
-        entry.state == .failed || entry.state == .unknown
+    /// A failure,  a state nobody can read,  or a service Muster tried to start and gave up on.
+    /// The sidebar's Services badge uses this rule too.
+    static func isProblem(_ entry: FleetServiceEntry) -> Bool {
+        entry.needsAttention
     }
 
     private static func serviceCounts(_ entries: [FleetServiceEntry]) -> String {
         let order: [(ManagedServiceState, String)] = [
             (.running, "running"), (.failed, "failed"), (.stopped, "stopped"),
-            (.notInstalled, "not installed"), (.unknown, "not known"),
+            (.notInstalled, "not installed"), (.notInPM2, "not in this Mac's pm2"),
+            (.unknown, "not known"),
         ]
         let parts = order.compactMap { state, word -> String? in
             let count = entries.filter { $0.state == state }.count
@@ -291,6 +307,8 @@ enum MachineMenuCopy {
     /// One service's row:  its title,  its state and the actions it offers.
     static func serviceRow(_ entry: FleetServiceEntry, allowlist: OpsAllowlist?, pm2Answered: Bool) -> MenuRow {
         var title = "\(entry.menuRowTitle):  \(entry.summary)"
+        // The owner's stop,  or what Muster did about it,  so the menu says who stopped it.
+        if let note = entry.menuNote { title += " (\(note))" }
         guard pm2Answered || !isPM2Row(entry) else {
             return MenuRow(title: title, actions: [])
         }
@@ -318,7 +336,17 @@ enum MachineMenuCopy {
         return "\(words.prefix(1).uppercased())\(words.dropFirst())."
     }
 
+    /// True when the seat check is recent enough to count,  or when the caller keeps no time.
+    private static func seatCheckIsCurrent(_ inputs: MachineMenuInputs) -> Bool {
+        guard let checkedAt = inputs.seatCheckedAt else { return true }
+        return SeatCheckFreshness.isCurrent(checkedAt: checkedAt, now: inputs.now)
+    }
+
     private static func seatItem(_ inputs: MachineMenuInputs) -> MenuItem {
+        if inputs.redCells != nil, let checkedAt = inputs.seatCheckedAt, !seatCheckIsCurrent(inputs) {
+            // The counts are from an old check,  so they are not said as if they were current.
+            return .line(SeatCheckFreshness.menuLine(checkedAt: checkedAt, now: inputs.now))
+        }
         guard let reds = inputs.redCells else {
             if inputs.lastRunWasTrusted == false {
                 return .line("Seat setup:  the last check could not be trusted.")
@@ -326,19 +354,37 @@ enum MachineMenuCopy {
             return .line("Seat Setup:  checking\u{2026}")
         }
         let drifted = inputs.driftCells
+        let unproven = inputs.unprovenCells.count
         if reds.isEmpty, drifted.isEmpty {
+            // Unproven cells are not red,  and the line must not read as a clean bill.
+            if unproven > 0 {
+                // The cells the line counts are listed, with the way to the grid.
+                var unprovenRows: [MenuItem] = inputs.unprovenCells.prefix(cellRowLimit).map { cell in
+                    MenuItem.command(title: "\(cell.seat) / \(cell.kindTitle):  \(cell.ruleID ?? stateWords(cell.state))",
+                             .openComplianceGrid)
+                }
+                let hidden = unproven - cellRowLimit
+                if hidden > 0 {
+                    unprovenRows.append(.command(title: hidden == 1 ? "1 More Cell" : "\(hidden) More Cells",
+                                                 .openComplianceGrid))
+                }
+                unprovenRows.append(.command(title: "Open Compliance Grid", .openComplianceGrid))
+                return .group(title: "Seat Setup:  no red or drifted cells, \(unproven) not proven",
+                              items: unprovenRows)
+            }
             return .line("Seat Setup:  no red or drifted cells")
         }
         var parts: [String] = []
         if !reds.isEmpty { parts.append(reds.count == 1 ? "1 red cell" : "\(reds.count) red cells") }
         if !drifted.isEmpty { parts.append(drifted.count == 1 ? "1 drifted cell" : "\(drifted.count) drifted cells") }
+        if unproven > 0 { parts.append("\(unproven) not proven") }
 
         var rows: [MenuItem] = []
-        for cell in (reds + drifted).prefix(cellRowLimit) {
+        for cell in (reds + drifted + inputs.unprovenCells).prefix(cellRowLimit) {
             rows.append(.command(title: "\(cell.seat) / \(cell.kindTitle):  \(cell.ruleID ?? stateWords(cell.state))",
                                  .openComplianceGrid))
         }
-        let more = reds.count + drifted.count - cellRowLimit
+        let more = reds.count + drifted.count + unproven - cellRowLimit
         if more > 0 {
             // No ellipsis:  this opens the grid,  and nothing runs.
             rows.append(.command(title: more == 1 ? "1 More Cell" : "\(more) More Cells",
@@ -361,7 +407,7 @@ enum MachineMenuCopy {
         case .missing: return "missing"
         case .unknown: return "could not be read"
         case .drift: return "drifted"
-        case .passed: return "passing"
+        case .passed: return "every check proven"
         case .unproven: return "not proven"
         case .unsupported: return "not supported"
         case .covered: return "does not apply"
@@ -373,7 +419,6 @@ enum MachineMenuCopy {
     static func server(_ inputs: MachineMenuInputs) -> ServerPlaceSummary {
         let reach = ServerReach.make(status: inputs.status, tools: inputs.tools)
         var items: [MenuItem] = []
-        var offersFetch = false
         let notKnownTimers = MenuItem.line("Timers \(FleetHost.server.onTitle):  not known")
         var health = MachineHealth.notKnown
 
@@ -383,13 +428,11 @@ enum MachineMenuCopy {
         case .fetchStopped(_, let lastReportAt):
             items.append(.line("\(lastReportLine(lastReportAt))\(gap)Whether the server is up is not known."))
             items.append(notKnownTimers)
-            offersFetch = true
         case .unreachable(let checkedAt, let lastReportAt):
             let reached = checkedAt.map { "The Mac could not reach the server at \(FleetTime.clock($0))." }
                 ?? "The Mac could not reach the server."
             items.append(.line("\(reached)\(gap)\(lastReportLine(lastReportAt))"))
             items.append(notKnownTimers)
-            offersFetch = true
         case .reportStopped(let reachedAt, let reportAt):
             let stopped = reachedAt.map {
                 "Reached at \(FleetTime.clock($0)), but its report stopped at \(FleetTime.clock(reportAt))."
@@ -399,7 +442,6 @@ enum MachineMenuCopy {
             health = .attention(1, someUnread: false)
         case .noReport:
             items.append(.line("No server report on the Mac yet."))
-            offersFetch = true
         case .cannotRead(let refusal):
             switch refusal {
             case .appOutOfDate:
@@ -409,10 +451,8 @@ enum MachineMenuCopy {
             case .notFromServer:
                 // The next fetch writes the server's own report over this file.
                 items.append(.line("This report did not come from the server."))
-                offersFetch = true
             case .unreadable:
                 items.append(.line("The server's report on the Mac could not be read."))
-                offersFetch = true
             }
         case .futureDated:
             items.append(.line("The server's report has a time ahead of the Mac's clock, so it is not current."))
@@ -435,7 +475,8 @@ enum MachineMenuCopy {
                 : "The server did not answer at \(time)."))
         }
         items.append(.command(title: "Open Server Status", .openServerStatus))
-        if offersFetch {
+        // Server Status offers the same fetch from the same rule (`ServerReach.offersFetch`).
+        if reach.offersFetch {
             items.append(.command(title: "Fetch From The Server Again\u{2026}", .fetchFromServer))
         }
         items.append(inputs.isAsking

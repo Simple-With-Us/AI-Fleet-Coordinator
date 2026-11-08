@@ -128,8 +128,11 @@ final class DispatchDriftTicker: DriftTicking {
     func start(interval: TimeInterval, work: @escaping () -> Void) {
         stop()
         let timer = DispatchSource.makeTimerSource(queue: queue)
+        // Wall-clock time,  not uptime:  uptime stops while the Mac sleeps,  so a timer on it
+        // would wait out the rest of its interval after a long sleep.  On the wall clock the
+        // deadline has passed by then,  and it fires as soon as the Mac wakes.
         timer.schedule(
-            deadline: .now() + interval,
+            wallDeadline: .now() + interval,
             repeating: interval,
             leeway: .seconds(60)
         )
@@ -165,6 +168,15 @@ final class DriftMonitor: ObservableObject {
     /// only there for a change the watcher could not see.
     static let safetyNetInterval: TimeInterval = 10 * 60
 
+    /// The shortest gap between two runs a watched path asked for.
+    ///
+    /// Some watched files are written all the time as a matter of course:  Claude Code
+    /// rewrites `~/.claude.json` while its sessions run.  Without a floor every such write
+    /// was a whole engine run,  back to back.  A change inside the gap is not lost:  it asks
+    /// for one run at the end of the gap,  and any further change in the same gap joins it.
+    /// A run the owner asks for and the safety net are not held by the floor.
+    nonisolated static let watcherRunFloor: TimeInterval = 60
+
     /// Where the monitor says what it is doing.
     ///
     /// The log is how the app is watched from the outside:  what it watches,  when
@@ -186,6 +198,10 @@ final class DriftMonitor: ObservableObject {
     /// The cells that drifted,  which the grid does not paint red and the menu still has
     /// to count:  a calm bar over drifted cells would not be true.
     @Published private(set) var driftCells: [DriftRedCell] = []
+    /// The cells that read not proven,  which are neither red nor drifted and which the
+    /// menu still has to count:  a calm bar over unproven cells would claim a proof
+    /// nobody reached.
+    @Published private(set) var unprovenCells: [DriftRedCell] = []
     /// The turns,  newest first.
     @Published private(set) var transitions: [DriftTransition] = []
     /// How many paths the manifest named and the app is watching.
@@ -216,8 +232,24 @@ final class DriftMonitor: ObservableObject {
     private var baseline: [String: CellState] = [:]
     /// Whether there is a baseline to compare with.
     private var hasBaseline: Bool = false
-    /// Whether a change arrived while a run was in flight.
-    private var refreshPending: Bool = false
+    /// Whether a watched change arrived while a run was in flight.
+    private var watcherRunPending: Bool = false
+    /// Whether the safety net asked for a run while one was in flight.
+    private var otherRunPending: Bool = false
+
+    /// Where the floor's waiting run is scheduled.
+    private let scheduler: DriftScheduling
+    /// The shortest gap between two runs a watched path asked for.
+    private let watcherRunFloor: TimeInterval
+    /// The time,  which a test sets by hand.
+    private let clock: () -> Date
+    /// When the last run a watched path asked for started.
+    private var lastWatcherRunAt: Date?
+    /// The one run waiting for the end of the gap,  when there is one.
+    private var floorWork: DriftScheduledWork?
+    /// The watches that hold a stream now,  in the list's order,  so an unchanged list is
+    /// not armed again.  Nil until the first arming after a start.
+    private var armedWatches: [DriftWatchList.Watch]?
 
     init(
         grid: DriftGridReading,
@@ -229,16 +261,21 @@ final class DriftMonitor: ObservableObject {
         home: URL = FileManager.default.homeDirectoryForCurrentUser,
         buildWatchList: @escaping (SeatManifest?, URL) -> DriftWatchList = {
             DriftWatchListBuilder.build(manifest: $0, home: $1)
-        }
+        },
+        watcherRunFloor: TimeInterval = DriftMonitor.watcherRunFloor,
+        clock: @escaping () -> Date = { Date() }
     ) {
         self.grid = grid
         self.notifier = notifier
         self.history = history
         self.watcher = watcher
         self.ticker = ticker
+        self.scheduler = scheduler
         self.debouncer = DriftDebouncer(scheduler: scheduler)
         self.home = home
         self.buildWatchList = buildWatchList
+        self.watcherRunFloor = watcherRunFloor
+        self.clock = clock
         self.transitions = history.load()
     }
 
@@ -265,24 +302,51 @@ final class DriftMonitor: ObservableObject {
         isWatching = false
         grid.onRunFinished = nil
         watcher.stop()
+        armedWatches = nil
         ticker.stop()
         debouncer.cancel()
+        floorWork?.cancel()
+        floorWork = nil
+        // The gap belongs to the session that is ending:  the first watched change after a
+        // start runs once its window ends,  and never waits out a gap from before the stop.
+        lastWatcherRunAt = nil
+        watcherRunPending = false
+        otherRunPending = false
     }
 
     // MARK: Watching
 
     /// Arm the watches the manifest's paths ask for.
     ///
-    /// The watches are armed again after every run,  because a path that was not
-    /// there may be there now and a path that was there may be gone,  and a watch
-    /// on a path that has moved is a watch on nothing.
+    /// The list is built again after every run,  because a path that was not there may
+    /// be there now and a path that was there may be gone,  and a watch on a path that
+    /// has moved is a watch on nothing.  The watcher is touched only where the list and the
+    /// streams it holds differ:  the comparison takes in each watch's root and whether its
+    /// target is a directory,  so a path that appeared or moved gets a stream of its own,  a
+    /// path that went away loses its stream,  and every other stream keeps running,  which
+    /// also keeps the events a restart would have dropped.  A watch whose stream could not
+    /// be made is asked for again after the next run,  and only that watch:  the streams that
+    /// did arm are kept.
     private func armWatcher() {
         let list = buildWatchList(grid.manifest, home)
         watchedPathCount = list.targetPaths.count
         watchedSeats = list.seats
-        Self.log.info("Watching \(list.targetPaths.count, privacy: .public) paths for \(list.seats.count, privacy: .public) seats")
-        watcher.start(list) { [weak self] _ in
+        if let armedWatches, armedWatches == list.watches { return }
+        let held = armedWatches ?? []
+        let gone = held.filter { !list.watches.contains($0) }
+        if !gone.isEmpty {
+            watcher.disarm(gone)
+        }
+        let kept = held.filter { list.watches.contains($0) }
+        let missing = list.watches.filter { !kept.contains($0) }
+        Self.log.info("Watching \(list.targetPaths.count, privacy: .public) paths for \(list.seats.count, privacy: .public) seats; \(missing.count, privacy: .public) watches to arm, \(gone.count, privacy: .public) let go")
+        let newlyArmed = watcher.arm(missing) { [weak self] _ in
             self?.changeDetected()
+        }
+        let armed = list.watches.filter { kept.contains($0) || newlyArmed.contains($0) }
+        armedWatches = armed
+        if armed.count < list.watches.count {
+            Self.log.error("Only \(armed.count, privacy: .public) of \(list.watches.count, privacy: .public) watches were armed; the next run tries the rest again")
         }
     }
 
@@ -298,19 +362,54 @@ final class DriftMonitor: ObservableObject {
     private func handleChange() {
         Self.log.info("A watched path changed; a run is due")
         debouncer.signal { [weak self] in
-            Task { @MainActor in self?.refresh(reason: "a watched path changed") }
+            Task { @MainActor in self?.watcherRunDue() }
         }
     }
 
     // MARK: Running
 
+    /// A watched change asked for a run,  which the floor may hold back.
+    ///
+    /// Inside the gap after the last such run,  one run is scheduled for the end of the
+    /// gap and every later change in the gap joins it,  so a file that is written all the
+    /// time costs one run a gap and not one run a write.
+    private func watcherRunDue() {
+        // One run already waits for the end of the gap,  and it will read this change too.
+        guard floorWork == nil else { return }
+        if let lastWatcherRunAt {
+            let wait = watcherRunFloor - clock().timeIntervalSince(lastWatcherRunAt)
+            if wait > 0 {
+                Self.log.info("A watched path changed inside the gap; one run waits \(Int(wait.rounded(.up)), privacy: .public) seconds")
+                floorWork = scheduler.schedule(after: wait) { [weak self] in
+                    Task { @MainActor in self?.floorGapEnded() }
+                }
+                return
+            }
+        }
+        refresh(reason: "a watched path changed", fromWatcher: true)
+    }
+
+    /// The gap ended,  and the run that waited for it starts.
+    private func floorGapEnded() {
+        floorWork = nil
+        guard isWatching else { return }
+        refresh(reason: "the gap after a watched change ended", fromWatcher: true)
+    }
+
     /// Run the engine again.
-    private func refresh(reason: String) {
+    private func refresh(reason: String, fromWatcher: Bool = false) {
         if grid.isRunning {
             // A run is already in flight and it may have read the files before the
             // change,  so another run is asked for when it ends.
-            refreshPending = true
+            if fromWatcher {
+                watcherRunPending = true
+            } else {
+                otherRunPending = true
+            }
             return
+        }
+        if fromWatcher {
+            lastWatcherRunAt = clock()
         }
         Self.log.info("The engine is asked to run again: \(reason, privacy: .public)")
         grid.refresh()
@@ -320,8 +419,10 @@ final class DriftMonitor: ObservableObject {
     private func runFinished(trusted: Bool) {
         lastRunAt = Date()
         lastRunWasTrusted = trusted
-        let pending = refreshPending
-        refreshPending = false
+        let watcherPending = watcherRunPending
+        let otherPending = otherRunPending
+        watcherRunPending = false
+        otherRunPending = false
 
         if trusted {
             evaluate(cells: grid.cells)
@@ -331,11 +432,17 @@ final class DriftMonitor: ObservableObject {
         let countText = redCount.map { "\($0)" } ?? "unknown"
         Self.log.info("A run landed; trusted: \(trusted, privacy: .public); red cells: \(countText, privacy: .public)")
 
-        // The watches are armed again,  because the paths may have moved.
+        // The watch list is built again,  because the paths may have moved.
         armWatcher()
 
-        if pending {
-            refresh(reason: "a change arrived during the run")
+        if otherPending {
+            // The safety net is not held by the floor.  A watched change that also came in
+            // is read by this same run,  so it starts the gap as well.
+            refresh(reason: "the safety net asked during the run", fromWatcher: watcherPending)
+        } else if watcherPending {
+            // A watched change during the run waits for the floor like any other,  so a
+            // file written all the time cannot keep the engine running back to back.
+            watcherRunDue()
         }
     }
 
@@ -352,6 +459,14 @@ final class DriftMonitor: ObservableObject {
         }
         redCount = reds.count
         driftCells = cells.filter { $0.state == .drift }.map { cell in
+            DriftRedCell(
+                seat: cell.seat,
+                kind: cell.kind.rawValue,
+                ruleID: cell.rules.first?.ruleId,
+                state: cell.state
+            )
+        }
+        unprovenCells = cells.filter { $0.state == .unproven }.map { cell in
             DriftRedCell(
                 seat: cell.seat,
                 kind: cell.kind.rawValue,
@@ -387,6 +502,7 @@ final class DriftMonitor: ObservableObject {
         redCount = nil
         redCells = []
         driftCells = []
+        unprovenCells = []
     }
 
     // MARK: Recording

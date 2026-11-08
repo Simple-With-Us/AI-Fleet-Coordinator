@@ -42,6 +42,7 @@ import {
   SEAT_LABELS,
   WAKE_SECRETS,
   KNOWN_SEATS,
+  GRANT_MAX_AGE_MS,
 } from "./config.js";
 import {
   hostAllowed,
@@ -70,8 +71,9 @@ import { serveGrBearerVerify } from "./gr-verify.js";
 import { serveGrAssertVerify, grantSummaryIsLive, cachedGrantExists } from "./gr-assert-verify.js";
 import { grAssertionMinter } from "./gr-assert.js";
 import { resolveGrSecrets, grClientFromResolved } from "./gr-tools.js";
+import { isGitPath, serveGit } from "./git-route.js";
 import { serveMcpRequest } from "./mcp.js";
-import { HostedTools } from "./hosted-tools.js";
+import { HostedTools, HOSTED_READ_TOOLS } from "./hosted-tools.js";
 import { IdentityRouter, resolveDelegatedCredentials, adminDelegatedReadiness, GB_IDENTITIES } from "./delegated-identities.js";
 import { gate, linearQuotaFromEnv } from "./gate.js";
 import { ToolError } from "./contract.js";
@@ -79,7 +81,7 @@ import { recallClientFromResolved, resolveRecallSecrets } from "./recall.js";
 import { fleetlinkClientFromSecret, resolveFleetlinkSeatTokens } from "./fleetlink.js";
 import { LinearClient, linearClientFromPair, resolveLinearPair, LINEAR_SEATS, linearSecretNames, seatTagForSeat } from "./linear.js";
 import { ZulipClient } from "./zulip.js";
-import { listenerClientFromEnv } from "./eavesdropper.js";
+import { listenerClientFromEnv, listenerSecretName } from "./eavesdropper.js";
 import { operatorNotesClientFromEnv } from "./notes.js";
 import { ConsentForm, AdminForm, CONSENT_ARRAY_KEYS, parseForm } from "./forms.js";
 import { SeatEvents, deliverWake, wakeReply, WAKE_BUDGET_MS, EVENT_NAME } from "./events.js";
@@ -90,7 +92,7 @@ import { resolveSecret, resolveWakeKeys, infisicalStats, infisicalMode, prefetch
 import { verifySpike, spikePathSeat, spikeKey, deliverSpike, spikeReply, SPIKE_SIGNATURE_HEADER, SPIKE_MAX_BODY, SPIKE_RATE_LIMIT, SPIKE_RATE_WINDOW_MS } from "./spike.js";
 import { serveLinearWake, LINEAR_WAKE_PATH } from "./linear-wake.js";
 import { AuditBatcher, AUDIT_FLUSH_MS } from "./audit-batch.js";
-import { IdentityCache } from "./identity-cache.js";
+import { IdentityCache, bearerCacheMs } from "./identity-cache.js";
 import { answerLifecycle } from "./mcp-lifecycle.js";
 import { BudgetExceeded, guardOff, guardOffResponse } from "./budget-guard.mjs";
 import { countedFetch, diagnosticRowAllowed, logLimited, runInvocation, spend, withinLimit } from "./invocation.js";
@@ -114,7 +116,8 @@ function configFor(env) {
 
 // The isolate's per-call audit buffer (R2, DO burn reduction):  one
 // AuditBatcher per isolate, shared by every HostedTools this Worker
-// builds, so tool-call audit rows flush to each seat's gate in batches
+// builds, so tool-call audit rows (writes and failed calls;  a successful
+// read writes none, owner ruling 2026-11-06) flush to each seat's gate in batches
 // instead of one Durable Object RPC per call.  The trade is stated in
 // src/audit-batch.js:  rows land seconds late, and an isolate evicted
 // mid-buffer loses its unflushed tail - audit only, never a control.
@@ -133,8 +136,10 @@ function auditSinkFor(ctx) {
 const IDENTITY_CACHE = new IdentityCache();
 
 // The OAuth Git callback's live-grant window (AFC-617, stated in
-// src/identity-cache.js).  The bearer verify window is config.grVerifyCacheMs.
-const GRANT_EXISTS_CACHE_MS = 5 * 60_000;
+// src/identity-cache.js):  an hour, capped by GATE_IDENTITY_CACHE_MS and by
+// the grant's own expiry (owner ruling 2026-11-06).  The bearer verify window
+// is config.grVerifyCacheMs.
+const GRANT_EXISTS_CACHE_MS = 60 * 60_000;
 
 // Request guards (AFC-617).  Both limits are per Cloudflare location and
 // eventually consistent, so they stop a runaway rather than meter exactly.
@@ -250,8 +255,7 @@ async function logRefusal(env, { where, reason, clientId, redirectUri, resource,
 }
 
 async function sha256Ref(text) {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(String(text)));
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 12);
+  return (await sha256Hex(String(text))).slice(0, 12);
 }
 
 // ---------------------------------------------------------------- provider
@@ -350,6 +354,8 @@ async function serveMcp(request, env, ctx) {
   if (identityEntry) {
     result = { code: "ok" };
   } else {
+    // A refusal this isolate records after the check starts beats the check.
+    const since = IDENTITY_CACHE.now();
     result = await seatGate.check({ epoch: props.epoch, approvedAt: props.approved_at, phase: props.phase });
     if (result.code === "ok") {
       // Only a fully positive verification is cached;  a paused seat
@@ -357,8 +363,14 @@ async function serveMcp(request, env, ctx) {
       // seat is never cached:  its calls are refused downstream
       // regardless, so the cache would buy nothing there and would only
       // rent out that seat's instant revocation.
-      if (!config.eventsOnlySeats.includes(seat)) {
-        IDENTITY_CACHE.set(identityKey, { seat, via: "oauth", epoch: props.epoch, approvedAt: props.approved_at, phase: props.phase }, config.gateIdentityCacheMs);
+      // The window never runs past the grant's own 90-day age limit, and
+      // one clock reading (the cache's own, the clock its expiry and `since`
+      // checks use) both caps the window and starts it.
+      const now = IDENTITY_CACHE.now();
+      const grantLeftMs = Number(props.approved_at) + GRANT_MAX_AGE_MS - now;
+      const ttlMs = Number.isFinite(grantLeftMs) ? Math.min(config.gateIdentityCacheMs, grantLeftMs) : 0;
+      if (!config.eventsOnlySeats.includes(seat) && ttlMs > 0) {
+        IDENTITY_CACHE.set(identityKey, { seat, via: "oauth", epoch: props.epoch, approvedAt: props.approved_at, phase: props.phase }, ttlMs, now, { since });
       }
     } else {
       // A gate refusal for this credential evicts whatever this isolate
@@ -436,8 +448,9 @@ async function serveMcp(request, env, ctx) {
 
   // The eavesdropper key resolves through Infisical too (optional:  no wake key
   // means no eavesdropper tools, never a 500 - src/eavesdropper.js).
-  const listenerWakeKey = Object.hasOwn(WAKE_SECRETS, seat)
-    ? await resolveSecret(env, { name: WAKE_SECRETS[seat], path: "/wake", envName: WAKE_SECRETS[seat], optional: true })
+  const listenerSecret = listenerSecretName(seat);
+  const listenerWakeKey = listenerSecret
+    ? await resolveSecret(env, { name: listenerSecret, path: "/wake", envName: listenerSecret, optional: true })
     : "";
   const tools = new HostedTools({
     seat,
@@ -532,7 +545,7 @@ function safeHost(origin) {
  * only as that persona (allowedIdentities for a non-shared seat is just itself).  Every refusal is the same
  * generic 401.  Paused personas, an unset credential bundle and an expired bearer all refuse.
  */
-async function serveGbBearerMcp(request, env, token, ctx) {
+async function serveGbBearerMcp(request, env, token, ctx, credential = null) {
   const config = configFor(env);
   const refuse = () => invalidToken("This token is not valid.");
   const parsed = parseGbBearer(token);
@@ -542,9 +555,13 @@ async function serveGbBearerMcp(request, env, token, ctx) {
   // R4:  a fresh cached verification for this exact bearer stands in for
   // gbBearerCheck (src/identity-cache.js states the window's terms).  The
   // key is the same hash the check itself uses;  the token is never stored.
-  const bearerHash = await sha256Hex(parsed.token);
+  // `credential` is serveRequest's hash of this same header token (the guard's key);  it
+  // is the same SHA-256, so it is not computed twice (AFC-617).
+  const bearerHash = credential ?? await sha256Hex(parsed.token);
   const identityEntry = IDENTITY_CACHE.get(bearerHash);
   let checked;
+  // A refusal this isolate records after the live check starts beats it.
+  const since = IDENTITY_CACHE.now();
   if (identityEntry) {
     checked = { ok: true, mcp_accept: true, paused: false };
   } else {
@@ -575,7 +592,8 @@ async function serveGbBearerMcp(request, env, token, ctx) {
   // The gate's verification is fully positive at this point (the bundle
   // resolution below is isolate config, re-run on every request either
   // way):  remember it for this isolate's window (R4).
-  if (!identityEntry) IDENTITY_CACHE.set(bearerHash, { seat: identity, via: "gb-bearer", mcp_accept: true }, config.gateIdentityCacheMs);
+  // One clock reading caps the window at the bearer's expiry and starts it.
+  if (!identityEntry) { const now = IDENTITY_CACHE.now(); IDENTITY_CACHE.set(bearerHash, { seat: identity, via: "gb-bearer", mcp_accept: true }, bearerCacheMs(config, checked, now), now, { since }); }
   const lifecycle = await answerLifecycle(request, { seat: identity, config });
   if (lifecycle.response) return lifecycle.response;
   request = lifecycle.request;
@@ -642,7 +660,7 @@ async function serveGbBearerMcp(request, env, token, ctx) {
  * An unhosted seat or a missing key can still answer lifecycle frames, which use
  * no credential, and refuses at its first tool call.
  */
-async function serveSbtBearerMcp(request, env, token, ctx) {
+async function serveSbtBearerMcp(request, env, token, ctx, credential = null) {
   const config = configFor(env);
   const refuse = () => invalidToken("This token is not valid.");
   const parsed = parseSbtBearer(token);
@@ -652,9 +670,12 @@ async function serveSbtBearerMcp(request, env, token, ctx) {
   // R4:  a fresh cached verification for this exact bearer stands in for
   // gbBearerCheck (src/identity-cache.js states the window's terms).  The
   // key is the same hash the check itself uses;  the token is never stored.
-  const bearerHash = await sha256Hex(parsed.token);
+  // `credential` is serveRequest's hash of this same header token, so it is not computed twice.
+  const bearerHash = credential ?? await sha256Hex(parsed.token);
   const identityEntry = IDENTITY_CACHE.get(bearerHash);
   let checked;
+  // A refusal this isolate records after the live check starts beats it.
+  const since = IDENTITY_CACHE.now();
   if (identityEntry) {
     checked = { ok: true, mcp_accept: true, paused: false };
   } else {
@@ -682,7 +703,8 @@ async function serveSbtBearerMcp(request, env, token, ctx) {
   // for this isolate's window (R4) - unless the seat is events-only, whose
   // calls are refused downstream regardless and are never cached (serveMcp
   // states the reasoning in full).
-  if (!identityEntry && !config.eventsOnlySeats.includes(seat)) IDENTITY_CACHE.set(bearerHash, { seat, via: "sbt-bearer", mcp_accept: true }, config.gateIdentityCacheMs);
+  // One clock reading caps the window at the bearer's expiry and starts it.
+  if (!identityEntry && !config.eventsOnlySeats.includes(seat)) { const now = IDENTITY_CACHE.now(); IDENTITY_CACHE.set(bearerHash, { seat, via: "sbt-bearer", mcp_accept: true }, bearerCacheMs(config, checked, now), now, { since }); }
   // This route passes no events, so lifecycle frames need no secret on any seat.
   const lifecycle = await answerLifecycle(request, { seat, config });
   if (lifecycle.response) return lifecycle.response;
@@ -703,8 +725,9 @@ async function serveSbtBearerMcp(request, env, token, ctx) {
   const recallSecrets = await resolveRecallSecrets(env);
   // The eavesdropper key resolves through Infisical too (optional:  no wake key
   // means no eavesdropper tools, never a 500 - src/eavesdropper.js).
-  const listenerWakeKey = Object.hasOwn(WAKE_SECRETS, seat)
-    ? await resolveSecret(env, { name: WAKE_SECRETS[seat], path: "/wake", envName: WAKE_SECRETS[seat], optional: true })
+  const listenerSecret = listenerSecretName(seat);
+  const listenerWakeKey = listenerSecret
+    ? await resolveSecret(env, { name: listenerSecret, path: "/wake", envName: listenerSecret, optional: true })
     : "";
   const grSecrets = await resolveGrSecrets(env);
   const tools = new HostedTools({
@@ -955,9 +978,10 @@ async function serveApp(request, env, _ctx) {
     // live rows - the library lists expired KV rows until their TTL sweeps
     // them (grantSummaryIsLive, src/gr-assert-verify.js).
     // A positive answer holds for GRANT_EXISTS_CACHE_MS in this isolate (AFC-617:
-    // one KV list per OAuth Git call was 921 of the Free 1,000 a day).  A deleted
-    // grant can lag that long;  the epoch and pause check in claimGrAssert stays
-    // live on every call, and an admin action on the seat evicts this entry.
+    // one KV list per OAuth Git call was 921 of the Free 1,000 a day), never past
+    // the grant's own expiry.  A deleted grant can lag that long;  the epoch and
+    // pause check in claimGrAssert stays live on every call, and an admin action
+    // on the seat evicts this entry.
     grantExists: (seat, grantRef) => cachedGrantExists(IDENTITY_CACHE, {
       seat,
       grantRef,
@@ -965,7 +989,7 @@ async function serveApp(request, env, _ctx) {
       lookup: async () => {
         spend("kvList");
         for (const g of await listAllGrants(env.OAUTH_PROVIDER, seat)) {
-          if (grantSummaryIsLive(g) && (await sha256Ref(g.id) === grantRef)) return true;
+          if (grantSummaryIsLive(g) && (await sha256Ref(g.id) === grantRef)) return { expiresAt: g.expiresAt };
         }
         return false;
       },
@@ -1370,6 +1394,7 @@ async function serveAdmin(request, env, config, oauth, email) {
         audits: audits.slice(0, 40),
         calls: calls.slice(0, 40),
         statusCalls: calls,
+        readTools: HOSTED_READ_TOOLS,
         statusErrors,
         infisical,
         runtimeErrors,
@@ -1630,6 +1655,9 @@ async function serveRequest(request, env, ctx) {
     // mentions or assigns a fleet seat wakes that seat.  Its own HMAC is the
     // gate, so it is answered before the path allowlist and the OAuth library.
     if (new URL(request.url).pathname === LINEAR_WAKE_PATH) return serveLinearWake(request, env, ctx);
+    // The read-only git route (src/git-route.js):  the relay authenticates the caller's bearer, so it never reaches the
+    // OAuth library.
+    if (isGitPath(new URL(request.url).pathname)) return serveGit(request, env);
     const route = classifyPath(new URL(request.url).pathname);
     if (!route) return notFound();
     if (route === "health") {
@@ -1681,9 +1709,9 @@ async function serveRequest(request, env, ctx) {
     const sbtBearer = route === "mcp" && !gbBearer ? sbtBearerFromRequest(request) : null;
     const hasAuthorization = request.headers.has("authorization");
     const response = gbBearer
-      ? await serveGbBearerMcp(request, env, gbBearer, ctx)
+      ? await serveGbBearerMcp(request, env, gbBearer, ctx, credential)
       : sbtBearer
-        ? await serveSbtBearerMcp(request, env, sbtBearer, ctx)
+        ? await serveSbtBearerMcp(request, env, sbtBearer, ctx, credential)
         : await fetchProvider(request, env, ctx);
     // A failed authentication counts against its IP, and past the limit it writes nothing.
     const writeRow = !(route === "mcp" && response.status === 401 && hasAuthorization) || await noteAuthFailure(request, env, credential);

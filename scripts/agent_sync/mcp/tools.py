@@ -125,6 +125,8 @@ WRITE_TOOLS = (
             "notes_pin",
             "notes_unpin",
             "recall_contribute",
+            "recall_correct",
+            "recall_retract",
         }
     )
     | LINEAR.write_names()
@@ -155,6 +157,7 @@ READ_TOOLS = (
             "zulip_drafts_list",
             "eavesdropper_status",
             "eavesdropper_inbox",
+            "operator_inbox_pending",
             "eavesdropper_owner_queue",
             "eavesdropper_wakes",
             "eavesdropper_held_back",
@@ -219,6 +222,7 @@ CLI_VERBS: dict[str, tuple[str, ...]] = {
     "zulip_typing": ("typing",),
     "eavesdropper_status": ("listener status",),
     "eavesdropper_inbox": ("listener inbox",),
+    "operator_inbox_pending": ("listener pending-inbox",),
     "eavesdropper_owner_queue": ("listener owner-queue",),
     "eavesdropper_wakes": ("listener wakes",),
     "eavesdropper_held_back": ("listener held-back",),
@@ -242,6 +246,8 @@ EXTERNAL_CLI: dict[str, str] = {
     "recall_search": "recall search",
     "recall_stats": "recall stats",
     "recall_contribute": "recall contribute",
+    "recall_correct": "recall correct",
+    "recall_retract": "recall retract",
     "fleetlink_create_share": "fleetlink upload",
     "fleetlink_create_link": "fleetlink link",
     "fleetlink_list_shares": "fleetlink list",
@@ -681,7 +687,7 @@ class Tools:
         owner_user_id: int = 0,
         operator_user_id: int = 0,
         owner_clients: Iterable[str] = (),
-        seat_bearer_locators: Mapping[str, str] | None = None,
+        seat_bearer_files: Mapping[str, str] | None = None,
         clock: Callable[[], float] = time.time,
         sleep: Callable[[float], None] = time.sleep,
         log: Callable[[str], None] = lambda text: None,
@@ -705,9 +711,9 @@ class Tools:
         # inside one;  a host that does not pin it gets a refusal that names the variable.
         self.operator_user_id = operator_user_id
         self.owner_clients = set(owner_clients)
-        # The seat's own bearer locator, a FOLDER:KEY_NAME location and never a value, so a Linear write
-        # can be signed:  board proves the seat from it and never reads AGENT_SEAT.
-        self.seat_bearer_locators = dict(seat_bearer_locators or {})
+        # The seat's own bearer file (an absolute path to its private bearer file, never a value), so a
+        # Linear write can be signed:  board proves the seat from it and never reads AGENT_SEAT.
+        self.seat_bearer_files = dict(seat_bearer_files or {})
         # The notes host (the Mac's script, or the Operator client) is made on first use:  most sessions never call a
         # Notes tool, and off a Mac it reads a fleet knob.
         self._notes_host_cache: NOTES_CLIENT.Host | None = None
@@ -2596,6 +2602,14 @@ class Tools:
                 "the same key is refused.",
             ) from None
         except RECALL.RecallUnavailable as exc:
+            if exc.code == "outcome_unknown":
+                self._idem_set(key, state="unknown")
+                raise ToolError(
+                    "outcome_unknown",
+                    "fleet recall failed before the contribution could be verified, so it may or may "
+                    "not have been stored.  Search recall before contributing again; a retry with the "
+                    "same key is refused.",
+                ) from None
             self._idem_drop(key)
             raise ToolError(exc.code, exc.message, retryable=exc.retryable) from None
         except BaseException as exc:
@@ -2614,6 +2628,160 @@ class Tools:
             "seat": self.seat,
             "status": str(result.get("status") or ""),
             "scrubbed": list(result.get("scrubbed") or []),
+            "duplicate": duplicate,
+        }
+        return self.ok(json.dumps(shown), shown)
+
+    def _recall_mutation(self, name: str, args: Mapping[str, Any]) -> dict[str, Any]:
+        """Correction and retraction follow the hosted write rules:  scan before the row is claimed,
+        explicit keys last 24 hours, and an identical retry gets the first result.  The service itself also
+        makes a repeat retraction or same-text correction idempotent.  On timeout the service may have
+        committed its single-point mutation, so the key stays unknown and search/audit is the way to tell."""
+
+        def scan(field: str, value: str) -> None:
+            self._scan(**{field: value})
+
+        correcting = name == "recall_correct"
+        try:
+            if correcting:
+                text, title, url = RECALL.contribute_fields(args, scan)
+                reason = RECALL._reason_field(args, scan)
+                fingerprint = [
+                    self.seat,
+                    args["doc_id"],
+                    text,
+                    reason,
+                    title,
+                    url,
+                    args.get("expected_revision"),
+                ]
+            else:
+                reason = RECALL._reason_field(args, scan)
+                fingerprint = [self.seat, args["doc_id"], reason, args.get("expected_revision")]
+        except RECALL.RecallUnavailable as exc:
+            raise ToolError(exc.code, exc.message, retryable=exc.retryable) from None
+        explicit = args.get("idempotency_key")
+        if explicit:
+            key, ttl = "k:recall:%s:%s" % (name, explicit), IDEM_EXPLICIT_TTL
+        else:
+            key, ttl = (
+                "i:recall:%s" % _sha(json.dumps(fingerprint, ensure_ascii=False)),
+                IDEM_IMPLICIT_TTL,
+            )
+        prior = self._idem_peek(key)
+        result_name = "_correct_result" if correcting else "_retract_result"
+        if prior is not None:
+            return getattr(self, result_name)(prior.get("result") or {}, duplicate=True)
+        verdict, row = self._idem_begin(key, ttl, {"tool": name})
+        if verdict == "duplicate" and row is not None:
+            return getattr(self, result_name)(row.get("result") or {}, duplicate=True)
+        if verdict == "reconcile":
+            self._idem_set(key, state="unknown")
+            raise ToolError(
+                "outcome_unknown",
+                "an earlier %s with this key may or may not have landed.  Search recall (with "
+                "include_retracted for a retraction) before retrying, or use a new idempotency_key."
+                % name,
+            )
+        call = RECALL.correct if correcting else RECALL.retract
+        try:
+            _, structured = call(args, self.seat, env=self.agent.rt.env, scan=scan)
+        except RECALL.RecallTimeout:
+            self._idem_set(key, state="unknown")
+            raise ToolError(
+                "outcome_unknown",
+                "fleet recall did not answer in time, so the %s may or may not have landed.  Search recall "
+                "(with include_retracted for a retraction) before retrying; a retry with the same key is refused."
+                % ("correction" if correcting else "retraction"),
+            ) from None
+        except RECALL.RecallUnavailable as exc:
+            if exc.code in ("invalid_response", "outcome_unknown"):
+                self._idem_set(key, state="unknown")
+                raise ToolError(
+                    "outcome_unknown",
+                    "fleet recall failed or answered the %s in a shape this server could not verify, so "
+                    "the write may or may not have landed.  Search recall before retrying; a retry "
+                    "with the same key is refused."
+                    % ("correction" if correcting else "retraction"),
+                ) from None
+            self._idem_drop(key)
+            raise ToolError(exc.code, exc.message, retryable=exc.retryable) from None
+        except BaseException as exc:
+            if is_interrupt(exc):
+                self._idem_set(key, state="unknown")  # the mutation may have landed
+            else:
+                self._idem_drop(key)
+            raise
+        self._idem_set(key, state="sent", id=0, result=structured)
+        return getattr(self, result_name)(structured, duplicate=bool(structured.get("duplicate")))
+
+    def _tool_recall_correct(self, args: Mapping[str, Any]) -> dict[str, Any]:
+        return self._recall_mutation("recall_correct", args)
+
+    def _tool_recall_retract(self, args: Mapping[str, Any]) -> dict[str, Any]:
+        return self._recall_mutation("recall_retract", args)
+
+    def _recall_mutation_string(
+        self, result: Mapping[str, Any], key: str, *, required: bool = True
+    ) -> str:
+        value = result.get(key)
+        if value is None and not required:
+            return ""
+        if not isinstance(value, str):
+            raise ToolError(
+                "invalid_response", "fleet recall returned an invalid response field: %s" % key
+            )
+        return value
+
+    def _recall_mutation_int(
+        self, result: Mapping[str, Any], key: str, *, required: bool = True
+    ) -> int:
+        value = result.get(key)
+        if value is None and not required:
+            return 0
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ToolError(
+                "invalid_response", "fleet recall returned an invalid response field: %s" % key
+            )
+        return value
+
+    def _correct_result(self, result: Mapping[str, Any], *, duplicate: bool) -> dict[str, Any]:
+        scrubbed = result.get("scrubbed")
+        if not isinstance(scrubbed, list) or any(not isinstance(item, str) for item in scrubbed):
+            raise ToolError(
+                "invalid_response", "fleet recall returned an invalid response field: scrubbed"
+            )
+        shown = {
+            "id": self._recall_mutation_string(result, "id"),
+            "doc_id": self._recall_mutation_string(result, "doc_id"),
+            "seat": self.seat,
+            "status": self._recall_mutation_string(result, "status"),
+            "revision": self._recall_mutation_int(result, "revision"),
+            "corrected_at": self._recall_mutation_int(result, "corrected_at", required=False),
+            "corrected_by": self._recall_mutation_string(result, "corrected_by", required=False),
+            "previous_content_hash": self._recall_mutation_string(result, "previous_content_hash"),
+            "content_hash": self._recall_mutation_string(result, "content_hash"),
+            "scrubbed": scrubbed,
+            "duplicate": duplicate,
+        }
+        return self.ok(json.dumps(shown), shown)
+
+    def _retract_result(self, result: Mapping[str, Any], *, duplicate: bool) -> dict[str, Any]:
+        retracted = result.get("retracted")
+        if not isinstance(retracted, bool):
+            raise ToolError(
+                "invalid_response", "fleet recall returned an invalid response field: retracted"
+            )
+        shown = {
+            "id": self._recall_mutation_string(result, "id"),
+            "doc_id": self._recall_mutation_string(result, "doc_id"),
+            "seat": self.seat,
+            "status": self._recall_mutation_string(result, "status"),
+            "revision": self._recall_mutation_int(result, "revision"),
+            "retracted": retracted,
+            "retracted_at": self._recall_mutation_int(result, "retracted_at"),
+            "retracted_by": self._recall_mutation_string(result, "retracted_by"),
+            "retraction_reason": self._recall_mutation_string(result, "retraction_reason"),
             "duplicate": duplicate,
         }
         return self.ok(json.dumps(shown), shown)
@@ -2651,15 +2819,15 @@ class Tools:
         """Run board and map its failures to tool errors.  LinearOutcomeUnknown (a timeout on a write) is its own
         exception here so a caller can keep an idempotency row for it."""
         session_env = self._own_session_env()
-        # board proves its seat from the bearer at SIMPLE_BOARD_BEARER_LOCATOR and never reads AGENT_SEAT, so
-        # the acting seat's own locator is handed to the child.  A write with no locator is refused here,
-        # before board runs, and names the seat and the config that would give it one.
-        locator = self.seat_bearer_locators.get(self.seat)
-        if spec.kind != "read" and not locator:
+        # board proves its seat from the bearer at SIMPLE_BOARD_BEARER_FILE and never reads AGENT_SEAT, so
+        # the acting seat's own file is handed to the child.  A write with no file is refused here, before
+        # board runs, and names the seat and the config that would give it one.
+        bearer_file = self.seat_bearer_files.get(self.seat)
+        if spec.kind != "read" and not bearer_file:
             raise ToolError(
                 "not_authorized",
-                "no bearer locator is configured for seat %s, so this write cannot be signed:  add "
-                "[seat.%s] bearer_locator to the listener config and restart the server"
+                "no bearer file is configured for seat %s, so this write cannot be signed:  add "
+                "[seat.%s] bearer_file to the listener config and restart the server"
                 % (self.seat, self.seat),
             )
         if spec.tool["name"] in LINEAR.SESSION_TOOLS:
@@ -2687,7 +2855,7 @@ class Tools:
                 env=self.agent.rt.env,
                 uid=uid,
                 session_env=session_env,
-                locator=locator,
+                bearer_file=bearer_file,
             )
         except LINEAR.LinearInvalid as exc:
             raise ToolError("invalid_argument", str(exc)) from None
@@ -2808,6 +2976,36 @@ class Tools:
                 "next_seq": view["next_seq"],
             },
         )
+
+    def _tool_operator_inbox_pending(self, args: Mapping[str, Any]) -> dict[str, Any]:
+        mode = args.get("mode", "check")
+        after_seq = args.get("after_seq", 0)
+        view = self._listener(
+            "pending-inbox",
+            {
+                "after_seq": after_seq,
+                "limit": 0 if mode == "check" else args.get("limit", 20),
+            },
+        )
+        structured = {
+            "mode": mode,
+            "count": view["count"],
+            "latest_seq": view["latest_seq"],
+            "after_seq": view["after_seq"],
+        }
+        if mode == "check":
+            return self.ok(
+                json.dumps(dict(view, seat=self.seat, items=[]), ensure_ascii=False), structured
+            )
+        items = self._eavesdropper_items(view["items"])
+        structured["seqs"] = [i["seq"] for i in items]
+        structured["ids"] = [i["id"] for i in items if _int(i.get("id")) is not None]
+        summary = "%s pending after seq %d, latest_seq %d" % (
+            self._plural(view["count"], "pending item"),
+            view["after_seq"],
+            view["latest_seq"],
+        )
+        return self._list_result("operator_inbox_pending", [], summary, items, structured)
 
     def _tool_eavesdropper_owner_queue(self, args: Mapping[str, Any]) -> dict[str, Any]:
         view = self._listener("owner-queue", args)

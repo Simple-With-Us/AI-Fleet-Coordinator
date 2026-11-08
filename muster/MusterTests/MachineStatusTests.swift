@@ -99,10 +99,11 @@ final class MachineStatusTests: XCTestCase {
         ]
     )
 
-    /// Nine running,  two stopped and one not installed.
+    /// Ten running,  two stopped and one not installed.
     private static func macServices(changing changes: [String: ManagedServiceState] = [:]) -> FleetServices {
         var states: [String: ManagedServiceState] = [
             "botfleet-mcp": .running, "app.botfleet.server": .running, "app.botfleet.companion": .notInstalled,
+            "com.jay.operator": .running,
             "shellular": .running, "code-main-keeper": .running, "vision-worker": .running,
             "xcode-health": .running, "agy-acp": .stopped, "grok-leader": .stopped,
             "grok-acp": .running, "clutch-web": .running, "seat-mcp": .running,
@@ -116,6 +117,7 @@ final class MachineStatusTests: XCTestCase {
         lastReadAt: Date? = nil,
         redCells: [DriftRedCell]? = [],
         driftCells: [DriftRedCell] = [],
+        unprovenCells: [DriftRedCell] = [],
         lastRunWasTrusted: Bool? = true,
         transitions: [DriftTransition] = [],
         status: ServerStatusReading?,
@@ -129,6 +131,7 @@ final class MachineStatusTests: XCTestCase {
             lastReadAt: lastReadAt ?? now,
             redCells: redCells,
             driftCells: driftCells,
+            unprovenCells: unprovenCells,
             lastRunWasTrusted: lastRunWasTrusted,
             transitions: transitions,
             status: status,
@@ -163,9 +166,9 @@ final class MachineStatusTests: XCTestCase {
         let expected = """
         The Mac
         Checked at 2:46 PM
-        Services:  9 running, 2 stopped, 1 not installed
+        Services:  10 running, 2 stopped, 1 not installed
         Seat Setup:  no red or drifted cells
-        Services On The Mac (12)
+        Services On The Mac (13)
             BotFleet MCP Server (On The Mac):  running
                 Restart On The Mac\u{2026}
                 Stop On The Mac\u{2026}
@@ -173,6 +176,9 @@ final class MachineStatusTests: XCTestCase {
                 Restart On The Mac
                 Stop On The Mac\u{2026}
             BotFleet Companion:  not installed
+            Operator Eavesdropper:  running
+                Restart On The Mac\u{2026}
+                Stop On The Mac\u{2026}
             Shellular:  running
                 Restart On The Mac\u{2026}
                 Stop On The Mac\u{2026}
@@ -244,7 +250,7 @@ final class MachineStatusTests: XCTestCase {
         XCTAssertEqual(top, [
             "The Mac",
             "Checked at 2:46 PM",
-            "Shellular:  failed \u{2014} wanted running",
+            "Shellular:  failed, should be running",
             "    Start On The Mac\u{2026}",
             "    Restart On The Mac\u{2026}",
             "Seat Setup:  1 red cell",
@@ -529,6 +535,31 @@ final class MachineStatusTests: XCTestCase {
         XCTAssertEqual(menu.mac.health, .notKnown)
     }
 
+    /// A run whose only non-green cells are unproven is not an OK Mac:  the line counts them
+    /// and the health is not known, never OK.
+    func testUnprovenCellsCountSoOKIsNotClaimed() throws {
+        let unproven = (0..<3).map {
+            DriftRedCell(seat: "S\($0)", kind: ConfigKind.hooks.rawValue, ruleID: nil, state: .unproven)
+        }
+        let menu = MachineMenu(inputs(unprovenCells: unproven, status: try statusReading(), tools: try toolsReading()))
+        XCTAssertEqual(menu.mac.health, .notKnown)
+        XCTAssertNotEqual(menu.mac.health, .ok)
+        assertLines(menu, contain: ["Seat Setup:  no red or drifted cells, 3 not proven"])
+        // The counted cells are listed and the grid is one click away.
+        XCTAssertTrue(menu.plainText.contains("S0 / \(unproven[0].kindTitle):  not proven"), menu.plainText)
+        XCTAssertTrue(menu.plainText.contains("Open Compliance Grid"), menu.plainText)
+    }
+
+    /// With a red cell as well, the unproven count rides in the group title.
+    func testUnprovenCellsAreNamedBesideRedOnes() throws {
+        let red = DriftRedCell(seat: "MM", kind: ConfigKind.hooks.rawValue, ruleID: nil, state: .missing)
+        let unproven = DriftRedCell(seat: "MA", kind: ConfigKind.hooks.rawValue, ruleID: nil, state: .unproven)
+        let menu = MachineMenu(inputs(redCells: [red], unprovenCells: [unproven],
+                                      status: try statusReading(), tools: try toolsReading()))
+        XCTAssertEqual(menu.mac.health, .attention(1, someUnread: false))
+        assertLines(menu, contain: ["Seat Setup:  1 red cell, 1 not proven"])
+    }
+
     func testDriftedCellsCountSoOKIsTrue() throws {
         let drifted = DriftRedCell(seat: "MM", kind: ConfigKind.hooks.rawValue, ruleID: nil, state: .drift)
         let menu = MachineMenu(inputs(driftCells: [drifted], status: try statusReading(), tools: try toolsReading()))
@@ -568,7 +599,47 @@ final class MachineStatusTests: XCTestCase {
         let entry = try XCTUnwrap(unwanted.entries.first { $0.id == "botfleet-mcp" })
         let row = MachineMenuCopy.serviceRow(entry, allowlist: Self.allowlist, pm2Answered: true)
         XCTAssertTrue(row.actions.isEmpty)
-        XCTAssertEqual(row.title, "BotFleet MCP Server (On The Mac):  stopped, it follows BotFleet Server")
+        XCTAssertEqual(row.title, "BotFleet MCP Server (On The Mac):  stopped, it starts when BotFleet Server is running")
+    }
+
+    func testAnApplicationPM2NeverHeardOfIsNotCalledStoppedAndHasNoStart() throws {
+        let services = Self.macServices(changing: ["seat-mcp": .notInPM2])
+        let entry = try XCTUnwrap(services.entries.first { $0.id == "seat-mcp" })
+        let row = MachineMenuCopy.serviceRow(entry, allowlist: Self.allowlist, pm2Answered: true)
+        XCTAssertTrue(row.actions.isEmpty)
+        XCTAssertEqual(row.title, "Seat MCP:  not in this Mac's pm2, pm2 on the Mac has no record of it, so it is not started from here")
+    }
+
+    func testAServiceTheOwnerStoppedSaysSoInTheMenuRow() throws {
+        let when = Date(timeIntervalSince1970: 1_800_000_000)
+        let services = FleetServices(serverState: .running,
+                                     states: ["shellular": .stopped],
+                                     stoppedByOwner: ["shellular"],
+                                     stoppedAt: ["shellular": when])
+        let entry = try XCTUnwrap(services.entries.first { $0.id == "shellular" })
+        let row = MachineMenuCopy.serviceRow(entry, allowlist: Self.allowlist, pm2Answered: true)
+        XCTAssertEqual(row.title, "Shellular:  stopped (stopped by you at \(FleetTime.clock(when)))")
+    }
+
+    func testWhatMusterDidAboutAServiceIsInTheMenuRow() throws {
+        let at = Date(timeIntervalSince1970: 1_800_000_000)
+        let note = ReconcileNote(.restarted(at: at))
+        let services = FleetServices(serverState: .running,
+                                     states: ["shellular": .running],
+                                     reconcileNotes: ["shellular": note])
+        let entry = try XCTUnwrap(services.entries.first { $0.id == "shellular" })
+        let row = MachineMenuCopy.serviceRow(entry, allowlist: Self.allowlist, pm2Answered: true)
+        XCTAssertEqual(row.title, "Shellular:  running (Restarted by Muster at \(FleetTime.clock(at)))")
+    }
+
+    func testAServiceMusterGaveUpOnCountsAsAProblemInTheMenu() throws {
+        let note = ReconcileNote(.gaveUp(tries: 3))
+        let services = FleetServices(serverState: .running,
+                                     states: ["shellular": .stopped],
+                                     reconcileNotes: ["shellular": note])
+        let entry = try XCTUnwrap(services.entries.first { $0.id == "shellular" })
+        XCTAssertTrue(entry.needsAttention)
+        XCTAssertEqual(entry.menuNote, "Muster stopped retrying after 3 tries")
     }
 
     func testAnUnreadableAllowlistOffersNoDirectRouteAndSaysWhy() throws {
@@ -667,6 +738,7 @@ final class MachineStatusTests: XCTestCase {
         grid.finish(cells: [
             GridCell(seat: "MM", kind: .hooks, state: .missing, rules: [], coverReason: nil),
             GridCell(seat: "MA", kind: .hooks, state: .drift, rules: [], coverReason: nil),
+            GridCell(seat: "MC", kind: .hooks, state: .unproven, rules: [], coverReason: nil),
         ], trusted: true)
         let deadline = Date().addingTimeInterval(5)
         while monitor.redCount == nil, Date() < deadline {
@@ -674,6 +746,7 @@ final class MachineStatusTests: XCTestCase {
         }
         XCTAssertEqual(monitor.redCount, 1)
         XCTAssertEqual(monitor.driftCells.map(\.seat), ["MA"])
+        XCTAssertEqual(monitor.unprovenCells.map(\.seat), ["MC"])
         grid.finish(cells: [], trusted: false)
         let later = Date().addingTimeInterval(5)
         while monitor.redCount != nil, Date() < later {
@@ -681,5 +754,6 @@ final class MachineStatusTests: XCTestCase {
         }
         XCTAssertNil(monitor.redCount)
         XCTAssertTrue(monitor.driftCells.isEmpty)
+        XCTAssertTrue(monitor.unprovenCells.isEmpty)
     }
 }

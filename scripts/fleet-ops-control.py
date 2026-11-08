@@ -8,6 +8,7 @@
   python3 scripts/fleet-ops-control.py server update NAME                 (--plan | --yes) [--json]
   python3 scripts/fleet-ops-control.py server update-status fleet-cli.ID.BASELINE --plan [--json]
   python3 scripts/fleet-ops-control.py server redeploy RESOURCE_UUID      (--plan | --yes) [--json]
+  python3 scripts/fleet-ops-control.py server eavesdropper-status server --plan [--json]
   python3 scripts/fleet-ops-control.py --from-ssh                         (the forced command)
   python3 scripts/fleet-ops-control.py --check-token                      (install check, not over ssh)
 
@@ -42,29 +43,50 @@ What it promises:
     `SSH_ORIGINAL_COMMAND`, refuses any shell metacharacter, splits it with `shlex`, and
     accepts only a `server` verb, one target, one of `--plan` or `--yes` and an optional
     `--json`.  Anything more is refused.
+  * `server eavesdropper-status server --plan` reads the server eavesdropper's `status.json`
+    with `docker exec --user agentsync eavesdropper /bin/cat /data/listener/status.json` (docker
+    group membership, no sudo, run as the container's own unprivileged account, a pinned
+    environment with an empty private docker config, at most 1 MiB, 15 seconds) and answers it
+    reduced to names, counts, tokens and times by `scripts/reduced_status.py`.  It
+    takes no lock, writes no audit row for a plan and refuses `--yes`.  When the status cannot be
+    read the result is `unavailable` with an `errorCode` word (never a path or docker's own
+    text) and the exit status is 1, although no command failed.
   * Every `--yes` run appends one JSON line to `~/.local/state/fleet-tools/ops-audit.jsonl`
     (0600): time, host role, verb, target and result.  No command output is recorded, and a
-    redeploy is recorded by its resource name, never its uuid.
+    redeploy is recorded by its resource name, never its uuid.  Each row also has a short
+    `id`, and the `--yes` answer carries it (`auditID`) with the row's target (`auditTarget`),
+    so the caller's own log can name the row this run wrote.
+  * One `--yes` runs at a time on a machine:  a second one while another holds
+    `~/.local/state/fleet-tools/ops-control.lock` is refused with `errorCode` `action_busy`.
+    Plans, update-status reads and journal reads take no lock.  A chain of commands that
+    stops at a failure says how many finished first (`completedCommands`).
 
 An update is submitted until a new successful service invocation is observed; API acceptance
 of a redeploy is also submitted.  Neither is called completed from submission alone.
 
-Exit status: 0 planned, submitted or done, 1 a command failed, 2 refused.
+Exit status: 0 planned, submitted or done, 1 a command failed (or, for `server
+eavesdropper-status` alone, the status could not be read: result `unavailable`, with no
+command failed), 2 refused.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime
+import fcntl
 import json
 import os
 import re
+import secrets
 import selectors
 import shlex
 import stat
 import subprocess
 import sys
+import tempfile
 import time
+import types
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -106,6 +128,56 @@ REDEPLOYABLE_TYPES = ("application",)
 LAUNCHCTL = "/bin/launchctl"
 SYSTEMCTL_CANDIDATES = ("/usr/bin/systemctl", "/bin/systemctl")
 JOURNALCTL_CANDIDATES = ("/usr/bin/journalctl", "/bin/journalctl")
+DOCKER_CANDIDATES = ("/usr/bin/docker", "/bin/docker")
+# `server eavesdropper-status` reads the status document of the server's eavesdropper (the
+# listener daemon) out of its container with one fixed argv, `docker exec --user agentsync
+# eavesdropper /bin/cat /data/listener/status.json`: no shell, no sudo, no flag or path from the
+# request.  The caller's account needs only membership of the `docker` group, and the read runs
+# as the container's own unprivileged account (the file is 0600 and that account's), never as
+# root.  /data is the daemon's AGENT_SYNC_STATE_DIR, a docker volume, and the listener's own
+# `listener_dir` puts status.json at <state dir>/listener/status.json.
+EAVESDROPPER_TARGET = "server"
+EAVESDROPPER_CONTAINER = "eavesdropper"
+EAVESDROPPER_USER = "agentsync"
+EAVESDROPPER_CAT = "/bin/cat"
+EAVESDROPPER_STATUS_PATH = "/data/listener/status.json"
+EAVESDROPPER_STATUS_MAX_BYTES = 1024 * 1024
+EAVESDROPPER_READ_TIMEOUT = 15
+# The whole environment of that docker call is built here, never taken from the caller's: a fixed
+# PATH, the local socket, and an empty private directory as both DOCKER_CONFIG and HOME, so no
+# docker config, context, credential helper or proxy setting of the account can apply.
+DOCKER_PATH = "/usr/bin:/bin"
+DOCKER_HOST = "unix:///var/run/docker.sock"
+# Only the start of docker's stderr is kept, to be compared with known phrases and never repeated.
+DOCKER_STDERR_MAX = 4096
+# Docker's own words for a container that cannot be exec'd into (compared ignoring case).
+DOCKER_NOT_RUNNING_PHRASES = ("is not running", "no such container", "is restarting")
+# How long to wait for a child to be reaped after it was killed, so a child that will not die
+# cannot hold this helper forever.
+KILL_WAIT_SECONDS = 5
+# The reducer module sits beside the helper, in the helper's own folder: `scripts/` in a source
+# checkout, the root-owned /usr/local/lib/fleet-resource-control on the server.  It is opened
+# without following a symlink and judged by fstat on the open descriptor, never by a path
+# check.  The layout is read from who owns that folder.  A folder owned by TRUSTED_MODULE_UID (root)
+# is the installed layout: the file must be root's too, and neither may be writable by group or
+# others.  Any other folder is a checkout: the file may also be owned by the calling account,
+# the folder must be that account's too, and still no group or other write bit is allowed.  A
+# checkout owned by another account is refused.  Nothing in the request or the environment
+# selects a place.
+HELPER_DIR = Path(__file__).resolve().parent
+TRUSTED_MODULE_UID = 0
+REDUCED_STATUS_NAME = "reduced_status.py"
+REDUCED_STATUS_MAX_BYTES = 256 * 1024
+# The reason words an unavailable answer may carry, each with the plain sentence for `detail`.
+EAVESDROPPER_UNAVAILABLE = {
+    "docker_unavailable": "docker could not be run",
+    "timeout": "reading the status took too long",
+    "container_not_running": "the eavesdropper container is not running",
+    "read_failed": "the eavesdropper container or its status file could not be read",
+    "too_large": "the status file is larger than the allowed size",
+    "not_json": "the status file is not a JSON object",
+    "module_unavailable": "the status reduction module is not installed beside the helper",
+}
 # pm2 runs the way Muster's own pm2 client runs it: a pinned node and the pm2 script,
 # never a PATH lookup a caller could shadow.
 NODE_CANDIDATES = ("/opt/homebrew/bin/node", "/usr/local/bin/node")
@@ -189,11 +261,15 @@ class Refused(Exception):
 
 
 class Failed(Exception):
-    """An allowed command ran and did not succeed."""
+    """An allowed command ran and did not succeed.
 
-    def __init__(self, message, *, error_code=None):
+    `completed` is how many commands of the plan finished before this one, when the run
+    was a chain;  None when it was not."""
+
+    def __init__(self, message, *, error_code=None, completed=None):
         super().__init__(message)
         self.error_code = error_code
+        self.completed = completed
 
 
 # MARK: - The allowlist
@@ -368,8 +444,7 @@ def _run_capped(argv, timeout, env, max_bytes, combine_stderr=False):
             except subprocess.TimeoutExpired:
                 timed_out = True
         if timed_out:
-            proc.kill()
-            proc.wait()
+            _kill_and_reap(proc)
             return 124, b""
         return proc.returncode, bytes(kept)
     except BaseException:
@@ -377,11 +452,7 @@ def _run_capped(argv, timeout, env, max_bytes, combine_stderr=False):
         # lifetime inside this call even when capture or waiting is interrupted.
         try:
             if proc.poll() is None:
-                proc.kill()
-        except BaseException:  # noqa: BLE001, S110 - Preserve the original interruption.
-            pass
-        try:
-            proc.wait()
+                _kill_and_reap(proc)
         except BaseException:  # noqa: BLE001, S110 - Preserve the original interruption.
             pass
         raise
@@ -395,6 +466,100 @@ def _run_capped(argv, timeout, env, max_bytes, combine_stderr=False):
             proc.stdout.close()
         except BaseException:  # noqa: BLE001, S110 - Preserve the original interruption.
             pass
+
+
+def _kill_and_reap(proc):
+    """Kill `proc` and wait for it, but never without a limit: a child that will not die is left
+    to the system instead of holding this helper forever."""
+    try:
+        proc.kill()
+    except OSError:
+        pass
+    try:
+        proc.wait(timeout=KILL_WAIT_SECONDS)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+def run_bounded_read(argv, timeout, env, max_bytes, stderr_max=DOCKER_STDERR_MAX):
+    """(exit status, stdout, stderr, over).  An argv list, never a shell, stdin closed.
+
+    Stdout is never held beyond `max_bytes`: the first byte past the limit kills the child at
+    once and answers `over` (True) with no stdout, so a huge file costs neither memory nor the
+    whole timeout.  Stderr is read alongside (so a chatty child cannot stall on a full pipe) and
+    only its first `stderr_max` bytes are kept, for a caller that classifies it and never repeats
+    it.  A timeout is status 124 and a program that cannot start is 127.  After a kill the wait
+    for the child is bounded."""
+    if not isinstance(argv, list) or not argv or not all(isinstance(a, str) for a in argv):
+        raise Refused("internal: not an argv list")
+    try:
+        proc = subprocess.Popen(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            cwd="/",
+            shell=False,
+        )
+    except OSError:
+        return 127, b"", b"", False
+    out = bytearray()
+    err = bytearray()
+    over = False
+    timed_out = False
+    selector = selectors.DefaultSelector()
+    try:
+        deadline = time.monotonic() + timeout
+        selector.register(proc.stdout, selectors.EVENT_READ, "out")
+        selector.register(proc.stderr, selectors.EVENT_READ, "err")
+        while selector.get_map() and not over:
+            remaining = deadline - time.monotonic()
+            events = selector.select(remaining) if remaining > 0 else []
+            if not events:
+                timed_out = True
+                break
+            for key, _ in events:
+                chunk = os.read(key.fd, 65536)
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                if key.data == "out":
+                    out += chunk
+                    if len(out) > max_bytes:
+                        over = True
+                        break
+                elif len(err) < stderr_max:
+                    err += chunk[: stderr_max - len(err)]
+        if not (over or timed_out):
+            try:
+                proc.wait(timeout=max(0.0, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                timed_out = True
+        if over:
+            _kill_and_reap(proc)
+            return -9, b"", bytes(err), True
+        if timed_out:
+            _kill_and_reap(proc)
+            return 124, b"", bytes(err), False
+        return proc.returncode, bytes(out), bytes(err), False
+    except BaseException:
+        try:
+            if proc.poll() is None:
+                _kill_and_reap(proc)
+        except BaseException:  # noqa: BLE001, S110 - Preserve the original interruption.
+            pass
+        raise
+    finally:
+        try:
+            selector.close()
+        except BaseException:  # noqa: BLE001, S110 - Best-effort cleanup must preserve the result.
+            pass
+        for stream in (proc.stdout, proc.stderr):
+            try:
+                stream.close()
+            except BaseException:  # noqa: BLE001, S110 - Preserve the original interruption.
+                pass
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -439,6 +604,7 @@ class Context:
         pm2_script=None,
         sleep=None,
         monotonic=None,
+        reader=None,
     ):
         self.platform = platform or sys.platform
         self.uid = os.getuid() if uid is None else uid
@@ -462,6 +628,8 @@ class Context:
         self.pm2_script = pm2_script
         self.sleep = sleep or time.sleep
         self.monotonic = monotonic or time.monotonic
+        # The bounded reader of `server eavesdropper-status` (see run_bounded_read).
+        self.reader = reader or run_bounded_read
 
     def child_env(self):
         env = {k: v for k, v in self.environ.items() if k in CHILD_ENV_KEEP}
@@ -583,6 +751,164 @@ def truncate_logs(raw):
     if truncated:
         kept = LOG_TRUNCATED_NOTE + "\n" + kept
     return kept, len(lines)
+
+
+def _docker():
+    for candidate in DOCKER_CANDIDATES:
+        if os.path.isfile(candidate):
+            return candidate
+    return DOCKER_CANDIDATES[0]
+
+
+def _module_trusted(info, owners):
+    """True when an opened module file or folder is owned by one of `owners` and neither group
+    nor others can write it."""
+    return info.st_uid in owners and not info.st_mode & 0o022
+
+
+def _read_module_source(ctx):
+    """The reducer module's bytes from the helper's own folder, or None when it is missing or
+    not trusted.
+
+    The folder and then the file are opened with O_NOFOLLOW (so a symlink is refused), both are
+    judged by fstat on the descriptor that was opened, and the bytes are read from that same
+    descriptor: the path is never looked at again, so a file swapped in afterwards changes
+    nothing.  A folder owned by TRUSTED_MODULE_UID is the installed layout (the file must be that
+    owner's as well); any other folder is a checkout and may also be the calling account's,
+    file and folder both.  The file is opened non-blocking, so a pipe put in its place is refused
+    by its type instead of waiting."""
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    cloexec = getattr(os, "O_CLOEXEC", 0)
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | nofollow | cloexec
+    opened = []
+    try:
+        fd = os.open(str(HELPER_DIR), directory_flags)
+        opened.append(fd)
+        info = os.fstat(fd)
+        if not stat.S_ISDIR(info.st_mode):
+            return None
+        installed = info.st_uid == TRUSTED_MODULE_UID
+        owners = (TRUSTED_MODULE_UID,) if installed else (TRUSTED_MODULE_UID, ctx.uid)
+        # A checkout folder must be the calling account's own, or root's: nobody else's.
+        if not _module_trusted(info, (TRUSTED_MODULE_UID, ctx.uid)):
+            return None
+        file_fd = os.open(
+            REDUCED_STATUS_NAME, os.O_RDONLY | os.O_NONBLOCK | nofollow | cloexec, dir_fd=fd
+        )
+        opened.append(file_fd)
+        info = os.fstat(file_fd)
+        if not stat.S_ISREG(info.st_mode) or not _module_trusted(info, owners):
+            return None
+        if info.st_size > REDUCED_STATUS_MAX_BYTES:
+            return None
+        chunks = []
+        total = 0
+        while True:
+            chunk = os.read(file_fd, 65536)
+            if not chunk:
+                return b"".join(chunks)
+            total += len(chunk)
+            if total > REDUCED_STATUS_MAX_BYTES:
+                return None
+            chunks.append(chunk)
+    except OSError:
+        return None
+    finally:
+        for descriptor in opened:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+
+
+def _load_reduced_status(ctx):
+    """The reduced_status module, or None when it cannot be trusted or loaded.
+
+    The bytes come from `_read_module_source` and are compiled and run in memory into a fresh
+    module object: no import system, no sys.path (so no module of the same name can be put
+    in front of it), no __pycache__ and no second open of the path."""
+    source = _read_module_source(ctx)
+    if source is None:
+        return None
+    try:
+        code = compile(source, REDUCED_STATUS_NAME, "exec", dont_inherit=True)
+        module = types.ModuleType("reduced_status")
+        exec(code, module.__dict__)  # noqa: S102 - the bytes were just judged trusted
+    except (Exception, SystemExit):  # noqa: BLE001 - any load failure is the same answer
+        return None
+    return module if callable(getattr(module, "reduce_status", None)) else None
+
+
+def _docker_env(config_dir):
+    """The whole environment of the docker call: nothing from the caller's."""
+    return {
+        "PATH": DOCKER_PATH,
+        "DOCKER_HOST": DOCKER_HOST,
+        "DOCKER_CONFIG": config_dir,
+        "HOME": config_dir,
+    }
+
+
+def _docker_failure(stderr):
+    """The reason word for a `docker exec` that exited non-zero.  Only the start of stderr is
+    looked at, and only to compare it with docker's known phrases for a container that is not
+    there or not running; anything else is `read_failed`, and the text is never kept."""
+    text = (stderr or b"")[:DOCKER_STDERR_MAX].decode("utf-8", "replace").lower()
+    if any(phrase in text for phrase in DOCKER_NOT_RUNNING_PHRASES):
+        return "container_not_running"
+    return "read_failed"
+
+
+def read_eavesdropper_status(ctx):
+    """(the status.json document, None) or (None, a reason word from EAVESDROPPER_UNAVAILABLE).
+
+    One argv, run without a shell and without sudo:
+    `docker exec --user agentsync eavesdropper /bin/cat /data/listener/status.json`.  The environment is
+    pinned (`_docker_env`, with an empty private temporary directory as the docker config), the
+    read stops at the first byte past the limit and answers `too_large` at once, and the reason
+    word is all a caller learns of a failure: docker's own words are only compared with known
+    phrases, never kept.
+
+    Privilege: the caller's account reaches the docker socket (root:docker, mode 0660) through its
+    membership of the `docker` group, so no sudo, no sudoers entry and no root shell is used.
+    `--user agentsync` runs `cat` as the container's own unprivileged account, which owns the
+    0600 file, so the read is no wider than that account's.  The container, the user and the
+    path are constants here, so no word from a request can reach docker."""
+    argv = [
+        _docker(),
+        "exec",
+        "--user",
+        EAVESDROPPER_USER,
+        EAVESDROPPER_CONTAINER,
+        EAVESDROPPER_CAT,
+        EAVESDROPPER_STATUS_PATH,
+    ]
+    try:
+        scratch = tempfile.TemporaryDirectory(prefix="fleet-ops-docker-")
+    except OSError:
+        return None, "docker_unavailable"
+    with scratch as config_dir:
+        status, out, err, over = ctx.reader(
+            argv,
+            timeout=EAVESDROPPER_READ_TIMEOUT,
+            env=_docker_env(config_dir),
+            max_bytes=EAVESDROPPER_STATUS_MAX_BYTES,
+        )
+    if over:
+        return None, "too_large"
+    if status == 127:
+        return None, "docker_unavailable"
+    if status == 124:
+        return None, "timeout"
+    if status != 0:
+        return None, _docker_failure(err)
+    try:
+        document = json.loads((out or b"").decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        return None, "not_json"
+    if not isinstance(document, dict):
+        return None, "not_json"
+    return document, None
 
 
 def _pm2_prefix(ctx):
@@ -1283,12 +1609,53 @@ def execute(ctx, scope, action, target, commands):
             raise Failed(f"Coolify answered HTTP {status}" if status else "Coolify did not answer")
         return f"Coolify accepted the redeploy (HTTP {status})"
     env = ctx.pm2_env() if scope == "pm2" else ctx.child_env()
+    finished = 0
     for argv in commands:
         status, _ = ctx.runner(argv, timeout=COMMAND_TIMEOUT, env=env)
         if status != 0:
             verb = next((a for a in argv[1:] if not a.startswith("-") and "/" not in a), action)
-            raise Failed(f"{os.path.basename(argv[0])} {verb} exited {status}")
+            raise Failed(f"{os.path.basename(argv[0])} {verb} exited {status}", completed=finished)
+        finished += 1
     return "done" if commands else "nothing to do"
+
+
+@contextlib.contextmanager
+def action_lock(ctx):
+    """Hold the one `--yes` lock on this machine, or refuse at once.
+
+    A second caller, such as a second Muster or a shell, gets a fixed refusal instead of
+    racing the first one on the same unit.  The lock is released when the process exits,
+    however it exits."""
+    directory = ctx.home / ".local" / "state" / "fleet-tools"
+    try:
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        info = directory.lstat()
+        fd = os.open(
+            directory / "ops-control.lock",
+            os.O_RDWR | os.O_CREAT | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+    except OSError:
+        raise Refused(
+            "the action lock is unavailable", error_code="action_lock_unavailable"
+        ) from None
+    try:
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
+            raise Refused(
+                "the action lock directory is untrusted", error_code="action_lock_unavailable"
+            )
+        lock_info = os.fstat(fd)
+        if not stat.S_ISREG(lock_info.st_mode) or lock_info.st_uid != os.getuid():
+            raise Refused("the action lock is untrusted", error_code="action_lock_unavailable")
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise Refused(
+                "another action is still running on this machine", error_code="action_busy"
+            ) from None
+        yield
+    finally:
+        os.close(fd)
 
 
 def execute_logs(ctx, commands):
@@ -1319,6 +1686,7 @@ def audit(
     invocation_id=None,
     verified=None,
     baseline=None,
+    row_id=None,
 ):
     """One JSON line, 0600, appended.  Never command output, never a uuid or a hostname.
     A finished logs run adds its line count and nothing of the text."""
@@ -1329,6 +1697,10 @@ def audit(
         "target": target,
         "result": result,
     }
+    # A short id the caller's own log can store, so the two rows of one action link up.
+    # The function answers True only when the row was written.
+    if isinstance(row_id, str) and re.fullmatch(r"[0-9a-f]{12}", row_id):
+        row["id"] = row_id
     if lines is not None:
         row["lines"] = lines
     if route in ("sudo-system-update", "root-system-update"):
@@ -1382,6 +1754,72 @@ def handle(ctx, scope, action, target, mode):
             receipt, code = update_status(ctx, config, target, mode)
             answer.update(receipt)
             return answer, code
+        if scope == "server" and action == "seat-inventory":
+            # A read of names and counts under this account's home, so it takes no lock, asks
+            # for no sudo and writes no audit row.  Only `--plan` is accepted:  there is
+            # nothing to confirm and nothing to run.
+            # Like every server verb, it runs on the server only:  off it the module would read
+            # another machine's home and still label the answer as the server's.
+            _server_only(ctx)
+            if mode != "plan":
+                raise Refused("seat-inventory only reads:  pass --plan")
+            # -I omits the script directory. Only this reviewed sibling directory is
+            # added; neither the request nor the environment selects an import path.
+            scripts = str(Path(__file__).resolve().parent)
+            if scripts not in sys.path:
+                sys.path.insert(0, scripts)
+            import fleet_seat_inventory
+
+            if not fleet_seat_inventory.PLATFORM_RE.fullmatch(target or "") or (
+                target not in fleet_seat_inventory.PLATFORMS
+            ):
+                raise Refused("that platform has no seat inventory")
+            document = fleet_seat_inventory.inventory(target, str(ctx.home), host="server")
+            answer.update(
+                ok=True,
+                result="planned",
+                detail="read-only inventory of what the platform has installed",
+                inventory=document,
+            )
+            return answer, 0
+        if scope == "server" and action == "eavesdropper-status":
+            # A read of the server eavesdropper's own status document, reduced to names, counts,
+            # tokens and times.  Like seat-inventory it takes no lock, asks for no sudo and writes
+            # no audit row for a plan, and only `--plan` is accepted: there is nothing to run.
+            # It runs on the server only, because the container it reads is the server's.
+            _server_only(ctx)
+            if mode != "plan":
+                raise Refused("eavesdropper-status only reads: pass --plan")
+            if target != EAVESDROPPER_TARGET:
+                raise Refused("only the server's eavesdropper has a status here")
+            document = reason = None
+            module = _load_reduced_status(ctx)
+            if module is None:
+                reason = "module_unavailable"
+            else:
+                document, reason = read_eavesdropper_status(ctx)
+            if document is not None:
+                try:
+                    reduced = module.reduce_status(document, ctx.now(), "server")
+                except Exception:  # noqa: BLE001 - an unusable module is the same answer
+                    document, reason = None, "module_unavailable"
+            if document is None:
+                # Not a refusal (the request was fine) and not a failed command: the status
+                # cannot be shown.  The reason word is fixed, and no path or docker text is kept.
+                answer.update(
+                    ok=False,
+                    result="unavailable",
+                    detail=EAVESDROPPER_UNAVAILABLE[reason],
+                    errorCode=reason,
+                )
+                return answer, 1
+            answer.update(
+                ok=True,
+                result="planned",
+                detail="read-only status of the server's eavesdropper",
+                status=reduced,
+            )
+            return answer, 0
         if scope == "server" and action in ("resource-status", "resource-policy"):
             if not config["resourcePolicy"]:
                 raise Refused("coding resource controls are not in the allowlist")
@@ -1392,34 +1830,43 @@ def handle(ctx, scope, action, target, mode):
                 sys.path.insert(0, scripts)
             from fleet_resource_control import handle as handle_resource
 
+            if mode == "yes" and action == "resource-policy":
+                # A write holds the same one-action lock as every other `--yes` write.
+                with action_lock(ctx):
+                    return handle_resource(ctx, action, target, mode)
             return handle_resource(ctx, action, target, mode)
-        commands, note, audit_target = plan_request(ctx, config, scope, action, target)
-        answer["commands"] = commands
-        if mode == "plan":
-            answer.update(ok=True, result="planned", detail=note)
-            code = 0
-        elif scope == "server" and action == "logs":
-            detail, text, log_lines = execute_logs(ctx, commands)
-            answer.update(ok=True, result="done", detail=detail, output=text, lines=log_lines)
-            code = 0
-        elif scope == "server" and action == "update":
-            receipt, code = execute_update(ctx, config, target, commands)
-            answer.update(receipt)
-        elif scope == "server" and action == "redeploy":
-            detail = execute(ctx, scope, action, target, commands)
-            answer.update(
-                ok=True,
-                result="submitted",
-                detail=detail,
-                executionState="submitted",
-                verified=False,
-            )
-            code = 0
-        else:
-            answer.update(
-                ok=True, result="done", detail=execute(ctx, scope, action, target, commands)
-            )
-            code = 0
+        with contextlib.ExitStack() as held:
+            # A logs run only reads the journal, so it takes no write lock.
+            if mode == "yes" and not (scope == "server" and action == "logs"):
+                held.enter_context(action_lock(ctx))
+            commands, note, audit_target = plan_request(ctx, config, scope, action, target)
+            answer["commands"] = commands
+            if mode == "plan":
+                answer.update(ok=True, result="planned", detail=note)
+                code = 0
+            elif scope == "server" and action == "logs":
+                detail, text, log_lines = execute_logs(ctx, commands)
+                answer.update(ok=True, result="done", detail=detail, output=text, lines=log_lines)
+                code = 0
+            elif scope == "server" and action == "update":
+                receipt, code = execute_update(ctx, config, target, commands)
+                answer.update(receipt)
+            elif scope == "server" and action == "redeploy":
+                detail = execute(ctx, scope, action, target, commands)
+                answer.update(
+                    ok=True,
+                    result="submitted",
+                    detail=detail,
+                    executionState="submitted",
+                    verified=False,
+                )
+                code = 0
+            else:
+                answer.update(
+                    ok=True, result="done", detail=execute(ctx, scope, action, target, commands)
+                )
+                answer["completedCommands"] = len(commands)
+                code = 0
     except Refused as exc:
         answer.update(ok=False, result="refused", detail=str(exc))
         if exc.error_code:
@@ -1429,6 +1876,8 @@ def handle(ctx, scope, action, target, mode):
         answer.update(ok=False, result="failed", detail=str(exc))
         if exc.error_code:
             answer["errorCode"] = exc.error_code
+        if exc.completed is not None:
+            answer["completedCommands"] = exc.completed
         code = 1
     if mode == "yes" and not (scope == "server" and action == "update-status"):
         if scope == "server" and action == "redeploy" and audit_target == target:
@@ -1440,18 +1889,24 @@ def handle(ctx, scope, action, target, mode):
                 route = "sudo-system-update"
             elif ctx.uid == 0 and answer["commands"] == [direct]:
                 route = "root-system-update"
-        audit(
+        row_id = secrets.token_hex(6)
+        written_target = (audit_target or "")[:120]
+        if audit(
             ctx,
             scope,
             action,
-            (audit_target or "")[:120],
+            written_target,
             answer["result"],
             lines=log_lines if answer["result"] == "done" else None,
             route=route,
             invocation_id=answer.get("invocationID"),
             verified=answer.get("verified"),
             baseline=answer.get("baselineStartMonotonic"),
-        )
+            row_id=row_id,
+        ):
+            # Only a row that was written is named, so the caller never links to nothing.
+            answer["auditID"] = row_id
+            answer["auditTarget"] = written_target
     return answer, code
 
 
@@ -1501,6 +1956,8 @@ def parse_ssh_command(text):
         "logs",
         "resource-status",
         "resource-policy",
+        "seat-inventory",
+        "eavesdropper-status",
     ):
         raise Refused("unknown server verb")
     if words[:3] != plain:
