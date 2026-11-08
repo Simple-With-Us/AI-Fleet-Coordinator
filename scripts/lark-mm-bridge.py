@@ -54,39 +54,36 @@ from pathlib import Path
 
 # The secret scanner lives in the managed fleet runtime, which is a separate
 # checkout and is not on the interpreter's path.  Add it before the import, so
-# the bridge does not depend on how it was launched.  The runtime was renamed
-# from agent-sync-runtime to simple-tools-runtime on Nov 2, 2026;  the old name
-# alone left the installed bridge crash-looping on ModuleNotFoundError
-# (AFC-490).  A copy run from a checkout uses its own scripts folder first.
+# the bridge does not depend on how it was launched.  A copy run from a checkout
+# uses its own scripts folder first (AFC-490).
 _RUNTIME_SCRIPTS = (
     "~/apps/lanes/_managed/fleet/simple-tools-runtime/scripts",
-    "~/apps/lanes/_managed/fleet/agent-sync-runtime/scripts",
 )
 
 
 def _runtime_scripts_dir(home=None, isdir=os.path.isdir, here=None):
-    """The first folder that holds the `agent_sync` package, or None."""
+    """The first folder that holds the `simple_tools` package, or None."""
     here = here if here is not None else os.path.dirname(os.path.abspath(__file__))
     candidates = [here]
     for path in _RUNTIME_SCRIPTS:
         candidates.append(os.path.join(home, path[2:]) if home else os.path.expanduser(path))
     for candidate in candidates:
-        if isdir(os.path.join(candidate, "agent_sync")):
+        if isdir(os.path.join(candidate, "simple_tools")):
             return candidate
     return None
 
 
-_AGENT_SYNC_SCRIPTS = _runtime_scripts_dir()
-if _AGENT_SYNC_SCRIPTS and _AGENT_SYNC_SCRIPTS not in sys.path:
-    sys.path.insert(0, _AGENT_SYNC_SCRIPTS)
+_SIMPLE_TOOLS_SCRIPTS = _runtime_scripts_dir()
+if _SIMPLE_TOOLS_SCRIPTS and _SIMPLE_TOOLS_SCRIPTS not in sys.path:
+    sys.path.insert(0, _SIMPLE_TOOLS_SCRIPTS)
 
 try:
-    from agent_sync.secretscan import scan as scan_secret
+    from simple_tools.secretscan import scan as scan_secret
 except ModuleNotFoundError:
     # Fail closed with a message that names where it looked.  The scanner is what stops a
     # credential-shaped reply reaching Lark, so there is no stub to fall back on.
     sys.stderr.write(
-        "lark-mm-bridge: agent_sync.secretscan not found;  looked in this script's folder and in "
+        "lark-mm-bridge: simple_tools.secretscan not found;  looked in this script's folder and in "
         + " and ".join(_RUNTIME_SCRIPTS)
         + ".  Install or update the fleet runtime, then restart the bridge.\n"
     )
@@ -104,8 +101,8 @@ DEFAULT_TIMEOUT = 1200
 REPLY_TIMEOUT = 300
 # The owner watches Zulip, so every Lark exchange is mirrored there with the
 # MiniMax session id, which is the thread the answer came from.
-AGENT_SYNC = os.path.expanduser("~/.local/bin/simple-chat")
-AGENT_SYNC_ROOT = os.path.expanduser("~/.agent-sync")
+SIMPLE_TOOLS = os.path.expanduser("~/.local/bin/simple-chat")
+SIMPLE_TOOLS_ROOT = os.path.expanduser("~/.simple-tools")
 ZULIP_TOPIC_PREFIX = "Lark"
 MAX_REPLY_CHARS = 4000
 # How many delivered message ids the dedup state remembers.  Rows that have
@@ -1226,7 +1223,7 @@ class Bridge:
             env["AGENT_SESSION"] = session_id
         try:
             run(
-                [AGENT_SYNC, "post", "--topic", topic, body],
+                [SIMPLE_TOOLS, "post", "--topic", topic, body],
                 timeout=REPLY_TIMEOUT,
                 env=env,
             )
@@ -1248,12 +1245,12 @@ class Bridge:
         used, under its own lock, so the two writers cannot interleave.
         """
         try:
-            from agent_sync import live as L
+            from simple_tools import live as L
         except ImportError as exc:
             log("could not record the Lark exchange in the seat inbox: %s" % exc)
             return
         try:
-            paths = L.SeatPaths(self.args.agent_sync_root, self.args.seat)
+            paths = L.SeatPaths(self.args.simple_tools_root, self.args.seat)
             now = time.time()
             # The owner flag and the wake flags follow who sent it:  an
             # Operator signal is not the owner asking, so it must not wake the
@@ -1931,10 +1928,10 @@ def build_parser():
         help="the fleet seat whose inbox records the Lark exchange",
     )
     parser.add_argument(
-        "--agent-sync-root",
-        dest="agent_sync_root",
-        default=AGENT_SYNC_ROOT,
-        help="the agent-sync state root that holds the seat inbox",
+        "--simple-tools-root",
+        dest="simple_tools_root",
+        default=SIMPLE_TOOLS_ROOT,
+        help="the simple-tools state root that holds the seat inbox",
     )
     parser.add_argument(
         "--signal",

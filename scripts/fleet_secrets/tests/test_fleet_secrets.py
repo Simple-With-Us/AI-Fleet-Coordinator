@@ -764,9 +764,9 @@ class NoValueInErrorsTests(Base):
 
 class ConfigTests(Base):
     def test_project_id_env_beats_file(self):
-        (self.home / ".agent-sync").mkdir()
+        (self.home / ".simple-tools").mkdir()
         other = "00000000-0000-4000-8000-0000000000ff"
-        (self.home / ".agent-sync" / "fleet-ops-project-id").write_text(other + "\n")
+        (self.home / ".simple-tools" / "fleet-ops-project-id").write_text(other + "\n")
         self.assertEqual(core.infisical_project_id({core.ENV_PROJECT: PROJECT}, self.home), PROJECT)
         self.assertEqual(core.infisical_project_id({}, self.home), other)
 
@@ -777,7 +777,7 @@ class ConfigTests(Base):
         self.assertEqual((code, out), (4, ""))
         self.assertIn(
             "the Fleet-OPS Infisical project id is not set:  set INFISICAL_FLEET_OPS_PROJECT_ID "
-            "or put it in ~/.agent-sync/fleet-ops-project-id "
+            "or put it in ~/.simple-tools/fleet-ops-project-id "
             "(it lives in the private fleet-ops inventory)",
             err,
         )

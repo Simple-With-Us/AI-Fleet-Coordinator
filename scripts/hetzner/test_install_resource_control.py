@@ -173,7 +173,7 @@ class InstallerTests(unittest.TestCase):
     def test_the_reducer_sits_beside_the_helper_in_the_scripts_folder(self):
         self.assertTrue((SCRIPTS / "reduced_status.py").is_file())
         self.assertTrue((SCRIPTS / "fleet-ops-control.py").is_file())
-        self.assertFalse((SCRIPTS / "agent_sync" / "reduced_status.py").exists())
+        self.assertFalse((SCRIPTS / "simple_tools" / "reduced_status.py").exists())
 
     def test_nonroot_or_nonlinux_refused_before_any_destination_write(self):
         for uid, platform in ((1, "linux"), (0, "darwin")):

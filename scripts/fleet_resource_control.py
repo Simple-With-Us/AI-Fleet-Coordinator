@@ -134,7 +134,7 @@ class InfisicalStore:
         self.token = private_text(ctx.home / ".config/fleet-tools/resource-policy-token", ctx.uid)
         if not self.token or any(c.isspace() or ord(c) < 33 for c in self.token):
             raise Refused("the resource-policy credential is malformed")
-        project = private_text(ctx.home / ".agent-sync/fleet-ops-project-id", ctx.uid)
+        project = private_text(ctx.home / ".simple-tools/fleet-ops-project-id", ctx.uid)
         if not re.fullmatch(r"[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}", project):
             raise Refused("the resource-policy project metadata is malformed")
         self.project = project
