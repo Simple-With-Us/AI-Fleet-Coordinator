@@ -4268,7 +4268,11 @@ class WorkflowVerbs:
         page = _int(args, "page", 1, 1000) if "page" in args else 1
         head = _ref(args, "head") if "head" in args else None
         base = _ref(args, "base") if "base" in args else None
-        q = f"state={state}&per_page={limit}&page={page}&sort=created&direction=asc"
+        # Newest first, like gh pr list: a caller paging to a cap (lane retire reads at most
+        # 1000 rows) needs the recent window, not the oldest one (Seer finding on PR #1515).
+        # The bounded-inventory verb below keeps created-ascending on purpose; its contract
+        # says so and its consumers reconcile against live state.
+        q = f"state={state}&per_page={limit}&page={page}&sort=created&direction=desc"
         if head is not None:
             q += "&head=" + quote(repo.split("/")[0] + ":" + head, safe="")
         if base is not None:

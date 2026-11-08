@@ -35,7 +35,7 @@ class PrListPages(unittest.TestCase):
             c.calls[0],
             (
                 "GET",
-                f"/repos/{REPO}/pulls?state=open&per_page=1&page=2&sort=created&direction=asc&head="
+                f"/repos/{REPO}/pulls?state=open&per_page=1&page=2&sort=created&direction=desc&head="
                 + REPO.split("/")[0]
                 + "%3Arelease%2Fa&base=main",
                 None,
