@@ -180,3 +180,140 @@ class WorkflowPermissions(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WorkflowPrElevation(unittest.TestCase):
+    MERGE = {"repo": REPO, "number": 7, "method": "squash", "expected_head_sha": SHA}
+
+    def run_merge(self, files, ceiling, action="wf_merge_guarded"):
+        minter = Minter()
+        if action == "wf_merge_guarded":
+            client = Client(files, {"merged": True, "sha": "b" * 40})
+        else:
+            pr = {"head": {"sha": SHA}, "base": {"ref": "main"}}
+            client = Client(pr, {"files": files}, {"message": "ok"})
+        args = self.MERGE if action == "wf_merge_guarded" else {"repo": REPO, "number": 7, "expected_head_sha": SHA}
+        handle = WorkflowVerbs.for_action(
+            client, Policy(ceiling), minter, "swu-wise", action, REPO, args=args
+        )
+        handle.run(action, args)
+        return client, minter
+
+    def test_workflow_pr_mints_second_token_with_workflows(self):
+        for action in ("wf_merge_guarded", "wf_update_branch"):
+            client, minter = self.run_merge(
+                [{"filename": "docs/a.md"}, {"filename": ".github/workflows/ci.yml"}],
+                {**CEILING, "workflows": "write"},
+                action,
+            )
+            self.assertEqual(len(minter.calls), 2, action)
+            self.assertEqual(minter.calls[1][2].get("workflows"), "write")
+            self.assertNotIn("workflows", minter.calls[0][2])
+            self.assertEqual(client.calls[-2][0], "GET")
+            self.assertEqual(client.calls[-1][0], "PUT")
+            if action == "wf_update_branch":
+                self.assertIn(f"/compare/{SHA}...main", client.calls[1][1])
+
+    def test_ordinary_pr_does_not_elevate(self):
+        for action in ("wf_merge_guarded", "wf_update_branch"):
+            _, minter = self.run_merge(
+                [{"filename": "docs/a.md"}], {**CEILING, "workflows": "write"}, action
+            )
+            self.assertEqual(len(minter.calls), 1, action)
+            self.assertNotIn("workflows", minter.calls[0][2])
+
+    def test_renamed_out_of_workflows_elevates(self):
+        _, minter = self.run_merge(
+            [{"filename": "docs/ci.yml", "previous_filename": ".github/workflows/ci.yml"}],
+            {**CEILING, "workflows": "write"},
+        )
+        self.assertEqual(minter.calls[1][2].get("workflows"), "write")
+
+    def test_ceiling_without_workflows_still_refused_before_write(self):
+        minter = Minter()
+        client = Client([{"filename": ".github/workflows/ci.yml"}])
+        handle = WorkflowVerbs.for_action(
+            client, Policy(CEILING), minter, "swu-wise", "wf_merge_guarded", REPO, args=self.MERGE
+        )
+        with self.assertRaises(CeilingDenied):
+            handle.run("wf_merge_guarded", self.MERGE)
+        self.assertEqual([c[0] for c in client.calls], ["GET"])
+        self.assertEqual(len(minter.calls), 1)
+
+    def test_preread_failure_blocks_write(self):
+        from git_relay.github_client import RelayGitHubError
+        from git_relay.server import PreReadUnavailable
+
+        class Boom(Client):
+            def _call(self, method, path, *a, **k):
+                self.calls.append((method, path))
+                raise RelayGitHubError(503, "down")
+
+        minter, client = Minter(), Boom()
+        handle = WorkflowVerbs.for_action(
+            client, Policy(CEILING), minter, "swu-wise", "wf_merge_guarded", REPO, args=self.MERGE
+        )
+        with self.assertRaises(PreReadUnavailable):
+            handle.run("wf_merge_guarded", self.MERGE)
+        self.assertEqual([c[0] for c in client.calls], ["GET"])
+
+    def test_update_branch_refuses_moved_head_before_any_mint_or_write(self):
+        minter = Minter()
+        client = Client({"head": {"sha": "c" * 40}, "base": {"ref": "main"}})
+        args = {"repo": REPO, "number": 7, "expected_head_sha": SHA}
+        handle = WorkflowVerbs.for_action(
+            client, Policy({**CEILING, "workflows": "write"}), minter, "swu-wise",
+            "wf_update_branch", REPO, args=args,
+        )
+        with self.assertRaises(Refused):
+            handle.run("wf_update_branch", args)
+        self.assertEqual([c[0] for c in client.calls], ["GET"])
+        self.assertEqual(len(minter.calls), 1)
+
+    def update_branch(self, files, ceiling=None):
+        minter = Minter()
+        client = Client({"head": {"sha": SHA}, "base": {"ref": "release/2026 nov"}}, {"files": files}, {"message": "ok"})
+        args = {"repo": REPO, "number": 7, "expected_head_sha": SHA}
+        handle = WorkflowVerbs.for_action(
+            client, Policy(ceiling or {**CEILING, "workflows": "write"}), minter, "swu-wise",
+            "wf_update_branch", REPO, args=args,
+        )
+        return client, minter, handle, args
+
+    def test_update_branch_large_compare_is_one_read_and_elevates(self):
+        files = [{"filename": f"src/f{i}.py"} for i in range(150)]
+        files[120] = {"filename": ".github/workflows/ci.yml"}
+        client, minter, handle, args = self.update_branch(files)
+        handle.run("wf_update_branch", args)
+        self.assertEqual(len([c for c in client.calls if "/compare/" in c[1]]), 1)
+        self.assertNotIn("per_page", client.calls[1][1])
+        self.assertEqual(minter.calls[1][2].get("workflows"), "write")
+        self.assertEqual(client.calls[-1][0], "PUT")
+
+    def test_update_branch_exactly_100_files_is_one_read_no_loop(self):
+        files = [{"filename": f"src/f{i}.py"} for i in range(100)]
+        client, minter, handle, args = self.update_branch(files)
+        handle.run("wf_update_branch", args)
+        self.assertEqual(len(client.calls), 3)
+        self.assertEqual(len(minter.calls), 1)
+
+    def test_update_branch_300_files_without_workflow_is_unverifiable(self):
+        from git_relay.server import PreReadUnavailable
+
+        files = [{"filename": f"src/f{i}.py"} for i in range(300)]
+        client, minter, handle, args = self.update_branch(files)
+        with self.assertRaises(PreReadUnavailable):
+            handle.run("wf_update_branch", args)
+        self.assertNotIn("PUT", [c[0] for c in client.calls])
+
+    def test_update_branch_300_files_with_workflow_still_elevates(self):
+        files = [{"filename": f"src/f{i}.py"} for i in range(300)]
+        files[5] = {"filename": ".github/workflows/ci.yml"}
+        client, minter, handle, args = self.update_branch(files)
+        handle.run("wf_update_branch", args)
+        self.assertEqual(minter.calls[1][2].get("workflows"), "write")
+
+    def test_update_branch_slashed_base_ref_keeps_slash(self):
+        client, _, handle, args = self.update_branch([{"filename": "a"}])
+        handle.run("wf_update_branch", args)
+        self.assertIn(f"/compare/{SHA}...release/2026%20nov", client.calls[1][1])

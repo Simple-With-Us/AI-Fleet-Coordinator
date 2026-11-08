@@ -67,6 +67,7 @@ MAX_FILE_B64 = 4 * ((MAX_FILE_RAW + 2) // 3)
 # base64 plus 60-column line wraps and JSON, which still fits under that cap.
 MAX_REF_BLOB_RAW = 700 * 1024
 MAX_PAGE = 50
+COMPARE_FILES_CAP = 300  # GitHub returns at most 300 files from the compare endpoint
 MAX_PROJECT = 100
 MAX_WORKFLOW_TEXT = 40000
 # Opt-in bounded larger-text class (covers the 83854-byte mirror document class);
@@ -759,7 +760,90 @@ class WorkflowVerbs:
             raise Unknown("own App credential unavailable") from None
         handle = cls(client, policy, seat, token, app_slug, action, repo)
         handle.workflow_write_allowed = needs_workflows
+        # Kept so merge/update-branch can elevate for a PR that edits workflow files.
+        handle._elevation = (minter, app_slug, ceiling)
         return handle
+
+    def _bearer_for_pr(self, repo, number, action, head_sha=None):
+        """Bearer for a PR merge or update-branch.
+
+        The default token is least permission. GitHub refuses a merge or branch update that
+        changes .github/workflows/* unless the token also holds workflows:write, so read what
+        the write will change first and mint the extra scope only when that touches the
+        directory. Merge: the PR file list. Update-branch: the base changes it pulls in
+        (compare head...base), after checking the PR head is still the expected sha.
+        Still bounded by the seat ceiling. A handle with no minter keeps its own bearer.
+        """
+        elevation = getattr(self, "_elevation", None)
+        if elevation is None:
+            return self.bearer
+        minter, app_slug, ceiling = elevation
+
+        def read(path):
+            try:
+                return self._get(path)
+            except RelayGitHubError as exc:
+                if exc.status in (0, 408) or exc.status >= 500:
+                    raise PreReadUnavailable(
+                        "PR file pre-read unavailable; no write attempted"
+                    ) from None
+                raise
+
+        touches = False
+
+        def scan(rows):
+            nonlocal touches
+            if not isinstance(rows, list):
+                raise RelayGitHubError(502, "PR files page unverifiable")
+            for row in rows:
+                if not isinstance(row, dict):
+                    raise RelayGitHubError(502, "PR files page unverifiable")
+                for key in ("filename", "previous_filename"):
+                    name = row.get(key)
+                    if isinstance(name, str) and name.startswith(".github/workflows/"):
+                        touches = True
+
+        if action == "wf_update_branch":
+            pr = read(f"/repos/{repo}/pulls/{number}")
+            if (
+                not isinstance(pr, dict)
+                or not isinstance(pr.get("head"), dict)
+                or pr["head"].get("sha") != head_sha
+                or not isinstance(pr.get("base"), dict)
+                or not isinstance(pr["base"].get("ref"), str)
+                or not pr["base"]["ref"]
+            ):
+                raise Refused("PR head not matched")
+            # The compare files array is one response capped at 300 files, not paginated:
+            # one read, and a full-size array may be truncated so it is unverifiable.
+            base_ref = quote(pr["base"]["ref"], safe="/")
+            data = read(f"/repos/{repo}/compare/{head_sha}...{base_ref}")
+            files = data.get("files") if isinstance(data, dict) else None
+            scan(files)
+            if not touches and len(files) >= COMPARE_FILES_CAP:
+                raise PreReadUnavailable("base changes too large to verify; no write attempted")
+        else:
+            for page in range(1, 31):
+                rows = read(f"/repos/{repo}/pulls/{number}/files?per_page=100&page={page}")
+                if isinstance(rows, list) and len(rows) > 100:
+                    raise RelayGitHubError(502, "PR files page unverifiable")
+                scan(rows)
+                if touches or len(rows) < 100:
+                    break
+            else:
+                raise PreReadUnavailable("PR file list too long to verify; no write attempted")
+        if not touches:
+            return self.bearer
+        required = dict(SPECS[action][0])
+        required["workflows"] = "write"
+        required.setdefault("metadata", "read")
+        if _perm_within_ceiling(required, ceiling):
+            raise CeilingDenied("seat permission ceiling insufficient")
+        try:
+            token, _ = minter.token_for(app_slug, repo, required)
+        except Exception:
+            raise Unknown("own App credential unavailable") from None
+        return token
 
     def _write_path_denied(self, path):
         if path in (".github", ".github/workflows"):
@@ -5181,11 +5265,12 @@ class WorkflowVerbs:
     def wf_update_branch(self, repo, args):
         _only(args, ("repo", "number", "expected_head_sha"))
         number, sha = _int(args, "number"), _sha(args, "expected_head_sha")
+        bearer = self._bearer_for_pr(repo, number, "wf_update_branch", sha)
         data = self.client._call(
             "PUT",
             f"/repos/{repo}/pulls/{number}/update-branch",
             {"expected_head_sha": sha},
-            bearer=self.bearer,
+            bearer=bearer,
         )
         return {"accepted": True, "message": str((data or {}).get("message", ""))[:200]}
 
@@ -6879,11 +6964,12 @@ class WorkflowVerbs:
             payload["commit_message"] = self._pr_text_field(
                 args, "commit_message", 65536, allow_blank=True
             )
+        bearer = self._bearer_for_pr(repo, number, "wf_merge_guarded")
         data = self.client._call(
             "PUT",
             f"/repos/{repo}/pulls/{number}/merge",
             payload,
-            bearer=self.bearer,
+            bearer=bearer,
         )
         if (
             not isinstance(data, dict)
