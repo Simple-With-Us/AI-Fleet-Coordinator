@@ -197,6 +197,15 @@ class BridgeBackupTest(unittest.TestCase):
         (held,) = self.events("muse-bridge-backup-held")
         self.assertEqual(held["reason"], BM.REVIEW_DUE)
 
+    def test_declaration_without_review_by_never_holds_for_review(self) -> None:
+        declared = {k: v for k, v in _good(self.now).items() if k != "review_by"}
+        later = self.now + 5 * 365 * 86400
+        self.now = later
+        state = self.run_envelope(declared)
+        self.assertEqual(self.events("muse-bridge-backup-held"), [])
+        self.assertEqual(len(self.decide_calls), 1)
+        self.assertIn("ECHO", state["cursors"])
+
     def test_active_mode_stamps_the_backup_runtime_and_advances(self) -> None:
         state = self.run_envelope(_good(self.now))
         self.assertEqual(
