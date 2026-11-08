@@ -218,11 +218,26 @@ struct ListenerStatus: Decodable, Equatable {
         /// a block it publishes in a shape Muster cannot read is kept with no answer in it,  so
         /// it is never mistaken for an eavesdropper too old to say.
         var operator_voice: OperatorVoice?
+        /// Whether resume-wake is verified for terminal sessions on this machine.
+        var rewake_verified_cli: Bool?
+        /// Whether resume-wake is verified for Desktop sessions on this machine.
+        var rewake_verified_desktop: Bool?
+        /// The one flag an eavesdropper from before the two above published for both.
+        var rewake_verified: Bool?
 
         enum CodingKeys: String, CodingKey {
             case seats, pause, updated, started, version, instance, disabled, skipped_seats
             case config_errors, reload_refused, reload_at, partition_file
             case operator_voice
+            case rewake_verified_cli, rewake_verified_desktop, rewake_verified
+        }
+
+        /// Whether resume-wake is verified on this machine, as the eavesdropper says.
+        var rewake: RewakeVerification {
+            RewakeVerification(
+                terminal: rewake_verified_cli ?? rewake_verified,
+                desktop: rewake_verified_desktop ?? rewake_verified
+            )
         }
     }
 
@@ -303,6 +318,9 @@ extension ListenerStatus.State {
         reload_refused = container.lenient([String].self, .reload_refused)
         reload_at = container.lenient(Double.self, .reload_at)
         partition_file = container.lenient(String.self, .partition_file)
+        rewake_verified_cli = container.lenient(Bool.self, .rewake_verified_cli)
+        rewake_verified_desktop = container.lenient(Bool.self, .rewake_verified_desktop)
+        rewake_verified = container.lenient(Bool.self, .rewake_verified)
         // A missing or null block is an eavesdropper that does not say.  A block of the wrong
         // shape costs only this block:  it is kept with no answer in it,  never dropped.
         if container.contains(.operator_voice), (try? container.decodeNil(forKey: .operator_voice)) != true {
@@ -405,7 +423,11 @@ enum OperatorVoiceReading: Equatable {
             return .notCurrent(why: why, lastAvailable: true, since: since, sinceText: sinceText)
         case .unavailable(let code, let since, let sinceText):
             return .notCurrent(why: why, lastAvailable: false, since: since, sinceText: sinceText, code: code)
-        case .notRead, .notReported, .unreadable, .notTriedYet, .notCurrent:
+        case .notTriedYet:
+            // "Not tried yet" is true only of the status it came from.  An old or stopped
+            // eavesdropper's may have tried since, so it is not known now (Kody on #1469).
+            return .notRead("\(why), and its last status had not tried the Operator yet, so whether the Operator can post is not known.")
+        case .notRead, .notReported, .unreadable, .notCurrent:
             return reading
         }
     }

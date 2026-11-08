@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import importlib.util
 import io
 import json
@@ -918,7 +919,7 @@ class HomeCase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.home = Path(self.tmp.name)
-        self.rt_dir = self.home / "apps/lanes/_managed/fleet/agent-sync-runtime"
+        self.rt_dir = self.home / "apps/lanes/_managed/fleet/simple-tools-runtime"
         self.patch = mock.patch.multiple(
             doctor,
             HOME=self.home,
@@ -1306,7 +1307,7 @@ class MacRuntimeTests(HomeCase):
 
 
 class MacUpdaterTests(HomeCase):
-    PRINT = "gui/501/com.jay.agent-sync-runtime-sync = {\n\tactive count = 0\n\tstate = not running\n\truns = 413\n\tlast exit code = 0\n\tevent triggers = {\n\t\tstate = active\n\t}\n}\n"
+    PRINT = "gui/501/com.jay.simple-tools-runtime-sync = {\n\tactive count = 0\n\tstate = not running\n\truns = 413\n\tlast exit code = 0\n\tevent triggers = {\n\t\tstate = active\n\t}\n}\n"
 
     def previous(self, runs, minutes_ago):
         return {
@@ -1320,7 +1321,7 @@ class MacUpdaterTests(HomeCase):
         report = doctor.Report()
         runner = fake_runner([(("launchctl", "print"), answer or (0, self.PRINT))])
         info = doctor.check_mac_updater(report, runner, previous)
-        return info, report.row("updater:com.jay.agent-sync-runtime-sync")
+        return info, report.row("updater:com.jay.simple-tools-runtime-sync")
 
     def test_counter(self):
         info, row = self.updater(self.previous(400, 15))
@@ -1441,7 +1442,7 @@ class LaneTests(HomeCase):
     def setUp(self):
         super().setUp()
         self.touch(
-            "apps/lanes/_managed/fleet/agent-sync-runtime/scripts/fleet_lanes/install_tools.py"
+            "apps/lanes/_managed/fleet/simple-tools-runtime/scripts/fleet_lanes/install_tools.py"
         )
         self.touch("apps/lane-tools/VERSION", f"sha={OLD}\npackage=0.1.0\n")
 
@@ -1693,7 +1694,7 @@ class ReportAndRunTests(HomeCase):
     def test_no_network_never_calls_a_fleet_tool_current(self):
         (self.rt_dir).mkdir(parents=True)
         (self.rt_dir / ".git").write_text("gitdir: x\n")
-        self.touch("apps/lanes/_managed/fleet/agent-sync-runtime/scripts/simple-chat", "x")
+        self.touch("apps/lanes/_managed/fleet/simple-tools-runtime/scripts/simple-chat", "x")
         (self.home / ".local/bin").mkdir(parents=True)
         (self.home / ".local/bin/simple-chat").symlink_to(self.rt_dir / "scripts/simple-chat")
         rules = [
@@ -1731,7 +1732,10 @@ class ReportAndRunTests(HomeCase):
         self.assertEqual(len(text.strip().splitlines()), 1)
         self.assertIn("server unreachable:", text)
         self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
-        self.assertEqual(sorted(p.name for p in path.parent.iterdir()), ["report.json"])
+        # AFC-576:  the app-process report is written beside it.
+        self.assertEqual(
+            sorted(p.name for p in path.parent.iterdir()), ["app-processes.json", "report.json"]
+        )
         report = json.loads(path.read_text())
         self.assertEqual((report["schemaVersion"], report["tool"]), (1, "fleet-tools-doctor"))
         self.assertEqual([h["host"] for h in report["hosts"]], ["mac", "server"])
@@ -1751,6 +1755,57 @@ class ReportAndRunTests(HomeCase):
         with self.assertRaises(ValueError):
             doctor.write_report(self.home / "state/fleet-tools/report.json", {"schemaVersion": 1})
         self.assertEqual(list(real.iterdir()), [])
+
+    def test_a_folder_swapped_for_a_symlink_after_the_check_is_refused(self):
+        # Kody, PR 1477:  the folder is opened with O_NOFOLLOW and used through that descriptor,
+        # so passing the early check is not enough to write through a link.
+        real = self.home / "elsewhere"
+        real.mkdir()
+        (self.home / "state").mkdir()
+        (self.home / "state/fleet-tools").symlink_to(real)
+        with mock.patch.object(doctor.Path, "is_symlink", return_value=False):
+            with self.assertRaises(ValueError):
+                doctor.write_report(
+                    self.home / "state/fleet-tools/report.json", {"schemaVersion": 1}
+                )
+        self.assertEqual(list(real.iterdir()), [])
+
+    def test_the_report_folder_is_fsynced_after_the_rename(self):
+        # BACKEND-36:  the rename only survives a power cut once the folder itself is synced.
+        synced = []
+        real_fsync = os.fsync
+
+        def record(fd):
+            synced.append(os.fstat(fd).st_ino)
+            return real_fsync(fd)
+
+        target = self.home / "state/fleet-tools/report.json"
+        with mock.patch.object(doctor.os, "fsync", side_effect=record):
+            doctor.write_report(target, {"schemaVersion": 1})
+        self.assertIn(target.parent.stat().st_ino, synced)
+        self.assertIn(target.stat().st_ino, synced)
+        self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o600)
+
+    def test_a_folder_fsync_failure_is_raised_unless_the_file_system_lacks_it(self):
+        # A file system without folder fsync says EINVAL, and the report it already renamed stands.
+        # Any other failure is a real one, and the write says so.
+        target = self.home / "state/fleet-tools/report.json"
+        real_fsync = os.fsync
+
+        def folder_fails(code):
+            def fsync(fd):
+                if stat.S_ISDIR(os.fstat(fd).st_mode):
+                    raise OSError(code, os.strerror(code))
+                return real_fsync(fd)
+
+            return fsync
+
+        with mock.patch.object(doctor.os, "fsync", side_effect=folder_fails(errno.EINVAL)):
+            doctor.write_report(target, {"schemaVersion": 1})
+        self.assertEqual(json.loads(target.read_text()), {"schemaVersion": 1})
+        with mock.patch.object(doctor.os, "fsync", side_effect=folder_fails(errno.EIO)):
+            with self.assertRaises(OSError):
+                doctor.write_report(target, {"schemaVersion": 2})
 
     def test_no_registry_skips_the_version_probes(self):
         text, _ = self.run_doctor(["--json", "--no-network", "--no-registry"])
@@ -1861,9 +1916,10 @@ class ServerStatusTests(HomeCase):
         path = self.status_path()
         self.assertEqual(json.loads(path.read_text()), self.status())
         self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
-        # Atomic:  no temporary file is left beside the two reports.
+        # Atomic:  no temporary file is left beside the reports (AFC-576 adds the app-process one).
         self.assertEqual(
-            sorted(p.name for p in path.parent.iterdir()), ["report.json", "server-status.json"]
+            sorted(p.name for p in path.parent.iterdir()),
+            ["app-processes.json", "report.json", "server-status.json"],
         )
 
     def test_the_mac_drops_an_invalid_status_and_keeps_the_previous_file(self):

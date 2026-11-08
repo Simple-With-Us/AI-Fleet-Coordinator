@@ -126,6 +126,12 @@ enum OpsAction: Equatable {
     case serverResource(field: String, value: String, revision: String)
     /// Read the server's coding resource-policy receipt,  without changing anything.
     case resourceStatus
+    /// `server eavesdropper-status server`,  run on the server:  the server eavesdropper's
+    /// status,  reduced to names,  counts,  tokens and times,  read only and `--plan` only.
+    case eavesdropperStatus
+
+    /// The verb the helper names in its answer to `.eavesdropperStatus`.
+    static let eavesdropperStatusVerb = "server eavesdropper-status"
 
     /// The machine the action runs on.
     ///
@@ -134,7 +140,8 @@ enum OpsAction: Equatable {
     /// the screen come from the same value that picks the route.
     var runsOn: FleetHost {
         switch self {
-        case .serverUnit, .serverUpdate, .coolifyRedeploy, .logs, .serverResource, .resourceStatus:
+        case .serverUnit, .serverUpdate, .coolifyRedeploy, .logs, .serverResource, .resourceStatus,
+             .eavesdropperStatus:
             return .server
         case .macAgent, .knobSet, .knobUnset, .pm2App:
             return .mac
@@ -146,7 +153,7 @@ enum OpsAction: Equatable {
         switch self {
         case .knobSet, .knobUnset: return .acrossFleet
         case .macAgent, .serverUnit, .serverUpdate, .coolifyRedeploy, .pm2App, .logs,
-             .serverResource, .resourceStatus:
+             .serverResource, .resourceStatus, .eavesdropperStatus:
             return .machine(runsOn)
         }
     }
@@ -158,7 +165,7 @@ enum OpsAction: Equatable {
     /// part way,  and the Mac knows whether the text reached it,  so it plainly did not work.
     var changesNothing: Bool {
         switch self {
-        case .logs, .resourceStatus:
+        case .logs, .resourceStatus, .eavesdropperStatus:
             return true
         case .macAgent, .serverUnit, .serverUpdate, .coolifyRedeploy, .knobSet, .knobUnset, .pm2App,
              .serverResource:
@@ -179,6 +186,7 @@ enum OpsAction: Equatable {
         case .logs(let unit): return OpsNames.unitTitle(unit)
         case .serverResource(let field, _, _): return ResourcePolicyField(rawValue: field)?.title ?? "Resource Policy"
         case .resourceStatus: return "The Resource Policy"
+        case .eavesdropperStatus: return "The Eavesdropper's Status"
         }
     }
 
@@ -198,6 +206,7 @@ enum OpsAction: Equatable {
         case .serverResource(let field, let value, _):
             return "\(ResourcePolicyField.changePhrase(field: field, value: value)) \(place)"
         case .resourceStatus: return "Read the resource policy \(place)"
+        case .eavesdropperStatus: return "Read the eavesdropper's status \(place)"
         }
     }
 
@@ -248,6 +257,8 @@ enum OpsAction: Equatable {
             return "\(phrase) \(place)."
         case .resourceStatus:
             return "Reads the resource policy \(place).\(gap)Nothing changes."
+        case .eavesdropperStatus:
+            return "Reads the eavesdropper's status \(place).\(gap)Nothing changes."
         }
     }
 
@@ -276,7 +287,8 @@ enum OpsAction: Equatable {
                 return "It stops right away on the server, and the server's report stops with it, so the Mac stops knowing the server within 45 minutes."
             }
             return "It stops right away on the server, and stays stopped until you start it again."
-        case .serverUpdate, .coolifyRedeploy, .knobSet, .knobUnset, .logs, .serverResource, .resourceStatus:
+        case .serverUpdate, .coolifyRedeploy, .knobSet, .knobUnset, .logs, .serverResource, .resourceStatus,
+             .eavesdropperStatus:
             return nil
         }
     }
@@ -302,6 +314,7 @@ enum OpsAction: Equatable {
         case .logs: return .logs
         case .serverResource: return .serverResource
         case .resourceStatus: return .resourceStatus
+        case .eavesdropperStatus: return .eavesdropperStatus
         }
     }
 
@@ -318,6 +331,7 @@ enum OpsAction: Equatable {
         case .logs: return "server logs"
         case .serverResource: return "server resource policy"
         case .resourceStatus: return "server resource status"
+        case .eavesdropperStatus: return "server eavesdropper status"
         }
     }
 
@@ -337,6 +351,7 @@ enum OpsAction: Equatable {
         case .logs(let unit): return unit
         case .serverResource(let field, _, _): return "coding.\(field)"
         case .resourceStatus: return "coding"
+        case .eavesdropperStatus: return "server"
         }
     }
 
@@ -354,6 +369,9 @@ enum OpsAction: Equatable {
         case .serverResource(let field, let value, let revision):
             return ["server", "resource-policy", "\(field).\(value).\(revision)"]
         case .resourceStatus: return ["server", "resource-status", "coding"]
+        // The target is the instance word `server` and nothing else:  the helper refuses any
+        // other, because the container it reads is the server's.
+        case .eavesdropperStatus: return ["server", "eavesdropper-status", "server"]
         }
     }
 }
@@ -362,7 +380,7 @@ enum OpsAction: Equatable {
 /// so the tests that walk every case cover it the day it is added.
 enum OpsActionCase: CaseIterable {
     case macAgent, serverUnit, serverUpdate, coolifyRedeploy, knobSet, knobUnset
-    case pm2App, logs, serverResource, resourceStatus
+    case pm2App, logs, serverResource, resourceStatus, eavesdropperStatus
 
     /// One valid action of this case.
     var sample: OpsAction {
@@ -378,6 +396,7 @@ enum OpsActionCase: CaseIterable {
         case .serverResource:
             return .serverResource(field: "cpu-cores", value: "4", revision: String(repeating: "a", count: 64))
         case .resourceStatus: return .resourceStatus
+        case .eavesdropperStatus: return .eavesdropperStatus
         }
     }
 }
@@ -635,7 +654,7 @@ struct OpsCommandBuilder {
             guard resourcePolicyFields.contains(field) else { throw OpsControlError.invalidArgument("resource field") }
             guard isSafeResourceValue(field: field, value: value) else { throw OpsControlError.invalidArgument("resource value") }
             guard isSafeResourceRevision(revision) else { throw OpsControlError.invalidArgument("resource revision") }
-        case .resourceStatus:
+        case .resourceStatus, .eavesdropperStatus:
             break
         }
     }
@@ -654,7 +673,8 @@ struct OpsCommandBuilder {
             switch action {
             case .macAgent, .pm2App: return helperURL
             case .knobSet, .knobUnset: return repoRoot.appendingPathComponent(OpsControlRoute.knobsEntryPoint)
-            case .serverUnit, .serverUpdate, .coolifyRedeploy, .logs, .serverResource, .resourceStatus: return nil
+            case .serverUnit, .serverUpdate, .coolifyRedeploy, .logs, .serverResource, .resourceStatus,
+                 .eavesdropperStatus: return nil
             }
         }
     }
@@ -739,6 +759,9 @@ struct OpsCommandBuilder {
         if case .resourceStatus = action, mode != .plan {
             throw OpsControlError.invalidArgument("read-only resource status mode")
         }
+        if case .eavesdropperStatus = action, mode != .plan {
+            throw OpsControlError.invalidArgument("read-only eavesdropper status mode")
+        }
         let timeout = mode == .plan ? OpsControlRoute.planTimeout : OpsControlRoute.runWait(for: action)
         var tail = action.verbArguments + [mode.flag, "--json"]
         if case .knobSet(let key, let value) = action {
@@ -773,7 +796,8 @@ struct OpsCommandBuilder {
                     environment: localEnvironment,
                     timeout: timeout
                 )
-            case .serverUnit, .serverUpdate, .coolifyRedeploy, .logs, .serverResource, .resourceStatus:
+            case .serverUnit, .serverUpdate, .coolifyRedeploy, .logs, .serverResource, .resourceStatus,
+                 .eavesdropperStatus:
                 // `runsOn` says these are the server's,  so this cannot be reached.  It
                 // refuses rather than running a server action on the Mac.
                 throw OpsControlError.invalidArgument("route")
@@ -955,11 +979,14 @@ struct OpsResult: Decodable, Equatable {
     let auditTarget: String?
     /// How many of the commands finished,  when a chain stopped part way or ran through.
     let completedCommands: Int?
+    /// The server eavesdropper's reduced status,  when `server eavesdropper-status` answered
+    /// one.  Read field by field,  so one odd field never costs the document.
+    let status: ReducedEavesdropperStatus?
 
     enum CodingKeys: String, CodingKey {
         case ok, verb, target, commands, result, detail, old, new, lkg, output, lines, resourcePolicy
         case executionState, verified, invocationID, baselineStartMonotonic, host
-        case errorCode, auditID, auditTarget, completedCommands
+        case errorCode, auditID, auditTarget, completedCommands, status
         case oldSource = "old_source"
     }
 
@@ -990,6 +1017,7 @@ struct OpsResult: Decodable, Equatable {
         auditID = try? container.decodeIfPresent(String.self, forKey: .auditID)
         auditTarget = try? container.decodeIfPresent(String.self, forKey: .auditTarget)
         completedCommands = try? container.decodeIfPresent(Int.self, forKey: .completedCommands)
+        status = try? container.decodeIfPresent(ReducedEavesdropperStatus.self, forKey: .status)
     }
 }
 
@@ -1045,6 +1073,10 @@ enum OpsResultKind: String {
     case done
     case refused
     case failed
+    /// A read verb that could not read what it reads (for example `server eavesdropper-status`
+    /// when the eavesdropper's status is not there).  It changed nothing:  it is not a failed
+    /// command and not a refusal.  The helper's `errorCode` says why.
+    case unavailable
     case unknown
 }
 
@@ -1088,6 +1120,10 @@ struct OpsOutcome: Equatable {
     var completedCommands: Int? = nil
     /// True when a run's answer lists other commands than the plan the owner approved.
     var differsFromReview: Bool = false
+    /// The server eavesdropper's reduced status,  for a planned `server eavesdropper-status`
+    /// answer that carried one;  nil for every other action.  Its version is not checked here:
+    /// `ServerEavesdropperReading(outcome:)` does that.
+    var eavesdropperStatus: ReducedEavesdropperStatus? = nil
 
     /// True when the run did what its mode asks for:  a plan that planned,  or a run that
     /// was done.  The helper's `ok`,  its result word and its exit code must all agree.
@@ -1108,9 +1144,12 @@ struct OpsOutcome: Equatable {
     /// when the helper said it ran:  a plan ran nothing,  a refusal ran nothing,  a failure
     /// stopped part way,  and a lost answer cannot say.
     var commandsHeading: String {
+        // A read that could not read anything planned nothing either, even through `--plan`.
+        if kind == .unavailable { return "What Was Read" }
         if isPlan || kind == .planned { return "The Plan" }
         switch kind {
         case .refused: return "Not Run"
+        case .unavailable: return "What Was Read"
         case .done, .submitted: return runNotKnown ? "What Was Asked To Run" : "What Ran"
         case .failed: return "What Was Tried"
         case .unknown, .planned: return "What Was Asked To Run"
@@ -1139,6 +1178,9 @@ struct OpsOutcome: Equatable {
     func resultTitle(for action: OpsAction) -> String {
         let gap = ServerStatusCopy.sentenceGap
         let who = action.runsOn == .mac ? "This Mac" : "The server"
+        if kind == .unavailable {
+            return "\(who) could not read it, so nothing is known yet.\(gap)Nothing was changed."
+        }
         if isPlan {
             if kind == .refused { return "\(who) refused this, so nothing ran." }
             return "The plan could not be read, so nothing ran."
@@ -1154,6 +1196,8 @@ struct OpsOutcome: Equatable {
             return "\(who) refused this, so nothing ran."
         case .failed:
             return "This did not work."
+        case .unavailable:
+            return "\(who) could not read it, so nothing is known yet.\(gap)Nothing was changed."
         case .unknown:
             guard runNotKnown else { return "The answer could not be read." }
             return "This may or may not have run \(action.runsOn.inProse).\(gap)Check its state before you run it again."
@@ -1308,6 +1352,13 @@ enum OpsResultParser {
             logText = answer.output.map(sanitizedForDisplay)
             logLines = answer.lines
         }
+        // The eavesdropper's status is surfaced only for a planned answer to that verb that names
+        // the verb it answered (or names none):  an answer for another verb is not this document.
+        var eavesdropperStatus: ReducedEavesdropperStatus?
+        if case .eavesdropperStatus = action, mode == .plan, kind == .planned,
+           answer.verb == nil || answer.verb == OpsAction.eavesdropperStatusVerb {
+            eavesdropperStatus = answer.status
+        }
         return OpsOutcome(
             kind: kind,
             ok: answer.ok,
@@ -1329,7 +1380,8 @@ enum OpsResultParser {
             serverAuditTarget: mode == .yes ? answer.auditTarget.map(auditTargetText) : nil,
             completedCommands: answer.completedCommands.flatMap {
                 (0...answer.commands.count).contains($0) ? $0 : nil
-            }
+            },
+            eavesdropperStatus: eavesdropperStatus
         )
     }
 
@@ -1453,6 +1505,7 @@ enum OpsResultParser {
         case .done: return "Done."
         case .refused: return "The helper refused the action."
         case .failed: return "The helper said the action failed (exit \(exitCode))."
+        case .unavailable: return "The helper could not read what this reads, and changed nothing."
         case .unknown: return "The helper's answer has no result this app knows (exit \(exitCode))."
         }
     }
@@ -2043,7 +2096,7 @@ final class OpsController: ObservableObject {
         case .pm2App(let verb, _), .macAgent(let verb, _):
             guard verb == .start else { return nil }
         case .serverUnit, .serverUpdate, .coolifyRedeploy, .knobSet, .knobUnset, .logs,
-             .serverResource, .resourceStatus:
+             .serverResource, .resourceStatus, .eavesdropperStatus:
             return nil
         }
         guard !isBusy, !isPresenting, task == nil else { return nil }
