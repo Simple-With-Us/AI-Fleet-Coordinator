@@ -126,6 +126,17 @@ struct OpsActionSheet: View {
         .interactiveDismissDisabled(controller.isAsking)
     }
 
+    /// What a redeploy restarts,  as the panel that planned it noted:  every container of the
+    /// application,  not only the row its button was on.  Nil for any other action.
+    private static func redeployScope(_ action: OpsAction) -> String? {
+        switch action {
+        case .coolifyRedeploy(let uuid, _):
+            return RedeployScopeNotes.shared.scope(for: uuid)?.sentence
+        default:
+            return nil
+        }
+    }
+
     @ViewBuilder
     private var content: some View {
         switch controller.phase {
@@ -145,6 +156,11 @@ struct OpsActionSheet: View {
                 Text(action.effectSentence)
                     .font(.callout)
                     .fixedSize(horizontal: false, vertical: true)
+                if let scope = Self.redeployScope(action) {
+                    Text(scope)
+                        .font(.callout.weight(.semibold))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 // A stop takes a service down at once,  so its warning is on the plan,  the
                 // same words the alert uses on the direct route.
                 if let warning = action.stopWarning {
@@ -183,6 +199,12 @@ struct OpsActionSheet: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                if let scope = Self.redeployScope(action) {
+                    Text(scope)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 commandsDisclosure(outcome, title: "The Approved Commands")
             }
         case .finished(let action, let outcome):

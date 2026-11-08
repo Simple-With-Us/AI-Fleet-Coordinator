@@ -248,6 +248,37 @@ final class ServerEavesdropperAnswerTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(status.seat(named: "MM")).quota?.source, "unknown")
     }
 
+    /// The answer the deployed helper gave through the Mac's real route (session BB, November 7,
+    /// 2026 at 7:21 PM:  `server eavesdropper-status server --plan --json`) reads in full:  every
+    /// seat is read, the Operator's voice the older container does not send reads Not reported,
+    /// and a quota that says it is not known stays not known.
+    func test_the_deployed_helpers_answer_reads_in_full() throws {
+        let parsed = outcome(try fixture("server_eavesdropper_status_live", "json"))
+        XCTAssertEqual(parsed.kind, .planned)
+        XCTAssertNil(parsed.errorCode)
+        let reading = ServerEavesdropperReading(outcome: parsed)
+        let status = try XCTUnwrap(reading.status, "\(reading)")
+        XCTAssertTrue(status.isThisAppsVersion)
+        XCTAssertEqual(status.instance, "server")
+        XCTAssertEqual(status.generatedAt, try date("2026-11-08T01:21:05Z"))
+        XCTAssertEqual(status.statusUpdated, try date("2026-11-08T01:21:03Z"))
+        XCTAssertEqual(status.seats.count, 29)
+        XCTAssertEqual(status.operatorVoiceReading, .notReported)
+        XCTAssertEqual(status.pause?.paused, false)
+        for seat in status.seats {
+            XCTAssertEqual(seat.connection, .connected, seat.seat)
+            XCTAssertEqual(seat.runState, .running, seat.seat)
+            XCTAssertEqual(seat.quotaReading, .notKnown, seat.seat)
+            XCTAssertNotEqual(seat.wakeKind, .fallback, seat.seat)
+        }
+        let now = try date("2026-11-08T01:22:00Z")
+        guard case .read(let compiler) = reading.seat("BF-COMPILER", now: now) else {
+            return XCTFail("\(reading.seat("BF-COMPILER", now: now))")
+        }
+        XCTAssertEqual(compiler.wakeKind, .inbox)
+        XCTAssertEqual(compiler.bot, "BF-Compiler")
+    }
+
     /// Each seat reads per seat:  a listed seat with its facts, and a seat the document does
     /// not hold says why, in words.
     func test_each_seat_reads_on_its_own() throws {

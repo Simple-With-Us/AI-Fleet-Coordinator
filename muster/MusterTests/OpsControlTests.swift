@@ -786,6 +786,7 @@ final class OpsWireContractTests: XCTestCase {
         case "serverUpdate": return .serverUpdate(name: target)
         case "coolifyRedeploy": return .coolifyRedeploy(uuid: target, name: "example-app")
         case "resourceStatus": return .resourceStatus
+        case "eavesdropperStatus": return .eavesdropperStatus
         default: return nil
         }
     }

@@ -114,7 +114,6 @@ public enum ServicePolicyTable {
     /// The allowlisted LaunchAgents the Services list does not show,  by label.  Muster
     /// leaves every one of them alone.
     private static let agents: [(String, String)] = [
-        ("com.jay.agent-sync-runtime-sync", handReason),
         ("com.jay.botfleet-server", handReason),
         ("com.jay.fleet-gdrive-backup", scheduledReason),
         ("com.jay.fleet-mac-services", scheduledReason),
@@ -133,6 +132,7 @@ public enum ServicePolicyTable {
         ("com.jay.operator-notes-runner", keepAliveReason),
         ("com.jay.operator-wake-alerter", handReason),
         ("com.jay.sim-idle-reaper", scheduledReason),
+        ("com.jay.simple-tools-runtime-sync", handReason),
         ("com.jays.weekly-fleet-mode-digest", scheduledReason),
     ]
 

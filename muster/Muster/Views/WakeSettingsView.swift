@@ -51,7 +51,7 @@ struct WakeSettingsView: View {
             base = store.model.seats.filter(\.needsAttention)
         case .deferred:
             base = store.model.seats.filter {
-                $0.usage.deferredTotalThisDay > 0 || $0.heldBackQueueCount > 0 || $0.heldBackTotalCount > 0 || $0.chatNudgesPending > 0 || $0.chatNudgesBlocked > 0
+                $0.usage.deferredTotalThisDay > 0 || $0.heldBackQueueCount > 0 || $0.heldBackTotalCount > 0 || $0.heldBackEvicted > 0 || $0.chatNudgesPending > 0 || $0.chatNudgesBlocked > 0
             }
         }
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -240,8 +240,10 @@ struct WakeSettingsView: View {
                 }
             }
             .font(.system(size: 10, design: .monospaced))
-            if model.runState == .running, !model.statusIsCurrent {
-                Text("Not current:  a running eavesdropper publishes every few seconds, so its values here may not be what it uses now.")
+            // The model words the reason:  a status another instance wrote can be fresh and still
+            // not be the Mac's, so its age is not always why.
+            if let reason = model.notCurrentReason {
+                Text(reason)
                     .font(.system(size: 10))
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
@@ -254,6 +256,12 @@ struct WakeSettingsView: View {
                 )
                 .font(.system(size: 10, design: .monospaced))
                 .foregroundStyle(allConnected ? Color.secondary : Color.orange)
+            }
+            if let rewake = model.rewake {
+                Label(rewake.sentence, systemImage: rewake.isProblem ? "exclamationmark.triangle" : "arrow.uturn.backward.circle")
+                    .font(.system(size: 10))
+                    .foregroundStyle(rewake.isProblem ? Color.orange : Color.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             Text("The server's eavesdropper is not read by this panel.\u{00A0} Seats it holds are listed as On The Server, read only, with nothing from the Mac's files.")
                 .font(.system(size: 10))
@@ -372,10 +380,14 @@ struct WakeSettingsView: View {
             Text("The Operator")
                 .font(.headline)
             HStack(alignment: .top, spacing: 8) {
-                Image(systemName: !options.isConfigured
-                    ? "info.circle"
-                    : (options.hasRequiredIdentity ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"))
-                    .foregroundStyle(!options.isConfigured
+                // A file that was not read says nothing about its Operator section, so it gets a
+                // question mark, never the plain information sign of a file with no section.
+                Image(systemName: !options.isKnown
+                    ? "questionmark.circle"
+                    : (!options.isConfigured
+                        ? "info.circle"
+                        : (options.hasRequiredIdentity ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")))
+                    .foregroundStyle(!options.isKnown || !options.isConfigured
                         ? Color.secondary
                         : (options.hasRequiredIdentity ? Color.green : Color.orange))
                     .accessibilityHidden(true)
@@ -549,17 +561,16 @@ struct WakeSettingsView: View {
         }
     }
 
-    /// The pause that covers a seat, in words:  what it stops, who set it and when.
+    /// The pause that covers a seat, in words:  what it stops, who set it and when, and where the
+    /// panel read it.  A pause that is not known is said to be not known, never left blank.
     @ViewBuilder
     private func pauseLabel(_ seat: WakeSeat) -> some View {
-        if seat.paused || seat.wakesPaused {
-            let what = seat.paused ? "Paused" : "Wakes Paused"
-            let scope = seat.pauseScope == "*" ? " by the pause on every seat" : ""
-            let by = seat.pauseBy.map { " by \($0)" } ?? ""
-            let at = seat.pauseAt.map { " at \(FleetTime.clock($0))" } ?? ""
-            Label("\(what)\(scope)\(by)\(at)", systemImage: "pause.circle.fill")
+        if let text = seat.pauseText() {
+            let notKnown = seat.pauseSource.notKnownReason != nil
+            Label(text, systemImage: notKnown ? "questionmark.circle" : "pause.circle.fill")
                 .font(.system(size: 10, weight: .semibold, design: .monospaced))
                 .foregroundStyle(seat.paused ? Color.red : Color.orange)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -588,8 +599,10 @@ struct WakeSettingsView: View {
             seatNotices(seat)
             runsLine(seat)
             if !seat.redWarnings.isEmpty {
+                // An old status's warnings are its last word, and say so.
+                let suffix = seat.liveIsCurrent ? "" : " (\(seat.notCurrentSuffix().dropFirst(2)))"
                 ForEach(seat.redWarnings, id: \.self) { warning in
-                    problemBox(warning)
+                    problemBox(warning + suffix)
                 }
             }
             Button {
@@ -624,10 +637,23 @@ struct WakeSettingsView: View {
     }
 
     /// The pause and resume, only where they do something.  A seat under a full pause is not
-    /// offered a wakes-only pause, which would loosen it.
+    /// offered a wakes-only pause, which would loosen it.  A seat whose pause is not known is
+    /// offered neither as if it were unpaused:  both are shown off, with why.
     @ViewBuilder
     private func pauseButtons(_ seat: WakeSeat) -> some View {
-        if seat.paused || seat.wakesPaused {
+        if let why = seat.pauseSource.notKnownReason {
+            let help = "Whether this seat is paused is not known, so neither a pause nor a resume is offered.\u{00A0} \(why)"
+            Button {} label: {
+                Label("Pause Wakes", systemImage: "pause.circle")
+            }
+            .disabled(true)
+            .help(help)
+            Button {} label: {
+                Label("Resume…", systemImage: "play.circle")
+            }
+            .disabled(true)
+            .help(help)
+        } else if seat.paused || seat.wakesPaused {
             Button {
                 pendingWakeAction = PendingWakeAction(kind: .resume, seat: seat.seat, runtime: nil)
             } label: {
@@ -656,8 +682,10 @@ struct WakeSettingsView: View {
             let cap = seat.cap(.wakesPerHour).map { " of \($0)" } ?? ""
             parts.append("\(floor)\(seat.usage.wakesThisHour)\(cap) wakes in the last hour")
         }
-        if seat.heldBackQueueCount > 0 {
-            parts.append("\(seat.heldBackQueueCount) held for later")
+        // Worded in the model, so an old status's counts say they are not current.
+        parts.append(contentsOf: seat.heldBackSummary)
+        if seat.fallbackIsAnswering {
+            parts.append("the OpenRouter fallback is answering")
         }
         let problems = seat.problems.count
         if problems > 0 {
@@ -926,27 +954,10 @@ struct WakeSettingsView: View {
             facts.append(("\(floor)\(usage.droppedThisDay) dropped in the last 24 hours", usage.droppedThisDay > 0))
             facts.append(("\(floor)\(usage.skippedThisDay) skipped in the last 24 hours", false))
         }
-        if seat.heldBackQueueCount > 0 || seat.heldBackTotalCount > 0 {
-            let reasons = seat.heldBackReasons.sorted { $0.key < $1.key }
-                .map { "\($0.value) \(WakeLedger.words(forReason: $0.key))" }
-                .joined(separator: ", ")
-            let oldest = seat.heldBackOldestAge.map { ", oldest \(FleetTime.age(Int($0)))" } ?? ""
-            let why = reasons.isEmpty ? "" : " (\(reasons))"
-            facts.append(("held for later now:  \(seat.heldBackQueueCount)\(why)\(oldest)", seat.heldBackQueueCount > 0))
-            facts.append(("held since start:  \(seat.heldBackTotalCount), \(seat.heldBackSurfacedCount) shown to the seat", false))
-        }
-        if seat.chatNudgesPending > 0 || seat.chatNudgesBlocked > 0 || seat.chatNudgesAccepted > 0 {
-            facts.append(("chat nudges:  \(seat.chatNudgesPending) pending, \(seat.chatNudgesBlocked) blocked, \(seat.chatNudgesAccepted) accepted", seat.chatNudgesBlocked > 0))
-        }
-        if seat.quotaRemaining != nil || seat.quotaExhausted {
-            var text = seat.quotaExhausted ? "quota exhausted" : "quota \(Int(seat.quotaRemaining ?? 0))% left"
-            if seat.quotaExhausted, let remaining = seat.quotaRemaining {
-                text += " (\(Int(remaining))% reported)"
-            }
-            if let source = seat.quotaSource { text += ", from \(source)" }
-            if let reason = seat.quotaReason, !reason.isEmpty { text += ":  \(reason)" }
-            if let reset = seat.quotaResetAt { text += ", resets \(FleetTime.clock(reset))" }
-            facts.append((text, seat.quotaExhausted))
+        // The held-back wakes, chat nudges, quota and fallback are worded in the model, so an old
+        // status's values say so there and never read as now.
+        for fact in seat.liveFacts() {
+            facts.append((fact.text, fact.emphasised))
         }
         return factGrid(title: "Deferred And Held", facts: facts)
     }
@@ -1112,18 +1123,48 @@ private struct WakeGridHeader: View {
     let labels: [String]
 
     var body: some View {
-        HStack(spacing: 12) {
-            ForEach(labels, id: \.self) { label in
-                Text(label)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 12) {
+                ForEach(labels, id: \.self) { label in
+                    Text(label)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                Text("State")
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(width: 108, alignment: .leading)
             }
-            Text("State")
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 108, alignment: .leading)
+            WakeStateLegend()
         }
+    }
+}
+
+// MARK: - The legend
+
+/// What each state means, in words that stay on screen (A11Y-37):  a state's meaning used to
+/// live only in the badge's tooltip.  Folded until opened, so it costs one line.
+private struct WakeStateLegend: View {
+    var body: some View {
+        DisclosureGroup("What The States Mean") {
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(WakeSettingState.legendOrder, id: \.self) { state in
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Label(state.label, systemImage: state.symbol)
+                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(state.tint)
+                            .frame(width: 130, alignment: .leading)
+                        Text(state.note)
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+            .padding(.top, 4)
+        }
+        .font(.caption2)
     }
 }
 
@@ -1195,6 +1236,13 @@ private struct WakeSettingRow: View {
                     .font(.system(size: 10))
                     .foregroundStyle(setting.state.isProblem ? Color.orange : Color.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+            } else if setting.state.isProblem {
+                // A state that needs explaining says so in visible words, not only on hover
+                // (A11Y-37).
+                Text(setting.state.note)
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color.orange)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             if moved {
                 Label(
@@ -1227,11 +1275,15 @@ private struct WakeStateBadge: View {
 
     var body: some View {
         HStack(spacing: 5) {
-            Circle()
-                .fill(state.tint)
-                .frame(width: 7, height: 7)
+            // A symbol for each state, so the colour only repeats what the shape and word say.
+            Image(systemName: state.symbol)
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(state.tint)
+                .accessibilityHidden(true)
             Text(state.label)
                 .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 7)
@@ -1243,6 +1295,8 @@ private struct WakeStateBadge: View {
         }
         .contentShape(Rectangle())
         .help(state.note)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(state.label.capitalized):  \(state.note)")
     }
 }
 
@@ -1263,7 +1317,30 @@ private extension WakeSettingState {
         }
     }
 
-    /// The badge's tooltip.
+    /// The badge's symbol, one per meaning, so no state is told apart by colour alone.
+    var symbol: String {
+        switch self {
+        case .match: return "checkmark.circle"
+        case .drift: return "arrow.left.arrow.right.circle"
+        case .stale: return "clock.badge.exclamationmark"
+        case .unproven: return "questionmark.square"
+        case .notOwned: return "minus.circle"
+        case .unpublished: return "eye.slash"
+        case .unset: return "circle.dashed"
+        case .off: return "power"
+        case .unknown: return "questionmark.circle"
+        case .heldElsewhere: return "arrow.up.right.circle"
+        case .seatOff: return "pause.circle"
+        }
+    }
+
+    /// The legend's order:  the states that need a look first, then the quiet ones.
+    static let legendOrder: [WakeSettingState] = [
+        .drift, .unknown, .stale, .unproven, .match, .unset, .off, .seatOff, .heldElsewhere,
+        .notOwned, .unpublished,
+    ]
+
+    /// The badge's tooltip, the legend's words, and the line under a row whose state needs it.
     var note: String {
         switch self {
         case .match: return "The eavesdropper is using the value the file holds.\u{00A0} This compares two values, and it does not prove the setting works."
