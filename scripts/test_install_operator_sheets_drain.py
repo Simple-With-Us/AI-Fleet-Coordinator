@@ -514,7 +514,9 @@ class PythonBlockTests(unittest.TestCase):
         self.assertEqual(self.block.resolve_knobs({}, {}), ({}, []))
         with self.assertRaises(self.block.InstallError) as caught:
             self.block.resolve_knobs({}, {"OPERATOR_SHEETS_PAGE_LIMIT": "999999"})
-        self.assertIn("OPERATOR_SHEETS_PAGE_LIMIT (kept from the existing drain.env)", str(caught.exception))
+        self.assertIn(
+            "OPERATOR_SHEETS_PAGE_LIMIT (kept from the existing drain.env)", str(caught.exception)
+        )
 
     def test_env_changes_name_settings_only(self):
         old = b"OPERATOR_SHEETS_WORKBOOK_ID=a\nOPERATOR_SHEETS_LOCK=/x\nHAND_SET=1\n"

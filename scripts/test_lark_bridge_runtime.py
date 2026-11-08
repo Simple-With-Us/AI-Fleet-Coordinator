@@ -5,6 +5,7 @@ looks:  its own scripts folder first, then simple-tools-runtime.
 
 Run:  cd scripts && python3 -m unittest test_lark_bridge_runtime -v
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -55,7 +56,9 @@ class RuntimePathTests(unittest.TestCase):
         result = subprocess.run(
             [sys.executable, "-I", str(copy), "--help"],
             env={"HOME": home, "PATH": os.environ.get("PATH", "/usr/bin:/bin")},
-            capture_output=True, text=True, timeout=30,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn("simple_tools.secretscan not found", result.stderr)
