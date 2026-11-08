@@ -25,6 +25,7 @@ Python 3.11+, standard library only.
 from __future__ import annotations
 
 import collections
+import hashlib
 import json
 import os
 import queue
@@ -111,11 +112,49 @@ POST_SPACING = 3.0
 # exist to prevent -- and a seat that cannot answer is the worst possible time to add traffic.
 QUOTA_HOLD_TELL_WINDOW = 3600.0
 HELD_TICK_SECONDS = 30.0  # held-back upkeep:  expiry, the owner digest and the catch-up check
+# AFC-652 F8 (re-drive liveness):  a pass completes probes for at most this many parked ids
+# and spends at most this many synchronous REST attempts overall, each capped at
+# REDRIVE_PROBE_TIMEOUT_SECONDS.  One pass therefore blocks the routing thread on at most
+# attempts x timeout of network work (3 x 2s), independent of the parked count and the
+# runner count.  A parked id whose payload stays unknown backs off exponentially (the base
+# doubling to the cap).  Bounds and backoff delay only PROBES:  the durable record and the
+# no-expiry rule (GATE 2) are unchanged, and a row stays parked and visible.
+REDRIVE_FETCHES_PER_TICK = 3
+REDRIVE_ATTEMPTS_PER_TICK = 3
+REDRIVE_PROBE_TIMEOUT_SECONDS = 2.0
+REDRIVE_UNKNOWN_BACKOFF_SECONDS = 30.0
+REDRIVE_UNKNOWN_BACKOFF_CAP_SECONDS = 300.0
 #:  How often the status file is rewritten.  The muse wake-PATH memo has to outlive this period,
 #:  or the memo expires between two ticks and every tick still pays the full scan (Kody, #880).
 STATUS_TICK_SECONDS = 2.0
 SEAT_INBOX_ROTATE_BYTES = 1 << 20
 SEAT_INBOX_ROTATE_SECONDS = 7 * 86400
+# AFC-652 R6 (inbox id-dedup):  the per-seat inbox keeps this many recent message id:kind keys
+# (meta) and re-reads this many tail bytes on every append, so a replay after a crash that lost
+# the meta write - rows fsynced, next_seq stale - never appends a second copy of the same row.
+SEAT_INBOX_RECENT_KEYS = 2000
+# Sized to cover the largest possible lost-meta crash window (one flush chunk plus one
+# content-capped row;  see SEAT_INBOX_FLUSH_BYTES).  The dedupe guarantee is exactly this tail
+# window plus the remembered keys:  every crash-replayable row falls inside it by construction.
+# A replay from further back is NOT claimed - no caller replays from that far back (the cursor
+# and the webhook spool never rewind that far, and the broadcast-effect ledger re-drives
+# through its own durable receipts, not through this file).
+SEAT_INBOX_TAIL_BYTES = 262144
+# Rows+meta flush granularity inside one append call (see _append_seat_inbox):  the lost-meta
+# crash window never exceeds one chunk plus the one content-capped row (~130 KB) that tipped it,
+# so the 256 KB tail always covers it.  96K + 130K = 226K < 256K.
+SEAT_INBOX_FLUSH_BYTES = 98304
+# How long an all-done broadcast-effect row survives as the durable seen-ring before boot
+# prunes it (see _finish_broadcast_effect).  Failed/unknown rows never prune (R4).
+BROADCAST_LEDGER_DONE_KEEP_SECONDS = 30 * 86400
+
+# AFC-652 K3:  drain_deferred() is checked on every broadcast admission (three gates) and on
+# every wake finalize, so it stats pause.json and re-parses only when the file changed
+# (mtime+size), instead of reading and parsing it on every call.  Writes go through
+# L.update_json (atomic replace), which always bumps the mtime, so a write is never missed.
+_DRAIN_CACHE: dict[str, tuple[int, int, bool]] = {}
+_DRAIN_CACHE_LOCK = threading.Lock()
+_DRAIN_CACHE_MAX = 64
 LOG_ROTATE_BYTES = 5 << 20
 LOG_KEEP = 3
 PROBE_CHANNEL = "sandbox"
@@ -294,6 +333,10 @@ class SeatRunner:
         self.jobs_cond = threading.Condition()
         self.running: W.Pending | None = None
         self.ledger = W.Ledger(self.paths.wakes)
+        # Highest event id routed from the outgoing-webhook spool this boot (AFC-652):  those
+        # routes do not advance the native cursor, so a restart before the cursor passes them
+        # would replay them.  status exposes it;  the drain waits for cursor >= high-water.
+        self.webhook_high_water: int = 0
         self.crashes: dict[int, int] = {}
         self.stop = threading.Event()  # set when a reload removes the seat:  its threads exit
         self.threads: dict[str, threading.Thread] = {}
@@ -627,6 +670,24 @@ def merge_routine_env(seats, env, home, *, fetch=None):
     return names
 
 
+def _inbox_row_key(row: Mapping[str, Any]) -> str:
+    """Crash-replay dedupe key for a seat-inbox row:  message id + kind + requeue provenance.
+
+    A row a dead or silent lease never took goes back through `_requeue` with
+    `released_from` / `returned_from` set, and it must NOT dedupe against the original
+    append (AFC-652 review fix):  the marker keeps its key distinct, while a crash-replay
+    of the requeue batch itself still dedupes, because the marker is part of the key."""
+    marker = row.get("released_from") or row.get("returned_from") or ""
+    if not isinstance(marker, str):
+        marker = ""
+    # An edited re-route (route_edit sets `edited`) is a NEW delivery of the same
+    # message id:  without the marker it deduped against the original delivery's row
+    # and the updated mention never reached the inbox.  A replay of the edited batch
+    # still dedupes, because the flag is part of the row and so part of its key.
+    edited = "edited" if row.get("edited") else ""
+    return "%s:%s:%s:%s" % (row.get("id"), row.get("kind") or "", marker, edited)
+
+
 class Daemon:
     def __init__(
         self,
@@ -772,11 +833,18 @@ class Daemon:
         self._broadcast_wakes: queue.SimpleQueue[tuple[Mapping[str, Any], frozenset[str]]] = (
             queue.SimpleQueue()
         )
+        # Drain-deferred wakes a worker thread hands back;  only tick() drains this queue too,
+        # for the same reason (AFC-652 review fix:  run_wake must not mutate the coalescer
+        # from a per-seat worker thread).
+        self._deferred_restores: queue.SimpleQueue[W.Pending] = queue.SimpleQueue()
         # The peer-broadcast audits (owner, Oct 27 2026, broadcast_audit.py):  one pending audit
         # per fleet bot's `@all`, keyed by message id, with the time it comes due.  They live in
         # memory only, so a restart drops them:  the cost is one unexplained broadcast, never a
         # wrong wake.  The cap on reminders per seat and per hour lives in the limiter.
-        self._broadcast_audits: dict[int, tuple[BAUD.Broadcast, float, int]] = {}
+        # The audits currently being run by their own threads, so one due tick never spawns
+        # two sends for the same message.  The durable state of every audit lives in the
+        # broadcast-effect ledger;  this set is only the in-process spawn fence.
+        self._audit_in_flight: set[int] = set()
         self._broadcast_rate = BAUD.RateLimiter()
         self.log.write("peer-broadcast-audit-start", pending=0)
         self.coalescer = W.Coalescer(
@@ -1237,7 +1305,13 @@ class Daemon:
             )
 
         try:
-            hook = LPH.LinearProjectsHook(loader, runner, clock=self.clock.time, log=self.log.write)
+            hook = LPH.LinearProjectsHook(
+                loader,
+                runner,
+                clock=self.clock.time,
+                log=self.log.write,
+                drain_armed=lambda: drain_deferred(self.root),
+            )
         except OSError as exc:
             self.log.write("linear-projects-error", error=type(exc).__name__)
             return None
@@ -1491,7 +1565,16 @@ class Daemon:
                 if view.get("state") == "accepted":
                     runner.jobs.append(pending)
                 else:
-                    self.coalescer.restore(pending)
+                    survivor, absorbed = self.coalescer.restore(pending)
+                    if absorbed is not None:
+                        # Two queued rows for one topic:  the deferred-restore race
+                        # persisted across the crash.  Fold them once, durably.
+                        runner.ledger.append(
+                            survivor.row("queued", now, merged_from=absorbed.wake_id)
+                        )
+                        runner.ledger.append(
+                            absorbed.row("merged", now, merged_into=survivor.wake_id)
+                        )
             for view in crashed:
                 self.log.write("wake-crashed", seat=runner.seat, wake_id=view.get("wake_id"))
                 if view.get("owner"):
@@ -1878,6 +1961,8 @@ class Daemon:
         runner.ring.add(message_id)
         self._note_probe(runner, message)
         self._route_retrying(runner, message, edited=False)
+        if not advance_cursor and message_id > runner.webhook_high_water:
+            runner.webhook_high_water = message_id
         if advance_cursor:
             runner.advance(message_id)
 
@@ -2074,18 +2159,18 @@ class Daemon:
         # A fleet bot's `@all` takes the same road (owner, Oct 27 2026):  it wakes like the
         # owner's, under the peer budgets.
         if self._broadcast_all(c):
-            self.start_fanout(message, c)
+            self.start_fanout(message, c, seat=runner.seat)
         # The owner's channel-wide note also belongs UNREAD in every fleet bot's own Zulip
         # inbox (AFC-938).  This is a second copy, not a replacement:  the `@**all**` wake path
         # above is untouched, and `@**everyone**` keeps waking nobody.
         if self._inbox_broadcast(c):
-            self.start_inbox_delivery(message, c)
+            self.start_inbox_delivery(message, c, seat=runner.seat)
         # A fleet bot's `@all` has to be explained to the owner (owner, Oct 27 2026):  the audit
         # asks, ten minutes later, whether Jay asked for it or the bot told him why.  The gate is
         # the message itself, not the routing verdict, and the audit keeps one entry per message
         # id, so every seat that sees the broadcast agrees on one reminder.
         if self._peer_broadcast_audit(message, c, runner):
-            self.schedule_broadcast_audit(message, c)
+            self.schedule_broadcast_audit(message, c, seat=runner.seat)
         # The seats this listener holds that cannot take a routine/headless wake for a
         # channel-wide `@all`.  This is not owner-only bookkeeping:  a fleet bot's `@all` wakes
         # exactly like the owner's now (owner, Oct 27 2026), so the same seats are blocked, and
@@ -2188,7 +2273,13 @@ class Daemon:
                             stale=c.stale,
                         )
                     if not matched:
-                        self.offer_wake(runner, row, owner=d.wake == "owner")
+                        # F4 fence (AFC-652):  an ingress re-route of a message whose wake
+                        # already reached the durable ledger must not offer a second copy.
+                        # Edited routes stay exempt (route_edit).
+                        if edited or not self._wake_already_recorded(runner, message["id"]):
+                            self.offer_wake(runner, row, owner=d.wake == "owner")
+                        else:
+                            self.log.write("wake-offer-fenced", seat=runner.seat, id=message["id"])
                     done.add("wake")
 
     def _append_seat_inbox(self, runner: SeatRunner, rows: list[dict[str, Any]]) -> None:
@@ -2210,13 +2301,72 @@ class Daemon:
                 size = 0
             if not size:
                 meta["file_started"] = now
-            numbered = []
+            # R6 (AFC-652):  append is fsynced before the meta write, so a crash can leave rows
+            # durable with a stale meta;  the replay that follows then appended a second copy.
+            # Reconcile against the file tail (keys and the highest seq actually present) before
+            # trusting the meta, and dedupe every row by its message id:kind key.  The bound is
+            # deliberate:  a cursor replay never reaches further back than the tail plus the
+            # remembered keys, so the dedupe window always covers a replayable row.
+            recent = meta.get("recent_keys")
+            if not isinstance(recent, list):
+                recent = []
+            seen = set(k for k in recent if isinstance(k, str))
+            if size:
+                tail_max_seq = 0
+                with open(paths.seat_inbox, "rb") as fh:
+                    if size > SEAT_INBOX_TAIL_BYTES:
+                        fh.seek(size - SEAT_INBOX_TAIL_BYTES)
+                    tail = fh.read().decode("utf-8", "replace")
+                for line in tail.splitlines():
+                    try:
+                        old = json.loads(line)
+                    except ValueError:
+                        continue  # a torn last line from a crash is skipped, never fatal
+                    if not isinstance(old, dict):
+                        continue
+                    old_seq = old.get("seq")
+                    if isinstance(old_seq, int) and not isinstance(old_seq, bool):
+                        tail_max_seq = max(tail_max_seq, old_seq)
+                    old_id = old.get("id")
+                    if isinstance(old_id, int) and not isinstance(old_id, bool):
+                        seen.add(_inbox_row_key(old))
+                if tail_max_seq >= seq:
+                    seq = tail_max_seq + 1
+            # The rows+meta are flushed in byte-bounded chunks, not once at the end:  the
+            # lost-meta crash window is then PROVABLY at most one chunk plus the one row that
+            # tipped it (<= SEAT_INBOX_FLUSH_BYTES + one content-capped row of ~130 KB < the
+            # tail window), however many rows a single call carries (a requeue batch is the
+            # multi-row caller).  The dedupe guarantee is exactly:  the remembered keys plus
+            # the tail window cover every replayable row, and a replay older than both is not
+            # claimed - no caller replays from that far back (the cursor, the webhook spool,
+            # and the broadcast-effect ledger all re-drive through their own durable records).
+            numbered: list[dict[str, Any]] = []
+
+            def flush() -> None:
+                if numbered:
+                    L.append_jsonl(paths.seat_inbox, numbered)
+                    numbered.clear()
+                meta["recent_keys"] = recent[-SEAT_INBOX_RECENT_KEYS:]
+                meta["next_seq"] = seq
+                L.write_json(paths.seat_inbox_meta, meta)
+
+            pending_bytes = 0
             for row in rows:
-                numbered.append(dict(row, seq=seq))
+                row_id = row.get("id")
+                if isinstance(row_id, int) and not isinstance(row_id, bool):
+                    row_key = _inbox_row_key(row)
+                    if row_key in seen:
+                        continue  # a replay after a crash mid-append never duplicates the row
+                    seen.add(row_key)
+                    recent.append(row_key)
+                out = dict(row, seq=seq)
                 seq += 1
-            L.append_jsonl(paths.seat_inbox, numbered)
-            meta["next_seq"] = seq
-            L.write_json(paths.seat_inbox_meta, meta)
+                numbered.append(out)
+                pending_bytes += len(json.dumps(out, ensure_ascii=False).encode("utf-8")) + 1
+                if pending_bytes >= SEAT_INBOX_FLUSH_BYTES:
+                    flush()
+                    pending_bytes = 0
+            flush()
 
     def handle_update(self, runner: SeatRunner, event: Mapping[str, Any]) -> None:
         """A content edit that newly tags this seat is routed again (route_edit, owner Oct 29 2026).
@@ -2310,6 +2460,19 @@ class Daemon:
         self.log.write("rename", seat=runner.seat, leases=renamed)
 
     # ---- wakes ---------------------------------------------------------------------------------
+    def _wake_already_recorded(self, runner: SeatRunner, message_id: int) -> bool:
+        """True when any wake in the durable ledger already carries this message as a trigger
+        (AFC-652, F4):  the offer for it ran - or was deliberately held or dropped, both
+        recorded decisions a re-route must not undo - so an ingress re-route (post-restart
+        repair, webhook replay ahead of the cursor, a re-driven broadcast hand-off) must not
+        offer a second copy.  Read at the ingress call sites only:  _requeue and catch-up
+        legitimately re-offer, and edited routes stay exempt (a new tag on an old message
+        must wake).  Same cached-view iteration as the stale-owner check below."""
+        for view in runner.ledger.wakes().values():
+            if message_id in (view.get("trigger_ids") or []):
+                return True
+        return False
+
     def offer_wake(self, runner: SeatRunner, item: Mapping[str, Any], *, owner: bool) -> None:
         now = self.clock.time()
         key = L.topic_key(str(item.get("channel") or ""), str(item.get("topic") or ""))
@@ -2350,7 +2513,19 @@ class Daemon:
             return
         reason = self._wake_block(runner, pending, now)
         if reason:
-            self._not_run(runner, pending, reason, now)
+            if reason == "paused" and drain_deferred(self.root):
+                # Drain-qualified pause (AFC-652, F7):  defer, never drop.  The "queued" ledger
+                # row already exists (offer_wake wrote it synchronously) and recovery restores
+                # it, so re-arming writes no row per cycle;  the stale gate in _wake_block
+                # still bounds a long defer.  An ordinary pause keeps its recorded drop.
+                pending.due = now + self.coalescer.window
+                # Hand the re-arm to the event thread:  the coalescer is not thread-safe, so
+                # a per-seat worker thread never mutates it.  tick() restores it before the
+                # next take_due, which is still ahead of the new due time.
+                self._deferred_restores.put(pending)
+                self.log.write("wake-deferred", seat=pending.seat, wake_id=pending.wake_id)
+            else:
+                self._not_run(runner, pending, reason, now)
             return
         lease_id = self.takeover(runner, pending)
         if lease_id:
@@ -3496,7 +3671,18 @@ class Daemon:
         # staleness, and the budgets with every other accepted wake reserved at its maximum.
         reason = self._wake_block(runner, pending, now)
         if reason:
-            self._not_run(runner, pending, reason, now)
+            if reason == "paused" and drain_deferred(self.root):
+                # Same drain defer as finalize (AFC-652, F7):  a wake admitted before the drain
+                # whose turn comes inside the window re-arms instead of dropping.  The second
+                # "accepted" row merges into the same ledger view, so budgets count it once.
+                pending.due = now + self.coalescer.window
+                # Hand the re-arm to the event thread:  the coalescer is not thread-safe, so
+                # a per-seat worker thread never mutates it.  tick() restores it before the
+                # next take_due, which is still ahead of the new due time.
+                self._deferred_restores.put(pending)
+                self.log.write("wake-deferred", seat=pending.seat, wake_id=pending.wake_id)
+            else:
+                self._not_run(runner, pending, reason, now)
             return
         if runner.cfg.wake == "http":
             self.run_routine(runner, pending, now)
@@ -3990,7 +4176,9 @@ class Daemon:
         if blocked:
             self.log.write("broadcast-wake-unsupported", id=message_id, seats=blocked)
 
-    def start_fanout(self, message: Mapping[str, Any], c: R.Classes) -> None:
+    def start_fanout(
+        self, message: Mapping[str, Any], c: R.Classes, seat: str | None = None
+    ) -> None:
         """The owner's channel-wide mention reaches the recently active chats (chat_fanout), once per message
         whichever seat saw it first.  The catalog walk can take seconds, so it runs off the event thread."""
         message_id = message.get("id")
@@ -3999,11 +4187,33 @@ class Daemon:
         with self._fanout_lock:
             if message_id in self._fanout_seen:
                 return
+        admitted = self._broadcast_admit(message, c, "fanout", seat=seat)
+        if admitted is None:
+            # The ledger write failed (logged broadcast-admit-failed):  no durable row exists
+            # for a later boot/tick re-drive, so hand the wake to the event thread like a
+            # fanout that never started (AFC-652 review fix).  The per-seat F4 fence in
+            # _broadcast_wake_after_fanout keeps a later successful admit from doubling it.
+            self._broadcast_wakes.put((message, frozenset()))
+            return
+        if admitted != "driving":
+            # The ledger is the durable seen-ring (R1):  the kind is parked by a drain window,
+            # already done/terminal, or claimed by the concurrent route that owns it.  Nothing
+            # is marked in memory and no work starts.
+            return
+        with self._fanout_lock:
             self._fanout_seen.append(message_id)
         where = FAN.scope(R.outside_code(str(message.get("content") or "")), c.topic)
         thread = threading.Thread(
-            target=self.fanout,
-            args=(message_id, c.channel, c.topic, where, FAN.ChatPlaces(), message),
+            target=self._run_fanout_effect,
+            args=(
+                str(message_id),
+                message_id,
+                c.channel,
+                c.topic,
+                where,
+                FAN.ChatPlaces(),
+                message,
+            ),
             kwargs={"owner": bool(c.owner)},
             name="chat-fanout",
             daemon=True,
@@ -4012,12 +4222,56 @@ class Daemon:
             thread.start()
         except Exception as exc:  # noqa: BLE001 - a fanout that never started owns nothing
             # The thread never ran, so the catalog walk never happened:  the wake is handed to
-            # the event thread with an empty nudged set, so tick() still wakes every seat.  The
-            # id stays in the seen ring:  the hand-off owns that wake now, and forgetting the id
-            # would let the next seat's route of the same message fan out again and wake twice.
-            # The log carries the id and the error type only:  never the content.
+            # the event thread with an empty nudged set, so tick() still wakes every seat.
+            # The chat nudges are lost to it, though, so the kind is a durable terminal
+            # failure with its reason (R4), not a gap only the log line remembered.
             self._broadcast_wakes.put((message, frozenset()))
+            self._fail_broadcast_effect(
+                str(message_id),
+                "fanout",
+                "drive thread did not start (%s)" % type(exc).__name__,
+            )
             self.log.write("fanout-start-failed", id=message_id, error=type(exc).__name__)
+
+    def _run_fanout_effect(
+        self,
+        mid: str,
+        message_id: int,
+        channel: str,
+        topic: str,
+        where: FAN.Scope,
+        places: Any,
+        message: Mapping[str, Any] | None,
+        *,
+        owner: bool = True,
+    ) -> None:
+        """Drive the fanout and land its completion receipt in the ledger (R2):  the kind
+        finishes when the work ENDS, not when the thread starts.  A crash mid-drive leaves
+        the kind driving, and boot re-parks it for a re-drive the nudge dedupe keys and the
+        F4 wake fence make safe."""
+        try:
+            result = self.fanout(message_id, channel, topic, where, places, message, owner=owner)
+        except Exception as exc:  # noqa: BLE001 - a dead drive is terminal, with its reason
+            self._fail_broadcast_effect(mid, "fanout", "drive raised %s" % type(exc).__name__)
+            return
+        receipt = {k: v for k, v in result.items() if v} if isinstance(result, dict) else None
+        # The walk completing is not the targets succeeding:  a catalog failure or any failed
+        # enqueue is a terminal failure with the per-target reasons in the receipt, never a
+        # done that silently lost chats.
+        if isinstance(result, dict) and result.get("error"):
+            self._fail_broadcast_effect(
+                mid, "fanout", "catalog %s" % result["error"], detail={"receipt": receipt}
+            )
+            return
+        if isinstance(result, dict) and result.get("failed"):
+            self._fail_broadcast_effect(
+                mid,
+                "fanout",
+                "%d chat enqueue(s) failed or were refused" % result["failed"],
+                detail={"receipt": receipt},
+            )
+            return
+        self._finish_broadcast_effect(mid, "fanout", receipt=receipt)
 
     @staticmethod
     def _inbox_broadcast(c: R.Classes) -> bool:
@@ -4041,7 +4295,9 @@ class Daemon:
             c.peer_broadcast and not c.owner_topic and not c.dm and not c.stale and not c.no_wake
         )
 
-    def start_inbox_delivery(self, message: Mapping[str, Any], c: R.Classes) -> None:
+    def start_inbox_delivery(
+        self, message: Mapping[str, Any], c: R.Classes, seat: str | None = None
+    ) -> None:
         """Put the owner's channel-wide note UNREAD in every fleet bot's own Zulip inbox.
 
         One delivery per message, whichever seat saw it first:  the id stays in the seen ring
@@ -4060,6 +4316,11 @@ class Daemon:
                 # The retry queue still owns this message:  a second seat's route of it must
                 # not start a second delivery.
                 return
+        if self._broadcast_admit(message, c, "inbox", seat=seat) != "driving":
+            # Parked by a drain window, already done/terminal, or claimed by the concurrent
+            # route that owns it:  the ledger is the durable seen-ring (R1).
+            return
+        with self._fanout_lock:
             self._inbox_seen.append(message_id)
             self._inbox_pending[message_id] = InboxPending(
                 message=message, seats=None, next_due=self.clock.time(), in_flight=True
@@ -4073,6 +4334,9 @@ class Daemon:
             ).start()
         except Exception as exc:  # noqa: BLE001 - a delivery that never started owns nothing
             self._forget_inbox(message_id)
+            # Nothing ran, so the kind goes back to parked and a later pass re-drives it:
+            # a spawn failure is transient and the delivery must not be lost to it.
+            self._release_broadcast_effect(str(message_id), "inbox")
             self.log.write(
                 "inbox-delivery-failed",
                 id=message_id,
@@ -4094,7 +4358,9 @@ class Daemon:
                 pass
             self._inbox_pending.pop(message_id, None)
 
-    def schedule_broadcast_audit(self, message: Mapping[str, Any], c: R.Classes) -> None:
+    def schedule_broadcast_audit(
+        self, message: Mapping[str, Any], c: R.Classes, seat: str | None = None
+    ) -> None:
         """Remember a fleet bot's `@all` so the listener can ask the owner for a reason.
 
         One audit per message id:  the first seat that routes the message owns it, and a second
@@ -4102,29 +4368,667 @@ class Daemon:
         `peer_broadcast_reminder_minutes`;  0 turns the reminder off, and the wake is untouched
         either way.
 
-        The pending audits live in memory (owner, Oct 27 2026):  a restart drops them, which
-        costs one unexplained broadcast and never a wrong wake.  The daemon logs that at start."""
+        The pending audit is durable in the broadcast-effect ledger:  a restart no longer
+        drops it, its due time survives, and a crash after the reminder's send but before its
+        ack turns the kind UNKNOWN at boot instead of sending a second reminder (R5)."""
         minutes = float(self.config.peer_broadcast_reminder_minutes)
         message_id = message.get("id")
         if not isinstance(message_id, int) or minutes <= 0:
             return
-        seat = BAUD.sender_seat_for(
+        sender_seat = BAUD.sender_seat_for(
             str(message.get("sender_email") or ""), seats=self._fleet_seat_tags()
         )
-        broadcast = BAUD.Broadcast(
-            message_id=message_id,
-            sender_seat=seat,
-            sender_email=str(message.get("sender_email") or ""),
-            channel=c.channel,
-            topic=c.topic,
-            timestamp=float(message.get("timestamp") or self.clock.time()),
+        detail = {
+            "due_at": self.clock.time() + minutes * 60.0,
+            "attempts": 0,
+            "sender_seat": sender_seat,
+            "sender_email": str(message.get("sender_email") or ""),
+            "timestamp": float(message.get("timestamp") or self.clock.time()),
+        }
+        if self._broadcast_admit(message, c, "audit", seat=seat, detail=detail) != "driving":
+            return
+        self.log.write(
+            "peer-broadcast-audit-scheduled", id=message_id, seat=sender_seat or "unknown"
         )
-        with self._fanout_lock:
-            if message_id in self._broadcast_audits:
+
+    # ---- durable broadcast-effect ledger (AFC-652, #1462) --------------------------------------
+    # EVERY broadcast effect kind (fanout, inbox, audit) is admitted to a durable ledger BEFORE
+    # any effect, any seen-ring mark or any cursor advance, drain window or not (R1).  A row
+    # lives until every admitted kind is done;  failed and unknown kinds are terminal, carry a
+    # durable reason and stay surfaced in status until the operator clears them (R4).  Crash
+    # boundaries, stated exactly:
+    #   - crash after admission, before or during a drive:  boot drops the dead process's
+    #     claims and re-parks fanout/inbox kinds (driving -> pending);  the re-drive is safe
+    #     because the fanout's nudge dedupe keys, the F4 wake fence and the inbox delivery's
+    #     idempotent writes already fence a second run.  The ledger never has to know how far
+    #     the drive got.
+    #   - crash after the audit reminder's external send but before its ack landed:  the
+    #     durable send-attempt marker turns the kind UNKNOWN at boot and it is NEVER resent
+    #     (R5:  Zulip has no idempotent send, so nothing proves the reminder did not go out).
+    # The claim-before-finish false-replay rule is preserved (R3):  a drain marker that lands
+    # mid-drive re-parks the kind (the re-park write removes the claim and clears the detail,
+    # so the driver's finish is a no-op) and the kind drives again after the window.
+
+    def _broadcast_ledger_path(self) -> str:
+        return os.path.join(L.listener_dir(self.root), "broadcast_effects.json")
+
+    def _deferred_broadcasts_path(self) -> str:
+        # The pre-#1462 park store:  only the boot migration reads it now.
+        return os.path.join(L.listener_dir(self.root), "deferred_broadcasts.json")
+
+    @staticmethod
+    def _broadcast_snapshot(message: Mapping[str, Any]) -> dict[str, Any]:
+        """The parked payload's identity:  a content hash and the sender, never the content
+        itself (R8)."""
+        content = str(message.get("content") or "")
+        return {
+            "content_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+            "sender_email": str(message.get("sender_email") or ""),
+            "sender_id": message.get("sender_id"),
+        }
+
+    def _broadcast_admit(
+        self,
+        message: Mapping[str, Any],
+        c: R.Classes,
+        kind: str,
+        seat: str | None = None,
+        detail: Mapping[str, Any] | None = None,
+    ) -> str | None:
+        """Admit one broadcast effect kind to the durable ledger and return its state.
+
+        The row is written BEFORE any effect, seen-ring mark or cursor advance (R1), on every
+        route, drain window or not.  Outside a drain window exactly one caller claims the kind
+        and reads "driving" (the claim write is the fence between concurrent seat routes);
+        inside one the kind is parked pending.  A drain marker that lands mid-drive re-parks
+        the kind:  the re-park drops the claim and clears the detail, so the driver's finish
+        is a no-op and the kind drives again after the window (R3).  A done/failed/unknown
+        kind is never resurrected:  that is the durable dedup."""
+        message_id = message.get("id")
+        if not isinstance(message_id, int) or isinstance(message_id, bool):
+            return None
+        mid = str(message_id)
+        drained = drain_deferred(self.root)
+        now = self.clock.time()
+        outcome: list[str] = []
+
+        def mutate(data: dict[str, Any]) -> None:
+            row = data.setdefault(
+                mid,
+                {
+                    "mid": message_id,
+                    "channel": c.channel,
+                    "topic": c.topic,
+                    "stream_id": message.get("stream_id"),
+                    "origin_seat": seat,
+                    "admitted_at": now,
+                    "snapshot": self._broadcast_snapshot(message),
+                    "effects": {},
+                    "claims": {},
+                    "changed_content": [],
+                },
+            )
+            effects = row.setdefault("effects", {})
+            effect = effects.get(kind)
+            if not isinstance(effect, dict):
+                effect = {"state": "pending", "reason": None, "detail": {}}
+                effects[kind] = effect
+            eff_detail = effect.setdefault("detail", {})
+            if not isinstance(eff_detail, dict):
+                eff_detail = {}
+                effect["detail"] = eff_detail
+            for key, value in (detail or {}).items():
+                eff_detail.setdefault(key, value)
+            state = str(effect.get("state") or "pending")
+            if drained:
+                if state in ("pending", "driving"):
+                    effect["state"] = "pending"
+                    effect["detail"] = {}
+                    row.setdefault("claims", {}).pop(kind, None)
+                    outcome.append("pending")
+                else:
+                    outcome.append(state)
                 return
-            due = self.clock.time() + minutes * 60.0
-            self._broadcast_audits[message_id] = (broadcast, due, 0)
-        self.log.write("peer-broadcast-audit-scheduled", id=message_id, seat=seat or "unknown")
+            if state == "pending":
+                effect["state"] = "driving"
+                row.setdefault("claims", {})[kind] = now
+                outcome.append("driving")
+                return
+            outcome.append(state)
+
+        try:
+            L.update_json(self._broadcast_ledger_path(), mutate)
+        except OSError:
+            self.log.write("broadcast-admit-failed", id=message_id, effect=kind)
+            return None
+        state = outcome[0] if outcome else "pending"
+        if state == "pending" and drained:
+            self.log.write("broadcast-effect-deferred", id=message_id, effect=kind)
+        return state
+
+    def _release_broadcast_effect(self, mid: str, kind: str) -> None:
+        """Drop a drive WITHOUT finishing (K2):  driving -> pending, so a start that failed
+        before any effect leaves the kind parked for a later pass instead of claimed forever.
+        The claim-before-finish false-replay rule is preserved:  a re-park that raced the
+        drive already removed the claim, and releasing an already-removed claim is a no-op."""
+
+        def mutate(data: dict[str, Any]) -> None:
+            row = data.get(mid)
+            if not isinstance(row, dict):
+                return
+            effect = (row.get("effects") or {}).get(kind)
+            if isinstance(effect, dict) and effect.get("state") == "driving":
+                effect["state"] = "pending"
+            (row.setdefault("claims", {})).pop(kind, None)
+
+        try:
+            L.update_json(self._broadcast_ledger_path(), mutate)
+        except OSError:
+            pass
+
+    def _finish_broadcast_effect(
+        self, mid: str, kind: str, receipt: Mapping[str, Any] | None = None
+    ) -> None:
+        """Done, with the completion receipt (R2) - unless a re-park raced the drive and
+        removed the claim (R3):  then the finish is a no-op and the kind stays parked.  The
+        row PERSISTS as the durable seen-ring:  a late route of the same message (another
+        seat's normal lag, or a replay after a restart) finds the done kind and starts
+        nothing - the audit reminder above all, which no other fence dedupes.  Boot prunes
+        all-done rows older than BROADCAST_LEDGER_DONE_KEEP_SECONDS."""
+
+        def mutate(data: dict[str, Any]) -> None:
+            row = data.get(mid)
+            if not isinstance(row, dict) or kind not in (row.get("claims") or {}):
+                return
+            row["claims"].pop(kind, None)
+            effect = row.setdefault("effects", {}).setdefault(
+                kind, {"state": "pending", "reason": None, "detail": {}}
+            )
+            effect["state"] = "done"
+            if receipt:
+                effect.setdefault("detail", {})["receipt"] = dict(receipt)
+
+        try:
+            L.update_json(self._broadcast_ledger_path(), mutate)
+        except OSError:
+            pass
+
+    def _fail_broadcast_effect(
+        self,
+        mid: str,
+        kind: str,
+        reason: str,
+        *,
+        state: str = "failed",
+        detail: Mapping[str, Any] | None = None,
+    ) -> None:
+        """Terminal failure/unknown with a durable reason (R4/R5):  surfaced in status, never
+        auto-retried, never dropped to zero.  Claim-guarded like the finish:  a re-park that
+        raced the drive already owns the kind's future."""
+
+        def mutate(data: dict[str, Any]) -> None:
+            row = data.get(mid)
+            if not isinstance(row, dict) or kind not in (row.get("claims") or {}):
+                return
+            row["claims"].pop(kind, None)
+            effect = row.setdefault("effects", {}).setdefault(
+                kind, {"state": "pending", "reason": None, "detail": {}}
+            )
+            effect["state"] = state
+            effect["reason"] = reason
+            if detail:
+                effect.setdefault("detail", {}).update(detail)
+
+        try:
+            L.update_json(self._broadcast_ledger_path(), mutate)
+        except OSError:
+            pass
+        self.log.write("broadcast-effect-terminal", id=mid, effect=kind, state=state, reason=reason)
+
+    def _update_broadcast_effect_detail(
+        self, mid: str, kind: str, updates: Mapping[str, Any]
+    ) -> None:
+        """Merge progress into a driving kind's detail (per-attempt receipts, retry due
+        times, the audit send-attempt marker).  Claim-guarded like the finish."""
+
+        def mutate(data: dict[str, Any]) -> None:
+            row = data.get(mid)
+            if not isinstance(row, dict) or kind not in (row.get("claims") or {}):
+                return
+            effect = (row.get("effects") or {}).get(kind)
+            if isinstance(effect, dict):
+                effect.setdefault("detail", {}).update(updates)
+
+        try:
+            L.update_json(self._broadcast_ledger_path(), mutate)
+        except OSError:
+            pass
+
+    def _claim_due_broadcast_audit(self, mid: str, now: float) -> bool:
+        """Hold the audit kind's claim before its real body runs.
+
+        Admission claims a driving audit for the whole wait and the claim sits in the
+        ledger;  boot clears every claim as stale (the claiming thread died with the
+        process), so a driving audit WITHOUT a send attempt can come due with no claim
+        held.  Every body write (the send-attempt marker, finish, fail, retry) is
+        claim-guarded and no-ops without it, so a claimless body would send the
+        reminder, record nothing, and send again on every later tick forever.  This
+        write restores exactly the admission claim - same kind, still driving, never a
+        terminal or re-parked row - or reports that the kind is not ours to run."""
+
+        claimed: list[bool] = []
+
+        def mutate(data: dict[str, Any]) -> None:
+            row = data.get(mid)
+            if not isinstance(row, dict):
+                return
+            effect = (row.get("effects") or {}).get("audit")
+            if not isinstance(effect, dict) or effect.get("state") != "driving":
+                return
+            row.setdefault("claims", {}).setdefault("audit", now)
+            claimed.append(True)
+
+        try:
+            L.update_json(self._broadcast_ledger_path(), mutate)
+        except OSError:
+            return False
+        return bool(claimed)
+
+    def _broadcast_ledger_boot(self) -> None:
+        """Migrate the pre-#1462 park store, then reconcile the ledger with the dead process.
+
+        Every claim is stale at boot (the claiming thread died with the process):
+          - fanout/inbox kinds in driving go back to pending and are re-driven:  their
+            effects are idempotent under the nudge dedupe key, the F4 wake fence and the
+            inbox delivery's idempotent writes, so a mid-drive crash never needs a finer
+            answer;
+          - an audit kind in driving WITH a send attempt but no completion is UNKNOWN (R5:
+            the reminder may have reached the owner;  it is never resent automatically);
+          - an audit kind in driving WITHOUT a send attempt stays driving:  nothing was
+            sent and its due time is durable.  The claim is stale like every other, so
+            the due pass re-claims the kind atomically before running the real body -
+            without that, the claim-guarded marker/finish writes would no-op and the
+            reminder would re-send on every tick.
+        Migrated rows park their unfinished kinds pending;  all-done rows drop."""
+        ledger = self._broadcast_ledger_path()
+        old_path = self._deferred_broadcasts_path()
+        old = L.read_json(old_path)
+        if not old and os.path.exists(old_path):
+            # read_json answers a corrupt store with {}, which would migrate as empty
+            # SILENTLY while the rows sit unrenamed forever.  Distinguish a genuinely
+            # empty store from an unreadable one and surface the latter:  the file is
+            # left in place for the operator, never renamed, never dropped.
+            try:
+                with open(old_path, encoding="utf-8") as fh:
+                    raw_old = json.load(fh)
+            except (OSError, ValueError):
+                raw_old = None
+            if not isinstance(raw_old, dict) or raw_old:
+                self.log.write(
+                    "broadcast-ledger-migration-unreadable", path=os.path.basename(old_path)
+                )
+        migrated = 0
+        if isinstance(old, dict) and old:
+            now = self.clock.time()
+
+            def migrate(data: dict[str, Any]) -> None:
+                nonlocal migrated
+                for mid, orow in old.items():
+                    if not isinstance(orow, dict):
+                        continue
+                    row = data.setdefault(
+                        str(mid),
+                        {
+                            "mid": orow.get("mid") if isinstance(orow.get("mid"), int) else None,
+                            "channel": orow.get("channel"),
+                            "topic": orow.get("topic"),
+                            "stream_id": orow.get("stream_id"),
+                            "origin_seat": orow.get("seat"),
+                            "admitted_at": orow.get("ts")
+                            if isinstance(orow.get("ts"), (int, float))
+                            else now,
+                            "snapshot": {},
+                            "effects": {},
+                            "claims": {},
+                            "changed_content": [],
+                        },
+                    )
+                    effects = row.setdefault("effects", {})
+                    for kind, done in (orow.get("effects") or {}).items():
+                        if kind in effects:
+                            continue
+                        effects[kind] = {
+                            "state": "done" if done is True else "pending",
+                            "reason": None,
+                            "detail": {"migrated": True},
+                        }
+                    migrated += 1
+
+            # The rename is the marker and happens only AFTER the complete copy is durable in
+            # the ledger.  A crash between the two loses nothing:  the old store is still
+            # there and the next boot re-migrates idempotently (a kind already present is
+            # skipped, never resurrected - a kind that drove to done between the two boots
+            # stays done).  Rows too corrupt to migrate stay in the .migrated file for the
+            # operator;  nothing rolls the ledger back.
+            try:
+                L.update_json(ledger, migrate)
+                os.replace(
+                    self._deferred_broadcasts_path(), self._deferred_broadcasts_path() + ".migrated"
+                )
+            except OSError:
+                self.log.write("broadcast-ledger-migration-failed", rows=len(old))
+        reparked = 0
+        unknowned = 0
+
+        def reset(data: dict[str, Any]) -> None:
+            nonlocal reparked, unknowned
+            for mid in list(data):
+                row = data.get(mid)
+                if not isinstance(row, dict):
+                    continue
+                row["claims"] = {}
+                effects = row.get("effects") or {}
+                for kind, effect in effects.items():
+                    if not isinstance(effect, dict) or effect.get("state") != "driving":
+                        continue
+                    detail = effect.get("detail")
+                    if not isinstance(detail, dict):
+                        detail = {}
+                        effect["detail"] = detail
+                    if kind == "audit":
+                        if detail.get("send_attempted_at"):
+                            effect["state"] = "unknown"
+                            effect["reason"] = (
+                                "reminder send attempted; the ack was lost to the stop, "
+                                "so a second send is never attempted"
+                            )
+                            unknowned += 1
+                        # Without a send attempt nothing went out:  the kind stays driving
+                        # and its durable due time re-runs it on a coming tick.
+                    else:
+                        effect["state"] = "pending"
+                        detail["boot_resets"] = int(detail.get("boot_resets") or 0) + 1
+                        reparked += 1
+                # Done rows are the durable seen-ring, so they persist - but not forever:
+                # a replay that could dedupe against them never reaches further back than
+                # the keep window (the cursor and the webhook spool rewind seconds, and a
+                # re-drive only touches rows with parked kinds), so older all-done rows are
+                # pruned here, at boot, never in the hot path.
+                admitted_at = row.get("admitted_at")
+                if (
+                    effects
+                    and all(
+                        isinstance(e, dict) and e.get("state") == "done" for e in effects.values()
+                    )
+                    and isinstance(admitted_at, (int, float))
+                    and admitted_at < self.clock.time() - BROADCAST_LEDGER_DONE_KEEP_SECONDS
+                ):
+                    data.pop(mid, None)
+
+        try:
+            L.update_json(ledger, reset)
+        except OSError:
+            return
+        if migrated or reparked or unknowned:
+            self.log.write(
+                "broadcast-ledger-boot", migrated=migrated, reparked=reparked, unknown=unknowned
+            )
+
+    def _probe_deferred_payload(self, runner: SeatRunner, mid: str) -> Mapping[str, Any] | None:
+        """ONE re-drive probe attempt:  the parked broadcast's payload from this runner, or
+        None on any miss, access-class answer, or transient failure.
+
+        Any connected runner that still fetches the payload proves it exists and re-drives
+        it.  There is NO expiry proof (AFC-652 GATE 2):  Zulip answers an inaccessible
+        message with the same 4xx as a deleted one, a runner that cannot see the parked
+        message's channel proves nothing, and even the origin seat's historical access does
+        not prove CURRENT access (the bot can lose a private channel mid-window).  No
+        response class distinguishes "deleted" from "cannot see", so the daemon never
+        expires a parked effect on its own:  every miss, access-class answer, and transient
+        failure keeps the kind parked, where it surfaces as a nonzero
+        drain.broadcast_effects until the operator investigates the named message (the
+        record carries its channel/topic/stream_id/origin seat for exactly that).
+
+        The attempt is deliberately short (REDRIVE_PROBE_TIMEOUT_SECONDS, not the general
+        http timeout):  it runs on the routing thread inside the per-pass attempt budget
+        (F8), so a hung read costs the pass seconds, never minutes."""
+        if not isinstance(mid, str) or not mid.isdigit():
+            # K4 (AFC-652 review):  the parked id names a REST path segment, so it is validated
+            # before it ever reaches one.  A row with a bad id is corrupt or hostile;  it is
+            # terminal-failed by the re-drive, and no request is ever made for it.
+            self.log.write("broadcast-redrive-bad-id", id=str(mid)[:64])
+            return None
+        try:
+            response = runner.client.get(
+                "messages/%s" % int(mid),
+                {"apply_markdown": False},
+                timeout=min(REDRIVE_PROBE_TIMEOUT_SECONDS, self.http_timeout),
+            )
+        except (Z.ApiError, Z.NetworkError, OSError):
+            return None
+        message = response.get("message") if isinstance(response, dict) else None
+        if isinstance(message, dict) and str(message.get("id")) == str(mid):
+            return message
+        return None
+
+    def _reconcile_broadcast_snapshot(
+        self, mid: str, row: Mapping[str, Any], message: Mapping[str, Any]
+    ) -> None:
+        """R8:  compare the re-fetched payload against the parked snapshot and RECORD the
+        decision.  A changed payload is reclassified with its new content (the route below
+        already does that);  the old and new hashes and the decision land in the row, so a
+        later audit can tell a re-driven edit from a re-driven original.  route_edit stays
+        the separate, exempt path it always was."""
+        new_hash = hashlib.sha256(str(message.get("content") or "").encode("utf-8")).hexdigest()
+        snapshot = row.get("snapshot") if isinstance(row, Mapping) else None
+        old_hash = (snapshot or {}).get("content_sha256")
+        if old_hash == new_hash:
+            return
+        decision = (
+            "reclassified-after-content-change" if old_hash else "snapshot-established-on-redrive"
+        )
+
+        def mutate(data: dict[str, Any]) -> None:
+            row2 = data.get(mid)
+            if not isinstance(row2, dict):
+                return
+            row2["snapshot"] = self._broadcast_snapshot(message)
+            row2.setdefault("changed_content", []).append(
+                {"at": self.clock.time(), "old": old_hash, "new": new_hash, "decision": decision}
+            )
+
+        try:
+            L.update_json(self._broadcast_ledger_path(), mutate)
+        except OSError:
+            return
+        self.log.write("broadcast-redrive-content-changed", id=mid, decision=decision)
+
+    def _redrive_deferred_broadcasts(self) -> None:
+        """Re-drive parked broadcast effects once no drain window covers them (boot and tick).
+
+        Liveness (F8):  a pass completes probes for at most REDRIVE_FETCHES_PER_TICK parked
+        ids and spends at most REDRIVE_ATTEMPTS_PER_TICK synchronous REST attempts overall
+        (each capped at REDRIVE_PROBE_TIMEOUT_SECONDS), so the routing thread never blocks
+        on more than attempts x timeout of network work however many ids are parked and
+        however many runners are connected.  An id whose payload stays unknown backs off
+        exponentially (REDRIVE_UNKNOWN_BACKOFF_SECONDS doubling to
+        REDRIVE_UNKNOWN_BACKOFF_CAP_SECONDS, in memory only).  Probes rotate across parked
+        ids and across the connected runners, so a stuck first id or a dead first runner
+        never starves the rest.  The durable record and the GATE 2 no-expiry rule are
+        unchanged:  bounds and backoff pace probes, they expire nothing."""
+        try:
+            data = L.read_json(self._broadcast_ledger_path())
+        except Exception:
+            return
+        if not isinstance(data, dict) or not data:
+            return
+        if drain_deferred(self.root):
+            # Parked kinds only exist from a drain window;  re-drive once the marker lifts.
+            # An ordinary pause does not hold them:  it never parked them.
+            return
+        runners = [
+            r
+            for r in self.seats.values()
+            if r.connected and r.client is not None and r.me is not None
+        ]
+        if not runners:
+            # Nobody can fetch a payload, so a pass would only cost backoff state.
+            return
+        now = self.clock.time()
+        retry = getattr(self, "_deferred_redrive_retry_at", None)
+        if not isinstance(retry, dict):
+            retry = {}
+            self._deferred_redrive_retry_at = retry
+        for stale in list(retry):
+            if stale not in data:
+                retry.pop(stale, None)
+        cursor = getattr(self, "_deferred_redrive_cursor", None)
+        if not isinstance(cursor, dict):
+            cursor = {"mid": None, "runner": 0}
+            self._deferred_redrive_cursor = cursor
+        parked_ids = [
+            mid
+            for mid in sorted(data)
+            if isinstance(data.get(mid), dict)
+            and any(
+                isinstance(e, dict) and e.get("state") == "pending"
+                for e in (data[mid].get("effects") or {}).values()
+            )
+        ]
+        if cursor["mid"] in parked_ids:
+            at = parked_ids.index(cursor["mid"]) + 1
+            parked_ids = parked_ids[at:] + parked_ids[:at]
+        attempts = 0
+        probed = 0
+        for mid in parked_ids:
+            if probed >= REDRIVE_FETCHES_PER_TICK or attempts >= REDRIVE_ATTEMPTS_PER_TICK:
+                break
+            next_at, delay = retry.get(mid, (0.0, 0.0))
+            if next_at > now:
+                continue
+            parked = [
+                k
+                for k, v in (data[mid].get("effects") or {}).items()
+                if isinstance(v, dict) and v.get("state") == "pending"
+            ]
+            if not parked:
+                continue
+            if not mid.isdigit():
+                # K4:  a parked id names a REST path segment, so it is validated before it
+                # ever reaches one.  A row with a bad id is corrupt or hostile:  it is a
+                # terminal failure with its reason, never probed, never parked forever.
+                self.log.write("broadcast-redrive-bad-id", id=mid[:64])
+                for kind in parked:
+                    self._terminate_broadcast_effect(
+                        mid, kind, "failed", "parked id is not a message id; never probed"
+                    )
+                continue
+            # Probe across the connected runners;  the first runner rotates per probe so a
+            # dead or slow runner is never every probe's first cost, and the attempt
+            # budget caps what a pass spends even when every runner hangs.
+            start = cursor["runner"] % len(runners)
+            message = None
+            runner = None
+            for off in range(len(runners)):
+                if attempts >= REDRIVE_ATTEMPTS_PER_TICK:
+                    break
+                candidate = runners[(start + off) % len(runners)]
+                attempts += 1
+                message = self._probe_deferred_payload(candidate, mid)
+                if message is not None:
+                    runner = candidate
+                    break
+            probed += 1
+            cursor["mid"] = mid
+            cursor["runner"] = start + 1
+            if message is None:
+                # No fetched payload:  every attempt missed, errored, or the attempt
+                # budget cut the probe short.  That is ambiguous (deleted, invisible to
+                # every connected bot, or simply unprobed this pass), and the daemon never
+                # expires a parked effect on its own:  stay parked and visible.  The
+                # in-memory backoff only paces the next probe;  it expires nothing.
+                delay = min(
+                    max(delay * 2.0, REDRIVE_UNKNOWN_BACKOFF_SECONDS),
+                    REDRIVE_UNKNOWN_BACKOFF_CAP_SECONDS,
+                )
+                retry[mid] = (now + delay, delay)
+                continue
+            retry.pop(mid, None)
+            row = data[mid]
+            self._reconcile_broadcast_snapshot(mid, row, message)
+            # K5 (AFC-652 review):  re-drive in the ORIGIN seat's routing context when that
+            # seat is connected - leases, budgets and the recorded origin all belong to it.
+            # When it is not, the probing runner's context is used and the substitution is
+            # logged, so the re-drive never silently classifies under the wrong seat.
+            drive_runner = runner
+            origin = row.get("origin_seat")
+            if isinstance(origin, str) and origin:
+                origin_runner = self.seats.get(origin)
+                if (
+                    origin_runner is not None
+                    and origin_runner.connected
+                    and origin_runner.me is not None
+                ):
+                    drive_runner = origin_runner
+                else:
+                    self.log.write(
+                        "broadcast-redrive-origin-absent",
+                        id=mid,
+                        seat=origin,
+                        via=runner.seat,
+                    )
+            try:
+                c, _d = R.route(
+                    message,
+                    drive_runner.me,
+                    self.context(drive_runner),
+                    self.lease_views(drive_runner),
+                )
+            except Exception as exc:  # noqa: BLE001 - K2: one parked id never aborts the pass
+                self.log.write("broadcast-redrive-error", id=mid, error=type(exc).__name__)
+                continue
+            for kind in parked:
+                # No pre-claim:  each start_* admits and claims atomically, so a concurrent
+                # route of the same message owns exactly one drive, and a drain marker that
+                # lands right here parks instead (R3).
+                try:
+                    if kind == "fanout":
+                        self.start_fanout(message, c, seat=drive_runner.seat)
+                    elif kind == "inbox":
+                        self.start_inbox_delivery(message, c, seat=drive_runner.seat)
+                    elif kind == "audit":
+                        self.schedule_broadcast_audit(message, c, seat=drive_runner.seat)
+                except Exception as exc:  # noqa: BLE001 - K2: one kind's failure never aborts
+                    # the pass or strands its claim:  the claim is released and the kind stays
+                    # parked for a later pass.
+                    self._release_broadcast_effect(mid, kind)
+                    self.log.write(
+                        "broadcast-redrive-error",
+                        id=mid,
+                        effect=kind,
+                        error=type(exc).__name__,
+                    )
+                    continue
+
+    def _terminate_broadcast_effect(self, mid: str, kind: str, state: str, reason: str) -> None:
+        """Terminal state for a kind nobody is driving (a corrupt row):  like
+        _fail_broadcast_effect but without the claim guard, because no drive holds one."""
+
+        def mutate(data: dict[str, Any]) -> None:
+            row = data.get(mid)
+            if not isinstance(row, dict):
+                return
+            row.setdefault("claims", {}).pop(kind, None)
+            effect = (row.get("effects") or {}).get(kind)
+            if isinstance(effect, dict) and effect.get("state") in ("pending", "driving"):
+                effect["state"] = state
+                effect["reason"] = reason
+
+        try:
+            L.update_json(self._broadcast_ledger_path(), mutate)
+        except OSError:
+            return
+        self.log.write("broadcast-effect-terminal", id=mid, effect=kind, state=state, reason=reason)
 
     def _fleet_seat_tags(self) -> frozenset[str]:
         """The seat tags this instance knows:  the partition's seats and the fleet's own list.
@@ -4136,34 +5040,82 @@ class Daemon:
     def _start_due_broadcast_audits(self, now: float) -> None:
         """Hand the audits that are due to their own threads.
 
-        The event thread only picks them up:  the check reads Zulip (the sender bot's own
-        account) and posts one DM, so it must not run where the coalescer lives.  A thread that
-        never started owns nothing, so the audit is put back on the queue (a spawn failure is
-        transient, and the owner reminder must not be lost to it) and logged as failed."""
-        due: list[tuple[BAUD.Broadcast, int]] = []
+        The ledger is the source of truth:  a driving audit kind with a due_at in the past is
+        picked up, fenced in-process by _audit_in_flight, and run off the event thread (the
+        check reads Zulip and posts one DM).  A thread that never started owns nothing:  the
+        kind keeps its durable state and is rescheduled with a bounded retry, exactly like a
+        retryable DM failure."""
+
+        try:
+            data = L.read_json(self._broadcast_ledger_path())
+        except Exception:
+            return
+        if not isinstance(data, dict):
+            return
+        due: list[tuple[str, BAUD.Broadcast, int]] = []
         with self._fanout_lock:
-            for message_id, (broadcast, due_at, attempt) in list(self._broadcast_audits.items()):
-                if due_at <= now:
-                    due.append((broadcast, attempt))
-                    self._broadcast_audits.pop(message_id, None)
-        for broadcast, attempt in due:
+            for mid, row in data.items():
+                if not isinstance(row, dict):
+                    continue
+                effect = (row.get("effects") or {}).get("audit")
+                if not isinstance(effect, dict) or effect.get("state") != "driving":
+                    continue
+                detail = effect.get("detail")
+                if not isinstance(detail, dict):
+                    continue
+                due_at = detail.get("due_at")
+                if not isinstance(due_at, (int, float)) or due_at > now:
+                    continue
+                message_id = row.get("mid")
+                if not isinstance(message_id, int) or message_id in self._audit_in_flight:
+                    continue
+                self._audit_in_flight.add(message_id)
+                due.append(
+                    (
+                        mid,
+                        BAUD.Broadcast(
+                            message_id=message_id,
+                            sender_seat=detail.get("sender_seat"),
+                            sender_email=str(detail.get("sender_email") or ""),
+                            channel=str(row.get("channel") or ""),
+                            topic=str(row.get("topic") or ""),
+                            timestamp=float(detail.get("timestamp") or now),
+                        ),
+                        int(detail.get("attempts") or 0),
+                    )
+                )
+        for mid, broadcast, attempt in due:
+            if not self._claim_due_broadcast_audit(mid, now):
+                # A re-park or terminal transition landed between the scan and the claim:
+                # the kind is not ours to run.
+                with self._fanout_lock:
+                    self._audit_in_flight.discard(broadcast.message_id)
+                continue
             try:
                 threading.Thread(
                     target=self._run_broadcast_audit,
-                    args=(broadcast, attempt),
+                    args=(mid, broadcast, attempt),
                     name="broadcast-audit",
                     daemon=True,
                 ).start()
             except Exception as exc:  # noqa: BLE001 - an audit that never started owns nothing
-                # The thread never ran, so nothing was sent:  the audit goes back on the queue
-                # like a retryable DM failure does, bounded by the same attempt cap.
-                if attempt < BAUD.REMINDER_MAX_ATTEMPTS:
-                    with self._fanout_lock:
-                        self._broadcast_audits[broadcast.message_id] = (
-                            broadcast,
-                            now + BAUD.REMINDER_RETRY_SECONDS,
-                            attempt + 1,
-                        )
+                # The thread never ran, so nothing was sent:  the audit is rescheduled like a
+                # retryable DM failure, bounded by the same attempt cap.
+                with self._fanout_lock:
+                    self._audit_in_flight.discard(broadcast.message_id)
+                if attempt + 1 >= BAUD.REMINDER_MAX_ATTEMPTS:
+                    self._fail_broadcast_effect(
+                        mid, "audit", "reminder thread did not start (%s)" % type(exc).__name__
+                    )
+                else:
+                    self._update_broadcast_effect_detail(
+                        mid,
+                        "audit",
+                        {
+                            "due_at": now + BAUD.REMINDER_RETRY_SECONDS,
+                            "attempts": attempt + 1,
+                        },
+                    )
                 self.log.write(
                     "peer-broadcast-all",
                     id=broadcast.message_id,
@@ -4172,7 +5124,7 @@ class Daemon:
                     error=type(exc).__name__,
                 )
 
-    def _run_broadcast_audit(self, broadcast: BAUD.Broadcast, attempt: int = 0) -> None:
+    def _run_broadcast_audit(self, mid: str, broadcast: BAUD.Broadcast, attempt: int = 0) -> None:
         """Check one fleet bot's `@all` and, when nobody explained it, DM the owner.
 
         Runs off the event thread.  The check reads the SENDER bot's own Zulip account, with
@@ -4181,18 +5133,32 @@ class Daemon:
         those credentials cannot be read, the check did not run, and the reminder says so in its
         second line instead of pretending the bot explained itself.
 
-        The reminder is the daemon's own deterministic text, so it is sent by the Operator and is
-        tagged `[OPERATOR·note]` (owner ruling, Oct 30 2026): it used to go out as the bot of a
-        seat chosen to carry alerts, a seat that never thought or said it.  With no Operator the
-        reminder is not sent, the refusal is logged, and the audit is kept for another try; it
-        never falls back to a seat's bot.
+        The reminder is the daemon's own deterministic text, sent through the Operator voice
+        path (`_operator_send`).  With no Operator the reminder is not sent, the refusal is
+        logged, and the audit is kept for another try;  it never falls back to a seat's bot.
+
+        Durability (R5):  the send-attempt marker is written to the ledger BEFORE the send;
+        a crash after the send but before the ack leaves the marker without a completion,
+        and boot turns the kind UNKNOWN rather than ever sending a second reminder.  A send
+        whose failure class says the request may have reached the server is UNKNOWN for the
+        same reason, immediately.
 
         Every log line carries the seat, the message id and the outcome:  never a key, an email
         or the message content."""
         message_id = broadcast.message_id
         seat = broadcast.sender_seat or "unknown"
+        try:
+            self._run_broadcast_audit_body(mid, broadcast, attempt)
+        finally:
+            with self._fanout_lock:
+                self._audit_in_flight.discard(message_id)
+
+    def _run_broadcast_audit_body(self, mid: str, broadcast: BAUD.Broadcast, attempt: int) -> None:
+        message_id = broadcast.message_id
+        seat = broadcast.sender_seat or "unknown"
         owner_id = int(self.config.owner_user_id)
         if owner_id <= 0:
+            self._fail_broadcast_effect(mid, "audit", "no owner user id is configured")
             self.log.write(
                 "peer-broadcast-all",
                 id=message_id,
@@ -4247,12 +5213,15 @@ class Daemon:
                 minutes=minutes,
             )
         if verdict.outcome in (BAUD.OWNER_CONTEXT, BAUD.EXPLAINED, BAUD.RATE_LIMITED):
+            # No reminder goes out:  the audit is done, with its verdict as the receipt.
+            self._finish_broadcast_effect(mid, "audit", receipt={"outcome": verdict.outcome})
             self.log.write("peer-broadcast-all", id=message_id, seat=seat, outcome=verdict.outcome)
             return
         text = W.neutralize_mentions(verdict.text)
         found = secretscan.scan(text, self.hidden)
         if found:
             # The scanner refuses and the message is not sent:  a reminder is not worth a leak.
+            self._fail_broadcast_effect(mid, "audit", "the secret scanner refused the reminder")
             self.log.write(
                 "peer-broadcast-all",
                 id=message_id,
@@ -4261,19 +5230,55 @@ class Daemon:
                 error="secret scanner",
             )
             return
+        # R5:  the send-attempt marker lands BEFORE the send.  A crash between the send and
+        # the ack leaves the marker without a completion, and boot turns the kind UNKNOWN:
+        # nothing proves the reminder did not reach the owner, so it is never sent twice.
+        self._update_broadcast_effect_detail(mid, "audit", {"send_attempted_at": self.clock.time()})
         try:
             result = self._operator_send({"type": "direct", "to": [owner_id], "content": text})
         except Exception as exc:  # noqa: BLE001 - a failed DM is logged and kept, never swallowed
-            # The failure is classified:  a retryable one keeps the audit pending so the
-            # reminder is not lost, a permanent one drops it, and a write that may have
-            # reached the server is never sent twice.  An Operator that is not available has sent
-            # nothing, and its credential or the vault may be back in a couple of minutes, so it is
-            # retried like a rate limit, inside the same attempt cap.
+            # The failure is classified:  a retryable one keeps the audit driving so the
+            # reminder is not lost, a permanent one fails it with its reason, and a write
+            # that may have reached the server is UNKNOWN and never sent twice.  An Operator
+            # that is not available has sent nothing, and its credential or the vault may be
+            # back in a couple of minutes, so it is retried like a rate limit, inside the
+            # same attempt cap.
             if isinstance(exc, OPV.OperatorUnavailable):
                 failure = BAUD.RETRY
-                self._operator_refused("broadcast-audit", exc, seat=seat, id=message_id)
             else:
                 failure = BAUD.dm_failure_outcome(exc)
+            # Durable before EVERY log row for this transition - the completion row and the
+            # classification refusal alike:  once either exists, the ledger already shows its
+            # outcome, so nothing can read a log saying failed/refused while the durable row
+            # still shows the previous attempts/due.
+            if failure == BAUD.UNKNOWN:
+                self._fail_broadcast_effect(
+                    mid,
+                    "audit",
+                    "reminder send outcome unknown (%s);  the DM may have reached the "
+                    "owner, so it is never resent" % type(exc).__name__,
+                    state="unknown",
+                )
+            elif failure == BAUD.RETRY and attempt < BAUD.REMINDER_MAX_ATTEMPTS:
+                self._update_broadcast_effect_detail(
+                    mid,
+                    "audit",
+                    {
+                        "due_at": self.clock.time() + BAUD.REMINDER_RETRY_SECONDS,
+                        "attempts": attempt + 1,
+                    },
+                )
+            else:
+                if failure == BAUD.RETRY:
+                    reason = "reminder send still failing after %d attempts (%s)" % (
+                        attempt + 1,
+                        type(exc).__name__,
+                    )
+                else:
+                    reason = "reminder send failed permanently (%s)" % type(exc).__name__
+                self._fail_broadcast_effect(mid, "audit", reason)
+            if isinstance(exc, OPV.OperatorUnavailable):
+                self._operator_refused("broadcast-audit", exc, seat=seat, id=message_id)
             self.log.write(
                 "peer-broadcast-all",
                 id=message_id,
@@ -4282,12 +5287,6 @@ class Daemon:
                 error=type(exc).__name__,
             )
             if failure == BAUD.RETRY and attempt < BAUD.REMINDER_MAX_ATTEMPTS:
-                with self._fanout_lock:
-                    self._broadcast_audits[broadcast.message_id] = (
-                        broadcast,
-                        self.clock.time() + BAUD.REMINDER_RETRY_SECONDS,
-                        attempt + 1,
-                    )
                 self.log.write(
                     "peer-broadcast-all-retry",
                     id=message_id,
@@ -4297,6 +5296,15 @@ class Daemon:
                 )
             return
         reminder_id = result.get("id")
+        self._finish_broadcast_effect(
+            mid,
+            "audit",
+            receipt={
+                "outcome": BAUD.REMINDED,
+                "reminder_id": int(reminder_id) if isinstance(reminder_id, int) else None,
+                "posted_by": OPV.VOICE,
+            },
+        )
         self.log.write(
             "peer-broadcast-all",
             id=message_id,
@@ -4414,8 +5422,11 @@ class Daemon:
         A seat that ended `retryable`, `unknown` or `missing-credentials` goes back on the
         retry queue with the steps it already completed.  A seat that ended `terminal` is
         reported once, in an `inbox-delivery-incomplete` event, so it is never silent.  When
-        the last retry fails, the queue gives up, says so, and drops the message."""
+        the last retry fails, the queue gives up and says so:  the kind ends FAILED with its
+        durable reason and per-seat receipts (R4), never dropped to zero.  A completed
+        delivery lands its per-seat receipt in the ledger and finishes the kind (R2)."""
         event: tuple[str, dict[str, Any]] | None = None
+        ledger: tuple[str, Any] | None = None
         with self._fanout_lock:
             state = self._inbox_pending.get(message_id)
             if state is None:
@@ -4456,6 +5467,17 @@ class Daemon:
                             },
                         },
                     )
+                    ledger = (
+                        "failed",
+                        "gave up after %d attempts:  %s"
+                        % (
+                            len(INBOX_RETRY_BACKOFF),
+                            ", ".join(
+                                "%s=%s" % (s, state.outcomes.get(s, IDEL.UNKNOWN)) for s in gave_up
+                            ),
+                        ),
+                        dict(state.outcomes),
+                    )
                     del self._inbox_pending[message_id]
                 else:
                     state.attempts += 1
@@ -4465,6 +5487,7 @@ class Daemon:
                         "inbox-delivery-retry-pending",
                         {"id": message_id, "seats": sorted(pending)},
                     )
+                    ledger = ("progress", dict(state.outcomes), state.attempts)
             else:
                 terminal = {
                     seat: outcome
@@ -4476,8 +5499,26 @@ class Daemon:
                         "inbox-delivery-incomplete",
                         {"id": message_id, "outcomes": terminal},
                     )
+                    ledger = (
+                        "failed",
+                        "terminal for:  %s"
+                        % ", ".join("%s=%s" % (s, o) for s, o in sorted(terminal.items())),
+                        dict(state.outcomes),
+                    )
+                else:
+                    ledger = ("done", dict(state.outcomes))
                 del self._inbox_pending[message_id]
-        # JsonLog.write is blocking I/O: it must not run under _fanout_lock.
+        # JsonLog.write and the ledger write are blocking I/O:  neither runs under _fanout_lock.
+        if ledger is not None:
+            mid = str(message_id)
+            if ledger[0] == "done":
+                self._finish_broadcast_effect(mid, "inbox", receipt={"targets": ledger[1]})
+            elif ledger[0] == "failed":
+                self._fail_broadcast_effect(mid, "inbox", ledger[1], detail={"targets": ledger[2]})
+            else:
+                self._update_broadcast_effect_detail(
+                    mid, "inbox", {"targets": ledger[1], "attempts": ledger[2]}
+                )
         if event is not None:
             self.log.write(event[0], **event[1])
             if event[0] == "inbox-delivery-gave-up":
@@ -4578,7 +5619,7 @@ class Daemon:
         nudged_seats: set[str],
         owner: bool = True,
     ) -> dict[str, Any]:
-        result: dict[str, Any] = {"queued": 0, "already": 0, "no_transport": {}}
+        result: dict[str, Any] = {"queued": 0, "already": 0, "no_transport": {}, "targets": {}}
         try:
             # The catalog's own TTL decides when a rescan is due:  a burst of alerts reuses one walk instead of each
             # forcing one, and never holds the scan lock longer than an ordinary wake's refresh would.
@@ -4589,17 +5630,25 @@ class Daemon:
         except Exception:
             self.log.write("fanout-error", id=message_id, error="catalog discovery failed")
             return dict(result, error="catalog")
+        targets: dict[str, str] = result["targets"]
         for row in chosen:
             platform = str(row.get("platform") or "")
             runner = self.seats.get(str(row.get("seat") or ""))
+            target_key = "%s:%s:%s" % (
+                row.get("seat") or "?",
+                platform or "?",
+                row.get("session_id") or "?",
+            )
             if platform not in CN.SUPPORTED_PLATFORMS or runner is None or not runner.cfg.enabled:
                 result["no_transport"][platform] = result["no_transport"].get(platform, 0) + 1
+                targets[target_key] = "no-transport"
                 continue
             # A busy chat is queued too:  the nudge queue's preflight holds it until the chat is idle, so a chat
             # that was picked is never silently dropped.
             fields = ("platform", "host", "session_id", "cwd")
             if any(not isinstance(row.get(key), str) or not row[key].strip() for key in fields):
                 result["failed"] = result.get("failed", 0) + 1
+                targets[target_key] = "failed:invalid-binding"
                 self.log.write(
                     "fanout-chat-error", id=message_id, error="invalid chat binding fields"
                 )
@@ -4614,6 +5663,7 @@ class Daemon:
                 # The transport was vetted above, so a refusal here is a bad binding or an unreadable state
                 # file:  an error to log and count, not a platform with nowhere to send.
                 result["failed"] = result.get("failed", 0) + 1
+                targets[target_key] = "failed:refused"
                 self.log.write(
                     "fanout-chat-error",
                     id=message_id,
@@ -4623,6 +5673,7 @@ class Daemon:
                 continue
             except Exception:  # one chat's failure never stops the rest of the alert
                 result["failed"] = result.get("failed", 0) + 1
+                targets[target_key] = "failed:queue-error"
                 self.log.write(
                     "fanout-chat-error",
                     id=message_id,
@@ -4631,6 +5682,7 @@ class Daemon:
                 )
                 continue
             result["queued" if added else "already"] += 1
+            targets[target_key] = "queued" if added else "already"
             nudged_seats.add(str(row.get("seat") or ""))
         self.log.write(
             "fanout",
@@ -4641,6 +5693,32 @@ class Daemon:
             **{k: v for k, v in result.items() if v},
         )
         return result
+
+    def _drain_deferred_restores(self) -> None:
+        """Event thread only (tick):  drain-deferred wakes handed back by worker threads."""
+        while True:
+            try:
+                pending = self._deferred_restores.get_nowait()
+            except queue.Empty:
+                return
+            survivor, absorbed = self.coalescer.restore(pending)
+            if absorbed is not None:
+                self._record_wake_merge(absorbed, survivor)
+
+    def _record_wake_merge(self, absorbed: W.Pending, survivor: W.Pending) -> None:
+        """Ledger rows for a merged wake pair:  the survivor's row is refreshed with the
+        union of trigger ids (a crash before its next row must not lose the absorbed
+        wake's triggers) and the absorbed wake's row is closed as merged, so a crash
+        recovery never re-offers it."""
+        now = self.clock.time()
+        runner = self.seats.get(absorbed.seat)
+        if runner is None:
+            return
+        runner.ledger.append(survivor.row("queued", now, merged_from=absorbed.wake_id))
+        runner.ledger.append(absorbed.row("merged", now, merged_into=survivor.wake_id))
+        self.log.write(
+            "wake-merged", seat=absorbed.seat, wake_id=absorbed.wake_id, into=survivor.wake_id
+        )
 
     def _drain_broadcast_wakes(self) -> None:
         """Event thread only (tick):  the owner `@all` wakes the fanout handed back."""
@@ -4664,6 +5742,12 @@ class Daemon:
                 if not d.wake or d.delivered_to or MB.enabled(self.config, seat):
                     continue
                 item = self.make_item(runner, message, c, d)
+                mid = message.get("id")
+                if isinstance(mid, int) and self._wake_already_recorded(runner, mid):
+                    # F4 fence (AFC-652):  a crash mid-hand-off must not double-offer a seat
+                    # whose wake for this message already ran.
+                    self.log.write("wake-offer-fenced", seat=seat, id=mid)
+                    continue
                 self.offer_wake(runner, item, owner=d.wake == "owner")
             except Exception as exc:  # noqa: BLE001 - one seat must not stop the broadcast
                 self.log.write(
@@ -7424,8 +8508,10 @@ class Daemon:
             # Publish this tick, so a tool that asked for the reload reads the answer straight away.
             self.last_tick["status"] = 0.0
         self._drain_broadcast_wakes()
+        self._redrive_deferred_broadcasts()
         self._start_due_inbox_retries(now)
         self._start_due_broadcast_audits(now)
+        self._drain_deferred_restores()
         for pending in self.coalescer.take_due(now):
             self.finalize(pending)
         if now - self.last_tick["reap"] >= 10:
@@ -7810,6 +8896,7 @@ class Daemon:
                 "creds": runner.cfg.creds,
                 "connected": runner.connected,
                 "cursor": runner.cursor,
+                "webhook_high_water": runner.webhook_high_water,
                 "last_event": runner.last_event_wall,
                 "wake": runner.cfg.wake,
                 "routine": routine,
@@ -7901,7 +8988,87 @@ class Daemon:
             # Whether the Operator itself can speak (AFC-602):  a listener that is up with a dead
             # Operator voice drops every wake it would have reported, and nothing else says so.
             "operator_voice": self.operator_voice.snapshot(),
+            "drain": self._drain_status(),
             "seats": seats,
+        }
+
+    def _drain_status(self) -> dict[str, Any]:
+        """The planned-drain observability surface (AFC-652, F1):  every field a qualified
+        drain checks before SIGTERM, plus the armed marker.  In-memory or small-file reads."""
+        try:
+            spool_rows = self.webhook_spool.pending()
+            spool: dict[str, Any] = {
+                "pending": len(spool_rows),
+                "max_id": max((int(r.get("message_id") or 0) for r in spool_rows), default=0),
+            }
+        except OSError:
+            spool = {"unavailable": True}
+        with self._fanout_lock:
+            broadcasts = {
+                "wake_handoffs": self._broadcast_wakes.qsize(),
+                "inbox_pending": len(self._inbox_pending),
+            }
+        effect_names = (
+            "chat-fanout",
+            "inbox-delivery",
+            "inbox-delivery-retry",
+            "broadcast-audit",
+            "broadcast-wake-unsupported",
+        )
+        threads = {name: 0 for name in effect_names}
+        for t in threading.enumerate():
+            if t.name in threads and t.is_alive():
+                threads[t.name] += 1
+        with self.child_lock:
+            children = len(self.children)
+        hook = getattr(self, "linear_projects_hook", None)
+        # The durable broadcast-effect ledger (R4):  per-state counts, and the terminal rows
+        # named with their reasons so a failed or unknown effect is never a silent gap.  The
+        # terminal list is bounded;  the count is always exact.
+        ledger = L.read_json(self._broadcast_ledger_path())
+        effect_counts = {"pending": 0, "driving": 0, "done": 0, "failed": 0, "unknown": 0}
+        terminal: list[dict[str, Any]] = []
+        terminal_total = 0
+        audits_driving = 0
+        if isinstance(ledger, dict):
+            for mid, row in ledger.items():
+                if not isinstance(row, dict):
+                    continue
+                for kind, effect in (row.get("effects") or {}).items():
+                    if not isinstance(effect, dict):
+                        continue
+                    state = str(effect.get("state") or "")
+                    if state in effect_counts:
+                        effect_counts[state] += 1
+                    if state == "driving" and kind == "audit":
+                        audits_driving += 1
+                    if state in ("failed", "unknown"):
+                        terminal_total += 1
+                        if len(terminal) < 50:
+                            terminal.append(
+                                {
+                                    "id": mid,
+                                    "effect": kind,
+                                    "state": state,
+                                    "reason": effect.get("reason"),
+                                }
+                            )
+        broadcasts["audits"] = audits_driving
+        return {
+            "armed": drain_deferred(self.root),
+            "outgoing_webhook": {
+                "enabled": bool(getattr(self.config, "outgoing_webhook_enabled", False)),
+                "listening": self.outgoing_webhook_server is not None,
+                "spool": spool,
+            },
+            "broadcasts": broadcasts,
+            "effect_threads": threads,
+            "coalescer_pending": len(self.coalescer.pending),
+            "router_queue": self.router_queue.qsize(),
+            "children": children,
+            "broadcast_effects": effect_counts,
+            "broadcast_effects_terminal": {"total": terminal_total, "rows": terminal},
+            "linear_projects_queued": hook.queued if hook is not None else None,
         }
 
     def write_status(self) -> None:
@@ -8286,6 +9453,8 @@ class Daemon:
         self._configure_listener_api()
         for seat in ("GROK", "CURSOR", "CODEX"):
             self.chat_queue(seat).recover_interrupted()
+        self._broadcast_ledger_boot()
+        self._redrive_deferred_broadcasts()
         os.ftruncate(lock_fd, 0)
         os.write(lock_fd, str(os.getpid()).encode())
         self.install_excepthooks()
@@ -8416,16 +9585,60 @@ def set_pause(
     by: str,
     now: float,
     message_id: int | None = None,
+    defer: bool = False,
 ) -> None:
+    if defer and seat is not None:
+        # K1 (AFC-652 review):  drain semantics are fleet-wide by design (wake defer, broadcast
+        # parking, the hook gate all key on ANY marker), so a per-seat defer entry would arm a
+        # fleet-wide drain under a seat's name.  The CLI already refuses `pause --defer` with
+        # `--seat`;  the primitive now refuses it too instead of recording a lie.
+        raise ValueError("a drain window is fleet-wide: defer cannot mark a per-seat pause")
+
     def mutate(data: dict[str, Any]) -> None:
-        data[seat or "*"] = {
+        entry: dict[str, Any] = {
             "wakes_only": wakes_only,
             "by": by,
             "ts": now,
             "message_id": message_id,
         }
+        if defer:
+            # Drain marker (AFC-652):  this pause is a qualified drain window.  Wakes defer
+            # (re-arm) instead of dropping, broadcast admissions park durably, and the Linear
+            # hook refuses new events with a 503.  An ordinary pause has no marker and keeps
+            # the existing drop semantics.  The exact-prior-bytes restore removes it.
+            entry["defer"] = True
+        data[seat or "*"] = entry
 
     L.update_json(pause_path(root), mutate)
+
+
+def drain_deferred(root: str) -> bool:
+    """True while any pause entry carries the drain marker (AFC-652).
+
+    Cached by (mtime, size) of pause.json (K3):  a broadcast admission checks this up to three
+    times, and each check used to open and parse the file.  One stat per check now, and the
+    parse only when the file actually changed.  Every writer uses L.update_json's atomic
+    replace, so a change always moves the mtime;  a missing file caches as the (0, 0) key and
+    its later creation misses the cache by construction."""
+    path = pause_path(root)
+    try:
+        st = os.stat(path)
+        key = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        key = (0, 0)
+    with _DRAIN_CACHE_LOCK:
+        hit = _DRAIN_CACHE.get(path)
+        if hit is not None and hit[:2] == key:
+            return hit[2]
+    data = L.read_json(path)
+    deferred = isinstance(data, dict) and any(
+        isinstance(v, dict) and v.get("defer") for v in data.values()
+    )
+    with _DRAIN_CACHE_LOCK:
+        if len(_DRAIN_CACHE) >= _DRAIN_CACHE_MAX:
+            _DRAIN_CACHE.clear()
+        _DRAIN_CACHE[path] = (key[0], key[1], deferred)
+    return deferred
 
 
 def clear_pause(root: str, seat: str | None) -> bool:

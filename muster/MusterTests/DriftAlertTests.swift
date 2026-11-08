@@ -720,8 +720,12 @@ final class DriftMonitorTests: XCTestCase {
         XCTAssertEqual(grid.refreshCount, 2)
     }
 
-    /// The safety net is not held by the floor.
-    func test_the_safety_net_is_not_held_by_the_floor() async throws {
+    /// GRID-33:  the net no longer runs on every tick of its own.  It runs when the last
+    /// trusted run is a whole interval old on the wall clock,  so a run that landed five
+    /// seconds before a tick is not run again,  and once the interval has passed it runs
+    /// without waiting on the watcher's floor.  (This replaces a test that the net ran five
+    /// seconds after a trusted run,  which is the behaviour GRID-33 removes.)
+    func test_the_safety_net_runs_only_once_the_trusted_run_is_an_interval_old() async throws {
         let grid = FakeGrid()
         let watcher = FakeWatcher()
         let scheduler = ManualScheduler()
@@ -739,7 +743,15 @@ final class DriftMonitorTests: XCTestCase {
         clock.advance(by: 5)
         ticker.fire()
         await settle()
-        XCTAssertEqual(grid.refreshCount, 2, "the safety net runs inside the gap")
+        XCTAssertEqual(grid.refreshCount, 1, "a trusted run five seconds ago is current, so the net waits")
+
+        // Look every minute until the trusted run is a whole interval old.
+        for _ in 0..<10 {
+            clock.advance(by: 60)
+            ticker.fire()
+            await settle()
+        }
+        XCTAssertEqual(grid.refreshCount, 2, "the net runs once the trusted run is an interval old")
     }
 
     /// The watcher keeps its streams when a run leaves the watch list as it was,  and is
@@ -890,6 +902,76 @@ final class DriftMonitorTests: XCTestCase {
         XCTAssertEqual(watcher.armCount, calls, "a fully armed list is not armed again")
     }
 
+    /// A stream that stops after the list was fully armed is armed again after the next run:
+    /// what the watcher reports as started decides,  not what the monitor armed last time.  A
+    /// stream that keeps failing is asked for once per run,  never in a loop of its own,  and
+    /// the healthy stream is left running throughout.
+    func test_a_stream_that_stops_after_a_full_arming_is_armed_again_after_the_next_run() async throws {
+        let grid = FakeGrid()
+        let watcher = FakeWatcher()
+        let healthy = URL(fileURLWithPath: "/tmp/muster-stopped/healthy.json")
+        let dying = URL(fileURLWithPath: "/tmp/muster-stopped/dying.json")
+        let healthyWatch = DriftWatchList.Watch(
+            root: healthy, target: healthy, targetIsDirectory: false, rootIsTheTarget: true
+        )
+        let dyingWatch = DriftWatchList.Watch(
+            root: dying, target: dying, targetIsDirectory: false, rootIsTheTarget: true
+        )
+        let monitor = DriftMonitor(
+            grid: grid,
+            notifier: DriftRecordingNotifier(),
+            history: DriftHistoryStore(url: historyURL),
+            watcher: watcher,
+            scheduler: ManualScheduler(),
+            ticker: ManualTicker(),
+            home: home,
+            buildWatchList: { _, _ in
+                DriftWatchList(
+                    watches: [healthyWatch, dyingWatch],
+                    targetPaths: [healthy, dying],
+                    seats: ["MM"]
+                )
+            }
+        )
+        monitor.start()
+        XCTAssertEqual(watcher.held, [healthyWatch, dyingWatch])
+        XCTAssertTrue(monitor.watchCoverage.isComplete)
+
+        // One stream stops on its own.  Nothing arms it before a run lands.
+        watcher.dropStream(root: dying)
+        await settle()
+        XCTAssertEqual(watcher.armCount, 1)
+
+        // It cannot be made again for now:  each run asks for it once,  and only it.
+        watcher.failingRoots = [dying]
+        grid.finish(cells: [], trusted: true)
+        await settle()
+        XCTAssertEqual(
+            watcher.armCalls,
+            [[healthyWatch, dyingWatch], [dyingWatch]],
+            "the stream that stopped was not asked for again"
+        )
+        XCTAssertEqual(monitor.watchCoverage.streamsFailed, 1)
+        XCTAssertTrue(watcher.disarmed.isEmpty, "the healthy stream was torn down")
+        XCTAssertEqual(watcher.streamsMade[healthy], 1, "the healthy stream was started again")
+        grid.finish(cells: [], trusted: true)
+        await settle()
+        XCTAssertEqual(watcher.armCount, 3, "a stream that keeps failing is asked for once per run")
+
+        // Once it can be made it arms,  and the list is kept from then on.
+        watcher.failingRoots = []
+        grid.finish(cells: [], trusted: true)
+        await settle()
+        XCTAssertEqual(watcher.held, [healthyWatch, dyingWatch])
+        XCTAssertEqual(watcher.streamsMade[dying], 2)
+        XCTAssertEqual(watcher.streamsMade[healthy], 1)
+        XCTAssertTrue(monitor.watchCoverage.isComplete)
+        let calls = watcher.armCount
+        grid.finish(cells: [], trusted: true)
+        await settle()
+        XCTAssertEqual(watcher.armCount, calls, "a fully armed list is not armed again")
+    }
+
     /// A stop forgets the gap:  the first watched change after a start runs once its window
     /// ends,  and does not wait out a gap left from before the stop.
     func test_a_restart_does_not_wait_out_the_old_gap() async throws {
@@ -913,21 +995,33 @@ final class DriftMonitorTests: XCTestCase {
         XCTAssertTrue(scheduler.liveDelays.isEmpty, "a run was left waiting for the old gap")
     }
 
-    /// The safety net is minutes,  not seconds.
-    func test_the_safety_net_is_slow() {
+    /// The safety net is minutes,  not seconds:  it looks at the clock every minute,  and
+    /// the engine runs only when the last trusted run is ten minutes old.
+    func test_the_safety_net_is_slow() async throws {
         let ticker = ManualTicker()
+        let grid = FakeGrid()
+        let clock = DriftTestClock()
         let monitor = DriftMonitor(
-            grid: FakeGrid(),
+            grid: grid,
             notifier: DriftRecordingNotifier(),
             history: DriftHistoryStore(url: historyURL),
             watcher: FakeWatcher(),
             scheduler: ManualScheduler(),
             ticker: ticker,
-            home: home
+            home: home,
+            clock: { clock.now }
         )
         monitor.start()
-        XCTAssertEqual(ticker.interval, DriftMonitor.safetyNetInterval)
-        XCTAssertGreaterThanOrEqual(ticker.interval ?? 0, 60)
+        XCTAssertEqual(ticker.interval, DriftMonitor.safetyNetCheckInterval)
+        XCTAssertGreaterThanOrEqual(DriftMonitor.safetyNetInterval, 60)
+        grid.finish(cells: [], trusted: true)
+        await settle()
+        for _ in 0..<9 {
+            clock.advance(by: 60)
+            ticker.fire()
+            await settle()
+        }
+        XCTAssertEqual(grid.refreshCount, 0, "nine minutes after a trusted run the net has not run")
     }
 
     /// The history is kept on disk,  and it survives a restart.
@@ -1188,6 +1282,12 @@ final class FakeGrid: DriftGridReading {
     var cells: [GridCell] = []
     var manifest: SeatManifest? = nil
     var isRunning: Bool = false
+    /// When the run in flight started,  which a test sets by hand.
+    var runStartedAt: Date?
+    /// When the run that landed last started,  which `finish` sets.
+    private(set) var lastLandedRunStartedAt: Date?
+    /// The compliance results the next landing carries.
+    var complianceResults: [CheckResult] = []
     var onRunFinished: ((Bool) -> Void)?
     /// How many times the engine was asked to run.
     private(set) var refreshCount: Int = 0
@@ -1196,9 +1296,10 @@ final class FakeGrid: DriftGridReading {
         refreshCount += 1
     }
 
-    /// A run landed.
-    func finish(cells: [GridCell], trusted: Bool) {
+    /// A run landed.  `startedAt` is when it started,  and nil when the grid cannot say.
+    func finish(cells: [GridCell], trusted: Bool, startedAt: Date? = nil) {
         self.cells = cells
+        lastLandedRunStartedAt = startedAt
         onRunFinished?(trusted)
     }
 }
@@ -1225,6 +1326,9 @@ final class FakeWatcher: DriftWatching {
 
     /// The watches the last arm call was given.
     var lastArmed: [DriftWatchList.Watch] { armCalls.last ?? [] }
+
+    /// The watches whose stream started:  the ones it holds.
+    var startedWatches: [DriftWatchList.Watch] { held }
 
     @discardableResult
     func arm(
@@ -1255,6 +1359,12 @@ final class FakeWatcher: DriftWatching {
 
     func stop() {
         held.removeAll()
+    }
+
+    /// A stream stops on its own,  with no `disarm`:  the watcher no longer reports it as
+    /// started,  and nothing records it as let go.
+    func dropStream(root: URL) {
+        held.removeAll { $0.root == root }
     }
 
     /// A change happened.

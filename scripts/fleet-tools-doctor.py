@@ -279,6 +279,9 @@ MAC_UPDATER_LABEL = "com.jay.simple-tools-runtime-sync"
 # The sync script's own log (~/apps/simple-tools-runtime-sync.sh, $LOG).  launchd's own stdout and
 # stderr files keep their pre-rename names on the Mac, but no-op runs write nothing to any of them.
 MAC_UPDATER_LOG = "~/apps/logs/simple-tools-runtime-sync.log"
+# Its state folder (STATE_DIR in scripts/simple-tools-runtime-sync.sh):  the pause file and the
+# commit it refused are kept here, not in the listener's ~/.agent-sync.
+MAC_UPDATER_STATE = ".simple-tools"
 SERVER_TIMERS = ("fleet-cli-git-update.timer", "fleet-tools-doctor.timer")
 # The collector is a systemd user unit for the forced-command user (scripts/systemd), so it
 # runs only while that user's manager does:  with linger on, or while someone is logged in.
@@ -1048,7 +1051,7 @@ def check_mac_updater(
     judged = prev_at is not None and clock() - prev_at >= 270 and isinstance(prev_runs, int)
     runs = job.get("runs")
     advanced = (runs != prev_runs) if (judged and runs is not None) else None
-    paused = (HOME / ".agent-sync/runtime-sync.pause").exists()
+    paused = (HOME / MAC_UPDATER_STATE / "runtime-sync.pause").exists()
     info = dict(job, paused=paused, previousRuns=prev_runs, advanced=advanced)
     check = f"updater:{MAC_UPDATER_LABEL}"
     fields = {"category": "fleet-tool", "tool": None}
@@ -1067,7 +1070,7 @@ def check_mac_updater(
             **fields,
         )
     elif paused:
-        why = "paused by ~/.agent-sync/runtime-sync.pause"
+        why = f"paused by ~/{MAC_UPDATER_STATE}/runtime-sync.pause"
         report.add(
             check, "FAIL", f"{why} (remove it to resume)", state="stale", reason=why, **fields
         )
@@ -1142,7 +1145,7 @@ def check_mac_runtime(
     count = "count unknown" if rt["behind"] is None else f"{rt['behind']} commits behind"
     blocking = []
     if updater.get("paused"):
-        blocking.append("the updater is paused (~/.agent-sync/runtime-sync.pause)")
+        blocking.append(f"the updater is paused (~/{MAC_UPDATER_STATE}/runtime-sync.pause)")
     tracked = git_try(MAC_RUNTIME, "status", "--porcelain", "--untracked-files=no", runner=runner)
     if tracked:
         blocking.append("tracked changes in the runtime block the updater")
@@ -1153,7 +1156,7 @@ def check_mac_runtime(
     if updater.get("advanced") is False:
         blocking.append("the updater's run counter has not moved since the previous report")
     try:
-        bad = (HOME / ".agent-sync/runtime-sync.bad-sha").read_text().strip()
+        bad = (HOME / MAC_UPDATER_STATE / "runtime-sync.bad-sha").read_text().strip()
     except OSError:
         bad = ""
     prev_rt = next(

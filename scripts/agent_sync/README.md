@@ -12,7 +12,7 @@ The code lives in `scripts/agent_sync/` and the entry point is `scripts/agent-sy
 scripts/agent_sync/install.sh [--dry-run] [CHECKOUT]
 ```
 
-The installer symlinks `~/.local/bin/simple-chat` to `CHECKOUT/scripts/agent-sync` and creates `~/.agent-sync` with mode 700.  `CHECKOUT` defaults to the managed runtime checkout `~/apps/lanes/_managed/fleet/agent-sync-runtime`, a detached worktree on `origin/main` that LaunchAgent `com.jay.agent-sync-runtime-sync` keeps current.  Never point it at the human integration tree `~/Code/AI-Fleet-Coordinator`, which a daemon resets.  It is idempotent, `--dry-run` only prints what it would do, and it touches no pm2 job, no LaunchAgent, no Slack file and nothing under `~/.secrets`.  It never overwrites a regular file at the link path.
+The installer symlinks `~/.local/bin/simple-chat` to `CHECKOUT/scripts/agent-sync` and creates `~/.agent-sync` with mode 700.  `CHECKOUT` defaults to the managed runtime checkout `~/apps/lanes/_managed/fleet/agent-sync-runtime`, a detached worktree on `origin/main` that LaunchAgent `com.jay.simple-tools-runtime-sync` keeps current.  Never point it at the human integration tree `~/Code/AI-Fleet-Coordinator`, which a daemon resets.  It is idempotent, `--dry-run` only prints what it would do, and it touches no pm2 job, no LaunchAgent, no Slack file and nothing under `~/.secrets`.  It never overwrites a regular file at the link path.
 
 The entry script resolves its own real path, so it works through the symlink.  Cloud seats with no checkout can run `python3 scripts/agent-sync` from any clone, or follow the wire rules below with plain HTTP.
 
