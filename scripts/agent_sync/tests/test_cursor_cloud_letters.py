@@ -171,6 +171,16 @@ class SweepTests(unittest.TestCase):
             reg.close_db()
         self.assertRegex(self.label(A2), r"^[A-Z]{2}$")
 
+    def test_an_agent_that_ages_out_and_wakes_again_is_not_told_twice(self) -> None:
+        self.run_sweep()
+        self.assertEqual(len(self.dm.calls), 1)
+        self.agents[0] = agent(A1, "GB-Director: tidy the board", hours_ago=40)  # past the window, still open
+        self.run_sweep()
+        self.assertIn(A1, CCL.read_state(self.env))
+        self.agents[0] = agent(A1, "GB-Director: tidy the board")  # it wakes before the registry frees its letter
+        self.run_sweep()
+        self.assertEqual(len(self.dm.calls), 1)
+
     def test_an_agent_with_no_readable_time_is_skipped(self) -> None:
         no_time = agent(A1, "GB-Director: tidy the board")
         del no_time["updated_at"]

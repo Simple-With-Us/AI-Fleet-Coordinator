@@ -292,7 +292,9 @@ def sweep(
         if whole:
             # Only a discovery that saw every open agent says one is gone:  a partial list (a page that failed, or
             # more agents than the cap) would forget what a bot was told, and tell it again next time.
-            open_ids = {str(a.get("session_id") or "") for a in agents}
+            # Every open agent counts, the stale ones too:  an agent past the window still holds its letter until the
+            # registry frees it, so forgetting the DM now would tell its bot again if it woke before then.
+            open_ids = {str(a.get("session_id") or "") for a in found}
             for sid in [k for k in state if k not in open_ids]:
                 del state[sid]  # the agent is gone; its letter is the registry's to free
         write_state(env, state)
