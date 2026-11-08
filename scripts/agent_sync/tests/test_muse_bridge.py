@@ -785,13 +785,15 @@ class BridgePinAdvisoryTest(unittest.TestCase):
         self.assertIsNone(MBM.pin_drift(self.root, str(self.build), C.MUSE_DEFAULT_MODEL))
 
     def test_a_failed_canary_names_value_free_runner_facts_only(self) -> None:
+        secret_path = self.root + "/secret"
+        free_text = "provider-controlled free text"
         failed = A.RunResult()
         failed.error = "no parseable result"
         failed.exit = 0
         failed.stdout_len = 4321
         failed.stderr_len = 17
         failed.stderr_sha = "ab" * 32
-        failed.models = [C.MUSE_DEFAULT_MODEL]
+        failed.models = [C.MUSE_DEFAULT_MODEL, secret_path, free_text]
         with (
             mock.patch.object(MBM, "resolve_bridge_muse", return_value=str(self.build)),
             mock.patch.object(A.MuseRunner, "run", return_value=failed),
@@ -800,9 +802,15 @@ class BridgePinAdvisoryTest(unittest.TestCase):
                 MBM.probe_pin(self.root, {}, self.root, "/usr/bin")
         text = str(caught.exception)
         self.assertIn("no parseable result", text)
-        self.assertIn("exit=0 stdout_len=4321 stderr_len=17 stderr_sha=" + "ab" * 6, text)
-        self.assertNotIn("ab" * 7, text)
+        # Exactly the 12 character digest prefix, followed by the models delimiter.
+        self.assertIn(
+            "exit=0 stdout_len=4321 stderr_len=17 stderr_sha=" + "ab" * 6 + " models=",
+            text,
+        )
         self.assertIn(C.MUSE_DEFAULT_MODEL, text)
+        self.assertIn("<unlisted>", text)
+        self.assertNotIn(secret_path, text)
+        self.assertNotIn(free_text, text)
         self.assertNotIn(self.root, text)
         self.assertFalse(os.path.exists(os.path.join(L.listener_dir(self.root), MBM.CANDIDATE_NAME)))
 
