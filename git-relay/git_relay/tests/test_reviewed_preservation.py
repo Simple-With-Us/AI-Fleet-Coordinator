@@ -251,10 +251,13 @@ class PreservationWorkflowTests(unittest.TestCase):
 class CompleteScanRegressionTests(PreservationWorkflowTests):
     def test_reviewed_source_and_result_each_run_full_scan(self):
         import base64
+
         from git_relay import workflow_verbs
         from git_relay.tests.test_workflow_verbs import Client, Multi
 
-        args, replies, record = self.setup_case(("Authorization: Bearer " + "a" * 24 + "\n").encode())
+        args, replies, record = self.setup_case(
+            ("Authorization: Bearer " + "a" * 24 + "\n").encode()
+        )
         base = base64.b64decode(replies[3]["content"]).decode()
         result = base.replace("other = old", "other = new")
         client = Client(*replies)
