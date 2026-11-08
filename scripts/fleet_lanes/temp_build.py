@@ -49,7 +49,8 @@ _NODE_INSTALLS = frozenset({"install", "i", "ci", "add", "rebuild", "isntall", "
 _NODE_RUNS = frozenset({"run", "run-script", "rum", "urn"})
 _NODE_DIR_OPTS = {"npm": ("--prefix", "-C"), "pnpm": ("--dir", "-C"), "yarn": ("--cwd",), "bun": ("--cwd",)}
 _NODE_VALUE_OPTS = frozenset({"--prefix", "-C", "--dir", "--cwd", "--workspace", "-w", "--filter", "-F", "--registry",
-                              "--cache", "--userconfig", "--loglevel", "--tag"})
+                              "--cache", "--userconfig", "--loglevel", "--tag", "--location"})
+_FALSE_WORDS = frozenset({"false", "0", "no", "off"})
 
 
 @dataclass(frozen=True)
@@ -133,6 +134,8 @@ def _swift(args: Sequence[str]) -> list[Output]:
 
 def _cargo(args: Sequence[str], env: Mapping[str, str]) -> list[Output]:
     words, opts = _positional(args, _CARGO_VALUE_OPTS)
+    if words and words[0].startswith("+"):
+        words = words[1:]  # a rustup toolchain, `cargo +nightly build`
     if not words or words[0] not in _CARGO_BUILDS:
         return []
     if opts.get("--target-dir"):
@@ -146,7 +149,9 @@ def _cargo(args: Sequence[str], env: Mapping[str, str]) -> list[Output]:
 
 def _node(tool: str, args: Sequence[str]) -> list[Output]:
     words, opts = _positional(args, _NODE_VALUE_OPTS)
-    if "-g" in args or "--global" in args or opts.get("--location") == "global":
+    global_value = opts.get("--global")
+    if ("-g" in args or "--global" in args or (global_value is not None and global_value.lower() not in _FALSE_WORDS)
+            or opts.get("--location") == "global"):
         return []  # a global install goes to the tool's own prefix, never the project
     if words:
         sub = words[0]

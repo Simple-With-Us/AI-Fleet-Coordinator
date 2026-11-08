@@ -35,6 +35,7 @@ def decide(tool: str, args: Sequence[str], cwd: str, env: Mapping[str, str], *, 
     from fleet_lanes import git_shim, guard, placement, temp_build
 
     stderr = sys.stderr if stderr is None else stderr
+    tool = os.path.basename(tool)
     if tool not in (*temp_build.TOOLS, "xcrun"):
         return 0
     env = git_shim.with_fleet_roots(env)

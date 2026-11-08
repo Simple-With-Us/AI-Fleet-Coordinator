@@ -484,7 +484,7 @@ The class says what a row excuses, because a pattern says only where, and a tool
 | `tool-cache`, `package-manager` | A clone reaching the shim, outside temp and `~/Code`.  Never a worktree, and never the hook, which is an agent's own command |
 | `package-temp` | The same, only when the destination really is in temp (pip, pnpm) |
 | `third-party-build` | A mirror or bare clone, or a clone from a local path, which are the two SwiftPM makes, anywhere |
-| `temp-build` | Build output in temp:  a build tool's own temp folder, such as Homebrew building from source or `cargo install`.  Never a checkout.  `package-temp`, `service` and `backup` rows excuse a temp build too |
+| `temp-build` | Build output in temp:  a build tool's own temp folder, such as Homebrew building from source or `cargo install`.  Never a checkout.  It matches a folder by name alone, which an agent can choose, so it excuses only what the build shim and the watcher see, never a build the hook reads from an agent's own command.  `package-temp`, `service` and `backup` rows excuse a temp build too |
 | `personal`, `trash` | Nothing a guard judges.  The doctor reads them:  a personal row excuses a clone of a repo the registry does not hold, and a cache or personal row never excuses a linked worktree |
 
 `code_main_sync` fails closed where the others fail open:  a lapsed row still pins a clone, and a missing or malformed file fails every clone (`load_exceptions_strict`).  `tests/test_placement.py` is the schema check, and it refuses a private path.

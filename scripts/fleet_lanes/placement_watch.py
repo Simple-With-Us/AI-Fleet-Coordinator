@@ -307,26 +307,40 @@ def _tree_facts(top: str, *, stop_bytes: int, max_entries: int = 200_000) -> tup
     while stack and seen < max_entries:
         here, depth = stack.pop()
         try:
-            with os.scandir(here) as it:
-                entries = list(it)
+            it = os.scandir(here)
         except OSError:
             continue
-        for entry in entries:
-            seen += 1
-            try:
-                st = entry.stat(follow_symlinks=False)
-            except OSError:
-                continue
-            if depth <= 1:
-                marked = marked or entry.name in _BUILD_MARKS
-            if depth <= 2:
-                newest = max(newest, st.st_mtime)
-            if entry.is_dir(follow_symlinks=False):
-                if st.st_dev == dev and (total < stop_bytes or depth < 2):
-                    stack.append((entry.path, depth + 1))
-            elif total < stop_bytes:
-                total += getattr(st, "st_blocks", 0) * 512 or st.st_size
+        with it:
+            for entry in _entries(it):
+                if seen >= max_entries:
+                    break
+                seen += 1
+                try:
+                    st = entry.stat(follow_symlinks=False)
+                except OSError:
+                    continue
+                if depth <= 1:
+                    marked = marked or entry.name in _BUILD_MARKS
+                if depth <= 2:
+                    newest = max(newest, st.st_mtime)
+                if entry.is_dir(follow_symlinks=False):
+                    if st.st_dev == dev and (total < stop_bytes or depth < 2):
+                        stack.append((entry.path, depth + 1))
+                elif total < stop_bytes:
+                    total += getattr(st, "st_blocks", 0) * 512 or st.st_size
     return total, newest, marked
+
+
+def _entries(it):
+    """Stream a scandir iterator, ending quietly when a folder vanishes or turns unreadable mid-listing."""
+    while True:
+        try:
+            entry = next(it)
+        except StopIteration:
+            return
+        except OSError:
+            return
+        yield entry
 
 
 def temp_build_findings(roots: Sequence[str], now: _dt.datetime, *, min_bytes: int = TEMP_TREE_MIN_BYTES,
@@ -750,6 +764,7 @@ _TITLES = {
     "code-work": "Code Clones Holding Work No Remote Has ({host})",
     "mode-file": "Lane Guard Mode File Has Lines It Cannot Use ({host})",
     "hook-coverage": "Lane Guard Hooks Not Running ({host})",
+    "temp-build": "Build Output Left In System Temp ({host})",
 }
 
 

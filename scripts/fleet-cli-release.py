@@ -73,7 +73,7 @@ RECALL_MODULES = (
 KNOB_MODULES = ("__init__", "knobs", "lkg", "registry", "source", "values")
 SCOPED_READER_MODULES = ("__init__", "core")
 # `lane` runs from these fleet_lanes modules plus its bash shim (fleet-apps.json is already shipped).
-LANE_MODULES = ("__init__", "doctor", "guard", "lane", "layout", "placement")
+LANE_MODULES = ("__init__", "doctor", "guard", "lane", "layout", "placement", "temp_build")
 AFC331_FILES = (
     "scripts/agent_sync/mcp/notes-tools.json",
     "scripts/agent_sync/mcp/recall-tools.json",

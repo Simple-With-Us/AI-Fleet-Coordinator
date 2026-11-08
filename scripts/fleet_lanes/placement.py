@@ -39,7 +39,7 @@ tool filling its own cache and a seat typing a clone can name the same folder:
     personal, trash     nothing a guard judges, since the source there is a fleet repo.  The doctor reads them.
     temp-build          a build tool's own output in temp (Homebrew building from source, `cargo install`), and nothing else.
 
-A build in temp is judged by row_excuses_build instead:  a temp-build or package-temp row excuses it (pip and Homebrew build in
+A build in temp is judged by row_excuses_build instead:  a package-temp row excuses it, a temp-build row only outside the hook (pip and Homebrew build in
 temp folders they make and remove themselves), and so does a service or backup row.  No other class does, because a cache row
 says a clone may sit there, not that a build may.
 
@@ -281,9 +281,14 @@ def row_excuses(row: ExceptionRow, *, via: str, clone: bool, in_temp: bool, in_c
     return not in_temp
 
 
-def row_excuses_build(row: ExceptionRow) -> bool:
-    """Whether a row excuses build output pointed into temp, the temp-build rule class."""
-    return row.cls in ("temp-build", "package-temp", "service", "backup")
+def row_excuses_build(row: ExceptionRow, *, typed: bool = False) -> bool:
+    """Whether a row excuses build output pointed into temp, the temp-build rule class.  A temp-build row matches a folder by
+    name alone (Homebrew's `<formula>-<date>-...`, `cargo-install...`), and an agent can choose that name, so it excuses only a
+    build the agent did not type:  the build shim's and the watcher's.  Homebrew and `cargo install` never come through the
+    hook, because neither is a build the hook reads.  `typed` is true for the hook's own judgement."""
+    if row.cls == "temp-build":
+        return not typed
+    return row.cls in ("package-temp", "service", "backup")
 
 
 def row_excuses_checkout(row: ExceptionRow, *, linked_worktree: bool, registered_app: bool) -> bool:

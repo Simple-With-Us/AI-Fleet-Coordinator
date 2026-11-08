@@ -181,8 +181,9 @@ class Hook(unittest.TestCase):
 
     def test_a_row_excuses_a_build_and_only_a_build(self) -> None:
         brew = row("**/tmp/*-20??????-*")
-        c = ctx("block", rows=(brew,))
-        d = G.evaluate(payload("cargo build --target-dir target", "/private/tmp/ripgrep-20261107-123-abc"), c)
+        pkg = row("**/tmp/*-20??????-*", "package-temp")
+        d = G.evaluate(payload("cargo build --target-dir target", "/private/tmp/ripgrep-20261107-123-abc"),
+                       ctx("block", rows=(pkg,)))
         self.assertEqual(d.action, G.ALLOW)
         self.assertEqual(d.detected_detail["class"], G.CLASS_EXCUSED)
         cache = row("**/tmp/*-20??????-*", "tool-cache")
@@ -191,6 +192,28 @@ class Hook(unittest.TestCase):
         self.assertEqual(d.action, G.DENY)
         self.assertFalse(P.row_excuses_checkout(brew, linked_worktree=False, registered_app=True))
         self.assertFalse(P.row_excuses(brew, via="shim", clone=True, in_temp=True, in_code=False, mirror_or_local=False))
+
+    def test_a_temp_build_row_never_excuses_a_build_the_agent_typed(self) -> None:
+        # The row matches by name alone, and an agent can choose the name;  only the shim and the watcher honour it.
+        c = ctx("block", rows=(row("**/tmp/*-20??????-*"), row("**/cargo-install*")))
+        for cwd in ("/private/tmp/ripgrep-20261107-123-abc", "/private/tmp/cargo-install-evil"):
+            with self.subTest(cwd=cwd):
+                d = G.evaluate(payload("cargo build --target-dir target", cwd), c)
+                self.assertEqual((d.action, d.rule_id), (G.DENY, G.RULE_TEMP_BUILD))
+                self.assertEqual(G.evaluate_build_argv("cargo", ["build"], cwd, c)[0], G.CLASS_EXCUSED)
+
+    def test_review_fixes_in_the_argv_reader(self) -> None:
+        self.assertEqual([o.path for o in TB.build_outputs("cargo", ["+nightly", "build", "--target-dir", "/tmp/t"])], ["/tmp/t"])
+        for args in (["install", "--location", "global", "x"], ["install", "--global=true", "x"], ["i", "--location=global"]):
+            with self.subTest(args=args):
+                self.assertEqual(TB.build_outputs("npm", args), [])
+        self.assertEqual(len(TB.build_outputs("npm", ["install", "--global=false"])), 1)
+
+    def test_the_watcher_titles_every_group_it_files(self) -> None:
+        for kind, group in W.RULE_CLASSES.items():
+            with self.subTest(kind=kind):
+                self.assertTrue(W._title(group, "mac"))
+        self.assertEqual(W._title("temp-build", "mac"), "Build Output Left In System Temp (Mac)")
 
     def test_shipped_rows_are_valid_and_cover_homebrew(self) -> None:
         data = json.loads((Path(__file__).resolve().parents[1] / P.EXCEPTIONS_NAME).read_text())

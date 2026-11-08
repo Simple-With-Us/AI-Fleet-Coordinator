@@ -2438,7 +2438,7 @@ class _Evaluator:
             return
         if target.startswith("/") and _UNK not in target:
             row = self.ctx.in_date_exception(target)
-            if row is not None and P.row_excuses_build(row):
+            if row is not None and P.row_excuses_build(row, typed=self.via != "shim"):
                 self.excused.append((row, target, src))
                 return
         self.placement.append((P.CLASS_TEMP_BUILD, _Hit(rule, target, src, what)))
