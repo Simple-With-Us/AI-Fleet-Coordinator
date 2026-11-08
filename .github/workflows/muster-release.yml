@@ -273,21 +273,37 @@ jobs:
               --notes "Muster's Sparkle feed.  Only .github/workflows/muster-release.yml writes this release." \
               --target "$GITHUB_SHA" --latest=false
           fi
+          # `--latest=false` on the build's release does not keep Muster off releases/latest
+          # by itself:  with no release pinned, GitHub falls back to the newest published
+          # release, which is a Muster build (observed Nov 7, 2026).  The feed release is
+          # pinned latest instead, so the repository's latest release is the feed, never a
+          # build.
+          gh release edit "$FEED_TAG" --latest
 
+      # A cache in front of the release asset can keep serving the previous
+      # appcast for a while after `gh release upload --clobber` replaces it
+      # (AFC-656: a run failed at 60 s while the feed served the build soon
+      # after), so this step waits minutes, not seconds, before it calls the
+      # publish broken, and says how long it waited when it does.
       - name: Confirm the live feed serves this build
         if: steps.gate.outputs.publish == 'true'
         env:
           FEED: ${{ steps.version.outputs.feed }}
           BUILD: ${{ steps.version.outputs.build }}
         run: |
-          for _ in 1 2 3 4 5 6 7 8 9 10; do
-            if curl -fsSL "$FEED" | grep -q "<sparkle:version>$BUILD</sparkle:version>"; then
-              echo "live feed names build $BUILD: $FEED"
+          tries=20
+          wait=15
+          for attempt in $(seq 1 "$tries"); do
+            # The no-cache header asks any cache in front of the asset not to answer from
+            # a stored copy, so the wait measures the feed, not the cache's timer.
+            if curl -fsSL -H 'Cache-Control: no-cache' "$FEED" | grep -q "<sparkle:version>$BUILD</sparkle:version>"; then
+              echo "live feed names build $BUILD after $(( (attempt - 1) * wait ))s of waiting: $FEED"
               exit 0
             fi
-            sleep 6
+            echo "attempt $attempt of $tries:  the feed does not name build $BUILD yet;  waiting ${wait}s"
+            sleep "$wait"
           done
-          echo "::error::$FEED does not name build $BUILD after a minute."
+          echo "::error::$FEED does not name build $BUILD after $(( tries * wait ))s ($tries tries, ${wait}s apart)."
           exit 1
 
       - name: Remove the signing keychain and keys

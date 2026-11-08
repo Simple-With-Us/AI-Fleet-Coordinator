@@ -464,7 +464,7 @@ Zulip only.
 *  **The Operator's own voice on the server.**  The Operator seat is already a service seat with
     its credentials from Infisical and its identity read from the environment.  What is missing is
     the Operator publishing its own threads rather than a seat reporting on them.
-*  **The Lark path.**  Built and running.  The Operator's signal reaches MM's Lark chat today.
+*  **The Lark path.**  Built, but not running on the Mac from Nov 2 to Nov 7, 2026 (AFC-490).  The managed runtime was renamed from agent-sync-runtime to simple-tools-runtime on Nov 2, and the installed bridge, which only knew the old name, crash-looped on `ModuleNotFoundError: agent_sync` (over 10,000 launchd runs, last exit 1).  `scripts/lark-mm-bridge.py` now finds either name, and the Mac's copy is reinstalled from it.  A signal reaching MM's Lark chat has to be checked again after that reinstall, and this line says so until it has been.
 *  **The WhatsApp receive half.**  Owned by CODEX as the approved executor, with Jet owning the
     subscription, the binding ceremony and the acceptance receipts.  Blocked on the deployed
     Worker being behind the merged read-routing, on the poller being stopped with the binding

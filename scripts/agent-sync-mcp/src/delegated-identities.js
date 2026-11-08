@@ -407,8 +407,9 @@ export class IdentityRouter {
 
   async catalog(rawArgs) {
     const name = "catalog";
-    // Exactly one scrubbed audit row per execution, written from finally on
-    // both paths (the audit helper swallows its own failures via safely()).
+    // A failed execution writes exactly one scrubbed audit row, from finally
+    // (the audit helper swallows its own failures via safely()).  A
+    // successful one is a read and writes none (owner ruling 2026-11-06).
     let row;
     try {
       const { identity: _ignored, ...inner } = parseArgs(CatalogCall, rawArgs);
@@ -424,8 +425,15 @@ export class IdentityRouter {
       row = { acting_identity: this.seat, tool: name, error_code: mapped.code, error_message: mapped.message.slice(0, 120) };
       return errorResult(mapped);
     } finally {
-      await this.audit(row);
+      if (row.outcome === "ok") this.logOk(name);
+      else await this.audit(row);
     }
+  }
+
+  /** The Workers Logs "tool" line for a successful router read (no audit row). */
+  logOk(name) {
+    const tools = this.callerTools;
+    tools.log?.({ event: "tool", seat: this.seat, authenticated_seat: this.seat, acting_identity: this.seat, tool: name, outcome: "ok", grant_ref: tools.grantRef });
   }
 
   status(identity) {
@@ -457,10 +465,9 @@ export class IdentityRouter {
       transport: "hosted",
       identities: this.allowed.map((identity) => this.status(identity)),
     };
-    await this.callerTools.safely(() => this.callerTools.auditRow(this.callerTools.gate, {
-      seat: this.seat, authenticated_seat: this.seat, acting_identity: this.seat,
-      grant_ref: this.callerTools.grantRef, client_id: this.callerTools.clientId, tool: name, outcome: "ok",
-    }));
+    // A successful read writes no audit row (owner ruling 2026-11-06), only
+    // the Workers Logs line every hosted call gets.
+    this.logOk(name);
     return okResult(JSON.stringify(info), info);
   }
 }

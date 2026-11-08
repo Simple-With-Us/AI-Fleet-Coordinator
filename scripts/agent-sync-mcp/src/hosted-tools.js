@@ -69,6 +69,7 @@ import {
   RECALL_MARKER_END,
 } from "./recall.js";
 import { GR_SECRETS, GR_TOOLS, GR_TOOL_NAMES, GRAPHQL_ERROR_CODES } from "./gr-tools.js";
+import { REFUSAL_REASONS, classifyRelayRefusal, githubRefusalStatus, refusalReasonText } from "./gr-refusal.js";
 import { TYPED_V1_ACTIONS, TYPED_V1_TOOLS } from "./gr-typed-v1.js";
 import { WF_V1_ACTIONS, WF_V1_TOOLS, parseWfV1Args, boundedWorkflowInput, WF_V1_READ_ACTIONS, workflowInputLimit } from "./gr-workflow-v1.js";
 import {
@@ -186,6 +187,15 @@ const FULL_READ_NAMES = FULL_NAMES.filter((name) => !Object.hasOwn(FULL_WRITE_KI
 const FULL_WRITE_NAMES = FULL_NAMES.filter((name) => Object.hasOwn(FULL_WRITE_KIND, ZULIP_LEGACY_NAMES[name]));
 export const HOSTED_READ_TOOLS = Object.freeze(new Set(["identities", "guide", "catalog", ...ZULIP_READ_NAMES, ...RECALL_READ_TOOLS, ...LINEAR_READ_TOOLS, ...FLEETLINK_READ_TOOLS, ...FULL_READ_NAMES, ...EAVESDROPPER_READ_TOOLS, ...NOTES_READ_TOOLS, "whatsapp_read", "gr_v1_pr_state", "gr_v1_pr_hold_state", ...WF_V1_TOOLS.filter((t) => WF_V1_READ_ACTIONS.includes(t.name.slice(3))).map((t) => t.name)]));
 export const HOSTED_WRITE_TOOLS = Object.freeze(new Set([...ZULIP_WRITE_NAMES, ...RECALL_WRITE_TOOLS, ...LINEAR_WRITE_TOOLS, ...FLEETLINK_WRITE_TOOLS, ...FULL_WRITE_NAMES, ...NOTES_WRITE_TOOLS, ...GR_TOOL_NAMES, "whatsapp_reply", "whatsapp_send_status", "gr_v1_pr_automerge_disable", ...WF_V1_TOOLS.filter((t) => !WF_V1_READ_ACTIONS.includes(t.name.slice(3))).map((t) => t.name)]));
+/**
+ * Whether a finished call writes a spec-3.9 audit row (owner ruling
+ * 2026-11-06:  successful reads leave the audit log).  A call audits unless
+ * it is a read (HOSTED_READ_TOOLS, the same classification the scope check
+ * uses) that ended "ok".  Errors, unknown names and every write audit.
+ */
+export function auditsCall(name, outcome) {
+  return outcome !== "ok" || !HOSTED_READ_TOOLS.has(name);
+}
 export const RECALL_IDEM_TTL_MS = 10 * 60 * 1000;
 // Team and state ids are cached per isolate for an hour:  long enough to keep
 // a seat inside Linear's request budget, short enough that a team rename or a
@@ -605,14 +615,20 @@ export class HostedTools {
       country: typeof this.cf.country === "string" ? this.cf.country.slice(0, 2) : null,
       ...audit,
     };
-    await this.safely(() => this.auditRow(this.gate, row));
-    if (this.callerGate !== this.gate) await this.safely(() => this.auditRow(this.callerGate, row));
+    // A successful read leaves no call row and so starts no audit flush
+    // (owner ruling 2026-11-06);  read errors and every write still audit.
+    // The Workers Logs "tool" line below stays for every call.
+    if (auditsCall(publicName, audit.outcome)) {
+      await this.safely(() => this.auditRow(this.gate, row));
+      if (this.callerGate !== this.gate) await this.safely(() => this.auditRow(this.callerGate, row));
+    }
     this.log({ event: "tool", seat: this.seat, authenticated_seat: this.callerSeat, acting_identity: this.seat, tool: publicName, outcome: row.error_code ?? "ok", latency_ms: latency, grant_ref: this.grantRef });
     return result;
   }
 
   /**
-   * One per-call audit row for one gate (spec 3.9).  Direct to the gate,
+   * One audit row for one gate (spec 3.9:  a write, or any call that
+   * failed;  a successful read writes none).  Direct to the gate,
    * unless the Worker installed its isolate audit buffer as this
    * instance's sink (R2, DO burn reduction):  the sink keys the row by the
    * gate's own name - the acting seat for this gate, the caller seat for
@@ -1537,7 +1553,10 @@ export class HostedTools {
       // generic code.
       const refusalShape = z.object({
         error: z.string().max(1000).optional(),
-        reason: z.enum(["credential_scan"]).optional(),
+        // A reason is trusted only from the closed vocabulary (gr-refusal.js);
+        // callWorkflow is the only producer on the workflow path.
+        reason: z.enum(REFUSAL_REASONS).optional(),
+        github_status: z.unknown().optional(),
       }).safeParse(body);
       if (!refusalShape.success) throw new ToolError("relay_refused", "refused");
       const refusalError = refusalShape.data.error;
@@ -1559,7 +1578,20 @@ export class HostedTools {
       if (credentialRefusal) {
         throw new ToolError("refused_secret", "git-relay refused the write:  the content looks like it contains a credential.  Remove or reword the credential-shaped content and send it again.  Nothing was written.");
       }
-      throw new ToolError("relay_refused", typeof refusalError === "string" ? refusalError.slice(0, 300) : "refused");
+      // Every other refusal keeps relay_refused but names its cause class when
+      // the relay's exact fixed string (or its numeric github_status) maps to
+      // one:  seat_policy, github_refused + github_status, fence_mismatch,
+      // bad_request_<id>.  The workflow path arrives pre-classified by
+      // callWorkflow and shows our own fixed sentence, never the relay's prose;
+      // the seven-action path keeps its existing capped message.  No match, no
+      // reason:  the answer is exactly what it was before.
+      const classified = refusalShape.data.reason
+        ? { reason: refusalShape.data.reason, ...(githubRefusalStatus(refusalShape.data.github_status) !== undefined ? { github_status: githubRefusalStatus(refusalShape.data.github_status) } : {}) }
+        : classifyRelayRefusal(refusalError, refusalShape.data.github_status);
+      const extra = classified ? { reason: classified.reason, ...(classified.github_status !== undefined ? { github_status: classified.github_status } : {}) } : null;
+      const flat = refusalError === "workflow_request_refused";
+      const fixedText = classified && flat ? refusalReasonText(classified.reason) : null;
+      throw new ToolError("relay_refused", fixedText ?? (typeof refusalError === "string" ? refusalError.slice(0, 300) : "refused"), { extra });
     }
     // A successful call still must answer with a plain JSON object;  anything
     // else is a mis-answering upstream, not a result.

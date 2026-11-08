@@ -24,6 +24,7 @@ import re
 import threading
 from collections.abc import Callable
 
+from .policy import SeatPolicy
 from .secret_scan import find_secret
 
 ACTION = "git_read"
@@ -153,7 +154,10 @@ def handle(
         outcome = "unavailable"
         detail["reason"] = type(exc).__name__
     finally:
-        relay.audit.record(seat, ACTION, _audit_repo(repo), outcome, detail)
+        # A successful fetch is a read and leaves no row (owner ruling 2026-11-06,
+        # SeatPolicy.audits);  a refused, denied or failed transfer still records.
+        if SeatPolicy.audits(ACTION, outcome):
+            relay.audit.record(seat, ACTION, _audit_repo(repo), outcome, detail)
 
 
 def _serve(relay, handler, seat, repo, upstream_path, kind, body, detail, connect) -> str:

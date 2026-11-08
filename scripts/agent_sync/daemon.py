@@ -690,6 +690,12 @@ class Daemon:
             str, str
         ] = {}  # seat -> instance, from the last partition check (route checks)
         self.config = C.load(self.root, self.config_path)
+        # The Operator's identity pins are the host's own settings:  the environment wins, and a
+        # host whose LaunchAgent carries no OPERATOR_ZULIP_* names (the Mac's) falls back to the
+        # `[daemon] operator_user_id` and `operator_email` it pinned in listener.toml.  Without
+        # either, the voice is refused by name rather than guessed.
+        self._pinned_from_config: set[str] = set()
+        self._pin_operator_identity()
         # The Operator's voice (owner ruling, Oct 30 2026): every post the daemon itself composes,
         # and every edit and typing indicator that goes with it, goes out as the pinned Operator bot
         # and never as a seat's bot.  Built on first use and checked against the pinned identity;
@@ -710,6 +716,7 @@ class Daemon:
             clock=self.clock.monotonic,
             log=self.log.write,
             hide=self.hide,
+            wall=self.clock.time,
         )
         # The Operator's posts are kept POST_SPACING apart whichever thread makes them: the next free
         # slot, taken under the lock, so two wake workers and the digest never fire together.
@@ -894,8 +901,33 @@ class Daemon:
             detail = "%s; %s" % (detail, ENV_RESTART_HINT)
         return target, why, detail
 
+    def _pin_operator_identity(self) -> None:
+        """Fill the Operator's identity pins in the environment from `[daemon]` in listener.toml.
+
+        The environment wins:  a name the host's own environment set is never replaced.  A name this
+        method set itself follows the file, so a reload that changes or removes a pin applies it, and
+        the Operator voice, which keeps its own snapshot of the environment, is told."""
+        pins = {
+            "OPERATOR_ZULIP_USER_ID": (
+                str(self.config.operator_user_id) if self.config.operator_user_id > 0 else ""
+            ),
+            "OPERATOR_ZULIP_EMAIL": self.config.operator_email,
+        }
+        for name, value in pins.items():
+            if name in self._pinned_from_config or not str(self.env.get(name) or "").strip():
+                if value:
+                    self.env[name] = value
+                    self._pinned_from_config.add(name)
+                elif name in self._pinned_from_config:
+                    self.env.pop(name, None)
+                    self._pinned_from_config.discard(name)
+        voice = getattr(self, "operator_voice", None)
+        if voice is not None:
+            voice.update_env(self.env)
+
     def _apply_config(self) -> None:
         cfg = self.config
+        self._pin_operator_identity()
         self.loopguard.enabled = cfg.wake_loop_prevention
         self.notifier.banners = self.banners_allowed and cfg.notify_banners
         # The owner id the direct-message guard checks (AFC-469).  A reload can change it, and the
@@ -7841,6 +7873,9 @@ class Daemon:
             "rewake_verified_cli": self.config.rewake_verified_cli,
             "rewake_verified_desktop": self.config.rewake_verified_desktop,
             "pause": L.read_json(pause_path(self.root)),
+            # Whether the Operator itself can speak (AFC-602):  a listener that is up with a dead
+            # Operator voice drops every wake it would have reported, and nothing else says so.
+            "operator_voice": self.operator_voice.snapshot(),
             "seats": seats,
         }
 

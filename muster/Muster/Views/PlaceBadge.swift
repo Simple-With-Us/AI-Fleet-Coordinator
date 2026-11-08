@@ -14,6 +14,14 @@ struct PlaceBadge: View {
 
 /// The strip over every panel:  the one badge that says where the panel's data and actions
 /// live,  and the line that says where its data came from.
+///
+/// The line is held to three lines,  never sized to its full wrapped height.  The strip sits
+/// above the panel's ScrollView,  and a vertical `fixedSize` there let the line,  measured at
+/// zero width,  claim about one character per line:  1032 points for Seat Setup's line.  In
+/// PR 1442's test harness that pushed the main window's columns under the title bar,  as the
+/// owner saw (AFC-616).  At the narrowest detail column every panel's line fits on one line,
+/// so three is room to spare.  `MusterWindowLayoutTests` checks this for each panel,  with
+/// the sources unread and read (the server's line with both of its times).
 struct PlaceStrip: View {
     let place: FleetPlace
     let source: String?
@@ -25,7 +33,7 @@ struct PlaceStrip: View {
                 Text(source)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .lineLimit(1...3)
                     .textSelection(.enabled)
             }
             Spacer(minLength: 0)

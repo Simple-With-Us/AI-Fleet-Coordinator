@@ -30,9 +30,19 @@ function start(bindings = {}, ratelimits = {}) {
       kvNamespaces: ["OAUTH_KV"],
       durableObjects: { SEAT_GATE: { className: "SeatGate", useSQLite: true } },
       ratelimits,
-      bindings: testEnv({ HOSTED_SEATS: "JET,GROK-WEB,CLAUDE", EVENTS_ONLY_SEATS: "JET", ZULIP_CLAUDE_API_KEY: "z".repeat(32), INFISICAL_MODE: "off", ...bindings }),
-      outboundService: () => {
+      bindings: testEnv({ HOSTED_SEATS: "JET,GROK-WEB,CLAUDE", EVENTS_ONLY_SEATS: "JET", ZULIP_CLAUDE_API_KEY: "z".repeat(32), INFISICAL_MODE: "off", RECALL_BASE_URL: "https://recall.jays.services", RECALL_API_TOKEN: `rt_${"Q".repeat(40)}`, RECALL_ACCESS_CLIENT_ID: "0123456789abcdef0123456789abcdef.access", RECALL_ACCESS_CLIENT_SECRET: "f".repeat(64), ...bindings }),
+      outboundService: (request) => {
         outbound.count += 1;
+        // A fake recall service, so a write (recall_contribute) can succeed:  a
+        // successful read writes no audit row (owner 2026-11-06), so only an ok
+        // write exercises the buffer's trailing timer.
+        const { pathname } = new URL(request.url);
+        if (pathname === "/api/v1/users/me") {
+          return new Response(JSON.stringify({ result: "success", msg: "", user_id: 4242, email: "claude-bot@simplewithus.zulipchat.com", full_name: "Claude", is_bot: true, is_admin: false, is_owner: false, role: 400 }), { status: 200, headers: { "Content-Type": "application/json" } });
+        }
+        if (pathname === "/recall/contribute") {
+          return new Response(JSON.stringify({ ok: true, id: "5f0c-uuid", doc_id: "contrib/CLAUDE/2026-11-06/abcd1234", scrubbed: [], status: "completed" }), { status: 200, headers: { "Content-Type": "application/json" } });
+        }
         return new Response("absent", { status: 404 });
       },
     }],
@@ -75,13 +85,30 @@ async function step(name, fn) {
 }
 
 try {
-  await step("an audit row lands with no further traffic, flushed by the invocation that buffered it", async () => {
+  const contribute = (mf, token, i) => rpc(mf, token, "tools/call", { name: "recall_contribute", arguments: { identity: "CLAUDE", category: "lesson", text: `The audit buffer flushes a successful write from its trailing timer after the response, variant ${i}.` } });
+
+  await step("a successful read writes no audit row, even past the flush window (owner 2026-11-06)", async () => {
     const mf = start();
     try {
       const { token, gate } = await mint(mf);
       const res = await rpc(mf, token, "tools/call", { name: "identities", arguments: {} });
       assert.equal(res.status, 200);
       assert.equal(sseJson(await res.text()).result.isError, undefined);
+      await new Promise((resolve) => setTimeout(resolve, 6500));
+      assert.deepEqual(await gate.callTail(10), [], "no row, so nothing to flush");
+    } finally {
+      await mf.dispose();
+    }
+  });
+
+  await step("an audit row lands with no further traffic, flushed by the invocation that buffered it", async () => {
+    const mf = start();
+    try {
+      const { token, gate } = await mint(mf);
+      const res = await contribute(mf, token, 0);
+      assert.equal(res.status, 200);
+      const body = sseJson(await res.text());
+      assert.equal(body.result.isError, undefined, JSON.stringify(body).slice(0, 300));
       const deadline = Date.now() + 9000;
       let tail = [];
       while (Date.now() < deadline && tail.length === 0) {
@@ -89,7 +116,7 @@ try {
         tail = await gate.callTail(10);
       }
       assert.equal(tail.length, 1, "the trailing timer must flush after the response");
-      assert.equal(tail[0].tool, "identities");
+      assert.deepEqual([tail[0].tool, tail[0].outcome], ["recall_contribute", "ok"]);
     } finally {
       await mf.dispose();
     }
@@ -100,7 +127,7 @@ try {
     try {
       const { token, gate } = await mint(mf);
       for (let i = 0; i < 3; i++) {
-        const res = await rpc(mf, token, "tools/call", { name: "identities", arguments: {} });
+        const res = await contribute(mf, token, i);
         await res.text();
       }
       const deadline = Date.now() + 9000;

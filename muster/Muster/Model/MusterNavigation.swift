@@ -28,6 +28,7 @@ enum MusterDestination: String, CaseIterable, Identifiable {
     case seats
     case controls
     case hosts
+    case appProcesses
     case virtualMachines
     case actionHistory
 
@@ -51,6 +52,7 @@ enum MusterDestination: String, CaseIterable, Identifiable {
         case .seats: return "Seats"
         case .controls: return "Controls"
         case .hosts: return "Tools And Worker Health"
+        case .appProcesses: return "App Processes"
         case .virtualMachines: return "Virtual Machines"
         case .actionHistory: return "Action History"
         }
@@ -72,6 +74,7 @@ enum MusterDestination: String, CaseIterable, Identifiable {
         case .seats: return "person.2.badge.gearshape"
         case .controls: return "slider.horizontal.3"
         case .hosts: return "rectangle.split.2x1"
+        case .appProcesses: return "rectangle.stack"
         case .virtualMachines: return "cube"
         case .actionHistory: return "list.bullet.clipboard"
         }
@@ -92,7 +95,7 @@ enum MusterDestination: String, CaseIterable, Identifiable {
             return .machine(.mac)
         case .serverStatus, .serverResourceLimits, .serverUpdates:
             return .machine(.server)
-        case .appsAndWork, .seats, .controls, .hosts, .virtualMachines, .actionHistory:
+        case .appsAndWork, .seats, .controls, .hosts, .appProcesses, .virtualMachines, .actionHistory:
             return .acrossFleet
         }
     }
@@ -181,11 +184,13 @@ extension MusterDestination {
             return "The fleet's app list, with each seat's lanes, pull requests and claims."
         case .seats:
             // Zulip refuses presence for bot users,  so the panel no longer reads it.
-            return "Sessions and quota come from the Mac's listener, and the last post from Zulip.\(gap)Sessions shown are on the Mac only."
+            return "Mac seats come from the Mac's listener, server seats from the server's eavesdropper, and the last post from Zulip."
         case .controls:
             return "Shared values in the fleet's secret store, as the Mac's copy shows them."
         case .hosts:
             return "The doctor's report on the Mac, which covers the Mac and the server.\(gap)Worker Health is the Worker's own file, read on the Mac."
+        case .appProcesses:
+            return "The doctor's process scan of the Mac and the server, read on the Mac."
         case .virtualMachines:
             return "Each machine's own report, copied to the Mac."
         case .actionHistory:
@@ -297,7 +302,7 @@ enum SidebarBadges {
     /// and are not counted as problems:  the badge is then `?` with nothing else wrong, or
     /// the count with a plus beside a real problem, as the Mac's card and the menu bar say.
     static func services(_ entries: [FleetServiceEntry], pm2Answered: Bool, readAt: Date?, now: Date) -> String? {
-        guard let readAt, now.timeIntervalSince(readAt) <= MachineMenuCopy.macReadWindow else { return "?" }
+        guard readIsCurrent(readAt: readAt, now: now) else { return "?" }
         let problems = entries.filter { entry in
             MachineMenuCopy.isProblem(entry) && !(MachineMenuCopy.isPM2Row(entry) && !pm2Answered)
         }.count
@@ -305,6 +310,29 @@ enum SidebarBadges {
             return problems == 0 ? "?" : "\(problems)+"
         }
         return problems == 0 ? nil : "\(problems)"
+    }
+
+    /// True when the Services read is recent enough to count, by the menu's own window.
+    static func readIsCurrent(readAt: Date?, now: Date) -> Bool {
+        guard let readAt else { return false }
+        return now.timeIntervalSince(readAt) <= MachineMenuCopy.macReadWindow
+    }
+
+    /// The Services badge in words, for the row's help and for VoiceOver, so the number is
+    /// never left to be guessed:  what it counts, and what `?` and a plus mean.  A `?` has two
+    /// causes, an old or absent read and a recent read that pm2 did not answer, so it is said
+    /// by which one it is.
+    static func servicesWords(_ badge: String, readIsCurrent: Bool) -> String {
+        if badge == "?" {
+            return readIsCurrent
+                ? "Not known: pm2 on the Mac did not answer, so its services could not be read."
+                : "Not known: the Mac's services have not been read recently."
+        }
+        let unread = badge.hasSuffix("+")
+        let count = Int(badge.dropLast(unread ? 1 : 0)) ?? 0
+        let things = count == 1 ? "1 service needs attention" : "\(count) services need attention"
+        let ending = unread ? ", and some could not be read." : "."
+        return "\(things) (failed, could not be read, or started and given up on)\(ending)"
     }
 }
 
@@ -512,8 +540,12 @@ enum GridStateFilter: String, CaseIterable, Identifiable {
     /// seats it opens on are the same cells.  With no shared check time which results were
     /// checked at another time is not known, as the card's count is then unknown, so every
     /// seat stays in view:  an empty grid would be a zero the Overview does not claim.
+    ///
+    /// A cell that is being checked with no earlier answer is not yet a finding,  so it
+    /// does not put its seat under a state filter:  a first run must not list every seat
+    /// as needing attention while it is still checking.
     func includes(_ cells: [GridCell], commonCheckedAt: Date?) -> Bool {
-        let states = cells.map(\.state)
+        let states = cells.filter { !$0.isCheckingWithNoAnswer }.map(\.state)
         switch self {
         case .all: return true
         case .attention:
