@@ -132,7 +132,8 @@ def build(repo, before, output):
     entry = (here / "runner.template.py").read_text()
     entry = entry.replace("MANIFEST_DIGEST_PLACEHOLDER", digest(raw_manifest))
     entry = entry.replace(
-        "MODULE_HASHES_PLACEHOLDER", repr({name: digest(raw) for name, raw in sources.items()})
+        "MODULE_HASHES = {}  # MODULE_HASHES_PLACEHOLDER",
+        "MODULE_HASHES = " + repr({name: digest(raw) for name, raw in sources.items()}),
     )
     ast.parse(entry)
     output = Path(output)

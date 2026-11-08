@@ -1,7 +1,7 @@
 import importlib.util
 import io
-from pathlib import Path
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -31,7 +31,7 @@ class ProviderRollout(unittest.TestCase):
                 def __init__(self):
                     self.calls = []
 
-                def call(self, action, args):
+                def call(self, action, args, new=new):
                     self.calls.append((action, args))
                     if action == "wf_repo_get":
                         return 200, {
@@ -96,20 +96,24 @@ class ProviderRollout(unittest.TestCase):
         builder = module("provider_builder_overlay", SOURCE / "build.py")
         base = "from .secret_scan import find_secret\n"
         pattern = r"\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{20,}"
-        raw = (base + "\n".join("P%d=%r" % (n, pattern) for n in range(18))).encode()
+        raw = (base + "\n".join(f"P{n}={pattern!r}" for n in range(18))).encode()
         with patch.object(builder, "digest", side_effect=[builder.BEFORE, builder.AFTER]):
             result = builder.overlay(raw)
         self.assertEqual(result.count(b"=PROVIDER_PATTERN"), 18)
         self.assertIn(b"from .provider_scan import PROVIDER_PATTERN", result)
         for count in (17, 19):
-            raw = (base + "\n".join("P%d=%r" % (n, pattern) for n in range(count))).encode()
-            with patch.object(builder, "digest", return_value=builder.BEFORE):
-                with self.assertRaisesRegex(ValueError, "census drift"):
-                    builder.overlay(raw)
-        raw = (base + "P=%r" % (pattern + "|unknown")).encode()
-        with patch.object(builder, "digest", return_value=builder.BEFORE):
-            with self.assertRaisesRegex(ValueError, "nonprovider suffix"):
+            raw = (base + "\n".join(f"P{n}={pattern!r}" for n in range(count))).encode()
+            with (
+                patch.object(builder, "digest", return_value=builder.BEFORE),
+                self.assertRaisesRegex(ValueError, "census drift"),
+            ):
                 builder.overlay(raw)
+        raw = (base + "P=" + repr(pattern + "|unknown")).encode()
+        with (
+            patch.object(builder, "digest", return_value=builder.BEFORE),
+            self.assertRaisesRegex(ValueError, "nonprovider suffix"),
+        ):
+            builder.overlay(raw)
 
     def test_malformed_repository_and_redirect_refuse(self):
         proof = module("provider_proof_malformed", SOURCE / "runtime_proof.py")
@@ -117,7 +121,7 @@ class ProviderRollout(unittest.TestCase):
         for malformed in [None, [], {"repository": None}, {"repository": []}]:
 
             class Fake(proof.RuntimeProof):
-                def call(self, action, args):
+                def call(self, action, args, malformed=malformed):
                     return 200, malformed
 
             self.assertFalse(Fake("synthetic")({}, {}))
