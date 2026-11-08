@@ -2180,6 +2180,11 @@ def openrouter_url_problem(url: str) -> str | None:
     return None
 
 
+# The same full slug shape the consult-backup declaration validates, so a malformed preset-like id
+# never takes the preset branch (it keeps the plain request shape and fails validation elsewhere).
+_OPENROUTER_PRESET_RE = re.compile(r"@preset/[A-Za-z0-9][A-Za-z0-9._-]{0,79}")
+
+
 def openrouter_request_body(model: str, system: str, user: str, schema: str) -> dict[str, Any]:
     """The one request body, for the call and for the pin's fingerprint (with placeholders).
 
@@ -2221,7 +2226,7 @@ def openrouter_request_body(model: str, system: str, user: str, schema: str) -> 
         "reasoning": dict(OPENROUTER_REASONING),
         "stream": False,
     }
-    if model.startswith("@preset/"):
+    if _OPENROUTER_PRESET_RE.fullmatch(model):
         body.pop("provider")
         # No `provider` object for a preset.  The owner chose the live preset (WhatsApp, Nov 7 2026,
         # 6:34 PM CT), so its provider block (order, fallbacks, exclusions, data collection) is his

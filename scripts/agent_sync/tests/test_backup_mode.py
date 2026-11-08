@@ -90,6 +90,18 @@ class ParseTest(unittest.TestCase):
             self.assertIsNone(parse_declaration({**GOOD, "review_by": bad}))
             self.assertIsNone(parse_declaration({**GOOD, "declared_at": bad}))
 
+    def test_huge_int_times_fail_closed_not_raise(self):
+        # math.isfinite on an int beyond float range raises OverflowError instead of returning False.
+        huge = 10**400
+        for key in ("review_by", "declared_at"):
+            self.assertIsNone(parse_declaration({**GOOD, key: huge}))
+            self.assertIsNone(parse_declaration({**GOOD, key: -huge}))
+
+    def test_empty_expected_models_rejected_for_plain_and_preset(self):
+        plain = {**GOOD, "model": "provider/name", "expected_models": []}
+        self.assertIsNone(parse_declaration(plain))
+        self.assertIsNone(parse_declaration({**GOOD, "expected_models": []}))
+
     def test_backwards_window_rejected(self):
         self.assertIsNone(parse_declaration({**GOOD, "review_by": GOOD["declared_at"]}))
 
@@ -148,6 +160,13 @@ class PresetRequestShapeTests(unittest.TestCase):
         # to replace the dashboard preset's whole provider block.
         body = A.openrouter_request_body("@preset/some-slug", "sys", "user", "{}")
         self.assertNotIn("provider", body)
+
+    def test_a_malformed_preset_like_id_keeps_the_plain_request_shape(self):
+        for bad in ("@preset/", "@preset/-bad", "@preset/has space", "@preset/" + "a" * 81):
+            body = A.openrouter_request_body(bad, "sys", "user", "{}")
+            self.assertEqual(body["provider"], {"require_parameters": True}, bad)
+            self.assertNotIn("tools", body)
+            self.assertNotIn("tool_choice", body)
 
     def test_a_plain_model_request_keeps_require_parameters(self):
         body = A.openrouter_request_body("provider/name", "sys", "user", "{}")

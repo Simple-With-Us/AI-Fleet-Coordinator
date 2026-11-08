@@ -356,7 +356,7 @@ def parse_declaration(raw: Any) -> BackupDeclaration | None:
             return None
     elif expected_raw is None:
         expected_raw = [model]
-    if not isinstance(expected_raw, list) or any(
+    if not isinstance(expected_raw, list) or not expected_raw or any(
         not isinstance(entry, str)
         or _PRESET_RE.fullmatch(entry)
         or not re.fullmatch(C.OPENROUTER_MODEL_PATTERN, entry)
@@ -368,7 +368,10 @@ def parse_declaration(raw: Any) -> BackupDeclaration | None:
     for value in (declared_at, review_by):
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             return None
-        if not math.isfinite(value):
+        try:
+            if not math.isfinite(value) or not math.isfinite(float(value)):
+                return None
+        except OverflowError:
             return None
     if review_by <= declared_at:
         return None
