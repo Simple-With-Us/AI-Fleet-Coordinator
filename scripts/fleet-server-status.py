@@ -1880,7 +1880,7 @@ def allowlist_unit_names(control):
 def installed_unit_files(units, run_command=run):
     """[(unit, scope, kind, path)] for the files systemd loaded each unit from,  in both scopes.
 
-    systemd's own `FragmentPath` and `DropInPaths` say where they are,  so no folder is guessed. 
+    systemd's own `FragmentPath` and `DropInPaths` say where they are,  so no folder is guessed.
     A unit a timer or another unit triggers is looked up too,  one round deep.  A unit this
     host does not have is left out.
     """
@@ -1982,7 +1982,7 @@ def collect_host_config(
 ):
     """The host's own config surface,  by digest:  installed units,  the broker,  the allowlists.
 
-    `previous` is the previous report's `hostConfig`,  by path,  which keeps `changedAt` sticky. 
+    `previous` is the previous report's `hostConfig`,  by path,  which keeps `changedAt` sticky.
     A path that looks like a credential is never hashed and never listed.
     """
     moment = time.time() if now is None else now

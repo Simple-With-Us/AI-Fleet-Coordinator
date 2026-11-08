@@ -3221,13 +3221,17 @@ class ChangedAtTests(unittest.TestCase):
             os.utime(path, (NOW - 60, NOW - 60))
             second = self.rows(root, first, NOW + 900)
             self.assertEqual(second[str(path)]["changedAt"], first[str(path)]["changedAt"])
-            self.assertEqual(second[str(path)]["modifiedAt"], collector.iso_from_timestamp(NOW - 60))
+            self.assertEqual(
+                second[str(path)]["modifiedAt"], collector.iso_from_timestamp(NOW - 60)
+            )
 
             # The content changes:  it moves to when the new content was written.
             path.write_text("two\n")
             os.utime(path, (NOW + 1000, NOW + 1000))
             third = self.rows(root, second, NOW + 1800)
-            self.assertEqual(third[str(path)]["changedAt"], collector.iso_from_timestamp(NOW + 1000))
+            self.assertEqual(
+                third[str(path)]["changedAt"], collector.iso_from_timestamp(NOW + 1000)
+            )
             fourth = self.rows(root, third, NOW + 2700)
             self.assertEqual(fourth[str(path)]["changedAt"], third[str(path)]["changedAt"])
 
@@ -3287,7 +3291,10 @@ class HostConfigTests(unittest.TestCase):
         control = source / "scripts" / "fleet-ops-control.json"
         control.write_text(
             json.dumps(
-                {"schemaVersion": 1, "server": {"watch": [{"unit": "gone.service", "scope": "system"}]}}
+                {
+                    "schemaVersion": 1,
+                    "server": {"watch": [{"unit": "gone.service", "scope": "system"}]},
+                }
             )
         )
         return source, etc, broker, control
