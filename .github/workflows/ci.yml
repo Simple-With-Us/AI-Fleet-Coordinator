@@ -230,13 +230,19 @@ jobs:
       with:
         python-version: '3.14'
         update-environment: false
-    - name: Muster route on Python 3.14
+    - name: Install cryptography on Python 3.14 for the Muster route
       timeout-minutes: 10
       env:
         PY314: ${{ steps.muster-route-py314.outputs.python-path }}
       run: |
         "$PY314" -c 'import sys; assert sys.version_info[:2] == (3, 14), sys.version; print(sys.version)'
         "$PY314" -m pip install "cryptography==46.0.5"
+    # The suite alone takes about half a minute here, so the ten minutes belong to it.
+    - name: Muster route on Python 3.14
+      timeout-minutes: 10
+      env:
+        PY314: ${{ steps.muster-route-py314.outputs.python-path }}
+      run: |
         "$PY314" scripts/test_muster_approval.py
         (cd docs/muster-ios && "$PY314" -I check_vectors_v5.py)
         "$PY314" scripts/make_muster_vectors.py --check
