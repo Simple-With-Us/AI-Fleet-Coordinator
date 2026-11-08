@@ -350,8 +350,13 @@ class WorkflowPrElevation(unittest.TestCase):
         minter, client = Minter(), Big()
         args = {"repo": REPO, "number": 7, "expected_head_sha": SHA}
         handle = WorkflowVerbs.for_action(
-            client, Policy({**CEILING, "workflows": "write"}), minter, "swu-wise",
-            "wf_update_branch", REPO, args=args,
+            client,
+            Policy({**CEILING, "workflows": "write"}),
+            minter,
+            "swu-wise",
+            "wf_update_branch",
+            REPO,
+            args=args,
         )
         with self.assertRaises(Refused) as ctx:
             handle.run("wf_update_branch", args)
@@ -373,8 +378,13 @@ class WorkflowPrElevation(unittest.TestCase):
         client = Flaky()
         args = {"repo": REPO, "number": 7, "expected_head_sha": SHA}
         handle = WorkflowVerbs.for_action(
-            client, Policy({**CEILING, "workflows": "write"}), Minter(), "swu-wise",
-            "wf_update_branch", REPO, args=args,
+            client,
+            Policy({**CEILING, "workflows": "write"}),
+            Minter(),
+            "swu-wise",
+            "wf_update_branch",
+            REPO,
+            args=args,
         )
         with self.assertRaises(PreReadUnavailable):
             handle.run("wf_update_branch", args)
