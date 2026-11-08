@@ -42,6 +42,58 @@ struct DriftWatchList {
     var isEmpty: Bool { watches.isEmpty }
 }
 
+/// What the drift watcher actually holds,  set against what the manifest asked it to watch
+/// (GRID-37).
+///
+/// The paths asked for come from the manifest.  The streams started are the ones whose
+/// `FSEventStreamStart` returned true,  as the watcher reports them,  and a path counts as
+/// watched only when at least one started stream stands for it.  A stream that could not be
+/// made,  or would not start,  is counted as failed and never as watching.
+struct DriftWatchCoverage: Equatable {
+    /// How many distinct paths the manifest names on the Mac,  which the watcher is asked to
+    /// watch.
+    let pathsAsked: Int
+    /// How many of those paths have at least one started stream on them.
+    let pathsWatched: Int
+    /// How many streams the list asks for:  one per path,  and one more on the nearest folder
+    /// above a path that is not there yet.
+    let streamsAsked: Int
+    /// How many of those streams started and are running.
+    let streamsStarted: Int
+    /// The paths with no started stream,  in the list's order.  A change to one of them is
+    /// seen only when the seat setup is checked again.
+    let unwatchedPaths: [URL]
+
+    /// How many streams the list asks for that are not running.
+    var streamsFailed: Int { max(0, streamsAsked - streamsStarted) }
+
+    /// Whether every stream the list asks for is running.
+    var isComplete: Bool { streamsFailed == 0 }
+
+    /// Nothing asked for and nothing watched:  before the first arming,  and after a stop.
+    static let empty = DriftWatchCoverage(
+        pathsAsked: 0,
+        pathsWatched: 0,
+        streamsAsked: 0,
+        streamsStarted: 0,
+        unwatchedPaths: []
+    )
+
+    /// The coverage of a list,  given the watches whose stream started.
+    static func of(list: DriftWatchList, started: [DriftWatchList.Watch]) -> DriftWatchCoverage {
+        let live = list.watches.filter { started.contains($0) }
+        let watchedTargets = Set(live.map { $0.target.standardizedFileURL.path })
+        let unwatched = list.targetPaths.filter { !watchedTargets.contains($0.standardizedFileURL.path) }
+        return DriftWatchCoverage(
+            pathsAsked: list.targetPaths.count,
+            pathsWatched: list.targetPaths.count - unwatched.count,
+            streamsAsked: list.watches.count,
+            streamsStarted: live.count,
+            unwatchedPaths: unwatched
+        )
+    }
+}
+
 /// Turns the manifest into the list of watches.
 ///
 /// Nothing here is written down twice:  the paths come from the manifest's rules,

@@ -30,10 +30,14 @@ struct OverviewView: View {
         monitor.lastRunAt.map { SeatCheckFreshness.isCurrent(checkedAt: $0, now: watch.now) } ?? true
     }
 
+    /// The counts,  kept while a run checks again:  the store keeps the last answer on
+    /// screen then,  so the counts are that answer's and do not go to dashes every run.  A
+    /// cell being checked with no earlier answer is not a finding yet,  so it is not counted.
     private var counts: OverviewCounts {
         OverviewCounts.make(
-            cells: store.cells,
-            trusted: store.phase == .loaded && seatCheckIsCurrent,
+            cells: store.cells.filter { !$0.isCheckingWithNoAnswer },
+            trusted: GridPresentation.engineAnswerShown(phase: store.phase, showingLastAnswer: store.isShowingLastAnswer)
+                && seatCheckIsCurrent,
             commonCheckedAt: store.commonCheckedAt
         )
     }
