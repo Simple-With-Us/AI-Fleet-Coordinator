@@ -7,8 +7,9 @@
 The fixture has two parts, and nothing in it is typed by hand but the `about` note:
 
   * What section 16 of `docs/muster-ios/server-route-spec.md` prints (the keys, the canonical form, the
-    pin, the lists, the sixteen approvals, the seven signed answers, the chain vectors' names), read out
-    of the spec's text, so that the two cannot differ.  The spec is the source of those bytes.
+    pin, both owner histories, every list, the sixteen approvals, the seven signed answers, and each
+    chain vector's held list, chain, history and answers, as printed and as a frozen helper gives
+    them), read out of the spec's text, so that the two cannot differ.  The spec is the source of those bytes.
   * What the code makes of them: the whole answer line of every signed answer, the signature cases
     (bad DER, bad base64url), the further signed answers (nothing held, a read result, a plan refusal, an
     unknown outcome, a rate limit, a plan mismatch, the unsigned `helper_key_missing`), and the plans
@@ -69,9 +70,14 @@ ABOUT = (
     "canonical-JSON line and a line feed), badSignatures, generatedAnswers, generatedPlans and "
     "resourceFieldScales.  To regenerate this file, run python3 scripts/make_muster_vectors.py "
     "--write; a test regenerates it and fails when it differs, so it cannot drift from the code.  "
-    "The chain slice must read the T-lists and entry hashes from the spec text, section 16: "
-    "chainVectors holds only each vector's id and its expected answer, and the 50 or so hashes of the "
-    "chain vectors are not here."
+    "The chain vectors' lists are here too: lists holds every list section 16 prints, keyed by the "
+    'name its chain table uses (v1 to v4, "v4 at 20:55" and the T-lists, such as "T6 list"), and '
+    "historyRotated is the two-line owner history that T24 alone runs under.  Each chainVectors row "
+    "gives its id, held list (null for nothing), chain, history, ruleC, frozenExpected (what a "
+    "Milestone 1 to 4 helper must answer, where every rule C entry is refused reopen_unavailable) and "
+    "proposalExpected (the printed cell: for a rule C row, the OPEN proposal's answer, which the "
+    "frozen helper must not be tested against).  The entry hashes are not here: the chain slice "
+    "computes them from the lists, and section 16 prints them."
 )
 
 BASE_APPROVAL = {
@@ -172,13 +178,18 @@ def from_spec(text):
     }
     fixture["pin"] = block_after("`/etc/muster/owner.pub`:")
     fixture["history"] = block_after("`/etc/muster/owner-history.jsonl` (one line):")
+    fixture["historyRotated"] = block_after("`/etc/muster/owner-history.jsonl` for T24 only")
     fixture["reopen"] = block_after("(two lines for version 4").splitlines()
-    fixture["lists"] = {
-        "v1": json.loads(block_after("**Version 1**")),
-        "v2": json.loads(block_after("**Version 2 (rule A)**")),
-        "v3": json.loads(block_after("**Version 3 (rule B, closed)**")),
-        "v4": json.loads(block_after("**Version 4 (rule C, reopened)**")),
-    }
+    # Every printed list, keyed by the chain table's name for it ("v1", "v4 at 20:55", "T6 list").
+    fixture["lists"] = {}
+    for m in re.finditer(
+        r"\*\*(Version [^*]+|T\d+ list)\*\*, (?:canonical body SHA-256 `[0-9a-f]{64}`, )?"
+        r"entry SHA-256 `[0-9a-f]{64}`:\n\n```json\n(.*?)\n```",
+        text,
+        re.DOTALL,
+    ):
+        fixture["lists"][LIST_NAMES.get(m.group(1), m.group(1))] = json.loads(m.group(2))
+    assert set(LIST_NAMES.values()) <= set(fixture["lists"]), sorted(fixture["lists"])
     fixture["listBodyHashes"] = {
         "v1": re.search(r"\*\*Version 1\*\*, canonical body SHA-256 `([0-9a-f]{64})`", text).group(
             1
@@ -240,12 +251,77 @@ def from_spec(text):
         fixture["answers"][name] = {"answer": json.loads(block_after(label)), "bodySHA256": sha}
     fixture["illustrativePlan"] = block_after("### Illustrative Plan")
     fixture["chainVectors"] = [
-        {"id": row[0], "expected": row[3]}
+        chain_vector(fixture["lists"], row)
         for row in (
             r.split(" | ") for r in re.findall(r"^\| (T\d+ [^\n]*) \|$", text, re.MULTILINE)
         )
     ]
+    rule_c = {item["id"].split(" ")[0] for item in fixture["chainVectors"] if item["ruleC"]}
+    assert rule_c == RULE_C_ROWS, sorted(rule_c)
     return fixture
+
+
+# The chain table's names for the lists printed under "Trust Lists";  the bad lists keep their own.
+LIST_NAMES = {
+    "Version 1": "v1",
+    "Version 2 (rule A)": "v2",
+    "Version 3 (rule B, closed)": "v3",
+    "Version 4 (rule C, reopened)": "v4",
+    "Version 4, signed again at 20:55 (T22, R5)": "v4 at 20:55",
+}
+# The rows section 16 names as rule C rows, and T23, the frozen judgement of T4.
+RULE_C_ROWS = {"T4", "T5", "T8", "T15", "T18", "T20", "T21", "T22", "T23"}
+# The reasons a rule C entry can fail with under the OPEN proposal, all of them in check 8.
+RULE_C_REASONS = {
+    "services_changed",
+    "server_keys_removed",
+    "countersignature",
+    "reopen_unrecorded",
+    "reopen_tag",
+    "reopen_device",
+    "reopen_unavailable",
+}
+
+
+def chain_vector(lists, row):
+    """One chain table row as data.  `proposalExpected` is the printed cell, the OPEN proposal's
+    answer for the rule C rows;  `frozenExpected` is what a Milestone 1 to 4 helper must answer
+    (section 16:  every rule C entry is refused `reopen_unavailable` once checks 1 to 7 pass)."""
+    vector_id, held_cell, chain_cell, expected_cell = (cell.strip() for cell in row[:4])
+    held = None if held_cell == "nothing" else held_cell
+    chain = [name.strip() for name in chain_cell.split(",")]
+    held_version = None if held is None else lists[held]["body"]["version"]
+    rule_c_at = None
+    previous = None if held is None else lists[held]
+    for index, name in enumerate(chain, 1):
+        entry = lists[name]
+        if previous is not None and previous["body"]["closed"] and not entry["body"]["closed"]:
+            rule_c_at = index
+            break
+        previous = entry
+    reason = re.search(r"reason `(\w+)`", expected_cell)
+    if rule_c_at is not None:
+        assert reason is None or reason.group(1) in RULE_C_REASONS, row
+        frozen = {"atEntry": rule_c_at, "reason": "reopen_unavailable"}
+    elif reason is None:
+        assert expected_cell == "ack", row
+        frozen = "ack"
+    else:
+        assert len(chain) == 1, row
+        frozen = {"atEntry": 1, "reason": reason.group(1)}
+    if frozen != "ack":
+        frozen.update(errorCode="chain_refused", helperTrustListVersion=held_version)
+    return {
+        "id": vector_id,
+        "held": held,
+        "chain": chain,
+        "history": "historyRotated" if vector_id.startswith("T24 ") else "history",
+        "ruleC": rule_c_at is not None,
+        "frozenExpected": frozen,
+        # T23 sits in the frozen table, so its printed cell is the frozen answer;  under the OPEN proposal
+        # it is T4's chain (held v3, chain v4), which the proposal acknowledges.
+        "proposalExpected": "ack" if vector_id.startswith("T23 ") else expected_cell,
+    }
 
 
 # MARK: - Test keys and builders

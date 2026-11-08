@@ -34,8 +34,8 @@ struct ServerUnitState: Equatable {
     let lastExitAt: Date?
     /// True for a timer:  the answer carries `nextElapseAt`,  null included.
     let isTimer: Bool
-    /// When a timer next elapses,  or nil for a service,  and for a timer on a monotonic
-    /// schedule that has no wall-clock time to give.
+    /// When a timer next elapses,  or nil for a service,  for a timer on a monotonic schedule
+    /// that has no wall-clock time to give,  and for a timer that is not active.
     let nextElapseAt: Date?
     /// When a timer last fired,  or nil for a service,  and for a timer that has not fired since
     /// boot.
@@ -122,8 +122,12 @@ struct ServerUnitState: Equatable {
             }
             if let next = nextElapseAt {
                 sentences.append("Next run \(FleetTime.when(next, now: now)).")
-            } else {
+            } else if activeState == "active" {
+                // An active timer with no wall-clock time runs on a monotonic schedule.
                 sentences.append("No next run time:  it runs on a schedule counted from boot or its last run.")
+            } else {
+                // systemd clears the next time of a timer that is not running.
+                sentences.append("No next run:  the timer is not scheduled while it is \(activeState).")
             }
         }
         if let exited = lastExitAt {
@@ -210,6 +214,22 @@ struct ServerUnitStateAfterRun: Equatable {
         case .some(.state(let state)): return state.nowLine(reportGeneratedAt: reportGeneratedAt, now: now)
         case .some(.unavailable(let cause)): return "Now:  not known.\(ServerStatusCopy.sentenceGap)\(cause)"
         }
+    }
+
+    /// True when this read is of the unit `action` ran,  so its line belongs on that action's
+    /// sheet.  Only a run of a server unit is read again.
+    func belongs(to action: OpsAction) -> Bool {
+        guard case .serverUnit(_, let ran) = action else { return false }
+        return ran == unit
+    }
+
+    /// The line the sheet shows under the result of `action`:  the "Now:" line,  a line saying
+    /// the read is under way while it is,  or nil when there is no read of that action's unit.
+    static func sheetLine(_ after: ServerUnitStateAfterRun?, for action: OpsAction,
+                          reportGeneratedAt: Date?, now: Date = Date()) -> String? {
+        guard let after, after.belongs(to: action) else { return nil }
+        if after.isReading { return "Now:  reading its state on the server\u{2026}" }
+        return after.line(reportGeneratedAt: reportGeneratedAt, now: now)
     }
 }
 

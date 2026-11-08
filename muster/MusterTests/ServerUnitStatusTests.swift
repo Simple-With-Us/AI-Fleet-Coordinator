@@ -730,4 +730,169 @@ final class MacAgentNotesTests: XCTestCase {
         }
         XCTAssertTrue(MacAgent.isStopConsequence(String(repeating: "y", count: 200)))
     }
+
+    /// The plan of a stop says what depends on the agent and what stopping it costs,  from that
+    /// agent's own row,  and says nothing for any other action.
+    func test_the_plan_of_a_stop_carries_the_agents_note() throws {
+        let rows = try agents(#"""
+        {"label":"com.jay.fleet-tools-doctor","controllable":true,"role":"reporting","stopConsequence":"Stopping this stops the fleet tools report."},
+        {"label":"com.jay.simple-tools-runtime-sync","controllable":true,"role":"updater"},
+        {"label":"com.jay.operator-notes-runner","controllable":true,"stopConsequence":"Owner notes wait until it starts again."},
+        {"label":"com.jay.mac-cleanup","controllable":true}
+        """#)
+        XCTAssertEqual(rows[0].roleSentence, "This agent writes a report Muster reads.")
+        XCTAssertEqual(rows[1].roleSentence, "This agent keeps the fleet tools on the Mac up to date.")
+        XCTAssertNil(rows[2].roleSentence)
+
+        let stop = { (label: String) in OpsAction.macAgent(verb: .stop, label: label) }
+        XCTAssertEqual(MacAgent.stopNote(for: stop("com.jay.fleet-tools-doctor"), agents: rows),
+                       "This agent writes a report Muster reads.\u{00A0} Stopping this stops the fleet tools report.")
+        XCTAssertEqual(MacAgent.stopNote(for: stop("com.jay.simple-tools-runtime-sync"), agents: rows),
+                       "This agent keeps the fleet tools on the Mac up to date.")
+        XCTAssertEqual(MacAgent.stopNote(for: stop("com.jay.operator-notes-runner"), agents: rows),
+                       "Owner notes wait until it starts again.")
+        // An agent with neither,  or one the file does not list,  has no note:  the general
+        // stop warning stands alone.
+        XCTAssertNil(MacAgent.stopNote(for: stop("com.jay.mac-cleanup"), agents: rows))
+        XCTAssertNil(MacAgent.stopNote(for: stop("com.jay.unknown"), agents: rows))
+        XCTAssertNil(MacAgent.stopNote(for: stop("com.jay.fleet-tools-doctor"), agents: []))
+        // Only a stop of a LaunchAgent carries it.
+        XCTAssertNil(MacAgent.stopNote(for: .macAgent(verb: .restart, label: "com.jay.fleet-tools-doctor"), agents: rows))
+        XCTAssertNil(MacAgent.stopNote(for: .macAgent(verb: .start, label: "com.jay.fleet-tools-doctor"), agents: rows))
+        XCTAssertNil(MacAgent.stopNote(for: .serverUnit(verb: .stop, unit: "com.jay.fleet-tools-doctor"), agents: rows))
+        XCTAssertNil(MacAgent.stopNote(for: .pm2App(verb: .stop, name: "com.jay.fleet-tools-doctor"), agents: rows))
+        // The sheet reads the agents only for such a stop.
+        XCTAssertTrue(MacAgent.mayHaveStopNote(stop("com.jay.fleet-tools-doctor")))
+        XCTAssertFalse(MacAgent.mayHaveStopNote(.macAgent(verb: .restart, label: "com.jay.fleet-tools-doctor")))
+        XCTAssertFalse(MacAgent.mayHaveStopNote(.serverUnit(verb: .stop, unit: "fleet-server-status.timer")))
+        XCTAssertFalse(MacAgent.mayHaveStopNote(nil))
+        // The general warning is still the plan's,  beside the note.
+        XCTAssertEqual(stop("com.jay.fleet-tools-doctor").stopWarning, FleetServices.launchAgentStopBody)
+    }
+}
+
+// MARK: - Review findings on PR 1533
+
+final class UnitStatusReviewFindingTests: XCTestCase {
+    /// A timer that is not active has no next run because it is not scheduled,  not because
+    /// its schedule is counted from boot (Sentry,  PR 1533).
+    func test_a_timer_that_is_not_active_says_it_is_not_scheduled() throws {
+        let now = try date("2026-11-08T16:05:00Z")
+        for (active, sub) in [("inactive", "dead"), ("failed", "failed")] {
+            let answer = unitAnswer(
+                "code-main-sync.timer",
+                #""scope":"system","activeState":""# + active + #"","subState":""# + sub
+                    + #"","unitResult":"success","lastExitAt":null,"nextElapseAt":null,"checkedAt":"2026-11-08T16:02:00Z""#
+            )
+            let state = try XCTUnwrap(parsePlan(answer, .unitStatus(unit: "code-main-sync.timer")).unitState, active)
+            XCTAssertTrue(state.isTimer, active)
+            XCTAssertNil(state.nextElapseAt, active)
+            XCTAssertEqual(state.timesText(now: now),
+                           "No next run:  the timer is not scheduled while it is \(active).\u{00A0} Last result:  success.",
+                           active)
+        }
+        // An active timer with no wall-clock time still says its schedule is counted from boot.
+        let active = try XCTUnwrap(parsePlan(monotonicAnswer, .unitStatus(unit: "code-main-sync.timer")).unitState)
+        XCTAssertEqual(active.timesText(now: now),
+                       "No next run time:  it runs on a schedule counted from boot or its last run.\u{00A0} Last result:  success.")
+    }
+
+    /// A long name with a service suffix still matches:  the suffix comes off the whole name
+    /// before it is cut to 120 characters (Kody,  PR 1533).
+    func test_a_long_name_with_a_service_suffix_matches_the_servers_name() {
+        let stem = String(repeating: "a", count: 118)
+        let muster = stem + " (my-service)"
+        XCTAssertGreaterThan(muster.count, OpsRedeployName.maximumLength)
+        // Cut first,  the name would end in " (" and the suffix could not be found.
+        XCTAssertEqual(OpsRedeployName.displayed(muster), stem + " (")
+        XCTAssertTrue(OpsRedeployName.matches(muster: muster, server: stem))
+        XCTAssertFalse(OpsRedeployName.matches(muster: muster, server: String(repeating: "b", count: 118)))
+        // A stem longer than the limit is cut to it,  as the server cuts it.
+        let longStem = String(repeating: "c", count: 125)
+        XCTAssertTrue(OpsRedeployName.matches(muster: longStem + " (svc)", server: String(repeating: "c", count: 120)))
+        // Non-ASCII in a long name is shaped before the suffix is taken off.
+        let shaped = String(repeating: "d", count: 117) + "\u{00E9}" + " (svc)"
+        XCTAssertTrue(OpsRedeployName.matches(muster: shaped, server: String(repeating: "d", count: 117) + "?"))
+    }
+
+    /// A logs answer that names another verb names no journal (Kody,  PR 1533).
+    func test_a_logs_unit_from_an_answer_for_another_verb_is_ignored() {
+        let logs = OpsAction.logs(unit: "fleet-server-status.timer")
+        func run(verb: String?) -> OpsOutcome {
+            let named = verb.map { #""verb":""# + $0 + #"","# } ?? ""
+            return parseRun(#"{"ok":true,"# + named + #""result":"done","commands":[],"output":"a\n","lines":1,"logsUnit":"other.service"}"#, logs)
+        }
+        XCTAssertEqual(OpsAction.logsVerb, "server logs")
+        XCTAssertEqual(run(verb: "server logs").logsUnit, "other.service")
+        XCTAssertEqual(run(verb: nil).logsUnit, "other.service")
+        for other in ["server restart", "server unit-status", "server eavesdropper-status", ""] {
+            let outcome = run(verb: other)
+            XCTAssertNil(outcome.logsUnit, other)
+            XCTAssertNil(outcome.logsHeading, other)
+            XCTAssertEqual(logs.title(plan: outcome), logs.title, other)
+        }
+    }
+
+    /// The Touch ID question and the sheet's title are the plan-aware title (Kody,  PR 1533).
+    @MainActor
+    func test_the_approval_question_and_the_sheet_title_name_the_unit_read() {
+        let logs = OpsAction.logs(unit: "fleet-server-status.timer")
+        let plan = parsePlan(#"{"ok":true,"verb":"server logs","result":"planned","commands":[],"logsUnit":"fleet-server-status.service"}"#, logs)
+        let expected = "Read the last logs of fleet-server-status.service on the server"
+        XCTAssertEqual(OpsApprovalRequest(action: logs, reviewed: plan).reason, expected)
+        XCTAssertEqual(OpsController.Phase.review(logs, plan).title, expected)
+        XCTAssertEqual(OpsController.Phase.running(logs, plan).title, expected)
+        XCTAssertEqual(OpsController.Phase.finished(logs, plan).title, expected)
+        XCTAssertEqual(OpsController.Phase.failed(logs, "x").title, logs.title)
+    }
+
+    /// The journal block is headed with the unit read when the answer named it (Kody,  PR 1533).
+    func test_the_journal_block_names_the_unit_read() {
+        let logs = OpsAction.logs(unit: "fleet-server-status.timer")
+        let named = parseRun(#"{"ok":true,"verb":"server logs","result":"done","commands":[],"output":"a\nb\n","lines":2,"logsUnit":"fleet-server-status.service"}"#, logs)
+        XCTAssertEqual(named.journalHeading, "Logs of fleet-server-status.service")
+        XCTAssertEqual(named.journalCountLine, "The last 2 journal lines.")
+        let one = parseRun(#"{"ok":true,"verb":"server logs","result":"done","commands":[],"output":"a\n","lines":1,"logsUnit":"fleet-server-status.service"}"#, logs)
+        XCTAssertEqual(one.journalCountLine, "The last journal line.")
+        // With no unit named,  the heading says how many lines were read,  as it did before.
+        let unnamed = parseRun(#"{"ok":true,"result":"done","commands":[],"output":"a\nb\n","lines":2}"#, logs)
+        XCTAssertEqual(unnamed.journalHeading, "The Last 2 Journal Lines")
+        XCTAssertNil(unnamed.journalCountLine)
+        let bare = parseRun(#"{"ok":true,"result":"done","commands":[],"output":"a\n"}"#, logs)
+        XCTAssertEqual(bare.journalHeading, "The Last Journal Lines")
+        XCTAssertNil(bare.journalCountLine)
+    }
+
+    /// The "Now:" line goes under the result of the run of that unit,  and nowhere else (Kody,
+    /// PR 1533).
+    func test_the_now_line_is_shown_under_the_run_of_its_unit() throws {
+        let unit = "fleet-server-status.timer"
+        let ran = OpsAction.serverUnit(verb: .restart, unit: unit)
+        let now = try date("2026-11-08T16:05:00Z")
+        let report = try date("2026-11-08T15:50:00Z")
+        let state = try XCTUnwrap(parsePlan(timerAnswer, .unitStatus(unit: unit)).unitState)
+        let read = ServerUnitStateAfterRun(unit: unit, reading: .state(state))
+
+        XCTAssertTrue(read.belongs(to: ran))
+        XCTAssertEqual(ServerUnitStateAfterRun.sheetLine(read, for: ran, reportGeneratedAt: report, now: now),
+                       "Now:  active (waiting), checked 10:02 AM, newer than the server's report")
+        // With no report time reachable,  the read is still shown.
+        XCTAssertEqual(ServerUnitStateAfterRun.sheetLine(read, for: ran, reportGeneratedAt: nil, now: now),
+                       "Now:  active (waiting), checked 10:02 AM, newer than the server's report")
+        // While the read is in flight,  the sheet says so.
+        XCTAssertEqual(ServerUnitStateAfterRun.sheetLine(ServerUnitStateAfterRun(unit: unit, reading: nil),
+                                                         for: ran, reportGeneratedAt: report, now: now),
+                       "Now:  reading its state on the server\u{2026}")
+        // A read that came to nothing says why.
+        XCTAssertEqual(ServerUnitStateAfterRun.sheetLine(ServerUnitStateAfterRun(unit: unit, reading: .unavailable("Why.")),
+                                                         for: ran, reportGeneratedAt: report, now: now),
+                       "Now:  not known.\u{00A0} Why.")
+        // No read,  a read of another unit,  or another action shows nothing.
+        XCTAssertNil(ServerUnitStateAfterRun.sheetLine(nil, for: ran, reportGeneratedAt: report, now: now))
+        XCTAssertNil(ServerUnitStateAfterRun.sheetLine(read, for: .serverUnit(verb: .stop, unit: "fleet-cli-git-update.timer"),
+                                                       reportGeneratedAt: report, now: now))
+        XCTAssertNil(ServerUnitStateAfterRun.sheetLine(read, for: .logs(unit: unit), reportGeneratedAt: report, now: now))
+        XCTAssertNil(ServerUnitStateAfterRun.sheetLine(read, for: .unitStatus(unit: unit), reportGeneratedAt: report, now: now))
+        XCTAssertFalse(read.belongs(to: .macAgent(verb: .restart, label: unit)))
+    }
 }

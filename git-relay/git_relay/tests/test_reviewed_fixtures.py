@@ -1,6 +1,7 @@
 """Exact-content attestation boundary tests. No network or live credentials."""
 
 import base64
+import unittest
 from hashlib import sha256
 from unittest import TestCase
 from unittest.mock import patch
@@ -140,3 +141,22 @@ class RepoTreeConsistencyTests(TestCase):
                     REPO, path, ("fixture = 'gh" + "p_" + "A" * 30 + "'\n").encode()
                 )
             )  # no registry entry may excuse bytes other than the exact attested ones
+
+
+class CurrentManifestScopeTests(unittest.TestCase):
+    def test_single_refresh_is_bound_to_manifest_and_existing_destination(self):
+        import json
+        from pathlib import Path
+
+        from git_relay.reviewed_fixtures import _REVIEWED_FIXTURES
+
+        root = Path(__file__).resolve().parents[3]
+        doc = json.loads((root / "docs/security/preservation-pending-manifest.json").read_text())
+        self.assertFalse(doc["active"])
+        rows = doc["single_exact_attestation_refresh"]
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row["path"], "scripts/simple_tools/tests/test_infisical_api_route.py")
+        self.assertEqual(len(row["edits"]), 5)
+        self.assertIn((row["repo"], row["path"], row["result_sha256"]), _REVIEWED_FIXTURES)
+        self.assertEqual(len(_REVIEWED_FIXTURES), 13)

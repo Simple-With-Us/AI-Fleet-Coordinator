@@ -85,6 +85,35 @@ struct MacAgent: Decodable, Identifiable, Equatable {
             && text.unicodeScalars.allSatisfy { (0x20...0x7E).contains($0.value) }
     }
 
+    /// What depends on this agent,  from its role,  in a sentence;  nil when it has no role.
+    var roleSentence: String? {
+        switch role {
+        case "reporting": return "This agent writes a report Muster reads."
+        case "updater": return "This agent keeps the fleet tools on the Mac up to date."
+        default: return nil
+        }
+    }
+
+    /// What a plan to stop this agent says beyond the general stop warning:  what depends on
+    /// it,  then what stopping it costs,  as the allowlist gives them.  Nil when it says neither.
+    var stopNote: String? {
+        let parts = [roleSentence, stopConsequence].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: ServerStatusCopy.sentenceGap)
+    }
+
+    /// The stop note for the plan of `action`,  from the agents the Mac last read:  only for a
+    /// stop of a LaunchAgent,  and only from the row of that label.
+    static func stopNote(for action: OpsAction, agents: [MacAgent]) -> String? {
+        guard case .macAgent(let verb, let label) = action, verb == .stop else { return nil }
+        return agents.first { $0.label == label }?.stopNote
+    }
+
+    /// True when the plan of `action` may carry a stop note,  so the sheet reads the agents.
+    static func mayHaveStopNote(_ action: OpsAction?) -> Bool {
+        guard case .macAgent(let verb, _)? = action else { return false }
+        return verb == .stop
+    }
+
     /// True when the collector read this agent's launchd state,  so `loaded` is an
     /// observation and not the collector's fallback guess.
     var isObserved: Bool { error == nil }

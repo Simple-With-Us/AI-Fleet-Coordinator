@@ -138,6 +138,8 @@ enum OpsAction: Equatable {
     static let eavesdropperStatusVerb = "server eavesdropper-status"
     /// The verb the helper names in its answer to `.unitStatus`.
     static let unitStatusVerb = "server unit-status"
+    /// The verb the helper names in its answer to `.logs`.
+    static let logsVerb = "server logs"
 
     /// The machine the action runs on.
     ///
@@ -491,25 +493,35 @@ enum OpsRedeployName {
     /// Printable ASCII,  with `?` for any other code point,  at most 120 characters.  Nil when
     /// nothing is left.
     static func displayed(_ text: String) -> String? {
+        let shaped = String(printable(text).prefix(maximumLength))
+        return shaped.trimmingCharacters(in: .whitespaces).isEmpty ? nil : shaped
+    }
+
+    /// Printable ASCII,  with `?` for any other code point,  at its full length.
+    private static func printable(_ text: String) -> String {
         let question: Unicode.Scalar = "?"
         var kept = String.UnicodeScalarView()
         for scalar in text.unicodeScalars {
             kept.append((0x20...0x7E).contains(scalar.value) ? scalar : question)
         }
-        let shaped = String(String(kept).prefix(maximumLength))
-        return shaped.trimmingCharacters(in: .whitespaces).isEmpty ? nil : shaped
+        return String(kept)
     }
 
     /// True when the server's name is the name this Mac had,  in the server's shape.  A Mac
     /// that had no name has nothing to compare,  so any name the server gives matches it.  The
     /// Mac's name may still carry the ` (SERVICE)` the server removes.
+    ///
+    /// The suffix is taken off the whole name before it is cut to 120 characters,  as the
+    /// server does:  cutting first would drop a long name's ` (SERVICE)`,  and the stem could
+    /// never be found.
     static func matches(muster: String, server: String) -> Bool {
         let trimmed = muster.trimmingCharacters(in: .whitespaces)
         if trimmed.isEmpty || trimmed == musterPlaceholder { return true }
         guard let mine = displayed(muster) else { return true }
         if mine == server { return true }
-        if mine.hasSuffix(")"), let open = mine.range(of: " (", options: .backwards) {
-            let stem = String(mine[..<open.lowerBound].prefix(maximumLength))
+        let whole = printable(muster)
+        if whole.hasSuffix(")"), let open = whole.range(of: " (", options: .backwards) {
+            let stem = String(whole[..<open.lowerBound].prefix(maximumLength))
             if stem == server { return true }
         }
         return false
@@ -1281,6 +1293,20 @@ struct OpsOutcome: Equatable {
         logsUnit.map { "Logs of \($0)" }
     }
 
+    /// The heading over the sheet's journal block:  the unit read when the answer named it
+    /// (`logsHeading`),  else how many lines were read.
+    var journalHeading: String {
+        if let logsHeading { return logsHeading }
+        return logLines.map { "The Last \($0) Journal Lines" } ?? "The Last Journal Lines"
+    }
+
+    /// The line under that heading when it names the unit:  how many lines were read.  Nil
+    /// when the heading already says so,  or the answer did not.
+    var journalCountLine: String? {
+        guard logsHeading != nil, let lines = logLines else { return nil }
+        return lines == 1 ? "The last journal line." : "The last \(lines) journal lines."
+    }
+
     /// True when the run did what its mode asks for:  a plan that planned,  or a run that
     /// was done.  The helper's `ok`,  its result word and its exit code must all agree.
     func isSuccess(for mode: OpsMode) -> Bool {
@@ -1527,9 +1553,10 @@ enum OpsResultParser {
            answer.verb == nil || answer.verb == OpsAction.unitStatusVerb {
             unitState = ServerUnitState(answer: answer, unit: unit)
         }
-        // The journal a logs answer read:  for a timer,  the service it starts.
+        // The journal a logs answer read:  for a timer,  the service it starts.  As above,  an
+        // answer that names another verb is not a logs answer,  so it names no journal.
         var logsUnit: String?
-        if case .logs = action {
+        if case .logs = action, answer.verb == nil || answer.verb == OpsAction.logsVerb {
             logsUnit = answer.logsUnit.flatMap { OpsCommandBuilder.isUnitName($0) ? $0 : nil }
         }
         // The resource a redeploy plan names.  A plan that names another resource than this
