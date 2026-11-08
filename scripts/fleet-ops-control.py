@@ -86,8 +86,9 @@ answer is signed with the helper's own key.  All of that is `muster_approval.py
 loaded by its fixed place, never through `sys.path`, and only when it is owned as the installed
 layout requires.  This branch reads one environment variable, `SSH_ORIGINAL_COMMAND`, first, and then empties
 the environment (leaving a fixed HOME and PATH) before the approval module and `cryptography` are
-loaded: its paths come from constants and the account database.  `muster trust-list chain` is not
-built, so the route is inert (every approval is `no_trust_list`) until that slice lands.
+loaded: its paths come from constants and the account database.  `muster trust-list chain --yes` is
+the one request that stores the trust list, so the route stays inert (every approval is
+`no_trust_list`) until a chain has been accepted.
 
 Exit status: 0 planned, submitted or done, 1 a command failed (or, for `server
 eavesdropper-status` alone, the status could not be read: result `unavailable`, with no
@@ -252,6 +253,11 @@ MUSTER_AUDIT_NAMES = (
     "approvalNonce",
     "planSHA256",
     "errorCode",
+    # An accepted trust-list chain (section 14, v5.3): the version now held, its body hash and the
+    # version held before (null when none was).
+    "trustListVersion",
+    "trustListSHA256",
+    "fromVersion",
 )
 # The one answer that needs no key, and the one a missing or untrusted module gives (server-route-spec
 # section 13): every verifier treats it as unauthenticated.
@@ -2745,8 +2751,9 @@ def run_from_muster(argv, ctx=None, out=None, muster=None):
     `_empty_environment`) before the approval module and `cryptography` are loaded, and the child
     environment is fixed.
 
-    NOT BUILT: `muster trust-list chain` (the module's docstring says what that means: the route is
-    inert, every approval is `no_trust_list`, until the chain slice lands)."""
+    `muster trust-list chain --yes` is the one request that stores the trust list (the module's docstring
+    says how): until a chain has been accepted the route is inert, and every approval is
+    `no_trust_list`."""
     out = out or sys.stdout
     hooks = muster or {}
     try:
