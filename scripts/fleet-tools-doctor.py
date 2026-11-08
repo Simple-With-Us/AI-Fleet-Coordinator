@@ -31,6 +31,11 @@ fleet-server-status of at most 512 KiB.  On the Mac, `--remote` with `--write P
 valid `serverStatus` to ~/.local/state/fleet-tools/server-status.json (0600, atomically) and
 leaves it out of the combined report.
 
+AFC-576:  on the server, `--json` also carries `appProcesses`, the fleet-app process scan of
+scripts/fleet_app_processes.py (no argv, no environment).  On the Mac, `--write PATH` also
+scans the Mac and writes it, with the server's scan, to app-processes.json beside PATH;  the
+server's scan never enters the combined report.  A scan that fails never fails the doctor.
+
 `--vms` pulls each VM named in ~/.config/fleet-tools/vm-hosts.json over its read-only
 forced-command key (the key prints `fleet-vm-status.py --json`) into
 ~/.local/state/fleet-tools/vms/<label>.json, 0600 and atomically.  A missing config is a
@@ -266,6 +271,9 @@ MAC_UPDATER_LABEL = "com.jay.simple-tools-runtime-sync"
 # The sync script's own log (~/apps/simple-tools-runtime-sync.sh, $LOG).  launchd's own stdout and
 # stderr files keep their pre-rename names on the Mac, but no-op runs write nothing to any of them.
 MAC_UPDATER_LOG = "~/apps/logs/simple-tools-runtime-sync.log"
+# Its state folder (STATE_DIR in scripts/simple-tools-runtime-sync.sh):  the pause file and the
+# commit it refused are kept here, not in the listener's ~/.agent-sync.
+MAC_UPDATER_STATE = ".simple-tools"
 SERVER_TIMERS = ("fleet-cli-git-update.timer", "fleet-tools-doctor.timer")
 # The collector is a systemd user unit for the forced-command user (scripts/systemd), so it
 # runs only while that user's manager does:  with linger on, or while someone is logged in.
@@ -1035,7 +1043,7 @@ def check_mac_updater(
     judged = prev_at is not None and clock() - prev_at >= 270 and isinstance(prev_runs, int)
     runs = job.get("runs")
     advanced = (runs != prev_runs) if (judged and runs is not None) else None
-    paused = (HOME / ".agent-sync/runtime-sync.pause").exists()
+    paused = (HOME / MAC_UPDATER_STATE / "runtime-sync.pause").exists()
     info = dict(job, paused=paused, previousRuns=prev_runs, advanced=advanced)
     check = f"updater:{MAC_UPDATER_LABEL}"
     fields = {"category": "fleet-tool", "tool": None}
@@ -1054,7 +1062,7 @@ def check_mac_updater(
             **fields,
         )
     elif paused:
-        why = "paused by ~/.agent-sync/runtime-sync.pause"
+        why = f"paused by ~/{MAC_UPDATER_STATE}/runtime-sync.pause"
         report.add(
             check, "FAIL", f"{why} (remove it to resume)", state="stale", reason=why, **fields
         )
@@ -1129,7 +1137,7 @@ def check_mac_runtime(
     count = "count unknown" if rt["behind"] is None else f"{rt['behind']} commits behind"
     blocking = []
     if updater.get("paused"):
-        blocking.append("the updater is paused (~/.agent-sync/runtime-sync.pause)")
+        blocking.append(f"the updater is paused (~/{MAC_UPDATER_STATE}/runtime-sync.pause)")
     tracked = git_try(MAC_RUNTIME, "status", "--porcelain", "--untracked-files=no", runner=runner)
     if tracked:
         blocking.append("tracked changes in the runtime block the updater")
@@ -1140,7 +1148,7 @@ def check_mac_runtime(
     if updater.get("advanced") is False:
         blocking.append("the updater's run counter has not moved since the previous report")
     try:
-        bad = (HOME / ".agent-sync/runtime-sync.bad-sha").read_text().strip()
+        bad = (HOME / MAC_UPDATER_STATE / "runtime-sync.bad-sha").read_text().strip()
     except OSError:
         bad = ""
     prev_rt = next(
@@ -3316,6 +3324,21 @@ def pull_vms(
     return [result for result in results if result is not None]
 
 
+def app_processes():
+    """AFC-576:  scripts/fleet_app_processes.py beside this file, or None when it cannot load.
+    Loaded by path, because `python3 -I` leaves this folder off sys.path."""
+    try:
+        import importlib.util
+
+        path = Path(__file__).resolve().parent / "fleet_app_processes.py"
+        spec = importlib.util.spec_from_file_location("fleet_app_processes", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    except Exception:
+        return None
+
+
 def combined_report(docs: list) -> dict:
     apply_skew(docs)
     return {
@@ -3643,6 +3666,12 @@ def run(
     elif host == "mac" and args.write:
         server = unreachable_server(f"{NO_ROUTE} (no --remote given)")
     vms = pull_vms(runner=runner) if args.vms else []
+    scan = app_processes()  # AFC-576:  the fleet-app process scan
+    if scan and host == "mac" and report_path:
+        mac_scan = scan.scan_host("mac", runner=runner, home=HOME)
+        scan.keep(server, mac_scan, report_path.parent / scan.REPORT_NAME, write_report)
+    elif server is not None:
+        server.pop("appProcesses", None)
     combined = None
     if args.write:
         docs = json.loads(
@@ -3658,6 +3687,8 @@ def run(
             status = read_server_status()
             if status is not None:
                 doc["serverStatus"] = status
+            if scan:
+                doc["appProcesses"] = scan.scan_host("server", runner=runner, home=HOME)
         print(json.dumps(doc, indent=2))
     elif report_path:
         far = ""

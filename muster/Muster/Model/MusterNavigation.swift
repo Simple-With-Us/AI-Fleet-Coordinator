@@ -28,6 +28,7 @@ enum MusterDestination: String, CaseIterable, Identifiable {
     case seats
     case controls
     case hosts
+    case appProcesses
     case virtualMachines
     case actionHistory
 
@@ -51,6 +52,7 @@ enum MusterDestination: String, CaseIterable, Identifiable {
         case .seats: return "Seats"
         case .controls: return "Controls"
         case .hosts: return "Tools And Worker Health"
+        case .appProcesses: return "App Processes"
         case .virtualMachines: return "Virtual Machines"
         case .actionHistory: return "Action History"
         }
@@ -72,6 +74,7 @@ enum MusterDestination: String, CaseIterable, Identifiable {
         case .seats: return "person.2.badge.gearshape"
         case .controls: return "slider.horizontal.3"
         case .hosts: return "rectangle.split.2x1"
+        case .appProcesses: return "rectangle.stack"
         case .virtualMachines: return "cube"
         case .actionHistory: return "list.bullet.clipboard"
         }
@@ -92,7 +95,7 @@ enum MusterDestination: String, CaseIterable, Identifiable {
             return .machine(.mac)
         case .serverStatus, .serverResourceLimits, .serverUpdates:
             return .machine(.server)
-        case .appsAndWork, .seats, .controls, .hosts, .virtualMachines, .actionHistory:
+        case .appsAndWork, .seats, .controls, .hosts, .appProcesses, .virtualMachines, .actionHistory:
             return .acrossFleet
         }
     }
@@ -181,11 +184,13 @@ extension MusterDestination {
             return "The fleet's app list, with each seat's lanes, pull requests and claims."
         case .seats:
             // Zulip refuses presence for bot users,  so the panel no longer reads it.
-            return "Sessions and quota come from the Mac's listener, and the last post from Zulip.\(gap)Sessions shown are on the Mac only."
+            return "Mac seats come from the Mac's listener, server seats from the server's eavesdropper, and the last post from Zulip."
         case .controls:
             return "Shared values in the fleet's secret store, as the Mac's copy shows them."
         case .hosts:
             return "The doctor's report on the Mac, which covers the Mac and the server.\(gap)Worker Health is the Worker's own file, read on the Mac."
+        case .appProcesses:
+            return "The doctor's process scan of the Mac and the server, read on the Mac."
         case .virtualMachines:
             return "Each machine's own report, copied to the Mac."
         case .actionHistory:

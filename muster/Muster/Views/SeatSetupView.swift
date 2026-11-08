@@ -247,7 +247,7 @@ struct SeatSetupView: View {
         } else if let found = artifacts[kind], artifactsSeat == seat {
             if found.rules.isEmpty {
                 EmptyNote(text: answered
-                    ? (found.coverReason ?? "No rule covers this seat and kind.")
+                    ? found.emptyText
                     : SeatSetup.waitingForEngine)
             } else {
                 let sources = store.ruleSources(seat: seat, kind: kind)
@@ -256,7 +256,8 @@ struct SeatSetupView: View {
                         RuleArtifactView(
                             rule: rule,
                             view: found.views.indices.contains(index) ? found.views[index] : nil,
-                            source: sources[rule.ruleId]
+                            source: sources[rule.ruleId],
+                            read: found.reads.indices.contains(index) ? found.reads[index] : nil
                         )
                         if index < found.rules.count - 1 { Divider() }
                     }
