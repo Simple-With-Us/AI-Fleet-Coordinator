@@ -535,7 +535,13 @@ For every shape the shim misses, the watcher is the backstop.  It finds the che
 
 ### code_main_sync
 
-The tracked source of the server's `code-main-sync`.  A clean clone with a stale `index.lock` failed its fast-forward on every run, and the job threw away the stderr that said so.  It now clears a lock over an hour old that no process holds, logs git's first error line, and passes over a folder that is no repo and a clone with an exception row.  The Mac keeps `code-main-keeper`.
+The tracked source of the server's `code-main-sync`.  A clean clone with a stale `index.lock` failed its fast-forward on every run, and the job threw away the stderr that said so.  It now clears a lock over an hour old that no process holds, logs git's first error line, and passes over a folder that is no repo and a clone with an exception row.  The Mac keeps `code-main-keeper`, tracked as `scripts/code-main-keeper.sh` (see Mirror Rule below).
+
+### Mirror Rule
+
+`mirror_write.py` answers one question for the git shim:  is this `commit` or `stash` (anything but `stash list` and `stash show`, and not `commit --dry-run`) writing into a primary clone that sits directly under the Code root?  If so, `git_shim.decide` logs a `mirror-warn` event and, by the `mirror` line of the mode file, warns or blocks.  The mode file now takes `mirror off|detect|block`, with `detect` the default.  It is a line of its own like `isolation`, and a bare `block` never turns it on.  The shim sends `commit` and `stash` to Python only when the folder is under the Code root (or an alias might lead to either), so a commit anywhere else never starts an interpreter.  A warning is exit 78 from Python, which the shell prints and then runs the real git, where a block is exit 77.  The placement watcher counts only `detect` and `block` actions, so `mirror-warn` and `mirror-block` never read as a misplaced checkout.  Gaps, by design:  a git not found through PATH, a `!` alias, `--git-dir` with no `--work-tree`, and `GIT_DIR` are not judged.  Tests:  `tests/test_mirror_write.py`.
+
+`scripts/code-main-keeper.sh` is the tracked source of the Mac's `code-main-keeper` (until AFC-618 it lived only at `~/apps/code-main-keeper.sh`).  Its only write is `git fetch origin` then `git merge --ff-only origin/main`, on an allowlisted clone on `main` that is completely clean and whose HEAD is an ancestor of origin/main.  Everything else is logged and left as found:  `HOLD` for an allowlisted clone it did not move, `NOTE` for a dirty tree, an off-main branch, local-only branches, stashes, or a clone that is mirror only (not on the allowlist, and not even fetched).  Edit the `ALLOWLIST_DEFAULT` array to add a repo on purpose.  Tests:  `tests/test_code_main_keeper.py`, with real git and a fake Code root.  Deploy by copying the file over `~/apps/code-main-keeper.sh`;  the pm2 loop runs it fresh every 60 seconds.
 
 ### Install, Mac
 
