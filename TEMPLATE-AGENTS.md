@@ -7,11 +7,14 @@ From November 6, 2026 at 8:02pm America/Chicago through November 8, 2026 at
 review after fixes or new commits. During this window this instruction overrides
 repeat-review and per-ready-head request guidance below. Read and address every
 existing finding, verify fixes and required tests, and preserve all other merge
-conditions. A failed attempt is not permission to retry: ask the owner if a new
-request is needed. This limit expires at the stated time; it is not permanent.
+conditions. A failed attempt is permission to retry (owner, November 8, 2026): a Kody run
+that could not complete, meaning its check is not `success` or it posted "Code Review Could
+Not Complete", is not a review, so request again.  Only a completed review uses up the one.
+This limit expires at the stated time; it is not permanent.
 
 Source: Jay's direct November 6 instruction, "Raised it but please tell all 1 review
 only per pr", followed by "For the next 2 days"; fleet announcement message638301219.
+Amended by Jay's November 8 instruction, "failed attempt is permission to retry, change rule".
 
 
 Read this before making changes.  It exists to save you (and whichever other AI
