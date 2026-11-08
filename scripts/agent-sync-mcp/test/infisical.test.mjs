@@ -567,6 +567,29 @@ test("prefetchFolder: a fresh listing is not fetched again (kody 4365623583)", a
   assert.equal(await resolveSecret(ENV, { name: "A", path: "/tools", envName: "L" }), "va");
 });
 
+test("prefetchFolder: requests that find a folder stale together share one listing (AFC-617)", async () => {
+  _resetInfisicalForTests();
+  const { prefetchFolder } = await import("../src/infisical.js");
+  const calls = mockFetch([["/api/v3/secrets/raw?", { body: { secrets: [{ secretKey: "A", secretValue: "va" }] } }]]);
+  await Promise.all(Array.from({ length: 6 }, () => prefetchFolder(ENV, "/tools")));
+  assert.equal(calls.length, 1, "six concurrent requests, one listing");
+  assert.equal(await resolveSecret(ENV, { name: "A", path: "/tools", envName: "L" }), "va");
+  await Promise.all([prefetchFolder(ENV, "/zulip"), prefetchFolder(ENV, "/linear")]);
+  assert.equal(calls.length, 3, "a different folder is its own listing");
+});
+
+test("prefetchFolder: a failed shared listing fails every request waiting on it in required mode, and the next request lists again (AFC-617)", async () => {
+  _resetInfisicalForTests();
+  const { prefetchFolder } = await import("../src/infisical.js");
+  const calls = mockFetch([]);
+  const results = await Promise.allSettled(Array.from({ length: 3 }, () => prefetchFolder(ENV, "/tools")));
+  assert.deepEqual(results.map((r) => r.status), ["rejected", "rejected", "rejected"]);
+  assert.ok(results.every((r) => r.reason instanceof InfisicalError));
+  assert.equal(calls.length, 1, "three concurrent requests, one failed listing");
+  await assert.rejects(() => prefetchFolder(ENV, "/tools"), InfisicalError);
+  assert.equal(calls.length, 2, "a failure is not remembered in required mode:  the next request lists again");
+});
+
 test("authenticated reads never follow a redirect (kody 4365623359)", async () => {
   _resetInfisicalForTests();
   const { prefetchFolder } = await import("../src/infisical.js");

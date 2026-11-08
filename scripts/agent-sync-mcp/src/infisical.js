@@ -25,18 +25,35 @@
 // and failed listings always use 60 seconds.  The token itself is never cached
 // here beyond the env binding, never logged.
 
-import { z } from "zod";
 import { INFISICAL_EXPECT_DEFAULT } from "./infisical-manifest.js";
 import { readBodyBytes } from "./wake.js";
 
 // Both Infisical answers are untrusted input:  parsed with these schemas
 // before anything reads them (kody 4365623474).  Unknown extra fields pass;
 // a missing or mistyped field the Worker relies on does not.
-const SecretResponse = z.object({ secret: z.object({ secretValue: z.string() }).passthrough() }).passthrough();
-const FolderListing = z.object({
-  secrets: z.array(z.object({ secretKey: z.string(), secretValue: z.string() }).passthrough()),
-  totalCount: z.number().int().nonnegative().optional(),
-}).passthrough();
+// AFC-617:  a folder listing used to go through a zod schema that copies every row (".passthrough()"), and
+// zod runs without its code-generating fast path in workerd, so one refresh of five folders cost about
+// 9 ms of Worker CPU before any secret was read, and the first zod parse of an isolate cost more.  These two
+// checks accept and refuse exactly what those schemas did and build no copy.  test/cpu-paths.test.mjs holds
+// the schemas they replace and compares them on a table of bodies.
+const isPlainObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+
+/** The answer for one secret ({ secret: { secretValue: string } }, extra keys allowed) when it has that shape, else null. */
+export function checkedSecret(value) {
+  return isPlainObject(value) && isPlainObject(value.secret) && typeof value.secret.secretValue === "string" ? value : null;
+}
+
+// A listing is an object whose `secrets` is an array of objects with string `secretKey` and `secretValue`, and
+// an optional non-negative safe-integer `totalCount`.
+export function checkedListing(value) {
+  if (!isPlainObject(value) || !Array.isArray(value.secrets)) return null;
+  const { secrets, totalCount } = value;
+  if (totalCount !== undefined && !(Number.isSafeInteger(totalCount) && totalCount >= 0)) return null;
+  for (const item of secrets) {
+    if (!isPlainObject(item) || typeof item.secretKey !== "string" || typeof item.secretValue !== "string") return null;
+  }
+  return { secrets, totalCount };
+}
 
 // Explicit limits before the schemas see an answer (kody 4366922682):  the
 // body is read up to a byte cap (a longer one is refused unread), then the
@@ -44,14 +61,23 @@ const FolderListing = z.object({
 // A listing of one scoped folder is a few KiB;  the caps leave wide room.
 export const INFISICAL_LIMITS = Object.freeze({ secretBytes: 256 * 1024, listingBytes: 2 * 1024 * 1024, depth: 32, nodes: 50_000 });
 
-function withinShape(value) {
-  const stack = [[value, 0]];
-  let nodes = 0;
-  while (stack.length) {
-    const [node, depth] = stack.pop();
-    nodes += 1;
-    if (nodes > INFISICAL_LIMITS.nodes || depth > INFISICAL_LIMITS.depth) return false;
-    if (node && typeof node === "object") for (const child of Object.values(node)) stack.push([child, depth + 1]);
+// The same walk as before (depth-first, no recursion), with the depth kept beside the node instead of in a
+// fresh pair per node:  a listing is hundreds of nodes and this ran on every refresh (AFC-617).
+export function withinShape(value) {
+  const nodes = [value];
+  const depths = [0];
+  let seen = 0;
+  while (nodes.length) {
+    const node = nodes.pop();
+    const depth = depths.pop();
+    seen += 1;
+    if (seen > INFISICAL_LIMITS.nodes || depth > INFISICAL_LIMITS.depth) return false;
+    if (node && typeof node === "object") {
+      for (const child of Object.values(node)) {
+        nodes.push(child);
+        depths.push(depth + 1);
+      }
+    }
   }
   return true;
 }
@@ -117,6 +143,8 @@ const folderWarm = new Map();
 // one doomed per-name subrequest each (kody 4365623733:  an outage would
 // otherwise cost ~90 subrequests per request).
 const folderFailed = new Map();
+// Listings in flight, by mode and folder (prefetchFolder shares them).
+const folderInflight = new Map();
 // A name Infisical just answered 404 for, outside any listing:  until the entry
 // ages out, no further per-name subrequest for it (AFC-617).  Same decisions as
 // a fresh 404, only without the subrequest.
@@ -145,6 +173,7 @@ export function _resetInfisicalForTests() {
   stats.absent = 0;
   folderWarm.clear();
   folderFailed.clear();
+  folderInflight.clear();
   missed.clear();
   fallbackLogged.clear();
 }
@@ -189,11 +218,11 @@ async function fetchRaw(env, path, name, { tokenOverride, tokenBinding = "INFISI
   });
   if (res.status === 404) throw new InfisicalError(`Infisical has no ${name} at ${path}`, { code: "not_found", status: 404 });
   if (!res.ok) throw new InfisicalError(`Infisical answered ${res.status} for ${name} at ${path}`, { code: "infisical_unavailable", status: res.status });
-  const parsed = SecretResponse.safeParse(await boundedJson(res, INFISICAL_LIMITS.secretBytes));
-  if (!parsed.success) throw new InfisicalError(`Infisical's answer for ${name} at ${path} failed schema validation`, { code: "invalid_response" });
+  const answer = checkedSecret(await boundedJson(res, INFISICAL_LIMITS.secretBytes));
+  if (!answer) throw new InfisicalError(`Infisical's answer for ${name} at ${path} failed schema validation`, { code: "invalid_response" });
   // Trimmed like every legacy binding read (kody 4366922800):  a padded record
   // never reaches Zulip as a wrong key, and whitespace alone is absence.
-  const value = parsed.data.secret.secretValue.trim();
+  const value = answer.secret.secretValue.trim();
   if (value === "") throw new InfisicalError(`Infisical returned no value for ${name} at ${path}`, { code: "not_found" });
   return value;
 }
@@ -210,6 +239,17 @@ export async function prefetchFolder(env, path) {
   if (m === "off") return;
   if (fresh(folderWarm.get(path), ttlMs(env))) return;
   if (m === "fallback" && fresh(folderFailed.get(path))) return;
+  // AFC-617:  requests that find a folder stale together share one refresh, where each used to list it again.
+  // A refresh that fails fails every request that waited on it (in required mode), and the next one tries again.
+  const key = `${m}\u0001${path}`;
+  const running = folderInflight.get(key);
+  if (running) return running;
+  const refresh = refreshFolder(env, path, m).finally(() => folderInflight.delete(key));
+  folderInflight.set(key, refresh);
+  return refresh;
+}
+
+async function refreshFolder(env, path, m) {
   const token = typeof env.INFISICAL_SERVICE_TOKEN === "string" ? env.INFISICAL_SERVICE_TOKEN.trim() : "";
   const workspace = String(env.INFISICAL_WORKSPACE_ID ?? "").trim();
   const environment = String(env.INFISICAL_ENVIRONMENT ?? "prod").trim() || "prod";
@@ -224,11 +264,11 @@ export async function prefetchFolder(env, path) {
     // shape doubt (no array, non-string fields, pagination markers) refuses
     // to warm:  an empty-looking malformed listing must never deactivate
     // tools or masquerade as drift.
-    const parsed = FolderListing.safeParse(await boundedJson(res, INFISICAL_LIMITS.listingBytes));
-    if (!parsed.success) {
+    const listing = checkedListing(await boundedJson(res, INFISICAL_LIMITS.listingBytes));
+    if (!listing) {
       throw new InfisicalError(`Infisical listing for ${path} failed schema validation`, { code: "invalid_listing" });
     }
-    const { secrets: items, totalCount } = parsed.data;
+    const { secrets: items, totalCount } = listing;
     if (totalCount !== undefined && totalCount !== items.length) {
       throw new InfisicalError(`Infisical listing for ${path} is truncated (${items.length} of ${totalCount})`, { code: "truncated_listing" });
     }
