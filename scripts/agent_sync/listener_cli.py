@@ -156,6 +156,14 @@ def installed_plugin_version(home: str) -> str | None:
 # --------------------------------------------------------------------------------------------
 
 
+def _check_defer_scope(seat: str | None, defer: bool) -> None:
+    """AFC-652:  --defer is fleet-wide drain semantics (wakes defer, broadcasts park, the
+    Linear hook gates);  a per-seat marker would arm the hook and defer one seat's wakes
+    without parking broadcasts, so the CLI refuses the combination."""
+    if defer and seat is not None:
+        raise Z.UsageError("--defer marks a fleet-wide drain window; it cannot take --seat")
+
+
 def cmd_daemon(rt: Any, args: argparse.Namespace) -> int:
     sub = args.daemon_command
     root = _root(rt)
@@ -302,7 +310,10 @@ def cmd_daemon(rt: Any, args: argparse.Namespace) -> int:
         from .daemon import set_pause
 
         seat = Z.normalise_seat(args.seat) if args.seat else None
-        set_pause(root, seat, wakes_only=args.wakes_only, by="cli", now=time.time())
+        _check_defer_scope(seat, args.defer)
+        set_pause(
+            root, seat, wakes_only=args.wakes_only, by="cli", now=time.time(), defer=args.defer
+        )
         rt.out(
             "paused %s%s; resume with: simple-chat daemon resume%s\n"
             % (
@@ -512,7 +523,12 @@ def cmd_status(rt: Any, args: argparse.Namespace) -> int:
             lines.append(
                 "paused: %s"
                 % ", ".join(
-                    "%s%s" % (k, " (wakes only)" if (v or {}).get("wakes_only") else "")
+                    "%s%s%s"
+                    % (
+                        k,
+                        " (wakes only)" if (v or {}).get("wakes_only") else "",
+                        " (drain)" if (v or {}).get("defer") else "",
+                    )
                     for k, v in sorted(pause.items())
                 )
             )
@@ -1700,6 +1716,13 @@ def add_parsers(
     q = add("pause", "kill switch: stop wakes and live interrupts (capture continues)", dsub)
     q.add_argument("--seat", metavar="S", help="one seat (default: every seat)")
     q.add_argument("--wakes-only", action="store_true", help="stop headless wakes only")
+    q.add_argument(
+        "--defer",
+        action="store_true",
+        help="mark this pause as a qualified drain window: wakes defer instead of dropping, "
+        "broadcast effects park durably, and the Linear hook refuses new events (AFC-652; "
+        "fleet-wide only, cannot combine with --seat)",
+    )
     q = add("resume", "lift a pause", dsub)
     q.add_argument("--seat", metavar="S", help="one seat (default: every pause)")
     add("reload", "re-read listener.toml (SIGHUP to the running listener)", dsub)
