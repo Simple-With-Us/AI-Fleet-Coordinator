@@ -56,6 +56,9 @@ FINAL_STATES = (
     "surfaced",
     "expired",
     "evicted",
+    # A wake whose triggers were absorbed by the other wake for the same topic
+    # (Coalescer.restore):  closed, never re-offered by a crash recovery.
+    "merged",
 )
 
 
@@ -310,6 +313,42 @@ class Pending:
             self.sender_id = sender
         self.owner = self.owner or owner
 
+    def merge(self, other: Pending) -> None:
+        """Absorb a NEWER pending for the same topic:  add() semantics, pending-to-pending.
+
+        The other's trigger ids come after this wake's own (they arrived later);  owner,
+        stale, route_tagged and skip_leases union;  the newest trigger time;  the first
+        asker kept when this wake knows one, else the other's;  first/due keep the
+        earlier bound, so no trigger ever fires later than its own window."""
+        seen = set(self.trigger_ids)
+        for message_id in other.trigger_ids:
+            if message_id not in seen:
+                seen.add(message_id)
+                self.trigger_ids.append(message_id)
+        owners = set(self.owner_ids)
+        for message_id in other.owner_ids:
+            if message_id not in owners:
+                owners.add(message_id)
+                self.owner_ids.append(message_id)
+        for lease_id in other.skip_leases:
+            if lease_id not in self.skip_leases:
+                self.skip_leases.append(lease_id)
+        if other.trigger_ts is not None:
+            self.trigger_ts = (
+                other.trigger_ts
+                if self.trigger_ts is None
+                else max(self.trigger_ts, other.trigger_ts)
+            )
+        self.route_tagged = self.route_tagged or other.route_tagged
+        self.stale = self.stale or other.stale
+        self.owner = self.owner or other.owner
+        if self.sender_id is None:
+            self.sender_id = other.sender_id
+        self.first = min(self.first, other.first)
+        self.due = min(self.due, other.due)
+        if other.catch_up and self.trigger_ts is None:
+            self.catch_up = True
+
     def row(self, state: str, now: float, **extra: Any) -> dict[str, Any]:
         row = {
             "ts": now,
@@ -403,8 +442,27 @@ class Coalescer:
         pending.add(item, owner)
         return pending
 
-    def restore(self, pending: Pending) -> None:
-        self.pending[(pending.seat, pending.key)] = pending
+    def restore(self, pending: Pending) -> tuple[Pending, Pending | None]:
+        """Re-arm a deferred wake;  returns (survivor, absorbed).
+
+        A newer offer for the same (seat, topic) may already occupy the slot:  the
+        deferred wake was popped when it went due, so offer() built a fresh pending
+        with its own trigger ids and its own queued ledger row.  Overwriting the slot
+        would drop those trigger ids and strand that row, so the OLDER pending absorbs
+        the newer one's triggers (Pending.merge) and the caller closes the absorbed
+        wake's ledger row and refreshes the survivor's:  no trigger id is lost and a
+        later crash recovery re-offers nothing twice."""
+        key = (pending.seat, pending.key)
+        existing = self.pending.get(key)
+        if existing is None or existing is pending:
+            self.pending[key] = pending
+            return pending, None
+        if existing.first <= pending.first:
+            existing.merge(pending)
+            return existing, pending
+        pending.merge(existing)
+        self.pending[key] = pending
+        return pending, existing
 
     def take_due(self, now: float) -> list[Pending]:
         ready = [p for p in self.pending.values() if p.due <= now]

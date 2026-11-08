@@ -655,7 +655,12 @@ def _inbox_row_key(row: Mapping[str, Any]) -> str:
     marker = row.get("released_from") or row.get("returned_from") or ""
     if not isinstance(marker, str):
         marker = ""
-    return "%s:%s:%s" % (row.get("id"), row.get("kind") or "", marker)
+    # An edited re-route (route_edit sets `edited`) is a NEW delivery of the same
+    # message id:  without the marker it deduped against the original delivery's row
+    # and the updated mention never reached the inbox.  A replay of the edited batch
+    # still dedupes, because the flag is part of the row and so part of its key.
+    edited = "edited" if row.get("edited") else ""
+    return "%s:%s:%s:%s" % (row.get("id"), row.get("kind") or "", marker, edited)
 
 
 class Daemon:
@@ -1535,7 +1540,16 @@ class Daemon:
                 if view.get("state") == "accepted":
                     runner.jobs.append(pending)
                 else:
-                    self.coalescer.restore(pending)
+                    survivor, absorbed = self.coalescer.restore(pending)
+                    if absorbed is not None:
+                        # Two queued rows for one topic:  the deferred-restore race
+                        # persisted across the crash.  Fold them once, durably.
+                        runner.ledger.append(
+                            survivor.row("queued", now, merged_from=absorbed.wake_id)
+                        )
+                        runner.ledger.append(
+                            absorbed.row("merged", now, merged_into=survivor.wake_id)
+                        )
             for view in crashed:
                 self.log.write("wake-crashed", seat=runner.seat, wake_id=view.get("wake_id"))
                 if view.get("owner"):
@@ -5657,7 +5671,24 @@ class Daemon:
                 pending = self._deferred_restores.get_nowait()
             except queue.Empty:
                 return
-            self.coalescer.restore(pending)
+            survivor, absorbed = self.coalescer.restore(pending)
+            if absorbed is not None:
+                self._record_wake_merge(absorbed, survivor)
+
+    def _record_wake_merge(self, absorbed: W.Pending, survivor: W.Pending) -> None:
+        """Ledger rows for a merged wake pair:  the survivor's row is refreshed with the
+        union of trigger ids (a crash before its next row must not lose the absorbed
+        wake's triggers) and the absorbed wake's row is closed as merged, so a crash
+        recovery never re-offers it."""
+        now = self.clock.time()
+        runner = self.seats.get(absorbed.seat)
+        if runner is None:
+            return
+        runner.ledger.append(survivor.row("queued", now, merged_from=absorbed.wake_id))
+        runner.ledger.append(absorbed.row("merged", now, merged_into=survivor.wake_id))
+        self.log.write(
+            "wake-merged", seat=absorbed.seat, wake_id=absorbed.wake_id, into=survivor.wake_id
+        )
 
     def _drain_broadcast_wakes(self) -> None:
         """Event thread only (tick):  the owner `@all` wakes the fanout handed back."""

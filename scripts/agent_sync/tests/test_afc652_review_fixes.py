@@ -18,6 +18,7 @@ from unittest import mock
 from agent_sync import daemon as D
 from agent_sync import live as L
 from agent_sync import router as R
+from agent_sync import wakes as W
 from agent_sync.tests.test_chat_fanout import FakeCatalog, cloud
 from agent_sync.tests.test_daemon import DaemonHarness, MENTION
 
@@ -112,6 +113,121 @@ class FanoutAdmitNoneFallbackTests(DaemonHarness):
         queued_message, nudged = daemon._broadcast_wakes.get_nowait()
         self.assertEqual(queued_message["id"], message_id)
         self.assertEqual(nudged, frozenset())
+
+
+class DeferredRestoreMergeTests(DaemonHarness):
+    """A trigger offered while a deferred restore waits must never be overwritten."""
+
+    def test_a_deferred_restore_merges_into_the_newer_offer_and_closes_its_row(self) -> None:
+        daemon = self.started()
+        mid1 = self.fake.add_message("Codex", "agent-sync", "t", MENTION)
+        self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
+        self.clock.advance(25)
+        daemon.tick()  # the first wake is accepted into the seat's jobs
+        D.set_pause(
+            self.root, None, wakes_only=True, by="test", now=self.clock.time(), defer=True
+        )
+        daemon.run_jobs("CLAUDE")  # run_wake hits the drain defer; the restore is queued
+        self.assertFalse(daemon._deferred_restores.empty())
+        old_wake = self.ledger()[0]["wake_id"]
+
+        # A new trigger for the same topic is offered while the restore waits:  the
+        # blind overwrite dropped its trigger id and stranded its queued row.
+        mid2 = self.fake.add_message("Codex", "agent-sync", "t", MENTION + " again")
+        daemon.pump("CLAUDE", timeout=0.5)  # route only; no tick, so the restore still waits
+        self.assertEqual(len(self.ledger()), 3)  # queued + accepted (mid1), queued (mid2)
+        self.assertEqual(len(daemon.coalescer.pending), 1)
+        self.assertEqual(daemon._deferred_restores.qsize(), 1)
+        new_wake = self.ledger()[2]["wake_id"]
+
+        daemon.tick()  # the event thread drains the restore
+        survivors = list(daemon.coalescer.pending.values())
+        self.assertEqual(len(survivors), 1, "the restore must merge, not overwrite")
+        survivor = survivors[0]
+        self.assertEqual(survivor.wake_id, old_wake, "the older wake absorbs the newer")
+        self.assertEqual(survivor.trigger_ids, [mid1, mid2])
+        merged = [r for r in self.ledger() if r["state"] == "merged"]
+        self.assertEqual([(r["wake_id"], r["merged_into"]) for r in merged], [(new_wake, old_wake)])
+        refreshed = [
+            r for r in self.ledger() if r["wake_id"] == old_wake and r.get("merged_from")
+        ]
+        self.assertEqual([r["trigger_ids"] for r in refreshed], [[mid1, mid2]])
+
+        # A crash recovery re-offers the union exactly once, never the absorbed wake.
+        reload, _ = daemon.seats["CLAUDE"].ledger.recover(self.clock.time())
+        self.assertEqual([v["wake_id"] for v in reload], [old_wake])
+        self.assertEqual(reload[0]["trigger_ids"], [mid1, mid2])
+
+        # The merged wake still runs once the drain clears, with both triggers.
+        D.clear_pause(self.root, None)
+        self.clock.advance(30)
+        daemon.tick()
+        daemon.run_jobs("CLAUDE")
+        done = [r for r in self.ledger() if r["wake_id"] == old_wake and r["state"] == "done"]
+        self.assertEqual(len(done), 1)
+        self.assertEqual(done[0]["trigger_ids"], [mid1, mid2])
+
+
+class RecoveryMergesQueuedWakePairTests(DaemonHarness):
+    def test_recovery_folds_two_queued_wakes_for_one_topic_durably(self) -> None:
+        daemon = self.started()
+        runner = daemon.seats["CLAUDE"]
+        now = self.clock.time()
+        item = {"channel": "agent-sync", "topic": "t", "type": "stream"}
+        p1 = W.Pending("w-old", "CLAUDE", item, owner=False, now=now - 5, due=now + 20)
+        p1.add({"id": 101, "ts": now - 5}, False)
+        p2 = W.Pending("w-new", "CLAUDE", item, owner=False, now=now, due=now + 20)
+        p2.add({"id": 102, "ts": now}, False)
+        runner.ledger.append(p1.row("queued", now - 5))
+        runner.ledger.append(p2.row("queued", now))
+
+        # The crash-persisted race:  two open queued rows for one (seat, topic).
+        daemon._recover_ledgers()
+        survivors = list(daemon.coalescer.pending.values())
+        self.assertEqual(len(survivors), 1)
+        self.assertEqual(
+            (survivors[0].wake_id, survivors[0].trigger_ids), ("w-old", [101, 102])
+        )
+        merged = [r for r in runner.ledger.rows() if r.get("state") == "merged"]
+        self.assertEqual([(r["wake_id"], r["merged_into"]) for r in merged], [("w-new", "w-old")])
+
+        # The fold is durable:  a second recovery rebuilds the same single wake once.
+        daemon.coalescer.pending.clear()
+        daemon._recover_ledgers()
+        survivors = list(daemon.coalescer.pending.values())
+        self.assertEqual(len(survivors), 1)
+        self.assertEqual(
+            (survivors[0].wake_id, survivors[0].trigger_ids), ("w-old", [101, 102])
+        )
+        self.assertEqual(
+            len([r for r in runner.ledger.rows() if r.get("state") == "merged"]), 1
+        )
+
+
+class EditedRouteSurvivesInboxDedupeTests(DaemonHarness):
+    def test_an_edited_reroute_is_a_distinct_inbox_row_and_its_replay_dedupes(self) -> None:
+        daemon = self.started()
+        runner = daemon.seats["CLAUDE"]
+        base = {
+            "id": 424299,
+            "channel": "agent-sync",
+            "topic": "t",
+            "sender": "Codex",
+            "ts": 1,
+            "content": "original",
+            "classes": [],
+        }
+        daemon._append_seat_inbox(runner, [dict(base, kind="message")])
+        edited = dict(base, kind="message", edited=True, content="edited in a mention")
+        daemon._append_seat_inbox(runner, [edited])
+        rows = L.read_jsonl(runner.paths.seat_inbox)
+        self.assertEqual(
+            len(rows), 2, "the edited re-route is a new delivery, not a replay duplicate"
+        )
+        self.assertEqual([r.get("edited") for r in rows], [None, True])
+        # A crash-replay of the edited batch still dedupes against its own append.
+        daemon._append_seat_inbox(runner, [edited])
+        self.assertEqual(len(L.read_jsonl(runner.paths.seat_inbox)), 2)
 
 
 if __name__ == "__main__":
