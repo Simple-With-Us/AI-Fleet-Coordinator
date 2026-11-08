@@ -2051,9 +2051,7 @@ class TestReview1199(unittest.TestCase):
             def open(self, req, timeout=None):
                 return Response()
 
-        with mock.patch.object(
-            git.urllib.request, "build_opener", lambda *handlers: FakeOpener()
-        ):
+        with mock.patch.object(git.urllib.request, "build_opener", lambda *handlers: FakeOpener()):
             return git._remote_post(git.REMOTE_MCP_URL, {}, b"{}", 5)
 
     def test_response_without_a_socket_returns_its_body(self):
