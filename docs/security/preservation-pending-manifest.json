@@ -1,5 +1,5 @@
 {
-  "status": "INACTIVE SOURCE REVIEW PENDING; approved unchanged-fixture intent, no install or execution clearance",
+  "status": "NEW PRESERVATION/SAME-PATH REGISTRIES INACTIVE; existing 13-entry fixture registry includes a source-active exact Infisical refresh; no install or execution clearance",
   "active": false,
   "composition_base": "3ce1e3f8fc40f7376cbf2be658781e6386399b4d",
   "current_main": "1cf0a993b56b22cfec7dc2de941ed1bd832c3a5e",
@@ -217,5 +217,13 @@
     "cached_actual_entries": 541,
     "inventory_note": "Source proofs remain pinned to their exact historical commits; target fixture blobs unchanged in refreshed current-main reconciliation. Prior cached actual entries541 describes those same immutable proof ancestors."
   },
-  "registries": "REVIEWED_PRESERVATIONS and REVIEWED_SAME_PATH_SOURCES remain empty pending normal source review and installation qualification"
+  "registries": "REVIEWED_PRESERVATIONS and REVIEWED_SAME_PATH_SOURCES remain empty pending normal source review and installation qualification",
+  "existing_fixture_registry": {
+    "entries": 13,
+    "infisical_refresh_source_active": true,
+    "deployment_or_runtime_use_established": false,
+    "target_blob": "0c8b4ed4acf205c619f970824a7eba4d7e3a96b3",
+    "target_sha256": "3ee7aac6e82c0f22bbadc29ba915cc05054c7d5e3c0962f9c84f9db5b8f94d88"
+  }
 }
+

@@ -2,7 +2,12 @@
 
 Status: inactive source proposal. Owner approved unchanged credential-shaped
 fixtures from either parent; normal source review, installation qualification
-and deployment gates still apply. Both release registries remain empty.
+and deployment gates still apply. The new REVIEWED_PRESERVATIONS and REVIEWED_SAME_PATH_SOURCES registries remain
+empty. The existing _REVIEWED_FIXTURES registry has 13 entries, including one
+refreshed exact Infisical API-route attestation. That row is active in source
+semantics, not an inactive proposed row; this source has not been deployed or
+qualified for runtime use by this proposal. The README table records its actual
+blob and digest.
 
 ## Original-base composition
 
