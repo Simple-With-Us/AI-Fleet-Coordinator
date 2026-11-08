@@ -44,7 +44,10 @@ RECEIVER_PATH = "scripts/fleet-cli-release.py"
 # The 154th is agent_sync/operator_sheets_drain.mjs (OPS-1037), the production drain runner.
 # The 155th is agent_sync/muster_service.py (AFC-654), the read-only Operator service `simple-chat`
 # dispatches for Muster's Seats panel.
-MAX_FILES = 155
+# The 156th is fleet_lanes/temp_build.py (AFC-618), the build-argv reader `lane`'s guard.py imports.
+# The 157th to 159th are the ZCode letter adapter, the ZC wake bridge and the ZC letter hook wrapper
+# (OPS-1048);  fleet-cli-release.py carries the same ledger.
+MAX_FILES = 159
 MAX_BYTES = 8 * 1024 * 1024
 OVERALL_SECONDS = 90
 SSH_SECONDS = 65

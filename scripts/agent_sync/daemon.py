@@ -645,6 +645,31 @@ class InboxPending:
     missing_named: dict[str, str] = field(default_factory=dict)
 
 
+def merge_routine_env(seats, env, home, *, fetch=None):
+    """Put a seat's routine URL and key into the environment its wake resolves against.
+
+    Every seat whose config carries a routine names two environment variables (url_env,
+    key_env);  the values live in Infisical Fleet-OPS /zulip under those exact names, so this
+    asks the one fleet-secrets reader for all of them at once and writes what came back into
+    `env`.  The names are returned (a test's assertion, and the log's count);  a value the
+    store does not hold is simply absent afterwards, which `resolve_routine` reports as
+    routine-unready.  `fetch` is the reader, overridable in tests;  the default never
+    returns a value for a name it could not read, and this never logs one."""
+    names = []
+    for runner in seats.values():
+        routine = getattr(runner.cfg, "routine", None)
+        if routine is not None:
+            names.extend((routine.url_env, routine.key_env))
+    if not names:
+        return []
+    if fetch is None:
+        fetch = lambda ns: Z._fetch_from_fleet_secrets(ns, env, home)
+    for name, value in dict(fetch(tuple(names))).items():
+        if value:
+            env[name] = value
+    return names
+
+
 def _inbox_row_key(row: Mapping[str, Any]) -> str:
     """Crash-replay dedupe key for a seat-inbox row:  message id + kind + requeue provenance.
 
@@ -9664,6 +9689,16 @@ class Daemon:
                 or (runner.cfg.creds == "file" and not self.secrets_dir)
             ],
         )
+        # A seat's remote routine (wake = "http") resolves its URL and key from this process's
+        # environment (resolve_routine).  The server's container carries those names in the
+        # environment it starts with;  this Mac instance has no folder loader, so the routine
+        # names ride the same one Infisical fetch the seat pairs use, and the values land in
+        # the environment the routines resolve against.  Never raises:  a name Infisical does
+        # not hold leaves the routine in its routine-unready state, exactly as before.
+        try:
+            merge_routine_env(self.seats, self.env, Path(self.home))
+        except Exception:
+            pass
         self.log.write(
             "started",
             pid=os.getpid(),
