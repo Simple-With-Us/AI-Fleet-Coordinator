@@ -275,44 +275,131 @@ struct FleetHostsView: View {
                 .foregroundStyle(.secondary)
             } else {
                 ForEach(Array(displayed.enumerated()), id: \.offset) { _, row in
-                    VStack(alignment: .leading, spacing: 1) {
-                        HStack(spacing: 8) {
-                            Text(row.check)
-                                .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                            if let category = row.category, !category.isEmpty {
-                                Text(category)
-                                    .font(.system(size: 9, design: .monospaced))
-                                    .foregroundStyle(.secondary)
-                                    .padding(.horizontal, 5)
-                                    .padding(.vertical, 1)
-                                    .background(Color.secondary.opacity(0.12), in: Capsule())
-                            }
-                            if let installed = row.installed, !installed.isEmpty {
-                                Text(installed.count > 12 ? String(installed.prefix(7)) : installed)
-                                    .font(.system(size: 10, design: .monospaced))
-                                    .foregroundStyle(.secondary)
-                            }
-                            Text(row.rowState.rawValue)
-                                .font(.system(size: 10, weight: .medium, design: .monospaced))
-                                .foregroundStyle(tint(for: row.outcome))
-                            if !row.countsInVerdict {
-                                Text("excluded from host verdict")
-                                    .font(.system(size: 9))
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer(minLength: 0)
-                        }
-                        Text(row.summary)
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    .padding(.vertical, 1)
+                    toolRow(row)
                 }
             }
         }
         .padding(.leading, 16)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// One check row:  its name and state,  the version columns when the doctor read any
+    /// (AFC-461),  and the doctor's own line under them.
+    private func toolRow(_ row: FleetToolsRow) -> some View {
+        let columns = ToolVersionColumns.make(for: row)
+        return VStack(alignment: .leading, spacing: 1) {
+            if let columns {
+                if columns.needsOwnLines {
+                    // A value too long for a column:  each value on its own line under
+                    // the tool name,  kept whole.
+                    rowTitle(row, showsInstalled: false)
+                    versionLines(columns)
+                } else {
+                    // Beside the tool name when the pane has room,  and under it when not,
+                    // so no value is ever truncated.
+                    ViewThatFits(in: .horizontal) {
+                        HStack(alignment: .top, spacing: 8) {
+                            rowTitle(row, showsInstalled: false)
+                            Spacer(minLength: 12)
+                            versionColumns(columns)
+                        }
+                        VStack(alignment: .leading, spacing: 2) {
+                            rowTitle(row, showsInstalled: false)
+                            versionColumns(columns)
+                        }
+                    }
+                }
+                if let basis = columns.basis {
+                    Text(basis)
+                        .font(.system(size: 10))
+                        .foregroundStyle(columns.explainsStale ? tint(for: row.outcome) : Color.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .help(columns.basisHelp ?? "")
+                }
+            } else {
+                HStack(spacing: 8) {
+                    rowTitle(row, showsInstalled: true)
+                    Spacer(minLength: 0)
+                }
+            }
+            Text(row.summary)
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.vertical, 1)
+    }
+
+    /// A row's name,  category,  state and verdict note.
+    ///
+    /// The old installed field shows only on a row without version columns:  on a registry
+    /// row it holds the same version the Installed column shows.
+    private func rowTitle(_ row: FleetToolsRow, showsInstalled: Bool) -> some View {
+        HStack(spacing: 8) {
+            Text(row.check)
+                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+            if let category = row.category, !category.isEmpty {
+                Text(category)
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(Color.secondary.opacity(0.12), in: Capsule())
+            }
+            if showsInstalled, let installed = row.installed, !installed.isEmpty {
+                Text(installed.count > 12 ? String(installed.prefix(7)) : installed)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            }
+            Text(row.rowState.rawValue)
+                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                .foregroundStyle(tint(for: row.outcome))
+            if !row.countsInVerdict {
+                Text("excluded from host verdict")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    /// The three values in fixed-width columns,  so they line up from row to row.
+    private func versionColumns(_ columns: ToolVersionColumns) -> some View {
+        HStack(alignment: .top, spacing: CGFloat(ToolVersionColumns.columnSpacing)) {
+            ForEach(columns.cells, id: \.label) { cell in
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(cell.label)
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                    versionValue(cell)
+                }
+                .frame(width: CGFloat(ToolVersionColumns.columnWidth), alignment: .leading)
+            }
+        }
+    }
+
+    /// The three values one to a line,  for a value too long for a column.
+    private func versionLines(_ columns: ToolVersionColumns) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            ForEach(columns.cells, id: \.label) { cell in
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(cell.label)
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 64, alignment: .leading)
+                    versionValue(cell)
+                }
+            }
+        }
+    }
+
+    /// One value:  the version,  or "Not known" in the secondary colour.  The words carry
+    /// the meaning and the colour only repeats them.  It wraps rather than truncates.
+    private func versionValue(_ cell: ToolVersionCell) -> some View {
+        Text(cell.text)
+            .font(.system(size: 10, design: .monospaced))
+            .foregroundStyle(cell.isKnown ? Color.primary : Color.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .help(cell.help ?? "")
     }
 
     // MARK: The Worker
