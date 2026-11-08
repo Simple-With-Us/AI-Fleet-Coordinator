@@ -336,6 +336,7 @@ def verify_receipt(
     policy_after,
     audit_rows,
     window_s=RECEIPT_WINDOW_S,
+    store_id=True,
 ):
     """Return the proven record, or refuse it.
 
@@ -347,6 +348,10 @@ def verify_receipt(
     hold exactly one matching denial row). The id enters the durable store only
     after every gate passes, so a crash before the store write can never accept
     a receipt it later replays - the retry simply runs the gates again.
+
+    store_id=False is the guarded transaction's dry-run check: every gate runs,
+    nothing is stored, and the same receipt still verifies at apply time, which
+    runs the gates again and records. Nothing but the dry-run path may pass False.
     """
     if not isinstance(receipt, dict) or set(receipt) != {"record", "hmac"}:
         raise ValueError("receipt shape")
@@ -371,5 +376,6 @@ def verify_receipt(
     if store.seen(proof_id):
         raise ValueError("receipt replayed")
     _audit_row_binds(record, audit_rows)
-    store.add(record)
+    if store_id:
+        store.add(record)
     return record

@@ -258,6 +258,13 @@ class ReceiptGateTests(unittest.TestCase):
             self.verify(self.receipt, audit_rows=[audit_row(self.record), audit_row(self.record)])
         self.assertFalse(self.store.seen("proof-1001"))
 
+    def test_dry_run_verification_consumes_nothing(self):
+        # The guarded transaction's dry run checks every gate without storing;
+        # the apply then verifies the same receipt again and records it.
+        self.verify(self.receipt, store_id=False)
+        self.assertFalse(self.store.seen("proof-1001"))
+        self.assertEqual(self.verify(self.receipt)["proof_id"], "proof-1001")
+
     def test_a_refused_receipt_is_never_recorded(self):
         with self.assertRaisesRegex(ValueError, "stale"):
             self.verify(self.receipt, now=self.now + 601)

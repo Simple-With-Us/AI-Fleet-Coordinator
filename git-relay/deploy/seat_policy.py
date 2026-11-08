@@ -160,6 +160,26 @@ def digest(seats: dict) -> str:
     return hashlib.sha256(compact(seats).encode()).hexdigest()[:16]
 
 
+def canonical_digest(policy: dict) -> str:
+    """The full canonical digest the additive transaction checks (seat_add_policy.digest).
+
+    Unlike digest() (the env installer's short line digest), this commits to the
+    whole rendered policy object:  it is the CAS value on the live seats file and
+    the receipt's transaction binding.
+    """
+    return hashlib.sha256(
+        json.dumps(policy, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+SEATS_FILE_VAR = "GIT_RELAY_SEATS_FILE"
+PROOF_KEY_FILE_VAR = "GIT_RELAY_PROOF_KEY_FILE"
+# server.py's default audit path, relative to the unit's WorkingDirectory.
+DEFAULT_AUDIT = "git-relay-audit.jsonl"
+# The durable accepted-proof store (deploy_proof.ReplayStore), same directory.
+REPLAY_STORE = "git-relay-proofs.json"
+
+
 def blob_id(path: Path | str) -> str:
     """The file's git blob id, the value `git rev-parse <commit>:<path>` prints."""
     data = Path(path).read_bytes()
@@ -351,6 +371,114 @@ def _restore(unit: Unit, wait: int, before: str, backup: str) -> int:
     return 3
 
 
+def _seats_file(unit: Unit) -> str:
+    """The live seats file:  exactly one GIT_RELAY_SEATS_FILE line, an absolute path.
+
+    The file input is mutually exclusive with the inline one (policy_input.py), so
+    a unit that sets both is refused rather than silently migrated.
+    """
+    with open(unit.config, encoding="utf-8") as fh:
+        lines = fh.read().splitlines()
+    value = _config_value(lines, SEATS_FILE_VAR)
+    if value is None or not os.path.isabs(value):
+        raise SystemExit(f"{unit.config}:  expected exactly one absolute {SEATS_FILE_VAR} line")
+    if _config_value(lines, SEATS_VAR) is not None:
+        raise SystemExit(
+            f"{unit.config}:  {SEATS_VAR} and {SEATS_FILE_VAR} are mutually exclusive"
+        )
+    return value
+
+
+def _restore_file(unit: Unit, wait: int, before: str, path: str, backup: str) -> int:
+    print(f"restoring {backup}")
+    _write_atomic(path, before)
+    subprocess.run(["systemctl", "restart", unit.name], check=False)
+    restored = _healthy(unit.health, unit.name, wait)
+    print("restored and healthy" if restored else "THE RESTORE IS NOT HEALTHY:  check the unit now")
+    return 3
+
+
+def install_seat(args, unit: Unit) -> int:
+    """Add exactly one seat to a file-backed policy:  CAS, durable backup, health-gated recovery.
+
+    Every gate runs before anything is written:  the live file must BE the
+    reviewed policy (CAS on the full canonical digest), the additive result
+    must match --expect-after, and the proof receipt must verify for exactly
+    this seat and this before/after pair against the operator key, the durable
+    replay store and the relay's own audit log.  The dry run checks the same
+    gates without consuming the receipt;  --apply verifies it again and records
+    it.  No policy is ever trimmed, reordered or regenerated here.
+    """
+    sys.path.insert(0, unit.relay)
+    try:
+        from git_relay import deploy_proof, seat_add_policy
+    finally:
+        sys.path.remove(unit.relay)
+    path = _seats_file(unit)
+    with open(path, encoding="utf-8") as fh:
+        before_text = fh.read()
+    current = json.loads(before_text)
+    if canonical_digest(current) != args.expect_before:
+        print("refusing:  the live policy is not the reviewed one (--expect-before mismatch)")
+        return 2
+    with open(args.row_json, encoding="utf-8") as fh:
+        row = json.load(fh)
+    try:
+        result = seat_add_policy.prepare(current, args.seat, row, args.expect_before)
+    except ValueError as exc:
+        print(f"refusing:  {exc}")
+        return 2
+    after = canonical_digest(result)
+    if after != args.expect_after:
+        print("refusing:  --expect-after does not match the additive result;  re-render and review")
+        return 2
+    key_path = os.environ.get(PROOF_KEY_FILE_VAR)
+    if not key_path:
+        print(f"refusing:  {PROOF_KEY_FILE_VAR} names no proof-key file;  the proof gate stays on")
+        return 2
+    with open(key_path, "rb") as fh:
+        key = fh.read().strip()
+    with open(args.receipt, encoding="utf-8") as fh:
+        receipt = json.load(fh)
+    audit_rows = deploy_proof.read_audit_rows(os.path.join(unit.relay, DEFAULT_AUDIT))
+    store = deploy_proof.ReplayStore(os.path.join(unit.relay, REPLAY_STORE))
+    try:
+        deploy_proof.verify_receipt(
+            key,
+            receipt,
+            seat=args.seat,
+            now=int(time.time()),
+            store=store,
+            policy_before=args.expect_before,
+            policy_after=args.expect_after,
+            audit_rows=audit_rows,
+            store_id=args.apply,
+        )
+    except ValueError as exc:
+        print(f"refusing:  {exc}")
+        return 2
+    print(f"additive policy digest {after} (new seat:  {args.seat})")
+    if not args.apply:
+        print("dry run;  install it with --apply and the same --expect-before/--expect-after/--receipt")
+        return 0
+    _ = unit.health  # refuse before writing if health cannot be checked
+    stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
+    backup = f"{path}.backup-seat-add-{stamp}"
+    _write_atomic(backup, before_text)
+    _write_atomic(path, json.dumps(result, sort_keys=True, separators=(",", ":")) + "\n")
+    try:
+        restart = subprocess.run(["systemctl", "restart", unit.name], check=False)
+        if restart.returncode == 0 and _healthy(unit.health, unit.name, args.wait):
+            print(f"installed seat {args.seat};  {unit.name} is healthy;  backup {backup}")
+            return 0
+        print(f"{unit.name} did not come back healthy (restart exit {restart.returncode})")
+    except BaseException:
+        print("interrupted before the relay was confirmed healthy")
+        _restore_file(unit, args.wait, before_text, path, backup)
+        raise
+    return _restore_file(unit, args.wait, before_text, path, backup)
+
+
 def install(args, unit: Unit) -> int:
     seats = render(load(args.policy))
     validate_with(unit.relay, seats)
@@ -486,11 +614,16 @@ def verify_inner(args) -> int:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("command", choices=["render", "install", "verify-apps", "verify-inner"])
+    parser.add_argument("command", choices=["render", "install", "install-seat", "verify-apps", "verify-inner"])
     parser.add_argument("--policy", default=str(DEFAULT_POLICY))
-    parser.add_argument("--unit", help="install, verify-apps:  the relay's systemd unit")
+    parser.add_argument("--unit", help="install, install-seat, verify-apps:  the relay's systemd unit")
     parser.add_argument("--wait", type=int, default=30, help="seconds to wait for health")
     parser.add_argument("--expect", help="install --apply:  the digest the dry run printed")
+    parser.add_argument("--seat", help="install-seat:  the one seat to add")
+    parser.add_argument("--row-json", help="install-seat:  the reviewed rendered seat row")
+    parser.add_argument("--expect-before", help="install-seat:  full canonical digest of the live policy")
+    parser.add_argument("--expect-after", help="install-seat:  full canonical digest of live-plus-one-seat")
+    parser.add_argument("--receipt", help="install-seat:  the signed external-proof receipt")
     parser.add_argument("--seats", help="verify-inner only:  the rendered policy")
     parser.add_argument("--relay", help="verify-inner only:  the deployed relay code")
     parser.add_argument("--secrets-path", default=DEFAULT_SECRETS_PATH, help="verify-inner only")
@@ -511,6 +644,13 @@ def main(argv=None) -> int:
         print(f"{os.path.basename(path)} blob {blob_id(path)}")
     if args.command == "install":
         return install(args, unit)
+    if args.command == "install-seat":
+        for flag in ("seat", "row_json", "expect_before", "expect_after", "receipt"):
+            if not getattr(args, flag):
+                parser.error(f"install-seat needs --{flag.replace('_', '-')}")
+        if os.geteuid() == 0:
+            require_root_owned([args.row_json, args.receipt])
+        return install_seat(args, unit)
     return verify_apps(args, unit)
 
 
