@@ -49,7 +49,8 @@ RECEIVER_PATH = "scripts/fleet-cli-release.py"
 # (OPS-1048);  fleet-cli-release.py carries the same ledger.
 # The 160th and 161st are simple_tools/platform_letter_cursor.py (the Cursor session-letter adapter) and
 # simple_tools/cursor_cloud_letters.py (the Cursor Cloud letter sweep).
-MAX_FILES = 161
+# The 162nd is scripts/ag-wake-bridge (AFC-665), the AG seat's wake bridge.
+MAX_FILES = 162
 MAX_BYTES = 8 * 1024 * 1024
 OVERALL_SECONDS = 90
 SSH_SECONDS = 65

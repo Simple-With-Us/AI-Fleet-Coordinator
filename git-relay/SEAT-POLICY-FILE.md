@@ -78,3 +78,29 @@ directory nobody else can write). The restart makes systemd hand the new copy to
 service. This does not migrate a unit onto the credential input. That migration, its
 journal and its rollback stay the separately reviewed step above, and no runtime effect
 is authorized by this document.
+
+### Migrating a file-backed unit onto the credential input
+
+`deploy/seat_policy_migrate.py` (`plan`, `apply`, `recover`) is that separately reviewed
+migration, as source. It does not run itself and no runtime effect is authorized by this
+document. It needs the policy's full canonical digest (`--expect-digest`), a root 0700
+journal directory and a root 0700 directory for the backing file. `EnvironmentFile=` overrides
+`Environment=`, so a drop-in cannot unset the file setting; `apply` instead replaces the one
+`GIT_RELAY_SEATS_FILE=` line in the unit's EnvironmentFile with
+`GIT_RELAY_SEATS_CREDENTIAL=seat-policy`, byte-preserving every other line, and adds one
+drop-in with `LoadCredential=seat-policy:<backing>`. The old policy file is left untouched.
+
+Order and crashes. The backing file and the drop-in are written first (an extra credential next
+to the file input is harmless), the config line last, so a restart or reboot at any phase boundary
+still starts the relay. The tests restart the simulated unit after a hard crash at every phase.
+Locking. The run holds install-seat's transaction lock on the old policy path and on the backing
+path, plus its own journal lock, from the snapshot through the health check, and it restores if the
+old policy file changes in that time. A root-only fsynced journal holds the before-images first; a
+failed start, health check or served-copy digest check, or any interruption, puts them back.
+`recover` needs only the journal, so it works after a crash, a reboot or with the service stopped.
+Before it writes, recover checks every journal field it uses (unit, config path equal to the unit's
+EnvironmentFile, the drop-in path, digests, integer owner and mode, a pre-migration config shape) and
+refuses to roll back a finished migration if a later install-seat changed the backing policy. The
+journal is protected only by being a root-only file in a 0700 directory: these checks catch corruption
+and mismatches, not someone who can already write as root. A real reboot test on the host is a separate
+released run. Adding a seat stays the proof-gated `install-seat`.

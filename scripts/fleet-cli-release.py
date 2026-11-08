@@ -52,7 +52,9 @@ MAX_BUNDLE_BYTES = 8 * 1024 * 1024
 # the checkout's real platform-letter.
 # The 160th and 161st are simple_tools/platform_letter_cursor.py (the Cursor session-letter adapter) and
 # simple_tools/cursor_cloud_letters.py (the Cursor Cloud letter sweep).
-MAX_FILES = 161
+# The 162nd is scripts/ag-wake-bridge, the AG seat's wake webhook receiver and deliverer (AFC-665;  its systemd
+# unit template stays repo-only under simple_tools/server/).
+MAX_FILES = 162
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MARKER = "# fleet-cli managed wrapper v1"
 # Retention:  a receive keeps the newest KEEP_RELEASES releases and deletes older ones, but never `current`,
@@ -140,6 +142,8 @@ EXACT = frozenset(
         # registry env file before it execs this checkout's real platform-letter).
         "scripts/zc-wake-bridge",
         "scripts/zcode-letter-hook/platform-letter",
+        # AFC-665:  the AG seat's wake bridge (delivering Operator wakes via the local agy CLI daemon API).
+        "scripts/ag-wake-bridge",
     }
 )
 # What every release ever installed contains.  verify_retained, rollback and status judge a retained

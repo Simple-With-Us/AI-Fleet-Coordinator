@@ -104,6 +104,7 @@ class RepoTreeConsistencyTests(TestCase):
         {
             "scripts/fleet_lanes/tests/test_install_mcp.py",
             "scripts/simple-tools-mcp/DEPLOY-PHASE0.md",
+            "scripts/simple-tools-mcp/test/gr-workflow-v1.test.mjs",
             "scripts/simple-tools-mcp/test/integration.workerd.mjs",
             "scripts/simple_tools/mcp/fixtures.jsonl",
             "scripts/simple_tools/tests/test_infisical_api_route.py",

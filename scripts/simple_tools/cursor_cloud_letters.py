@@ -8,7 +8,8 @@ hook gives at the start, so `platform_letter_cursor` leaves Cloud agents alone a
 instead.  Each run:
 
 1.  Reads the open Cloud agents (IDLE or ACTIVE) from the Cursor API (`CursorCloudTransport.discover`), with the key
-    that module already uses (CURSOR_SYNC_API_KEY from Infisical Fleet-OPS, or CURSOR_API_KEY).
+    that module already uses (CURSOR_SYNC_API_KEY from Infisical Fleet-OPS, or CURSOR_API_KEY).  Only an agent updated
+    within the last 36 hours goes on:  Cursor keeps a finished agent IDLE until it is archived.
 2.  Registers each one in the `cursor` letter namespace at location `cloud`, under its own source, so the hook's local
     chats and these never sweep each other.  A registration also marks the agent seen, so a letter stays while the agent
     is open and the registry's 36 hour sweep frees it once the agent is gone.  The title is sent without any letter
@@ -61,6 +62,12 @@ CURSOR_LINK = re.compile(r"https://cursor\.com/[A-Za-z0-9/?=&._-]{1,200}")
 # The whole sweep's budget for DMs:  past it, the rest wait for the next run, so one slow `simple-chat` cannot hold the
 # run past the timer's next start.  A registration still happens for every agent.
 DM_BUDGET = 180
+# Cursor keeps a finished Cloud agent IDLE until it is archived, so the open list holds agents untouched for weeks.  Only
+# one updated within the registry's own stale window takes a letter (and wakes its bot);  an older one would hold a
+# letter it never uses and wake a bot about a dead chat.  An agent with no readable updated_at is skipped too.
+MAX_AGE_HOURS = 36
+# A page of 100 agents takes longer than the transport's 5 second default;  30 is the transport's own ceiling.
+API_TIMEOUT = 30
 
 Runner = Callable[..., Any]
 Transport = Callable[[list[str]], Mapping[str, Any]]
@@ -196,6 +203,17 @@ def send_dm(bot: str, text: str, env: Mapping[str, str], runner: Runner) -> str:
     return "refused" if named else "unknown"
 
 
+def recent(agent: Mapping[str, Any], now: float, max_age_hours: float = MAX_AGE_HOURS) -> bool:
+    """Whether the agent's updatedAt is within `max_age_hours` of `now`.  It is read the way the chat catalog reads the
+    same field (epoch seconds, epoch milliseconds or an ISO time);  a missing or unreadable time is not recent."""
+    from .chat_catalog import _timestamp
+
+    when = _timestamp(agent.get("updated_at"))
+    if when <= 0:
+        return False
+    return now - when <= max_age_hours * 3600
+
+
 def sweep(
     env: Mapping[str, str],
     *,
@@ -215,15 +233,16 @@ def sweep(
     if discover is None:
         from .cursor_chat_transport import CursorCloudTransport
 
-        cloud = CursorCloudTransport()
+        cloud = CursorCloudTransport(timeout_seconds=API_TIMEOUT)
         discover = cloud.discover
 
         def complete() -> bool:
             return getattr(cloud, "last_discovery_status", "") == "complete"
 
-    agents = discover()
+    found = discover()
     # Whether the discovery saw every open agent:  only then is an agent missing from it gone.
     whole = complete() if complete is not None else True
+    agents = [a for a in found if recent(a, now)]
     state = read_state(env)
     rows = []
     for agent in agents:
@@ -268,11 +287,18 @@ def sweep(
         if whole:
             # Only a discovery that saw every open agent says one is gone:  a partial list (a page that failed, or
             # more agents than the cap) would forget what a bot was told, and tell it again next time.
-            open_ids = {str(a.get("session_id") or "") for a in agents}
+            # Every open agent counts, the stale ones too:  an agent past the window still holds its letter until the
+            # registry frees it, so forgetting the DM now would tell its bot again if it woke before then.
+            open_ids = {str(a.get("session_id") or "") for a in found}
             for sid in [k for k in state if k not in open_ids]:
                 del state[sid]  # the agent is gone; its letter is the registry's to free
         write_state(env, state)
-    return {"agents": len(agents), "complete": whole, "rows": rows}
+    return {
+        "agents": len(agents),
+        "stale": len(found) - len(agents),
+        "complete": whole,
+        "rows": rows,
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -289,7 +315,16 @@ def main(argv: list[str] | None = None) -> int:
     try:
         out = sweep(env, remote=remote, dry_run=args.dry_run)
     except Exception as exc:  # noqa: BLE001 - one line for the log, never a traceback with a key in it
-        print(json.dumps({"error": type(exc).__name__}))
+        # The Cursor API failure carries only an HTTP status and a code, never the response text.
+        print(
+            json.dumps(
+                {
+                    "error": type(exc).__name__,
+                    "status": getattr(exc, "status", None),
+                    "code": getattr(exc, "code", None),
+                }
+            )
+        )
         return 1
     print(json.dumps(out, sort_keys=True))
     return 1 if any("error" in row for row in out["rows"]) else 0
