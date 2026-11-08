@@ -1157,10 +1157,15 @@ def _build_seats() -> dict[str, dict[str, object]]:
     )
     # Where a seat runs, only where the fleet has said so.  A seat left out here reads as "place not known"
     # in Muster's grid:  that is the honest value, not a gap to fill by guessing.
+    #   CLAUDE:  Claude Code sessions run on the Mac (the Claude desktop) and on the server (EE, Nov 8).
     #   ZC:  its sessions live on both hosts (ZC, Nov 7:  the server's ZCode app drives its chat there,
     #        and the Mac desktop keeps local chats of its own).
+    #   MA:  "Muse Assist runs on a cloud VM" (its skills cover above);  the MA rules read the Mac only as
+    #        evidence, so the seat itself is not a Mac seat (EE, Nov 8).
     #   GROK-BOT:  "Grok Bot runs as Cursor cloud agents" (its not-applicable reasons above).
+    seats["CLAUDE"]["runsOn"] = ["mac", "server"]
     seats["ZC"]["runsOn"] = ["mac", "server"]
+    seats["MA"]["runsOn"] = ["vm"]
     seats["GROK-BOT"]["runsOn"] = ["cloud"]
     return seats
 

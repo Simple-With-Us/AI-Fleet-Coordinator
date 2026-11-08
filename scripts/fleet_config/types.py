@@ -371,8 +371,6 @@ class SeatManifest:
     uncovered: tuple[UncoveredSurface, ...] = ()
     # Where the seat's sessions run, as place words (mac, server, vm, cloud);  empty when the manifest does not say.
     runs_on: tuple[str, ...] = ()
-    # The seat this one mirrors, when it is a copy of another seat;  empty when it is not said to be one.
-    copy_of: str = ""
 
 
 @dataclass(frozen=True)
