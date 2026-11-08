@@ -1,6 +1,19 @@
 # Muster Server Route:  The `--from-muster` Entry
 
-**Spec version 5.**  Written by the CLAUDE seat (session AA) on November 7, 2026, from revision 9 of `design.md`, EE's eighth look and BB's answers from building the helper.  Versions 1 to 4 are kept beside it in the scratch folder.  **Frozen:**  everything except the parts marked OPEN.  **OPEN, gating Milestone 5:**  rule C (§8's reopen rule and its rule at non-server verifiers), the reopen record and recovery (§9), the final chain refusal store (§11), `finalRefusals` (§13) and the chain-refusal audit row (§14).  Section 17A lists what is wrong with them, unsolved.  Milestones 1 to 4 build only on frozen parts.  Any change to a frozen part is version 6 and needs a new review.  Where this spec and the design differ, this spec wins.
+**Spec version 5.1.**  Version 5.1 adds the six settled rulings from the independent review of BB's helper build, listed in the table below;  it changes frozen parts only where those rulings direct (the `--yes` step order among them).  Written by the CLAUDE seat (session AA) on November 7, 2026, from revision 9 of `design.md`, EE's eighth look and BB's answers from building the helper.  Versions 1 to 4 are kept beside it in the scratch folder.  **Frozen:**  everything except the parts marked OPEN.  **OPEN, gating Milestone 5:**  rule C (§8's reopen rule and its rule at non-server verifiers), the reopen record and recovery (§9), the final chain refusal store (§11), `finalRefusals` (§13) and the chain-refusal audit row (§14).  Section 17A lists what is wrong with them, unsolved.  Milestones 1 to 4 build only on frozen parts.  Any other change to a frozen part is version 6 and needs a new review.  Where this spec and the design differ, this spec wins.
+
+## Changes In Version 5.1
+
+From the independent review of BB's build, which used version 5 on `main` as the authority.  The rulings are settled.
+
+| # | Change | Where |
+| --- | --- | --- |
+| 1 | An acknowledgement with nothing held answers `closed: false`, `signedByCurrentKey: false` and both nulls;  every verifier branches on a null `helperTrustListVersion` first, and the rotation proof needs that version to equal K.  | §10, §13 |
+| 2 | A refusal's `helperTrustListVersion` is informational, never coverage:  `no_trust_list` with version K means a list exists and is not usable.  | §13 |
+| 3 | A stale resource-policy revision is `plan_refused` with reason `revision_stale`, not `internal_error`.  | §4, §12, §15 |
+| 4 | The `yes` rate step moves from Y1 to Y8b, under `ops-control.lock`, between the ledger read (Y8a) and the nonce append (Y8c), so only authenticated approvals that spend a nonce use the `yes` budget.  | §11, §12, §14, §15 |
+| 5 | Outcome `unknown` covers a Coolify GET sent without an observed answer;  the muster plan's redeploy `auditTarget` turns every code point outside printable ASCII into one `?`.  | §4, §13 |
+| 6 | The chain verb is not built yet:  `chain --yes` answers `not_built`, so the helper holds no list and every approval answers `no_trust_list`.  | §4, §12, §15, §16 |
 
 ## 0.  What Changes For BB's Helper Slice
 
@@ -19,7 +32,7 @@ Since version 4, from BB's answers and EE's eighth look:
 | 9 | Root readers of state files check the file's expected owner, not their own uid.  | §10, §11 |
 | 10 | An empty reopen record is accepted as no lines;  how the shared module is held equal is stated.  | §9, §10 |
 | 11 | The rule table's "When" column is exclusive;  §15 no longer lists `trust_list_changed` at C3;  refusals carry `helperTrustListVersion` or `null`.  | §8, §13, §15 |
-| 12 | **Wait for §17A before building:**  rule C's record conditions, the final-refusal store, `finalRefusals` and the chain-refusal audit row.  Until then the chain verb answers a rule C entry `chain_refused` with reason `reopen_unavailable` (non-final), records no refusal, and every acknowledgement carries `"finalRefusals":[]`.  | §8, §11, §13 |
+| 12 | **Wait for §17A before building:**  rule C's record conditions, the final-refusal store, `finalRefusals` and the chain-refusal audit row.  Until then the chain verb (once its slice lands;  before that it answers `not_built`, v5.1) answers a rule C entry `chain_refused` with reason `reopen_unavailable` (non-final), records no refusal, and every acknowledgement carries `"finalRefusals":[]`.  | §8, §11, §13 |
 
 Unchanged:  the command line, the verbs and modes, the approval text and its fields, the ledger, OPEN-1 to OPEN-5 as settled in version 3, and the check order.  The approval vectors keep their meaning, but their bytes change because the illustrative plan now has `argv[0]` as the helper resolves it on this server (`/usr/bin/systemctl`, for the user-scope `fleet-server-status.timer`).
 
@@ -95,9 +108,11 @@ This line goes in `/home/jay/.ssh/authorized_keys`, beside `fleet-ops-ctl`'s.  
 | `server` | `seat-inventory` | A platform the module knows | Signed result with the read | `mode_not_allowed` |
 | `server` | `update-status` | The existing receipt id | Signed result with the read | `mode_not_allowed` |
 | `muster` | `trust-list` | `current` | Signed acknowledgement | `mode_not_allowed` |
-| `muster` | `trust-list` | `chain` | `mode_not_allowed` | Accepts a chain (§8);  no device approval |
+| `muster` | `trust-list` | `chain` | `mode_not_allowed` | Accepts a chain (§8);  no device approval.  **Not built yet:**  `not_built` until the chain slice lands (below) |
 
 A scope, verb or target word not in this table (including the `mac` and `pm2` scopes and `server eavesdropper-status`) is `bad_command`;  a known verb with a mode the table does not allow is `mode_not_allowed`.
+
+**The chain verb is not built yet (v5.1).**  Until the chain slice lands, `muster trust-list chain --plan` answers `mode_not_allowed`, as the table says, and `muster trust-list chain --yes` answers the refusal `not_built` at P2:  before standard input is read, and before any rate step, lock, signature check or write, so it is not counted and writes no audit row.  Nothing else writes `muster-trust.json`, so the helper holds no list and the route stays inert:  every approval answers `no_trust_list` at Y2, and `muster trust-list current --plan` answers the acknowledgement with nothing held (§13).  §5's chain framing, the helper's use of §8, C1 to C5, the chain refusal body and the chain audit row describe the chain slice and take effect when it lands.
 
 **Plan commands (from `scripts/fleet-ops-control.py` on `main`, which is authoritative).**  The `--from-muster` branch calls the same `plan_request(ctx, config, scope, action, target)` and hashes what it returns, so these are that function's outputs, read from `main` at `96a7d33f3` (BB confirmed this on November 7).  Numbers in an argv are strings.
 
@@ -107,16 +122,18 @@ A scope, verb or target word not in this table (including the `mac` and `pm2` sc
 | `logs` | `[[JOURNALCTL] + ["--user"] (only for `scope` `user`) + ["-u", UNIT, "-n", "200", "--no-pager"]]`;  200 is `LOG_MAX_LINES` (`server_logs_commands`) | The unit |
 | `update`, system scope | `[["/usr/bin/sudo", "-n", "/usr/bin/systemctl", "start", "--no-block", "fleet-cli-git-update.service"]]`:  `update_command` allows only the update named `fleet-cli` with that unit, uses the fixed `UPDATE_SYSTEMCTL` and `SUDO` paths, adds `sudo -n` only when the helper is not running as uid 0, and first probes `sudo -n -l -- <that argv>` | The update's name |
 | `update`, user scope | `[[SYSTEMCTL, "--user", "start", "--no-block", UNIT]]`, `UNIT` being the update's unit (`_systemctl_argv`) | The update's name |
-| `redeploy` | `[["coolify", "GET", "/api/v1/deploy?uuid=UUID"]]`, the query built with `urllib.parse.urlencode`.  `coolify` is a literal pseudo-command:  `execute()` never runs it, and sends an HTTP GET to the Coolify base URL plus `commands[0][2]`, with the token read at run time and never in the plan | The application's name from the report row, with a trailing ` (SERVICE)` removed when the row names that service, capped at 120 characters;  `coolify resource` when the row has no name |
+| `redeploy` | `[["coolify", "GET", "/api/v1/deploy?uuid=UUID"]]`, the query built with `urllib.parse.urlencode`.  `coolify` is a literal pseudo-command:  `execute()` never runs it, and sends an HTTP GET to the Coolify base URL plus `commands[0][2]`, with the token read at run time and never in the plan | The application's name from the report row, with a trailing ` (SERVICE)` removed when the row names that service, capped at 120 characters;  `coolify resource` when the row has no name;  then, in the muster plan object, made printable ASCII (below) |
 | `resource-policy` | Not `fleet-ops-plan/1`:  the `fleet-resource-plan/1` object of §13, with `old` and `new` from `fleet_resource_control`'s `before` and `after` | The field name |
 
 `SYSTEMCTL` is the first of `/usr/bin/systemctl` and `/bin/systemctl` that exists as a file (`_systemctl`), and `JOURNALCTL` the first of `/usr/bin/journalctl` and `/bin/journalctl` (`_journalctl`);  if neither exists, the first is used.  **So `argv[0]` is resolved on the host, and the plan hash is server-local:  the app signs the `planSHA256` that the server's own `--plan` returned (§13's plan check), and never a hash it computed itself.**
 
-**Plan-time refusals.**  The shared planner refuses with `plan_refused`.  Its `reason` is the planner's own `error_code` when it gives one (on `main`:  `update_busy`, `authorization_unavailable`, `update_route_unavailable`, `update_executable_unavailable`, `unit_status_unavailable`, `unit_status_invalid`, `unit_unavailable`, `unit_type_unsupported`), and otherwise `allowlist_miss` (the target, its action or the redeploy permission is not on the helper's root-owned allowlist) or `report_stale` (for `redeploy`, `server-status.json` is missing, unsafe, older than 45 minutes (`STATUS_MAX_AGE_SECONDS`), does not list the uuid, or lists a row that cannot be redeployed).
+**The redeploy `auditTarget` in the muster plan (v5.1).**  The plan's canonical bytes allow only printable ASCII (§2), and an application name can hold other characters.  So when the helper builds the muster plan object for `redeploy`, it starts from the value above (the application name from the report row, a trailing ` (SERVICE)` removed when the row names that service, capped at 120 characters, or `coolify resource` when the row has no name), and then replaces every code point outside `0x20` to `0x7E` with one `?`:  one `?` per code point, with no collapsing of runs and no trimming.  The cap comes first, so the result is never longer than 120 characters.  For example, `Café App` becomes `Caf? App`.  This applies only when the muster plan object is built;  the existing `--from-ssh` route's `audit_target` is unchanged.
+
+**Plan-time refusals.**  The shared planner refuses with `plan_refused`.  Its `reason` is the planner's own `error_code` when it gives one (on `main`:  `update_busy`, `authorization_unavailable`, `update_route_unavailable`, `update_executable_unavailable`, `unit_status_unavailable`, `unit_status_invalid`, `unit_unavailable`, `unit_type_unsupported`), and otherwise `allowlist_miss` (the target, its action or the redeploy permission is not on the helper's root-owned allowlist), `report_stale` (for `redeploy`, `server-status.json` is missing, unsafe, older than 45 minutes (`STATUS_MAX_AGE_SECONDS`), does not list the uuid, or lists a row that cannot be redeployed), or `revision_stale` (for `resource-policy`, the saved policy's revision is no longer the one the target names, because the policy changed since it was read;  `fleet_resource_control` refuses this without an error code, so before v5.1 it would have been `internal_error`).  No other reason is used.
 
 ## 5.  Standard Input
 
-**Framing.**  Read to end of file.  The limit is 4,096 bytes, or 65,536 bytes for `muster trust-list chain --yes`;  the helper reads at most limit + 1 bytes and refuses `input_too_large` beyond the limit.  Children keep `stdin=DEVNULL`.  A sender splits a chain into consecutive requests, each starting at the version the helper holds plus one.
+**Framing.**  Read to end of file.  The limit is 4,096 bytes, or 65,536 bytes for `muster trust-list chain --yes` (once the chain slice lands;  until then that request is `not_built` at P2 and its input is not read, §4);  the helper reads at most limit + 1 bytes and refuses `input_too_large` beyond the limit.  Children keep `stdin=DEVNULL`.  A sender splits a chain into consecutive requests, each starting at the version the helper holds plus one.
 
 **Parsing.**  Strict UTF-8, exactly one JSON object, `NaN` and infinities refused, duplicate keys refused, unknown keys refused, every value of the stated type and pattern, every string printable ASCII.  For a chain, every entry must have exactly the `body`, `ownerSignature` and `countersignatures` keys and every body field of §8 with its type;  structural checks on entries happen here.  Any failure is `bad_input`.  **Formatting and key order of the input do not matter:**  the helper parses the document and works from the values, and canonical bytes are computed by the helper wherever a hash or signature needs them.
 
@@ -133,7 +150,7 @@ A scope, verb or target word not in this table (including the `mac` and `pm2` sc
 | --- | --- | --- |
 | `jobId` | `[a-z0-9]{1,26}` | |
 | `jobNonce` | `[0-9a-f]{32}` | Must differ from `approvalNonce` (`bad_input`) |
-| `approvalNonce` | `[0-9a-f]{32}` | Ledger, Y8 |
+| `approvalNonce` | `[0-9a-f]{32}` | Ledger, Y8a and Y8c |
 | `host` | `[A-Za-z0-9._@-]{1,128}` | Must equal `server`, Y3 (`field_mismatch`) |
 | `action` | `[A-Za-z0-9._@-]{1,128}` | Must equal the command's verb, Y3 |
 | `target` | `[A-Za-z0-9._@-]{1,128}` | Must equal the command's target, Y3 |
@@ -264,7 +281,7 @@ Everything in this section is the version 4 proposal, kept so the problems in §
 3. Writes it to a temporary file in `/etc/muster` (`O_CREAT | O_EXCL | O_NOFOLLOW`, 0644), `fsync`s it, renames it over the history, and `fsync`s `/etc/muster`.  Then the same for `owner.pub`.  Each rename is durable before the next begins.
 4. `muster-agent repin --resume` handles the state where the history's open entry names a key other than `owner.pub`'s:  it prints that key's full fingerprint, asks the owner to confirm it is the new key, and writes `owner.pub` from that entry as in step 3.  In any other state it changes nothing and says so.
 
-**Muster's side.**  Muster offers a rotation only when the server has acknowledged every version it signed, then shows N = K + 1 and from that moment signs nothing with the old key.  It signs version N with the new key only after an acknowledgement shows `signedByCurrentKey: false` for version K, which proves `repin` has run.
+**Muster's side.**  Muster offers a rotation only when the server has acknowledged every version it signed, then shows N = K + 1 and from that moment signs nothing with the old key.  It signs version N with the new key only after an acknowledgement shows `signedByCurrentKey: false` with `helperTrustListVersion` equal to K, which proves `repin` has run.  An acknowledgement whose `helperTrustListVersion` is `null` (nothing held, §13) never counts as that proof, whatever its `signedByCurrentKey` says.
 
 On every approval (Y2) and in every acknowledgement, the stored list must be signed by the current key;  a pre-rotation list gives `no_trust_list` to approvals and `signedByCurrentKey: false` in acknowledgements until a list of version N or later arrives.
 
@@ -274,7 +291,7 @@ On every approval (Y2) and in every acknowledgement, the stored list must be sig
 
 **Ledger.**  `muster-nonces.jsonl` in that directory, 0600.  One canonical JSON line per used approval nonce, `{"approvalNonce","deviceId","expiresAt","jobId","recordedAt"}`, then a line feed.  The job nonce is `muster-exec`'s.  For `resource-policy` the helper checks and appends before calling `fleet_resource_control`, which does not touch the ledger.
 
-**Durability.**  Under `ops-control.lock` at Y8:  refuse `replayed_nonce` if the nonce is on any line;  otherwise append, flush, `fsync` (and the directory if the file was just created), and only then continue.  The nonce is spent even if Y9 refuses or the run fails.
+**Durability.**  Under `ops-control.lock` at Y8 (§12):  at Y8a, refuse `replayed_nonce` if the nonce is on any line;  at Y8b, take the `yes` rate step, which refuses `rate_limited` without spending the nonce;  only then, at Y8c, append, flush, `fsync` (and the directory if the file was just created), and only then continue.  The nonce is spent even if Y9 refuses or the run fails.
 
 **The final line (OPEN-3).**  If the file does not end with a line feed, the helper looks at the fragment after the last line feed.  A fragment that parses as a whole ledger line was written in full:  the helper appends a line feed, `fsync`s, writes a ledger-repair row with result `completed`, and continues, so that nonce stays spent.  A fragment that does not parse is the remains of an append that never finished its `fsync`, so no action ran on it:  the helper truncates to the last line feed, `fsync`s, writes a ledger-repair row with result `repaired`, and continues.  Any other line that does not parse is `ledger_corrupt`:  every approval is refused, without a row, until the file is repaired in a shell.
 
@@ -290,12 +307,12 @@ On every approval (Y2) and in every acknowledgement, the stored list must be sig
 
 - **P0.**  The state directory and the helper key (§11);  `helper_key_missing`, unsigned.
 - **P1.**  `/etc/muster` (§10), the reopen record included when present, read once into memory for this request;  `pin_unsafe`.
-- **P2.**  Command line (§3, §4);  `bad_command`, then `mode_not_allowed`.
+- **P2.**  Command line (§3, §4);  `bad_command`, then `mode_not_allowed`, then `not_built` (§4:  `muster trust-list chain --yes` until the chain slice lands).
 - **P3.**  Standard input (§5);  `input_too_large`, then `bad_input`.
 
 Requests refused at P0 to P3 are not counted by the rate limits;  each is refused before it can reach a lock, a signature check or an action.
 
-**Rate limits.**  Counted at Y1, R1, C1 and K1.
+**Rate limits.**  Counted at Y8b, R1, C1 and K1.  Before v5.1 the `yes` class was counted at Y1;  it now waits until the approval has verified and is about to spend its nonce.
 
 | Class | Requests | Key | Spacing Per Key | Hourly Cap Per Class |
 | --- | --- | --- | --- | --- |
@@ -307,29 +324,32 @@ Requests refused at P0 to P3 are not counted by the rate limits;  each is refuse
 - **Times** are integer milliseconds since the epoch, from the same float clock as §7, rounded down.
 - **Spacing:**  a request passes when at least the spacing has passed since the last counted request with its key (`now − last ≥ spacing`;  exactly 5 seconds passes).
 - **The hour** is sliding and inclusive:  the cap counts the class's requests with `now − at ≤ 3,600,000`, so a request exactly 3,600 seconds old still counts.  The cap is per class, across every key.
-- **What counts:**  every request that passes the rate step, whatever happens after it.  A request refused `rate_limited` is not counted.
-- **The file:**  `/home/jay/.local/state/fleet-tools/muster-rate.json`, the canonical JSON of `{"contract":"muster-rate/1","events":[[class,key,milliseconds],…]}`, oldest first.  Every update drops events with `now − at > 3,600,000` and is written by a temporary file and `rename` (no `fsync`:  a lost update only forgets recent requests).  A file with more than 810 events, events out of order, or that fails §11's checks or does not parse, is `state_unsafe`, and stays so until repaired in a shell.
-- **The lock:**  `/home/jay/.local/state/fleet-tools/muster-rate.lock`, an exclusive `flock`, never `ops-control.lock`, and never held while taking another lock.  The helper waits for it at most 2 seconds, then answers `rate_limited` without counting.
-- **Residual:**  an exploited `muster-exec` can spend a class's hourly cap, which delays the owner's own requests.  It can already withhold every request, so this adds no new power.
+- **What counts:**  every request that passes the rate step, whatever happens after it.  A request refused `rate_limited` is not counted.  For `yes` the rate step is Y8b, under `ops-control.lock`, so nothing before Y8b uses the `yes` budget:  `bad_signature`, `unknown_device`, `field_mismatch`, `no_trust_list`, `state_unsafe`, `clock_unsynced`, `window_too_long`, `expired`, `not_yet_valid`, `action_busy`, `trust_list_changed`, `ledger_corrupt`, `replayed_nonce` and `internal_error` before Y8b never count.  A captured approval replayed any number of times never counts (it is refused at Y8a or earlier), and junk can never lock the owner out.  Everything after Y8c counts, because it spent a nonce:  `plan_mismatch` at Y9 and a failed run at Y10 included.  A fault at Y8c is `internal_error` (Faults, below) and its Y8b event stays counted;  only an approval that verified can reach it.
+- **The file:**  `/home/jay/.local/state/fleet-tools/muster-rate.json`, the canonical JSON of `{"contract":"muster-rate/1","events":[[class,key,milliseconds],…]}`, oldest first.  Every update drops events with `now − at > 3,600,000` and is written by a temporary file and `rename` (no `fsync`:  a lost update only forgets recent requests), except that a `yes` event is made durable at Y8b before its nonce is spent.  A file with more than 810 events, events out of order, or that fails §11's checks or does not parse, is `state_unsafe`, and stays so until repaired in a shell.
+- **The lock:**  `/home/jay/.local/state/fleet-tools/muster-rate.lock`, an exclusive `flock` of its own (never `ops-control.lock` itself), and never held while taking another lock.  The lock order is the same everywhere:  `ops-control.lock`, then the rate lock.  Y8b takes the rate lock while holding `ops-control.lock`;  R1 and K1 (`plan` and `current`), and C1, only ever take the rate lock, and release it before any other lock is taken.  The helper waits for it at most 2 seconds, then answers `rate_limited` without counting (at Y8b, with the nonce unspent).
+- **Residual:**  `plan` and `current` requests are unsigned, so their rate steps cannot be authenticated:  anyone who can reach the route, an exploited `muster-exec` included, can use up the `plan` and `current` budgets, which delays the owner's own plans and acknowledgements (and, once the chain slice lands, the same holds for the `chain` budget at C1).  Nobody can use up the `yes` budget that way:  it counts only approvals that verified and are about to spend their nonce, and each nonce is spent once, so neither junk nor a replayed capture makes the owner's real approval `rate_limited`.  An exploited `muster-exec` can already withhold every request, so the `plan` and `current` exposure adds no new power.
 
 **`server … --yes`, an approval (OPEN-4):**
 
-- **Y1.**  Rate limit;  `rate_limited`.
+- **Y1.**  No rate step (v5.1):  the `yes` class is counted at Y8b, once the approval has verified, so nothing before Y8b uses its budget.  The step keeps its name so later steps keep theirs.
 - **Y2.**  Read the stored list without a lock (it changes only by `rename`), noting its body hash (`state_unsafe`);  none, or not signed by the current owner key, is `no_trust_list`.
 - **Y3.**  `host`, `action`, `target` equal `server`, the verb, the target;  `field_mismatch`.
 - **Y4.**  `deviceId` names a device on the stored list, and the list is not closed;  `unknown_device`.
 - **Y5.**  Signature by that device's `approvalKey`;  `bad_signature`.  From here the fields are verified.
 - **Y6.**  Clock synchronised (`clock_unsynced`), then the window (§7).
 - **Y7.**  Take `ops-control.lock` (for `logs` too;  `action_busy`), read the stored list again, and refuse `trust_list_changed` if its body hash differs from Y2's.
-- **Y8.**  Ledger (§11);  `ledger_corrupt`, `replayed_nonce`.  From here the nonce is spent.
+- **Y8.**  Under `ops-control.lock`, in this order:
+  - **Y8a.**  Read the ledger (§11);  `ledger_corrupt`, then `replayed_nonce`.
+  - **Y8b.**  Rate check and record for class `yes`, key `verb target`, taking the rate lock while holding `ops-control.lock` (Rate limits, above).  Over the hourly cap or inside the spacing is `rate_limited`, and the nonce is not spent:  the same approval may be retried inside its two-minute window.  Otherwise the event is recorded and made durable (the temporary file `fsync`ed, renamed, and the directory `fsync`ed) before Y8c.
+  - **Y8c.**  Append the nonce and `fsync` it (§11).  From here the nonce is spent.
 - **Y9.**  Build the plan with the shared function and compare its SHA-256 with `planSHA256`;  `plan_mismatch` and an audit row.  For `resource-policy` this and the revision comparison happen inside `fleet_resource_control` under `broker_lock`.
 - **Y10.**  Run, write the audit row, answer with a signed result (exit 0 done or submitted, 1 failed or unknown).
 
-**Faults.**  Any unexpected failure before Y8 (an exception, a missing file the steps above do not name) is the refusal `internal_error`, and nothing ran.  After Y8 the nonce is spent, so a fault is never a refusal:  it is a signed result with outcome `failed` and a `detail` naming it, with its audit row.  That covers a plan that cannot be built at Y9 (the planner refusing with a §4 reason, a redeploy uuid gone, an Infisical read error), which reads `detail` `plan_refused: <reason>` or the fault's name.
+**Faults.**  Any unexpected failure before Y8c has spent the nonce (an exception, a missing file the steps above do not name) is the refusal `internal_error`, and nothing ran.  After Y8c the nonce is spent, so a fault is never a refusal:  it is a signed result with outcome `failed` and a `detail` naming it, with its audit row.  That covers a plan that cannot be built at Y9 (the planner refusing with a §4 reason, including `revision_stale` when the saved resource policy changed after the approved plan was built, a redeploy uuid gone, an Infisical read error), which reads `detail` `plan_refused: <reason>` or the fault's name.
 
 **`server … --plan`:**  R1 rate limit (`rate_limited`);  R2 build the plan or run the read, as today (`broker_lock` for `resource-policy` only;  `plan_refused` with its reason, or `internal_error`);  R3 signed plan or signed result (exit 0).
 
-**`muster trust-list chain --yes`:**
+**`muster trust-list chain --yes`, once the chain slice lands (until then it is `not_built` at P2, §4):**
 
 - **C1.**  Rate limit;  `rate_limited`.
 - **C2.**  Read the stored list without a lock, noting its body hash (§11;  `state_unsafe`);  none means the chain must begin at version 1.
@@ -357,9 +377,11 @@ Requests refused at P0 to P3 are not counted by the rate limits;  each is refuse
 | `refusal`, chain | `contract`, `verified` `false`, `chain` (`{"version","entrySHA256","final"}` for the refused entry at C3, with `final` always `false` until §17A is settled;  `null` for any other refusal), `errorCode`, `reason` (the §8 reason for `chain_refused`, else `null`), `helperTrustListVersion`, `refusedAt` |
 | `ack` | `contract` `muster-signed-ack/1`, `helperTrustListVersion` (or `null`), `closed`, `signedByCurrentKey`, `trustListSHA256` (or `null`), `finalRefusals` (OPEN;  always `[]` until §17A is settled), `at` |
 
-**`helperTrustListVersion`** in every answer is the version of the stored list the helper read for this request, or `null` when it holds none or had not read it (a refusal at P1 to P3 or at a rate step) or could not read it (`state_unsafe`).
+**`helperTrustListVersion`** in every answer is the version of the stored list the helper read for this request, or `null` when it holds none or had not read it (a refusal at P1 to P3, or at R1, C1 or K1;  a `yes` refusal at Y8b has read it) or could not read it (`state_unsafe`).  It reports the stored list's version even when that list is not signed by the current key.  A phone reads it as information, never as coverage:  a `no_trust_list` refusal that carries version K means a list of version K exists and is not usable (for example, it is signed by a key that is no longer current), not that version K covers the request.
 
-**Outcomes:**  `done` (it ran and finished as planned);  `submitted` (it was handed to a service that finishes later, such as a Coolify deploy or a `--no-block` start);  `failed` (it did not do what was planned, or a fault came after Y8);  `unknown` (it was started but its end could not be observed, such as a timeout or a lost child status);  `planned` (a read or a plan, no change).  The phone reads `unknown` as "Started;  result not known".
+**An acknowledgement with nothing held (v5.1).**  When the helper holds no stored list, an acknowledgement answers `helperTrustListVersion: null`, `trustListSHA256: null`, `closed: false` and `signedByCurrentKey: false`.  Every verifier branches on `helperTrustListVersion == null` first, before it reads any other field of an acknowledgement:  a null version means only that nothing is held, so that acknowledgement's `closed` and `signedByCurrentKey` carry no information, and in particular its `signedByCurrentKey: false` is never evidence that `repin` ran (§10).  The same holds for `muster-pub`'s heartbeat, which has the same body.
+
+**Outcomes:**  `done` (it ran and finished as planned);  `submitted` (it was handed to a service that finishes later, such as a Coolify deploy or a `--no-block` start);  `failed` (it did not do what was planned, or a fault came after Y8c);  `unknown` (it was started but its end could not be observed, such as a timeout, a lost child status, or a Coolify GET for `redeploy` that was sent without an observed answer);  `planned` (a read or a plan, no change).  The phone reads `unknown` as "Started;  result not known".
 
 `muster-pub`'s heartbeat has the same body as `ack`, signed with its own key under the same prefix.
 
@@ -377,8 +399,8 @@ Rows go to `/home/jay/.local/state/fleet-tools/ops-audit.jsonl`, always appended
 
 | Request | Row |
 | --- | --- |
-| Approval | One helper row once Y8 has appended its nonce:  the Y9 `plan_mismatch` refusal, the Y10 outcome, or a fault after Y8 (`failed`).  This holds for `resource-policy` too;  `fleet_resource_control` writes its own rows in its own file as it does today.  Refusals before Y8 (including `clock_unsynced`, `expired`, `action_busy`, `trust_list_changed`, `ledger_corrupt`, `replayed_nonce` and `internal_error`) write none.  So each `approvalNonce` gets at most one helper row, ever, and replaying an approval adds no row.  |
-| Chain | One row at C5 when accepted (with the new version and body hash).  A refused chain writes none until §17A is settled.  |
+| Approval | One helper row once Y8c has appended its nonce:  the Y9 `plan_mismatch` refusal, the Y10 outcome, or a fault after Y8c (`failed`).  This holds for `resource-policy` too;  `fleet_resource_control` writes its own rows in its own file as it does today.  Refusals before Y8c (including `clock_unsynced`, `expired`, `action_busy`, `trust_list_changed`, `ledger_corrupt` and `replayed_nonce` at Y8a, `rate_limited` at Y8b, and `internal_error`) write none;  an approval refused `rate_limited` and retried gets its one row only when a retry spends its nonce.  So each `approvalNonce` gets at most one helper row, ever, and replaying an approval adds no row.  |
+| Chain | One row at C5 when accepted (with the new version and body hash), once the chain slice lands;  `not_built` writes none.  A refused chain writes none until §17A is settled.  |
 | Ledger repair | One row when a final fragment is completed or truncated (§11).  |
 | `--plan`, `current`, reads | None.  |
 
@@ -391,24 +413,25 @@ Rows go to `/home/jay/.local/state/fleet-tools/ops-audit.jsonl`, always appended
 | `helper_key_missing` | P0, unsigned (includes an unsafe state directory) |
 | `pin_unsafe` | P1 only (includes a record that fails §9's settled format) |
 | `bad_command`, `mode_not_allowed` | P2 |
+| `not_built` | P2, after `mode_not_allowed`:  `muster trust-list chain --yes` until the chain slice lands (§4).  Not counted, no input read, no audit row |
 | `input_too_large`, `bad_input` | P3 (`bad_input` includes equal nonces, non-ASCII strings and malformed chain entries) |
-| `rate_limited` | Y1, R1, C1, K1, including a rate lock held more than 2 seconds |
+| `rate_limited` | Y8b (verified, the nonce not spent), R1, C1, K1, including a rate lock held more than 2 seconds |
 | `state_unsafe` | Y2, C2, K2, or any state file (§11, §12) |
 | `no_trust_list` | Y2 |
 | `field_mismatch`, `unknown_device`, `bad_signature` | Y3, Y4, Y5 |
 | `clock_unsynced`, `window_too_long`, `not_yet_valid`, `expired` | Y6 |
 | `action_busy`, `trust_list_changed` | Y7, C4 |
-| `ledger_corrupt`, `replayed_nonce` | Y8 |
+| `ledger_corrupt`, `replayed_nonce` | Y8a |
 | `plan_mismatch` | Y9 |
-| `plan_refused` | R2, with `reason` the planner's own `error_code` (§4), or `allowlist_miss` or `report_stale` |
-| `internal_error` | Any step before Y8, or R2, C1 to C5, K1 to K3 |
+| `plan_refused` | R2, with `reason` the planner's own `error_code` (§4), or `allowlist_miss`, `report_stale` or `revision_stale` |
+| `internal_error` | Any step before Y8c spends the nonce, or R2, C1 to C5, K1 to K3 |
 | `chain_refused` | C3, `reason` one of `version_gap`, `previous_hash`, `owner_key`, `owner_signature`, `duplicate_device`, `countersignature`, `closed_rule`, `first_rule`, `services_changed`, `server_keys_removed`, `reopen_unavailable` (until §17A is settled), and, in the OPEN proposal, `reopen_unrecorded`, `reopen_tag`, `reopen_device` |
 
 Exit status:  0 planned, submitted, done or acknowledged;  1 failed or unknown;  2 refused.
 
 ## 16.  Test Vectors
 
-Generated by `make_vectors_v5.py` with `cryptography` 46.0.5 under `/usr/bin/python3 -I` (Python 3.14.4).  Every vector was checked by the script's reference checker before it was written, and `check_vectors_v5.py` re-checks the printed vectors from this file alone.  **The rule C, reopen-record and recovery vectors (T4, T5's last step, T8, T15, T18, T20, T21, T22, R1 to R5) illustrate the OPEN proposal of §9 and will change when §17A is settled;  under version 5 as frozen, every rule C entry is refused `reopen_unavailable`.**  **Every key below is a test key derived from a fixed label (the whole bold heading, parenthesis included) and is used nowhere else.**  A harness resets the ledger between approval vectors, because several reuse one approvalNonce.
+Generated by `make_vectors_v5.py` with `cryptography` 46.0.5 under `/usr/bin/python3 -I` (Python 3.14.4).  Every vector was checked by the script's reference checker before it was written, and `check_vectors_v5.py` re-checks the printed vectors from this file alone.  **The rule C, reopen-record and recovery vectors (T4, T5's last step, T8, T15, T18, T20, T21, T22, R1 to R5) illustrate the OPEN proposal of §9 and will change when §17A is settled;  under version 5 as frozen, every rule C entry is refused `reopen_unavailable`.**  **Every key below is a test key derived from a fixed label (the whole bold heading, parenthesis included) and is used nowhere else.**  A harness resets the ledger and the rate file between approval vectors, because several reuse one approvalNonce, and one `verb target` at one clock.
 
 ### Test Keys
 
@@ -1346,7 +1369,7 @@ How `muster-agent reopen --version 4 --device d-f4e396a67ceefe6a551abbc0` prints
 
 ### Chain Vectors
 
-Each is `muster trust-list chain --yes` with the lists named, under the pin, history and record above.  The reason is the first failing check in §8's numbered order;  each bad list fails exactly one check.  **The rule C rows (T4, T5, T8, T15, T18, T20, T21 and T22) give the OPEN proposal's outcomes.  A Milestone 1 to 4 builder skips them, or expects `chain_refused` with reason `reopen_unavailable` for each rule C entry (T5 is refused at its fourth entry), as T23 below shows.**  `Final` gives the version 4 proposal's classification, which is OPEN (§17A, A2);  version 5 records and reports nothing as final.
+Each is `muster trust-list chain --yes` with the lists named, under the pin, history and record above.  The reason is the first failing check in §8's numbered order;  each bad list fails exactly one check.  **The rule C rows (T4, T5, T8, T15, T18, T20, T21 and T22) give the OPEN proposal's outcomes.  A Milestone 1 to 4 builder skips them, or expects `chain_refused` with reason `reopen_unavailable` for each rule C entry (T5 is refused at its fourth entry), as T23 below shows.**  `Final` gives the version 4 proposal's classification, which is OPEN (§17A, A2);  version 5 records and reports nothing as final.  Until the chain slice lands, the helper answers every chain request `not_built` (§4), so a helper harness runs these against the chain slice;  the other verifiers check them now.
 
 | Vector | Held Before | Chain | Expected | Final | Why |
 | --- | --- | --- | --- | --- | --- |
@@ -1870,7 +1893,7 @@ stdin bytes (533 bytes):
 
 ### Cases Without Fixed Bytes
 
-A harness builds these:  `pin_unsafe` (owner.pub group-writable, owned by jay, or a symbolic link;  the same for the reopen record when it exists, or a record line that does not match its pattern);  `helper_key_missing` (the key file absent, a symbolic link, mode 0644, or unparseable);  `input_too_large` (4,097 bytes);  `bad_input` (a duplicate key, `NaN`, a non-ASCII string, or a chain entry missing a body field);  a valid approval whose stdin keys are in another order with extra spaces (accepted, since formatting does not matter);  `state_unsafe` (`muster-nonces.jsonl` mode 0644, `muster-trust.json` a symbolic link or empty, or an unparseable rate file);  a torn final ledger fragment (truncated, then the approval proceeds);  a complete final ledger line without a line feed (a line feed is appended, and that nonce stays spent);  a corrupt middle line (`ledger_corrupt`);  `rate_limited` (two identical requests within the spacing, the class's hourly cap reached, or `muster-rate.lock` held elsewhere for more than 2 seconds);  `trust_list_changed` (the stored list replaced between Y2 and Y7);  a replay of V1 after the ledger has pruned its nonce (`expired` at Y6, and no audit row);  `clock_unsynced` (V1 with the clock reported unsynchronised, and no audit row);  V1 at `now` = 21:02:00.001 (`expired`);  rate boundaries (a second `plan` request exactly 5 seconds after the first passes, at 4.999 seconds is `rate_limited`;  an event exactly 3,600 seconds old still counts;  a rate file with 811 events is `state_unsafe`);  `plan_refused` (`update_busy` with the update's unit activating;  `report_stale` with a 46-minute-old report);  an unsafe state directory (mode 0755:  `helper_key_missing`);  a fault after Y8 (a signed result with outcome `failed` and one audit row);  an empty reopen record (accepted as no lines);  a record whose last line has no line feed (`pin_unsafe`).
+A harness builds these:  `pin_unsafe` (owner.pub group-writable, owned by jay, or a symbolic link;  the same for the reopen record when it exists, or a record line that does not match its pattern);  `helper_key_missing` (the key file absent, a symbolic link, mode 0644, or unparseable);  `input_too_large` (4,097 bytes);  `bad_input` (a duplicate key, `NaN`, a non-ASCII string, or a chain entry missing a body field);  a valid approval whose stdin keys are in another order with extra spaces (accepted, since formatting does not matter);  `state_unsafe` (`muster-nonces.jsonl` mode 0644, `muster-trust.json` a symbolic link or empty, or an unparseable rate file);  a torn final ledger fragment (truncated, then the approval proceeds);  a complete final ledger line without a line feed (a line feed is appended, and that nonce stays spent);  a corrupt middle line (`ledger_corrupt`);  `rate_limited` (two `plan` requests for one `verb target` within the spacing, two different approvals for one `verb target` within 2 seconds, the class's hourly cap reached, or `muster-rate.lock` held elsewhere for more than 2 seconds);  a `yes` approval refused `rate_limited` at Y8b (its nonce not in the ledger afterwards, and no audit row), then retried inside its window and accepted;  60 approvals with bad signatures, then V1 (accepted:  none of the 60 used the `yes` budget);  V1 replayed 60 times after it ran (`replayed_nonce` each time, and a fresh approval for the same `verb target` 2 seconds after V1 is accepted);  `not_built` (`muster trust-list chain --yes`, before its input is read);  the acknowledgement with nothing held (`closed` false, `signedByCurrentKey` false, `helperTrustListVersion` and `trustListSHA256` null);  `plan_refused` with `revision_stale` (a `resource-policy` target naming a revision older than the saved policy's);  a redeploy row named `Café App` (the muster plan's `auditTarget` is `Caf? App`, and the `--from-ssh` route's `audit_target` is unchanged);  `trust_list_changed` (the stored list replaced between Y2 and Y7);  a replay of V1 after the ledger has pruned its nonce (`expired` at Y6, and no audit row);  `clock_unsynced` (V1 with the clock reported unsynchronised, and no audit row);  V1 at `now` = 21:02:00.001 (`expired`);  rate boundaries (a second `plan` request exactly 5 seconds after the first passes, at 4.999 seconds is `rate_limited`;  an event exactly 3,600 seconds old still counts;  a rate file with 811 events is `state_unsafe`);  `plan_refused` (`update_busy` with the update's unit activating;  `report_stale` with a 46-minute-old report);  an unsafe state directory (mode 0755:  `helper_key_missing`);  a fault after Y8c (a signed result with outcome `failed` and one audit row);  an empty reopen record (accepted as no lines);  a record whose last line has no line feed (`pin_unsafe`).
 
 ## 17.  Open
 
@@ -1921,3 +1944,9 @@ EE's eighth look, as it touches this spec, and BB's answers.
 | Corrections before merge (EE's check of PR 1484, and BB) | The `clock_unsynced` test is normative (§7:  `adjtimex(modes=0)`, `TIME_ERROR`, `STA_UNSYNC`, `maxerror` above 1 second, or a failed call), with two unverified points left in 17B.3;  §16 says Milestone 1 to 4 builders skip the rule C rows or expect `reopen_unavailable`, and adds vector T23 for it;  V11 to V16 state their audit rows, and V11 and V12, being accepted, get one.  The version stays 5:  these settle text the review found unclear, and change no frozen rule.  |
 | Sentry on PR 1484:  plan commands diverge from `scripts/fleet-ops-control.py` | Confirmed against `main` at `96a7d33f3`, and BB confirmed `main` is authoritative:  `--user` only for user-scope units, `SYSTEMCTL` and `JOURNALCTL` resolved on the host, redeploy as `["coolify","GET",…]`, and the update argv exactly as `update_command` builds it.  §4 now quotes `main`, adds that the app signs the server's own plan hash, and takes `plan_refused` reasons from the planner's own error codes.  The illustrative plan's bytes did not change (the timer is user-scope and `/usr/bin/systemctl` exists here).  |
 | Every vector | EE's v4 run held.  v5's approval vectors are re-signed over the new plan with the same outcomes, and `check_vectors_v5.py` re-checks everything.  |
+| Independent review of BB's build:  an acknowledgement with nothing held left its fields open, and a null-version acknowledgement could pass as proof that `repin` ran | Fixed in v5.1 (§13, §10):  nothing held answers `closed: false`, `signedByCurrentKey: false` and both nulls;  every verifier branches on a null `helperTrustListVersion` first;  the rotation proof needs that version to equal K.  |
+| Independent review of BB's build:  a refusal's `helperTrustListVersion` could be read as coverage | Fixed in v5.1 (§13):  the version is still reported, as information only;  `no_trust_list` with version K means a list exists and is not usable.  |
+| Independent review of BB's build:  a stale resource-policy revision fell through to `internal_error` | Fixed in v5.1 (§4, §12, §15):  `plan_refused` with reason `revision_stale`;  the other reasons are unchanged.  |
+| Independent review of BB's build (security):  the `yes` rate step ran before the signature check, so 60 wrongly signed requests could make the owner's real approval `rate_limited` for an hour | Fixed in v5.1 (§12, §11, §14, §15):  the `yes` class moves to Y8b, under `ops-control.lock`, after the ledger read (Y8a) and before the nonce append (Y8c);  a rate-limited approval keeps its nonce unspent;  the rate parameters and the lock order are unchanged, and the residual note says plainly that only the unsigned `plan` and `current` budgets can be used up by others.  |
+| Independent review of BB's build:  outcome `unknown` for an unanswered Coolify GET, and a redeploy `auditTarget` that could break canonical bytes | Fixed in v5.1 (§13, §4):  `unknown` covers a GET sent without an observed answer;  the muster plan's `auditTarget` turns each code point outside `0x20` to `0x7E` into one `?`, after the 120-character cap, leaving the `--from-ssh` route unchanged.  |
+| Independent review of BB's build:  the spec described `trust-list chain` as available before its slice is built | Fixed in v5.1 (§4, §5, §12, §14, §15, §16):  `chain --plan` is `mode_not_allowed` and `chain --yes` is the new `not_built` at P2, so the helper holds no list and every approval answers `no_trust_list`.  |
