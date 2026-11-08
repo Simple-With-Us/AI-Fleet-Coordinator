@@ -661,7 +661,7 @@ struct FleetGridView: View {
                         .font(.system(size: 12, weight: .semibold, design: .monospaced))
                     Text(location.chip)
                         .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(location == .onTheMac ? Color.secondary : Color.orange)
+                        .foregroundStyle(location.chipTone == .plain ? Color.secondary : Color.orange)
                         .padding(.horizontal, 5)
                         .padding(.vertical, 1)
                         .background(Color.secondary.opacity(0.12), in: Capsule())
