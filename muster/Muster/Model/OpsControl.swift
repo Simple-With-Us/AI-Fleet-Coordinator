@@ -129,9 +129,15 @@ enum OpsAction: Equatable {
     /// `server eavesdropper-status server`,  run on the server:  the server eavesdropper's
     /// status,  reduced to names,  counts,  tokens and times,  read only and `--plan` only.
     case eavesdropperStatus
+    /// `server unit-status UNIT`,  run on the server:  one listed unit's systemd state
+    /// (active state,  sub-state,  result and times),  read only and `--plan` only.  The unit
+    /// is an allowlisted server unit or a `watch` unit;  `OpsUnitStatusReader` checks that.
+    case unitStatus(unit: String)
 
     /// The verb the helper names in its answer to `.eavesdropperStatus`.
     static let eavesdropperStatusVerb = "server eavesdropper-status"
+    /// The verb the helper names in its answer to `.unitStatus`.
+    static let unitStatusVerb = "server unit-status"
 
     /// The machine the action runs on.
     ///
@@ -141,7 +147,7 @@ enum OpsAction: Equatable {
     var runsOn: FleetHost {
         switch self {
         case .serverUnit, .serverUpdate, .coolifyRedeploy, .logs, .serverResource, .resourceStatus,
-             .eavesdropperStatus:
+             .eavesdropperStatus, .unitStatus:
             return .server
         case .macAgent, .knobSet, .knobUnset, .pm2App:
             return .mac
@@ -153,7 +159,7 @@ enum OpsAction: Equatable {
         switch self {
         case .knobSet, .knobUnset: return .acrossFleet
         case .macAgent, .serverUnit, .serverUpdate, .coolifyRedeploy, .pm2App, .logs,
-             .serverResource, .resourceStatus, .eavesdropperStatus:
+             .serverResource, .resourceStatus, .eavesdropperStatus, .unitStatus:
             return .machine(runsOn)
         }
     }
@@ -165,7 +171,7 @@ enum OpsAction: Equatable {
     /// part way,  and the Mac knows whether the text reached it,  so it plainly did not work.
     var changesNothing: Bool {
         switch self {
-        case .logs, .resourceStatus, .eavesdropperStatus:
+        case .logs, .resourceStatus, .eavesdropperStatus, .unitStatus:
             return true
         case .macAgent, .serverUnit, .serverUpdate, .coolifyRedeploy, .knobSet, .knobUnset, .pm2App,
              .serverResource:
@@ -187,6 +193,7 @@ enum OpsAction: Equatable {
         case .serverResource(let field, _, _): return ResourcePolicyField(rawValue: field)?.title ?? "Resource Policy"
         case .resourceStatus: return "The Resource Policy"
         case .eavesdropperStatus: return "The Eavesdropper's Status"
+        case .unitStatus(let unit): return OpsNames.unitTitle(unit)
         }
     }
 
@@ -207,6 +214,29 @@ enum OpsAction: Equatable {
             return "\(ResourcePolicyField.changePhrase(field: field, value: value)) \(place)"
         case .resourceStatus: return "Read the resource policy \(place)"
         case .eavesdropperStatus: return "Read the eavesdropper's status \(place)"
+        case .unitStatus: return "Read the state of \(subjectTitle) \(place)"
+        }
+    }
+
+    /// The title,  with what a plan answer said about the subject in place of what this Mac
+    /// had:  a redeploy names the server's resource name once a plan gave one,  and a logs
+    /// read of a timer names the service whose journal it reads.  The sheet's title and the
+    /// Touch ID question use this (`OpsController.Phase.title`,  `OpsApprovalRequest.reason`).
+    func title(plan: OpsOutcome?) -> String {
+        let place = changes.inProse
+        switch self {
+        case .coolifyRedeploy:
+            // The server's stand-in for a row with no name says less than this Mac's name.
+            guard let name = plan?.resourceName, name != OpsRedeployName.serverPlaceholder else {
+                return title
+            }
+            return "Redeploy \(name) \(place)"
+        case .logs(let unit):
+            guard let read = plan?.logsUnit, read != unit else { return title }
+            return "Read the last logs of \(read) \(place)"
+        case .macAgent, .serverUnit, .serverUpdate, .knobSet, .knobUnset, .pm2App, .serverResource,
+             .resourceStatus, .eavesdropperStatus, .unitStatus:
+            return title
         }
     }
 
@@ -259,6 +289,8 @@ enum OpsAction: Equatable {
             return "Reads the resource policy \(place).\(gap)Nothing changes."
         case .eavesdropperStatus:
             return "Reads the eavesdropper's status \(place).\(gap)Nothing changes."
+        case .unitStatus:
+            return "Reads the state of \(subjectTitle) \(place).\(gap)Nothing changes."
         }
     }
 
@@ -288,7 +320,7 @@ enum OpsAction: Equatable {
             }
             return "It stops right away on the server, and stays stopped until you start it again."
         case .serverUpdate, .coolifyRedeploy, .knobSet, .knobUnset, .logs, .serverResource, .resourceStatus,
-             .eavesdropperStatus:
+             .eavesdropperStatus, .unitStatus:
             return nil
         }
     }
@@ -315,6 +347,7 @@ enum OpsAction: Equatable {
         case .serverResource: return .serverResource
         case .resourceStatus: return .resourceStatus
         case .eavesdropperStatus: return .eavesdropperStatus
+        case .unitStatus: return .unitStatus
         }
     }
 
@@ -332,6 +365,7 @@ enum OpsAction: Equatable {
         case .serverResource: return "server resource policy"
         case .resourceStatus: return "server resource status"
         case .eavesdropperStatus: return "server eavesdropper status"
+        case .unitStatus: return "server unit status"
         }
     }
 
@@ -352,6 +386,7 @@ enum OpsAction: Equatable {
         case .serverResource(let field, _, _): return "coding.\(field)"
         case .resourceStatus: return "coding"
         case .eavesdropperStatus: return "server"
+        case .unitStatus(let unit): return unit
         }
     }
 
@@ -372,6 +407,7 @@ enum OpsAction: Equatable {
         // The target is the instance word `server` and nothing else:  the helper refuses any
         // other, because the container it reads is the server's.
         case .eavesdropperStatus: return ["server", "eavesdropper-status", "server"]
+        case .unitStatus(let unit): return ["server", "unit-status", unit]
         }
     }
 }
@@ -380,7 +416,7 @@ enum OpsAction: Equatable {
 /// so the tests that walk every case cover it the day it is added.
 enum OpsActionCase: CaseIterable {
     case macAgent, serverUnit, serverUpdate, coolifyRedeploy, knobSet, knobUnset
-    case pm2App, logs, serverResource, resourceStatus, eavesdropperStatus
+    case pm2App, logs, serverResource, resourceStatus, eavesdropperStatus, unitStatus
 
     /// One valid action of this case.
     var sample: OpsAction {
@@ -397,7 +433,13 @@ enum OpsActionCase: CaseIterable {
             return .serverResource(field: "cpu-cores", value: "4", revision: String(repeating: "a", count: 64))
         case .resourceStatus: return .resourceStatus
         case .eavesdropperStatus: return .eavesdropperStatus
+        case .unitStatus: return .unitStatus(unit: OpsNames.reportTimerUnit)
         }
+    }
+
+    /// True for the reads the helper takes with `--plan` only,  so they have no `--yes` run.
+    var isPlanOnly: Bool {
+        self == .resourceStatus || self == .eavesdropperStatus || self == .unitStatus
     }
 }
 
@@ -429,6 +471,57 @@ enum OpsNames {
             return false
         }
         return named?.title ?? name
+    }
+}
+
+/// A redeploy's resource name as the server's plan gives it,  and the check that it names the
+/// resource on this Mac's button.
+///
+/// The server writes the name the way its audit row names the redeploy:  a trailing
+/// ` (SERVICE)` removed,  at most 120 characters,  printable ASCII with `?` for any other code
+/// point,  and `coolify resource` when the row has no name.  This Mac's name comes from the
+/// server's report,  so it is put in the same shape before the two are compared.
+enum OpsRedeployName {
+    /// The server's name for a row that has none.
+    static let serverPlaceholder = "coolify resource"
+    /// This Mac's name for a row whose report gave none (`ServerStatusReading.redeployName`).
+    static let musterPlaceholder = "this resource"
+    static let maximumLength = 120
+
+    /// Printable ASCII,  with `?` for any other code point,  at most 120 characters.  Nil when
+    /// nothing is left.
+    static func displayed(_ text: String) -> String? {
+        let question: Unicode.Scalar = "?"
+        var kept = String.UnicodeScalarView()
+        for scalar in text.unicodeScalars {
+            kept.append((0x20...0x7E).contains(scalar.value) ? scalar : question)
+        }
+        let shaped = String(String(kept).prefix(maximumLength))
+        return shaped.trimmingCharacters(in: .whitespaces).isEmpty ? nil : shaped
+    }
+
+    /// True when the server's name is the name this Mac had,  in the server's shape.  A Mac
+    /// that had no name has nothing to compare,  so any name the server gives matches it.  The
+    /// Mac's name may still carry the ` (SERVICE)` the server removes.
+    static func matches(muster: String, server: String) -> Bool {
+        let trimmed = muster.trimmingCharacters(in: .whitespaces)
+        if trimmed.isEmpty || trimmed == musterPlaceholder { return true }
+        guard let mine = displayed(muster) else { return true }
+        if mine == server { return true }
+        if mine.hasSuffix(")"), let open = mine.range(of: " (", options: .backwards) {
+            let stem = String(mine[..<open.lowerBound].prefix(maximumLength))
+            if stem == server { return true }
+        }
+        return false
+    }
+
+    /// The plain sentence for a plan that names another resource,  naming both.
+    static func mismatchSentence(muster: String, server: String) -> String {
+        let mine = displayed(muster) ?? musterPlaceholder
+        return ApplyCopy.join(
+            "Muster planned a redeploy of \"\(mine)\", but the server's plan names \"\(server)\", so nothing will run.",
+            "Read the server's report again, then plan the redeploy again."
+        )
     }
 }
 
@@ -654,6 +747,8 @@ struct OpsCommandBuilder {
             guard resourcePolicyFields.contains(field) else { throw OpsControlError.invalidArgument("resource field") }
             guard isSafeResourceValue(field: field, value: value) else { throw OpsControlError.invalidArgument("resource value") }
             guard isSafeResourceRevision(revision) else { throw OpsControlError.invalidArgument("resource revision") }
+        case .unitStatus(let unit):
+            guard isUnitName(unit) else { throw OpsControlError.invalidArgument("unit name") }
         case .resourceStatus, .eavesdropperStatus:
             break
         }
@@ -674,7 +769,7 @@ struct OpsCommandBuilder {
             case .macAgent, .pm2App: return helperURL
             case .knobSet, .knobUnset: return repoRoot.appendingPathComponent(OpsControlRoute.knobsEntryPoint)
             case .serverUnit, .serverUpdate, .coolifyRedeploy, .logs, .serverResource, .resourceStatus,
-                 .eavesdropperStatus: return nil
+                 .eavesdropperStatus, .unitStatus: return nil
             }
         }
     }
@@ -762,6 +857,9 @@ struct OpsCommandBuilder {
         if case .eavesdropperStatus = action, mode != .plan {
             throw OpsControlError.invalidArgument("read-only eavesdropper status mode")
         }
+        if case .unitStatus = action, mode != .plan {
+            throw OpsControlError.invalidArgument("read-only unit status mode")
+        }
         let timeout = mode == .plan ? OpsControlRoute.planTimeout : OpsControlRoute.runWait(for: action)
         var tail = action.verbArguments + [mode.flag, "--json"]
         if case .knobSet(let key, let value) = action {
@@ -797,7 +895,7 @@ struct OpsCommandBuilder {
                     timeout: timeout
                 )
             case .serverUnit, .serverUpdate, .coolifyRedeploy, .logs, .serverResource, .resourceStatus,
-                 .eavesdropperStatus:
+                 .eavesdropperStatus, .unitStatus:
                 // `runsOn` says these are the server's,  so this cannot be reached.  It
                 // refuses rather than running a server action on the Mac.
                 throw OpsControlError.invalidArgument("route")
@@ -982,11 +1080,36 @@ struct OpsResult: Decodable, Equatable {
     /// The server eavesdropper's reduced status,  when `server eavesdropper-status` answered
     /// one.  Read field by field,  so one odd field never costs the document.
     let status: ReducedEavesdropperStatus?
+    /// The unit a `server unit-status` answer describes,  and its scope (`user` or `system`).
+    let unit: String?
+    let scope: String?
+    /// systemd's words for that unit:  ActiveState,  SubState and Result.  `unitResult` is
+    /// systemd's Result,  because the answer's own `result` is the helper's word.
+    let activeState: String?
+    let subState: String?
+    let unitResult: String?
+    /// When the service last exited,  and when a timer next elapses,  as the helper spells a
+    /// time (`YYYY-MM-DDTHH:MM:SSZ`),  or null.
+    let lastExitAt: String?
+    let nextElapseAt: String?
+    /// True when the answer carries the `nextElapseAt` key at all,  null included:  the helper
+    /// gives it for a timer only.
+    let hasNextElapseAt: Bool
+    /// When the server read the unit.
+    let checkedAt: String?
+    /// The unit whose journal a `server logs` answer reads:  the service a timer starts,  for a
+    /// timer.  The timer stays the target and the audit target.
+    let logsUnit: String?
+    /// The Coolify resource a `server redeploy` plan or run names,  the same string as its audit
+    /// target.  Absent in a refusal.
+    let resourceName: String?
 
     enum CodingKeys: String, CodingKey {
         case ok, verb, target, commands, result, detail, old, new, lkg, output, lines, resourcePolicy
         case executionState, verified, invocationID, baselineStartMonotonic, host
         case errorCode, auditID, auditTarget, completedCommands, status
+        case unit, scope, activeState, subState, unitResult, lastExitAt, nextElapseAt, checkedAt
+        case logsUnit, resourceName
         case oldSource = "old_source"
     }
 
@@ -1018,6 +1141,17 @@ struct OpsResult: Decodable, Equatable {
         auditTarget = try? container.decodeIfPresent(String.self, forKey: .auditTarget)
         completedCommands = try? container.decodeIfPresent(Int.self, forKey: .completedCommands)
         status = try? container.decodeIfPresent(ReducedEavesdropperStatus.self, forKey: .status)
+        unit = try? container.decodeIfPresent(String.self, forKey: .unit)
+        scope = try? container.decodeIfPresent(String.self, forKey: .scope)
+        activeState = try? container.decodeIfPresent(String.self, forKey: .activeState)
+        subState = try? container.decodeIfPresent(String.self, forKey: .subState)
+        unitResult = try? container.decodeIfPresent(String.self, forKey: .unitResult)
+        lastExitAt = try? container.decodeIfPresent(String.self, forKey: .lastExitAt)
+        nextElapseAt = try? container.decodeIfPresent(String.self, forKey: .nextElapseAt)
+        hasNextElapseAt = container.contains(.nextElapseAt)
+        checkedAt = try? container.decodeIfPresent(String.self, forKey: .checkedAt)
+        logsUnit = try? container.decodeIfPresent(String.self, forKey: .logsUnit)
+        resourceName = try? container.decodeIfPresent(String.self, forKey: .resourceName)
     }
 }
 
@@ -1124,6 +1258,24 @@ struct OpsOutcome: Equatable {
     /// answer that carried one;  nil for every other action.  Its version is not checked here:
     /// `ServerEavesdropperReading(outcome:)` does that.
     var eavesdropperStatus: ReducedEavesdropperStatus? = nil
+    /// One unit's systemd state,  for a planned `server unit-status` answer about the unit the
+    /// action names whose state words are in their own shape;  nil for every other answer.
+    var unitState: ServerUnitState? = nil
+    /// The unit whose journal a logs answer reads,  when the helper named one in a unit's own
+    /// shape:  `fleet-server-status.service` for `fleet-server-status.timer`.
+    var logsUnit: String? = nil
+    /// The resource name a redeploy plan or run gave,  in printable ASCII and at most 120
+    /// characters.
+    var resourceName: String? = nil
+    /// True when Muster itself stopped a plan the server gave,  so nothing ran:  a redeploy
+    /// plan that names another resource than the one on this Mac's button.
+    var stoppedOnMac: Bool = false
+
+    /// The heading over a logs run's journal lines,  naming the unit read:  `Logs of
+    /// fleet-server-status.service` for a timer.  Nil when the answer named no unit.
+    var logsHeading: String? {
+        logsUnit.map { "Logs of \($0)" }
+    }
 
     /// True when the run did what its mode asks for:  a plan that planned,  or a run that
     /// was done.  The helper's `ok`,  its result word and its exit code must all agree.
@@ -1182,6 +1334,7 @@ struct OpsOutcome: Equatable {
             return "\(who) could not read it, so nothing is known yet.\(gap)Nothing was changed."
         }
         if isPlan {
+            if stoppedOnMac { return "Muster stopped this before it ran, so nothing ran." }
             if kind == .refused { return "\(who) refused this, so nothing ran." }
             return "The plan could not be read, so nothing ran."
         }
@@ -1220,6 +1373,10 @@ struct OpsOutcome: Equatable {
             return "The way the server runs this update changed after the plan.\(gap)Plan it again."
         case "invocation_replaced":
             return "Another update run replaced this one before Muster could see it finish."
+        case "read_only_required":
+            return "This only reads, so the server takes it as a plan and never as a run."
+        case "unit_status_unavailable", "unit_unavailable", "unit_status_invalid":
+            return ServerUnitState.cause(errorCode: errorCode, detail: nil)
         default:
             return nil
         }
@@ -1359,6 +1516,31 @@ enum OpsResultParser {
            answer.verb == nil || answer.verb == OpsAction.eavesdropperStatusVerb {
             eavesdropperStatus = answer.status
         }
+        // A unit's state is surfaced only for a planned answer to `server unit-status` about the
+        // unit this action names,  and only with its state words in their own shape.
+        var unitState: ServerUnitState?
+        if case .unitStatus(let unit) = action, mode == .plan, kind == .planned,
+           answer.verb == nil || answer.verb == OpsAction.unitStatusVerb {
+            unitState = ServerUnitState(answer: answer, unit: unit)
+        }
+        // The journal a logs answer read:  for a timer,  the service it starts.
+        var logsUnit: String?
+        if case .logs = action {
+            logsUnit = answer.logsUnit.flatMap { OpsCommandBuilder.isUnitName($0) ? $0 : nil }
+        }
+        // The resource a redeploy plan names.  A plan that names another resource than this
+        // Mac's button is stopped here,  before anything can be approved or run.
+        var resourceName: String?
+        var stoppedOnMac = false
+        if case .coolifyRedeploy(_, let name) = action, let given = answer.resourceName {
+            resourceName = OpsRedeployName.displayed(given)
+            if mode == .plan, kind == .planned, let server = resourceName,
+               !OpsRedeployName.matches(muster: name, server: server) {
+                kind = .refused
+                detail = OpsRedeployName.mismatchSentence(muster: name, server: server)
+                stoppedOnMac = true
+            }
+        }
         return OpsOutcome(
             kind: kind,
             ok: answer.ok,
@@ -1381,7 +1563,11 @@ enum OpsResultParser {
             completedCommands: answer.completedCommands.flatMap {
                 (0...answer.commands.count).contains($0) ? $0 : nil
             },
-            eavesdropperStatus: eavesdropperStatus
+            eavesdropperStatus: eavesdropperStatus,
+            unitState: unitState,
+            logsUnit: logsUnit,
+            resourceName: resourceName,
+            stoppedOnMac: stoppedOnMac
         )
     }
 
@@ -1647,6 +1833,9 @@ struct OpsAllowlist: Equatable {
     var serverUnits: [Entry] = []
     var updates: [Update] = []
     var coolifyRedeploy: Bool = false
+    /// The server's `watch` units:  read and granted nothing,  so they get no verb buttons,
+    /// but `server unit-status` may read them (`allowsUnitStatus`).
+    var watchUnits: [String] = []
 
     /// The verbs the allowlist names for a LaunchAgent,  in the app's order.
     func verbs(forMacAgent label: String) -> [OpsVerb] {
@@ -1750,6 +1939,15 @@ struct OpsAllowlist: Equatable {
             list.updates.append(Update(name: name, unit: unit, scope: scope))
         }
         list.coolifyRedeploy = (coolify["redeploy"] as? Bool) == true
+        // The `watch` units grant nothing,  so a malformed one costs only its own state read:
+        // it is skipped,  and the file is not refused for it here.  The server still checks.
+        if let watch = server["watch"] as? [Any] {
+            list.watchUnits = watch.compactMap { item in
+                guard let row = item as? [String: Any], let unit = row["unit"] as? String,
+                      OpsCommandBuilder.isUnitName(unit) else { return nil }
+                return unit
+            }
+        }
         return list
     }
 
@@ -1813,6 +2011,10 @@ enum OpsApprovalAnswer: Equatable {
 struct OpsApprovalRequest: Equatable {
     let action: OpsAction
     let reviewed: OpsOutcome
+
+    /// The Touch ID question:  the action's title,  naming what the reviewed plan named
+    /// (`OpsAction.title(plan:)`),  so a redeploy asks about the server's resource name.
+    var reason: String { action.title(plan: reviewed) }
 }
 
 /// Where a run is,  for the words and the clock on the sheet.
@@ -1849,7 +2051,9 @@ enum OpsRunStage: Equatable {
 /// plan the owner approved.
 @MainActor
 final class OpsController: ObservableObject {
-    static let shared = OpsController()
+    /// The app's one controller.  It reads a server unit's state again right after a run of
+    /// that unit ends (`unitStateAfterRun`).
+    static let shared = OpsController(readsUnitStateAfterRun: true)
 
     enum Phase: Equatable {
         case idle
@@ -1867,6 +2071,18 @@ final class OpsController: ObservableObject {
             case .running(let action, _): return action
             case .finished(let action, _): return action
             case .failed(let action, _): return action
+            }
+        }
+
+        /// The sheet's title:  the action's title,  naming what its plan named once a plan
+        /// answered (`OpsAction.title(plan:)`).  Nil while idle.
+        var title: String? {
+            switch self {
+            case .idle: return nil
+            case .planning(let action), .failed(let action, _): return action.title
+            case .review(let action, let outcome), .running(let action, let outcome),
+                 .finished(let action, let outcome):
+                return action.title(plan: outcome)
             }
         }
     }
@@ -1889,12 +2105,22 @@ final class OpsController: ObservableObject {
     @Published private(set) var stageStartedAt: Date?
     /// True while Muster runs a start of its own (`runUnattended`),  with nobody at a sheet.
     @Published private(set) var isRunningUnattended = false
+    /// The live state of the server unit the last `--yes` run acted on,  read through
+    /// `server unit-status` right after the run ended,  for the sheet's "Now:" line
+    /// (`ServerUnitStateAfterRun.line(reportGeneratedAt:)`).  Its reading is nil while the read
+    /// is in flight.  Nil before such a run,  and cleared when a new plan starts.  The read is
+    /// a plan,  changes nothing,  and does not hold the sheet or count as busy.
+    @Published private(set) var unitStateAfterRun: ServerUnitStateAfterRun?
 
     private let runner: OpsRunning
     private let makeBuilder: () -> OpsCommandBuilder
     private let auditURL: URL?
     private let checksInstall: Bool
     private let now: () -> Date
+    private let readsUnitStateAfterRun: Bool
+    private let readAllowlist: () -> OpsAllowlist?
+    /// Moves on with every unit-state read,  so only the newest one may write.
+    private var unitStateGeneration = 0
     private var task: Task<Void, Never>?
     /// True when the owner closed the sheet while a plan was being read:  its answer is
     /// dropped,  because a plan changes nothing.
@@ -1915,13 +2141,42 @@ final class OpsController: ObservableObject {
         },
         auditURL: URL? = OpsAuditLog.logURL(),
         checksInstall: Bool = true,
-        now: @escaping () -> Date = { Date() }
+        now: @escaping () -> Date = { Date() },
+        readsUnitStateAfterRun: Bool = false,
+        readAllowlist: @escaping () -> OpsAllowlist? = {
+            OpsAllowlist.read(at: OpsAllowlist.url(repoRoot: FleetConfigLocation.resolve().repoRoot))
+        }
     ) {
         self.runner = runner
         self.makeBuilder = makeBuilder
         self.auditURL = auditURL
         self.checksInstall = checksInstall
         self.now = now
+        self.readsUnitStateAfterRun = readsUnitStateAfterRun
+        self.readAllowlist = readAllowlist
+    }
+
+    /// Reads one server unit's state now,  through `server unit-status UNIT --plan`,  and
+    /// publishes it as `unitStateAfterRun`.  The sheet may call it after a run;  the controller
+    /// calls it itself when `readsUnitStateAfterRun` is on.  Nothing is changed,  no Touch ID is
+    /// asked,  and the unit must be on this Mac's allowlist as a server or `watch` unit.
+    func readUnitState(_ unit: String) {
+        unitStateGeneration += 1
+        let generation = unitStateGeneration
+        unitStateAfterRun = ServerUnitStateAfterRun(unit: unit, reading: nil)
+        let reader = OpsUnitStatusReader(runner: runner, makeBuilder: makeBuilder)
+        let allowlist = readAllowlist()
+        Task { [weak self] in
+            let reading = await reader.read(unit: unit, allowlist: allowlist)
+            guard let self, self.unitStateGeneration == generation else { return }
+            self.unitStateAfterRun = ServerUnitStateAfterRun(unit: unit, reading: reading)
+        }
+    }
+
+    /// Forgets the last unit-state read,  and drops one still in flight.
+    private func clearUnitState() {
+        unitStateGeneration += 1
+        unitStateAfterRun = nil
     }
 
     /// True while a helper is running.
@@ -2027,6 +2282,7 @@ final class OpsController: ObservableObject {
         notice = nil
         abandonPlan = false
         isSheetHidden = false
+        clearUnitState()
         phase = .planning(action)
         task = Task { [weak self] in
             await self?.runPlan(action)
@@ -2096,7 +2352,7 @@ final class OpsController: ObservableObject {
         case .pm2App(let verb, _), .macAgent(let verb, _):
             guard verb == .start else { return nil }
         case .serverUnit, .serverUpdate, .coolifyRedeploy, .knobSet, .knobUnset, .logs,
-             .serverResource, .resourceStatus, .eavesdropperStatus:
+             .serverResource, .resourceStatus, .eavesdropperStatus, .unitStatus:
             return nil
         }
         guard !isBusy, !isPresenting, task == nil else { return nil }
@@ -2244,7 +2500,9 @@ final class OpsController: ObservableObject {
             guard
                 fresh.commands == reviewed.commands,
                 fresh.knobChange?.old == reviewed.knobChange?.old,
-                fresh.knobChange?.oldSource == reviewed.knobChange?.oldSource
+                fresh.knobChange?.oldSource == reviewed.knobChange?.oldSource,
+                // A redeploy whose resource was renamed after the review is not the one approved.
+                fresh.resourceName == reviewed.resourceName
             else {
                 phase = .review(action, fresh)
                 notice = ApplyCopy.join(
@@ -2289,6 +2547,11 @@ final class OpsController: ObservableObject {
             }
         }
         if started { completedRuns += 1 }
+        // The helper may have acted on the unit,  so its state is read again,  newer than the
+        // report the plan was made from.
+        if started, readsUnitStateAfterRun, case .serverUnit(_, let unit) = action {
+            readUnitState(unit)
+        }
     }
 
     private func enterStage(_ stage: OpsRunStage) {

@@ -314,6 +314,74 @@ class Document(unittest.TestCase):
         self.assertTrue(all(not a["plistInRepo"] for a in doc["agents"]))
         self.assertEqual(len(doc["agents"]), 4)
 
+    def write_control(self, agents):
+        path = os.path.join(self.tmp.name, "notes.json")
+        with open(path, "w") as handle:
+            json.dump({"schemaVersion": 1, "mac": {"agents": agents}}, handle)
+        return path
+
+    def test_role_and_stop_consequence_are_carried_from_the_allowlist(self):
+        control = self.write_control(
+            [
+                {
+                    "label": "com.jay.fleet-tools-doctor",
+                    "actions": ["start", "stop", "restart"],
+                    "role": "reporting",
+                    "stopConsequence": "Stopping this stops the Mac fetching the server's report.",
+                },
+                {
+                    "label": "com.jay.extra-agent",
+                    "actions": ["restart"],
+                    "role": "updater",
+                },
+                {
+                    "label": "com.jay.notes-only",
+                    "actions": ["stop"],
+                    "stopConsequence": "Owner notes wait until it starts again.",
+                },
+            ]
+        )
+        doc = self.build(FakeRunner({"com.jay.fleet-tools-doctor": RUNNING}), control)
+        by_label = {a["label"]: a for a in doc["agents"]}
+        doctor = by_label["com.jay.fleet-tools-doctor"]
+        self.assertEqual(doctor["role"], "reporting")
+        self.assertEqual(
+            doctor["stopConsequence"], "Stopping this stops the Mac fetching the server's report."
+        )
+        self.assertEqual(by_label["com.jay.extra-agent"]["role"], "updater")
+        self.assertNotIn("stopConsequence", by_label["com.jay.extra-agent"])
+        notes_only = by_label["com.jay.notes-only"]
+        self.assertNotIn("role", notes_only)
+        self.assertEqual(notes_only["stopConsequence"], "Owner notes wait until it starts again.")
+        # An agent the allowlist gives no notes for carries neither key.
+        self.assertNotIn("role", by_label["com.jay.mac-cleanup"])
+        self.assertNotIn("stopConsequence", by_label["com.jay.mac-cleanup"])
+
+    def test_a_note_of_the_wrong_shape_is_left_out(self):
+        control = self.write_control(
+            [
+                {"label": "com.jay.a", "actions": ["stop"], "role": "boss", "stopConsequence": ""},
+                {"label": "com.jay.b", "actions": ["stop"], "role": 3, "stopConsequence": "x" * 201},
+                {"label": "com.jay.c", "actions": ["stop"], "role": None, "stopConsequence": "two\nlines"},
+                {"label": "com.jay.d", "actions": ["stop"], "stopConsequence": "Café closes"},
+                {"label": "com.jay.e", "actions": ["stop"], "stopConsequence": ["a list"]},
+                {"label": "com.jay.f", "actions": ["stop"], "stopConsequence": "y" * 200},
+            ]
+        )
+        doc = self.build(FakeRunner({}), control)
+        by_label = {a["label"]: a for a in doc["agents"]}
+        for label in ("com.jay.a", "com.jay.b", "com.jay.c", "com.jay.d", "com.jay.e"):
+            self.assertNotIn("role", by_label[label], label)
+            self.assertNotIn("stopConsequence", by_label[label], label)
+        self.assertEqual(by_label["com.jay.f"]["stopConsequence"], "y" * 200)
+
+    def test_the_real_allowlist_notes_are_well_formed(self):
+        notes = fms.agent_notes(fms.DEFAULT_CONTROL)
+        for label, note in notes.items():
+            self.assertTrue(set(note) <= {"role", "stopConsequence"}, label)
+            if "role" in note:
+                self.assertIn(note["role"], fms.AGENT_ROLES, label)
+
 
 class Writing(unittest.TestCase):
     def test_write_is_atomic_and_private(self):
