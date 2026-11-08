@@ -4,12 +4,12 @@
 
 ## Changes In Version 5.5
 
-From BB's chain verb as merged in PR 1543 (`scripts/muster_approval.py` on `main`), written down by AA on November 8, 2026.  Both rows say what that helper already does;  neither changes what any request gets back, a byte the helper sends, or a vector.
+From BB's chain verb as merged in PR 1543 (`scripts/muster_approval.py` on `main`), written down by AA on November 8, 2026.  Both rows say what that helper already does;  neither changes what any request gets back, a byte the helper sends, or a vector.  With PR 1543 the chain slice has landed:  where this spec says what holds "until the chain slice lands" (`chain --yes` answering `bad_command` at P2, in §0, §4, §5 and §12 to §16), it describes the helper before PR 1543, and what it says takes effect "when" or "once" the slice lands (§5's chain framing, C1 to C5, the chain refusal body and the chain audit row) is what `main` does now.  Rewording those passages for the landed slice is left to a later version;  it changes no rule.
 
 | # | Change | Where |
 | --- | --- | --- |
 | 1 | The sweep at C5:  under `ops-control.lock` and before the temporary file is made, the helper removes stale `.muster-trust.json.<16 lowercase hex>.tmp` entries in the state directory that are regular files of its account with one link, ignoring every error and touching nothing else.  | §8, §12, §16 |
-| 2 | The size guard at P3:  an entry whose canonical bytes exceed the 65,536-byte stored-file limit is `bad_input`;  no list within the other limits (64 devices, 64 countersignatures) can reach it, so it is defence in depth.  | §5 |
+| 2 | The size guard at P3:  an entry whose canonical bytes exceed the 65,536-byte stored-file limit is `bad_input`;  no list within the other limits (64 devices, 64 countersignatures) can reach it, so it is defence in depth.  The reference checkers apply it too.  | §5, both scripts |
 
 ## Changes In Version 5.4
 
@@ -200,7 +200,7 @@ A scope, verb or target word not in this table (including the `mac` and `pm2` sc
 - **Base64url** is canonical:  only the alphabet of RFC 4648 section 5, no `=` padding, a length that a whole number of bytes can have, and no stray trailing bits, so re-encoding the decoded bytes gives back exactly the same text.  A key is decoded here, at P3, and any failure is `bad_input`.  A signature is held only to §6's pattern at P3 (so `=` in one is `bad_input`);  its base64url and its DER are judged when it is verified, so a signature with stray trailing bits fails its verification:  in an owner signature the reason is `owner_signature` (check 4), in a countersignature it is `countersignature` (rule A, or rule C's proposal), and in an approval's `signature` the code is `bad_signature` (Y5).  Vectors T26 and T27 print the two list cases.
 - **Times.**  Every time (a list's `issuedAt`, and an approval's `issuedAt` and `expiresAt`) has §2's form and is a real calendar time:  `2026-11-07T23:59:60Z` (no leap second), `2026-02-30T20:00:00Z` and year `0000` are `bad_input`.
 - **The contract.**  A list's `body.contract` is exactly `muster-trust-list/1`;  any other value is `bad_input`.
-- **Size (v5.5).**  An entry whose canonical bytes (§2) exceed 65,536 bytes, the most the stored file may hold (§11), is `bad_input` at P3, so a list the helper accepts can always be read back.  No list within the other limits (64 devices and 64 countersignatures, every field at its longest) can reach it:  the largest is about 55 KB.  So this is defence in depth, which keeps that invariant if a limit is ever raised.
+- **Size (v5.5).**  An entry whose canonical bytes (§2) exceed 65,536 bytes, the most the stored file may hold (§11), is `bad_input` at P3, so a list the helper accepts can always be read back.  No list within the other limits (64 devices and 64 countersignatures, every field at its longest) can reach it:  the largest is about 55 KB.  So this is defence in depth, which keeps that invariant if a limit is ever raised.  The reference checkers apply it too (`size`), as they apply the rules above.
 - **The whole request.**  P3 parses the whole document before C1, so one malformed entry makes the request `bad_input` wherever it stands in the chain, and nothing is counted.  **Formatting and key order of the input do not matter:**  the helper parses the document and works from the values, and canonical bytes are computed by the helper wherever a hash or signature needs them.
 
 | Request | Document |

@@ -215,7 +215,8 @@ def p3(e):
         ):
             bad.append("countersignature")
     try:
-        canon(e)
+        if len(canon(e)) > 65536:
+            bad.append("size")  # v5.5:  more than the stored file may hold (section 11)
     except (ValueError, TypeError):
         bad.append("not canonical")
     return bad

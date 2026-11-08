@@ -504,9 +504,11 @@ def p3_failure(entry):
         ):
             return "countersignature"
     try:
-        canonical(entry)
+        size = len(canonical(entry))
     except ValueError:
         return "not canonical"
+    if size > 65536:
+        return "size"  # v5.5:  more than the stored file may hold (section 11)
     return None
 
 
