@@ -10,7 +10,7 @@ Since version 4, from BB's answers and EE's eighth look:
 | --- | --- | --- |
 | 1 | The exact plan commands and `auditTarget` per verb, with absolute `argv[0]`.  | §4 |
 | 2 | Plan-time refusals have a code, `plan_refused`, with a reason.  | §4, §12 |
-| 3 | An approval fails closed with `clock_unsynced` when the helper cannot confirm the clock is synchronised;  `--plan` is unaffected.  | §7, §12 |
+| 3 | An approval fails closed with `clock_unsynced` when `adjtimex(modes=0)` fails, returns `TIME_ERROR`, reports `STA_UNSYNC`, or reports `maxerror` above 1 second;  `--plan` is unaffected.  | §7, §12 |
 | 4 | A fault before the nonce is spent is `internal_error`;  after it, a fault is a signed result with outcome `failed`.  Outcome `unknown` is added.  | §12, §13 |
 | 5 | The window is compared exactly on the float clock, with no grace.  | §7 |
 | 6 | Rate-limit keys are `verb target`;  the boundaries are stated.  | §12 |
@@ -160,7 +160,7 @@ muster-approve/1
 
 ## 7.  The Clock And The Two-Minute Window
 
-**The clock.**  Before the window, the helper confirms that the system clock is synchronised;  if it cannot confirm it, the approval is refused `clock_unsynced`.  `--plan`, reads and the trust-list verbs do not check it.  How this server synchronises its clock, and so what the helper asks, is not verified (§17, item 3).
+**The clock.**  Before the window, the helper reads the kernel's clock state with `adjtimex` in read-only mode (`modes = 0`), a privilege-free call made through `ctypes` from the standard library, which works under `/usr/bin/python3 -I`.  It refuses the approval `clock_unsynced` when any of these holds:  the call fails;  it returns `TIME_ERROR`;  `STA_UNSYNC` is set in `status`;  or `maxerror` is above 1 second (1,000,000 microseconds).  `--plan`, reads and the trust-list verbs do not check it.  On this server, as BB measured on November 7, chrony runs, `timedatectl` reports `NTPSynchronized=yes`, and the kernel reports `TIME_OK`, `maxerror` 175 ms and `esterror` 2.6 ms, so the check passes today.  Two points are not verified (§17B, item 3).
 
 **The window.**  `now` is read once at Y6 as the system clock's float seconds since the epoch (UTC), and compared exactly with the approval's whole-second times, with no grace:  `expiresAt` must be later than `issuedAt` and at most 120 seconds after it (`window_too_long`);  `issuedAt` must be at most 60 seconds after `now` (`not_yet_valid`);  `now` must not be later than `expiresAt` (`expired`).  `now` equal to `expiresAt` is accepted, and so is `issuedAt` equal to `now` + 60;  `now` = `expiresAt` + 0.001 is `expired`.
 
@@ -1344,7 +1344,7 @@ How `muster-agent reopen --version 4 --device d-f4e396a67ceefe6a551abbc0` prints
 
 ### Chain Vectors
 
-Each is `muster trust-list chain --yes` with the lists named, under the pin, history and record above.  The reason is the first failing check in §8's numbered order;  each bad list fails exactly one check.  Rows that hold v3 and send a rule C entry give the OPEN proposal's outcome.  `Final` gives the version 4 proposal's classification, which is OPEN (§17A, A2);  version 5 records and reports nothing as final.
+Each is `muster trust-list chain --yes` with the lists named, under the pin, history and record above.  The reason is the first failing check in §8's numbered order;  each bad list fails exactly one check.  **The rule C rows (T4, T5, T8, T15, T18, T20, T21 and T22) give the OPEN proposal's outcomes.  A Milestone 1 to 4 builder skips them, or expects `chain_refused` with reason `reopen_unavailable` for each rule C entry (T5 is refused at its fourth entry), as T23 below shows.**  `Final` gives the version 4 proposal's classification, which is OPEN (§17A, A2);  version 5 records and reports nothing as final.
 
 | Vector | Held Before | Chain | Expected | Final | Why |
 | --- | --- | --- | --- | --- | --- |
@@ -1369,6 +1369,14 @@ Each is `muster trust-list chain --yes` with the lists named, under the pin, his
 | T20 reopen with the wrong device | v3 | T20 list | `chain_refused`, reason `reopen_device` | yes | Tagged with the newest code for version 4, but that line names device C and the list names device B.  |
 | T21 reopen with a retired code | v3 | T21 list | `chain_refused`, reason `reopen_tag` | yes | Identical to v4 except that it is tagged with the first code, which the newer line for version 4 retired.  |
 | T22 a second valid version 4 | v3 | v4 at 20:55 | ack |  | Signed at 20:55 with the same code and device:  a server could hold this instead of v4 (R5).  |
+
+### Frozen Version 5 Vector
+
+What every verifier in Milestones 1 to 4 must answer for a rule C entry.
+
+| Vector | Held Before | Chain | Expected | Final | Why |
+| --- | --- | --- | --- | --- | --- |
+| T23 v4 under version 5 as frozen | v3 | v4 | `chain_refused`, reason `reopen_unavailable` | no | The same chain as T4, judged by a Milestone 1 to 4 verifier:  checks 1 to 7 pass, and rule C is not available.  |
 
 ### Recovery Vectors
 
@@ -1568,7 +1576,7 @@ stdin bytes (535 bytes):
 
 #### V11 checked exactly at expiresAt
 
-now equals expiresAt.
+now equals expiresAt.  Accepted, so it passes Y8 and runs.  Audit row:  yes.
 
 ```
 stored list:           version 1
@@ -1586,7 +1594,7 @@ stdin bytes (533 bytes):
 
 #### V12 issued exactly 60 seconds ahead
 
-issuedAt equals now plus 60 seconds.
+issuedAt equals now plus 60 seconds.  Accepted, so it passes Y8 and runs.  Audit row:  yes.
 
 ```
 stored list:           version 1
@@ -1604,7 +1612,7 @@ stdin bytes (534 bytes):
 
 #### V13 approval nonce equals job nonce
 
-The two nonces must differ.
+The two nonces must differ.  Audit row:  no.
 
 ```
 stored list:           version 1
@@ -1622,7 +1630,7 @@ stdin bytes (535 bytes):
 
 #### V14 device not on the stored list
 
-Device B, correctly signed by its own approval key, while the helper holds version 1, which lists only A.
+Device B, correctly signed by its own approval key, while the helper holds version 1, which lists only A.  Audit row:  no.
 
 ```
 stored list:           version 1
@@ -1640,7 +1648,7 @@ stdin bytes (534 bytes):
 
 #### V15 stored list closed
 
-V1's approval while the helper holds version 3, which is closed.
+V1's approval while the helper holds version 3, which is closed.  Audit row:  no.
 
 ```
 stored list:           version 3 (closed)
@@ -1658,7 +1666,7 @@ stdin bytes (533 bytes):
 
 #### V16 nothing stored
 
-V1's approval while the helper holds no list.
+V1's approval while the helper holds no list.  Audit row:  no.
 
 ```
 stored list:           nothing
@@ -1886,7 +1894,7 @@ Rule C (§8), the reopen record and recovery (§9), the final chain refusal stor
 
 | # | Item | Owner | Gates |
 | --- | --- | --- | --- |
-| 3 | How this server synchronises its clock, and so how the helper confirms it for `clock_unsynced`.  Not verified.  | BB | Milestone 5 |
+| 3 | Two points about `clock_unsynced` (§7) that are not verified:  how the kernel's `maxerror` and `STA_UNSYNC` behave after a long chrony outage, so whether the check refuses approvals then;  and whether anything other than chrony steps this server's clock.  | BB | Milestone 5 |
 | 4 | Whether Swift, writing null members explicitly with `.sortedKeys` and `.withoutEscapingSlashes`, reproduces the canonical-form vector byte for byte on the Xcode CI uses.  | AA | Milestone 1 |
 | 5 | How a phone accepts an owner-key rotation (the old key's statement and the Face ID step).  | AA | Milestone 1 |
 | 6 | The paths, in `muster-pub`'s home, of its stored list, and `muster-agent trust-status`'s exact output.  | AA | Milestone 1 |
@@ -1907,5 +1915,6 @@ EE's eighth look, as it touches this spec, and BB's answers.
 | Refusal `helperTrustListVersion` undefined when nothing is held | Fixed in v5 (§13).  |
 | Rate-limit boundaries;  over-810 file;  P0 to P3 not counted | Fixed in v5 (§12):  inclusive spacing and hour, `state_unsafe` over 810, and the design's claim narrowed to requests that parse.  |
 | `resource-policy` audit rows;  a plan that fails after Y8 | Fixed in v5 from BB's answers (§12 Faults, §14).  |
-| BB's answers:  plan commands, audit fields, unsynced clock, planner refusals, fault code, `unknown`, rate key, exact window, state directory, empty record, module equality | Made normative (§4, §7, §9, §10, §11, §12, §13, §14).  The clock mechanism stays open (17B.3, BB).  |
+| BB's answers:  plan commands, audit fields, unsynced clock, planner refusals, fault code, `unknown`, rate key, exact window, state directory, empty record, module equality | Made normative (§4, §7, §9, §10, §11, §12, §13, §14).  |
+| Corrections before merge (EE's check of PR 1484, and BB) | The `clock_unsynced` test is normative (§7:  `adjtimex(modes=0)`, `TIME_ERROR`, `STA_UNSYNC`, `maxerror` above 1 second, or a failed call), with two unverified points left in 17B.3;  §16 says Milestone 1 to 4 builders skip the rule C rows or expect `reopen_unavailable`, and adds vector T23 for it;  V11 to V16 state their audit rows, and V11 and V12, being accepted, get one.  The version stays 5:  these settle text the review found unclear, and change no frozen rule.  |
 | Every vector | EE's v4 run held.  v5's approval vectors are re-signed over the new plan with the same outcomes, and `check_vectors_v5.py` re-checks everything.  |

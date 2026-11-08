@@ -193,7 +193,8 @@ def hist_key(v):
             return h["ownerKey"]
 
 
-def failures(prev, e):
+def failures(prev, e, frozen=False):
+    """Every failing check.  frozen=True is version 5 as frozen:  rule C is not available."""
     b, f = e["body"], []
     bb = canon(b)
     if b["version"] != (1 if prev is None else prev["body"]["version"] + 1):
@@ -241,6 +242,8 @@ def failures(prev, e):
         if cs or b["reopenTag"]:
             f.append("closed_rule")
         svc()
+    elif prev["body"]["closed"] and frozen:
+        f.append("reopen_unavailable")
     elif prev["body"]["closed"]:
         svc()
         if sorted(csid) != sorted(ids) or not cs_valid(b["devices"]):
@@ -294,12 +297,14 @@ FINAL = {
 rows = re.findall(
     r"^\| (T\d+ [^|]+) \| ([^|]+) \| ([^|]+) \| ([^|]+) \| ([^|]*) \|", text, re.MULTILINE
 )
-check(len(rows) == 21, "chain rows %d" % len(rows))
+check(len(rows) == 22, "chain rows %d" % len(rows))
+check(any(r[0].startswith("T23 ") for r in rows), "the frozen vector T23 is printed")
 for name, held, chain, expect, final in rows:
+    frozen = name.startswith("T23 ")
     prev = None if held.strip() == "nothing" else L(held.strip())
     allf = []
     for c in [x.strip() for x in chain.split(",")]:
-        allf = failures(prev, L(c))
+        allf = failures(prev, L(c), frozen=frozen)
         if allf:
             break
         prev = L(c)
@@ -345,8 +350,8 @@ for m in re.finditer(
 plan_sha = re.search(r"`planSHA256` = `([0-9a-f]{64})`", text).group(1)
 check(H(block_after("### Illustrative Plan").encode()) == plan_sha, "plan hash")
 devs = {"version 1": L("v1"), "version 3 (closed)": L("v3"), "nothing": None}
-for m in re.finditer(r"#### (V\d+[^\n]*)\n\n[^\n]*\n\n```\n(.*?)\n```", text, re.DOTALL):
-    name, blk = m.groups()
+for m in re.finditer(r"#### (V\d+[^\n]*)\n\n([^\n]*)\n\n```\n(.*?)\n```", text, re.DOTALL):
+    name, note, blk = m.groups()
     f = dict(re.findall(r"^([a-z A-Z0-9()-]+?):\s+(.*)$", blk, re.MULTILINE))
     lines = blk.splitlines()
     hexline = lines[lines.index("approval text bytes (hex):") + 1]
@@ -415,7 +420,13 @@ for m in re.finditer(r"#### (V\d+[^\n]*)\n\n[^\n]*\n\n```\n(.*?)\n```", text, re
     else:
         got = "accepted"
     check(got == f["expected outcome"], f"{name}: {got} vs {f['expected outcome']}")
-    print(f"{name:45} {got}")
+    # §14:  a helper row exactly when Y8 spent the nonce, which is an acceptance or plan_mismatch.
+    audit = re.search(r"Audit row:  (yes|no)", note)
+    check(
+        audit is not None and (audit.group(1) == "yes") == (got in ("accepted", "plan_mismatch")),
+        name + " audit-row statement follows the after-Y8 rule",
+    )
+    print(f"{name:45} {got}, audit row {audit.group(1) if audit else 'not stated'}")
 
 # -------- signed answers
 for label, prefix in [

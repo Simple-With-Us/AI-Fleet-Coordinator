@@ -309,7 +309,8 @@ def history_key(history, version):
     return None
 
 
-def check_chain(held, chain, history, records):
+def check_chain(held, chain, history, records, frozen=False):
+    """frozen=True is version 5 as frozen:  every rule C entry is refused reopen_unavailable after checks 1 to 7."""
     prev = held
     for entry in chain:
         b = entry["body"]
@@ -372,6 +373,8 @@ def check_chain(held, chain, history, records):
             if server_keys_removed():
                 return "server_keys_removed", entry
         elif prev["body"]["closed"]:  # 8 C
+            if frozen:
+                return "reopen_unavailable", entry
             if not services_only_removed():
                 return "services_changed", entry
             if server_keys_removed():
@@ -533,6 +536,20 @@ chain_cases = [
 ]
 for name, held, chain, expect, _ in chain_cases:
     got, _ = check_chain(held, chain, HISTORY, RECORDS)
+    if got != expect:
+        sys.exit(f"{name}: expected {expect}, reference says {got}")
+# Version 5 as frozen (Milestones 1 to 4):  a rule C entry is refused reopen_unavailable.
+frozen_cases = [
+    (
+        "T23 v4 under version 5 as frozen",
+        L3,
+        [L4],
+        "reopen_unavailable",
+        "The same chain as T4, judged by a Milestone 1 to 4 verifier:  checks 1 to 7 pass, and rule C is not available.",
+    ),
+]
+for name, held, chain, expect, _ in frozen_cases:
+    got, _ = check_chain(held, chain, HISTORY, RECORDS, frozen=True)
     if got != expect:
         sys.exit(f"{name}: expected {expect}, reference says {got}")
 assert sha(canonical(bad["T15"]["body"])) == sha(canonical(L4["body"]))
@@ -870,7 +887,7 @@ acase(
     [],
     PLAN_SHA,
     "accepted",
-    "now equals expiresAt.",
+    "now equals expiresAt.  Accepted, so it passes Y8 and runs.  Audit row:  yes.",
 )
 a, x = approval(devA["approval"], issuedAt="2026-11-07T21:01:30Z", expiresAt="2026-11-07T21:03:30Z")
 acase(
@@ -881,7 +898,7 @@ acase(
     [],
     PLAN_SHA,
     "accepted",
-    "issuedAt equals now plus 60 seconds.",
+    "issuedAt equals now plus 60 seconds.  Accepted, so it passes Y8 and runs.  Audit row:  yes.",
 )
 a, x = approval(devA["approval"], approvalNonce="0f1e2d3c4b5a69788796a5b4c3d2e1f0")
 acase(
@@ -892,7 +909,7 @@ acase(
     [],
     PLAN_SHA,
     "bad_input",
-    "The two nonces must differ.",
+    "The two nonces must differ.  Audit row:  no.",
 )
 a, x = approval(devB["approval"], deviceId=DB["deviceId"])
 acase(
@@ -903,7 +920,7 @@ acase(
     [],
     PLAN_SHA,
     "unknown_device",
-    "Device B, correctly signed by its own approval key, while the helper holds version 1, which lists only A.",
+    "Device B, correctly signed by its own approval key, while the helper holds version 1, which lists only A.  Audit row:  no.",
 )
 a, x = approval(devA["approval"])
 acase(
@@ -914,7 +931,7 @@ acase(
     [],
     PLAN_SHA,
     "unknown_device",
-    "V1's approval while the helper holds version 3, which is closed.",
+    "V1's approval while the helper holds version 3, which is closed.  Audit row:  no.",
     stored=L3,
     stored_name="version 3 (closed)",
 )
@@ -927,7 +944,7 @@ acase(
     [],
     PLAN_SHA,
     "no_trust_list",
-    "V1's approval while the helper holds no list.",
+    "V1's approval while the helper holds no list.  Audit row:  no.",
     stored=None,
     stored_name="nothing",
 )
@@ -1216,7 +1233,9 @@ for key in [
 w("### Chain Vectors")
 w("")
 w(
-    "Each is `muster trust-list chain --yes` with the lists named, under the pin, history and record above.  The reason is the first failing check in §8's numbered order;  each bad list fails exactly one check.  Rows that hold v3 and send a rule C entry give the OPEN proposal's outcome.  `Final` gives the version 4 proposal's classification, which is OPEN (§17A, A2);  version 5 records and reports nothing as final."
+    "Each is `muster trust-list chain --yes` with the lists named, under the pin, history and record above.  The reason is the first failing check in §8's numbered order;  each bad list fails exactly one check.  "
+    "**The rule C rows (T4, T5, T8, T15, T18, T20, T21 and T22) give the OPEN proposal's outcomes.  A Milestone 1 to 4 builder skips them, or expects `chain_refused` with reason `reopen_unavailable` for each rule C entry (T5 is refused at its fourth entry), as T23 below shows.**  "
+    "`Final` gives the version 4 proposal's classification, which is OPEN (§17A, A2);  version 5 records and reports nothing as final."
 )
 w("")
 w("| Vector | Held Before | Chain | Expected | Final | Why |")
@@ -1230,6 +1249,17 @@ for name, held, chain, expect, why in chain_cases:
     out = "ack" if expect == "accepted" else f"`chain_refused`, reason `{expect}`"
     fin = "" if expect == "accepted" else ("yes" if expect in FINAL else "no")
     w(f"| {name} | {hv} | {cv} | {out} | {fin} | {why} |")
+w("")
+w("### Frozen Version 5 Vector")
+w("")
+w("What every verifier in Milestones 1 to 4 must answer for a rule C entry.")
+w("")
+w("| Vector | Held Before | Chain | Expected | Final | Why |")
+w("| --- | --- | --- | --- | --- | --- |")
+for name, held, chain, expect, why in frozen_cases:
+    hv = names[id(held)]
+    cv = ", ".join(names[id(c)] for c in chain)
+    w(f"| {name} | {hv} | {cv} | `chain_refused`, reason `{expect}` | no | {why} |")
 w("")
 w("### Recovery Vectors")
 w("")
