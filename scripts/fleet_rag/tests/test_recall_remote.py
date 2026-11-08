@@ -181,20 +181,36 @@ class RemoteRecall(unittest.TestCase):
             self.assertEqual((code, calls), (2, []))
             self.assertIn("SIMPLE_RECALL_REMOTE_WRITES", err)
 
-    def test_correct_and_retract_map_without_a_caller_seat(self):
+    def test_correct_and_retract_name_the_verified_connection_seat(self):
         doc = "contrib/CODEX/2026-11-05/472fc36e"
-        code, _, err, calls = self.run_cli(
-            ["correct", doc, self.LESSON, "--reason", "make it current", "--expected-revision", "2"],
-            reply({"id": "1", "doc_id": doc, "status": "completed"}, "corrected"), env=self.W)
-        self.assertEqual(code, 0, err)
-        self.assertEqual(calls[0][2]["params"], {"name": "recall_correct", "arguments": {
-            "doc_id": doc, "text": self.LESSON, "reason": "make it current", "expected_revision": 2}})
-        self.assertNotIn("seat", calls[0][2]["params"]["arguments"])
-        code, _, err, calls = self.run_cli(["retract", doc, "--reason", "obsolete now"],
-            reply({"id": "1", "doc_id": doc, "retracted": True}, "retracted"), env=self.W)
-        self.assertEqual(code, 0, err)
-        self.assertEqual(calls[0][2]["params"], {"name": "recall_retract", "arguments": {
-            "doc_id": doc, "reason": "obsolete now"}})
+        operations = (
+            (["correct", doc, self.LESSON, "--reason", "make it current", "--expected-revision", "2"],
+             "recall_correct", {"doc_id": doc, "text": self.LESSON, "reason": "make it current",
+                                "expected_revision": 2, "identity": "CODEX"}),
+            (["retract", doc, "--reason", "obsolete now"],
+             "recall_retract", {"doc_id": doc, "reason": "obsolete now", "identity": "CODEX"}),
+        )
+        for argv, tool, arguments in operations:
+            with self.subTest(tool=tool):
+                answer = self.seat_then(self.IDENTITIES, reply({"id": "1", "doc_id": doc}))
+                code, _, err, calls = self.run_cli(argv, answer, env=self.W)
+                self.assertEqual(code, 0, err)
+                self.assertEqual([c[2]["params"]["name"] for c in calls], ["identities", tool])
+                self.assertEqual(calls[0][2]["params"]["arguments"], {})
+                self.assertEqual(calls[1][2]["params"], {"name": tool, "arguments": arguments})
+                self.assertNotIn("seat", calls[1][2]["params"]["arguments"])
+
+    def test_correct_and_retract_without_a_verified_seat_send_no_write(self):
+        doc = "contrib/CODEX/2026-11-05/472fc36e"
+        for argv in (["correct", doc, self.LESSON, "--reason", "current"],
+                     ["retract", doc, "--reason", "obsolete"]):
+            with self.subTest(operation=argv[0]):
+                code, _, err, calls = self.run_cli(
+                    argv, self.seat_then({"default_identity": "CODEX", "authenticated_seat": "ECHO",
+                                          "identities": [{"identity": "CODEX"}]}), env=self.W)
+                self.assertEqual(code, 2)
+                self.assertEqual([c[2]["params"]["name"] for c in calls], ["identities"])
+                self.assertIn("write was not sent", err)
 
     def test_mutations_refuse_a_caller_seat(self):
         doc = "contrib/CODEX/2026-11-05/472fc36e"
