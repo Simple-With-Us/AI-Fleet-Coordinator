@@ -182,9 +182,9 @@ class Base(unittest.TestCase):
         return path
 
 
-# The Mac's runtime-sync LaunchAgent was renamed on Nov 2, 2026.  The allowlist names the live
-# label; the plist template under scripts/launchd still carries the old one until the template
-# is renamed too, so the coverage test below matches it through this map.
+# The Mac's runtime-sync LaunchAgent was renamed on Nov 2, 2026.  The allowlist and the plist
+# template under scripts/launchd both carry the live label;  the old one must stay refused,
+# and no template may carry it again.
 RENAMED_AGENTS = {"com.jay.agent-sync-runtime-sync": "com.jay.simple-tools-runtime-sync"}
 
 
@@ -199,7 +199,8 @@ class AllowlistTests(Base):
                 .split("<string>", 1)[1]
                 .split("</string>", 1)[0]
             ).strip()
-            self.assertIn(RENAMED_AGENTS.get(label, label), config["agents"], plist.name)
+            self.assertNotIn(label, RENAMED_AGENTS, f"{plist.name} carries a retired label")
+            self.assertIn(label, config["agents"], plist.name)
         self.assertIn("com.jay.fleet-worker-health", config["agents"])
         self.assertIn("com.jay.fleet-mac-services", config["agents"])
         self.assertEqual(config["units"]["fleet-server-status.timer"]["scope"], "user")
