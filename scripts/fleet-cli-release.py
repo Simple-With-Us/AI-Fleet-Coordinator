@@ -50,9 +50,11 @@ MAX_BUNDLE_BYTES = 8 * 1024 * 1024
 # The 159th is scripts/zcode-letter-hook/platform-letter, the ZC letter hook's wrapper (OPS-1048):  the copy the
 # install writes to ~/.local/bin/zc-letter/platform-letter, which sources the shared registry env before it execs
 # the checkout's real platform-letter.
-# The 160th is scripts/ag-wake-bridge, the AG seat's wake webhook receiver and deliverer (AFC-665;  its systemd
+# The 160th and 161st are agent_sync/platform_letter_cursor.py (the Cursor session-letter adapter) and
+# agent_sync/cursor_cloud_letters.py (the Cursor Cloud letter sweep).
+# The 162nd is scripts/ag-wake-bridge, the AG seat's wake webhook receiver and deliverer (AFC-665;  its systemd
 # unit template stays repo-only under agent_sync/server/).
-MAX_FILES = 160
+MAX_FILES = 162
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MARKER = "# fleet-cli managed wrapper v1"
 # Retention:  a receive keeps the newest KEEP_RELEASES releases and deletes older ones, but never `current`,

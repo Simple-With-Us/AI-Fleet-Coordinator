@@ -276,9 +276,7 @@ class HookTests(Base):
         text = self.said(answer)
         self.assertIn("Operator session letter: Antigravity %s, on the Mac." % label, text)
         self.assertIn('"@**Antigravity** %s"' % label, text)
-        self.assertIn("no way to set a chat's title", text)
-        self.assertIn('should start with "%s: "' % label, text)
-        self.assertNotIn("title starts with", text)  # the library's line is true only where a title can be set
+        self.assertIn('title starts with "%s: "' % label, text)
         record = self.lookup()
         self.assertEqual((record["label"], record["seat"]), (label, "AG"))
         self.assertEqual(self.note()["state"], "open")
@@ -323,6 +321,21 @@ class HookTests(Base):
         self.set_title(root, CID, "%s: Own Words" % label)
         self.assertEqual(self.hook(pre), {})
         self.assertEqual(self.lookup()["title"], "Own Words")  # the letter comes off what the Operator keeps
+
+    def test_the_title_writer_renames_annotations_and_summaries_db(self) -> None:
+        root = self.summaries({CID: "Audio Check Probe"})
+        ann_dir = os.path.join(root, "annotations")
+        os.makedirs(ann_dir, exist_ok=True)
+        ann_file = os.path.join(ann_dir, "%s.pbtxt" % CID)
+        Path(ann_file).write_text('title:"Audio Check Probe"  last_user_view_time:{seconds:1794121881  nanos:616000000}')
+        start, pre = self.payloads(root)
+        self.hook(start)
+        label = self.note()["label"]
+        expected = "%s: Audio Check Probe" % label
+        self.assertEqual(PA.stored_title(start), expected)
+        ann_text = Path(ann_file).read_text(encoding="utf-8")
+        self.assertIn('title:"%s"' % expected, ann_text)
+        self.assertIn("last_user_view_time:{seconds:1794121881", ann_text)
 
     def test_a_resumed_conversation_is_registered_on_its_first_prompt(self) -> None:
         # A conversation from before the install, resumed: agy sends no SessionStart.
@@ -971,6 +984,20 @@ class SweepTests(Base):
         self.assertEqual(code, 0)
         self.assertEqual(self.lookup(CID)["state"], "active")
         self.assertEqual(self.lookup(PARENT)["state"], "closed")
+
+    def test_sweep_tolerates_summaries_table_without_killed_column(self) -> None:
+        root = os.path.join(self.home, ".gemini", "antigravity-cli")
+        os.makedirs(root, exist_ok=True)
+        db = os.path.join(root, "conversation_summaries.db")
+        conn = sqlite3.connect(db)
+        with conn:
+            conn.execute("CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, title TEXT)")
+            conn.execute("INSERT INTO conversation_summaries VALUES (?, ?)", (CID, "Live"))
+        conn.close()
+        out = io.StringIO()
+        code = PA.main(["sweep", "--location", "mac"], env=self.env(), stdout=out)
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out.getvalue())["found"], 0)
 
 
 if __name__ == "__main__":

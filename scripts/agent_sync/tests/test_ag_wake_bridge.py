@@ -190,7 +190,7 @@ class Receiver(Base):
                         "title": "AFC-665 Antigravity Operator setup",
                         "verified_host": "server",
                         "state": "open",
-                        "assigned_at": 2,
+                        "assigned_at": "2026-11-08T06:46:57.123Z",
                         "retired_at": None,
                         "closed_at": None,
                     },
@@ -202,9 +202,10 @@ class Receiver(Base):
         self.assertTrue(answer["delivered"], answer)
         self.assertEqual(answer["picked"], "topic-match")
         with open(self.fake_out()) as fh:
-            seen = fh.read().split()
-        self.assertIn(CID_A, seen)
-        self.assertIn("AFC-665", seen)
+            seen_text = fh.read()
+        self.assertIn(CID_A, seen_text)
+        self.assertIn("w-0001", seen_text)
+        self.assertNotIn("AFC-665", seen_text)  # untrusted topic/channel/link are never interpolated into prompt text
         status, answer = self.post(self.wake(), env, key=self.key)
         self.assertEqual(status, 200)
         self.assertEqual(answer["reason"], "already-seen")
@@ -303,6 +304,39 @@ class TargetPick(Base):
         sid_mac, why_mac = B.pick_target(rows, "AFC-665 Operator setup", Path(self.store), "mac")
         self.assertEqual((sid_mac, why_mac), (CID_MAC, "topic-match"))
 
+    def test_iso8601_timestamps_and_fifo_seen_eviction(self) -> None:
+        rows = self.rows(
+            {
+                "native_session_id": CID_A,
+                "title": "Older session",
+                "verified_host": "server",
+                "state": "open",
+                "assigned_at": "2026-11-07T10:00:00Z",
+                "retired_at": None,
+                "closed_at": None,
+            },
+            {
+                "native_session_id": CID_B,
+                "title": "Newer session",
+                "verified_host": "server",
+                "state": "open",
+                "assigned_at": "2026-11-08T10:00:00Z",
+                "retired_at": None,
+                "closed_at": None,
+            },
+        )
+        sid, why = B.pick_target(rows, "no-matching-words", Path(self.store), "server")
+        self.assertEqual((sid, why), (CID_B, "most-recent"))
+        seen_file = Path(self.tmp.name) / "seen.json"
+        for i in range(B.SEEN_CAP):
+            B.remember_id(seen_file, "z-%04d" % i)
+        # Adding a lexicographically smaller ID must keep it and evict the oldest ("z-0000").
+        B.remember_id(seen_file, "a-new")
+        kept = B.seen_ids(seen_file)
+        self.assertIn("a-new", kept)
+        self.assertNotIn("z-0000", kept)
+        self.assertIn("z-0001", kept)
+
 
 class DeliverCli(Base):
     def test_deliver_cli_runs_one_delivery(self) -> None:
@@ -345,6 +379,15 @@ class DeliverCli(Base):
             out_text = fh.read()
         self.assertIn(CID_A, out_text)
         self.assertIn("agent-sync-wake", out_text)
+        bad = B.deliver(
+            env,
+            self.config,
+            wake_id="bad wake id!",
+            topic="Operator setup",
+            channel="work-in-progress",
+            link="",
+        )
+        self.assertEqual(bad, {"delivered": False, "reason": "bad-wake-id"})
 
 
 if __name__ == "__main__":

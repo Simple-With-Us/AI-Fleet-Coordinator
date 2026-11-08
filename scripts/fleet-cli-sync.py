@@ -47,8 +47,10 @@ RECEIVER_PATH = "scripts/fleet-cli-release.py"
 # The 156th is fleet_lanes/temp_build.py (AFC-618), the build-argv reader `lane`'s guard.py imports.
 # The 157th to 159th are the ZCode letter adapter, the ZC wake bridge and the ZC letter hook wrapper
 # (OPS-1048);  fleet-cli-release.py carries the same ledger.
-# The 160th is scripts/ag-wake-bridge (AFC-665), the AG seat's wake bridge.
-MAX_FILES = 160
+# The 160th and 161st are agent_sync/platform_letter_cursor.py (the Cursor session-letter adapter) and
+# agent_sync/cursor_cloud_letters.py (the Cursor Cloud letter sweep).
+# The 162nd is scripts/ag-wake-bridge (AFC-665), the AG seat's wake bridge.
+MAX_FILES = 162
 MAX_BYTES = 8 * 1024 * 1024
 OVERALL_SECONDS = 90
 SSH_SECONDS = 65

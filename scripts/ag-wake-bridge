@@ -69,10 +69,10 @@ ENV_PRINCIPAL = "SIMPLE_TOOLS_OPERATOR_REGISTRY_PRINCIPAL"
 ENV_KEY = "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY"
 
 WAKE_TEXT = (
-    "[{seat}\u00b7wake] You were tagged in Zulip:\u00a0 #{channel} / {topic}.\u00a0 {link}\n"
-    "Wake id {wake_id}.\u00a0 Read your inbox with `simple-chat inbox --peek`, respond in that "
-    "thread, and follow your seat rules.\u00a0 This prompt was delivered by the Operator's wake "
-    "bridge; the message text is not quoted here on purpose."
+    "[{seat}\u00b7wake] Wake id {wake_id}.\u00a0 Read your inbox with `simple-chat inbox --peek`, "
+    "respond in the thread that tagged you, and follow your seat rules.\u00a0 This prompt was "
+    "delivered by the Operator's wake bridge; the message metadata and text are not quoted here "
+    "on purpose."
 )
 
 DEFAULT_CONFIG = {
@@ -186,32 +186,36 @@ def registry_history(env: dict[str, str], limit: int = 50) -> list[dict[str, Any
         except (OSError, ValueError):
             return []
     from agent_sync import platform_letter as PL
+    from agent_sync import registry_api as RA
 
     merged = dict(PL.with_registry_env(env))
-    url = (merged.get(ENV_URL) or "").strip()
-    if not url:
-        return []
-    principal = (merged.get(ENV_PRINCIPAL) or "").strip() or "OPERATOR"
-    key = (merged.get(ENV_KEY) or "").strip()
-    if not key:
-        return []
-    from agent_sync import listener_registry as RG
-
-    path = RG.PREFIX + "history"
-    query = "platform=%s&limit=%d" % (PLATFORM, limit)
-    try:
-        target = url.rstrip("/") + path + "?" + query
-        request = urllib.request.Request(target, method="GET")
-        request.add_header("User-Agent", "agent-sync-registry/1.0")
-        headers = RG.headers(key, "GET", path, query, principal, b"", time.time())
-        for name, value in headers.items():
-            request.add_header(name, value)
-        with urllib.request.urlopen(request, timeout=10) as response:
-            answer = json.loads(response.read().decode("utf-8"))
-    except (OSError, ValueError, KeyError):
+    answer = RA.call(merged, "history", {"platform": PLATFORM, "limit": limit}, timeout=10)
+    if not isinstance(answer, dict) or "error" in answer:
         return []
     rows = answer.get("rows") or answer.get("records") or answer.get("items") or []
     return rows if isinstance(rows, list) else []
+
+
+def _parse_timestamp(value: Any) -> float:
+    """An epoch timestamp or an ISO-8601 timestamp string (`alias_assignments.assigned_at`) as a
+    comparable float; 0.0 when unset or unparseable."""
+    if value is None or isinstance(value, bool):
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    if not text:
+        return 0.0
+    try:
+        return float(text)
+    except ValueError:
+        pass
+    try:
+        from datetime import datetime
+
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
 
 
 def _words(text: str) -> set[str]:
@@ -244,7 +248,7 @@ def pick_target(
         sid = str(row.get("native_session_id") or "")
         if not TARGET_RE.fullmatch(sid):
             continue
-        candidates.append((float(row.get("assigned_at") or 0), sid, str(row.get("title") or "")))
+        candidates.append((_parse_timestamp(row.get("assigned_at")), sid, str(row.get("title") or "")))
     excluded = _excluded_ids(store_list, [sid for _, sid, _ in candidates])
     for seen, sid, title in candidates:
         if sid in excluded:
@@ -312,16 +316,26 @@ def _excluded_ids(stores: list[Path], sids: list[str]) -> set[str]:
 # --------------------------------------------------------------------------------------------
 
 
-def seen_ids(path: Path) -> set[str]:
+def _seen_list(path: Path) -> list[str]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        return {str(x) for x in data} if isinstance(data, list) else set()
+        if not isinstance(data, list):
+            return []
+        return list(dict.fromkeys(str(x) for x in data if x is not None))
     except (OSError, ValueError):
-        return set()
+        return []
+
+
+def seen_ids(path: Path) -> set[str]:
+    return set(_seen_list(path))
 
 
 def remember_id(path: Path, wake_id: str) -> None:
-    ids = sorted(seen_ids(path) | {wake_id})[-SEEN_CAP:]
+    existing = _seen_list(path)
+    if wake_id in existing:
+        existing.remove(wake_id)
+    existing.append(wake_id)
+    ids = existing[-SEEN_CAP:]
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     tmp = path.with_suffix(".tmp")
     try:
@@ -364,17 +378,20 @@ def deliver(
     """Resolve the target and run the delivery command.  Never raises."""
     if not config.get("delivery_enabled"):
         return {"delivered": False, "reason": "delivery-disabled"}
+    if not WAKE_ID_RE.fullmatch(wake_id or ""):
+        return {"delivered": False, "reason": "bad-wake-id"}
     stores = store_paths(env)
     try:
         rows = registry_history(env)
     except Exception:  # noqa: BLE001 - an unreadable registry is an undelivered wake, never a crash
         rows = []
-    sid, why = pick_target(rows, topic, stores, str(config.get("target_host") or "server"))
+    try:
+        sid, why = pick_target(rows, topic, stores, str(config.get("target_host") or "server"))
+    except Exception:  # noqa: BLE001 - a malformed row never crashes delivery
+        sid, why = "", "no-live-session"
     if not sid:
         return {"delivered": False, "reason": why}
-    text = WAKE_TEXT.format(
-        seat=SEAT, channel=channel or "-", topic=topic or "-", link=link or "", wake_id=wake_id
-    )
+    text = WAKE_TEXT.format(seat=SEAT, wake_id=wake_id)
     argv = [
         str(part).replace("{session_id}", sid).replace("{wake_text}", text)
         for part in (config.get("command_template") or [])
@@ -535,14 +552,20 @@ def make_handler(env: dict[str, str], config: dict[str, Any], receipts: list[dic
 
 def serve(env: dict[str, str], bind: str, port: int, config: dict[str, Any]) -> int:
     from agent_sync import platform_letter as PL
+    from agent_sync import registry_api as RA
 
     env = dict(PL.with_registry_env(env))
-    for name in (ENV_URL, ENV_KEY):
-        if not (env.get(name) or "").strip():
-            raise SystemExit(
-                "ag-wake-bridge: %s is not set: the registry environment is missing"
-                " (source the host's shared registry env file first)" % name
-            )
+    if not RA.base_url(env):
+        raise SystemExit(
+            "ag-wake-bridge: %s is not set: the registry environment is missing"
+            " (source the host's shared registry env file first)" % RA.URL_ENV
+        )
+    key_env = (env.get(RA.KEY_REF_ENV) or "").strip() or RA.KEY_ENV
+    if not (env.get(key_env) or "").strip():
+        raise SystemExit(
+            "ag-wake-bridge: %s is not set: the registry environment is missing"
+            " (source the host's shared registry env file first)" % key_env
+        )
     if not read_key(env):
         raise SystemExit(
             "ag-wake-bridge: the routine key file is missing, short, or group-readable"
