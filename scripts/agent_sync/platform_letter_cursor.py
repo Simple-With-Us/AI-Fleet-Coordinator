@@ -139,4 +139,6 @@ def entry(command: str, timeout: int, event: str) -> dict[str, Any]:
     return {"command": command, "timeout": timeout, "failClosed": False}
 
 
-INSTALL = PL.JsonHookInstaller(path=HOOKS_FILE, events=HOOK_TIMEOUTS, locate=versioned_hooks, build=entry)
+INSTALL = PL.JsonHookInstaller(
+    path=HOOKS_FILE, events=HOOK_TIMEOUTS, locate=versioned_hooks, build=entry
+)
