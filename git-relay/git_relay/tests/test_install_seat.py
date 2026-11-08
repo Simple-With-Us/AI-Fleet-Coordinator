@@ -150,14 +150,13 @@ class InstallSeatTests(unittest.TestCase):
         rc = sp.install_seat(self.args2(), self.unit)
         self.assertEqual(rc, 0)
         self.assertEqual(json.loads(self.seats_path.read_text()), self.policy)
-        self.assertFalse(
-            ReplayStore(str(self.relay_dir / sp.REPLAY_STORE)).seen("proof-t1")
-        )
+        self.assertFalse(ReplayStore(str(self.relay_dir / sp.REPLAY_STORE)).seen("proof-t1"))
 
     def test_apply_installs_atomically_with_backup_and_consumes_the_receipt(self):
         fake = _FakeSubprocess()
-        with mock.patch.object(sp, "subprocess", fake), mock.patch.object(
-            sp, "_healthy", lambda *a: True
+        with (
+            mock.patch.object(sp, "subprocess", fake),
+            mock.patch.object(sp, "_healthy", lambda *a: True),
         ):
             rc = sp.install_seat(self.args2(apply=True), self.unit)
         self.assertEqual(rc, 0)
@@ -172,8 +171,9 @@ class InstallSeatTests(unittest.TestCase):
 
     def test_apply_with_an_unhealthy_restart_restores_the_previous_file(self):
         fake = _FakeSubprocess()
-        with mock.patch.object(sp, "subprocess", fake), mock.patch.object(
-            sp, "_healthy", lambda *a: False
+        with (
+            mock.patch.object(sp, "subprocess", fake),
+            mock.patch.object(sp, "_healthy", lambda *a: False),
         ):
             rc = sp.install_seat(self.args2(apply=True), self.unit)
         self.assertEqual(rc, 3)
@@ -190,11 +190,118 @@ class InstallSeatTests(unittest.TestCase):
         record = dict(self.record, policy_after="0" * 64)
         # Recompute the digests so the receipt is internally consistent but
         # names a DIFFERENT transaction than this one.
-        other_after = sp.canonical_digest({"swu-old": dict(OLD_ROW), "swu-zc": dict(NEW_ROW, identity="OTHER")})
+        other_after = sp.canonical_digest(
+            {"swu-old": dict(OLD_ROW), "swu-zc": dict(NEW_ROW, identity="OTHER")}
+        )
         record["policy_after"] = other_after
         self.receipt_path.write_text(json.dumps(sign_receipt(KEY, record)))
         rc = sp.install_seat(self.args2(), self.unit)
         self.assertEqual(rc, 2)
+
+    def test_a_held_transaction_lock_refuses_without_touching_the_file(self):
+        import fcntl
+
+        lock_path = str(self.seats_path) + ".transaction.lock"
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            with mock.patch.object(sp, "TRANSACTION_LOCK_WAIT_S", 0.2):
+                rc = sp.install_seat(self.args2(), self.unit)
+        finally:
+            os.close(fd)
+        self.assertEqual(rc, 2)
+        self.assertEqual(json.loads(self.seats_path.read_text()), self.policy)
+        self.assertFalse(ReplayStore(str(self.relay_dir / sp.REPLAY_STORE)).seen("proof-t1"))
+
+    def test_apply_preserves_a_nonroot_service_users_ownership_and_mode(self):
+        import pwd
+
+        me = pwd.getpwuid(os.geteuid())
+        unit = sp.Unit(
+            name="git-relay.service",
+            relay=str(self.relay_dir),
+            config=str(self.config),
+            apps_token="x",
+            environment={"GIT_RELAY_HOST": "127.0.0.1", "GIT_RELAY_PORT": "8471"},
+            user=me.pw_name,
+        )
+        os.chmod(self.seats_path, 0o640)
+        fake = _FakeSubprocess()
+        with (
+            mock.patch.object(sp, "subprocess", fake),
+            mock.patch.object(sp, "_healthy", lambda *a: True),
+        ):
+            rc = sp.install_seat(self.args2(apply=True), unit)
+        self.assertEqual(rc, 0)
+        info = os.stat(self.seats_path)
+        self.assertEqual(info.st_uid, me.pw_uid)
+        self.assertEqual(info.st_mode & 0o777, 0o640)
+
+    def test_a_nonroot_unit_refuses_a_file_it_does_not_own(self):
+        unit = sp.Unit(
+            name="git-relay.service",
+            relay=str(self.relay_dir),
+            config=str(self.config),
+            apps_token="x",
+            environment={"GIT_RELAY_HOST": "127.0.0.1", "GIT_RELAY_PORT": "8471"},
+            user="root-is-not-this-test-user" if os.geteuid() != 0 else "nobody",
+        )
+        # The refusal fires only when the named user resolves and does not own
+        # the file;  an unresolvable name refuses as unreadable-by-design too.
+        rc = sp.install_seat(self.args2(), unit)
+        self.assertEqual(rc, 2)
+        self.assertEqual(json.loads(self.seats_path.read_text()), self.policy)
+
+    def test_a_dynamic_user_unit_is_refused(self):
+        unit = sp.Unit(
+            name="git-relay.service",
+            relay=str(self.relay_dir),
+            config=str(self.config),
+            apps_token="x",
+            environment={"GIT_RELAY_HOST": "127.0.0.1", "GIT_RELAY_PORT": "8471"},
+            dynamic_user=True,
+        )
+        rc = sp.install_seat(self.args2(), unit)
+        self.assertEqual(rc, 2)
+        self.assertEqual(json.loads(self.seats_path.read_text()), self.policy)
+
+    def test_the_units_actual_audit_path_is_honored(self):
+        custom = self.relay_dir / "elsewhere-audit.jsonl"
+        (self.relay_dir / sp.DEFAULT_AUDIT).rename(custom)
+        unit = sp.Unit(
+            name="git-relay.service",
+            relay=str(self.relay_dir),
+            config=str(self.config),
+            apps_token="x",
+            environment={
+                "GIT_RELAY_HOST": "127.0.0.1",
+                "GIT_RELAY_PORT": "8471",
+                "GIT_RELAY_AUDIT_PATH": str(custom),
+            },
+        )
+        rc = sp.install_seat(self.args2(), unit)
+        self.assertEqual(rc, 0)
+        # A relative value resolves against the unit's working directory, as from_env does.
+        (self.relay_dir / "logs").mkdir()
+        custom.rename(self.relay_dir / "logs" / "audit.jsonl")
+        unit.environment["GIT_RELAY_AUDIT_PATH"] = "logs/audit.jsonl"
+        rc = sp.install_seat(self.args2(), unit)
+        self.assertEqual(rc, 0)
+
+    def test_a_missing_audit_log_refuses_closed(self):
+        (self.relay_dir / sp.DEFAULT_AUDIT).unlink()
+        rc = sp.install_seat(self.args2(), self.unit)
+        self.assertEqual(rc, 2)
+        self.assertEqual(json.loads(self.seats_path.read_text()), self.policy)
+
+    def test_duplicate_seats_file_lines_are_refused_as_ambiguous(self):
+        self.config.write_text(
+            "GIT_RELAY_SEATS_FILE=%s\nGIT_RELAY_SEATS_FILE=%s\n"
+            % (self.seats_path, self.seats_path)
+        )
+        with self.assertRaises(SystemExit):
+            sp.install_seat(self.args2(), self.unit)
+        self.assertEqual(json.loads(self.seats_path.read_text()), self.policy)
 
 
 if __name__ == "__main__":

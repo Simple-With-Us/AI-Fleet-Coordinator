@@ -238,9 +238,7 @@ class ReplayStore:
             if not isinstance(entries, list):
                 raise TypeError()
             self._entries = [
-                {field: e[field] for field in self._FIELDS}
-                for e in entries
-                if isinstance(e, dict)
+                {field: e[field] for field in self._FIELDS} for e in entries if isinstance(e, dict)
             ]
             for entry in self._entries:
                 if (

@@ -159,7 +159,9 @@ class ExternalProofTests(unittest.TestCase):
         self.assertNotEqual(retry["proof_id"], record["proof_id"])
 
     def test_read_timeout_is_inconclusive(self):
-        record = proof(FakeRelay(fail_read=TimeoutError("timed out")))("swu-zc", "p2", BEFORE, AFTER)
+        record = proof(FakeRelay(fail_read=TimeoutError("timed out")))(
+            "swu-zc", "p2", BEFORE, AFTER
+        )
         self.assertEqual((record["outcome"], record["stage"]), (INCONCLUSIVE, "read"))
 
 
@@ -249,7 +251,9 @@ class ReceiptGateTests(unittest.TestCase):
             self.verify(self.receipt, audit_rows=[])
         # A row for another probe path (another proof id) does not bind this one.
         with self.assertRaisesRegex(ValueError, "relay audit"):
-            self.verify(self.receipt, audit_rows=[audit_row(self.record, path="deploy-proof/other.probe")])
+            self.verify(
+                self.receipt, audit_rows=[audit_row(self.record, path="deploy-proof/other.probe")]
+            )
         # A row whose reason differs from the recorded refusal does not bind.
         with self.assertRaisesRegex(ValueError, "relay audit"):
             self.verify(self.receipt, audit_rows=[audit_row(self.record, reason="seat policy")])
