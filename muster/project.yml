@@ -95,6 +95,7 @@ targets:
       # store, so the test bundle compiles them (MusterSettingsLayoutTests, SettingsFoldersTests).
       - path: Muster/Views/MusterSettingsPanes.swift
       - path: Muster/Model/ConfigFileReader.swift
+      - path: Muster/Model/PlatformVariants.swift
       - path: Muster/Model/DriftAlerts.swift
       - path: Muster/Model/DriftHistory.swift
       - path: Muster/Model/DriftMonitor.swift
@@ -167,6 +168,9 @@ targets:
       # The place strip, so MusterWindowLayoutTests checks the app's own strip.  It needs only
       # FleetHost, MachineStatus and MusterNavigation, which are compiled above.
       - path: Muster/Views/PlaceBadge.swift
+      # Apps & Work's filter row.  It takes a binding and no store, so FleetViewFilterBarTests
+      # hosts the row itself at the narrowest pane.
+      - path: Muster/Views/FleetViewFilterBar.swift
     settings:
       base:
         PRODUCT_NAME: MusterTests
