@@ -18,6 +18,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import types
 import unittest
 from collections.abc import Callable
 from pathlib import Path
@@ -763,6 +764,36 @@ class PruneTests(WorldCase):
             "the integration tree was touched",
         )
 
+    def test_a_lowercase_github_origin_reads_the_relay_in_the_registry_spelling(self) -> None:
+        # The server's origin is github.com/simple-with-us/...;  GitHub ignores case, but the
+        # relay's seat policy does not, and it refused the lowercase owner (reason seat_policy).
+        lane = self.w.new_lane("pr13-sweep")
+        self.w.commit(lane)
+        self.w.push(lane, "feature/thirteen")
+        self.w.merged_pr(lane, "feature/thirteen", number=13)
+
+        asked: list[list[str]] = []
+
+        def lowercase_origin(argv: list[str]) -> D.CmdResult | None:
+            if "remote.origin.url" in argv:
+                asked.append(argv)
+                return D.CmdResult(0, "https://github.com/simple-with-us/DealDex.git\n", "")
+            return None
+
+        res = self.w.run("prune", "--json", override=lowercase_origin)
+        self.assertEqual(res.rc, 0, res.err)
+        self.assertTrue(asked, "the origin URL was never asked for")
+        row = res.row("claude-pr13-sweep")
+        self.assertEqual(row["action"], "remove", row)
+        self.assertIn("PR #13 merged", row["reason"])
+        queries = [
+            json.loads(call[call.index("--args-json") + 1])
+            for call in res.calls
+            if call[:1] == ["simple-git"]
+        ]
+        self.assertTrue(queries)
+        self.assertEqual({q["repo"] for q in queries}, {"Simple-With-Us/DealDex"})
+
     def test_dirty_untracked_and_unpushed_lanes_are_kept(self) -> None:
         dirty = self.w.new_lane("dirty")
         self.w.commit(dirty)
@@ -1429,6 +1460,48 @@ class RetireTests(WorldCase):
         self.merged("noseat", 401)
         self.assertEqual(
             self.w.run("retire", "noseat", env={"AGENT_SEAT": None}).rc, 64
+        )
+
+
+class OwnerRepoTests(unittest.TestCase):
+    """_owner_repo: the remote's repo in the registry's spelling when they are the same repo."""
+
+    def owner_repo(self, url: str | None, known: str) -> str | None:
+        app = types.SimpleNamespace(owner_repo=known)
+
+        def run(argv: list[str], cwd: Path | None = None) -> D.CmdResult:
+            return D.CmdResult(0, url, "") if url is not None else D.CmdResult(1, "", "")
+
+        return R._owner_repo(run, app, Path("."))  # type: ignore[arg-type]
+
+    def test_the_same_repo_in_another_case_uses_the_registry_spelling(self) -> None:
+        for url in (
+            "https://github.com/simple-with-us/AI-Fleet-Coordinator.git",
+            "git@github.com:SIMPLE-WITH-US/ai-fleet-coordinator.git",
+            "https://github.com/Simple-With-Us/AI-Fleet-Coordinator",
+        ):
+            self.assertEqual(
+                self.owner_repo(url, "Simple-With-Us/AI-Fleet-Coordinator"),
+                "Simple-With-Us/AI-Fleet-Coordinator",
+                url,
+            )
+
+    def test_a_remote_naming_another_repo_keeps_its_own_name(self) -> None:
+        self.assertEqual(
+            self.owner_repo("https://github.com/someone/DealDex.git", "Simple-With-Us/DealDex"),
+            "someone/DealDex",
+        )
+
+    def test_no_usable_remote_falls_back_to_the_registry(self) -> None:
+        self.assertEqual(self.owner_repo(None, "Simple-With-Us/DealDex"), "Simple-With-Us/DealDex")
+        self.assertEqual(
+            self.owner_repo("file:///tmp/origin.git", "Simple-With-Us/DealDex"),
+            "Simple-With-Us/DealDex",
+        )
+
+    def test_a_remote_with_no_registry_spelling_is_used_as_is(self) -> None:
+        self.assertEqual(
+            self.owner_repo("https://github.com/simple-with-us/X.git", ""), "simple-with-us/X"
         )
 
 

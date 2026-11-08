@@ -1070,7 +1070,14 @@ def _remote_heads(run: Runner, tree: Path) -> dict[str, str] | None:
 def _owner_repo(run: Runner, app: L.App, tree: Path) -> str | None:
     res = run(["git", "config", "--get", "remote.origin.url"], cwd=tree)
     found = D.parse_owner_repo(res.out.strip()) if res.ok else None
-    return found or (app.owner_repo or None)
+    known = app.owner_repo or None
+    # GitHub ignores case in owner and repo names, but the relay's seat policy matches them
+    # exactly, and the server's origin reads github.com/simple-with-us/...  So when the remote
+    # names the registry's repo, use the registry's spelling;  a remote naming another repo
+    # (a fork) keeps its own.
+    if found and known and found.casefold() == known.casefold():
+        return known
+    return found or known
 
 
 def _lane_apps(ctx: K.Ctx, repo_filter: str | None) -> list[L.App]:
