@@ -73,7 +73,6 @@ import { serveGrAssertVerify, grantSummaryIsLive, cachedGrantExists } from "./gr
 import { grAssertionMinter } from "./gr-assert.js";
 import { resolveGrSecrets, grClientFromResolved } from "./gr-tools.js";
 import { isGitPath, serveGit } from "./git-route.js";
-import { serveMcpRequest } from "./mcp.js";
 import { HostedTools, HOSTED_READ_TOOLS } from "./hosted-tools.js";
 import { IdentityRouter, resolveDelegatedCredentials, adminDelegatedReadiness, GB_IDENTITIES } from "./delegated-identities.js";
 import { gate, linearQuotaFromEnv } from "./gate.js";
@@ -106,7 +105,7 @@ import {
 import { serveLinearWake, LINEAR_WAKE_PATH } from "./linear-wake.js";
 import { AuditBatcher, AUDIT_FLUSH_MS } from "./audit-batch.js";
 import { IdentityCache, bearerCacheMs } from "./identity-cache.js";
-import { answerLifecycle } from "./mcp-lifecycle.js";
+import { answerLifecycle, serveRoutedMcp } from "./mcp-lifecycle.js";
 import { BudgetExceeded, guardOff, guardOffResponse } from "./budget-guard.mjs";
 import { countedFetch, diagnosticRowAllowed, logLimited, runInvocation, spend, withinLimit } from "./invocation.js";
 
@@ -534,7 +533,7 @@ async function serveMcp(request, env, ctx) {
     clientId: typeof auth.clientId === "string" ? auth.clientId : "",
     logRefusal: (row) => logRefusal(env, row),
   }) : null;
-  const response = await serveMcpRequest(request, routedTools, authInfo, events);
+  const response = await serveRoutedMcp(request, routedTools, authInfo, events);
   if (response.status === 403 && request.headers.has("origin")) {
     // Records whether any client sends a browser Origin (spec 3.2).
     console.log(JSON.stringify({ event: "mcp_origin_refused", origin_host: logSafe(safeHost(request.headers.get("origin")), 120) }));
@@ -658,7 +657,7 @@ async function serveGbBearerMcp(request, env, token, ctx, credential = null) {
   });
   const routed = new IdentityRouter({ callerTools: tools, credentials: null, createIdentity: null });
   const authInfo = { token: grantRef, clientId: "gb-bearer", scopes, extra: { seat: identity } };
-  return serveMcpRequest(request, routed, authInfo, null);
+  return serveRoutedMcp(request, routed, authInfo, null);
 }
 
 // ---------------------------------------------------------------- /mcp with a seat bearer
@@ -774,7 +773,7 @@ async function serveSbtBearerMcp(request, env, token, ctx, credential = null) {
   });
   const routed = new IdentityRouter({ callerTools: tools, credentials: null, createIdentity: null });
   const authInfo = { token: grantRef, clientId: "sbt-bearer", scopes, extra: { seat } };
-  return serveMcpRequest(request, routed, authInfo, null);
+  return serveRoutedMcp(request, routed, authInfo, null);
 }
 
 // ---------------------------------------------------------------- /internal/wake/<SEAT>
