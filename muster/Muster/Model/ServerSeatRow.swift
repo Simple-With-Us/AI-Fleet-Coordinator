@@ -252,6 +252,23 @@ struct ServerSeatRowPresentation: Equatable {
             + gap + "That is old evidence, not the seat's state now."
     }
 
+    /// How often the open Seat Activity panel reads the server's eavesdropper again, in
+    /// seconds.  It is one question to the server for every seat at once, and it must stay well
+    /// inside the server answer's window (`ReducedEavesdropperStatus.freshnessWindow`, five
+    /// minutes, counted from when the server wrote it), or the rows would read "Not current"
+    /// for part of every cycle.
+    static let serverRereadSeconds = 60
+
+    /// What the store's last reading says about one seat at `now`, the same rule as
+    /// `ServerEavesdropperStatusStore.seat(_:)` but at the caller's moment, so the heading and
+    /// every row of one drawing judge currency at one instant.
+    static func seatReading(_ name: String, reading: ServerEavesdropperReading?, now: Date) -> ServerSeatReading {
+        guard let reading else {
+            return .notRead("The server's eavesdropper has not been read yet.")
+        }
+        return reading.seat(name, now: now)
+    }
+
     /// The one line under the Held By The Server heading:  when Muster read the server's
     /// eavesdropper and whether that answer is current.  The rows say the rest.
     static func groupLine(
@@ -280,8 +297,11 @@ struct ServerSeatRowPresentation: Equatable {
                         : "The server's eavesdropper is paused for every seat.")
                 }
             }
-        case .notRead, .unavailable, .notThisAppsVersion:
+        case .notRead, .unavailable:
             line = "\(when), but no reading came back, so each row says why."
+        case .notThisAppsVersion:
+            // An answer did come back:  this version of Muster cannot read it.
+            line = "\(when), and it answered in a form this version of Muster cannot read, so each row says to update Muster."
         }
         if loading { line += gap + "Muster is reading it again now." }
         return line

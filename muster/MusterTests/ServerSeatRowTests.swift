@@ -318,6 +318,34 @@ final class ServerSeatRowTests: XCTestCase {
             "Muster read the server's eavesdropper at 2:00 PM, but no reading came back, so each row says why."
                 + rowGap + "Muster is reading it again now."
         )
+        // An answer this version cannot read did come back, so the heading says that, as the
+        // rows do, and never "no reading came back".
+        XCTAssertEqual(
+            ServerSeatRowPresentation.groupLine(
+                reading: .notThisAppsVersion("The answer is a later contract."),
+                readAt: readAt, loading: false, now: now
+            ),
+            "Muster read the server's eavesdropper at 2:00 PM, and it answered in a form this version of Muster cannot read, so each row says to update Muster."
+        )
+    }
+
+    /// The heading and the rows judge currency at the caller's one moment.
+    func test_a_seat_reading_is_judged_at_the_callers_moment() throws {
+        XCTAssertEqual(
+            ServerSeatRowPresentation.seatReading("CLAUDE", reading: nil, now: Date()),
+            .notRead("The server's eavesdropper has not been read yet.")
+        )
+        let reading = ServerEavesdropperReading.notThisAppsVersion("later contract")
+        XCTAssertEqual(
+            ServerSeatRowPresentation.seatReading("CLAUDE", reading: reading, now: Date()),
+            reading.seat("CLAUDE", now: Date())
+        )
+    }
+
+    /// The open panel reads the server well inside the answer's own window.
+    func test_the_server_is_read_again_well_inside_its_window() {
+        XCTAssertLessThan(TimeInterval(ServerSeatRowPresentation.serverRereadSeconds) * 2,
+                          ReducedEavesdropperStatus.freshnessWindow)
     }
 
     /// A current global pause is said once, under the heading.

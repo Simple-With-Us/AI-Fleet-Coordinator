@@ -65,8 +65,11 @@ struct SeatActivityView: View {
                     }
                     if model.rosterProblem == nil {
                         sources(model)
+                        // One moment for the whole drawing, so the server heading and every server
+                        // row judge whether the answer is current at the same instant.
+                        let now = Date()
                         ForEach(model.groups) { group in
-                            groupView(group, model: model)
+                            groupView(group, model: model, now: now)
                         }
                         if model.groups.allSatisfy({ $0.kind != .server }), let note = model.otherServerSeatsNote {
                             groupHeading(.server)
@@ -105,10 +108,12 @@ struct SeatActivityView: View {
         }
         .task {
             // The server's eavesdropper,  read on its own so the Mac's slower read never holds
-            // it up:  on a visit,  then on the same slow clock,  only while the app is in front.
+            // it up:  on a visit,  then every minute,  only while the page is open and the app is
+            // in front.  The minute keeps a read well inside the server answer's own five minute
+            // window, so the rows do not sit at "Not current" between reads.
             await serverStatus.refreshIfOlder(than: SeatActivityView.foregroundMinimumSeconds)
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: UInt64(SeatActivityView.refreshSeconds) * 1_000_000_000)
+                try? await Task.sleep(nanoseconds: UInt64(ServerSeatRowPresentation.serverRereadSeconds) * 1_000_000_000)
                 if Task.isCancelled { break }
                 guard activity.isActive else { continue }
                 await serverStatus.refreshIfOlder(than: SeatActivityView.foregroundMinimumSeconds)
@@ -266,7 +271,7 @@ struct SeatActivityView: View {
             .padding(.top, 6)
     }
 
-    private func groupView(_ group: SeatActivityGroup, model: SeatActivityModel) -> some View {
+    private func groupView(_ group: SeatActivityGroup, model: SeatActivityModel, now: Date) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             groupHeading(group.kind)
             Text(SeatActivityText.display(group.kind.explanation))
@@ -278,7 +283,7 @@ struct SeatActivityView: View {
                     reading: serverStatus.reading,
                     readAt: serverStatus.readAt,
                     loading: serverStatus.loading,
-                    now: Date()
+                    now: now
                 )))
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -292,7 +297,7 @@ struct SeatActivityView: View {
             }
             tableHeader(group.kind)
             ForEach(group.rows) { row in
-                rowView(row, readAt: model.readAt)
+                rowView(row, readAt: model.readAt, now: now)
             }
         }
     }
@@ -320,10 +325,10 @@ struct SeatActivityView: View {
     }
 
     /// One seat's row.
-    private func rowView(_ row: SeatActivityRow, readAt: Date?) -> some View {
+    private func rowView(_ row: SeatActivityRow, readAt: Date?, now: Date) -> some View {
         // A seat the server holds reads from the server's eavesdropper;  every other row is
         // built from the Mac's,  exactly as before.
-        let server: ServerSeatRowPresentation? = row.place == .server ? serverPresentation(row) : nil
+        let server: ServerSeatRowPresentation? = row.place == .server ? serverPresentation(row, now: now) : nil
         return VStack(alignment: .leading, spacing: 3) {
             HStack(alignment: .top, spacing: 8) {
                 VStack(alignment: .leading, spacing: 1) {
@@ -401,13 +406,13 @@ struct SeatActivityView: View {
     }
 
     /// What the server's eavesdropper says about a seat the server holds,  as its row shows it.
-    private func serverPresentation(_ row: SeatActivityRow) -> ServerSeatRowPresentation {
+    private func serverPresentation(_ row: SeatActivityRow, now: Date) -> ServerSeatRowPresentation {
         ServerSeatRowPresentation(
-            reading: serverStatus.seat(row.seat),
+            reading: ServerSeatRowPresentation.seatReading(row.seat, reading: serverStatus.reading, now: now),
             status: serverStatus.reading?.status,
             readAt: serverStatus.readAt,
             loading: serverStatus.loading,
-            now: Date()
+            now: now
         )
     }
 
