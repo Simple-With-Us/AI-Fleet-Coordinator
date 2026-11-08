@@ -2710,6 +2710,19 @@ class StrongerWriteTests(unittest.TestCase):
                 collector.write_report(link / "report.json", {})
             self.assertEqual(list(real.iterdir()), [])
 
+    def test_a_folder_swapped_for_a_link_after_the_check_is_refused(self):
+        # Kody, PR 1477:  the folder is opened with O_NOFOLLOW and used through that descriptor,
+        # so passing the early check is not enough to write through a link.
+        with tempfile.TemporaryDirectory() as tmp:
+            real = Path(tmp) / "real"
+            real.mkdir()
+            link = Path(tmp) / "link"
+            link.symlink_to(real)
+            with mock.patch.object(collector.Path, "is_symlink", return_value=False):
+                with self.assertRaises(OSError):
+                    collector.write_report(link / "report.json", {})
+            self.assertEqual(list(real.iterdir()), [])
+
 
 class WholeRunTests(unittest.TestCase):
     """Whole runs of `main`, each reading the report the one before it wrote."""

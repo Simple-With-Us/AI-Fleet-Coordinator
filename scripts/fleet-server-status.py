@@ -97,11 +97,11 @@ import json
 import os
 import pwd
 import re
+import secrets
 import socket
 import stat
 import subprocess
 import sys
-import tempfile
 import time
 from pathlib import Path
 
@@ -2376,35 +2376,42 @@ def collection_report(coolify, services, code_problem, answered_scopes, processe
 
 def write_report(path, document):
     """Atomic and private:  a 0600 temporary file in the same folder,  fsynced,  then
-    renamed over.  The folder is created 0700 when it is absent,  and a folder that is a link
-    is refused:  the report goes where the Mac and the helper will look for it,  or nowhere."""
+    renamed over.  The folder is created 0700 when it is absent,  and a folder that is a link
+    is refused:  the report goes where the Mac and the helper will look for it,  or nowhere.
+    The folder is opened once with O_NOFOLLOW,  and the temporary file,  the rename and the
+    folder fsync all go through that descriptor,  so a folder swapped for a link after the
+    check cannot redirect the report (Kody,  PR 1477)."""
     if path.parent.is_symlink():
         raise OSError("the report's folder is a symlink;  refusing to write")
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    if path.parent.is_symlink():
-        raise OSError("the report's folder is a symlink;  refusing to write")
-    handle, temporary = tempfile.mkstemp(
-        prefix=".server-status.", suffix=".tmp", dir=str(path.parent)
-    )
     try:
-        os.fchmod(handle, 0o600)
-        with os.fdopen(handle, "w") as output:
-            json.dump(document, output, indent=2, sort_keys=False)
-            output.write("\n")
-            output.flush()
-            os.fsync(output.fileno())
-        os.replace(temporary, path)
-        folder = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(folder)
-        finally:
-            os.close(folder)
-    except BaseException:
-        try:
-            os.unlink(temporary)
-        except OSError:
-            pass
+        folder = os.open(str(path.parent), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as error:
+        if error.errno in (errno.ELOOP, errno.ENOTDIR):
+            raise OSError("the report's folder is a symlink;  refusing to write") from error
         raise
+    try:
+        temporary = ".server-status.%d.%s.tmp" % (os.getpid(), secrets.token_hex(8))
+        handle = os.open(
+            temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=folder
+        )
+        try:
+            os.fchmod(handle, 0o600)
+            with os.fdopen(handle, "w") as output:
+                json.dump(document, output, indent=2, sort_keys=False)
+                output.write("\n")
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, path.name, src_dir_fd=folder, dst_dir_fd=folder)
+        except BaseException:
+            try:
+                os.unlink(temporary, dir_fd=folder)
+            except OSError:
+                pass
+            raise
+        os.fsync(folder)
+    finally:
+        os.close(folder)
 
 
 def parse_args(argv=None):
