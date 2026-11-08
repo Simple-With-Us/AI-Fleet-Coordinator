@@ -10,6 +10,7 @@ import unittest
 
 from git_relay.deploy_proof import (
     INCONCLUSIVE,
+    NULL_OID,
     PROVEN,
     REFUSALS,
     REFUSED,
@@ -75,6 +76,20 @@ class ExternalProofTests(unittest.TestCase):
         probe = next(body for url, body in relay.requests if "wf_file_patch" in url)
         self.assertIn("proof-0001", probe["message"])
         self.assertEqual(probe["expected_head_sha"], "0" * 40)
+
+    def test_probe_is_mutation_free_by_construction(self):
+        relay = FakeRelay()
+        proof(relay)("swu-zc", "proof-0005")
+        probe = next(body for url, body in relay.requests if "wf_file_patch" in url)
+        # The git null object id never names a ref head, commit or blob, so no
+        # provider write can be satisfied from this request whatever the
+        # service allows (the relay's comparisons cannot match it, and the
+        # provider enforces expectedHeadOid server-side). Empty edits on top.
+        self.assertEqual(NULL_OID, "0" * 40)
+        self.assertEqual(probe["expected_head_sha"], NULL_OID)
+        self.assertEqual(probe["base_blob_sha"], NULL_OID)
+        self.assertEqual(probe["edits"], [{"start": 0, "end": 0, "text": ""}])
+        self.assertEqual(probe["branch"], "main")
 
     def test_every_documented_refusal_proves_without_a_manifest_digest(self):
         for refusal in sorted(REFUSALS):

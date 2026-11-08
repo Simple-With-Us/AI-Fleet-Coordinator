@@ -2,7 +2,9 @@
 
 The bearer is supplied from a private local file by the fixed root entry point;
 never persisted in the manifest, printed, transmitted elsewhere or returned.
-Default-branch refusal occurs before any provider mutation in wf_file_patch.
+Mutation-free by construction: the negative probe pins the git null object id
+(see NULL_OID) as both expected head and base blob, preconditions no provider
+write can satisfy, so no answer - expected or not - can produce a mutation.
 """
 
 import hashlib
@@ -11,6 +13,16 @@ import json
 import time
 from urllib.error import HTTPError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
+
+
+# The git null object id. It never names a real object: a branch head is always
+# an existing commit (the null id marks an unborn or deleted ref), and a blob
+# whose SHA-1 is all zero would require a preimage. Pinning it as the probe's
+# expected_head_sha and base_blob_sha makes every write precondition
+# unsatisfiable, at every layer, for any service that could answer the probe:
+# the relay's ref/commit/blob comparisons cannot match it, and the provider's
+# createCommitOnBranch enforces expectedHeadOid server-side.
+NULL_OID = "0" * 40
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -66,8 +78,8 @@ class RuntimeProof:
                 "branch": "main",
                 "path": "README.md",
                 "message": "Bounded runtime negative probe: default branch must refuse",
-                "expected_head_sha": "0" * 40,
-                "base_blob_sha": "0" * 40,
+                "expected_head_sha": NULL_OID,
+                "base_blob_sha": NULL_OID,
                 "edits": [{"start": 0, "end": 0, "text": ""}],
             },
         )
@@ -102,6 +114,12 @@ class ExternalProof(RuntimeProof):
     detail) is findable by exactly that id. The proof never assumes the
     manifest digest of the deployed image was already logged: it accepts the
     documented refusal set and records which refusal answered.
+
+    The negative probe is mutation-free by construction, not merely denied
+    first: it pins NULL_OID as expected head and base blob, which no ref,
+    commit or blob can equal, so even a service that unexpectedly ALLOWS the
+    call cannot complete the provider write. An unexpected answer is recorded
+    REFUSED and halts the transaction regardless.
 
     Timeout recovery contract: a transport error or timeout yields an
     INCONCLUSIVE record, never a signed success. An inconclusive probe left the
@@ -138,8 +156,8 @@ class ExternalProof(RuntimeProof):
             "branch": "main",
             "path": "README.md",
             "message": "Bounded external negative probe %s: default branch must refuse" % proof_id,
-            "expected_head_sha": "0" * 40,
-            "base_blob_sha": "0" * 40,
+            "expected_head_sha": NULL_OID,
+            "base_blob_sha": NULL_OID,
             "edits": [{"start": 0, "end": 0, "text": ""}],
         }
         try:
