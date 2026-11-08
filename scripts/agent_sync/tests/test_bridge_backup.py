@@ -458,7 +458,9 @@ class BackupAnswerShapeTest(unittest.TestCase):
             ("keys_mismatch", {**base, "surprise-key-from-the-model": 1}),
             ("keys_mismatch", {"action": "none"}),
             ("action_reply", {**base, "action": "reply", "reply": "hi"}),
-            ("action_escalate", {**base, "action": "escalate", "risk": "high"}),
+            ("risk_uncertain", {**base, "risk": "uncertain"}),
+            ("risk_high", {**base, "action": "reply", "reply": "hi", "risk": "high"}),
+            ("action_escalate", {**base, "action": "escalate", "owner_note": "n", "risk": "low"}),
             ("action not in the enum", {**base, "action": "launch-the-missiles"}),
             (
                 "chat_target is exclusive; action must be none and other actions null",

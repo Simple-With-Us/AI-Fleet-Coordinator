@@ -68,6 +68,10 @@ def _invalid_detail(obj: Any, why: str | None) -> str:
     if not isinstance(obj, dict):
         return "not_object"
     action = obj.get("action")
+    if obj.get("coerced") and obj.get("risk") in ("high", "uncertain"):
+        # The validator turned a risk-screened answer into an escalation, so the model did not
+        # choose that action:  name the screening, not the action.
+        return "risk_%s" % obj["risk"]
     if action != "none":
         return "action_%s" % (action if action in W.ACTIONS else "unknown")
     for key in _CONSULT_NULL_FIELDS:
