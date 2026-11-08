@@ -1,28 +1,60 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:recommended"],
+  "extends": [
+    "config:recommended"
+  ],
   "dependencyDashboard": true,
   "minimumReleaseAge": "5 days",
   "packageRules": [
     {
-      "matchUpdateTypes": ["minor", "patch", "pin", "digest"],
+      "matchUpdateTypes": [
+        "minor",
+        "patch",
+        "pin",
+        "digest"
+      ],
       "groupName": "non-major dependencies",
       "automerge": true,
       "automergeType": "pr",
       "platformAutomerge": true
     },
     {
-      "matchUpdateTypes": ["major"],
+      "matchUpdateTypes": [
+        "major"
+      ],
       "automerge": false,
-      "labels": ["dependencies", "major"]
+      "labels": [
+        "dependencies",
+        "major"
+      ]
     },
     {
       "description": "The hosted ST-MCP Worker holds bot keys and runs its own OAuth server:  the fleet's two-week rule, and no automerge, because its path-filtered workerd check is not required and Renovate merged package.json bumps here without a matching lockfile (#408).",
-      "matchFileNames": ["scripts/agent-sync-mcp/**"],
+      "matchFileNames": [
+        "scripts/agent-sync-mcp/**"
+      ],
       "minimumReleaseAge": "14 days",
       "automerge": false,
-      "labels": ["dependencies", "agent-sync-mcp"]
+      "labels": [
+        "dependencies",
+        "agent-sync-mcp"
+      ]
+    },
+    {
+      "description": "The fleet_view step's python-version 3.9 is the Mac's interpreter contract (Muster runs /usr/bin/python3, and scripts/fleet_view/tests/test_python39.py enforces the pin), not a dependency to bump.",
+      "matchFileNames": [
+        ".github/workflows/ci.yml"
+      ],
+      "matchDepNames": [
+        "python"
+      ],
+      "enabled": false
     }
   ],
-  "vulnerabilityAlerts": { "labels": ["security"], "minimumReleaseAge": null }
+  "vulnerabilityAlerts": {
+    "labels": [
+      "security"
+    ],
+    "minimumReleaseAge": null
+  }
 }
