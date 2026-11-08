@@ -806,6 +806,11 @@ class BridgePinAdvisoryTest(unittest.TestCase):
         self.assertNotIn(self.root, text)
         self.assertFalse(os.path.exists(os.path.join(L.listener_dir(self.root), MBM.CANDIDATE_NAME)))
 
+    def test_a_served_model_name_that_is_not_an_id_is_not_echoed(self) -> None:
+        self.assertEqual(MBM._diagnostic_model("vendor/model-1.2:x"), "vendor/model-1.2:x")
+        for bad in (self.root + "/secret", "/etc/passwd", "a b", "x" * 200, "../x", None, 7):
+            self.assertEqual(MBM._diagnostic_model(bad), "<unlisted>")
+
     def test_an_unreadable_contract_holds_as_unreadable_not_stale(self) -> None:
         self.write_pin(str(self.build))
         with mock.patch.object(MBM, "fingerprint", return_value=None):
