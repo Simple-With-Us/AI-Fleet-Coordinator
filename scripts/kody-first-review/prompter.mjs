@@ -34,33 +34,63 @@ async function api(path, options = {}) {
   return res.status === 204 ? null : res.json();
 }
 
-// Every open PR, drafts included (owner asked for drafts too). 100 covers this fleet
-// with headroom; pagination here is deliberate, not an afterthought.
-async function listOpenPrs() {
-  const prs = [];
-  for (let page = 1; page <= 5; page += 1) {
-    const batch = await api(`/repos/${repo}/pulls?state=open&per_page=100&page=${page}`);
-    prs.push(...batch);
+// Every page of a list endpoint. The cap is a runaway guard, far above any real PR.
+async function listAll(path, maxPages = 20) {
+  const items = [];
+  const sep = path.includes('?') ? '&' : '?';
+  for (let page = 1; page <= maxPages; page += 1) {
+    const batch = await api(`${path}${sep}per_page=100&page=${page}`);
+    items.push(...batch);
     if (batch.length < 100) break;
   }
-  return prs;
+  return items;
 }
 
-const prs = await listOpenPrs();
-let prompted = 0;
-for (const pr of prs) {
+// Every open PR, drafts included (owner asked for drafts too).
+const listOpenPrs = () => listAll(`/repos/${repo}/pulls?state=open`, 5);
+
+// One PR: fetch every comment and review page, decide, and post if needed. Returns
+// true when it prompted (or would have, in a dry run).
+async function handle(pr) {
   const [issueComments, reviews] = await Promise.all([
-    api(`/repos/${repo}/issues/${pr.number}/comments?per_page=100`),
-    api(`/repos/${repo}/pulls/${pr.number}/reviews?per_page=100`),
+    listAll(`/repos/${repo}/issues/${pr.number}/comments`),
+    listAll(`/repos/${repo}/pulls/${pr.number}/reviews`),
   ]);
   const verdict = decide(pr, { issueComments, reviews, now: Date.now() });
   console.log(`#${pr.number} ${pr.draft ? 'draft ' : ''}${verdict}`);
-  if (verdict !== 'prompt') continue;
-  if (dryRun) continue;
-  await api(`/repos/${repo}/issues/${pr.number}/comments`, {
-    method: 'POST',
-    body: JSON.stringify({ body: TRIGGER_TEXT }),
-  });
-  prompted += 1;
+  if (verdict !== 'prompt') return false;
+  if (!dryRun) {
+    await api(`/repos/${repo}/issues/${pr.number}/comments`, {
+      method: 'POST',
+      body: JSON.stringify({ body: TRIGGER_TEXT }),
+    });
+  }
+  return true;
 }
+
+// A few PRs at a time keeps the run well inside the job timeout without bursting the
+// API. One PR's failure is logged and the sweep moves on; the run still exits non-zero
+// so a failing tick is visible in Actions.
+const CONCURRENCY = 4;
+const prs = await listOpenPrs();
+let prompted = 0;
+let failed = 0;
+let next = 0;
+async function worker() {
+  while (next < prs.length) {
+    const pr = prs[next];
+    next += 1;
+    try {
+      if (await handle(pr)) prompted += 1;
+    } catch (error) {
+      failed += 1;
+      console.error(`#${pr.number} error: ${error.message}`);
+    }
+  }
+}
+await Promise.all(Array.from({ length: Math.min(CONCURRENCY, prs.length) }, worker));
 console.log(dryRun ? `dry-run complete, ${prompted} would prompt` : `prompted ${prompted}`);
+if (failed > 0) {
+  console.error(`${failed} PR(s) failed`);
+  process.exitCode = 1;
+}

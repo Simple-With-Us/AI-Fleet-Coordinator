@@ -14,7 +14,10 @@ on:
         type: boolean
         default: true
 
+# A called workflow can only narrow these, so the caller grants all three.
 permissions:
+  contents: read
+  pull-requests: read
   issues: write
 
 jobs:

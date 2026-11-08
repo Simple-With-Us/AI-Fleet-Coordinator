@@ -23,13 +23,18 @@ export const MIN_PR_AGE_MINUTES = 30;
 
 // A trigger request counts only as its own line outside a fenced code block, matching
 // the fleet's kody-defer command parsing: a quoted or fenced mention is discussion,
-// not a request, and must not suppress a real prompt.
+// not a request, and must not suppress a real prompt. Both ``` and ~~~ open or close a
+// fence, the same test as kody-defer's fenceToggle.
+function fenceToggle(line) {
+  return /^(```|~~~)/.test(line);
+}
+
 export function isTriggerComment(body) {
   const lines = String(body || '').split('\n');
   let fenced = false;
   for (const raw of lines) {
-    const line = raw.trim();
-    if (line.startsWith('```')) { fenced = !fenced; continue; }
+    const line = raw.trim().replace(/\r$/, '');
+    if (fenceToggle(line)) { fenced = !fenced; continue; }
     if (fenced) continue;
     if (line.toLowerCase() === TRIGGER_TEXT) return true;
   }

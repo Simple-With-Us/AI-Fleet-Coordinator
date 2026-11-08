@@ -24,7 +24,7 @@ Each tick, for every open PR in the repo (drafts included, per the owner request
    comment counts as answered: failed reviews are never auto-retried, so a model
    outage cannot turn the schedule into retry spam. Failed PRs stay manual.
 3. Skip if any comment already carries the request. The request counts only as its
-   own line outside a code fence (same parsing rule as kody-defer): a quoted or
+   own line outside a ``` or ~~~ code fence (same parsing rule as kody-defer): a quoted or
    fenced mention is discussion and does not suppress the prompt.
 4. Otherwise post `@kody start-review`.
 

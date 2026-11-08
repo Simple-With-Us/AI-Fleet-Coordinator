@@ -19,7 +19,11 @@ on:
         default: main
         required: false
 
+# contents:read for both checkouts (private callers), pull-requests:read to list PRs
+# and reviews, issues:write to read and post the trigger comment.
 permissions:
+  contents: read
+  pull-requests: read
   issues: write
 
 concurrency:

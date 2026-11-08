@@ -23,6 +23,9 @@ test('trigger text must be its own line', () => {
   assert.equal(isTriggerComment('please run @kody start-review now'), false);
   assert.equal(isTriggerComment('> @kody start-review\nquoted earlier'), false);
   assert.equal(isTriggerComment('```\n@kody start-review\n```'), false);
+  assert.equal(isTriggerComment('~~~\n@kody start-review\n~~~'), false);
+  assert.equal(isTriggerComment('~~~\nquoted\n~~~\n@kody start-review'), true);
+  assert.equal(isTriggerComment('@kody start-review\r'), true);
   assert.equal(isTriggerComment('@KODY START-REVIEW'), true);
   assert.equal(isTriggerComment('@kody start-review please'), false);
 });
