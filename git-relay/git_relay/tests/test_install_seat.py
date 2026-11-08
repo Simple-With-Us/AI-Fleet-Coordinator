@@ -277,6 +277,120 @@ class InstallSeatTests(unittest.TestCase):
         self.assertEqual(rc, 2)
         self.assertEqual(json.loads(self.seats_path.read_text()), self.policy)
 
+    def credential_unit(self, **over):
+        """A DynamicUser unit that reads its policy through the systemd credential."""
+        self.config.write_text("GIT_RELAY_SEATS_CREDENTIAL=seat-policy\n")
+        os.chmod(self.seats_path, 0o600)
+        base = dict(
+            name="git-relay.service",
+            relay=str(self.relay_dir),
+            config=str(self.config),
+            apps_token="x",
+            environment={"GIT_RELAY_HOST": "127.0.0.1", "GIT_RELAY_PORT": "8471"},
+            dynamic_user=True,
+            seat_credential=str(self.seats_path),
+        )
+        base.update(over)
+        return sp.Unit(**base)
+
+    def test_a_dynamic_user_unit_with_the_credential_input_installs_the_seat(self):
+        unit = self.credential_unit()
+        fake = _FakeSubprocess()
+        with (
+            mock.patch.object(sp, "subprocess", fake),
+            mock.patch.object(sp, "_healthy", lambda *a: True),
+        ):
+            rc = self.install(self.args2(apply=True), unit)
+        self.assertEqual(rc, 0)
+        installed = json.loads(self.seats_path.read_text())
+        self.assertEqual(sp.canonical_digest(installed), self.after)
+        self.assertEqual(os.stat(self.seats_path).st_mode & 0o777, 0o600)
+        self.assertEqual(len(list(self.seats_path.parent.glob("seats.json.backup-seat-add-*"))), 1)
+        self.assertTrue(ReplayStore(str(self.relay_dir / sp.REPLAY_STORE)).seen("proof-t1"))
+        self.assertIn(["systemctl", "restart", "git-relay.service"], fake.calls)
+
+    def test_the_credential_input_dry_run_writes_nothing(self):
+        rc = self.install(self.args2(), self.credential_unit())
+        self.assertEqual(rc, 0)
+        self.assertEqual(json.loads(self.seats_path.read_text()), self.policy)
+        self.assertFalse(ReplayStore(str(self.relay_dir / sp.REPLAY_STORE)).seen("proof-t1"))
+
+    def test_the_credential_input_still_needs_the_proof_receipt_and_cas(self):
+        unit = self.credential_unit()
+        self.assertEqual(self.install(self.args2(expect_before="0" * 64), unit), 2)
+        with mock.patch.dict(os.environ, {sp.PROOF_KEY_FILE_VAR: ""}):
+            self.assertEqual(self.install(self.args2(), unit), 2)
+        store = ReplayStore(str(self.relay_dir / sp.REPLAY_STORE))
+        store.add(self.record)
+        self.assertEqual(self.install(self.args2(), unit), 2)
+        self.assertEqual(json.loads(self.seats_path.read_text()), self.policy)
+
+    def test_the_credential_input_restores_the_backing_file_when_unhealthy(self):
+        unit = self.credential_unit()
+        fake = _FakeSubprocess()
+        with (
+            mock.patch.object(sp, "subprocess", fake),
+            mock.patch.object(sp, "_healthy", lambda *a: False),
+        ):
+            rc = self.install(self.args2(apply=True), unit)
+        self.assertEqual(rc, 3)
+        self.assertEqual(json.loads(self.seats_path.read_text()), self.policy)
+
+    def test_the_credential_input_is_mutually_exclusive_with_the_other_inputs(self):
+        unit = self.credential_unit()
+        for extra in (
+            "GIT_RELAY_SEATS_FILE=%s\n" % self.seats_path,
+            "GIT_RELAY_SEATS_JSON={}\n",
+            "GIT_RELAY_SEATS_CREDENTIAL=seat-policy\n",
+        ):
+            self.config.write_text("GIT_RELAY_SEATS_CREDENTIAL=seat-policy\n" + extra)
+            with self.assertRaises(SystemExit):
+                self.install(self.args2(), unit)
+            self.assertEqual(json.loads(self.seats_path.read_text()), self.policy)
+
+    def test_the_credential_input_refuses_a_wrong_name_or_a_missing_backing_file(self):
+        unit = self.credential_unit()
+        self.config.write_text("GIT_RELAY_SEATS_CREDENTIAL=other\n")
+        with self.assertRaises(SystemExit):
+            self.install(self.args2(), unit)
+        for backing in ("", "relative/seats.json"):
+            unit = self.credential_unit(seat_credential=backing)
+            with self.assertRaises(SystemExit):
+                self.install(self.args2(), unit)
+
+    def test_the_credential_input_refuses_an_unsafe_backing_file(self):
+        unit = self.credential_unit()
+        os.chmod(self.seats_path, 0o644)
+        self.assertEqual(self.install(self.args2(), unit), 2)
+        os.chmod(self.seats_path, 0o600)
+        link = self.seats_path.parent / "link.json"
+        link.symlink_to(self.seats_path)
+        self.assertEqual(self.install(self.args2(), self.credential_unit(seat_credential=str(link))), 2)
+        os.chmod(self.seats_path.parent, 0o777)
+        try:
+            self.assertEqual(self.install(self.args2(), self.credential_unit()), 2)
+        finally:
+            os.chmod(self.seats_path.parent, 0o700)
+        self.assertEqual(json.loads(self.seats_path.read_text()), self.policy)
+
+    def test_read_unit_carries_the_policy_credential_and_refuses_a_duplicate(self):
+        show = "WorkingDirectory=/opt/r\nEnvironmentFiles=/etc/r/c.env (ignore_errors=no)\nDynamicUser=yes\n"
+        cat = (
+            "LoadCredential=git-relay-apps-token:/etc/r/apps\n"
+            "LoadCredential=seat-policy:/etc/r/seats.json\n"
+        )
+        unit = sp.read_unit("git-relay.service", show=show, cat=cat)
+        self.assertEqual(unit.seat_credential, "/etc/r/seats.json")
+        self.assertTrue(unit.dynamic_user)
+        none = sp.read_unit(
+            "git-relay.service", show=show, cat="LoadCredential=git-relay-apps-token:/etc/r/apps\n"
+        )
+        self.assertEqual(none.seat_credential, "")
+        with self.assertRaises(SystemExit):
+            sp.read_unit(
+                "git-relay.service", show=show, cat=cat + "LoadCredential=seat-policy:/etc/r/other\n"
+            )
+
     def test_the_units_actual_audit_path_is_honored(self):
         custom = self.relay_dir / "elsewhere-audit.jsonl"
         (self.relay_dir / sp.DEFAULT_AUDIT).rename(custom)

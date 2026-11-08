@@ -64,6 +64,10 @@ DEFAULT_POLICY = HERE / "seat-policy.json"
 DEFAULT_SECRETS_PATH = "/github-apps"
 APPS_CREDENTIAL = "git-relay-apps-token"
 SEATS_VAR = "GIT_RELAY_SEATS_JSON"
+# The systemd credential input (policy_input.py):  the unit sets GIT_RELAY_SEATS_CREDENTIAL=seat-policy and
+# carries LoadCredential=seat-policy:<backing file>.  A DynamicUser unit takes the policy this way.
+SEATS_CREDENTIAL_VAR = "GIT_RELAY_SEATS_CREDENTIAL"
+SEATS_CREDENTIAL = "seat-policy"
 SECRETS_PATH_VAR = "GIT_RELAY_SECRETS_PATH"
 VERIFY_REPO = "Simple-With-Us/AI-Fleet-Coordinator"
 # The unit environment the inner check needs, copied from the running unit (never a secret).
@@ -214,6 +218,8 @@ class Unit:
     environment: dict
     user: str = ""
     dynamic_user: bool = False
+    # The backing file of LoadCredential=seat-policy:<file>;  empty when the unit has none.
+    seat_credential: str = ""
 
     @property
     def health(self) -> str:
@@ -268,12 +274,16 @@ def read_unit(name: str, show=None, cat=None) -> Unit:
             user = value.strip()
         elif key == "DynamicUser":
             dynamic = value.strip() == "yes"
-    tokens = []
+    tokens, policies = [], []
     for line in cat.splitlines():
         if line.strip().startswith("LoadCredential="):
             ident, _, source = line.strip().split("=", 1)[1].partition(":")
             if ident == APPS_CREDENTIAL and source:
                 tokens.append(source)
+            elif ident == SEATS_CREDENTIAL and source:
+                policies.append(source)
+    if len(policies) > 1:
+        raise SystemExit(f"{name}:  more than one {SEATS_CREDENTIAL} LoadCredential;  refusing as ambiguous")
     if not relay or len(files) != 1 or len(tokens) != 1:
         raise SystemExit(
             f"{name}:  expected a WorkingDirectory, one EnvironmentFile and one "
@@ -287,6 +297,7 @@ def read_unit(name: str, show=None, cat=None) -> Unit:
         environment=env,
         user=user,
         dynamic_user=dynamic,
+        seat_credential=policies[0] if policies else "",
     )
 
 
@@ -422,6 +433,80 @@ def _seats_file(unit: Unit) -> str:
     return value
 
 
+def _seat_policy_source(unit: Unit) -> tuple[str, bool]:
+    """The live policy file and whether the service reads it through the systemd credential.
+
+    A unit that sets GIT_RELAY_SEATS_CREDENTIAL=seat-policy reads its policy from a
+    LoadCredential copy of one root-owned backing file, which is the only input a
+    DynamicUser unit can use.  The transaction then replaces that backing file, and
+    the restart makes systemd hand the new copy to the service.  The credential input
+    is mutually exclusive with the file and inline inputs (policy_input.py), so a unit
+    that sets any of them next to it is refused rather than guessed at, and so is a
+    unit whose LoadCredential for the policy is missing or not an absolute path.
+    Without the credential setting this is exactly the file input, unchanged.
+    """
+    with open(unit.config, encoding="utf-8") as fh:
+        lines = fh.read().splitlines()
+    hits = [line for line in lines if line.startswith(SEATS_CREDENTIAL_VAR + "=")]
+    if not hits and SEATS_CREDENTIAL_VAR not in unit.environment:
+        return _seats_file(unit), False
+    if len(hits) > 1:
+        raise SystemExit(
+            f"{unit.config}:  expected exactly one {SEATS_CREDENTIAL_VAR} line, found {len(hits)}"
+        )
+    value = hits[0].split("=", 1)[1].strip().strip("'\"") if hits else unit.environment.get(
+        SEATS_CREDENTIAL_VAR, ""
+    )
+    if hits and SEATS_CREDENTIAL_VAR in unit.environment:
+        raise SystemExit(f"{unit.config}:  {SEATS_CREDENTIAL_VAR} is set twice;  refusing as ambiguous")
+    if value != SEATS_CREDENTIAL:
+        raise SystemExit(f"{unit.config}:  {SEATS_CREDENTIAL_VAR} must name {SEATS_CREDENTIAL}")
+    if (
+        _config_value(lines, SEATS_VAR) is not None
+        or _config_value(lines, SEATS_FILE_VAR) is not None
+        or SEATS_VAR in unit.environment
+        or SEATS_FILE_VAR in unit.environment
+    ):
+        raise SystemExit(f"{unit.config}:  the seat policy inputs are mutually exclusive")
+    if not unit.seat_credential or not os.path.isabs(unit.seat_credential):
+        raise SystemExit(
+            f"{unit.name}:  expected one absolute LoadCredential={SEATS_CREDENTIAL}:<file>;  "
+            f"found {unit.seat_credential!r}"
+        )
+    return unit.seat_credential, True
+
+
+def _credential_backing_refusal(path: str) -> str | None:
+    """Why a credential backing file is unsafe to replace, or None.
+
+    It is read by systemd as root and handed to a service uid that no host file can own,
+    so it must be a plain private file nobody else can write or swap:  not a symlink,
+    one link, owned by root (or by the user running this, as policy_input.py accepts),
+    mode 0400 or 0600, in a directory nobody else can write."""
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return "the credential backing file is unreadable"
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or info.st_nlink != 1
+        or info.st_uid not in (0, os.geteuid())
+        or stat.S_IMODE(info.st_mode) not in (0o400, 0o600)
+    ):
+        return "the credential backing file must be a private regular file (0400 or 0600, not a symlink)"
+    try:
+        parent = os.lstat(os.path.dirname(path))
+    except OSError:
+        return "the credential backing directory is unreadable"
+    if (
+        not stat.S_ISDIR(parent.st_mode)
+        or parent.st_uid not in (0, os.geteuid())
+        or stat.S_IMODE(parent.st_mode) & 0o022
+    ):
+        return "the credential backing directory must be private to its owner (no group or other write)"
+    return None
+
+
 def _audit_path(unit: Unit) -> str:
     """The relay's ACTUAL audit log:  its GIT_RELAY_AUDIT_PATH (Environment= or the
     EnvironmentFile), resolved like from_env does, else the default beside the code."""
@@ -460,11 +545,15 @@ def _acquire_transaction_lock(seats_path: str):
             time.sleep(0.05)
 
 
-def _service_uid(unit: Unit) -> int | None:
+def _service_uid(unit: Unit, credential: bool = False) -> int | None:
     """The uid the service reads the seats file as;  None when that cannot work.
 
     A DynamicUser gets a fresh uid per start, so no host file's ownership can
-    match it:  that deployment must use the systemd credential input instead."""
+    match it:  that deployment must use the systemd credential input instead.
+    On that input the service never reads the host file itself;  systemd reads
+    it as root, so the file stays root's and the answer is 0."""
+    if credential:
+        return 0
     if unit.dynamic_user:
         return None
     if not unit.user or unit.user in ("root", "0"):
@@ -527,19 +616,26 @@ def install_seat(args, unit: Unit) -> int:
         from git_relay import deploy_proof, seat_add_policy
     finally:
         sys.path.remove(unit.relay)
-    path = _seats_file(unit)
+    path, credential = _seat_policy_source(unit)
     lock_fd = _acquire_transaction_lock(path)
     if lock_fd is None:
         print("refusing:  another install-seat transaction holds the lock;  retry when it finishes")
         return 2
     try:
-        return _install_seat_locked(args, unit, path, deploy_proof, seat_add_policy)
+        return _install_seat_locked(args, unit, path, deploy_proof, seat_add_policy, credential)
     finally:
         os.close(lock_fd)
 
 
-def _install_seat_locked(args, unit: Unit, path: str, deploy_proof, seat_add_policy) -> int:
-    uid = _service_uid(unit)
+def _install_seat_locked(
+    args, unit: Unit, path: str, deploy_proof, seat_add_policy, credential: bool = False
+) -> int:
+    uid = _service_uid(unit, credential)
+    if credential:
+        refusal = _credential_backing_refusal(path)
+        if refusal:
+            print(f"refusing:  {refusal}")
+            return 2
     if uid is None:
         print(
             "refusing:  the unit's User=/DynamicUser= cannot own a readable seats file;\n"
