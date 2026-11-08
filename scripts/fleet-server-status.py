@@ -49,6 +49,33 @@ gone now reads as `absent`.  Each Coolify row says where its `uuid` came from:
 `filesSummary` says how many files were found against the bound,  so a reader can tell
 a partial list from a whole one.
 
+`drift` only says what moved since the previous report,  about fifteen minutes ago.  Two more
+fields on each present file row say how the file stands against what is intended:
+
+  * `intent` compares the file with its checkout's own `origin/main` blob,  read-only and with
+    no fetch:  `clean` when they match;  `behind` when the file is what the checkout's HEAD
+    holds and HEAD is an ancestor of `origin/main`,  so the checkout has not caught up;  and
+    `localEdit` otherwise,  which is an uncommitted edit,  an untracked file or a local commit.
+    `unknown` means it could not be told,  and `intentReason` then says why in a fixed code:
+    `not_a_checkout`,  `no_origin_main`,  `git_failed` or `git_budget`.  It is never guessed
+    to be `clean`.
+  * `changedAt` is when the file's content last changed:  the file's modification time when
+    the collector first saw this content,  carried from report to report for as long as the
+    digest stays the same.  A touch that leaves the content alone does not move it.
+
+`hostConfig` is the host's own config surface,  by digest and never by content.  It holds the
+installed unit files and drop-ins of the units the allowlist names,  watches or updates and of
+the units this repo ships (`UNIT_SOURCE_FOLDERS`),  where systemd's own `FragmentPath` and
+`DropInPaths` say they are;  the resource broker's folder,  where
+`scripts/hetzner/install-resource-control.sh` installs it;  the allowlist installed in that
+folder;  and the allowlist this run read,  when it is not the one next to this script.  Each row
+has `kind` (`unit`,  `dropIn`,  `broker` or `allowlist`),  `path` and `state` (`present`,
+`missing`,  `unreadable`,  or `absent` for a broker folder that is not there).  A present row
+adds `bytes`,  `modifiedAt`,  `sha256` and a sticky `changedAt`.  `source` names the repo file
+the row was installed from,  relative to the checkout this script runs from,  and
+`matchesSource` says whether the two digests agree.  A unit or drop-in row also names its `unit`
+and `scope`.
+
 Nothing stays forever because it once existed.  An `absent` row carries `absentSince` and a
 `missing` row carries `missingSince`,  and each is dropped after seven days.  A resource's
 identity is its uuid and its real compose service,  never a per-deploy container name,  so a
@@ -161,6 +188,40 @@ DEFAULT_CONTROL = Path(__file__).resolve().parent / "fleet-ops-control.json"
 # The helper that acts on it:  its own check says which units are controllable.
 DEFAULT_CONTROLLER = Path(__file__).resolve().parent / "fleet-ops-control.py"
 CONTROL_LIMIT = 256 * 1024
+# The checkout this script runs from:  the repo that ships the units and the broker's code.
+SOURCE_ROOT = Path(__file__).resolve().parent.parent
+# Git is only asked read-only questions,  it never fetches,  and each call has a time limit.  The
+# whole run's git work has one too,  and a checkout reached after it reads `unknown`.
+GIT_TIMEOUT_SECONDS = 10
+GIT_BUDGET_SECONDS = 60
+INTENT_REF = "refs/remotes/origin/main"
+# Where git is looked for:  the server's own folders,  and Homebrew's on a Mac.
+GIT_PATH = "/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin"
+# The largest file that is hashed.
+FILE_READ_LIMIT = 4 * 1024 * 1024
+# Where scripts/hetzner/install-resource-control.sh installs the resource broker,  and the files
+# it writes there.  Its `fleet_secrets` package is never listed,  because that path looks like a
+# credential.
+BROKER_DIR = Path("/usr/local/lib/fleet-resource-control")
+BROKER_FILES = (
+    "fleet-ops-control.py",
+    "fleet-ops-control.json",
+    "fleet_resource_control.py",
+    "fleet_seat_inventory.py",
+    "hetzner/__init__.py",
+    "hetzner/fleet_coding_memory.py",
+    "hetzner/coding_resources.py",
+)
+BROKER_ALLOWLIST = "fleet-ops-control.json"
+# The folders of this repo that ship systemd units,  relative to the checkout.
+UNIT_SOURCE_FOLDERS = (
+    "scripts/systemd",
+    "scripts/host",
+    "scripts/hetzner",
+    "scripts/agent_sync/server",
+)
+# The properties read to find a unit's installed files,  and nothing else.
+UNIT_FILE_PROPERTIES = ("Id", "LoadState", "FragmentPath", "DropInPaths", "Triggers")
 SCOPES = ("system", "user")
 # A unit name is passed to systemctl as an argument,  so it must look like one and never
 # like an option.
@@ -373,30 +434,62 @@ def is_secret_path(path) -> bool:
     )
 
 
-def digest_of(path):
-    """The first sixteen hex characters of a file's digest,  or None when it cannot be read."""
+def read_bounded(path, limit=FILE_READ_LIMIT):
+    """A regular file's bytes,  or None when it is not one,  is a link,  is too large or cannot be
+    read.  The bytes are only ever hashed:  they never reach the report."""
     descriptor = None
     try:
         descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
         info = os.fstat(descriptor)
-        if not stat.S_ISREG(info.st_mode) or info.st_size > 4 * 1024 * 1024:
+        if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
             return None
-        hasher = hashlib.sha256()
         with os.fdopen(descriptor, "rb") as handle:
             descriptor = None
-            remaining = 4 * 1024 * 1024 + 1
-            while remaining:
-                chunk = handle.read(min(65536, remaining))
-                if not chunk:
-                    return hasher.hexdigest()[:16]
-                remaining -= len(chunk)
-                hasher.update(chunk)
-        return None
+            data = handle.read(limit + 1)
+        return None if len(data) > limit else data
     except OSError:
         return None
     finally:
         if descriptor is not None:
             os.close(descriptor)
+
+
+def short_digest(data):
+    """The first sixteen hex characters of the sha256 of some bytes."""
+    return hashlib.sha256(data).hexdigest()[:16]
+
+
+def digest_of(path):
+    """The first sixteen hex characters of a file's digest,  or None when it cannot be read."""
+    data = read_bounded(path)
+    return None if data is None else short_digest(data)
+
+
+def blob_ids(data):
+    """The id git gives these bytes as a blob,  for each of git's two object formats.
+
+    Computed here rather than by `git hash-object`,  so no filter a checkout configures is
+    ever run.
+    """
+    header = b"blob %d\x00" % len(data)
+    return {
+        "sha1": hashlib.sha1(header + data).hexdigest(),
+        "sha256": hashlib.sha256(header + data).hexdigest(),
+    }
+
+
+def changed_at(before, digest, modified, moment):
+    """When a file's content last changed,  carried across reports.
+
+    While the digest is the one the previous report saw,  its `changedAt` is kept.  Otherwise
+    the content is new to the collector,  and its modification time is the best evidence of
+    when it was written:  never later than now.
+    """
+    if isinstance(before, dict) and before.get("sha256") == digest:
+        kept = before.get("changedAt")
+        if seconds_from_report_time(kept) is not None:
+            return kept
+    return iso_from_timestamp(min(modified, moment))
 
 
 # MARK: - Coolify
@@ -1481,7 +1574,7 @@ def code_root_readable(code_root):
         return False
 
 
-def collect_files(code_root, previous, limit=200, now=None):
+def collect_files(code_root, previous, limit=200, now=None, git=None):
     """The config files,  each one with its drift against the previous report.
 
     A file that was in the previous report and is gone now is listed as `missing`:
@@ -1492,11 +1585,14 @@ def collect_files(code_root, previous, limit=200, now=None):
     the whole checkout is gone there is no row per file:  the checkout is counted in
     `rows.removed`,  because removing a checkout is not a failure of its files.
     """
+    # A present row also carries its `intent` against its checkout's `origin/main`,  asked of
+    # `git` (by default `git_output`),  and its sticky `changedAt`.
     moment = time.time() if now is None else now
     rows = FileRows()
     rows.removed = {}
     rows.root_readable = code_root_readable(code_root)
     present = set()
+    contents = {}
     paths, total = watched_paths(code_root, limit=limit)
     rows.cut = paths.cut
     for path in paths:
@@ -1508,10 +1604,12 @@ def collect_files(code_root, previous, limit=200, now=None):
             info = path.stat()
         except (OSError, ValueError):
             continue
-        digest = digest_of(path)
-        if digest is None:
+        data = read_bounded(path)
+        if data is None:
             continue
+        digest = short_digest(data)
         present.add(str(path))
+        contents[str(path)] = blob_ids(data)
         rows.append(
             {
                 "path": str(path),
@@ -1519,8 +1617,15 @@ def collect_files(code_root, previous, limit=200, now=None):
                 "modifiedAt": iso_from_timestamp(info.st_mtime),
                 "sha256": digest,
                 "drift": drift_of(str(path), digest, previous),
+                "changedAt": changed_at(previous.get(str(path)), digest, info.st_mtime, moment),
             }
         )
+    intents = file_intents(code_root, contents, git or git_output)
+    for row in rows:
+        intent, reason = intents.get(row["path"], ("unknown", "git_failed"))
+        row["intent"] = intent
+        if reason:
+            row["intentReason"] = reason
     for path in sorted(previous):
         if path in present or is_secret_path(path):
             continue
@@ -1599,6 +1704,323 @@ def drift_of(path, digest, previous):
         return "unchanged"
     # A README or a package manifest moves with ordinary work,  not with config.
     return "info" if Path(path).name in INFO_FILES else "changed"
+
+
+# MARK: - What is intended
+
+
+def git_output(repo, arguments, timeout=GIT_TIMEOUT_SECONDS):
+    """(exit status, stdout bytes) of one read-only git question about `repo`,  or None when
+    git could not be run or ran out of time.
+
+    Nothing here writes or fetches.  Optional locks are off,  so not even the index is
+    refreshed;  fsmonitor,  which can start a program,  is off;  pathspecs are literal;  git never
+    prompts.  Git gets a fixed environment rather than this process's own,  which the collector
+    never reads,  so no `GIT_` variable can point it somewhere else.
+    """
+    environment = {
+        "PATH": GIT_PATH,
+        "HOME": str(Path.home()),
+        "GIT_OPTIONAL_LOCKS": "0",
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_LITERAL_PATHSPECS": "1",
+        "LC_ALL": "C",
+    }
+    command = ["git", "--no-pager", "-C", str(repo), "-c", "core.fsmonitor=false"]
+    try:
+        result = subprocess.run(
+            command + list(arguments),
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            env=environment,
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return result.returncode, result.stdout
+
+
+def tree_blobs(repo, commit, relative_paths, git=git_output):
+    """{path: blob id} for the paths that `commit` holds as files,  or None when git could not
+    say.  A path the commit does not hold is simply not in the answer."""
+    answer = git(repo, ["ls-tree", "-r", "-z", commit, "--"] + sorted(relative_paths))
+    if answer is None or answer[0] != 0:
+        return None
+    blobs = {}
+    for entry in answer[1].split(b"\0"):
+        meta, tab, name = entry.partition(b"\t")
+        fields = meta.split()
+        if tab and len(fields) == 3 and fields[1] == b"blob":
+            blobs[os.fsdecode(name)] = fields[2].decode("ascii", "replace")
+    return blobs
+
+
+def commit_id(repo, ref, git=git_output):
+    """The commit `ref` names in `repo`:  a string,  False when there is no such ref,  or None
+    when git could not answer."""
+    answer = git(repo, ["rev-parse", "--verify", "--quiet", ref + "^{commit}"])
+    if answer is None:
+        return None
+    code, output = answer
+    if code != 0:
+        return False
+    text = output.decode("ascii", "replace").strip()
+    return text if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", text) else None
+
+
+def checkout_intents(repo, files, git=git_output, deadline=None):
+    """{path: (intent, reason)} for one checkout's files against its own `origin/main`.
+
+    `files` is {path: blob_ids(content)}.  `reason` is None unless the intent is `unknown`.  A
+    file is `clean` when its blob is the one `origin/main` holds,  `behind` when it is the one
+    HEAD holds and HEAD is an ancestor of `origin/main`,  and `localEdit` otherwise.
+    """
+
+    def unknown(reason):
+        return {path: ("unknown", reason) for path in files}
+
+    if deadline is not None and time.monotonic() > deadline:
+        return unknown("git_budget")
+    answer = git(repo, ["rev-parse", "--show-toplevel"])
+    if answer is None:
+        return unknown("git_failed")
+    if answer[0] != 0:
+        return unknown("not_a_checkout")
+    try:
+        top = Path(os.fsdecode(answer[1].strip())).resolve()
+        if top != repo.resolve():
+            # The folder sits inside some other repo:  it is not a checkout of its own.
+            return unknown("not_a_checkout")
+    except (OSError, RuntimeError):
+        return unknown("git_failed")
+    main = commit_id(repo, INTENT_REF, git)
+    if main is None:
+        return unknown("git_failed")
+    if main is False:
+        return unknown("no_origin_main")
+    head = commit_id(repo, "HEAD", git)
+    if head is None:
+        return unknown("git_failed")
+    relative = {path: Path(path).relative_to(repo).as_posix() for path in files}
+    on_main = tree_blobs(repo, main, relative.values(), git)
+    at_head = tree_blobs(repo, head, relative.values(), git) if head else {}
+    if on_main is None or at_head is None:
+        return unknown("git_failed")
+    algorithm = "sha256" if len(main) == 64 else "sha1"
+    ancestor = []
+    intents = {}
+    for path, ids in files.items():
+        mine = ids[algorithm]
+        name = relative[path]
+        if on_main.get(name) == mine:
+            intents[path] = ("clean", None)
+            continue
+        if not head or at_head.get(name) != mine:
+            intents[path] = ("localEdit", None)
+            continue
+        if not ancestor:
+            # Exit status 0 is yes and 1 is no;  anything else is no answer.
+            verdict = git(repo, ["merge-base", "--is-ancestor", head, main])
+            answered = verdict is not None and verdict[0] in (0, 1)
+            ancestor.append(verdict[0] == 0 if answered else None)
+        if ancestor[0] is None:
+            intents[path] = ("unknown", "git_failed")
+        else:
+            intents[path] = ("behind", None) if ancestor[0] else ("localEdit", None)
+    return intents
+
+
+def file_intents(code_root, contents, git=git_output, budget=GIT_BUDGET_SECONDS):
+    """{path: (intent, reason)} for every present file,  checkout by checkout."""
+    deadline = time.monotonic() + budget
+    groups = {}
+    for path, ids in contents.items():
+        try:
+            name = Path(path).relative_to(code_root).parts[0]
+        except (ValueError, IndexError):
+            continue
+        groups.setdefault(name, {})[path] = ids
+    intents = {}
+    for name in sorted(groups):
+        intents.update(checkout_intents(code_root / name, groups[name], git, deadline))
+    return intents
+
+
+# MARK: - The host's config
+
+
+def shipped_units(source_root=SOURCE_ROOT):
+    """{unit: its file,  relative to the checkout} for the units this repo ships.
+
+    A template (`name@.service`) is left out:  only an instance of one is ever loaded.
+    """
+    units = {}
+    for folder in UNIT_SOURCE_FOLDERS:
+        for path in files_in(source_root / folder):
+            name = path.name
+            if UNIT_RE.fullmatch(name) and "@." not in name and name not in units:
+                units[name] = "%s/%s" % (folder, name)
+    return units
+
+
+def allowlist_unit_names(control):
+    """The units the allowlist names,  watches or updates.  Naming one here grants nothing."""
+    server = control_server_section(control) or {}
+    names = []
+    for key in ("units", "watch", "updates"):
+        entries = server.get(key)
+        for entry in entries if isinstance(entries, list) else []:
+            unit = entry.get("unit") if isinstance(entry, dict) else None
+            if isinstance(unit, str) and UNIT_RE.fullmatch(unit) and unit not in names:
+                names.append(unit)
+    return names
+
+
+def installed_unit_files(units, run_command=run):
+    """[(unit, scope, kind, path)] for the files systemd loaded each unit from,  in both scopes.
+
+    systemd's own `FragmentPath` and `DropInPaths` say where they are,  so no folder is guessed. 
+    A unit a timer or another unit triggers is looked up too,  one round deep.  A unit this
+    host does not have is left out.
+    """
+    found = []
+    for scope in SCOPES:
+        asked = sorted(units)
+        seen = set(asked)
+        for _round in range(2):
+            if not asked:
+                break
+            shown = show_units(asked, scope, run_command, properties=UNIT_FILE_PROPERTIES)
+            if shown is None:
+                break
+            more = []
+            for unit in asked:
+                props = shown.get(unit) or {}
+                if props.get("LoadState") in (None, "", "not-found", "masked"):
+                    continue
+                fragment = props.get("FragmentPath") or ""
+                if fragment.startswith("/"):
+                    found.append((unit, scope, "unit", fragment))
+                for drop_in in (props.get("DropInPaths") or "").split():
+                    if drop_in.startswith("/"):
+                        found.append((unit, scope, "dropIn", drop_in))
+                for name in (props.get("Triggers") or "").split():
+                    if UNIT_RE.fullmatch(name) and name not in seen:
+                        seen.add(name)
+                        more.append(name)
+            asked = sorted(more)
+    return found
+
+
+def host_file_row(row, path, previous, moment, source=None, source_root=SOURCE_ROOT):
+    """`row` with what is at `path`:  its digest and its times,  never its content.
+
+    `source` is the repo file it was installed from,  and `matchesSource` compares the two.
+    """
+    if source:
+        row["source"] = source
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        row["state"] = "missing"
+        return row
+    except OSError:
+        row["state"] = "unreadable"
+        return row
+    data = read_bounded(path)
+    if data is None:
+        row["state"] = "unreadable"
+        return row
+    digest = short_digest(data)
+    row["state"] = "present"
+    row["bytes"] = len(data)
+    row["modifiedAt"] = iso_from_timestamp(info.st_mtime)
+    row["sha256"] = digest
+    row["changedAt"] = changed_at(previous.get(row["path"]), digest, info.st_mtime, moment)
+    if source:
+        wanted = digest_of(source_root / source)
+        if wanted is not None:
+            row["matchesSource"] = wanted == digest
+    return row
+
+
+def broker_rows(broker_dir, previous, moment, source_root=SOURCE_ROOT):
+    """The resource broker's installed files,  the expected ones and any others beside them.
+
+    A folder that is not there is one `absent` row,  and a link is never followed.
+    """
+    try:
+        if broker_dir.is_symlink() or not broker_dir.is_dir():
+            return [{"kind": "broker", "path": str(broker_dir), "state": "absent"}]
+    except OSError:
+        return [{"kind": "broker", "path": str(broker_dir), "state": "unreadable"}]
+    names = set(BROKER_FILES)
+    for path in files_in(broker_dir) + files_in(broker_dir / "hetzner"):
+        names.add(path.relative_to(broker_dir).as_posix())
+    rows = []
+    for name in sorted(names):
+        path = broker_dir / name
+        if is_secret_path(path):
+            continue
+        kind = "allowlist" if name == BROKER_ALLOWLIST else "broker"
+        source = "scripts/" + name if (source_root / "scripts" / name).is_file() else None
+        row = {"kind": kind, "path": str(path)}
+        rows.append(host_file_row(row, path, previous, moment, source, source_root))
+    return rows
+
+
+def collect_host_config(
+    control,
+    previous,
+    run_command=run,
+    *,
+    source_root=SOURCE_ROOT,
+    broker_dir=BROKER_DIR,
+    now=None,
+    platform=None,
+):
+    """The host's own config surface,  by digest:  installed units,  the broker,  the allowlists.
+
+    `previous` is the previous report's `hostConfig`,  by path,  which keeps `changedAt` sticky. 
+    A path that looks like a credential is never hashed and never listed.
+    """
+    moment = time.time() if now is None else now
+    shipped = shipped_units(source_root)
+    units = set(shipped) | set(allowlist_unit_names(control))
+    rows = []
+    listed = set()
+    for unit, scope, kind, place in installed_unit_files(units, run_command):
+        if place in listed or is_secret_path(place):
+            continue
+        listed.add(place)
+        row = {"kind": kind, "path": place, "unit": unit, "scope": scope}
+        source = shipped.get(unit) if kind == "unit" else None
+        # A unit file can be a link (`systemctl link`),  so it is read where it really is.
+        real = Path(os.path.realpath(place))
+        rows.append(host_file_row(row, real, previous, moment, source, source_root))
+    if host_role(platform) == "server":
+        rows += broker_rows(broker_dir, previous, moment, source_root)
+    own = source_root / "scripts" / BROKER_ALLOWLIST
+    try:
+        separate = Path(control).resolve() != own.resolve()
+    except (OSError, RuntimeError):
+        separate = True
+    if separate and not is_secret_path(control):
+        row = {"kind": "allowlist", "path": str(control)}
+        source = "scripts/" + BROKER_ALLOWLIST
+        rows.append(host_file_row(row, Path(control), previous, moment, source, source_root))
+    return rows
+
+
+def previous_host_config(path):
+    """The previous report's `hostConfig` rows,  by path."""
+    rows = previous_document(path).get("hostConfig")
+    previous = {}
+    for row in rows if isinstance(rows, list) else []:
+        if isinstance(row, dict) and isinstance(row.get("path"), str):
+            previous[row["path"]] = row
+    return previous
 
 
 # MARK: - The report
@@ -1832,6 +2254,7 @@ def build_report(
     collection=None,
     process_sample_seconds=None,
     platform=None,
+    host_config=None,
 ):
     """The report,  as Muster reads it.
 
@@ -1893,6 +2316,8 @@ def build_report(
         document["filesSummary"] = files_summary
     if resource_policy is not None:
         document["resourcePolicy"] = resource_policy
+    if host_config is not None:
+        document["hostConfig"] = host_config
     return document
 
 
@@ -2040,6 +2465,12 @@ def parse_args(argv=None):
         default=500,
         help="the most config files to report (default: 500)",
     )
+    parser.add_argument(
+        "--broker-dir",
+        type=Path,
+        default=BROKER_DIR,
+        help="where the resource broker is installed (default: %s)" % BROKER_DIR,
+    )
     return parser.parse_args(argv)
 
 
@@ -2085,6 +2516,12 @@ def main(argv=None, run_command=run, proc=Path("/proc")):
             files,
         ),
         process_sample_seconds=args.cpu_interval if args.cpu_interval > 0 else None,
+        host_config=collect_host_config(
+            args.control,
+            previous_host_config(snapshot),
+            run_command,
+            broker_dir=args.broker_dir,
+        ),
     )
 
     if args.dry_run:
