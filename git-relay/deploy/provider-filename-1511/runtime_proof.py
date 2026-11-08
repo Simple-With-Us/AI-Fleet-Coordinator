@@ -7,7 +7,7 @@ is created. The ordinary message distinguishes the old and new matchers.
 
 import json
 from urllib.error import HTTPError
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -21,7 +21,7 @@ class RuntimeProof:
 
     def __init__(self, bearer, opener=None):
         self.bearer = bearer
-        self.opener = opener or build_opener(NoRedirect())
+        self.opener = opener or build_opener(ProxyHandler({}), NoRedirect())
 
     def call(self, action, args):
         raw = json.dumps(args, separators=(",", ":")).encode()

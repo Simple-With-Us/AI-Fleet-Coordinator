@@ -1,5 +1,7 @@
 import importlib.util
 import io
+import os
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -130,3 +132,50 @@ class ProviderRollout(unittest.TestCase):
         text = (SOURCE / "runner.template.py").read_text()
         self.assertIn("MANIFEST_DIGEST_PLACEHOLDER", text)
         self.assertNotIn('if MANIFEST_DIGEST=="e66', text)
+
+    def test_template_exact_binding_and_drift_refusal(self):
+        builder = module("provider_template", SOURCE / "build.py")
+        template = (SOURCE / "runner.template.py").read_text()
+        sources = {"git_relay/a.py": b"a", "git_relay/b.py": b"b"}
+        result = builder.render_entry(template, b"manifest", sources)
+        self.assertNotIn("PLACEHOLDER", result)
+        for text in [
+            template.replace("MODULE_HASHES = {}  #", "MODULE_HASHES = {} #"),
+            template.replace("MANIFEST_DIGEST_PLACEHOLDER", "changed"),
+            template + "\nMODULE_HASHES = {}\n",
+            template + "\n# EXTRA_PLACEHOLDER\n",
+        ]:
+            with self.assertRaises(ValueError):
+                builder.render_entry(text, b"manifest", sources)
+        with self.assertRaises(ValueError):
+            builder.render_entry(template, b"manifest", {})
+
+    def test_private_directory_permissions_and_symlink_refusal(self):
+        builder = module("provider_directory", SOURCE / "build.py")
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "package"
+            builder.private_dir(path)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o700)
+            link = Path(root) / "link"
+            link.symlink_to(path, target_is_directory=True)
+            with self.assertRaises(ValueError):
+                builder.private_dir(link)
+            path.chmod(0o755)
+            with self.assertRaises(ValueError):
+                builder.private_dir(path)
+
+    def test_loopback_opener_ignores_proxy_environment(self):
+        proof = module("provider_proxy", SOURCE / "runtime_proof.py")
+        with patch.dict(
+            os.environ,
+            {
+                "http_proxy": "http://untrusted.invalid:80",
+                "HTTP_PROXY": "http://untrusted.invalid:80",
+                "all_proxy": "http://untrusted.invalid:80",
+            },
+        ):
+            instance = proof.RuntimeProof("synthetic")
+        self.assertFalse(
+            any(isinstance(h, proof.ProxyHandler) and h.proxies for h in instance.opener.handlers)
+        )
+        self.assertTrue(any(isinstance(h, proof.NoRedirect) for h in instance.opener.handlers))

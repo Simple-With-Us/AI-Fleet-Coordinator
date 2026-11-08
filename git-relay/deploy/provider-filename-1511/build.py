@@ -8,6 +8,7 @@ import argparse
 import ast
 import hashlib
 import json
+import os
 from pathlib import Path
 
 BEFORE = "7a4a7cc41f9be1764fb830fdc8eeeb61f47062bb2cb14f7dc814347b6c55fc3b"
@@ -88,6 +89,45 @@ def overlay(raw):
     return raw
 
 
+def private_dir(path):
+    if path.is_symlink():
+        raise ValueError("scratch package symlink refused")
+    path.mkdir(mode=0o700, exist_ok=True)
+    info = path.lstat()
+    if not path.is_dir() or info.st_uid != os.geteuid() or info.st_mode & 0o077:
+        raise ValueError("scratch package must be owner-only")
+
+
+def render_entry(template, raw_manifest, sources):
+    module_hashes = {name: digest(raw) for name, raw in sources.items()}
+    if not module_hashes:
+        raise ValueError("runner module hashes are empty")
+    manifest_placeholder = "MANIFEST_DIGEST_PLACEHOLDER"
+    module_placeholder = "MODULE_HASHES = {}  # MODULE_HASHES_PLACEHOLDER"
+    for marker in (manifest_placeholder, module_placeholder):
+        if template.count(marker) != 1:
+            raise ValueError("runner template placeholder drift")
+    entry = template.replace(manifest_placeholder, digest(raw_manifest)).replace(
+        module_placeholder, "MODULE_HASHES = " + repr(module_hashes)
+    )
+    if "PLACEHOLDER" in entry:
+        raise ValueError("runner template placeholder remains")
+    bindings = {}
+    for node in ast.parse(entry).body:
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id in (
+                    "MANIFEST_DIGEST",
+                    "MODULE_HASHES",
+                ):
+                    if target.id in bindings:
+                        raise ValueError("duplicate runner binding")
+                    bindings[target.id] = ast.literal_eval(node.value)
+    if bindings != {"MANIFEST_DIGEST": digest(raw_manifest), "MODULE_HASHES": module_hashes}:
+        raise ValueError("runner binding drift")
+    return entry
+
+
 def build(repo, before, output):
     here = Path(__file__).resolve().parent
     package = Path(repo) / "git-relay/git_relay"
@@ -129,18 +169,13 @@ def build(repo, before, output):
         "unit": UNIT,
     }
     raw_manifest = json.dumps(manifest, sort_keys=True, indent=2).encode() + b"\n"
-    entry = (here / "runner.template.py").read_text()
-    entry = entry.replace("MANIFEST_DIGEST_PLACEHOLDER", digest(raw_manifest))
-    entry = entry.replace(
-        "MODULE_HASHES = {}  # MODULE_HASHES_PLACEHOLDER",
-        "MODULE_HASHES = " + repr({name: digest(raw) for name, raw in sources.items()}),
-    )
-    ast.parse(entry)
+    entry = render_entry((here / "runner.template.py").read_text(), raw_manifest, sources)
     output = Path(output)
     output.mkdir(mode=0o700, exist_ok=False)
     for name, raw in sources.items():
         target = output / "runner-package" / name
-        target.parent.mkdir(parents=True, exist_ok=True)
+        private_dir(target.parent.parent)
+        private_dir(target.parent)
         target.write_bytes(raw)
     for name, raw in {
         "0.candidate": workflow,
