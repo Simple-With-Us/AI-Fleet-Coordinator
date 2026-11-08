@@ -366,6 +366,16 @@ class RelayMcp:
                 error = None
             if is_read:
                 if isinstance(error, dict):
+                    # The relay marks a rate-limited or transiently failed read (429, 502)
+                    # retryable:  say so, with its retry-after, before calling it a refusal.
+                    if type(error.get("retryable")) is bool and error["retryable"]:
+                        return _tool_failure(
+                            message,
+                            "unavailable",
+                            exc.code,
+                            retryable=True,
+                            retry_after=error.get("retry_after_seconds"),
+                        )
                     return _tool_failure(message, "relay_refused", exc.code)
                 return _tool_failure(message, "unavailable", exc.code)
             if isinstance(error, dict) and error.get("outcome") in ("unknown", "pending"):

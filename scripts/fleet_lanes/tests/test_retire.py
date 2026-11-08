@@ -486,7 +486,7 @@ class AllowlistTests(unittest.TestCase):
             ],
             ["git", "rev-parse", "--verify", "-q", "HEAD^{tree}"],
             ["git", "rev-parse", "--verify", "-q", self.SHA + "^{tree}"],
-            ["git", "rev-list", "--max-count=100", "refs/remotes/origin/main"],
+            ["git", "rev-list", "--max-count=100", "--format=%T", "refs/remotes/origin/main"],
             ["lsof", "-d", "cwd", "-Fpcn"],
         ]:
             with self.subTest(argv=argv):
@@ -599,8 +599,9 @@ class AllowlistTests(unittest.TestCase):
                 '{"per_page":50,"repo":"Simple-With-Us/DealDex","state":"all"}',
                 "--json",
             ],
-            ["git", "rev-list", "--max-count=101", "refs/remotes/origin/main"],
-            ["git", "rev-list", "--max-count=100", "main"],
+            ["git", "rev-list", "--max-count=101", "--format=%T", "refs/remotes/origin/main"],
+            ["git", "rev-list", "--max-count=100", "--format=%T", "main"],
+            ["git", "rev-list", "--max-count=100", "refs/remotes/origin/main"],
             ["lsof"],
             ["lsof", "-p", "1"],
             ["bash", "-c", "true"],

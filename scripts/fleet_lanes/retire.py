@@ -195,11 +195,12 @@ def _git_key(
     if a == ["ls-remote", "--heads", "origin"]:
         return "net"
     if (
-        len(a) == 3
+        len(a) == 4
         and a[0] == "rev-list"
         and a[1] == f"--max-count={TREE_LANDED_COMMITS}"
-        and a[2].startswith("refs/remotes/origin/")
-        and K.valid_ref_name(a[2])
+        and a[2] == "--format=%T"
+        and a[3].startswith("refs/remotes/origin/")
+        and K.valid_ref_name(a[3])
     ):
         return "git"
     return None
@@ -246,7 +247,7 @@ def check_allowed(
     git: worktree list --porcelain | worktree remove <path inside the lanes root> (never --force) | worktree prune |
     branch -d <ref> (never -D) | status --porcelain --ignored --untracked-files=normal | rev-list --count HEAD
     --not <sha> | rev-list --count --ignore-missing HEAD --not <sha>... | rev-list --max-count=100
-    refs/remotes/origin/<ref> | rev-parse (--absolute-git-dir | --git-common-dir | --show-toplevel | --verify -q
+    --format=%T refs/remotes/origin/<ref> | rev-parse (--absolute-git-dir | --git-common-dir | --show-toplevel | --verify -q
     HEAD-or-sha[^{commit}|^{tree}]) | config --get (remote.origin.url | branch.<ref>.merge | branch.<ref>.remote) | merge-base
     --is-ancestor HEAD refs/remotes/origin/<ref> | symbolic-ref -q --short refs/remotes/origin/HEAD | ls-remote
     --heads origin.  simple-git: call gr_wf_pr_list_page --args-json <the two bounded shapes> --json.
@@ -830,18 +831,23 @@ def _tree_landed(run: Runner, path: str, default_branch: str) -> bool:
     head = run(["git", "rev-parse", "--verify", "-q", "HEAD^{tree}"], cwd=path)
     if not head.ok or not _SHA.match(head.out.strip()):
         return False
+    # One call lists every candidate commit with its tree ("commit <sha>" then the tree sha, per
+    # commit), so the comparison is done here instead of one git process per commit.
     commits = run(
-        ["git", "rev-list", f"--max-count={TREE_LANDED_COMMITS}", f"refs/remotes/origin/{default_branch}"],
+        [
+            "git",
+            "rev-list",
+            f"--max-count={TREE_LANDED_COMMITS}",
+            "--format=%T",
+            f"refs/remotes/origin/{default_branch}",
+        ],
         cwd=path,
     )
     if not commits.ok:
         return False
+    want = head.out.strip()
     for line in commits.out.splitlines():
-        sha = line.strip()
-        if not _SHA.match(sha):
-            continue
-        tree = run(["git", "rev-parse", "--verify", "-q", f"{sha}^{{tree}}"], cwd=path)
-        if tree.ok and tree.out.strip() == head.out.strip():
+        if line.strip() == want:
             return True
     return False
 
