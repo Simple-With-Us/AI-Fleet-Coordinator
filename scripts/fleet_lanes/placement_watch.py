@@ -85,7 +85,7 @@ STATUS_FRESH_HOURS = 3  # as long as fleet-tools-doctor gives a watcher before i
 BEARER_FILE = "SIMPLE_BOARD_BEARER_FILE"
 # What a send can come to.  Only a refusal the CLI made before sending anything is safe to repeat.
 OK, REFUSED, UNKNOWN = "ok", "refused", "unknown"
-# The two CLIs number their exits differently (linear-board/board EXIT_*, agent_sync/zulip.py exit_code).
+# The two CLIs number their exits differently (linear-board/board EXIT_*, simple_tools/zulip.py exit_code).
 REFUSED_EXITS = {
     # Bad usage, an untrusted seat helper, no credentials, a rate limit that outlasted the wait, no verified seat.
     "simple-board": frozenset({2, 3, 4, 5, 6}),
