@@ -228,7 +228,8 @@ final class DispatchDriftTicker: DriftTicking {
 /// The engine runs when a watched path changes,  when the Mac wakes,  and from the safety
 /// net when no trusted run has landed for a whole interval on the wall clock.  It never
 /// runs twice at once:  the store shares a run in flight,  the safety net leaves a run in
-/// flight alone,  and the wake queues one more run only behind a run from before the sleep.
+/// flight alone,  and the wake queues one more run only behind a run that started before the
+/// wait after the wake was over.
 @MainActor
 final class DriftMonitor: ObservableObject {
     /// How old the last trusted run may be before the safety net runs the engine (GRID-33).
@@ -322,9 +323,10 @@ final class DriftMonitor: ObservableObject {
     @Published private(set) var lastTrustedRunAt: Date?
     /// When the last run that could be trusted started,  or nil when the grid could not say.
     ///
-    /// A wake is covered only by a trusted run that started after it:  a run that was in
-    /// flight when the Mac slept read the Mac as it was then,  and may have read the secret
-    /// store while the network was still down,  even when it lands after the wake.
+    /// A wake is covered only by a trusted run that started once the hold after it was over:  a
+    /// run that was in flight when the Mac slept read the Mac as it was then,  and one that
+    /// started inside the hold may have read the secret store while the network was still
+    /// down,  even when either lands after the wake.
     @Published private(set) var lastTrustedRunStartedAt: Date?
     /// Whether the last run could be trusted.
     @Published private(set) var lastRunWasTrusted: Bool?
@@ -359,8 +361,9 @@ final class DriftMonitor: ObservableObject {
     private var lastTickAt: Date?
     /// When the Mac last woke,  while the run the wake asked for has not been decided.
     private var wokeAt: Date?
-    /// Until when the safety net leaves the engine alone after a wake,  so the run after a
-    /// wake waits for the network instead of failing the secret store checks.
+    /// Until when the safety net and the runs a watched path asks for leave the engine alone
+    /// after a wake,  so the run after a wake waits for the network instead of failing the
+    /// secret store checks.
     private var wakeHoldUntil: Date?
     /// The run waiting for the network after a wake.
     private var wakeWork: DriftScheduledWork?
@@ -471,6 +474,11 @@ final class DriftMonitor: ObservableObject {
     /// also keeps the events a restart would have dropped.  A watch whose stream could not
     /// be made is asked for again after the next run,  and only that watch:  the streams that
     /// did arm are kept.
+    ///
+    /// What the watcher says is running decides,  not what the monitor armed last time:  a
+    /// watch that was armed and whose stream the watcher no longer reports as started is armed
+    /// again,  on the same schedule as a watch that failed to arm (after the next run,  never
+    /// in a loop of its own).
     private func armWatcher() {
         let list = buildWatchList(grid.manifest, home)
         watchedPathCount = list.targetPaths.count
@@ -478,13 +486,19 @@ final class DriftMonitor: ObservableObject {
         // The coverage is read from the watcher after any arming below,  so it counts the
         // streams that started and never the ones that were only asked for.
         defer { watchCoverage = DriftWatchCoverage.of(list: list, started: watcher.startedWatches) }
-        if let armedWatches, armedWatches == list.watches { return }
+        let started = watcher.startedWatches
+        if let armedWatches, armedWatches == list.watches,
+           list.watches.allSatisfy({ started.contains($0) }) { return }
         let held = armedWatches ?? []
         let gone = held.filter { !list.watches.contains($0) }
         if !gone.isEmpty {
             watcher.disarm(gone)
         }
-        let kept = held.filter { list.watches.contains($0) }
+        let stopped = held.filter { list.watches.contains($0) && !started.contains($0) }
+        if !stopped.isEmpty {
+            Self.log.error("\(stopped.count, privacy: .public) watches that were armed hold no running stream; they are armed again")
+        }
+        let kept = held.filter { list.watches.contains($0) && started.contains($0) }
         let missing = list.watches.filter { !kept.contains($0) }
         Self.log.info("Watching \(list.targetPaths.count, privacy: .public) paths for \(list.seats.count, privacy: .public) seats; \(missing.count, privacy: .public) watches to arm, \(gone.count, privacy: .public) let go")
         let newlyArmed = watcher.arm(missing) { [weak self] _ in
@@ -523,6 +537,7 @@ final class DriftMonitor: ObservableObject {
     private func watcherRunDue() {
         // One run already waits for the end of the gap,  and it will read this change too.
         guard floorWork == nil else { return }
+        if isHeldForWake() { return }
         if let lastWatcherRunAt {
             let wait = watcherRunFloor - clock().timeIntervalSince(lastWatcherRunAt)
             if wait > 0 {
@@ -540,7 +555,19 @@ final class DriftMonitor: ObservableObject {
     private func floorGapEnded() {
         floorWork = nil
         guard isWatching else { return }
+        if isHeldForWake() { return }
         refresh(reason: "the gap after a watched change ended", fromWatcher: true)
+    }
+
+    /// Whether a run a watched path asked for waits out the hold after a wake.
+    ///
+    /// A run that starts inside the hold may read the secret store before the network is
+    /// back.  The change is not lost:  the run the wake asks for at the end of the hold reads
+    /// every watched file,  and it runs unless a run that started after the hold covers it.
+    private func isHeldForWake() -> Bool {
+        guard let wakeHoldUntil, clock() < wakeHoldUntil else { return false }
+        Self.log.info("A watched path changed inside the wait after a wake; the wake's run reads it")
+        return true
     }
 
     // MARK: The safety net and the wake (GRID-33)
@@ -615,24 +642,27 @@ final class DriftMonitor: ObservableObject {
     }
 
     /// The network has had its moment after a wake,  and the engine runs,  unless a trusted
-    /// run that started after the wake already covers it.
+    /// run that started once the hold was over already covers it.
     ///
-    /// Cover is judged by when the run started,  not when it landed:  a run that was in flight
-    /// when the Mac slept and lands just after the wake read the Mac as it was before,  and
-    /// perhaps the secret store while the network was down,  so it never covers the wake.  A
-    /// run whose start the grid cannot say covers nothing.
+    /// Cover is judged by when the run started,  not when it landed,  and only a run that
+    /// started at or after the end of the hold (`wokeAt` plus `wakeRunDelay`) covers the wake.
+    /// A run that was in flight when the Mac slept read the Mac as it was before,  and one that
+    /// started inside the hold may have read the secret store before the network came back;
+    /// either may land after the wake,  and neither covers it.  A run whose start the grid
+    /// cannot say covers nothing.
     ///
-    /// Never a second run at once:  a run in flight that started after the wake is the run the
-    /// wake asks for,  and one that started before the sleep read the Mac as it was then,  so
-    /// one more run follows it when it lands.
+    /// Never a second run at once:  a run in flight that started after the hold is the run the
+    /// wake asks for,  and one that started earlier may have read the Mac without its network,
+    /// so one more run follows it when it lands.
     private func wakeRunDue() {
         wakeWork = nil
         wakeHoldUntil = nil
         guard isWatching, let wokeAt else { return }
         self.wokeAt = nil
-        if let lastTrustedRunStartedAt, lastTrustedRunStartedAt >= wokeAt { return }
+        let holdEnd = wokeAt.addingTimeInterval(Self.wakeRunDelay)
+        if let lastTrustedRunStartedAt, lastTrustedRunStartedAt >= holdEnd { return }
         if grid.isRunning {
-            if let started = grid.runStartedAt, started >= wokeAt { return }
+            if let started = grid.runStartedAt, started >= holdEnd { return }
             otherRunPending = true
             return
         }

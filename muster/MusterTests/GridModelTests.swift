@@ -350,6 +350,43 @@ final class ComplianceStoreTests: XCTestCase {
         XCTAssertEqual(store.complianceStatus(ruleID: "compliance-secrets-hygiene")?.standing, .notAnswered)
         XCTAssertEqual(store.complianceStatus(ruleID: "compliance-litestream-heartbeat")?.word, ComplianceRuleStatus.notBuiltWord)
     }
+
+    /// The statuses are built once per answer:  a list that looks each rule up row by row does
+    /// not build them again for every row,  and the next answer builds them afresh.
+    func test_the_statuses_are_built_once_per_answer() throws {
+        let engine = HandEngine()
+        let (store, root) = try makeStore(engine: engine)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        store.refresh()
+        let decoded = try EnvelopeDecoder.decode(Data(envelope.utf8))
+        land(
+            EngineRun(envelope: decoded, exitCode: 0, standardError: "", failure: nil, timedOut: false),
+            on: store,
+            engine: engine
+        )
+        let ruleIDs = store.complianceStatuses.map(\.ruleID)
+        XCTAssertEqual(ruleIDs.count, 3)
+        let built = store.complianceBuildCount
+        for ruleID in ruleIDs {
+            XCTAssertEqual(store.complianceStatus(ruleID: ruleID)?.ruleID, ruleID)
+            XCTAssertEqual(store.complianceStatuses.map(\.ruleID), ruleIDs)
+        }
+        XCTAssertNil(store.complianceStatus(ruleID: "compliance-nothing"))
+        XCTAssertEqual(store.complianceBuildCount, built, "a lookup built the statuses again")
+        XCTAssertEqual(store.complianceStatus(ruleID: "compliance-secrets-hygiene")?.standing, .answered(.drift))
+
+        // A failed run is a new answer,  and the statuses follow it.
+        store.refresh()
+        land(
+            EngineRun(envelope: nil, exitCode: 1, standardError: "", failure: "the engine did not answer", timedOut: false),
+            on: store,
+            engine: engine
+        )
+        XCTAssertEqual(store.complianceStatus(ruleID: "compliance-secrets-hygiene")?.standing, .notAnswered)
+        XCTAssertEqual(store.complianceStatuses.map(\.ruleID), ruleIDs)
+        XCTAssertEqual(store.complianceBuildCount, built + 1)
+    }
 }
 
 // MARK: - GRID-18:  a failing compliance result goes through the drift alert path
@@ -704,13 +741,13 @@ final class SafetyNetAndWakeTests: XCTestCase {
         try? FileManager.default.removeItem(at: home)
     }
 
-    private func makeMonitor(grid other: DriftGridReading? = nil) -> DriftMonitor {
+    private func makeMonitor(grid other: DriftGridReading? = nil, watcher: FakeWatcher? = nil) -> DriftMonitor {
         let clock = self.clock!
         return DriftMonitor(
             grid: other ?? grid,
             notifier: DriftRecordingNotifier(),
             history: DriftHistoryStore(url: home.appendingPathComponent("drift-history.json")),
-            watcher: FakeWatcher(),
+            watcher: watcher ?? FakeWatcher(),
             scheduler: scheduler,
             ticker: ticker,
             wake: wake,
@@ -866,14 +903,15 @@ final class SafetyNetAndWakeTests: XCTestCase {
         withExtendedLifetime(monitor) {}
     }
 
-    /// A run in flight that started after the wake is the run the wake asks for.
+    /// A run in flight that started once the hold after the wake was over is the run the wake
+    /// asks for.
     func test_a_wake_does_not_add_a_run_to_one_that_started_after_it() async throws {
         let monitor = makeMonitor()
         monitor.start()
         wake.wake()
         await settleGridModel()
         grid.isRunning = true
-        grid.runStartedAt = clock.now.addingTimeInterval(1)
+        grid.runStartedAt = clock.now.addingTimeInterval(DriftMonitor.wakeRunDelay)
         clock.advance(by: DriftMonitor.wakeRunDelay)
         scheduler.fireAll()
         await settleGridModel()
@@ -908,22 +946,127 @@ final class SafetyNetAndWakeTests: XCTestCase {
         withExtendedLifetime(monitor) {}
     }
 
-    /// A trusted run that started after the wake,  such as one a watched change asked for,
-    /// already covers it.
-    func test_a_wake_is_covered_by_a_trusted_run_that_started_after_it() async throws {
+    /// A trusted run that started once the hold after the wake was over already covers it.
+    func test_a_wake_is_covered_by_a_trusted_run_that_started_after_the_hold() async throws {
         let monitor = makeMonitor()
         monitor.start()
         wake.wake()
         await settleGridModel()
-        clock.advance(by: 1)
+        clock.advance(by: DriftMonitor.wakeRunDelay)
         let started = clock.now
         clock.advance(by: 2)
         grid.finish(cells: [], trusted: true, startedAt: started)
         await settleGridModel()
-        clock.advance(by: DriftMonitor.wakeRunDelay)
         scheduler.fireAll()
         await settleGridModel()
         XCTAssertEqual(grid.refreshCount, 0)
+        withExtendedLifetime(monitor) {}
+    }
+
+    /// A trusted run that started inside the hold after a wake,  such as one the owner asked
+    /// for,  may have read the secret store before the network was back.  It lands after the
+    /// wake and still never covers it:  the wake's run starts when the hold ends.
+    func test_a_run_that_started_inside_the_hold_does_not_cover_the_wake() async throws {
+        let monitor = makeMonitor()
+        monitor.start()
+        wake.wake()
+        await settleGridModel()
+        clock.advance(by: 3)
+        let started = clock.now
+        clock.advance(by: 2)
+        grid.finish(cells: [], trusted: true, startedAt: started)
+        await settleGridModel()
+        XCTAssertEqual(grid.refreshCount, 0, "the wake's run still waits for the network")
+
+        clock.advance(by: DriftMonitor.wakeRunDelay - 5)
+        scheduler.fireAll()
+        await settleGridModel()
+        XCTAssertEqual(grid.refreshCount, 1, "a run from inside the hold cancelled the wake's run")
+        withExtendedLifetime(monitor) {}
+    }
+
+    /// A run still in flight when the hold ends,  which started inside it,  gets one more run
+    /// behind it,  after it lands and never beside it.
+    func test_a_run_in_flight_that_started_inside_the_hold_gets_one_run_behind_it() async throws {
+        let monitor = makeMonitor()
+        monitor.start()
+        wake.wake()
+        await settleGridModel()
+        clock.advance(by: 4)
+        let started = clock.now
+        grid.isRunning = true
+        grid.runStartedAt = started
+        clock.advance(by: DriftMonitor.wakeRunDelay - 4)
+        scheduler.fireAll()
+        await settleGridModel()
+        XCTAssertEqual(grid.refreshCount, 0, "a second run started beside the one in flight")
+        grid.isRunning = false
+        grid.runStartedAt = nil
+        grid.finish(cells: [], trusted: true, startedAt: started)
+        await settleGridModel()
+        XCTAssertEqual(grid.refreshCount, 1, "no run followed the run from inside the hold")
+        withExtendedLifetime(monitor) {}
+    }
+
+    /// A watched change inside the hold after a wake starts no run before the network is back:
+    /// the wake's run at the end of the hold reads it.
+    func test_a_watched_change_inside_the_hold_waits_for_the_wakes_run() async throws {
+        let watcher = FakeWatcher()
+        let monitor = makeMonitor(watcher: watcher)
+        monitor.start()
+        wake.wake()
+        await settleGridModel()
+        clock.advance(by: 3)
+        watcher.fire()
+        await settleGridModel()
+        scheduler.fireDebounce()
+        await settleGridModel()
+        XCTAssertEqual(grid.refreshCount, 0, "a watched change started a run inside the hold")
+        XCTAssertEqual(scheduler.liveDelays, [DriftMonitor.wakeRunDelay], "only the wake's run waits")
+
+        clock.advance(by: DriftMonitor.wakeRunDelay - 3)
+        scheduler.fireAll()
+        await settleGridModel()
+        XCTAssertEqual(grid.refreshCount, 1, "the wake's run did not start when the hold ended")
+        withExtendedLifetime(monitor) {}
+    }
+
+    /// The run a watched change left waiting for the end of the floor waits out the hold too,
+    /// when the floor ends inside it,  and the wake's run reads its change.
+    func test_the_floors_waiting_run_inside_the_hold_waits_for_the_wakes_run() async throws {
+        let watcher = FakeWatcher()
+        let monitor = makeMonitor(watcher: watcher)
+        monitor.start()
+        watcher.fire()
+        await settleGridModel()
+        scheduler.fireDebounce()
+        await settleGridModel()
+        XCTAssertEqual(grid.refreshCount, 1)
+        grid.finish(cells: [], trusted: true, startedAt: clock.now)
+        await settleGridModel()
+
+        // A second change inside the floor waits for its end.
+        let floorWait = DriftMonitor.watcherRunFloor - 10
+        clock.advance(by: 10)
+        watcher.fire()
+        await settleGridModel()
+        scheduler.fireDebounce()
+        await settleGridModel()
+        XCTAssertEqual(scheduler.liveDelays, [floorWait])
+
+        // The Mac wakes just before the floor ends,  so the floor ends inside the hold.
+        clock.advance(by: floorWait - 2)
+        wake.wake()
+        await settleGridModel()
+        clock.advance(by: 2)
+        scheduler.fire { $0 == floorWait }
+        await settleGridModel()
+        XCTAssertEqual(grid.refreshCount, 1, "the floor's run started inside the hold")
+
+        clock.advance(by: DriftMonitor.wakeRunDelay - 2)
+        scheduler.fireAll()
+        await settleGridModel()
+        XCTAssertEqual(grid.refreshCount, 2, "the wake's run did not start when the hold ended")
         withExtendedLifetime(monitor) {}
     }
 

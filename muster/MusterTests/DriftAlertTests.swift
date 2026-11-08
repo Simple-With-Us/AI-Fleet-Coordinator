@@ -902,6 +902,76 @@ final class DriftMonitorTests: XCTestCase {
         XCTAssertEqual(watcher.armCount, calls, "a fully armed list is not armed again")
     }
 
+    /// A stream that stops after the list was fully armed is armed again after the next run:
+    /// what the watcher reports as started decides,  not what the monitor armed last time.  A
+    /// stream that keeps failing is asked for once per run,  never in a loop of its own,  and
+    /// the healthy stream is left running throughout.
+    func test_a_stream_that_stops_after_a_full_arming_is_armed_again_after_the_next_run() async throws {
+        let grid = FakeGrid()
+        let watcher = FakeWatcher()
+        let healthy = URL(fileURLWithPath: "/tmp/muster-stopped/healthy.json")
+        let dying = URL(fileURLWithPath: "/tmp/muster-stopped/dying.json")
+        let healthyWatch = DriftWatchList.Watch(
+            root: healthy, target: healthy, targetIsDirectory: false, rootIsTheTarget: true
+        )
+        let dyingWatch = DriftWatchList.Watch(
+            root: dying, target: dying, targetIsDirectory: false, rootIsTheTarget: true
+        )
+        let monitor = DriftMonitor(
+            grid: grid,
+            notifier: DriftRecordingNotifier(),
+            history: DriftHistoryStore(url: historyURL),
+            watcher: watcher,
+            scheduler: ManualScheduler(),
+            ticker: ManualTicker(),
+            home: home,
+            buildWatchList: { _, _ in
+                DriftWatchList(
+                    watches: [healthyWatch, dyingWatch],
+                    targetPaths: [healthy, dying],
+                    seats: ["MM"]
+                )
+            }
+        )
+        monitor.start()
+        XCTAssertEqual(watcher.held, [healthyWatch, dyingWatch])
+        XCTAssertTrue(monitor.watchCoverage.isComplete)
+
+        // One stream stops on its own.  Nothing arms it before a run lands.
+        watcher.dropStream(root: dying)
+        await settle()
+        XCTAssertEqual(watcher.armCount, 1)
+
+        // It cannot be made again for now:  each run asks for it once,  and only it.
+        watcher.failingRoots = [dying]
+        grid.finish(cells: [], trusted: true)
+        await settle()
+        XCTAssertEqual(
+            watcher.armCalls,
+            [[healthyWatch, dyingWatch], [dyingWatch]],
+            "the stream that stopped was not asked for again"
+        )
+        XCTAssertEqual(monitor.watchCoverage.streamsFailed, 1)
+        XCTAssertTrue(watcher.disarmed.isEmpty, "the healthy stream was torn down")
+        XCTAssertEqual(watcher.streamsMade[healthy], 1, "the healthy stream was started again")
+        grid.finish(cells: [], trusted: true)
+        await settle()
+        XCTAssertEqual(watcher.armCount, 3, "a stream that keeps failing is asked for once per run")
+
+        // Once it can be made it arms,  and the list is kept from then on.
+        watcher.failingRoots = []
+        grid.finish(cells: [], trusted: true)
+        await settle()
+        XCTAssertEqual(watcher.held, [healthyWatch, dyingWatch])
+        XCTAssertEqual(watcher.streamsMade[dying], 2)
+        XCTAssertEqual(watcher.streamsMade[healthy], 1)
+        XCTAssertTrue(monitor.watchCoverage.isComplete)
+        let calls = watcher.armCount
+        grid.finish(cells: [], trusted: true)
+        await settle()
+        XCTAssertEqual(watcher.armCount, calls, "a fully armed list is not armed again")
+    }
+
     /// A stop forgets the gap:  the first watched change after a start runs once its window
     /// ends,  and does not wait out a gap left from before the stop.
     func test_a_restart_does_not_wait_out_the_old_gap() async throws {
@@ -1289,6 +1359,12 @@ final class FakeWatcher: DriftWatching {
 
     func stop() {
         held.removeAll()
+    }
+
+    /// A stream stops on its own,  with no `disarm`:  the watcher no longer reports it as
+    /// started,  and nothing records it as let go.
+    func dropStream(root: URL) {
+        held.removeAll { $0.root == root }
     }
 
     /// A change happened.
