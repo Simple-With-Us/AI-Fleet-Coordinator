@@ -61,6 +61,10 @@ _PATH = re.compile(r"[A-Za-z0-9._/+@~-]{1,1024}")
 _REPO = re.compile(r"[A-Za-z0-9._-]{1,100}/[A-Za-z0-9._-]{1,100}")
 MAX_FILE_RAW = 2 * 1024 * 1024
 MAX_FILE_B64 = 4 * ((MAX_FILE_RAW + 2) // 3)
+# A referenced blob is read back through GitHubClient._call, which rejects any
+# response body over 1 MiB (github_client.MAX_BODY).  700 KiB raw is ~934 KB of
+# base64 plus 60-column line wraps and JSON, which still fits under that cap.
+MAX_REF_BLOB_RAW = 700 * 1024
 MAX_PAGE = 50
 MAX_PROJECT = 100
 MAX_WORKFLOW_TEXT = 40000
@@ -5497,9 +5501,9 @@ class WorkflowVerbs:
                         blob.get("sha") != sha
                         or blob.get("encoding") != "base64"
                         or type(blob.get("size")) is not int
-                        or not 0 <= blob["size"] <= MAX_FILE_RAW
+                        or not 0 <= blob["size"] <= MAX_REF_BLOB_RAW
                         or not isinstance(raw, str)
-                        or len(raw) > ((MAX_FILE_RAW + 2) // 3) * 4 + MAX_FILE_RAW // 30
+                        or len(raw) > ((MAX_REF_BLOB_RAW + 2) // 3) * 4 + MAX_REF_BLOB_RAW // 30
                     ):
                         raise Refused("referenced blob unavailable or unsupported")
                     try:
@@ -5511,7 +5515,7 @@ class WorkflowVerbs:
                     # Budgets measure the decoded bytes, never the receipt's declared
                     # size:  a receipt that understates blob["size"] cannot smuggle
                     # content past the raw work budget.
-                    if len(decoded_raw) > MAX_FILE_RAW:
+                    if len(decoded_raw) > MAX_REF_BLOB_RAW:
                         raise Refused("referenced blob exceeds the per-file raw budget")
                     if (
                         len(decoded_raw) != blob["size"]
