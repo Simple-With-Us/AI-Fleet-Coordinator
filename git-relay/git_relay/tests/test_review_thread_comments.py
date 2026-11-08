@@ -35,7 +35,9 @@ def thread():
 
 def run(value, args=ARGS, final=SHA):
     client = Client({"head": {"sha": SHA}}, {"data": {"node": value}}, {"head": {"sha": final}})
-    handle = WorkflowVerbs(client, Policy(), "swu-wise", "own", "swu-wise", ACTION, REPO)
+    handle = WorkflowVerbs(
+        client, Policy(), "swu-wise", "proof-bearer-placeholder", "swu-wise", ACTION, REPO
+    )
     return handle.run(ACTION, args), client
 
 
@@ -52,7 +54,7 @@ class ReviewReplies(unittest.TestCase):
         self.assertTrue(query.startswith("query("))
         self.assertNotIn("mutation", query)
         self.assertIn("fullDatabaseId", query)
-        self.assertEqual(client.calls[1][3], "own")
+        self.assertEqual(client.calls[1][3], "proof-bearer-placeholder")
 
     def test_cursor_continuation_and_changed_head(self):
         value = thread()
@@ -103,7 +105,36 @@ class ReviewReplies(unittest.TestCase):
     def test_invalid_args_do_not_dispatch(self):
         for extra in [{"thread_id": "foreign"}, {"cursor": "bad cursor"}, {"other": True}]:
             client = Client()
-            handle = WorkflowVerbs(client, Policy(), "swu-wise", "own", "swu-wise", ACTION, REPO)
+            handle = WorkflowVerbs(
+                client, Policy(), "swu-wise", "proof-bearer-placeholder", "swu-wise", ACTION, REPO
+            )
             with self.assertRaises(Refused):
                 handle.run(ACTION, {**ARGS, **extra})
             self.assertEqual(client.calls, [])
+
+    def test_serialized_escape_budget_and_malformed_unicode(self):
+        value = thread()
+        value["comments"]["nodes"][0]["body"] = "\x01" * 65536
+        with self.assertRaises(Refused):
+            run(value)
+        for body in ["\ud800", "bad\x00body"]:
+            value = thread()
+            value["comments"]["nodes"][0]["body"] = body
+            with self.assertRaises(RelayGitHubError):
+                run(value)
+
+    def test_loaded_credential_withheld(self):
+        value = thread()
+        value["comments"]["nodes"][0]["body"] = "proof-bearer-placeholder"
+        out, _ = run(value)
+        self.assertEqual(out["comments"][0]["body"], "<withheld: credential-shaped text>")
+        self.assertTrue(out["comments"][0]["body_withheld"])
+
+    def test_all_read_surfaces_register_action(self):
+        root = __import__("pathlib").Path(__file__).resolve().parents[3]
+        for name in [
+            "scripts/git-tools/git",
+            "scripts/git-tools/export_catalog.py",
+            "scripts/agent-sync-mcp/src/gr-workflow-v1.js",
+        ]:
+            self.assertIn(ACTION, (root / name).read_text())

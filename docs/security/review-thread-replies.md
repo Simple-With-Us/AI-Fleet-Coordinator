@@ -23,3 +23,15 @@ The query uses fullDatabaseId with decimal-string/integer validation so current
 mutation, personal token, new grant or review trigger. Source publication and
 review are not installation or runtime-use clearance. This new capability is
 not included in the1511 two-image matcher transaction.
+
+## Separate grant and installation boundary
+
+Production fleet and pinned seat profiles intentionally do not grant this new
+action. Registration in policy.py is a recognized capability name, not a seat
+grant. Actual use requires a separately reviewed, exact own-seat grant and
+installation transaction. No profile or live policy is widened by this PR.
+
+Bodies are filtered with the sibling secret/provider guards, including the loaded
+bearer, and withheld bodies carry body_withheld plus the fixed redacted marker.
+Malformed NUL/surrogate text fails closed. The final serialized receipt is capped
+at256KiB after JSON escaping, independently of the raw body/page limits.

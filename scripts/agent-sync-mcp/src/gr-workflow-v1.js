@@ -566,9 +566,9 @@ export function validWfV1Response(action, body, args) {
  if(!boundedWorkflowInput(body,{maxDepth:12,maxNodes:50000,maxBytes:1048576,maxString:1048576,maxKeys:1000}))return false;
  if(action==='wf_review_thread_comments'){
   const cursor=z.string().regex(/^[A-Za-z0-9_/=+-]{1,256}$/).nullable();
-  const row=z.object({id:positive,body:z.string().refine(v=>utf8Bytes(v)<=65536),url:z.string(),author:z.string().max(100).nullable(),review_id:positive,commit_id:shaValue,reply_to_id:positive.nullable()}).strict();
+  const row=z.object({id:positive,body:z.string().refine(v=>!v.includes('\0')&&!/[\uD800-\uDFFF]/u.test(v)&&utf8Bytes(v)<=65536&&!discussionCredential.test(v)),body_withheld:z.boolean(),url:z.string(),author:z.string().max(100).nullable(),review_id:positive,commit_id:shaValue,reply_to_id:positive.nullable()}).strict().refine(v=>!v.body_withheld||v.body==='<withheld: credential-shaped text>');
   const schema=z.object({number:positive,head_sha:shaValue,thread_id:z.string().regex(/^PRRT_[A-Za-z0-9_-]{1,200}$/),is_resolved:z.boolean(),is_outdated:z.boolean(),comments:z.array(row).max(5),has_more:z.boolean(),end_cursor:cursor,snapshot:z.literal(false)}).strict();
-  if(!schema.safeParse(body).success)return false;
+  if(!schema.safeParse(body).success||utf8Bytes(JSON.stringify(body))>262144)return false;
   if(new Set(body.comments.map(v=>v.id)).size!==body.comments.length||body.comments.reduce((n,v)=>n+utf8Bytes(v.body),0)>131072)return false;
   if(body.has_more&&(!body.end_cursor||!body.comments.length||body.end_cursor===args?.cursor))return false;
   return !args||(body.number===args.number&&body.head_sha===args.expected_head_sha&&body.thread_id===args.thread_id&&body.comments.every(v=>v.url===`https://github.com/${args.repo}/pull/${args.number}#discussion_r${v.id}`));

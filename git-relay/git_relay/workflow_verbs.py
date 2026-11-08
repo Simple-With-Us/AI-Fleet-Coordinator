@@ -3595,9 +3595,15 @@ class WorkflowVerbs:
                 bad()
             seen.add(row["databaseId"])
             body = row.get("body")
-            if not isinstance(body, str) or len(body.encode("utf-8")) > 65536:
+            if not isinstance(body, str) or "\x00" in body:
                 bad()
-            total += len(body.encode("utf-8"))
+            try:
+                body_size = len(body.encode("utf-8"))
+            except UnicodeEncodeError:
+                raise RelayGitHubError(502, "PR discussion body unverifiable") from None
+            if body_size > 65536:
+                bad()
+            total += body_size
             if total > 131072:
                 bad()
             author, review, reply = (
@@ -3629,10 +3635,19 @@ class WorkflowVerbs:
                 or url != f"https://github.com/{repo}/pull/{number}#discussion_r{row['databaseId']}"
             ):
                 bad()
+            withheld = bool(
+                find_secret(body)
+                or self.bearer
+                and self.bearer in body
+                or re.search(
+                    PROVIDER_PATTERN + "|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}", body
+                )
+            )
             rows.append(
                 {
                     "id": row["databaseId"],
-                    "body": body,
+                    "body": "<withheld: credential-shaped text>" if withheld else body,
+                    "body_withheld": withheld,
                     "url": url,
                     "author": author["login"] if author else None,
                     "review_id": review["databaseId"],
@@ -3641,17 +3656,19 @@ class WorkflowVerbs:
                 }
             )
         self._pull_at_commit(repo, number, head)
-        return {
-            "number": number,
-            "head_sha": head,
-            "thread_id": thread_id,
-            "is_resolved": thread["isResolved"],
-            "is_outdated": thread["isOutdated"],
-            "comments": rows,
-            "has_more": page["hasNextPage"],
-            "end_cursor": end,
-            "snapshot": False,
-        }
+        return self._context_size(
+            {
+                "number": number,
+                "head_sha": head,
+                "thread_id": thread_id,
+                "is_resolved": thread["isResolved"],
+                "is_outdated": thread["isOutdated"],
+                "comments": rows,
+                "has_more": page["hasNextPage"],
+                "end_cursor": end,
+                "snapshot": False,
+            }
+        )
 
     def wf_review_threads(self, repo, args):
         _only(args, ("repo", "number", "cursor"))
