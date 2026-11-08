@@ -3006,7 +3006,8 @@ class GuardFactsTests(World):
         ok = self.make_source(
             "fewer",
             guard=self.guard_with(
-                'r"clone|worktree|archive|codeload|tarball|zipball|fetch|pull|remote|checkout-index"',
+                'r"clone|worktree|archive|codeload|tarball|zipball|fetch|pull|remote|checkout-index"\n'
+                '    r"|deriveddatapath|bundlepath|ymroot|objroot|target-dir|build-path|cratch-path"',
                 'r"clone|pull"',
             ),
         )
@@ -3048,7 +3049,7 @@ class GuardFactsTests(World):
         self.install(())
         checks = {c.name: c for c in T.verify_tools(self.paths, timeout=TIMEOUT)}
         self.assertEqual(checks["prefilter"].status, "PASS", checks["prefilter"].line())
-        self.assertIn("10 trigger words", checks["prefilter"].detail)
+        self.assertIn("17 trigger words", checks["prefilter"].detail)
 
     def test_the_generated_patterns_are_exactly_the_guards_words(self) -> None:
         text = T.render_hook_shim()
@@ -4292,7 +4293,7 @@ class MusePlanApplyVerifyTests(World):
         self.assertIn("new      muse-seat", out)
         self.assertIn("muse-plugin/fleet-lane-guard/hooks/lane-guard.sh", out)
         self.assertIn("muse-plugin/fleet-lane-guard/.muse-plugin/plugin.json", out)
-        self.assertIn("prefilter: derived from guard.py _TRIGGER (10 words: clone, worktree", out)
+        self.assertIn("prefilter: derived from guard.py _TRIGGER (17 words: clone, worktree", out)
         self.assertTrue(all(ord(c) < 128 for c in out), "plan output must print on any terminal")
 
     def test_plan_all_default_still_lists_muse_and_exits_zero(self) -> None:
