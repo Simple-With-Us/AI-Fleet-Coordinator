@@ -150,12 +150,7 @@ def real_time(text):
         return False
     try:
         datetime.datetime(
-            int(text[0:4]),
-            int(text[5:7]),
-            int(text[8:10]),
-            int(text[11:13]),
-            int(text[14:16]),
-            int(text[17:19]),
+            int(text[0:4]), int(text[5:7]), int(text[8:10]), int(text[11:13]), int(text[14:16]), int(text[17:19])
         )
     except ValueError:
         return False
@@ -374,7 +369,12 @@ def stray_bit(text):
 
 def first_fit(make, field):
     """The first list `make(i)` builds whose signature in `field` has a byte length that can carry stray bits.
-    Signing is deterministic (RFC 6979), so the search always ends at the same list."""
+    Signing is deterministic (RFC 6979), so the search always ends at the same list;  without it the search
+    could end elsewhere, so it refuses to run on a cryptography that lacks deterministic signing."""
+    try:
+        ec.ECDSA(hashes.SHA256(), deterministic_signing=True)
+    except TypeError as exc:
+        raise RuntimeError("cryptography does not support deterministic ECDSA signing") from exc
     for i in range(50):
         lst = make(i)
         if len(unb64u(field(lst))) % 3:
@@ -384,8 +384,7 @@ def first_fit(make, field):
 
 # T26 (v5.4):  a first list whose owner signature carries a stray trailing bit (check 4, owner_signature).
 _t26 = first_fit(
-    lambda i: make_list(1, None, f"2026-11-07T20:{i:02d}:30Z", [DA]),
-    lambda lst: lst["ownerSignature"],
+    lambda i: make_list(1, None, f"2026-11-07T20:{i:02d}:30Z", [DA]), lambda lst: lst["ownerSignature"]
 )
 bad["T26"] = dict(_t26, ownerSignature=stray_bit(_t26["ownerSignature"]))
 # T27 (v5.4):  rule A whose one countersignature carries a stray trailing bit (rule A, countersignature).
@@ -396,10 +395,7 @@ _t27 = first_fit(
 bad["T27"] = dict(
     _t27,
     countersignatures=[
-        dict(
-            _t27["countersignatures"][0],
-            signature=stray_bit(_t27["countersignatures"][0]["signature"]),
-        )
+        dict(_t27["countersignatures"][0], signature=stray_bit(_t27["countersignatures"][0]["signature"]))
     ],
 )
 
@@ -474,18 +470,14 @@ def p3_failure(entry):
             return "deviceId"
         if not (isinstance(d["name"], str) and 1 <= len(d["name"]) <= 40):
             return "name"
-        if not all(
-            key_ok(d[k]) for k in ("approvalKey", "requestKey", "readingKey", "notificationKey")
-        ):
+        if not all(key_ok(d[k]) for k in ("approvalKey", "requestKey", "readingKey", "notificationKey")):
             return "device key"
     s = b["services"]
     if not isinstance(s, dict) or set(s) != SERVICE_NAMES:
         return "services"
     if not all(v is None or key_ok(v) for v in s.values()):
         return "service key"
-    if not (
-        isinstance(entry["ownerSignature"], str) and SIG_PATTERN.fullmatch(entry["ownerSignature"])
-    ):
+    if not (isinstance(entry["ownerSignature"], str) and SIG_PATTERN.fullmatch(entry["ownerSignature"])):
         return "ownerSignature"
     cs = entry["countersignatures"]
     if not isinstance(cs, list) or len(cs) > 64:
@@ -798,9 +790,7 @@ for _entry in [L1, L2, L3, L4, L4b] + list(bad.values()):
 
 # v5.4:  the strictness §16's harness cases build, each re-signed so that only its one fault remains.
 def _compressed(key):
-    point = key.public_key().public_bytes(
-        serialization.Encoding.X962, serialization.PublicFormat.CompressedPoint
-    )
+    point = key.public_key().public_bytes(serialization.Encoding.X962, serialization.PublicFormat.CompressedPoint)
     return b64u(bytes.fromhex("3039301306072a8648ce3d020106082a8648ce3d030107032200") + point)
 
 
@@ -810,48 +800,24 @@ def _hybrid(key):
 
 
 for _label, _lst in [
-    (
-        "compressed owner key",
-        make_list(1, None, "2026-11-07T20:00:00Z", [DA], owner_key=_compressed(owner)),
-    ),
-    (
-        "hybrid owner key",
-        make_list(1, None, "2026-11-07T20:00:00Z", [DA], owner_key=_hybrid(owner)),
-    ),
+    ("compressed owner key", make_list(1, None, "2026-11-07T20:00:00Z", [DA], owner_key=_compressed(owner))),
+    ("hybrid owner key", make_list(1, None, "2026-11-07T20:00:00Z", [DA], owner_key=_hybrid(owner))),
     (
         "compressed service key",
-        make_list(
-            1,
-            None,
-            "2026-11-07T20:00:00Z",
-            [DA],
-            services=dict(SERVICES, serverExecutor=_compressed(helper)),
-        ),
+        make_list(1, None, "2026-11-07T20:00:00Z", [DA], services=dict(SERVICES, serverExecutor=_compressed(helper))),
     ),
-    (
-        "owner key with a stray bit",
-        make_list(1, None, "2026-11-07T20:00:00Z", [DA], owner_key=stray_bit(OWNER)),
-    ),
-    (
-        "owner key with padding",
-        make_list(1, None, "2026-11-07T20:00:00Z", [DA], owner_key=OWNER + "=="),
-    ),
+    ("owner key with a stray bit", make_list(1, None, "2026-11-07T20:00:00Z", [DA], owner_key=stray_bit(OWNER))),
+    ("owner key with padding", make_list(1, None, "2026-11-07T20:00:00Z", [DA], owner_key=OWNER + "==")),
     ("leap second", make_list(1, None, "2026-11-07T23:59:60Z", [DA])),
     ("February 30", make_list(1, None, "2026-02-30T20:00:00Z", [DA])),
     ("year 0000", make_list(1, None, "0000-11-07T20:00:00Z", [DA])),
-    (
-        "another contract",
-        make_list(1, None, "2026-11-07T20:00:00Z", [DA], contract="muster-trust-list/2"),
-    ),
+    ("another contract", make_list(1, None, "2026-11-07T20:00:00Z", [DA], contract="muster-trust-list/2")),
 ]:
     assert check_chain(None, [_lst], HISTORY, RECORDS)[0] == "bad_input", _label
     # The same fault in the second entry of a chain still refuses the whole request at P3.
     assert check_chain(None, [L1, dict(_lst)], HISTORY, RECORDS)[0] == "bad_input", _label
 # v5.4, check 7 says "exactly when":  an open first list with no device is closed_rule.
-assert (
-    check_chain(None, [make_list(1, None, "2026-11-07T20:00:00Z", [])], HISTORY, RECORDS)[0]
-    == "closed_rule"
-)
+assert check_chain(None, [make_list(1, None, "2026-11-07T20:00:00Z", [])], HISTORY, RECORDS)[0] == "closed_rule"
 # Version 5 as frozen (Milestones 1 to 4):  a rule C entry is refused reopen_unavailable.
 frozen_cases = [
     (
