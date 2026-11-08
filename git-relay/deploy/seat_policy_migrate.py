@@ -139,6 +139,15 @@ class Host:
     def read_unit(self, unit: str) -> sp.Unit:
         return sp.read_unit(unit)
 
+    def relay_credential_directory(self, unit: sp.Unit) -> str:
+        """The one credential directory the relay accepts for the policy credential."""
+        sys.path.insert(0, unit.relay)
+        try:
+            from git_relay import policy_input
+        finally:
+            sys.path.remove(unit.relay)
+        return policy_input.SEAT_CREDENTIAL_DIRECTORY
+
     def healthy(self, unit: sp.Unit) -> bool:
         return sp._healthy(unit.health, unit.name, self.wait)
 
@@ -248,6 +257,14 @@ def _gates(host: Host, unit: sp.Unit, args) -> dict:
     if any("token" in cfg for cfg in policy.values()):
         raise Refusal("a seat carries a static token;  the shared-only policy cannot hold it")
     sp.validate_with(unit.relay, policy)
+    # systemd derives the credential directory from the unit name, and the relay accepts the
+    # credential input only under one directory.  A unit named otherwise would pass every gate here
+    # and then fail the relay's startup health check after two restarts, so refuse before writing.
+    if f"{CREDENTIALS_ROOT}/{unit.name}" != host.relay_credential_directory(unit):
+        raise Refusal(
+            "the unit's systemd credential directory is not the one the relay accepts for the "
+            "policy credential"
+        )
     dropin = _dropin_path(host, unit.name)
     if os.path.lexists(dropin):
         raise Refusal(f"{dropin} already exists;  refusing to overwrite it")
@@ -444,7 +461,15 @@ def apply(args, host: Host | None = None, crash_after: str | None = None) -> int
             return 2
         existing = _read_journal(args.journal_dir)
         if existing is not None:
-            print(f"refusing:  a journal exists (phase {existing['phase']});  run recover first")
+            if existing.get("phase") == "restored":
+                print(
+                    "refusing:  a journal from an earlier, restored attempt exists;  review it, "
+                    "then move it aside (this tool never deletes a journal) before applying again"
+                )
+            else:
+                print(
+                    f"refusing:  a journal exists (phase {existing['phase']});  run recover first"
+                )
             return 2
         try:
             g = _gates(host, unit, args)

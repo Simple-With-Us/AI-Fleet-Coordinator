@@ -99,9 +99,14 @@ class FakeHost(mg.Host):
             text += self._dropin().read_text()
         return text
 
+    unit_name = UNIT
+
+    def relay_credential_directory(self, unit):
+        return "/run/credentials/git-relay.service"
+
     def read_unit(self, unit):
         return sp.Unit(
-            name=UNIT,
+            name=self.unit_name,
             relay=self.relay,
             config=str(self.root / "config.env"),
             apps_token="/etc/git-relay/apps.infisical-token",
@@ -601,6 +606,25 @@ class MigrateTests(unittest.TestCase):
                 self.assertIn("cannot be opened safely", out)
                 self.assertEqual(target.read_text(), "x")
                 os.unlink(lock)
+
+    def test_a_misnamed_unit_is_refused_before_anything_is_written(self):
+        self.host.unit_name = "other-relay.service"
+        for fn in (mg.plan, mg.apply):
+            with self.subTest(fn=fn.__name__):
+                rc, out = self.run_cmd(fn)
+                self.assertEqual(rc, 2)
+                self.assertIn("credential directory is not the one the relay accepts", out)
+                self.assert_unchanged()
+                self.assertEqual(self.host.calls, [])
+
+    def test_a_restored_journal_gets_a_clear_refusal_and_is_never_deleted(self):
+        (self.journal / mg.JOURNAL).write_text(json.dumps({"phase": "restored"}))
+        rc, out = self.run_cmd(mg.apply)
+        self.assertEqual(rc, 2)
+        self.assertIn("restored attempt", out)
+        self.assertIn("never deletes a journal", out)
+        self.assertTrue((self.journal / mg.JOURNAL).exists())
+        self.assert_unchanged()
 
 
 if __name__ == "__main__":
