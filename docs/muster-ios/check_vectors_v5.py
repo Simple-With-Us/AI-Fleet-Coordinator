@@ -62,23 +62,163 @@ def H(b):
     return hashlib.sha256(b).hexdigest()
 
 
-def unb64u(s):
+def lenient_unb64u(s):
     return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
+
+
+def unb64u(s):
+    """v5.4:  canonical base64url only.  Re-encoding the decoded bytes must give the text back, which
+    refuses padding, characters outside the alphabet and stray trailing bits in one comparison."""
+    if not isinstance(s, str) or len(s) % 4 == 1 or set(s) - set(B64U):
+        raise ValueError("not base64url")
+    raw = lenient_unb64u(s)
+    if base64.urlsafe_b64encode(raw).rstrip(b"=").decode() != s:
+        raise ValueError("not canonical base64url")
+    return raw
+
+
+B64U = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+SPKI_HEAD = bytes.fromhex("3059301306072a8648ce3d020106082a8648ce3d030107034200")
+
+
+def p256(pub):
+    """v5.4:  the key must be the 91-byte SubjectPublicKeyInfo of an uncompressed P-256 point."""
+    der = unb64u(pub)
+    if len(der) != 91 or der[:26] != SPKI_HEAD or der[26] != 4:
+        raise ValueError("not an uncompressed P-256 SubjectPublicKeyInfo")
+    key = serialization.load_der_public_key(der)
+    if not isinstance(key, ec.EllipticCurvePublicKey) or key.curve.name != "secp256r1":
+        raise ValueError("not P-256")
+    return key
 
 
 def ok(pub, sig, data):
     """True only for a valid signature.  Any malformed key, signature or encoding counts as a failure
-    (reported by the caller's check), so one bad vector never stops the rest of the run."""
+    (reported by the caller's check), so one bad vector never stops the rest of the run.  v5.4:  the key
+    and the signature are decoded strictly, so stray trailing bits make the signature fail."""
     try:
-        serialization.load_der_public_key(unb64u(pub)).verify(
-            unb64u(sig), data, ec.ECDSA(hashes.SHA256())
-        )
+        p256(pub).verify(unb64u(sig), data, ec.ECDSA(hashes.SHA256()))
         return True
     except InvalidSignature:
         return False
     except Exception as error:  # noqa: BLE001 -- a malformed vector must not abort the run
         print("malformed key or signature:", type(error).__name__, str(error)[:120])
         return False
+
+
+def calendar_time(s):
+    """v5.4:  §2's form, and a real calendar time."""
+    m = (
+        re.fullmatch(r"([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})Z", s)
+        if isinstance(s, str)
+        else None
+    )
+    if not m:
+        return False
+    try:
+        datetime.datetime(*(int(x) for x in m.groups()))
+    except ValueError:
+        return False
+    return True
+
+
+def p3(e):
+    """v5.4:  every reason P3 refuses one signed list (`bad_input`), as a list;  empty when it parses."""
+    bad = []
+
+    def key(v, what):
+        try:
+            p256(v)
+        except Exception:  # noqa: BLE001
+            bad.append(what)
+
+    if not isinstance(e, dict) or sorted(e) != ["body", "countersignatures", "ownerSignature"]:
+        return ["entry keys"]
+    b = e["body"]
+    want = [
+        "closed",
+        "contract",
+        "devices",
+        "issuedAt",
+        "ownerKey",
+        "previousSHA256",
+        "reopenTag",
+        "services",
+        "version",
+    ]
+    if not isinstance(b, dict) or sorted(b) != want:
+        return ["body keys"]
+    if b["contract"] != "muster-trust-list/1":
+        bad.append("contract")
+    if type(b["version"]) is not int or b["version"] < 1 or b["version"] > 2**53 - 1:
+        bad.append("version")
+    for n in ("previousSHA256", "reopenTag"):
+        if b[n] is not None and not (isinstance(b[n], str) and re.fullmatch(r"[0-9a-f]{64}", b[n])):
+            bad.append(n)
+    if not calendar_time(b["issuedAt"]):
+        bad.append("issuedAt")
+    key(b["ownerKey"], "ownerKey")
+    if type(b["closed"]) is not bool:
+        bad.append("closed")
+    devs = b["devices"]
+    if not isinstance(devs, list) or len(devs) > 64:
+        return bad + ["devices"]
+    for d in devs:
+        if not isinstance(d, dict) or sorted(d) != [
+            "approvalKey",
+            "deviceId",
+            "name",
+            "notificationKey",
+            "readingKey",
+            "requestKey",
+        ]:
+            return bad + ["device"]
+        if not (isinstance(d["deviceId"], str) and re.fullmatch(r"d-[0-9a-f]{24}", d["deviceId"])):
+            bad.append("deviceId")
+        if not (isinstance(d["name"], str) and 1 <= len(d["name"]) <= 40):
+            bad.append("name")
+        for k in ("approvalKey", "requestKey", "readingKey", "notificationKey"):
+            key(d[k], "device " + k)
+    s = b["services"]
+    if (
+        not isinstance(s, dict)
+        or len(s) != 7
+        or not {
+            "macPublisher",
+            "macExecutor",
+            "macAgreement",
+            "serverPublisher",
+            "serverExecutor",
+            "serverExecutorAgreement",
+            "serverHelper",
+        }
+        == set(s)
+    ):
+        return bad + ["services"]
+    for k, v in s.items():
+        if v is not None:
+            key(v, "service " + k)
+    sig_re = r"[A-Za-z0-9_-]{1,100}"
+    if not (isinstance(e["ownerSignature"], str) and re.fullmatch(sig_re, e["ownerSignature"])):
+        bad.append("ownerSignature")
+    cs = e["countersignatures"]
+    if not isinstance(cs, list) or len(cs) > 64:
+        return bad + ["countersignatures"]
+    for c in cs:
+        if not (
+            isinstance(c, dict)
+            and sorted(c) == ["deviceId", "signature"]
+            and isinstance(c["deviceId"], str)
+            and re.fullmatch(r"d-[0-9a-f]{24}", c["deviceId"])
+            and isinstance(c["signature"], str)
+            and re.fullmatch(sig_re, c["signature"])
+        ):
+            bad.append("countersignature")
+    try:
+        canon(e)
+    except (ValueError, TypeError):
+        bad.append("not canonical")
+    return bad
 
 
 def block_after(label):
@@ -182,7 +322,9 @@ for m in re.finditer(
     if body_h:
         check(H(canon(lst["body"])) == body_h, "body hash " + name)
     check(H(canon(lst)) == entry_h, "entry hash " + name)
-check(len(lists) == 22, "list count %d" % len(lists))
+    # v5.4:  every printed list parses at P3, so the helper never refuses one of them as bad_input.
+    check(p3(lst) == [], "P3 refuses %s: %s" % (name, p3(lst)))
+check(len(lists) == 24, "list count %d" % len(lists))
 alias = {
     "v1": "Version 1",
     "v2": "Version 2 (rule A)",
@@ -341,7 +483,7 @@ FINAL = {
 rows = re.findall(
     r"^\| (T\d+ [^|]+) \| ([^|]+) \| ([^|]+) \| ([^|]+) \| ([^|]*) \|", text, re.MULTILINE
 )
-check(len(rows) == 24, "chain rows %d" % len(rows))
+check(len(rows) == 26, "chain rows %d" % len(rows))
 check(any(r[0].startswith("T23 ") for r in rows), "the frozen vector T23 is printed")
 check(not any(r[0].startswith("T9 ") for r in rows), "T9 stays retired")
 check("so the table has no T9" in text, "the T9 note is printed")
@@ -350,7 +492,11 @@ for name, held, chain, expect, final in rows:
     hist = HISTORY_OF.get(name.split(" ")[0], history)
     prev = None if held.strip() == "nothing" else L(held.strip())
     allf = []
-    for c in [x.strip() for x in chain.split(",")]:
+    entries = [x.strip() for x in chain.split(",")]
+    # v5.4:  P3 reads the whole document first, so any malformed entry is bad_input for the request.
+    if any(p3(L(c)) for c in entries):
+        entries, allf = [], ["bad_input"]
+    for c in entries:
         allf = failures(prev, L(c), frozen=frozen, hist=hist)
         if allf:
             break
@@ -366,6 +512,77 @@ for name, held, chain, expect, final in rows:
 check(
     failures(None, lists["T24 list"]) == [] and failures(None, L("v1"), hist=rotated) == [],
     "T24 fails only under the rotated history, and v1 passes under it",
+)
+
+
+# -------- v5.4 strictness, built here from v1 and checked by this file's own P3 and checks
+def priv(label):
+    s = (
+        int.from_bytes(hashlib.sha256(("muster test key " + label).encode()).digest(), "big")
+        % (N - 1)
+        + 1
+    )
+    return ec.derive_private_key(s, ec.SECP256R1())
+
+
+def b64(raw):
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+
+def resigned(body):
+    """v1 with this body, signed again by the pinned owner, so only the body's own fault remains."""
+    sig = priv("owner").sign(b"muster-trust-list/1\n" + canon(body), ec.ECDSA(hashes.SHA256()))
+    return {"body": body, "ownerSignature": b64(sig), "countersignatures": []}
+
+
+v1b = L("v1")["body"]
+own_der = unb64u(OWNER)
+compressed = b64(
+    bytes.fromhex("3039301306072a8648ce3d020106082a8648ce3d030107032200")
+    + bytes([2 + (own_der[-1] & 1)])
+    + own_der[27:59]
+)
+hybrid = b64(own_der[:26] + bytes([6 + (own_der[-1] & 1)]) + own_der[27:])
+stray_key = OWNER[:-1] + B64U[B64U.index(OWNER[-1]) | 1]
+check(lenient_unb64u(stray_key) == own_der, "the stray-bit key decodes leniently to the owner key")
+strict_cases = {
+    "compressed owner key": dict(v1b, ownerKey=compressed),
+    "hybrid owner key": dict(v1b, ownerKey=hybrid),
+    "compressed service key": dict(v1b, services=dict(v1b["services"], serverExecutor=compressed)),
+    "owner key with a stray bit": dict(v1b, ownerKey=stray_key),
+    "owner key with padding": dict(v1b, ownerKey=OWNER + "=="),
+    "leap second": dict(v1b, issuedAt="2026-11-07T23:59:60Z"),
+    "February 30": dict(v1b, issuedAt="2026-02-30T20:00:00Z"),
+    "year 0000": dict(v1b, issuedAt="0000-11-07T20:00:00Z"),
+    "another contract": dict(v1b, contract="muster-trust-list/2"),
+}
+for what, body in strict_cases.items():
+    got = p3(resigned(body))
+    check(len(got) == 1, "v5.4 %s:  P3 should refuse it for one reason, got %s" % (what, got))
+check(
+    p3(resigned(dict(v1b))) == [] and failures(None, resigned(dict(v1b))) == [],
+    "re-signed v1 passes",
+)
+open_empty = resigned(dict(v1b, devices=[]))
+check(
+    p3(open_empty) == [] and failures(None, open_empty) == ["closed_rule"],
+    "v5.4:  an open first list with no device fails check 7 alone",
+)
+# T26 and T27:  only the stray bit is wrong, so a lenient decoder would accept them.
+t26, t27 = lists["T26 list"], lists["T27 list"]
+lenient_sig = b64(lenient_unb64u(t26["ownerSignature"]))
+check(
+    lenient_sig != t26["ownerSignature"]
+    and ok(OWNER, lenient_sig, b"muster-trust-list/1\n" + canon(t26["body"]))
+    and failures(None, dict(t26, ownerSignature=lenient_sig)) == [],
+    "T26 is a valid first list but for its stray bit",
+)
+cs27 = t27["countersignatures"][0]
+lenient_cs = b64(lenient_unb64u(cs27["signature"]))
+check(
+    lenient_cs != cs27["signature"]
+    and failures(L("v1"), dict(t27, countersignatures=[dict(cs27, signature=lenient_cs)])) == [],
+    "T27 is a valid rule A list but for its stray bit",
 )
 
 # -------- recovery table
@@ -520,6 +737,8 @@ for label, prefix in [
             and failures(L("v1"), lists["T7 list"]) == ["previous_hash"],
             "chain refusal names T7",
         )
+        # v5.4, §13:  a chain refusal from P3 on carries `chain` and no `claimed`.
+        check("claimed" not in body, "the chain refusal carries no claimed")
     if "finalRefusals" in body:
         check(body["finalRefusals"] == [], "finalRefusals empty in v5")
         held = {2: "v2", 3: "v3"}[body["helperTrustListVersion"]]

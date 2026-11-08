@@ -9037,7 +9037,7 @@ CHAIN_NOW = FIXTURE["answers"]["chainRefusalT7"]["answer"]["body"]["refusedAt"]
 TRUST_NAME = "muster-trust.json"
 ROTATED_OWNER = "owner after rotation (T24 only)"
 # Every chain vector the spec prints, T9 having been retired (a number is never reused).
-CHAIN_VECTOR_NUMBERS = [*range(1, 9), *range(10, 26)]
+CHAIN_VECTOR_NUMBERS = [*range(1, 9), *range(10, 28)]
 # The vectors that reach rule C: a Milestone 1 to 4 helper refuses each `reopen_unavailable`.
 RULE_C_VECTORS = {"T4", "T5", "T8", "T15", "T18", "T20", "T21", "T22", "T23"}
 
