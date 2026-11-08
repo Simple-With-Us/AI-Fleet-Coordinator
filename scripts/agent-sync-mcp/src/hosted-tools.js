@@ -1472,7 +1472,13 @@ export class HostedTools {
       throw mapFleetLinkError(error, { write });
     }
     // FleetLink's own refusals are short, written by FleetLink, and never hold credentials.
-    if (!out.ok) throw new ToolError("fleetlink_refused", `FleetLink:  ${fleetlinkMessage(out.message)}`);
+    if (!out.ok) {
+      // A read status is evidence about this read only, never a write receipt
+      // or proof that a historical create did not land.
+      const readCode = !write && out.code === "not_found" ? "fleetlink_not_found"
+        : !write && out.code === "gone" ? "fleetlink_expired" : "fleetlink_refused";
+      throw new ToolError(readCode, `FleetLink:  ${fleetlinkMessage(out.message)}`);
+    }
     const header = `simple-tools ${name}:  as ${this.seat}'s FleetLink account`;
     return okResult(fleetlinkEnvelope(header, out.data, newNonce()), fleetlinkSummary(out.data));
   }

@@ -52,7 +52,7 @@ function fakeFleetLink(respond) {
       return new Response(JSON.stringify(out.json ?? {}), { status: out.status, headers: out.headers });
     }
     const result = out.error
-      ? { content: [{ type: "text", text: out.error }], isError: true }
+      ? { content: [{ type: "text", text: out.error }], isError: true, ...(out.code ? { structuredContent: { code: out.code } } : {}) }
       : { content: [{ type: "text", text: JSON.stringify(out.data ?? { share: SHARE }) }] };
     return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result }), { status: 200, headers: { "content-type": "application/json" } });
   };
@@ -403,5 +403,32 @@ test("renew accepts a positive lifetime or forever, not zero, negative or arbitr
   }
   for (const days of [0.01, 3, "forever"]) {
     assert.equal((await tools.call("fleetlink_renew_share", { slug: "demo", days })).isError, undefined);
+  }
+});
+
+
+test("known read statuses survive without changing write refusals or accepting arbitrary upstream codes", async () => {
+  for (const [code, expected] of [["not_found", "fleetlink_not_found"], ["gone", "fleetlink_expired"], ["malicious_code", "fleetlink_refused"]]) {
+    const { tools } = harness({ respond: () => ({ error: "not available", code }) });
+    assert.equal(errorOf(await tools.call("fleetlink_get_share", { slug: "example" })).code, expected);
+    assert.equal(errorOf(await tools.call("fleetlink_create_share", { text: "source" })).code, "fleetlink_refused");
+  }
+});
+
+test("bounded expired-own metadata arguments are read-only and passed unchanged", async () => {
+  const { tools, upstream } = harness();
+  const args = { scope: "mine", include_expired: true, before: "1794000000000:shr_example", limit: 20 };
+  assert.equal((await tools.call("fleetlink_list_shares", args)).isError, undefined);
+  assert.deepEqual(upstream.calls[0].body.params.arguments, args);
+  assert.equal((await tools.call("fleetlink_list_shares", { include_expired: "yes" })).isError, true);
+  assert.equal((await tools.call("fleetlink_list_shares", { before: "not-a-cursor" })).isError, true);
+});
+
+
+test("list summaries keep only a bounded next cursor and preserve exhaustion", async () => {
+  for (const next of ["1794000000:shr_abc123", null, "bad cursor"]) {
+    const { tools } = harness({ respond: () => ({ data: { shares: [SHARE], next } }) });
+    const result = await tools.call("fleetlink_list_shares", { scope: "mine", include_expired: true });
+    assert.equal(result.structuredContent.next, next === "bad cursor" ? undefined : next);
   }
 });

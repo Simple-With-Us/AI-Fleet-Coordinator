@@ -186,6 +186,14 @@
             "type": "integer",
             "minimum": 1,
             "maximum": 200
+          },
+          "before": {
+            "type": "string",
+            "pattern": "^\\d{1,16}:shr_[A-Za-z0-9]{1,64}$"
+          },
+          "include_expired": {
+            "type": "boolean",
+            "description": "Expired own-share metadata only; scope mine required. No deleted history or expired file access."
           }
         }
       },
