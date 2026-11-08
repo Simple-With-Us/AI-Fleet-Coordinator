@@ -566,8 +566,10 @@ final class ServerEavesdropperCurrencyTests: XCTestCase {
         let early = try date("2026-11-08T19:54:00Z")
         let why = try XCTUnwrap(status.notCurrentReason(now: early))
         XCTAssertTrue(why.contains("ahead of this Mac's clock"), why)
-        // Inside the window either side is current, as the reducer judges its own document.
-        XCTAssertTrue(status.isCurrent(now: try date("2026-11-08T19:56:00Z")))
+        // The reducer's rule (PR 1479):  up to 5 seconds ahead is current, more is not.
+        XCTAssertTrue(status.isCurrent(now: try date("2026-11-08T19:59:57Z")))
+        XCTAssertFalse(status.isCurrent(now: try date("2026-11-08T19:59:54Z")))
+        XCTAssertFalse(status.isCurrent(now: try date("2026-11-08T19:56:00Z")))
     }
 }
 

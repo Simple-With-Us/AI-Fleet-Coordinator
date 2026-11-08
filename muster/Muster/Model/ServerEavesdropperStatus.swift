@@ -107,6 +107,10 @@ struct ReducedEavesdropperStatus: Decodable, Equatable {
     /// rollout note says the same.  Muster uses the same window for the age of the server's
     /// answer and for the age of the listener's own status.
     static let freshnessWindow: TimeInterval = 300
+    /// How far ahead of this Mac's clock a time may be and still count:  the reducer's own rule
+    /// (session BB, PR 1479:  "5 s ahead to 300 s old").  Both machines keep NTP time, so more
+    /// than this is a clock problem, not a fresh reading.
+    static let aheadTolerance: TimeInterval = 5
 
     /// The version the document says it is, or nil when it does not say.
     let schema: Int?
@@ -173,8 +177,8 @@ extension ReducedEavesdropperStatus {
     }
 
     /// Why the reading is not current, or nil when it is.  The server's answer and the
-    /// listener's own status must each be within `freshnessWindow` of `now`, either side, as
-    /// the reducer judges the listener's status against its own clock.
+    /// listener's own status must each be at most `freshnessWindow` old and at most
+    /// `aheadTolerance` ahead of `now`, the rule the reducer applies to the listener's status.
     func notCurrentReason(now: Date) -> String? {
         let window = Self.freshnessWindow
         let minutes = Int(window / 60)
@@ -185,7 +189,7 @@ extension ReducedEavesdropperStatus {
         if answerAge > window {
             return "The server read this at \(EavesdropperStatusText.time(generatedAt, now: now)), more than \(minutes) minutes ago, so it is not current."
         }
-        if answerAge < -window {
+        if answerAge < -Self.aheadTolerance {
             return "The server's answer is dated \(EavesdropperStatusText.time(generatedAt, now: now)), ahead of this Mac's clock, so it is not current."
         }
         guard let statusUpdated else {
@@ -195,7 +199,7 @@ extension ReducedEavesdropperStatus {
         if statusAge > window {
             return "The server's eavesdropper last wrote its status at \(EavesdropperStatusText.time(statusUpdated, now: now)), more than \(minutes) minutes ago, so it is not current."
         }
-        if statusAge < -window {
+        if statusAge < -Self.aheadTolerance {
             return "The server's eavesdropper dated its status \(EavesdropperStatusText.time(statusUpdated, now: now)), ahead of this Mac's clock, so it is not current."
         }
         return nil
