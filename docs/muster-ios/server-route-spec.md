@@ -1,6 +1,16 @@
 # Muster Server Route:  The `--from-muster` Entry
 
-**Spec version 5.1.**  Version 5.1 adds the settled rulings from the independent review of BB's helper build and the spec requests from BB's final build, listed in the table below;  it changes frozen parts only where those rulings direct (the `--yes` step order among them).  Written by the CLAUDE seat (session AA) on November 7, 2026, from revision 9 of `design.md`, EE's eighth look and BB's answers from building the helper.  Versions 1 to 4 are kept beside it in the scratch folder.  **Frozen:**  everything except the parts marked OPEN.  **OPEN, gating Milestone 5:**  rule C (§8's reopen rule and its rule at non-server verifiers), the reopen record and recovery (§9), the final chain refusal store (§11), `finalRefusals` (§13) and the chain-refusal audit row (§14).  Section 17A lists what is wrong with them, unsolved.  Milestones 1 to 4 build only on frozen parts.  Any other change to a frozen part is version 6 and needs a new review.  Where this spec and the design differ, this spec wins.
+**Spec version 5.2.**  Version 5.2 adds the requests from EE's Swift-side read of BB's helper PR 1505, relayed by BB, listed in the first table below.  They change no rule the helper follows and no byte it sends:  they state the phone's side of rules already frozen (the canonical encoder and parser in Swift, the approval's own times, and what the phone does after each refusal).  Version 5.1 added the settled rulings from the independent review of BB's helper build and the spec requests from BB's final build, listed in the second table;  it changed frozen parts only where those rulings directed (the `--yes` step order among them).  Written by the CLAUDE seat (session AA) on November 7, 2026, from revision 9 of `design.md`, EE's eighth look and BB's answers from building the helper.  Versions 1 to 4 are kept beside it in the scratch folder.  **Frozen:**  everything except the parts marked OPEN.  **OPEN, gating Milestone 5:**  rule C (§8's reopen rule and its rule at non-server verifiers), the reopen record and recovery (§9), the final chain refusal store (§11), `finalRefusals` (§13) and the chain-refusal audit row (§14).  Section 17A lists what is wrong with them, unsolved.  Milestones 1 to 4 build only on frozen parts.  Any other change to a frozen part is version 6 and needs a new review.  Where this spec and the design differ, this spec wins.
+
+## Changes In Version 5.2
+
+Every row is from EE's Swift-side read of BB's helper PR 1505 (the `--from-muster` entry), relayed by BB, and is made normative here.  None changes what the helper does or what it sends.
+
+| # | Change | Where |
+| --- | --- | --- |
+| 1 | Swift writes canonical bytes with a hand-written canonical encoder (keys sorted by byte value, so `B` before `a` and `a10` before `a9`), never `JSONEncoder` or `.sortedKeys`, and reads with a strict parser that refuses duplicate keys, floating-point numbers, a boolean where a number belongs (or the reverse) and non-ASCII strings.  Open item 4 is settled.  | §2, §13, §17B |
+| 2 | The approval's `issuedAt` is not tied to the signed plan's `issuedAt`:  the helper compares it only with its own clock, so the phone sets it from its estimate of the server's clock (its own clock plus the offset seen at the plan answer) and sets `expiresAt` at most 120 seconds later.  Copying the plan's `issuedAt` would make any Plan Review longer than 120 seconds sign an approval that has already expired.  | §7, §13 |
+| 3 | What The Phone Does Next, a new table:  a verified `plan_mismatch` has spent its nonce (plan again and sign again);  `expired`, `not_yet_valid` and `window_too_long` mean sign a new approval;  a verified `state_unsafe` or `internal_error` is treated as maybe spent, because the answer does not name its step and an `internal_error` from Y8c may leave the nonce on disk.  | §6, §15 |
 
 ## Changes In Version 5.1
 
@@ -75,7 +85,7 @@ This spec covers what the root-owned helper `/usr/local/lib/fleet-resource-contr
 - A member whose value is `null` is written, never left out.
 - No whitespace;  `,` between members and elements;  `:` between a key and its value.
 
-In Python this is `json.dumps(v, sort_keys=True, separators=(",", ":"), ensure_ascii=True)` after checking that every string is printable ASCII.  In Swift a producer must write every member itself, including `null` ones (`encodeNil(forKey:)`, never the synthesized `encodeIfPresent`), with `outputFormatting = [.sortedKeys, .withoutEscapingSlashes]`;  whether that reproduces the vector byte for byte is Open item 4.
+In Python this is `json.dumps(v, sort_keys=True, separators=(",", ":"), ensure_ascii=True)` after checking that every string is printable ASCII.  **In Swift (v5.2),** every producer and verifier writes canonical bytes with a hand-written canonical encoder that writes each member itself, `null` ones included, with object keys sorted by byte value (so `B` before `a` and `a10` before `a9`), never with `JSONEncoder` or `.sortedKeys`, whose key order is not a byte sort.  It reads every signed or hashed object with a strict parser that refuses duplicate keys, floating-point numbers and any string that is not printable ASCII, and keeps `true` and `false` apart from numbers, so a boolean where a number belongs (or the reverse) is refused.  It never reads them with `JSONSerialization`, which reads booleans as numbers, turns integers into doubles and keeps the last of two duplicate keys.  The encoder must reproduce §16's canonical-form vector byte for byte.
 
 **Entry hash.**  `entrySHA256` of a signed list is SHA-256 of the canonical bytes of the whole signed object (`body`, `ownerSignature` and `countersignatures`).  The body hash covers only `body`.  Two entries can share a body hash and differ in their signatures (T15), and ECDSA signatures are malleable, so an entry hash is not a stable name for an owner-signed list (§17A).
 
@@ -181,7 +191,7 @@ muster-approve/1
 <expiresAt>
 ```
 
-**Which key.**  Only the `approvalKey` of the device the approval names, on the stored list.  A job may carry more than one approval (a new one after `plan_mismatch`, for example);  each has its own `approvalNonce`.
+**Which key.**  Only the `approvalKey` of the device the approval names, on the stored list.  A job may carry more than one approval (a new one after `plan_mismatch` or `expired`, for example, as §15's What The Phone Does Next says);  each has its own `approvalNonce`.
 
 **Signature form (v5.1).**  The `signature` is the DER `ECDSA-Sig-Value` of §2, and no verifier requires its `s` to be in the lower half of the curve order.  A high-S signature is accepted;  it cannot be used twice, because the nonce is spent (the ledger is keyed by `approvalNonce` alone, §11, so the other form of the same signature is `replayed_nonce`).  On the Swift side, low-S is not required:  the phone may send whichever form its signer produced.
 
@@ -190,6 +200,8 @@ muster-approve/1
 **The clock.**  Before the window, the helper reads the kernel's clock state with `adjtimex` in read-only mode (`modes = 0`), a privilege-free call made through `ctypes` from the standard library, which works under `/usr/bin/python3 -I`.  It refuses the approval `clock_unsynced` when any of these holds:  the call fails;  it returns `TIME_ERROR`;  `STA_UNSYNC` is set in `status`;  or `maxerror` is above 1 second (1,000,000 microseconds).  `--plan`, reads and the trust-list verbs do not check it.  On this server, as BB measured on November 7, chrony runs, `timedatectl` reports `NTPSynchronized=yes`, and the kernel reports `TIME_OK`, `maxerror` 175 ms and `esterror` 2.6 ms, so the check passes today.  Two points are not verified (§17B, item 3).
 
 **The window.**  `now` is read once at Y6 as the system clock's float seconds since the epoch (UTC), and compared exactly with the approval's whole-second times, with no grace:  `expiresAt` must be later than `issuedAt` and at most 120 seconds after it (`window_too_long`);  `issuedAt` must be at most 60 seconds after `now` (`not_yet_valid`);  `now` must not be later than `expiresAt` (`expired`).  `now` equal to `expiresAt` is accepted, and so is `issuedAt` equal to `now` + 60;  `now` = `expiresAt` + 0.001 is `expired`.
+
+**The approval's own times (v5.2).**  The approval's `issuedAt` and `expiresAt` are the phone's, tied to no other time:  the helper compares them only with its own clock at Y6, never with the signed plan's `issuedAt` or any other answer's time.  So the phone never copies the plan's `issuedAt` into the approval, because any Plan Review longer than 120 seconds would then sign an approval that is already `expired`.  It sets `issuedAt` to its estimate of the server's clock at the moment it signs, which is its own clock plus the offset it saw at the plan answer (the plan's `issuedAt` minus its own clock when that answer arrived), rounded down to the whole second, and sets `expiresAt` at most 120 seconds after `issuedAt`.  The estimate errs early by the plan answer's time in transit, which only shortens the window the approval has left when it reaches the helper;  unless the phone's own clock is changed in between, it cannot make the approval `not_yet_valid`.
 
 ## 8.  The Trust List
 
@@ -394,7 +406,7 @@ Requests refused at P0 to P3 are not counted by the rate limits;  each is refuse
 
 `muster-pub`'s heartbeat has the same body as `ack`, signed with its own key under the same prefix.
 
-**The phone's plan check.**  Before Plan Review, the phone verifies the plan's signature with the `serverHelper` key of its applied list;  checks that `claimed` equals the job it sent and `host`, `action` and `target` equal the job's;  checks that SHA-256 of the ASCII bytes of `plan` equals `planSHA256`;  and checks that `plan` parses as one of the canonical plan objects below and re-encodes to exactly the same bytes.  Any failure:  no Plan Review, and the job shows as refused by the phone.  It renders Plan Review from those bytes and signs the approval over that `planSHA256`.
+**The phone's plan check.**  Before Plan Review, the phone verifies the plan's signature with the `serverHelper` key of its applied list;  checks that `claimed` equals the job it sent and `host`, `action` and `target` equal the job's;  checks that SHA-256 of the ASCII bytes of `plan` equals `planSHA256`;  and checks that `plan` parses as one of the canonical plan objects below and re-encodes to exactly the same bytes.  Any failure:  no Plan Review, and the job shows as refused by the phone.  It renders Plan Review from those bytes and signs the approval over that `planSHA256`.  It parses `plan`, like every answer, with §2's strict parser and re-encodes it with §2's canonical encoder (v5.2).  It keeps the offset between the plan's `issuedAt` and its own clock when the answer arrived, for the approval's times (§7);  the approval's `issuedAt` is never the plan's `issuedAt` itself.
 
 Canonical plan objects:  `{"contract":"fleet-ops-plan/1","scope","action","target","commands","auditTarget"}` for the helper's verbs, with `commands` and `auditTarget` as in §4;  `{"contract":"fleet-resource-plan/1","field","old","new","revision","auditTarget"}` for `resource-policy`, `auditTarget` being the field name.
 
@@ -424,18 +436,30 @@ Rows go to `/home/jay/.local/state/fleet-tools/ops-audit.jsonl`, always appended
 | `bad_command`, `mode_not_allowed` | P2 (`bad_command` includes `muster trust-list chain --yes` until the chain slice lands, §4:  not counted, no input read, no audit row) |
 | `input_too_large`, `bad_input` | P3 (`bad_input` includes equal nonces, non-ASCII strings and malformed chain entries) |
 | `rate_limited` | Y8b (verified, the nonce not spent), R1, C1, K1, including a rate lock held more than 2 seconds |
-| `state_unsafe` | Y2, C2, K2, or any state file (§11, §12) |
+| `state_unsafe` | Y2, C2, K2, or any state file (§11, §12);  verified only from Y7 (the stored list read again), Y8a (the ledger) or Y8b (the rate file), all before Y8c (v5.2) |
 | `no_trust_list` | Y2 |
 | `field_mismatch`, `unknown_device`, `bad_signature` | Y3, Y4, Y5 |
 | `clock_unsynced`, `window_too_long`, `not_yet_valid`, `expired` | Y6 |
 | `action_busy`, `trust_list_changed` | Y7, C4 |
 | `ledger_corrupt`, `replayed_nonce` | Y8a |
-| `plan_mismatch` | Y9 |
+| `plan_mismatch` | Y9, verified, the nonce spent at Y8c |
 | `plan_refused` | R2, with `reason` exactly one of:  the planner's own `error_code` (§4), which is `update_busy`, `authorization_unavailable`, `update_route_unavailable`, `update_executable_unavailable`, `unit_status_unavailable`, `unit_status_invalid`, `unit_unavailable`, `unit_type_unsupported`, `update_route_changed`, `receipt_context_mismatch` or `receipt_context_unavailable`;  else `allowlist_miss`, `report_stale` (the status report is missing, unsafe, not JSON, not from `fleet-server-status`, older than 45 minutes, not listing the uuid, or not a redeployable row) or `revision_stale`.  After Y8c the same reason appears only as a result's `detail` `plan_refused: <reason>` (§12 Faults) |
-| `internal_error` | Any step before Y8c spends the nonce, or R2, C1 to C5, K1 to K3 |
+| `internal_error` | Any step before Y8c spends the nonce, or R2, C1 to C5, K1 to K3;  verified when it comes from Y6 to Y8c, and at Y8c the nonce's line may already be on disk (§12 Faults, v5.2) |
 | `chain_refused` | C3, `reason` one of `version_gap`, `previous_hash`, `owner_key`, `owner_signature`, `duplicate_device`, `countersignature`, `closed_rule`, `first_rule`, `services_changed`, `server_keys_removed`, `reopen_unavailable` (until §17A is settled), and, in the OPEN proposal, `reopen_unrecorded`, `reopen_tag`, `reopen_device` |
 
 Exit status:  0 planned, submitted, done or acknowledged;  1 failed or unknown;  2 refused.
+
+**What The Phone Does Next (v5.2).**  After a refusal of an approval, the phone acts on the code and on `verified` (§13) as below.  A resend is the same approval document sent again.  A new approval has a new `approvalNonce`, new times (§7) and a new Face ID signature.  How a refusal is shown to the owner is the design's reading rule, unchanged:  every refusal except a verified `plan_mismatch` shows as not known whether it ran, until a signed result settles it, so before it signs anything new the phone asks for the job's result again.
+
+| Refusal | The Approval's Nonce | What The Phone Does Next |
+| --- | --- | --- |
+| `plan_mismatch` (verified, Y9) | Spent at Y8c | Plan again (`--plan`), show a new Plan Review, and sign a new approval over the new `planSHA256`.  A resend of this approval can only be `replayed_nonce`.  |
+| `expired`, `not_yet_valid`, `window_too_long` (verified, Y6) | Not spent | Sign a new approval with new times (§7).  It may name the same `planSHA256`, since Y9 compares it with a fresh plan anyway;  if the plan has changed since, the answer is `plan_mismatch`.  |
+| `state_unsafe`, `internal_error` (verified) | Maybe spent | Treat as maybe spent:  never resend this approval (if its nonce was spent, a resend can only be `replayed_nonce`);  plan again and sign a new approval.  A verified `state_unsafe` comes from Y7 (the stored list read again), Y8a (the ledger) or Y8b (the rate file), all before Y8c, so by this spec its nonce is not spent.  A verified `internal_error` comes from any step from Y6 to Y8c, and at Y8c the nonce's line may have reached the disk before its write or `fsync` failed (§12 Faults).  The answer does not name its step, so the phone treats both codes alike.  A `state_unsafe` stays until the file is repaired in a shell (§11, §12), so a new approval meets the same refusal until then.  |
+| `rate_limited` (verified, Y8b), `action_busy` (verified, Y7) | Not spent | Resend the same approval inside its window (§12);  once the window has passed, sign a new approval.  |
+| `replayed_nonce` (verified, Y8a) | Spent by an earlier use | Never resend.  Ask for the job's result;  if the owner chooses to act again, plan again and sign a new approval.  |
+
+For any other refusal the phone resends nothing and signs nothing new on its own.
 
 ## 16.  Test Vectors
 
@@ -1928,11 +1952,10 @@ Rule C (§8), the reopen record and recovery (§9), the final chain refusal stor
 | # | Item | Owner | Gates |
 | --- | --- | --- | --- |
 | 3 | Two points about `clock_unsynced` (§7) that are not verified:  how the kernel's `maxerror` and `STA_UNSYNC` behave after a long chrony outage, so whether the check refuses approvals then;  and whether anything other than chrony steps this server's clock.  | BB | Milestone 5 |
-| 4 | Whether Swift, writing null members explicitly with `.sortedKeys` and `.withoutEscapingSlashes`, reproduces the canonical-form vector byte for byte on the Xcode CI uses.  | AA | Milestone 1 |
 | 5 | How a phone accepts an owner-key rotation (the old key's statement and the Face ID step).  | AA | Milestone 1 |
 | 6 | The paths, in `muster-pub`'s home, of its stored list, and `muster-agent trust-status`'s exact output.  | AA | Milestone 1 |
 
-Items 1 (plan commands) and 2 (audit field names) are settled by BB's answers (§4, §14).
+Items 1 (plan commands) and 2 (audit field names) are settled by BB's answers (§4, §14).  Item 4 (whether Swift's `JSONEncoder` with `.sortedKeys` reproduces the canonical-form vector) is settled in v5.2 (§2):  Swift uses a hand-written canonical encoder, never `JSONEncoder` or `.sortedKeys`, and a strict parser, and the encoder must reproduce the vector byte for byte.
 
 ## 18.  Review Response
 
@@ -1965,3 +1988,6 @@ EE's eighth look, as it touches this spec, and BB's answers.
 | BB's final build, request 7:  when a refusal's `helperTrustListVersion` is `null` | Fixed in v5.1 (§13, §12):  it is the version this request actually read (Y2, R3 or K2) and nothing more, so a `plan_refused` at R2 carries `null`;  the acknowledgement with nothing held carries `finalRefusals: []`.  |
 | BB's final build, request 9:  high-S signatures | Fixed in v5.1 (§6):  a high-S signature is accepted;  it cannot be used twice, because the nonce is spent;  the phone need not make low-S signatures.  |
 | BB's final build, requests 1, 6 and 8 | Already in v5.1 (§12, §4):  the `yes` rate step at Y8a to Y8c (BB's single "Y8, in this order" says the same), the redeploy `auditTarget` rule, the rate clamp and the empty rate file.  |
+| EE's Swift-side read of BB's helper PR 1505, relayed by BB:  §2 and §17B item 4 still named `JSONEncoder` with `.sortedKeys`, whose key order is not a byte sort, and Swift's own parser is not strict | Fixed in v5.2 (§2, §13, §17B):  a hand-written canonical encoder (keys sorted by byte value, so `B` before `a` and `a10` before `a9`), never `JSONEncoder` or `.sortedKeys`, and a strict parser that refuses duplicate keys, floating-point numbers, a boolean where a number belongs (or the reverse) and non-ASCII strings;  item 4 is settled.  |
+| EE's Swift-side read of PR 1505:  copying the plan's `issuedAt` into the approval fails whenever Plan Review takes longer than 120 seconds | Fixed in v5.2 (§7, §13):  the approval's times are tied to no other time, since the helper compares them only with its own clock;  the phone uses its estimate of the server's clock (its own clock plus the offset seen at the plan answer) and sets `expiresAt` at most 120 seconds later.  |
+| EE's Swift-side read of PR 1505:  the phone's retry list left out a verified `plan_mismatch`, the window refusals, and a verified `state_unsafe` or `internal_error` | Fixed in v5.2 (§15, §6):  What The Phone Does Next says a verified `plan_mismatch` has spent its nonce (plan again and sign again);  `expired`, `not_yet_valid` and `window_too_long` mean sign a new approval;  a verified `state_unsafe` (Y7, Y8a or Y8b) or `internal_error` (Y6 to Y8c, the nonce maybe on disk at Y8c) is treated as maybe spent.  |
