@@ -49,7 +49,11 @@ class FakeHost(mg.Host):
     """systemd, as far as the migration depends on it."""
 
     def __init__(self, root: Path, healthy=True, relay="/nonexistent-relay"):
-        super().__init__(wait=1, credentials_root=str(root / "run-credentials"), dropin_root=str(root / "systemd"))
+        super().__init__(
+            wait=1,
+            credentials_root=str(root / "run-credentials"),
+            dropin_root=str(root / "systemd"),
+        )
         self.root = root
         self.healthy_after_restart = healthy
         self.relay = relay
@@ -187,7 +191,8 @@ class MigrateTests(unittest.TestCase):
         self.assertEqual(Path(self.backing).read_bytes(), self.policy_bytes)
         self.assertEqual(os.stat(self.backing).st_mode & 0o777, 0o600)
         self.assertEqual(
-            self.host._dropin().read_text(), f"[Service]\nLoadCredential=seat-policy:{self.backing}\n"
+            self.host._dropin().read_text(),
+            f"[Service]\nLoadCredential=seat-policy:{self.backing}\n",
         )
         self.assertEqual(self.seats.read_bytes(), self.policy_bytes)  # old file untouched
         self.assertEqual([c for c in self.host.calls if c[0] == "restart"], [("restart", UNIT)])
@@ -320,7 +325,9 @@ class MigrateTests(unittest.TestCase):
                 self.assertEqual(self.config.read_bytes(), self.config_bytes)
                 self.assertFalse(self.host._dropin().exists())
                 self.assertEqual(self.seats.read_bytes(), self.policy_bytes)
-                self.assertEqual(json.loads((self.journal / mg.JOURNAL).read_text())["phase"], "restored")
+                self.assertEqual(
+                    json.loads((self.journal / mg.JOURNAL).read_text())["phase"], "restored"
+                )
 
     def test_hard_crash_then_fresh_recover_from_the_journal_alone(self):
         """The process dies with no cleanup (power loss, kill -9, reboot):  the restore path
@@ -361,8 +368,11 @@ class MigrateTests(unittest.TestCase):
         self.args = SimpleNamespace(unit=UNIT, journal_dir=str(self.journal))
         self.assertEqual(self.run_cmd(mg.recover)[0], 2)  # no journal
         self.args = SimpleNamespace(
-            unit=UNIT, backing=self.backing, journal_dir=str(self.journal),
-            expect_digest=self.digest, allow_non_root=True,
+            unit=UNIT,
+            backing=self.backing,
+            journal_dir=str(self.journal),
+            expect_digest=self.digest,
+            allow_non_root=True,
         )
         self.assertEqual(self.run_cmd(mg.apply)[0], 0)
         path = self.journal / mg.JOURNAL
