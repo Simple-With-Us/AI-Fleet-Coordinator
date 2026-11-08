@@ -105,13 +105,15 @@ MCODE_DEFAULT_MODEL = "minimax/MiniMax-M3.1-Flash"
 MCODE_MODEL_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]{0,59}$"
 # The OpenRouter HTTP runtime's models.  `wake = "openrouter"` defaults to the Muse contributor tier run
 # through OpenRouter (so it needs no muse binary, no pin on one and no Meta login);  the fallback
-# defaults to the DeepSeek Flash "latest" alias.  The leading `~` is part of OpenRouter's id for a
-# "latest" alias, not a shell-ism.  Both are defaults only:  `seat.X.model` and `seat.X.fallback_model`
-# win, so a move to another model shows up in the config.  A "latest" alias can change the served
-# weights upstream without changing anything the pin fingerprints, which the owner accepted when he asked
-# for it;  the slug itself is part of the fingerprint.
+# defaults to MiniMax M3.1 Flash (owner, Nov 7, 2026:  muse spark 1.3 contributor first, MiniMax M3.1
+# Flash as backup;  the Oct 30 DeepSeek "latest" pick it replaces is quoted in
+# docs/protocols/agent-sync-listener.md).  The id is the same string MCODE_DEFAULT_MODEL carries, so
+# one model has one name on both routes.  Both are defaults only:  `seat.X.model` and `seat.X.fallback_model`
+# win, so a move to another model shows up in the config.  The id names a version, not a `~latest`
+# alias, so the pin fingerprints the exact upstream model;  a seat still on the old alias default reads
+# as a stale shape, and the Nov 3 advisory-pin ruling covers the move.
 OPENROUTER_DEFAULT_MODEL = "meta/muse-spark-1.3-contributor"
-OPENROUTER_FALLBACK_MODEL = "~deepseek/deepseek-flash-latest"
+OPENROUTER_FALLBACK_MODEL = "minimax/MiniMax-M3.1-Flash"
 # `provider/name`, with an optional leading `~`.  No `:` suffix on purpose:  OpenRouter's `:online`
 # adds web search and `:nitro` or `:floor` re-route, and an unattended no-tools wake wants none of them.
 OPENROUTER_MODEL_PATTERN = r"^(~?[A-Za-z0-9][A-Za-z0-9._-]{0,39}/[A-Za-z0-9][A-Za-z0-9._-]{0,79}|@preset/[A-Za-z0-9][A-Za-z0-9._-]{0,79})$"

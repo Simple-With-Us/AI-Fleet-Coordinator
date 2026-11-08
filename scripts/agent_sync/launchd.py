@@ -189,7 +189,7 @@ def sample_config(secrets_dir: str | None, env: Mapping[str, str] | None = None)
         '# wake = "openrouter"',
         '# model = "meta/muse-spark-1.3-contributor"       # the default for this wake type',
         '# fallback = "openrouter"                         # optional; another model on a failure',
-        '# fallback_model = "~deepseek/deepseek-flash-latest"   # the default;  must differ from model',
+        '# fallback_model = "minimax/MiniMax-M3.1-Flash"   # the default;  must differ from model',
         "# ... or keep the muse binary as the wake and let OpenRouter answer when it cannot:",
         '# wake = "muse"',
         '# fallback = "openrouter"',
