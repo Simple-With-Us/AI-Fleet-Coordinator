@@ -1614,7 +1614,7 @@ class AntigravityCatalogTests(unittest.TestCase):
                     "Operator Setup",
                     "2026-11-08T00:00:00Z",
                     "2026-11-08T01:00:00Z",
-                    '["file:///mnt/fleet-extra/Code/AI-Fleet-Coordinator"]',
+                    '["file:///Users/x/Code/AI-Fleet-Coordinator"]',
                     0,
                 ),
             )
@@ -1637,7 +1637,7 @@ class AntigravityCatalogTests(unittest.TestCase):
         self.assertEqual(row["session_id"], "4aade78e-6a38-40ed-9fc2-11a6eeac6189")
         self.assertEqual(row["seat"], "AG")
         self.assertEqual(row["title"], "Operator Setup")
-        self.assertEqual(row["cwd"], "/mnt/fleet-extra/Code/AI-Fleet-Coordinator")
+        self.assertEqual(row["cwd"], "/Users/x/Code/AI-Fleet-Coordinator")
         self.assertEqual(row["status"], "metadata-only")
         self.assertFalse(row["capabilities"]["wake"])
         found = cat.find("antigravity", "4aade78e-6a38-40ed-9fc2-11a6eeac6189")

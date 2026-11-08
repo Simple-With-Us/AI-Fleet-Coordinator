@@ -785,7 +785,7 @@ def _common_parent() -> argparse.ArgumentParser:
         "--session",
         metavar="ID",
         default=argparse.SUPPRESS,
-        help="session id (default: env CLAUDE_CODE_SESSION_ID, then AGENT_SESSION)",
+        help="session id (default: env AGENT_SESSION, CLAUDE_CODE_SESSION_ID, then ANTIGRAVITY_CONVERSATION_ID)",
     )
     group.add_argument(
         "--json",
