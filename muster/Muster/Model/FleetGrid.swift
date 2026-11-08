@@ -179,11 +179,11 @@ struct GridCell: Identifiable {
         !provenRules.isEmpty && provenRules.count < askedRules.count
     }
 
-    /// The state's name as the badge and the panel print it.
+    /// The state's short name, as a narrow badge prints it.
+    ///
+    /// The full word is `gridWord` (GridPresentation.swift), which every surface uses so a
+    /// state is spelled one way everywhere.
     var stateName: String { isNoGuard ? "NO GUARD" : state.shortLabel }
-
-    /// The state's name in full, for the panel and the tooltip.
-    var stateFullName: String { isNoGuard ? "NO GUARD" : state.rawValue }
 
     /// What the badge prints beside the state:  the proof the cell REACHED.
     ///

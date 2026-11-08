@@ -499,6 +499,29 @@ class PeerBroadcastDaemonTests(DaemonHarness):
     def log_rows(self, daemon) -> list[dict]:
         return L.read_jsonl(daemon.log.path)
 
+    def audit_rows(self, daemon) -> dict[int, dict]:
+        """Every broadcast-ledger row carrying an audit effect, keyed by message id.
+
+        The audit is durable now (AFC-652):  the ledger row, not a process-memory map, is
+        the book the listener keeps, so a restart cannot lose the reminder."""
+        data = L.read_json(daemon._broadcast_ledger_path())
+        rows: dict[int, dict] = {}
+        for row in (data or {}).values():
+            if not isinstance(row, dict):
+                continue
+            effect = (row.get("effects") or {}).get("audit")
+            if isinstance(effect, dict) and isinstance(row.get("mid"), int):
+                rows[row["mid"]] = effect
+        return rows
+
+    def driving_audits(self, daemon) -> dict[int, dict]:
+        """The audits still waiting for their reminder:  driving, never a terminal state."""
+        return {
+            mid: effect
+            for mid, effect in self.audit_rows(daemon).items()
+            if effect.get("state") == "driving"
+        }
+
     def test_a_peer_at_all_fans_out_and_lands_in_the_inboxes_once(self) -> None:
         daemon = self.started()
         daemon._chat_catalog = FakeCatalog([])
@@ -520,12 +543,13 @@ class PeerBroadcastDaemonTests(DaemonHarness):
         daemon._chat_catalog = FakeCatalog([])
         message_id = self.peer_all()
         self.pump_until(daemon, lambda: message_id in daemon._fanout_seen)
-        self.assertEqual(list(daemon._broadcast_audits), [message_id])
+        self.assertEqual(list(self.driving_audits(daemon)), [message_id])
         message = next(m for m in self.fake.messages if m["id"] == message_id)
         daemon.route_message(
             daemon.seats["CLAUDE"], dict(message, flags=["stream_wildcard_mentioned"])
         )
-        self.assertEqual(len(daemon._broadcast_audits), 1)
+        self.assertEqual(len(self.driving_audits(daemon)), 1)
+        self.assertEqual(len(self.audit_rows(daemon)), 1, "the dedupe keeps one audit row per message")
 
     def test_the_senders_own_runner_still_schedules_one_audit(self) -> None:
         """The sender's own seat runner sees its own post as `own`, never as a peer broadcast:
@@ -552,10 +576,11 @@ class PeerBroadcastDaemonTests(DaemonHarness):
         message = next(m for m in self.fake.messages if m["id"] == message_id)
         # The sender's own seat routes it first:  that view is `own`, not a peer broadcast.
         daemon.route_message(daemon.seats["CODEX"], dict(message))
-        self.assertEqual(list(daemon._broadcast_audits), [message_id])
+        self.assertEqual(list(self.driving_audits(daemon)), [message_id])
         # A second seat's route of the same message must not schedule a second audit.
         daemon.route_message(daemon.seats["CLAUDE"], dict(message))
-        self.assertEqual(len(daemon._broadcast_audits), 1)
+        self.assertEqual(len(self.driving_audits(daemon)), 1)
+        self.assertEqual(len(self.audit_rows(daemon)), 1, "the dedupe keeps one audit row per message")
 
     def test_a_stale_peer_at_all_schedules_no_audit(self) -> None:
         """A stale replay wakes nobody, so it must not schedule a reminder either."""
@@ -570,7 +595,7 @@ class PeerBroadcastDaemonTests(DaemonHarness):
         )
         message = next(m for m in self.fake.messages if m["id"] == message_id)
         daemon.route_message(daemon.seats["CLAUDE"], dict(message))
-        self.assertEqual(daemon._broadcast_audits, {})
+        self.assertEqual(self.audit_rows(daemon), {})
 
     def test_the_owner_at_all_schedules_no_audit(self) -> None:
         daemon = self.started()
@@ -579,7 +604,7 @@ class PeerBroadcastDaemonTests(DaemonHarness):
             "Jay Wedgeworth", "agent-sync", "t", "@all the deploy is broken"
         )
         self.pump_until(daemon, lambda: message_id in daemon._fanout_seen)
-        self.assertEqual(daemon._broadcast_audits, {})
+        self.assertEqual(self.audit_rows(daemon), {})
 
     def test_a_peer_broadcast_nudge_is_not_an_owner_wake(self) -> None:
         """A fleet bot's `@all` takes the peer path:  its chat nudge answers to the peer
@@ -617,8 +642,16 @@ class PeerBroadcastDaemonTests(DaemonHarness):
         rows = [r for r in self.log_rows(daemon) if r.get("event") == "peer-broadcast-all"]
         self.assertEqual(rows[-1].get("outcome"), "reminder_failed")
         self.assertEqual(rows[-1].get("error"), "NetworkError")
+        pending = self.driving_audits(daemon)
         self.assertIn(
-            message_id, daemon._broadcast_audits, "a retryable failure keeps the audit pending"
+            message_id, pending, "a retryable failure keeps the audit pending"
+        )
+        detail = pending[message_id].get("detail") or {}
+        self.assertEqual(detail.get("attempts"), 1, "the retry is counted on the durable row")
+        self.assertEqual(
+            detail.get("due_at"),
+            self.clock.time() + BAUD.REMINDER_RETRY_SECONDS,
+            "the retry carries its new due time",
         )
 
     def test_the_audit_reminds_the_owner_when_nothing_explained_the_broadcast(self) -> None:
@@ -626,7 +659,7 @@ class PeerBroadcastDaemonTests(DaemonHarness):
         daemon._chat_catalog = FakeCatalog([])
         message_id = self.peer_all()
         self.pump_until(daemon, lambda: message_id in daemon._fanout_seen)
-        self.assertEqual(len(daemon._broadcast_audits), 1)
+        self.assertEqual(len(self.driving_audits(daemon)), 1)
         # The audit is due ten minutes later.
         self.clock.advance(11 * 60)
         daemon.tick()
@@ -640,6 +673,8 @@ class PeerBroadcastDaemonTests(DaemonHarness):
         self.assertEqual(rows[-1].get("outcome"), "reminded")
         self.assertEqual(rows[-1].get("id"), message_id)
         self.assertNotIn("broken", json.dumps(rows[-1]), "the log never holds the content")
+        effect = self.audit_rows(daemon)[message_id]
+        self.assertEqual(effect.get("state"), "done", "the reminded audit is terminal, never re-due")
 
     def test_the_reminder_is_the_operators_dm_tagged_operator_note(self) -> None:
         """The reminder is the daemon's own text, so the Operator sends it, tagged as the Operator's
@@ -679,7 +714,10 @@ class PeerBroadcastDaemonTests(DaemonHarness):
         refused = [r for r in self.log_rows(daemon) if r.get("event") == "operator-post-refused"]
         self.assertEqual(refused[-1].get("site"), "broadcast-audit")
         self.assertEqual(self.fake.requests_to("POST", "messages"), [], "nothing was sent by anyone")
-        self.assertIn(message_id, daemon._broadcast_audits, "an unavailable Operator keeps the audit pending")
+        pending = self.driving_audits(daemon)
+        self.assertIn(message_id, pending, "an unavailable Operator keeps the audit pending")
+        detail = pending[message_id].get("detail") or {}
+        self.assertEqual(detail.get("attempts"), 1, "the wait is counted as a retry, not a loss")
         self.assertEqual(self.seat_requests(), [])
 
     def test_a_human_at_all_schedules_no_audit(self) -> None:
@@ -690,7 +728,7 @@ class PeerBroadcastDaemonTests(DaemonHarness):
         message_id = self.fake.add_message("Guest", "agent-sync", "t", "@all the deploy is broken")
         message = next(m for m in self.fake.messages if m["id"] == message_id)
         daemon.route_message(daemon.seats["CLAUDE"], dict(message))
-        self.assertEqual(daemon._broadcast_audits, {})
+        self.assertEqual(self.audit_rows(daemon), {})
 
     def test_an_unmapped_sender_at_all_schedules_no_audit(self) -> None:
         """A sender id that is in no user map is not known to be a bot:  the router calls an
@@ -702,7 +740,7 @@ class PeerBroadcastDaemonTests(DaemonHarness):
         )
         message = next(m for m in self.fake.messages if m["id"] == message_id)
         daemon.route_message(daemon.seats["CLAUDE"], dict(message, sender_id=987654))
-        self.assertEqual(daemon._broadcast_audits, {})
+        self.assertEqual(self.audit_rows(daemon), {})
 
     def test_an_unknown_seat_at_all_still_schedules_one_audit(self) -> None:
         """A bot whose email maps to no seat of the fleet still used `@all`:  the audit is
@@ -713,9 +751,9 @@ class PeerBroadcastDaemonTests(DaemonHarness):
         message_id = self.fake.add_message(
             "Mystery", "agent-sync", "t", "@all the deploy is broken"
         )
-        self.pump_until(daemon, lambda: message_id in daemon._broadcast_audits)
-        broadcast = daemon._broadcast_audits[message_id][0]
-        self.assertEqual(broadcast.sender_seat, "", "the sender maps to no seat of the fleet")
+        self.pump_until(daemon, lambda: message_id in self.driving_audits(daemon))
+        detail = self.driving_audits(daemon)[message_id].get("detail") or {}
+        self.assertEqual(detail.get("sender_seat"), "", "the sender maps to no seat of the fleet")
         # The audit is due ten minutes later.
         self.clock.advance(11 * 60)
         daemon.tick()
@@ -742,10 +780,11 @@ class PeerBroadcastDaemonTests(DaemonHarness):
         with mock.patch("agent_sync.daemon.threading") as fake_threading:
             fake_threading.Thread.side_effect = RuntimeError("no thread today")
             daemon._start_due_broadcast_audits(self.clock.time())
-        self.assertIn(message_id, daemon._broadcast_audits, "a spawn failure requeues the audit")
-        _broadcast, due, attempt = daemon._broadcast_audits[message_id]
-        self.assertEqual(attempt, 1)
-        self.assertEqual(due, self.clock.time() + BAUD.REMINDER_RETRY_SECONDS)
+        pending = self.driving_audits(daemon)
+        self.assertIn(message_id, pending, "a spawn failure requeues the audit")
+        detail = pending[message_id].get("detail") or {}
+        self.assertEqual(detail.get("attempts"), 1)
+        self.assertEqual(detail.get("due_at"), self.clock.time() + BAUD.REMINDER_RETRY_SECONDS)
         rows = [r for r in self.log_rows(daemon) if r.get("event") == "peer-broadcast-all"]
         self.assertEqual(rows[-1].get("outcome"), "reminder_failed")
         self.assertEqual(rows[-1].get("error"), "RuntimeError")

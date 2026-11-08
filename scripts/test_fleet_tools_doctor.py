@@ -1262,16 +1262,16 @@ class MacRuntimeTests(HomeCase):
         self.assertEqual((row["state"], row["status"]), ("unknown", "WARN"))
 
     def test_reasons(self):
-        self.touch(".agent-sync/runtime-sync.pause", "")
+        self.touch(".simple-tools/runtime-sync.pause", "")
         _, row = self.runtime(updater=dict(self.HEALTHY, paused=True))
         self.assertEqual(row["status"], "FAIL")
         self.assertIn("paused", row["reason"])
-        (self.home / ".agent-sync/runtime-sync.pause").unlink()
-        self.touch(".agent-sync/runtime-sync.bad-sha", TIP + "\n")
+        (self.home / ".simple-tools/runtime-sync.pause").unlink()
+        self.touch(".simple-tools/runtime-sync.bad-sha", TIP + "\n")
         _, row = self.runtime(updater=dict(self.HEALTHY, advanced=None))
         self.assertEqual(row["status"], "WARN")  # amber:  the updater waits for main to move
         self.assertIn("smoke test", row["reason"])
-        (self.home / ".agent-sync/runtime-sync.bad-sha").unlink()
+        (self.home / ".simple-tools/runtime-sync.bad-sha").unlink()
         _, row = self.runtime(tracked=" M scripts/simple-chat\n")
         self.assertEqual(row["status"], "FAIL")
         self.assertIn("tracked changes", row["reason"])

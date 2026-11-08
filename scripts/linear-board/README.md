@@ -10,7 +10,7 @@ Status: built and tested against a local mock of Linear, and checked live with r
 
 ### Before cutover: as `board-linear`
 
-Install it next to the old CLI and leave `~/.local/bin/board` alone.  Install from the repo only, so the live copy cannot drift from the tracked one.  Link to the managed runtime checkout, never to the human integration tree under `~/Code`: `/Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime` is a detached worktree that `com.jay.agent-sync-runtime-sync` keeps on AFC origin/main every 120 seconds (the `simple-chat` CLI already runs from it).
+Install it next to the old CLI and leave `~/.local/bin/board` alone.  Install from the repo only, so the live copy cannot drift from the tracked one.  Link to the managed runtime checkout, never to the human integration tree under `~/Code`: `/Users/jay/apps/lanes/_managed/fleet/simple-tools-runtime` is a detached worktree that `com.jay.simple-tools-runtime-sync` keeps on AFC origin/main every 120 seconds (the `simple-chat` CLI already runs from it).
 
 ```bash
 ln -sf "/Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime/scripts/linear-board/board" "$HOME/.local/bin/board-linear"

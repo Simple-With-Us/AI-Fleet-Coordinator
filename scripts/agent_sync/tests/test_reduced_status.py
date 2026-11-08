@@ -1396,10 +1396,15 @@ class FromRealDaemonStatusTests(DaemonHarness):
             "pid", "version", "started", "muse_bridge", "config_errors", "reload_refused",
             "reload_at", "partition_file", "owner_user_id", "chat_nudges", "wake_loop_prevention",
             "loop_guard", "rewake_verified", "rewake_verified_cli", "rewake_verified_desktop",
+            # AFC-652's planned-drain checklist:  on-host operator tooling with message ids
+            # and effect reasons in its terminal rows, so the reducer deliberately never
+            # reads it (see reduced_status.py, "Deliberately never read").
+            "drain",
         }  # fmt: skip
         self.assertEqual(set(document), read | not_read)
         seat_keys = {
-            "bot", "creds", "connected", "cursor", "last_event", "wake", "routine", "muse_bridge",
+            "bot", "creds", "connected", "cursor", "webhook_high_water", "last_event", "wake",
+            "routine", "muse_bridge",
             "pinned", "pin", "claude", "muse", "model", "fallback", "provider", "quota",
             "wakes_24h", "routes_24h", "route_enabled", "budget", "live", "jobs", "running",
             "paused", "wakes_paused", "held_back", "leases", "red", "chat_nudges",
