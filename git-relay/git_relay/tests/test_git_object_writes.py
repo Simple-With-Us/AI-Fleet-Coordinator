@@ -379,9 +379,12 @@ class RepeatedReferenceTests(unittest.TestCase):
 
         args, blob = self.fixture(b"safe\n")
         client = Client(blob)
-        with patch(
-            "git_relay.workflow_verbs.unreviewed_file_secret", side_effect=[None, "credential"]
-        ), self.assertRaises(Refused):
+        with (
+            patch(
+                "git_relay.workflow_verbs.unreviewed_file_secret", side_effect=[None, "credential"]
+            ),
+            self.assertRaises(Refused),
+        ):
             self.handle(client).run("wf_git_tree_create", args)
         self.assertEqual(len(client.calls), 1)
         self.assertEqual(client.calls[0][0], "GET")
