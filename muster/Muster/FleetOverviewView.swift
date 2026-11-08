@@ -178,8 +178,9 @@ struct FleetOverviewView: View {
         switch place {
         case .complianceGrid:
             guard let redCount = monitor.redCount else { return "?" }
-            // An old check,  as after a long sleep,  is not a clean grid.
-            if let checkedAt = monitor.lastRunAt,
+            // An old check,  as after a long sleep,  is not a clean grid.  The count is the last
+            // trusted run's,  so its age is that run's (GRID-33).
+            if let checkedAt = monitor.lastTrustedRunAt,
                !SeatCheckFreshness.isCurrent(checkedAt: checkedAt, now: watch.now) { return "?" }
             return redCount > 0 ? "\(redCount)" : nil
         case .services:
