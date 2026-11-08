@@ -196,4 +196,11 @@ Of what the helper and its sibling modules name, #1509 changed only the eavesdro
 
 ## Deployed
 
-Not deployed yet.
+Deployed by hand on November 8, 2026 at 5:08 AM from main `d468c2e` (PR 1534), the allowlist first and the helper second.  Each file was replaced through a candidate beside it, hash-checked against the repository file, and renamed into place.
+
+| File | Before | After |
+| --- | --- | --- |
+| `fleet-ops-control.json` | `241482d3f0fcd2ed2012f6c1e9c848ffd88b92cdf4deabac0e0909cc9bd8dcde` | `3e5515142d4f01f0791a2e2cc758073865cf1a019efc05a2ea1c727574cfcbe3` |
+| `fleet-ops-control.py` | `4c11edb91f58af041fd65fd2f9fe65afcfdcf01b7e80f4486cad73c0202b32f1` | `ead2d092715397833cf62d42f51be9948b0f25ec55f43b181b664e2aa69a774a` |
+
+Both old files were backed up first, each hash-checked against the installed file it copied, in `/var/backups/fleet-ops-control-unit-status-20261108T110836Z/` (a root-only 0700 directory), holding `fleet-ops-control.py` and `fleet-ops-control.json` as they were.  Read after, through the Mac route:  `unit-status` answered for a user timer, a system timer and a service;  an unlisted unit was refused, and so was `--yes` (`read_only_required`);  `logs` of a timer read the service's journal;  `eavesdropper-status` and `resource-status` still answered.

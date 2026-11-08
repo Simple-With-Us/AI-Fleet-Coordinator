@@ -2,7 +2,7 @@
 
 The Muster iPhone route (`fleet-ops-control.py --from-muster`, `scripts/muster_approval.py`, merged and inert) answers every approval `no_trust_list`, because nothing writes `/home/jay/.local/state/fleet-tools/muster-trust.json`.  This change adds the request that does, `muster trust-list chain --yes`, as `docs/muster-ios/server-route-spec.md` version 5.3 describes it (sections 5, 8, 12, 13 and 14, steps P3 and C1 to C5).  The sender splits a long history into consecutive requests of at most 32 lists, each starting at the version the helper holds plus one, and the helper keeps only the newest list it has verified.
 
-Nothing here is deployed.  This change did not read or touch `/etc/muster`, the live state directory, any key, any service or the installed files, so every statement about the live server below comes from the earlier rollout notes or from the code and is marked as not checked now.
+The two files were deployed on November 8, 2026 at 10:06 AM (the Deployed section at the end has the hashes).  The change itself did not read or touch `/etc/muster`, the live state directory or any key, so what this note says about those and about the first chain comes from the earlier rollout notes or from the code, and was not checked when the deploy was made.
 
 ## 1. What The Verb Does
 
@@ -33,11 +33,11 @@ The acknowledgement answers for the list just written (`helperTrustListVersion`,
 
 ## 3. How An Installed Route Becomes Live
 
-The route needs all of the following before the first chain can be delivered.  The state of each on the live server was not read for this change.  The Nov 8 rollout note `2026-11-08-helper-unit-status.md` recorded `/etc/muster` and `/usr/local/lib/muster-agent` as absent and the installed helper answering the unsigned `helper_key_missing`.  Check each again before relying on it.
+The route needs all of the following before the first chain can be delivered.  Row 1 was done on November 8, 2026 at 10:06 AM (Deployed, below).  The state of rows 2 to 5 on the live server was not read for this change.  The Nov 8 rollout note `2026-11-08-helper-unit-status.md` recorded `/etc/muster` and `/usr/local/lib/muster-agent` as absent and the installed helper answering the unsigned `helper_key_missing`.  Check each again before relying on it.
 
 | # | What | Who | Repository state |
 | --- | --- | --- | --- |
-| 1 | The two changed files go to `/usr/local/lib/fleet-resource-control` (section 4 below). | Whoever deploys the helper | This change |
+| 1 | The two changed files go to `/usr/local/lib/fleet-resource-control` (section 4 below). | Whoever deploys the helper | This change, deployed November 8, 2026 at 10:06 AM |
 | 2 | `/etc/muster/owner.pub` (one line, the base64url SPKI of the owner key, then a line feed) and `/etc/muster/owner-history.jsonl` (one canonical line `{"fromVersion":1,"ownerKey":"...","toSHA256":null,"toVersion":null}` and a line feed), root-owned, not writable by group or others, in a root-owned directory. Until they exist every request is `pin_unsafe`. | The owner, as root at the console, comparing the full fingerprint with Muster's | `muster-agent install` (the tool section 10 names) is not in this repository, so the files would be made by hand |
 | 3 | The helper key `/home/jay/.local/state/fleet-tools/muster-helper.key`, an unencrypted PKCS#8 PEM P-256 key, mode 0600, in a state directory with no group or other bits.  Without it every request answers the unsigned `helper_key_missing`.  Its public half is `services.serverHelper` of the lists the owner signs. | The owner (section 13 says the Milestone 5 install makes it and prints its fingerprint) | The installer does not make it |
 | 4 | The `muster-exec` key and its line in `/home/jay/.ssh/authorized_keys`: `restrict,from="127.0.0.1,::1",command="/usr/bin/python3 -I /usr/local/lib/fleet-resource-control/fleet-ops-control.py --from-muster" ssh-ed25519 AAAA... muster-exec@server` (section 3).  The earlier slice's note asked for `env -i` with `SSH_ORIGINAL_COMMAND` passed through by name; the spec does not say so yet, and neither form was run under a real sshd. | The owner | `muster-exec` is not in this repository |
@@ -49,7 +49,7 @@ Do not send a chain to the live server as a test.  The first chain is the owner
 
 ## 4. Deploying The Two Files
 
-Two installed files change, `fleet-ops-control.py` (three new audit field names and docstrings) and `muster_approval.py` (the verb).  `muster_trust_files.py`, the allowlist and every other file are byte-for-byte what `main` had.  Read the installed hashes first and replace nothing if they differ from the files the last deploy wrote (this change did not read them).  Take a hash-verified backup of each, write each new file beside its target as a candidate, check its sha256 against the repository file and rename it into place, the way `2026-11-08-helper-unit-status.md` did.
+Two installed files change, `fleet-ops-control.py` (three new audit field names and docstrings) and `muster_approval.py` (the verb).  `muster_trust_files.py`, the allowlist and every other file are byte-for-byte what `main` had.  Read the installed hashes first and replace nothing if they differ from the files the last deploy wrote (the deploy read them; the Deployed section has what it found).  Take a hash-verified backup of each, write each new file beside its target as a candidate, check its sha256 against the repository file and rename it into place, the way `2026-11-08-helper-unit-status.md` did.
 
 **Helper first, module second.**  Every state between the two renames works, and the order decides which one is harmless:
 
@@ -93,4 +93,19 @@ Not interpretations, because the spec says them: a concurrent chain can meet `ac
 
 ## Deployed
 
-Not deployed yet.
+Deployed by hand on November 8, 2026 at 10:06 AM from main `0c83f9592` (PR 1543), the helper first and the module second, as section 4 says.  Each file was replaced through a candidate beside it, hash-checked against the repository file, and renamed into place.
+
+| File | Before | After |
+| --- | --- | --- |
+| `fleet-ops-control.py` | `ead2d092715397833cf62d42f51be9948b0f25ec55f43b181b664e2aa69a774a` | `bf83a9e2be384a7a9a95f6d3d83bd82553d2475d98dadd9e8d1103ad6fece9a6` |
+| `muster_approval.py` | `fbe9db7d437c0548111eb2d21bb96ae50b24221684be14a7d96346ab4af6a8f8` | `fbd212aec1738365e3f90ff8c29000ebd8028399bc7cfd23865138b932e58269` |
+
+Both old files were backed up first, each hash-checked against the installed file it copied, in `/var/backups/fleet-ops-control-trust-chain-20261108T160614Z/` (a root-only 0700 directory), holding `fleet-ops-control.py` and `muster_approval.py` as they were.  Rollback restores the module first and then the helper from that folder, each through a hash-checked candidate.  No other installed file changed, and the allowlist, `fleet_resource_control.py` and `muster_trust_files.py` were byte for byte main's before and after.
+
+Read after the swap:
+
+- The installed module imports on its own and has the chain parse and the temporary-file sweep.
+- `--from-muster` on the server still answers the fixed unsigned `helper_key_missing`, as it must:  there is no helper key and no `/etc/muster` yet, so the route is inert.
+- Through the Mac route, `unit-status`, `logs`, `eavesdropper-status` (29 seats running) and `resource-status` still answer.
+
+Nothing was sent to the chain verb on the live server.  The route goes live only when the owner's steps in section 3 exist and the owner delivers a first chain.
