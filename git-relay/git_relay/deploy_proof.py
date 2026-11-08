@@ -48,6 +48,10 @@ class NoRedirect(HTTPRedirectHandler):
 class RuntimeProof:
     URL = "http://127.0.0.1:8471/v1/"
     REPO = "Simple-With-Us/AI-Fleet-Coordinator"
+    # The in-host proof against localhost needs no User-Agent; the external
+    # proof names itself explicitly (the front-end filter rejects anonymous
+    # Python agents).  See ExternalProof.USER_AGENT.
+    USER_AGENT = None
 
     def __init__(self, bearer, opener=None):
         self.bearer = bearer
@@ -55,11 +59,10 @@ class RuntimeProof:
 
     def call(self, action, args):
         raw = json.dumps(args, separators=(",", ":")).encode()
-        request = Request(
-            self.URL + action,
-            data=raw,
-            headers={"Authorization": "Bearer " + self.bearer, "Content-Type": "application/json"},
-        )
+        headers = {"Authorization": "Bearer " + self.bearer, "Content-Type": "application/json"}
+        if self.USER_AGENT:
+            headers["User-Agent"] = self.USER_AGENT
+        request = Request(self.URL + action, data=raw, headers=headers)
         try:
             response = self.opener.open(request, timeout=15)
         except HTTPError as response:
@@ -79,11 +82,12 @@ class RuntimeProof:
     def __call__(self, identity, hashes):
         # Real own-App authenticated read proves normal policy/minter path.
         status, repo = self.call("wf_repo_get", {"repo": self.REPO})
+        repo_info = repo.get("repository") if isinstance(repo, dict) else None
         if (
             status != 200
-            or not isinstance(repo, dict)
-            or repo.get("repository", {}).get("full_name") != self.REPO
-            or repo.get("repository", {}).get("default_branch") != "main"
+            or not isinstance(repo_info, dict)
+            or repo_info.get("full_name") != self.REPO
+            or repo_info.get("default_branch") != "main"
         ):
             return False
         status, result = self.call(
@@ -147,11 +151,13 @@ class ExternalProof(RuntimeProof):
     """
 
     URL = "https://agents.simplewithus.com/v1/"
+    VERSION = 2
+    USER_AGENT = "swu-git-relay-external-proof/2"
 
     def __call__(self, seat, proof_id, policy_before, policy_after):
         path = probe_path(proof_id)
         record = {
-            "v": 2,
+            "v": self.VERSION,
             "seat": seat,
             "proof_id": proof_id,
             "ts": int(time.time()),
@@ -167,11 +173,12 @@ class ExternalProof(RuntimeProof):
             # Timeout or transport failure: the relay's state is unknown to the
             # caller, so this is never a proof. Retry with a fresh proof id.
             return dict(record, outcome=INCONCLUSIVE, stage="read")
+        repo_info = repo.get("repository") if isinstance(repo, dict) else None
         if (
             status != 200
-            or not isinstance(repo, dict)
-            or repo.get("repository", {}).get("full_name") != self.REPO
-            or repo.get("repository", {}).get("default_branch") != "main"
+            or not isinstance(repo_info, dict)
+            or repo_info.get("full_name") != self.REPO
+            or repo_info.get("default_branch") != "main"
         ):
             return dict(record, outcome=REFUSED, stage="read", status=status)
         probe = {
@@ -335,11 +342,15 @@ def verify_receipt(
     audit_rows,
     window_s=RECEIPT_WINDOW_S,
     store_id=True,
+    url=None,
+    repo=None,
 ):
     """Return the proven record, or refuse it.
 
     Gates, in order: shape, HMAC (forged or tampered), outcome (only PROVEN is
-    a proof), staleness (outside the window), seat (names another seat),
+    a proof), proof target (record version, endpoint and repository must be
+    exactly the expected ExternalProof values, never another environment's),
+    staleness (outside the window), seat (names another seat),
     transaction binding (names another policy before/after pair), probe-path
     consistency (path must be probe_path(proof_id)), replay (the durable store
     has already accepted this id), and audit binding (the relay's own log must
@@ -361,6 +372,19 @@ def verify_receipt(
         raise ValueError("receipt forged")
     if record.get("outcome") != PROVEN:
         raise ValueError("receipt is not a proof")
+    # The receipt must name THIS proof target: the record version, the exact
+    # endpoint and the exact repository, not merely any HMAC-valid record for
+    # the seat (a proof against another environment must never verify here).
+    if url is None:
+        url = ExternalProof.URL
+    if repo is None:
+        repo = ExternalProof.REPO
+    if (
+        record.get("v") != ExternalProof.VERSION
+        or record.get("url") != url
+        or record.get("repo") != repo
+    ):
+        raise ValueError("receipt names another proof target")
     ts = record.get("ts")
     if not isinstance(ts, int) or not 0 <= now - ts <= window_s:
         raise ValueError("receipt stale")

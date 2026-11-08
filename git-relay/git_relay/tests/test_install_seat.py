@@ -27,7 +27,8 @@ sys.modules[SPEC.name] = sp
 SPEC.loader.exec_module(sp)
 
 KEY = b"test-only install-seat proof key"
-REPO = "Simple-With-Us/AI-Fleet-Coordinator"
+# Synthetic fixture repository only:  no real organization names in fixtures.
+REPO = "example-org/example-repo"
 
 OLD_ROW = {
     "actions": ["open_pr"],
@@ -118,6 +119,10 @@ class InstallSeatTests(unittest.TestCase):
         self.env.stop()
         self.dir.cleanup()
 
+    def install(self, args, unit):
+        with mock.patch.object(deploy_proof.ExternalProof, "REPO", REPO):
+            return sp.install_seat(args, unit)
+
     def args2(self, **over):
         base = {
             "seat": "swu-zc",
@@ -132,22 +137,22 @@ class InstallSeatTests(unittest.TestCase):
         return SimpleNamespace(**base)
 
     def test_cas_refuses_a_live_policy_that_is_not_the_reviewed_one(self):
-        rc = sp.install_seat(self.args2(expect_before="0" * 64), self.unit)
+        rc = self.install(self.args2(expect_before="0" * 64), self.unit)
         self.assertEqual(rc, 2)
         self.assertEqual(json.loads(self.seats_path.read_text()), self.policy)
 
     def test_expect_after_mismatch_refuses(self):
-        rc = sp.install_seat(self.args2(expect_after="0" * 64), self.unit)
+        rc = self.install(self.args2(expect_after="0" * 64), self.unit)
         self.assertEqual(rc, 2)
         self.assertEqual(json.loads(self.seats_path.read_text()), self.policy)
 
     def test_proof_gate_stays_on_without_the_key_file(self):
         with mock.patch.dict(os.environ, {sp.PROOF_KEY_FILE_VAR: ""}):
-            rc = sp.install_seat(self.args2(), self.unit)
+            rc = self.install(self.args2(), self.unit)
         self.assertEqual(rc, 2)
 
     def test_dry_run_checks_every_gate_without_writing_or_consuming(self):
-        rc = sp.install_seat(self.args2(), self.unit)
+        rc = self.install(self.args2(), self.unit)
         self.assertEqual(rc, 0)
         self.assertEqual(json.loads(self.seats_path.read_text()), self.policy)
         self.assertFalse(ReplayStore(str(self.relay_dir / sp.REPLAY_STORE)).seen("proof-t1"))
@@ -158,7 +163,7 @@ class InstallSeatTests(unittest.TestCase):
             mock.patch.object(sp, "subprocess", fake),
             mock.patch.object(sp, "_healthy", lambda *a: True),
         ):
-            rc = sp.install_seat(self.args2(apply=True), self.unit)
+            rc = self.install(self.args2(apply=True), self.unit)
         self.assertEqual(rc, 0)
         installed = json.loads(self.seats_path.read_text())
         self.assertEqual(sp.canonical_digest(installed), self.after)
@@ -175,14 +180,14 @@ class InstallSeatTests(unittest.TestCase):
             mock.patch.object(sp, "subprocess", fake),
             mock.patch.object(sp, "_healthy", lambda *a: False),
         ):
-            rc = sp.install_seat(self.args2(apply=True), self.unit)
+            rc = self.install(self.args2(apply=True), self.unit)
         self.assertEqual(rc, 3)
         self.assertEqual(json.loads(self.seats_path.read_text()), self.policy)
 
     def test_a_replayed_receipt_is_refused_before_any_write(self):
         store = ReplayStore(str(self.relay_dir / sp.REPLAY_STORE))
         store.add(self.record)
-        rc = sp.install_seat(self.args2(), self.unit)
+        rc = self.install(self.args2(), self.unit)
         self.assertEqual(rc, 2)
         self.assertEqual(json.loads(self.seats_path.read_text()), self.policy)
 
@@ -195,8 +200,15 @@ class InstallSeatTests(unittest.TestCase):
         )
         record["policy_after"] = other_after
         self.receipt_path.write_text(json.dumps(sign_receipt(KEY, record)))
-        rc = sp.install_seat(self.args2(), self.unit)
+        rc = self.install(self.args2(), self.unit)
         self.assertEqual(rc, 2)
+
+    def test_a_receipt_for_another_proof_target_is_refused(self):
+        record = dict(self.record, repo="example-org/other-repo")
+        self.receipt_path.write_text(json.dumps(sign_receipt(KEY, record)))
+        rc = self.install(self.args2(), self.unit)
+        self.assertEqual(rc, 2)
+        self.assertEqual(json.loads(self.seats_path.read_text()), self.policy)
 
     def test_a_held_transaction_lock_refuses_without_touching_the_file(self):
         import fcntl
@@ -206,7 +218,7 @@ class InstallSeatTests(unittest.TestCase):
         fcntl.flock(fd, fcntl.LOCK_EX)
         try:
             with mock.patch.object(sp, "TRANSACTION_LOCK_WAIT_S", 0.2):
-                rc = sp.install_seat(self.args2(), self.unit)
+                rc = self.install(self.args2(), self.unit)
         finally:
             os.close(fd)
         self.assertEqual(rc, 2)
@@ -231,7 +243,7 @@ class InstallSeatTests(unittest.TestCase):
             mock.patch.object(sp, "subprocess", fake),
             mock.patch.object(sp, "_healthy", lambda *a: True),
         ):
-            rc = sp.install_seat(self.args2(apply=True), unit)
+            rc = self.install(self.args2(apply=True), unit)
         self.assertEqual(rc, 0)
         info = os.stat(self.seats_path)
         self.assertEqual(info.st_uid, me.pw_uid)
@@ -248,7 +260,7 @@ class InstallSeatTests(unittest.TestCase):
         )
         # The refusal fires only when the named user resolves and does not own
         # the file;  an unresolvable name refuses as unreadable-by-design too.
-        rc = sp.install_seat(self.args2(), unit)
+        rc = self.install(self.args2(), unit)
         self.assertEqual(rc, 2)
         self.assertEqual(json.loads(self.seats_path.read_text()), self.policy)
 
@@ -261,7 +273,7 @@ class InstallSeatTests(unittest.TestCase):
             environment={"GIT_RELAY_HOST": "127.0.0.1", "GIT_RELAY_PORT": "8471"},
             dynamic_user=True,
         )
-        rc = sp.install_seat(self.args2(), unit)
+        rc = self.install(self.args2(), unit)
         self.assertEqual(rc, 2)
         self.assertEqual(json.loads(self.seats_path.read_text()), self.policy)
 
@@ -279,18 +291,18 @@ class InstallSeatTests(unittest.TestCase):
                 "GIT_RELAY_AUDIT_PATH": str(custom),
             },
         )
-        rc = sp.install_seat(self.args2(), unit)
+        rc = self.install(self.args2(), unit)
         self.assertEqual(rc, 0)
         # A relative value resolves against the unit's working directory, as from_env does.
         (self.relay_dir / "logs").mkdir()
         custom.rename(self.relay_dir / "logs" / "audit.jsonl")
         unit.environment["GIT_RELAY_AUDIT_PATH"] = "logs/audit.jsonl"
-        rc = sp.install_seat(self.args2(), unit)
+        rc = self.install(self.args2(), unit)
         self.assertEqual(rc, 0)
 
     def test_a_missing_audit_log_refuses_closed(self):
         (self.relay_dir / sp.DEFAULT_AUDIT).unlink()
-        rc = sp.install_seat(self.args2(), self.unit)
+        rc = self.install(self.args2(), self.unit)
         self.assertEqual(rc, 2)
         self.assertEqual(json.loads(self.seats_path.read_text()), self.policy)
 
@@ -300,7 +312,7 @@ class InstallSeatTests(unittest.TestCase):
             % (self.seats_path, self.seats_path)
         )
         with self.assertRaises(SystemExit):
-            sp.install_seat(self.args2(), self.unit)
+            self.install(self.args2(), self.unit)
         self.assertEqual(json.loads(self.seats_path.read_text()), self.policy)
 
 

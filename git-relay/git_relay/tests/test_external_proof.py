@@ -25,7 +25,10 @@ from git_relay.deploy_proof import (
     verify_receipt,
 )
 
-REPO = "Simple-With-Us/AI-Fleet-Coordinator"
+# Fixtures never name a real organization repository (review rule:  synthetic
+# hostnames and paths in fixtures).  The proof under test is pinned to it
+# through the subclass, so production keeps its own constants.
+REPO = "example-org/example-repo"
 KEY = b"test-only proof key"
 BEFORE = "a" * 64
 AFTER = "b" * 64
@@ -54,10 +57,12 @@ class FakeRelay:
         self.fail_read = fail_read
         self.fail_probe = fail_probe
         self.requests = []
+        self.headers = []
 
     def open(self, request, timeout):
         body = json.loads(request.data.decode())
         self.requests.append((request.full_url, body))
+        self.headers.append(dict(request.header_items()))
         if self.fail_read and "wf_repo_get" in request.full_url:
             raise self.fail_read
         if self.fail_probe and "wf_file_patch" in request.full_url:
@@ -67,8 +72,14 @@ class FakeRelay:
         return _Response(400, {"error": self.refusal})
 
 
+class _Proof(ExternalProof):
+    """The external proof pinned to the synthetic fixture repository."""
+
+    REPO = REPO
+
+
 def proof(relay):
-    return ExternalProof("test-bearer", opener=relay)
+    return _Proof("test-bearer", opener=relay)
 
 
 def audit_row(record, **over):
@@ -158,6 +169,25 @@ class ExternalProofTests(unittest.TestCase):
         self.assertEqual(retry["outcome"], PROVEN)
         self.assertNotEqual(retry["proof_id"], record["proof_id"])
 
+    def test_external_calls_name_themselves_with_a_user_agent(self):
+        relay = FakeRelay()
+        proof(relay)("swu-zc", "proof-0006", BEFORE, AFTER)
+        agents = [h.get("User-agent") for h in relay.headers]
+        self.assertTrue(agents)
+        for agent in agents:
+            self.assertEqual(agent, ExternalProof.USER_AGENT)
+        self.assertNotIn("Python-urllib", agents[0])
+
+    def test_a_none_or_shaped_wrong_repository_is_refused_not_a_crash(self):
+        class NoneRepo(FakeRelay):
+            def open(self, request, timeout):
+                if "wf_repo_get" in request.full_url:
+                    return _Response(200, {"repository": None})
+                return super().open(request, timeout)
+
+        record = proof(NoneRepo())("swu-zc", "p7", BEFORE, AFTER)
+        self.assertEqual((record["outcome"], record["stage"]), (REFUSED, "read"))
+
     def test_read_timeout_is_inconclusive(self):
         record = proof(FakeRelay(fail_read=TimeoutError("timed out")))(
             "swu-zc", "p2", BEFORE, AFTER
@@ -184,6 +214,7 @@ class ReceiptGateTests(unittest.TestCase):
             "policy_before": BEFORE,
             "policy_after": AFTER,
             "audit_rows": [audit_row(self.record)],
+            "repo": REPO,
         }
         kwargs.update(over)
         return verify_receipt(KEY, receipt, **kwargs)
@@ -260,6 +291,20 @@ class ReceiptGateTests(unittest.TestCase):
         # Two matching rows are ambiguous: refuse, and nothing is stored.
         with self.assertRaisesRegex(ValueError, "relay audit"):
             self.verify(self.receipt, audit_rows=[audit_row(self.record), audit_row(self.record)])
+        self.assertFalse(self.store.seen("proof-1001"))
+
+    def test_a_receipt_for_another_proof_target_is_refused(self):
+        # Same key, same seat, valid HMAC - but another endpoint, repo or
+        # record version must never verify here.
+        for field, value in (
+            ("url", "https://elsewhere.example/v1/"),
+            ("repo", "example-org/other-repo"),
+            ("v", 1),
+        ):
+            record = dict(self.record, **{field: value})
+            receipt = sign_receipt(KEY, record)
+            with self.assertRaisesRegex(ValueError, "another proof target"):
+                self.verify(receipt)
         self.assertFalse(self.store.seen("proof-1001"))
 
     def test_dry_run_verification_consumes_nothing(self):
