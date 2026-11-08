@@ -12,6 +12,7 @@ import os
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 from agent_sync import cursor_cloud_letters as CCL
 from agent_sync import operator_registry as OR
@@ -196,8 +197,39 @@ class RecentTests(unittest.TestCase):
         self.assertTrue(CCL.recent({"updated_at": "2026-11-08T00:00:01.000Z"}, now))
         self.assertTrue(CCL.recent({"updated_at": "2026-11-07T00:00:00+00:00"}, now))
         self.assertFalse(CCL.recent({"updated_at": "2026-11-06T23:59:59Z"}, now))
-        self.assertFalse(CCL.recent({"updated_at": "2026-11-08T00:00:00"}, now))  # no zone:  not trusted
+        self.assertTrue(CCL.recent({"updated_at": now - 3600}, now))  # epoch seconds
+        self.assertTrue(CCL.recent({"updated_at": int((now - 3600) * 1000)}, now))  # epoch milliseconds
+        self.assertFalse(CCL.recent({"updated_at": now - 40 * 3600}, now))
+        self.assertFalse(CCL.recent({"updated_at": "yesterday"}, now))
+        self.assertFalse(CCL.recent({"updated_at": True}, now))
         self.assertFalse(CCL.recent({}, now))
+
+
+class TransportTests(unittest.TestCase):
+    """The sweep's own Cursor transport:  built with the 30 second timeout, and a partial discovery is not complete."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.env = {"HOME": tmp.name, "AGENT_SYNC_STATE_DIR": os.path.join(tmp.name, "state"), "AGENT_SEAT": "CLAUDE"}
+
+    def built(self, status: str) -> tuple[mock.MagicMock, dict]:
+        fake = mock.MagicMock()
+        fake.return_value.discover.return_value = []
+        fake.return_value.last_discovery_status = status
+        with mock.patch("agent_sync.cursor_chat_transport.CursorCloudTransport", fake):
+            out = CCL.sweep(self.env, runner=Fake(), transport=lambda argv: {})
+        return fake, out
+
+    def test_it_builds_the_transport_with_the_long_timeout(self) -> None:
+        fake, out = self.built("complete")
+        fake.assert_called_once_with(timeout_seconds=CCL.API_TIMEOUT)
+        self.assertEqual(CCL.API_TIMEOUT, 30)
+        self.assertTrue(out["complete"])
+
+    def test_a_partial_discovery_is_reported_as_not_complete(self) -> None:
+        _, out = self.built("partial")
+        self.assertFalse(out["complete"])
 
 
 class TitleTests(unittest.TestCase):

@@ -204,19 +204,14 @@ def send_dm(bot: str, text: str, env: Mapping[str, str], runner: Runner) -> str:
 
 
 def recent(agent: Mapping[str, Any], now: float, max_age_hours: float = MAX_AGE_HOURS) -> bool:
-    """Whether the agent's updatedAt is within `max_age_hours` of `now`.  A missing or unreadable time is not recent."""
-    import datetime as dt
+    """Whether the agent's updatedAt is within `max_age_hours` of `now`.  It is read the way the chat catalog reads the
+    same field (epoch seconds, epoch milliseconds or an ISO time);  a missing or unreadable time is not recent."""
+    from .chat_catalog import _timestamp
 
-    stamp = str(agent.get("updated_at") or "").strip()
-    if not stamp:
+    when = _timestamp(agent.get("updated_at"))
+    if when <= 0:
         return False
-    try:
-        when = dt.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
-    except ValueError:
-        return False
-    if when.tzinfo is None:
-        return False
-    return now - when.timestamp() <= max_age_hours * 3600
+    return now - when <= max_age_hours * 3600
 
 
 def sweep(
