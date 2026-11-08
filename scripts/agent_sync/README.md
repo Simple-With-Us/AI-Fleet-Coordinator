@@ -387,15 +387,3 @@ cd scripts && python3 -m unittest agent_sync.tests.test_platform_letter
 ```
 cd scripts && python3 -m unittest agent_sync.tests.test_platform_letter_antigravity
 ```
-
-### Cursor
-
-`agent_sync/platform_letter_cursor.py` is the adapter for Cursor's local chats, in the IDE and `cursor-agent` (seat CURSOR, the Mac and the server).  Its docstring has the evidence, read from the cursor-agent 2026.10.22 build.
-
-- **Registration and context work, the title does not.**  sessionStart and beforeSubmitPrompt answer `additional_context` with the letter.  Nothing is closed on an end:  the CLI sends sessionEnd when it exits and a chat it resumes gets no sessionStart, so the prompt event registers a chat the hook has not seen, and the registry's 36 hour sweep frees idle letters.  No Cursor hook payload carries a title and no answer sets one.
-- **Install.**  `platform-letter install --platform cursor [--check | --remove]` adds the two events to `~/.cursor/hooks.json` with `failClosed: false`, next to the lane guard.
-- **Cloud agents are the sweep's.**  A Cloud agent's hooks run on Cursor's workers, which drop sessionStart's context and cannot reach the registry, so the hook leaves a chat with `is_background_agent` alone.  `python3 -m agent_sync.cursor_cloud_letters sweep` reads the open Cloud agents from the Cursor API and registers each at location `cloud`.  When an agent's title names a Grok Bot ("GB-Director: words"), that bot gets one Zulip DM per letter, from the seat the sweep runs as, asking it to rename the chat to "XX: GB-Director: words" (owner, Nov 7, 2026:  the wake is allowed, since the bot renames the chat).  `--dry-run` reads and sends nothing.
-
-```
-cd scripts && python3 -m unittest agent_sync.tests.test_platform_letter_cursor agent_sync.tests.test_cursor_cloud_letters
-```

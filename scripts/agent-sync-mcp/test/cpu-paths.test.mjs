@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { boundedWorkflowInput, isJsonValue, utf8Bytes, validWfV1Response } from "../src/gr-workflow-v1.js";
 import { sha256Hex } from "../src/gb-bearer.js";
+import { checkedListing, checkedSecret, withinShape, INFISICAL_LIMITS } from "../src/infisical.js";
 
 const encoderLength = (text) => new TextEncoder().encode(text).length;
 
@@ -126,4 +127,72 @@ test("response validation of the fall-through actions is unchanged:  the same bo
   assert.equal(validWfV1Response("wf_runs", { runs: "not-an-array", complete: true }, { repo: "o/r" }), false);
   // Repeated calls (the memoized schema) answer the same.
   for (let i = 0; i < 3; i++) assert.equal(validWfV1Response("wf_runs", runs, { repo: "o/r" }), true);
+});
+
+// The zod schema that checkedListing replaced, verbatim.
+const referenceListing = z.object({
+  secrets: z.array(z.object({ secretKey: z.string(), secretValue: z.string() }).passthrough()),
+  totalCount: z.number().int().nonnegative().optional(),
+}).passthrough();
+
+test("checkedListing accepts and refuses exactly what the zod listing schema did", () => {
+  const row = (extra = {}) => ({ secretKey: "K", secretValue: "v", ...extra });
+  const cases = [
+    { secrets: [] }, { secrets: [row()] }, { secrets: [row({ id: "x", tags: [{ a: 1 }] })], totalCount: 1 }, { secrets: [row()], totalCount: 0 }, { secrets: [], totalCount: 0 },
+    { secrets: [row()], totalCount: -1 }, { secrets: [row()], totalCount: 1.5 }, { secrets: [row()], totalCount: "1" }, { secrets: [row()], totalCount: null },
+    { secrets: [row()], totalCount: 2 ** 53 }, { secrets: [row()], totalCount: 2 ** 53 - 1 }, { secrets: [row()], totalCount: -0 }, { secrets: [row()], totalCount: JSON.parse("1e999") },
+    { secrets: [row()], totalCount: undefined }, { secrets: [row()], extra: 1 }, { secrets: [{ secretKey: "K" }] }, { secrets: [{ secretValue: "v" }] }, { secrets: [{ secretKey: 1, secretValue: "v" }] },
+    { secrets: [{ secretKey: "K", secretValue: null }] }, { secrets: [row(), null] }, { secrets: [row(), []] }, { secrets: [row(), "x"] }, { secrets: "x" }, { secrets: null }, { secrets: {} },
+    {}, [], null, undefined, "x", 1, true, [row()], { secrets: [[row()]] }, { secrets: [row()], totalCount: Number.MAX_SAFE_INTEGER },
+  ];
+  for (const value of cases) {
+    const want = referenceListing.safeParse(value);
+    const got = checkedListing(value);
+    assert.equal(got !== null, want.success, JSON.stringify(value)?.slice(0, 80) ?? String(value));
+    if (want.success) {
+      assert.equal(got.secrets, value.secrets);
+      assert.equal(got.totalCount, value.totalCount);
+    }
+  }
+});
+
+// The zod schema that checkedSecret replaced, verbatim.
+const referenceSecret = z.object({ secret: z.object({ secretValue: z.string() }).passthrough() }).passthrough();
+
+test("checkedSecret accepts and refuses exactly what the zod secret schema did", () => {
+  const cases = [
+    { secret: { secretValue: "v" } }, { secret: { secretValue: "" } }, { secret: { secretValue: "v", secretKey: "K", tags: [1] }, extra: 1 },
+    { secret: { secretValue: 1 } }, { secret: { secretValue: null } }, { secret: {} }, { secret: [] }, { secret: null }, { secret: "x" }, { secret: [{ secretValue: "v" }] },
+    {}, [], null, undefined, "x", 1, true, [{ secret: { secretValue: "v" } }], { Secret: { secretValue: "v" } },
+  ];
+  for (const value of cases) {
+    const want = referenceSecret.safeParse(value).success;
+    const got = checkedSecret(value);
+    assert.equal(got !== null, want, JSON.stringify(value) ?? String(value));
+    if (want) assert.equal(got, value);
+  }
+});
+
+// The tuple-allocating walk that withinShape replaced, verbatim.
+function referenceShape(value) {
+  const stack = [[value, 0]];
+  let nodes = 0;
+  while (stack.length) {
+    const [node, depth] = stack.pop();
+    nodes += 1;
+    if (nodes > INFISICAL_LIMITS.nodes || depth > INFISICAL_LIMITS.depth) return false;
+    if (node && typeof node === "object") for (const child of Object.values(node)) stack.push([child, depth + 1]);
+  }
+  return true;
+}
+
+test("withinShape answers what the earlier walk did at the depth and node limits", () => {
+  const nest = (levels) => { let value = "leaf"; for (let i = 0; i < levels; i++) value = { k: [value] }; return value; };
+  const cases = [
+    1, "x", null, true, [], {}, [1, 2, 3], { a: { b: [1, { c: null }] } }, nest(1), nest(10), nest(15), nest(16), nest(17), nest(40),
+    Array.from({ length: 49_999 }, () => 1), Array.from({ length: 50_000 }, () => 1), Array.from({ length: 50_001 }, () => 1),
+    Object.fromEntries(Array.from({ length: 49_999 }, (_, i) => [`k${i}`, i])), Object.fromEntries(Array.from({ length: 50_000 }, (_, i) => [`k${i}`, i])),
+    { secrets: Array.from({ length: 500 }, (_, i) => ({ secretKey: `K${i}`, secretValue: "v", tags: [{ id: "t" }], actor: { id: "a" } })) },
+  ];
+  for (const value of cases) assert.equal(withinShape(value), referenceShape(value), JSON.stringify(value)?.slice(0, 60) ?? String(value));
 });

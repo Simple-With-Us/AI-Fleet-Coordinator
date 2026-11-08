@@ -351,6 +351,7 @@ REQUIRED_MODULES = (
     "__init__.py",
     "layout.py",
     "placement.py",
+    "temp_build.py",  # guard.py imports it for the temp-build rule
     "guard.py",
     "lane_guard_hook.py",
     "fleet_guard_hook.py",
