@@ -2,8 +2,8 @@
   "status": "INACTIVE SOURCE REVIEW PENDING; approved unchanged-fixture intent, no install or execution clearance",
   "active": false,
   "composition_base": "3ce1e3f8fc40f7376cbf2be658781e6386399b4d",
-  "current_main": "27801add4cfd5ea09fa8d2cbc3307e509779c1b9",
-  "target_tree": "550beb61fb7cd372b3504d3b4f023130d7d730ec",
+  "current_main": "1cf0a993b56b22cfec7dc2de941ed1bd832c3a5e",
+  "target_tree": "b730bf08a1e2d34f65367a0f7edd24babe7f6981",
   "original_provider_fixture": "scripts/test-lark-mm-bridge.py unchanged in base tree, not supplied as tree entry",
   "preservation": [
     {
@@ -212,9 +212,10 @@
   "tree_inventory_bounds": {
     "per_tree": 512,
     "cached_total": 2048,
-    "actual_scripts_children": 266,
+    "actual_scripts_children": 271,
     "simulated_metadata_proof": "all3 exact immutable source records pass",
-    "cached_actual_entries": 541
+    "cached_actual_entries": 541,
+    "inventory_note": "Source proofs remain pinned to their exact historical commits; target fixture blobs unchanged in refreshed current-main reconciliation. Prior cached actual entries541 describes those same immutable proof ancestors."
   },
   "registries": "REVIEWED_PRESERVATIONS and REVIEWED_SAME_PATH_SOURCES remain empty pending normal source review and installation qualification"
 }

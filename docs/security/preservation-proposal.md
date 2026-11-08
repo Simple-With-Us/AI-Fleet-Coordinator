@@ -6,8 +6,8 @@ and deployment gates still apply. Both release registries remain empty.
 
 ## Original-base composition
 
-The current manifest pins original PR head3ce1e3f8, main27801add and reconciled
-tree550beb61. Compose from the original PR tree, leaving its provider-shaped
+The current manifest pins original PR head3ce1e3f8, main1cf0a993 and reconciled
+treeb730bf08. Compose from the original PR tree, leaving its provider-shaped
 Lark test fixture untouched. No provider exemption is proposed.
 
 - Three exact main objects have immutable same-path/source/blob/mode/size proofs.
@@ -25,12 +25,12 @@ Lark test fixture untouched. No provider exemption is proposed.
 
 ## Metadata and scanner corrections found during qualification
 
-Main's scripts tree has266children. The previous100-entry bound rejected a
+Main's scripts tree has271children. The previous100-entry bound rejected a
 valid planned source ancestor. The proposed bound is512entries per tree, plus
 a new2048-entry cumulative cached-tree budget. Path depth, exact source records,
 nontruncation, duplicate checks, immutable commit/tree/blob/mode/size binding,
 full byte scanning, loaded/provider guards and per-reference raw budgets remain.
-Local metadata simulation over all three real records consumes541cached entries.
+Local metadata simulation over all three real records consumes541cached entries. Those source records remain pinned to their exact historical commits; the refreshed target retains the same fixture blobs, and the provider-shaped Lark fixture remains unchanged from the original PR base.
 
 The preservation validator previously enumerated only the packaged scanner's
 patterns. The outbound scanner also recognizes shorter bearer contexts. Both
