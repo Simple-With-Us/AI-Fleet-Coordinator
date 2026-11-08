@@ -335,3 +335,46 @@ class WorkflowPrElevation(unittest.TestCase):
         client, _, handle, args = self.update_branch([{"filename": "a"}])
         handle.run("wf_update_branch", args)
         self.assertIn(f"/compare/{SHA}...release/2026%20nov", client.calls[1][1])
+
+    def test_oversized_compare_is_a_nonretryable_refusal_not_a_503(self):
+        from git_relay.github_client import RelayGitHubError
+        from git_relay.server import PreReadUnavailable
+
+        class Big(Client):
+            def _call(self, method, path, *a, **k):
+                self.calls.append((method, path))
+                if "/compare/" in path:
+                    raise RelayGitHubError(0, "too large", code="response_too_large")
+                return {"head": {"sha": SHA}, "base": {"ref": "main"}}
+
+        minter, client = Minter(), Big()
+        args = {"repo": REPO, "number": 7, "expected_head_sha": SHA}
+        handle = WorkflowVerbs.for_action(
+            client, Policy({**CEILING, "workflows": "write"}), minter, "swu-wise",
+            "wf_update_branch", REPO, args=args,
+        )
+        with self.assertRaises(Refused) as ctx:
+            handle.run("wf_update_branch", args)
+        self.assertNotIsInstance(ctx.exception, PreReadUnavailable)
+        self.assertNotIn("PUT", [c[0] for c in client.calls])
+        self.assertEqual(len(minter.calls), 1)
+
+    def test_transient_compare_failure_is_still_retryable_preread(self):
+        from git_relay.github_client import RelayGitHubError
+        from git_relay.server import PreReadUnavailable
+
+        class Flaky(Client):
+            def _call(self, method, path, *a, **k):
+                self.calls.append((method, path))
+                if "/compare/" in path:
+                    raise RelayGitHubError(503, "down")
+                return {"head": {"sha": SHA}, "base": {"ref": "main"}}
+
+        client = Flaky()
+        args = {"repo": REPO, "number": 7, "expected_head_sha": SHA}
+        handle = WorkflowVerbs.for_action(
+            client, Policy({**CEILING, "workflows": "write"}), Minter(), "swu-wise",
+            "wf_update_branch", REPO, args=args,
+        )
+        with self.assertRaises(PreReadUnavailable):
+            handle.run("wf_update_branch", args)

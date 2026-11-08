@@ -783,6 +783,12 @@ class WorkflowVerbs:
             try:
                 return self._get(path)
             except RelayGitHubError as exc:
+                if exc.code == "response_too_large":
+                    # Size will not shrink on retry: a definite, non-retryable refusal,
+                    # unlike a transient pre-read failure. Fails closed, nothing written.
+                    raise Refused(
+                        "PR changes too large to verify for workflow files; no write attempted"
+                    ) from None
                 if exc.status in (0, 408) or exc.status >= 500:
                     raise PreReadUnavailable(
                         "PR file pre-read unavailable; no write attempted"
