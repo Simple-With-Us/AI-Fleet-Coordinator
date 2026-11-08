@@ -440,7 +440,12 @@ class Install(Base):
         for entry in events["SessionStart"]:
             for hook in entry["hooks"]:
                 words = hook["command"].split()
-                self.assertEqual(os.path.basename(words[0]), "platform-letter")
+                # the full wrapper path, not only its basename:  the first install wrote
+                # ~/.local/zc-letter (one dirname too many) and the hooks silently no-opped
+                self.assertEqual(
+                    words[0],
+                    os.path.join(self.home, ".local/bin/zc-letter/platform-letter"),
+                )
                 self.assertIn("--platform", words)
                 self.assertIn("zcode", words)
                 names.append(hook["command"])
