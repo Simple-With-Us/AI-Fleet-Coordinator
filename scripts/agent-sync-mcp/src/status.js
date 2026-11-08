@@ -42,6 +42,10 @@ const ERROR_GUIDANCE = {
   seat_mismatch: ["The wake names a different seat than this endpoint.", "Send the wake to the endpoint configured for the intended seat."],
   callback_url_refused: ["The callback URL failed the URL safety policy.", "Use a public HTTPS hostname without credentials, a private address, or a nonstandard port."],
   event_wake_released: ["A wake delivery attempt failed and the wake was released for retry.", "Check the eavesdropper's callback and the Zulip channel delivery, then let the scheduled retry run."],
+  event_wake_rate_limited: ["The seat's hourly wake budget, shared by the listener and webhook wakes, is spent, so this wake was refused with 429.", "Wait for the Retry-After interval;  if wakes are legitimately busier, raise EVENT_WAKE_RATE_LIMIT through a reviewed deploy."],
+  event_wake_custody_full: ["The seat holds the maximum number of wake ids whose delivery outcome is unknown, so every new wake is refused.", "No admin control clears it yet:  check with the receiver which held wakes arrived, then have the Worker's maintainer clear the seat's wake_tomb custody ledger;  wakes stay refused until then."],
+  event_wake_tombstoned_replay: ["A wake id came back after an earlier delivery of it had an unknown outcome, so it was answered as a duplicate and not delivered again.", "Check whether the receiver got the first delivery;  send a new wake id only if it did not."],
+  event_wake_reclaim_fenced: ["A wake's earlier request died after it may have dispatched, so the retry was answered as a duplicate and not delivered again.", "Check whether the receiver got the event;  send a new wake id only if it did not."],
   window_expired: ["The seat's connection window expired.", "Arm the intended seat again and immediately restart connection."],
   ambiguous_armed_seats: ["More than one seat sharing this callback is armed.", "Disarm all but the intended seat, then restart connection."],
   missing_key: ["The seat has no installed Zulip key.", "Install the seat's key through the approved credential flow, then verify connectivity."],
@@ -136,7 +140,7 @@ function collectErrorRows({ statusCalls, statusErrors, refusals, tokenRefusals, 
   for (const a of audits) {
     const detail = a.detail ?? {};
     const isDeliveryFailure = a.event === "event_delivery" && detail.outcome !== "delivered";
-    const isWakeFailure = ["event_wake_channel_refused", "event_wake_settle_stale", "event_wake_released"].includes(a.event);
+    const isWakeFailure = ["event_wake_channel_refused", "event_wake_settle_stale", "event_wake_released", "event_wake_rate_limited", "event_wake_custody_full", "event_wake_tombstoned_replay", "event_wake_reclaim_fenced"].includes(a.event);
     const isTokenFailure = a.event === "token_exchange" && detail.outcome !== "ok";
     const isMcpRefusal = a.event === "mcp_refused";
     if (isDeliveryFailure || isWakeFailure || isTokenFailure || isMcpRefusal) rows.push({ kind: isTokenFailure ? "Token Exchange" : isMcpRefusal ? "MCP Refusal" : "Wake Delivery", ...detail, ts: a.ts, seat: a.seat ?? detail.seat ?? "—", client: detail.host ?? detail.sub_ref ?? detail.client ?? "—", tool: a.event, error_code: detail.reason ?? detail.outcome ?? a.event });

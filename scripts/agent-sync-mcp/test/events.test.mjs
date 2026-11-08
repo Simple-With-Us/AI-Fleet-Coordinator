@@ -731,6 +731,50 @@ test("finding 1:  a provable zero-dispatch still releases the SAME wake", async 
   assert.equal(deliveries.length, 1);
 });
 
+test("a zero-dispatch whose release settle fails once is retried and still released", async () => {
+  const { gate, deliveries, fetchFn } = await wakeSetup({ statuses: [200] });
+  gate.eventSubLive = async () => { throw new Error("store down"); };
+  const realSettle = gate.eventSettleWake;
+  let settles = 0;
+  gate.eventSettleWake = async (opts) => {
+    settles++;
+    if (settles === 1) throw new Error("transient");
+    return realSettle(opts);
+  };
+  const w = wake({ wake_id: "w-settle-once" });
+  const first = await listenerPost(gate, w, fetchFn);
+  assert.equal(settles, 2, "the failed settle was tried once more");
+  assert.deepEqual(first.reply, { status: 503, body: { ok: false, retry: true, subscribers: 1, delivered: 0 } });
+  gate.eventSubLive = (opts) => state.eventSubLive(gate.store, opts, Date.now());
+  gate.eventSettleWake = realSettle;
+  assert.equal((await listenerPost(gate, w, fetchFn)).reply.status, 202, "released:  the retry delivers");
+  assert.equal(deliveries.length, 1);
+});
+
+test("a zero-dispatch whose release settle keeps failing never promises a retry the tombstone would refuse", async () => {
+  // The fence landed its tombstone and the release never did:  the
+  // eavesdropper's retry would be answered duplicate, so the first answer
+  // must not be 503 retry.  Custody is reported as held.
+  const { gate, deliveries, fetchFn } = await wakeSetup({ statuses: [200] });
+  gate.eventSubLive = async () => { throw new Error("store down"); };
+  gate.eventSettleWake = async () => { throw new Error("store down"); };
+  const w = wake({ wake_id: "w-settle-down" });
+  const first = await listenerPost(gate, w, fetchFn);
+  assert.equal(deliveries.length, 0);
+  assert.deepEqual(first.reply, { status: 202, body: { ok: true, subscribers: 1, delivered: 0, outcome: "uncertain" } });
+  assert.ok("w-settle-down" in ((await gate.store.get("wake_tomb")) ?? {}), "the tombstone the answer reports is really there");
+  // With no fence attempted (a channel failure before it), no tombstone can
+  // exist, so a failed settle still answers retry:  the lease runs out and the
+  // eavesdropper's retry claims the wake again.
+  const fresh = await wakeSetup({ statuses: [200] });
+  fresh.gate.eventSettleWake = async () => { throw new Error("store down"); };
+  const channelsDown = async () => { throw new Error("zulip down"); };
+  const w2 = wake({ wake_id: "w-settle-nofence" });
+  const answer = await listenerPost(fresh.gate, w2, fresh.fetchFn, async () => {}, channelsDown);
+  assert.equal(answer.reply.status, 503);
+  assert.ok(!("w-settle-nofence" in ((await fresh.gate.store.get("wake_tomb")) ?? {})));
+});
+
 test("the listener fences a claim before dispatch: a crash after dispatch never re-arms", async () => {
   // The mark lands, then the Worker "crashes": no settle. Lease expiry must
   // NOT reclaim it - on this path or the webhook path.

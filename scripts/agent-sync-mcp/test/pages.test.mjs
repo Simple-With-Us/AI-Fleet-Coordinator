@@ -308,6 +308,24 @@ test("wake release retries are visible with actionable callback guidance", async
   assert.match(html, /Check the eavesdropper&#39;s callback and the Zulip channel delivery/);
 });
 
+test("wake refusals (budget, custody cap, tombstoned replay, fenced reclaim) are visible with their own guidance", async () => {
+  const cases = [
+    ["event_wake_rate_limited", /hourly wake budget, shared by the listener and webhook wakes, is spent/],
+    ["event_wake_custody_full", /maximum number of wake ids whose delivery outcome is unknown/],
+    ["event_wake_tombstoned_replay", /earlier delivery of it had an unknown outcome/],
+    ["event_wake_reclaim_fenced", /earlier request died after it may have dispatched/],
+  ];
+  for (const [event, cause] of cases) {
+    const html = await adminPage({
+      ...adminFacts,
+      statusAudits: [{ ts: Date.parse("2026-10-09T20:06:00Z"), seat: "JET", event, detail: { wake_ref: "w-1" } }],
+    }).text();
+    assert.match(html, /Wake Delivery/, event);
+    assert.match(html, cause, event);
+    assert.match(html, new RegExp(event), event);
+  }
+});
+
 test("wake failures drive the same overview status as the unified error list", async () => {
   const html = await adminPage({
     ...adminFacts,

@@ -48,7 +48,7 @@
 
 import { safeEqual } from "./policy.js";
 import { wakeSignature } from "./wake.js";
-import { WEBHOOK_EVENT_NAME, subEventName, deliverEvent, eventIdFor } from "./events.js";
+import { WEBHOOK_EVENT_NAME, subEventName, deliverEvent, eventIdFor, settleWithOneRetry } from "./events.js";
 import { WAKE_RATE_LIMIT, WAKE_RATE_WINDOW_MS } from "./seat-state.js";
 
 export const WEBHOOK_WAKE_CONTRACT = "agent-sync-webhook-wake/1";
@@ -181,12 +181,14 @@ export async function deliverWebhookWake({ gate, wake, claim, fetchFn, now = Dat
       marked = { ok: false };
     }
     if (!marked.ok) {
-      try {
-        await gate.eventSettleWake({ wakeId: wake.wake_id, token: claim.token, outcome: "retry" });
-      } catch {
-        console.log(JSON.stringify({ event: "webhook_wake_settle_failed" }));
+      if (await settleWithOneRetry(gate, { wakeId: wake.wake_id, token: claim.token, outcome: "retry" })) {
+        return { outcome: "retry", subscribers: mine.length, delivered: 0 };
       }
-      return { outcome: "retry", subscribers: mine.length, delivered: 0 };
+      // The mark may have landed its tombstone before it failed, and the
+      // release did not land:  a retry of the SAME wake could be answered
+      // "duplicate", so "send it again" may not be promised.  Custody is held.
+      console.log(JSON.stringify({ event: "webhook_wake_settle_failed" }));
+      return { outcome: "uncertain", subscribers: mine.length, delivered: 0 };
     }
   }
   const data = webhookWakeData(wake);
@@ -235,10 +237,12 @@ export async function deliverWebhookWake({ gate, wake, claim, fetchFn, now = Dat
     // A dispatch happened and its fate is unknown (timeout, 5xx, network).
     outcome = "uncertain";
   }
-  try {
-    await gate.eventSettleWake({ wakeId: wake.wake_id, token: claim.token, outcome, delivered });
-  } catch {
+  if (!(await settleWithOneRetry(gate, { wakeId: wake.wake_id, token: claim.token, outcome, delivered }))) {
     console.log(JSON.stringify({ event: "webhook_wake_settle_failed" }));
+    // The pre-dispatch tombstone stands (only this settle removes it), so the
+    // caller's retry of the SAME wake would be "duplicate":  a "retry" may not
+    // be promised.  Report custody as held.
+    if (outcome === "retry") outcome = "uncertain";
   }
   return { outcome, subscribers: mine.length, delivered };
 }

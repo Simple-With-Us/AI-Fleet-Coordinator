@@ -473,6 +473,61 @@ test("a failed dispatch fence dispatches nothing and releases the claim", async 
   assert.equal((await gate.webhookWakeClaim({ wakeId: wake.wake_id })).verdict, "go");
 });
 
+test("a failed release settle never promises a retry the tombstone would refuse", async () => {
+  // Zero-dispatch after the fence landed:  only the settle removes the
+  // tombstone.  One transient failure is retried and the claim is released.
+  const store = state.memoryStore();
+  const gate = memoryGate(store, { subLive: async () => { throw new Error("store down"); } });
+  await upsertSub(store);
+  let settles = 0;
+  gate.eventSettleWake = async (opts) => {
+    settles++;
+    if (settles === 1) throw new Error("transient");
+    return state.eventSettleWake(store, opts, NOW_MS);
+  };
+  const wake = { wake_id: "w-settle-once", sent_at: NOW_S };
+  const claim = await gate.webhookWakeClaim({ wakeId: wake.wake_id });
+  const result = await deliverWebhookWake({ gate, wake, claim, fetchFn: fetchWith(200), sleep: async () => {} });
+  assert.equal(settles, 2);
+  assert.equal(result.outcome, "retry");
+  assert.equal((await gate.webhookWakeClaim({ wakeId: wake.wake_id })).verdict, "go", "released:  the SAME wake may be sent again");
+
+  // The settle keeps failing:  the tombstone stands, so the answer must not
+  // be 503 retry (the caller's retry would be told duplicate).
+  const store2 = state.memoryStore();
+  const gate2 = memoryGate(store2, { subLive: async () => { throw new Error("store down"); } });
+  await upsertSub(store2);
+  gate2.eventSettleWake = async () => { throw new Error("store down"); };
+  const wake2 = { wake_id: "w-settle-down", sent_at: NOW_S };
+  const claim2 = await gate2.webhookWakeClaim({ wakeId: wake2.wake_id });
+  const result2 = await deliverWebhookWake({ gate: gate2, wake: wake2, claim: claim2, fetchFn: fetchWith(200), sleep: async () => {} });
+  assert.equal(result2.outcome, "uncertain");
+  assert.equal(webhookWakeReply({ verdict: "go", ...result2 }).status, 202, "custody held, never 503 retry");
+  assert.equal((await state.webhookWakeClaim(store2, { wakeId: wake2.wake_id }, NOW_MS + 60 * 1000)).verdict, "duplicate", "and a retry would indeed be a duplicate");
+
+  // The fence failed and so did its release:  the same holds.
+  const store3 = state.memoryStore();
+  const gate3 = memoryGate(store3);
+  await upsertSub(store3);
+  gate3.eventMarkDispatched = async () => { throw new Error("store down"); };
+  gate3.eventSettleWake = async () => { throw new Error("store down"); };
+  const wake3 = { wake_id: "w-mark-settle-down", sent_at: NOW_S };
+  const claim3 = await gate3.webhookWakeClaim({ wakeId: wake3.wake_id });
+  const posts = [];
+  const result3 = await deliverWebhookWake({ gate: gate3, wake: wake3, claim: claim3, fetchFn: fetchWith(200, posts), sleep: async () => {} });
+  assert.equal(posts.length, 0, "no fence, no dispatch");
+  assert.equal(result3.outcome, "uncertain");
+});
+
+test("the claim boundary refuses ids outside the route's syntax and Object.prototype members", async () => {
+  const store = state.memoryStore();
+  for (const bad of ["__proto__", "constructor", "toString", "has space", "", "x".repeat(129), 42]) {
+    await assert.rejects(state.webhookWakeClaim(store, { wakeId: bad }, NOW_MS), /bad wake id/, String(bad));
+  }
+  assert.deepEqual((await store.get("wake_seen")) ?? {}, {}, "nothing was written");
+  assert.equal((await state.webhookWakeClaim(store, { wakeId: "ok.id:1-2_3" }, NOW_MS)).verdict, "go");
+});
+
 test("listener wakeReply maps rate_limited to 429", async () => {
   const { wakeReply } = await import("../src/events.js");
   const reply = wakeReply({ verdict: "rate_limited", retryAfterS: 42 });

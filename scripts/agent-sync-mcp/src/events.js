@@ -788,6 +788,26 @@ export function wakeOutcome(results) {
 }
 
 /**
+ * End a claim with SeatGate.eventSettleWake, trying once more if the call
+ * throws (a transient Durable Object error).  A repeat is safe:  the settle is
+ * token-checked, so if the first call landed and only its answer was lost, the
+ * second is a stale no-op ({ok: false}), never a second settle.  Returns true
+ * when a call completed, false when both threw (the claim's state is then
+ * unknown to the caller).
+ */
+export async function settleWithOneRetry(gate, args) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      await gate.eventSettleWake(args);
+      return true;
+    } catch {
+      // fall through to the second attempt
+    }
+  }
+  return false;
+}
+
+/**
  * Deliver one claimed wake (`claim` from SeatGate.eventClaimWake) and end its
  * claim with SeatGate.eventSettleWake:  "retry" (provable zero-dispatch
  * only) forgets the wake so the eavesdropper's next attempt claims it again,
@@ -810,6 +830,9 @@ export async function deliverWake({ gate, wake, claim, channels = async () => nu
   let streamId = null;
   let allowed = null;
   let refused = false;
+  // Whether the dispatch fence was attempted:  from then on a tombstone may
+  // exist that only a successful settle removes.
+  let markAttempted = false;
   try {
     // Channel resolution happens BEFORE any dispatch, so its failure is a
     // provable zero-dispatch "retry" (503, the listener sends the wake again).
@@ -835,6 +858,7 @@ export async function deliverWake({ gate, wake, claim, channels = async () => nu
     // SAME wake may come back.
     let marked = { ok: true };
     if (claim.subs.length > 0) {
+      markAttempted = true;
       try {
         marked = await gate.eventMarkDispatched({ wakeId: wake.wake_id, token: claim.token });
       } catch {
@@ -856,12 +880,16 @@ export async function deliverWake({ gate, wake, claim, channels = async () => nu
       }
     }
   }
-  try {
-    await gate.eventSettleWake({ wakeId: wake.wake_id, token: claim.token, outcome, delivered, streamId });
-  } catch {
-    // A delivered wake then stays claimed until its lease runs out;  a "retry"
-    // is answered 503 anyway, and the eavesdropper's retry claims it after that.
+  if (!(await settleWithOneRetry(gate, { wakeId: wake.wake_id, token: claim.token, outcome, delivered, streamId }))) {
     console.log(JSON.stringify({ event: "wake_settle_failed", outcome }));
+    // Once the dispatch fence was attempted, a tombstone may stand that only
+    // the failed settle would have removed, and the eavesdropper's retry of
+    // the same wake would then be answered "duplicate".  So a "retry" may no
+    // longer be promised (503 would ask for a retry that cannot deliver):
+    // report custody as held instead.  With no fence attempt (a channel
+    // failure before it) no tombstone exists:  the claim's lease runs out and
+    // the retry claims it again, so "retry" stays honest.
+    if (outcome === "retry" && markAttempted) outcome = "uncertain";
   }
   return { verdict: "go", outcome, subscribers, delivered };
 }

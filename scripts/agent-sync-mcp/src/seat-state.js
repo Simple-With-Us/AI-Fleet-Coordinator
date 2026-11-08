@@ -1434,7 +1434,11 @@ export async function spikeClaim(store, { spikeId, max = 3, windowMs = 60 * MINU
 // rate-limited wake was never claimed and never dispatched, so the same id
 // may come back inside a later window.
 export async function webhookWakeClaim(store, { wakeId, max = WAKE_RATE_LIMIT, windowMs = WAKE_RATE_WINDOW_MS }, now = Date.now()) {
-  if (typeof wakeId !== "string" || wakeId.length === 0 || wakeId.length > 128) throw new Error("bad wake id");
+  // The same token syntax the route admits (webhook-wake.js WAKE_ID_RE), checked
+  // again at the storage boundary, and never an Object.prototype member:  as a
+  // plain ledger key "__proto__" would hit the prototype instead of an own
+  // entry, and the claim and its custody fence would not persist.
+  if (typeof wakeId !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(wakeId) || wakeId in Object.prototype) throw new Error("bad wake id");
   // Dedupe (before any charge), the shared envelope and the crash fence all
   // live in the canonical claim now:  this path only names its event.
   return eventClaimWake(store, { wakeId, messageId: null, name: WEBHOOK_EVENT_NAME, budget: { max, windowMs } }, now);

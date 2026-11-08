@@ -1746,6 +1746,46 @@ try {
     await own.arrayBuffer();
   });
 
+  await step("webhook wake route admission:  404 with the flag off, with no key, for a seat with no webhook binding and for a reused wake key;  401 for a bad signature;  a signed wake is admitted", async () => {
+    // Pins serveWebhookWake's call site in index.js, not only the pure
+    // webhookWakeAdmission:  the flag, the JET-only binding, the hosted seat
+    // and the key separation are all read there.
+    const WEBHOOK_KEY = randomBytes(32).toString("hex");
+    const hookBytes = (overrides = {}) => Buffer.from(JSON.stringify({ contract: "agent-sync-webhook-wake/1", seat: "JET", wake_id: `wh-${randomBytes(6).toString("hex")}`, sent_at: Math.floor(Date.now() / 1000), ...overrides }));
+    const hookPost = (seat, bytes, { key = WEBHOOK_KEY, signature } = {}) => mf.dispatchFetch(`${HOST}/internal/webhook-wake/${seat}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Agent-Sync-Webhook-Signature": signature ?? createHmac("sha256", Buffer.from(key, "utf8")).update(bytes).digest("hex") },
+      body: bytes,
+    });
+    const expectStatus = async (res, status, label) => {
+      assert.equal(res.status, status, `${label}:  ${await res.clone().text()}`);
+      await res.arrayBuffer();
+    };
+    const before = callbackCalls.length;
+    await mf.dispose();
+    mf = startWorker(HOST, { WAKE_WEBHOOK_KEY_JET: WEBHOOK_KEY });
+    await expectStatus(await hookPost("JET", hookBytes()), 404, "flag off, key set, signed");
+    await mf.dispose();
+    mf = startWorker(HOST, { WEBHOOK_WAKE_ENABLED: "on" });
+    await expectStatus(await hookPost("JET", hookBytes()), 404, "flag on, no webhook key");
+    await mf.dispose();
+    mf = startWorker(HOST, { WEBHOOK_WAKE_ENABLED: "on", WAKE_WEBHOOK_KEY_JET: WAKE_KEY_JET });
+    await expectStatus(await hookPost("JET", hookBytes(), { key: WAKE_KEY_JET }), 404, "webhook key equal to the seat's wake key");
+    await mf.dispose();
+    mf = startWorker(HOST, { WEBHOOK_WAKE_ENABLED: "on", WAKE_WEBHOOK_KEY_JET: WEBHOOK_KEY });
+    await expectStatus(await hookPost("GROK-WEB", hookBytes({ seat: "GROK-WEB" })), 404, "a seat with no webhook binding");
+    await expectStatus(await hookPost("JET", hookBytes(), { signature: "0".repeat(64) }), 401, "bad signature");
+    await expectStatus(await hookPost("JET", hookBytes(), { key: WAKE_KEY_JET }), 401, "signed with the wake key");
+    // Admitted:  no fleet.webhook subscription on this fresh instance, so the
+    // wake settles as no_subscriber and nothing is delivered.
+    const admitted = await hookPost("JET", hookBytes());
+    assert.equal(admitted.status, 202, await admitted.clone().text());
+    assert.deepEqual(await admitted.json(), { ok: true, subscribers: 0, delivered: 0, outcome: "no_subscriber" });
+    assert.equal(callbackCalls.length, before, "no callback was hit");
+    await mf.dispose();
+    mf = startWorker(HOST, { SPIKE_EXTRA_EVENTS: "on" });
+  });
+
   await step(`a per-bot bearer: minted once on /admin, hash-only, acts only as ${PERSONA}, rotates and revokes`, async () => {
     const minted = await adminAction("mint_gb_bearer", { identity: PERSONA });
     assert.equal(minted.status, 200);
