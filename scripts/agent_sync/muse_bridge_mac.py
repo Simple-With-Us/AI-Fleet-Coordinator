@@ -198,9 +198,19 @@ def probe_pin(root: str, env: Mapping[str, str], home: str, wake_path: str) -> d
         or obj.get("risk") != "low"
         or result.models != [model]
     ):
+        # Value-free runner facts only:  exit code, byte counts, the stderr digest and the served
+        # model names.  Never stdout, stderr text, the prompt, a path or any environment value.
         raise ValueError(
-            "bridge canary did not select its exact fixed resource: %s"
-            % (result.error or "unexpected selection")
+            "bridge canary did not select its exact fixed resource: %s (exit=%s stdout_len=%s "
+            "stderr_len=%s stderr_sha=%s models=%s)"
+            % (
+                result.error or "unexpected selection",
+                result.exit,
+                result.stdout_len,
+                result.stderr_len,
+                (result.stderr_sha or "")[:12],
+                ",".join(str(m)[:80] for m in (result.models or [])[:4]),
+            )
         )
     candidate = {
         "muse": A.binary_pin(binary),
