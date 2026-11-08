@@ -8,9 +8,16 @@ review after fixes or new commits. During this window this instruction overrides
 repeat-review and per-ready-head request guidance below. Read and address every
 existing finding, verify fixes and required tests, and preserve all other merge
 conditions. A failed attempt is permission to retry (owner, November 8, 2026): a Kody run
-that could not complete, meaning its check is not `success` or it posted "Code Review Could
-Not Complete", is not a review, so request again.  Only a completed review uses up the one.
-This limit expires at the stated time; it is not permanent.
+that finished without a review is not a review, so request again.  That means a completed
+failure, error, skipped or cancelled check, a `success` check without the full-review receipt
+(title `Code Review Complete`, summary starting `Review finished successfully`, started no
+earlier than the newest request; see docs/AUTO-MERGE.md), or a "Code Review Could Not Complete"
+comment.  A run that is still queued or `in_progress` is not a failed attempt and permits no
+new request.  A retry from the same seat must use different text from the earlier request,
+because the relay returns the existing comment for identical text within 24 hours and posts
+nothing, for example a second line after `@kody start-review`.  The hourly prompter
+(docs/KODY-FIRST-REVIEW.md) never retries a failed run itself;  a seat does.  Only a completed
+review uses up the one. This limit expires at the stated time; it is not permanent.
 
 Source: Jay's direct November 6 instruction, "Raised it but please tell all 1 review
 only per pr", followed by "For the next 2 days"; fleet announcement message638301219.
