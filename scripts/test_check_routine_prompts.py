@@ -95,7 +95,7 @@ class FixtureTests(unittest.TestCase):
 
     def test_findings_never_echo_the_text(self):
         _, out, _ = run(str(FIXTURES / "bad"))
-        for needle in ("Some Person", "Sample-Repo", "obsolete-websocket"):
+        for needle in ("Some Person", "Sample-Repo", "slack-post.py"):
             self.assertNotIn(needle, out)
 
 
@@ -164,8 +164,6 @@ class MentionPathSlackTests(unittest.TestCase):
 
     def test_slack_helper(self):
         for bad in (
-            "obsolete-websocket.py",
-            "obsolete-push",
             "slack-post",
             "slack_post",
             "https://hooks.slack.com/services/x",

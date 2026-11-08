@@ -29,7 +29,7 @@ from simple_tools import zulip as Z
 from simple_tools.tests.fake_openrouter import FakeOpenRouter, Reply, completion
 
 MODEL = "meta/muse-spark-1.3-contributor"
-FALLBACK_MODEL = "~deepseek/deepseek-flash-latest"
+FALLBACK_MODEL = "minimax/MiniMax-M3.1-Flash"
 PROMPT_MARKER = "UNIQUE-PROMPT-MARKER-4471"
 GOOD = {
     "action": "reply",
@@ -451,8 +451,11 @@ class ConfigCase(unittest.TestCase):
             MODEL,
             FALLBACK_MODEL,
             "deepseek/deepseek-v4-flash",
+            "minimax/MiniMax-M3.1-Flash",
             "Qwen/Qwen3-8B",
             "~anthropic/claude-sonnet-latest",
+            "@preset/operator-inbox-router",
+            "@preset/a",
         ):
             self.assertEqual(self.seat(wake="openrouter", model=good).errors, [], good)
             self.assertEqual(self.seat(wake="muse", fallback="openrouter", fallback_model=good).errors, [], good)
@@ -470,6 +473,12 @@ class ConfigCase(unittest.TestCase):
             "meta/x\n",
             "meta/" + "x" * 90,
             "$(id)/x",
+            "@preset/",
+            "@preset/ x",
+            "@preset/$(id)",
+            "@preset/" + "x" * 90,
+            " @preset/x",
+            "preset@preset/x",
             5,
         ):
             wake = self.seat(wake="openrouter", model=bad)

@@ -1,7 +1,7 @@
 #!/bin/bash
 # simple-tools-runtime-sync.sh  --  keep the simple-tools runtime checkout on AFC origin/main.
 #
-# The always-on Zulip listener (com.jay.eavesdropper) and the `simple-chat` CLI run from a
+# The always-on Zulip listener (com.jay.operator) and the `simple-chat` CLI run from a
 # dedicated managed checkout, never from the human integration tree ~/Code/AI-Fleet-Coordinator:
 #
 #   /Users/jay/apps/lanes/_managed/fleet/simple-tools-runtime     (detached worktree, locked)
@@ -25,7 +25,7 @@
 set -u
 
 RUNTIME="${SIMPLE_TOOLS_RUNTIME:-/Users/jay/apps/lanes/_managed/fleet/simple-tools-runtime}"
-LISTENER_LABEL="${SIMPLE_TOOLS_LISTENER_LABEL:-com.jay.eavesdropper}"
+LISTENER_LABEL="${SIMPLE_TOOLS_LISTENER_LABEL:-com.jay.operator}"
 STATE_DIR="$HOME/.simple-tools"
 LOCK_DIR="$STATE_DIR/runtime-sync.lock"
 PAUSE_FILE="$STATE_DIR/runtime-sync.pause"

@@ -644,6 +644,22 @@ class FakeConfirm:
             raise self.fail
         return {"structuredContent": {"seat": self.seat, "authenticated_seat": self.seat}}
 
+    def call(self, name: str, arguments: Any, write: bool = False) -> dict[str, Any]:
+        self.calls.append((name, dict(arguments), write))
+        queued = self.replies.get(name) or []
+        out = (
+            queued.pop(0)
+            if queued
+            else {
+                "status": "done",
+                "request_id": arguments.get("request_id"),
+                "action": name[len("notes_"):],
+                "transport": "operator",
+            }
+        )
+        if isinstance(out, BaseException):
+            raise out
+        return {"structuredContent": out}
 
 class HostTests(unittest.TestCase):
     SCRIPT = Path("/fake/apple-notes-coding.sh")
@@ -651,7 +667,7 @@ class HostTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.home = Path(self.tmp.name)
+        self.home = Path(self.tmp.name).resolve()
         self.store = IdemStore(str(self.home / "state" / "CLAUDE" / "mcp-idem.json"))
         self.env = {"HOME": str(self.home), "PATH": "/usr/bin"}
         self.runs: list[dict[str, Any]] = []
@@ -1066,7 +1082,7 @@ class HostTests(unittest.TestCase):
         path.write_text("sbt_clutch_" + "x" * 43)
         path.chmod(0o600)
         host = NC.Host(self.env, self.home, self.store, caller="cli", script_finder=lambda env, home: None)
-        with self.assertRaises(N.NotesError) as caught:
+        with mock.patch("simple_tools.fleet_bearer.gateway_transport"), self.assertRaises(N.NotesError) as caught:
             NC.call(host, "CLAUDE", self.req(), wait=0)
         self.assertEqual(caught.exception.code, "not_authorized")
         self.assertNotIn("sbt_", caught.exception.message)

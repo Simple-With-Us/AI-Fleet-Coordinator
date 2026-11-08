@@ -43,7 +43,6 @@
     "draft_edit": "zulip_draft_edit",
     "draft_delete": "zulip_draft_delete",
     "typing": "zulip_typing",
-    "simple_tools_identities": "identities",
     "listener_status": "eavesdropper_status",
     "listener_inbox": "eavesdropper_inbox",
     "listener_owner_queue": "eavesdropper_owner_queue",

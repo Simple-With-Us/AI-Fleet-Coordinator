@@ -246,7 +246,7 @@ class CodexThreadMetaTests(McpHarness):
 
         def broken(args):
             states.append(tools.agent.state.path)
-            tools.agent.state.advance_cursor("work-in-progress", "AFC-296", 9)
+            tools.agent.state.advance_cursor("simple-tools", "AFC-296", 9)
             raise RuntimeError("synthetic failure")
 
         with mock.patch.object(tools, "_tool_zulip_topics", side_effect=broken):

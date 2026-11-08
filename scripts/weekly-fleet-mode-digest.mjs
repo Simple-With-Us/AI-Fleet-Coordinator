@@ -10,13 +10,13 @@
 //
 // Data sources:
 //   1. Usage Monitor `GET /api/agent-model-mix?days=7`
-//      Bearer USAGE_READ_TOKEN.  May 404 / connection-refused if the sibling
+//      Authorized with the USAGE_READ_TOKEN env var.  May 404 / connection-refused if the sibling
 //      PR (Usage-Monitor `claude/agent-model-mix-endpoint`) is not yet
 //      merged/deployed -- handled gracefully as "unavailable this week".
 //   2. Sentry `agent-sessions` project, events endpoint, dataset=ourlogs,
 //      query `message:*subagent*` (matches `claude_code.subagent_completed`;
 //      an exact `message:subagent_completed` query returns zero results).
-//      Bearer SENTRY_AUTH_TOKEN_FULLSCOPE (plain SENTRY_AUTH_TOKEN 403s on
+//      Authorized with the SENTRY_AUTH_TOKEN_FULLSCOPE env var (plain SENTRY_AUTH_TOKEN 403s on
 //      this endpoint -- confirmed against this org).
 //
 // Usage:

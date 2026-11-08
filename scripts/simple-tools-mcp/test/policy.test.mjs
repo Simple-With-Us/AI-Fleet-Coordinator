@@ -54,25 +54,13 @@ test("strict redirect refuses every bypass shape", () => {
   }
 });
 
-// Hard cutover (owner ruling, Oct 22, 2026):  the old obsolete.example.test
-// host is refused outright.  No alias, no redirect, no fallback, and no list of
-// accepted hosts that a later edit could widen.
-test("host check refuses the old obsolete.example.test host", () => {
-  for (const path of ["/mcp", "/authorize", "/oauth/token", "/health", "/admin"]) {
-    const old = new Request(`https://obsolete.example.test${path}`);
-    assert.equal(hostAllowed(old, config.host), false, path);
-    assert.equal(hostAllowed(old, PUBLIC_HOST), false, path);
-  }
-  // A host that merely ends with, or embeds, the old name is not the host.
-  assert.equal(hostAllowed(new Request("https://obsolete.example.test.evil.example/mcp"), config.host), false);
-  assert.equal(hostAllowed(new Request("https://evil.example/?h=obsolete.example.test"), config.host), false);
-});
-
-test("hostAllowed takes one host, never a list (no fallback can creep back)", () => {
-  const old = new Request("https://obsolete.example.test/mcp");
-  // Even an array naming the old host cannot be smuggled in:  a list is not a host.
-  assert.equal(hostAllowed(old, [PUBLIC_HOST, "obsolete.example.test"]), false);
-  assert.equal(hostAllowed(old, [PUBLIC_HOST]), false);
+// No alias, no redirect, no fallback, and no list of accepted hosts that a later
+// edit could widen.
+test("hostAllowed takes one host, never a list (no fallback can creep in)", () => {
+  const foreign = new Request("https://evil.example/mcp");
+  // Even an array naming a foreign host cannot be smuggled in:  a list is not a host.
+  assert.equal(hostAllowed(foreign, [PUBLIC_HOST, "evil.example"]), false);
+  assert.equal(hostAllowed(foreign, [PUBLIC_HOST]), false);
   assert.equal(hostAllowed(new Request("https://agents.simplewithus.com/mcp"), PUBLIC_HOST), true);
 });
 

@@ -4,7 +4,7 @@
 // or put on a team's side with view or edit access.
 //
 // Each call goes to FleetLink's own MCP endpoint (POST /mcp, tools/call) with
-// one server credential, FLEETLINK_AGENT_SECRET (FleetLink's SIMPLE_TOOLS_SECRET),
+// one server credential, FLEETLINK_AGENT_SECRET (FleetLink's DEPLOY.md lists its shared secrets as retired),
 // and the acting seat in X-Fleet-Seat.  FleetLink gives every seat its own
 // bot account (usr_agent_<seat>) under Jay's, an admin of the Fleet team with
 // Jay and every other seat, with FleetLink's widest limits, so the seat comes
@@ -88,7 +88,7 @@ export const FLEETLINK_TOOLS = Object.freeze([
     name: "fleetlink_list_shares",
     title: "FleetLink List Shares",
     description: "Live shares this seat can see:  scope mine (default), teams (every team, the other seats' shared work), team with team_id, and an optional q search.  Read-only.",
-    inputSchema: object({ scope: { type: "string", enum: ["mine", "bots", "team", "teams", "all"] }, team_id: TEAM_ID, q: { type: "string", maxLength: 100 }, limit: { type: "integer", minimum: 1, maximum: 200 } }),
+    inputSchema: object({ scope: { type: "string", enum: ["mine", "bots", "team", "teams", "all"] }, team_id: TEAM_ID, q: { type: "string", maxLength: 100 }, limit: { type: "integer", minimum: 1, maximum: 200 }, before: { type: "string", pattern: "^\\d{1,16}:shr_[A-Za-z0-9]{1,64}$" }, include_expired: { type: "boolean", description: "Expired own-share metadata only; scope mine required. No deleted history or expired file access." } }),
     annotations: READ,
   },
   {
@@ -420,7 +420,13 @@ export class FleetLinkClient {
     const envelope = RpcResult.safeParse(body);
     if (!envelope.success) throw new FleetLinkError("unexpected", { status });
     const { content, isError } = envelope.data.result;
-    if (isError === true) return { ok: false, message: content[0].text };
+    if (isError === true) {
+      // Only a fixed status code may cross this boundary, never arbitrary
+      // upstream fields. Write error and unknown-outcome behavior is unchanged.
+      const code = envelope.data.result.structuredContent?.code;
+      return { ok: false, message: content[0].text,
+        ...(typeof code === "string" && ["not_found", "gone"].includes(code) ? { code } : {}) };
+    }
     const data = ToolData.safeParse(parseBody(content[0].text));
     if (!data.success) throw new FleetLinkError("unexpected", { status });
     return { ok: true, data: data.data };
@@ -464,7 +470,7 @@ export function mapFleetLinkError(error, { write = false } = {}) {
       break;
   }
   if (status === 401) {
-    return new ToolError("not_authorized", `FleetLink refused this seat's credential (HTTP 401).  The owner checks the seat's entry in ${FLEETLINK_SEAT_TOKENS} (a revoked bot token) or ${FLEETLINK_SECRET} here and SIMPLE_TOOLS_SECRET on FleetLink (DEPLOY.md, "FleetLink").`, { extra: { status } });
+    return new ToolError("not_authorized", `FleetLink refused this seat's credential (HTTP 401).  The owner checks the seat's entry in ${FLEETLINK_SEAT_TOKENS} (a revoked bot token) or ${FLEETLINK_SECRET} here (DEPLOY.md, "FleetLink").`, { extra: { status } });
   }
   if (status === 403) {
     const said = error.upstreamMessage ? fleetlinkMessage(error.upstreamMessage) : "";
@@ -505,7 +511,10 @@ export function fleetlinkSummary(data) {
     };
   }
   const shares = SlugList.safeParse(data?.shares);
-  if (shares.success) out.slugs = shares.data.map((s) => s.slug);
+  if (shares.success) {
+    out.slugs = shares.data.map((s) => s.slug);
+  }
+  if (data?.next === null || (typeof data?.next === "string" && /^\d{1,16}:shr_[A-Za-z0-9]{1,64}$/.test(data.next) && !/[\r\n]/.test(data.next))) out.next = data.next;
   const teams = TeamList.safeParse(data?.teams);
   if (teams.success) out.team_ids = teams.data.map((t) => t.id);
   const upload = UploadData.safeParse(data?.upload);

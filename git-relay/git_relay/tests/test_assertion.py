@@ -274,6 +274,20 @@ class ResolveTest(unittest.TestCase):
         # a cached positive would hide the Worker's replay refusal.
         self.assertEqual(len(v2._transport.calls), 2)
 
+    def test_a_route_503_is_cached_against_that_one_assertion_only(self):
+        # The Worker answers 503 when its grant-listing budget runs out.  The README
+        # states this effect:  the retry of one token is refused from the cache, and
+        # the next call's freshly minted assertion goes back to the Worker.
+        token, claims = mint()
+        v = verifier(lambda body: (503, b""))
+        self.assertIsNone(v.resolve(token, proof(claims)))
+        self.assertIsNone(v.resolve(token, proof(claims)))
+        self.assertEqual(len(v._transport.calls), 1)
+
+        fresh, fresh_claims = mint(jti="fedcba9876543210")
+        self.assertIsNone(v.resolve(fresh, proof(fresh_claims)))
+        self.assertEqual(len(v._transport.calls), 2)
+
     def test_short_key_and_missing_key_are_startup_errors(self):
         with self.assertRaises(ValueError):
             GrAssertionVerifier(

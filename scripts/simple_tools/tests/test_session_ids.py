@@ -110,6 +110,14 @@ class RuleTests(unittest.TestCase):
             S.detect("CLAUDE", None, {"CLAUDE_CODE_SESSION_ID": "claude-id-0001"}), "claude-id-0001"
         )
         self.assertEqual(
+            S.detect(
+                "AG",
+                None,
+                {"ANTIGRAVITY_CONVERSATION_ID": "0ec80a40-de9a-425f-9d05-bea808c26770"},
+            ),
+            "0ec80a40-de9a-425f-9d05-bea808c26770",
+        )
+        self.assertEqual(
             S.detect("CODEX", None, {"CODEX_THREAD_ID": "019a-thread-1"}), "019a-thread-1"
         )
         self.assertEqual(

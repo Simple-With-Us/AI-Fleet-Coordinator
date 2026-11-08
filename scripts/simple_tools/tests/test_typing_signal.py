@@ -57,7 +57,7 @@ class FakeClient:
 class Pending:
     """The wake's conversation, as the daemon hands it over."""
 
-    def __init__(self, kind: str = "stream", *, channel: str = "work-in-progress", topic: str = "t",
+    def __init__(self, kind: str = "stream", *, channel: str = "simple-tools", topic: str = "t",
                  recipients: list[int] | None = None, stream_id: int | None = 101) -> None:
         self.type = kind
         self.channel = channel
@@ -211,7 +211,7 @@ class DaemonTypingTests(DaemonHarness):
             )
         )
         daemon = self.started()
-        self.fake.add_message("Codex", "work-in-progress", "t", MENTION)
+        self.fake.add_message("Codex", "simple-tools", "t", MENTION)
         self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
         self.clock.advance(19)
         daemon.tick()
@@ -222,12 +222,12 @@ class DaemonTypingTests(DaemonHarness):
         first = posts[0]
         self.assertEqual(first["type"], "stream")
         self.assertEqual(first["topic"], "t")
-        self.assertEqual(first["stream_id"], str(self.fake.streams["work-in-progress"]))
+        self.assertEqual(first["stream_id"], str(self.fake.streams["simple-tools"]))
         self.assertEqual([r["state"] for r in self.ledger()][-1], "done")
 
     def test_a_seat_with_the_indicator_off_says_nothing(self) -> None:
         daemon = self.started()
-        self.fake.add_message("Codex", "work-in-progress", "t", MENTION)
+        self.fake.add_message("Codex", "simple-tools", "t", MENTION)
         self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
         self.clock.advance(19)
         daemon.tick()
@@ -271,7 +271,7 @@ class DaemonTypingTests(DaemonHarness):
         daemon._typing_signal = capture_signal
         daemon.run_fallback = watch_fallback
         daemon.claude_runner.run = failing_run
-        self.fake.add_message("Codex", "work-in-progress", "t", MENTION)
+        self.fake.add_message("Codex", "simple-tools", "t", MENTION)
         self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
         self.clock.advance(19)
         daemon.tick()

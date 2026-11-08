@@ -23,6 +23,7 @@ BOT_IDENTITIES = (
     "MM",
     "OPENCODE",
     "AMP",
+    "ZC",
     "BF-COMPILER",
     "BF-DEPLOYER",
     "BF-DESIGNER",
@@ -47,8 +48,6 @@ BOT_IDENTITIES = (
     "GB-ORACLE",
     "GB-TRADER",
     "GB-ENGINEER",
-    "ZC",
-    "KIMI",
 )
 
 

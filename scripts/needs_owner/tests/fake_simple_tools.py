@@ -93,7 +93,7 @@ def message_json(m):
 
 def main():
     argv = sys.argv[1:]
-    # The fake realm is "work-in-progress" (the configured channel):  pin it the way
+    # The fake realm is "work-in-progress":  pin it the way
     # simple_tools/tests/harness.py pins its own, or channel-less commands lose the realm.
     args = C.build_parser(channel_default="work-in-progress").parse_args(argv)
     stdin = ""

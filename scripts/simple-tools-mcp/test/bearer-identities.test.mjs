@@ -28,7 +28,7 @@ test("all active ordinary registry bots have canonical bearer identities without
   for (const row of ordinary) assert.ok(BEARER_SEATS.includes(row.tag), row.tag);
   for (const [identity, row] of Object.entries(BEARER_ONLY_SEATS)) {
     // AMP is hosted-bearer only. The registry's extraSeats model deliberately
-    // avoids ordinary-seat lane/listener rollout. Its exact own records and
+    // avoids ordinary-seat lane/simple-tools rollout. Its exact own records and
     // extra-seat registration are pinned below, not accepted by a wildcard.
     if (identity === "AMP") {
       assert.equal(registry.seatApps.extraSeats.AMP, "amp");
@@ -39,10 +39,10 @@ test("all active ordinary registry bots have canonical bearer identities without
     }
     if (identity === "ZC" || identity === "KIMI") {
       // Registered 2026-11-03:  the ZC seat tag is the acronym while its created /zulip
-      // records use the ZCODE stem, so ZC requests ZCODE_ZULIP_* and KIMI requests
+      // records use the ZC stem, so ZC requests ZC_ZULIP_* and KIMI requests
       // KIMI_ZULIP_* - the exact requested secret names are pinned, not wildcarded.
       assert.deepEqual(row, identity === "ZC"
-        ? { prefix: "ZCODE", email: "zc-bot@simplewithus.zulipchat.com" }
+        ? { prefix: "ZC", email: "zc-bot@simplewithus.zulipchat.com" }
         : { prefix: "KIMI", email: "kimi-bot@simplewithus.zulipchat.com" });
     }
     const source = ordinary.find((r) => r.tag === identity);

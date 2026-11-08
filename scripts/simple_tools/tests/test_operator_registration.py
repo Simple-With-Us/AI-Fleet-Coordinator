@@ -198,8 +198,8 @@ class OperatorRegistrationTest(unittest.TestCase):
     def test_a_route_scoped_refusal_holds_only_its_own_route(self):
         # The route scan's refusal binds the topic it matched:  a later lease naming a
         # clean topic is asked there (kody 4366099679, the field split).
-        old = {"channel": "work-in-progress", "topic": "Old Lane"}
-        new = {"channel": "work-in-progress", "topic": "New Lane"}
+        old = {"channel": "simple-tools", "topic": "Old Lane"}
+        new = {"channel": "simple-tools", "topic": "New Lane"}
         entry = self.begin(
             route=old, route_topics=[dict(old, expires=None)], now=1000.0
         )["entry"]
@@ -436,8 +436,8 @@ class OperatorRegistrationTest(unittest.TestCase):
     def test_a_secret_shaped_route_is_refused_and_nothing_is_stored(self):
         with self.assertRaises(OREG.RegistrationRefused):
             self.begin(
-                route={"channel": "work-in-progress", "topic": "sk-" + os.urandom(16).hex()},
-                route_topics=[{"channel": "work-in-progress", "topic": "t", "expires": None}],
+                route={"channel": "simple-tools", "topic": "sk-" + os.urandom(16).hex()},
+                route_topics=[{"channel": "simple-tools", "topic": "t", "expires": None}],
             )
         self.assertEqual(OREG.pending_entries(self.db), [])
 
@@ -539,35 +539,35 @@ class OperatorRegistrationRouteRefreshTest(unittest.TestCase):
 
     def test_an_unrelated_new_topic_does_not_steal_the_route(self):
         self.begin(
-            route={"channel": "work-in-progress", "topic": "AFC Work"},
-            topics=[{"channel": "work-in-progress", "topic": "AFC Work", "expires": 5000.0}],
+            route={"channel": "simple-tools", "topic": "AFC Work"},
+            topics=[{"channel": "simple-tools", "topic": "AFC Work", "expires": 5000.0}],
         )
         out = self.begin(
-            route={"channel": "work-in-progress", "topic": "Shiny New"},
+            route={"channel": "simple-tools", "topic": "Shiny New"},
             topics=[
-                {"channel": "work-in-progress", "topic": "AFC Work", "expires": 5000.0},
-                {"channel": "work-in-progress", "topic": "Shiny New", "expires": 9000.0},
+                {"channel": "simple-tools", "topic": "AFC Work", "expires": 5000.0},
+                {"channel": "simple-tools", "topic": "Shiny New", "expires": 9000.0},
             ],
         )
-        self.assertEqual(out["entry"]["route"], {"channel": "work-in-progress", "topic": "AFC Work"})
+        self.assertEqual(out["entry"]["route"], {"channel": "simple-tools", "topic": "AFC Work"})
         self.assertIsNone(out.get("route_change"))
 
     def test_a_topic_gone_marks_the_route_lost_once(self):
         self.begin(
-            route={"channel": "work-in-progress", "topic": "AFC Work"},
-            topics=[{"channel": "work-in-progress", "topic": "AFC Work", "expires": 5000.0}],
+            route={"channel": "simple-tools", "topic": "AFC Work"},
+            topics=[{"channel": "simple-tools", "topic": "AFC Work", "expires": 5000.0}],
         )
         out = self.begin(
-            route={"channel": "work-in-progress", "topic": "Elsewhere"},
-            topics=[{"channel": "work-in-progress", "topic": "Elsewhere", "expires": 9000.0}],
+            route={"channel": "simple-tools", "topic": "Elsewhere"},
+            topics=[{"channel": "simple-tools", "topic": "Elsewhere", "expires": 9000.0}],
         )
         self.assertEqual(out.get("route_change"), "lost")
         self.assertTrue(out["entry"].get("route_lost"))
         # The stale route is kept - the question was asked there and nowhere honest.
-        self.assertEqual(out["entry"]["route"], {"channel": "work-in-progress", "topic": "AFC Work"})
+        self.assertEqual(out["entry"]["route"], {"channel": "simple-tools", "topic": "AFC Work"})
         again = self.begin(
-            route={"channel": "work-in-progress", "topic": "Elsewhere"},
-            topics=[{"channel": "work-in-progress", "topic": "Elsewhere", "expires": 9000.0}],
+            route={"channel": "simple-tools", "topic": "Elsewhere"},
+            topics=[{"channel": "simple-tools", "topic": "Elsewhere", "expires": 9000.0}],
         )
         self.assertIsNone(again.get("route_change"))
 
@@ -576,74 +576,74 @@ class OperatorRegistrationRouteRefreshTest(unittest.TestCase):
         not a continuation:  expiry equality is not rename provenance, so the entry
         fails closed to route_lost rather than moving the question."""
         self.begin(
-            route={"channel": "work-in-progress", "topic": "AFC Work"},
-            topics=[{"channel": "work-in-progress", "topic": "AFC Work", "expires": None}],
+            route={"channel": "simple-tools", "topic": "AFC Work"},
+            topics=[{"channel": "simple-tools", "topic": "AFC Work", "expires": None}],
         )
         out = self.begin(
-            route={"channel": "work-in-progress", "topic": "Unrelated Lane"},
-            topics=[{"channel": "work-in-progress", "topic": "Unrelated Lane", "expires": None}],
+            route={"channel": "simple-tools", "topic": "Unrelated Lane"},
+            topics=[{"channel": "simple-tools", "topic": "Unrelated Lane", "expires": None}],
         )
         self.assertEqual(out.get("route_change"), "lost")
-        self.assertEqual(out["entry"]["route"], {"channel": "work-in-progress", "topic": "AFC Work"})
+        self.assertEqual(out["entry"]["route"], {"channel": "simple-tools", "topic": "AFC Work"})
 
     def test_retarget_routes_repoints_the_pending_question(self):
         first = self.begin(
-            route={"channel": "work-in-progress", "topic": "AFC Work"},
-            topics=[{"channel": "work-in-progress", "topic": "AFC Work", "expires": None}],
+            route={"channel": "simple-tools", "topic": "AFC Work"},
+            topics=[{"channel": "simple-tools", "topic": "AFC Work", "expires": None}],
         )
         moved = OREG.retarget_routes(
             self.db,
             seat="MM",
-            old_channel="work-in-progress",
+            old_channel="simple-tools",
             old_topic="AFC Work",
-            new_channel="work-in-progress",
+            new_channel="simple-tools",
             new_topic="AFC Work Renamed",
         )
         self.assertEqual([entry["entry_id"] for entry in moved], [first["entry"]["entry_id"]])
         entry = OREG.pending_entries(self.db)[0]
-        self.assertEqual(entry["route"], {"channel": "work-in-progress", "topic": "AFC Work Renamed"})
+        self.assertEqual(entry["route"], {"channel": "simple-tools", "topic": "AFC Work Renamed"})
 
     def test_retarget_routes_matches_only_the_seat_and_route(self):
         self.begin(
-            route={"channel": "work-in-progress", "topic": "AFC Work"},
-            topics=[{"channel": "work-in-progress", "topic": "AFC Work", "expires": None}],
+            route={"channel": "simple-tools", "topic": "AFC Work"},
+            topics=[{"channel": "simple-tools", "topic": "AFC Work", "expires": None}],
         )
         # A rename in another seat, or of another topic, leaves the entry alone.
         moved = OREG.retarget_routes(
             self.db, seat="CLAUDE",
-            old_channel="work-in-progress", old_topic="AFC Work",
-            new_channel="work-in-progress", new_topic="Renamed",
+            old_channel="simple-tools", old_topic="AFC Work",
+            new_channel="simple-tools", new_topic="Renamed",
         )
         self.assertEqual(moved, [])
         moved = OREG.retarget_routes(
             self.db, seat="MM",
-            old_channel="work-in-progress", old_topic="Some Other Topic",
-            new_channel="work-in-progress", new_topic="Renamed",
+            old_channel="simple-tools", old_topic="Some Other Topic",
+            new_channel="simple-tools", new_topic="Renamed",
         )
         self.assertEqual(moved, [])
         entry = OREG.pending_entries(self.db)[0]
-        self.assertEqual(entry["route"], {"channel": "work-in-progress", "topic": "AFC Work"})
+        self.assertEqual(entry["route"], {"channel": "simple-tools", "topic": "AFC Work"})
 
     def test_retarget_routes_revives_a_lost_entry(self):
         """The pass can mark a route lost before the rename event lands;  the event's
         provenance still re-points it, because it proves where the question went."""
         self.begin(
-            route={"channel": "work-in-progress", "topic": "AFC Work"},
-            topics=[{"channel": "work-in-progress", "topic": "AFC Work", "expires": 5000.0}],
+            route={"channel": "simple-tools", "topic": "AFC Work"},
+            topics=[{"channel": "simple-tools", "topic": "AFC Work", "expires": 5000.0}],
         )
         out = self.begin(
-            route={"channel": "work-in-progress", "topic": "Elsewhere"},
-            topics=[{"channel": "work-in-progress", "topic": "Elsewhere", "expires": 9000.0}],
+            route={"channel": "simple-tools", "topic": "Elsewhere"},
+            topics=[{"channel": "simple-tools", "topic": "Elsewhere", "expires": 9000.0}],
         )
         self.assertEqual(out.get("route_change"), "lost")
         moved = OREG.retarget_routes(
             self.db, seat="MM",
-            old_channel="work-in-progress", old_topic="AFC Work",
-            new_channel="work-in-progress", new_topic="AFC Work Renamed",
+            old_channel="simple-tools", old_topic="AFC Work",
+            new_channel="simple-tools", new_topic="AFC Work Renamed",
         )
         self.assertEqual(len(moved), 1)
         entry = OREG.pending_entries(self.db)[0]
-        self.assertEqual(entry["route"], {"channel": "work-in-progress", "topic": "AFC Work Renamed"})
+        self.assertEqual(entry["route"], {"channel": "simple-tools", "topic": "AFC Work Renamed"})
         self.assertFalse(entry.get("route_lost"))
 
 class QueueValidationAndPruningTests(unittest.TestCase):

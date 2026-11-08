@@ -16,7 +16,7 @@ Mac, the one allocator for every host and every platform.  A chat on the Mac re
 server reaches it over one SSH hop to the Mac (the destination in SESSION_LETTER_REMOTE, or the hook's --remote), by
 running `~/.local/bin/platform-letter registry ...` there, so the Mac's own managed runtime makes the write.  The
 registry side refuses a host that has no registry file and never creates one: a second file would issue letters that
-collide with the Mac's.  A platform keeps its own namespace (`codex`, `opencode`, `muse`, `grok`, `antigravity`): a
+collide with the Mac's.  A platform keeps its own namespace (`codex`, `opencode`, `muse`, `grok`, `antigravity`, `cursor`): a
 letter is unique inside it, and `claude` and `minimax` are reserved to their own hooks.
 
 The letters.  Every chat takes a pair (AA to ZZ, 676 per platform).  A main chat takes the doubled pairs in order
@@ -78,6 +78,9 @@ from . import session_ids as SI
 ENTRY = "platform-letter"
 SCOPE = "default"
 LOCATIONS = ("mac", "server")
+# The locations the registry side takes:  a hook runs on the Mac or the server, and a chat no hook runs in (a Cursor
+# Cloud agent, which `cursor_cloud_letters` registers from the Cursor API) is in the cloud.
+REGISTRY_LOCATIONS = LOCATIONS + ("cloud",)
 # The two platforms that have their own hooks, sweeps and registry sides: this module never writes their rows.
 RESERVED_PLATFORMS = ("claude", "minimax")
 PLATFORM_RE = re.compile(r"[a-z][a-z0-9-]{1,31}")
@@ -874,6 +877,243 @@ def _on_record(OR: Any, db: str, args: Any, sid: str) -> dict[str, Any]:
         reg.close_db()
 
 
+#: The registry's own sentence for a session it does not hold, raised by its mutation functions
+#: ("session ... is not registered on ...; register it first") and rendered by the API as the
+#: call's error.  The local path never surfaces it (its lookup answers first), so the API path
+#: folds it back to NO_REGISTRATION, the answer the hook reads as "no registration for this chat".
+_NOT_REGISTERED_MARK = "is not registered on"
+
+
+#: How long one registry API call from a hook may take.  The hooks carry budgets of 15 to
+#: 20 seconds (HOOK_TIMEOUTS) and a register chains at most two calls, so one call gets 6:
+#: the chain's worst case stays inside the tightest budget, and a healthy call to the
+#: listener answers in well under a second.  The batch callers of registry_api (the
+#: operator-registry CLI) keep its longer default.
+_API_TIMEOUT = 6
+REGISTRY_ENV_SUBPATH = os.path.join(".local", "bin", "mm-registry-env")
+
+
+def with_registry_env(env: Mapping[str, str]) -> Mapping[str, str]:
+    """Return `env` enriched from `$HOME/.local/bin/mm-registry-env` when no registry API URL or SSH remote is set.
+
+    Hook processes launched by Antigravity, Codex, OpenCode, Muse and ZCode inherit no login profile, so on both the
+    server and the Mac the shared registry env file is where `SIMPLE_TOOLS_OPERATOR_REGISTRY_URL` and the signing key
+    live.  Unit tests pass a temporary `HOME` (or no `HOME`) without that file, so their local-store and SSH-hop paths
+    stay untouched."""
+    from . import registry_api as RA
+
+    if RA.base_url(env) or _text(env.get(ENV_REMOTE)) or _text(env.get(ENV_REMOTE_FALLBACK)):
+        return env
+    home = _text(env.get("HOME"))
+    if not home:
+        return env
+    path = os.path.join(home, REGISTRY_ENV_SUBPATH)
+    if not os.path.isfile(path):
+        return env
+    names = (RA.URL_ENV, RA.PRINCIPAL_ENV, RA.KEY_ENV, RA.KEY_REF_ENV)
+    script = (
+        '. "$1" >/dev/null 2>&1 || true\n'
+        "for k in %s; do\n"
+        '  eval "v=\\${$k:-}"\n'
+        '  [ -n "$v" ] && printf "%%s=%%s\\0" "$k" "$v"\n'
+        "done\n"
+        'ref="${%s:-}"\n'
+        'if [ -n "$ref" ]; then\n'
+        '  eval "rv=\\${$ref:-}"\n'
+        '  [ -n "$rv" ] && printf "%%s=%%s\\0" "$ref" "$rv"\n'
+        "fi\n"
+        "exit 0\n"
+    ) % (" ".join(names), RA.KEY_REF_ENV)
+    try:
+        proc = subprocess.run(
+            ["/bin/sh", "-c", script, "mm-registry-env", path],
+            env=dict(env),
+            capture_output=True,
+            timeout=5,
+            stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return env
+    if proc.returncode != 0 or not proc.stdout:
+        return env
+    merged = dict(env)
+    for item in proc.stdout.split(b"\0"):
+        if not item or b"=" not in item:
+            continue
+        k, _, v = item.partition(b"=")
+        try:
+            key_str = k.decode("utf-8")
+            val_str = v.decode("utf-8").strip()
+        except UnicodeDecodeError:
+            continue
+        if val_str and not _text(merged.get(key_str)):
+            merged[key_str] = val_str
+    return merged
+
+
+def _call_api(env: Mapping[str, str], op: str, params: Mapping[str, Any]) -> dict[str, Any]:
+    from . import registry_api
+
+    return registry_api.call(env, op, params, timeout=_API_TIMEOUT)
+
+
+def _api_error(answer: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The answer itself when it carries an error, folded when the error is the registry saying
+    the session is not registered;  None when it carries none."""
+    if "error" not in answer:
+        return None
+    # The API names this refusal with the code not_registered as well as with the registry's
+    # sentence, and its other sentences ("no session with this identity") carry no mark to
+    # match, so the fold checks the code first.
+    if answer.get("code") == "not_registered" or _NOT_REGISTERED_MARK in str(
+        answer.get("error") or ""
+    ):
+        return {"error": NO_REGISTRATION}
+    return dict(answer)
+
+
+def _api_identity(args: Any, sid: str) -> dict[str, Any]:
+    return {
+        "platform": args.platform,
+        "location": args.location,
+        "scope": SCOPE,
+        "session_id": sid,
+    }
+
+
+def _register_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict[str, Any]:
+    """Register one chat through the registry API:  resume it, or reopen it when it comes back closed.
+
+    The local path's orchestration, over the API's ops:  the registry's register answers for a
+    fresh chat and for a resume (its resume already stamps the session seen, as the local
+    register does), a resumed-closed chat is reopened, and a resumed or reopened chat that arrived with a
+    title has the title carried over, because register keeps an existing record's old title.
+    What the local path also does, this path does not:  it sweeps nothing and evicts nothing.
+    Reclaiming letters is the registry's own sweep's work once the store is the API's (the
+    letter sweep), exactly as it already is on the MiniMax path, and an exhausted space answers
+    with the registry's refusal instead of this hook closing another chat to make room."""
+    title = clean_title(args.title)
+    pick = resolve_pick(OR, args.letter_pick)
+    parent = ""
+    if args.parent_session_id:
+        try:
+            parent = SI.check(args.parent_session_id, "the parent session id")
+        except ValueError:
+            parent = ""  # not a session id, so no parent: the chat is picked like a main chat
+    params: dict[str, Any] = {
+        **_api_identity(args, sid),
+        "seat": args.seat,
+        "source": args.source,
+        "title": title,
+        "letter_space": args.letter_space,
+        "letter_pick": pick,
+    }
+    if parent:
+        params["parent_session_id"] = parent
+    out = _call_api(env, "register", params)
+    if out.get("code") == "labels_exhausted":
+        return {"error": "all %s letters are in use" % args.letter_space, "swept": 0}
+    error = _api_error(out)
+    if error is not None:
+        return error
+    if out.get("outcome") == "resumed_closed":
+        reopen_params: dict[str, Any] = {
+            "record_id": out["record_id"],
+            "actor": args.seat,
+            "source": args.source,
+            "letter_pick": pick,
+        }
+        if parent:
+            reopen_params["parent_session_id"] = parent
+        reopened = _call_api(env, "reopen", reopen_params)
+        if reopened.get("code") == "labels_exhausted":
+            return {"error": "all %s letters are in use" % args.letter_space, "swept": 0}
+        if reopened.get("code") == "space_lost":
+            return {
+                "error": "this registry cannot give a closed chat a pair letter again yet",
+                "swept": 0,
+            }
+        error = _api_error(reopened)
+        if error is not None:
+            return error
+        out = {
+            **out,
+            "label": reopened["label"],
+            "generation": reopened["generation"],
+            "previous": reopened["previous"],
+            "outcome": "reopened",
+            "title_display": OR.display_title(reopened["label"], title),
+        }
+    if title and out.get("outcome") in ("resumed", "reopened"):
+        updated = _call_api(env, "update", {**_api_identity(args, sid), "title": title})
+        error = _api_error(updated)
+        if error is not None:
+            return error
+        # The register answer above still names the title the record already carried, on a
+        # reopen as on a resume;  the update's answer names the one just set, as the local
+        # path's does.
+        out = {**out, "title": updated.get("title"), "title_display": updated.get("title_display")}
+    out["swept"] = 0
+    out["evicted"] = 0
+    return out
+
+
+def _on_record_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict[str, Any]:
+    """title, touch, close and show for one chat through the registry API.
+
+    The local path looks the record up first and answers from it:  no record is NO_REGISTRATION,
+    and a closed one is retired, before any op writes.  The API's ops are addressed by identity
+    and answer in the registry's own words, so this path probes with the touch op where the
+    local path reads:  a touch stamps a live session seen, answers outcome "closed" for a
+    closed one without writing anything, and refuses a session the registry does not hold.
+    The registry's touch answer carries the stamp, not the letter, so a touch here answers
+    with the record id alone where the local path also names the letter and generation."""
+    identity = _api_identity(args, sid)
+    if args.op == "show":
+        # The API has no show op:  `held` answers the letter side of the record (its id and
+        # the letters it has held), which is what a show is asked for.  The full row stays
+        # a local read on a host with no API configured.
+        held = _call_api(env, "held", identity)
+        if "error" in held:
+            if held.get("code") == "not_registered":
+                return {"error": NO_REGISTRATION}
+            return dict(held)
+        return {
+            "record_id": held.get("record_id", ""),
+            "label": held.get("label", ""),
+            "letters": held.get("letters", []),
+            "found": True,
+        }
+    if args.op == "close":
+        out = _call_api(
+            env, "close", {**identity, "reason": "session ended", "source": args.source}
+        )
+        error = _api_error(out)
+        if error is not None:
+            return error
+        if out.get("outcome") == "already_closed":
+            return {"retired": True, "record_id": out.get("record_id", "")}
+        return {"closed": bool(out.get("closed")), "label": out.get("label", "")}
+    probe = _call_api(env, "touch", identity)
+    error = _api_error(probe)
+    if error is not None:
+        return error
+    if probe.get("outcome") == "closed":
+        return {"retired": True, "record_id": probe.get("record_id", "")}
+    title = clean_title(args.title) if args.op == "title" else ""
+    if args.op == "touch" or not title:
+        return {"ok": True, "record_id": probe.get("record_id", "")}
+    updated = _call_api(env, "update", {**identity, "title": title})
+    error = _api_error(updated)
+    if error is not None:
+        return error
+    return {
+        "ok": True,
+        "label": updated.get("label", ""),
+        "generation": updated.get("generation"),
+    }
+
+
 def _make_parser() -> Any:
     import argparse
 
@@ -891,7 +1131,7 @@ def _make_parser() -> Any:
     parser.refused = Refused  # type: ignore[attr-defined]
     parser.add_argument("op", choices=("register", "title", "touch", "close", "show"))
     parser.add_argument("--platform", required=True)
-    parser.add_argument("--location", required=True, choices=LOCATIONS)
+    parser.add_argument("--location", required=True, choices=REGISTRY_LOCATIONS)
     parser.add_argument("--session-id", required=True)
     parser.add_argument("--seat", default="")
     parser.add_argument("--title", default="")
@@ -912,10 +1152,13 @@ def registry_main(
     [--parent-session-id PID] [--letter-space single|double] [--letter-pick PICK] [--db FILE]`, one JSON line out.
 
     The exit status is 0 for an answer, 2 for bad arguments, 3 when this host has no registry, 4 for a refused
-    request and 5 for an answer that carries an error."""
+    request and 5 for an answer that carries an error.  When the registry API URL is configured
+    (registry_api), the server's store answers instead and the local file is never opened, so
+    status 3 does not arise:  a registry that cannot be reached answers with an error, status 5."""
     import sqlite3
 
     from . import operator_registry as OR
+    from . import registry_api
 
     parser = _make_parser()
     try:
@@ -931,6 +1174,26 @@ def registry_main(
     args.seat = args.seat or "OPERATOR"
     args.source = args.source.strip() or "platform-letter:" + args.platform
     db = args.db or OR.default_db(env)
+    if not registry_api.base_url(env) and not os.path.isfile(db):
+        env = with_registry_env(env)
+    if registry_api.base_url(env):
+        # The registry API is the store now:  with its URL configured (the daemon's own
+        # configuration), the server's store answers and the local file is never opened.
+        # A failed call is an error answer, never a quiet local write:  two stores taking
+        # writes is the split the cutover exists to end.
+        try:
+            sid = SI.check(args.session_id, "the session id")
+            if args.op == "register":
+                out = _register_api(OR, env, args, sid)
+            else:
+                out = _on_record_api(OR, env, args, sid)
+        except ValueError as exc:
+            return _emit(stdout, {"error": "%s: %s" % (type(exc).__name__, str(exc)[:200])}, 4)
+        except (KeyError, TypeError):
+            # A registry answer too short to fold (a key the orchestration reads is not
+            # there) is a failed call, answered the same way:  an error, never a traceback.
+            return _emit(stdout, {"error": "the registry answer was incomplete"}, 5)
+        return _emit(stdout, out, 0 if "error" not in out else 5)
     if not os.path.isfile(db):
         # Never create one: a second registry would hand out letters that collide with the one the Operator keeps.
         return _emit(stdout, {"error": "no Operator registry on this host"}, 3)
@@ -1165,6 +1428,16 @@ class Chat:
             out = io.StringIO()
             registry_main(argv, env=self.env, stdout=out)
             return _answer(_last_json(out.getvalue()))
+        from . import registry_api as RA
+
+        env = self.env if (RA.base_url(self.env) or self.remote) else with_registry_env(self.env)
+        if RA.base_url(env):
+            # The explicit URL is the cutover (registry_api):  a hook on a host off the
+            # registry calls the Operator's API itself, under the location it was installed
+            # with, and never hops over ssh to a host whose own call would land here anyway.
+            out = io.StringIO()
+            registry_main(argv, env=env, stdout=out)
+            return _answer(_last_json(out.getvalue()))
         if not dest:
             dest_name = ENV_REMOTE
             dest = self.remote
@@ -1246,6 +1519,40 @@ def reminder(spec: PlatformSpec, note: Mapping[str, Any]) -> str:
         'Operator session letter: %s, on the %s.  This chat is addressed as "@**%s** %s", and its title '
         'starts with "%s: "; keep that prefix if the chat is renamed.'
         % (ref, note.get("location"), spec.display, label, label)
+    )
+
+
+def untitled_context(
+    body: Mapping[str, Any], env: Mapping[str, str], seat: str, sid: str, display: str, product: str
+) -> str:
+    """The context line for a platform whose hooks cannot set a chat's title (such as Cursor), from one `json` style
+    answer (`{"context", "label"}`):  the chat is told its letter and how it is addressed, and that its title does not
+    carry the letter.  Any other line (no letter yet, another seat's) is the library's own, as it is."""
+    context = _text(
+        body.get("context")
+    )  # not `tidy`:  the library's sentence gaps stay as they are
+    label = _text(body.get("label"))
+    head, mark, _ = context.partition("Operator session letter:")
+    if not (label and mark):
+        return context
+    try:
+        with open(note_path(env, seat, sid), encoding="utf-8") as fh:
+            note = json.load(fh)
+    except (OSError, ValueError):
+        note = {}
+    note = note if isinstance(note, dict) else {}
+    gen = note.get("generation") or 1
+    where = "server" if note.get("location") == "server" else "Mac"
+    ref = "%s %s%s" % (
+        display,
+        label,
+        " (gen %d)" % gen if isinstance(gen, int) and gen > 1 else "",
+    )
+    # Rendered copy:  a sentence gap is U+00A0 plus a space.
+    return (
+        '%sOperator session letter: %s, on the %s.  This chat is addressed as "@**%s** %s".  %s gives a '
+        "hook no way to set a chat's title, so the title does not carry the letter; a name the owner gives this chat "
+        'should start with "%s: ".' % (head, ref, where, display, label, product, label)
     )
 
 

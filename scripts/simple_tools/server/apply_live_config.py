@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bring the live config's JET and Grok Bot sections in line with the image's sample, and add the settings
+"""Bring the live config's JET, Grok Bot and BotFleet sections in line with the image's sample, and add the settings
 sections a live volume lacks.
 
 Run it inside the container (the Coolify terminal, or docker exec):
@@ -9,7 +9,7 @@ Run it inside the container (the Coolify terminal, or docker exec):
 
 The entrypoint seeds /data/listener.toml from the sample only once, so a seat section changed in the
 sample never reaches a live volume by itself.  This copies exactly the sample's [seat.JET] and every
-[seat.GB-*] section into the live file:  a section that differs is replaced where it stands, with the
+[seat.GB-*] and [seat.BF-*] section into the live file:  a section that differs is replaced where it stands, with the
 comment lines just above it, and a missing one is appended.  [listener_api], [notes_queue] (AFC-486) and
 [linear_projects] (AFC-565) are appended the same way when the live file has none, but one that is there is
 never changed:  its `enabled` (and the notes queue's seat lists) are the operator's choice on that volume,
@@ -54,7 +54,7 @@ ADD_ONLY = ("listener_api", "notes_queue", "linear_projects")
 
 
 def target(seat: str) -> bool:
-    return seat == "JET" or seat.startswith("GB-")
+    return seat == "JET" or seat.startswith("GB-") or seat.startswith("BF-")
 
 
 def blocks(text: str) -> tuple[list[str], list[tuple[str, list[str]]]]:
@@ -241,7 +241,7 @@ def main(argv: list[str] | None = None, out=sys.stdout) -> int:
         return 2
     if not changes:
         print(
-            "no changes:  %s already matches the sample's JET and GB sections and has [%s]"
+            "no changes:  %s already matches the sample's JET, GB and BF sections and has [%s]"
             % (live_path, "] and [".join(ADD_ONLY)),
             file=out,
         )

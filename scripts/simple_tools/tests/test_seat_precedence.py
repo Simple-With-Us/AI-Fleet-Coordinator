@@ -78,15 +78,10 @@ class ResolveSeatTests(Harness):
         self.assertIn("answered as", I.check_bot(bot, "BF-PLUMBER", CODEX_EMAIL))
 
     def test_partition(self) -> None:
-        # Single-server consolidation:  the Mac listener serves no seat, the server serves CLAUDE.
-        served, why = I.served_here("CLAUDE", {})
-        self.assertFalse(served)
-        self.assertIn("seat CLAUDE is not served by the Mac listener", why)
-        self.assertTrue(I.served_here("CLAUDE", {"SIMPLE_TOOLS_INSTANCE": "server"})[0])
+        self.assertEqual(I.served_here("CLAUDE", {}), (True, ""))
         served, why = I.served_here("BF-PLUMBER", {})
         self.assertFalse(served)
         self.assertIn("seat BF-PLUMBER is not served by the Mac listener", why)
-        self.assertFalse(I.served_here("BF-PLUMBER", {"SIMPLE_TOOLS_INSTANCE": "server"})[0])
         self.assertFalse(I.served_here("NOT-A-SEAT", {})[0])
         self.assertTrue(I.served_here("GB-COMPILER", {"SIMPLE_TOOLS_INSTANCE": "server"})[0])
         missing = {"SIMPLE_TOOLS_PARTITION": str(self.tmp / "nope.toml")}
@@ -429,10 +424,10 @@ class WakeLauncherTests(Harness):
             {
                 k: v
                 for k, v in env.items()
-                if k.startswith(("AGENT", "SIMPLE_TOOLS", "ZULIP", "CLAUDE_CODE_SESSION"))
+                if k.startswith(("AGENT", "ZULIP", "CLAUDE_CODE_SESSION", "SIMPLE_TOOLS_ATTACH"))
             },
             {
-                "AGENT_LAUNCHER": "eavesdropper-wake",
+                "AGENT_LAUNCHER": "simple-tools-wake",
                 "AGENT_LAUNCH_SEAT": "CLAUDE",
                 "AGENT_SEAT": "CLAUDE",
                 "SIMPLE_TOOLS_ATTACH": "0",

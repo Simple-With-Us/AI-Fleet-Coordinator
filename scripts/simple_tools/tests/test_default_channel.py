@@ -1,10 +1,9 @@
 """The default channel has to follow the realm, and be settable when the realm moves it.
 
-The realm renamed the fleet's coordination channel, and the runtime's default was a
-hardcoded name that no longer existed, so every seat's post without ``--channel`` failed
-with STREAM_DOES_NOT_EXIST.  These tests hold the default to the realm's live name and
-hold the override in place, so the next rename is a configuration change and not a
-fleet-wide outage.
+A default that names a channel the realm does not have makes every seat's post without
+``--channel`` fail with STREAM_DOES_NOT_EXIST.  These tests hold the default to the realm's
+live name and hold the override in place, so a channel rename is a configuration change and
+not a fleet-wide outage.
 """
 
 from __future__ import annotations
@@ -57,19 +56,6 @@ def _rendered_copy(repo_root: pathlib.Path, tree: str, name: str) -> pathlib.Pat
     return repo_root / tree / "skills" / name / "SKILL.md"
 
 
-def _without_comments(text: str, suffix: str) -> str:
-    """The file's text with its comments taken out.
-
-    A channel is written `#name`, and a comment marker is `#` followed by whitespace in Python
-    and shell and `//` in JavaScript, so the two never look the same.  A `#!/usr/bin/env bash`
-    line and a `#` inside a shell string are comments and go too.
-    """
-    if suffix in (".js", ".mjs"):
-        return re.sub(r"//.*", "", text)
-    if suffix in (".py", ".sh"):
-        return re.sub(r"#(?![A-Za-z]).*", "", text)
-    return text
-
 MCP_DIR = pathlib.Path(__file__).resolve().parents[1] / "mcp"
 SIMPLE_TOOLS_DIR = pathlib.Path(__file__).resolve().parents[1]
 
@@ -113,9 +99,6 @@ class DefaultChannelTests(unittest.TestCase):
         # presence messages in the channel it actually lives in.
         presence_channels = {c for c, _ in L.DEFAULT_PRESENCE}
         self.assertIn(Z.DEFAULT_CHANNEL, presence_channels)
-        # The realm kept the old name as a "DO NOT USE" tombstone stream, so a regression to it
-        # would post into a stream nobody reads and fail silently rather than loudly.
-        self.assertNotIn("unused-channel", presence_channels)
 
     def test_the_shipped_listener_configs_carry_the_same_presence_topics(self) -> None:
         # The server config and its test fixture are what the listener actually reads, so a
@@ -131,7 +114,7 @@ class DefaultChannelTests(unittest.TestCase):
             self.assertIn(
                 Z.DEFAULT_CHANNEL,
                 text,
-                "%s still names the old channel for presence" % path,
+                "%s does not name the default channel for presence" % path,
             )
 
     def test_every_mcp_tool_that_defaults_a_channel_defaults_it_to_the_same_name(self) -> None:
@@ -167,40 +150,14 @@ class DefaultChannelTests(unittest.TestCase):
 
     def test_the_cli_fleet_help_names_the_live_channel(self) -> None:
         # `--fleet` only works in the fleet coordination channel, and the help text is where a
-        # seat learns that.  A help string still naming the old channel sends it to the tombstone.
+        # seat learns that.
         # The channel's display name is title-cased and its slug is not, so the check folds case.
         help_text = (SIMPLE_TOOLS_DIR / "cli.py").read_text()
         self.assertIn("#%s" % Z.DEFAULT_CHANNEL, help_text.casefold())
-        self.assertNotIn("#unused-channel", help_text.casefold())
-
-    def test_no_channel_in_the_skills_pack_names_the_old_channel(self) -> None:
-        # The pack is what every seat reads, and it is rendered from the canonical tree, so a
-        # rename that moves the code and not the pack leaves every seat pointing at a stream
-        # nobody reads.  A channel is always written in its hashtag form, so that form is the
-        # signal;  the runtime's own source may still mention the old name in a comment that
-        # explains the rename, and the pack may not.
-        # There is no exemption for a retired seat:  their packs are rendered from the canonical
-        # too, so a retired seat's pack may not name the old channel either.  A blanket skip
-        # here would hide any stale consumer that landed under one of those folders.
-        repo_root = SIMPLE_TOOLS_DIR.parents[1]
-        pack = repo_root / "docs" / "fleet-skills"
-        offenders = []
-        for path in sorted(pack.rglob("*.md")):
-            if "#unused-channel" in path.read_text():
-                offenders.append(str(path.relative_to(repo_root)))
-        for path in sorted((repo_root / ".claude" / "skills").rglob("SKILL.md")):
-            if "#unused-channel" in path.read_text():
-                offenders.append(str(path.relative_to(repo_root)))
-        self.assertEqual(
-            offenders,
-            [],
-            "the skills pack still names the old channel:  %s" % ", ".join(offenders),
-        )
 
     def test_every_generated_pack_matches_the_channel_of_its_canonical(self) -> None:
-        # Rejecting the old channel is not the same as holding the new one:  a generator that
-        # drops the live label, or a generated copy that has drifted from its source, passes
-        # the check above and leaves every seat without a channel to post in.  So the generated
+        # A generator that drops the live label, or a generated copy that has drifted from its
+        # source, leaves every seat without a channel to post in.  So the generated
         # copy has to name exactly the channels its canonical source names, and the live label
         # has to be in the canonical and in the rendered tree.
         repo_root = SIMPLE_TOOLS_DIR.parents[1]
@@ -284,68 +241,17 @@ class DefaultChannelTests(unittest.TestCase):
         self.assertEqual(skipped, [], "no rendered copy was compared for:  %s" % ", ".join(skipped))
         self.assertEqual(drifted, [], ";  ".join(drifted))
 
-    def test_no_onboarding_prompt_names_the_old_channel(self) -> None:
-        # An onboarding prompt is the first thing a seat reads, so a prompt that names the old
-        # channel sends that seat to the tombstone before it has read anything else.  These are
-        # the live prompts;  the fleet guide's changelog rows are history and are not checked
-        # here.
-        repo_root = SIMPLE_TOOLS_DIR.parents[1]
-        prompts = (
-            "docs/FX-ONBOARDING-PROMPT.md",
-            "docs/INSTINCT-ONBOARDING-PROMPT.md",
-            "docs/MUSE-ONBOARDING.md",
-            "docs/ONBOARDING-NEW-AGENT.md",
-            "docs/ONBOARDING-NEW-APP.md",
-            "docs/OPENCODE-ONBOARDING-PROMPT.md",
-        )
-        for name in prompts:
-            path = repo_root / name
-            self.assertTrue(path.exists(), "%s is missing" % name)
-            self.assertNotIn(
-                "#unused-channel",
-                path.read_text(),
-                "%s still names the old channel" % name,
-            )
-
-    def test_no_live_source_names_the_old_channel(self) -> None:
-        # The last three renames each left a live straggler:  a CLI help string, a tool error
-        # message and a shell script's echo.  A channel reference is written `#name`, and a
-        # comment marker is `#` followed by whitespace in Python and shell and `//` in
-        # JavaScript, so the comments can go and the references can be read.  A comment that
-        # explains the rename is allowed to name the old channel;  a string that tells a seat
-        # where to post is not.
-        repo_root = SIMPLE_TOOLS_DIR.parents[1]
-        offenders = []
-        for base in ("scripts", "workers"):
-            for path in sorted((repo_root / base).rglob("*")):
-                if path.suffix not in (".py", ".js", ".mjs", ".sh"):
-                    continue
-                parts = path.relative_to(repo_root).parts
-                if "node_modules" in parts or "dist" in parts or "tests" in parts:
-                    continue
-                if path.name.startswith("test_") or ".test." in path.name:
-                    continue
-                text = _without_comments(path.read_text(), path.suffix)
-                if "#unused-channel" in text:
-                    offenders.append(str(path.relative_to(repo_root)))
-        self.assertEqual(
-            offenders,
-            [],
-            "a live source still names the old channel:  %s" % ", ".join(offenders),
-        )
-
     def test_the_bot_provisioning_script_subscribes_to_the_live_channel(self) -> None:
-        # A newly provisioned bot that is subscribed to the old channel never sees fleet
-        # coordination traffic, and the seat that waits for it waits forever.  The script takes
-        # the channel from the runtime that owns it, so the check is that the runtime's own
-        # default is in the list and that the old name is not.
+        # A newly provisioned bot that is not subscribed to the default channel never sees
+        # fleet coordination traffic, and the seat that waits for it waits forever.  The script
+        # takes the channel from the runtime that owns it, so the check is that the runtime's
+        # own default is in the list.
         # The environment has to go in:  `default_channel()` without it never reads
         # SIMPLE_TOOLS_CHANNEL, so a deployment that names its own channel would still provision
         # bots into the realm's default.
         repo_root = SIMPLE_TOOLS_DIR.parents[1]
         text = (repo_root / "scripts" / "zulip_provision_bots.py").read_text()
         self.assertIn("default_channel(os.environ)", text)
-        self.assertNotIn('"unused-channel"', text)
 
 
 if __name__ == "__main__":

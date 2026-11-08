@@ -16,7 +16,7 @@ import { FakeLinear, TOKEN_URL, GRAPHQL_URL, opOf } from "./fake-linear.mjs";
 import { testEnv } from "./helpers.mjs";
 import { memoryQuota } from "./quota-helper.mjs";
 import {
-  LINEAR_TOOLS, LINEAR_SCOPE, FLAT_LABELS, LinearClient, LinearError, appNameOk, seatTagForSeat, routeApp, commentId,
+  LINEAR_TOOLS, LINEAR_SCOPE, FLAT_LABELS, LinearClient, LinearError, appNameOk, seatTagForSeat, routeApp, commentId, stableUuid, stableRelationId,
   neutralizeLinearMentions, linearGraphqlErrorMeta, mapLinearError, linearCommentCreateInput, M_COMMENT,
   LINEAR_SECRETS, LINEAR_SEATS, OWN_APP_LINEAR_PREFIXES,
 } from "../src/linear.js";
@@ -673,6 +673,15 @@ test("the same comment twice sends one comment id, and the second call returns t
   assert.match(first.id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
 });
 
+// The text the stored fingerprints were first made under (see ID_NAMESPACE in src/linear.js).
+const STORED_NAMESPACE = ["agent", "sync", "mcp"].join("-");
+
+test("stored Linear ids keep their original values, so a repeated create updates the same row", async () => {
+  // Pinned from the namespace the ids were first minted under.  Renaming the Worker must not change them.
+  assert.equal(await stableUuid("issue", "BF:slug:uid-1"), "93d67229-42e3-459b-ada7-22480b7ea0fb");
+  assert.equal(await stableRelationId("issue-1", "issue-2"), "f6112e44-f4a0-4c65-906f-31427d96fb26");
+});
+
 test("commentId is fixed per issue, seat, verb, body and session, and different the next day", async () => {
   const at = (body, { day = "2026-10-09", session = "s-1" } = {}) => commentId("issue-1", "GROK-WEB", "claim", body, session, day);
   const today = await at("CLAIMED");
@@ -991,7 +1000,7 @@ async function maHarness() {
   h.fake.addLabel("seat:MA");
   h.fake.issued.push("tok-ma");
   const t0 = Date.parse("2026-10-09T10:00:00Z") / 1000;
-  const fp = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`simple-tools-mcp:linear:MA:${CLIENT_ID}:${CLIENT_SECRET}`)).then((b) => [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, "0")).join("").slice(0, 16));
+  const fp = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${STORED_NAMESPACE}:linear:MA:${CLIENT_ID}:${CLIENT_SECRET}`)).then((b) => [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, "0")).join("").slice(0, 16));
   await h.gate.linearTokenSet({ access_token: "tok-ma", minted_at: t0, expires_at: t0 + 30 * 86_400, mint_count: 1, cred_fp: fp });
   return h;
 }
@@ -1010,7 +1019,7 @@ test("MA claim without its claim label says the app cannot delegate, not that th
   const { tools, fake } = harness({ seat: "MA", viewer: { id: "u-ma", name: "Muse Assist (MA)", app: true } });
   const t0 = Date.parse("2026-10-09T10:00:00Z") / 1000;
   fake.issued.push("tok-ma");
-  const fp = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`simple-tools-mcp:linear:MA:${CLIENT_ID}:${CLIENT_SECRET}`)).then((b) => [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, "0")).join("").slice(0, 16));
+  const fp = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${STORED_NAMESPACE}:linear:MA:${CLIENT_ID}:${CLIENT_SECRET}`)).then((b) => [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, "0")).join("").slice(0, 16));
   await tools.gate.linearTokenSet({ access_token: "tok-ma", minted_at: t0, expires_at: t0 + 30 * 86_400, mint_count: 1, cred_fp: fp });
   fake.addIssue({ id: "issue-402", identifier: "AFC-402", team: "AFC" });
   const error = toolError(await tools.call("linear_claim", { id: "AFC-402" }), "invalid_argument");

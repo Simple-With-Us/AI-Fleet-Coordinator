@@ -93,7 +93,7 @@ class ChatInspectionTests(ListenerHarness):
         fake_muse = FakeMuseRunner(outputs, on_run=after_first)
         daemon = self.daemon(muse_runner=fake_muse)
         self.assertTrue(daemon.connect_seat("CLAUDE"), daemon.seats["CLAUDE"].error)
-        daemon._pinned_muse = lambda _runner: ("muse-binary", None)
+        daemon._pinned_muse = lambda _runner: ("muse-binary", None, None)
         daemon.takeover = lambda _runner, _pending: None
         daemon.history = lambda _runner, _pending: [
             {"id": 55, "sender_id": 12, "client": "web", "content": "inspect the relevant existing chat"}
@@ -102,7 +102,7 @@ class ChatInspectionTests(ListenerHarness):
         daemon._chat_catalog = catalog
         now = self.clock.time()
         pending = W.Pending("inspect-wake", "CLAUDE",
-                            {"channel": "work-in-progress", "topic": "inspection", "type": "stream"},
+                            {"channel": "simple-tools", "topic": "inspection", "type": "stream"},
                             owner=owner, now=now, due=now)
         pending.add({"id": 55, "ts": now}, owner)
         return daemon, fake_muse, catalog, pending

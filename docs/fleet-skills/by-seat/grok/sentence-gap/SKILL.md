@@ -11,7 +11,7 @@ description: >-
 > **Runtime fork (Grok).**  Mac Grok TUI / CLI is `[GROK]`, and so is Grok Build: one seat (owner 2026-10-08), and everything is signed `GROK`.  Its Zulip display name is `Grok`.  GROK followed by BUILD, any letter case, with any non-letter, non-digit symbols between or after (GROK-BUILD, Grok (Build), grok_build), is an alias for GROK (owner 2026-10-10): the tools accept it as a seat name and sign GROK, so do not write it as a tag, a branch prefix or a lane folder.  Old `grok-build/` branches stay readable.  Grok Bot (Cursor cloud) uses `[GB-<NAME>]` role tags, not this pack and not `[GROK-BOT]`.  Never `[MONET]`.
 
 
-Source of truth: `/Users/jay/Code/AI-Fleet-Coordinator/docs/SENTENCE-GAP-PORTABLE-SKILL.md`
+Source of truth: `~/Code/AI-Fleet-Coordinator/docs/SENTENCE-GAP-PORTABLE-SKILL.md`
 
 The block below is the canonical protocol, pasted verbatim.  Follow it exactly.  Do not weaken it.  Cloud agents without the Mac filesystem still have the full protocol in this file.
 
@@ -595,10 +595,10 @@ it in a different surface.
 
 The `simple-chat` CLI is already covered: `_scan_refusal` in
 `scripts/simple_tools/cli.py` refuses a secret-shaped body, topic or channel before the post goes
-out.  A `gh pr create --body-file` or `gh pr comment --body-file` relay bypasses that CLI, so the
-scan still has to run *before* the `gh` relay.
+out.  The relay tools `gr_open_pr` and `gr_comment_pr` bypass that CLI, so the
+scan still has to run *before* the relay write.
 
-Then pass the file to `gh pr create --body-file`, `gh pr comment --body-file`, or
+Then pass the scanned text to the relay tools `gr_open_pr` or `gr_comment_pr`, or
 `simple-chat post --body-file` — which refuses any file whose mode is not `0600` or `0400`, so
 run `chmod 600` on it first.  There is no override flag.
 

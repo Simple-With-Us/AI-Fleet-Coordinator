@@ -17,7 +17,6 @@ import threading
 import tomllib
 import unittest
 import urllib.parse
-import uuid
 from pathlib import Path
 
 from simple_tools import config as C
@@ -28,6 +27,7 @@ FIXTURE = Path(__file__).resolve().parent / "fixtures" / "server-listener-live-o
 TARGETS = ["JET"] + ["GB-" + r for r in ("DIRECTOR", "FIXER", "DESIGNER", "COMPILER", "HOUSEKEEPER", "PUBLISHER",
                                           "DEPLOYER", "MONITOR", "PLUMBER", "ORACLE", "TRADER", "ENGINEER")]
 UNTOUCHED = ["MA", "GROK-WEB", "WISE", "ECHO"]
+INFISICAL_PROJECT_ID = "00000000-0000-4000-8000-000000000042"
 
 
 def _load(name: str):
@@ -47,19 +47,18 @@ def folder(path: str) -> str:
 
 
 # --------------------------------------------------------------------------------------------
-# A loopback Infisical:  universal-auth login, then one folder of raw secrets
+# A loopback Infisical:  direct service-token bearer, then one folder of raw secrets
 # --------------------------------------------------------------------------------------------
 
 class FakeInfisical:
-    def __init__(self, client_id: str, client_secret: str, secrets_map: dict[str, str],
-                 operator: dict[str, str] | None = None) -> None:
+    def __init__(self, client_id: str, client_secret: str, secrets_map: dict[str, str]) -> None:
         self.client_id, self.client_secret, self.secrets = client_id, client_secret, secrets_map
-        # The Fleet-OPS project's /zulip_operator folder;  None is a host whose project has no such folder.
-        self.operator = operator
-        self.token = "tok-" + secrets.token_hex(16)
+        self.token = "st." + "service-token-fixture-value"
         self.login_status = 200
         self.read_failures = 0          # 5xx answers before a good read
         self.requests: list[tuple[str, str]] = []
+        self.metadata_override: dict[str, object] = {}
+        self.provenance_override: dict[str, str] = {}
         fake = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -77,28 +76,44 @@ class FakeInfisical:
             def do_POST(self) -> None:
                 fake.requests.append(("POST", self.path))
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-                if self.path != "/api/v1/auth/universal-auth/login" or fake.login_status != 200:
-                    return self._send(fake.login_status if fake.login_status != 200 else 404,
-                                      {"message": "refused " + body.get("clientSecret", "")})
-                if (body.get("clientId"), body.get("clientSecret")) != (fake.client_id, fake.client_secret):
-                    return self._send(401, {"message": "bad identity"})
-                self._send(200, {"accessToken": fake.token, "expiresIn": 7200})
+                return self._send(404, {"message": "login route is not available"})
 
             def do_GET(self) -> None:
                 fake.requests.append(("GET", self.path))
                 if self.headers.get("Authorization") != "Bearer " + fake.token:
                     return self._send(401, {"message": "no token"})
-                if fake.read_failures:
+                if self.path == "/api/v2/service-token":
+                    metadata = {
+                        "id": "synthetic-token-id",
+                        "name": "synthetic-listener-reader",
+                        "projectId": INFISICAL_PROJECT_ID,
+                        "workspace": INFISICAL_PROJECT_ID,
+                        "scopes": [
+                            {"environment": "prod", "secretPath": "/zulip"},
+                            {"environment": "prod", "secretPath": "/operator"},
+                        ],
+                        "permissions": ["read"],
+                        "expiresAt": "2099-01-01T00:00:00Z",
+                    }
+                    metadata.update(fake.metadata_override)
+                    return self._send(200, metadata)
+                if fake.read_failures and self.path.startswith("/api/v3/secrets/raw?"):
                     fake.read_failures -= 1
                     return self._send(503, {"message": "busy"})
-                if "secretPath=%2Fzulip_operator" in self.path:
-                    if fake.operator is None or "environment=prod" not in self.path:
-                        return self._send(404, {"message": "no folder"})
-                    return self._send(200, {"secrets": [{"secretKey": k, "secretValue": v}
-                                                        for k, v in fake.operator.items()]})
-                if "secretPath=%2Fzulip" not in self.path or "environment=prod" not in self.path:
+                requested_path = folder(self.path)
+                if requested_path not in ("/zulip", "/operator") or "environment=prod" not in self.path:
                     return self._send(404, {"message": "no folder"})
-                self._send(200, {"secrets": [{"secretKey": k, "secretValue": v} for k, v in fake.secrets.items()]})
+                self._send(200, {"secrets": [
+                    {
+                        "secretKey": k,
+                        "secretValue": v,
+                        "workspace": fake.provenance_override.get("workspace", INFISICAL_PROJECT_ID),
+                        "environment": "prod",
+                        "secretPath": requested_path,
+                        "type": "shared",
+                    }
+                    for k, v in fake.secrets.items()
+                ]})
 
         self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -128,16 +143,15 @@ class InfisicalEnvTests(unittest.TestCase):
             "ZULIP_ALERT_GB_FIXER_KEY": "crsr_" + secrets.token_hex(16),
             "ZULIP_ALERT_GB_FIXER_HEADER": "Authorization: Bearer crsr_never",
             "ZULIP_JET_EMAIL": "openai-dot-bot@zulip.test",
-            "ZULIP_BF_COMPILER_API_KEY": "bf-" + secrets.token_hex(8),     # a BotFleet bot:  not a server seat
-            "ZULIP_CLAUDE_API_KEY": "zk-" + secrets.token_hex(8),         # CLAUDE:  a server seat now
-            "ZULIP_GROK_BUILD_API_KEY": "gb-" + secrets.token_hex(8),     # GROK-BUILD:  on no instance
+            "ZULIP_BF_BUILDER_API_KEY": "bf-" + secrets.token_hex(8),      # the retired BotFleet seat:  not a server seat
+            "ZULIP_CLAUDE_API_KEY": "mac-" + secrets.token_hex(8),         # a Mac seat
             "ZULIP_SITE": "https://evil.test",                             # never from Infisical
             "PATH": "/nowhere",
         }
 
     def env(self, fake: FakeInfisical | None = None, **extra: str) -> dict[str, str]:
-        env = {"INFISICAL_CLIENT_ID": self.cid, "INFISICAL_CLIENT_SECRET": self.csecret,
-               "INFISICAL_PROJECT_ID": "proj-1", "PATH": "%s:/usr/bin:/bin" % os.path.dirname(sys.executable),
+        env = {"INFISICAL_TOKEN": "st.service-token-fixture-value",
+               "INFISICAL_PROJECT_ID": INFISICAL_PROJECT_ID, "PATH": "%s:/usr/bin:/bin" % os.path.dirname(sys.executable),
                "HOME": str(self.tmp), "ZULIP_SITE": "https://simplewithus.zulipchat.com"}
         if fake:
             env["INFISICAL_API_URL"] = fake.url
@@ -148,15 +162,15 @@ class InfisicalEnvTests(unittest.TestCase):
         with FakeInfisical(self.cid, self.csecret, self.values) as fake:
             out, line = IE.build_env(self.env(fake, ZULIP_GB_FIXER_API_KEY="stale-coolify-copy"))
         for name in ("ZULIP_GB_FIXER_EMAIL", "ZULIP_GB_FIXER_API_KEY", "ZULIP_ALERT_GB_FIXER_ENDPOINT",
-                     "ZULIP_ALERT_GB_FIXER_KEY", "ZULIP_JET_EMAIL", "ZULIP_CLAUDE_API_KEY"):
+                     "ZULIP_ALERT_GB_FIXER_KEY", "ZULIP_JET_EMAIL"):
             self.assertEqual(out[name], self.values[name], "%s comes from Infisical, which wins" % name)
-        for name in ("ZULIP_ALERT_GB_FIXER_HEADER", "ZULIP_BF_COMPILER_API_KEY", "ZULIP_GROK_BUILD_API_KEY"):
+        for name in ("ZULIP_ALERT_GB_FIXER_HEADER", "ZULIP_BF_BUILDER_API_KEY", "ZULIP_CLAUDE_API_KEY"):
             self.assertNotIn(name, out)
         self.assertEqual(out["ZULIP_SITE"], "https://simplewithus.zulipchat.com")
         self.assertNotEqual(out["PATH"], "/nowhere")
         self.assertNotIn("INFISICAL_CLIENT_ID", out)
         self.assertNotIn("INFISICAL_CLIENT_SECRET", out)
-        self.assertIn("loaded 6 variables from Infisical (prod /zulip; 1 replaced a container value, 5 other", line)
+        self.assertIn("loaded 5 variables from Infisical (prod /zulip; 1 replaced a container value, 5 other", line)
         for value in list(self.values.values()) + [self.csecret, fake.token]:
             self.assertNotIn(value, line)
 
@@ -168,154 +182,67 @@ class InfisicalEnvTests(unittest.TestCase):
         self.assertEqual(out["SENTRY_FLEET_DSN"], "https://k@o1.ingest.us.sentry.io/1")
         self.assertNotIn("SENTRY_API_TOKEN", out)
         self.assertNotIn("SIMPLE_TOOLS_SENTRY_DSN_OTHER", out)
-        self.assertIn("loaded 7 variables", line)
+        self.assertIn("loaded 6 variables", line)
         self.assertNotIn("k@o1", line)
 
-    def test_a_refused_login_falls_back_to_the_container_environment_without_a_body(self) -> None:
-        with FakeInfisical(self.cid, "other-secret", self.values) as fake:
-            out, line = IE.build_env(self.env(fake, ZULIP_GB_FIXER_API_KEY="coolify-copy"))
-        self.assertEqual(line, "Infisical load failed (login: HTTP 401); starting with the container environment")
-        self.assertEqual(out["ZULIP_GB_FIXER_API_KEY"], "coolify-copy")
-        self.assertNotIn("INFISICAL_CLIENT_SECRET", out)
+    def test_missing_service_token_fails_closed_before_any_request(self) -> None:
+        with FakeInfisical(self.cid, self.csecret, self.values) as fake:
+            env = self.env(fake, ZULIP_GB_FIXER_API_KEY="coolify-copy")
+            env.pop("INFISICAL_TOKEN")
+            with self.assertRaisesRegex(IE.LoadError, "missing INFISICAL_TOKEN"):
+                IE.build_env(env)
 
     def test_a_busy_read_is_retried_once(self) -> None:
         with FakeInfisical(self.cid, self.csecret, self.values) as fake:
             fake.read_failures = 1
             out, line = IE.build_env(self.env(fake), sleep=lambda s: None)
-        self.assertIn("loaded 6 variables", line)
+        self.assertIn("loaded 5 variables", line)
         # The /zulip read is retried once;  then the notes-queue keys' own folder is read once (AFC-486).
-        self.assertEqual([m for m, _ in fake.requests], ["POST", "GET", "GET", "GET"])
-        self.assertEqual([folder(p) for m, p in fake.requests if m == "GET"], ["/zulip", "/zulip", "/operator"])
+        self.assertEqual([m for m, _ in fake.requests], ["GET"] * 5)
+        raw_paths = [folder(p) for m, p in fake.requests if "/api/v3/secrets/raw?" in p]
+        self.assertEqual(raw_paths, ["/zulip", "/zulip", "/operator"])
+
+    def test_token_metadata_project_mismatch_stops_before_secret_values(self) -> None:
+        with FakeInfisical(self.cid, self.csecret, self.values) as fake:
+            fake.metadata_override = {"projectId": "wrong-project"}
+            with self.assertRaisesRegex(IE.LoadError, "project identity did not match"):
+                IE.build_env(self.env(fake))
+        self.assertEqual([path for _, path in fake.requests], ["/api/v2/service-token"])
+
+    def test_secret_record_provenance_mismatch_fails_closed(self) -> None:
+        with FakeInfisical(self.cid, self.csecret, self.values) as fake:
+            fake.provenance_override = {"workspace": "wrong-project"}
+            with self.assertRaisesRegex(IE.LoadError, "invalid or unverified listing"):
+                IE.build_env(self.env(fake))
+        raw_paths = [folder(path) for _, path in fake.requests if "/api/v3/secrets/raw?" in path]
+        self.assertEqual(raw_paths, ["/zulip"])
 
     def test_a_plain_http_api_that_is_not_loopback_is_refused(self) -> None:
-        out, line = IE.build_env(self.env(INFISICAL_API_URL="http://infisical.example.com/api"))
-        self.assertEqual(line, "Infisical load failed (INFISICAL_API_URL must be an https URL); starting with the "
-                               "container environment")
-        self.assertNotIn("INFISICAL_CLIENT_SECRET", out)
+        with self.assertRaisesRegex(IE.LoadError, "must be an https URL"):
+            IE.build_env(self.env(INFISICAL_API_URL="http://infisical.example.com/api"))
 
     def test_an_incomplete_identity_is_not_used(self) -> None:
         env = self.env()
         env.pop("INFISICAL_PROJECT_ID")
-        out, line = IE.build_env(env)
-        self.assertIn("Infisical not used (INFISICAL_PROJECT_ID not set)", line)
-        self.assertNotIn("INFISICAL_CLIENT_SECRET", out)
+        with self.assertRaisesRegex(IE.LoadError, "missing INFISICAL_PROJECT_ID"):
+            IE.build_env(env)
 
     def test_the_allowlist_follows_the_partition(self) -> None:
         names = IE.allowed_names(IE.server_codes(IE.PARTITION_DEFAULT))
         self.assertIn("ZULIP_ALERT_GB_TRADER_KEY", names)
         self.assertIn("JET_ROUTINE_KEY", names)
         self.assertIn("ZULIP_GROK_WEB_API_KEY", names)
+        # Every live BotFleet seat is a server seat now (owner, Fri, Nov 6), so its pair loads too.
+        self.assertIn("ZULIP_BF_COMPILER_EMAIL", names)
+        self.assertIn("ZULIP_BF_TRADER_API_KEY", names)
         # The Operator's own Zulip identity is the host's to provide:  a user id and an address,
         # never a credential, so they are shared names the loader copies from the store.
         self.assertIn("OPERATOR_ZULIP_USER_ID", names)
         self.assertIn("OPERATOR_ZULIP_EMAIL", names)
-        # CLAUDE moved to the server in the single-server consolidation, so its names load there now.
-        self.assertIn("ZULIP_CLAUDE_API_KEY", names)
-        self.assertIn("CLAUDE_ZULIP_KEY", names)
-        for name in ("ZULIP_GROK_BUILD_API_KEY", "ZULIP_BF_COMPILER_EMAIL", "ZULIP_EMAIL", "ZULIP_API_KEY",
-                     "ZULIP_SITE", "ZULIP_ALERT_GB_TRADER_HEADER"):
+        for name in ("ZULIP_CLAUDE_API_KEY", "ZULIP_BF_BUILDER_EMAIL", "ZULIP_ZC_API_KEY", "ZULIP_KIMI_API_KEY",
+                     "ZULIP_AMP_API_KEY", "ZULIP_EMAIL", "ZULIP_API_KEY", "ZULIP_SITE",
+                     "ZULIP_ALERT_GB_TRADER_HEADER"):
             self.assertNotIn(name, names)
-
-    # Runtime-derived fixture id:  deterministic, no committed inventory-shaped literal.
-    FLEET_OPS = str(uuid.uuid5(uuid.NAMESPACE_URL, "simple-tools/tests/server-rollout/fleet-ops"))
-
-    def operator_folder_reads(self, fake: FakeInfisical) -> list[str]:
-        return [p for m, p in fake.requests if m == "GET" and "zulip_operator" in p]
-
-    def test_the_operator_service_identity_loads_from_its_own_project(self) -> None:
-        ops = {
-            "ZULIP_OPERATOR_EMAIL": "operator-bot@zulip.test",
-            "ZULIP_OPERATOR_API_KEY": "zk-" + secrets.token_hex(12),
-            "OPERATOR_ZULIP_USER_ID": "1217148",
-            "OPERATOR_ZULIP_EMAIL": "operator-bot@zulip.test",
-            "ZULIP_CLAUDE_API_KEY": "not-the-operator-folder's-name",  # not a service name:  dropped here
-        }
-        with FakeInfisical(self.cid, self.csecret, self.values, operator=ops) as fake:
-            out, line = IE.build_env(self.env(fake, INFISICAL_FLEET_OPS_PROJECT_ID=self.FLEET_OPS))
-        for name in ("OPERATOR_ZULIP_USER_ID", "OPERATOR_ZULIP_EMAIL"):
-            self.assertEqual(out[name], ops[name], "%s comes from the Fleet-OPS folder" % name)
-        # The credential pair is NEVER injected into the environment, even though the folder
-        # carries it:  the Operator's credentials reach the daemon only through the
-        # scoped-service-token reader, per the owner's clarified normal method.
-        self.assertNotIn("ZULIP_OPERATOR_EMAIL", out)
-        self.assertNotIn("ZULIP_OPERATOR_API_KEY", out)
-        self.assertEqual(out["ZULIP_CLAUDE_API_KEY"], self.values["ZULIP_CLAUDE_API_KEY"],
-                         "a non-service name in the folder is never injected")
-        self.assertIn("Operator service identity from /zulip_operator: 2 of 2", line)
-        reads = self.operator_folder_reads(fake)
-        self.assertEqual(len(reads), 1)
-        self.assertIn("workspaceId=%s" % self.FLEET_OPS, reads[0])
-        for value in ops.values():
-            self.assertNotIn(value, line)
-
-    def test_a_folder_pin_that_disagrees_with_the_host_pin_is_refused(self) -> None:
-        ops = {
-            "ZULIP_OPERATOR_EMAIL": "operator-bot@zulip.test",
-            "ZULIP_OPERATOR_API_KEY": "zk-" + secrets.token_hex(12),
-            "OPERATOR_ZULIP_USER_ID": "1217148",
-            "OPERATOR_ZULIP_EMAIL": "other-bot@zulip.test",
-        }
-        env = self.env  # bound before the with, for readability below
-        with FakeInfisical(self.cid, self.csecret, self.values, operator=ops) as fake:
-            out, line = IE.build_env(env(fake, INFISICAL_FLEET_OPS_PROJECT_ID=self.FLEET_OPS,
-                                         OPERATOR_ZULIP_EMAIL="operator-bot@zulip.test"))
-        self.assertNotIn("OPERATOR_ZULIP_USER_ID", out, "both pins are refused on a disagreement")
-        self.assertEqual(out["OPERATOR_ZULIP_EMAIL"], "operator-bot@zulip.test",
-                         "the host keeps its own pin;  the folder never overrides it")
-        self.assertNotIn("ZULIP_OPERATOR_API_KEY", out, "the pair never loads, pin or no pin")
-        self.assertIn("Operator service pins refused (folder pin disagrees with the host pin)", line)
-        self.assertNotIn(ops["ZULIP_OPERATOR_API_KEY"], line)
-        self.assertNotIn("other-bot@zulip.test", line)
-
-    def test_the_operator_credential_pair_is_never_injected(self) -> None:
-        # Even with no pins anywhere, the folder's credential pair does not enter the
-        # environment:  no Zulip key pair rides env on the normal service-token path.
-        ops = {
-            "ZULIP_OPERATOR_EMAIL": "someone-else@zulip.test",
-            "ZULIP_OPERATOR_API_KEY": "zk-" + secrets.token_hex(12),
-        }
-        with FakeInfisical(self.cid, self.csecret, self.values, operator=ops) as fake:
-            out, line = IE.build_env(self.env(fake, INFISICAL_FLEET_OPS_PROJECT_ID=self.FLEET_OPS))
-        self.assertNotIn("ZULIP_OPERATOR_API_KEY", out)
-        self.assertNotIn("ZULIP_OPERATOR_EMAIL", out)
-        self.assertNotIn(ops["ZULIP_OPERATOR_API_KEY"], line)
-        self.assertNotIn("someone-else@zulip.test", line)
-
-    def test_a_non_numeric_operator_user_id_is_refused_alone(self) -> None:
-        ops = {
-            "ZULIP_OPERATOR_EMAIL": "operator-bot@zulip.test",
-            "ZULIP_OPERATOR_API_KEY": "zk-" + secrets.token_hex(12),
-            "OPERATOR_ZULIP_USER_ID": "not-a-number",
-            "OPERATOR_ZULIP_EMAIL": "operator-bot@zulip.test",
-        }
-        with FakeInfisical(self.cid, self.csecret, self.values, operator=ops) as fake:
-            out, line = IE.build_env(self.env(fake, INFISICAL_FLEET_OPS_PROJECT_ID=self.FLEET_OPS))
-        self.assertNotIn("OPERATOR_ZULIP_USER_ID", out)
-        self.assertNotIn("ZULIP_OPERATOR_API_KEY", out, "the pair never loads")
-        self.assertIn("OPERATOR_ZULIP_USER_ID refused (not a positive id)", line)
-        self.assertNotIn("not-a-number", line)
-
-    def test_no_operator_folder_is_a_note_not_a_stop(self) -> None:
-        with FakeInfisical(self.cid, self.csecret, self.values) as fake:  # operator=None: no such folder
-            out, line = IE.build_env(self.env(fake, INFISICAL_FLEET_OPS_PROJECT_ID=self.FLEET_OPS))
-        self.assertNotIn("ZULIP_OPERATOR_API_KEY", out)
-        self.assertIn("Operator service identity not loaded", line)
-        self.assertEqual(len(self.operator_folder_reads(fake)), 1, "the folder was asked for once")
-
-    def test_the_allowlist_covers_every_name_the_sample_seats_read(self) -> None:
-        # The loader and the shipped config must agree exactly:  every email_env/key_env a server
-        # seat section reads is allowlisted, or the loader never injects it and the seat cannot
-        # connect.  GROK's section reads the GROK_BUILD stem names (its bot file is Grok-Build).
-        sample = tomllib.loads((SERVER_DIR / "listener.toml").read_text())
-        names = IE.allowed_names(IE.server_codes(IE.PARTITION_DEFAULT))
-        read = set()
-        for section in sample.get("seat", {}).values():
-            for field in ("email_env", "key_env"):
-                if section.get(field):
-                    read.add(section[field])
-        self.assertTrue(read, "the sample's seat sections name their variables")
-        self.assertEqual(read - names, set())
-        self.assertIn("GROK_BUILD_ZULIP_KEY", read & names)
 
     # ---- the launcher and the entrypoint as processes
 
@@ -330,7 +257,7 @@ class InfisicalEnvTests(unittest.TestCase):
         self.assertEqual(got, {"ZULIP_ALERT_GB_FIXER_KEY": self.values["ZULIP_ALERT_GB_FIXER_KEY"],
                                "INFISICAL_CLIENT_SECRET": None, "INFISICAL_CLIENT_ID": None,
                                "ZULIP_ALERT_GB_FIXER_HEADER": None})
-        self.assertIn("simple-chat: loaded 6 variables from Infisical", run.stderr)
+        self.assertIn("simple-chat: loaded 5 variables from Infisical", run.stderr)
         self.assertNotIn(self.csecret, run.stderr)
 
     def entrypoint(self, env: dict[str, str]) -> subprocess.CompletedProcess:
@@ -343,36 +270,42 @@ class InfisicalEnvTests(unittest.TestCase):
             run = self.entrypoint(self.env(fake))
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertFalse(json.loads(run.stdout)["running"], "simple-chat daemon status --json ran with the given arguments")
-        self.assertIn("simple-chat: loaded 6 variables from Infisical", run.stderr)
-        self.assertEqual([p.split("?")[0] for _, p in fake.requests],
-                         ["/api/v1/auth/universal-auth/login", "/api/v3/secrets/raw", "/api/v3/secrets/raw"])
-        # one login, then /zulip and the notes-queue keys' /operator folder (AFC-486)
-        self.assertEqual([folder(p) for m, p in fake.requests if m == "GET"], ["/zulip", "/operator"])
+        self.assertIn("simple-chat: loaded 5 variables from Infisical", run.stderr)
+        self.assertEqual([p.split("?")[0] for _, p in fake.requests if "/api/v3/secrets/raw?" in p],
+                         ["/api/v3/secrets/raw", "/api/v3/secrets/raw"])
+        # /zulip and the notes-queue keys' /operator folder (AFC-486)
+        self.assertEqual(
+            [folder(p) for m, p in fake.requests if "/api/v3/secrets/raw?" in p],
+            ["/zulip", "/operator"],
+        )
+        raw_queries = [urllib.parse.parse_qs(urllib.parse.urlsplit(p).query)
+                       for _, p in fake.requests if "/api/v3/secrets/raw?" in p]
+        for query in raw_queries:
+            self.assertEqual(query["expandSecretReferences"], ["false"])
+            self.assertEqual(query["recursive"], ["false"])
+            self.assertEqual(query["include_imports"], ["false"])
 
-    def test_the_entrypoint_without_an_identity_runs_as_before(self) -> None:
+    def test_the_entrypoint_without_a_service_token_fails_closed(self) -> None:
         env = self.env()
-        for name in ("INFISICAL_CLIENT_ID", "INFISICAL_CLIENT_SECRET", "INFISICAL_PROJECT_ID"):
+        for name in ("INFISICAL_TOKEN", "INFISICAL_PROJECT_ID"):
             env.pop(name)
         run = self.entrypoint(env)
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertNotIn("Infisical", run.stderr)
+        self.assertNotEqual(run.returncode, 0)
+        self.assertIn("missing INFISICAL_TOKEN", run.stderr)
 
-    def test_the_entrypoint_with_a_partial_identity_says_so_and_still_runs(self) -> None:
+    def test_the_entrypoint_with_a_service_token_but_no_project_fails_closed(self) -> None:
         env = self.env()
         env.pop("INFISICAL_PROJECT_ID")
         run = self.entrypoint(env)
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertIn("ERROR: Infisical not used (missing: INFISICAL_PROJECT_ID;", run.stderr)
-        self.assertNotIn(self.csecret, run.stderr)
+        self.assertNotEqual(run.returncode, 0)
+        self.assertIn("missing INFISICAL_PROJECT_ID", run.stderr)
 
-    def test_a_project_id_without_client_credentials_fails_loudly_naming_them(self) -> None:
+    def test_a_project_id_without_service_token_fails_loudly(self) -> None:
         env = self.env()
-        env.pop("INFISICAL_CLIENT_ID")
-        env.pop("INFISICAL_CLIENT_SECRET")
+        env.pop("INFISICAL_TOKEN")
         run = self.entrypoint(env)
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertIn("ERROR: Infisical not used (missing: INFISICAL_CLIENT_ID INFISICAL_CLIENT_SECRET;", run.stderr)
-        self.assertIn("NOT in use", run.stderr)
+        self.assertNotEqual(run.returncode, 0)
+        self.assertIn("missing INFISICAL_TOKEN", run.stderr)
 
     def test_the_load_line_counts_gb_seats_with_both_zulip_names_without_values(self) -> None:
         with FakeInfisical(self.cid, self.csecret, self.values) as fake:
@@ -387,9 +320,8 @@ class InfisicalEnvTests(unittest.TestCase):
         with FakeInfisical(self.cid, self.csecret, self.values) as fake:
             url = fake.url
         run = self.entrypoint(self.env(INFISICAL_API_URL=url))        # the fake is stopped:  connection refused
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertIn("Infisical load failed (login: ", run.stderr)
-        self.assertIn("starting with the container environment", run.stderr)
+        self.assertNotEqual(run.returncode, 0, run.stderr)
+        self.assertIn("ERROR: service-token metadata: URLError", run.stderr)
 
 
 # --------------------------------------------------------------------------------------------
@@ -552,13 +484,13 @@ class ApplyLiveConfigTests(unittest.TestCase):
         self.assertTrue(self.live.read_text().endswith(enabled))
 
     def test_a_result_that_would_not_load_is_refused_and_nothing_is_written(self) -> None:
-        # A seat that is on no instance in the server's live file is a partition problem the merge cannot fix.
-        self.live.write_text(self.live.read_text() + '\n[seat.GROK-BUILD]\nbot = "Grok"\nwake = "http"\n')
+        # A Mac seat in the server's live file is a partition problem the merge cannot fix.
+        self.live.write_text(self.live.read_text() + '\n[seat.CLAUDE]\nbot = "Claude"\nwake = "claude"\n')
         before = self.live.read_text()
         code, out = self.run_main("--apply")
         self.assertEqual(code, 2, out)
         self.assertIn("refused:  the result would not load", out)
-        self.assertIn("seat GROK-BUILD", out)
+        self.assertIn("seat CLAUDE", out)
         self.assertEqual(self.live.read_text(), before)
         self.assertEqual(list(self.tmp.glob("*.bak-*")), [])
 

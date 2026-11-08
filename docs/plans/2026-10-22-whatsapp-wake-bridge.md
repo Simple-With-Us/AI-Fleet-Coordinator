@@ -1,7 +1,5 @@
 # AFC-477 WhatsApp Wake Bridge For Jet:  Proposal (pending approval)
 
-Historical identifiers have been redacted. These records do not certify current deployment state.
-
 Thu, Oct 22, 2026, 6:35am.  Linear AFC-477.  Owner:  CLAUDE (session 75771c43).  Status:  proposal pending approval.  Nothing in this document is built, deployed or holding standing access.  The only live work approved so far is the second-event spike, and its exact scope is in section 13.
 
 Every component, route, key and tool name below is a working name.  Section 12 explains why, and lists the names that Jay and Jet choose.
@@ -45,7 +43,7 @@ The event is only a doorbell.  The text never rides in the event and never touch
 
 ## 3. How A Wake Reaches Jet Today
 
-Zulip mention, then the server listener (being renamed the Operator in #851), then a signed `[retired identifier]` POST to `/internal/wake/JET`, then the Worker verifies it (`scripts/simple-tools-mcp/src/wake.js:132`), claims the `wake_id` and POSTs a signed `zulip.mention` event to the callback of the live subscription (`src/events.js:598-622`), and ChatGPT runs a turn in the subscribed conversation.  PR #428 built this, merged Oct 10.  Jet confirmed the route live at 5:55am today (https://simplewithus.zulipchat.com/#narrow/near/633924850).
+Zulip mention, then the server listener (being renamed the Operator in #851), then a signed `simple-tools-wake/1` POST to `/internal/wake/JET`, then the Worker verifies it (`scripts/simple-tools-mcp/src/wake.js:132`), claims the `wake_id` and POSTs a signed `zulip.mention` event to the callback of the live subscription (`src/events.js:598-622`), and ChatGPT runs a turn in the subscribed conversation.  PR #428 built this, merged Oct 10.  Jet confirmed the route live at 5:55am today (https://simplewithus.zulipchat.com/#narrow/near/633924850).
 
 Properties that shape this design, all in `scripts/simple-tools-mcp/src/events.js` at `2af99bec`:
 
@@ -106,7 +104,7 @@ The bridge checks each `GET /agent/v1/updates` answer before it forwards anythin
 
 ### The Worker module (store, event and tools)
 
-- One self-contained module in the hosted MCP Worker (today ST-MCP, Worker script `[retired identifier]`), registered through a small interface (section 12).
+- One self-contained module in the hosted MCP Worker (today ST-MCP, Worker script `simple-tools-mcp`), registered through a small interface (section 12).
 - Signed routes, working paths:  `POST /internal/wa-ingest/JET`, `GET /internal/wa-outbox/JET` (held open up to 25 seconds), `POST /internal/wa-outbox/JET/result` and `POST /internal/wa-heartbeat/JET`.
 - It stores messages, the binding, the dedupe ledger and the send ledger in `wa_`-prefixed tables (section 7).
 - Ingest decides each message in this order, and records the outcome in the 35-day dedupe ledger (section 7) whatever it is:
@@ -136,7 +134,7 @@ The bridge checks each `GET /agent/v1/updates` answer before it forwards anythin
 
 ### Unchanged
 
-The listener and Operator, `daemon.py`, `[seat.JET]`, `[retired identifier]`, `/internal/wake/<SEAT>`, `WAKE_HMAC_KEY_JET`, `JET_ROUTINE_KEY`, the `zulip.mention` schema, its subscription ids, and its tests, including `test_a_jet_mention_wakes_the_hosted_worker_with_an_hmac_signed_body` (`scripts/simple_tools/tests/test_server.py:1433`) and "one live destination per seat" (`scripts/simple-tools-mcp/test/events.test.mjs:433`).
+The listener and Operator, `daemon.py`, `[seat.JET]`, `simple-tools-wake/1`, `/internal/wake/<SEAT>`, `WAKE_HMAC_KEY_JET`, `JET_ROUTINE_KEY`, the `zulip.mention` schema, its subscription ids, and its tests, including `test_a_jet_mention_wakes_the_hosted_worker_with_an_hmac_signed_body` (`scripts/simple_tools/tests/test_server.py:1433`) and "one live destination per seat" (`scripts/simple-tools-mcp/test/events.test.mjs:433`).
 
 Two existing Worker behaviours change, each with regression tests, and the spike exercises both first:  delivery filters by event name, and the cap becomes one conversation per seat with one subscription per event name, so a second conversation is still refused.
 
@@ -386,18 +384,18 @@ Also:
 
 | PR | State | What it means here |
 |---|---|---|
-| #844, the Worker host move (Echo) | Closed.  Superseded by #849, which merged at 6:04am. | The hosted Worker is ST-MCP and answers only at `agents.simplewithus.com`.  The old host gets a 404, with no alias or redirect.  The Worker script name stays `[retired identifier]` so that the `[retired identifier]` Durable Object namespace keeps its state (`wrangler.jsonc:15-24`).  Remote clients must reconnect and re-authorize.  #849 says it was not deployed. |
+| #844, the Worker host move (Echo) | Closed.  Superseded by #849, which merged at 6:04am. | The hosted Worker is ST-MCP and answers only at `agents.simplewithus.com`.  The old host gets a 404, with no alias or redirect.  The Worker script name stays `simple-tools-mcp` so that the `simple-tools-mcp.SeatGate` Durable Object namespace keeps its state (`wrangler.jsonc:15-24`).  Remote clients must reconnect and re-authorize.  #849 says it was not deployed. |
 | #851, Operator rename (MM) | Open, conflicting, changes requested | The listener becomes the Operator (`com.jay.operator`, `operator.service`).  `listener_*` tools become `eavesdropper_*` with no aliases.  Seats may not open DMs (`dm_policy.py`).  Python module names, the `/listener/v1/` read API, the hosted host and CLI binary names are left for later. |
 | #837, hosted listener on Hetzner | Open, preparation only | Moves the listener daemon and its signed read API to a Coolify app on Hetzner.  It says "Nothing about the bridge changes;  seats keep using the Worker MCP as today."  Its layout is "Operator decides, GHR and ST-MCP execute".  GHR is now git-relay and GR-MCP (#848). |
 | #846, Muster Wake Settings (MM) | Open | Reads `~/.simple-tools/listener.toml` and the wake ledgers, and edits seat wake settings and the Operator options. |
 
-What is being renamed or retired:  the [retired identifier] listener and daemon naming (now the Operator), the `listener_*` tools, the `[retired identifier]` host, `[seat.JET]` in `listener.toml`, and probably in time the listener-to-Worker wake path (`[retired identifier]`, `/internal/wake/<SEAT>`, `WAKE_HMAC_KEY_JET` and `JET_ROUTINE_KEY`).
+What is being renamed or retired:  the previous listener and daemon naming (now the Operator), the `listener_*` tools, the previous Worker host, `[seat.JET]` in `listener.toml`, and probably in time the listener-to-Worker wake path (`simple-tools-wake/1`, `/internal/wake/<SEAT>`, `WAKE_HMAC_KEY_JET` and `JET_ROUTINE_KEY`).
 
 What persists for now:  a hosted MCP Worker as the service plane (ST-MCP today), its SeatGate namespace, and MCP Events delivery into Jet's subscription.
 
 ### Rules this design follows
 
-1. **No dependency on retiring surfaces.**  The bridge uses none of these:  `daemon.py`, `listener.toml` or `[seat.JET]`, `[retired identifier]`, `/internal/wake/<SEAT>`, `WAKE_HMAC_KEY_JET`, `JET_ROUTINE_KEY`, the `listener_*` or `eavesdropper_*` tools, the `/listener/v1/` read API, or the Operator's wake ledger and budgets.  Renaming or retiring any of them does not touch the bridge, and the bridge does not block the Operator.
+1. **No dependency on retiring surfaces.**  The bridge uses none of these:  `daemon.py`, `listener.toml` or `[seat.JET]`, `simple-tools-wake/1`, `/internal/wake/<SEAT>`, `WAKE_HMAC_KEY_JET`, `JET_ROUTINE_KEY`, the `listener_*` or `eavesdropper_*` tools, the `/listener/v1/` read API, or the Operator's wake ledger and budgets.  Renaming or retiring any of them does not touch the bridge, and the bridge does not block the Operator.
 2. **One module behind one interface.**  Everything WhatsApp-related in the Worker lives in one directory (working path `scripts/simple-tools-mcp/src/wa/`) and is registered through one call that adds an event definition, three tool specs, the internal routes and its storage tables.  Existing files change only at the registration points (the event registry, route dispatch, policy classification and the tool list) plus the subscription grouping in `src/seat-state.js`, the new `redactSecret` in `src/contract.js` and the owner pin in `src/config.js` and `src/access.js`, as section 5 lists, and tests cover each one.  If ST-MCP is renamed, split or replaced, the module moves as a unit.  If it moves to a different Worker, the bridge changes only its configured base URL and key.
 3. **Storage that can move.**  The tables carry a `wa_` prefix.  A Durable Object namespace cannot be renamed without orphaning its state (`wrangler.jsonc:15-24`), so a move is planned as a drain:  SEND off, let bodies be acknowledged or expire, then export the binding and the ledger hashes to the successor.  Short body retention keeps that move cheap.  Whether the tables sit in SeatGate or in their own Durable Object class is part of the placement choice below.
 4. **No host in code.**  The bridge reads its base URL from configuration, today `https://agents.simplewithus.com`.

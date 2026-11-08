@@ -66,8 +66,8 @@ GROK_SESSIONS = GROK_HOME / "sessions"
 CURSOR_PROJECTS = HOME / ".cursor" / "projects"
 CODEX_SESSIONS = HOME / ".codex" / "sessions"
 GEMINI_HOME = HOME / ".gemini"
-# The protocol document was renamed:  the live copy and the mirror each hold exactly one name now, and the old one
-# is gone.  The fleet points at FLEET-PROTOCOL.md by its current name only.
+# The live copy and the mirror of the protocol document each hold exactly one name.  The fleet points at
+# FLEET-PROTOCOL.md by that name only.
 PROTOCOL_DOC_NAMES = ("FLEET-PROTOCOL.md",)
 EXTRA_DOCS = (
     APPS_DIR / "FLEET-PROTOCOL.md",
@@ -136,11 +136,11 @@ def take_doc_skips() -> list[tuple[str, str]]:
     return out
 
 
-SOURCES = ("linear", "doc", "skill", "memory", "apple-note", "chat-log", "board", "effort-log")
+SOURCES = ("linear", "doc", "skill", "memory", "apple-note", "chat-log")
 # Nightly / `ingest --all`.  chat-log is an infrequent owner-policy scan, not a lesson dump
 # (owner 2026-09-02).  Pass `--source chat-log` explicitly.
-# Retired board/effort-log generators remain explicit-only for migration verification.
-# Never reintroduce their corpus documents through default or --all refreshes.
+# board and effort-log are retired sources (owner 2026-11-03: Linear is the only issue home).
+# Their iter_* readers stay for tests until the data is deleted;  they are not registered.
 NIGHTLY_SOURCES = ("linear", "doc", "skill", "memory", "apple-note")
 
 WARNINGS: list[str] = []
@@ -2490,9 +2490,7 @@ def iter_linear(
 # --------------------------------------------------------------------------- registry
 
 GENERATORS: dict[str, Callable[..., Iterator[Doc]]] = {
-    "board": iter_board,
     "linear": iter_linear,
-    "effort-log": iter_effort_logs,
     "doc": iter_docs,
     "skill": iter_skills,
     "memory": iter_memory,

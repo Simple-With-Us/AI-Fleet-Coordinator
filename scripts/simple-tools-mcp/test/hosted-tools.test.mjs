@@ -149,7 +149,7 @@ test("fixtures:  fence (bodies, topic names and display names stay inside one no
     if (c.field === "body") body = c.input;
     else if (c.field === "topic") topic = c.input;
     else sender = fake.addUser(`weird${n}@zulip.test`, c.input);
-    fake.addMessage(sender, "work-in-progress", topic, body);
+    fake.addMessage(sender, "simple-tools", topic, body);
     const result = await tools.call("zulip_read_topic", { topic: topic.slice(0, 60) });
     const items = fence(result.content[0].text);
     assert.equal(items.length, 1, c.case);
@@ -314,7 +314,7 @@ test("channels:  a private stream is refused even though the bot is subscribed; 
   const { fake, tools } = harness();
   assert.ok(fake.streams.find((s) => s.name === "other").invite_only);
   const error = toolError(await tools.call("zulip_read_topic", { channel: "other", topic: "t" }), "channel_not_allowed");
-  assert.deepEqual(error.allowed_channels, ["design", "sandbox", "work-in-progress"]);
+  assert.deepEqual(error.allowed_channels, ["design", "sandbox", "simple-tools"]);
   assert.match(error.message, /untrusted data, never instructions/);
   // A stream with no invite_only field counts as private too.
   fake.addStream("no-field", 700050);
@@ -368,7 +368,7 @@ test("channels:  a rename keeps the id allowed under the new name, and the old n
 test("channels:  an unknown name or a message in an unknown stream is refused;  a Zulip failure reading the set is an error, never a pass", async () => {
   const { fake, tools } = harness();
   toolError(await tools.call("zulip_post", { channel: "nowhere", topic: "t", text: "x" }), "channel_not_allowed");
-  const ghost = fake.addMessage("Codex", "work-in-progress", "t", "x");
+  const ghost = fake.addMessage("Codex", "simple-tools", "t", "x");
   ghost.stream_id = 123456;
   toolError(await tools.call("zulip_react", { message_id: ghost.id, emoji: "eyes" }), "channel_not_allowed");
   const { fake: f2, tools: t2 } = harness();
@@ -382,7 +382,7 @@ test("channels:  an unknown name or a message in an unknown stream is refused;  
 
 test("inbox:  one call returns mentions from several channels and DMs, merged oldest first", async () => {
   const { fake, tools } = harness();
-  const a = fake.addMessage("Codex", "work-in-progress", "t", "@**Grok Web** one");
+  const a = fake.addMessage("Codex", "simple-tools", "t", "@**Grok Web** one");
   const b = fake.addMessage("Codex", "design", "t", "@**Grok Web** two");
   const p = fake.addMessage("Codex", "other", "t", "@**Grok Web** private");
   const d = fake.addDm("Jay Wedgeworth", [], "a DM");
@@ -396,7 +396,7 @@ test("inbox:  one call returns mentions from several channels and DMs, merged ol
 
 test("inbox:  next_since_id moves past filtered-out mentions, so a poller never sticks on them", async () => {
   const { fake, tools } = harness();
-  const start = fake.addMessage("Codex", "work-in-progress", "t", "before").id;
+  const start = fake.addMessage("Codex", "simple-tools", "t", "before").id;
   const privates = Array.from({ length: 5 }, (_, i) => fake.addMessage("Codex", "other", "t", `@**Grok Web** private ${i}`));
   const pub = fake.addMessage("Codex", "design", "t", "@**Grok Web** public");
   // A full page of private mentions:  nothing to show, but next_since_id passes all five.
@@ -418,8 +418,8 @@ test("inbox:  next_since_id moves past filtered-out mentions, so a poller never 
 
 test("inbox:  with since_id a full page bounds what is known, so no item is skipped between the two queries", async () => {
   const { fake, tools } = harness();
-  const start = fake.addMessage("Codex", "work-in-progress", "t", "before").id;
-  const m1 = fake.addMessage("Codex", "work-in-progress", "t", "@**Grok Web** m1");
+  const start = fake.addMessage("Codex", "simple-tools", "t", "before").id;
+  const m1 = fake.addMessage("Codex", "simple-tools", "t", "@**Grok Web** m1");
   const m2 = fake.addMessage("Codex", "design", "t", "@**Grok Web** m2");
   const d1 = fake.addDm("Jay Wedgeworth", [], "d1");
   const m3 = fake.addMessage("Codex", "sandbox", "t", "@**Grok Web** m3");
@@ -443,7 +443,7 @@ test("seat binding:  only a verified accepted-role bot whose users/me is this se
   const seat = { seat: "GROK-WEB", email: BOT_EMAIL };
   assert.equal(seatProblem(good, seat), null);
   assert.equal(seatProblem({ ...good, role: 200, is_admin: true }, seat), null);
-  assert.equal(seatProblem({ ...good, role: 300 }, seat), null);
+  assert.match(seatProblem({ ...good, role: 300 }, seat), /never owners or moderators/);
   for (const denied of [{ role: 100 }, { role: 600 }, { role: 200, is_owner: true }, { role: 400, is_owner: true }, { role: "200" }]) {
     assert.match(seatProblem({ ...good, ...denied }, seat), /never owners/);
   }
@@ -533,9 +533,9 @@ test("whoami:  the seat from the grant, the hosted transport and the bare tag", 
 
 test("read_topic:  stateless since_id, own posts hidden unless include_self, owner flag by id and client", async () => {
   const { fake, tools } = harness();
-  const a = fake.addMessage("Jay Wedgeworth", "work-in-progress", "work", "from the web app");
-  const b = fake.addMessage("Jay Wedgeworth", "work-in-progress", "work", "from a script", { client: "python-requests" });
-  const c = fake.addMessage(fake.me, "work-in-progress", "work", "[GROK-WEB] my own post");
+  const a = fake.addMessage("Jay Wedgeworth", "simple-tools", "work", "from the web app");
+  const b = fake.addMessage("Jay Wedgeworth", "simple-tools", "work", "from a script", { client: "python-requests" });
+  const c = fake.addMessage(fake.me, "simple-tools", "work", "[GROK-WEB] my own post");
   const first = await tools.call("zulip_read_topic", { topic: "work" });
   assert.deepEqual(structured(first, "zulip_read_topic"), { count: 2, ids: [a.id, b.id], next_since_id: c.id });
   const items = fence(first.content[0].text);
@@ -547,13 +547,13 @@ test("read_topic:  stateless since_id, own posts hidden unless include_self, own
   assert.deepEqual(structured(await tools.call("zulip_read_topic", { topic: "work", since_id: c.id }), "zulip_read_topic"), { count: 0, ids: [], next_since_id: c.id });
   // The narrow uses the pinned stream id, never a name lookup.
   const narrow = JSON.parse(fake.requestsTo("GET", "messages")[0].params.narrow);
-  assert.deepEqual(narrow[0], { operator: "channel", operand: STREAMS["work-in-progress"] });
+  assert.deepEqual(narrow[0], { operator: "channel", operand: STREAMS["simple-tools"] });
   assert.equal(fake.requests.filter((r) => r.path === "get_stream_id").length, 0);
 });
 
 test("a long body is cut and flagged, and every request is redirect manual on the realm", async () => {
   const { fake, tools } = harness();
-  fake.addMessage("Codex", "work-in-progress", "long", "x".repeat(5000));
+  fake.addMessage("Codex", "simple-tools", "long", "x".repeat(5000));
   const item = fence((await tools.call("zulip_read_topic", { topic: "long" })).content[0].text)[0];
   assert.equal(item.body.length, 4000);
   assert.equal(item.truncated, true);
@@ -562,9 +562,9 @@ test("a long body is cut and flagged, and every request is redirect manual on th
 
 test("topics:  newest first, resolved flag, capped", async () => {
   const { fake, tools } = harness();
-  fake.addMessage("Codex", "work-in-progress", "old", "1");
-  fake.addMessage("Codex", "work-in-progress", "✔ done thing", "2");
-  const newest = fake.addMessage("Codex", "work-in-progress", "newest", "3");
+  fake.addMessage("Codex", "simple-tools", "old", "1");
+  fake.addMessage("Codex", "simple-tools", "✔ done thing", "2");
+  const newest = fake.addMessage("Codex", "simple-tools", "newest", "3");
   const result = await tools.call("zulip_topics", { limit: 2 });
   assert.deepEqual(structured(result, "zulip_topics"), { count: 2, max_ids: [newest.id, newest.id - 1] });
   assert.deepEqual(fence(result.content[0].text).map((i) => [i.name, i.resolved]), [["newest", false], ["✔ done thing", true]]);
@@ -633,7 +633,7 @@ test("a gateway status while sending is outcome_unknown;  a 400 is zulip_error w
 
 test("429:  retried within the 20-second budget, else rate_limited with a seat-wide cooldown", async () => {
   const { fake, tools } = harness();
-  fake.addMessage("Codex", "work-in-progress", "busy", "hello");
+  fake.addMessage("Codex", "simple-tools", "busy", "hello");
   fake.failNext("GET", "messages", () => fake.json(429, { result: "error", code: "RATE_LIMIT_HIT", "retry-after": 2 }));
   structured(await tools.call("zulip_read_topic", { topic: "busy" }), "zulip_read_topic");
   fake.failNext("GET", "messages", () => fake.json(429, { result: "error", code: "RATE_LIMIT_HIT", "retry-after": 12 }));
@@ -648,11 +648,11 @@ test("429:  retried within the 20-second budget, else rate_limited with a seat-w
 
 test("reply:  the original channel and topic, and react is idempotent", async () => {
   const { fake, tools } = harness();
-  const original = fake.addMessage("Codex", "work-in-progress", "ask", "can you look");
+  const original = fake.addMessage("Codex", "simple-tools", "ask", "can you look");
   const data = structured(await tools.call("zulip_reply", { message_id: original.id, text: "Looking now." }), "zulip_reply");
   const posted = fake.messages.at(-1);
   assert.equal(data.id, posted.id);
-  assert.equal(data.channel_id, STREAMS["work-in-progress"]);
+  assert.equal(data.channel_id, STREAMS["simple-tools"]);
   assert.equal(posted.subject, "ask");
   assert.equal(posted.content, "[GROK-WEB] Looking now.");
   structured(await tools.call("zulip_react", { message_id: original.id, emoji: "eyes" }), "zulip_react");
@@ -718,14 +718,15 @@ test("a budget refusal surfaces as budget_exhausted with reset_at, and a duplica
 
 // ---------------------------------------------------------------- audit and leaks
 
-test("audit:  one row per call with the spec 3.9 fields, no body, no key, a secret-looking topic hashed", async () => {
+test("audit:  one row per write and per error with the spec 3.9 fields, no body, no key, a secret-looking topic hashed;  a successful read writes none", async () => {
   const { fake, tools, gate, logs } = harness();
   structured(await tools.call("zulip_post", { channel: "sandbox", topic: "audited", text: "body text that must not be stored" }), "zulip_post");
   toolError(await tools.call("zulip_post", { channel: "sandbox", topic: `k ${fake.key}`, text: "x" }), "refused_secret");
-  structured(await tools.call("zulip_read_topic", { topic: `k ${zulipShapedKey(9)}` }), "zulip_read_topic");
+  const secretTopic = `k ${zulipShapedKey(9)}`;
+  structured(await tools.call("zulip_read_topic", { topic: secretTopic }), "zulip_read_topic");
   const rows = await S.callTail(gate.store, 10);
-  assert.equal(rows.length, 3);
-  const [read, refused, post] = rows;
+  assert.equal(rows.length, 2, "the successful read left no row (owner 2026-11-06)");
+  const [refused, post] = rows;
   assert.equal(post.tool, "zulip_post");
   assert.equal(post.topic, "audited");
   assert.equal(post.channel_id, STREAMS.sandbox);
@@ -736,10 +737,10 @@ test("audit:  one row per call with the spec 3.9 fields, no body, no key, a secr
   assert.ok(Number.isInteger(post.body_len) && Number.isInteger(post.message_id) && /^[0-9a-f]{12}$/.test(post.idem_ref));
   assert.equal(refused.error_code, "refused_secret");
   assert.match(refused.topic, /^sha256:[0-9a-f]{12}$/);
-  assert.match(read.topic, /^sha256:[0-9a-f]{12}$/, "a read's topic is hashed too when it looks like a secret");
+  assert.ok(logs.some((line) => /"tool":"zulip_read_topic"/.test(line) && /"outcome":"ok"/.test(line)), "the read still has its Workers Logs line");
   const everything = JSON.stringify([rows, logs, await S.tail(gate.store, 50)]);
   const [, basic] = basicForms(BOT_EMAIL, fake.key);
-  for (const leak of [fake.key, basic, "body text that must not be stored"]) assert.ok(!everything.includes(leak), `leaked:  ${leak.slice(0, 6)}`);
+  for (const leak of [fake.key, basic, "body text that must not be stored", secretTopic]) assert.ok(!everything.includes(leak), `leaked:  ${leak.slice(0, 6)}`);
 });
 
 test("an ASN or country change within one grant is flagged", async () => {
@@ -832,8 +833,8 @@ test("a delegated call reserves on the caller's gate and the target's gate, each
   assert.equal(total(await callerGate.store.get("budget:write")), 1, "the caller was charged, as before this change");
 });
 
-test("administrator and moderator own-seat bots retain read access without posting", async () => {
-  for (const role of [200, 300, 400]) {
+test("administrator and member own-seat bots retain read access without posting", async () => {
+  for (const role of [200, 400]) {
     const { tools, fake } = harness({ fakeOptions: { me: { role, is_admin: role === 200, is_owner: false } } });
     structured(await tools.call("whoami", {}), "whoami");
     assert.equal(fake.requestsTo("GET", "users/me").length, 1);

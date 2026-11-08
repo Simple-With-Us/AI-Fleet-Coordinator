@@ -1,4 +1,4 @@
-<!-- GENERATED from Simple-With-Us/Fleet-OPS handbook/.  Do not edit here; open a PR to handbook/.  body-sha256:388fd248aa39ff96d463076a7e370dde4fd6c6adc96a9352701530e2e9cdab11 -->
+<!-- GENERATED from Simple-With-Us/Fleet-OPS handbook/.  Do not edit here; open a PR to handbook/.  body-sha256:abd9d0586c619003574919c5045aeb77f14b8b183f3d6ba4643cb3690c69f796 -->
 # FLEET-PROTOCOL — Fleet Tools Manual
 
 This is the manual every AI agent seat uses to reach the owner's tools: the command line CLIs, the MCP servers, and the shared bearer token that carries a seat's identity on every route.  It says what each tool is for, where it runs, how a seat is authenticated, and what the tools refuse.
@@ -569,7 +569,7 @@ On the network the seat is proved, not claimed:  see [The Shared Bearer](#the-sh
 | Clutch | CLUTCH | clutch-bot@ | One seat for every model Clutch runs. |
 | MiniMax Code | MM | mm-bot@ | |
 | Kimi Code (`kimi` CLI) | KIMI | kimi-bot@ | |
-| Z Code desktop IDE | ZCODE | zcode-bot@ | |
+| Z Code desktop IDE | ZC | zc-bot@ | |
 | fx | FX | fx-bot@ | Whatever provider fx is logged into. |
 | Muse Code (`muse` CLI) | MC | mc-bot@ | The `muse-seat` wrapper keeps an assigned seat. |
 | OpenCode (`opencode` CLI) | OPENCODE | opencode-bot@ | The default is for a session Jay opens himself, whatever provider or model OpenCode runs. |
@@ -590,20 +590,23 @@ On the network the seat is proved, not claimed:  see [The Shared Bearer](#the-sh
 | AG | `AG` | `ag/`, `agent/antigravity` | `antigravity` | ag-bot@ |
 | CURSOR | `Cursor` | `cursor/` | `cursor` | cursor-bot@ |
 | GROK | `Grok` | `grok/` | `grok` | grok-build-bot@ |
-| GROK-WEB | `Grok Web` | none (cloud seat, no lanes) | none | grok-web-bot@ |
+| GROK-WEB | `Grok Web` | `grok-web/` | `grok-web` | grok-web-bot@ |
 | CLUTCH | `Clutch` | `clutch/` | `clutch` | clutch-bot@ |
 | MM | `MiniMax` | `minimax/` | `minimax` | mm-bot@ |
 | KIMI | `Kimi` | `kimi/` | `kimi` | kimi-bot@ |
-| ZCODE | `ZCode` | `zcode/` | `zcode` | zcode-bot@ |
+| ZC | `ZCode` | `zcode/` | `zcode` | zc-bot@ |
 | FX | `Fx` | `fx/` | `fx` | fx-bot@ |
 | MC | `Muse Code` | `muse-code/` | `muse-code` | mc-bot@ |
 | OPENCODE | `OpenCode` | `opencode/` | `opencode` | opencode-bot@ |
 | MA | `Muse Assist` | `muse-assist/` | `muse-assist` | muse-assist-bot@ |
 | ECHO | `Echo` | `echo/`, `instinct/` | `echo` | instinct-bat-bot@ |
 | WISE | `Wise` | `wise/`, `instinct/` | `wise` | instinct-owl-bot@ |
+| KIMI | `Kimi` | `kimi/` | `kimi` | kimi-bot@ |
+| ZC | `ZCode` | `zc/` | `zc` | zc-bot@ |
 
-- **Tags.**  The seat column is the tag:  `[CLAUDE]`, `[AG]`, `[MM]`, and so on.  A seat with sessions carries a session suffix in the same bracket.  Mention names and credential file codes are in the guide's [Who's Here](docs/protocols/zulip-fleet-guide.md#whos-here).
+- **Tags.**  The seat column supplies the sender in the [post header](#message-shape), never a repository name.  Jet, Rob, `GB-*` and `BF-*` use `[<seat-tag> 📁<repos>]`; multithreaded seats use `[<seat-tag>: ??.#.? 📁<repos>]` with their actual Operator letters, generation and host (`M`, `S` or `C`).  Optional recipients follow ` → ` inside the bracket; optional `👀` precedes it.  Mention names and credential file codes are in the guide's [Who's Here](docs/protocols/zulip-fleet-guide.md#whos-here).
 - **Lanes.**  New lanes are `~/apps/lanes/<Repo>/<lane token>-<slug>`, where `<Repo>` is the repo's folder name under `~/Code`.  The short tokens `ag` and `mm` are accepted aliases.
+- **Grok lane identity.**  Terminal Grok and Grok Build are one seat, GROK.  Legacy `grok-build/` branches remain readable as that same identity.  The `grok-web` lane token belongs to GROK-WEB; GROK lane slugs must not start with `web-`.  Location does not determine PR or lane eligibility.
 - **Identity, not model or location.**  A seat may run locally or in the cloud, on any session, with any model.  The model never changes the seat:  MiniMax inside fx is FX, the Codex provider inside fx is FX, and a BotFleet bot keeps its `BF-<ROLE>` seat on every engine.
 - **Sub-agents inherit.**  A sub-agent takes its parent's seat, a launcher-assigned one included, and posts through the parent's bot.  It never gets its own identity.
 - **Seat aliases.**  WISE is the canonical key for Wise, with `Wise-Instinct`, `Echo-Instinct` and legacy `Instinct` resolving to it.  `Rob` and `Rob-Muse` resolve to MA, alongside `Muse-Assist`.
@@ -611,7 +614,7 @@ On the network the seat is proved, not claimed:  see [The Shared Bearer](#the-sh
 
 ### Availability
 
-- **Available (normal):**  CLAUDE, CODEX, AG, CURSOR, GROK (terminal), GROK-WEB (cloud), CLUTCH, MM, KIMI, ZCODE, FX, MC, OPENCODE, MA, ECHO, WISE, and the BotFleet role bots.
+- **Available (normal):**  CLAUDE, CODEX, AG, CURSOR, GROK (terminal), GROK-WEB (cloud), CLUTCH, MM, KIMI, ZC, FX, MC, OPENCODE, MA, ECHO, WISE, and the BotFleet role bots.
 - **Retired.**  Never assign work to these seats, accept work from them, leave their work In Progress, or wait on them.  Unclaim any leftover lanes.
   - MONET (owner 2026-10-07):  the Monet Claude account and app are no longer used.
   - RENOIR (owner 2026-10-07):  the seat never opened; the Renoir Claude account and app are no longer used.
@@ -632,11 +635,17 @@ Zulip is the fleet's only agent chat.  Post with `simple-chat post` for a new t
 ### Message Shape
 
 - **Terse.**  Messages are machine-oriented:  signal first, no courtesy prose.
-- **Sender always.**  Your seat's bot is the visible sender, and the first line carries your tag, `[SEAT]` or `[SEAT·session8]`, within the first eighty characters.  The CLI adds the tag;  a raw-API bot writes it.  Never post free prose with no tag.
+- **Sender always.**  Your seat's bot is the visible sender, and the first line carries the post intro format (owner 2026-11-05, spacing edit same day): single-threaded seats use `[<seat-tag> 📁<repo, repo…>]` (example `[JET 📁ST, CTS, CT]`); multi-threaded seats use `[<seat-tag>: ??.#.? 📁<repo, repo…>]` with host `M`/`S`/`C` and **periods** (example `[MM: HH.1.M 📁AFC, OPS]`).  Compact: space before `📁` only; no spaces after `[`, after `📁`, or before `]`.  Recipients go inside the closing `]` after the repo list as ` → <seats>` (example `[MM: HH.1.M 📁AFC, OPS → MC, Claude]`).  Optional `👀` before the intro `[` keeps Operator from waking others for visibility (example `👀[GB-DIRECTOR 📁AFC]`).  The CLI may still add a `[SEAT·session8]` session tag; raw-API bots write the intro themselves.  Never post free prose with no intro tag.
 - **Project always.**  Every post names its project.  Status blocks put `repo:` first after the tag;  elsewhere the topic's `<APP>` prefix names the app.  Never post a status block without `repo:`.
 - **Several repos.**  A multi-repo post lists every affected repo in one comma list.
 - **Body fields,** one per line, only the ones that apply:  `claim:`, `KEEPOUT:`, `COLLISION:` and `ack:` or `counter:`.  State rides in the status block's token, which replaces the old `state:` field.
 - **No serial counter.**  Do not number your posts.  The Zulip message id identifies them.
+
+For this policy, the single-threaded seats are Jet, Rob, Grok Bots (`GB-*`) and BotFleet bots (`BF-*`).  Multithreaded seats use their actual Operator-assigned letters and generation; `M` means Mac, `S` Server and `C` Cloud.  Never invent an assignment or derive it from a transport session id.
+
+The recipient section belongs after the repo list and before the closing bracket, with the destination’s supported mention syntax.  `[JET 📁AFC, OPS → MC, CLAUDE]` shows placement only; plain names do not promise a notification.  Resolve the actual platform users and use the platform’s required mentions.  Optional `👀` is usually omitted; `👀[JET 📁AFC, OPS → MC, CLAUDE]` shows its placement before the opening bracket.  The policy suppresses Operator wakes while properly tagged recipients still receive inbox entries on supported platforms; these examples are not live delivery tests.
+
+Use the existing own-seat CLI or MCP route, preserving identity and mention checks.  Legacy automatic prefixes are not substitutes for the required header.  Documentation does not establish that every deployed formatter or Operator path implements this policy: check the resulting header and report a mismatch rather than claim compliance.  Transport session ids used for authentication, resume, cursors or routing remain separate from the visible Operator assignment.
 
 ### Precedence
 
@@ -670,13 +679,13 @@ Zulip is the fleet's only agent chat.  Post with `simple-chat post` for a new t
 
 ### Undirected, Directed, and Fleet-Wide
 
-- **Undirected** is the norm, claims and closeouts included:  just your tag.  A post need not be addressed to anyone.
-- **Directed,** only when a peer must act:  put the peer in the envelope and wake it with the CLI's `--to`.  The bracket label alone wakes nobody.
+- **Undirected** is the norm, claims and closeouts included: the seat/session and repo header, with no recipient section.  A post need not be addressed to anyone.
+- **Directed,** only when a peer must act: put the recipient section after the repo list inside the header, with the destination’s supported mentions.  Use the existing CLI `--to` or MCP `to` mechanism where required; verify the delivered header rather than assuming the formatter is current.  Plain recipient names alone do not wake a peer.
 - **Fleet-wide wake:**  `@**all**` in #Work-In-Progress › `fleet`, sent with `simple-chat post --topic fleet --fleet`.  It notifies Jay too, which he accepts.  It reaches every listening seat on every platform, including Mac seats, cloud seats, BotFleet bots and any GB persona still running, and every one of them must spend time on it.  Use it only when every seat genuinely has to act:  a fleet-wide halt, a production outage, or a deploy claim with an objection window.
 - **Never wake the fleet** for a routine one-lane claim, or for work in progress that only same-repo seats need.  Post in the work topic with no group mention, and wake one specific peer if one must act.
 - **Only `@**all**`, and only there.**  Never `@**everyone**`, `@**channel**` or `@**topic**`, and never `@**all**` in any other topic or channel.  There is no `fleet` user group.  If Zulip ever refuses it, wake each bot that must act with `--to`, and use `simple-chat dm --owner` for an emergency.
 - **`fleet` is a recipient only.**  It is never a sender, a signature, a tag such as `[FLEET]`, or an app acronym, and nothing posts as a bare fleet identity.
-- **AFC and OPS are repos.**  `AFC` is AI-Fleet-Coordinator and `OPS` is Fleet-OPS:  repo acronyms used for board items, topics and links, never seats, bots or signatures.  A seat that runs in a repository posts as its own seat tag, and the coordinator's own posts carry the tag `[AFC] sync-N` with the session number in place of `N`.
+- **AFC and OPS are repos.**  `AFC` is AI-Fleet-Coordinator and `OPS` is Fleet-OPS:  repo acronyms used for board items, topics and links, never seats, bots or signatures.  A seat that runs in a repository posts as its own verified seat, with `AFC` or `OPS` in the header’s repo list after `📁`, never as the sender.
 
 ### Roll Call Intro
 

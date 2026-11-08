@@ -16,6 +16,7 @@ import datetime as dt
 import json
 import mimetypes
 import os
+import re
 import stat
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
@@ -447,10 +448,32 @@ def _target(agent: Any, args: argparse.Namespace) -> dict[str, Any]:
     return OPS.target_params(agent, channel=args.channel, topic=args.topic, user_ids=ids or None)
 
 
+def _opening_tag_seat(head: str) -> tuple[str, bool]:
+    """(seat, session-like) from the text before `→` inside one leading bracket.
+
+    Legacy `[SEAT·session` counts as session-like.  A compact intro
+    `[SEAT 📁repos]` or `[SEAT: LL.#.H 📁repos]` names its seat explicitly.
+    """
+    head = head.strip()
+    if "\u00b7" in head:
+        seat, mark, _session = head.partition("\u00b7")
+        return seat.strip(), bool(mark)
+    compact = re.match(
+        r"^(?P<seat>[A-Za-z0-9][A-Za-z0-9_-]*)"
+        r"(?:\s*:\s*[A-Za-z0-9]+(?:[.-]\d+[.-][MSC]))?"
+        r"(?:\s+📁.*)?$",
+        head,
+    )
+    if not compact:
+        return "", False
+    return compact.group("seat"), False
+
+
 def _tag_carries_owner(agent: Any, content: Any) -> bool:
     """Whether a message's own leading seat tag carries the OWNER label.  The tag is read as
-    `_compose` writes it (`[SEAT·session→OWNER,...]`, with `->` accepted as elsewhere), and only
-    that leading bracket counts.  A `→OWNER` quoted later in the text is not routing."""
+    `_compose` writes it (`[SEAT·session→OWNER,...]` or `[SEAT 📁repos →OWNER]`, with `->`
+    accepted as elsewhere), and only that leading bracket counts.  A `→OWNER` quoted later
+    in the text is not routing."""
     text, _ = ROUTER.strip_no_wake(str(content or ""), getattr(agent, "seat", None))
     text = text.lstrip()
     if not text.startswith("["):
@@ -459,18 +482,20 @@ def _tag_carries_owner(agent: Any, content: Any) -> bool:
     if close < 0:
         return False
     tag = text[1:close]
-    if "→" in tag:
-        head, _, labels = tag.partition("→")
+    if "\u2192" in tag:
+        head, _, labels = tag.partition("\u2192")
     elif "->" in tag:
         head, _, labels = tag.partition("->")
     else:
         return False
-    seat, session_mark, _session = head.partition("·")
+    seat, session_mark = _opening_tag_seat(head)
+    own = getattr(agent, "seat", None)
     #  The same seat-tag rule strip_no_wake uses:  a bracket counts when it carries a session
-    #  part, or when it names this seat.  Any other leading bracket is ordinary text.
-    if not seat or (not session_mark and seat != getattr(agent, "seat", None)):
+    #  part, or when it names this seat (bare `[SEAT→…]` or a compact intro).  Any other
+    #  leading bracket is ordinary text.
+    if not seat or (not session_mark and seat != own):
         return False
-    return "OWNER" in {label.strip() for label in labels.split(",")}
+    return "OWNER" in {label.strip() for label in labels.split(",") if label.strip()}
 
 
 # --------------------------------------------------------------------------------------------
@@ -948,8 +973,8 @@ def cmd_api(agent: Any, args: argparse.Namespace) -> int:
     path = path.removeprefix("api/v1/")
     if not OPS.api_allowed(args.method, path):
         raise UsageError(
-            "%s %s is not on the simple-chat api allowlist (non-admin endpoints only; see "
-            'docs/protocols/zulip-fleet-guide.md, "The simple-chat CLI")' % (args.method, path)
+            "%s %s is not on the simple-tools api allowlist (non-admin endpoints only; see "
+            'docs/protocols/zulip-fleet-guide.md, "The simple-tools CLI")' % (args.method, path)
         )
     params = OPS.encode_json_params(
         _pairs(args.param, "--param"), _pairs(args.json_param, "--json-param")

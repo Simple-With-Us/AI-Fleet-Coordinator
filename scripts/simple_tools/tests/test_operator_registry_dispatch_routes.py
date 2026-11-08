@@ -80,12 +80,17 @@ class RouteContractTest(unittest.TestCase):
             self.assertRegex(source, r'add_parser\(\s*"%s"' % verb, verb)
 
     def test_no_extra_module_verbs_are_routed(self):
-        # The allowlist must be exactly the real CLI's subcommand set - no more, no less.
+        # Every routed verb must exist. New local export-attempt commands stay
+        # deliberately unrouted until their remote argument/retry contract is reviewed.
         import inspect
         import re
         source = inspect.getsource(OR.main)
         real = set(re.findall(r'add_parser\(\s*"([a-z-]+)"', source))
-        self.assertEqual(set(D.ALLOWED_MODULE_VERBS), real)
+        local_only = {"export-attempts", "record-export-attempt", "record-export-attempts"}
+        self.assertEqual(set(D.ALLOWED_MODULE_VERBS), real - local_only)
+        self.assertTrue(local_only <= real)
+        for verb in local_only:
+            self.assertIsNone(D._container_command({}, "isolated", ["operator-registry", verb]))
 
 
 if __name__ == "__main__":

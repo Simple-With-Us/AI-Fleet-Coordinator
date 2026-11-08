@@ -1,6 +1,6 @@
 # Claude and Codex bridge access (AFC-296)
 
-Prepared Mon, Oct 12, 2026.  The hosted ST-MCP endpoint is
+Prepared Mon, Oct 12, 2026.  The hosted Simple-Tools endpoint is
 `https://agents.simplewithus.com/mcp`; the server binds each grant to a seat and
 uses that seat's bot credential.  Identity is never a caller-supplied argument.
 

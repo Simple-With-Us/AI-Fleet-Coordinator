@@ -1,7 +1,5 @@
 # Fleet RAG made operational and connected to every platform — 2026-09-01
 
-Historical identifiers have been redacted. These records do not certify current deployment state.
-
 **Seat:** CLAUDE (author) then GROK (pickup after the Claude usage-limit cap).  **Boards:**
 `17f4547c` (backup), `9c75471c` (ingest), `c799b564` (recall interface), `0f9a13b1` (doc diet +
 guardrails).  **Worktree:** `~/apps/fleet-claude-rag` @ `claude/fleet-rag-operational`.  **Owner
@@ -36,7 +34,7 @@ Plan B.
 | Backup: daily snapshot → `/data/backups/qdrant` → B2 | box `/usr/local/sbin/fleet-qdrant-snapshot.sh`, `/etc/cron.d/fleet-qdrant` (tracked in `scripts/hetzner/`) | installed, first run verified |
 | Health rows: snapshot age + ingest sentinel, paging via the existing Pushover path | box `fleet-health-verify.sh` → `fleet-qdrant-health.sh` | installed |
 | Oracle routines: nightly ingest, weekly health + eval | `~/.botfleet/routines.json` | created |
-| Seat pointers: [retired identifier] stanza, global CLAUDE.md stanza, TEMPLATE-AGENTS, skill `fleet-recall` | this repo + `~/apps/FLEET-PROTOCOL.md` + `~/.claude/CLAUDE.md` | landed |
+| Seat pointers: FLEET-PROTOCOL stanza, global CLAUDE.md stanza, TEMPLATE-AGENTS, skill `fleet-recall` | this repo + `~/apps/FLEET-PROTOCOL.md` + `~/.claude/CLAUDE.md` | landed |
 | Docs: `docs/RAG-FLEET-INFRA.md` rewritten, `MAC-LOCAL-PROCESSES.md` rows, fleet-ops ATTACK-MAP | | landed |
 
 Numbers after the first full ingest are in the effort-log row and the Apple Note.

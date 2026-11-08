@@ -216,7 +216,7 @@ class DaemonFanoutTests(DaemonHarness):
         other = dict(chat(9, 0, platform="claude", repo=ST_URL), seat="CLAUDE", updated_at=now - 60)
         daemon._chat_catalog = FakeCatalog(st + [other])
         message_id = self.fake.add_message(
-            "Jay Wedgeworth", "work-in-progress", "misc", "@**all** for ST: deploy is out"
+            "Jay Wedgeworth", "simple-tools", "misc", "@**all** for ST: deploy is out"
         )
         queue = daemon.chat_queue("CLAUDE")
         self.pump_until(daemon, lambda: len(queue.snapshot()["items"]) >= 5)
@@ -228,7 +228,7 @@ class DaemonFanoutTests(DaemonHarness):
             all(item["message_id"] == str(message_id) and item["owner"] for item in items)
         )
         result = daemon.fanout(
-            message_id, "work-in-progress", "misc", F.Scope(frozenset({"socratic-trade"}))
+            message_id, "simple-tools", "misc", F.Scope(frozenset({"socratic-trade"}))
         )
         self.assertEqual(
             (result["queued"], result["already"], result["no_transport"]), (0, 5, {"claude": 1})
@@ -238,7 +238,7 @@ class DaemonFanoutTests(DaemonHarness):
         daemon = self.started()
         row = dict(cloud(1, 0, ST_URL), seat="CLAUDE", host=7, updated_at=self.clock.time())
         daemon._chat_catalog = FakeCatalog([row])
-        result = daemon.fanout(123, "work-in-progress", "misc", F.Scope())
+        result = daemon.fanout(123, "simple-tools", "misc", F.Scope())
         self.assertEqual(result.get("failed"), 1)
         self.assertEqual(daemon.chat_queue("CLAUDE").snapshot()["items"], [])
 
@@ -246,7 +246,7 @@ class DaemonFanoutTests(DaemonHarness):
         daemon = self.started()
         row = dict(cloud(1, 0, None), seat="CLAUDE", cwd=None, updated_at=self.clock.time())
         daemon._chat_catalog = FakeCatalog([row])
-        result = daemon.fanout(123, "work-in-progress", "misc", F.Scope())
+        result = daemon.fanout(123, "simple-tools", "misc", F.Scope())
         self.assertEqual(result.get("failed"), 1)
         self.assertEqual(result["queued"], 0)
         self.assertEqual(daemon.chat_queue("CLAUDE").snapshot()["items"], [])
@@ -256,7 +256,7 @@ class DaemonFanoutTests(DaemonHarness):
         daemon._chat_catalog = FakeCatalog([])
         with mock.patch.object(daemon._chat_catalog, "discover", side_effect=RuntimeError("private external body")):
             with mock.patch.object(daemon.log, "write") as logged:
-                result = daemon.fanout(123, "work-in-progress", "misc", F.Scope())
+                result = daemon.fanout(123, "simple-tools", "misc", F.Scope())
         self.assertEqual(result["error"], "catalog")
         self.assertNotIn("private external body", repr(logged.call_args_list))
 
@@ -269,7 +269,7 @@ class DaemonFanoutTests(DaemonHarness):
             [dict(cloud(1, 0, ST_URL), seat="CLAUDE", updated_at=self.clock.time())]
         )
         message_id = self.fake.add_message(
-            "Jay Wedgeworth", "work-in-progress", "misc", "@**all** for ST: hi"
+            "Jay Wedgeworth", "simple-tools", "misc", "@**all** for ST: hi"
         )
         self.pump_until(daemon, lambda: message_id in daemon._fanout_seen)
         self.assertIn(message_id, daemon._fanout_seen, "the unmarked owner @all fans out")
@@ -283,17 +283,21 @@ class DaemonFanoutTests(DaemonHarness):
             [dict(cloud(1, 0, ST_URL), seat="CLAUDE", updated_at=self.clock.time())]
         )
         message_id = self.fake.add_message(
-            "Jay Wedgeworth", "work-in-progress", "misc", ":eyes: @**all** for ST: hi"
+            "Jay Wedgeworth", "simple-tools", "misc", ":eyes: @**all** for ST: hi"
         )
-        # The daemon has to have seen the message:  the wait is on the routing ring, not on a
-        # delivery, because the delivery is exactly what must not happen.
+        # The daemon has to have seen the message:  the wait is on the routing ring, not on the
+        # fanout, because the fanout is exactly what must not happen.
         self.pump_until(daemon, lambda: message_id in daemon.global_ring)
         time.sleep(0.3)
         self.assertNotIn(message_id, daemon._fanout_seen, "the marker stops the fanout")
         self.assertEqual(daemon.chat_queue("CLAUDE").snapshot()["items"], [])
         row = self.route_row(message_id)
         self.assertIsNotNone(row, "the route was logged")
-        self.assertEqual(row["decision"]["drop"], "no_wake", "the log row carries the reason")
+        # OPS-1036:  the message is no longer dropped — it is delivered to the seat inbox with
+        # the wake suppressed, so the log row carries no drop and the no-wake block instead.
+        self.assertIsNone(row["decision"]["drop"], "the marker message is delivered, not dropped")
+        self.assertEqual(row["decision"]["wake_block"], "no_wake", "the log row carries the reason")
+        self.assertTrue(row["decision"]["inbox"], "the seat inbox got its copy")
         self.assertIn("no_wake", row["classes"], "the marker is in the class labels")
 
     def route_row(self, message_id: int) -> dict | None:
@@ -321,7 +325,7 @@ class DaemonFanoutTests(DaemonHarness):
         daemon._chat_catalog = FakeCatalog(
             [dict(cloud(1, 0, ST_URL), seat="CLAUDE", updated_at=self.clock.time())]
         )
-        message_id = self.fake.add_message("Codex", "work-in-progress", "misc", "@**all** for ST: hi")
+        message_id = self.fake.add_message("Codex", "simple-tools", "misc", "@**all** for ST: hi")
         self.pump_until(daemon, lambda: message_id in daemon._fanout_seen or bool(self.inbox()))
         time.sleep(0.3)
         self.assertIn(message_id, daemon._fanout_seen, "a peer's @all fans out like the owner's")

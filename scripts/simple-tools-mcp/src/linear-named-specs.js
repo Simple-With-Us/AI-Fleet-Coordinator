@@ -21,10 +21,10 @@ function aliases(writes) {
   }
   for (const command of writes) {
     if (command.name.startsWith('linear_archive_') && command.name.endsWith('_label')) {
-      out.push({ ...command, name: command.name.replace('linear_archive_', 'linear_retire_') });
+      out.push({ ...command, name: command.name.replace('linear_archive_', 'linear_retire_'), title: command.title.replace(/Archive/i, 'Retire') });
     }
     if (command.name.startsWith('linear_unarchive_') && command.name.endsWith('_label')) {
-      out.push({ ...command, name: command.name.replace('linear_unarchive_', 'linear_restore_') });
+      out.push({ ...command, name: command.name.replace('linear_unarchive_', 'linear_restore_'), title: command.title.replace(/Unarchive/i, 'Restore') });
     }
   }
   return out;
@@ -48,7 +48,7 @@ const WRITE_ALIASES = {
 function synonymCommands(commands, names) {
   return Object.entries(names).flatMap(([name, target]) => {
     const original = commands.find((c) => c.name === target);
-    return original ? [{ ...original, name, description: name === 'linear_create_attachment_from_upload'
+    return original ? [{ ...original, name, title: name.slice('linear_'.length).split('_').map(word => word[0].toUpperCase() + word.slice(1)).join(' '), description: name === 'linear_create_attachment_from_upload'
       ? 'Create an attachment record for an already uploaded asset.  Set input.url to the assetUrl from linear_prepare_attachment_upload and input.issueId to the target issue.  This does not upload file bytes.'
       : `${original.description}  Alias of ${target}.` }] : [];
   });
@@ -61,7 +61,12 @@ export const LINEAR_NAMED_COMMANDS = Object.freeze([
 export const LINEAR_NAMED_BY_NAME = Object.freeze(Object.fromEntries(LINEAR_NAMED_COMMANDS.map((c) => [c.name, c])));
 export const LINEAR_NAMED_TOOLS = Object.freeze(LINEAR_NAMED_COMMANDS.map((command) => {
   const properties = Object.fromEntries(Object.entries(command.args).map(([name, arg]) => [name, { ...arg.schema, ...(arg.description ? { description: arg.description } : {}), ...(name === "id" ? { minLength: 1 } : {}) }]));
-  properties.max_chars = outputLimit;
+  // A document read returns one whole document:  the fleet's own deficiency
+  // log passed 26K characters and the shared 24,000 default made it
+  // unreadable in one call (response_too_large), while a 12.5K document read
+  // fine.  Document reads therefore advertise the 64,000 ceiling as their
+  // default;  callNamedLinear applies the same default server-side.
+  properties.max_chars = command.name === "linear_get_document" ? { ...outputLimit, default: 64000 } : outputLimit;
   if (command.selection) properties.selection = selection;
   const required = Object.entries(command.args).filter(([, arg]) => arg.required).map(([name]) => name);
   if (command.write) {

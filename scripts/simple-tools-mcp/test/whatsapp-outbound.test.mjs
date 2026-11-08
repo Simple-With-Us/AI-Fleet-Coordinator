@@ -267,7 +267,7 @@ test("the retry cap is the Worker's: a reply that never left the bridge is refus
   assert.equal(status.replies[0].intent_id, created.intent_id);
 });
 
-test("the WhatsApp module never reaches Zulip, the listener or the wake", async () => {
+test("the WhatsApp module never reaches Zulip, the eavesdropper or the wake", async () => {
   const source = ["contract.js", "index.js", "state.js"].map((name) => readFileSync(new URL(`../src/wa/${name}`, import.meta.url), "utf8")).join("\n");
   for (const banned of ["zulip", "listener", "eavesdropper", "wake", "notes", "recall"]) {
     assert.ok(!new RegExp(`from "\\.\\./${banned}`).test(source), `the WhatsApp module imports ${banned}`);

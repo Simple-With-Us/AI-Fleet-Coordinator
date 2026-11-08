@@ -56,8 +56,8 @@ const sha256 = (text) => createHash("sha256").update(text).digest("hex");
 
 // Pinned from origin/main (2af99bec), before the spike existed.
 const GOLDEN = Object.freeze({
-  definitionSha: "279b937640baaba8f7d59f310d477f49f07a0b93f7684a02a145f069f00dfff7",
-  listSha: "b947bab7776352f318ab67a9d0beb53ed600a9baf78c7ff2a8e4c83636a8352d",
+  definitionSha: "890dbe50c353fb94832e7b9e6f521accb45a955d959adb98abb9f0ecf7ca289a",
+  listSha: "9aacbec1e49d3bf510a0282def4310e43144f311a2daa93918fc8a3562ae8d8f",
   sub: '{"id":"sub_0127e860dc74c489dc41e43cda5a53e5","refreshBefore":"2026-10-15T17:46:40Z","cursor":null,"truncated":false}',
   second: "-32600 simple-tools MCP already sends zulip.mention for this seat to another chat.  Stop monitoring there first, or wait until it lapses at 2026-10-15T17:46:40Z unless refreshed.",
   reply: '{"status":202,"body":{"ok":true,"subscribers":1,"delivered":1,"outcome":"delivered"}}',

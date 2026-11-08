@@ -420,6 +420,27 @@ class ReleaseTests(unittest.TestCase):
         ]:
             self.assertFalse(release.allowed_path(path), path)
 
+    def test_scoped_verifier_is_required_only_for_new_bundles_and_excludes_the_cli(self):
+        for name in ("__init__", "core"):
+            path = "scripts/fleet_secrets/%s.py" % name
+            self.assertTrue(release.allowed_path(path), path)
+            self.assertIn(path, release.TOOL_REQUIRED)
+            self.assertNotIn(path, release.BASE_REQUIRED)
+            bundle = make_bundle()
+            bundle["files"].pop(path)
+            bundle["bundle_sha256"] = release.manifest_digest(bundle["files"])
+            with self.assertRaisesRegex(release.Refused, "bad_file_set"):
+                release.decode_bundle(json.dumps(bundle).encode())
+        for path in (
+            "scripts/fleet-secrets",
+            "scripts/fleet_secrets/cli.py",
+            "scripts/fleet_secrets/__main__.py",
+            "scripts/fleet_secrets/linux-entrypoint.py",
+            "scripts/fleet_secrets/tests/test_scoped_tokens.py",
+            "scripts/install-fleet-secrets.sh",
+        ):
+            self.assertFalse(release.allowed_path(path), path)
+
     def test_the_shipped_knob_modules_are_exactly_what_a_lookup_imports_and_run_on_stdlib_alone(
         self,
     ):
@@ -532,9 +553,9 @@ class ReleaseTests(unittest.TestCase):
         # Nothing new to add:  a further update writes no wrapper.
         self.assertEqual(release.new_wrapper_plan(self.home), {})
 
-    def test_helper_wiring_is_generated_for_chat_board_and_recall_only(self):
+    def test_helper_wiring_is_generated_for_chat_board_git_and_recall_only(self):
         helper = str(self.home / ".config/fleet-cli/seat-remote-defaults.py")
-        for name in ("simple-chat", "simple-board", "recall"):
+        for name in ("simple-chat", "simple-board", "simple-git", "recall"):
             text = release.wrapper(self.home, "scripts/" + name).decode()
             line = f"import runpy\nrunpy.run_path({helper!r}, init_globals={{'fleet_command': {name!r}}})\n"
             self.assertIn(line, text, name)
@@ -542,7 +563,7 @@ class ReleaseTests(unittest.TestCase):
             self.assertLess(text.index("from pathlib import Path"), text.index(line), name)
             self.assertLess(text.index(line), text.index("release = Path("), name)
         for script in (
-            "scripts/simple-git",
+            "scripts/git-tools/git",
             "scripts/simple-notes",
             "scripts/fleet-mode",
             "scripts/fleet_lanes/bin/lane",
@@ -553,24 +574,35 @@ class ReleaseTests(unittest.TestCase):
         self.assertNotIn("runpy", mcp)
         self.assertNotIn("seat-remote-defaults", mcp)
         # no credential value or secret path component is generated
-        for name in ("simple-chat", "simple-board", "recall"):
+        for name in ("simple-chat", "simple-board", "simple-git", "recall"):
             self.assertNotIn(".secrets", release.wrapper(self.home, "scripts/" + name).decode())
 
-    def test_simple_git_wrapper_never_runs_the_helper(self):
-        # The canonical generated simple-git wrapper carries no helper read or run - even on a host
-        # that HAS the helper installed (this suite's fake home does) and with a seat declared in the
-        # caller's environment.  A declared seat passes through for the server-side identity check;
-        # it never re-enables the helper.  The helper stays wired for chat/board/recall (above).
+    def test_simple_git_wrapper_runs_the_helper_only_when_a_trusted_one_is_installed(self):
+        # A host that HAS the helper (this suite's fake home does) gets simple-git wired like chat, board
+        # and recall:  the helper runs first, with the command name, and fails closed.  A seat declared in
+        # the generating process's environment changes nothing:  the wrapper text is the same.
+        helper = str(self.home / ".config/fleet-cli/seat-remote-defaults.py")
+        line = f"import runpy\nrunpy.run_path({helper!r}, init_globals={{'fleet_command': 'simple-git'}})\n"
         with mock.patch.dict(os.environ, {"AGENT_SEAT": "KELVIN"}):
             text = release.wrapper(self.home, "scripts/simple-git").decode()
-        self.assertNotIn("runpy", text)
-        self.assertNotIn("seat-remote-defaults", text)
+        self.assertIn(line, text)
+        self.assertLess(text.index("from pathlib import Path"), text.index(line))
+        self.assertLess(text.index(line), text.index("release = Path("))
+        self.assertEqual(text, release.wrapper(self.home, "scripts/simple-git").decode())
         self.assertNotIn(".secrets", text)
+        # No helper, or a symlinked one:  the plain wrapper, with no helper read and no credential path.
+        helper_file = self.home / ".config/fleet-cli/seat-remote-defaults.py"
+        helper_file.unlink()
+        plain = release.wrapper(self.home, "scripts/simple-git").decode()
+        self.assertNotIn("runpy", plain)
+        self.assertIn("os.execv(argv[0], argv)", plain)
+        helper_file.symlink_to(self.home / "elsewhere")
+        self.assertNotIn("runpy", release.wrapper(self.home, "scripts/simple-git").decode())
 
     def test_a_host_without_the_helper_keeps_plain_wrappers(self):
         helper = self.home / ".config/fleet-cli/seat-remote-defaults.py"
         helper.unlink()
-        for name in ("simple-chat", "simple-board", "recall"):
+        for name in ("simple-chat", "simple-board", "simple-git", "recall"):
             text = release.wrapper(self.home, "scripts/" + name).decode()
             self.assertNotIn("runpy", text, name)
             self.assertIn("os.execv(argv[0], argv)", text, name)
@@ -864,7 +896,7 @@ class ReleaseTests(unittest.TestCase):
             self.assertNotIn(
                 path,
                 release.BASE_REQUIRED,
-                "a retained pre-rename release stays a valid rollback target: " + path,
+                "a retained older release stays a valid rollback target: " + path,
             )
 
     def test_smoke_runs_the_new_tools(self):
@@ -1011,6 +1043,69 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(release.Refused, "existing_simple_tools_mcp_conflict"):
             self.receive()
 
+    def _write_assigned_codex_registration(self):
+        config = self.home / ".codex/config.toml"
+        config.parent.mkdir(exist_ok=True)
+        self._foreign_transport()
+        assigned = release.assigned_codex_mcp_expected(self.home)
+        raw = (
+            "# Owner-selected hosted transport; keep its custody wrapper.\n"
+            "[mcp_servers.simple-chat]\ncommand = " + json.dumps(assigned["command"]) + "\n"
+            "env_vars = " + json.dumps(assigned["env_vars"]) + "\n"
+        ).encode()
+        config.write_bytes(raw)
+        config.chmod(0o600)
+        return config, raw
+
+    def test_update_preserves_assigned_transport_and_adds_missing_wrappers(self):
+        self.receive()
+        config, raw = self._write_assigned_codex_registration()
+        missing = self.home / ".local/bin/platform-letter"
+        missing.unlink()
+        result = self.receive(make_bundle("two"), install=False)
+        self.assertEqual(result["status"], "activated")
+        self.assertEqual(config.read_bytes(), raw)
+        self.assertEqual(config.stat().st_mode & 0o777, 0o600)
+        self.assertTrue(missing.is_file())
+
+    def test_install_preserves_assigned_transport_without_rewriting_it(self):
+        config, raw = self._write_assigned_codex_registration()
+        self.assertEqual(self.receive()["status"], "activated")
+        self.assertEqual(config.read_bytes(), raw)
+        self.assertEqual(config.stat().st_mode & 0o777, 0o600)
+
+    def test_assigned_transport_requires_the_exact_known_path_and_shape(self):
+        for change in (
+            {"command": str(self.home / ".local/bin/codex-simple-tools")},
+            {"command": "/owner/custom"},
+            {"args": []},
+            {"env_vars": []},
+        ):
+            with self.subTest(change=change):
+                config, _ = self._write_assigned_codex_registration()
+                entry = {**release.assigned_codex_mcp_expected(self.home), **change}
+                raw = (
+                    "[mcp_servers.simple-chat]\n"
+                    + "\n".join(key + " = " + json.dumps(value) for key, value in entry.items())
+                    + "\n"
+                ).encode()
+                config.write_bytes(raw)
+                with self.assertRaisesRegex(release.Refused, "existing_simple_chat_mcp_conflict"):
+                    release.install_plan(self.home)
+                self.assertEqual(config.read_bytes(), raw)
+
+    def test_assigned_and_legacy_keys_together_are_still_refused(self):
+        config, raw = self._write_assigned_codex_registration()
+        legacy = release.codex_mcp_expected(self.home / ".local/bin")
+        raw += (
+            "[mcp_servers.obsolete-tools]\ncommand = " + json.dumps(legacy["command"]) + "\n"
+            "env_vars = " + json.dumps(legacy["env_vars"]) + "\n"
+        ).encode()
+        config.write_bytes(raw)
+        with self.assertRaisesRegex(release.Refused, "existing_simple_tools_mcp_conflict"):
+            release.new_wrapper_plan(self.home, ("obsolete-tools", "obsolete-codex-mcp"))
+        self.assertEqual(config.read_bytes(), raw)
+
     def test_non_table_codex_shapes_are_refused_not_an_internal_error(self):
         config = self.home / ".codex/config.toml"
         config.parent.mkdir()
@@ -1024,7 +1119,7 @@ class ReleaseTests(unittest.TestCase):
                 with self.assertRaisesRegex(release.Refused, code):
                     self.receive()
 
-    def test_migrate_refuses_non_table_mcp_servers_directly(self):
+    def test_install_plan_refuses_non_table_mcp_servers_directly(self):
         config = self.home / ".codex/config.toml"
         config.parent.mkdir()
         config.write_bytes(b'mcp_servers = "x"\n')
@@ -1112,6 +1207,111 @@ class ReleaseTests(unittest.TestCase):
                 with self.assertRaises(release.Refused) as raised:
                     release.smoke(self.home, self.home)
                 self.assertEqual(str(raised.exception), code)
+
+    def _fake_releases(self, count):
+        releases = self.base / "releases"
+        names = []
+        for index in range(count):
+            name = f"{index:064x}"
+            (releases / name).mkdir()
+            os.utime(releases / name, (1000 + index, 1000 + index))
+            names.append(name)
+        return names
+
+    def test_prune_keeps_newest_and_never_current_or_previous(self):
+        self.receive()
+        self.receive(make_bundle("two"), install=False)
+        current = release.release_at(self.base, "current").name
+        previous = release.release_at(self.base, "previous").name
+        old = self._fake_releases(6)
+        proc = self.home / "proc"
+        proc.mkdir()
+        # keep=1 would delete everything but the newest, yet current and previous must survive.
+        removed = release.prune(self.base, 1, proc)
+        survivors = {path.name for path in (self.base / "releases").iterdir()}
+        self.assertTrue({current, previous} <= survivors)
+        self.assertEqual(set(removed) | survivors, set(old) | {current, previous})
+        self.assertNotIn(current, removed)
+        self.assertNotIn(previous, removed)
+
+    def test_prune_never_removes_a_release_a_live_process_runs_from(self):
+        self.receive()
+        old = self._fake_releases(5)
+        proc = self.home / "proc"
+        (proc / "123").mkdir(parents=True)
+        (proc / "123" / "cwd").symlink_to(self.base.resolve() / "releases" / old[0])
+        removed = release.prune(self.base, 1, proc)
+        self.assertNotIn(old[0], removed)
+        self.assertTrue((self.base / "releases" / old[0]).is_dir())
+        self.assertIn(old[1], removed)
+
+    def test_prune_tolerates_a_dangling_pointer(self):
+        self.receive()
+        # A dangling `previous` link has no release to protect and must not abort pruning.
+        (self.base / "previous").symlink_to("releases/" + "d" * 64)
+        old = self._fake_releases(4)
+        proc = self.home / "proc"
+        proc.mkdir()
+        removed = release.prune(self.base, 1, proc)
+        self.assertIn(old[0], removed)
+        current = release.release_at(self.base, "current").name
+        self.assertNotIn(current, removed)
+
+    def test_prune_tolerates_a_plain_file_pointer(self):
+        self.receive()
+        (self.base / "previous").write_text("not a link")
+        old = self._fake_releases(4)
+        proc = self.home / "proc"
+        proc.mkdir()
+        removed = release.prune(self.base, 1, proc)
+        self.assertIn(old[0], removed)
+
+    def test_smoke_failure_leaves_retention_unchanged(self):
+        self.receive()
+        old = self._fake_releases(release.KEEP_RELEASES + 5)
+        before = sorted(path.name for path in (self.base / "releases").iterdir())
+        with mock.patch.object(release, "smoke", side_effect=release.Refused("smoke_failed")):
+            with self.assertRaisesRegex(release.Refused, "smoke_failed"):
+                self.receive(make_bundle("two"), install=False)
+        after = sorted(path.name for path in (self.base / "releases").iterdir())
+        self.assertEqual(before, after)
+        self.assertTrue(set(old) <= set(after))
+
+    def test_prune_leaves_foreign_entries_alone(self):
+        self.receive()
+        releases = self.base / "releases"
+        (releases / "not-a-release").mkdir()
+        (releases / "notes.txt").write_text("keep")
+        (releases / ("f" * 64)).symlink_to(releases / "not-a-release")
+        self._fake_releases(3)
+        proc = self.home / "proc"
+        proc.mkdir()
+        release.prune(self.base, 1, proc)
+        self.assertTrue((releases / "not-a-release").is_dir())
+        self.assertTrue((releases / "notes.txt").exists())
+        self.assertTrue((releases / ("f" * 64)).is_symlink())
+
+    def test_receive_prunes_to_keep_releases_instead_of_refusing(self):
+        self.receive()
+        self._fake_releases(release.RELEASE_LIMIT)
+        result = self.receive(make_bundle("two"), install=False)
+        self.assertEqual(result["status"], "activated")
+        count = len(list((self.base / "releases").iterdir()))
+        self.assertLessEqual(count, release.KEEP_RELEASES)
+
+    def test_receive_still_refuses_when_everything_is_protected(self):
+        self.receive()
+        names = self._fake_releases(release.RELEASE_LIMIT)
+        with mock.patch.object(release, "releases_in_use", return_value=set(names)):
+            with self.assertRaisesRegex(release.Refused, "release_retention_limit"):
+                self.receive(make_bundle("two"), install=False)
+
+    def test_prune_control_command_reports_removed_count(self):
+        self.receive()
+        self._fake_releases(release.KEEP_RELEASES + 2)
+        with mock.patch.object(release, "releases_in_use", return_value=set()):
+            result = release.control(self.home, "prune")
+        self.assertEqual(result["removed"], 3)
 
     def test_rollback_pauses_future_sync_and_resume_allows_it(self):
         first = self.receive()
@@ -1283,11 +1483,12 @@ class ShippedDataFilesTests(unittest.TestCase):
             with self.assertRaisesRegex(release.Refused, "bad_file_set"):
                 release.decode_bundle(json.dumps(bundle).encode())
 
-    def test_git_tools_are_not_helper_commands(self):
-        # Each simple-git user supplies their OWN bearer and the server decides identity and
-        # permissions from it:  simple-git is not a helper command.  The generated-wrapper half of
-        # this contract is ReleaseTests.test_simple_git_wrapper_never_runs_the_helper.
-        self.assertNotIn("scripts/simple-git", release.HELPER_COMMANDS)
+    def test_only_the_git_entry_wrapper_is_a_helper_command(self):
+        # A seat that declares itself gets its OWN bearer from the host helper; an undeclared caller
+        # supplies its own, and the server decides identity and permissions from the bearer.  The
+        # implementation file is never wired:  only the installed entry command is.  The generated-wrapper
+        # half is ReleaseTests.test_simple_git_wrapper_runs_the_helper_only_when_a_trusted_one_is_installed.
+        self.assertEqual(release.HELPER_COMMANDS.get("scripts/simple-git"), "simple-git")
         self.assertNotIn("scripts/git-tools/git", release.HELPER_COMMANDS)
 
 

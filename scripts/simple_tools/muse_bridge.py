@@ -11,10 +11,13 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
+import re
 import sys
 import time
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
 from . import config as C
@@ -264,6 +267,161 @@ def export_local(root: str, cfg: C.Config, cursors: Mapping[str, Any]) -> dict[s
     return out
 
 
+# ---- AFC-649 known-cap mode: an explicit, reversible bridge consult switch ----------------------
+# (Kept inside this module, not a new file: every scripts/simple_tools/*.py ships in the fleet CLI
+# release, whose file ceiling needs its own policy review for each added file.)
+#
+# AFC-649 known-cap mode: an explicit, reversible bridge consult switch.
+#
+# WHY THIS EXISTS.  On 2026-11-06 the owner reported the primary consult runtime at its
+# subscription cap - a then-current observation, not a standing statement about later capacity or
+# any reset time - and selected an OpenRouter call for this one inbox-routing consult case,
+# supplying the 'operator-inbox-router' preset reference on the existing OPERATOR_OPENROUTER_API_KEY
+# (the earlier MiniMax PAYG-direct design is withdrawn).  The tool-less request shape and the gates
+# below are the integration's own safety properties.  Automatic cap detection is NOT part of this
+# module:  the installed Muse 1.4.14 exec stream does not expose the typed quota signal (the only
+# verified embedding is MSP turn/completed params.error.quota, and the bridge's headless exec runs
+# never see it), so nothing here tries to infer a cap from error text, exit codes, or record
+# shapes.  The mode is entered only by explicit operator declaration and exited only by explicit
+# removal or, when the operator chose to state one, by its own review time.
+#
+# NO EXPIRY BY DEFAULT.  review_by is OPTIONAL.  A declaration without it (absent or null) never
+# expires:  the mode runs until the operator removes it, and a review is a check, not a shutoff
+# (owner direction, WhatsApp 2026-11-07 22:21 CT: "don't have it expire by default").  A review_by that IS given must be a
+# finite epoch after declared_at, or the declaration is misconfigured and fails closed - a bad
+# date never silently turns into "no expiry".
+#
+# EXPIRY IS A HOLD, NOT A REVERT.  When an explicitly declared review time passes, consults HOLD:
+# pending rows stay pending, no cursor advances, no runtime is invoked at all, and a review-due
+# signal is logged.  Expiry never switches to unverified model behavior (neither back to the capped
+# primary nor onward on the backup).
+#
+# ABSENT VS MALFORMED.  A declaration that was never configured (absent/null) selects the primary,
+# i.e. exactly the behavior the bridge has today.  A declaration that IS configured but partial or
+# malformed fails CLOSED:  consults hold, pending work is preserved, and a misconfigured signal is
+# logged - silently falling back to the primary would spend against the cap the operator declared,
+# and silently degrading would consume rows nobody decided.
+
+_PRESET_RE = re.compile(r"^@preset/[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
+
+MUSE = "muse"
+OPENROUTER = "openrouter"
+HOLD = "backup_review_due"
+
+_REQUIRED_KEYS = ("runtime", "model", "reason", "declared_at")
+
+
+@dataclass(frozen=True)
+class BackupDeclaration:
+    """One operator declaration that the primary consult runtime is at a known cap.
+
+    runtime:    the approved backup runtime id;  only "openrouter" is recognised.
+    model:      the OpenRouter model the backup consult calls;  an `@preset/<slug>` reference
+                (the reference the owner supplied for this case) or a plain `provider/name`,
+                validated against the consult-backup pattern (seat validation stays preset-free:
+                a preset's latest version is always served, so a slug pins nothing for a seat).
+    expected_models:  the plain `provider/name` ids the declaration expects the preset to serve.
+                REQUIRED with an `@preset/` model and checked against the response's served model
+                on every answered consult (a mismatch is a charged hold, never silent acceptance):
+                a dashboard edit to the preset's model list changes what runs without changing
+                any slug, and this set is the only code-side fingerprint of it.  Optional with a
+                plain model, where it defaults to that model itself.
+    reason:     the operator's own words for why the mode was entered (logged verbatim).
+    declared_at: epoch seconds.
+    review_by:  OPTIONAL epoch seconds, None when the operator declared no expiry (the default).
+                When set, consults hold once it passes."""
+
+    runtime: str
+    model: str
+    reason: str
+    declared_at: float
+    review_by: float | None
+    expected_models: tuple
+
+
+def parse_declaration(raw: Any) -> BackupDeclaration | None:
+    """The declaration from bridge config, or None when absent or malformed (fail-safe)."""
+    if not isinstance(raw, Mapping):
+        return None
+    if any(k not in raw for k in _REQUIRED_KEYS):
+        return None
+    runtime = raw["runtime"]
+    model = raw["model"]
+    reason = raw["reason"]
+    declared_at = raw["declared_at"]
+    review_by = raw.get("review_by")
+    if runtime != OPENROUTER:
+        return None
+    if not isinstance(model, str) or not re.fullmatch(C.OPENROUTER_MODEL_PATTERN, model):
+        return None
+    expected_raw = raw.get("expected_models")
+    if _PRESET_RE.fullmatch(model):
+        # A preset's model list lives on the dashboard;  without a declared expectation the
+        # code has no fingerprint of what the preset serves, so a preset declaration without a
+        # valid expected_models is misconfigured and fails closed.
+        if not isinstance(expected_raw, list) or not expected_raw:
+            return None
+    elif expected_raw is None:
+        expected_raw = [model]
+    if (
+        not isinstance(expected_raw, list)
+        or not expected_raw
+        or any(
+            not isinstance(entry, str)
+            or _PRESET_RE.fullmatch(entry)
+            or not re.fullmatch(C.OPENROUTER_MODEL_PATTERN, entry)
+            for entry in expected_raw
+        )
+    ):
+        return None
+    if not isinstance(reason, str) or not reason.strip():
+        return None
+    for value in (declared_at,) if review_by is None else (declared_at, review_by):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        try:
+            if not math.isfinite(value) or not math.isfinite(float(value)):
+                return None
+        except OverflowError:
+            return None
+    if review_by is not None and review_by <= declared_at:
+        return None
+    return BackupDeclaration(
+        runtime=OPENROUTER,
+        model=model,
+        reason=reason.strip(),
+        declared_at=float(declared_at),
+        review_by=None if review_by is None else float(review_by),
+        expected_models=tuple(expected_raw),
+    )
+
+
+MISCONFIGURED = "backup_misconfigured"
+REVIEW_DUE = "backup_review_due"
+
+
+def select_consult_runtime(
+    raw: Any, *, now: float | None = None
+) -> tuple[str, BackupDeclaration | None, str | None]:
+    """(which runtime a bridge consult uses, the declaration, why consults hold).
+
+    (MUSE, None, None)          - never enabled: no declaration configured.
+    (OPENROUTER, decl, None)    - a complete declaration: no review_by (never expires) or inside its window.
+    (HOLD, None, MISCONFIGURED) - a declaration IS configured but partial or malformed: fail
+                                  closed, preserve pending work, never silently use the primary.
+    (HOLD, decl, REVIEW_DUE)    - an explicit review_by has passed: hold every consult,
+                                  preserve pending work, signal for re-examination.  No runtime runs."""
+    if raw is None:
+        return MUSE, None, None
+    decl = parse_declaration(raw)
+    if decl is None:
+        return HOLD, None, MISCONFIGURED
+    moment = time.time() if now is None else now
+    if decl.review_by is not None and moment >= decl.review_by:
+        return HOLD, decl, REVIEW_DUE
+    return OPENROUTER, decl, None
+
+
 def _store_path(root: str) -> str:
     parent = L.listener_dir(root)
     L.private_dir(parent)
@@ -363,7 +521,7 @@ def finish_native(root: str, receipt: str, state: str) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Private eavesdropper Muse bridge exchange")
+    parser = argparse.ArgumentParser(description="Private Simple-Tools Muse bridge exchange")
     parser.add_argument("command", choices=("export", "submit"))
     args = parser.parse_args(argv)
     root = L.state_root(os.environ)

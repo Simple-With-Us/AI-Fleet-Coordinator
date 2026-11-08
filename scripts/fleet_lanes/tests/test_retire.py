@@ -12,24 +12,32 @@ AGENT_SEAT leaks in.
 from __future__ import annotations
 
 import datetime as dt
+import inspect
 import io
 import json
 import os
 import shutil
 import subprocess
 import tempfile
+import types
 import unittest
 from collections.abc import Callable
 from pathlib import Path
 
 from fleet_lanes import doctor as D
 from fleet_lanes import lane as K
+from fleet_lanes import layout as L
 from fleet_lanes import retire as R
 
 REGISTRY_DATA = {
     "owner": "Simple-With-Us",
     "apps": [
-        {"repo": "DealDex", "acronym": "DD", "worktreePrefix": "dealdex", "codeDir": "DealDex"},
+        {
+            "repo": "DealDex",
+            "acronym": "DD",
+            "worktreePrefix": "dealdex",
+            "codeDir": "DealDex",
+        },
         {
             "repo": "Socratic-Trade",
             "acronym": "ST",
@@ -40,7 +48,12 @@ REGISTRY_DATA = {
     "seats": [
         {"tag": "CLAUDE", "worktreeSuffix": "claude", "branchPrefixes": ["claude/"]},
         {"tag": "CODEX", "worktreeSuffix": "codex", "branchPrefixes": ["codex/"]},
-        {"tag": "MONET", "worktreeSuffix": "monet", "branchPrefixes": ["monet/"], "retired": True},
+        {
+            "tag": "MONET",
+            "worktreeSuffix": "monet",
+            "branchPrefixes": ["monet/"],
+            "retired": True,
+        },
     ],
 }
 _HERMETIC = {
@@ -69,7 +82,12 @@ def _git(
     full_env = {"PATH": os.environ.get("PATH", ""), **_HERMETIC, **(env or {})}
     full_env.setdefault("HOME", cwd or tempfile.gettempdir())
     proc = subprocess.run(
-        ["git", *args], cwd=cwd, env=full_env, capture_output=True, text=True, check=False
+        ["git", *args],
+        cwd=cwd,
+        env=full_env,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     if check and proc.returncode != 0:
         raise AssertionError(f"git {' '.join(args)} failed: {proc.stderr}")
@@ -107,8 +125,13 @@ def setUpModule() -> None:
             _git(["commit", "-q", "-m", "pr"], cwd=seed, env=env)
             SHAS["pr"] = _git(["rev-parse", "HEAD"], cwd=seed, env=env)
             _git(["push", "-q", bare, "prbranch"], cwd=seed, env=env)
-            _git(["--git-dir", bare, "update-ref", "refs/pull/7/head", SHAS["pr"]], env=env)
-            _git(["--git-dir", bare, "update-ref", "-d", "refs/heads/prbranch"], env=env)
+            _git(
+                ["--git-dir", bare, "update-ref", "refs/pull/7/head", SHAS["pr"]],
+                env=env,
+            )
+            _git(
+                ["--git-dir", bare, "update-ref", "-d", "refs/heads/prbranch"], env=env
+            )
         uri = Path(bare).as_uri()
         TEMPLATE_URIS[repo] = uri
         _git(["clone", "-q", uri, os.path.join(world, "home", "Code", repo)], env=env)
@@ -197,12 +220,56 @@ class World:
         return _git(args, cwd=str(cwd), env=self.env, check=check)
 
     def gh(self, argv: list[str]) -> D.CmdResult:
+        # lane.py's own `gh pr view` (lane new --review); retire no longer calls gh at all.
         repo = argv[argv.index("--repo") + 1]
         pool = list(self.prs.get(repo, []))
         if "--head" in argv:
             name = argv[argv.index("--head") + 1]
             pool = [p for p in pool if p.get("headRefName") == name]
         return D.CmdResult(0, json.dumps(pool), "")
+
+    def relay(self, argv: list[str]) -> D.CmdResult:
+        """The seat's simple-git relay page, answered from the same fixtures in relay shape."""
+        if argv[1:3] != ["call", "gr_wf_pr_list_page"]:
+            return D.CmdResult(1, "", "unexpected simple-git call")
+        query = json.loads(argv[argv.index("--args-json") + 1])
+        repo = query["repo"]
+        if repo not in self.prs:
+            return D.CmdResult(1, "", "relay refused")
+        pool = list(self.prs[repo])
+        if "head" in query:
+            pool = [p for p in pool if p.get("headRefName") == query["head"]]
+        per_page = int(query["per_page"])
+        page = int(query.get("page", 1))
+        chunk = pool[(page - 1) * per_page : page * per_page]
+        rows = []
+        for p in chunk:
+            state = {"OPEN": "open"}.get(p["state"], "closed")
+            rows.append(
+                {
+                    "number": p["number"],
+                    "state": state,
+                    "title": "",
+                    "head_ref": p["headRefName"],
+                    "head_sha": p["headRefOid"],
+                    "base_ref": "main",
+                    "base_sha": "0" * 40,
+                    "draft": False,
+                    "merged_at": "2026-11-06T00:00:00Z" if p["state"] == "MERGED" else None,
+                    "updated_at": "2026-11-06T00:00:00Z",
+                    "html_url": "https://example.invalid/pr",
+                }
+            )
+        out = {
+            "structured": {
+                "pulls": rows,
+                "page": page,
+                "per_page": per_page,
+                "has_more": page * per_page < len(pool),
+            },
+            "text": "",
+        }
+        return D.CmdResult(0, json.dumps(out), "")
 
     def run(
         self,
@@ -222,18 +289,30 @@ class World:
         def exec_fn(a: list[str], cwd, child_env, timeout) -> D.CmdResult:
             calls.append(list(a))
             if override is not None:
-                forced = override(list(a))
+                # An override that declares a `cwd` parameter is told which tree is asking.
+                forced = (
+                    override(list(a), cwd=cwd)
+                    if "cwd" in inspect.signature(override).parameters
+                    else override(list(a))
+                )
                 if forced is not None:
                     return forced
             if a[0] == "gh":
                 return self.gh(list(a))
+            if a[0] == "simple-git":
+                return self.relay(list(a))
             if a[0] == "lsof":
                 return self.lsof()
             return K.default_exec(a, cwd, child_env, timeout)
 
         out, err = io.StringIO(), io.StringIO()
         rc = K.main(
-            list(argv), env=full_env, clock=lambda: clock, exec_fn=exec_fn, stdout=out, stderr=err
+            list(argv),
+            env=full_env,
+            clock=lambda: clock,
+            exec_fn=exec_fn,
+            stdout=out,
+            stderr=err,
         )
         return Result(rc, out.getvalue(), err.getvalue(), calls)
 
@@ -256,13 +335,23 @@ class World:
         self.git(["push", "-q", "-u", "origin", f"HEAD:{head}"], lane)
 
     def merged_pr(
-        self, lane: Path, head: str, number: int = 11, repo: str = "DealDex", state: str = "MERGED"
+        self,
+        lane: Path,
+        head: str,
+        number: int = 11,
+        repo: str = "DealDex",
+        state: str = "MERGED",
     ) -> None:
         sha = self.git(["rev-parse", "HEAD"], lane)
         self.old_pr(head, sha, number=number, repo=repo, state=state)
 
     def old_pr(
-        self, head: str, sha: str, number: int, repo: str = "DealDex", state: str = "MERGED"
+        self,
+        head: str,
+        sha: str,
+        number: int,
+        repo: str = "DealDex",
+        state: str = "MERGED",
     ) -> None:
         """A PR for the branch name `head` whose head commit is `sha` (any sha, local or not)."""
         self.prs[f"Simple-With-Us/{repo}"].append(
@@ -278,7 +367,9 @@ class World:
 
     def worktree_paths(self, repo: str = "DealDex") -> list[str]:
         out = self.git(["worktree", "list", "--porcelain"], self.trees[repo])
-        return [ln.split(" ", 1)[1] for ln in out.splitlines() if ln.startswith("worktree ")]
+        return [
+            ln.split(" ", 1)[1] for ln in out.splitlines() if ln.startswith("worktree ")
+        ]
 
 
 class WorldCase(unittest.TestCase):
@@ -287,6 +378,52 @@ class WorldCase(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------- the allowlist
+
+
+class RoleLaneLookupTests(unittest.TestCase):
+    """AFC-620:  prune/doctor seat lookup resolves a BF-<ROLE>/GB-<ROLE> tag or folder to the
+    synthesized role lane seat;  roles never become seats rows."""
+
+    def _registry(self) -> L.Registry:
+        return L.parse_registry(
+            {
+                "owner": "Simple-With-Us",
+                "apps": [],
+                "seats": [
+                    {
+                        "tag": "CLAUDE",
+                        "worktreeSuffix": "claude",
+                        "branchPrefixes": ["claude/"],
+                    }
+                ],
+                "seatApps": {
+                    "bySeat": {},
+                    "extraSeats": {},
+                    "patterns": [
+                        {
+                            "match": "BF-*",
+                            "app": "botfleet",
+                            "lane": {
+                                "roles": ["FIXER"],
+                                "folderTemplate": "bf-<role>",
+                                "branchTemplate": "bf-<role>/",
+                            },
+                        }
+                    ],
+                },
+            }
+        )
+
+    def test_a_role_tag_and_its_folder_resolve(self) -> None:
+        reg = self._registry()
+        seat = R._lookup_seat(reg, "BF-FIXER")
+        self.assertIsNotNone(seat)
+        self.assertEqual((seat.name, seat.suffix), ("BF-FIXER", "bf-fixer"))
+        seat = R._lookup_seat(reg, "bf-fixer")
+        self.assertIsNotNone(seat)
+        self.assertEqual(seat.name, "BF-FIXER")
+        self.assertIsNone(R._lookup_seat(reg, "BF-KODY"))
+        self.assertEqual(R._lookup_seat(reg, "CLAUDE").suffix, "claude")
 
 
 class AllowlistTests(unittest.TestCase):
@@ -304,8 +441,25 @@ class AllowlistTests(unittest.TestCase):
             ["git", "worktree", "prune"],
             ["git", "branch", "-d", "claude/x"],
             ["git", "status", "--porcelain", "--ignored", "--untracked-files=normal"],
-            ["git", "rev-list", "--count", "--ignore-missing", "HEAD", "--not", self.SHA],
-            ["git", "rev-list", "--count", "--ignore-missing", "HEAD", "--not", self.SHA, "c" * 40],
+            [
+                "git",
+                "rev-list",
+                "--count",
+                "--ignore-missing",
+                "HEAD",
+                "--not",
+                self.SHA,
+            ],
+            [
+                "git",
+                "rev-list",
+                "--count",
+                "--ignore-missing",
+                "HEAD",
+                "--not",
+                self.SHA,
+                "c" * 40,
+            ],
             ["git", "rev-list", "--count", "--ignore-missing", "HEAD", "--not"],
             ["git", "rev-list", "--count", "HEAD", "--not", self.SHA],
             ["git", "rev-parse", "--absolute-git-dir"],
@@ -317,34 +471,29 @@ class AllowlistTests(unittest.TestCase):
             ["git", "merge-base", "--is-ancestor", "HEAD", "refs/remotes/origin/main"],
             ["git", "symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD"],
             ["git", "ls-remote", "--heads", "origin"],
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            ["git", "hash-object", "--", "docs/a b.md"],
+            ["git", "checkout", "--", "docs/a.md"],
+            ["git", "rev-parse", "--verify", "-q", "refs/remotes/origin/main:docs/a.md"],
             [
-                "gh",
-                "pr",
-                "list",
-                "--repo",
-                "Simple-With-Us/DealDex",
-                "--state",
-                "all",
-                "--limit",
-                "1000",
+                "simple-git",
+                "call",
+                "gr_wf_pr_list_page",
+                "--args-json",
+                '{"page":1,"per_page":50,"repo":"Simple-With-Us/DealDex","state":"all"}',
                 "--json",
-                R.GH_FIELDS,
             ],
             [
-                "gh",
-                "pr",
-                "list",
-                "--repo",
-                "Simple-With-Us/DealDex",
-                "--state",
-                "all",
-                "--head",
-                "claude/x",
-                "--limit",
-                "20",
+                "simple-git",
+                "call",
+                "gr_wf_pr_list_page",
+                "--args-json",
+                '{"head":"claude/x","per_page":20,"repo":"Simple-With-Us/DealDex","state":"all"}',
                 "--json",
-                R.GH_FIELDS,
             ],
+            ["git", "rev-parse", "--verify", "-q", "HEAD^{tree}"],
+            ["git", "rev-parse", "--verify", "-q", self.SHA + "^{tree}"],
+            ["git", "rev-list", "--max-count=100", "--format=%T", "refs/remotes/origin/main"],
             ["lsof", "-d", "cwd", "-Fpcn"],
         ]:
             with self.subTest(argv=argv):
@@ -385,18 +534,81 @@ class AllowlistTests(unittest.TestCase):
             ],
             ["git", "rev-list", "--count", "HEAD", "--not", "--exclude=*", "--remotes"],
             ["git", "rev-list", "--count", "HEAD", "--not", "--remotes"],
-            ["git", "rev-list", "--count", "HEAD", "--not", "--exclude=origin/x", "--remotes"],
-            ["git", "rev-list", "--count", "--ignore-missing", "HEAD", "--not", "--remotes"],
+            [
+                "git",
+                "rev-list",
+                "--count",
+                "HEAD",
+                "--not",
+                "--exclude=origin/x",
+                "--remotes",
+            ],
+            [
+                "git",
+                "rev-list",
+                "--count",
+                "--ignore-missing",
+                "HEAD",
+                "--not",
+                "--remotes",
+            ],
             ["git", "rev-list", "--count", "--ignore-missing", "HEAD", "--not", "main"],
-            ["git", "rev-list", "--count", "--ignore-missing", "HEAD", "--not", self.SHA, "--all"],
+            [
+                "git",
+                "rev-list",
+                "--count",
+                "--ignore-missing",
+                "HEAD",
+                "--not",
+                self.SHA,
+                "--all",
+            ],
             ["git", "config", "--get", "core.sshCommand"],
             ["git", "config", "branch.x.merge", "y"],
             ["git", "merge-base", "--is-ancestor", "HEAD", "main"],
             ["git", "ls-remote", "origin"],
+            ["git", "hash-object", "-w", "--", "a.md"],
+            ["git", "hash-object", "--", "../a.md"],
+            ["git", "hash-object", "--", "/etc/passwd"],
+            ["git", "hash-object", "--", "-x"],
+            ["git", "checkout", "--", ".."],
+            ["git", "checkout", "--", "."],
+            ["git", "checkout", "main"],
+            ["git", "checkout", "-f", "--", "a.md"],
+            ["git", "rev-parse", "--verify", "-q", "refs/remotes/origin/main:../a"],
+            ["git", "rev-parse", "--verify", "-q", "refs/heads/main:a.md"],
+            ["git", "status", "--porcelain", "--untracked-files=all", "--ignored"],
             ["git", "fetch", "origin"],
             ["gh", "pr", "merge", "1"],
             ["gh", "pr", "list", "--repo", "a/b"],
             ["gh", "api", "graphql"],
+            [
+                "simple-git",
+                "call",
+                "gr_wf_pr_merge_guarded",
+                "--args-json",
+                '{"repo":"Simple-With-Us/DealDex"}',
+                "--json",
+            ],
+            [
+                "simple-git",
+                "call",
+                "gr_wf_pr_list_page",
+                "--args-json",
+                '{"page":21,"per_page":50,"repo":"Simple-With-Us/DealDex","state":"all"}',
+                "--json",
+            ],
+            [
+                "simple-git",
+                "call",
+                "gr_wf_pr_list_page",
+                "--args-json",
+                '{"per_page":50,"repo":"Simple-With-Us/DealDex","state":"all"}',
+                "--json",
+            ],
+            ["git", "rev-list", "--max-count=101", "--format=%T", "refs/remotes/origin/main"],
+            ["git", "rev-list", "--max-count=100", "--format=%T", "main"],
+            ["git", "rev-list", "--max-count=100", "refs/remotes/origin/main"],
             ["lsof"],
             ["lsof", "-p", "1"],
             ["bash", "-c", "true"],
@@ -449,7 +661,7 @@ class DecideTests(unittest.TestCase):
             "keep marker": facts(keep_marker=True),
             "status failed": facts(dirty=None),
             "dirty": facts(dirty=2),
-            "gh failed": facts(pr=R.PrView(found=False)),
+            "relay failed": facts(pr=R.PrView(found=False)),
             "open pr": facts(pr=R.PrView(open_number=9)),
             "unpushed": facts(unpushed=3, pr=R.PrView()),
             "not done": facts(pr=R.PrView()),
@@ -476,14 +688,23 @@ class DecideTests(unittest.TestCase):
 
     def test_prune_only_guards(self) -> None:
         recent = facts(idle_minutes=3.0)
-        self.assertEqual(R.decide(recent, prune=True), ("keep", "active in the last 15 minutes"))
+        self.assertEqual(
+            R.decide(recent, prune=True), ("keep", "active in the last 15 minutes")
+        )
         self.assertEqual(R.decide(recent, prune=False)[0], "remove")
-        empty = facts(pr=R.PrView(), merged_default=True, upstream=None, idle_minutes=60.0)
+        empty = facts(
+            pr=R.PrView(), merged_default=True, upstream=None, idle_minutes=60.0
+        )
         self.assertEqual(R.decide(empty, prune=True)[0], "keep")
         self.assertEqual(R.decide(empty, prune=False)[0], "remove")
         self.assertEqual(
             R.decide(
-                facts(pr=R.PrView(), merged_default=True, upstream=None, idle_minutes=3000.0),
+                facts(
+                    pr=R.PrView(),
+                    merged_default=True,
+                    upstream=None,
+                    idle_minutes=3000.0,
+                ),
                 prune=True,
             )[0],
             "remove",
@@ -491,12 +712,16 @@ class DecideTests(unittest.TestCase):
         self.assertEqual(R.decide(facts(idle_minutes=None), prune=True)[0], "keep")
 
     def test_review_checkouts(self) -> None:
-        open_review = facts(kind="review", pr=R.PrView(review_state="OPEN", covers_head=True))
+        open_review = facts(
+            kind="review", pr=R.PrView(review_state="OPEN", covers_head=True)
+        )
         self.assertEqual(
             R.decide(open_review, prune=True), ("keep", "review checkout of an open PR")
         )
         self.assertEqual(R.decide(open_review, prune=False)[0], "remove")
-        merged = facts(kind="review", pr=R.PrView(review_state="MERGED", covers_head=True))
+        merged = facts(
+            kind="review", pr=R.PrView(review_state="MERGED", covers_head=True)
+        )
         self.assertEqual(R.decide(merged, prune=True)[0], "remove")
 
     def test_managed_and_other_are_skipped(self) -> None:
@@ -508,7 +733,9 @@ class DecideTests(unittest.TestCase):
 
 
 class PruneTests(WorldCase):
-    def test_a_merged_sweep_lane_is_removable_and_the_dry_run_changes_nothing(self) -> None:
+    def test_a_merged_sweep_lane_is_removable_and_the_dry_run_changes_nothing(
+        self,
+    ) -> None:
         lane = self.w.new_lane("pr11-sweep")
         self.w.commit(lane)
         self.w.push(lane, "feature/eleven")  # a sweep lane pushes HEAD:<pr head>
@@ -519,7 +746,9 @@ class PruneTests(WorldCase):
         row = res.row("claude-pr11-sweep")
         self.assertEqual(row["action"], "remove", row)
         self.assertIn("PR #11 merged", row["reason"])
-        self.assertEqual(tree_hash(self.w.root), before, "the dry run changed something")
+        self.assertEqual(
+            tree_hash(self.w.root), before, "the dry run changed something"
+        )
         self.assertFalse(res.has("worktree", "remove"))
 
     def test_apply_removes_with_git_worktree_remove_and_never_forces(self) -> None:
@@ -537,7 +766,52 @@ class PruneTests(WorldCase):
         self.assertTrue(res.has("branch", "-d", "claude/pr12-sweep"))
         self.assertFalse(any("-D" in v or "--force" in v for v in res.verbs))
         self.assertTrue(
-            (self.w.trees["DealDex"] / "one.txt").exists(), "the integration tree was touched"
+            (self.w.trees["DealDex"] / "one.txt").exists(),
+            "the integration tree was touched",
+        )
+
+    def test_a_lowercase_github_origin_reads_the_relay_in_the_registry_spelling(self) -> None:
+        # The server's origin is github.com/simple-with-us/...;  GitHub ignores case, but the
+        # relay's seat policy does not, and it refused the lowercase owner (reason seat_policy).
+        apps = (
+            ("DealDex", 13, "feature/thirteen"),
+            ("Socratic-Trade", 14, "feature/fourteen"),
+        )
+        for repo, number, head in apps:
+            lane = self.w.new_lane(f"pr{number}-sweep", repo=repo)
+            self.w.commit(lane)
+            self.w.push(lane, head)
+            self.w.merged_pr(lane, head, number=number, repo=repo)
+
+        asked: set[str] = set()
+
+        def lowercase_origin(
+            argv: list[str], cwd: Path | str | None = None
+        ) -> D.CmdResult | None:
+            # Each integration tree answers with the lowercase form of ITS OWN repo.
+            name = Path(str(cwd)).name
+            if "remote.origin.url" in argv and name in self.w.trees:
+                asked.add(name)
+                url = f"https://github.com/simple-with-us/{name}.git\n"
+                return D.CmdResult(0, url, "")
+            return None
+
+        res = self.w.run("prune", "--json", override=lowercase_origin)
+        self.assertEqual(res.rc, 0, res.err)
+        self.assertEqual(asked, {"DealDex", "Socratic-Trade"})
+        for _, number, _ in apps:
+            row = res.row(f"claude-pr{number}-sweep")
+            self.assertEqual(row["action"], "remove", row)
+            self.assertIn(f"PR #{number} merged", row["reason"])
+        queries = [
+            json.loads(call[call.index("--args-json") + 1])
+            for call in res.calls
+            if call[:1] == ["simple-git"]
+        ]
+        self.assertTrue(queries)
+        self.assertEqual(
+            {q["repo"] for q in queries},
+            {"Simple-With-Us/DealDex", "Simple-With-Us/Socratic-Trade"},
         )
 
     def test_dirty_untracked_and_unpushed_lanes_are_kept(self) -> None:
@@ -561,7 +835,9 @@ class PruneTests(WorldCase):
             self.assertTrue(p.exists())
         self.assertFalse(res.has("worktree", "remove"))
 
-    def test_ignored_build_output_does_not_keep_a_lane_but_ignored_local_state_does(self) -> None:
+    def test_ignored_build_output_does_not_keep_a_lane_but_ignored_local_state_does(
+        self,
+    ) -> None:
         exclude = self.w.trees["DealDex"] / ".git" / "info" / "exclude"
         exclude.parent.mkdir(parents=True, exist_ok=True)
         exclude.write_text("node_modules/\n.env\n", encoding="utf-8")
@@ -570,7 +846,9 @@ class PruneTests(WorldCase):
         self.w.push(built, "claude/built")
         self.w.merged_pr(built, "claude/built", number=23)
         (built / "node_modules" / "pkg").mkdir(parents=True)
-        (built / "node_modules" / "pkg" / "index.js").write_text("x\n", encoding="utf-8")
+        (built / "node_modules" / "pkg" / "index.js").write_text(
+            "x\n", encoding="utf-8"
+        )
         local = self.w.new_lane("local-state")
         self.w.commit(local)
         self.w.push(local, "claude/local-state")
@@ -578,7 +856,9 @@ class PruneTests(WorldCase):
         (local / ".env").write_text("NAME=value\n", encoding="utf-8")
         res = self.w.run("prune", "--apply", "--json")
         self.assertTrue(res.row("claude-built")["removed"], res.out)
-        self.assertEqual(res.row("claude-local-state")["reason"], "ignored local state: .env")
+        self.assertEqual(
+            res.row("claude-local-state")["reason"], "ignored local state: .env"
+        )
         self.assertTrue(local.exists())
 
     def test_ignored_local_state_is_named_and_refuses_a_retire(self) -> None:
@@ -627,7 +907,9 @@ class PruneTests(WorldCase):
         self.assertFalse(res.has("worktree", "remove"))
         self.assertTrue(lane.exists())
 
-    def test_squash_merged_with_the_remote_branch_deleted_is_covered_by_the_pr_head(self) -> None:
+    def test_squash_merged_with_the_remote_branch_deleted_is_covered_by_the_pr_head(
+        self,
+    ) -> None:
         lane = self.w.new_lane("squashed")
         self.w.commit(lane)
         self.w.push(lane, "claude/squashed")
@@ -643,6 +925,40 @@ class PruneTests(WorldCase):
         self.assertEqual(row["action"], "remove", row)
         self.assertIn("HEAD is the PR head", row["reason"])
 
+    def test_squash_merge_with_a_rewritten_head_is_covered_by_tree_equality(
+        self,
+    ) -> None:
+        # The hard AFC-647 case: the PR was squash-merged, so its head is a commit that
+        # never contained the lane's HEAD (the lane kept moving, or the head ref is simply
+        # another sha), and the lane branch was never pushed anywhere live.  Neither the
+        # PR head nor ancestry can vouch — only the identical tree on origin/main can.
+        lane = self.w.new_lane("treefall")
+        self.w.commit(lane)  # writes claude-treefall.txt with the lane's tree
+        tree = self.w.trees["DealDex"]  # the integration tree, on main
+        (tree / "claude-treefall.txt").write_text(
+            "claude-treefall.txt\n", encoding="utf-8"
+        )
+        self.w.git(["add", "claude-treefall.txt"], tree)
+        self.w.git(["commit", "-q", "-m", "squash of claude/treefall"], tree)
+        self.w.git(["push", "-q", "origin", "main"], tree)
+        squash_sha = self.w.git(["rev-parse", "HEAD"], tree)
+        self.w.old_pr("claude/treefall", squash_sha, number=33, state="MERGED")
+        res = self.w.run("prune", "--json")
+        row = res.row("claude-treefall")
+        self.assertEqual(row["action"], "remove", row)
+        self.assertIn("tree is on origin/main", row["reason"])
+
+    def test_a_merged_pr_name_alone_does_not_cover_an_unlanded_tree(self) -> None:
+        # Same shape, but the lane's tree never landed: the stale-PR hold must win.
+        lane = self.w.new_lane("unlanded")
+        self.w.commit(lane)
+        other = self.w.git(["rev-parse", "HEAD"], self.w.trees["DealDex"])
+        self.w.old_pr("claude/unlanded", other, number=34, state="MERGED")
+        res = self.w.run("prune", "--json")
+        row = res.row("claude-unlanded")
+        self.assertEqual(row["action"], "keep", row)
+        self.assertIn("no merged or closed PR holds HEAD", row["reason"])
+
     def test_an_open_pr_keeps_the_lane(self) -> None:
         lane = self.w.new_lane("open")
         self.w.commit(lane)
@@ -652,7 +968,9 @@ class PruneTests(WorldCase):
             self.w.run("prune", "--json").row("claude-open")["reason"], "PR #41 is open"
         )
 
-    def test_upstream_deleted_on_origin_is_done_when_head_is_on_a_live_ref(self) -> None:
+    def test_upstream_deleted_on_origin_is_done_when_head_is_on_a_live_ref(
+        self,
+    ) -> None:
         lane = self.w.new_lane("gone")
         self.w.commit(lane)
         self.w.git(
@@ -711,7 +1029,9 @@ class PruneTests(WorldCase):
         self.w.commit(work)
         self.w.push(work, "claude/reused-work")
         # the old PR's head is a real local commit (today's origin/main) that does not contain HEAD
-        self.w.old_pr("claude/reused-work", self.w.git(["rev-parse", "HEAD~1"], work), number=6)
+        self.w.old_pr(
+            "claude/reused-work", self.w.git(["rev-parse", "HEAD~1"], work), number=6
+        )
         row = self.w.run("prune", "--apply", "--json").row("claude-reused-work")
         self.assertEqual(row["action"], "keep", row)
         self.assertIn("not done", row["reason"])
@@ -767,14 +1087,18 @@ class PruneTests(WorldCase):
         self.assertFalse(res.has("worktree", "remove"))
         self.assertFalse(res.has("branch", "-d"))
         self.assertTrue(
-            self.w.git(["rev-parse", "--verify", "-q", "refs/heads/claude/two-names"], tree)
+            self.w.git(
+                ["rev-parse", "--verify", "-q", "refs/heads/claude/two-names"], tree
+            )
         )
         # a peer remote that holds the commit (another lane, a scratch bare repo) never vouches either
         peer = self.w.root / "peer.git"
         self.w.git(["init", "-q", "--bare", str(peer)], self.w.root)
         self.w.git(["remote", "add", "peer", peer.as_uri()], tree)
         self.w.git(["push", "-q", "peer", "HEAD:refs/heads/copy"], lane)
-        self.assertTrue(self.w.git(["rev-parse", "--verify", "-q", "refs/remotes/peer/copy"], tree))
+        self.assertTrue(
+            self.w.git(["rev-parse", "--verify", "-q", "refs/remotes/peer/copy"], tree)
+        )
         row = self.w.run("prune", "--apply", "--json").row("claude-two-names")
         self.assertEqual(row["action"], "keep", row)
         self.assertTrue(lane.exists())
@@ -800,7 +1124,9 @@ class PruneTests(WorldCase):
         )
         res = self.w.run("prune", "--json", override=fail)
         self.assertEqual(res.rc, 69)
-        self.assertEqual(res.row("claude-blind")["reason"], "could not count unpushed commits")
+        self.assertEqual(
+            res.row("claude-blind")["reason"], "could not count unpushed commits"
+        )
         self.assertEqual(res.row("claude-blind-main")["action"], "remove")
         self.assertEqual(res.row("claude-blind-pr")["action"], "remove")
         self.assertTrue(any("ls-remote" in e for e in res.json()["errors"]))
@@ -810,7 +1136,9 @@ class PruneTests(WorldCase):
         self.w.commit(lane)
         self.w.push(lane, "claude/closed")
         self.w.merged_pr(lane, "claude/closed", number=51, state="CLOSED")
-        self.assertEqual(self.w.run("prune", "--json").row("claude-closed")["action"], "remove")
+        self.assertEqual(
+            self.w.run("prune", "--json").row("claude-closed")["action"], "remove"
+        )
 
     def test_recent_activity_keeps_a_merged_lane_in_prune_only(self) -> None:
         lane = self.w.new_lane("fresh")
@@ -818,7 +1146,9 @@ class PruneTests(WorldCase):
         self.w.push(lane, "claude/fresh")
         self.w.merged_pr(lane, "claude/fresh", number=61)
         res = self.w.run("prune", "--json", clock=REAL_NOW)
-        self.assertEqual(res.row("claude-fresh")["reason"], "active in the last 15 minutes")
+        self.assertEqual(
+            res.row("claude-fresh")["reason"], "active in the last 15 minutes"
+        )
 
     def test_an_unused_lane_is_held_for_a_day(self) -> None:
         self.w.new_lane("unused")
@@ -826,16 +1156,23 @@ class PruneTests(WorldCase):
         self.assertEqual(row["action"], "keep")
         self.assertIn("never pushed", row["reason"])
         self.assertEqual(
-            self.w.run("prune", "--json", clock=MUCH_LATER).row("claude-unused")["action"], "remove"
+            self.w.run("prune", "--json", clock=MUCH_LATER).row("claude-unused")[
+                "action"
+            ],
+            "remove",
         )
 
-    def test_main_moving_on_origin_does_not_make_a_fresh_lane_look_unpushed(self) -> None:
+    def test_main_moving_on_origin_does_not_make_a_fresh_lane_look_unpushed(
+        self,
+    ) -> None:
         # Main advances on origin from another clone, so its new tip is not an object here yet (no fetch).
         # The live-sha count drops that missing sha, but HEAD is in origin/main, which is never deleted or
         # rewound, so the unused lane is still pushed and goes after its 24-hour hold.
         lane = self.w.new_lane("idle")
         other = self.w.root / "other-clone"
-        self.w.git(["clone", "-q", self.w.origins["DealDex"].as_uri(), str(other)], self.w.root)
+        self.w.git(
+            ["clone", "-q", self.w.origins["DealDex"].as_uri(), str(other)], self.w.root
+        )
         (other / "later.txt").write_text("later\n", encoding="utf-8")
         self.w.git(["add", "later.txt"], other)
         self.w.git(["commit", "-q", "-m", "later"], other)
@@ -843,11 +1180,17 @@ class PruneTests(WorldCase):
         new_tip = self.w.git(["rev-parse", "HEAD"], other)
         tree = self.w.trees["DealDex"]
         self.assertEqual(
-            self.w.git(["rev-parse", "--verify", "-q", new_tip + "^{commit}"], tree, check=False),
+            self.w.git(
+                ["rev-parse", "--verify", "-q", new_tip + "^{commit}"],
+                tree,
+                check=False,
+            ),
             "",
             "the new tip is an object here",
         )
-        self.assertNotEqual(self.w.git(["rev-parse", "refs/remotes/origin/main"], tree), new_tip)
+        self.assertNotEqual(
+            self.w.git(["rev-parse", "refs/remotes/origin/main"], tree), new_tip
+        )
         row = self.w.run("prune", "--json", clock=MUCH_LATER).row("claude-idle")
         self.assertEqual(row["action"], "remove", row)
         self.assertTrue(lane.exists())
@@ -859,7 +1202,8 @@ class PruneTests(WorldCase):
         self.w.merged_pr(lane, "claude/busy", number=71)
         self.w.lsof = lambda: D.CmdResult(0, f"p4242\nczsh\nn{lane}/sub\n", "")
         self.assertIn(
-            "process 4242 (zsh)", self.w.run("prune", "--json").row("claude-busy")["reason"]
+            "process 4242 (zsh)",
+            self.w.run("prune", "--json").row("claude-busy")["reason"],
         )
         self.w.lsof = lambda: D.CmdResult(None, error="FileNotFoundError: lsof")
         res = self.w.run("prune", "--apply", "--json")
@@ -884,7 +1228,8 @@ class PruneTests(WorldCase):
         self.assertEqual(self.w.run("prune", "--seat", "CLAUDE", "--json").rc, 0)
         other = self.w.run("prune", "--seat", "codex", "--all-seats", "--json")
         self.assertEqual(
-            [os.path.basename(r["path"]) for r in other.json()["lanes"]], ["codex-theirs"]
+            [os.path.basename(r["path"]) for r in other.json()["lanes"]],
+            ["codex-theirs"],
         )
         both = self.w.run("prune", "--all-seats", "--json")
         self.assertEqual(
@@ -922,19 +1267,29 @@ class PruneTests(WorldCase):
         )
         self.assertEqual(made.rc, 0, made.err)
         self.w.prs["Simple-With-Us/DealDex"].append(
-            {"number": 7, "state": "OPEN", "headRefName": "prbranch", "headRefOid": SHAS["pr"]}
+            {
+                "number": 7,
+                "state": "OPEN",
+                "headRefName": "prbranch",
+                "headRefOid": SHAS["pr"],
+            }
         )
         res = self.w.run("prune", "--repo", "dealdex", "--json")
         self.assertEqual(
             [os.path.basename(r["path"]) for r in res.json()["lanes"]], ["review-pr-7"]
         )
-        self.assertEqual(res.row("review-pr-7")["reason"], "review checkout of an open PR")
+        self.assertEqual(
+            res.row("review-pr-7")["reason"], "review checkout of an open PR"
+        )
         self.w.prs["Simple-With-Us/DealDex"][-1]["state"] = "MERGED"
         self.assertEqual(
-            self.w.run("prune", "--repo", "DD", "--json").row("review-pr-7")["action"], "remove"
+            self.w.run("prune", "--repo", "DD", "--json").row("review-pr-7")["action"],
+            "remove",
         )
         self.assertEqual(
-            self.w.run("prune", "--repo", "ST", "--json").row("claude-elsewhere")["action"],
+            self.w.run("prune", "--repo", "ST", "--json").row("claude-elsewhere")[
+                "action"
+            ],
             "remove",
         )
 
@@ -961,12 +1316,15 @@ class PruneTests(WorldCase):
         self.w.push(done, "claude/done")
         self.w.merged_pr(done, "claude/done", number=111)
         stale = self.w.new_lane("stale")
-        shutil.rmtree(stale)  # the folder vanished (this test simulates it; the tool never does)
+        shutil.rmtree(
+            stale
+        )  # the folder vanished (this test simulates it; the tool never does)
         (self.w.lanes / "Gone").symlink_to(self.w.root / "no-such-disk")
         res = self.w.run("prune", "--apply", "--json")
         self.assertTrue(res.row("claude-done")["removed"])
         self.assertEqual(
-            res.row("claude-stale")["reason"], "folder is missing (git lists it as prunable)"
+            res.row("claude-stale")["reason"],
+            "folder is missing (git lists it as prunable)",
         )
         self.assertFalse(res.has("worktree", "prune"))
         self.assertTrue(any("PRUNE-SKIPPED" in n for n in res.json()["notes"]))
@@ -1019,6 +1377,80 @@ class RetireTests(WorldCase):
         self.assertEqual(self.w.run("retire", str(lane)).rc, 0)
         self.assertFalse(lane.exists())
 
+    # A lane whose edits went out through the GitHub API (gr_wf_files_put) keeps them as uncommitted files.
+    def publish(self, files: dict[str, str]) -> None:
+        tree = self.w.trees["DealDex"]
+        for name, text in files.items():
+            (tree / name).write_text(text, encoding="utf-8")
+            self.w.git(["add", name], tree)
+        self.w.git(["commit", "-q", "-m", "published"], tree)
+        self.w.git(["push", "-q", "origin", "HEAD:main"], tree)
+
+    def api_lane(self, slug: str, files: dict[str, str], same: dict[str, str]) -> Path:
+        """A lane with `files` written in it, while origin/main got `same` (the published copy)."""
+        lane = self.w.new_lane(slug)
+        for name, text in files.items():
+            (lane / name).write_text(text, encoding="utf-8")
+        self.publish(same)
+        return lane
+
+    def test_retire_accepts_a_tracked_edit_identical_to_origin_main(self) -> None:
+        edit = {"one.txt": "published\n"}
+        lane = self.api_lane("apitracked", edit, edit)
+        res = self.w.run("retire", "apitracked")
+        self.assertEqual(res.rc, 0, res.err)
+        self.assertFalse(lane.exists())
+        self.assertFalse(any("--force" in v or "-D" in v for v in res.verbs))
+
+    def test_retire_accepts_an_untracked_file_identical_to_origin_main(self) -> None:
+        new = {"docs/new.md": "published\n"}
+        lane = self.w.new_lane("apiuntracked")
+        (lane / "docs").mkdir()
+        (lane / "docs" / "new.md").write_text("published\n", encoding="utf-8")
+        (self.w.trees["DealDex"] / "docs").mkdir()
+        self.publish(new)
+        res = self.w.run("retire", "apiuntracked")
+        self.assertEqual(res.rc, 0, res.err)
+        self.assertFalse(lane.exists())
+
+    def test_one_differing_file_keeps_the_lane_and_restores_nothing(self) -> None:
+        lane = self.api_lane(
+            "apimixed",
+            {"one.txt": "published\n", "new.txt": "published\n", "two.txt": "mine\n"},
+            {"one.txt": "published\n", "new.txt": "published\n", "two.txt": "theirs\n"},
+        )
+        res = self.w.run("retire", "apimixed")
+        self.assertEqual(res.rc, 64)
+        self.assertIn("1 uncommitted or untracked file", res.err)
+        self.assertEqual((lane / "one.txt").read_text(encoding="utf-8"), "published\n")
+        self.assertEqual((lane / "new.txt").read_text(encoding="utf-8"), "published\n")
+        self.assertEqual((lane / "two.txt").read_text(encoding="utf-8"), "mine\n")
+        self.assertFalse(res.has("worktree", "remove"))
+
+    def test_a_deletion_or_staged_change_is_never_published(self) -> None:
+        lane = self.api_lane("apidelete", {}, {"one.txt": "published\n"})
+        (lane / "two.txt").unlink()
+        res = self.w.run("retire", "apidelete")
+        self.assertEqual(res.rc, 64)
+        self.assertIn("uncommitted or untracked", res.err)
+        self.assertFalse((lane / "two.txt").exists())
+        self.assertFalse(res.has("worktree", "remove"))
+        staged = self.api_lane("apistaged", {"one.txt": "again\n"}, {"one.txt": "again\n"})
+        self.w.git(["add", "one.txt"], staged)
+        res = self.w.run("retire", "apistaged")
+        self.assertEqual(res.rc, 64)
+        self.assertTrue(staged.exists())
+
+    def test_identical_files_do_not_count_when_head_is_not_merged(self) -> None:
+        lane = self.w.new_lane("apiunmerged")
+        self.w.commit(lane)  # a local commit that is on no remote ref
+        (lane / "one.txt").write_text("published\n", encoding="utf-8")
+        self.publish({"one.txt": "published\n"})
+        res = self.w.run("retire", "apiunmerged")
+        self.assertEqual(res.rc, 64)
+        self.assertTrue(lane.exists())
+        self.assertEqual((lane / "one.txt").read_text(encoding="utf-8"), "published\n")
+
     def test_retire_refuses_what_is_not_removable(self) -> None:
         lane = self.w.new_lane("busywork")
         self.w.commit(lane)
@@ -1027,7 +1459,9 @@ class RetireTests(WorldCase):
         self.assertIn("on no remote ref", res.err)
         self.assertTrue(lane.exists())
 
-    def test_retire_refuses_another_seats_lane_and_unknown_or_ambiguous_slugs(self) -> None:
+    def test_retire_refuses_another_seats_lane_and_unknown_or_ambiguous_slugs(
+        self,
+    ) -> None:
         theirs = self.w.new_lane("peer", seat="CODEX")
         res = self.w.run("retire", str(theirs))
         self.assertEqual(res.rc, 64)
@@ -1044,14 +1478,64 @@ class RetireTests(WorldCase):
 
     def test_retire_needs_agent_seat(self) -> None:
         self.merged("noseat", 401)
-        self.assertEqual(self.w.run("retire", "noseat", env={"AGENT_SEAT": None}).rc, 64)
+        self.assertEqual(
+            self.w.run("retire", "noseat", env={"AGENT_SEAT": None}).rc, 64
+        )
+
+
+class OwnerRepoTests(unittest.TestCase):
+    """_owner_repo: the remote's repo in the registry's spelling when they are the same repo."""
+
+    def owner_repo(self, url: str | None, known: str) -> str | None:
+        app = types.SimpleNamespace(owner_repo=known)
+
+        def run(argv: list[str], cwd: Path | None = None) -> D.CmdResult:
+            return D.CmdResult(0, url, "") if url is not None else D.CmdResult(1, "", "")
+
+        return R._owner_repo(run, app, Path("."))  # type: ignore[arg-type]
+
+    def test_the_same_repo_in_another_case_uses_the_registry_spelling(self) -> None:
+        for url in (
+            "https://github.com/simple-with-us/AI-Fleet-Coordinator.git",
+            "git@github.com:SIMPLE-WITH-US/ai-fleet-coordinator.git",
+            "https://github.com/Simple-With-Us/AI-Fleet-Coordinator",
+        ):
+            self.assertEqual(
+                self.owner_repo(url, "Simple-With-Us/AI-Fleet-Coordinator"),
+                "Simple-With-Us/AI-Fleet-Coordinator",
+                url,
+            )
+
+    def test_a_remote_naming_another_repo_keeps_its_own_name(self) -> None:
+        self.assertEqual(
+            self.owner_repo("https://github.com/someone/DealDex.git", "Simple-With-Us/DealDex"),
+            "someone/DealDex",
+        )
+
+    def test_no_usable_remote_falls_back_to_the_registry(self) -> None:
+        self.assertEqual(self.owner_repo(None, "Simple-With-Us/DealDex"), "Simple-With-Us/DealDex")
+        self.assertEqual(
+            self.owner_repo("file:///tmp/origin.git", "Simple-With-Us/DealDex"),
+            "Simple-With-Us/DealDex",
+        )
+
+    def test_a_remote_with_no_registry_spelling_is_used_as_is(self) -> None:
+        self.assertEqual(
+            self.owner_repo("https://github.com/simple-with-us/X.git", ""), "simple-with-us/X"
+        )
 
 
 class ParserTests(unittest.TestCase):
     def test_usage_errors_are_64(self) -> None:
         out, err = io.StringIO(), io.StringIO()
         self.assertEqual(
-            K.main(["prune", "--bogus"], env={"HOME": "/nonexistent"}, stdout=out, stderr=err), 64
+            K.main(
+                ["prune", "--bogus"],
+                env={"HOME": "/nonexistent"},
+                stdout=out,
+                stderr=err,
+            ),
+            64,
         )
         self.assertEqual(
             K.main(["retire"], env={"HOME": "/nonexistent"}, stdout=out, stderr=err), 64

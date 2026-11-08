@@ -1,17 +1,17 @@
-// The listener's wake into a hosted seat:  POST /internal/wake/<SEAT> with the
+// The eavesdropper's wake into a hosted seat:  POST /internal/wake/<SEAT> with the
 // `simple-tools-wake/1` body (scripts/simple_tools/adapters.py routine_body), sent
-// by the server listener's `http` wake adapter with `auth = "hmac-sha256"`.
+// by the server eavesdropper's `http` wake adapter with `auth = "hmac-sha256"`.
 //
 // The header is X-Simple-Tools-Signature:  the lowercase hex HMAC-SHA256 of the
-// raw body bytes, keyed with the UTF-8 bytes of the shared key (the listener's
+// raw body bytes, keyed with the UTF-8 bytes of the shared key (the eavesdropper's
 // <SEAT>_ROUTINE_KEY, this Worker's WAKE_HMAC_KEY_<SEAT>), with no prefix.
 // The signature is checked over the raw bytes before any JSON parse.  A body
 // whose `sent_at` is more than five minutes old or one minute in the future is
 // refused, so the wake_id dedupe in SeatGate only has to remember a few minutes.
 // `stream_id` (the trigger's Zulip stream id, null for a DM) is optional here
-// so an older listener's body still parses;  events.js then refuses a channel
+// so an older eavesdropper's body still parses;  events.js then refuses a channel
 // wake that lacks it.
-// `held_back` is optional too:  the listener's summary of wakes it held back
+// `held_back` is optional too:  the eavesdropper's summary of wakes it held back
 // for its budget, `{count, items}`, with at most 20 items of metadata and no
 // message text.  When present it is checked strictly (heldBackProblem), and a
 // malformed one is 400 `bad_held_back`.  Keys an item does not know are
@@ -29,7 +29,7 @@ export const WAKE_MAX_SKEW_S = 60;
 // The shortest key the Worker accepts.  `openssl rand -hex 32` gives 64.
 export const WAKE_MIN_KEY_LEN = 32;
 // `held_back` limits:  at most 20 items, and every string in an item at most
-// 200 UTF-16 code units (the listener sends at most 100 characters of a name
+// 200 UTF-16 code units (the eavesdropper sends at most 100 characters of a name
 // and drops a link longer than 200 rather than cut it).
 export const HELD_BACK_MAX_ITEMS = 20;
 export const HELD_BACK_MAX_STRING = 200;
@@ -111,7 +111,7 @@ function heldBackItemOk(item) {
 /**
  * True when `held_back` is present and malformed.  Absent or null is fine.
  * Present, it is `{count, items}`:  count an integer of at least 0 and at
- * least the number of items (the listener may hold back more than it lists),
+ * least the number of items (the eavesdropper may hold back more than it lists),
  * items an array of at most HELD_BACK_MAX_ITEMS well-formed items.
  */
 export function heldBackProblem(heldBack) {

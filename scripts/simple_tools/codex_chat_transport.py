@@ -125,7 +125,7 @@ class RPC:
             self.request(
                 "initialize",
                 {
-                    "clientInfo": {"name": "simple-chat", "version": "1"},
+                    "clientInfo": {"name": "simple-tools", "version": "1"},
                     "capabilities": {"experimentalApi": True},
                 },
             )

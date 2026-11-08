@@ -32,7 +32,7 @@ OPERATOR_EMAIL = "operator-bot@zulip.test"
 SEAT_EMAIL = "claude-bot@zulip.test"
 OWNER_ID = 12
 AFC_PROJECT = "fixture-afc-project"
-CHANNEL = "work-in-progress"
+CHANNEL = "simple-tools"
 TOPIC = "AFC Work"
 
 ENTRY = {

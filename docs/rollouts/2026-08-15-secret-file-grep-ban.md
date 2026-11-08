@@ -1,7 +1,5 @@
 # Handoff-file grep trap (do not print KEY=value lines)
 
-Historical identifiers have been redacted. These records do not certify current deployment state.
-
 ## Context & Objective
 
 A session listed keys in `~/.secrets/global-api-keys` with
@@ -28,7 +26,7 @@ rules forbid the next seat from doing the same.
 
 ## Verification State
 
-Docs-only.  Text review of the trap section in [retired identifier] vs the live
+Docs-only.  Text review of the trap section in FLEET-PROTOCOL vs the live
 `~/apps/FLEET-PROTOCOL.md` copy (sections match).
 
 ## Next Steps & Blockers

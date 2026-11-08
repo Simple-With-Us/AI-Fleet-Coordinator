@@ -1,7 +1,5 @@
 # 2026-08-14 — Register GROK-BUILD as a standing seat
 
-Historical identifiers have been redacted. These records do not certify current deployment state.
-
 ## Context & Objective
 
 Grok Build TUI is a separate identity from Mac Grok.  DealDex already
@@ -32,6 +30,6 @@ Checker is app-scoped; seat append does not change its result.
 
 ## Next
 
-- Mac Grok: add GROK-BUILD to the [retired identifier] Agent Seat table and
+- Mac Grok: add GROK-BUILD to the FLEET-PROTOCOL Agent Seat table and
   Available list.
 - DealDex PR `grok-build/fleet-setup` for STATUS / effort / rollout.

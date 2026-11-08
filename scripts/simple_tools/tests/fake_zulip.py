@@ -69,7 +69,7 @@ class Queue:
 FAKE_OWNER_ID = 12  # the realm owner (Jay); every fake bot is his, like the real fleet's
 # the fake realm's channel:  these suites pin SIMPLE_TOOLS_CHANNEL to it, so they keep
 # exercising their own name instead of the runtime default (which follows the realm).
-FAKE_CHANNEL = "work-in-progress"
+FAKE_CHANNEL = "simple-tools"
 # The realm's live name for the same channel, so a fixture that names it resolves to a stream
 # the bot is in.  The hosted fake teaches the realm both names for one stream id (STREAMS in
 # scripts/simple-tools-mcp/test/fake-zulip.mjs);  the golden fixtures are shared by both servers,

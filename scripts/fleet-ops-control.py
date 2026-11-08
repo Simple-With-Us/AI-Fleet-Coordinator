@@ -2,10 +2,16 @@
 """fleet-ops-control:  start, stop, restart and update the fleet's own processes, and nothing else.
 
   python3 scripts/fleet-ops-control.py mac start|stop|restart LABEL       (--plan | --yes) [--json]
+  python3 scripts/fleet-ops-control.py pm2 start|stop|restart NAME        (--plan | --yes) [--json]
   python3 scripts/fleet-ops-control.py server start|stop|restart UNIT     (--plan | --yes) [--json]
+  python3 scripts/fleet-ops-control.py server logs UNIT                   (--plan | --yes) [--json]
   python3 scripts/fleet-ops-control.py server update NAME                 (--plan | --yes) [--json]
+  python3 scripts/fleet-ops-control.py server update-status fleet-cli.ID.BASELINE --plan [--json]
+  python3 scripts/fleet-ops-control.py server unit-status UNIT            --plan [--json]
   python3 scripts/fleet-ops-control.py server redeploy RESOURCE_UUID      (--plan | --yes) [--json]
+  python3 scripts/fleet-ops-control.py server eavesdropper-status server --plan [--json]
   python3 scripts/fleet-ops-control.py --from-ssh                         (the forced command)
+  python3 scripts/fleet-ops-control.py --from-muster                      (the forced command of muster-exec)
   python3 scripts/fleet-ops-control.py --check-token                      (install check, not over ssh)
 
 `scripts/fleet-ops-control.json` is the one allowlist.  A label, a unit or an update that is
@@ -17,41 +23,101 @@ What it promises:
   * `--plan` prints the commands it would run and changes nothing.  `--yes` runs them.  With
     neither it refuses.
   * Every command is an argv list run without a shell.  Labels and unit names must match a
-    strict pattern before they reach an argv, and their output is thrown away: only an exit
-    status is reported.
+    strict pattern before they reach an argv, and their output is kept private.  Update
+    stderr is bounded and classified into fixed error codes, never returned verbatim.
+    `server logs` is the deliberate exception: a `--yes` run returns
+    the last 200 journal lines (at most 64 KiB, with a truncation note when cut) in the
+    answer's `output`, while a `--plan` carries no log text at all.  The journal it reads is the
+    entry's `logsUnit`, which is the unit itself unless the entry names another, and for a timer
+    is the service the timer starts (`x.timer` reads `x.service`), because a timer's own journal
+    holds only Started and Stopped.  Mac LaunchAgents have
+    no log verb, because launchd has no uniform log file to tail.  `pm2` verbs act on the
+    Mac pm2 applications the allowlist names, with one `pm2 start|stop|restart NAME` argv
+    and no ecosystem fallback.  A `start` first reads `pm2 jlist`:  a stale record (online
+    with no process behind it) is planned as a restart, because pm2 answers a start on one
+    with "already started" and starts nothing, and an application pm2 no longer remembers
+    is refused at plan time rather than recreated from the ecosystem file.
   * `redeploy` takes a uuid only when the latest `server-status.json` lists it as a Coolify
     resource, so no uuid or host is kept in this repo.  The Coolify token is read through
     `fleet-secrets` into memory, sent in one request header and never printed, logged or
     passed in an argv.  A forced command has only the environment sshd gives it, so
-    fleet-secrets logs in with the Infisical identity in `~/.config/fleet-tools/ops-control.env`
-    (0600) when that file exists.  `--check-token` reads the token the same way and asks
+    `fleet-secrets` receives the scoped Fleet Ops Control token from `ops-control.env` (0600).
+    `--check-token` reads the token the same way and asks
     Coolify for its version, which proves the whole path and changes nothing.
   * `--from-ssh` is the forced command of the `fleet-ops-ctl` key.  It reads
     `SSH_ORIGINAL_COMMAND`, refuses any shell metacharacter, splits it with `shlex`, and
     accepts only a `server` verb, one target, one of `--plan` or `--yes` and an optional
     `--json`.  Anything more is refused.
+  * `server eavesdropper-status server --plan` reads the server eavesdropper's `status.json`
+    with `docker exec --user simpletools eavesdropper /bin/cat /data/listener/status.json` (docker
+    group membership, no sudo, run as the container's own unprivileged account, a pinned
+    environment with an empty private docker config, at most 1 MiB, 15 seconds) and answers it
+    reduced to names, counts, tokens and times by `scripts/reduced_status.py`.  It
+    takes no lock, writes no audit row for a plan and refuses `--yes`.  When the status cannot be
+    read the result is `unavailable` with an `errorCode` word (never a path or docker's own
+    text) and the exit status is 1, although no command failed.
+  * `server unit-status UNIT --plan` reads one listed unit (an entry of the allowlist's server `units`
+    or its `watch` list, in the scope the entry names) with one fixed `systemctl [--user] show`, no
+    sudo, and answers its ActiveState, SubState, Result, last exit time and (for a timer) last
+    trigger and next elapse as bounded tokens and ISO-8601 UTC times, with the helper's own
+    clock as `checkedAt`.  It takes no
+    lock, writes no audit row for a plan and refuses `--yes` (audited, like every refused `--yes`).  A
+    unit that systemctl cannot show, or shows in a way this reader does not accept, is refused with
+    an `errorCode`, never with systemd's own text.  The `--from-muster` route does not offer it.
   * Every `--yes` run appends one JSON line to `~/.local/state/fleet-tools/ops-audit.jsonl`
     (0600): time, host role, verb, target and result.  No command output is recorded, and a
-    redeploy is recorded by its resource name, never its uuid.
+    redeploy is recorded by its resource name, never its uuid.  Each row also has a short
+    `id`, and the `--yes` answer carries it (`auditID`) with the row's target (`auditTarget`),
+    so the caller's own log can name the row this run wrote.
+  * One `--yes` runs at a time on a machine:  a second one while another holds
+    `~/.local/state/fleet-tools/ops-control.lock` is refused with `errorCode` `action_busy`.
+    Plans, update-status reads and journal reads take no lock.  A chain of commands that
+    stops at a failure says how many finished first (`completedCommands`).
 
-Exit status: 0 planned or done, 1 a command failed, 2 refused.
+An update is submitted until a new successful service invocation is observed; API acceptance
+of a redeploy is also submitted.  Neither is called completed from submission alone.
+
+`--from-muster` is the forced command of the `muster-exec` key (`server-route-spec.md`, version 5).
+`SSH_ORIGINAL_COMMAND` holds four words (`server VERB TARGET --plan|--yes`) and standard input one
+JSON document.  A plan or a read needs no approval and is rate limited; a run needs an approval
+signed by an enrolled device's approval key, inside a two-minute window, with a fresh nonce recorded
+before anything runs, and only if the plan this helper builds hashes to the approved hash.  Every
+answer is signed with the helper's own key.  All of that is `muster_approval.py`, a sibling file
+loaded by its fixed place, never through `sys.path`, and only when it is owned as the installed
+layout requires.  This branch reads one environment variable, `SSH_ORIGINAL_COMMAND`, first, and then empties
+the environment (leaving a fixed HOME and PATH) before the approval module and `cryptography` are
+loaded: its paths come from constants and the account database.  `muster trust-list chain --yes` is
+the one request that stores the trust list, so the route stays inert (every approval is
+`no_trust_list`) until a chain has been accepted.
+
+Exit status: 0 planned, submitted or done, 1 a command failed (or, for `server
+eavesdropper-status` alone, the status could not be read: result `unavailable`, with no
+command failed), 2 refused.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime
+import fcntl
+import hashlib
+import hmac
+import importlib.util
 import json
 import os
 import re
+import secrets
+import selectors
 import shlex
 import stat
 import subprocess
 import sys
+import tempfile
 import time
+import types
 import urllib.error
 import urllib.parse
-import urllib.request
 from pathlib import Path
 
 TOOL = "fleet-ops-control"
@@ -73,6 +139,11 @@ LABEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,126}")
 # A systemd unit this tool may name: a plain service or timer, no template or path escapes.
 UNIT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,120}\.(service|timer)")
 UPDATE_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
+# A pm2 application name: the registry's own lowercase shape, never a flag or a path.
+PM2_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
+LOG_MAX_LINES = 200
+LOG_MAX_BYTES = 64 * 1024
+LOG_TRUNCATED_NOTE = "[fleet-ops-control: output truncated to the last 200 lines / 64 KiB]"
 # Coolify resource uuids are short lowercase letters and digits.
 UUID_RE = re.compile(r"[A-Za-z0-9]{6,64}")
 # What may appear in SSH_ORIGINAL_COMMAND at all: no quote, no shell metacharacter.
@@ -84,6 +155,126 @@ REDEPLOYABLE_TYPES = ("application",)
 
 LAUNCHCTL = "/bin/launchctl"
 SYSTEMCTL_CANDIDATES = ("/usr/bin/systemctl", "/bin/systemctl")
+JOURNALCTL_CANDIDATES = ("/usr/bin/journalctl", "/bin/journalctl")
+DOCKER_CANDIDATES = ("/usr/bin/docker", "/bin/docker")
+# `server eavesdropper-status` reads the status document of the server's eavesdropper (the
+# listener daemon) out of its container with one fixed argv, `docker exec --user simpletools
+# eavesdropper /bin/cat /data/listener/status.json`: no shell, no sudo, no flag or path from the
+# request.  The caller's account needs only membership of the `docker` group, and the read runs
+# as the container's own unprivileged account (the file is 0600 and that account's), never as
+# root.  /data is the daemon's SIMPLE_TOOLS_STATE_DIR, a docker volume, and the listener's own
+# `listener_dir` puts status.json at <state dir>/listener/status.json.
+EAVESDROPPER_TARGET = "server"
+EAVESDROPPER_CONTAINER = "eavesdropper"
+EAVESDROPPER_USER = "simpletools"
+EAVESDROPPER_CAT = "/bin/cat"
+EAVESDROPPER_STATUS_PATH = "/data/listener/status.json"
+EAVESDROPPER_STATUS_MAX_BYTES = 1024 * 1024
+EAVESDROPPER_READ_TIMEOUT = 15
+# The whole environment of that docker call is built here, never taken from the caller's: a fixed
+# PATH, the local socket, and an empty private directory as both DOCKER_CONFIG and HOME, so no
+# docker config, context, credential helper or proxy setting of the account can apply.
+DOCKER_PATH = "/usr/bin:/bin"
+DOCKER_HOST = "unix:///var/run/docker.sock"
+# Only the start of docker's stderr is kept, to be compared with known phrases and never repeated.
+DOCKER_STDERR_MAX = 4096
+# Docker's own words for a container that cannot be exec'd into (compared ignoring case).
+DOCKER_NOT_RUNNING_PHRASES = ("is not running", "no such container", "is restarting")
+# How long to wait for a child to be reaped after it was killed, so a child that will not die
+# cannot hold this helper forever.
+KILL_WAIT_SECONDS = 5
+# The reducer module sits beside the helper, in the helper's own folder: `scripts/` in a source
+# checkout, the root-owned /usr/local/lib/fleet-resource-control on the server.  It is opened
+# without following a symlink and judged by fstat on the open descriptor, never by a path
+# check.  The layout is read from who owns that folder.  A folder owned by TRUSTED_MODULE_UID (root)
+# is the installed layout: the file must be root's too, and neither may be writable by group or
+# others.  Any other folder is a checkout: the file may also be owned by the calling account,
+# the folder must be that account's too, and still no group or other write bit is allowed.  A
+# checkout owned by another account is refused.  Nothing in the request or the environment
+# selects a place.
+HELPER_DIR = Path(__file__).resolve().parent
+TRUSTED_MODULE_UID = 0
+REDUCED_STATUS_NAME = "reduced_status.py"
+REDUCED_STATUS_MAX_BYTES = 256 * 1024
+# The reason words an unavailable answer may carry, each with the plain sentence for `detail`.
+EAVESDROPPER_UNAVAILABLE = {
+    "docker_unavailable": "docker could not be run",
+    "timeout": "reading the status took too long",
+    "container_not_running": "the eavesdropper container is not running",
+    "read_failed": "the eavesdropper container or its status file could not be read",
+    "too_large": "the status file is larger than the allowed size",
+    "not_json": "the status file is not a JSON object",
+    "module_unavailable": "the status reduction module is not installed beside the helper",
+}
+# The `--from-muster` entry (`muster-exec`'s forced command).  The approval engine is the sibling
+# file `muster_approval.py`, loaded by its fixed place (beside this file, in the installed layout and
+# in a checkout alike) and never through sys.path.  The environment of this branch is fixed: nothing
+# a caller sets can move a path, a key, the clock or a child's PATH.
+MUSTER_ENTRY = "--from-muster"
+MUSTER_MODULE_FILE = "muster_approval.py"
+MUSTER_ROUTE = "from-muster"
+MUSTER_VIA = "muster-ios"
+MUSTER_CHILD_ENV = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"}
+MUSTER_UPDATE_ROUTES = ("sudo-system-update", "root-system-update")
+# The shared /etc/muster reader has one source file in the repository, `scripts/muster_agent/`, and the
+# installer copies it flat beside the helper; the loader looks beside the helper first (the installed
+# layout) and then in that folder (a checkout).
+MUSTER_TRUST_FILES_NAME = "muster_trust_files.py"
+MUSTER_AGENT_DIR = "muster_agent"
+MUSTER_MODULE_MAX_BYTES = 512 * 1024
+# What the audit names a Coolify resource when the application's name is not known (never a uuid).
+COOLIFY_AUDIT_TARGET = "coolify resource"
+# Section 4: a plan refusal's `reason` is the planner's own `error_code`, passed through unchanged.  These
+# are the codes that count: the eight the spec names, then three of the same kind (the update recheck
+# at run time and the two receipt codes of `update-status`) that it does not name yet.
+MUSTER_PLANNER_CODES = (
+    "update_busy",
+    "authorization_unavailable",
+    "update_route_unavailable",
+    "update_executable_unavailable",
+    "unit_status_unavailable",
+    "unit_status_invalid",
+    "unit_unavailable",
+    "unit_type_unsupported",
+    "update_route_changed",
+    "receipt_context_mismatch",
+    "receipt_context_unavailable",
+)
+# A refusal that has no code of its own gets one of these: the target, its action or the redeploy
+# permission is not on the allowlist; the status report is missing, unsafe, stale, foreign or does not
+# list the application; the resource policy's saved revision is not the one the request names.
+MUSTER_PLAN_REASONS = MUSTER_PLANNER_CODES + ("allowlist_miss", "report_stale", "revision_stale")
+MUSTER_AUDIT_VALUE_RE = re.compile(r"[A-Za-z0-9._@:-]{1,128}")
+MUSTER_AUDIT_NAMES = (
+    "route",
+    "via",
+    "jobId",
+    "deviceId",
+    "approvalNonce",
+    "planSHA256",
+    "errorCode",
+    # An accepted trust-list chain (section 14, v5.3): the version now held, its body hash and the
+    # version held before (null when none was).
+    "trustListVersion",
+    "trustListSHA256",
+    "fromVersion",
+)
+# The one answer that needs no key, and the one a missing or untrusted module gives (server-route-spec
+# section 13): every verifier treats it as unauthenticated.
+MUSTER_UNSIGNED_ANSWER = {
+    "protocol": "muster-helper/1",
+    "kind": "refusal",
+    "body": {"contract": "muster-signed-refusal/1", "errorCode": "helper_key_missing"},
+    "keyId": None,
+    "signature": None,
+}
+# pm2 runs the way Muster's own pm2 client runs it: a pinned node and the pm2 script,
+# never a PATH lookup a caller could shadow.
+NODE_CANDIDATES = ("/opt/homebrew/bin/node", "/usr/local/bin/node")
+PM2_CANDIDATES = (
+    "/opt/homebrew/lib/node_modules/pm2/bin/pm2",
+    "/usr/local/lib/node_modules/pm2/bin/pm2",
+)
 FLEET_SECRETS_CANDIDATES = ("~/.local/bin/fleet-secrets", "/usr/local/bin/fleet-secrets")
 COOLIFY_TOKEN_NAME = "COOLIFY_API_TOKEN"
 COOLIFY_TOKEN_PATH = "/coolify"
@@ -92,25 +283,119 @@ COOLIFY_TOKEN_PATH = "/coolify"
 COOLIFY_DEFAULT_BASE = "http://127.0.0.1:8000"
 # The Infisical identity fleet-secrets may be handed from the credential file, and nothing
 # else from it.
-CREDENTIAL_NAMES = (
-    "INFISICAL_TOKEN",
-    "INFISICAL_AUTOMATION_CLIENT_ID",
-    "INFISICAL_AUTOMATION_CLIENT_SECRET",
+CREDENTIAL_NAMES = ("FLEET_OPS_CONTROL_INFISICAL_TOKEN",)
+SCOPED_TOKEN_NAME = CREDENTIAL_NAMES[0]
+# Keep this boundary independent of optional fleet-secrets imports.
+SHARED_AUTH_ENV_NAMES = frozenset(
+    {
+        "INFISICAL_TOKEN",
+        "INFISICAL_AI_FLEET_COORDINATOR_TOKEN",
+        "INFISICAL_WRITE_TOKEN",
+        "INFISICAL_CLIENT_ID",
+        "INFISICAL_CLIENT_SECRET",
+        "INFISICAL_AUTOMATION_CLIENT_ID",
+        "INFISICAL_AUTOMATION_CLIENT_SECRET",
+        "INFISICAL_UNIVERSAL_AUTH_CLIENT_ID",
+        "INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET",
+        "INFISICAL_SHARED_CLIENT_ID",
+        "INFISICAL_SHARED_CLIENT_SECRET",
+        "WISE_RELAY_INFISICAL_TOKEN",
+    }
 )
 CREDENTIALS_MAX_BYTES = 8 * 1024
 COMMAND_TIMEOUT = 90
 SECRET_TIMEOUT = 30
 HTTP_TIMEOUT = 30
-# The only variables a launchctl or systemctl child sees.
-CHILD_ENV_KEEP = ("PATH", "HOME", "LANG", "LC_ALL", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS")
+SUDO = "/usr/bin/sudo"
+UPDATE_SYSTEMCTL = "/usr/bin/systemctl"
+FLEET_CLI_UPDATE_UNIT = "fleet-cli-git-update.service"
+UPDATE_PROBE_TIMEOUT = 3
+UPDATE_POLL_ATTEMPTS = 25
+UPDATE_POLL_INTERVAL = 0.5
+UPDATE_VERIFY_SECONDS = 12
+UPDATE_STATUS_RE = re.compile(r"fleet-cli\.([0-9a-f]{32})\.(0|[1-9][0-9]{0,19})")
+UINT64_MAX = (1 << 64) - 1
+AUDIT_CONTEXT_MAX_BYTES = 1024 * 1024
+UPDATE_PROPERTIES = (
+    "LoadState",
+    "ActiveState",
+    "SubState",
+    "Job",
+    "Type",
+    "InvocationID",
+    "Result",
+    "ExecMainCode",
+    "ExecMainStatus",
+    "ExecMainStartTimestampMonotonic",
+    "ExecMainExitTimestampMonotonic",
+)
+# `server unit-status UNIT --plan`: one `systemctl [--user] show` of a listed unit, asked for these
+# properties and no others.  A timer has no main process, so it is not asked for a last exit time
+# (systemd has no such property on it and prints none), and a service has no next elapse or last
+# trigger.  A timer is asked instead for when it last fired its job and when it fires next.
+UNIT_STATUS_PROPERTIES = ("LoadState", "ActiveState", "SubState", "Result")
+UNIT_STATUS_SERVICE_PROPERTIES = UNIT_STATUS_PROPERTIES + ("ExecMainExitTimestamp",)
+UNIT_STATUS_TIMER_PROPERTIES = UNIT_STATUS_PROPERTIES + (
+    "NextElapseUSecRealtime",
+    "LastTriggerUSec",
+)
+# What the reader keeps of the output: a real answer is a few hundred bytes, so one byte past this
+# is a refusal and never a truncated read (the capped runner keeps the tail of what it is given).
+UNIT_STATUS_MAX_BYTES = 4096
+UNIT_STATUS_TIMEOUT = 10
+# systemd's state words (`active`, `start-pre`, `auto-restart`, `exit-code`, `start-limit-hit`...):
+# lowercase letters, digits and dashes.  Anything else is not passed on.
+UNIT_STATE_RE = re.compile(r"[a-z][a-z0-9-]{0,31}")
+# `--timestamp=unix` spells a time `@SECONDS`; `0`, `@0`, `n/a` and an empty value mean "never".
+UNIT_TIME_RE = re.compile(r"@([0-9]{1,20})")
+UNIT_TIME_UNSET = ("", "n/a", "0")
+# The load states that mean the unit is not there to be read, in systemd's words.
+UNIT_NOT_LOADED = ("not-found", "masked", "error", "bad-setting")
+# The words an allowlist entry's optional `role` may use (the collector's own list), and the shape of
+# its optional `stopConsequence`: one line of printable ASCII, at most 200 characters, no leading or
+# trailing space.  Neither is used by the helper; it checks them so that a bad one cannot reach Muster.
+# The copy therefore stays plain ASCII with ordinary spaces (no U+00A0 sentence gap), because a value
+# that breaks the rule refuses the whole allowlist and the installer checks only schemaVersion.
+UNIT_ROLES = ("reporting", "updater")
+STOP_CONSEQUENCE_RE = re.compile(r"[\x21-\x7e](?:[\x20-\x7e]{0,198}[\x21-\x7e])?")
+# The only variables a launchctl or systemctl child sees.  A pm2 child also needs
+# PM2_HOME, which names a directory and never a credential.
+CHILD_ENV_KEEP = (
+    "PATH",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "XDG_RUNTIME_DIR",
+    "DBUS_SESSION_BUS_ADDRESS",
+    "PM2_HOME",
+)
 
 
 class Refused(Exception):
     """The request is not allowed.  The text is a fixed phrase that names no secret."""
 
+    def __init__(self, message, *, error_code=None, reason=None):
+        super().__init__(message)
+        self.error_code = error_code
+        # For the `--from-muster` route only (server-route-spec section 4): one of its four
+        # plan-refusal reasons.  A refusal that has none is not a plan refusal there.
+        self.reason = reason or (error_code if error_code in MUSTER_PLANNER_CODES else None)
+
 
 class Failed(Exception):
-    """An allowed command ran and did not succeed."""
+    """An allowed command ran and did not succeed.
+
+    `completed` is how many commands of the plan finished before this one, when the run
+    was a chain;  None when it was not."""
+
+    def __init__(self, message, *, error_code=None, completed=None, timed_out=False):
+        super().__init__(message)
+        self.error_code = error_code
+        self.completed = completed
+        # True when the action was started and its end could not be observed (a command killed at its
+        # time limit, or a request that may have been sent and got no answer).  The `--from-muster` route
+        # calls such a run `unknown`, never `failed` (server-route-spec section 13); no answer carries it.
+        self.timed_out = timed_out
 
 
 # MARK: - The allowlist
@@ -143,23 +428,54 @@ def validate_config(doc):
     if not isinstance(mac, dict) or not isinstance(server, dict):
         bad("sections")
     agents = {}
-    for row in mac.get("agents") or []:
+    for row in _rows(mac.get("agents"), bad, "mac.agents"):
         if not isinstance(row, dict) or not isinstance(row.get("label"), str):
             bad("mac.agents")
         label = row["label"]
         if not LABEL_RE.fullmatch(label) or label in agents:
             bad("mac.agents label")
         agents[label] = _actions(row, bad)
+        _notes(row, bad)
+    pm2_apps = {}
+    for row in _rows(mac.get("pm2Apps"), bad, "mac.pm2Apps"):
+        if not isinstance(row, dict) or not isinstance(row.get("name"), str):
+            bad("mac.pm2Apps")
+        name = row["name"]
+        if not PM2_RE.fullmatch(name) or name in pm2_apps:
+            bad("mac.pm2Apps name")
+        pm2_apps[name] = _actions(row, bad)
+        _notes(row, bad)
     units = {}
-    for row in server.get("units") or []:
+    for row in _rows(server.get("units"), bad, "server.units"):
         if not isinstance(row, dict) or not isinstance(row.get("unit"), str):
             bad("server.units")
         unit = row["unit"]
         if not UNIT_RE.fullmatch(unit) or unit in units or row.get("scope") not in SCOPES:
             bad("server.units unit")
-        units[unit] = {"scope": row["scope"], "actions": _actions(row, bad)}
+        units[unit] = {
+            "scope": row["scope"],
+            "actions": _actions(row, bad),
+            "logsUnit": _logs_unit(row, unit, bad),
+        }
+        _notes(row, bad)
+    # The units that are read and granted nothing: `server unit-status` may read them and no other
+    # verb names them.  A unit named in both lists keeps its `units` entry.
+    watch = {}
+    for row in _rows(server.get("watch"), bad, "server.watch"):
+        if not isinstance(row, dict) or not isinstance(row.get("unit"), str):
+            bad("server.watch")
+        unit = row["unit"]
+        if not UNIT_RE.fullmatch(unit) or row.get("scope") not in SCOPES:
+            bad("server.watch unit")
+        known = units.get(unit) or watch.get(unit)
+        if known is not None and known["scope"] != row["scope"]:
+            # One name in two scopes: a status request names a unit and no scope, so it could not
+            # tell which of the two it was asking about.
+            bad("server.watch scope")
+        if unit not in units:
+            watch.setdefault(unit, {"scope": row["scope"]})
     updates = {}
-    for row in server.get("updates") or []:
+    for row in _rows(server.get("updates"), bad, "server.updates"):
         if not isinstance(row, dict):
             bad("server.updates")
         name, unit = row.get("name"), row.get("unit")
@@ -177,11 +493,16 @@ def validate_config(doc):
     coolify = server.get("coolify") or {}
     if not isinstance(coolify, dict) or not isinstance(coolify.get("redeploy", False), bool):
         bad("server.coolify")
+    if type(server.get("resourcePolicy", False)) is not bool:
+        bad("server.resourcePolicy")
     return {
         "agents": agents,
+        "pm2": pm2_apps,
         "units": units,
+        "watch": watch,
         "updates": updates,
         "redeploy": bool(coolify.get("redeploy", False)),
+        "resourcePolicy": server.get("resourcePolicy", False),
     }
 
 
@@ -192,21 +513,74 @@ def _actions(row, bad):
     return tuple(actions)
 
 
+def _rows(value, bad, what):
+    """The entries of one allowlist list: `value` when it is a list, an empty list when the key is
+    absent or empty (Python's truth rule, as every `or` default here reads it and as Muster's own
+    reader of the file does), and a refusal for anything else, so that a list given as a number, a
+    string, a flag or an object is a malformed file and not a traceback that takes every verb down."""
+    if not value:
+        return []
+    if not isinstance(value, list):
+        bad(f"{what} is not a list")
+    return value
+
+
+def _logs_unit(row, unit, bad):
+    """The unit `server logs` reads the journal of, for the allowlist entry `row` of `unit`.
+
+    An entry may name it (`logsUnit`, a unit name of the same safe shape, read in the entry's own
+    scope).  Otherwise a timer reads the service it starts, `x.timer` reading `x.service`, because a
+    timer's own journal holds only Started and Stopped, and any other unit reads itself."""
+    if "logsUnit" in row:
+        logs_unit = row["logsUnit"]
+        if not isinstance(logs_unit, str) or not UNIT_RE.fullmatch(logs_unit):
+            bad("server.units logsUnit")
+        return logs_unit
+    if unit.endswith(".timer"):
+        # The unit name already matched UNIT_RE, so its stem and the new suffix do too.
+        return unit[: -len(".timer")] + ".service"
+    return unit
+
+
+def _notes(row, bad):
+    """Check the owner copy an entry may carry: `role` (one word of UNIT_ROLES) and `stopConsequence`
+    (what stopping it costs, one line of printable ASCII).  The helper acts on neither, so a bad one
+    refuses the file rather than reach Muster."""
+    if "role" in row and (not isinstance(row["role"], str) or row["role"] not in UNIT_ROLES):
+        bad("role")
+    if "stopConsequence" in row and (
+        not isinstance(row["stopConsequence"], str)
+        or not STOP_CONSEQUENCE_RE.fullmatch(row["stopConsequence"])
+    ):
+        bad("stopConsequence")
+
+
 # MARK: - Running things
 
 
-def run_command(argv, timeout=COMMAND_TIMEOUT, env=None, want_stdout=False):
-    """(exit status, stdout bytes).  An argv list, never a shell; stderr is dropped.
+def run_command(
+    argv,
+    timeout=COMMAND_TIMEOUT,
+    env=None,
+    want_stdout=False,
+    max_bytes=None,
+    combine_stderr=False,
+):
+    """(exit status, captured bytes).  An argv list, never a shell.
 
-    A timeout is status 124 and a missing binary 127, like a shell would say."""
+    With `max_bytes` the capture itself is capped, keeping only the last bytes.  A timeout
+    is status 124 and a missing binary 127, like a shell would say.  Stderr is discarded
+    unless explicitly merged for bounded private classification by the update path."""
     if not isinstance(argv, list) or not argv or not all(isinstance(a, str) for a in argv):
         raise Refused("internal: not an argv list")
+    if want_stdout and max_bytes:
+        return _run_capped(argv, timeout, env, max_bytes, combine_stderr=combine_stderr)
     try:
         proc = subprocess.run(
             argv,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE if want_stdout else subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.STDOUT if combine_stderr and want_stdout else subprocess.DEVNULL,
             timeout=timeout,
             env=env,
             cwd="/",
@@ -220,25 +594,211 @@ def run_command(argv, timeout=COMMAND_TIMEOUT, env=None, want_stdout=False):
     return proc.returncode, (proc.stdout or b"") if want_stdout else b""
 
 
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    """Never follow a 3xx: the token must not be sent to another origin."""
+def _run_capped(argv, timeout, env, max_bytes, combine_stderr=False):
+    """Capture stdout without ever holding more than its last `max_bytes` bytes."""
+    try:
+        proc = subprocess.Popen(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT if combine_stderr else subprocess.DEVNULL,
+            env=env,
+            cwd="/",
+            shell=False,
+        )
+    except OSError:
+        return 127, b""
+    kept = bytearray()
+    selector = None
+    timed_out = False
+    try:
+        deadline = time.monotonic() + timeout
+        fd = proc.stdout.fileno()
+        selector = selectors.DefaultSelector()
+        selector.register(fd, selectors.EVENT_READ)
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                break
+            if not selector.select(remaining):
+                timed_out = True
+                break
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break
+            kept += chunk
+            if len(kept) > max_bytes:
+                del kept[: len(kept) - max_bytes]
+        if not timed_out:
+            try:
+                proc.wait(timeout=max(0.0, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                timed_out = True
+        if timed_out:
+            _kill_and_reap(proc)
+            return 124, b""
+        return proc.returncode, bytes(kept)
+    except BaseException:
+        # This is a bounded journal/status capture or update submission.  Keep its
+        # lifetime inside this call even when capture or waiting is interrupted.
+        try:
+            if proc.poll() is None:
+                _kill_and_reap(proc)
+        except BaseException:  # noqa: BLE001, S110 - Preserve the original interruption.
+            pass
+        raise
+    finally:
+        if selector is not None:
+            try:
+                selector.close()
+            except BaseException:  # noqa: BLE001, S110 - Best-effort cleanup must preserve the result.
+                pass
+        try:
+            proc.stdout.close()
+        except BaseException:  # noqa: BLE001, S110 - Preserve the original interruption.
+            pass
 
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
+
+def _kill_and_reap(proc):
+    """Kill `proc` and wait for it, but never without a limit: a child that will not die is left
+    to the system instead of holding this helper forever."""
+    try:
+        proc.kill()
+    except OSError:
+        pass
+    try:
+        proc.wait(timeout=KILL_WAIT_SECONDS)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+def run_bounded_read(argv, timeout, env, max_bytes, stderr_max=DOCKER_STDERR_MAX):
+    """(exit status, stdout, stderr, over).  An argv list, never a shell, stdin closed.
+
+    Stdout is never held beyond `max_bytes`: the first byte past the limit kills the child at
+    once and answers `over` (True) with no stdout, so a huge file costs neither memory nor the
+    whole timeout.  Stderr is read alongside (so a chatty child cannot stall on a full pipe) and
+    only its first `stderr_max` bytes are kept, for a caller that classifies it and never repeats
+    it.  A timeout is status 124 and a program that cannot start is 127.  After a kill the wait
+    for the child is bounded."""
+    if not isinstance(argv, list) or not argv or not all(isinstance(a, str) for a in argv):
+        raise Refused("internal: not an argv list")
+    try:
+        proc = subprocess.Popen(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            cwd="/",
+            shell=False,
+        )
+    except OSError:
+        return 127, b"", b"", False
+    out = bytearray()
+    err = bytearray()
+    over = False
+    timed_out = False
+    selector = selectors.DefaultSelector()
+    try:
+        deadline = time.monotonic() + timeout
+        selector.register(proc.stdout, selectors.EVENT_READ, "out")
+        selector.register(proc.stderr, selectors.EVENT_READ, "err")
+        while selector.get_map() and not over:
+            remaining = deadline - time.monotonic()
+            events = selector.select(remaining) if remaining > 0 else []
+            if not events:
+                timed_out = True
+                break
+            for key, _ in events:
+                chunk = os.read(key.fd, 65536)
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                if key.data == "out":
+                    out += chunk
+                    if len(out) > max_bytes:
+                        over = True
+                        break
+                elif len(err) < stderr_max:
+                    err += chunk[: stderr_max - len(err)]
+        if not (over or timed_out):
+            try:
+                proc.wait(timeout=max(0.0, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                timed_out = True
+        if over:
+            _kill_and_reap(proc)
+            return -9, b"", bytes(err), True
+        if timed_out:
+            _kill_and_reap(proc)
+            return 124, b"", bytes(err), False
+        return proc.returncode, bytes(out), bytes(err), False
+    except BaseException:
+        try:
+            if proc.poll() is None:
+                _kill_and_reap(proc)
+        except BaseException:  # noqa: BLE001, S110 - Preserve the original interruption.
+            pass
+        raise
+    finally:
+        try:
+            selector.close()
+        except BaseException:  # noqa: BLE001, S110 - Best-effort cleanup must preserve the result.
+            pass
+        for stream in (proc.stdout, proc.stderr):
+            try:
+                stream.close()
+            except BaseException:  # noqa: BLE001, S110 - Preserve the original interruption.
+                pass
+
+
+class NoAnswer(int):
+    """Zero, the status of a GET that got no answer, and `sent` true: the request may have reached
+    the server (a timeout, a reset, an answer cut short), so its effect cannot be told.  A plain 0 is
+    a GET that never left (a refused connection, a name that did not resolve, a bad URL)."""
+
+    sent = True
 
 
 def http_get(url, headers, timeout=HTTP_TIMEOUT):
-    """The HTTP status of one GET, or 0 when there was no answer.  The body is discarded."""
-    opener = urllib.request.build_opener(_NoRedirect)
-    request = urllib.request.Request(url, method="GET", headers=headers)
+    """The HTTP status of one GET, or 0 when there was no answer.  The body is discarded.
+
+    A `NoAnswer` (it is 0 too) means the request may have been sent.  `urllib.request` is imported
+    here and not at the top of the file so that `ssl`, the proxy variables and the opener are set up
+    only when a GET is made, after the `--from-muster` branch has emptied the environment.  That is
+    all it does: OpenSSL reads its configuration when `hashlib` is imported at the top of the file,
+    before the environment is emptied, so a clean start comes from the forced command line, which
+    starts the interpreter with an empty environment (the module docstring of `muster_approval`)."""
+    import http.client
+    import socket
+    import urllib.request
+
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        """Never follow a 3xx: the token must not be sent to another origin."""
+
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+
+    opener = urllib.request.build_opener(NoRedirect)
+    try:
+        request = urllib.request.Request(url, method="GET", headers=headers)
+    except ValueError:
+        return 0
     try:
         with opener.open(request, timeout=timeout) as response:
             response.read(64 * 1024)
             return response.status
     except urllib.error.HTTPError as exc:
         return exc.code
-    except (urllib.error.URLError, OSError, ValueError):
-        return 0
+    except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as exc:
+        reason = getattr(exc, "reason", exc)
+        if isinstance(exc, ValueError) or isinstance(
+            reason, (ConnectionRefusedError, socket.gaierror, FileNotFoundError, PermissionError)
+        ):
+            return 0
+        return NoAnswer(0)
 
 
 class Context:
@@ -258,6 +818,11 @@ class Context:
         audit_path=None,
         fleet_secrets=None,
         credentials_path=None,
+        pm2_node=None,
+        pm2_script=None,
+        sleep=None,
+        monotonic=None,
+        reader=None,
     ):
         self.platform = platform or sys.platform
         self.uid = os.getuid() if uid is None else uid
@@ -277,6 +842,12 @@ class Context:
         self.audit_path = audit_path or (
             self.home / ".local" / "state" / "fleet-tools" / "ops-audit.jsonl"
         )
+        self.pm2_node = pm2_node
+        self.pm2_script = pm2_script
+        self.sleep = sleep or time.sleep
+        self.monotonic = monotonic or time.monotonic
+        # The bounded reader of `server eavesdropper-status` (see run_bounded_read).
+        self.reader = reader or run_bounded_read
 
     def child_env(self):
         env = {k: v for k, v in self.environ.items() if k in CHILD_ENV_KEEP}
@@ -286,6 +857,12 @@ class Context:
             runtime = f"/run/user/{self.uid}"
             if os.path.isdir(runtime):
                 env["XDG_RUNTIME_DIR"] = runtime
+        return env
+
+    def pm2_env(self):
+        env = self.child_env()
+        env.setdefault("PM2_HOME", str(self.home / ".pm2"))
+        env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
         return env
 
 
@@ -343,10 +920,283 @@ def server_unit_commands(ctx, config, action, unit):
         raise Refused("the unit is not a valid unit name")
     entry = config["units"].get(unit)
     if entry is None:
-        raise Refused("the unit is not in the allowlist")
+        raise Refused("the unit is not in the allowlist", reason="allowlist_miss")
     if action not in entry["actions"]:
-        raise Refused("that action is not allowed for this unit")
+        raise Refused("that action is not allowed for this unit", reason="allowlist_miss")
     return [_systemctl_argv(entry["scope"], action, unit)], f"{entry['scope']} unit"
+
+
+def _journalctl():
+    for candidate in JOURNALCTL_CANDIDATES:
+        if os.path.isfile(candidate):
+            return candidate
+    return JOURNALCTL_CANDIDATES[0]
+
+
+def server_logs_commands(ctx, config, unit):
+    _server_only(ctx)
+    if not UNIT_RE.fullmatch(unit or ""):
+        raise Refused("the unit is not a valid unit name")
+    entry = config["units"].get(unit)
+    if entry is None:
+        raise Refused("the unit is not in the allowlist", reason="allowlist_miss")
+    # The journal of the entry's `logsUnit`: the service a timer starts, else the unit itself.
+    argv = (
+        [_journalctl()]
+        + (["--user"] if entry["scope"] == "user" else [])
+        + ["-u", entry["logsUnit"], "-n", str(LOG_MAX_LINES), "--no-pager"]
+    )
+    return [argv], f"last {LOG_MAX_LINES} journal lines, read only"
+
+
+def truncate_logs(raw):
+    """(text, kept journal line count) for a logs `--yes` answer.  At most the last
+    LOG_MAX_LINES lines and at most LOG_MAX_BYTES bytes, with the truncation
+    note first when anything was cut.  The note is not a journal line, so the count
+    is journal lines only, which is how every consumer words it."""
+    truncated = len(raw) > LOG_MAX_BYTES
+    if truncated:
+        raw = raw[-LOG_MAX_BYTES:]
+        # Drop a partial first line the byte cut may have made.
+        cut = raw.find(b"\n")
+        if cut >= 0:
+            raw = raw[cut + 1 :]
+    text = raw.decode("utf-8", "replace")
+    lines = text.splitlines(keepends=True)
+    if len(lines) > LOG_MAX_LINES:
+        truncated = True
+        lines = lines[-LOG_MAX_LINES:]
+    kept = "".join(lines)
+    if truncated:
+        kept = LOG_TRUNCATED_NOTE + "\n" + kept
+    return kept, len(lines)
+
+
+def _docker():
+    for candidate in DOCKER_CANDIDATES:
+        if os.path.isfile(candidate):
+            return candidate
+    return DOCKER_CANDIDATES[0]
+
+
+def _module_trusted(info, owners):
+    """True when an opened module file or folder is owned by one of `owners` and neither group
+    nor others can write it."""
+    return info.st_uid in owners and not info.st_mode & 0o022
+
+
+def _read_module_source(ctx, parts=(REDUCED_STATUS_NAME,), max_bytes=REDUCED_STATUS_MAX_BYTES):
+    """The bytes of a module under the helper's own folder, or None when it is missing or not
+    trusted.  `parts` is its path below that folder (the reducer by default) and `max_bytes` its
+    size limit.
+
+    The folder and then the file are opened with O_NOFOLLOW (so a symlink is refused), both are
+    judged by fstat on the descriptor that was opened, and the bytes are read from that same
+    descriptor: the path is never looked at again, so a file swapped in afterwards changes
+    nothing.  A folder owned by TRUSTED_MODULE_UID is the installed layout (the file must be that
+    owner's as well); any other folder is a checkout and may also be the calling account's,
+    file and folder both.  The file is opened non-blocking, so a pipe put in its place is refused
+    by its type instead of waiting."""
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    cloexec = getattr(os, "O_CLOEXEC", 0)
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | nofollow | cloexec
+    opened = []
+    try:
+        fd = os.open(str(HELPER_DIR), directory_flags)
+        opened.append(fd)
+        info = os.fstat(fd)
+        if not stat.S_ISDIR(info.st_mode):
+            return None
+        installed = info.st_uid == TRUSTED_MODULE_UID
+        owners = (TRUSTED_MODULE_UID,) if installed else (TRUSTED_MODULE_UID, ctx.uid)
+        # A checkout folder must be the calling account's own, or root's: nobody else's.
+        if not _module_trusted(info, (TRUSTED_MODULE_UID, ctx.uid)):
+            return None
+        for folder in parts[:-1]:
+            # A folder below the helper's own (the checkout's `muster_agent/`) is held to the same
+            # owner and mode rule, opened without following a link.
+            fd = os.open(folder, directory_flags, dir_fd=fd)
+            opened.append(fd)
+            info = os.fstat(fd)
+            if not stat.S_ISDIR(info.st_mode) or not _module_trusted(info, owners):
+                return None
+        file_fd = os.open(parts[-1], os.O_RDONLY | os.O_NONBLOCK | nofollow | cloexec, dir_fd=fd)
+        opened.append(file_fd)
+        info = os.fstat(file_fd)
+        if not stat.S_ISREG(info.st_mode) or not _module_trusted(info, owners):
+            return None
+        if info.st_size > max_bytes:
+            return None
+        chunks = []
+        total = 0
+        while True:
+            chunk = os.read(file_fd, 65536)
+            if not chunk:
+                return b"".join(chunks)
+            total += len(chunk)
+            if total > max_bytes:
+                return None
+            chunks.append(chunk)
+    except OSError:
+        return None
+    finally:
+        for descriptor in opened:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+
+
+def _load_reduced_status(ctx):
+    """The reduced_status module, or None when it cannot be trusted or loaded.
+
+    The bytes come from `_read_module_source` and are compiled and run in memory into a fresh
+    module object: no import system, no sys.path (so no module of the same name can be put
+    in front of it), no __pycache__ and no second open of the path."""
+    source = _read_module_source(ctx)
+    if source is None:
+        return None
+    try:
+        code = compile(source, REDUCED_STATUS_NAME, "exec", dont_inherit=True)
+        module = types.ModuleType("reduced_status")
+        exec(code, module.__dict__)  # noqa: S102 - the bytes were just judged trusted
+    except (Exception, SystemExit):  # noqa: BLE001 - any load failure is the same answer
+        return None
+    return module if callable(getattr(module, "reduce_status", None)) else None
+
+
+def _docker_env(config_dir):
+    """The whole environment of the docker call: nothing from the caller's."""
+    return {
+        "PATH": DOCKER_PATH,
+        "DOCKER_HOST": DOCKER_HOST,
+        "DOCKER_CONFIG": config_dir,
+        "HOME": config_dir,
+    }
+
+
+def _docker_failure(stderr):
+    """The reason word for a `docker exec` that exited non-zero.  Only the start of stderr is
+    looked at, and only to compare it with docker's known phrases for a container that is not
+    there or not running; anything else is `read_failed`, and the text is never kept."""
+    text = (stderr or b"")[:DOCKER_STDERR_MAX].decode("utf-8", "replace").lower()
+    if any(phrase in text for phrase in DOCKER_NOT_RUNNING_PHRASES):
+        return "container_not_running"
+    return "read_failed"
+
+
+def read_eavesdropper_status(ctx):
+    """(the status.json document, None) or (None, a reason word from EAVESDROPPER_UNAVAILABLE).
+
+    One argv, run without a shell and without sudo:
+    `docker exec --user simpletools eavesdropper /bin/cat /data/listener/status.json`.  The environment is
+    pinned (`_docker_env`, with an empty private temporary directory as the docker config), the
+    read stops at the first byte past the limit and answers `too_large` at once, and the reason
+    word is all a caller learns of a failure: docker's own words are only compared with known
+    phrases, never kept.
+
+    Privilege: the caller's account reaches the docker socket (root:docker, mode 0660) through its
+    membership of the `docker` group, so no sudo, no sudoers entry and no root shell is used.
+    `--user simpletools` runs `cat` as the container's own unprivileged account, which owns the
+    0600 file, so the read is no wider than that account's.  The container, the user and the
+    path are constants here, so no word from a request can reach docker."""
+    argv = [
+        _docker(),
+        "exec",
+        "--user",
+        EAVESDROPPER_USER,
+        EAVESDROPPER_CONTAINER,
+        EAVESDROPPER_CAT,
+        EAVESDROPPER_STATUS_PATH,
+    ]
+    try:
+        scratch = tempfile.TemporaryDirectory(prefix="fleet-ops-docker-")
+    except OSError:
+        return None, "docker_unavailable"
+    with scratch as config_dir:
+        status, out, err, over = ctx.reader(
+            argv,
+            timeout=EAVESDROPPER_READ_TIMEOUT,
+            env=_docker_env(config_dir),
+            max_bytes=EAVESDROPPER_STATUS_MAX_BYTES,
+        )
+    if over:
+        return None, "too_large"
+    if status == 127:
+        return None, "docker_unavailable"
+    if status == 124:
+        return None, "timeout"
+    if status != 0:
+        return None, _docker_failure(err)
+    try:
+        document = json.loads((out or b"").decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        return None, "not_json"
+    if not isinstance(document, dict):
+        return None, "not_json"
+    return document, None
+
+
+def _pm2_prefix(ctx):
+    node = ctx.pm2_node
+    if node is None:
+        node = next((c for c in NODE_CANDIDATES if os.access(c, os.X_OK)), NODE_CANDIDATES[0])
+    script = ctx.pm2_script
+    if script is None:
+        script = next((c for c in PM2_CANDIDATES if os.access(c, os.X_OK)), PM2_CANDIDATES[0])
+    return [node, script]
+
+
+def _pm2_record(ctx, name):
+    """(status, pid) pm2 has for `name`, "missing" when it has no record, else None.
+
+    None means pm2 could not be asked or its listing could not be read, so nothing is
+    known and the caller plans the plain verb."""
+    status, out = ctx.runner(
+        _pm2_prefix(ctx) + ["jlist"],
+        timeout=15,
+        env=ctx.pm2_env(),
+        want_stdout=True,
+        max_bytes=1024 * 1024,
+    )
+    if status != 0:
+        return None
+    try:
+        listing = json.loads((out or b"").decode("utf-8", "replace"))
+    except ValueError:
+        return None
+    if not isinstance(listing, list):
+        return None
+    for row in listing:
+        if not isinstance(row, dict) or row.get("name") != name:
+            continue
+        inner = row.get("pm2_env") if isinstance(row.get("pm2_env"), dict) else {}
+        pid = row.get("pid") if isinstance(row.get("pid"), int) else inner.get("pid")
+        return inner.get("status"), pid if isinstance(pid, int) else 0
+    return "missing"
+
+
+def pm2_commands(ctx, config, action, name):
+    if not ctx.platform.startswith("darwin"):
+        raise Refused("pm2 verbs run only on the Mac")
+    if not PM2_RE.fullmatch(name or ""):
+        raise Refused("the pm2 name is not valid")
+    allowed = config["pm2"].get(name)
+    if allowed is None:
+        raise Refused("the pm2 application is not in the allowlist")
+    if action not in allowed:
+        raise Refused("that action is not allowed for this pm2 application")
+    if action == "start":
+        record = _pm2_record(ctx, name)
+        if record == "missing":
+            raise Refused(
+                "pm2 no longer remembers this application and this tool does not recreate it"
+            )
+        if record is not None:
+            status_word, pid = record
+            if status_word == "online" and pid <= 0:
+                return [_pm2_prefix(ctx) + ["restart", name]], "stale pm2 record, restarting it"
+    return [_pm2_prefix(ctx) + [action, name]], "pm2 application"
 
 
 def server_update_commands(ctx, config, name):
@@ -355,12 +1205,481 @@ def server_update_commands(ctx, config, name):
         raise Refused("the update name is not valid")
     entry = config["updates"].get(name)
     if entry is None:
-        raise Refused("the update is not in the allowlist")
-    # --no-block: an update can run for minutes, and the Mac is waiting over ssh.  The unit's
-    # own result shows in the services list on the next status report.
-    return [
-        _systemctl_argv(entry["scope"], "start", "--no-block", entry["unit"])
-    ], "runs in the background"
+        raise Refused("the update is not in the allowlist", reason="allowlist_miss")
+    before = update_unit_state(ctx, entry)
+    require_update_idle(before)
+    return [update_command(ctx, name, entry)], (
+        "submits the update and checks a new service invocation for bounded completion"
+    )
+
+
+def update_command(ctx, name, entry):
+    # General OS sudo access is not general app authority.  Only this immutable mapping
+    # may use the existing grant; config cannot choose another privileged executable/unit.
+    if entry["scope"] == "system":
+        if name != "fleet-cli" or entry["unit"] != FLEET_CLI_UPDATE_UNIT:
+            raise Refused(
+                "this system update has no approved application route",
+                error_code="update_route_unavailable",
+            )
+        if not os.path.isfile(UPDATE_SYSTEMCTL) or not os.access(UPDATE_SYSTEMCTL, os.X_OK):
+            raise Refused(
+                "the approved systemctl executable is unavailable",
+                error_code="update_executable_unavailable",
+            )
+        argv = [UPDATE_SYSTEMCTL, "start", "--no-block", FLEET_CLI_UPDATE_UNIT]
+    else:
+        argv = _systemctl_argv(entry["scope"], "start", "--no-block", entry["unit"])
+    if entry["scope"] == "system" and ctx.uid != 0:
+        if not os.path.isfile(SUDO) or not os.access(SUDO, os.X_OK):
+            raise Refused(
+                "the approved authorization executable is unavailable",
+                error_code="authorization_unavailable",
+            )
+        # Query this exact argv; never grant permission or elevate the broker itself.
+        status, _ = ctx.runner(
+            [SUDO, "-n", "-l", "--"] + argv,
+            timeout=UPDATE_PROBE_TIMEOUT,
+            env=ctx.child_env(),
+        )
+        if status != 0:
+            raise Refused(
+                "the update needs existing noninteractive permission for this exact system unit",
+                error_code="authorization_unavailable",
+            )
+        argv = [SUDO, "-n"] + argv
+    return argv
+
+
+def update_unit_state(ctx, entry, timeout=UPDATE_PROBE_TIMEOUT):
+    status, raw = ctx.runner(
+        _systemctl_argv(
+            entry["scope"],
+            "show",
+            entry["unit"],
+            "--property=" + ",".join(UPDATE_PROPERTIES),
+        ),
+        timeout=timeout,
+        env=ctx.child_env(),
+        want_stdout=True,
+        max_bytes=16 * 1024,
+    )
+    if status != 0:
+        raise Refused("the update unit status is unavailable", error_code="unit_status_unavailable")
+    state = {}
+    for line in raw.decode("utf-8", "replace").splitlines():
+        key, sep, value = line.partition("=")
+        if not sep or key not in UPDATE_PROPERTIES or key in state:
+            raise Refused("the update unit status is invalid", error_code="unit_status_invalid")
+        state[key] = value
+    if state.get("LoadState") in ("not-found", "masked", "error", "bad-setting"):
+        raise Refused("the update unit is missing or unavailable", error_code="unit_unavailable")
+    if set(state) != set(UPDATE_PROPERTIES) or state["LoadState"] != "loaded":
+        raise Refused("the update unit status is incomplete", error_code="unit_status_invalid")
+    if state["Type"] != "oneshot":
+        raise Refused(
+            "the update unit must be a oneshot service", error_code="unit_type_unsupported"
+        )
+    if state["InvocationID"] and not re.fullmatch(r"[0-9a-f]{32}", state["InvocationID"]):
+        raise Refused("the update invocation status is invalid", error_code="unit_status_invalid")
+    for key in (
+        "ExecMainCode",
+        "ExecMainStatus",
+        "ExecMainStartTimestampMonotonic",
+        "ExecMainExitTimestampMonotonic",
+    ):
+        if not re.fullmatch(r"[0-9]{1,20}", state[key]):
+            raise Refused("the update process status is invalid", error_code="unit_status_invalid")
+        state[key] = int(state[key])
+        if state[key] > UINT64_MAX:
+            raise Refused("the update process status is invalid", error_code="unit_status_invalid")
+    return state
+
+
+def require_update_idle(state):
+    if state["ActiveState"] not in ("inactive", "failed") or state["Job"]:
+        raise Refused(
+            "the update is already running or has a pending job", error_code="update_busy"
+        )
+
+
+def update_failure_code(status, output):
+    """Classify bounded private stderr; none of its text reaches the receipt or audit."""
+    text = output.decode("utf-8", "replace").lower()
+    if status == 124:
+        return "update_submit_timeout"
+    if status == 127:
+        return "update_executable_unavailable"
+    if any(
+        word in text
+        for word in (
+            "access denied",
+            "permission denied",
+            "authentication required",
+            "authentication is required",
+            "password is required",
+            "not allowed to execute",
+            "a terminal is required",
+            "incorrect password",
+        )
+    ):
+        return "authorization_unavailable"
+    if "not found" in text or "does not exist" in text or "masked" in text:
+        return "unit_unavailable"
+    return "update_submit_failed"
+
+
+def end_not_seen(status):
+    """True when a child that was started has no observed end: killed at its time limit (124) or by a
+    signal (a negative status, such as -9 from the memory controller).  The `--from-muster` route
+    reports such a run `unknown`, never `failed`."""
+    return status == 124 or status < 0
+
+
+def execute_update(ctx, config, target, commands):
+    entry = config["updates"][target]
+    # Recheck immediately before submission, rather than trusting an earlier plan.
+    before = update_unit_state(ctx, entry)
+    require_update_idle(before)
+    command = update_command(ctx, target, entry)
+    if commands != [command]:
+        raise Refused("the update execution route changed", error_code="update_route_changed")
+    status, output = ctx.runner(
+        command,
+        timeout=UPDATE_PROBE_TIMEOUT,
+        env=ctx.child_env(),
+        want_stdout=True,
+        max_bytes=8192,
+        combine_stderr=True,
+    )
+    if status != 0:
+        raise Failed(
+            "the update submission was not confirmed",
+            error_code=update_failure_code(status, output),
+            timed_out=end_not_seen(status),
+        )
+    answer = dict(
+        ok=True,
+        result="submitted",
+        executionState="submitted",
+        verified=False,
+        detail="the update was submitted; completion has not been observed",
+        baselineStartMonotonic=before["ExecMainStartTimestampMonotonic"],
+    )
+    invocation = None
+    deadline = ctx.monotonic() + UPDATE_VERIFY_SECONDS
+    for attempt in range(UPDATE_POLL_ATTEMPTS):
+        remaining = deadline - ctx.monotonic()
+        if remaining <= 0:
+            break
+        if attempt:
+            ctx.sleep(min(UPDATE_POLL_INTERVAL, remaining))
+        remaining = deadline - ctx.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            state = update_unit_state(ctx, entry, timeout=min(UPDATE_PROBE_TIMEOUT, remaining))
+        except Refused:
+            answer["detail"] = "the update was submitted; completion status is unavailable"
+            return answer, 0
+        current = state["InvocationID"]
+        if not current or current == before["InvocationID"]:
+            continue
+        if invocation is not None and current != invocation:
+            answer["detail"] = (
+                "the update was submitted; another invocation replaced its completion status"
+            )
+            answer.pop("invocationID", None)
+            answer.update(executionState="expired", errorCode="invocation_replaced")
+            return answer, 0
+        invocation = current
+        answer, code = update_observation(state, current, before["ExecMainStartTimestampMonotonic"])
+        if answer["verified"]:
+            return answer, code
+    return answer, 0
+
+
+def update_observation(state, invocation, previous_start):
+    answer = dict(
+        ok=True,
+        result="submitted",
+        executionState="submitted",
+        verified=False,
+        invocationID=invocation,
+        baselineStartMonotonic=previous_start,
+        detail="the update invocation has not completed with a verified result",
+    )
+    if state["InvocationID"] != invocation:
+        answer.update(
+            executionState="expired",
+            errorCode="invocation_not_current",
+            detail="the captured update invocation is no longer current; its completion cannot be verified",
+        )
+        return answer, 0
+    terminal = state["ActiveState"] in ("inactive", "failed") and not state["Job"]
+    if not terminal:
+        return answer, 0
+    if state["Result"] and state["Result"] != "success":
+        answer.update(
+            ok=False,
+            result="failed",
+            executionState="failed",
+            verified=True,
+            errorCode="update_invocation_failed",
+            detail="the captured update service invocation failed",
+        )
+        return answer, 1
+    started = state["ExecMainStartTimestampMonotonic"]
+    if (
+        state["Result"] == "success"
+        and state["ActiveState"] == "inactive"
+        and state["ExecMainCode"] == 1
+        and state["ExecMainStatus"] == 0
+        and started > previous_start
+        and state["ExecMainExitTimestampMonotonic"] >= started
+    ):
+        answer.update(
+            result="done",
+            executionState="completed",
+            verified=True,
+            detail="the captured update service invocation completed successfully",
+        )
+    return answer, 0
+
+
+def update_status(ctx, config, target, mode):
+    _server_only(ctx)
+    if mode != "plan":
+        raise Refused("update status is read only; pass --plan", error_code="read_only_required")
+    match = UPDATE_STATUS_RE.fullmatch(target or "")
+    if not match:
+        raise Refused(
+            "update status requires a captured fleet-cli invocation ID",
+            error_code="invocation_id_invalid",
+        )
+    baseline = int(match.group(2))
+    if baseline > UINT64_MAX:
+        raise Refused("the captured update baseline is invalid", error_code="invocation_id_invalid")
+    entry = config["updates"].get("fleet-cli")
+    if entry != {"unit": FLEET_CLI_UPDATE_UNIT, "scope": "system"}:
+        raise Refused(
+            "the fleet-cli status route is unavailable", error_code="update_route_unavailable"
+        )
+    if captured_update_baseline(ctx, match.group(1)) != baseline:
+        raise Refused(
+            "the update receipt does not match its recorded baseline",
+            error_code="receipt_context_mismatch",
+        )
+    # Never submit or query sudo on this path, and never substitute a newer ID.
+    state = update_unit_state(ctx, entry)
+    return update_observation(state, match.group(1), baseline)
+
+
+def captured_update_baseline(ctx, invocation):
+    """Read the bounded existing private audit; never trust client freshness alone.
+
+    This is capture provenance for the restricted route, not protection against code
+    already running as the server account that owns the audit.
+    """
+    descriptors = []
+    try:
+        path = Path(ctx.audit_path).absolute()
+        directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        parent = os.open("/", directory_flags)
+        descriptors.append(parent)
+        for component in path.parts[1:-1]:
+            parent = os.open(component, directory_flags, dir_fd=parent)
+            descriptors.append(parent)
+            info = os.fstat(parent)
+            sticky_root = info.st_uid == 0 and info.st_mode & stat.S_ISVTX
+            if info.st_uid not in (0, ctx.uid) or (info.st_mode & 0o022 and not sticky_root):
+                raise OSError("unsafe audit directory")
+        fd = os.open(
+            path.name,
+            os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW,
+            dir_fd=parent,
+        )
+        descriptors.append(fd)
+        info = os.fstat(fd)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != ctx.uid
+            or stat.S_IMODE(info.st_mode) != 0o600
+        ):
+            raise OSError("unsafe audit file")
+        offset = max(0, info.st_size - AUDIT_CONTEXT_MAX_BYTES)
+        os.lseek(fd, offset, os.SEEK_SET)
+        remaining = min(info.st_size, AUDIT_CONTEXT_MAX_BYTES)
+        chunks = []
+        while remaining:
+            chunk = os.read(fd, remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        data = b"".join(chunks)
+        if offset:
+            data = data.partition(b"\n")[2]
+        lines = data.decode("utf-8").splitlines()
+        for line in reversed(lines):
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(row, dict) or row.get("invocationID") != invocation:
+                continue
+            baseline = row.get("baselineStartMonotonic")
+            if (
+                row.get("host") == "server"
+                and row.get("verb") == "server update"
+                and row.get("target") == "fleet-cli"
+                and (
+                    row.get("route") in MUSTER_UPDATE_ROUTES
+                    # A `--from-muster` run keeps the update route in `updateRoute`.
+                    or (
+                        row.get("route") == MUSTER_ROUTE
+                        and row.get("via") == MUSTER_VIA
+                        and row.get("updateRoute") in MUSTER_UPDATE_ROUTES
+                    )
+                )
+                and row.get("result") in ("submitted", "done", "failed")
+                and type(baseline) is int
+                and 0 <= baseline <= UINT64_MAX
+            ):
+                return baseline
+            break
+    except (OSError, ValueError, UnicodeError, RecursionError):
+        pass
+    finally:
+        for fd in reversed(descriptors):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+    raise Refused(
+        "the captured update receipt context is unavailable",
+        error_code="receipt_context_unavailable",
+    )
+
+
+def unit_status(ctx, config, target, mode):
+    """The answer fields of `server unit-status UNIT --plan`, or Refused.
+
+    A read of one unit the allowlist lists (an entry of `units` or of `watch`, in the scope that
+    entry names) with one fixed `systemctl [--user] show`: no sudo, the pinned child environment, a
+    bounded capture and a time limit.  Nothing is changed, so there is no lock and no audit row for a
+    plan, and `--yes` is refused.  Every value in the answer is a short token matched against a
+    pattern, an ISO-8601 UTC time or null, and nothing of systemd's own text is passed on: what
+    this reader does not accept is refused with a fixed `errorCode`, as `update-status` does."""
+    _server_only(ctx)
+    if mode != "plan":
+        raise Refused("unit status is read only; pass --plan", error_code="read_only_required")
+    if not UNIT_RE.fullmatch(target or ""):
+        raise Refused("the unit is not a valid unit name")
+    entry = config["units"].get(target)
+    if entry is None:
+        entry = config["watch"].get(target)
+    if entry is None:
+        raise Refused("the unit is not in the allowlist", reason="allowlist_miss")
+    timer = target.endswith(".timer")
+    properties = UNIT_STATUS_TIMER_PROPERTIES if timer else UNIT_STATUS_SERVICE_PROPERTIES
+    status, raw = ctx.runner(
+        _systemctl_argv(
+            entry["scope"],
+            "show",
+            "--timestamp=unix",
+            "--property=" + ",".join(properties),
+            target,
+        ),
+        timeout=UNIT_STATUS_TIMEOUT,
+        env=ctx.child_env(),
+        want_stdout=True,
+        # One byte more than the limit, so that an answer past it is seen to be past it.
+        max_bytes=UNIT_STATUS_MAX_BYTES + 1,
+    )
+    if status != 0:
+        raise Refused("the unit status is unavailable", error_code="unit_status_unavailable")
+    state = unit_status_state(raw or b"", properties)
+    # `lastExitAt` is when the main process last exited, and systemd clears it when that process runs
+    # again: it is null for a timer (no main process) and for any service that is running now, so
+    # always for a long-running one such as docker.service.
+    answer = dict(
+        ok=True,
+        result="planned",
+        detail="read-only status of a listed unit",
+        unit=target,
+        scope=entry["scope"],
+        activeState=state["ActiveState"],
+        subState=state["SubState"],
+        unitResult=state["Result"] or None,
+        lastExitAt=None if timer else unit_status_time(state["ExecMainExitTimestamp"]),
+    )
+    if timer:
+        # Only a timer has these two: when it fires next (null for a timer that runs by a monotonic
+        # clock) and when it last fired its job (null when systemd has none).
+        answer["nextElapseAt"] = unit_status_time(state["NextElapseUSecRealtime"])
+        answer["lastTriggerAt"] = unit_status_time(state["LastTriggerUSec"])
+    answer["checkedAt"] = datetime.datetime.fromtimestamp(
+        ctx.now(), datetime.timezone.utc
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return answer
+
+
+def unit_status_state(raw, properties):
+    """{property: value} from the bytes of one `systemctl show`, or Refused with a fixed code.
+
+    Strict: one `KEY=VALUE` line per asked property, in any order, newline separated, ASCII only, no
+    other key, no repeated key, no blank line, at most UNIT_STATUS_MAX_BYTES.  A unit that is not there
+    (`not-found`, `masked`...) is `unit_unavailable`, any other load state than `loaded` and every
+    other departure from the shape is `unit_status_invalid`."""
+
+    def invalid():
+        return Refused("the unit status is invalid", error_code="unit_status_invalid")
+
+    if len(raw) > UNIT_STATUS_MAX_BYTES:
+        raise invalid()
+    try:
+        text = raw.decode("ascii")
+    except UnicodeDecodeError:
+        raise invalid() from None
+    lines = text.split("\n")
+    if lines[-1] == "":
+        lines.pop()
+    state = {}
+    for line in lines:
+        key, sep, value = line.partition("=")
+        if not sep or key not in properties or key in state:
+            raise invalid()
+        state[key] = value
+    if state.get("LoadState") in UNIT_NOT_LOADED:
+        raise Refused("the unit is missing or unavailable", error_code="unit_unavailable")
+    if set(state) != set(properties) or state["LoadState"] != "loaded":
+        raise invalid()
+    for key in ("ActiveState", "SubState"):
+        if not UNIT_STATE_RE.fullmatch(state[key]):
+            raise invalid()
+    # A unit that has no result yet says so with an empty one.
+    if state["Result"] and not UNIT_STATE_RE.fullmatch(state["Result"]):
+        raise invalid()
+    return state
+
+
+def unit_status_time(value):
+    """ISO-8601 UTC (`2026-11-08T05:15:00Z`) for a `--timestamp=unix` value (`@1794127500`), None for
+    one that says never (empty, `n/a`, `0` or `@0`), and Refused for anything else."""
+    if value in UNIT_TIME_UNSET:
+        return None
+    match = UNIT_TIME_RE.fullmatch(value)
+    if match is None:
+        raise Refused("the unit status is invalid", error_code="unit_status_invalid")
+    seconds = int(match.group(1))
+    if seconds == 0:
+        return None
+    try:
+        moment = datetime.datetime.fromtimestamp(seconds, datetime.timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        raise Refused("the unit status is invalid", error_code="unit_status_invalid") from None
+    return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _server_only(ctx):
@@ -377,7 +1696,7 @@ def coolify_resource(ctx, uuid):
     try:
         fd = os.open(str(path), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     except OSError:
-        raise Refused("there is no server status report") from None
+        raise Refused("there is no server status report", reason="report_stale") from None
     try:
         info = os.fstat(fd)
         if (
@@ -386,7 +1705,9 @@ def coolify_resource(ctx, uuid):
             or info.st_mode & 0o022
             or info.st_size > STATUS_MAX_BYTES
         ):
-            raise Refused("the server status report is not a private regular file")
+            raise Refused(
+                "the server status report is not a private regular file", reason="report_stale"
+            )
         with os.fdopen(fd, "rb", closefd=False) as handle:
             raw = handle.read(STATUS_MAX_BYTES + 1)
     finally:
@@ -394,20 +1715,34 @@ def coolify_resource(ctx, uuid):
     try:
         doc = json.loads(raw.decode("utf-8"))
     except (ValueError, UnicodeDecodeError):
-        raise Refused("the server status report is not JSON") from None
+        raise Refused("the server status report is not JSON", reason="report_stale") from None
     if not isinstance(doc, dict) or doc.get("tool") != "fleet-server-status":
-        raise Refused("the server status report is not from fleet-server-status")
+        raise Refused(
+            "the server status report is not from fleet-server-status", reason="report_stale"
+        )
     generated = _parse_time(doc.get("generatedAt"))
     if generated is None or ctx.now() - generated > STATUS_MAX_AGE_SECONDS:
-        raise Refused("the server status report is stale")
+        raise Refused("the server status report is stale", reason="report_stale")
     for row in doc.get("coolify") or []:
         if isinstance(row, dict) and row.get("uuid") == uuid:
-            if row.get("type") not in REDEPLOYABLE_TYPES:
-                raise Refused("only a Coolify application can be redeployed")
-            if not uuid_from_label(row):
-                raise Refused("the report has no Coolify uuid for that resource")
+            refusal = redeploy_refusal(row)
+            if refusal:
+                raise Refused(refusal, reason="report_stale")
             return row
-    raise Refused("the uuid is not in the latest server status report")
+    raise Refused("the uuid is not in the latest server status report", reason="report_stale")
+
+
+def redeploy_refusal(row):
+    """Why the first report row with a uuid cannot be redeployed, or None when it can."""
+    if row.get("type") not in REDEPLOYABLE_TYPES:
+        return "only a Coolify application can be redeployed"
+    if not uuid_from_label(row):
+        return "the report has no Coolify uuid for that resource"
+    # The collector puts live rows first, so a first row that is not live says that
+    # nothing with this uuid is on the host now.
+    if row.get("status") in ("absent", "unknown"):
+        return "that application is not running on the server"
+    return None
 
 
 def uuid_from_label(row):
@@ -485,17 +1820,25 @@ def read_coolify_token(ctx):
 def secrets_env(ctx):
     """The environment the fleet-secrets child runs with.  Raises Failed.
 
-    When the credential file exists it is the one source of the Infisical identity: the
-    process's own CREDENTIAL_NAMES are dropped and the file's are used, so a run over ssh
-    and a run from a root shell log in the same way.  The file must be a regular file of
-    ours with no group or other bits, holding only `NAME=value` lines (no quotes) for
-    INFISICAL_TOKEN, or for both INFISICAL_AUTOMATION_CLIENT_ID and _SECRET.  Its values
-    reach this one child only, never an argv, a launchctl or systemctl child, the answer or
-    the audit.  With no file, the process environment is used as it is."""
+    The private file supplies only this caller's scoped read-only service token.  It is mapped
+    to INFISICAL_TOKEN for the one fleet-secrets child, never to an argv or a service-control
+    child.  Inherited shared token and machine-identity bindings are discarded."""
     env = dict(ctx.environ)
+    process_token = env.pop(SCOPED_TOKEN_NAME, "")
+    for name in SHARED_AUTH_ENV_NAMES:
+        env.pop(name, None)
     try:
         fd = os.open(str(ctx.credentials_path), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     except FileNotFoundError:
+        value = process_token
+        if value:
+            if (
+                not value.startswith("st.")
+                or not 20 <= len(value) <= 2048
+                or any(c.isspace() for c in value)
+            ):
+                raise Failed("the scoped Infisical token is malformed")
+            env["INFISICAL_TOKEN"] = value
         return env
     except OSError:
         raise Failed("the Infisical credential file cannot be read") from None
@@ -531,12 +1874,17 @@ def secrets_env(ctx):
         ):
             raise Failed("the Infisical credential file is malformed")
         values[name] = value
-    pair = [n for n in CREDENTIAL_NAMES[1:] if n in values]
-    if len(pair) == 1 or not ("INFISICAL_TOKEN" in values or pair):
+    if SCOPED_TOKEN_NAME not in values:
         raise Failed("the Infisical credential file is malformed")
-    for name in CREDENTIAL_NAMES:
-        env.pop(name, None)
-    env.update(values)
+    token = values.get(SCOPED_TOKEN_NAME)
+    if token and (
+        not token.startswith("st.")
+        or not 20 <= len(token) <= 2048
+        or any(c.isspace() for c in token)
+    ):
+        raise Failed("the Infisical credential file is malformed")
+    if token:
+        env["INFISICAL_TOKEN"] = token
     return env
 
 
@@ -578,10 +1926,18 @@ def plan_request(ctx, config, scope, action, target):
             raise Refused("unknown mac verb")
         commands, note = mac_commands(ctx, config, action, target)
         return commands, note, target
+    if scope == "pm2":
+        if action not in ACTIONS:
+            raise Refused("unknown pm2 verb")
+        commands, note = pm2_commands(ctx, config, action, target)
+        return commands, note, target
     if scope != "server":
         raise Refused("unknown verb")
     if action in ACTIONS:
         commands, note = server_unit_commands(ctx, config, action, target)
+        return commands, note, target
+    if action == "logs":
+        commands, note = server_logs_commands(ctx, config, target)
         return commands, note, target
     if action == "update":
         commands, note = server_update_commands(ctx, config, target)
@@ -589,12 +1945,16 @@ def plan_request(ctx, config, scope, action, target):
     if action == "redeploy":
         _server_only(ctx)
         if not config["redeploy"]:
-            raise Refused("redeploy is not allowed")
+            raise Refused("redeploy is not allowed", reason="allowlist_miss")
         if not UUID_RE.fullmatch(target or ""):
             raise Refused("the uuid is not valid")
         row = coolify_resource(ctx, target)
         query = urllib.parse.urlencode({"uuid": target})
-        name = row.get("name") if isinstance(row.get("name"), str) else "coolify resource"
+        name = row.get("name") if isinstance(row.get("name"), str) else COOLIFY_AUDIT_TARGET
+        # A redeploy covers the whole application, so the audit names it and not one service.
+        service = row.get("service")
+        if isinstance(service, str) and name.endswith(f" ({service})"):
+            name = name[: -len(f" ({service})")]
         return [["coolify", "GET", f"/api/v1/deploy?{query}"]], "redeploy", name[:120]
     raise Refused("unknown server verb")
 
@@ -612,18 +1972,102 @@ def execute(ctx, scope, action, target, commands):
         finally:
             token = ""
         if not 200 <= status < 300:
-            raise Failed(f"Coolify answered HTTP {status}" if status else "Coolify did not answer")
+            raise Failed(
+                f"Coolify answered HTTP {status}" if status else "Coolify did not answer",
+                timed_out=bool(getattr(status, "sent", False)),
+            )
         return f"Coolify accepted the redeploy (HTTP {status})"
+    env = ctx.pm2_env() if scope == "pm2" else ctx.child_env()
+    finished = 0
     for argv in commands:
-        status, _ = ctx.runner(argv, timeout=COMMAND_TIMEOUT, env=ctx.child_env())
+        status, _ = ctx.runner(argv, timeout=COMMAND_TIMEOUT, env=env)
         if status != 0:
-            verb = next((a for a in argv[1:] if not a.startswith("-")), "")
-            raise Failed(f"{os.path.basename(argv[0])} {verb} exited {status}")
+            verb = next((a for a in argv[1:] if not a.startswith("-") and "/" not in a), action)
+            raise Failed(
+                f"{os.path.basename(argv[0])} {verb} exited {status}",
+                completed=finished,
+                timed_out=end_not_seen(status),
+            )
+        finished += 1
     return "done" if commands else "nothing to do"
 
 
-def audit(ctx, scope, action, target, result):
-    """One JSON line, 0600, appended.  Never command output, never a uuid or a hostname."""
+@contextlib.contextmanager
+def action_lock(ctx):
+    """Hold the one `--yes` lock on this machine, or refuse at once.
+
+    A second caller, such as a second Muster or a shell, gets a fixed refusal instead of
+    racing the first one on the same unit.  The lock is released when the process exits,
+    however it exits."""
+    directory = ctx.home / ".local" / "state" / "fleet-tools"
+    try:
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        info = directory.lstat()
+        fd = os.open(
+            directory / "ops-control.lock",
+            os.O_RDWR | os.O_CREAT | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+    except OSError:
+        raise Refused(
+            "the action lock is unavailable", error_code="action_lock_unavailable"
+        ) from None
+    try:
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
+            raise Refused(
+                "the action lock directory is untrusted", error_code="action_lock_unavailable"
+            )
+        lock_info = os.fstat(fd)
+        if not stat.S_ISREG(lock_info.st_mode) or lock_info.st_uid != os.getuid():
+            raise Refused("the action lock is untrusted", error_code="action_lock_unavailable")
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise Refused(
+                "another action is still running on this machine", error_code="action_busy"
+            ) from None
+        yield
+    finally:
+        os.close(fd)
+
+
+def execute_logs(ctx, commands):
+    """(detail, text, line count) for a logs `--yes`.  The journal text goes to the
+    answer only; the detail and the audit carry the count and nothing else."""
+    argv = commands[0]
+    status, out = ctx.runner(
+        argv,
+        timeout=COMMAND_TIMEOUT,
+        env=ctx.child_env(),
+        want_stdout=True,
+        max_bytes=LOG_MAX_BYTES * 4,
+    )
+    if status != 0:
+        raise Failed(f"journalctl exited {status}", timed_out=end_not_seen(status))
+    text, lines = truncate_logs(out or b"")
+    return f"{lines} journal lines", text, lines
+
+
+def audit(
+    ctx,
+    scope,
+    action,
+    target,
+    result,
+    lines=None,
+    route=None,
+    invocation_id=None,
+    verified=None,
+    baseline=None,
+    row_id=None,
+    extra=None,
+):
+    """One JSON line, 0600, appended.  Never command output, never a uuid or a hostname.
+    A finished logs run adds its line count and nothing of the text.
+
+    `extra` is the `--from-muster` route's own fields (server-route-spec section 14): only the names
+    in MUSTER_AUDIT_NAMES, each a short plain word or null.  The row's `route` is then `from-muster`,
+    and the update route, if any, moves to `updateRoute`."""
     row = {
         "time": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "host": "mac" if ctx.platform.startswith("darwin") else "server",
@@ -631,6 +2075,25 @@ def audit(ctx, scope, action, target, result):
         "target": target,
         "result": result,
     }
+    # A short id the caller's own log can store, so the two rows of one action link up.
+    # The function answers True only when the row was written.
+    if isinstance(row_id, str) and re.fullmatch(r"[0-9a-f]{12}", row_id):
+        row["id"] = row_id
+    if lines is not None:
+        row["lines"] = lines
+    if route in MUSTER_UPDATE_ROUTES:
+        row["updateRoute" if isinstance(extra, dict) else "route"] = route
+    if isinstance(invocation_id, str) and re.fullmatch(r"[0-9a-f]{32}", invocation_id):
+        row["invocationID"] = invocation_id
+    if isinstance(verified, bool):
+        row["verified"] = verified
+    if type(baseline) is int and 0 <= baseline <= UINT64_MAX:
+        row["baselineStartMonotonic"] = baseline
+    if isinstance(extra, dict):
+        for name in MUSTER_AUDIT_NAMES:
+            value = extra.get(name)
+            if name in extra and (value is None or MUSTER_AUDIT_VALUE_RE.fullmatch(str(value))):
+                row[name] = value
     path = ctx.audit_path
     try:
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -654,7 +2117,85 @@ def audit(ctx, scope, action, target, result):
         os.close(fd)
 
 
-def handle(ctx, scope, action, target, mode):
+def plan_object(scope, action, target, commands, audit_target):
+    """The canonical plan object of `fleet-ops-plan/1` (server-route-spec section 13).
+
+    The one shape both the signed plan and the approval's hash are made from."""
+    return {
+        "contract": "fleet-ops-plan/1",
+        "scope": scope,
+        "action": action,
+        "target": target,
+        "commands": commands,
+        "auditTarget": printable_ascii(audit_target),
+    }
+
+
+def printable_ascii(text):
+    """`text` with each code point outside 0x20 to 0x7E replaced by one `?` (no run collapsed, nothing
+    trimmed), so that a plan's bytes are always canonical.  The audit keeps the real name; only the
+    plan the phone reads and hashes is changed, and only the `--from-muster` route builds it."""
+    return "".join(char if 0x20 <= ord(char) <= 0x7E else "?" for char in str(text))
+
+
+def muster_audit_extra(approval):
+    """The route's audit fields from a verified approval dict, or None when any is missing."""
+    if not isinstance(approval, dict):
+        return None
+    extra = {"route": MUSTER_ROUTE, "via": MUSTER_VIA}
+    for name in ("jobId", "deviceId", "approvalNonce", "planSHA256"):
+        value = approval.get(name)
+        if not isinstance(value, str) or not MUSTER_AUDIT_VALUE_RE.fullmatch(value):
+            return None
+        extra[name] = value
+    if not re.fullmatch(r"[0-9a-f]{64}", extra["planSHA256"]):
+        return None
+    return extra
+
+
+def muster_refusal_code(answer):
+    """`plan_mismatch` when a refused `--yes` run was refused for that, else None.
+
+    It is the only refusal the route keeps after the nonce is spent; any other is a failed run."""
+    return "plan_mismatch" if answer.get("errorCode") == "plan_mismatch" else None
+
+
+def redeploy_audit_target(scope, action, target, audit_target):
+    """What the audit names a redeploy: the application's name once the planner knew it, else
+    `coolify resource`, and never the uuid.  Every other verb keeps its own target."""
+    if scope == "server" and action == "redeploy":
+        # A name that is missing, equal to the uuid or blank (empty or only whitespace, which is what a
+        # service-only name is once its service is taken off) is not a name: it is the placeholder too.
+        if audit_target is None or audit_target == target or not audit_target.strip():
+            return COOLIFY_AUDIT_TARGET
+    return target if audit_target is None else audit_target
+
+
+def check_approved_plan(approval, plan_bytes, plan):
+    """Refuse unless `plan` hashes to the approval's `planSHA256`.  Nothing has run yet."""
+    try:
+        digest = hashlib.sha256(plan_bytes(plan)).hexdigest()
+    except ValueError:
+        raise Refused("the plan cannot be written canonically", error_code="plan_refused") from None
+    if not hmac.compare_digest(digest, approval["planSHA256"]):
+        raise Refused(
+            "the approved plan is not the plan this request would run", error_code="plan_mismatch"
+        )
+
+
+def handle(
+    ctx,
+    scope,
+    action,
+    target,
+    mode,
+    *,
+    require_approval=False,
+    approval=None,
+    lock_held=False,
+    plan_bytes=None,
+    reason_out=None,
+):
     """The whole request: the JSON answer and the exit status.  `mode` is plan, yes or None."""
     answer = {
         "ok": False,
@@ -664,32 +2205,600 @@ def handle(ctx, scope, action, target, mode):
         "result": "refused",
         "detail": "",
     }
+    # The keyword arguments belong to the `--from-muster` route (server-route-spec section 12) and
+    # change nothing for a caller that does not pass them.  `require_approval` is its fail-closed
+    # switch: a run (`--yes`) then needs a verified `approval` dict and `plan_bytes`, the canonical
+    # bytes function, and the plan built below must hash to the approval's `planSHA256` before
+    # anything runs.  `lock_held` says the caller already holds the one action lock (and a logs run
+    # then takes it too, as the route requires).  Every audit row carries the route's fields.
     audit_target = target
+    log_lines = None
+    extra = None
     try:
         if mode not in ("plan", "yes"):
             raise Refused("pass --plan to see the commands or --yes to run them")
+        if require_approval and mode == "yes":
+            extra = muster_audit_extra(approval)
+            if extra is None or scope != "server" or not callable(plan_bytes):
+                extra = None
+                raise Refused("a verified approval is required", error_code="approval_required")
         config = load_config(ctx.config_path)
-        commands, note, audit_target = plan_request(ctx, config, scope, action, target)
-        answer["commands"] = commands
-        if mode == "plan":
-            answer.update(ok=True, result="planned", detail=note)
-            code = 0
-        else:
+        if scope == "server" and action == "update-status":
+            receipt, code = update_status(ctx, config, target, mode)
+            answer.update(receipt)
+            return answer, code
+        if scope == "server" and action == "unit-status":
+            # A read of one listed unit's state: no lock, no sudo and no audit row for a plan.  Only
+            # `--plan` is accepted, and a refused `--yes` is audited like every refused `--yes`.
+            answer.update(unit_status(ctx, config, target, mode))
+            return answer, 0
+        if scope == "server" and action == "seat-inventory":
+            # A read of names and counts under this account's home, so it takes no lock, asks
+            # for no sudo and writes no audit row.  Only `--plan` is accepted:  there is
+            # nothing to confirm and nothing to run.
+            # Like every server verb, it runs on the server only:  off it the module would read
+            # another machine's home and still label the answer as the server's.
+            _server_only(ctx)
+            if mode != "plan":
+                raise Refused("seat-inventory only reads:  pass --plan")
+            # -I omits the script directory. Only this reviewed sibling directory is
+            # added; neither the request nor the environment selects an import path.
+            scripts = str(Path(__file__).resolve().parent)
+            if scripts not in sys.path:
+                sys.path.insert(0, scripts)
+            import fleet_seat_inventory
+
+            if not fleet_seat_inventory.PLATFORM_RE.fullmatch(target or "") or (
+                target not in fleet_seat_inventory.PLATFORMS
+            ):
+                raise Refused("that platform has no seat inventory")
+            document = fleet_seat_inventory.inventory(target, str(ctx.home), host="server")
             answer.update(
-                ok=True, result="done", detail=execute(ctx, scope, action, target, commands)
+                ok=True,
+                result="planned",
+                detail="read-only inventory of what the platform has installed",
+                inventory=document,
             )
-            code = 0
+            return answer, 0
+        if scope == "server" and action == "eavesdropper-status":
+            # A read of the server eavesdropper's own status document, reduced to names, counts,
+            # tokens and times.  Like seat-inventory it takes no lock, asks for no sudo and writes
+            # no audit row for a plan, and only `--plan` is accepted: there is nothing to run.
+            # It runs on the server only, because the container it reads is the server's.
+            _server_only(ctx)
+            if mode != "plan":
+                raise Refused("eavesdropper-status only reads: pass --plan")
+            if target != EAVESDROPPER_TARGET:
+                raise Refused("only the server's eavesdropper has a status here")
+            document = reason = None
+            module = _load_reduced_status(ctx)
+            if module is None:
+                reason = "module_unavailable"
+            else:
+                document, reason = read_eavesdropper_status(ctx)
+            if document is not None:
+                try:
+                    reduced = module.reduce_status(document, ctx.now(), "server")
+                except Exception:  # noqa: BLE001 - an unusable module is the same answer
+                    document, reason = None, "module_unavailable"
+            if document is None:
+                # Not a refusal (the request was fine) and not a failed command: the status
+                # cannot be shown.  The reason word is fixed, and no path or docker text is kept.
+                answer.update(
+                    ok=False,
+                    result="unavailable",
+                    detail=EAVESDROPPER_UNAVAILABLE[reason],
+                    errorCode=reason,
+                )
+                return answer, 1
+            answer.update(
+                ok=True,
+                result="planned",
+                detail="read-only status of the server's eavesdropper",
+                status=reduced,
+            )
+            return answer, 0
+        if scope == "server" and action in ("resource-status", "resource-policy"):
+            if not config["resourcePolicy"]:
+                raise Refused(
+                    "coding resource controls are not in the allowlist", reason="allowlist_miss"
+                )
+            # -I omits the script directory. Only this reviewed sibling directory is
+            # added; neither the request nor the environment selects an import path.
+            scripts = str(Path(__file__).resolve().parent)
+            if scripts not in sys.path:
+                sys.path.insert(0, scripts)
+            from fleet_resource_control import handle as handle_resource
+
+            # The route's switch goes down to fleet_resource_control, which compares the plan hash
+            # itself, under its own lock.
+            routed = (
+                {
+                    "require_approval": True,
+                    "approval": approval,
+                    "source": MUSTER_VIA,
+                    "plan_bytes": plan_bytes,
+                }
+                if require_approval
+                else {}
+            )
+            if mode == "yes" and action == "resource-policy":
+                # A write holds the same one-action lock as every other `--yes` write.
+                with contextlib.ExitStack() as held:
+                    if not lock_held:
+                        held.enter_context(action_lock(ctx))
+                    if isinstance(reason_out, dict):
+                        reason_out["started"] = True  # the write itself decides: see above
+                    resource_answer, resource_code = handle_resource(
+                        ctx, action, target, mode, **routed
+                    )
+                if isinstance(reason_out, dict) and resource_answer.get("errorCode") == (
+                    "revision_stale"
+                ):
+                    reason_out["reason"] = "revision_stale"
+                if require_approval:
+                    # A `--from-muster` request leaves one row in the helper's own audit as well.
+                    audit_run(
+                        ctx,
+                        scope,
+                        action,
+                        target,
+                        target.split(".", 1)[0],
+                        resource_answer,
+                        None,
+                        extra,
+                    )
+                return resource_answer, resource_code
+            return handle_resource(ctx, action, target, mode, **routed)
+        with contextlib.ExitStack() as held:
+            # A logs run only reads the journal, so it takes no write lock; a `--from-muster` run
+            # takes it for logs too, unless the caller already holds it.
+            if (
+                mode == "yes"
+                and not lock_held
+                and (require_approval or not (scope == "server" and action == "logs"))
+            ):
+                held.enter_context(action_lock(ctx))
+            commands, note, audit_target = plan_request(ctx, config, scope, action, target)
+            if scope == "server" and action == "logs":
+                # The unit whose journal the plan reads, for the caller to show.  Only this answer
+                # carries it: the signed `--from-muster` plan does not, and its commands name it.
+                answer["logsUnit"] = config["units"][target]["logsUnit"]
+            if scope == "server" and action == "redeploy":
+                # The name the audit row records (`redeploy_audit_target`, so the placeholder for a
+                # missing, blank or uuid name), in the printable ASCII that the signed plan's
+                # `auditTarget` uses.  The audit row keeps the real name and the answer carries the
+                # printable form.  Muster shows it as the authoritative name, and the `--yes`
+                # answer repeats it.
+                answer["resourceName"] = printable_ascii(
+                    redeploy_audit_target(scope, action, target, audit_target)
+                )
+            if require_approval and mode == "yes":
+                check_approved_plan(
+                    approval,
+                    plan_bytes,
+                    plan_object(scope, action, target, commands, audit_target),
+                )
+            answer["commands"] = commands
+            if mode == "yes" and isinstance(reason_out, dict):
+                # From here an execute function may begin the action.  The `--from-muster` backend
+                # reads this, so that an exception out of this function after this point is `unknown`
+                # and one before it is `failed`; no answer carries it.
+                reason_out["started"] = True
+            if mode == "plan":
+                answer.update(ok=True, result="planned", detail=note)
+                code = 0
+            elif scope == "server" and action == "logs":
+                detail, text, log_lines = execute_logs(ctx, commands)
+                answer.update(ok=True, result="done", detail=detail, output=text, lines=log_lines)
+                code = 0
+            elif scope == "server" and action == "update":
+                receipt, code = execute_update(ctx, config, target, commands)
+                answer.update(receipt)
+            elif scope == "server" and action == "redeploy":
+                detail = execute(ctx, scope, action, target, commands)
+                answer.update(
+                    ok=True,
+                    result="submitted",
+                    detail=detail,
+                    executionState="submitted",
+                    verified=False,
+                )
+                code = 0
+            else:
+                answer.update(
+                    ok=True, result="done", detail=execute(ctx, scope, action, target, commands)
+                )
+                answer["completedCommands"] = len(commands)
+                code = 0
     except Refused as exc:
         answer.update(ok=False, result="refused", detail=str(exc))
+        if exc.error_code:
+            answer["errorCode"] = exc.error_code
+        if isinstance(reason_out, dict):
+            # The `--from-muster` backend asks for the planner's reason; the answer never carries it.
+            reason_out["reason"] = exc.reason
         code = 2
     except Failed as exc:
         answer.update(ok=False, result="failed", detail=str(exc))
+        if exc.error_code:
+            answer["errorCode"] = exc.error_code
+        if exc.completed is not None:
+            answer["completedCommands"] = exc.completed
+        if exc.timed_out and require_approval:
+            # Started and killed at its time limit: the route's word is `unknown`, in the answer and
+            # in the one audit row (section 13).  A caller without the route's switch still gets
+            # `failed`, as ever.
+            answer["result"] = "unknown"
         code = 1
-    if mode == "yes":
-        if scope == "server" and action == "redeploy" and audit_target == target:
-            audit_target = "coolify resource"  # refused before the name was known: no uuid
-        audit(ctx, scope, action, (audit_target or "")[:120], answer["result"])
+    if mode == "yes" and not (scope == "server" and action == "update-status"):
+        audit_run(ctx, scope, action, target, audit_target, answer, log_lines, extra)
     return answer, code
+
+
+def audit_run(ctx, scope, action, target, audit_target, answer, log_lines, extra):
+    """The one audit row of a `--yes` request, and the `auditID` and `auditTarget` it adds to `answer`."""
+    if scope == "server" and action == "redeploy":
+        audit_target = redeploy_audit_target(scope, action, target, audit_target)
+    route = None
+    if scope == "server" and action == "update":
+        direct = [UPDATE_SYSTEMCTL, "start", "--no-block", FLEET_CLI_UPDATE_UNIT]
+        if answer["commands"] == [[SUDO, "-n"] + direct]:
+            route = "sudo-system-update"
+        elif ctx.uid == 0 and answer["commands"] == [direct]:
+            route = "root-system-update"
+    written_result = answer["result"]
+    if extra is not None and written_result == "refused":
+        if muster_refusal_code(answer) == "plan_mismatch":
+            extra = dict(extra, errorCode="plan_mismatch")
+        else:
+            # The nonce is spent by now, so any other refusal of the run is a fault of the run, and
+            # its one row says `failed` (section 14); an error code belongs to a refusal only.
+            written_result = "failed"
+    row_id = secrets.token_hex(6)
+    written_target = (audit_target or "")[:120]
+    if audit(
+        ctx,
+        scope,
+        action,
+        written_target,
+        written_result,
+        lines=log_lines if written_result == "done" else None,
+        route=route,
+        invocation_id=answer.get("invocationID"),
+        verified=answer.get("verified"),
+        baseline=answer.get("baselineStartMonotonic"),
+        row_id=row_id,
+        extra=extra,
+    ):
+        # Only a row that was written is named, so the caller never links to nothing.
+        answer["auditID"] = row_id
+        answer["auditTarget"] = written_target
+
+
+# MARK: - The --from-muster entry
+
+
+def _compile_module(source, file_name, module_name, required_attr):
+    """A fresh module run in memory from `source`, or None when it fails to load.
+
+    No import system, no sys.path, no __pycache__ and no second open of any path, as for the
+    reducer."""
+    try:
+        code = compile(source, file_name, "exec", dont_inherit=True)
+        module = types.ModuleType(module_name)
+        exec(code, module.__dict__)  # noqa: S102 - the bytes were just judged trusted
+    except (Exception, SystemExit):  # noqa: BLE001 - any load failure is the same answer
+        return None
+    return module if callable(getattr(module, required_attr, None)) else None
+
+
+def _load_muster_module(ctx, candidates, module_name, required_attr):
+    """A sibling module of this file, or None when it cannot be trusted or loaded.
+
+    `candidates` are its places below the helper's folder, tried in order; the first that exists
+    and is trusted is the one.  The bytes come from `_read_module_source` (the same open-by-descriptor,
+    fstat-judged read as the reducer's, with its installed-layout and checkout owner rules), so
+    nothing in the request or the environment selects a file, and a file swapped in after the check
+    changes nothing."""
+    for parts in candidates:
+        source = _read_module_source(ctx, parts, MUSTER_MODULE_MAX_BYTES)
+        if source is not None:
+            return _compile_module(source, parts[-1], module_name, required_attr)
+    return None
+
+
+def _load_muster_modules(ctx):
+    """(muster_approval, muster_trust_files) or None.  Both are needed, or neither is used.
+
+    The shared /etc/muster reader is installed flat beside the helper, and the repository keeps its
+    one source file in `muster_agent/` (server-route-spec section 10), so a checkout is read from there."""
+    trust_files = _load_muster_module(
+        ctx,
+        ((MUSTER_TRUST_FILES_NAME,), (MUSTER_AGENT_DIR, MUSTER_TRUST_FILES_NAME)),
+        "muster_trust_files",
+        "read_trust_files",
+    )
+    approval = _load_muster_module(
+        ctx, ((MUSTER_MODULE_FILE,),), "muster_approval", "handle_request"
+    )
+    if trust_files is None or approval is None:
+        return None
+    return approval, trust_files
+
+
+class _MusterLock:
+    """The one action lock, with its refusals turned into the approval module's own."""
+
+    def __init__(self, ctx, module):
+        self._ctx = ctx
+        self._module = module
+        self._held = None
+
+    def __enter__(self):
+        self._held = action_lock(self._ctx)
+        try:
+            self._held.__enter__()
+        except Refused as exc:
+            if exc.error_code == "action_busy":
+                raise self._module.LockBusy from None
+            raise self._module.LockUnsafe from None
+        return self
+
+    def __exit__(self, *exc_info):
+        return self._held.__exit__(*exc_info)
+
+
+def _sibling(name):
+    """A module of the helper's own folder, through the one path the other verbs use."""
+    scripts = str(Path(__file__).resolve().parent)
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
+    return importlib.import_module(name)
+
+
+class _MusterBackend:
+    """What `muster_approval` needs from this process: the plan, the read, the run, the audit row and
+    the one action lock.  Each is the helper's own shared function, called as it always is, plus the
+    route's `require_approval` where a run is concerned."""
+
+    def __init__(self, ctx, module):
+        self.ctx = ctx
+        self.module = module
+
+    def lock(self):
+        return _MusterLock(self.ctx, self.module)
+
+    def target_ok(self, verb, target):
+        """True when `target` has the shape this verb's target must have (server-route-spec section 4).
+
+        This is grammar only, so that the module can refuse `bad_command` at P2 before it counts the
+        request.  Whether the word names something the allowlist allows is for the planner, which
+        refuses `plan_refused` with the reason `allowlist_miss`."""
+        if verb in ACTIONS or verb == "logs":
+            return UNIT_RE.fullmatch(target) is not None
+        if verb == "update":
+            return UPDATE_RE.fullmatch(target) is not None
+        if verb == "redeploy":
+            return UUID_RE.fullmatch(target) is not None
+        if verb == "update-status":
+            match = UPDATE_STATUS_RE.fullmatch(target)
+            return match is not None and int(match.group(2)) <= UINT64_MAX
+        if verb == "resource-status":
+            return target == "coding"
+        if verb == "resource-policy":
+            try:
+                _sibling("fleet_resource_control").parse_target(target)
+            except Exception:  # noqa: BLE001 - its own refusal class, and any fault, mean no
+                return False
+            return True
+        if verb == "seat-inventory":
+            inventory = _sibling("fleet_seat_inventory")
+            return inventory.PLATFORM_RE.fullmatch(target) is not None and (
+                target in inventory.PLATFORMS
+            )
+        return False
+
+    def plan_bytes(self, verb, target):
+        """The canonical plan bytes that a run of this verb and target would hash.
+
+        Refuses with BackendRefused when the shared planner refuses: its `code` is the planner's reason
+        (its own `error_code` when it gives one, else `allowlist_miss`, `report_stale` or
+        `revision_stale`), or None for a fault that is no refusal (the module answers
+        `internal_error`)."""
+        ctx = self.ctx
+        try:
+            config = load_config(ctx.config_path)
+            if verb == "resource-policy":
+                if not config["resourcePolicy"]:
+                    raise Refused(
+                        "coding resource controls are not in the allowlist", reason="allowlist_miss"
+                    )
+                handle_resource = _sibling("fleet_resource_control").handle
+                answer, code = handle_resource(
+                    ctx,
+                    verb,
+                    target,
+                    "plan",
+                    require_approval=True,
+                    source=MUSTER_VIA,
+                    plan_bytes=self.module.canonical_bytes,
+                )
+                if code != 0 or not isinstance(answer.get("plan"), dict):
+                    raise Refused(
+                        answer.get("detail") or "the resource plan cannot be built",
+                        reason="revision_stale"
+                        if answer.get("errorCode") == "revision_stale"
+                        else None,
+                    )
+                plan = answer["plan"]
+            else:
+                commands, _note, audit_target = plan_request(ctx, config, "server", verb, target)
+                plan = plan_object("server", verb, target, commands, audit_target)
+            return self.module.canonical_bytes(plan)
+        except Refused as exc:
+            raise self.module.BackendRefused(str(exc), exc.reason) from None
+        except Failed as exc:
+            raise self.module.BackendRefused(str(exc)) from None
+        except ValueError:
+            raise self.module.BackendRefused("the plan cannot be written canonically") from None
+
+    def read(self, verb, target):
+        reason = {}
+        answer, _code = handle(self.ctx, "server", verb, target, "plan", reason_out=reason)
+        if answer.get("result") == "refused":
+            raise self.module.BackendRefused(answer.get("detail", ""), reason.get("reason"))
+        output = json.dumps(answer, sort_keys=True).encode("utf-8")
+        return self.module.ReadResult(answer.get("detail", ""), output)
+
+    def run(self, verb, target, approval):
+        reason = {}
+        try:
+            answer, _code = handle(
+                self.ctx,
+                "server",
+                verb,
+                target,
+                "yes",
+                require_approval=True,
+                approval=approval,
+                lock_held=True,
+                plan_bytes=self.module.canonical_bytes,
+                reason_out=reason,
+            )
+        except Exception:
+            # An exception out of the shared function: the module needs to know whether it was
+            # raised before the action could have begun (`failed`) or after (`unknown`).
+            raise self.module.RunFault(started=bool(reason.get("started"))) from None
+        result = answer.get("result")
+        detail = answer.get("detail", "")
+        if result == "refused":
+            if answer.get("errorCode") == "plan_mismatch":
+                return self.module.RunResult(
+                    "refused", detail, None, answer.get("auditID"), "plan_mismatch"
+                )
+            # Any other refusal inside the run happens after the nonce is spent, so for the route it
+            # is a fault of the run: the module answers a `failed` result that names the reason.
+            why = reason.get("reason")
+            named = f"plan_refused: {why}" if why in MUSTER_PLAN_REASONS else "internal_error"
+            return self.module.RunResult("refused", named, None, answer.get("auditID"))
+        # `unknown` (a policy write that was sent and not confirmed) stays `unknown`: section 13's
+        # word for work that was started and whose end could not be observed.  Anything else that is
+        # not done or submitted is a failure.
+        outcome = {"done": "done", "submitted": "submitted", "unknown": "unknown"}.get(
+            result, "failed"
+        )
+        return self.module.RunResult(outcome, detail, answer.get("output"), answer.get("auditID"))
+
+    def audit(self, scope, verb, target, result, fields):
+        """One row for the module: its target goes through the same mapping as the helper's own rows,
+        so a Coolify uuid is never written."""
+        written = redeploy_audit_target(scope, verb, target, None)
+        return audit(self.ctx, scope, verb, written, result, extra=fields)
+
+
+def _muster_config(module, hooks):
+    """The configuration of this run: production's, unless a test hands one in."""
+    settings = hooks.get("config")
+    if settings is None:
+        return module.production_config()
+    if settings.get("clock") is not None:
+        clock = settings["clock"]
+    elif "now" in settings:
+        fixed = settings["now"]
+
+        def clock():
+            return fixed
+    else:
+        clock = time.time
+    return module.MusterConfig(
+        etc_dir=settings["etc_dir"],
+        state_dir=settings["state_dir"],
+        root_uid=settings["root_uid"],
+        uid=settings["uid"],
+        clock=clock,
+        clock_state=settings.get("clock_state"),
+    )
+
+
+def _empty_environment(home):
+    """Empty this process's environment, leaving a fixed HOME and PATH.
+
+    What this covers: what the code loaded after this point reads from the environment (the proxy
+    variables of `urllib.request`, which the helper imports inside the function that uses it, the
+    settings of `ssl` and of `cryptography`, which the modules this entry loads afterwards import, and
+    the locale), and the environment the children get (a fixed HOME and PATH; `os.environ.clear` also
+    clears the C environment).  What it does not cover, because it comes first: the interpreter's own
+    start and the standard modules imported at the top of the file.  `hashlib` is one, and OpenSSL
+    reads its configuration (`OPENSSL_CONF`) when `hashlib` is imported, so that variable is honoured
+    before this runs.  `python3 -I` ignores the `PYTHON*` variables and sshd passes only the names its
+    `AcceptEnv` allows, but a clean start is the forced command's: it starts the interpreter with an
+    empty environment and passes `SSH_ORIGINAL_COMMAND` through by name (`env -i` alone would drop the
+    one variable that is read first)."""
+    os.environ.clear()
+    os.environ["HOME"] = home
+    os.environ["PATH"] = MUSTER_CHILD_ENV["PATH"]
+
+
+def run_from_muster(argv, ctx=None, out=None, muster=None):
+    """The `--from-muster` entry: one request in, one signed answer out.  Returns the exit status.
+
+    The forced command passes nothing but `argv`: `ctx`, `out` and `muster` are for the tests.
+    `muster` is a dict with optional `config` (settings for `MusterConfig`), `ssh_command` and `stdin`
+    (bytes); without it everything is production's: constants, the account database, the real
+    clock, `SSH_ORIGINAL_COMMAND` and standard input.  The one environment variable this branch reads
+    is `SSH_ORIGINAL_COMMAND`, read first; the environment is then emptied (see
+    `_empty_environment`) before the approval module and `cryptography` are loaded, and the child
+    environment is fixed.
+
+    `muster trust-list chain --yes` is the one request that stores the trust list (the module's docstring
+    says how): until a chain has been accepted the route is inert, and every approval is
+    `no_trust_list`."""
+    out = out or sys.stdout
+    hooks = muster or {}
+    try:
+        ssh_command = (
+            hooks["ssh_command"]
+            if "ssh_command" in hooks
+            else os.environ.get("SSH_ORIGINAL_COMMAND")
+        )
+        import pwd
+
+        home = Path(pwd.getpwuid(os.geteuid()).pw_dir)
+        _empty_environment(str(home))
+        if ctx is None:
+            ctx = Context(home=home, environ={"HOME": str(home), **MUSTER_CHILD_ENV})
+        modules = _load_muster_modules(ctx)
+        if modules is None:
+            out.write(
+                json.dumps(MUSTER_UNSIGNED_ANSWER, sort_keys=True, separators=(",", ":")) + "\n"
+            )
+            return 2
+        module, trust_files = modules
+        config = _muster_config(module, hooks)
+        if "stdin" in hooks:
+            data = hooks["stdin"]
+
+            def read_stdin(limit):
+                return data[: limit + 1]
+        else:
+
+            def read_stdin(limit):
+                return module.read_stdin_limited(0, limit)
+
+        answer, code = module.handle_request(
+            config,
+            _MusterBackend(ctx, module),
+            ssh_command,
+            argv == [MUSTER_ENTRY],
+            read_stdin,
+            trust_files,
+        )
+        out.write(module.encode_answer(answer))
+        return code
+    except Exception:  # noqa: BLE001 - nothing may escape as a traceback
+        out.write(json.dumps(MUSTER_UNSIGNED_ANSWER, sort_keys=True, separators=(",", ":")) + "\n")
+        return 2
 
 
 # MARK: - Command line
@@ -699,13 +2808,13 @@ class _QuietParser(argparse.ArgumentParser):
     """Refuses instead of printing argparse's own usage text and exiting."""
 
     def error(self, message):
-        raise Refused("usage: (mac|server) ACTION TARGET (--plan|--yes) [--json]")
+        raise Refused("usage: (mac|pm2|server) ACTION TARGET (--plan|--yes) [--json]")
 
 
 def parse_request(argv):
     """(scope, action, target, mode, json) from a verb argv, or Refused.  Exactly one target."""
     parser = _QuietParser(prog=TOOL, add_help=False)
-    parser.add_argument("scope", choices=("mac", "server"))
+    parser.add_argument("scope", choices=("mac", "pm2", "server"))
     parser.add_argument("action")
     parser.add_argument("target")
     group = parser.add_mutually_exclusive_group()
@@ -731,7 +2840,17 @@ def parse_ssh_command(text):
     plain = [w for w in words if not w.startswith("-")]
     if len(plain) != 3 or plain[0] != "server":
         raise Refused("only a server verb with one target is accepted over ssh")
-    if plain[1] not in ACTIONS + ("update", "redeploy"):
+    if plain[1] not in ACTIONS + (
+        "update",
+        "update-status",
+        "unit-status",
+        "redeploy",
+        "logs",
+        "resource-status",
+        "resource-policy",
+        "seat-inventory",
+        "eavesdropper-status",
+    ):
         raise Refused("unknown server verb")
     if words[:3] != plain:
         raise Refused("the verb and target come first")
@@ -742,6 +2861,36 @@ def parse_ssh_command(text):
     return words
 
 
+def sanitize_for_terminal(text):
+    """Journal text with escape and control sequences removed, for a terminal.
+
+    Newlines and tabs stay.  The JSON answer keeps the text as the journal held it."""
+    kept = []
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if char == "\x1b":
+            index += 1
+            if index < len(text) and text[index] == "[":
+                index += 1
+                while index < len(text) and not "@" <= text[index] <= "~":
+                    index += 1
+                index += 1
+            elif index < len(text) and text[index] == "]":
+                index += 1
+                while index < len(text) and text[index] not in ("\x07", "\x1b"):
+                    index += 1
+                if index < len(text) and text[index] == "\x07":
+                    index += 1
+            elif index < len(text):
+                index += 1
+            continue
+        if char in ("\n", "\t") or not (ord(char) < 0x20 or 0x7F <= ord(char) <= 0x9F):
+            kept.append(char)
+        index += 1
+    return "".join(kept)
+
+
 def emit(answer, as_json, out):
     if as_json:
         out.write(json.dumps(answer, sort_keys=True) + "\n")
@@ -750,10 +2899,15 @@ def emit(answer, as_json, out):
     out.write(f" ({answer['detail']})\n" if answer["detail"] else "\n")
     for argv in answer["commands"]:
         out.write("  " + " ".join(shlex.quote(a) for a in argv) + "\n")
+    if answer.get("output"):
+        out.write(sanitize_for_terminal(answer["output"]))
 
 
-def main(argv=None, ctx=None, out=None):
+def main(argv=None, ctx=None, out=None, muster=None):
     argv = list(sys.argv[1:] if argv is None else argv)
+    if MUSTER_ENTRY in argv:
+        # Before anything reads the environment into a Context: this branch builds its own.
+        return run_from_muster(argv, ctx, out, muster)
     ctx = ctx or Context()
     out = out or sys.stdout
     if "--from-ssh" in argv:

@@ -9,6 +9,7 @@ every test that reaches it.
 
 from __future__ import annotations
 
+import http.client
 import os
 import subprocess
 import unittest
@@ -640,6 +641,56 @@ class CallPublicTests(unittest.TestCase):
         self.assertNotIn("python-urllib", seen["headers"]["User-Agent"].lower())
         self.assertEqual(res, {"hits": [], "mode": "dense"})
 
+    def test_mutations_disable_automatic_retries(self):
+        args = {
+            "recall_contribute": {"text": "x" * 60, "category": "lesson", "seat": "CLAUDE"},
+            "recall_correct": {
+                "doc_id": "contrib/CLAUDE/2026-11-05/472fc36e",
+                "text": "x" * 60,
+                "reason": "make the lesson current",
+                "seat": "CLAUDE",
+            },
+            "recall_retract": {
+                "doc_id": "contrib/CLAUDE/2026-11-05/472fc36e",
+                "reason": "make the lesson current",
+                "seat": "CLAUDE",
+            },
+        }
+        for name, kwargs in args.items():
+            seen = {}
+
+            def fake_http_json(url, body, headers, method=None, timeout=None, retries=None):
+                seen.update(url=url, retries=retries)
+                return {"ok": True, "status": "completed"}
+
+            with mock.patch.object(core, "http_json", fake_http_json):
+                public_fallback.call_public(name, kwargs)
+            self.assertEqual(seen["retries"], 0, name)
+
+    def test_a_public_mutation_disconnect_is_one_attempt_not_a_replay(self):
+        kwargs = {
+            "text": "x" * 60,
+            "category": "lesson",
+            "seat": "CLAUDE",
+            "doc_id": "contrib/CLAUDE/2026-11-05/472fc36e",
+            "reason": "make the lesson current",
+        }
+        for name in ("recall_contribute", "recall_correct", "recall_retract"):
+            calls = {"n": 0}
+
+            def disconnected(req, timeout=None):
+                calls["n"] += 1
+                raise http.client.RemoteDisconnected("closed during write")
+
+            with (
+                mock.patch.object(core.urllib.request, "urlopen", disconnected),
+                mock.patch.object(core.time, "sleep") as sleep,
+                self.assertRaisesRegex(FleetRagError, "RemoteDisconnected reaching"),
+            ):
+                public_fallback.call_public(name, kwargs)
+            self.assertEqual(calls["n"], 1, name)
+            sleep.assert_not_called()
+
     def test_stats_is_a_get_with_no_body(self):
         seen = {}
 
@@ -655,6 +706,82 @@ class CallPublicTests(unittest.TestCase):
     def test_unknown_tool_name_rejected(self):
         with self.assertRaisesRegex(FleetRagError, "no public REST route"):
             public_fallback.call_public("recall_ingest", {})
+
+
+# --------------------------------------------------------------------------- mutation routing
+
+
+class CallMutationRoutingTests(unittest.TestCase):
+    def setUp(self):
+        self.env = mock.patch.dict(os.environ, PUBLIC_ENV, clear=False)
+        self.env.start()
+        for key in (
+            "FLEET_RECALL_FAKE",
+            "QDRANT_URL",
+            "TEI_URL",
+            public_fallback.LOCAL_MUTATION_ENV,
+            "RECALL_OWNER_TOKEN",
+        ):
+            os.environ.pop(key, None)
+        self._saved_qdrant = recall_api.Qdrant
+        recall_api.Qdrant = core.Qdrant
+        self.no_fs = mock.patch.object(core, "fleet_secret", return_value=None)
+        self.no_fs.start()
+
+    def tearDown(self):
+        self.no_fs.stop()
+        recall_api.Qdrant = self._saved_qdrant
+        self.env.stop()
+
+    def kwargs(self, seat="CLAUDE"):
+        return {
+            "doc_id": "contrib/CLAUDE/2026-11-05/472fc36e",
+            "text": "x" * 50,
+            "reason": "make the lesson current",
+            "seat": seat,
+        }
+
+    def test_qdrant_tei_override_alone_still_uses_the_service(self):
+        os.environ["QDRANT_URL"] = "http://127.0.0.1:16333"
+        os.environ["TEI_URL"] = "http://127.0.0.1:18081"
+        local = mock.Mock(side_effect=AssertionError("must not bypass the service mutation lock"))
+        with mock.patch.object(public_fallback, "call_public", return_value={"status": "completed"}) as public:
+            res = public_fallback.call_mutation("recall_correct", self.kwargs(), local)
+        self.assertEqual(res, {"status": "completed"})
+        local.assert_not_called()
+        public.assert_called_once_with("recall_correct", self.kwargs())
+
+    def test_explicit_operator_corpus_override_runs_local(self):
+        os.environ[public_fallback.LOCAL_MUTATION_ENV] = "1"
+        local = mock.Mock(return_value={"status": "completed"})
+        with mock.patch.object(
+            public_fallback, "call_public", side_effect=AssertionError("must not call public")
+        ):
+            res = public_fallback.call_mutation("recall_retract", self.kwargs(), local)
+        self.assertEqual(res, {"status": "completed"})
+        local.assert_called_once()
+
+    def test_explicit_local_owner_mutation_requires_owner_token(self):
+        os.environ[public_fallback.LOCAL_MUTATION_ENV] = "1"
+        local = mock.Mock(side_effect=AssertionError("must not run without owner proof"))
+        with self.assertRaisesRegex(FleetRagError, "RECALL_OWNER_TOKEN"):
+            public_fallback.call_mutation("recall_retract", self.kwargs("OWNER"), local)
+        local.assert_not_called()
+
+    def test_explicit_local_owner_mutation_with_owner_token_runs_local(self):
+        os.environ[public_fallback.LOCAL_MUTATION_ENV] = "1"
+        os.environ["RECALL_OWNER_TOKEN"] = "owner-token"
+        local = mock.Mock(return_value={"status": "completed"})
+        res = public_fallback.call_mutation("recall_retract", self.kwargs("OWNER"), local)
+        self.assertEqual(res, {"status": "completed"})
+        local.assert_called_once()
+
+    def test_fake_backend_still_runs_local_without_owner_config(self):
+        recall_api.Qdrant = recall_api.FakeQdrant
+        local = mock.Mock(return_value={"status": "completed"})
+        res = public_fallback.call_mutation("recall_retract", self.kwargs("OWNER"), local)
+        self.assertEqual(res, {"status": "completed"})
+        local.assert_called_once()
 
 
 # --------------------------------------------------------------------------- call_with_fallback

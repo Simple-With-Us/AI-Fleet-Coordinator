@@ -49,9 +49,9 @@ class CanonicalSeatTests(unittest.TestCase):
 
 class ContributeSignsGrokTests(RecallBase):
     def test_grok_build_spellings_contribute_as_grok(self):
-        for raw in ("GROK-BUILD", "Grok Build", "grok_build", "Grok (Build)"):
+        for i, raw in enumerate(("GROK-BUILD", "Grok Build", "grok_build", "Grok (Build)")):
             FakeQdrant.upserts.clear()
-            res = recall_api.recall_contribute(GOOD, "lesson", seat=raw)
+            res = recall_api.recall_contribute(f"{GOOD} Alias case {i}.", "lesson", seat=raw)
             self.assertTrue(res["doc_id"].startswith("contrib/GROK/"), (raw, res["doc_id"]))
             (point,), = FakeQdrant.upserts
             self.assertEqual(point["payload"]["seat"], "GROK", raw)
@@ -64,7 +64,10 @@ class ContributeSignsGrokTests(RecallBase):
     def test_near_misses_are_kept_and_other_checks_still_apply(self):
         res = recall_api.recall_contribute(GOOD, "lesson", seat="grok-build-bot")
         self.assertTrue(res["doc_id"].startswith("contrib/GROK-BUILD-BOT/"))
-        res = recall_api.recall_contribute(GOOD, "lesson", seat="GROK-WEB")
+        res = recall_api.recall_contribute(
+            "GROK-WEB runbooks stay distinct from GROK-BUILD-BOT lessons when the text is different.",
+            "lesson", seat="GROK-WEB",
+        )
         self.assertTrue(res["doc_id"].startswith("contrib/GROK-WEB/"))
         with self.assertRaisesRegex(FleetRagError, "seat must be"):
             recall_api.recall_contribute(GOOD, "lesson", seat="GROK BUILDER!")

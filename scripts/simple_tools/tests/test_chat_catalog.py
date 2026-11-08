@@ -6,9 +6,10 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from simple_tools import chat_transport as CT
-from simple_tools.chat_catalog import ChatCatalog, _stable_id
+from simple_tools.chat_catalog import MAX_FILES_PER_SOURCE, ChatCatalog, _stable_id
 
 
 class FakeClock:
@@ -827,3 +828,820 @@ class ChatCatalogTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OpenCodeCatalogTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.home = Path(self.tmp.name)
+        self.clock = FakeClock()
+
+    def catalog(self, **kwargs):
+        return ChatCatalog(home=self.home, host="test-host", clock=self.clock, **kwargs)
+
+    def _db(self) -> Path:
+        db = self.home / ".local" / "share" / "opencode" / "opencode.db"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(db)
+        try:
+            conn.execute(
+                "CREATE TABLE session (id TEXT, project_id TEXT, parent_id TEXT,"
+                " directory TEXT, title TEXT, time_created INTEGER)"
+            )
+            conn.execute(
+                "CREATE TABLE message (id TEXT, session_id TEXT, time_created INTEGER, data TEXT)"
+            )
+            conn.execute(
+                "CREATE TABLE part (id TEXT, message_id TEXT, session_id TEXT,"
+                " time_created INTEGER, data TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO session VALUES ('ses_1', 'p1', NULL, '/srv/app', 'Real chat', 1000)"
+            )
+            conn.execute(
+                "INSERT INTO message VALUES ('msg_1', 'ses_1', 2000,"
+                " '{\"role\": \"user\", \"time\": {\"created\": 2000}}')"
+            )
+            conn.execute(
+                "INSERT INTO part VALUES ('prt_1', 'msg_1', 'ses_1', 2000,"
+                " '{\"type\": \"text\", \"text\": \"hello fleet\"}')"
+            )
+            conn.execute(
+                "INSERT INTO part VALUES ('prt_2', 'msg_1', 'ses_1', 2001,"
+                " '{\"type\": \"tool\", \"state\": {\"status\": \"completed\"}}')"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return db
+
+    def test_sqlite_store_yields_a_catalog_row(self):
+        self._db()
+        catalog = self.catalog()
+        rows = catalog.discover()
+        row = next(r for r in rows if r["platform"] == "opencode")
+        self.assertEqual(row["seat"], "OPENCODE")
+        self.assertEqual(row["session_id"], "ses_1")
+        self.assertEqual(row["title"], "Real chat")
+        self.assertEqual(row["cwd"], "/srv/app")
+        self.assertEqual(row["updated_at"], 2.0)
+        self.assertEqual(row["status"], "available")
+        self.assertFalse(row["capabilities"]["wake"])
+        self.assertEqual(row["capabilities"]["wake_status"], "unsupported")
+        self.assertEqual(catalog.excerpt(row["id"]), [{"role": "user", "text": "hello fleet"}])
+
+    def _legacy_tree(self, session: dict) -> None:
+        base = self.home / ".local" / "share" / "opencode" / "storage" / "session" / "proj"
+        base.mkdir(parents=True)
+        (base / "ses_legacy.json").write_text(json.dumps(session), encoding="utf-8")
+
+    def _db_v2(self, with_content_tables=True) -> Path:
+        # The live store layout the plugin README records:  session_v2 plus the
+        # newer content tables.
+        db = self.home / ".local" / "share" / "opencode" / "opencode.db"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(db)
+        try:
+            conn.execute(
+                "CREATE TABLE session_v2 (id TEXT, directory TEXT, title TEXT,"
+                " time_created INTEGER, time_archived INTEGER)"
+            )
+            conn.execute(
+                "INSERT INTO session_v2 VALUES ('ses_v2', '/srv/v2', 'V2 chat', 3000, NULL)"
+            )
+            if with_content_tables:
+                conn.execute("CREATE TABLE session_message (id TEXT, session_id TEXT)")
+            conn.commit()
+        finally:
+            conn.close()
+        return db
+
+    def test_session_v2_store_yields_rows(self):
+        self._db_v2()
+        rows = self.catalog().discover()
+        row = next(r for r in rows if r["platform"] == "opencode")
+        self.assertEqual(row["session_id"], "ses_v2")
+        self.assertEqual(row["title"], "V2 chat")
+        self.assertEqual(row["status"], "metadata-only")
+
+    def test_session_v2_without_content_tables_is_metadata_only(self):
+        # Registry rows only, nothing readable:  metadata-only, never available
+        # with an empty excerpt list (daemon.py already skips metadata-only).
+        self._db_v2(with_content_tables=False)
+        rows = self.catalog().discover()
+        row = next(r for r in rows if r["platform"] == "opencode")
+        self.assertEqual(row["session_id"], "ses_v2")
+        self.assertEqual(row["status"], "metadata-only")
+        self.assertFalse(row["capabilities"]["read"])
+
+    def test_registry_only_legacy_store_is_metadata_only(self):
+        # Legacy shape with no message/part tables at all:  same degradation.
+        db = self._db()
+        conn = sqlite3.connect(db)
+        try:
+            conn.execute("DROP TABLE message")
+            conn.execute("DROP TABLE part")
+            conn.commit()
+        finally:
+            conn.close()
+        rows = self.catalog().discover()
+        row = next(r for r in rows if r["platform"] == "opencode")
+        self.assertEqual(row["status"], "metadata-only")
+        self.assertFalse(row["capabilities"]["read"])
+
+    def test_message_only_store_lookup_fails_closed(self):
+        # Exactly one legacy content table is shape drift:  the by-id lookup
+        # fails closed like discovery, never a degraded metadata-only row.
+        db = self._db()
+        conn = sqlite3.connect(db)
+        try:
+            conn.execute("DROP TABLE part")
+            conn.commit()
+        finally:
+            conn.close()
+        self.assertIsNone(self.catalog()._find_opencode("ses_1"))
+
+    def test_oversized_directory_is_not_materialized_in_lookup(self):
+        # Identity and workspace path guards live in SQL:  an oversized or
+        # non-TEXT directory must not load before the row is classified; the
+        # lookup finds no row.
+        db = self._db()
+        conn = sqlite3.connect(db)
+        try:
+            conn.execute(
+                "UPDATE session SET directory = ? WHERE id = 'ses_1'",
+                (sqlite3.Binary(b"d" * (20 * 1024 * 1024)),),
+            )
+            conn.execute(
+                "INSERT INTO session VALUES ('ses_big', 'p1', NULL, ?, 'Big', 1000)",
+                ("d" * 2000,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        catalog = self.catalog()
+        self.assertIsNone(catalog._find_opencode("ses_1"))
+        self.assertIsNone(catalog._find_opencode("ses_big"))
+
+    def test_uri_significant_store_path_stays_read_only(self):
+        # A home path containing URI-significant characters must not change the
+        # SQLite URI:  without percent-encoding, "?" would drop mode=ro (opening
+        # the store read-write) and "#" would resolve a different file.
+        db = self._db()
+        tricky_home = Path(self.tmp.name + "?mode=rw")
+        tricky_db = tricky_home / ".local" / "share" / "opencode" / "opencode.db"
+        tricky_db.parent.mkdir(parents=True)
+        import shutil
+
+        shutil.copy(db, tricky_db)
+        catalog = ChatCatalog(home=tricky_home, host="test-host", clock=self.clock)
+        rows = catalog.discover()
+        row = next(r for r in rows if r["platform"] == "opencode")
+        self.assertEqual(row["session_id"], "ses_1")
+        self.assertEqual(row["status"], "available")
+        # Proof the handle is read-only:  a write through the catalog's own
+        # connection shape is rejected by SQLite.
+        import sqlite3 as s3
+        from urllib.parse import quote as q
+
+        ro = s3.connect(f"file:{q(str(tricky_db))}?mode=ro", uri=True)
+        try:
+            with self.assertRaises(s3.OperationalError):
+                ro.execute("CREATE TABLE nope (id TEXT)")
+        finally:
+            ro.close()
+
+    def test_one_unreadable_project_does_not_abort_the_scan(self):
+        base = self.home / ".local" / "share" / "opencode" / "storage" / "session"
+        (base / "good").mkdir(parents=True)
+        (base / "bad").mkdir(parents=True)
+        (base / "good" / "ses_a.json").write_text(
+            json.dumps({"id": "ses_a", "title": "A", "time": {"created": 1000}}), encoding="utf-8"
+        )
+        (base / "bad" / "ses_b.json").write_text(
+            json.dumps({"id": "ses_b", "title": "B", "time": {"created": 2000}}), encoding="utf-8"
+        )
+        real_scandir = os.scandir
+
+        def flaky(path):
+            if Path(path) == base / "bad":
+                raise OSError("permission denied")
+            return real_scandir(path)
+
+        with mock.patch("simple_tools.chat_catalog.os.scandir", side_effect=flaky):
+            rows = self.catalog().discover()
+        found = {r.get("session_id") for r in rows if r["platform"] == "opencode"}
+        self.assertIn("ses_a", found)
+
+    def test_find_opencode_by_id_in_db(self):
+        self._db()
+        catalog = self.catalog()
+        row = catalog.find("opencode", "ses_1")
+        self.assertIsNotNone(row)
+        self.assertEqual(row["session_id"], "ses_1")
+        self.assertEqual(row["title"], "Real chat")
+        self.assertIsNone(catalog.find("opencode", "ses_missing"))
+
+    def test_find_opencode_by_id_in_legacy_tree(self):
+        self._legacy_tree({"id": "ses_legacy", "title": "Old", "time": {"created": 5000}})
+        catalog = self.catalog()
+        row = catalog.find("opencode", "ses_legacy")
+        self.assertIsNotNone(row)
+        self.assertEqual(row["title"], "Old")
+        self.assertIsNone(catalog.find("opencode", "ses_nope"))
+
+    def test_db_path_present_but_unusable_never_falls_through_to_legacy(self):
+        # A db path that EXISTS but cannot be used (here: a directory) is an
+        # explicit "unusable", never a silent fallthrough to the legacy tree
+        # while a real store marker is present (Kody L944).
+        db = self.home / ".local" / "share" / "opencode" / "opencode.db"
+        db.mkdir(parents=True)
+        self._legacy_tree({"id": "ses_legacy", "title": "Old", "time": {"created": 5000}})
+        rows = self.catalog().discover()
+        row = next(r for r in rows if r["platform"] == "opencode")
+        self.assertEqual(row["status"], "unavailable")
+        self.assertIn("unusable", row["error"])
+        self.assertNotIn(
+            "ses_legacy", [r.get("session_id") for r in rows if r["platform"] == "opencode"]
+        )
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "no symlink support")
+    def test_db_symlink_escaping_home_reports_unusable(self):
+        outside = self.home.parent / (self.home.name + "-outside.db")
+        self.addCleanup(lambda: outside.unlink(missing_ok=True))
+        outside.write_bytes(b"not a database")
+        db = self.home / ".local" / "share" / "opencode" / "opencode.db"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        os.symlink(outside, db)
+        self._legacy_tree({"id": "ses_legacy", "title": "Old", "time": {"created": 5000}})
+        rows = self.catalog().discover()
+        row = next(r for r in rows if r["platform"] == "opencode")
+        self.assertEqual(row["status"], "unavailable")
+        self.assertIn("unusable", row["error"])
+
+    def test_operational_database_error_is_not_reported_as_schema_drift(self):
+        # A corrupt file is an OPERATIONAL failure ("file is not a database"),
+        # not shape drift:  it must not be collapsed into "unrecognized"
+        # (Kody L1142).
+        db = self.home / ".local" / "share" / "opencode" / "opencode.db"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        db.write_bytes(b"this is not a sqlite database at all")
+        rows = self.catalog().discover()
+        row = next(r for r in rows if r["platform"] == "opencode")
+        self.assertEqual(row["status"], "unavailable")
+        self.assertIn("operational", row["error"])
+        self.assertNotIn("unrecognized", row["error"])
+
+    def test_locked_database_reports_operational_not_unrecognized(self):
+        db = self._db()
+        lock = sqlite3.connect(db)
+        self.addCleanup(lock.close)
+        lock.execute("BEGIN EXCLUSIVE")
+        lock.execute("INSERT INTO session VALUES ('ses_x', 'p', NULL, '/x', 'X', 1)")
+        rows = self.catalog().discover()
+        row = next(r for r in rows if r["platform"] == "opencode")
+        self.assertEqual(row["status"], "unavailable")
+        self.assertIn("operational", row["error"])
+
+    def test_legacy_empty_id_fails_closed(self):
+        # An empty-string id is malformed metadata:  fail the platform closed,
+        # never substitute path.stem or skip silently (Kody L1215).
+        self._legacy_tree({"id": "", "title": "Old", "time": {"created": 5000}})
+        rows = self.catalog().discover()
+        row = next(r for r in rows if r["platform"] == "opencode")
+        self.assertEqual(row["status"], "unavailable")
+        self.assertIn("malformed", row["error"])
+
+    def test_legacy_nonstring_id_fails_closed(self):
+        self._legacy_tree({"id": 123, "title": "Old", "time": {"created": 5000}})
+        rows = self.catalog().discover()
+        row = next(r for r in rows if r["platform"] == "opencode")
+        self.assertEqual(row["status"], "unavailable")
+        self.assertIn("malformed", row["error"])
+
+    def test_bulk_excerpts_cover_every_session_in_one_pass(self):
+        # The set-based excerpt query must return each session's own excerpts
+        # (Kody L1120):  two sessions, two texts, no cross-talk.
+        db = self.home / ".local" / "share" / "opencode" / "opencode.db"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(db)
+        try:
+            conn.execute(
+                "CREATE TABLE session (id TEXT, directory TEXT, title TEXT, time_created INTEGER)"
+            )
+            conn.execute(
+                "CREATE TABLE message (id TEXT, session_id TEXT, time_created INTEGER, data TEXT)"
+            )
+            conn.execute(
+                "CREATE TABLE part (id TEXT, message_id TEXT, session_id TEXT,"
+                " time_created INTEGER, data TEXT)"
+            )
+            conn.execute("INSERT INTO session VALUES ('ses_a', '/a', 'A', 1000)")
+            conn.execute("INSERT INTO session VALUES ('ses_b', '/b', 'B', 2000)")
+            conn.execute(
+                "INSERT INTO message VALUES ('m_a', 'ses_a', 1500, '{\"role\": \"user\"}')"
+            )
+            conn.execute(
+                "INSERT INTO message VALUES ('m_b', 'ses_b', 2500, '{\"role\": \"assistant\"}')"
+            )
+            conn.execute(
+                "INSERT INTO part VALUES ('p_a', 'm_a', 'ses_a', 1500,"
+                " '{\"type\": \"text\", \"text\": \"alpha text\"}')"
+            )
+            conn.execute(
+                "INSERT INTO part VALUES ('p_b', 'm_b', 'ses_b', 2500,"
+                " '{\"type\": \"text\", \"text\": \"beta text\"}')"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        catalog = self.catalog()
+        rows = {r["session_id"]: r for r in catalog.discover() if r["platform"] == "opencode"}
+        self.assertEqual(rows["ses_a"]["status"], "available")
+        self.assertEqual(rows["ses_b"]["status"], "available")
+        self.assertEqual(catalog.excerpt(rows["ses_a"]["id"]), [{"role": "user", "text": "alpha text"}])
+        self.assertEqual(catalog.excerpt(rows["ses_b"]["id"]), [{"role": "assistant", "text": "beta text"}])
+
+    def test_missing_store_reports_unavailable(self):
+        rows = self.catalog().discover()
+        row = next(r for r in rows if r["platform"] == "opencode")
+        self.assertEqual(row["status"], "unavailable")
+        self.assertFalse(row["capabilities"]["read"])
+
+    def test_unknown_database_schema_reports_unrecognized(self):
+        db = self.home / ".local" / "share" / "opencode" / "opencode.db"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(db)
+        conn.execute("CREATE TABLE something_else (id TEXT)")
+        conn.commit()
+        conn.close()
+        rows = self.catalog().discover()
+        row = next(r for r in rows if r["platform"] == "opencode")
+        self.assertEqual(row["status"], "unavailable")
+        self.assertIn("unrecognized", row["error"])
+
+    def test_legacy_json_tree_is_read_when_no_database(self):
+        base = self.home / ".local" / "share" / "opencode" / "storage" / "session" / "proj"
+        base.mkdir(parents=True)
+        (base / "ses_9.json").write_text(
+            json.dumps({"id": "ses_9", "title": "Old chat", "directory": "/old",
+                        "time": {"created": 5000, "updated": 9000}}),
+            encoding="utf-8",
+        )
+        rows = self.catalog().discover()
+        row = next(r for r in rows if r["platform"] == "opencode")
+        self.assertEqual(row["session_id"], "ses_9")
+        self.assertEqual(row["title"], "Old chat")
+        self.assertEqual(row["updated_at"], 9.0)
+
+    def test_newer_content_shape_is_registry_only(self):
+        # session_message/session_input are defined at the same pinned owning
+        # revision (sql.ts @411eff73); their content layout is unqualified, so a
+        # store carrying them must degrade to registry-only rows: metadata-only,
+        # no content read, no excerpt claims.
+        db = self._db()
+        conn = sqlite3.connect(db)
+        try:
+            conn.execute(
+                "CREATE TABLE session_message (id TEXT, session_id TEXT, type TEXT,"
+                " seq INTEGER, time_created INTEGER, data TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO session_message VALUES ('sm_1', 'ses_1', 'user', 1, 3000, '{}')"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        catalog = self.catalog()
+        rows = catalog.discover()
+        row = next(r for r in rows if r["platform"] == "opencode")
+        self.assertEqual(row["status"], "metadata-only")
+        self.assertFalse(row["capabilities"]["read"])
+        self.assertFalse(row["capabilities"]["wake"])
+        # Activity stamp still comes from the window-bounded newer table.
+        self.assertEqual(row["updated_at"], 3.0)
+        self.assertEqual(catalog.excerpt(row["id"]), [])
+
+    def test_archived_session_is_excluded(self):
+        db = self.home / ".local" / "share" / "opencode" / "opencode.db"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(db)
+        try:
+            conn.execute(
+                "CREATE TABLE session (id TEXT, directory TEXT, title TEXT,"
+                " time_created INTEGER, time_archived INTEGER)"
+            )
+            conn.execute("INSERT INTO session VALUES ('ses_live', '/a', 'Live', 1000, NULL)")
+            conn.execute("INSERT INTO session VALUES ('ses_arch', '/b', 'Archived', 2000, 1234)")
+            conn.commit()
+        finally:
+            conn.close()
+        rows = self.catalog().discover()
+        ids = [r["session_id"] for r in rows if r["platform"] == "opencode"]
+        self.assertIn("ses_live", ids)
+        self.assertNotIn("ses_arch", ids)
+
+    def test_window_bounded_by_creation_ordered_by_activity(self):
+        # The discovery window is the MAX_FILES_PER_SOURCE most recently created
+        # sessions.  An old but recently active chat outside the window stays
+        # omitted (bounded-subset contract); inside the window, rows are
+        # activity-ordered and outside-window messages never leak stamps in.
+        db = self.home / ".local" / "share" / "opencode" / "opencode.db"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(db)
+        try:
+            conn.execute(
+                "CREATE TABLE session (id TEXT, directory TEXT, title TEXT, time_created INTEGER)"
+            )
+            conn.execute(
+                "CREATE TABLE message (id TEXT, session_id TEXT, time_created INTEGER, data TEXT)"
+            )
+            conn.execute(
+                "CREATE TABLE part (id TEXT, message_id TEXT, session_id TEXT,"
+                " time_created INTEGER, data TEXT)"
+            )
+            total = MAX_FILES_PER_SOURCE + 5
+            for i in range(total):
+                conn.execute(
+                    "INSERT INTO session VALUES (?, '/w', ?, ?)",
+                    ("ses_%03d" % i, "Chat %d" % i, (i + 1) * 1000),
+                )
+            conn.execute(
+                "INSERT INTO message VALUES ('m_out', 'ses_000', 999999000, '{}')"
+            )
+            conn.execute(
+                "INSERT INTO message VALUES ('m_in', 'ses_100', 500000000, '{}')"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        catalog = self.catalog(max_records=1000)
+        rows = [
+            r
+            for r in catalog.discover()
+            if r["platform"] == "opencode" and r["status"] == "available"
+        ]
+        ids = [r["session_id"] for r in rows]
+        self.assertEqual(len(ids), MAX_FILES_PER_SOURCE)
+        for omitted in ("ses_000", "ses_001", "ses_002", "ses_003", "ses_004"):
+            self.assertNotIn(omitted, ids)
+        self.assertEqual(ids[0], "ses_100")
+        self.assertEqual(rows[0]["updated_at"], 500000.0)
+        self.assertEqual(ids[1], "ses_164")
+        self.assertEqual(rows[1]["updated_at"], 165.0)
+
+    def test_malformed_part_yields_empty_excerpt_not_unavailable(self):
+        # Row-level malformed content is best-effort: skipped, empty excerpt.
+        # Fail-closed applies to store shape only, never to row content.
+        db = self.home / ".local" / "share" / "opencode" / "opencode.db"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(db)
+        try:
+            conn.execute(
+                "CREATE TABLE session (id TEXT, directory TEXT, title TEXT, time_created INTEGER)"
+            )
+            conn.execute(
+                "CREATE TABLE message (id TEXT, session_id TEXT, time_created INTEGER, data TEXT)"
+            )
+            conn.execute(
+                "CREATE TABLE part (id TEXT, message_id TEXT, session_id TEXT,"
+                " time_created INTEGER, data TEXT)"
+            )
+            conn.execute("INSERT INTO session VALUES ('ses_1', '/a', 'Chat', 1000)")
+            conn.execute("INSERT INTO message VALUES ('msg_1', 'ses_1', 2000, 'broken {')")
+            conn.execute("INSERT INTO part VALUES ('prt_1', 'msg_1', 'ses_1', 2000, 'also broken [')")
+            conn.commit()
+        finally:
+            conn.close()
+        catalog = self.catalog()
+        rows = catalog.discover()
+        row = next(r for r in rows if r["platform"] == "opencode")
+        self.assertEqual(row["status"], "available")
+        self.assertEqual(catalog.excerpt(row["id"]), [])
+
+    def test_oversized_part_is_skipped_before_parse(self):
+        # Payloads beyond the row byte guard are filtered in SQL, before any
+        # JSON parse; the session stays available with an empty excerpt.
+        db = self.home / ".local" / "share" / "opencode" / "opencode.db"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(db)
+        try:
+            conn.execute(
+                "CREATE TABLE session (id TEXT, directory TEXT, title TEXT, time_created INTEGER)"
+            )
+            conn.execute(
+                "CREATE TABLE message (id TEXT, session_id TEXT, time_created INTEGER, data TEXT)"
+            )
+            conn.execute(
+                "CREATE TABLE part (id TEXT, message_id TEXT, session_id TEXT,"
+                " time_created INTEGER, data TEXT)"
+            )
+            conn.execute("INSERT INTO session VALUES ('ses_1', '/a', 'Chat', 1000)")
+            conn.execute(
+                "INSERT INTO message VALUES ('msg_1', 'ses_1', 2000,"
+                ' \'{"role": "user"}\')'
+            )
+            big = '{"type": "text", "text": "' + "x" * 200000 + '"}'
+            conn.execute("INSERT INTO part VALUES ('prt_1', 'msg_1', 'ses_1', 2000, ?)", (big,))
+            conn.commit()
+        finally:
+            conn.close()
+        catalog = self.catalog()
+        rows = catalog.discover()
+        row = next(r for r in rows if r["platform"] == "opencode")
+        self.assertEqual(row["status"], "available")
+        self.assertEqual(catalog.excerpt(row["id"]), [])
+
+    def test_legacy_tree_read_error_reports_unavailable(self):
+        base = self.home / ".local" / "share" / "opencode" / "storage" / "session"
+        base.mkdir(parents=True)
+        with mock.patch("simple_tools.chat_catalog.os.scandir", side_effect=OSError("denied")):
+            rows = self.catalog().discover()
+        row = next(r for r in rows if r["platform"] == "opencode")
+        self.assertEqual(row["status"], "unavailable")
+        self.assertIn("unreadable", row["error"])
+
+    def test_one_platform_scan_error_is_isolated(self):
+        # A raising scanner degrades only its own platform; every other platform
+        # is still scanned fresh.
+        self._db()
+        catalog = self.catalog()
+        with mock.patch.object(catalog, "_scan_muse", side_effect=RuntimeError("boom")):
+            rows = catalog.discover()
+        opencode = next(r for r in rows if r["platform"] == "opencode")
+        self.assertEqual(opencode["status"], "available")
+        muse = next(r for r in rows if r["platform"] == "muse")
+        self.assertEqual(muse["status"], "unavailable")
+        self.assertIn("scan error", muse["error"])
+
+    def test_malformed_part_table_fails_closed(self):
+        # Reviewer repro: valid session/message tables but a part table missing
+        # the columns this reader parses is shape drift:  fail closed as
+        # "unrecognized", never an available session with silently empty
+        # excerpts.
+        db = self.home / ".local" / "share" / "opencode" / "opencode.db"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(db)
+        try:
+            conn.execute(
+                "CREATE TABLE session (id TEXT, directory TEXT, title TEXT, time_created INTEGER)"
+            )
+            conn.execute(
+                "CREATE TABLE message (id TEXT, session_id TEXT, time_created INTEGER, data TEXT)"
+            )
+            conn.execute("CREATE TABLE part (id TEXT, wrong TEXT)")
+            conn.execute("INSERT INTO session VALUES ('ses_1', '/a', 'Chat', 1000)")
+            conn.commit()
+        finally:
+            conn.close()
+        rows = self.catalog().discover()
+        row = next(r for r in rows if r["platform"] == "opencode")
+        self.assertEqual(row["status"], "unavailable")
+        self.assertIn("unrecognized", row["error"])
+        self.assertFalse(row["capabilities"]["read"])
+
+    def test_partial_content_shape_fails_closed(self):
+        # Exactly one of the legacy content tables present is drift too.
+        db = self.home / ".local" / "share" / "opencode" / "opencode.db"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(db)
+        try:
+            conn.execute(
+                "CREATE TABLE session (id TEXT, directory TEXT, title TEXT, time_created INTEGER)"
+            )
+            conn.execute(
+                "CREATE TABLE message (id TEXT, session_id TEXT, time_created INTEGER, data TEXT)"
+            )
+            conn.execute("INSERT INTO session VALUES ('ses_1', '/a', 'Chat', 1000)")
+            conn.commit()
+        finally:
+            conn.close()
+        rows = self.catalog().discover()
+        row = next(r for r in rows if r["platform"] == "opencode")
+        self.assertEqual(row["status"], "unavailable")
+        self.assertIn("unrecognized", row["error"])
+
+    def test_byte_cap_counts_utf8_bytes_not_characters(self):
+        # 40k four-byte characters = 160KB of UTF-8:  above the 64KB byte cap
+        # even though it is below 64k characters.
+        db = self._db()
+        big = '{"type": "text", "text": "' + "\U0001F600" * 40000 + '"}'
+        conn = sqlite3.connect(db)
+        try:
+            conn.execute("INSERT INTO part VALUES ('prt_mb', 'msg_1', 'ses_1', 2002, ?)", (big,))
+            conn.commit()
+        finally:
+            conn.close()
+        catalog = self.catalog()
+        rows = catalog.discover()
+        row = next(r for r in rows if r["platform"] == "opencode")
+        self.assertEqual(row["status"], "available")
+        self.assertEqual(
+            catalog.excerpt(row["id"]), [{"role": "user", "text": "hello fleet"}]
+        )
+
+    def test_real_heavy_query_trips_work_budget(self):
+        # A real query (no mocked instant trip):  a few hundred windowed sessions
+        # plus messages, a small but real instruction budget, and the read aborts
+        # as "store exceeds read budget" - never "unrecognized", never silently
+        # empty.
+        db = self.home / ".local" / "share" / "opencode" / "opencode.db"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(db)
+        try:
+            conn.execute(
+                "CREATE TABLE session (id TEXT, directory TEXT, title TEXT, time_created INTEGER)"
+            )
+            conn.execute(
+                "CREATE TABLE message (id TEXT, session_id TEXT, time_created INTEGER, data TEXT)"
+            )
+            conn.execute(
+                "CREATE TABLE part (id TEXT, message_id TEXT, session_id TEXT,"
+                " time_created INTEGER, data TEXT)"
+            )
+            for i in range(300):
+                conn.execute(
+                    "INSERT INTO session VALUES (?, '/w', ?, ?)", ("ses_%03d" % i, "C%d" % i, i)
+                )
+                conn.execute(
+                    "INSERT INTO message VALUES (?, ?, ?, '{}')", ("m_%03d" % i, "ses_%03d" % i, i)
+                )
+            conn.commit()
+        finally:
+            conn.close()
+        catalog = self.catalog()
+        with mock.patch("simple_tools.chat_catalog.OPENCODE_SQLITE_WORK_STEPS", 2000), mock.patch(
+            "simple_tools.chat_catalog.OPENCODE_SQLITE_PROGRESS_STEPS", 100
+        ):
+            rows = catalog.discover()
+        row = next(r for r in rows if r["platform"] == "opencode")
+        self.assertEqual(row["status"], "unavailable")
+        self.assertIn("exceeds read budget", row["error"])
+
+    def test_deadline_trip_reports_store_heavy(self):
+        self._db()
+        catalog = self.catalog()
+        with mock.patch("simple_tools.chat_catalog.OPENCODE_SQLITE_DEADLINE_SECONDS", 0), mock.patch(
+            "simple_tools.chat_catalog.OPENCODE_SQLITE_PROGRESS_STEPS", 1
+        ):
+            rows = catalog.discover()
+        row = next(r for r in rows if r["platform"] == "opencode")
+        self.assertEqual(row["status"], "unavailable")
+        self.assertIn("exceeds read budget", row["error"])
+
+    def test_overlong_id_sessions_are_dropped_not_truncated(self):
+        # Two distinct sessions whose ids share the first 128 characters must
+        # never collapse into one truncated row:  both are dropped by the
+        # length guard, the normal session keeps its FULL original id.
+        db = self._db()
+        conn = sqlite3.connect(db)
+        try:
+            prefix = "ses_" + "a" * 126
+            conn.execute(
+                "INSERT INTO session VALUES (?, 'p1', NULL, '/x', 'Chat X', 600)",
+                (prefix + "X",),
+            )
+            conn.execute(
+                "INSERT INTO session VALUES (?, 'p1', NULL, '/y', 'Chat Y', 700)",
+                (prefix + "Y",),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        rows = [
+            r
+            for r in self.catalog(max_records=1000).discover()
+            if r["platform"] == "opencode" and r["status"] != "unavailable"
+        ]
+        ids = [r["session_id"] for r in rows]
+        self.assertEqual(ids, ["ses_1"])  # full original id, no truncation
+        self.assertNotIn(prefix, "".join(ids))
+
+    def test_overlong_directory_session_is_dropped(self):
+        # A truncated workspace path would be a wrong workspace for preflight:
+        # the session is dropped, never emitted with a clipped cwd.
+        db = self._db()
+        conn = sqlite3.connect(db)
+        try:
+            conn.execute(
+                "INSERT INTO session VALUES ('ses_longdir', 'p1', NULL, ?, 'Long dir', 800)",
+                ("/" + "d" * 2000,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        rows = [
+            r
+            for r in self.catalog(max_records=1000).discover()
+            if r["platform"] == "opencode" and r["status"] != "unavailable"
+        ]
+        ids = [r["session_id"] for r in rows]
+        self.assertIn("ses_1", ids)
+        self.assertNotIn("ses_longdir", ids)
+
+    def test_oversized_title_is_clipped_but_session_kept(self):
+        # Title is display-only:  clipping it is honest and the session stays.
+        db = self._db()
+        conn = sqlite3.connect(db)
+        try:
+            conn.execute(
+                "INSERT INTO session VALUES ('ses_bigtitle', 'p1', NULL, '/bt', ?, 900)",
+                ("T" * 1_000_000,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        rows = [
+            r
+            for r in self.catalog(max_records=1000).discover()
+            if r["platform"] == "opencode" and r["status"] != "unavailable"
+        ]
+        row = next(r for r in rows if r["session_id"] == "ses_bigtitle")
+        self.assertLessEqual(len(row["title"]), 180)
+
+    def test_legacy_enumeration_is_bounded(self):
+        # More ses_*.json files than the cap in one project:  exactly the cap is
+        # enumerated, no error, no unbounded walk.
+        base = self.home / ".local" / "share" / "opencode" / "storage" / "session" / "proj"
+        base.mkdir(parents=True)
+        for i in range(MAX_FILES_PER_SOURCE + 40):
+            (base / ("ses_%03d.json" % i)).write_text(
+                json.dumps({"id": "ses_%03d" % i, "title": "Chat %d" % i,
+                            "time": {"created": 1000 + i}}),
+                encoding="utf-8",
+            )
+        rows = [
+            r
+            for r in self.catalog(max_records=1000).discover()
+            if r["platform"] == "opencode" and r["status"] == "available"
+        ]
+        self.assertEqual(len(rows), MAX_FILES_PER_SOURCE)
+
+
+class AntigravityCatalogTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.home = Path(self.tmp.name) / "home"
+        self.home.mkdir()
+        self.clock = FakeClock()
+
+    def catalog(self, **kwargs):
+        return ChatCatalog(
+            home=self.home,
+            host="test-host",
+            clock=self.clock,
+            grok_transport=FakeGrok(),
+            cursor_transport=FakeCursor(),
+            **kwargs,
+        )
+
+    def test_antigravity_scanner_and_find_read_summaries_db(self) -> None:
+        db = self.home / ".gemini/antigravity-cli/conversation_summaries.db"
+        db.parent.mkdir(parents=True)
+        conn = sqlite3.connect(db)
+        with conn:
+            conn.execute(
+                "CREATE TABLE conversation_summaries ("
+                "conversation_id TEXT PRIMARY KEY, title TEXT, created_at TEXT, updated_at TEXT,"
+                " workspace_uris TEXT, killed INTEGER DEFAULT 0)"
+            )
+            conn.execute(
+                "INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    "4aade78e-6a38-40ed-9fc2-11a6eeac6189",
+                    "Operator Setup",
+                    "2026-11-08T00:00:00Z",
+                    "2026-11-08T01:00:00Z",
+                    '["file:///Users/x/Code/AI-Fleet-Coordinator"]',
+                    0,
+                ),
+            )
+            conn.execute(
+                "INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    "cd6b94bc-8497-4f06-974b-9e247440c923",
+                    "Killed Chat",
+                    "2026-11-08T00:00:00Z",
+                    "2026-11-08T02:00:00Z",
+                    '["/repo"]',
+                    1,
+                ),
+            )
+        conn.close()
+        cat = self.catalog()
+        rows = [r for r in cat.discover() if r["platform"] == "antigravity"]
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row["session_id"], "4aade78e-6a38-40ed-9fc2-11a6eeac6189")
+        self.assertEqual(row["seat"], "AG")
+        self.assertEqual(row["title"], "Operator Setup")
+        self.assertEqual(row["cwd"], "/Users/x/Code/AI-Fleet-Coordinator")
+        self.assertEqual(row["status"], "metadata-only")
+        self.assertFalse(row["capabilities"]["wake"])
+        found = cat.find("antigravity", "4aade78e-6a38-40ed-9fc2-11a6eeac6189")
+        self.assertIsNotNone(found)
+        self.assertEqual(found["title"], "Operator Setup")
+        self.assertIsNone(cat.find("antigravity", "cd6b94bc-8497-4f06-974b-9e247440c923"))
+        self.assertIsNone(cat.find("antigravity", "missing"))

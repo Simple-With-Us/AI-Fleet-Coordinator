@@ -26,7 +26,7 @@ class StateTests(unittest.TestCase):
         old = os.umask(0)
         try:
             state = S.State(self.root, "CLAUDE", "abcd1234")
-            state.advance_cursor("work-in-progress", "topic", 5)
+            state.advance_cursor("simple-tools", "topic", 5)
             state.record_posted(6)
             state.advance_inbox(7)
         finally:
@@ -37,7 +37,7 @@ class StateTests(unittest.TestCase):
         for file in (state.path, self.root / "CLAUDE" / "inbox.json"):
             self.assertEqual(self.mode(file), 0o600, file)
         data = json.loads(state.path.read_text())
-        self.assertEqual(data["cursors"], {"work-in-progress\u0000topic": 5})
+        self.assertEqual(data["cursors"], {"simple-tools\u0000topic": 5})
         self.assertEqual(data["posted"], [6])
 
     def test_existing_loose_directories_of_ours_are_tightened_but_the_root_is_not(self) -> None:
@@ -73,46 +73,10 @@ class StateTests(unittest.TestCase):
 
     def test_cursors_never_move_backwards_and_keys_ignore_case(self) -> None:
         state = S.State(self.root, "CLAUDE", "t")
-        state.advance_cursor("work-in-progress", "Roll Call", 10)
-        state.advance_cursor("work-in-progress", "roll call", 4)
-        self.assertEqual(state.cursor("work-in-progress", "ROLL CALL"), 10)
-        self.assertIsNone(state.cursor("work-in-progress", "other"))
-
-    def test_cursor_falls_back_to_legacy_channel_name(self) -> None:
-        state = S.State(self.root, "CLAUDE", "t")
-        state.advance_cursor("work-in-progress", "Roll Call", 10)
-        self.assertEqual(state.cursor("Work-In-Progress", "roll call"), 10)
-        self.assertEqual(state.cursor("work-in-progress", "Roll Call"), 10)
-
-    def test_advance_rekeys_legacy_cursor_under_the_new_channel(self) -> None:
-        state = S.State(self.root, "CLAUDE", "t")
-        state.advance_cursor("work-in-progress", "Roll Call", 10)
-        state.advance_cursor("Work-In-Progress", "Roll Call", 12)
-        data = json.loads(state.path.read_text())
-        self.assertEqual(
-            list(data["cursors"]), [S.cursor_key("Work-In-Progress", "Roll Call")]
-        )
-        self.assertEqual(state.cursor("Work-In-Progress", "Roll Call"), 12)
-        self.assertEqual(state.cursor("work-in-progress", "Roll Call"), 12)
-
-    def test_advance_with_lower_id_keeps_the_legacy_position(self) -> None:
-        state = S.State(self.root, "CLAUDE", "t")
-        state.advance_cursor("work-in-progress", "Roll Call", 10)
-        state.advance_cursor("Work-In-Progress", "Roll Call", 4)
-        self.assertEqual(state.cursor("Work-In-Progress", "Roll Call"), 10)
-        data = json.loads(state.path.read_text())
-        # The position is consolidated under the new key, never rewound;  the covered
-        # legacy entry goes only after the new key holds an equal or larger value.
-        self.assertEqual(
-            list(data["cursors"]), [S.cursor_key("Work-In-Progress", "Roll Call")]
-        )
-
-    def test_advance_after_rekey_never_moves_back(self) -> None:
-        state = S.State(self.root, "CLAUDE", "t")
-        state.advance_cursor("work-in-progress", "Roll Call", 10)
-        state.advance_cursor("Work-In-Progress", "Roll Call", 12)
-        state.advance_cursor("Work-In-Progress", "Roll Call", 4)
-        self.assertEqual(state.cursor("Work-In-Progress", "Roll Call"), 12)
+        state.advance_cursor("Simple-Tools", "Roll Call", 10)
+        state.advance_cursor("simple-tools", "roll call", 4)
+        self.assertEqual(state.cursor("SIMPLE-TOOLS", "ROLL CALL"), 10)
+        self.assertIsNone(state.cursor("simple-tools", "other"))
 
     def test_ledger_keeps_the_newest_500(self) -> None:
         state = S.State(self.root, "CLAUDE", "t")

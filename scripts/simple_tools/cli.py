@@ -217,8 +217,9 @@ class Agent:
             )
         session_id = (
             getattr(args, "session", None)
-            or env.get("CLAUDE_CODE_SESSION_ID")
             or env.get("AGENT_SESSION")
+            or env.get("CLAUDE_CODE_SESSION_ID")
+            or env.get("ANTIGRAVITY_CONVERSATION_ID")
         )
         self.tag = Z.session_tag(session_id)
         # The FULL session id, kept beside the 8-character tag:  the tag is what a post carries, so
@@ -369,11 +370,10 @@ class Agent:
         if self.tag and self.sent_by_this_bot(message):
             # The prefix has no closing bracket, so a bare startswith would take a sibling whose tag
             # merely begins with ours (session ids shorter than 8 characters) for this session.
-            content = str(message.get("content") or "")
-            return (
-                content.startswith(self.tag_prefix + "]")
-                or content.startswith(self.tag_prefix + "->")
-                or content.startswith(self.tag_prefix + "\u2192")
+            # A compact intro counts only when it carries this same session id.  A bare
+            # `[SEAT 📁repos]` is not this session, so siblings stay visible.
+            return ROUTER.content_matches_session_prefix(
+                str(message.get("content") or ""), self.tag_prefix
             )
         return False
 
@@ -709,10 +709,7 @@ def _resolve_channel_args(
 ) -> argparse.Namespace:
     """A channel name the caller typed resolves to the channel it means.
 
-    The realm renamed the fleet's coordination channel and left the old name behind as a
-    tombstone stream, so a caller that still names it has to land in the live channel.
-    The name is resolved once, here, so every command below works with the channel the
-    fleet reads.
+    The name is resolved once, here, so every command below works with the same channel.
     """
     for name in ("channel", "new_channel"):
         value = getattr(args, name, None)
@@ -785,7 +782,7 @@ def _common_parent() -> argparse.ArgumentParser:
         "--session",
         metavar="ID",
         default=argparse.SUPPRESS,
-        help="session id (default: env CLAUDE_CODE_SESSION_ID, then AGENT_SESSION)",
+        help="session id (default: env AGENT_SESSION, CLAUDE_CODE_SESSION_ID, then ANTIGRAVITY_CONVERSATION_ID)",
     )
     group.add_argument(
         "--json",
@@ -1612,6 +1609,43 @@ def _resolve_peers(agent: Agent, names: Sequence[str]) -> tuple[list[str], list[
     return mentions, labels
 
 
+def _compose_intro_lead(
+    text: str,
+    *,
+    labels: Sequence[str],
+    mentions: Sequence[str],
+    quiet: bool,
+) -> str | None:
+    """When `text` already opens with a compact intro, that intro stays line 1.
+
+    `--to` labels are merged inside the closing bracket.  @-mentions follow the
+    bracket on the same line.  A quiet post keeps one no-wake marker immediately
+    before `[`.  None when the text does not open with a valid intro, so the
+    caller keeps the legacy session tag.
+    """
+    intro = ROUTER.parse_leading_compact_intro(text)
+    if not intro:
+        return None
+    peers = list(intro["peers"])
+    for label in labels:
+        if label not in peers:
+            peers.append(label)
+    arrow = (" \u2192" + ",".join(peers)) if peers else ""
+    bracket = "[%s%s 📁%s%s]" % (intro["seat"], intro["thread"], intro["repos"], arrow)
+    marker = intro["marker"]
+    if quiet and not marker:
+        marker = ROUTER.NO_WAKE_MARKER + " "
+    rest = intro["rest"]
+    mention_blob = " ".join(m for m in mentions if m and m not in rest)
+    if mention_blob:
+        if rest.startswith("\n") or not rest.strip():
+            return "%s%s %s%s" % (marker, bracket, mention_blob, rest)
+        return "%s%s %s %s" % (marker, bracket, mention_blob, rest.lstrip())
+    if rest.startswith("\n") or not rest or rest[0].isspace():
+        return "%s%s%s" % (marker, bracket, rest)
+    return "%s%s %s" % (marker, bracket, rest)
+
+
 def _compose(
     agent: Agent,
     text: str,
@@ -1620,20 +1654,57 @@ def _compose(
     mentions: Sequence[str],
     no_tag: bool,
     quiet: bool = False,
+    preserve_compact: bool = False,
 ) -> str:
-    parts: list[str] = []
-    if quiet:
-        # The owner's per-message no-wake signal:  the message stays readable in Zulip and wakes
-        # nobody.  It goes before the seat tag, because the tag is what the runtime prepends and
-        # the marker has to be the first thing the reader sees (AFC-468).
-        parts.append(ROUTER.NO_WAKE_MARKER)
-    if not no_tag:
-        parts.append(
-            agent.tag_prefix + ("\u2192" + ",".join(labels) if labels else "") + "]"
-        )  # → canonical, -> accepted
-    parts.extend(mentions)
-    parts.append(text)
-    body = " ".join(parts)
+    compact = ROUTER.parse_leading_compact_intro(text)
+    if preserve_compact and not no_tag and compact and compact["seat"] != agent.seat:
+        # Preserve canonical compact intros; main's complete-own-intro handling
+        # below still covers legacy and session-tagged messages.
+        led = _compose_intro_lead(text, labels=labels, mentions=mentions, quiet=quiet)
+        if led is not None:
+            if len(led) > MAX_CONTENT_LENGTH:
+                raise UsageError(
+                    "the message is %d characters; Zulip allows at most %d"
+                    % (len(led), MAX_CONTENT_LENGTH)
+                )
+            return led
+    # Same complete-own-intro rule as the hosted composeBody transport.
+    leading = re.match(r"^(?:👀\s*)?\s*", text).group(0)
+    start = len(leading)
+    seat_end = start + 1 + len(agent.seat)
+    end = text.find("]", start)
+    own = (
+        not no_tag
+        and text.startswith("[" + agent.seat, start)
+        and text[seat_end : seat_end + 1] in ("]", " ", ":", "·", "→", "\t")
+        and end >= 0
+        and not re.search(r"[\r\n\[]", text[start + 1 : end])
+    )
+    if own:
+        intro = text[:end]
+        if "·" in agent.tag_prefix:
+            suffix = re.sub(r"^·[^\s:→\]]*", "", intro[seat_end:])
+            intro = intro[:seat_end] + agent.tag_prefix[agent.tag_prefix.index("·") :] + suffix
+        arrow = intro.find("→")
+        existing = [] if arrow < 0 else [v.strip() for v in intro[arrow + 1 :].split(",")]
+        added = list(dict.fromkeys(label for label in labels if label not in existing))
+        if added:
+            intro += (" →" if arrow < 0 else ",") + ",".join(added)
+        tail = text[end + 1 :]
+        if tail and not tail[0].isspace():
+            tail = " " + tail
+        body = intro + "]" + (" " + " ".join(mentions) if mentions else "") + tail
+        if quiet and not leading.startswith(ROUTER.NO_WAKE_MARKER):
+            body = ROUTER.NO_WAKE_MARKER + " " + body
+    else:
+        parts: list[str] = []
+        if quiet:
+            parts.append(ROUTER.NO_WAKE_MARKER)
+        if not no_tag:
+            parts.append(agent.tag_prefix + ("→" + ",".join(labels) if labels else "") + "]")
+        parts.extend(mentions)
+        parts.append(text)
+        body = " ".join(parts)
     if len(body) > MAX_CONTENT_LENGTH:
         raise UsageError(
             "the message is %d characters; Zulip allows at most %d"
@@ -1781,6 +1852,7 @@ def cmd_post(agent: Agent, args: argparse.Namespace) -> int:
     body = _compose(
         agent,
         text,
+        preserve_compact=True,
         labels=labels,
         mentions=mentions,
         no_tag=args.no_tag,
@@ -2092,6 +2164,7 @@ def cmd_dm(agent: Agent, args: argparse.Namespace) -> int:
     body = _compose(
         agent,
         text,
+        preserve_compact=True,
         labels=to.labels,
         mentions=[],
         no_tag=args.no_tag,
@@ -2338,6 +2411,7 @@ def cmd_reply(agent: Agent, args: argparse.Namespace) -> int:
     body = _compose(
         agent,
         text,
+        preserve_compact=True,
         labels=labels,
         mentions=mentions,
         no_tag=args.no_tag,
@@ -2837,7 +2911,7 @@ DISPATCH_OVERRIDES: dict[str, dict[str, Callable[[Runtime, argparse.Namespace], 
 
 # Every top-level verb `simple-chat` owns:  the Zulip/chat verbs, the stdio MCP server, the tools
 # guide, identity listing and the attach/detach hooks.  The listener verbs (daemon, listener,
-# status, wakes) are held here until the Operator/eavesdropper workstream gives them their own
+# status, wakes) are held here until the Operator/simple-tools workstream gives them their own
 # command; they are not renamed in this change.
 CHAT_VERBS = frozenset(
     {
@@ -2872,7 +2946,7 @@ CHAT_VERBS = frozenset(
     | set(zulip_cli.COMMANDS)
 )
 
-# The listener/daemon verbs.  They stay on `simple-chat` until the Operator/eavesdropper
+# The listener/daemon verbs.  They stay on `simple-chat` until the Operator/simple-tools
 # workstream gives them their own command; this change does not rename them.
 LISTENER_VERBS = frozenset({"attach", "detach", "daemon", "listener", "status", "wakes"})
 
@@ -2930,6 +3004,7 @@ REMOTE_MAX_NODES = 100_000
 _REMOTE_CODES = frozenset(
     (
         "invalid_argument",
+        "invalid_response",
         "unavailable",
         "upstream_error",
         "not_authorized",
@@ -2955,6 +3030,8 @@ _REMOTE_CODES = frozenset(
         "forbidden",
         "fleetlink_seat_disabled",
         "fleetlink_refused",
+        "fleetlink_not_found",
+        "fleetlink_expired",
         "dm_not_allowed",
         "budget_exhausted",
     )
@@ -3527,6 +3604,14 @@ def main(
         and argv
         and argv[0] in HOOK_VERBS
     ):
+        # The plugin's Claude Code hooks run `attach --hook EVENT` and `attach --rewake` on every
+        # prompt, Stop and session boundary, and a nonzero exit from a command hook blocks the
+        # user's prompt (the `letter` hook follows the same contract for this reason).  In remote
+        # mode these hook calls no-op:  exit 0 with no output, nothing run locally, the
+        # simple_tools.attach module never imported.  A bare `attach`/`detach` typed by a person
+        # stays a clear refusal with exit 2.
+        if any(a == "--rewake" or a == "--hook" or a.startswith("--hook=") for a in argv[1:]):
+            return 0
         print(
             f"{prog}: `{argv[0]}` is a local listener verb and is not available in remote mode "
             "(SIMPLE_CHAT_REMOTE=1); it is not run locally either",

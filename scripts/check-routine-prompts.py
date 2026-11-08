@@ -227,8 +227,7 @@ def single_space_gaps(text: str) -> list[int]:
 _MENTION = re.compile(r"@_?\*\*")
 _CODE_PATH = re.compile(r"(?:~|\$HOME|\$\{HOME\}|/Users/[^/\s`'\"]+)/Code\b")
 _SLACK = re.compile(
-    r"obsolete-websocket|obsolete-push|slack[-_]post|slack[-_]helper|hooks\.slack\.com"
-    r"|slack\.com/api",
+    r"slack[-_]post|slack[-_]helper|hooks\.slack\.com|slack\.com/api",
     re.IGNORECASE,
 )
 _PLACEHOLDER = re.compile(r"<C\d+ ID>|\bTODO\b|\bFIXME\b")

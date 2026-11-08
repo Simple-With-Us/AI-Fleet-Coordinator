@@ -1,7 +1,5 @@
 # Infisical Agent Proxy adoption and `~/.secrets` retirement
 
-Historical identifiers have been redacted. These records do not certify current deployment state.
-
 Linear:  OPS-818.  Seat:  CLAUDE.  Started Sun, Oct 18.
 Builds on Antigravity's audit, "~/.secrets & global-api-keys Deprecation & Migration Catalog" (Sun, Oct 18), and the Oct 8 research comment on OPS-818.
 
@@ -40,7 +38,7 @@ Each phase is additive until Phase 5.  Nothing is deleted, booted out or rotated
 
 ### Phase 1:  Read from Infisical first (additive)
 
-- Done in #634 (Oct 18):  `simple-chat` falls back to Fleet-OPS `/zulip` (`<PREFIX>_ZULIP_EMAIL`, `_KEY`, `_SITE`, prefix = zuliprc stem upper-cased, hyphens to underscores) when no zuliprc, `ZULIP_RC` or env triple is set.  It asks for the calling seat's three names only, and `[retired identifier]` turns it off.  The project id is never committed:  each machine needs `INFISICAL_FLEET_OPS_PROJECT_ID` or `~/.simple-tools/fleet-ops-project-id` (set on the Mac).  Any Fleet-OPS login can still read every seat's keys, so per-seat identities remain the real fix.  `subscribe_all.py`, `heartbeat.py`, `daemon.py` and `launchd.py` follow the same resolver.
+- Done in #634 (Oct 18):  `simple-chat` falls back to Fleet-OPS `/zulip` (`<PREFIX>_ZULIP_EMAIL`, `_KEY`, `_SITE`, prefix = zuliprc stem upper-cased, hyphens to underscores) when no zuliprc, `ZULIP_RC` or env triple is set.  It asks for the calling seat's three names only, and `SIMPLE_TOOLS_INFISICAL=0` turns it off.  The project id is never committed:  each machine needs `INFISICAL_FLEET_OPS_PROJECT_ID` or `~/.simple-tools/fleet-ops-project-id` (set on the Mac).  Any Fleet-OPS login can still read every seat's keys, so per-seat identities remain the real fix.  `subscribe_all.py`, `heartbeat.py`, `daemon.py` and `launchd.py` follow the same resolver.
 - Done Oct 18:  Jay chose to keep root as references.  The six dangling targets were recovered from each root key's version history (the version before the rewrite) into the folder its reference names, eleven keys that were in `/global-api-keys` only got root references, and all 705 root keys resolve.  Every root reader now expands references and fails closed on an unresolved one:  AFC #636 and #639, FleetLink #105, Usage-Monitor #1707, BotFleet #1232, DealDex #489, Personal-Site #213, Fleet-OPS #131 and #132, Clutch #151 and #152, CodeCaps #259, ContactLogo #217, HogHunter #175, Congress.Trade #2793.
 - Done in #635:  `fleet-secrets` (`get`, `run`, `names`, `doctor`), the one replacement for reading `~/.secrets/global-api-keys`.  See `INFISICAL.md` § fleet-secrets.  Auth is Jay's CLI session until a machine identity is in Keychain.
 - Done Oct 18:  no repo code reads `~/.secrets/global-api-keys` any more (env first, then `fleet-secrets`):  AFC #641, #643, #645 and #646, BotFleet #1234, Clutch #153, CodeCaps #260, ContactLogo #218, Congress.Trade #2794, DealDex #490, Fleet-OPS #133, FleetLink #106, HogHunter #176, Socratic-Trade #4870, Usage-Monitor #1709.  Autorotate is archived on GitHub, so its commit waits in a local lane.  The global agent instruction files (`~/.claude/CLAUDE.md`, `~/AGENTS.md` and the other platforms') now teach `fleet-secrets`.

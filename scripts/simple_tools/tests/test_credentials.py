@@ -644,7 +644,7 @@ class RefusalTests(Harness):
 
 class SecrecyTests(Harness):
     def test_key_is_absent_everywhere_across_commands_and_error_paths(self) -> None:
-        self.fake.add_message("Codex", "work-in-progress", "topic a", "hello @**Claude**")
+        self.fake.add_message("Codex", "simple-tools", "topic a", "hello @**Claude**")
         self.fake.echo_auth = True  # the server echoes the Authorization header into its errors
         commands = [
             ("whoami",),

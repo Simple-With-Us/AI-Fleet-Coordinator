@@ -63,7 +63,7 @@ class ChatNudgesTest(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.queue = ChatNudges(self.tmp.name, "GROK")
         self.binding = {
-            "channel": "work-in-progress",
+            "channel": "simple-tools",
             "topic": "AFC-305 existing chat nudges",
             "platform": "grok-leader",
             "host": "host",
@@ -217,13 +217,13 @@ class ChatNudgesTest(unittest.TestCase):
         L.write_json(self.queue.path, data)
 
         result = self.queue.rename(
-            "work-in-progress", "AFC-305 existing chat nudges", "work-in-progress", "AFC-305 renamed", 12
+            "simple-tools", "AFC-305 existing chat nudges", "simple-tools", "AFC-305 renamed", 12
         )
         self.assertEqual(result, {"status": "moved", "moved": 1, "held": 0})
         snapshot = self.queue.snapshot()
         updated_pending, unchanged_unknown = snapshot["items"]
         self.assertEqual(
-            snapshot["bindings"][L.topic_key("work-in-progress", "AFC-305 renamed")]["topic"],
+            snapshot["bindings"][L.topic_key("simple-tools", "AFC-305 renamed")]["topic"],
             "AFC-305 renamed",
         )
         self.assertEqual(updated_pending["binding"]["topic"], "AFC-305 renamed")
@@ -234,7 +234,7 @@ class ChatNudgesTest(unittest.TestCase):
     def test_rename_keeps_addressed_seat_on_a_source_qualified_selection(self) -> None:
         self.queue.enqueue_target(self.binding, 4244, 10, owner=False, source_seat="ECHO")
         result = self.queue.rename(
-            "work-in-progress", "AFC-305 existing chat nudges", "work-in-progress", "AFC-305 renamed", 12
+            "simple-tools", "AFC-305 existing chat nudges", "simple-tools", "AFC-305 renamed", 12
         )
         self.assertEqual(result, {"status": "moved", "moved": 1, "held": 0})
         item = self._item()
@@ -253,14 +253,14 @@ class ChatNudgesTest(unittest.TestCase):
         )
         self.queue.bind(**destination)
         result = self.queue.rename(
-            "work-in-progress", self.binding["topic"], "work-in-progress", destination["topic"], 11
+            "simple-tools", self.binding["topic"], "simple-tools", destination["topic"], 11
         )
         self.assertEqual(result, {"status": "collision", "moved": 0, "held": 1})
         snapshot = self.queue.snapshot()
         self.assertEqual(
-            snapshot["bindings"][L.topic_key("work-in-progress", destination["topic"])], destination
+            snapshot["bindings"][L.topic_key("simple-tools", destination["topic"])], destination
         )
-        self.assertNotIn(L.topic_key("work-in-progress", self.binding["topic"]), snapshot["bindings"])
+        self.assertNotIn(L.topic_key("simple-tools", self.binding["topic"]), snapshot["bindings"])
         self.assertEqual(snapshot["items"][0]["binding"], self.binding)
         self.assertIn("collision", snapshot["items"][0]["hold_reason"])
 

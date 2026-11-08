@@ -42,6 +42,61 @@ from . import secretscan
 from . import session_ids as SI
 from .operator_registry_schema import DDL, SCHEMA_VERSION
 
+# Wake-transport support by adapter platform, the one canonical table the registry
+# derives a session's stored wake_capability from and the chat-nudge transport list
+# reads.  It lives in this module, not a file of its own, because the shipped set is
+# capped at 150 files (fleet-cli-release.py MAX_FILES, with the receiver's
+# fleet-cli-sync.py enforcing the same count):  a 151st file would need a budget
+# raise on both sides, and this table does not carry one.
+WAKE_SUPPORTED = "code-supported"
+WAKE_NONE = "none"
+WAKE_UNKNOWN = "unknown"
+
+# Every platform the chat catalog scans, assessed against this tree, plus the
+# owner-named chatgpt exception below.  A platform not listed derives
+# WAKE_UNKNOWN, not WAKE_NONE.
+_WAKE_SUPPORT: dict[str, str] = {
+    "grok-leader": WAKE_SUPPORTED,
+    "cursor-cloud": WAKE_SUPPORTED,
+    "codex": WAKE_SUPPORTED,
+    "claude": WAKE_NONE,
+    "cursor-local": WAKE_NONE,
+    "muse": WAKE_NONE,
+    "minimax": WAKE_NONE,
+    "fx": WAKE_NONE,
+    "antigravity": WAKE_NONE,
+    "opencode": WAKE_NONE,
+    # Owner ask 2026-11-04:  "jet needs to wake also his own way".  chatgpt is
+    # not a catalog platform - the JET/JET-CHAT seat is OpenAI-hosted with no
+    # local store to scan - and this tree ships no chatgpt wake adapter:  his
+    # wake is his own hosted route (the JET listener HTTP -> hosted MCP events
+    # callbacks, events-only per the Oct 30 grounding), outside this tree.  So
+    # he is recorded here explicitly, NONE against this tree, never UNKNOWN.
+    "chatgpt": WAKE_NONE,
+}
+
+
+def wake_capability_for_platform(platform: object) -> str:
+    """The tree's wake-transport support for one adapter platform, source-only.
+
+    This table is the tree's support as written, not a runtime promise:  it
+    says nothing about a live adapter's current reachability.  Registration
+    derives a session's stored wake_capability from it only when the caller
+    makes no claim of its own, so a new row carries the tree's honest support
+    level instead of the blanket "unknown" default.  Derivation fills new or
+    "unknown" rows only:  a stored non-"unknown" value is a stored claim,
+    explicit or derived, and is never rewritten by a later derivation.
+    """
+    if not isinstance(platform, str):
+        return WAKE_UNKNOWN
+    return _WAKE_SUPPORT.get(platform.strip().lower(), WAKE_UNKNOWN)
+
+
+def implemented_wake_platforms() -> frozenset[str]:
+    """The adapter platforms this tree ships a delivery adapter for."""
+    return frozenset(p for p, state in _WAKE_SUPPORT.items() if state == WAKE_SUPPORTED)
+
+
 LETTERS = tuple("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 
 # Two letter spaces on one platform (owner 2026-10-28):  a main conversation takes a
@@ -703,6 +758,28 @@ class SessionRegistry:
                         "UPDATE sessions SET last_seen_at = ? WHERE record_id = ?",
                         (now, record_id),
                     )
+                    # A stored "unknown" is the no-claim sentinel, never a stored
+                    # claim, so the row takes the incoming value on its own resume:
+                    # the derivation's source-tree support, or a caller's fresher
+                    # claim.  Any other stored value is a stored claim, explicit
+                    # or derived, and wins.  The sentinel is recognized case- and
+                    # whitespace-insensitively on BOTH sides (kody #1348):  a row
+                    # written "UNKNOWN" or " unknown " through the mutable
+                    # session_upsert path is still no claim and takes the update,
+                    # and an unknown-ish incoming value is never stored as one.
+                    # Real claims stay verbatim (any case is a claim).
+                    # This is not a batch migration:  rows change only when their own
+                    # session next registers, and closed rows keep their history.
+                    stored_capability = str(row["wake_capability"] or "unknown").strip().lower()
+                    incoming_capability = str(identity.get("wake_capability") or "unknown")
+                    if (
+                        stored_capability == "unknown"
+                        and incoming_capability.strip().lower() != "unknown"
+                    ):
+                        conn.execute(
+                            "UPDATE sessions SET wake_capability = ? WHERE record_id = ?",
+                            (incoming_capability, record_id),
+                        )
                     # The exported sheet refreshes "Last Seen At" only from a
                     # session_upsert payload, so the row that just moved has to be
                     # enqueued in the same transaction.  Without it the database
@@ -1114,6 +1191,13 @@ def register_session(
     )
     native = SI.check(native_session_id, "the native session id")
     parent = _clean_parent(parent_session_id)
+    if str(wake_capability or "unknown").strip().lower() == "unknown":
+        # No caller claim:  derive the tree's own source-only support level for
+        # the adapter platform (new or "unknown" rows only;  a stored
+        # non-"unknown" claim, explicit or derived, is never rewritten), before
+        # the letter namespace folds it ("cursor-cloud" and "cursor-local" both
+        # become "cursor", and only one of them can deliver).
+        wake_capability = wake_capability_for_platform(platform)
     platform = normalize_platform(platform)
     default_space, default_pick = PLATFORM_LETTER_DEFAULTS.get(platform, ("single", "lowest"))
     space = letter_space or default_space
@@ -1924,7 +2008,7 @@ def candidates_for_letter(db_path: str, letter: str) -> list[dict[str, Any]]:
     return out
 
 
-# ---- exact wake-target resolution (single-server consolidation, Nov 2 2026) -------------
+# ---- exact wake-target resolution (read-only; no supported delivery bindings) ------------
 
 #: The wake_capability tokens that name a VERIFIED delivery binding:  a session may be woken
 #: at its native thread only when its own platform binding set one of these at
@@ -2091,6 +2175,7 @@ def lookup_many(
                 "generation": generation,
                 "seat": seat,
                 "ref": cross_seat_ref(seat, letter, generation),
+                "title": str(found.get("title") or ""),
             }
     finally:
         try:
@@ -2212,6 +2297,106 @@ def mark_exported(db_path: str, outbox_ids: list[str], exported_at: str | None =
         conn.close()
 
 
+EXPORT_OUTCOMES = ("exported", "already_present", "failed", "ambiguous")
+
+
+def record_export_attempt(
+    db_path: str,
+    outbox_id: str,
+    destination: str,
+    tab: str,
+    kind: str,
+    outcome: str,
+    detail: str = "",
+) -> str:
+    """Record one export attempt in the store-side fence (OPS-1037) and return its id.
+
+    The fence is the store's own record of what an exporter did:  an outbox row is only
+    treated as exported (see mark_exported) once an attempt with outcome 'exported' or
+    'already_present' exists for its (outbox_id, destination, tab, kind).  Recording is
+    deliberately separate from marking, so a runner can never quietly skip the audit row:
+    it asks the store to remember the attempt, then asks the store to mark the row.
+    """
+    if outcome not in EXPORT_OUTCOMES:
+        raise ValueError("outcome must be one of %s" % ", ".join(EXPORT_OUTCOMES))
+    attempt_id = _ulid()
+    conn = sqlite3.connect(str(db_path))
+    try:
+        with conn:
+            conn.execute(
+                "INSERT INTO export_attempts"
+                " (attempt_id, outbox_id, destination, tab, kind, outcome, detail, attempted_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (attempt_id, outbox_id, destination, tab, kind, outcome, detail, _utcnow()),
+            )
+        return attempt_id
+    finally:
+        conn.close()
+
+
+def record_export_attempts(db_path: str, records: list[dict[str, Any]]) -> list[str]:
+    """Record many fence attempts in one transaction and return their ids (OPS-1037).
+
+    The drain records one attempt per outbox row; batching keeps a multi-thousand-row
+    backfill from paying a process spawn and a connection per row.  Every record is
+    validated before any insert, so a bad record fails the whole batch with nothing
+    written — the caller keeps all of the batch's rows pending and retries cleanly.
+    """
+    prepared = []
+    for record in records:
+        outcome = str(record.get("outcome") or "")
+        if outcome not in EXPORT_OUTCOMES:
+            raise ValueError("outcome must be one of %s" % ", ".join(EXPORT_OUTCOMES))
+        prepared.append(
+            (
+                _ulid(),
+                str(record.get("outbox_id") or ""),
+                str(record.get("destination") or ""),
+                str(record.get("tab") or ""),
+                str(record.get("kind") or ""),
+                outcome,
+                str(record.get("detail") or ""),
+                _utcnow(),
+            )
+        )
+    conn = sqlite3.connect(str(db_path))
+    try:
+        with conn:
+            conn.executemany(
+                "INSERT INTO export_attempts"
+                " (attempt_id, outbox_id, destination, tab, kind, outcome, detail, attempted_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                prepared,
+            )
+        return [p[0] for p in prepared]
+    finally:
+        conn.close()
+
+
+def export_attempts(
+    db_path: str, outbox_id: str | None = None, limit: int = 100
+) -> list[dict[str, Any]]:
+    """The fence rows, newest first — one outbox row's history, or the recent drain's."""
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        if outbox_id:
+            rows = conn.execute(
+                "SELECT attempt_id, outbox_id, destination, tab, kind, outcome, detail, attempted_at"
+                " FROM export_attempts WHERE outbox_id = ? ORDER BY rowid DESC LIMIT ?",
+                (outbox_id, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT attempt_id, outbox_id, destination, tab, kind, outcome, detail, attempted_at"
+                " FROM export_attempts ORDER BY rowid DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
 def default_db(env: Mapping[str, str] | None = None) -> str:
     """The shared registry location, resolved from the caller's environment.
 
@@ -2230,12 +2415,95 @@ def default_db(env: Mapping[str, str] | None = None) -> str:
     return registry_db_path(root, env)
 
 
+def _api_call_for(args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
+    """The API call one parsed CLI invocation names:  the op and its fields, under the
+    names the registry API folds (registry_api drops the unset ones)."""
+    identity = {
+        "platform": getattr(args, "platform", None),
+        "location": getattr(args, "location", None),
+        "scope": getattr(args, "scope", None),
+        "session_id": getattr(args, "session_id", None),
+    }
+    command = args.command
+    if command == "pending-outbox":
+        return "pending-outbox", {"limit": args.limit}
+    if command == "mark-exported":
+        return "mark-exported", {"outbox_ids": list(args.outbox_ids)}
+    if command == "resolve":
+        return "resolve", {
+            "platform": args.platform,
+            "letter": args.letter,
+            "generation": args.generation,
+        }
+    if command == "register":
+        return "register", {
+            **identity,
+            "seat": args.seat,
+            "source": args.source,
+            "title": args.title,
+            "project": args.project,
+            "thread_link": args.thread_link,
+            "apple_note_link": args.apple_note_link,
+            "wake_capability": args.wake_capability,
+            "letter_space": args.letter_space,
+            "letter_pick": args.letter_pick,
+            "parent_session_id": args.parent_session_id,
+            "parent_letter": args.parent_letter,
+        }
+    if command == "relabel":
+        return "relabel", {
+            **identity,
+            "seat": args.seat,
+            "source": args.source,
+            "letter_space": args.letter_space,
+            "letter_pick": args.letter_pick,
+            "parent_session_id": args.parent_session_id,
+            "parent_letter": args.parent_letter,
+            "force": args.force,
+        }
+    if command == "update":
+        return "update", {
+            **identity,
+            "title": args.title,
+            "project": args.project,
+            "thread_link": args.thread_link,
+            "apple_note_link": args.apple_note_link,
+            "wake_capability": args.wake_capability,
+        }
+    if command == "close":
+        return "close", {
+            **identity,
+            "reason": args.reason,
+            "actor": args.actor,
+            "source": args.source,
+        }
+    if command == "touch":
+        return "touch", dict(identity)
+    if command == "sweep":
+        return "sweep", {
+            "platform": args.platform,
+            "seat": args.seat,
+            "stale_after_minutes": args.stale_after_minutes,
+        }
+    if command == "reopen":
+        return "reopen", {
+            "record_id": args.record_id,
+            "actor": args.actor,
+            "source": args.source,
+            "letter_pick": args.letter_pick,
+            "parent_session_id": args.parent_session_id,
+        }
+    if command == "history":
+        return "history", {"platform": args.platform, "limit": args.limit}
+    return command, {}
+
+
 def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None) -> int:
     env = os.environ if env is None else env
     parser = argparse.ArgumentParser(prog="operator-registry")
     sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser("pending-outbox")
-    p.add_argument("--db", required=True)
+    p.add_argument("--db", default="", help="the registry file (default: the shared path)")
     p.add_argument("--limit", type=int, default=50)
     w = sub.add_parser(
         "wake-target",
@@ -2244,8 +2512,34 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
     w.add_argument("--db", default="", help="the registry file (default: the shared path)")
     w.add_argument("--seat", required=True)
     m = sub.add_parser("mark-exported")
-    m.add_argument("--db", required=True)
+    m.add_argument("--db", default="", help="the registry file (default: the shared path)")
     m.add_argument("outbox_ids", nargs="+")
+    ra = sub.add_parser(
+        "record-export-attempt",
+        help="record one export attempt in the store-side fence (OPS-1037)",
+    )
+    ra.add_argument("--db", default="", help="the registry file (default: the shared path)")
+    ra.add_argument("--outbox-id", required=True)
+    ra.add_argument("--destination", required=True, help="the export target, such as a workbook id")
+    ra.add_argument("--tab", required=True)
+    ra.add_argument("--kind", required=True)
+    ra.add_argument("--outcome", required=True, choices=list(EXPORT_OUTCOMES))
+    ra.add_argument("--detail", default="")
+    rb = sub.add_parser(
+        "record-export-attempts",
+        help="record a batch of export attempts in the store-side fence (OPS-1037)",
+    )
+    rb.add_argument("--db", default="", help="the registry file (default: the shared path)")
+    rb.add_argument(
+        "--record",
+        action="append",
+        default=[],
+        help="one JSON object per attempt: outbox_id, destination, tab, kind, outcome, detail",
+    )
+    ea = sub.add_parser("export-attempts", help="read the export fence (OPS-1037)")
+    ea.add_argument("--db", default="", help="the registry file (default: the shared path)")
+    ea.add_argument("--outbox-id", default="")
+    ea.add_argument("--limit", type=int, default=100)
     r = sub.add_parser(
         "register",
         help="register one session and print its letter, generation and title form",
@@ -2420,6 +2714,48 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
     t.add_argument("--scope", required=True, help="the profile scope")
     t.add_argument("--session-id", required=True, help="the native session id")
     args = parser.parse_args(argv)
+    from . import registry_api
+
+    if args.command in ("record-export-attempt", "record-export-attempts", "export-attempts"):
+        # The export fence is the store's own bookkeeping (OPS-1037):  it is handled
+        # locally, before the registry-API cutover below, because the API carries no
+        # fence ops and the fence's only caller (the Sheets drain) runs on the store's
+        # host against the store file.  Routing these through the API would reject
+        # them as unknown ops and wedge the drain.  The no-registry guard still
+        # applies, so a stray local file is never brought into being for them either.
+        db = getattr(args, "db", "") or default_db(env)
+        if not os.path.isfile(db):
+            print(json.dumps({"error": "no Operator registry on this host"}))
+            return 3
+        if args.command == "record-export-attempt":
+            attempt_id = record_export_attempt(
+                db,
+                args.outbox_id,
+                args.destination,
+                args.tab,
+                args.kind,
+                args.outcome,
+                args.detail,
+            )
+            print(json.dumps({"attempt_id": attempt_id}))
+            return 0
+        if args.command == "record-export-attempts":
+            records = [json.loads(item) for item in args.record]
+            print(json.dumps({"attempt_ids": record_export_attempts(db, records)}))
+            return 0
+        print(json.dumps(export_attempts(db, args.outbox_id or None, args.limit)))
+        return 0
+
+    if registry_api.base_url(env):
+        # The HTTPS transport is this CLI's cutover, the same rule the MiniMax helper's
+        # registry_call follows:  with the registry API URL configured, the server's
+        # store answers every op and the local file is never opened, so a caller on a
+        # host that keeps a stale local copy (the letter sweep, run every quarter hour
+        # against this CLI) cannot keep writing that copy after the cutover.  A failed
+        # call prints its error and exits 2;  nothing falls back to the file.
+        answer = registry_api.call(env, *_api_call_for(args))
+        print(json.dumps(answer))
+        return 0 if "error" not in answer else 2
     db = getattr(args, "db", "") or default_db(env)
     if args.command == "pending-outbox":
         # The bridge's own reviewed contract:  a missing store is its error, exit 2.
@@ -2583,10 +2919,14 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
         print(json.dumps(rows))
         return 0
     if args.command == "reopen":
-        from . import platform_letter  # lazy:  platform_letter imports this module
+        # The reopen shares the platform's own rule, the one every hook uses, so the
+        # pair space is kept the same way here as it is in the hook.  It lives behind
+        # this verb because a host that keeps no registry asks the host that holds one.
+        from . import platform_letter
 
-        reg = SessionRegistry(db)
+        reg = None
         try:
+            reg = SessionRegistry(db)
             letter, generation, previous = platform_letter.operator_reopen(
                 sys.modules[__name__],
                 db,
@@ -2598,18 +2938,31 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
                 parent=args.parent_session_id,
             )
         except platform_letter.SpaceLost as exc:
-            # A pair-holding chat would come back with a single letter:  refused before
-            # anything is written.
-            print(json.dumps({"error": str(exc), "code": "space_lost"}))
+            # A chat that held a pair would come back with a single letter.  That is
+            # refused before anything is written.
+            print(
+                json.dumps({"error": str(exc), "code": "space_lost", "outcome": "reopen_refused"})
+            )
             return 2
         except LabelExhausted as exc:
-            print(json.dumps({"error": str(exc), "code": "label_exhausted"}))
+            print(
+                json.dumps(
+                    {"error": str(exc), "code": "labels_exhausted", "outcome": "reopen_refused"}
+                )
+            )
             return 2
-        except (UnknownRecord, KeyError, ValueError, OSError) as exc:
-            print(json.dumps({"error": str(exc)}))
+        except (UnknownRecord, KeyError, ValueError, OSError, sqlite3.Error) as exc:
+            # A database that faults is a refusal, not a traceback:  the far host has
+            # to answer with something the caller can read.
+            print(
+                json.dumps(
+                    {"error": str(exc), "code": "reopen_failed", "outcome": "reopen_refused"}
+                )
+            )
             return 2
         finally:
-            reg.close_db()
+            if reg is not None:
+                reg.close_db()
         print(
             json.dumps(
                 {

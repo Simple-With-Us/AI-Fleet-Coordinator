@@ -220,7 +220,7 @@ export const ZULIP_FULL_METHODS = {
     const message = await this.ownMessage(args.message_id);
     audit.message_id = args.message_id;
     if (isInt(message.stream_id)) audit.channel_id = message.stream_id;
-    // `to` tags peers as post does, and the listener wakes a seat an edit newly tags (owner, Oct 29
+    // `to` tags peers as post does, and the eavesdropper wakes a seat an edit newly tags (owner, Oct 29
     // 2026).  The edit replaces the whole text, so the caller names again any peer it should keep.
     const [content] = await this.compose(text, [...(args.to ?? [])], args.session);
     audit.body_len = [...content].length;

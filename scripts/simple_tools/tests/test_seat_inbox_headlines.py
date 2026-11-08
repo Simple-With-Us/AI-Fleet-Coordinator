@@ -144,6 +144,14 @@ class StopContinuationTests(SeatInboxHarness):
         self.assertEqual(self.stop(), "")
         self.assertIn("latest id 4", self.context_of(self.prompt()))
 
+    def test_a_no_wake_marker_mention_waits_for_the_next_prompt(self) -> None:
+        # OPS-1036:  a marker post now lands in the seat inbox (the delivery is not suppressed),
+        # but a Stop continuation is a wake, so the marker row must never trigger one — it is
+        # headlined at the next prompt instead, like an ineligible sender's mention.
+        self.add_row(6, classes=("eligible", "direct", "no_wake"))
+        self.assertEqual(self.stop(), "")
+        self.assertIn("latest id 6", self.context_of(self.prompt()))
+
     def test_a_row_the_session_already_saw_is_not_a_continuation(self) -> None:
         self.add_row(5)
         self.prompt()

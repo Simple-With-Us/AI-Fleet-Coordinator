@@ -162,6 +162,22 @@ class InstallTests(ListenerHarness):
         )
         self.assertIn("operator_user_id", " ".join(C.load(self.root).errors))
 
+    def test_the_operator_email_is_pinned_beside_its_id_and_is_optional(self) -> None:
+        # The same per-host inventory as the id:  none committed, "" means not pinned, and a value
+        # that is not an address is an error rather than a guess.
+        base = '[daemon]\nowner_user_id = 7\noperator_user_id = 4242\n{}[seat.CLAUDE]\nbot = "Claude"\n'
+        (self.state_dir / "listener.toml").write_text(
+            base.format('operator_email = " Operator-Bot@Realm.Example.Test "\n')
+        )
+        cfg = C.load(self.root)
+        self.assertEqual(cfg.operator_email, "operator-bot@realm.example.test")
+        self.assertEqual(cfg.errors, [])
+        (self.state_dir / "listener.toml").write_text(base.format(""))
+        cfg = C.load(self.root)
+        self.assertEqual((cfg.operator_email, cfg.errors), ("", []))
+        (self.state_dir / "listener.toml").write_text(base.format('operator_email = "not-an-address"\n'))
+        self.assertIn("operator_email", " ".join(C.load(self.root).errors))
+
     def test_status_displays_per_seat_nudge_counts_and_legacy_snapshot(self):
         path = os.path.join(self.root, "listener", "status.json")
         counts = {"bindings": 2, "pending": 3, "blocked": 4, "unknown": 5, "accepted": 6}
@@ -367,9 +383,11 @@ class InitAndTestWakeTests(ListenerHarness):
         dry = self.run_cli("daemon", "test-wake", "--seat", "CLAUDE")
         self.assertEqual(dry.code, 0, dry.err)
         self.assertIn("--safe-mode", dry.out)
-        env_line = next(line for line in dry.out.splitlines() if line.startswith("environment names:"))
-        for name in ("AGENT_LAUNCHER", "AGENT_LAUNCH_SEAT", "AGENT_SEAT", "SIMPLE_TOOLS_ATTACH", "CLAUDE_CODE_DISABLE_ADVISOR_TOOL", "ENABLE_CLAUDEAI_MCP_SERVERS", "HOME"):
-            self.assertIn(name, env_line.split(": ", 1)[1].split(", "))
+        self.assertIn(
+            "environment names: AGENT_LAUNCHER, AGENT_LAUNCH_SEAT, AGENT_SEAT, "
+            "CLAUDE_CODE_DISABLE_ADVISOR_TOOL, ENABLE_CLAUDEAI_MCP_SERVERS, HOME",
+            dry.out,
+        )
         self.assertIn("BEGIN_UNTRUSTED_ZULIP", dry.out)
         self.assertEqual(self.dumps(), [], "no --run, no claude")
         self.set_claude(mode="tool", hang=30, output=reply_output())
@@ -437,7 +455,7 @@ class LocalReadTests(ListenerHarness):
                     "seq": 1,
                     "id": 500,
                     "kind": "message",
-                    "channel": "work-in-progress",
+                    "channel": "simple-tools",
                     "topic": "t",
                     "sender": "Codex",
                     "sender_id": 11,
@@ -449,7 +467,7 @@ class LocalReadTests(ListenerHarness):
                     "seq": 2,
                     "id": 501,
                     "kind": "message",
-                    "channel": "work-in-progress",
+                    "channel": "simple-tools",
                     "topic": "t",
                     "sender": "Codex",
                     "content": "already live",
@@ -463,7 +481,7 @@ class LocalReadTests(ListenerHarness):
                 {
                     "seq": 1,
                     "kind": "owner_note",
-                    "title": "work-in-progress CLAUDE",
+                    "title": "simple-tools CLAUDE",
                     "text": "a note for you",
                     "note": "Jay asked for a deploy.",
                     "owner": True,
@@ -494,7 +512,7 @@ class LocalReadTests(ListenerHarness):
                     "ts": 1_790_000_000,
                     "wake_id": "w1",
                     "state": "queued",
-                    "channel": "work-in-progress",
+                    "channel": "simple-tools",
                     "topic": "t",
                     "trigger_ids": [5],
                 },

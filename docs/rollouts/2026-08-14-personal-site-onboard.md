@@ -1,11 +1,9 @@
 # 2026-08-14 — Register Personal-Site in the fleet
 
-Historical identifiers have been redacted. These records do not certify current deployment state.
-
 ## Context & Objective
 
 Owner asked to onboard Personal-Site using ONBOARDING-NEW-APP / ONBOARDING-NEW-AGENT
-and [retired identifier]
+and FLEET-PROTOCOL.
 
 ## Changes Made
 

@@ -50,7 +50,7 @@ from .items import Item
 from .proc import Result, Runner
 
 SESSION = "needsown"  # simple-chat cuts a session label to 8 characters
-# The configured channel is read
+# The service channel;  the env var overrides it.  The name is read
 # through the links module, which casefolds it, so a mixed-case override still
 # compares with the casefolded channel names everywhere else.
 CHANNEL = linkmod.resolve_channel()

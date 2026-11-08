@@ -141,6 +141,70 @@ class VoiceTests(unittest.TestCase):
             voice.client()
         self.assertIn("not configured", caught.exception.reason)
 
+    def test_the_snapshot_says_whether_the_operator_can_speak_and_since_when(self) -> None:
+        wall = [1_700_000_000.0]  # 2023-11-14 22:13:20 UTC
+
+        def vault_down(owner: int) -> Any:
+            raise Z.CredentialError("fleet-secrets is not installed (~/.local/bin/fleet-secrets)")
+
+        voice = OPV.OperatorVoice(
+            env=self.ENV,
+            owner_user_id=lambda: self.owner,
+            factory=self.factory,
+            clock=lambda: self.now,
+            wall=lambda: wall[0],
+        )
+        self.assertEqual(voice.snapshot(), {"available": None, "code": None, "since": None})
+        self.make = vault_down
+        with self.assertRaises(OPV.OperatorUnavailable):
+            voice.client()
+        down = voice.snapshot()
+        self.assertEqual((down["available"], down["code"]), (False, OPV.CODE_UNAVAILABLE))
+        self.assertEqual(down["since"], "2023-11-14T22:13:20Z")
+        self.assertNotIn("fleet-secrets", json.dumps(down), "a code, never the reason sentence")
+        # The same failure retried after its window keeps the time it began.
+        wall[0] += 600
+        self.now += OPV.RETRY_SECONDS + 1
+        with self.assertRaises(OPV.OperatorUnavailable):
+            voice.client()
+        self.assertEqual(voice.snapshot(), down)
+        # It comes back:  reachable, no code, and a new time.
+        self.make = lambda owner: FakeOperatorClient(operator_me())
+        wall[0] += 600
+        self.now += OPV.RETRY_SECONDS + 1
+        voice.client()
+        self.assertEqual(
+            voice.snapshot(), {"available": True, "code": None, "since": "2023-11-14T22:33:20Z"}
+        )
+        # A rejected credential makes it unavailable again, with its own code.
+        wall[0] += 60
+        voice.forget(voice.client())
+        again = voice.snapshot()
+        self.assertEqual((again["available"], again["code"]), (False, "operator_credential_rejected"))
+        self.assertEqual(again["since"], "2023-11-14T22:34:20Z")
+
+    def test_a_moved_pin_drops_the_verified_client_and_a_remembered_failure(self) -> None:
+        voice = self.voice()
+        first = voice.client()
+        voice.update_env(dict(self.ENV))  # nothing moved:  the same client stays
+        self.assertIs(voice.client(), first)
+        self.assertTrue(voice.snapshot()["available"])
+        voice.update_env(dict(self.ENV, OPERATOR_ZULIP_EMAIL="other-bot@zulip.test"))
+        moved = voice.snapshot()
+        self.assertEqual(
+            (moved["available"], moved["code"]),
+            (None, None),
+            "the published state is about the old pin too:  not known until a build answers",
+        )
+        with self.assertRaises(OPV.OperatorUnavailable) as caught:
+            voice.client()  # rebuilt (the fake still answers as the old bot), judged against the new pin
+        self.assertIn("not the pinned Operator", caught.exception.reason)
+        self.assertEqual(len(self.built), 2, "a new build, not the cached client")
+        # A failure remembered under the old pin is forgotten the moment the pin moves.
+        self.assertIsNotNone(voice.known_unavailable())
+        voice.update_env(dict(self.ENV))
+        self.assertIsNone(voice.known_unavailable())
+
     def test_an_unpinned_owner_means_no_operator(self) -> None:
         self.owner = 0
         voice = self.voice()
@@ -376,7 +440,7 @@ class OperatorHarness(DaemonHarness):
         return [row for row in rows if row.get("event") == name]
 
     def peer_wake(self, daemon: D.Daemon, topic: str = "t") -> int:
-        mid = self.fake.add_message("Codex", "work-in-progress", topic, MENTION)
+        mid = self.fake.add_message("Codex", "simple-tools", topic, MENTION)
         self.pump_until(daemon, lambda: any(mid in r.get("trigger_ids", []) for r in self.ledger()))
         self.wake_cycle(daemon)
         return mid
@@ -391,7 +455,7 @@ class WakeReplyTests(OperatorHarness):
         mid = self.peer_wake(daemon)
         posts = self.operator_posts()
         self.assertEqual(len(posts), 1)
-        self.assertEqual((posts[0]["display_recipient"], posts[0]["subject"]), ("work-in-progress", "t"))
+        self.assertEqual((posts[0]["display_recipient"], posts[0]["subject"]), ("simple-tools", "t"))
         self.assertTrue(posts[0]["content"].startswith("[OPERATOR·wake] re=%d\n" % mid), posts[0]["content"])
         self.assertEqual(self.seat_requests(), [], "the seat's own bot wrote nothing")
         row = self.final_row()
@@ -497,6 +561,57 @@ class NoOperatorTests(OperatorHarness):
         self.peer_wake(daemon)
         self.assert_not_run()
 
+    def test_a_host_that_pins_the_operator_only_in_listener_toml_still_has_a_voice(self) -> None:
+        """The Mac's LaunchAgent carries no OPERATOR_ZULIP_* names:  the pins the host wrote in
+        `[daemon]` stand in for them, and an environment value still wins over the file."""
+        self.write_config(
+            extra_daemon='operator_user_id = %d\noperator_email = "%s"' % (OPERATOR_USER_ID, OPERATOR_EMAIL)
+        )
+        daemon = self.daemon(env=self.env(OPERATOR_ZULIP_USER_ID=None, OPERATOR_ZULIP_EMAIL=None))
+        self.assertEqual(daemon.env["OPERATOR_ZULIP_USER_ID"], str(OPERATOR_USER_ID))
+        self.assertEqual(daemon.env["OPERATOR_ZULIP_EMAIL"], OPERATOR_EMAIL)
+        self.assertEqual(OPV.pinned_user_id(daemon.env), OPERATOR_USER_ID)
+        winner = self.daemon(env=self.env(OPERATOR_ZULIP_USER_ID="999"))
+        self.assertEqual(winner.env["OPERATOR_ZULIP_USER_ID"], "999", "the environment wins")
+
+    def test_a_reload_applies_pins_that_came_from_listener_toml_and_never_replaces_the_environment(
+        self,
+    ) -> None:
+        pins = 'operator_user_id = %d\noperator_email = "%s"'
+        self.write_config(extra_daemon=pins % (999, "other-bot@zulip.test"))
+        daemon = self.daemon(env=self.env(OPERATOR_ZULIP_USER_ID=None, OPERATOR_ZULIP_EMAIL=None))
+        self.assertEqual(daemon.env["OPERATOR_ZULIP_USER_ID"], "999")
+        self.write_config(extra_daemon=pins % (OPERATOR_USER_ID, OPERATOR_EMAIL))
+        daemon.reload()
+        self.assertEqual(daemon.env["OPERATOR_ZULIP_USER_ID"], str(OPERATOR_USER_ID))
+        self.assertEqual(daemon.env["OPERATOR_ZULIP_EMAIL"], OPERATOR_EMAIL)
+        self.assertEqual(
+            OPV.pinned_user_id(daemon.operator_voice._env), OPERATOR_USER_ID, "the voice was told"
+        )
+        self.write_config()  # the pins are gone from the file
+        daemon.reload()
+        self.assertNotIn("OPERATOR_ZULIP_USER_ID", daemon.env)
+        self.assertNotIn("OPERATOR_ZULIP_EMAIL", daemon.env)
+        # A name the host's environment set is the host's, whatever the file says.
+        winner = self.daemon(env=self.env(OPERATOR_ZULIP_USER_ID="999"))
+        self.write_config(extra_daemon="operator_user_id = 5")
+        winner.reload()
+        self.assertEqual(winner.env["OPERATOR_ZULIP_USER_ID"], "999")
+
+    def test_the_status_says_the_operator_cannot_speak_and_since_when(self) -> None:
+        self.operator_available = False
+        daemon = self.started()
+        self.peer_wake(daemon)
+        voice = daemon.status()["operator_voice"]
+        self.assertEqual((voice["available"], voice["code"]), (False, "operator_unavailable"))
+        self.assertRegex(voice["since"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+        self.assertNotIn("fleet-secrets", json.dumps(voice))
+        self.operator_available = True
+        self.clock.advance(OPV.RETRY_SECONDS + 1)
+        self.peer_wake(daemon, "d")
+        voice = daemon.status()["operator_voice"]
+        self.assertEqual((voice["available"], voice["code"]), (True, None))
+
     def test_a_known_outage_is_checked_without_the_network_before_the_wake_is_queued(self) -> None:
         """After one failed build the router-side check (`_wake_block`) knows the Operator is away for the
         window, so later wakes are dropped when they are finalized, with no vault read and no queue."""
@@ -558,7 +673,7 @@ class NoOperatorTests(OperatorHarness):
         daemon.operator_voice.client()
         with self.assertRaises(OPV.OperatorRefused):
             daemon._operator_send(
-                {"type": "stream", "to": "work-in-progress", "topic": "t", "content": "key %s" % self.operator_key}
+                {"type": "stream", "to": "simple-tools", "topic": "t", "content": "key %s" % self.operator_key}
             )
         self.assertEqual(self.operator_posts(), [])
 
@@ -584,7 +699,7 @@ class SiteTests(OperatorHarness):
 
     def quota_pending(self, daemon: D.Daemon, sender: int, message_id: int) -> W.Pending:
         now = self.clock.time()
-        pending = W.Pending("q%d" % message_id, "CLAUDE", {"channel": "work-in-progress", "topic": "t", "type": "stream"},
+        pending = W.Pending("q%d" % message_id, "CLAUDE", {"channel": "simple-tools", "topic": "t", "type": "stream"},
                             owner=False, now=now, due=now)
         pending.add({"id": message_id, "sender_id": sender, "ts": now}, False)
         return pending
@@ -696,8 +811,8 @@ class SiteTests(OperatorHarness):
         daemon = self.started()
         runner = daemon.seats["CLAUDE"]
         now = self.clock.time()
-        pending = W.Pending("t1", "CLAUDE", {"channel": "work-in-progress", "topic": "t", "type": "stream",
-                                             "stream_id": self.fake.streams["work-in-progress"]},
+        pending = W.Pending("t1", "CLAUDE", {"channel": "simple-tools", "topic": "t", "type": "stream",
+                                             "stream_id": self.fake.streams["simple-tools"]},
                             owner=False, now=now, due=now)
         self.assertIsNone(daemon._typing_signal(runner, pending))
         self.assertEqual(self.log_events("typing-skipped")[-1]["code"], OPV.CODE_BUILDING)
@@ -755,7 +870,7 @@ def context(**changes: Any) -> R.Context:
 
 def message(sender: int, content: str, flags: tuple[str, ...] = ("mentioned",)) -> dict[str, Any]:
     return {"id": 501, "sender_id": sender, "content": content, "flags": list(flags), "timestamp": 9_990,
-            "client": "ZulipPython", "type": "stream", "display_recipient": "work-in-progress", "subject": "t",
+            "client": "ZulipPython", "type": "stream", "display_recipient": "simple-tools", "subject": "t",
             "sender_full_name": "x"}
 
 

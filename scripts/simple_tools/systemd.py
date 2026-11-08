@@ -119,7 +119,7 @@ def unit_text(
     return "\n".join(
         [
             "[Unit]",
-            "Description=Eavesdropper Listener",
+            "Description=Simple-Tools Listener",
             "After=network-online.target",
             "",
             "[Service]",

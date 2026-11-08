@@ -15,7 +15,11 @@ from simple_tools.secretscan import scan
 
 def _canon(pattern: str) -> str:
     """Python raw-string vs YAML quote escaping (`\\"` vs `"`) is the same regex."""
-    return pattern.replace('\\"', '"').replace("\\'", "'")
+    normalized = pattern.replace('\\"', '"').replace("\\'", "'")
+    # The scanner's trailing value capture is metadata for source-expression
+    # classification. Collector masking deliberately keeps the stricter raw
+    # pattern, without that scanner-only classification or capture metadata.
+    return re.sub(r"\(\?P<value>(\[[^\]]+\]\{[0-9]+,\})\)$", r"\1", normalized)
 
 
 # Patterns that cannot be transcribed 1:1 into the collector's RE2
@@ -70,6 +74,16 @@ class RedactionParityTests(unittest.TestCase):
                 "secretscan pattern has no blocked_values row and no documented divergence: %s"
                 % pattern,
             )
+
+    def test_capture_normalization_preserves_literal_matching_boundaries(self) -> None:
+        raw = r"token=[A-Za-z0-9]{16,}"
+        captured = r"token=(?P<value>[A-Za-z0-9]{16,})"
+        self.assertEqual(_canon(captured), raw)
+        self.assertNotEqual(_canon(captured.replace("16", "8")), raw)
+        self.assertNotEqual(_canon(captured.replace("value", "other")), raw)
+        self.assertNotEqual(_canon(captured + "suffix"), raw)
+        for text in ("token=" + "a" * 16, "token=" + "a" * 15, "ordinary"):
+            self.assertEqual(bool(re.search(raw, text)), bool(re.search(captured, text)))
 
     def test_github_and_coolify_standins_are_present(self) -> None:
         self.assertIn(r"\bgh[pousr]_[A-Za-z0-9]{30,}\b", self.blocked)

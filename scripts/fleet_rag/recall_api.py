@@ -19,6 +19,7 @@ import os
 import re
 import shutil
 import tempfile
+import threading
 import time
 from typing import Any
 
@@ -64,6 +65,9 @@ SOURCES = (
     "agent-contribution",
     "linear",
 )
+# Retired 2026-11-03 (Linear is the only issue home).  Still accepted as a search filter so
+# historical golden queries load, but no longer reported by stats.
+RETIRED_SOURCES = ("board", "effort-log")
 CATEGORIES = (
     "lesson",
     "preference",
@@ -102,6 +106,16 @@ HIT_FIELDS = (
     "path",
     "created_at",
 )
+AUDIT_HIT_FIELDS = (
+    "revision",
+    "corrected_at",
+    "corrected_by",
+    "correction_reason",
+    "retracted",
+    "retracted_at",
+    "retracted_by",
+    "retraction_reason",
+)
 
 # The ingest orchestrator stores its run sentinel as a point with source="meta".  It is never
 # a search result: every search filter carries this must_not clause.
@@ -112,6 +126,28 @@ def meta_exclude() -> dict:
     """Fresh must_not condition for the ingest sentinel (fresh so callers cannot share state)."""
     return {"key": "source", "match": {"value": META_SOURCE}}
 
+
+def retracted_exclude() -> dict:
+    """Fresh must_not condition matching the service's bool payload index."""
+    return {"key": RETRACTED_FIELD, "match": {"value": True}}
+
+
+def _is_retracted(payload: dict) -> bool:
+    """Supported writes and the service's payload index use one bool representation."""
+    return payload.get(RETRACTED_FIELD) is True
+
+
+# Retracted contributions stay in the corpus for provenance and audit, but every normal search
+# excludes them.  An explicit include_retracted=True is the audit view.
+RETRACTED_FIELD = "retracted"
+ADMIN_SEATS = ("OWNER",)
+
+# Correction / retraction is a read-modify-write over one point.  Supported mutation surfaces route
+# through the one recall service process, where this lock serializes the two operations;  a Run your
+# own direct deployment gets the same in-process protection.  Qdrant has no multi-point transaction,
+# so the write itself is deliberately one point:  correction upserts the same point id and retraction
+# sets its payload fields.  Neither can leave an old and a new lesson both searchable.
+_MUTATION_LOCK = threading.RLock()
 
 # Marker appended to recall_contribute()["scrubbed"] when gitleaks is not installed, so callers
 # can see that only the regex scrub ran.
@@ -138,10 +174,17 @@ RERANK_MIN_CANDIDATES = 20
 QDRANT_GROUPS_ENV = "FLEET_RECALL_QDRANT_GROUPS"
 CONTRIB_MIN = 40
 CONTRIB_MAX = 4000
+REASON_MIN = 3
+REASON_MAX = 500
+# Keep every prior version, but refuse further corrections once the in-payload audit reaches
+# this bound instead of letting one point grow without limit.  Retract and re-contribute
+# when a lesson genuinely needs an eleventh correction.
+REVISION_HISTORY_LIMIT = 10
 DAY_MS = 86_400_000
 
 _APP_RE = re.compile(r"^[a-z0-9][a-z0-9\-]{0,63}$")
 _SEAT_RE = re.compile(r"^[A-Z][A-Z0-9_\-]{0,31}$")
+_DOC_ID_RE = re.compile(r"^contrib/[A-Z][A-Z0-9_\-]{0,31}/\d{4}-\d{2}-\d{2}/[0-9a-f]{8}$")
 
 _CACHE: dict[str, dict[str, str]] = {}
 
@@ -202,10 +245,12 @@ def build_filter(
     seat: str | None = None,
     since_days: int | None = None,
     now: int | None = None,
+    include_retracted: bool = False,
 ) -> dict:
     """Exact-match filter on the four enumerated fields plus a created_at lower bound.
 
-    Always excludes the ingest sentinel (source="meta"), so the result is never None.
+    Always excludes the ingest sentinel (source="meta"), so the result is never None.  Retracted
+    contributions are excluded unless include_retracted=True explicitly asks for the audit view.
     """
     flt = match_filter(category=category, app=app, source=source, seat=seat) or {}
     must = list(flt.get("must", []))
@@ -214,7 +259,10 @@ def build_filter(
             raise FleetRagError("since_days must be a positive integer")
         gte = (now if now is not None else now_ms()) - since_days * DAY_MS
         must.append({"key": "created_at", "range": {"gte": gte}})
-    out: dict[str, Any] = {"must_not": [meta_exclude()]}
+    must_not = [meta_exclude()]
+    if not include_retracted:
+        must_not.append(retracted_exclude())
+    out: dict[str, Any] = {"must_not": must_not}
     if must:
         out["must"] = must
     return out
@@ -228,6 +276,18 @@ def _hit(raw: dict) -> dict:
     }
     for f in HIT_FIELDS:
         out[f] = p.get(f, 0 if f in ("chunk_index", "created_at") else "")
+    for f in AUDIT_HIT_FIELDS:
+        default = (
+            1
+            if f == "revision"
+            else 0
+            if f in ("corrected_at", "retracted_at")
+            else False
+            if f == "retracted"
+            else ""
+        )
+        out[f] = p.get(f, default)
+    out["retracted"] = _is_retracted(p)
     return out
 
 
@@ -338,6 +398,7 @@ def recall_search(
     per_doc: int = 1,
     prefer_lessons: bool = True,
     rerank: bool = True,
+    include_retracted: bool = False,
 ) -> dict:
     """Hybrid (dense + keyword + lesson, RRF) search over the fleet-agents corpus, one hit per
     document.
@@ -363,6 +424,8 @@ def recall_search(
         raise FleetRagError(f"limit must be an integer between 1 and {MAX_LIMIT}")
     if isinstance(per_doc, bool) or not isinstance(per_doc, int) or not 1 <= per_doc <= PER_DOC_MAX:
         raise FleetRagError(f"per_doc must be an integer between 1 and {PER_DOC_MAX}")
+    if not isinstance(include_retracted, bool):
+        raise FleetRagError("include_retracted must be a boolean")
     category = _one_of("category", _opt_str("category", category), CATEGORIES)
     source = _one_of("source", _opt_str("source", source), SOURCES)
     app = _opt_str("app", app)
@@ -372,7 +435,7 @@ def recall_search(
     if app:
         app = app.lower()
     t0 = time.time()
-    flt = build_filter(category, app, source, seat, since_days)
+    flt = build_filter(category, app, source, seat, since_days, include_retracted=include_retracted)
     cfg = get_config(need_write=False)
     query = query.strip()
     vector = embed(cfg, [query])[0]
@@ -426,7 +489,7 @@ def recall_stats() -> dict:
     cfg = get_config(need_write=False)
     q = Qdrant(cfg)
     info = q.info()
-    by_source = {s: q.count(match_filter(source=s)) for s in SOURCES}
+    by_source = {s: q.count(match_filter(source=s)) for s in SOURCES if s not in RETIRED_SOURCES}
     by_app = {}
     for a in KNOWN_APPS:
         n = q.count(match_filter(app=a))
@@ -533,7 +596,7 @@ def recall_contribute(
 
     cfg = get_config(need_write=True)
     ts = now_ms()
-    day = datetime.datetime.fromtimestamp(ts / 1000, datetime.UTC).strftime("%Y-%m-%d")
+    day = datetime.datetime.fromtimestamp(ts / 1000, datetime.timezone.utc).strftime("%Y-%m-%d")
     doc_id = f"contrib/{seat}/{day}/{content_hash(clean)[:8]}"
     payload: dict[str, Any] = {
         "source": "agent-contribution",
@@ -554,9 +617,421 @@ def recall_contribute(
     if kinds:
         payload["scrubbed"] = kinds
     point = build_point(clean, payload)
-    point["vector"] = embed(cfg, [clean])[0]
-    status = Qdrant(cfg).upsert([point])
+    q = Qdrant(cfg)
+
+    def find_existing() -> dict | None:
+        existing = q.retrieve(point["id"], with_payload=True, with_vector=False)
+        if existing is None:
+            # A correction keeps the original point id while its payload's content_hash moves to
+            # the replacement.  The deterministic-id retrieve alone would miss that corrected
+            # point and let the same replacement be contributed a second time.
+            matches = list(
+                q.scroll(
+                    {
+                        "must": [
+                            {
+                                "key": "content_hash",
+                                "match": {"value": point["payload"]["content_hash"]},
+                            }
+                        ]
+                    },
+                    limit=2,
+                    with_payload=True,
+                    with_vector=False,
+                )
+            )
+            if matches:
+                existing = matches[0]
+        return existing
+
+    def duplicate_result(existing: dict) -> dict:
+        old = existing.get("payload") or {}
+        return {
+            "id": str(existing.get("id") or point["id"]),
+            "doc_id": str(old.get("doc_id") or doc_id),
+            "scrubbed": reported,
+            "status": "duplicate",
+            "existing": {
+                "id": str(existing.get("id") or point["id"]),
+                "doc_id": str(old.get("doc_id") or doc_id),
+                "seat": str(old.get("seat") or ""),
+                "content_hash": str(old.get("content_hash") or ""),
+                "retracted": _is_retracted(old),
+            },
+        }
+
+    # A deterministic duplicate should not pay for a TEI embedding.  Do the cheap lookup first;
+    # after embedding, recheck under the mutation lock so a racing contribution cannot pass the
+    # same lookup and then write the same point.
+    existing = find_existing()
+    if existing is not None:
+        return duplicate_result(existing)
+    vector = embed(cfg, [clean])[0]
+    with _MUTATION_LOCK:
+        existing = find_existing()
+        if existing is not None:
+            return duplicate_result(existing)
+        point["vector"] = vector
+        status = q.upsert([point])
     return {"id": point["id"], "doc_id": doc_id, "scrubbed": reported, "status": status}
+
+
+# --------------------------------------------------------------------------- correction / retraction
+
+
+def _safe_audit_text(name: str, value: str, maximum: int = REASON_MAX) -> str:
+    """Scrub one stored audit/metadata field and fail closed on the gitleaks gate."""
+    if not isinstance(value, str):
+        raise FleetRagError(f"{name} must be a string")
+    value = value.strip()
+    if not value:
+        raise FleetRagError(f"{name} must not be blank")
+    if len(value) > maximum:
+        raise FleetRagError(
+            f"{name} must be at most {maximum} characters once trimmed ({len(value)})"
+        )
+    clean, kinds = scrub(value)
+    if kinds or (gitleaks_available() and _still_secret(clean)):
+        raise FleetRagError(f"refusing: {name} looks like it contains a secret")
+    return clean
+
+
+def _reason(value: Any, name: str = "reason") -> str:
+    clean = _safe_audit_text(name, value)
+    if len(clean) < REASON_MIN:
+        raise FleetRagError(
+            f"{name} must be {REASON_MIN}..{REASON_MAX} characters once trimmed ({len(clean)})"
+        )
+    return clean
+
+
+def _actor_seat(value: Any) -> str:
+    seat = search_log.canonical_seat(_opt_str("seat", value) or os.environ.get("AGENT_SEAT") or "")
+    if not seat:
+        raise FleetRagError("seat is required (pass seat=... or set AGENT_SEAT)")
+    if not _SEAT_RE.match(seat):
+        raise FleetRagError("seat must be an uppercase tag like CLAUDE or GROK-BOT")
+    return seat
+
+
+def _doc_id(value: Any) -> str:
+    if not isinstance(value, str):
+        raise FleetRagError("doc_id must be a string")
+    value = value.strip()
+    if not _DOC_ID_RE.fullmatch(value):
+        raise FleetRagError(
+            "doc_id must be an agent contribution id like contrib/CLAUDE/2026-11-05/472fc36e"
+        )
+    return value
+
+
+def _expected_revision(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise FleetRagError("expected_revision must be a positive integer")
+    return value
+
+
+def _contribution_point(q: Any, doc_id: str) -> dict:
+    """The one chunk-zero agent contribution point for doc_id, or a precise refusal."""
+    flt = {
+        "must": [
+            {"key": "doc_id", "match": {"value": doc_id}},
+            {"key": "source", "match": {"value": LESSON_SOURCE}},
+            {"key": "chunk_index", "match": {"value": 0}},
+        ]
+    }
+    points = list(q.scroll(flt, limit=4, with_payload=True, with_vector=False))
+    if not points:
+        raise FleetRagError(f"no agent contribution found for {doc_id}")
+    if len(points) != 1:
+        raise FleetRagError(
+            f"{doc_id} matched {len(points)} contribution points; refusing to guess which one to change"
+        )
+    return points[0]
+
+
+def _authorize_change(payload: dict, actor: str) -> str:
+    owner = str(payload.get("seat") or "").upper()
+    if actor != owner and actor not in ADMIN_SEATS:
+        raise FleetRagError(
+            f"only the owning seat ({owner or 'unknown'}) or an admin seat may change {payload.get('doc_id')}"
+        )
+    return owner
+
+
+def _check_revision(payload: dict, expected: int | None) -> int:
+    revision = payload.get("revision", 1)
+    if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
+        raise FleetRagError(
+            "the stored contribution has an invalid revision; refusing to change it"
+        )
+    if expected is not None and revision != expected:
+        raise FleetRagError(
+            f"the contribution is now at revision {revision}, not expected_revision {expected}; "
+            "read it again before changing it"
+        )
+    return revision
+
+
+def _scrub_replacement(text: str) -> tuple[str, list[str]]:
+    if not isinstance(text, str):
+        raise FleetRagError("text must be a string")
+    text = text.strip()
+    if len(text) < CONTRIB_MIN:
+        raise FleetRagError(f"text too short: {len(text)} chars (minimum {CONTRIB_MIN})")
+    if len(text) > CONTRIB_MAX:
+        raise FleetRagError(f"text too long: {len(text)} chars (maximum {CONTRIB_MAX})")
+    clean, kinds = scrub(text)
+    reported = list(kinds)
+    if gitleaks_available():
+        if _still_secret(clean):
+            raise FleetRagError(
+                "refusing: text still looks like it contains a secret after scrubbing"
+            )
+    else:
+        reported.append(GITLEAKS_UNAVAILABLE)
+    return clean, reported
+
+
+def _correction_plan(
+    old_point: dict,
+    doc_id: str,
+    clean: str,
+    reason: str,
+    actor: str,
+    title: str | None,
+    url: str | None,
+    expected: int | None,
+    ts: int,
+) -> dict[str, Any]:
+    """Validate one correction against the point just read and build its one-point write."""
+    old = old_point.get("payload") or {}
+    owner = _authorize_change(old, actor)
+    revision = _check_revision(old, expected)
+    if _is_retracted(old):
+        raise FleetRagError(
+            f"{doc_id} is retracted; correction would resurrect it, so it was refused"
+        )
+    old_text = str(old.get("text") or "")
+    old_hash = str(old.get("content_hash") or content_hash(old_text))
+    new_hash = content_hash(clean)
+    old_title = str(old.get("title") or "")
+    old_url = str(old.get("url") or "")
+    new_title = _opt_str("title", title)
+    new_url = _opt_str("url", url)
+    if new_title is not None:
+        new_title = _safe_audit_text("title", new_title, 200)
+    if new_url is not None:
+        new_url = _safe_audit_text("url", new_url, 500)
+        if not re.match(r"^https?://", new_url):
+            raise FleetRagError("url must start with http:// or https://")
+    new_title = new_title or old_title
+    new_url = new_url or old_url
+    metadata_changed = new_title != old_title or new_url != old_url
+    point_id = str(old_point.get("id") or "")
+    if new_hash == old_hash and not metadata_changed:
+        return {
+            "point_id": point_id,
+            "owner": owner,
+            "revision": revision,
+            "old_hash": old_hash,
+            "new_hash": new_hash,
+            "unchanged": True,
+        }
+    history = old.get("revisions", [])
+    if not isinstance(history, list) or any(not isinstance(r, dict) for r in history):
+        raise FleetRagError(
+            "the stored contribution has an invalid revision history; refusing to change it"
+        )
+    if len(history) >= REVISION_HISTORY_LIMIT:
+        raise FleetRagError(
+            f"the contribution already has {REVISION_HISTORY_LIMIT} preserved revisions; "
+            "retract and re-contribute it instead of growing one point without bound"
+        )
+    history = list(history)
+    archived = {
+        "revision": revision,
+        "text": old_text,
+        "content_hash": old_hash,
+        "title": old_title,
+        "url": old_url,
+        "replaced_at": ts,
+        "replaced_by": actor,
+        "reason": reason,
+    }
+    if "scrubbed" in old:
+        archived["scrubbed"] = old["scrubbed"]
+    history.append(archived)
+    fields = {
+        "title": new_title,
+        "url": new_url,
+        "updated_at": ts,
+        "revision": revision + 1,
+        "corrected_at": ts,
+        "corrected_by": actor,
+        "correction_reason": reason,
+        "revisions": history,
+    }
+    return {
+        "point_id": point_id,
+        "owner": owner,
+        "revision": revision,
+        "old_hash": old_hash,
+        "new_hash": new_hash,
+        "old": old,
+        "fields": fields,
+        "unchanged": False,
+        "metadata_only": new_hash == old_hash,
+    }
+
+
+def recall_correct(
+    doc_id: str,
+    text: str,
+    reason: str,
+    seat: str | None = None,
+    title: str | None = None,
+    url: str | None = None,
+    expected_revision: int | None = None,
+) -> dict:
+    """Replace one agent contribution in place, preserving every prior version in its payload.
+
+    The lesson keeps its original point id and doc_id, so the supported mutation is one atomic
+    Qdrant point write, never a delete-then-add pair.  A text change moves the old text into
+    `revisions` and upserts the new vector;  a metadata-only correction records the old metadata
+    and updates the same point payload.  The owning seat or OWNER may correct a lesson.  A
+    retracted lesson is not resurrected by correction.
+    """
+    doc_id = _doc_id(doc_id)
+    reason = _reason(reason, "reason")
+    actor = _actor_seat(seat)
+    expected = _expected_revision(expected_revision)
+    clean, reported = _scrub_replacement(text)
+    cfg = get_config(need_write=True)
+    ts = now_ms()
+    q = Qdrant(cfg)
+    with _MUTATION_LOCK:
+        old_point = _contribution_point(q, doc_id)
+        plan = _correction_plan(old_point, doc_id, clean, reason, actor, title, url, expected, ts)
+    vector = None
+    if not plan["unchanged"] and not plan["metadata_only"]:
+        # TEI is a network call.  Do not hold the fleet mutation lock through it:  re-read and
+        # re-check the same point under the lock before the one-point write below.
+        vector = embed(cfg, [clean])[0]
+    with _MUTATION_LOCK:
+        current_point = _contribution_point(q, doc_id)
+        current = current_point.get("payload") or {}
+        if _is_retracted(current):
+            raise FleetRagError(
+                f"{doc_id} was retracted while the correction was being prepared; refusing to resurrect it"
+            )
+        _authorize_change(current, actor)
+        current_revision = _check_revision(current, expected)
+        current_hash = str(
+            current.get("content_hash") or content_hash(str(current.get("text") or ""))
+        )
+        if current_revision != plan["revision"] or current_hash != plan["old_hash"]:
+            raise FleetRagError(
+                f"{doc_id} changed while the correction was being prepared; read it again before changing it"
+            )
+        if plan["unchanged"]:
+            return {
+                "id": plan["point_id"],
+                "doc_id": doc_id,
+                "seat": plan["owner"],
+                "status": "unchanged",
+                "revision": plan["revision"],
+                "content_hash": plan["old_hash"],
+                "previous_content_hash": plan["old_hash"],
+                "scrubbed": reported,
+            }
+        fields = dict(plan["fields"])
+        if reported:
+            fields["scrubbed"] = reported
+        elif "scrubbed" in plan["old"] and not plan["metadata_only"]:
+            # set_payload cannot delete a key; text-changing corrections carry the replacement's
+            # scrub report, while metadata-only corrections preserve the stored one.
+            fields["scrubbed"] = []
+        if plan["metadata_only"]:
+            status = q.set_payload([plan["point_id"]], fields)
+        else:
+            payload = dict(plan["old"])
+            payload.update({"text": clean, "content_hash": plan["new_hash"], **fields})
+            if not reported:
+                payload.pop("scrubbed", None)
+            point = {"id": plan["point_id"], "payload": payload, "vector": vector}
+            status = q.upsert([point])
+    return {
+        "id": plan["point_id"],
+        "doc_id": doc_id,
+        "seat": plan["owner"],
+        "status": status,
+        "revision": plan["revision"] + 1,
+        "corrected_at": ts,
+        "corrected_by": actor,
+        "previous_content_hash": plan["old_hash"],
+        "content_hash": plan["new_hash"],
+        "scrubbed": reported,
+    }
+
+
+def recall_retract(
+    doc_id: str,
+    reason: str,
+    seat: str | None = None,
+    expected_revision: int | None = None,
+) -> dict:
+    """Take one agent contribution back without deleting its provenance.
+
+    The mutation is one Qdrant payload write on the one existing point.  It marks the lesson
+    retracted and records actor, time and reason;  normal recall_search filters it out, while
+    include_retracted=True remains the audit view.  A repeated retraction is an idempotent success.
+    """
+    doc_id = _doc_id(doc_id)
+    reason = _reason(reason, "reason")
+    actor = _actor_seat(seat)
+    expected = _expected_revision(expected_revision)
+    cfg = get_config(need_write=True)
+    ts = now_ms()
+    with _MUTATION_LOCK:
+        q = Qdrant(cfg)
+        point = _contribution_point(q, doc_id)
+        payload = point.get("payload") or {}
+        owner = _authorize_change(payload, actor)
+        revision = _check_revision(payload, expected)
+        if _is_retracted(payload):
+            return {
+                "id": str(point.get("id") or ""),
+                "doc_id": doc_id,
+                "seat": owner,
+                "status": "already_retracted",
+                "revision": revision,
+                "retracted": True,
+                "retracted_at": int(payload.get("retracted_at") or 0),
+                "retracted_by": str(payload.get("retracted_by") or ""),
+                "retraction_reason": str(payload.get("retraction_reason") or ""),
+            }
+        fields = {
+            RETRACTED_FIELD: True,
+            "retracted_at": ts,
+            "retracted_by": actor,
+            "retraction_reason": reason,
+            "updated_at": ts,
+        }
+        status = q.set_payload([str(point.get("id") or "")], fields)
+    return {
+        "id": str(point.get("id") or ""),
+        "doc_id": doc_id,
+        "seat": owner,
+        "status": status,
+        "revision": revision,
+        "retracted": True,
+        "retracted_at": ts,
+        "retracted_by": actor,
+        "retraction_reason": reason,
+    }
 
 
 # --------------------------------------------------------------------------- fake backend
@@ -574,6 +1049,7 @@ class FakeQdrant:
     points: list[dict] = []
     calls: list[tuple] = []
     group_calls: list[dict] = []
+    scrolls: list[dict | None] = []
     upserts: list[list[dict]] = []
 
     def __init__(self, cfg: dict[str, str], collection: str | None = None):
@@ -581,7 +1057,7 @@ class FakeQdrant:
 
     @classmethod
     def reset(cls, seed: bool = True) -> None:
-        cls.points, cls.calls, cls.group_calls, cls.upserts = [], [], [], []
+        cls.points, cls.calls, cls.group_calls, cls.scrolls, cls.upserts = [], [], [], [], []
         if seed:
             cls.points.extend(_fake_seed())
 
@@ -590,6 +1066,11 @@ class FakeQdrant:
 
     def info(self) -> dict:
         return {"status": "green", "points_count": len(self.points), "payload_schema": {}}
+
+    def retrieve(
+        self, point_id: str, *, with_payload: Any = True, with_vector: bool = False
+    ) -> dict | None:
+        return next((p for p in self.points if str(p.get("id")) == str(point_id)), None)
 
     @classmethod
     def _cond(cls, p: dict, cond: dict) -> bool:
@@ -621,6 +1102,23 @@ class FakeQdrant:
 
     def count(self, flt: dict | None = None, exact: bool = True) -> int:
         return sum(1 for p in self.points if self._matches(p, flt))
+
+    def scroll(
+        self,
+        flt: dict | None = None,
+        limit: int = 256,
+        with_payload: Any = True,
+        with_vector: bool = False,
+    ):
+        FakeQdrant.scrolls.append(flt)
+        matched = 0
+        for point in list(self.points):
+            if not self._matches(point, flt):
+                continue
+            yield {"id": point["id"], "payload": point["payload"]}
+            matched += 1
+            if matched >= limit:
+                return
 
     def search_dense(
         self, vector: list[float], limit: int = 5, flt: dict | None = None
@@ -698,6 +1196,13 @@ class FakeQdrant:
         FakeQdrant.points = [p for p in self.points if p["id"] not in ids] + [
             {"id": p["id"], "payload": p["payload"]} for p in points
         ]
+        return "completed"
+
+    def set_payload(self, ids: list[str], payload: dict, wait: bool = True) -> str:
+        wanted = set(ids)
+        for point in self.points:
+            if point["id"] in wanted:
+                point["payload"].update(payload)
         return "completed"
 
 

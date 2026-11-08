@@ -50,8 +50,9 @@
     <key>HOME</key>
     <string>/Users/jay</string>
     <!-- No identity variable lives here:  the seat is proven by CLAUDE's own bearer.  Provisioning adds
-         SIMPLE_BOARD_BEARER_LOCATOR (a FOLDER:KEY_NAME location, never a value) for the CLAUDE seat bearer;  until
-         it is added the notifier refuses (no verified seat) instead of acting as anyone. -->
+         SIMPLE_BOARD_BEARER_FILE (an absolute path to the seat's private bearer file, never a value) for the
+         CLAUDE seat bearer;  until it is added the notifier refuses (no verified seat) instead of acting as
+         anyone. -->
   </dict>
 </dict>
 </plist>

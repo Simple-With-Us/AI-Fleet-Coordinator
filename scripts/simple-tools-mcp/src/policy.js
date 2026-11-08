@@ -148,10 +148,9 @@ export function clientBoundToSeat(client, seat, redirectUri, config) {
  * Host check (spec 3.2):  only the one hostname, on the default port.  Both the
  * URL the runtime built and the raw Host header must name it.
  *
- * Hard cutover (owner ruling, Oct 22, 2026):  this takes exactly one host, not
- * a list.  The old obsolete.example.test host is refused here like any other
- * unknown Host, so there is no fallback, alias or redirect left to keep it
- * working.  Passing an array is not supported on purpose.
+ * This takes exactly one host, not a list.  Any other host is refused here as an
+ * unknown Host, so there is no fallback, alias or redirect.  Passing an array is
+ * not supported on purpose.
  */
 export function hostAllowed(request, host) {
   let url;
@@ -249,7 +248,7 @@ export function classifyPath(pathname) {
       // the same signed channel as the ingest.
       if (["/internal/wa-ingest/JET", "/internal/wa-operator/JET", "/internal/wa-outbox/JET", "/internal/wa-outbox/JET/result"].includes(pathname)) return "wa";
       if (pathname === "/internal/health/linear") return "linear_health";
-      // The listener's wake (src/wake.js).  Outside Cloudflare Access, which
+      // The eavesdropper's wake (src/wake.js).  Outside Cloudflare Access, which
       // covers /authorize and /admin only;  its own HMAC is the gate.
       if (/^\/internal\/wake\/[A-Z][A-Z0-9-]{0,31}$/.test(pathname)) return "wake";
       // AFC-477 spike (temporary, src/spike.js):  a 404 unless SPIKE_EXTRA_EVENTS

@@ -2,8 +2,7 @@
 """Exercise infra_phase0.py's tunnel/DNS cleanup against a fake Cloudflare API.
 
 Driven by test/infra-phase0.test.mjs.  Stdlib only, no network:  the point is
-to prove that a rule or CNAME belonging to the RETIRED host is still found and
-removed after the hard cutover repointed HOST at the current endpoint.
+to prove that a rule or CNAME belonging to the served host is found and removed.
 Prints one JSON object; the node test asserts on it.
 """
 
@@ -54,8 +53,7 @@ class FakeCloudflare:
         # When set, the tunnel answers with a shape this script must refuse to
         # interpret rather than crash on.
         self.malformed = None
-        # Zones that answer "not on this account".  The retired zone is not
-        # guaranteed to be on the account, and that must not abort `dns`.
+        # Zones that answer "not on this account".
         self.absent_zones: set[str] = set()
         # Zones whose lookup itself fails, the way `Cloudflare.ok` stops on a
         # rejected key or a 5xx.  That is not absence and must not read as it.
@@ -418,11 +416,11 @@ def main() -> None:
             {
                 "hosts_after_tunnel": [r.get("hostname") for r in (ingress_after or [])],
                 "deleted_record_ids": cf.deleted,
+                "absent_zone": absent_zone,
                 "queried": sorted(f"{zone}:{host}" for zone, host in cf.queried),
                 "output": "\n".join(lines),
                 "malformed_errors": malformed_errors,
                 "tunnel_config_reads": tunnel_config_reads,
-                "absent_zone": absent_zone,
                 "failed_lookup": failed_lookup,
                 "secrets": secret_probes(),
             }

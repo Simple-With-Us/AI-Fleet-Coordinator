@@ -1516,7 +1516,7 @@ class ReopenHeldCliTest(unittest.TestCase):
             self._register("thread-0002", ["--letter-space", "double"])
             code, answer = self._run(["reopen", "--db", self.db, "--record-id", reg["record_id"]])
             self.assertEqual(code, 2)
-            self.assertEqual(answer["code"], "label_exhausted")
+            self.assertEqual(answer["code"], "labels_exhausted")
 
     def test_reopen_of_an_unknown_record_is_an_error(self):
         code, answer = self._run(["reopen", "--db", self.db, "--record-id", "no-such-record"])
@@ -1763,3 +1763,84 @@ class RegistryGuardTest(unittest.TestCase):
         code, answer = self._run(["history", "--platform=minimax", "--db", db])
         self.assertEqual(code, 0)
         self.assertEqual(answer, [])
+
+
+class ReopenCommandTest(unittest.TestCase):
+    """The reopen verb of the registry's own CLI.
+
+    A host that keeps no registry asks the host that holds one, so the reopen has to
+    be a verb the CLI answers, not a call into the registry from inside a hook.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db = os.path.join(self.tmp.name, "registry.sqlite3")
+        self.reg = R.SessionRegistry(self.db)
+
+    def tearDown(self):
+        self.reg.close_db()
+        self.tmp.cleanup()
+
+    def test_the_reopen_command_gives_a_closed_chat_its_letter_back(self):
+        made = self.reg.resolve_or_register(ident(platform="minimax", native="n-9"))
+        self.reg.close(made["record_id"])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = R.main(
+                [
+                    "reopen",
+                    "--db",
+                    self.db,
+                    "--record-id",
+                    made["record_id"],
+                    "--actor",
+                    "MM",
+                    "--source",
+                    "test",
+                    "--letter-pick",
+                    "oldest",
+                ]
+            )
+        answer = json.loads(out.getvalue().splitlines()[-1])
+        self.assertEqual(code, 0)
+        self.assertEqual(answer["outcome"], "reopened")
+        self.assertEqual(answer["label"], made["label"])
+        self.assertIsNone(self.reg._get(made["record_id"])["closed_at"])
+
+    def test_the_reopen_command_answers_a_refusal_as_json(self):
+        # A record that is not there is a readable answer, never a traceback.
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = R.main(["reopen", "--db", self.db, "--record-id", "no-such-record"])
+        answer = json.loads(out.getvalue().splitlines()[-1])
+        self.assertEqual(code, 2)
+        self.assertEqual(answer["code"], "reopen_failed")
+        self.assertEqual(answer["outcome"], "reopen_refused")
+
+    def test_the_reopen_command_never_brings_a_registry_into_being(self):
+        # A host that keeps no registry must not grow one:  a second registry hands
+        # out letters that collide with the ones the Operator keeps, so the CLI
+        # refuses and the file is never created.
+        missing = os.path.join(self.tmp.name, "no-registry-here", "registry.sqlite3")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = R.main(["reopen", "--db", missing, "--record-id", "no-such-record"])
+        answer = json.loads(out.getvalue().splitlines()[-1])
+        self.assertEqual(code, 3)
+        self.assertEqual(answer, {"error": "no Operator registry on this host"})
+        self.assertFalse(os.path.exists(missing))
+
+    def test_the_reopen_command_answers_a_database_fault_as_json(self):
+        # A database that faults is a refusal the caller can read, never a traceback:
+        # the far host would answer with something unparseable and the hop would
+        # report an unknown outcome instead of the refusal it owes.
+        broken = os.path.join(self.tmp.name, "broken.sqlite3")
+        with open(broken, "wb") as handle:
+            handle.write(b"this is not a database")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = R.main(["reopen", "--db", broken, "--record-id", "no-such-record"])
+        answer = json.loads(out.getvalue().splitlines()[-1])
+        self.assertEqual(code, 2)
+        self.assertEqual(answer["code"], "reopen_failed")
+        self.assertEqual(answer["outcome"], "reopen_refused")

@@ -208,7 +208,7 @@ def seat_line(seat: str, held: Mapping[str, Any]) -> str:
     return ", ".join(bits)
 
 
-HEADLINE = "**Held-back wakes on the eavesdropper server listener.**"
+HEADLINE = "**Held-back wakes on the simple-tools server listener.**"
 
 
 def updated_line(updated: str | None, *, clear: bool) -> list[str]:

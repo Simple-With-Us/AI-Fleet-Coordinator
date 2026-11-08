@@ -1,12 +1,10 @@
 # 2026-08-20 — README / About match how the fleet works
 
-Historical identifiers have been redacted. These records do not certify current deployment state.
-
 ## Context & Objective
 
 GitHub About for `AI-Fleet-Coordinator` was empty.  The README still described a
 generic “autonomous multi-agent framework.”  The live fleet is Mac collab
-(`mac.jays.services`), Shellular, `[retired identifier]`, and coding seats in
+(`mac.jays.services`), Shellular, `#Work-In-Progress`, and coding seats in
 `fleet-apps.json` — with **no app-specific Grok Bot seats**.
 
 ## Changes Made
@@ -14,7 +12,7 @@ generic “autonomous multi-agent framework.”  The live fleet is Mac collab
 Docs and repo metadata only.  No product code.
 
 - `README.md` — how the fleet works now; apps/seats table; THE BOARD +
-  Shellular + [retired identifier]; explicit “no per-app GROK-BOT lanes.”
+  Shellular + simple-tools; explicit “no per-app GROK-BOT lanes.”
 - `FLEET-PROTOCOL.md` — Overview looks at THE BOARD first; `GROK-BOT` row in the
   seat table; Available list; THE BOARD identity note.
 - `EFFORT-LOG-PROTOCOL.md`, `TEMPLATE-AGENTS.md`, both ONBOARDING docs,
@@ -26,7 +24,7 @@ Docs and repo metadata only.  No product code.
 - Did **not** add `GROK-BOT` to `fleet-apps.json` `seats[]`.  That list is
   coding-lane inventory (worktree suffix + branch prefix).  Grok Bot drives
   Cursor cloud and has no per-app lane.
-- Did **not** invent a `GB-*` roster.  [retired identifier] only says operational Slack
+- Did **not** invent a `GB-*` roster.  FLEET-PROTOCOL only says operational Slack
   tags may use a `GB-` prefix and those are not per-app lanes.
 - Homepage set to the public digest site.  THE BOARD is auth-gated.
 

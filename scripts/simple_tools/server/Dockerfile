@@ -4,17 +4,17 @@
 # docs/protocols/eavesdropper-server.md.
 #
 # Build context is the repo root:
-#   docker build -f scripts/simple_tools/server/Dockerfile -t eavesdropper-server .
+#   docker build -f scripts/simple_tools/server/Dockerfile -t simple-tools-server .
 #
 # No secrets are baked in.  Bot emails and keys and the routine URLs and keys arrive at run time:
-# loaded from Infisical by the entrypoint when Coolify sets the INFISICAL_* machine identity
-# (server/infisical_env.py), else as runtime-only Coolify variables.  ZULIP_SITE is a Coolify
+# loaded from Infisical by the entrypoint when Coolify binds the scoped INFISICAL_TOKEN
+# service token (server/infisical_env.py).  ZULIP_SITE is a Coolify
 # variable either way.  State, the config and the logs live on the /data volume.
 FROM python:3.14-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    HOME=/home/eavesdropper \
+    HOME=/home/simpletools \
     SIMPLE_TOOLS_INSTANCE=server \
     SIMPLE_TOOLS_STATE_DIR=/data \
     SIMPLE_TOOLS_CONFIG=/data/listener.toml \
@@ -24,11 +24,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # each is disabled unless listener.toml opts in.
 EXPOSE 8787 8788
 
-RUN groupadd --system --gid 10001 eavesdropper \
- && useradd --system --uid 10001 --gid eavesdropper --home-dir /home/eavesdropper --create-home \
-        --shell /usr/sbin/nologin eavesdropper \
+RUN groupadd --system --gid 10001 simpletools \
+ && useradd --system --uid 10001 --gid simpletools --home-dir /home/simpletools --create-home \
+        --shell /usr/sbin/nologin simpletools \
  && mkdir -p /data \
- && chown eavesdropper:eavesdropper /data \
+ && chown simpletools:simpletools /data \
  && chmod 0700 /data
 
 WORKDIR /app
@@ -46,7 +46,7 @@ RUN chmod 0755 /app/scripts/simple-chat /app/scripts/simple_tools/server/entrypo
         /app/scripts/simple_tools/server/apply_live_config.py \
  && ln -s /app/scripts/simple-chat /usr/local/bin/simple-chat
 
-USER eavesdropper
+USER simpletools
 
 # Healthy while the daemon rewrites /data/listener/status.json (every 2 seconds); unhealthy when
 # the file is older than 60 seconds or missing (a refused start never writes it).

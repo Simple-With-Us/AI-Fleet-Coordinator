@@ -790,7 +790,7 @@ def cmd_check(cf: Cloudflare | None, _apply: bool) -> None:
         status, _, _ = _http("GET", f"{ISSUER}{path}")
         expect(f"{path} is 404", status == 404, str(status))
 
-    # The listener's wake (spec 3.12) is outside Access:  an unsigned POST is the
+    # The eavesdropper's wake (spec 3.12) is outside Access:  an unsigned POST is the
     # Worker's own 401 once WAKE_HMAC_KEY_JET is set (404 before), never Access.
     status, headers, _ = _http(
         "POST", f"{ISSUER}/internal/wake/JET", b"{}", {"Content-Type": "application/json"}
@@ -834,9 +834,8 @@ def cmd_check(cf: Cloudflare | None, _apply: bool) -> None:
             # One resolution per zone, reused for both sweeps below.
             zid = zone_id_if_present(cf, zone)
             if zid is None:
-                # Not a failure:  the retired zone being gone from the account
-                # is the end state this module is driving at.  Report it and
-                # keep checking, rather than aborting the whole verification.
+                # Not a failure:  report it and keep checking, rather than
+                # aborting the whole verification.
                 say(f"zone {zone} is not on account {ACCOUNT_ID}; nothing to check there")
                 continue
             expect(

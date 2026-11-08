@@ -2,13 +2,12 @@
   "schemaVersion": 1,
   "mac": {
     "agents": [
-      {"label": "com.jay.simple-tools-runtime-sync", "actions": ["start", "stop", "restart"]},
       {"label": "com.jay.botfleet-server", "actions": ["start", "stop", "restart"]},
       {"label": "com.jay.fleet-gdrive-backup", "actions": ["start", "stop", "restart"]},
-      {"label": "com.jay.fleet-mac-services", "actions": ["start", "stop", "restart"]},
-      {"label": "com.jay.fleet-tools-doctor", "actions": ["start", "stop", "restart"]},
+      {"label": "com.jay.fleet-mac-services", "actions": ["start", "stop", "restart"], "role": "reporting", "stopConsequence": "Stopping this stops the Mac's agent report, so Muster's Services panel goes out of date and the Mac's jobs read as not known."},
+      {"label": "com.jay.fleet-tools-doctor", "actions": ["start", "stop", "restart"], "role": "reporting", "stopConsequence": "Stopping this stops the fleet tools report, so Muster's Fleet Tools rows go out of date and then read as not known."},
       {"label": "com.jay.fleet-work-backup", "actions": ["start", "stop", "restart"]},
-      {"label": "com.jay.fleet-worker-health", "actions": ["start", "stop", "restart"]},
+      {"label": "com.jay.fleet-worker-health", "actions": ["start", "stop", "restart"], "role": "reporting", "stopConsequence": "Stopping this stops the worker health report, so Muster's worker card goes out of date."},
       {"label": "com.jay.github-outbox-bridge", "actions": ["start", "stop", "restart"]},
       {"label": "com.jay.grok-idle-unload", "actions": ["start", "stop", "restart"]},
       {"label": "com.jay.ios-testflight-freshness", "actions": ["start", "stop", "restart"]},
@@ -18,16 +17,38 @@
       {"label": "com.jay.mac-resource-watch", "actions": ["start", "stop", "restart"]},
       {"label": "com.jay.mac-seat-watch", "actions": ["start", "stop", "restart"]},
       {"label": "com.jay.needs-owner-notify", "actions": ["start", "stop", "restart"]},
-      {"label": "com.jay.operator-notes-runner", "actions": ["start", "stop", "restart"]},
+      {"label": "com.jay.operator-notes-runner", "actions": ["start", "stop", "restart"], "stopConsequence": "Stopping this stops the Mac answering Apple Notes requests from the server and cloud seats, and they wait in the Operator's queue for up to 24 hours."},
       {"label": "com.jay.operator-wake-alerter", "actions": ["start", "stop", "restart"]},
       {"label": "com.jay.sim-idle-reaper", "actions": ["start", "stop", "restart"]},
+      {"label": "com.jay.simple-tools-runtime-sync", "actions": ["start", "stop", "restart"], "role": "updater", "stopConsequence": "Stopping this stops the Mac's fleet tools updating from main, and the Operator listener is no longer restarted when its code changes."},
       {"label": "com.jays.weekly-fleet-mode-digest", "actions": ["start", "stop", "restart"]}
+    ],
+    "pm2Apps": [
+      {"name": "botfleet-mcp", "actions": ["start", "stop", "restart"]},
+      {"name": "shellular", "actions": ["start", "stop", "restart"]},
+      {"name": "code-main-keeper", "actions": ["start", "stop", "restart"]},
+      {"name": "vision-worker", "actions": ["start", "stop", "restart"]},
+      {"name": "xcode-health", "actions": ["start", "stop", "restart"]},
+      {"name": "agy-acp", "actions": ["start", "stop", "restart"]},
+      {"name": "grok-leader", "actions": ["start", "stop", "restart"]},
+      {"name": "grok-acp", "actions": ["start", "stop", "restart"]},
+      {"name": "clutch-web", "actions": ["start", "stop", "restart"]},
+      {"name": "seat-mcp", "actions": ["start", "stop", "restart"]}
     ]
   },
   "server": {
+    "resourcePolicy": true,
     "units": [
-      {"unit": "fleet-server-status.timer", "scope": "user", "actions": ["start", "stop", "restart"]},
-      {"unit": "fleet-cli-git-update.timer", "scope": "system", "actions": ["start", "stop", "restart"]}
+      {"unit": "fleet-server-status.timer", "scope": "user", "actions": ["start", "stop", "restart"], "role": "reporting", "stopConsequence": "Stopping this stops the server's report, so Muster goes out of date within 45 minutes and every Redeploy is refused."},
+      {"unit": "fleet-cli-git-update.timer", "scope": "system", "actions": ["start", "stop", "restart"], "role": "updater", "stopConsequence": "Stopping this ends the hourly safety net that keeps the fleet tools on the server current."}
+    ],
+    "watch": [
+      {"unit": "code-main-sync.timer", "scope": "system"},
+      {"unit": "fleet-tools-doctor.timer", "scope": "system"},
+      {"unit": "fleet-housekeep.timer", "scope": "system"},
+      {"unit": "box-disk-hygiene.timer", "scope": "system"},
+      {"unit": "docker.service", "scope": "system"},
+      {"unit": "tailscaled.service", "scope": "system"}
     ],
     "updates": [
       {"name": "fleet-cli", "unit": "fleet-cli-git-update.service", "scope": "system"}

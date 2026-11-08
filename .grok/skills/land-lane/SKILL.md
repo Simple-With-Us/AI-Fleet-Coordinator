@@ -12,7 +12,7 @@ description: Land a Grok feature branch to main across the fleet — seat worktr
 
 Always-commit is standing policy.  After each coherent finished unit: commit → push → PR → merge when CI is green.  A remote branch with no PR is unfinished.  Pause only for force-push, prod data wipe, or live-key revoke.
 
-Seat: **GROK**.  Branch: `grok/<slug>`.  Never `claude/`.  Never land from `~/Code/<repo>` or from branch `main`.
+Seat: **GROK**.  Branch: `grok/<slug>`.  Never another seat's branch prefix.  Never land from `~/Code/<repo>` or from branch `main`.
 
 ## Preconditions
 
@@ -26,7 +26,7 @@ git config user.email "12656028+jaywedgeworth22@users.noreply.github.com"
 
 ## Docs before the PR
 
-1. Linear issue → In Progress with honest status (`simple-board claim <id> ...`, branch `<seat>/<id>-<slug>`).  The effort logs are archived, so there is no `docs/EFFORT-LOG.md` row to mirror.  The PR body says `Fixes <ID>` if it finishes the issue, `Refs <ID>` if not.
+1. Linear issue → In Progress with honest status (the MCP tool `linear_claim` with `id`, branch `<seat>/<id>-<slug>`).  The effort logs are archived, so there is no `docs/EFFORT-LOG.md` row to mirror.  The PR body says `Fixes <ID>` if it finishes the issue, `Refs <ID>` if not.
 2. `STATUS.md` stanza: what landed, next action.
 3. `docs/rollouts/YYYY-MM-DD-slug.md` — summary, why, files, verification commands actually run, follow-ups.
 4. Substantial owner-facing work: living Apple Note via the `apple-notes` skill, title `[TEAM_KEY, Agent] …`.
@@ -49,14 +49,13 @@ The script (idempotent) refuses the integration worktree and branch `main`, refu
 
 ST `land.sh` may still mention a retired path (`~/Code/Agentic Trading`).  The binding keepout is **any** `~/Code/<repo>` checkout.
 
-If it dies on missing `workflow` OAuth scope (branch touched `.github/workflows/*`):
+If the workflow still needs a dispatch, use the relay tool `gr_workflow_dispatch` (`identity` = your own seat tag):  `repo`, `workflow`, `ref`.
 
 ```bash
-gh auth refresh -h github.com -s workflow
 bash scripts/land.sh
 ```
 
-**AI-Fleet-Coordinator also has a `land.sh` — do not run it.**  It is an ST clone (Node 24 + tsc/test/build) and this repo has no `package.json`.  Docs-only: commit, push, `gh pr create`.
+**AI-Fleet-Coordinator also has a `land.sh` — do not run it.**  It is an ST clone (Node 24 + tsc/test/build) and this repo has no `package.json`.  Docs-only: commit, push, then open the PR with the relay tool `gr_open_pr`.
 
 ### Other apps — merge main, run *that* repo's verify, then PR
 
@@ -65,8 +64,8 @@ git fetch origin
 git merge origin/main --no-edit
 # then the gate below — do not invent npm test
 git push -u origin HEAD
-gh pr create --fill
 ```
+Open the PR with the relay tool `gr_open_pr` (`identity` = your own seat tag):  `repo`, `base`, `head`, `title`, `body`.
 
 | App | Verify (from current AGENTS.md / ci.yml) |
 |-----|------------------------------------------|
@@ -81,19 +80,21 @@ CTS "prod" is an annotated tag `vX.Y.Z` after merge — announce on `#Work-In-Pr
 
 `STATUS.md` / `PLAN.md` (and the archived `docs/EFFORT-LOG.md`) often carry `merge=union` in `.gitattributes`.  Additive edits usually combine.  Never delete another agent's row while resolving.  Up to 3 land attempts are fine.
 
+## Request the Kody review
+
+Kodus is in manual mode, so a push starts nothing.  Once the head is ready, read the PR's comments for an existing request on that head, then post a top-level comment that starts with `@kody start-review` (the relay tool `gr_comment_pr`).  A head was reviewed only when Kody's own `Kody Code Review` check on it is `success`, its title is `Code Review Complete`, its summary starts `Review finished successfully`, and it started no earlier than the newest request; treat every other result as no review.  Answer every finding with its fix, or a dispute based on the code, before you merge.  The full rule is in `AGENTS.md`, section "Kody reviews are requested by hand".
+
 ## Arm auto-merge
 
-```bash
-gh pr merge <N> --squash --auto
-```
+Arm auto-merge with the relay tool `gr_wf_automerge_enable` (`repo`, `number`, `method` = `SQUASH`).
 
 Not `--admin`.  Branch protection is `enforce_admins: true` plus conversation resolution.  Unresolved review threads block forever.  Use `codex-triage` / `unstick-pr`.
 
-If the box is gating several lanes, announce the full gate in #builds topic `gates`: `simple-chat post --channel builds --topic gates "gating now (<repo>, <branch or purpose>)"`, then post `gate clear` in the same topic when it finishes.  The CLI writes the tag.  Wait on a peer's open `gating now` with `simple-chat wait --channel builds --topic gates --timeout 900`.  Use the fleet wake (`@**all**` in #Work-In-Progress topic `fleet`) only when every listening seat on every platform must spend time.  `AFC` and `OPS` are repo acronyms, never a sender or a signature.
+If the box is gating several lanes, announce the full gate in #builds topic `gates`: the MCP tool `zulip_post` (`channel` = `builds`, `topic` = `gates`, `text` = "gating now (<repo>, <branch or purpose>)"), then post `gate clear` in the same topic when it finishes.  The server writes the tag.  Wait on a peer's open `gating now` with the CLI fallback `simple-chat wait --channel builds --topic gates --timeout 900` (it needs a seat:  `AGENT_SEAT`, `--as NAME`, `--default-seat NAME` or `--rc`).  Use the fleet wake (`@**all**` in #Work-In-Progress topic `fleet`) only when every listening seat on every platform must spend time.  `AFC` and `OPS` are repo acronyms, never a sender or a signature.
 
 ## After merge
 
-- Linear issue: **Completed** (Done) means merged to `main`, not "PR opened."  A `Fixes <ID>` PR moves it on merge once Linear's GitHub automation is on; otherwise run `simple-board status <id> completed`.
+- Linear issue: **Completed** (Done) means merged to `main`, not "PR opened."  A `Fixes <ID>` PR moves it on merge once Linear's GitHub automation is on; otherwise run the MCP tool `linear_status` (`id` = the issue, `status` = `completed`).
 - **Deployed** only after the app's production target is verified (`deploy-verify`).
 - Merge to `main` auto-deploys ST / CT / UM on Coolify and DealDex on Vercel.  Do not double-trigger.  Personal-Site live origin is Vercel behind Cloudflare and is **not** "merge = live" — do not mint a second Vercel project.
 - Retire the lane once the PR is merged: `cd ~ && ~/apps/lane retire <slug>` (from outside the lane; it refuses a dirty, unpushed, open-PR or in-use lane and says why).  `~/apps/lane prune` lists all your lanes and `--apply` removes the merged ones.
@@ -108,7 +109,7 @@ If the box is gating several lanes, announce the full gate in #builds topic `gat
 
 ## Canon
 
-- `/Users/jay/apps/FLEET-PROTOCOL.md` — Always commit + land; merge requirements; branch/worktree naming
+- `~/apps/FLEET-PROTOCOL.md` — Always commit + land; merge requirements; branch/worktree naming
 - App `AGENTS.md` Pre-Commit / Handoff + Verify before claiming done
 - `scripts/land.sh` when present
 - Skills: `session-start`, `unstick-pr`, `codex-triage`, `deploy-verify`, `closeout`, `owner-copy`

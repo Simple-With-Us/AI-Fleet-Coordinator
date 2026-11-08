@@ -15,8 +15,25 @@ from simple_tools.tests.harness import TAG, Harness
 
 
 class MessageCommandTests(Harness):
+    def test_post_edit_and_scheduled_own_intro_parity(self) -> None:
+        intro = "[CLAUDE: HH.1.M 📁AFC, OPS]"
+        made = self.run_cli("post", "--topic", "t", "--to", "CODEX", intro + " status", "--json")
+        self.assertEqual(made.code, 0, made.err)
+        mid = json.loads(made.out)["id"]
+        self.assertEqual(self.fake._find(mid)["content"], "[CLAUDE·%s: HH.1.M 📁AFC, OPS →CODEX] @**Codex** status" % TAG)
+        edited = self.run_cli("edit", "--id", str(mid), "[CLAUDE·old12345 📁OPS] edited")
+        self.assertEqual(edited.code, 0, edited.err)
+        self.assertEqual(self.fake._find(mid)["content"], "[CLAUDE·%s 📁OPS] edited" % TAG)
+        scheduled = self.run_cli("scheduled", "create", "--topic", "later", "--at", str(int(time.time()) + 3600), "👀 " + intro + " later", "--json")
+        self.assertEqual(scheduled.code, 0, scheduled.err)
+        sid = json.loads(scheduled.out)["id"]
+        self.assertEqual(self.fake.scheduled[sid]["content"], "👀 [CLAUDE·%s: HH.1.M 📁AFC, OPS] later" % TAG)
+        changed = self.run_cli("scheduled", "edit", "--id", str(sid), "[MA 📁OPS] quoted")
+        self.assertEqual(changed.code, 0, changed.err)
+        self.assertEqual(self.fake.scheduled[sid]["content"], "[CLAUDE·%s] [MA 📁OPS] quoted" % TAG)
+
     def test_show_prints_one_message_with_its_flags(self) -> None:
-        mid = self.fake.add_message("Codex", "work-in-progress", "t", "hello @**Claude**")
+        mid = self.fake.add_message("Codex", "simple-tools", "t", "hello @**Claude**")
         result = self.run_cli("show", "--id", str(mid), "--json")
         self.assertEqual(result.code, 0, result.err)
         row = json.loads(result.out)
@@ -54,7 +71,7 @@ class MessageCommandTests(Harness):
         )
 
     def test_edit_to_owner_unpinned_exits_2_before_any_request(self) -> None:
-        posted = self.fake.add_message("Claude", "work-in-progress", "t", "[CLAUDE·%s] first" % TAG)
+        posted = self.fake.add_message("Claude", "simple-tools", "t", "[CLAUDE·%s] first" % TAG)
         result = self.run_cli("edit", "--id", str(posted), "--to-owner", "now for you")
         self.assertEqual(result.code, 2)
         self.assertIn("owner_user_id is not pinned", result.err)
@@ -84,7 +101,7 @@ class MessageCommandTests(Harness):
         self.pin_owner()
         posted = self.fake.add_message(
             "Claude",
-            "work-in-progress",
+            "simple-tools",
             "t",
             "[CLAUDE·mvs35f72→OWNER] @**Jay Wedgeworth|%d** first" % FAKE_OWNER_ID,
         )
@@ -102,9 +119,34 @@ class MessageCommandTests(Harness):
             "@**Jay Wedgeworth|%d** third words" % FAKE_OWNER_ID,
         )
 
+    def test_edit_keeps_owner_from_a_compact_intro(self) -> None:
+        self.pin_owner()
+        posted = self.fake.add_message(
+            "Claude",
+            "simple-tools",
+            "t",
+            "[CLAUDE 📁AFC →OWNER] @**Jay Wedgeworth|%d** first" % FAKE_OWNER_ID,
+        )
+        result = self.run_cli("edit", "--id", str(posted), "second words")
+        self.assertEqual(result.code, 0, result.err)
+        self.assertEqual(
+            self.fake._find(posted)["content"],
+            "[CLAUDE·%s→OWNER] @**Jay Wedgeworth|%d** second words" % (TAG, FAKE_OWNER_ID),
+        )
+        multi = self.fake.add_message(
+            "Claude",
+            "simple-tools",
+            "t",
+            "👀 [MM: HH.1.M 📁AFC,OPS →OWNER] first",
+        )
+        # This harness posts as CLAUDE, so an MM intro is not this seat's tag.
+        missed = self.run_cli("edit", "--id", str(multi), "second words")
+        self.assertEqual(missed.code, 0, missed.err)
+        self.assertNotIn("→OWNER", self.fake._find(multi)["content"])
+
     def test_edit_does_not_invent_owner_from_quoted_text(self) -> None:
         posted = self.fake.add_message(
-            "Claude", "work-in-progress", "t", "[CLAUDE·%s] quoted [CLAUDE·x→OWNER] hi" % TAG
+            "Claude", "simple-tools", "t", "[CLAUDE·%s] quoted [CLAUDE·x→OWNER] hi" % TAG
         )
         result = self.run_cli("edit", "--id", str(posted), "second words")
         self.assertEqual(result.code, 0, result.err)
@@ -132,7 +174,7 @@ class MessageCommandTests(Harness):
         self.assertEqual(caught.exception.msg, "Invalid message(s)")
 
     def test_edit_refuses_another_senders_message(self) -> None:
-        theirs = self.fake.add_message("Codex", "work-in-progress", "t", "not yours")
+        theirs = self.fake.add_message("Codex", "simple-tools", "t", "not yours")
         before = len(self.fake.requests_to("PATCH", "messages/%d" % theirs))
         edit = self.run_cli("edit", "--id", str(theirs), "mine now")
         self.assertEqual(edit.code, 2)
@@ -140,7 +182,7 @@ class MessageCommandTests(Harness):
         self.assertEqual(len(self.fake.requests_to("PATCH", "messages/%d" % theirs)), before)
 
     def test_delete_leaves_another_senders_message_to_zulips_permission(self) -> None:
-        theirs = self.fake.add_message("Codex", "work-in-progress", "t", "not yours")
+        theirs = self.fake.add_message("Codex", "simple-tools", "t", "not yours")
         refused = self.run_cli("delete", "--id", str(theirs))
         self.assertEqual(refused.code, 2)
         self.assertIn("no permission to delete it", refused.err)
@@ -159,8 +201,8 @@ class MessageCommandTests(Harness):
         self.assertFalse(any(m["id"] == posted for m in self.fake.messages))
 
     def test_move_renames_and_moves_and_unresolve(self) -> None:
-        first = self.fake.add_message("Codex", "work-in-progress", "old name", "a")
-        self.fake.add_message("Codex", "work-in-progress", "old name", "b")
+        first = self.fake.add_message("Codex", "simple-tools", "old name", "a")
+        self.fake.add_message("Codex", "simple-tools", "old name", "b")
         result = self.run_cli("move", "--topic", "old name", "--new-topic", "new name")
         self.assertEqual(result.code, 0, result.err)
         self.assertEqual({m["subject"] for m in self.fake.messages}, {"new name"})
@@ -181,20 +223,20 @@ class MessageCommandTests(Harness):
         self.assertEqual(json.loads(plain.out)["topic"], "new name")
 
     def test_unreact_is_idempotent(self) -> None:
-        mid = self.fake.add_message("Codex", "work-in-progress", "t", "x")
+        mid = self.fake.add_message("Codex", "simple-tools", "t", "x")
         self.assertEqual(self.run_cli("react", "--id", str(mid), "eyes").code, 0)
         self.assertEqual(self.run_cli("unreact", "--id", str(mid), ":eyes:").code, 0)
         again = self.run_cli("unreact", "--id", str(mid), "eyes")
         self.assertEqual(again.code, 0, again.err)
 
     def test_flags_by_id_and_by_topic(self) -> None:
-        a = self.fake.add_message("Codex", "work-in-progress", "t", "a")
-        b = self.fake.add_message("Codex", "work-in-progress", "t", "b")
+        a = self.fake.add_message("Codex", "simple-tools", "t", "a")
+        b = self.fake.add_message("Codex", "simple-tools", "t", "b")
         self.assertEqual(self.run_cli("star", "--id", str(a)).code, 0)
         self.assertIn("starred", self.fake._flags(self.fake._find(a)))
         self.assertEqual(self.run_cli("unstar", "--id", str(a)).code, 0)
         self.assertNotIn("starred", self.fake._flags(self.fake._find(a)))
-        read = self.run_cli("mark-read", "--channel", "work-in-progress", "--topic", "t", "--json")
+        read = self.run_cli("mark-read", "--channel", "simple-tools", "--topic", "t", "--json")
         self.assertEqual(json.loads(read.out)["updated"], 2)
         self.assertIn("read", self.fake._flags(self.fake._find(b)))
         self.assertEqual(self.run_cli("mark-unread", "--id", str(b)).code, 0)
@@ -205,8 +247,8 @@ class MessageCommandTests(Harness):
 
 class SearchAndDirectoryTests(Harness):
     def test_search_words_sender_has_and_channel(self) -> None:
-        self.fake.add_message("Codex", "work-in-progress", "t", "deploy failed see https://x.test")
-        self.fake.add_message("Cursor", "work-in-progress", "t", "deploy fine")
+        self.fake.add_message("Codex", "simple-tools", "t", "deploy failed see https://x.test")
+        self.fake.add_message("Cursor", "simple-tools", "t", "deploy fine")
         self.fake.add_message("Codex", "other", "u", "unrelated")
         found = self.run_cli("search", "deploy", "--sender", "Codex", "--has", "link", "--json")
         self.assertEqual(found.code, 0, found.err)
@@ -223,9 +265,9 @@ class SearchAndDirectoryTests(Harness):
         listed = self.run_cli("channels", "--all", "--json")
         names = {row["name"]: row for row in json.loads(listed.out)}
         self.assertFalse(names["sandbox"]["subscribed"])
-        info = json.loads(self.run_cli("channel-info", "--channel", "work-in-progress", "--json").out)
+        info = json.loads(self.run_cli("channel-info", "--channel", "simple-tools", "--json").out)
         self.assertEqual((info["stream_id"], info["public"]), (7, True))
-        members = self.run_cli("members", "--channel", "work-in-progress", "--json")
+        members = self.run_cli("members", "--channel", "simple-tools", "--json")
         self.assertIn(BOT_EMAIL, members.out)
         gone = json.loads(self.run_cli("unsubscribe", "--channel", "other", "--json").out)
         self.assertEqual(gone, {"channel_id": 8, "removed": True})
@@ -315,7 +357,7 @@ class UploadScheduledDraftsTypingTests(Harness):
 
 class ApiEscapeHatchTests(Harness):
     def test_allowlisted_endpoint_runs(self) -> None:
-        mid = self.fake.add_message("Codex", "work-in-progress", "t", "x")
+        mid = self.fake.add_message("Codex", "simple-tools", "t", "x")
         result = self.run_cli("api", "GET", "messages/%d/history" % mid)
         self.assertEqual(result.code, 0, result.err)
         self.assertIn("message_history", result.out)
@@ -332,7 +374,7 @@ class ApiEscapeHatchTests(Harness):
         self.assertEqual(len(self.fake.requests), before)
 
     def test_secret_in_a_parameter_is_refused(self) -> None:
-        result = self.run_cli("api", "POST", "messages", "--param", "type=stream", "--param", "to=work-in-progress",
+        result = self.run_cli("api", "POST", "messages", "--param", "type=stream", "--param", "to=simple-tools",
                               "--param", "topic=t", "--param", "content=key " + self.key)
         self.assertEqual(result.code, 2)
         self.assertEqual(self.fake.requests_to("POST", "messages"), [])

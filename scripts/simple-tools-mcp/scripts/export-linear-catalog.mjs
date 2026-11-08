@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Export the hosted simple-tools Linear catalogs for the `board` CLI.
+// Export the hosted Simple-Tools Linear catalogs for the `board` CLI.
 //
 // The hosted server's named Linear commands, its proxied official Linear MCP
 // tools and its public-input allowlist live in JavaScript (src/).  The board
@@ -24,6 +24,7 @@ import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { withServiceTitle } from "../src/tool-titles.js";
 import { LINEAR_NAMED_COMMANDS, LINEAR_NAMED_TOOLS } from "../src/linear-named-specs.js";
 import { buildNamedOperation } from "../src/linear-named.js";
 import { LINEAR_MCP_TOOLS, LINEAR_MCP_BY_NAME } from "../src/linear-mcp-specs.js";
@@ -59,7 +60,7 @@ function argList(args) {
 function commandShape(command) {
   return {
     name: command.name,
-    title: command.title,
+    title: withServiceTitle(command).title,
     description: command.description,
     root: command.root,
     args: argList(command.args),
@@ -103,7 +104,7 @@ function coreCatalog() {
     const tool = by[name];
     return {
       name: tool.name,
-      title: tool.title,
+      title: withServiceTitle(tool).title,
       description: tool.description,
       kind: LINEAR_WRITE_TOOLS.has(name) ? "write" : "read",
       input_schema: tool.inputSchema,
@@ -126,7 +127,7 @@ function officialCatalog() {
     return {
       name: spec.name,
       upstream_name: spec.upstreamName,
-      title: spec.title,
+      title: withServiceTitle(spec).title,
       description: spec.description,
       kind: spec.write ? "write" : "read",
       input_schema: spec.inputSchema,
@@ -234,6 +235,10 @@ const GUARD_CASES = [
   ["variables array", "query { viewer { id } }", [1], "query"],
   ["variables too deep", "query { viewer { id } }", { a: { b: { c: { d: { e: { f: { g: { h: { i: { j: { k: { l: { m: { n: { o: { p: { q: { r: 1 } } } } } } } } } } } } } } } } } }, "query"],
   ["document over the length limit", `query { viewer { id } }${" ".repeat(24000)}`, {}, "query"],
+  ["variables under the raised limit", "query { viewer { id } }", { value: "x".repeat(30000) }, "query"],
+  ["variables at the raised limit", "query { viewer { id } }", { value: "x".repeat(99988) }, "query"],
+  ["variables over the raised limit", "query { viewer { id } }", { value: "x".repeat(99989) }, "query"],
+  ["astral variables count as single characters", "query { viewer { id } }", { value: "\u{1F600}".repeat(60000) }, "query"],
   ["too many tokens", `query { ${Array.from({ length: 4100 }, () => "a: b").join(" ")} }`, {}, "query"],
   ["mutation issueCreate", "mutation M($input: IssueCreateInput!) { issueCreate(input: $input) { success issue { id } } }", { input: { title: "t", teamId: "team" } }, "mutation"],
   ["mutation aliased root", "mutation { made: issueCreate(input: { title: \"t\", labelIds: [\"l1\", \"l2\"], priority: 2, estimate: 1.5, flag: true, none: null, kind: BUG }) { success } }", {}, "mutation"],

@@ -213,7 +213,7 @@ def message_history(agent: Any, message_id: int) -> list[dict[str, Any]]:
 
 
 def resolved_channel(agent: Any, channel: str) -> str:
-    """The live channel a name refers to, resolved with the runtime's own environment.
+    """The channel a name refers to, resolved with the runtime's own environment.
 
     The narrow names the channel and so does the guard that checks an anchor against it,
     so both halves of a command have to resolve the same name.
@@ -222,8 +222,7 @@ def resolved_channel(agent: Any, channel: str) -> str:
 
 
 def newest_in_topic(agent: Any, channel: str, topic: str) -> dict[str, Any]:
-    # The narrow names the channel, so a retired name has to be resolved before it
-    # becomes an operand:  otherwise the lookup reads the tombstone stream.
+    # The narrow names the channel, so the name is resolved before it becomes an operand.
     channel = resolved_channel(agent, channel)
     newest = agent.fetch(
         [{"operator": "channel", "operand": channel}, {"operator": "topic", "operand": topic}],

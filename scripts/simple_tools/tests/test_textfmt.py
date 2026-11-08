@@ -220,7 +220,7 @@ class ScannerAndCapAreUnaffectedTests(unittest.TestCase):
 
 class OutboundParamsTests(unittest.TestCase):
     def test_a_new_message_gets_the_gap_and_the_topic_is_untouched(self) -> None:
-        params = {"type": "stream", "to": "work-in-progress", "topic": "A.  B", "content": "One.  Two."}
+        params = {"type": "stream", "to": "simple-tools", "topic": "A.  B", "content": "One.  Two."}
         out = Z.outbound_params("POST", "messages", params)
         self.assertEqual(out["content"], "One.%sTwo." % G)
         self.assertEqual(
@@ -453,7 +453,7 @@ class SendPathTests(Harness):
 
     def test_read_shows_other_peoples_messages_exactly_as_stored(self) -> None:
         peer = "Peer says.  Two spaces.  And a trailing pair.  "
-        self.fake.add_message("Codex", "work-in-progress", "t", peer)
+        self.fake.add_message("Codex", "simple-tools", "t", peer)
         shown = self.run_cli("read", "--topic", "t").out
         self.assertIn("Peer says.  Two spaces.  And a trailing pair.", shown)
         self.assertNotIn(NBSP, shown)

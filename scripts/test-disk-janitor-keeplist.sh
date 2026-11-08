@@ -11,8 +11,8 @@
 # The failure mode this guards against is silent.  A reaped node_modules does not
 # take a running service down immediately — the process keeps serving from
 # memory and reports healthy while its own restart is what fails.  On
-# 2026-10-03 that is exactly how a retired Slack relay lost `ws` and killed
-# Slack event fan-out for every seat on this Mac for a day and a half.  The
+# 2026-10-03 that is exactly how an always-on relay lost `ws` and killed
+# event fan-out for every seat on this Mac for a day and a half.  The
 # tracked KEEP_RE had silently diverged from the live one, which is the other
 # half of the bug: a fix that only lands on the Mac is one re-sync away from
 # being lost.
@@ -29,7 +29,7 @@ KEEP_LINE=$(grep -n '^KEEP_RE=' "$JANITOR" | head -1 | cut -d: -f1)
 [ -n "$KEEP_LINE" ] || fail "KEEP_RE not found in $JANITOR"
 
 # Exact-token membership.  Splitting the list into whole alternatives means
-# a short token can never be satisfied by a longer token, and a prefix match
+# `clutch` can never be satisfied by `clutch-runtime`, and a prefix match
 # cannot stand in for a real entry.  The leading `^"^(` and trailing `))$"` are
 # regex syntax, not part of any path.
 KEEP_TOKENS=$(sed -n "${KEEP_LINE}p" "$JANITOR" \

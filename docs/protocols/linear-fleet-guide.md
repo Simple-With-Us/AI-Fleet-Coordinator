@@ -32,13 +32,13 @@ This is the rule the fleet runs on.  It exists because attribution is the whole 
 1. **Search before you start.**  Use `linear_list`, or your app token's search.  Look for related or duplicate issues.
 2. **Check the issue is real and still open in practice.**  Read it, then look at recent PRs, fleet recall and Sentry to confirm it has not been superseded or already fixed.
 3. **Act on what you found.**  If it is stale, superseded or already resolved, comment with your evidence and close it, or mark it a duplicate.  If it is real, claim it under your own identity before you start.  If a related issue already exists, comment on that one instead of opening parallel work.
-4. **Use the ST-MCP `linear_*` tools first** for `linear_whoami`, `linear_list`, `linear_show`, `linear_file`, `linear_claim`, `linear_comment` and `linear_status`.
-5. **For anything ST-MCP cannot do yet, use your own seat's Linear app token** through Linear's API.  That covers search, editing issues, assignees, labels, priority, moving issues between projects, creating or editing projects, cycles, sub-issues, blocking links, attachments, and unclaiming.
-6. **Never write to Linear through Jay's Linear connector.**  It always acts as Jay, and it may not be connected at all times, so do not depend on it.  Reads only, when it is there and neither ST-MCP nor your app token can do the read.
+4. **Use the Simple-Tools `linear_*` tools first** for `linear_whoami`, `linear_list`, `linear_show`, `linear_file`, `linear_claim`, `linear_comment` and `linear_status`.
+5. **For anything Simple-Tools cannot do yet, use your own seat's Linear app token** through Linear's API.  That covers search, editing issues, assignees, labels, priority, moving issues between projects, creating or editing projects, cycles, sub-issues, blocking links, attachments, and unclaiming.
+6. **Never write to Linear through Jay's Linear connector.**  It always acts as Jay, and it may not be connected at all times, so do not depend on it.  Reads only, when it is there and neither Simple-Tools nor your app token can do the read.
 7. **Every write must show your seat's name.**  Filing, comments, claims, status changes, labels, edits, projects, links and attachments, all of them.
-8. **If ST-MCP is rate-limited or failing, switch to your app token, and go back to ST-MCP once it works again.**
+8. **If Simple-Tools is rate-limited or failing, switch to your app token, and go back to Simple-Tools once it works again.**
 
-For Zulip, use the ST-MCP Zulip tools, which post as your own bot:  `zulip_topics` lists threads, `zulip_read_topic` reads one, `zulip_inbox` shows what is new for you, `zulip_post` starts a topic, `zulip_reply` answers in a thread, `zulip_react` adds an emoji, and `zulip_dm_list`, `zulip_dm_read` and `zulip_dm_send` handle direct messages.  Writes name the bot they act as in `identity`, as in `docs/protocols/per-call-identity.md`.  The full tool list, the connection choice and the error codes are in the [ST-MCP Tools Guide](https://fleetlink.online/simple-tools-guide/) (or call the `guide` tool).  Read the [Zulip Fleet Guide](https://fleetlink.online/zulip/zulip-fleet-guide.md) before posting:  it covers naming, message format, claims, approvals and catch-up after downtime.
+For Zulip, use the Simple-Tools Zulip tools, which post as your own bot:  `zulip_topics` lists threads, `zulip_read_topic` reads one, `zulip_inbox` shows what is new for you, `zulip_post` starts a topic, `zulip_reply` answers in a thread, `zulip_react` adds an emoji, and `zulip_dm_list`, `zulip_dm_read` and `zulip_dm_send` handle direct messages.  Writes name the bot they act as in `identity`, as in `docs/protocols/per-call-identity.md`.  The full tool list, the connection choice and the error codes are in the [Simple-Tools Tools Guide](https://fleetlink.online/simple-tools-guide/) (or call the `guide` tool).  Read the [Zulip Fleet Guide](https://fleetlink.online/zulip/zulip-fleet-guide.md) before posting:  it covers naming, message format, claims, approvals and catch-up after downtime.
 
 ## Before You Start
 
@@ -60,7 +60,7 @@ Use the highest one that does the job.  Dropping a level is allowed; silently us
 
 | # | Tool | Use it for | Identity it writes as |
 | --- | --- | --- | --- |
-| 1 | ST-MCP `linear_*` MCP tools | whoami, list, show, file, claim, comment, status | Your seat, stamped by the server |
+| 1 | Simple-Tools `linear_*` MCP tools | whoami, list, show, file, claim, comment, status | Your seat, stamped by the server |
 | 2 | Your seat's Linear app credentials from Infisical (`LINEAR_<SEAT>_CLIENT_ID` / `_SECRET`) through the API | search, edits, assignees, labels, priority, projects, cycles, sub-issues, blocking links, attachments, unclaiming | Your seat's own app |
 | 3 | Jay's Linear connector | **reads only**, and only when 1 and 2 cannot do the read | Jay, so reads only |
 
@@ -87,7 +87,7 @@ Set `AGENT_SEAT` in the same command as the call:  shell state does not persist 
 
 Jay's Linear connector always acts as Jay.  It may also be disconnected at any moment.
 
-- **Reads:** acceptable, and only when ST-MCP and your own app token cannot do the read.
+- **Reads:** acceptable, and only when Simple-Tools and your own app token cannot do the read.
 - **Writes:** never.  Not a comment, not a label, not a status, not an attachment, not a project edit.
 
 This is the Linear half of the standing rule that no agent posts, DMs, reacts, or writes through Jay's account anywhere.  The reason is identical:  a record that says Jay did it, when a bot did it, is worse than no record, because it is confidently wrong.
@@ -173,7 +173,7 @@ Each seat has its own Linear app, named for the seat bot's display name.  Its c
 
 Lookup order: the `LINEAR_CLIENT_ID`/`LINEAR_CLIENT_SECRET` environment pair (a cloud runtime), then the seat's own `LINEAR_<SEAT>_CLIENT_*` pair in the environment, then the seat's pair from Infisical Fleet-OPS prod `/linear`, then `LINEAR_<SEAT>_CLIENT_*` from the AI Fleet Coordinator `/linear` folder, then the shared app's `LINEAR_FLEET_CLIENT_*` pair in the environment, then the shared app's pair from Infisical Fleet-OPS prod `/linear`, then the shared app's pair from the AI Fleet Coordinator `/linear` folder.  The process environment is consulted first for every pair and a stored value is a fallback, so an operator's exported pair always wins.  Every stored value is read through the approved loader only, `fleet-secrets get NAME` (OPS-818), with `--project ai-fleet-coordinator` for the AI Fleet Coordinator folder, and never through a direct Infisical call.  A seat whose own app resolves never falls back to the shared Fleet app, because the fleet pair is read in the fleet branch, after the seat's own.  The one value still read from the AI Fleet Coordinator folder through an `INFISICAL_AUTOMATION` identity is the shared copy of a minted token on a host with no `fleet-secrets`, which is a token cache and not a credential.  An operator resolves a credential the same way: the process environment first, then `fleet-secrets get NAME`, never a direct Infisical call and never a credential file.  When none of them resolves, the CLI names the variables it could not find and stops.  It does not fall back to a local file, because it reads no credential file (AFC-359).
 
-Each app has one minted token, shared through Infisical `/linear` as `LINEAR_<SEAT>_CACHE_TOKEN` (`LINEAR_FLEET_CACHE_TOKEN` for the shared app), so every host that runs `simple-board` uses the same token instead of minting their own against Linear's one-mint-a-day limit.  No token is written to disk.  The CLI's own cache directory, `~/.cache/linear-board` (or `LINEAR_BOARD_CACHE_DIR`), mode 700, holds non-secret material only, such as the idempotency receipts.  `simple-board whoami` prints the identity it resolved and where each part came from.  The hosted ST-MCP Worker still keeps its own token per seat in that seat's Durable Object.
+Each app has one minted token, shared through Infisical `/linear` as `LINEAR_<SEAT>_CACHE_TOKEN` (`LINEAR_FLEET_CACHE_TOKEN` for the shared app), so every host that runs `simple-board` uses the same token instead of minting their own against Linear's one-mint-a-day limit.  No token is written to disk.  The CLI's own cache directory, `~/.cache/linear-board` (or `LINEAR_BOARD_CACHE_DIR`), mode 700, holds non-secret material only, such as the idempotency receipts.  `simple-board whoami` prints the identity it resolved and where each part came from.  The hosted Simple-Tools Worker still keeps its own token per seat in that seat's Durable Object.
 
 `simple-board whoami` prints the identity line, the viewer, the workspace, and the credentials path.  Check it before your first write:
 
@@ -215,7 +215,7 @@ The full design, the filters, the Infisical names and the setup steps are in
 
 ## When a Tool Fails
 
-- ST-MCP rate-limited or erroring:**  use your seat's app token for the work, then return to ST-MCP when it recovers.  Say in the work topic which tool you used, so the next reader knows the record came by a second path.
+- **Simple-Tools rate-limited or erroring:**  use your seat's app token for the work, then return to Simple-Tools when it recovers.  Say in the work topic which tool you used, so the next reader knows the record came by a second path.
 - **Writes refused for a missing seat:**  set `AGENT_SEAT` in the same command.  Never put it in a global setting.
 - **Claim refused:**  another seat holds it.  Check whether the work is genuinely theirs, then coordinate in the work topic.  `--steal` is a last resort and needs a reason.
 - **A record looks wrong:**  do not edit a peer's text.  Comment with the evidence and the date ([Every Write Shows Your Seat](#every-write-shows-your-seat)).

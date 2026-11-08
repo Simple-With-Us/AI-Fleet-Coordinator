@@ -52,16 +52,40 @@ import time
 from collections import deque
 from pathlib import Path
 
-# The secret scanner lives in the managed simple-tools runtime, which is a
-# separate checkout and is not on the interpreter's path.  Add it before the
-# import, so the bridge does not depend on how it was launched.
-_SIMPLE_TOOLS_SCRIPTS = os.path.expanduser(
-    "~/apps/lanes/_managed/fleet/simple-tools-runtime/scripts"
-)
-if os.path.isdir(_SIMPLE_TOOLS_SCRIPTS) and _SIMPLE_TOOLS_SCRIPTS not in sys.path:
+# The secret scanner lives in the managed fleet runtime, which is a separate
+# checkout and is not on the interpreter's path.  Add it before the import, so
+# the bridge does not depend on how it was launched.  A copy run from a checkout
+# uses its own scripts folder first (AFC-490).
+_RUNTIME_SCRIPTS = ("~/apps/lanes/_managed/fleet/simple-tools-runtime/scripts",)
+
+
+def _runtime_scripts_dir(home=None, isdir=os.path.isdir, here=None):
+    """The first folder that holds the `simple_tools` package, or None."""
+    here = here if here is not None else os.path.dirname(os.path.abspath(__file__))
+    candidates = [here]
+    for path in _RUNTIME_SCRIPTS:
+        candidates.append(os.path.join(home, path[2:]) if home else os.path.expanduser(path))
+    for candidate in candidates:
+        if isdir(os.path.join(candidate, "simple_tools")):
+            return candidate
+    return None
+
+
+_SIMPLE_TOOLS_SCRIPTS = _runtime_scripts_dir()
+if _SIMPLE_TOOLS_SCRIPTS and _SIMPLE_TOOLS_SCRIPTS not in sys.path:
     sys.path.insert(0, _SIMPLE_TOOLS_SCRIPTS)
 
-from simple_tools.secretscan import scan as scan_secret
+try:
+    from simple_tools.secretscan import scan as scan_secret
+except ModuleNotFoundError:
+    # Fail closed with a message that names where it looked.  The scanner is what stops a
+    # credential-shaped reply reaching Lark, so there is no stub to fall back on.
+    sys.stderr.write(
+        "lark-mm-bridge: simple_tools.secretscan not found;  looked in this script's folder and in "
+        + " and ".join(_RUNTIME_SCRIPTS)
+        + ".  Install or update the fleet runtime, then restart the bridge.\n"
+    )
+    raise SystemExit(1)
 
 LARK_EVENT_KEY = "im.message.receive_v1"
 DEFAULT_LARK_CLI = os.path.expanduser("~/.local/npm-global/bin/lark-cli")
@@ -75,7 +99,7 @@ DEFAULT_TIMEOUT = 1200
 REPLY_TIMEOUT = 300
 # The owner watches Zulip, so every Lark exchange is mirrored there with the
 # MiniMax session id, which is the thread the answer came from.
-SIMPLE_CHAT = os.path.expanduser("~/.local/bin/simple-chat")
+SIMPLE_TOOLS = os.path.expanduser("~/.local/bin/simple-chat")
 SIMPLE_TOOLS_ROOT = os.path.expanduser("~/.simple-tools")
 ZULIP_TOPIC_PREFIX = "Lark"
 MAX_REPLY_CHARS = 4000
@@ -1197,7 +1221,7 @@ class Bridge:
             env["AGENT_SESSION"] = session_id
         try:
             run(
-                [SIMPLE_CHAT, "post", "--topic", topic, body],
+                [SIMPLE_TOOLS, "post", "--topic", topic, body],
                 timeout=REPLY_TIMEOUT,
                 env=env,
             )

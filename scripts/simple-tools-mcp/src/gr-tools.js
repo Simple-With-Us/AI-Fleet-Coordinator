@@ -19,8 +19,9 @@
 import { z } from "zod";
 import { callTypedV1 } from "./gr-typed-v1.js";
 import { ASSERTION_FAMILY_RE } from "./gr-assert.js";
-import { WF_V1_READ_ACTIONS, WF_V1_ACTIONS, workflowInputLimit, validWfV1Args, boundedWorkflowInput, parseWfV1Args, validWfV1Response } from "./gr-workflow-v1.js";
+import { WF_V1_READ_ACTIONS, WF_V1_ACTIONS, workflowInputLimit, validWfV1Args, boundedWorkflowInput, parseWfV1Args, validWfV1Response, utf8Bytes } from "./gr-workflow-v1.js";
 import { resolveSecret } from "./infisical.js";
+import { classifyRelayRefusal } from "./gr-refusal.js";
 
 /** The relay's response envelope (kody discussion_r4372745180):  every body
  * is decoded as UNKNOWN and validated with RelayResponseSchema.parse before
@@ -36,6 +37,9 @@ export const RelayResponseSchema = z.looseObject({
 
 export const GR_TIMEOUT_MS = 15_000;
 export const GR_RESPONSE_LIMIT = 262_144; // bytes:  a relay answer is small JSON
+export const GRAPHQL_ERROR_CODES = Object.freeze([
+  "graphql_forbidden", "graphql_not_found", "graphql_unprocessable", "graphql_rate_limited",
+]);
 export const GR_SECRETS = Object.freeze({
   accessId: "GR_ACCESS_CLIENT_ID",
   accessSecret: "GR_ACCESS_CLIENT_SECRET",
@@ -151,12 +155,12 @@ export class GrRelayClient {
     ) {
       return {status: 400, body: {error: "invalid_workflow_args"}};
     }
-    if (new TextEncoder().encode(JSON.stringify(args)).length > limit) return {status:400,body:{error:"workflow_request_too_large"}};
+    if (utf8Bytes(JSON.stringify(args)) > limit) return {status:400,body:{error:"workflow_request_too_large"}};
     const parsedArgs=parseWfV1Args(action,args);
     if(parsedArgs===null)return {status:400,body:{error:"invalid_workflow_args"}};
     args=parsedArgs;
     const serialized = JSON.stringify(args);
-    if (new TextEncoder().encode(serialized).length > limit) return {status:400,body:{error:"workflow_request_too_large"}};
+    if (utf8Bytes(serialized) > limit) return {status:400,body:{error:"workflow_request_too_large"}};
     const write = !WF_V1_READ_ACTIONS.includes(action);
     const unavailable = () => ({status:502,body:{error:"upstream_unavailable", ...(write ? {outcome:"unknown",retryable:false} : {retryable:true})}});
     const credential = await this.#credential(action, serialized);
@@ -186,11 +190,41 @@ export class GrRelayClient {
       if (response.status < 400 || response.status > 599 || !body || typeof body!=="object" || Array.isArray(body)) return unavailable();
       const errorShape = z.object({error:z.string().max(1000),retryable:z.boolean().optional(),outcome:z.enum(['pending','unknown','refused']).optional()}).safeParse(body);
       if(!errorShape.success) return unavailable();
+      const parsed=errorShape.data;
+      // The relay's github_code is external data:  validate it with zod before
+      // any use.  A code outside the allowlist (or of the wrong type) is
+      // dropped, never reflected.
+      const githubCodeShape=z.enum(GRAPHQL_ERROR_CODES).optional().safeParse(body.github_code);
+      const githubCode=githubCodeShape.success?githubCodeShape.data:undefined;
+      const outcomeUnknown=()=>({status:502,body:{error:"workflow_outcome_unknown",outcome:"unknown",retryable:false,...(githubCode?{github_code:githubCode}:{})}});
       // Never reflect upstream error prose; a duplicate can be pending/unknown.
-      if(response.status===409 && ['pending','unknown'].includes(body.outcome))
-        return {status:502,body:{error:"workflow_outcome_unknown",outcome:"unknown",retryable:false}};
-      if(response.status>=500 && body.retryable!==true) return unavailable();
-      return {status:response.status,body:{error:"workflow_request_refused", ...(body.retryable===true ? {retryable:true} : {})}};
+      if(response.status===409 && ['pending','unknown'].includes(parsed.outcome)) return outcomeUnknown();
+      if(response.status>=500 && parsed.retryable!==true) {
+        if (response.status === 502 && parsed.outcome === "unknown" && githubCode) return outcomeUnknown();
+        return unavailable();
+      }
+      // Preserve the relay's credential-scan verdict as a machine-readable
+      // marker:  the collapsed prose stays fixed, but without the marker the
+      // hosted front cannot tell a credential refusal from any other 4xx, so
+      // gr_wf_file_put/gr_wf_files_put callers lost their refused_secret reason.
+      // The vouched family is the relay's fixed credential refusals:  the
+      // workflow verbs' "credential-shaped ..." strings, the pre-dispatch
+      // scanner's anchored field/pattern tail, and the credential-only
+      // environment-name refusal.  Three stay OUT:  the secrets-API variable
+      // refusal and "invalid asset content" also fire for over-limit or
+      // non-string values (not credential verdicts), and the commit-message
+      // refusal is post-write - the commit already exists, so the hosted
+      // "Nothing was written" guidance would be false.
+      const credentialMarker = typeof parsed.error === "string"
+        && parsed.error !== "credential-shaped commit message refused"
+        && (parsed.error.startsWith("credential-shaped")
+          || parsed.error === "environment name contains credential pattern"
+          || /^[^\n]{1,200} looks like it contains a credential \([A-Za-z0-9_]{1,60}\); refusing to relay it$/.test(parsed.error));
+      // The cause class, from the relay's exact fixed strings and numeric
+      // github_status only (src/gr-refusal.js):  a closed reason or nothing,
+      // never the relay's prose.  An unmatched refusal keeps the flat answer.
+      const classified=credentialMarker?{reason:"credential_scan"}:classifyRelayRefusal(parsed.error, body.github_status);
+      return {status:response.status,body:{error:"workflow_request_refused", ...(classified ? classified : {}), ...(parsed.retryable===true ? {retryable:true} : {})}};
     } catch {return unavailable();}
   }
 
@@ -202,6 +236,13 @@ export class GrRelayClient {
    * and HTTP status.  Never throws on a relay refusal - a 4xx body is data
    * the tool caller should see (its own allowlist answer). */
   async call(action, args) {
+    if (action === "open_pr" && args && Object.hasOwn(args, "draft")) {
+      if (typeof args.draft !== "boolean") return { status: 400, body: { error: "draft_must_be_boolean" } };
+      if (args.draft === false) {
+        args = { ...args };
+        delete args.draft;
+      }
+    }
     const body = JSON.stringify(args ?? {});
     const credential = await this.#credential(action, body);
     if (credential === null) return { status: 503, body: { error: "not_configured" }, localFailure: true };
@@ -277,7 +318,7 @@ export const GR_TOOLS = Object.freeze([
     name: "gr_open_pr",
     title: "Open Pull Request",
     description: "Open a pull request through git-relay.  Runs under the owner's scoped PR-only token (the only action that token performs);  the title and body are scanned for credential-shaped text before anything is sent.",
-    inputSchema: obj(["repo", "base", "head", "title", "body"], { repo: REPO, base: { type: "string" }, head: { type: "string" }, title: { type: "string" }, body: { type: "string" } }),
+    inputSchema: obj(["repo", "base", "head", "title", "body"], { repo: REPO, base: { type: "string" }, head: { type: "string" }, title: { type: "string" }, body: { type: "string" }, draft: { type: "boolean" } }),
   },
   {
     name: "gr_edit_pr",

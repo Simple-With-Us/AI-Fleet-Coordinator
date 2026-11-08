@@ -74,14 +74,18 @@ fi
 # same 120 minute stale window.  An implementation that still removes the
 # lock and recreates it can delete a fresh lock between a peer's staleness
 # check and its recreation, and then two reclaimers sweep at once.
-# The shell holder writes no owner file -- it recovers by the age rule -- so a peer
-# that reads an owner file must fall back to the age rule when the file is older
-# than the lock directory it sits beside.
+# Standalone shell holders publish the same owner record as the other holders.
+# An inherited owner token leaves the parent record and lock untouched.
 HOUSEKEEPER_LOCK="$HOME/.claude-disk-janitor/.housekeeper.lock"
 # The shared guard over this protocol.  See housekeeper_with_guard below.
 HOUSEKEEPER_GUARD="$HOME/.claude-disk-janitor/.housekeeper.lock.guard"
 HOUSEKEEPER_STALE=""
 HOUSEKEEPER_LOCK_INODE=""
+# The long-lived shell owns the lock, never the short-lived guarded helper.
+HOUSEKEEPER_OWNER_PID=$$
+HOUSEKEEPER_OWNER_RECORD=""
+HOUSEKEEPER_OWNER_START=""
+HOUSEKEEPER_PREVIOUS_OWNER=""
 # 1 means the moved-aside copy holds a PEER's lock, so it must never be deleted.
 HOUSEKEEPER_STALE_IS_PEER=0
 # Where the guarded acquire section hands its state to the release.
@@ -273,7 +277,107 @@ housekeeper_record_state() {
         echo "LOCK_INODE=$inode"
         echo "STALE=$HOUSEKEEPER_STALE"
         echo "PEER=$HOUSEKEEPER_STALE_IS_PEER"
+        echo "OWNER_RECORD=$HOUSEKEEPER_OWNER_RECORD"
     } > "$HOUSEKEEPER_STATE_FILE"
+}
+
+# Publish under the existing guard, after mkdir and before any cleanup starts.
+# A failure leaves the lock in place and fails closed.  The expected record is
+# returned to the main shell so release can compare the whole identity.
+housekeeper_owner_identity() {
+    python3 - "$HOUSEKEEPER_LOCK.owner" <<'PYIDENTITY'
+import hashlib, os, sys
+try:
+    path = sys.argv[1]
+    info = os.lstat(path)
+    with open(path, "rb") as handle:
+        raw = handle.read(65537)
+    if len(raw) > 65536:
+        raise OSError("oversized owner record")
+    print((info.st_dev, info.st_ino, info.st_mtime_ns, hashlib.sha256(raw).hexdigest()))
+except FileNotFoundError:
+    print("absent")
+except OSError:
+    # Preserve an unreadable owner path; it cannot identify an authorized replacement.
+    sys.exit(1)
+PYIDENTITY
+}
+
+# Obtain the start token before mkdir: ps may take up to ten seconds, while
+# the published acquisition and filesystem timestamps must agree within two.
+housekeeper_process_start_token() {
+    python3 - "$HOUSEKEEPER_OWNER_PID" <<'PYSTART'
+import os, subprocess, sys
+try:
+    result = subprocess.run(
+        ["/bin/ps", "-o", "lstart=", "-p", sys.argv[1]],
+        capture_output=True, text=True, timeout=10, check=False,
+        env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LC_ALL": "C"},
+    )
+    start = result.stdout.strip()
+    if result.returncode != 0 or not start or len(start) > 128:
+        raise OSError("process start token unavailable")
+    print(start)
+except (OSError, subprocess.SubprocessError) as exc:
+    print("failed to read housekeeper process start: %s" % exc, file=sys.stderr)
+    sys.exit(1)
+PYSTART
+}
+
+housekeeper_publish_owner() {
+    local current_owner
+    current_owner="$(housekeeper_owner_identity)" || return 1
+    if [ "$current_owner" != "$HOUSEKEEPER_PREVIOUS_OWNER" ]; then
+        echo "failed to publish housekeeper owner: owner changed during acquisition" >&2
+        return 1
+    fi
+    python3 - "$HOUSEKEEPER_LOCK" "$HOUSEKEEPER_OWNER_PID" "$HOUSEKEEPER_OWNER_START" <<'PYOWNER'
+import json, os, socket, sys, tempfile, time
+
+lock_path, pid = sys.argv[1], int(sys.argv[2])
+start = sys.argv[3]
+owner_path = lock_path + ".owner"
+tmp_path = None
+try:
+    lock_stat = os.stat(lock_path)
+    if not start or len(start) > 128:
+        raise OSError("process start token unavailable")
+    acquired_at = time.time()
+    if abs(acquired_at - lock_stat.st_mtime) > 2.0:
+        raise OSError("lock acquisition timestamp out of bounds")
+    payload = json.dumps({"pid": pid, "host": socket.gethostname() or "unknown",
+                          "acquired_at": acquired_at, "lock": lock_path, "start": start})
+    fd, tmp_path = tempfile.mkstemp(prefix=".housekeeper-owner-", dir=os.path.dirname(lock_path))
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        os.fchmod(handle.fileno(), 0o600)
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+    # Filesystems can timestamp mkdir and write at the same instant.  Advance
+    # only the private temp file, with the reader's two-second skew bound.
+    stamp = max(os.stat(tmp_path).st_mtime_ns, lock_stat.st_mtime_ns + 1_000_000)
+    if abs(acquired_at - stamp / 1_000_000_000) > 2.0:
+        raise OSError("owner acquisition timestamp out of bounds")
+    os.utime(tmp_path, ns=(stamp, stamp))
+    if os.stat(tmp_path).st_mtime_ns <= lock_stat.st_mtime_ns:
+        raise OSError("owner timestamp is not newer than lock")
+    os.replace(tmp_path, owner_path)
+    dir_fd = os.open(os.path.dirname(lock_path), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+    print(payload)
+except OSError as exc:
+    print("failed to publish housekeeper owner: %s" % exc, file=sys.stderr)
+    sys.exit(1)
+finally:
+    if tmp_path is not None:
+        try:
+            os.unlink(tmp_path)
+        except FileNotFoundError:
+            pass
+PYOWNER
 }
 
 # Whether the owner file proves the holder of a given lock directory is gone.
@@ -288,8 +392,7 @@ housekeeper_record_state() {
 # conservative -- exit 0 (the holder is gone) ONLY when the file names a dead
 # pid on THIS host, or a pid this host has since handed to somebody else, and
 # was written after the lock directory it sits beside.  Anything else exits 1
-# and the caller falls back to the age rule, which is what this script relies
-# on for its own holder:  it writes no owner file.
+# and the caller falls back to the age rule.
 #
 # The argument is the lock directory to judge, which is the canonical lock at
 # the first gate and the moved-aside copy at the second.  The owner file is a
@@ -482,9 +585,18 @@ housekeeper_acquire_section() {
     # This section owns its own copy of the peer flag:  the release reads it
     # back from the state file.
     HOUSEKEEPER_STALE_IS_PEER=0
+    HOUSEKEEPER_PREVIOUS_OWNER="$(housekeeper_owner_identity)" || {
+        echo "failed to publish housekeeper owner: unreadable prior owner" >&2
+        housekeeper_record_state
+        return 76
+    }
     housekeeper_try_mkdir "$HOUSEKEEPER_LOCK"
     rc=$?
     if [ "$rc" = "0" ]; then
+        if ! HOUSEKEEPER_OWNER_RECORD="$(housekeeper_publish_owner)"; then
+            housekeeper_record_state
+            return 76
+        fi
         housekeeper_record_state held
         return 0
     fi
@@ -594,6 +706,10 @@ housekeeper_acquire_section() {
         housekeeper_record_state
         return 76
     fi
+    if ! HOUSEKEEPER_OWNER_RECORD="$(housekeeper_publish_owner)"; then
+        housekeeper_record_state
+        return 76
+    fi
     housekeeper_record_state held
     return 0
 }
@@ -612,7 +728,25 @@ housekeeper_release_section() {
     # The canonical lock is ours only if it is still the one we created.
     if [ -n "$HOUSEKEEPER_LOCK_INODE" ]; then
         if [ "$(stat -f %i "$HOUSEKEEPER_LOCK" 2>/dev/null || echo '')" = "$HOUSEKEEPER_LOCK_INODE" ]; then
-            rmdir "$HOUSEKEEPER_LOCK" 2>/dev/null || true
+            # Compare the whole record before either removal, under this guard.
+            # Unknown or replaced metadata cannot authorize deleting anything.
+            python3 - "$HOUSEKEEPER_LOCK" "${HOUSEKEEPER_OWNER_RECORD:-}" <<'PYRELEASE'
+import json, os, sys
+lock_path, expected = sys.argv[1:]
+try:
+    with open(lock_path + ".owner", encoding="utf-8") as handle:
+        actual = handle.read()
+    if not expected or actual != expected:
+        sys.exit(0)
+    record = json.loads(actual)
+    if set(record) != {"pid", "host", "acquired_at", "lock", "start"}:
+        sys.exit(0)
+    os.rmdir(lock_path)
+    # Keep the record when rmdir fails, allowing readers to see a dead holder.
+    os.unlink(lock_path + ".owner")
+except (OSError, ValueError, TypeError):
+    pass
+PYRELEASE
         fi
     fi
 }
@@ -634,17 +768,25 @@ mkdir -p "$(dirname "$HOUSEKEEPER_LOCK")" 2>/dev/null || true
 # The release runs inside the guard, because the ownership check and the
 # removal have to be one decision against every implementation of this
 # protocol.
-trap 'housekeeper_with_guard "$HOUSEKEEPER_GUARD" "housekeeper_release_section" >/dev/null 2>&1 || true' EXIT
+trap 'wait; housekeeper_with_guard "$HOUSEKEEPER_GUARD" "housekeeper_release_section" >/dev/null 2>&1 || true' EXIT
+# Bash defers these traps while a foreground cleanup runs.  Do not release
+# while that child can still be reclaiming; EXIT also waits for tracked jobs.
+trap 'exit 143' TERM
+trap 'exit 130' INT
 
 # The guarded sections run in a child shell, so the functions and the state
 # they read have to travel with them.
 export -f housekeeper_with_guard housekeeper_try_mkdir housekeeper_rename_exclusive \
     housekeeper_restore_lock housekeeper_record_state housekeeper_acquire_section \
-    housekeeper_release_section housekeeper_owner_is_gone
+    housekeeper_release_section housekeeper_owner_is_gone housekeeper_publish_owner housekeeper_owner_identity \
+    housekeeper_process_start_token
 export HOUSEKEEPER_LOCK HOUSEKEEPER_GUARD HOUSEKEEPER_STALE HOUSEKEEPER_LOCK_INODE \
-    HOUSEKEEPER_STALE_IS_PEER HOUSEKEEPER_STATE_FILE
+    HOUSEKEEPER_STALE_IS_PEER HOUSEKEEPER_STATE_FILE HOUSEKEEPER_OWNER_PID HOUSEKEEPER_OWNER_RECORD \
+    HOUSEKEEPER_PREVIOUS_OWNER HOUSEKEEPER_OWNER_START
 
 if [ "${HOUSEKEEPER_LOCK_OWNER:-0}" != "1" ]; then
+    HOUSEKEEPER_OWNER_START="$(housekeeper_process_start_token)" || exit 1
+    export HOUSEKEEPER_OWNER_START
     # The state file carries the outcome of the guarded section back to this
     # shell:  the inode of the lock this process created, the moved-aside
     # copy, and whether that copy holds a live peer's lock.
@@ -675,6 +817,7 @@ if [ "${HOUSEKEEPER_LOCK_OWNER:-0}" != "1" ]; then
                 LOCK_INODE) HOUSEKEEPER_LOCK_INODE="$housekeeper_value" ;;
                 STALE) HOUSEKEEPER_STALE="$housekeeper_value" ;;
                 PEER) HOUSEKEEPER_STALE_IS_PEER="$housekeeper_value" ;;
+                OWNER_RECORD) HOUSEKEEPER_OWNER_RECORD="$housekeeper_value" ;;
             esac
         done < "$HOUSEKEEPER_STATE_FILE"
         rm -f "$HOUSEKEEPER_STATE_FILE"
@@ -696,7 +839,7 @@ if [ "${HOUSEKEEPER_LOCK_OWNER:-0}" != "1" ]; then
     # The lock is ours:  say so, so that the children this script spawns know
     # it is already held and do not try to take it again.
     export HOUSEKEEPER_LOCK_OWNER=1
-    export HOUSEKEEPER_LOCK_INODE HOUSEKEEPER_STALE HOUSEKEEPER_STALE_IS_PEER
+    export HOUSEKEEPER_LOCK_INODE HOUSEKEEPER_STALE HOUSEKEEPER_STALE_IS_PEER HOUSEKEEPER_OWNER_RECORD
 fi
 
 echo "[$(date)] Starting Mac automated cleanup${PRESSURE:+ (pressure)}..."

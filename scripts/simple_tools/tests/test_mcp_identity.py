@@ -17,7 +17,7 @@ from simple_tools import identities as X
 from simple_tools.mcp import identity_router as R
 from simple_tools.mcp import tools as T
 from simple_tools.tests.harness import TAG, write_rc
-from simple_tools.tests.mcp_harness import McpHarness, seat_bearer_locator, zulip_shaped
+from simple_tools.tests.mcp_harness import McpHarness, seat_bearer_file, zulip_shaped
 
 ENABLED = X.gb_identities()
 PERSONA = ENABLED[1]  # any enabled persona works;  the table decides which
@@ -62,12 +62,12 @@ class IdentityHarness(McpHarness):
             {"CLAUDE", "CURSOR", "BF-PLUMBER"} | ({PERSONA, "GB-RETIRED"} & set(ENABLED))
         )
         self.expected = ["CLAUDE"]
-        # board proves its seat from the bearer at SIMPLE_BOARD_BEARER_LOCATOR and never reads AGENT_SEAT,
-        # so every seat this suite acts as gets its own locator in the installed listener.toml.  Without
-        # one a Linear write is refused before board runs.
+        # board proves its seat from the bearer at SIMPLE_BOARD_BEARER_FILE and never reads AGENT_SEAT,
+        # so every seat this suite acts as gets its own bearer file in the installed listener.toml.
+        # Without one a Linear write is refused before board runs.
         self.pin_seat_bearers(
             {
-                seat: seat_bearer_locator(seat)
+                seat: seat_bearer_file(seat)
                 for seat in ("CLAUDE", "CURSOR", "BF-PLUMBER", PERSONA)
             }
         )
@@ -451,7 +451,7 @@ class CliTests(IdentityHarness):
         self.assertNotIn("hello", json.dumps(rows))
 
     def test_a_mutating_api_call_is_audited_with_its_method_and_path_and_never_its_body(self):
-        mid = self.fake.add_message("Codex", "work-in-progress", "t", "hi")
+        mid = self.fake.add_message("Codex", "simple-tools", "t", "hi")
         env = self.cli_env()
         self.assertEqual(self.run_cli("api", "GET", "messages/%d/history" % mid, env=env).code, 0)
         posted = self.run_cli(

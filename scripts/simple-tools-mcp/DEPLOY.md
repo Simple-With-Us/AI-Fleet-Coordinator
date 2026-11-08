@@ -2,7 +2,7 @@
 
 The runbook for `https://agents.simplewithus.com` from Phase 2 on:  the seven tools, with GROK-WEB and JET both served (JET enabled Fri, Oct 9, after Jay demoted `openai-dot-bot` to member;  deployed with its key installed at about 8:10am, version `068c2953`).  [DEPLOY-PHASE0.md](DEPLOY-PHASE0.md) is the record of the first deploy and the hostname move.
 
-A merge is never a deploy (spec 3.2):  agents auto-merge to `main`, so every deploy is run by hand from a checkout of the merged commit, never from CI.  Decision D8 (Thu, Oct 8) accepts deploying with the Cloudflare Global key pair from the handoff file until Jay mints a per-Worker deploy token (owner item A5).  Anyone who can deploy this Worker can act as every hosted seat;  that is the accepted residual.
+A merge is never a deploy (spec 3.2):  agents auto-merge to `main`, so every deploy is run by hand from a checkout of the merged commit, never from CI.  Deploys use the scoped per-Worker token `CLOUDFLARE_ECHO_ST_MCP_DEPLOY` (Fleet-OPS `prod` `/cloudflare`), read through its own read-only reader, and go out with `wrangler versions upload` plus `wrangler versions deploy` (see [ops/2026-11-08-scoped-deploy-token-route.md](ops/2026-11-08-scoped-deploy-token-route.md)).  The earlier decision D8 (Thu, Oct 8) that accepted the Cloudflare Global key pair is retired:  do not use the Global key or `CLOUDFLARE_JAY_API_KEY` for any step below, and do not fall back to it if the scoped token is refused;  stop and ask the owner.  Anyone who can deploy this Worker can act as every hosted seat.
 
 Run everything from `scripts/simple-tools-mcp/` in a fresh worktree off `origin/main` (never `~/Code/AI-Fleet-Coordinator`).  Never merge stderr into output (`2>&1`) on a command that touches a credential.
 
@@ -21,10 +21,13 @@ INFISICAL_WORKSPACE_ID`, value from the Fleet-OPS project page, on stdin).
 - `off` (default):  only the legacy Worker bindings are read.  Fully
   compatible with every install below;  nothing changes until the mode is set.
 - `fallback`:  Infisical first, the legacy binding on a miss or a read
-  failure.  Every read a binding serves is logged as one JSON event,
+  failure.  Every read a binding serves is counted as a fallback (`/admin`
+  status shows the counters), and each name and code logs one JSON event per
+  isolate,
   `{"event":"infisical_fallback","path":...,"name":...,"binding":...,"served":...,"code":...,"status":...}`
-  (names and a fixed code only, never a value), and counted as a fallback
-  (`/admin` status shows the counters).  A FleetLink seat token's binding is
+  (names and a fixed code only, never a value).  A failed folder listing logs
+  one `infisical_listing_failed` per isolate per folder and code, and is retried
+  once a minute.  A FleetLink seat token's binding is
   its bundle entry, `FLEETLINK_SEAT_TOKENS[<SEAT>]`.  An optional secret that
   is undeclared and set nowhere (not in Infisical, no binding) reads as empty
   and is counted apart as absent, never as a fallback:  `required` gives the
@@ -32,6 +35,8 @@ INFISICAL_WORKSPACE_ID`, value from the Fleet-OPS project page, on stdin).
 - `required`:  Infisical only, zero fallbacks.  A missing secret that is
   DECLARED configured throws visibly;  a secret absent from the declaration
   list is an intentionally-off capability and reads as empty.
+
+**How long a read is kept (`INFISICAL_CACHE_TTL_S`, AFC-617).**  An isolate keeps each successful Infisical read, each folder listing and each remembered 404 for `INFISICAL_CACHE_TTL_S` seconds (a plain var, 10 to 3600; unset or invalid means 60).  `wrangler.jsonc` sets 300.  A refresh is about five subrequests and 8 ms of Worker CPU on the request that triggers it, and every active isolate paid it every minute, which put sparse tools over Workers Free's 10 ms CPU limit.  The trade is rotation speed: a secret rotated in Infisical reaches an isolate within the window (5 minutes), not within one minute.  Remove the var to return to 60.  A failed folder listing is still retried after 60 seconds, and the mint-capable isolated reads (the Git assertion signing key) still expire after 60, whatever the var says.
 
 **The proof before `required`.**  Run `fallback` and exercise the Worker (an
 `/mcp` session per seat, `/admin`).  `required` is turned on only when
@@ -96,16 +101,25 @@ perl -e 'alarm 900; exec @ARGV' npm run test:workerd
 (
   set +x
   export CLOUDFLARE_ACCOUNT_ID=3a9368057468d0909cafaa85df12d1b7
-  CLOUDFLARE_EMAIL="$(fleet-secrets get CLOUDFLARE_JAY_ACCOUNT_EMAIL)"
-  CLOUDFLARE_API_KEY="$(fleet-secrets get CLOUDFLARE_JAY_API_KEY)"
-  export CLOUDFLARE_EMAIL CLOUDFLARE_API_KEY
-  WRANGLER_SEND_METRICS=false perl -e 'alarm 600; exec @ARGV' npx --no-install wrangler deploy
+  # CLOUDFLARE_API_TOKEN is read in-process from CLOUDFLARE_ECHO_ST_MCP_DEPLOY with the scoped reader,
+  # never printed, logged or passed in argv.  The Global key is retired.
+  WRANGLER_SEND_METRICS=false perl -e 'alarm 600; exec @ARGV' npx --no-install wrangler versions upload --message "<what and which commit>"
+  # then promote the printed Worker Version ID:
+  WRANGLER_SEND_METRICS=false perl -e 'alarm 600; exec @ARGV' npx --no-install wrangler versions deploy <version-id>@100 --yes
 )
 ```
+
+Do not run plain `wrangler deploy` with the scoped token:  its custom-domain step fails with code 10084.  On 2026-11-08 wrangler printed "No targets deployed" for that failed run, but do not assume what a failed run left live:  run `npx wrangler deployments list` and check which version holds 100% before and after.
 
 The same Worker, KV namespace, `SeatGate` class (migration `v1`, no new migration) and custom domain as Phase 0.  From this deploy on, every Phase 0 grant is dead:  its props carry no `phase: 2`, so `/mcp` answers 401 and a refresh gets `invalid_grant`.
 
 ## Step 2:  Install the hosted seats' keys
+
+`install_seat_key.py` now requires the project-specific read-only service token in
+`SIMPLE_TOOLS_MCP_SEAT_KEY_AFC_INFISICAL_READ_TOKEN` for AFC seats or
+`SIMPLE_TOOLS_MCP_SEAT_KEY_FLEETOPS_INFISICAL_READ_TOKEN` for CODEX and MA.  It sends that
+token directly as a bearer for the prod `/zulip` read and fails closed if the binding is
+missing or malformed; machine identity credentials are not accepted.
 
 ```bash
 python3 -I install_seat_key.py GROK-WEB            # checks only
@@ -150,9 +164,9 @@ The recall tools (spec 1.1) need three Worker secrets.  Without them they answer
 (
   set +x
   export CLOUDFLARE_ACCOUNT_ID=3a9368057468d0909cafaa85df12d1b7
-  CLOUDFLARE_EMAIL="$(fleet-secrets get CLOUDFLARE_JAY_ACCOUNT_EMAIL)"
-  CLOUDFLARE_API_KEY="$(fleet-secrets get CLOUDFLARE_JAY_API_KEY)"
-  export CLOUDFLARE_EMAIL CLOUDFLARE_API_KEY
+  # CLOUDFLARE_API_TOKEN: the scoped deploy token, read in-process as in Step 1.  The Global key is retired.
+  # Whether the scoped token may run `wrangler secret put` is not yet verified:  if Cloudflare refuses it,
+  # stop and ask the owner.  Do not fall back to the Global key.
   put() { [ -n "$2" ] || { echo "missing $1" >&2; return 1; }; printf %s "$2" | WRANGLER_SEND_METRICS=false npx --no-install wrangler secret put "$1" >/dev/null && echo "set $1"; }
   put RECALL_API_TOKEN "$(fleet-secrets get RECALL_API_TOKEN)"
   put RECALL_ACCESS_CLIENT_ID "$(fleet-secrets get AGENTS_JAYS_SERVICES_ACCESS_SERVICE_TOKEN_CF_ACCESS_CLIENT_ID)"
@@ -172,9 +186,9 @@ Run from this directory, in the same subshell shape as Step 2b.  Never print a v
 (
   set +x
   export CLOUDFLARE_ACCOUNT_ID=3a9368057468d0909cafaa85df12d1b7
-  CLOUDFLARE_EMAIL="$(fleet-secrets get CLOUDFLARE_JAY_ACCOUNT_EMAIL)"
-  CLOUDFLARE_API_KEY="$(fleet-secrets get CLOUDFLARE_JAY_API_KEY)"
-  export CLOUDFLARE_EMAIL CLOUDFLARE_API_KEY
+  # CLOUDFLARE_API_TOKEN: the scoped deploy token, read in-process as in Step 1.  The Global key is retired.
+  # Whether the scoped token may run `wrangler secret put` is not yet verified:  if Cloudflare refuses it,
+  # stop and ask the owner.  Do not fall back to the Global key.
   put() { [ -n "$2" ] || { echo "missing $1" >&2; return 1; }; printf %s "$2" | WRANGLER_SEND_METRICS=false npx --no-install wrangler secret put "$1" >/dev/null && echo "set $1"; }
   # Read the pair from wherever the owner keeps seat credentials (see below), then:
   # put LINEAR_GROK_WEB_CLIENT_ID     "<the client id>"
@@ -182,23 +196,27 @@ Run from this directory, in the same subshell shape as Step 2b.  Never print a v
 )
 ```
 
-**Which Infisical project holds the pair.**  AI Fleet Coordinator, `prod`, `/linear`:  as of Thu, Oct 16, 2026 every hosted seat's pair is there (Infisical names `LINEAR_<SEAT>_CLIENT_ID` and `_SECRET`, hyphens as underscores), and the installs below read them from it.  The Worker secret names come from `LINEAR_SECRETS` in `src/linear.js` and match the Infisical names, except WISE:  its Infisical pair `LINEAR_WISE_CLIENT_ID`/`_SECRET` is installed on the Worker as `LINEAR_INSTINCT_CLIENT_ID`/`_SECRET`.  `docs/protocols/linear-migration.md` section 2 planned a separate **Fleet Linear Seats** project;  it is not where the hosted seats' pairs live.  Before a `put`, run `board whoami` as the seat with that pair and check the viewer is the seat's own app.
+**Which Infisical project holds the pair.**  AI Fleet Coordinator, `prod`, `/linear`:  as of Thu, Oct 16, 2026 every hosted seat's pair is there (Infisical names `LINEAR_<SEAT>_CLIENT_ID` and `_SECRET`, hyphens as underscores), and the installs below read them from it.  The Worker secret names come from `LINEAR_SECRETS` in `src/linear.js` and match the Infisical names, except WISE:  its Infisical pair `LINEAR_WISE_CLIENT_ID`/`_SECRET` is installed on the Worker as `LINEAR_INSTINCT_CLIENT_ID`/`_SECRET`.  `docs/protocols/linear-migration.md` section 2 planned a separate **Fleet Linear Seats** project;  it is not where the hosted seats' pairs live.  Before a `put`, run `board whoami` as the seat with that pair and check the viewer is the seat's own app.  No mint coordination is needed: the CLI reuses the app's fresh cached token when it has one (`LINEAR_<SEAT>_CACHE_TOKEN` in AFC `/linear`), and the hosted first use mints once into the seat's own Durable Object cache.  The two caches are per host by design, and a mint on each host with the same scope is supported - only a different scope string revokes the app's other tokens.
 
-**Which seats are on.**  `LINEAR_SEATS` in `src/linear.js` lists the seats whose Linear tools answer at all:  GROK-WEB, CURSOR, JET, JET-CHAT, ECHO, WISE, CLAUDE and CODEX plus the 19 own-app seats in `LINEAR_OWN_APP_ENABLED`: MA, AG, CLUTCH, FX, GROK, MC, MM, OPENCODE, AMP and ten of the twelve active BotFleet roles (BF-COMPILER, BF-DEPLOYER, BF-DESIGNER, BF-DIRECTOR, BF-FIXER, BF-HOUSEKEEPER, BF-MONITOR, BF-ORACLE, BF-PLUMBER, BF-PUBLISHER).  BF-ENGINEER and BF-TRADER are held back: their pair names and app names are prepared, but they are not enabled, so they read no credential and mint nothing until their own viewer is qualified, each with a grounded app name (`SEAT_APP_NAMES`).  An own-app seat accepts only that grounded name (never the bare seat tag) and runs the viewer check once per request before its first read or write, so a wrong or non-app viewer is refused before any data call;  the original 8 seats keep their existing check.  A seat does not need a cached token to be on:  on first use the hosted client mints that seat's own token from its own `/linear` pair (`LINEAR_<SEAT>_CLIENT_ID`/`_SECRET`, hyphens as underscores;  `GROK` is `LINEAR_GROK_*`, `BF-COMPILER` is `LINEAR_BF_COMPILER_*`), under the seat lock and Linear's one-mint-per-app-per-day rule, and caches it.  The mint comes BEFORE the viewer check:  the token is stored and Linear sees the mint even if the viewer check then refuses the seat, so the check proves the identity, it does not undo a mint.  A refused viewer check does not clear the cached token:  fixing a display name in `SEAT_APP_NAMES` is a code change and the cached token is reused, so no second mint (and no daily-cap wait) is needed.  MA's installed app has no `app:assignable`, so MA is in `LINEAR_NO_DELEGATE_SEATS`:  `linear_claim` claims by the claim label only, sends no `delegateId` and returns `delegate: null`;  `linear_status` releasing to open or backlog is refused before any change when the issue has an app delegate (MA cannot clear one), and works when there is none;  closing statuses never touch a delegate.  Each seat mints with a scope matched to its own app:  `LINEAR_SCOPE` (`read,write,app:assignable,app:mentionable`) for the originals, the 17 and BF-ENGINEER, `SEAT_MINT_SCOPES` for MA (`comments:create,issues:create,read,write`, the installed client scope the provider returned).  While held back, BF-TRADER (which has no installation, grants or memberships yet) would make a new first grant on its first mint, with the least the hosted tools use: `read,write,app:assignable` (`linear_claim` and `linear_status` set the app as issue delegate, which needs app:assignable;  no hosted tool needs app:mentionable, so it is left off).  MA mints with its own installed scope (`SEAT_MINT_SCOPES`, `comments:create,issues:create,read,write`);  a new mint can interrupt connections that hold an older MA token.  `MINT_SCOPE_PENDING` is empty and exists to park a seat again.  MA, BF-ENGINEER and BF-TRADER names are the provider registration names for their canonical client ids (read-only `applicationInfo`), though only MA is enabled.  BF-BUILDER is retired and has no Linear pair.  A seat is added to `LINEAR_OWN_APP_ENABLED` only in a change that also gives it a grounded `SEAT_APP_NAMES` entry (a test enforces this) and a redeploy.  `LINEAR_INFISICAL` in `src/linear.js` carries the same names as the live folder;  an earlier revision read the reverse `<SEAT>_LINEAR_*` names, which the folder does not hold.  JET-CHAT keeps reading Jet's `/linear` record, unchanged.  Adding a seat is a code change and a redeploy, deliberately, so a seat cannot gain board access by accident.
+**The runtime read is the Worker binding, not the folder.**  AI Fleet Coordinator prod `/linear` is the canonical store for every seat pair, but the hosted Worker's runtime Infisical leg (`INFISICAL_MODE` `fallback`, one `INFISICAL_WORKSPACE_ID`) points at the Fleet-OPS project, which holds no seat pairs.  What serves a seat is the same-name encrypted Worker binding installed from the AFC pair by the two `put` lines above.  Adding or changing a pair in AFC `/linear` therefore reaches the runtime only through a `put` of the same names.  Never re-point `INFISICAL_WORKSPACE_ID` at the AFC project to fix a seat: the one token and workspace serve every folder (`/zulip`, `/wake`, `/tools`, `/linear`), and the other folders live in Fleet-OPS.
+**Which seats are on.**  `LINEAR_SEATS` in `src/linear.js` lists the seats whose Linear tools answer at all:  GROK-WEB, CURSOR, JET, JET-CHAT, ECHO, WISE, CLAUDE and CODEX plus the 21 own-app seats in `LINEAR_OWN_APP_ENABLED`: MA, AG, CLUTCH, FX, GROK, MC, MM, OPENCODE, AMP, ZC, KIMI and ten of the twelve active BotFleet roles (BF-COMPILER, BF-DEPLOYER, BF-DESIGNER, BF-DIRECTOR, BF-FIXER, BF-HOUSEKEEPER, BF-MONITOR, BF-ORACLE, BF-PLUMBER, BF-PUBLISHER).  BF-ENGINEER and BF-TRADER are held back: their pair names and app names are prepared, but they are not enabled, so they read no credential and mint nothing until their own viewer is qualified, each with a grounded app name (`SEAT_APP_NAMES`).  OPERATOR is held back for a different reason: its viewer is qualified ("[Operator]"), but it is in no hosted sign-in table (`KNOWN_SEATS`, `BEARER_ONLY_SEATS`, `BF_BEARER_SEATS`), so no session can authenticate as it and enabling it would be dead config.  Its pair and viewer are qualified; whether it has any working write consumer is unverified (board writes need a bearer-verified caller and OPERATOR holds no bearer).  An own-app seat accepts only that grounded name (never the bare seat tag) and runs the viewer check once per request before its first read or write, so a wrong or non-app viewer is refused before any data call;  the original 8 seats keep their existing check.  A seat does not need a cached token to be on:  on first use the hosted client mints that seat's own token from its own `/linear` pair (`LINEAR_<SEAT>_CLIENT_ID`/`_SECRET`, hyphens as underscores;  `GROK` is `LINEAR_GROK_*`, `BF-COMPILER` is `LINEAR_BF_COMPILER_*`), under the seat lock and Linear's one-mint-per-app-per-day rule, and caches it.  The mint comes BEFORE the viewer check:  the token is stored and Linear sees the mint even if the viewer check then refuses the seat, so the check proves the identity, it does not undo a mint.  A refused viewer check does not clear the cached token:  fixing a display name in `SEAT_APP_NAMES` is a code change and the cached token is reused, so no second mint (and no daily-cap wait) is needed.  MA's installed app has no `app:assignable`, so MA is in `LINEAR_NO_DELEGATE_SEATS`:  `linear_claim` claims by the claim label only, sends no `delegateId` and returns `delegate: null`;  `linear_status` releasing to open or backlog is refused before any change when the issue has an app delegate (MA cannot clear one), and works when there is none;  closing statuses never touch a delegate.  Each seat mints with a scope matched to its own app:  `LINEAR_SCOPE` (`read,write,app:assignable,app:mentionable`) for the originals, the 20 and BF-ENGINEER, `SEAT_MINT_SCOPES` for MA (`comments:create,issues:create,read,write`, the installed client scope the provider returned).  While held back, BF-TRADER (which has no installation, grants or memberships yet) would make a new first grant on its first mint, with the least the hosted tools use: `read,write,app:assignable` (`linear_claim` and `linear_status` set the app as issue delegate, which needs app:assignable;  no hosted tool needs app:mentionable, so it is left off).  MA mints with its own installed scope (`SEAT_MINT_SCOPES`, `comments:create,issues:create,read,write`);  a new mint can interrupt connections that hold an older MA token.  `MINT_SCOPE_PENDING` is empty and exists to park a seat again.  MA, BF-ENGINEER and BF-TRADER names are the provider registration names for their canonical client ids (read-only `applicationInfo` at the time;  qualifying a seat's app name now uses the seat's own pair and `board whoami`), though only MA is enabled.  BF-BUILDER is retired and has no Linear pair.  A seat is added to `LINEAR_OWN_APP_ENABLED` only in a change that also gives it a grounded `SEAT_APP_NAMES` entry (a test enforces this) and a redeploy.  `LINEAR_INFISICAL` in `src/linear.js` carries the same names as the live folder;  an earlier revision read the reverse `<SEAT>_LINEAR_*` names, which the folder does not hold.  JET-CHAT keeps reading Jet's `/linear` record, unchanged.  Adding a seat is a code change and a redeploy, deliberately, so a seat cannot gain board access by accident.
 
-**Writes are off.**  `LINEAR_TOOLS_WRITES` is a plain var, not a secret, and reads happen without it.  Turn writes on in `wrangler.jsonc` (`"LINEAR_TOOLS_WRITES": "1"`), redeploy, and probe with a throwaway issue before letting a seat work for real.
+**Writes are on.**  `LINEAR_TOOLS_WRITES` is `"1"` in `wrangler.jsonc` (a plain var, not a secret); reads never needed the switch.  A newly enabled seat still probes with a throwaway issue before it works for real.
 
-**The one-mint-a-day rule.**  The seat's token is cached in its Durable Object, never in KV, because the DO's input gate is what stops two requests from minting at once.  Linear allows one mint per app per 24 hours, so a cached token minted under a day ago is never replaced, not even after a 401.  Jay forces a fresh one by rotating the app's credentials in Linear and re-running the two `put` lines:  that changes the credential fingerprint, which invalidates the cached row.
+**The one-mint-a-day rule.**  The seat's token is cached in its Durable Object, never in KV, because the DO's input gate is what stops two requests from minting at once.  Each host mints at most once per app per 24 hours from its own cache - a fleet guard against Linear's 1,000 parallel-token cap, not a vendor limit - so a cached token minted under a day ago on that host is never replaced, not even after a 401.  A mint on a second host in the same window is supported:  the scope string is one shared constant, and only a different scope revokes the app's other tokens.  Jay forces a fresh one by rotating the app's credentials in Linear and re-running the two `put` lines:  that changes the credential fingerprint, which invalidates the cached row.
 
 **Check it** with a `linear_whoami` call from the seat's app (ARMING-JAY.md, "Linear").  In the Worker log, `"tool":"linear_whoami"` with `outcome` `ok` means the mint and the viewer query both worked;  `not_authorized` with `swapped` in the message means the secret pair belongs to a different Linear app than that seat's —  the Worker refuses to write in that case, and so should you until it is fixed.
 
 ## Step 3:  The tunnel rule (once)
 
-Inspect current tunnel state before cleanup.  The helper defaults to the current public host;
-additional cleanup targets must be supplied explicitly with `--cleanup-target ZONE:HOST`.
-Run a dry run first, obtain target-specific approval, then apply.  Cleanup backs up the whole
-configuration, preserves unrelated rules and requires a catch-all last.  No DNS or tunnel
-change is authorized by this runbook alone.
+If "Jay's Tunnel" carries an ingress rule `agents.simplewithus.com -> http://localhost:8787`, drop it (`check` reports one as a FAIL).  The tunnel runs with `--token-file`, so its configuration is remote, in the Cloudflare API, not in `~/.cloudflared`.
+
+```bash
+python3 -I infra_phase0.py tunnel          # dry run:  exactly one rule goes, the catch-all stays last
+python3 -I infra_phase0.py tunnel --apply  # backs up the whole config to ~/.simple-tools-mcp-phase0/, then PUTs it without that rule
+```
+
+The step refuses unless exactly one rule goes and the catch-all stays last, and it touches no other hostname.  Afterwards spot-check two or three of the other tunnel hostnames.
 
 ## Step 4:  Check
 
@@ -251,30 +269,38 @@ Owner decisions, Sat, Oct 10:  a DM event carries its fenced excerpt ("yes"), an
 
 ## Any public channel
 
-A seat may use every public channel its bot is subscribed to, minus `CHANNELS_DENY`.
-The deny list contains stream IDs and defaults to empty.  Private channels are refused.
-The per-seat subscription list is cached for 60 seconds.  MCP Events uses the same rule;
-a Zulip failure returns 503 so delivery can retry.  A channel filter is a free string
-checked at subscribe time.  To exclude a public channel for all seats, set its stream ID
-in `CHANNELS_DENY` and redeploy after review.
+Owner ruling, Sat, Oct 10, 2026:  "I want bots to wake to any channel or DM", and for the ECHO and WISE pollers, "All of them".  The `CHANNELS` var is removed;  a seat now uses any public channel its own bot is subscribed to, read from Zulip per seat and cached 60 seconds, minus `CHANNELS_DENY` (a JSON array of stream ids in `wrangler.jsonc` vars, `[]` by default).  Private channels are never allowed.  MCP Events wakes use the same rule, read at delivery time with the seat's key (a Zulip failure there answers 503, so the listener retries).  The `events/list` channel filter is now a free string checked at subscribe time;  ChatGPT may need a plugin rescan to see the new schema, and an existing subscription keeps working.  No secret, scope or binding changes, and no migration:  step 1 is the whole deploy.  To keep a public channel off every seat, add its stream id to `CHANNELS_DENY` and redeploy.
 
 **Deployed** Sun, Oct 11, about 12:39am (CLAUDE sub-agent), from `10b2042b` (PR 464):  version `ebe48ba3-c792-44af-8d0b-c4cb151a04c6`, `CHANNELS_DENY ([])`, no `CHANNELS`.  `/health` answered `{"ok":true}`;  `/mcp` with no token and an unsigned `/internal/wake/JET` both answered 401.
 
 ## The rest of Zulip (AFC-330)
 
-Owner, Thu, Oct 15:  "I'd like simple-tools MCP and whatever local agents use to be able to do all tasks supported by Zulip."  33 more `zulip_*` tools (spec section 1.6) come from `tools.json` by construction, implemented in `src/zulip-full.js`.  No secret, scope or var changes:  step 1 is the whole deploy.  Clients that cache `tools/list` (Grok on the web, ChatGPT) refresh the connector's tools to see them.  Smoke test from a connected seat after the deploy:  `zulip_channels`, then `zulip_search` with `{"query": "deploy", "channel": "sandbox"}`, then `zulip_draft_create` and `zulip_draft_delete` in #sandbox (a draft is never sent).  **Not deployed yet.**
+Owner, Thu, Oct 15:  "I'd like Simple-Tools and whatever local agents use to be able to do all tasks supported by Zulip."  33 more `zulip_*` tools (spec section 1.6) come from `tools.json` by construction, implemented in `src/zulip-full.js`.  No secret, scope or var changes:  step 1 is the whole deploy.  Clients that cache `tools/list` (Grok on the web, ChatGPT) refresh the connector's tools to see them.  Smoke test from a connected seat after the deploy:  `zulip_channels`, then `zulip_search` with `{"query": "deploy", "channel": "sandbox"}`, then `zulip_draft_create` and `zulip_draft_delete` in #sandbox (a draft is never sent).  **Not deployed yet.**
 
 ## Listener read API (AFC-330)
 
 The `eavesdropper_status`, `eavesdropper_inbox`, `eavesdropper_owner_queue`, `eavesdropper_wakes` and `eavesdropper_held_back` tools (spec section 1.7) read the server listener's signed read API with the seat's `WAKE_HMAC_KEY_<SEAT>`.  Until both halves are set up they answer `not_configured` and nothing else changes.
 
-1. The listener half first:  the listener deployment guide, "The Read API", steps 1 to 5 (redeploy, keys, `[listener_api]`, the proxy route, the checks).
-2. Set the var in `wrangler.jsonc`:  `"LISTENER_API_URL": "https://operator.jays.services"` (an https origin with no path;  anything else reads as unset).  Open a PR and merge it.
+1. The eavesdropper half first:  `docs/protocols/eavesdropper-server.md`, "The Read API", steps 1 to 5 (redeploy, keys, `[listener_api]`, the proxy route, the checks).
+2. Set the var in `wrangler.jsonc`:  `"LISTENER_API_URL": "https://operator.simplewithus.com"` (an https origin with no path;  anything else reads as unset).  Open a PR and merge it.
+   Set the fleet knob to the same origin before deploying:  `OPERATOR_API_URL` in Infisical (project "AI Fleet Coordinator", `prod`, root path) is what the Python clients read (simple-notes, the stdio `notes_*` tools, the Mac runner), and the contract is one origin for both (`docs/protocols/operator-notes.md`).  A deploy that moves only the var splits each notes request/response pair across two hosts.
 3. Make sure each seat that should read its records has `WAKE_HMAC_KEY_<SEAT>` (JET already does;  the others only if Jay chose to add them in the server doc's step 2):
    ```bash
    fleet-secrets get JET_ROUTINE_KEY | tr -d '"\n' | WRANGLER_SEND_METRICS=false npx --no-install wrangler secret put WAKE_HMAC_KEY_JET >/dev/null && echo "set WAKE_HMAC_KEY_JET"
    ```
 4. Deploy (step 1).  From a connected JET chat, `eavesdropper_status` answers counts;  a 401 there means the two keys differ or the clocks are more than five minutes apart, a 404 that the listener has no key for the seat.  **Not deployed yet.**
+
+### Pending inbox for inbox-only seats (OPS-1047)
+
+`operator_inbox_pending` reads the same signed API's `pending-inbox` record:  the calling seat's wake-worthy seat-inbox items after a caller-held `after_seq`, as a count-only `check` or a full `pull`.  The seat comes only from the grant or bearer, never from an argument, and reading moves no cursor.  For MA (a bearer seat with `wake = "inbox"` on the server listener, so no wake routine ever minted it a key):
+
+1. On the listener side, give MA a read key through the existing mechanism:  set `MA_ROUTINE_KEY` (a fresh value of at least 32 characters) in the listener's environment (Infisical AI Fleet Coordinator, `prod`, the folder the listener loads at start) and restart the container, so `listener_api_keys` picks it up.  MA's wake stays `inbox`;  the key signs reads only.
+2. Give the Worker the same value under its MA listener-read-secret name, from Infisical `/wake` (where `resolveSecret` reads `WAKE_HMAC_KEY_MA` for the listener client alone;  `LISTENER_READ_SECRETS` in `src/config.js`) or as the fallback Worker secret:
+   ```bash
+   fleet-secrets get MA_ROUTINE_KEY | tr -d '"\n' | WRANGLER_SEND_METRICS=false npx --no-install wrangler secret put WAKE_HMAC_KEY_MA >/dev/null && echo "set WAKE_HMAC_KEY_MA"
+   ```
+   This opens no wake route for MA:  `/internal/wake/<SEAT>` and the spike route also require the seat in `HOSTED_SEATS`, and MA is not there.
+3. Deploy the Worker (step 1) and add `operator_inbox_pending` to the calling client's tool allowlist (for MA, the local Fleet Tools client's `ALLOWED_TOOLS`).  Smoke:  `operator_inbox_pending` with `{"mode": "check"}` answers MA's pending count and `latest_seq`;  `{"mode": "pull", "after_seq": <latest_seq>}` answers zero items.
 
 ## Notes, recall and the guide (AFC-331, AFC-486)
 
@@ -288,6 +314,8 @@ The eight notes tools (`notes_create`, `notes_update`, `notes_pin`, `notes_unpin
 3. Set `LISTENER_API_URL` in `wrangler.jsonc` if "Listener read API" step 2 has not already (an https origin with no path;  anything else reads as unset).  Open a PR and merge it.
 4. Remove the retired relay binding:  `WRANGLER_SEND_METRICS=false npx --no-install wrangler secret delete NOTES_RELAY_CONSUMER`, with Step 1's credentials.  One binding goes and one comes, so the Worker's binding count does not change (see the FleetLink note below).  `sync_notes_consumer.py`, which copied that knob from Infisical, is gone.
 5. Deploy (step 1).  From a connected seat, `notes_list` with `{"limit": 3}` answers `done` with three titles while the Mac runner is up;  `queued` means the Operator took the request and the runner has not answered within 25 seconds (`notes_status` follows it from there).  A `not_configured` that names the signature means the two keys differ or the clocks are more than five minutes apart;  one that names `[notes_queue]` means the Operator has no `WORKER` key or the queue is off;  `forbidden` means the seat is not in `worker_seats`.  **Deployed Sat, Oct 24, 2026 at 12:08 AM** (version `7a5dec1e`, from `c2b4da0d`), with the Operator at `https://operator.jays.services`.  Checked from a connected CLAUDE seat:  `notes_create` answered `transport: operator`, and `notes_status` showed it `done` 40 seconds later.  The deploy dropped `ACCESS_AUD`, which had been a plain-text var, so it was put back as a secret (as DEPLOY-PHASE0.md says it is);  a later deploy leaves a secret alone.
+
+**Moved Wed, Nov 4, 2026:**  the Operator's origin is `https://operator.simplewithus.com` (owner rename), and `https://operator.jays.services` is retired.  `LISTENER_API_URL` names the new origin, and the fleet knob `OPERATOR_API_URL` was set to the same origin ("Listener read API" step 2).
 
 The `guide` tool serves `src/guide-text.js`, generated from `docs/protocols/simple-tools-guide.md`:  after editing that page run `node scripts/export-guide.mjs` (a test fails when it is stale).  `recall_*` specs are shared with the stdio server through `scripts/simple_tools/mcp/recall-tools.json`:  after changing `src/recall.js` run `node scripts/export-recall-tools.mjs`.  Clients that cache `tools/list` refresh the connector to see the new tools (the notes tools went from five to eight).
 
@@ -323,7 +351,7 @@ spike_id = str(uuid.uuid4())
 body = json.dumps({"contract": "simple-tools-spike/1", "seat": "JET", "spike_id": spike_id, "sent_at": int(time.time())}).encode()
 sig = hmac.new(key.encode(), body, hashlib.sha256).hexdigest()
 req = urllib.request.Request("https://agents.simplewithus.com/internal/spike/JET", data=body, method="POST",
-                             headers={"Content-Type": "application/json", "X-simple-tools MCP-Spike-Signature": sig,
+                             headers={"Content-Type": "application/json", "X-Simple-Tools-Spike-Signature": sig,
                                       "User-Agent": "simple-tools-spike/1"})  # Cloudflare answers 1010 to Python's default UA
 try:
     with urllib.request.urlopen(req, timeout=25) as r: print(spike_id, r.status, r.read().decode()[:300])
@@ -373,8 +401,8 @@ Jay regenerates the bot's key in Zulip (the old one dies at once), updates `ZULI
 ## Open owner items
 
 - **A4:**  Infisical's Cloudflare Workers sync for the hosted keys, with "Disable Secret Deletion" (replaces step 2).
-- **A5:**  a per-Worker deploy token, kept out of agents' reach (replaces the Global key in step 1).
-- **A1 and D8:**  a key location no agent identity can read.  Until then the INFISICAL_AUTOMATION identity and the Global key can both reach GROK-WEB's key, which D8 accepts.
+- **A5:**  done for deploys:  the scoped per-Worker token and its reader replaced the Global key (2026-11-08 record in `ops/`).  Whether that token may also run `wrangler secret put` is unverified.
+- **A1 and D8:**  a key location no agent identity can read.  Until then the INFISICAL_AUTOMATION identity can reach GROK-WEB's key.  The Global key is retired and not a deploy route.
 - **ECHO and WISE:**  connect one at a time from the Instinct app's own computer ([ARMING-JAY.md](ARMING-JAY.md), "Connect Echo" and "Connect Wise").  The Worker serves both and both keys are installed (Fri, Oct 9, about 10:24pm);  the client id comes from the first attempt.
 - **JET:**  arm it and connect ChatGPT ([ARMING-JAY.md](ARMING-JAY.md)).  The bot is a member, the Worker serves JET and its key is installed (Fri, Oct 9, about 8:10am), so nothing else blocks it.
 
@@ -479,11 +507,11 @@ approved limits.  Deploy the merged budget code before expecting the setting
 to take effect.  It is read and validated with the existing startup config;
 no runtime Infisical request is made per tool call.  Cursor Linear operations
 use distinct counters and pacing; existing exhausted Zulip counters are retained.
-Verify production CURSOR audit outcomes for both reads and writes after deployment.
+Verify production CURSOR audit outcomes for writes and failed calls after deployment;  a successful read writes no audit row (owner ruling Fri, Nov 6, 2026), so check reads in the Workers Logs `tool` lines instead.
 
 ## Per-Call Identity (AFC-322, AFC-331)
 
-Every grant offers per-call `identity` selection (`docs/protocols/per-call-identity.md`).  A CURSOR or GROK-WEB grant may act as CURSOR, GROK-WEB and the twelve enabled Grok Bot personas;  every other grant only as its own seat.  `identities` (formerly `simple_tools_identities`) reports the set with Zulip and Linear configured or missing states.  The personas are the `enabled` list in `scripts/simple_tools/mcp/gb-identities.json`:  `GB-DIRECTOR`, `GB-FIXER`, `GB-DESIGNER`, `GB-COMPILER`, `GB-HOUSEKEEPER`, `GB-PUBLISHER`, `GB-DEPLOYER`, `GB-MONITOR`, `GB-PLUMBER`, `GB-ORACLE` and `GB-TRADER`.  `BF-*` identities belong to BotFleet, so they do not appear.  Writes must name their identity;  a client that omits it gets `identity_required`, so the Cursor and Grok connector instructions must say to pass it.  No OAuth client, callback, token, grant, scope or `HOSTED_SEATS` entry is added for a GB identity.
+Every grant offers per-call `identity` selection (`docs/protocols/per-call-identity.md`).  A CURSOR or GROK-WEB grant may act as CURSOR, GROK-WEB and the twelve enabled Grok Bot personas;  every other grant only as its own seat.  `identities` reports the set with Zulip and Linear configured or missing states.  The personas are the `enabled` list in `scripts/simple_tools/mcp/gb-identities.json`:  `GB-DIRECTOR`, `GB-FIXER`, `GB-DESIGNER`, `GB-COMPILER`, `GB-HOUSEKEEPER`, `GB-PUBLISHER`, `GB-DEPLOYER`, `GB-MONITOR`, `GB-PLUMBER`, `GB-ORACLE` and `GB-TRADER`.  `BF-*` identities belong to BotFleet, so they do not appear.  Writes must name their identity;  a client that omits it gets `identity_required`, so the Cursor and Grok connector instructions must say to pass it.  No OAuth client, callback, token, grant, scope or `HOSTED_SEATS` entry is added for a GB identity.
 
 The source remains the 24 `ZULIP_GB_<ROLE>_EMAIL` and `ZULIP_GB_<ROLE>_API_KEY` values in the **AI Fleet Coordinator** Infisical project, `prod` `/zulip`, plus the 24 `LINEAR_GB_<ROLE>_CLIENT_ID` and `LINEAR_GB_<ROLE>_CLIENT_SECRET` values in that project's `prod` `/linear`.  The earlier separate **Fleet Linear Seats** project guidance does not apply to these GB pairs.  Each role's email must equal `<role>-grok-bot@simplewithus.zulipchat.com`;  its Zulip key must authenticate that member bot (role 400), and its Linear viewer must name the selected `GB-ROLE` app.
 
@@ -495,7 +523,7 @@ At deploy (AFC-331):  the tool names change (`post` is now `zulip_post`, and so 
 
 ## FleetLink (AFC-328)
 
-The `fleetlink_*` tools need one Worker secret, `FLEETLINK_AGENT_SECRET`:  `fls_` plus 64 hex.  FleetLink holds the same value as its own Worker secret `SIMPLE_TOOLS_SECRET` (FleetLink `docs/multi-user.md`, "Agent Accounts").  Without it the FleetLink tools answer `not_configured` and everything else works.  The value lives in Infisical, project "AI Fleet Coordinator", `prod`, `/fleetlink`, as `FLEETLINK_AGENT_SECRET` (INFISICAL.md).  It was made and installed on both Workers on Thu, Oct 15, 2026.  To reinstall it here, read it with the INFISICAL_AUTOMATION identity and pipe it straight in, with the Step 1 credentials exported in the same subshell.  Never print it:
+The `fleetlink_*` tools need one Worker secret, `FLEETLINK_AGENT_SECRET`:  `fls_` plus 64 hex.  FleetLink's own `DEPLOY.md` now lists its shared static credentials as retired and deleted from its Worker, so check its "Agent Accounts" section (`docs/multi-user.md`) before relying on this secret.  Without it the FleetLink tools answer `not_configured` and everything else works.  The value lives in Infisical, project "AI Fleet Coordinator", `prod`, `/fleetlink`, as `FLEETLINK_AGENT_SECRET` (INFISICAL.md).  It was made and installed on both Workers on Thu, Oct 15, 2026.  To reinstall it here, read it with the INFISICAL_AUTOMATION identity and pipe it straight in, with the Step 1 credentials exported in the same subshell.  Never print it:
 
 ```bash
 (
@@ -506,7 +534,7 @@ The `fleetlink_*` tools need one Worker secret, `FLEETLINK_AGENT_SECRET`:  `fls_
 )
 ```
 
-On FleetLink's side, the same value goes to `SIMPLE_TOOLS_SECRET` on the `fleetlink` Worker.  Its deploy (`FLEETLINK_SECRETS=keep`) keeps the secret, and `wrangler secret put SIMPLE_TOOLS_SECRET` or the Workers secrets API replaces it.  Rotate by installing a new value on both sides, FleetLink first:  until this Worker has the new value too, the tools answer `not_authorized` with HTTP 401.
+FleetLink no longer holds a matching shared secret, so there is nothing to install on its side.  A seat signs in with its own token (below), and the tools answer `not_authorized` with HTTP 401 when FleetLink refuses a credential.
 
 **Seat tokens.**  A seat that has its own FleetLink bot token signs in with it instead of the server credential, so it works under that token's limits:  the fleet's tokens are minted to follow Jay's limits as they change (FleetLink `limits_from: "manager"`).  The tokens live in Infisical `/fleetlink` as `FLEETLINK_TOKEN_<SEAT>` (hyphens as underscores), and the Worker reads them from one secret, `FLEETLINK_SEAT_TOKENS`, a JSON object of seat to token (`{"JET": "fla_…", "GB-FIXER": "fla_…"}`), because the Worker is near its binding limit.  Build it in memory from Infisical for every hosted seat and GB identity, and pipe it to `wrangler secret put FLEETLINK_SEAT_TOKENS`;  never print it.  A malformed bundle is ignored whole and every seat falls back to `FLEETLINK_AGENT_SECRET`.  Re-run it after minting a token for a new seat.
 
@@ -557,7 +585,7 @@ The Worker reaches the relay through `GR_UPSTREAM_URL` with a Cloudflare Access 
 
 Set when step 2 lands:  `GR_UPSTREAM_URL` as a plain Worker var;  `GR_ACCESS_CLIENT_ID` / `GR_ACCESS_CLIENT_SECRET` are placed in Fleet-OPS `/gr-front` and read at runtime like the verify key - never put as Worker secrets, never at `/tools`.  `GR_BEARER_VERIFY_KEY` is read at runtime from `/tools`, not put as a Worker secret.  After deploy, `/admin` shows the GR section configured and a `gr_*` call answers from the relay instead of `not_configured`.
 
-Hosted-OAuth parity (the `gr_*` tools on a seat's OAuth connection, not only on bearer connections) needs deliberate switches, each its own reviewed change:  `GR_ASSERTION_SIGN_KEY` in `/gr-assert-signing` plus the narrowly scoped `GR_ASSERT_INFISICAL_SERVICE_TOKEN` Worker binding (both above);  `GIT_RELAY_OAUTH_ASSERT=1` and `GIT_RELAY_ASSERT_VERIFY_URL=https://<worker>/internal/gr-assert-verify` in the relay's unit environment (without them the relay builds no assertion verifier and assertion-shaped tokens refuse like any unknown token);  and `"oauth_assert": true` on each seat in the reviewed seat policy (rendered by `seat_policy.py`, installed with the digest-checked `install --apply --expect` flow).  A seat that is paused or events-only mints no assertion, and a seat without the flag refuses assertions, so enabling the key and switch alone changes no live behavior.  Each assertion is per-call:  bound to the action and the SHA-256 of the exact request body, TTL-clamped to 120 seconds, one-use (the jti is spent durably and atomically in the seat's SeatGate on verification, in the same transaction as the live gate check;  the jti store is bounded and fails closed at capacity rather than evicting a live record), scope-checked (a grant without `zulip:write` can never authorize a write), re-checked against the seat's live gate on every call (epoch bump or pause refuses immediately), and matched against the provider's live grant list, so a deleted or replaced grant refuses even before its epoch moves.  Qualify per seat:  on that seat's OAuth connection, a `gr_*` read (or an expected allowlist denial naming the right seat) instead of `not_configured`, plus one audit row on the relay showing the seat.
+Hosted-OAuth parity (the `gr_*` tools on a seat's OAuth connection, not only on bearer connections) needs deliberate switches, each its own reviewed change:  `GR_ASSERTION_SIGN_KEY` in `/gr-assert-signing` plus the narrowly scoped `GR_ASSERT_INFISICAL_SERVICE_TOKEN` Worker binding (both above);  `GIT_RELAY_OAUTH_ASSERT=1` and `GIT_RELAY_ASSERT_VERIFY_URL=https://<worker>/internal/gr-assert-verify` in the relay's unit environment (without them the relay builds no assertion verifier and assertion-shaped tokens refuse like any unknown token);  and `"oauth_assert": true` on each seat in the reviewed seat policy (rendered by `seat_policy.py`, installed with the digest-checked `install --apply --expect` flow).  A seat that is paused or events-only mints no assertion, and a seat without the flag refuses assertions, so enabling the key and switch alone changes no live behavior.  Each assertion is per-call:  bound to the action and the SHA-256 of the exact request body, TTL-clamped to 120 seconds, one-use (the jti is spent durably and atomically in the seat's SeatGate on verification, in the same transaction as the live gate check;  the jti store is bounded and fails closed at capacity rather than evicting a live record), scope-checked (a grant without `zulip:write` can never authorize a write), re-checked against the seat's live gate on every call (epoch bump or pause refuses immediately), and matched against the provider's grant list (a positive listing is reused for up to an hour, never past the grant's expiry), so a deleted or replaced grant refuses within that hour even before its epoch moves.  Qualify per seat:  on that seat's OAuth connection, an expected allowlist denial naming the right seat, or a `gr_*` write, instead of `not_configured`, plus that call's audit row on the relay showing the seat (a successful read writes no row in the relay's `audit.jsonl` or in the SeatGate call log).
 
 ### 6. Smoke check
 
@@ -568,3 +596,7 @@ Hosted-OAuth parity (the `gr_*` tools on a seat's OAuth connection, not only on 
 ### 7. Seat cutover
 
 Per seat, at its own pace:  mint or confirm its shared bearer on the admin page, point the seat at GR-MCP (stdio) or the Worker's `gr_*` tools, verify one action end to end, then retire that seat's interim AFC-460 shell/cache path.  The interim path stays working for seats that have not moved;  retiring it fleet-wide is its own owner decision.
+
+## 2026-11-08 addendum: scoped per-Worker deploy token uses `versions upload` + `versions deploy`
+
+The per-Worker deploy token (`CLOUDFLARE_ECHO_ST_MCP_DEPLOY`, Fleet-OPS `prod` `/cloudflare`, read through the scoped reader registered on the Fleet Reference "Infisical Service Tokens" tab) cannot complete plain `wrangler deploy`: the custom-domain trigger step fails with Cloudflare code 10084 ("The zone "agents.simplewithus.com" does not exist on your account") because the scoped token cannot see the zone. The script upload succeeds and wrangler reported "No targets deployed" on 2026-11-08, with the existing custom-domain attachment untouched;  check `npx wrangler deployments list` rather than assuming what a failed run left live. Deploy instead with `npx wrangler versions upload --message ...` followed by `npx wrangler versions deploy <version-id>@100 --yes` - a traffic-only promotion that does not touch triggers or domains. Full record with the verbatim error and promotion proof: [ops/2026-11-08-scoped-deploy-token-route.md](ops/2026-11-08-scoped-deploy-token-route.md). Do not widen the token or return to the retired Global-key route without the owner.

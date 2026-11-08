@@ -276,9 +276,7 @@ class HookTests(Base):
         text = self.said(answer)
         self.assertIn("Operator session letter: Antigravity %s, on the Mac." % label, text)
         self.assertIn('"@**Antigravity** %s"' % label, text)
-        self.assertIn("no way to set a chat's title", text)
-        self.assertIn('should start with "%s: "' % label, text)
-        self.assertNotIn("title starts with", text)  # the library's line is true only where a title can be set
+        self.assertIn('title starts with "%s: "' % label, text)
         record = self.lookup()
         self.assertEqual((record["label"], record["seat"]), (label, "AG"))
         self.assertEqual(self.note()["state"], "open")
@@ -323,6 +321,21 @@ class HookTests(Base):
         self.set_title(root, CID, "%s: Own Words" % label)
         self.assertEqual(self.hook(pre), {})
         self.assertEqual(self.lookup()["title"], "Own Words")  # the letter comes off what the Operator keeps
+
+    def test_the_title_writer_renames_annotations_and_summaries_db(self) -> None:
+        root = self.summaries({CID: "Audio Check Probe"})
+        ann_dir = os.path.join(root, "annotations")
+        os.makedirs(ann_dir, exist_ok=True)
+        ann_file = os.path.join(ann_dir, "%s.pbtxt" % CID)
+        Path(ann_file).write_text('title:"Audio Check Probe"  last_user_view_time:{seconds:1794121881  nanos:616000000}')
+        start, pre = self.payloads(root)
+        self.hook(start)
+        label = self.note()["label"]
+        expected = "%s: Audio Check Probe" % label
+        self.assertEqual(PA.stored_title(start), expected)
+        ann_text = Path(ann_file).read_text(encoding="utf-8")
+        self.assertIn('title:"%s"' % expected, ann_text)
+        self.assertIn("last_user_view_time:{seconds:1794121881", ann_text)
 
     def test_a_resumed_conversation_is_registered_on_its_first_prompt(self) -> None:
         # A conversation from before the install, resumed: agy sends no SessionStart.
@@ -394,10 +407,33 @@ class HookTests(Base):
             self.env(AGENT_LAUNCH_SEAT="BOTFLEET"),
             self.env(SESSION_LETTER="0"),
             self.env(ANTIGRAVITY_LETTER="0"),
-            self.env(SESSION_LETTER_LOCATION="server"),  # Antigravity runs on the Mac only
         ):
             self.assertEqual(self.hook(start_payload(), env=env), {}, env)
         self.assertEqual(self.calls, [])
+
+    def test_server_location_registers_and_renders_on_the_server(self) -> None:
+        answer = self.hook(start_payload(), env=self.env(SESSION_LETTER_LOCATION="server"))
+        label = self.note()["label"]
+        self.assertRegex(label, PAIR)
+        text = self.said(answer)
+        self.assertIn("Operator session letter: Antigravity %s, on the server." % label, text)
+        reg = OR.SessionRegistry(self.db)
+        try:
+            record = reg.lookup("antigravity", "server", PL.SCOPE, CID)
+        finally:
+            reg.close_db()
+        self.assertEqual((record["label"], record["seat"]), (label, "AG"))
+
+    def test_an_unregistered_parent_is_enrolled_before_its_sub_agent(self) -> None:
+        answer = self.hook(start_payload(CID, parentConversationId=PARENT, agentName="self"))
+        self.assertIn("injectSteps", answer)
+        self.assertEqual(self.ops(), ["register", "register"])
+        parent_label = self.note(PARENT)["label"]
+        child_label = self.note(CID)["label"]
+        self.assertRegex(parent_label, PAIR)
+        self.assertRegex(child_label, PAIR)
+        if PL._accepts(OR.register_session, "parent_session_id"):
+            self.assertEqual(child_label, parent_label[0] + chr(ord(parent_label[1]) + 1))
 
     def test_the_session_id_is_the_conversation_id_from_the_payload_or_the_environment(self) -> None:
         self.assertEqual(PA.SPEC.session_id({"conversationId": CID}, {}), CID)
@@ -920,6 +956,48 @@ class InstallTests(Base):
         out = io.StringIO()
         code = PL.install_main(["--platform", "antigravity", "--check"], {"HOME": self.home}, out)
         self.assertEqual((code, json.loads(out.getvalue())["installed"]), (1, {"SessionStart": False, "PreInvocation": False}))
+
+
+class SweepTests(Base):
+    def test_sweep_reports_and_closes_killed_conversations(self) -> None:
+        root = os.path.join(self.home, ".gemini", "antigravity-cli")
+        os.makedirs(root, exist_ok=True)
+        db = os.path.join(root, "conversation_summaries.db")
+        conn = sqlite3.connect(db)
+        with conn:
+            conn.execute(
+                "CREATE TABLE conversation_summaries ("
+                "conversation_id TEXT PRIMARY KEY, title TEXT, preview TEXT, parent_conversation_id TEXT, killed INTEGER DEFAULT 0)"
+            )
+            conn.execute("INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?)", (CID, "Live", "Live", "", 0))
+            conn.execute("INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?)", (PARENT, "Killed", "Killed", "", 1))
+        conn.close()
+        self.hook(start_payload(CID))
+        self.hook(start_payload(PARENT))
+        out = io.StringIO()
+        code = PA.main(["sweep", "--location", "mac"], env=self.env(), stdout=out)
+        self.assertEqual(code, 0)
+        report = json.loads(out.getvalue())
+        self.assertEqual(report["closed"], [{"session_id": PARENT, "would_close": True}])
+        out = io.StringIO()
+        code = PA.main(["sweep", "--apply", "--location", "mac"], env=self.env(), stdout=out)
+        self.assertEqual(code, 0)
+        self.assertEqual(self.lookup(CID)["state"], "active")
+        self.assertEqual(self.lookup(PARENT)["state"], "closed")
+
+    def test_sweep_tolerates_summaries_table_without_killed_column(self) -> None:
+        root = os.path.join(self.home, ".gemini", "antigravity-cli")
+        os.makedirs(root, exist_ok=True)
+        db = os.path.join(root, "conversation_summaries.db")
+        conn = sqlite3.connect(db)
+        with conn:
+            conn.execute("CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, title TEXT)")
+            conn.execute("INSERT INTO conversation_summaries VALUES (?, ?)", (CID, "Live"))
+        conn.close()
+        out = io.StringIO()
+        code = PA.main(["sweep", "--location", "mac"], env=self.env(), stdout=out)
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out.getvalue())["found"], 0)
 
 
 if __name__ == "__main__":

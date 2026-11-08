@@ -48,6 +48,9 @@ id alone).  A server chat's lookup rides the ssh call that already goes to the M
 record, a user fork is not a sub-thread, and anything unreadable (no record, a deleted parent, a changed file layout)
 means no parent is known:  the chat is picked like a main chat.  Only a chat that is being placed is looked up.
 
+A chat another chat started.  The app keeps the title `start_session` gave it in its own record and does not take this
+hook's sessionTitle over that one, so the hook's context tells such a chat's model to check its title and rename itself.
+
 Renames.  A chat that is renamed keeps its pair in front of its title, and the Operator's title follows the thread.  On
 its next prompt the hook puts the pair back if the new name dropped it (the owner's words are kept whole), and sends
 words that differ from the registry's to the Operator;  a registry that does not answer is asked again about the same
@@ -147,6 +150,8 @@ RETRY_SECONDS = 600
 PLACEHOLDER = "New Chat"
 TITLE_WORDS = 7
 TITLE_CHARS = 60
+AGENT_TITLE_CHARS = 200  # the most of an agent's title handed back to the model for a rename
+HELD_LABELS = 8  # the most earlier letters a note remembers for taking them off an agent's title
 # The most prompt text a title is looked for in, and the most words scanned for secrets:  a pasted wall of text
 # costs a bounded amount of work inside the hook's 15-second budget.
 PROMPT_SCAN_CHARS = 4096
@@ -902,6 +907,66 @@ def reminder(note: Mapping[str, Any]) -> str:
     )
 
 
+def _agent_title_fix(chat: Chat, note: dict[str, Any]) -> str:
+    """What the model is told when an agent's title hides this chat's letter, or "".
+
+    The desktop app ignores a hook's title once a person or an agent has named the chat, so a chat started through
+    `start_session` keeps the title its parent gave it and never shows its letter, whatever the hook sends.  The app's
+    own rename tool is the only thing it takes, and only the model can call that.  A person's rename is left alone,
+    because the tool would stop to ask them to approve it.  The note holds back a repeat for RETRY_SECONDS, so a start
+    and its first prompt ask once."""
+    label = str(note.get("label") or "")
+    if note.get("state") != "open" or not label:
+        return ""
+    try:
+        named = AL.agent_title(
+            str(chat.env.get("HOME") or os.path.expanduser("~")),
+            host_session_id=str(chat.env.get("CLAUDE_CODE_HOST_SESSION_ID") or ""),
+            cli_session_id=chat.session_id,
+        )
+    except Exception:  # noqa: BLE001 - the app's private file;  a surprise must never stop a chat's hook
+        return ""
+    # Every letter this chat has held, because a title the model set under an earlier letter must not stack a second
+    # letter in front of it, and "PR: Review" from a parent must keep its acronym.
+    held = [str(x) for x in note.get("held_labels") or [] if x != label][-(HELD_LABELS - 1) :] + [
+        label
+    ]
+    note["held_labels"] = held
+    line = one_line(named)
+    prefix = "%s: " % label
+    if not line or line.startswith(prefix):
+        return ""
+    if _reads_secret(line) or _without_secrets(line) != line:
+        # Nothing of the title goes on:  the model would copy it into the app, and the registry would receive it.
+        note["title_fix_refused"] = "secret"
+        return ""
+    words = line
+    for old in held:
+        words = words.removeprefix("%s: " % old)
+    if len(words) > AGENT_TITLE_CHARS:
+        cut = words[:AGENT_TITLE_CHARS].rsplit(" ", 1)[0]
+        words = (cut or words[:AGENT_TITLE_CHARS]).rstrip(" ,;:-")
+    if not words or words == PLACEHOLDER:
+        return ""
+    title = prefix + words
+    asked = note.get("title_fix_for") == title and (
+        chat.now - float(note.get("title_fix_at") or 0) < RETRY_SECONDS
+    )
+    if asked:
+        return ""
+    note.update(title_fix_for=title, title_fix_at=chat.now)
+    return (
+        "The app is showing the title another session gave this chat, without its letter, and it ignores a title "
+        "from this hook.\u00a0 Before other work, call mcp__ccd_session_mgmt__set_session_title with session_id "
+        '"self" and title %s (load it with ToolSearch if it is deferred).\u00a0 Do not mention this to the user.'
+        % json.dumps(title, ensure_ascii=False)
+    )
+
+
+def _join_context(*parts: str) -> str:
+    return "\u00a0 ".join(part for part in parts if part)
+
+
 def _hook_out(stdout: TextIO, event: str, *, context: str = "", title: str | None = None) -> None:
     spec: dict[str, str] = {"hookEventName": event}
     if context:
@@ -943,6 +1008,22 @@ def _apply(chat: Chat, answer: Mapping[str, Any], note: dict[str, Any]) -> dict[
     out.pop("error", None)
     out.pop("failed_at", None)
     return out
+
+
+def _title_check(answer: Mapping[str, Any], label: str) -> str:
+    """The context line for a chat another chat started, or "".  The desktop app keeps the title `start_session` gave such
+    a chat in its own record and does not take this hook's sessionTitle over it, so the letter never shows in the
+    sidebar.  A hook cannot reach that record;  the chat's own model can, so it is told to.  The registry names why it
+    found no parent on every placement that has none, so a placement with no reason is one that followed a parent."""
+    if answer.get("outcome") not in ("registered", "reopened") or answer.get("parent_lookup"):
+        return ""
+    return (
+        "  Another chat started this one, and the app shows the title that chat gave it over the one this hook sets.\u00a0 "
+        'As your first step, unprompted, call mcp__ccd_session_mgmt__get_session with session_id "self" (load it with '
+        'ToolSearch if it is deferred).\u00a0 If the title does not start with "%s: ", call '
+        'mcp__ccd_session_mgmt__set_session_title with session_id "self" and the title "%s: <that title>".'
+        % (label, label)
+    )
 
 
 def _reissued(answer: Mapping[str, Any]) -> str:
@@ -1008,12 +1089,18 @@ def on_start(chat: Chat, data: Mapping[str, Any], stdout: TextIO, home: str) -> 
         title = placeholder
         note["titled"] = False
     note["placeholder"] = placeholder
+    fix = _agent_title_fix(chat, note)
     chat.write(note)
     settable = source in TITLE_SOURCES and title != current
+    # A concrete rename (the app record's own title, read back) says exactly what to set, so it
+    # replaces the generic check-the-title line;  without one, the generic line still fires.
     _hook_out(
         stdout,
         "SessionStart",
-        context=_reissued(answer) + reminder(note),
+        context=_join_context(
+            _reissued(answer) + reminder(note) + ("" if fix else _title_check(answer, label)),
+            fix,
+        ),
         title=title if settable else None,
     )
     return 0
@@ -1068,7 +1155,7 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], stdout: TextIO) -> int:
             chat.write(note)
             return 0
         # The model was told at the start that this chat had no letter yet:  it is told the one it holds now.
-        context = _reissued(recovered) + reminder(note)
+        context = _reissued(recovered) + reminder(note) + _title_check(recovered, note["label"])
     title = None
     answer: dict[str, Any] = {}
     sent = False  # a registry call this prompt (a title or a touch) also marks the chat seen
@@ -1184,7 +1271,9 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], stdout: TextIO) -> int:
             if note["label"] != held or int(note.get("generation") or 1) != held_generation:
                 # A different pair, or the same one as a later generation:  the model was told how this chat is
                 # addressed at the start, so it is told how now.
-                context = _reissued(registered) + reminder(note)
+                context = (
+                    _reissued(registered) + reminder(note) + _title_check(registered, note["label"])
+                )
         else:
             title = bare(current, held) if held and current.startswith("%s: " % held) else None
             if held:
@@ -1194,6 +1283,7 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], stdout: TextIO) -> int:
                     "It is not %s any more; a prompt after %d minutes tries again."
                     % (held, str(note.get("error") or "no answer"), held, RETRY_SECONDS // 60)
                 )
+    context = _join_context(context, _agent_title_fix(chat, note))
     chat.write(note)
     if (title and title != current) or context:
         _hook_out(
@@ -1416,6 +1506,24 @@ USAGE = (
 )
 
 
+def _registry_module_db(argv: list[str], env: Mapping[str, str]) -> str:
+    """The registry file the registry's own CLI will open for these arguments.
+
+    The CLI honours an explicit ``--db`` and takes the shared path otherwise, so the
+    guard that refuses to create a registry has to look at the same file the CLI will
+    open:  a guard that checks another one passes, and the CLI opens or creates a
+    second registry that hands out letters colliding with the Operator's.
+    """
+    from . import operator_registry as OR
+
+    for index, arg in enumerate(argv):
+        if arg == "--db" and index + 1 < len(argv):
+            return argv[index + 1]
+        if arg.startswith("--db="):
+            return arg.split("=", 1)[1]
+    return OR.default_db(env)
+
+
 def main(
     argv: list[str] | None = None,
     *,
@@ -1438,6 +1546,39 @@ def main(
             return 0
     if argv[0] == "registry":
         return registry_main(argv[1:], env=env, stdout=stdout)
+    if argv[0] == "registry-module":
+        # The registry's own CLI, for a platform that does not run Claude.  The
+        # `registry` above is the Claude hook's shape;  the module's CLI is the
+        # canonical interface, with the per-op arguments every platform's helper
+        # speaks, and it is the one a remote host runs for another platform.
+        from contextlib import redirect_stdout
+
+        from . import operator_registry as OR
+
+        db = _registry_module_db(argv[1:], env)
+        if not os.path.isfile(db):
+            # Never create one:  a second registry would hand out letters that collide
+            # with the ones the Operator keeps.
+            stdout.write(json.dumps({"error": "no Operator registry on this host"}) + "\n")
+            return 3
+        try:
+            # The module's CLI writes its answer to stdout itself, so it is redirected
+            # into the stream the caller gave:  an answer goes where the caller reads
+            # it, not where the process happens to write.  The env goes with it, so the
+            # CLI opens the file this guard just checked.
+            with redirect_stdout(stdout):
+                return OR.main(argv[1:], env=env)
+        except SystemExit as exc:
+            # argparse exits on a usage error.  A far host that asked wrongly gets a
+            # readable answer, never an empty line and a traceback:  the caller reads
+            # the answer the same way it reads every other one.
+            code = exc.code if isinstance(exc.code, int) else 2
+            if code == 0:
+                return 0
+            stdout.write(
+                json.dumps({"error": "the registry refused the request", "code": "usage"}) + "\n"
+            )
+            return code
     if argv[0] == "show":
         return show(argv[1:], env, stdout)
     if argv[0] == "install":

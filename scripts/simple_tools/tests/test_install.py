@@ -1,7 +1,7 @@
 """install.sh: dry run changes nothing, a real run links and makes ~/.simple-tools 700, reruns are idempotent.
 
 Always runs with HOME pointed at a temp directory, against a fake checkout holding only
-scripts/simple-tools, so the real home, LaunchAgents and credential folders are never involved."""
+scripts/simple-chat, so the real home, LaunchAgents and credential folders are never involved."""
 
 from __future__ import annotations
 

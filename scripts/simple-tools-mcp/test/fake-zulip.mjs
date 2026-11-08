@@ -3,7 +3,7 @@
 // flow's outbound service.  It implements only what the seven tools call:
 // users/me, users, users/me/subscriptions, users/me/<stream>/topics, messages
 // (GET with narrow and anchor, POST), messages/<id> and
-// messages/<id>/reactions.  Streams:  work-in-progress, sandbox and design are
+// messages/<id>/reactions.  Streams:  simple-tools, sandbox and design are
 // public;  other (999001) is private, and every bot is subscribed to all four,
 // so "other" stands for a private stream a bot is in.  Direct messages
 // are real-Zulip shaped:  `display_recipient` lists every person in the
@@ -14,11 +14,12 @@
 
 export const REALM = "https://simplewithus.zulipchat.com";
 // The realm renamed the fleet's coordination channel;  the worker resolves its default channel
-// from the shared tool contract, so the fake carries the current name.
+// from the shared tool contract, so the fake carries the live name (and keeps the old one as the
+// same stream so fixtures written against it still address the same place).
 // The stream ids are synthetic on purpose:  a fake must not carry a production resource id, and
 // nothing here depends on the number matching the realm.
 export const DEFAULT_CHANNEL = "work-in-progress";
-export const STREAMS = { [DEFAULT_CHANNEL]: 900001, sandbox: 900002, other: 999001, design: 700001 };
+export const STREAMS = { [DEFAULT_CHANNEL]: 900001, "simple-tools": 900001, sandbox: 900002, other: 999001, design: 700001 };
 export const PRIVATE_STREAMS = Object.freeze([STREAMS.other]);
 export const OWNER_ID = 1211974;
 export const BOT_EMAIL = "grok-web-bot@simplewithus.zulipchat.com";

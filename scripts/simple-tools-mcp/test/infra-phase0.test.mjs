@@ -70,13 +70,12 @@ function readProbe() {
 // that have to keep seeing the retired host after HOST was repointed.
 test("tunnel --apply drops the retired host's ingress rule as well as the served one", () => {
   const result = readProbe();
-  // Before the fix, HOST alone was removed and the retired hostname survived.
   assert.deepEqual(result.hosts_after_tunnel, [null], "only the catch-all rule may remain");
   assert.match(result.output, /remove: obsolete\.example\.test -> http:\/\/localhost:8787/);
   assert.match(result.output, /remove: agents\.simplewithus\.com ->/);
 });
 
-test("dns --apply finds the tunnel CNAME in both the new and the retired zone", () => {
+test("dns --apply finds the tunnel CNAME in the served zone", () => {
   const { queried, deleted_record_ids: deleted } = readProbe();
   // The retired host's CNAME lives in jays.services;  scanning only
   // simplewithus.com reported "nothing to delete" while it still resolved.

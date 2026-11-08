@@ -5,15 +5,14 @@ the kill switch live here and in listener/pause.json (owner decision 2026-10-07)
 never stops the daemon:  `load()` returns the errors, the daemon shows red in status, sends one
 notify-owner and keeps running with what it could read (a seat with a bad section gets no queue).
 
-One instance of this package runs the listener (single-server consolidation, owner direction
-Mon, Nov 2 2026):  `server`, a container on the Coolify box, holds every seat - the nine seats
-whose execution tools live on the owner's Mac (AG, CLAUDE, CLUTCH, CODEX, CURSOR, FX, GROK, MC
-and MM), the Grok Bot personas, the other cloud seats and the Operator service.  The Mac
-listener is retired to a thin wake alerter.  The one exception to "never stops" is the seat
-partition (docs/protocols/simple-tools-partition.toml).  It fails closed:  a daemon whose
-config holds a seat, enabled or not, that the partition does not give to its own instance (a
-seat of another instance, a `none` seat, or a seat the partition does not list), or a section
-that reads another listed seat's credential, refuses to start, so a seat is never held twice.
+Two instances of this package run the listener (owner decision, Thu, Oct 8):  `mac` holds
+the nine Mac seats (AG, CLAUDE, CLUTCH, CODEX, CURSOR, FX, GROK, MC and MM), and `server`
+(a container on the Coolify box) holds the Grok Bot personas and the other cloud seats.  The
+one exception to "never stops" is the seat partition (docs/protocols/simple-tools-partition.toml,
+required on both instances).  It fails closed:  a daemon whose config holds a seat, enabled or
+not, that the partition does not give to its own instance (a seat of the other instance, a
+`none` seat, or a seat the partition does not list), or a section that reads another listed
+seat's credential, refuses to start, so a seat is never held twice.
 
 Credentials:  `creds = "file"` (the default) is the seat's own bot, named by `bot` (its credential
 file stem, e.g. Grok-Build):  read from Infisical Fleet-OPS /zulip as <BOT>_ZULIP_EMAIL, _KEY and _SITE
@@ -106,16 +105,21 @@ MCODE_DEFAULT_MODEL = "minimax/MiniMax-M3.1-Flash"
 MCODE_MODEL_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]{0,59}$"
 # The OpenRouter HTTP runtime's models.  `wake = "openrouter"` defaults to the Muse contributor tier run
 # through OpenRouter (so it needs no muse binary, no pin on one and no Meta login);  the fallback
-# defaults to the DeepSeek Flash "latest" alias.  The leading `~` is part of OpenRouter's id for a
-# "latest" alias, not a shell-ism.  Both are defaults only:  `seat.X.model` and `seat.X.fallback_model`
-# win, so a move to another model shows up in the config.  A "latest" alias can change the served
-# weights upstream without changing anything the pin fingerprints, which the owner accepted when he asked
-# for it;  the slug itself is part of the fingerprint.
+# defaults to MiniMax M3.1 Flash (owner, Nov 7, 2026:  muse spark 1.3 contributor first, MiniMax M3.1
+# Flash as backup;  the Oct 30 DeepSeek "latest" pick it replaces is quoted in
+# docs/protocols/simple-tools-listener.md).  The id is the same string MCODE_DEFAULT_MODEL carries, so
+# one model has one name on both routes.  Both are defaults only:  `seat.X.model` and `seat.X.fallback_model`
+# win, so a move to another model shows up in the config.  The id names a version, not a `~latest`
+# alias, so the pin fingerprints the exact upstream model;  a seat still on the old alias default reads
+# as a stale shape, and the Nov 3 advisory-pin ruling covers the move.
 OPENROUTER_DEFAULT_MODEL = "meta/muse-spark-1.3-contributor"
-OPENROUTER_FALLBACK_MODEL = "~deepseek/deepseek-flash-latest"
+OPENROUTER_FALLBACK_MODEL = "minimax/MiniMax-M3.1-Flash"
 # `provider/name`, with an optional leading `~`.  No `:` suffix on purpose:  OpenRouter's `:online`
 # adds web search and `:nitro` or `:floor` re-route, and an unattended no-tools wake wants none of them.
-OPENROUTER_MODEL_PATTERN = r"^~?[A-Za-z0-9][A-Za-z0-9._-]{0,39}/[A-Za-z0-9][A-Za-z0-9._-]{0,79}$"
+OPENROUTER_MODEL_PATTERN = r"^(~?[A-Za-z0-9][A-Za-z0-9._-]{0,39}/[A-Za-z0-9][A-Za-z0-9._-]{0,79}|@preset/[A-Za-z0-9][A-Za-z0-9._-]{0,79})$"
+# An `@preset/<slug>` reference is accepted too:  the preset then supplies the model list and any
+# system prompt, and the slug itself is what the pin fingerprints, so an edit on the dashboard
+# changes behavior without changing the fingerprint.
 # Wakes the budget holds back (heldback.py), per seat:  `held_back = { max = 200, overflow_max = 1000,
 # ttl_hours = 24, items_in_wake = 20, owner_digest_minutes = 60, catch_up = true }`.  max is the records
 # with names;  past it the oldest move to a compact overflow tier (still listed by id), and only past
@@ -206,12 +210,6 @@ def env_code(seat: str) -> str:
     return re.sub(r"[^A-Z0-9]", "_", seat.upper())
 
 
-# Same canonical locator shape the board CLI enforces (scripts/linear-board/board BEARER_LOCATOR_RE).
-BEARER_LOCATOR_RE = re.compile(
-    r"/[A-Za-z0-9_-]{1,64}(?:/[A-Za-z0-9_-]{1,64}){0,7}:[A-Z][A-Z0-9_]{0,63}"
-)
-
-
 class RoutineConfig:
     """Where a remote `http` wake goes:  the names of the environment variables that hold the
     routine URL and its sender key (never the values), the method, the header and auth mode."""
@@ -278,7 +276,7 @@ class SeatConfig:
         fallback_model: str = OPENROUTER_FALLBACK_MODEL,
         muse_bridge: bool = False,
         typing_indicator: bool = False,
-        bearer_locator: str | None = None,
+        bearer_file: str | None = None,
         config_problems: list[str] | None = None,
     ) -> None:
         self.seat = seat
@@ -310,10 +308,11 @@ class SeatConfig:
         self.instance = instance
         self.enabled = enabled
         self.creds = creds  # "file", "infisical" or "env"
-        # The seat's own simple-board bearer LOCATOR (a Fleet-OPS FOLDER:KEY_NAME, never a secret), from this trusted
-        # daemon config only.  It names where the seat's bearer lives;  the CLI still verifies it and takes the seat
-        # from the verifier, so a wake or request can never choose a credential.  None = this seat files no board item.
-        self.bearer_locator = bearer_locator
+        # The seat's own simple-board bearer FILE:  an absolute path to that seat's private 0600 bearer file (never
+        # the bearer itself), from this trusted daemon config only.  The CLI still verifies the bearer and takes the
+        # seat from the verifier, so a wake or request can never choose a credential.  None = this seat files no
+        # board item.
+        self.bearer_file = bearer_file
         self.email_env = email_env
         self.key_env = key_env
         self.site_env = site_env
@@ -392,6 +391,7 @@ class Config:
         # The production application the Mac bridge reaches, from the operator's
         # own config.  Empty when the bridge is off.
         self.muse_bridge_remote_app = ""
+        self.muse_bridge_consult_backup: dict[str, Any] | None = None
         self.errors: list[str] = []
         # Seats a config problem kept out entirely (AFC-358):  seat -> why.  They have no runner, so
         # status shows them as a red row instead of letting them vanish.
@@ -404,6 +404,7 @@ class Config:
         # it a seat cannot be told "the Operator opened this DM" from "a seat opened it", and the
         # runtime refuses by name instead of guessing.
         self.operator_user_id = 0
+        self.operator_email = ""
         self.eligible_user_ids: set[int] = set()
         # `[operator] dm_allow`:  the user ids besides the pinned owner that the Operator may hand a
         # tagged address's candidate list to (AFC-412).  The list carries internal session ids and
@@ -666,6 +667,13 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         errors.append("muse_bridge.remote_seats must be unique canonical seat names")
     else:
         cfg.muse_bridge_remote_seats = tuple(remote_seats)
+    # AFC-649 known-cap mode:  an explicit operator declaration that the primary consult runtime
+    # is capped and the approved backup serves consults.  Stored raw and validated at consult
+    # time (simple_tools.backup_mode):  absent/null means never enabled and the primary runs as
+    # today;  a configured-but-malformed declaration fails CLOSED there, holding consults and
+    # preserving pending work instead of erroring the whole config load.
+    backup = bridge.get("consult_backup")
+    cfg.muse_bridge_consult_backup = backup if backup is None or isinstance(backup, dict) else {}
     daemon = raw.get("daemon") or {}
     if not isinstance(daemon, dict):
         errors.append("[daemon] must be a table")
@@ -687,6 +695,16 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         errors.append("daemon.operator_user_id must be a user id (0 means not pinned yet)")
     else:
         cfg.operator_user_id = operator
+    # The Operator bot's address, pinned beside its id so the voice can tell the pinned bot
+    # without an environment variable (a LaunchAgent that does not carry one still speaks).  Like
+    # the id it is per-host inventory, so none is committed;  "" means not pinned.
+    operator_email = daemon.get("operator_email", "")
+    if not isinstance(operator_email, str) or (
+        operator_email.strip() and "@" not in operator_email
+    ):
+        errors.append("daemon.operator_email must be the Operator bot's address (or empty)")
+    else:
+        cfg.operator_email = operator_email.strip().casefold()
     eligible = daemon.get("eligible_user_ids", [])
     if not isinstance(eligible, list) or not all(
         isinstance(i, int) and not isinstance(i, bool) for i in eligible
@@ -991,15 +1009,20 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         if not isinstance(typing_indicator, bool):
             wake_problems.append("seat.%s.typing_indicator must be true or false" % seat_name)
             typing_indicator = False
-        bearer_locator = section.get("bearer_locator")
-        if bearer_locator is not None and (
-            not isinstance(bearer_locator, str) or not BEARER_LOCATOR_RE.fullmatch(bearer_locator)
+        if "bearer_locator" in section:
+            wake_problems.append(
+                "seat.%s.bearer_locator is retired:  name bearer_file instead, an absolute path to the "
+                "seat's own private bearer file (never the bearer itself)" % seat_name
+            )
+        bearer_file = section.get("bearer_file")
+        if bearer_file is not None and (
+            not isinstance(bearer_file, str) or not bearer_file.startswith("/")
         ):
             wake_problems.append(
-                "seat.%s.bearer_locator must be a FOLDER:KEY_NAME location (no secret value)"
-                % seat_name
+                "seat.%s.bearer_file must be an absolute path to the seat's private bearer file "
+                "(no secret value)" % seat_name
             )
-            bearer_locator = None
+            bearer_file = None
         creds = section.get("creds", "file")
         if creds not in ("file", "infisical", "env"):
             problems.append(
@@ -1072,7 +1095,7 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
             # An OpenRouter model id is `provider/name` (and may start with `~`), not a CLI alias.
             if not isinstance(model, str) or not re.fullmatch(OPENROUTER_MODEL_PATTERN, model):
                 wake_problems.append(
-                    "seat.%s.model must be an OpenRouter model such as %s"
+                    "seat.%s.model must be an OpenRouter model such as %s or an @preset/ reference"
                     % (seat_name, OPENROUTER_DEFAULT_MODEL)
                 )
         elif not isinstance(model, str) or not re.fullmatch(r"[a-z0-9.\-\[\]]{1,60}", model):
@@ -1160,7 +1183,7 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
             OPENROUTER_MODEL_PATTERN, fallback_model
         ):
             wake_problems.append(
-                "seat.%s.fallback_model must be an OpenRouter model such as %s"
+                "seat.%s.fallback_model must be an OpenRouter model such as %s or an @preset/ reference"
                 % (seat_name, OPENROUTER_FALLBACK_MODEL)
             )
         elif fallback == "openrouter" and wake == "openrouter" and fallback_model == model:
@@ -1272,7 +1295,7 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
             fallback_model=fallback_model,
             muse_bridge=muse_bridge,
             typing_indicator=typing_indicator,
-            bearer_locator=bearer_locator,
+            bearer_file=bearer_file,
             config_problems=wake_problems,
         )
         (cfg.seats if enabled else cfg.disabled)[seat_name] = seat_cfg

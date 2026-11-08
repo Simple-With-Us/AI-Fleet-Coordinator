@@ -1,7 +1,5 @@
 # 2026-09-01 — Sentry fleet adoption (standing split + hygiene)
 
-Historical identifiers have been redacted. These records do not certify current deployment state.
-
 ## Summary
 
 Implementation of the 2026-09-01 Sentry fleet adoption report as fleet-level
@@ -51,7 +49,7 @@ page.
 
 ## What this unit lands
 
-- [retired identifier] Observability section: standing split, Seer gate, overlap table,
+- FLEET-PROTOCOL Observability section: standing split, Seer gate, overlap table,
   CI fingerprint rule, Size Analysis TODO.
 - This rollout (implementation of the adoption report, not a second plan).
 - Plan addendum pointing here.

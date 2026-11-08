@@ -404,7 +404,7 @@ class AdminRefusalTests(ServerHarness):
             "only the member persona holds a queue",
         )
         self.fake.add_message(
-            "Codex", "work-in-progress", "t", "@**GB-Director** and @**GB-Compiler** look"
+            "Codex", "simple-tools", "t", "@**GB-Director** and @**GB-Compiler** look"
         )
         self.pump_until(daemon, lambda: len(self.ledger(SEAT)) >= 1, seat=SEAT)
         self.wake_cycle(daemon)
@@ -489,7 +489,7 @@ class DmTests(ServerHarness):
     def test_a_bf_bot_mention_wakes_the_gb_routine(self) -> None:
         bf = self.fake.add_user("bf-builder-bot@zulip.test", "BF Builder", is_bot=True, user_id=31)
         daemon = self.started()
-        mid = self.fake.add_message(bf, "work-in-progress", "CT build red", MENTION)
+        mid = self.fake.add_message(bf, "simple-tools", "CT build red", MENTION)
         self.pump_until(daemon, lambda: len(self.ledger(SEAT)) >= 1, seat=SEAT)
         self.wake_cycle(daemon)
         body = self.routine.received[0].json()
@@ -510,8 +510,8 @@ class DmTests(ServerHarness):
 
     def test_a_channel_mention_wakes_with_dm_false(self) -> None:
         daemon = self.started()
-        mid = self.fake.add_message("Codex", "work-in-progress", "CT build red", MENTION)
-        self.fake.add_message("Codex", "work-in-progress", "CT build red", "plain chatter")
+        mid = self.fake.add_message("Codex", "simple-tools", "CT build red", MENTION)
+        self.fake.add_message("Codex", "simple-tools", "CT build red", "plain chatter")
         self.pump_until(daemon, lambda: len(self.ledger(SEAT)) >= 1, seat=SEAT)
         self.wake_cycle(daemon, 19)
         self.assertEqual(self.routine.received, [], "still inside the quiet window")
@@ -520,16 +520,16 @@ class DmTests(ServerHarness):
         self.assertFalse(body["dm"])
         self.assertEqual(
             (body["channel"], body["topic"], body["dm_recipient_ids"]),
-            ("work-in-progress", "CT build red", []),
+            ("simple-tools", "CT build red", []),
         )
-        self.assertEqual(body["stream_id"], self.fake.streams["work-in-progress"])
+        self.assertEqual(body["stream_id"], self.fake.streams["simple-tools"])
         self.assertEqual(
-            body["reply_to"], {"type": "stream", "channel": "work-in-progress", "topic": "CT build red"}
+            body["reply_to"], {"type": "stream", "channel": "simple-tools", "topic": "CT build red"}
         )
         self.assertEqual((body["sender_user_id"], body["is_bot"], body["owner"]), (11, True, False))
         self.assertEqual(
             body["zulip_link"],
-            "%s/#narrow/channel/7-work-in-progress/topic/CT.20build.20red/near/%d" % (self.fake.url, mid),
+            "%s/#narrow/channel/7-simple-tools/topic/CT.20build.20red/near/%d" % (self.fake.url, mid),
         )
         self.assertEqual(body["contract"], "simple-tools-wake/1")
         self.assertEqual(body["seat"], SEAT)
@@ -634,7 +634,7 @@ class RoutineBodyTests(unittest.TestCase):
             base = {
                 "id": 9,
                 "type": "stream",
-                "channel": "work-in-progress",
+                "channel": "simple-tools",
                 "topic": "t",
                 "sender_id": 11,
                 "content": "x",
@@ -886,7 +886,7 @@ class LedgerAndSecrecyTests(ServerHarness):
         self.assertIn("wake-failed", kinds)
         self.assertEqual(self.banners, [], "no banners on the server instance")
         self.routine.script = [500, 500, 500, 500]
-        self.fake.add_message("Codex", "work-in-progress", "t", MENTION)
+        self.fake.add_message("Codex", "simple-tools", "t", MENTION)
         self.pump_until(daemon, lambda: len(self.ledger(SEAT)) >= 5, seat=SEAT)
         self.wake_cycle(daemon)
         last = self.ledger(SEAT)[-1]
@@ -925,7 +925,7 @@ class LedgerAndSecrecyTests(ServerHarness):
         self.write_server_config(budget="wakes_per_hour = 2, usd_per_day = 0.01")
         daemon = self.started()
         for topic in ("a", "b", "c"):
-            self.fake.add_message("Codex", "work-in-progress", topic, MENTION)
+            self.fake.add_message("Codex", "simple-tools", topic, MENTION)
             self.pump_until(
                 daemon,
                 lambda: (
@@ -1036,7 +1036,7 @@ class LedgerAndSecrecyTests(ServerHarness):
     def test_an_unready_routine_drops_the_wake_and_names_the_variable(self) -> None:
         daemon = self.server_daemon(env=self.server_env(GB_COMPILER_ROUTINE_KEY=None))
         self.assertTrue(daemon.connect_seat(SEAT))
-        self.fake.add_message("Codex", "work-in-progress", "t", MENTION)
+        self.fake.add_message("Codex", "simple-tools", "t", MENTION)
         self.pump_until(daemon, lambda: len(self.ledger(SEAT)) >= 1, seat=SEAT)
         self.wake_cycle(daemon)
         self.assertEqual(self.ledger(SEAT)[-1]["reason"], "routine_not_configured")
@@ -1083,41 +1083,30 @@ class PartitionTests(ServerHarness):
         log = (self.state_dir / "logs" / "listener.log").read_text()
         self.assertIn('"refused-start"', log)
 
-    def test_the_partition_gives_every_held_seat_to_the_server(self) -> None:
-        # Single-server consolidation:  every held seat belongs to the server instance, so the Mac
-        # listener refuses each one and a seat on no instance is refused by both.  These assertions
-        # read the real partition, not the mac-side fixture ListenerHarness pins.
-        real = os.path.join(C.REPO_ROOT, C.PARTITION_RELPATH)
-        self.write_config(seats='[seat.CLAUDE]\nbot = "Claude"\nwake = "claude"\n')
-        err = self.refused(self.env(SIMPLE_TOOLS_PARTITION=real))
+    def test_the_partition_file_keeps_claude_off_the_server_and_gb_off_the_mac(self) -> None:
+        self.write_server_config(seats='[seat.CLAUDE]\nbot = "Claude"\nwake = "claude"\n')
+        err = self.refused(self.server_env())
         self.assertIn(
-            "seat CLAUDE is configured here (the 'mac' listener), but it belongs to the 'server' instance",
+            "seat CLAUDE is configured here (the 'server' listener), but it belongs to the 'mac' instance",
             err,
         )
         self.assertIn("simple-tools-partition.toml", err)
         self.write_config(
             seats='[seat.CLAUDE]\nbot = "Claude"\n\n[seat.GB-COMPILER]\nenabled = false\nbot = "GB-Compiler"\n'
         )
-        err = self.refused(self.env(SIMPLE_TOOLS_PARTITION=real))
+        err = self.refused(self.env())
         self.assertIn(
             "seat GB-COMPILER is configured here (the 'mac' listener), but it belongs to the 'server'",
-            err,
-        )
-        self.write_server_config(seats='[seat.BF-PLUMBER]\ncreds = "env"\n')
-        err = self.refused(self.server_env())
-        self.assertIn(
-            "seat BF-PLUMBER is configured here (the 'server' listener), but no listener instance holds it",
             err,
         )
 
     def test_a_bf_seat_is_held_by_no_listener(self) -> None:
         self.write_config(
-            seats='[seat.CLAUDE]\nbot = "Claude"\n\n[seat.BF-PLUMBER]\nbot = "BF-Plumber"\n'
+            seats='[seat.CLAUDE]\nbot = "Claude"\n\n[seat.BF-BUILDER]\nbot = "BF-Builder"\n'
         )
-        real = os.path.join(C.REPO_ROOT, C.PARTITION_RELPATH)
-        err = self.refused(self.env(SIMPLE_TOOLS_PARTITION=real))
+        err = self.refused(self.env())
         self.assertIn(
-            "seat BF-PLUMBER is configured here (the 'mac' listener), but no listener instance holds it",
+            "seat BF-BUILDER is configured here (the 'mac' listener), but no listener instance holds it",
             err,
         )
 
@@ -1146,7 +1135,7 @@ class PartitionTests(ServerHarness):
         self.write_config(
             seats='[seat.CLAUDE]\nbot = "Claude"\n\n[seat.ZED]\nbot = "Zed"\nenabled = false\n'
         )
-        err = self.refused(self.env(SIMPLE_TOOLS_PARTITION=os.path.join(C.REPO_ROOT, C.PARTITION_RELPATH)))
+        err = self.refused(self.env(SIMPLE_TOOLS_PARTITION=str(PARTITION)))
         self.assertIn(
             "seat ZED is configured here (the 'mac' listener), but %s does not list it" % PARTITION,
             err,
@@ -1156,11 +1145,11 @@ class PartitionTests(ServerHarness):
         err = self.refused(self.server_env())
         self.assertIn("seat GB-NEWBIE is configured here (the 'server' listener), but", err)
         self.assertIn("does not list it", err)
-        # A seat the partition marks none (BotFleet handles BF bots natively) is refused too.
-        self.write_server_config(seats='[seat.BF-FIXER]\ncreds = "env"\n')
+        # A seat the partition marks none (the retired BF-BUILDER) is refused too.
+        self.write_server_config(seats='[seat.BF-BUILDER]\ncreds = "env"\n')
         err = self.refused(self.server_env())
         self.assertIn(
-            "seat BF-FIXER is configured here (the 'server' listener), but no listener instance holds it",
+            "seat BF-BUILDER is configured here (the 'server' listener), but no listener instance holds it",
             err,
         )
 
@@ -1245,9 +1234,7 @@ class PartitionTests(ServerHarness):
         self.assertEqual(self.fake.registrations, [])
 
     def test_the_cli_run_returns_2_without_waiting(self) -> None:
-        # A seat on no instance (BF-PLUMBER) is the refusal this CLI run reports;  the server now
-        # holds CLAUDE, so it is no longer a refusing example.
-        self.write_server_config(seats='[seat.BF-PLUMBER]\ncreds = "env"\n')
+        self.write_server_config(seats='[seat.CLAUDE]\nbot = "Claude"\n')
         result = self.run_cli("daemon", "run", "--wait-lock", env=self.server_env())
         self.assertEqual(result.code, 2)
         self.assertIn("refusing to start", result.err)
@@ -1255,13 +1242,13 @@ class PartitionTests(ServerHarness):
 
     def test_a_reload_that_adds_a_seat_of_the_other_instance_keeps_the_running_config(self) -> None:
         daemon = self.started()
-        self.write_server_config(seats='[seat.BF-FIXER]\ncreds = "env"\n')
+        self.write_server_config(seats='[seat.CLAUDE]\nbot = "Claude"\nwake = "claude"\n')
         daemon.reload()
         self.assertEqual(sorted(daemon.seats), [SEAT])
-        self.assertNotIn("BF-FIXER", daemon.config.seats)
+        self.assertNotIn("CLAUDE", daemon.config.seats)
         daemon.write_status()
         status = L.read_json(os.path.join(self.root, "listener", "status.json"))
-        self.assertIn("seat BF-FIXER is configured here", " ".join(status["config_errors"]))
+        self.assertIn("seat CLAUDE is configured here", " ".join(status["config_errors"]))
         self.write_server_config()
         daemon.reload()
         self.assertEqual(daemon.reload_refused, [])
@@ -1269,23 +1256,25 @@ class PartitionTests(ServerHarness):
     def test_the_repo_partition_and_both_sample_configs_agree(self) -> None:
         partition, error = C.load_partition(str(PARTITION))
         self.assertIsNone(error)
-        self.assertEqual(partition["CLAUDE"], "server")
+        self.assertEqual(partition["CLAUDE"], "mac")
         gb = sorted(s for s in partition if s.startswith("GB-"))
         self.assertEqual(len(gb), 12)
         self.assertEqual({partition[s] for s in gb}, {"server"})
         bf = {s: v for s, v in partition.items() if s.startswith("BF-")}
         bf_names = set(bf)
-        self.assertEqual(len(bf), 11)
+        self.assertEqual(len(bf), 13)
         self.assertEqual(
             {s for s, v in bf.items() if v == "server"},
-            {"BF-DIRECTOR"},
-            "the server holds only BF-DIRECTOR of the BotFleet seats (owner, Mon, Oct 13)",
+            bf_names - {"BF-BUILDER"},
+            "the server holds every live BotFleet seat (owner, Fri, Nov 6:  every seat "
+            "working, all through the Operator); BF-BUILDER is retired and held by none",
         )
-        self.assertEqual({s for s, v in bf.items() if v == "none"}, bf_names - {"BF-DIRECTOR"})
+        self.assertEqual({s for s, v in bf.items() if v == "none"}, {"BF-BUILDER"})
         self.assertEqual(
-            {s for s, v in partition.items() if v == "mac"},
-            set(),
-            "the single-server consolidation left the Mac listener holding no seat",
+            {s for s, v in partition.items() if v == "mac"} - S.SERVICE_SEATS,
+            set(launchd.READER_SEATS),
+            "the Mac holds every Mac seat (owner, Thu, Oct 8), the deterministic service "
+            "identities excepted (they hold no reader seat)",
         )
         for seat in ["MA", "JET", "GROK-WEB", "ECHO", "WISE"]:
             self.assertEqual(partition.get(seat), "server", "%s is a cloud seat" % seat)
@@ -1296,36 +1285,46 @@ class PartitionTests(ServerHarness):
         )
         mac = C.from_dict(tomllib.loads(launchd.sample_config(str(self.secrets_dir))))
         self.assertEqual(mac.instance, "mac")
-        # The Mac sample still carries CLAUDE, which the partition now gives to the server:  the
-        # disagreement is refused fail-closed until the Mac's listener is retired.
-        self.assertTrue(
-            any("CLAUDE" in e for e in C.partition_errors(mac, partition, env_instance="mac"))
-        )
+        self.assertEqual(C.partition_errors(mac, partition, env_instance="mac"), [])
         self.assertEqual(sorted(mac.seats), ["CLAUDE"])
         self.assertTrue(
-            bf_names <= mac.outgoing_webhook_seats,
-            "a fresh Mac sample accepts migrated BF senders without holding their queues",
+            (bf_names - {"BF-BUILDER"}) <= mac.outgoing_webhook_seats,
+            "a fresh Mac sample accepts migrated BF senders without holding their queues "
+            "(the retired BF-BUILDER is not a sender any more)",
         )
         server = C.from_dict(tomllib.loads((SERVER_DIR / "listener.toml").read_text()))
         self.assertEqual(server.errors, [])
         self.assertEqual(server.instance, "server")
-        self.assertTrue(bf_names <= server.outgoing_webhook_seats)
-        self.assertFalse(
-            bf_names & set(server.seats), "BF sender eligibility must not create server consumers"
+        self.assertTrue((bf_names - {"BF-BUILDER"}) <= server.outgoing_webhook_seats)
+        self.assertTrue(
+            (bf_names - {"BF-BUILDER"}) <= set(server.seats),
+            "every live BF sender now holds a server queue too (owner, Fri, Nov 6)",
         )
+        self.assertNotIn("BF-BUILDER", set(server.seats) | set(server.disabled))
         self.assertEqual(C.partition_errors(server, partition, env_instance="server"), [])
         self.assertEqual(
             sorted(server.disabled),
-            ["BF-DIRECTOR"],
-            "the only disabled persona is BF-DIRECTOR, whose routine key is not inventoried yet",
+            [],
+            "no server seat is disabled:  every seat works through the Operator (owner, Fri, Nov 6)",
         )
         self.assertEqual(
             sorted(server.seats),
-            sorted(list(gb) + list(CLOUD_SEATS) + ["CLAUDE", "CODEX", "AG", "CURSOR", "GROK",
-                                                  "CLUTCH", "FX", "MM", "MC"]),
-            "the enabled seats are every GB persona, the five cloud seats and the nine seats the "
-            "single-server consolidation moved to the server",
+            sorted(list(gb) + list(CLOUD_SEATS) + [s for s, v in bf.items() if v == "server"]),
+            "the enabled seats are every GB persona, the five cloud seats and every live BF seat",
         )
+        for seat in [s for s, v in bf.items() if v == "server"]:
+            seat_cfg = server.seats[seat]
+            code = C.env_code(seat)
+            self.assertEqual(
+                (seat_cfg.wake, seat_cfg.creds, seat_cfg.instance, seat_cfg.routine),
+                ("inbox", "env", "server", None),
+                "%s has capture only, no wake adapter (BotFleet has no routine endpoint)" % seat,
+            )
+            self.assertEqual(
+                (seat_cfg.email_env, seat_cfg.key_env, seat_cfg.site_env),
+                ("ZULIP_%s_EMAIL" % code, "ZULIP_%s_API_KEY" % code, "ZULIP_SITE"),
+                seat,
+            )
         for seat in CLOUD_SEATS:
             seat_cfg = server.seats[seat]
             code = C.env_code(seat)
@@ -1454,7 +1453,7 @@ class CloudSeatTests(CloudSeatHarness):
             self.assertTrue(daemon.connect_seat(seat), daemon.seats[seat].error)
         sent = {
             seat: self.fake.add_message(
-                "Codex", "work-in-progress", "cloud %s" % seat, "@**%s** please look" % name
+                "Codex", "simple-tools", "cloud %s" % seat, "@**%s** please look" % name
             )
             for seat, (_, name) in CLOUD_SEATS.items()
         }
@@ -1489,7 +1488,7 @@ class CloudSeatTests(CloudSeatHarness):
         self.assertTrue(daemon.connect_seat("JET"), daemon.seats["JET"].error)
         self.assertIn(jet_key, daemon.hidden)
         self.fake.add_message(
-            "Codex", "work-in-progress", "jet wake", "@**%s** please look" % CLOUD_SEATS["JET"][1]
+            "Codex", "simple-tools", "jet wake", "@**%s** please look" % CLOUD_SEATS["JET"][1]
         )
         self.pump_until(daemon, lambda: len(self.ledger("JET")) >= 1, seat="JET")
         self.clock.advance(25.0)
@@ -1508,7 +1507,7 @@ class CloudSeatTests(CloudSeatHarness):
         )
         self.assertEqual(got.header("Idempotency-Key"), body["wake_id"])
         # The Worker delivers a channel wake only from an allowlisted stream id, so the listener sends it.
-        self.assertEqual(body["stream_id"], self.fake.streams["work-in-progress"])
+        self.assertEqual(body["stream_id"], self.fake.streams["simple-tools"])
 
     def test_a_gb_persona_from_the_sample_wakes_its_routine_with_the_infisical_webhook_names(
         self,
@@ -1531,7 +1530,7 @@ class CloudSeatTests(CloudSeatHarness):
         self.assertTrue(daemon.connect_seat("GB-FIXER"), daemon.seats["GB-FIXER"].error)
         self.assertIn(hook_key, daemon.hidden, "the routine key is scrubbed like a bot key")
         self.fake.add_message(
-            "Codex", "work-in-progress", "fixer wake", "@**GB-Fixer** main is red, please look"
+            "Codex", "simple-tools", "fixer wake", "@**GB-Fixer** main is red, please look"
         )
         self.pump_until(daemon, lambda: len(self.ledger("GB-FIXER")) >= 1, seat="GB-FIXER")
         self.clock.advance(25.0)
@@ -1835,7 +1834,7 @@ class ContainerTests(unittest.TestCase):
         ]
         self.assertEqual(lines[0], "FROM python:3.14-slim")
         users = [l.split()[1] for l in lines if l.startswith("USER ")]
-        self.assertEqual(users, ["eavesdropper"], "the daemon runs as a non-root user (renamed service user)")
+        self.assertEqual(users, ["simpletools"], "the daemon runs as a non-root user")
         self.assertIn("COPY scripts/simple_tools /app/scripts/simple_tools", lines)
         self.assertIn("COPY scripts/simple-chat /app/scripts/simple-chat", lines)
         self.assertIn(
@@ -1863,7 +1862,7 @@ class ContainerTests(unittest.TestCase):
         self.assertNotRegex(
             text, r"(?im)^\s*(ARG|ENV)\b[^\n]*(KEY|TOKEN|SECRET|PASSWORD)", "no secret is baked in"
         )
-        for host in ("simple-tools.jays.services", "agents.simplewithus.com"):
+        for host in ("agents.simplewithus.com", "agents.simplewithus.com"):
             self.assertNotIn(host, text, "no hosted MCP host is baked into the image")
         ignore = (SERVER_DIR / "Dockerfile.dockerignore").read_text().splitlines()
         self.assertEqual(ignore[[i for i, l in enumerate(ignore) if not l.startswith("#")][0]], "*")
@@ -1885,6 +1884,8 @@ class ContainerTests(unittest.TestCase):
         self.assertTrue((REPO / "scripts" / "simple-chat").stat().st_mode & stat.S_IXUSR)
 
     def test_the_entrypoint_seeds_the_config_once_and_runs_simple_tools(self) -> None:
+        from simple_tools.tests.test_server_rollout import FakeInfisical, INFISICAL_PROJECT_ID
+
         data = self.tmp / "data"
         env = {
             "HOME": str(self.tmp),
@@ -1892,33 +1893,49 @@ class ContainerTests(unittest.TestCase):
             "SIMPLE_TOOLS_INSTANCE": "server",
             "PATH": "%s:/usr/bin:/bin" % os.path.dirname(sys.executable),
         }
-        run = subprocess.run(
-            ["sh", str(SERVER_DIR / "entrypoint.sh"), "status", "--json"],
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertIn("seeded", run.stderr)
-        self.assertFalse(json.loads(run.stdout)["running"])
-        seeded = data / "listener.toml"
-        self.assertEqual(seeded.read_text(), (SERVER_DIR / "listener.toml").read_text())
-        self.assertEqual(stat.S_IMODE(os.stat(seeded).st_mode), 0o600)
-        seeded.write_text(seeded.read_text() + "# pinned by init\n")
-        again = subprocess.run(
-            ["sh", str(SERVER_DIR / "entrypoint.sh"), "status", "--json"],
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        self.assertEqual(again.returncode, 0, again.stderr)
-        self.assertNotIn("seeded", again.stderr)
-        self.assertTrue(
-            seeded.read_text().endswith("# pinned by init\n"),
-            "an existing config is never overwritten",
-        )
+        with FakeInfisical("unused-fixture-id", "unused-fixture-secret", {}) as fake:
+            env.update({
+                "INFISICAL_TOKEN": fake.token,
+                "INFISICAL_PROJECT_ID": INFISICAL_PROJECT_ID,
+                "INFISICAL_API_URL": fake.url,
+            })
+            run = subprocess.run(
+                ["sh", str(SERVER_DIR / "entrypoint.sh"), "status", "--json"],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            self.assertEqual(run.returncode, 0, run.stderr)
+            self.assertIn("seeded", run.stderr)
+            self.assertFalse(json.loads(run.stdout)["running"])
+            seeded = data / "listener.toml"
+            self.assertEqual(seeded.read_text(), (SERVER_DIR / "listener.toml").read_text())
+            self.assertEqual(stat.S_IMODE(os.stat(seeded).st_mode), 0o600)
+            seeded.write_text(seeded.read_text() + "# pinned by init\n")
+            again = subprocess.run(
+                ["sh", str(SERVER_DIR / "entrypoint.sh"), "status", "--json"],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            self.assertEqual(again.returncode, 0, again.stderr)
+            self.assertNotIn("seeded", again.stderr)
+            self.assertTrue(
+                seeded.read_text().endswith("# pinned by init\n"),
+                "an existing config is never overwritten",
+            )
+            self.assertEqual(len(fake.requests), 8)
+            self.assertTrue(all(method == "GET" for method, _ in fake.requests))
+            self.assertTrue(all(
+                path == "/api/v2/service-token"
+                or (path.startswith("/api/v3/secrets/raw?") and (
+                    "secretPath=%2Fzulip" in path or "secretPath=%2Foperator" in path
+                ))
+                for _, path in fake.requests
+            ))
+            self.assertNotIn(fake.token, run.stdout + run.stderr + again.stdout + again.stderr)
 
     def test_the_healthcheck_follows_the_status_file_age(self) -> None:
         health = _load_healthcheck()
@@ -2055,7 +2072,7 @@ class ThreadedServerTests(ServerHarness):
         self.addCleanup(second.stop.set)
         self.assertTrue(err.waiting.wait(30), "the second listener did not wait for the lock")
         first_id = self.fake.add_message(
-            "Codex", "work-in-progress", "one", MENTION, timestamp=int(time.time())
+            "Codex", "simple-tools", "one", MENTION, timestamp=int(time.time())
         )
         self.assertTrue(self.routine.wait_for(1), "the running listener never woke the routine")
         deadline = time.monotonic() + 30
@@ -2081,7 +2098,7 @@ class ThreadedServerTests(ServerHarness):
         # Wakes run in order on the one worker:  once this later mention reaches the routine, any
         # duplicate of the first would already have been sent.
         second_id = self.fake.add_message(
-            "Codex", "work-in-progress", "two", MENTION, timestamp=int(time.time())
+            "Codex", "simple-tools", "two", MENTION, timestamp=int(time.time())
         )
         self.assertTrue(self.routine.wait_for(2), "the new listener never woke the routine")
         self.assertEqual(

@@ -567,6 +567,49 @@ test("prefetchFolder: a fresh listing is not fetched again (kody 4365623583)", a
   assert.equal(await resolveSecret(ENV, { name: "A", path: "/tools", envName: "L" }), "va");
 });
 
+test("prefetchFolder: requests that find a folder stale together share one listing (AFC-617)", async () => {
+  _resetInfisicalForTests();
+  const { prefetchFolder } = await import("../src/infisical.js");
+  const calls = mockFetch([["/api/v3/secrets/raw?", { body: { secrets: [{ secretKey: "A", secretValue: "va" }] } }]]);
+  await Promise.all(Array.from({ length: 6 }, () => prefetchFolder(ENV, "/tools")));
+  assert.equal(calls.length, 1, "six concurrent requests, one listing");
+  assert.equal(await resolveSecret(ENV, { name: "A", path: "/tools", envName: "L" }), "va");
+  await Promise.all([prefetchFolder(ENV, "/zulip"), prefetchFolder(ENV, "/linear")]);
+  assert.equal(calls.length, 3, "a different folder is its own listing");
+});
+
+test("prefetchFolder: a failed shared listing fails every request waiting on it in required mode, and the next request lists again (AFC-617)", async () => {
+  _resetInfisicalForTests();
+  const { prefetchFolder } = await import("../src/infisical.js");
+  const calls = mockFetch([]);
+  const results = await Promise.allSettled(Array.from({ length: 3 }, () => prefetchFolder(ENV, "/tools")));
+  assert.deepEqual(results.map((r) => r.status), ["rejected", "rejected", "rejected"]);
+  assert.ok(results.every((r) => r.reason instanceof InfisicalError));
+  assert.equal(calls.length, 1, "three concurrent requests, one failed listing");
+  await assert.rejects(() => prefetchFolder(ENV, "/tools"), InfisicalError);
+  assert.equal(calls.length, 2, "a failure is not remembered in required mode:  the next request lists again");
+});
+
+test("prefetchFolder: a waiter does not hang on a listing that never settles, it lists the folder itself (AFC-617, sentry)", async (t) => {
+  _resetInfisicalForTests();
+  const { prefetchFolder } = await import("../src/infisical.js");
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  let calls = 0;
+  globalThis.fetch = (url) => {
+    calls++;
+    if (calls === 1) return new Promise(() => {});
+    return Promise.resolve(new Response(JSON.stringify({ secrets: [{ secretKey: "A", secretValue: "va" }] }), { status: 200, headers: { "content-type": "application/json" } }));
+  };
+  prefetchFolder(ENV, "/tools").catch(() => {});
+  const waiter = prefetchFolder(ENV, "/tools");
+  await Promise.resolve();
+  t.mock.timers.tick(10_001);
+  await waiter;
+  assert.equal(calls, 2, "the waiter gave up on the stuck listing and listed once itself");
+  await prefetchFolder(ENV, "/tools");
+  assert.equal(calls, 2, "its listing warmed the folder");
+});
+
 test("authenticated reads never follow a redirect (kody 4365623359)", async () => {
   _resetInfisicalForTests();
   const { prefetchFolder } = await import("../src/infisical.js");
@@ -644,9 +687,182 @@ test("cache expiry: a rotated value is picked up after the TTL", async () => {
   }
 });
 
+test("INFISICAL_CACHE_TTL_S widens the window for listings and values;  unset, out of range or invalid keeps 60 seconds (AFC-617)", async () => {
+  const { prefetchFolder } = await import("../src/infisical.js");
+  const realNow = Date.now;
+  try {
+    // [setting, seconds later, still fresh]
+    for (const [setting, secondsLater, stillFresh] of [[undefined, 59, true], [undefined, 61, false], ["300", 120, true], ["300", 299, true], ["300", 301, false], [300, 120, true], ["10", 11, false], ["5", 61, false], ["99999", 61, false], ["abc", 61, false], ["", 61, false]]) {
+      _resetInfisicalForTests();
+      const env = { ...ENV, ...(setting === undefined ? {} : { INFISICAL_CACHE_TTL_S: setting }) };
+      const calls = mockFetch([["/api/v3/secrets/raw?", { body: { secrets: [{ secretKey: "A", secretValue: "v" }] } }]]);
+      Date.now = realNow;
+      await prefetchFolder(env, "/tools");
+      assert.equal(calls.length, 1);
+      const start = realNow();
+      Date.now = () => start + secondsLater * 1000;
+      await prefetchFolder(env, "/tools");
+      assert.equal(calls.length, stillFresh ? 1 : 2, `listing, setting ${JSON.stringify(setting)} at +${secondsLater}s`);
+      // A listed value is read from the same window.
+      assert.equal(await resolveSecret(env, { name: "A", path: "/tools", envName: "L" }), "v");
+    }
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test("a wider INFISICAL_CACHE_TTL_S never lengthens the retry after a failed listing, which stays 60 seconds", async () => {
+  _resetInfisicalForTests();
+  const { prefetchFolder } = await import("../src/infisical.js");
+  let calls = 0;
+  globalThis.fetch = async () => { calls += 1; throw new Error("socket hangup"); };
+  const realWarn = console.warn;
+  console.warn = () => {};
+  const realNow = Date.now;
+  try {
+    const env = { ...ENV, INFISICAL_MODE: "fallback", INFISICAL_CACHE_TTL_S: "300", LEGACY: "v0" };
+    await prefetchFolder(env, "/tools");
+    await prefetchFolder(env, "/tools");
+    assert.equal(calls, 1, "a failed listing is not retried inside 60 seconds");
+    const start = realNow();
+    Date.now = () => start + 61_000;
+    await prefetchFolder(env, "/tools");
+    assert.equal(calls, 2, "and is retried after 60 seconds, not after the wider window");
+  } finally {
+    console.warn = realWarn;
+    Date.now = realNow;
+  }
+});
+
 test("folder 404 (missing folder) in required mode throws as unavailable, not as per-name absence", async () => {
   _resetInfisicalForTests();
   const { prefetchFolder } = await import("../src/infisical.js");
   mockFetch([]);
   await assert.rejects(() => prefetchFolder(ENV, "/nonexistent"), (e) => e.code === "infisical_unavailable" && e.status === 404, "a missing folder is an infra signal, not authoritative emptiness");
+});
+
+test("fallback mode:  a 404 outside a listing is one subrequest per TTL and one log line per isolate;  every read still counts", async () => {
+  _resetInfisicalForTests();
+  let calls = 0;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => { calls += 1; return new Response("{}", { status: 404 }); };
+  const realWarn = console.warn;
+  const lines = [];
+  console.warn = (line) => lines.push(line);
+  try {
+    const env = { ...ENV, INFISICAL_MODE: "fallback", LEGACY: "v0" };
+    for (let i = 0; i < 5; i++) assert.equal(await resolveSecret(env, { name: "S", path: "/linear", envName: "LEGACY" }), "v0");
+    assert.equal(calls, 1);
+    assert.equal(infisicalStats().fallbacks, 5);
+    assert.equal(lines.length, 1);
+  } finally {
+    globalThis.fetch = realFetch;
+    console.warn = realWarn;
+    _resetInfisicalForTests();
+  }
+});
+
+test("fallback mode:  a miss is fetched again only once its TTL passes, and logs no second line", async () => {
+  _resetInfisicalForTests();
+  let calls = 0;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => { calls += 1; return new Response("{}", { status: 404 }); };
+  const realNow = Date.now;
+  const lines = await warnings(async () => {
+    try {
+      const env = { ...ENV, INFISICAL_MODE: "fallback", LEGACY: "v0" };
+      const read = () => resolveSecret(env, { name: "S", path: "/linear", envName: "LEGACY" });
+      await read();
+      await read();
+      assert.equal(calls, 1);
+      const start = realNow();
+      Date.now = () => start + 61_000;
+      await read();
+      await read();
+      assert.equal(calls, 2, "one subrequest per minute per isolate, so a rotation that adds the name is seen");
+    } finally {
+      Date.now = realNow;
+      globalThis.fetch = realFetch;
+    }
+  });
+  assert.equal(lines.length, 1);
+  _resetInfisicalForTests();
+});
+
+test("fallback mode:  a folder whose listing keeps failing costs one listing a minute, no per-name reads and one log line per isolate", async () => {
+  _resetInfisicalForTests();
+  const { prefetchFolder } = await import("../src/infisical.js");
+  let calls = 0;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => { calls += 1; return new Response("{}", { status: 403 }); };
+  const realNow = Date.now;
+  const lines = await warnings(async () => {
+    try {
+      const env = { ...ENV, INFISICAL_MODE: "fallback", LEGACY: "v0" };
+      const request = async () => {
+        await prefetchFolder(env, "/gr-front");
+        assert.equal(await resolveSecret(env, { name: "A", path: "/gr-front", envName: "LEGACY", optional: true }), "v0");
+        assert.equal(await resolveSecret(env, { name: "B", path: "/gr-front", envName: "LEGACY", optional: true }), "v0");
+      };
+      for (let i = 0; i < 5; i++) await request();
+      assert.equal(calls, 1, "five requests, one failed listing, no per-name read");
+      const start = realNow();
+      Date.now = () => start + 61_000;
+      for (let i = 0; i < 5; i++) await request();
+      assert.equal(calls, 2, "retried once past the TTL");
+    } finally {
+      Date.now = realNow;
+      globalThis.fetch = realFetch;
+    }
+  });
+  const events = lines.map((line) => JSON.parse(line).event);
+  assert.deepEqual(events.filter((event) => event === "infisical_listing_failed").length, 1);
+  assert.deepEqual(events.filter((event) => event === "infisical_fallback").length, 2, "one per name, across ten requests");
+  assert.equal(infisicalStats().fallbacks, 20, "every read still counts");
+  _resetInfisicalForTests();
+});
+
+test("an isolated read's 404 is one subrequest per TTL, and an outage is retried on the next call", async () => {
+  _resetInfisicalForTests();
+  const { resolveSecretIsolated } = await import("../src/infisical.js");
+  const env = { ...ENV, INFISICAL_MODE: "fallback", NARROW_TOKEN: "narrow" };
+  const read = () => resolveSecretIsolated(env, { name: "SIGN", path: "/signing", tokenBinding: "NARROW_TOKEN" });
+  let calls = 0;
+  let status = 404;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => { calls += 1; return new Response("{}", { status }); };
+  const realNow = Date.now;
+  const lines = await warnings(async () => {
+    try {
+      assert.equal(await read(), "");
+      assert.equal(await read(), "");
+      assert.equal(calls, 1, "the 404 is remembered");
+      const start = realNow();
+      Date.now = () => start + 61_000;
+      status = 500;
+      assert.equal(await read(), "");
+      assert.equal(await read(), "");
+      assert.equal(calls, 3, "an outage holds nothing, so the next mint retries");
+    } finally {
+      Date.now = realNow;
+      globalThis.fetch = realFetch;
+    }
+  });
+  assert.equal(lines.length, 1, "one line for the outage across its retries");
+  _resetInfisicalForTests();
+});
+
+test("required mode:  a cached miss still throws for a declared secret", async () => {
+  _resetInfisicalForTests();
+  let calls = 0;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => { calls += 1; return new Response("{}", { status: 404 }); };
+  try {
+    const env = { ...ENV, INFISICAL_MODE: "required" };
+    for (let i = 0; i < 2; i++) await assert.rejects(() => resolveSecret(env, { name: "S", path: "/linear", envName: "LEGACY" }), /Infisical has no S/);
+    assert.equal(calls, 1);
+  } finally {
+    globalThis.fetch = realFetch;
+    _resetInfisicalForTests();
+  }
 });

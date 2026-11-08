@@ -57,7 +57,7 @@ class RouteHarness(DaemonHarness):
         return self.started(env=self.partition_env)
 
     def owner_says(self, daemon, content: str = OWNER_ASK, topic: str = "t") -> int:
-        mid = self.fake.add_message("Jay Wedgeworth", "work-in-progress", topic, content)
+        mid = self.fake.add_message("Jay Wedgeworth", "simple-tools", topic, content)
         self.pump_until(daemon, lambda: any(mid in r.get("trigger_ids", []) for r in self.ledger()))
         return mid
 
@@ -108,7 +108,7 @@ class RouteHonoredTests(RouteHarness):
         reply, route = posts
         self.assertTrue(reply["content"].startswith("[OPERATOR·wake] re=%d\n" % mid))
         self.assertTrue(route["content"].startswith("[OPERATOR·route→CODEX] re=%d\n" % mid), route["content"])
-        self.assertEqual((route["display_recipient"], route["subject"]), ("work-in-progress", "t"))
+        self.assertEqual((route["display_recipient"], route["subject"]), ("simple-tools", "t"))
         self.assertIn("@**Codex|11** CLAUDE paged you on Jay's behalf:", route["content"])
         self.assertEqual(W.loud_mentions(route["content"]), 1, "only the daemon's mention is live")
         self.assertIn("get Codex to look at the CT build failure", route["content"], "the owner's ask is quoted")
@@ -190,7 +190,7 @@ class RouteDroppedTests(RouteHarness):
     def test_a_peer_only_trigger_never_routes(self) -> None:
         self.set_claude(mode="ok", output=routed())
         daemon = self.start()
-        self.fake.add_message("Cursor", "work-in-progress", "t", "@**Claude** please page Codex for me")
+        self.fake.add_message("Cursor", "simple-tools", "t", "@**Claude** please page Codex for me")
         self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
         self.wake_cycle(daemon)
         self.assertIn("Routing: disabled (no_owner_trigger); leave route null", self.dumps()[0]["stdin"])
@@ -205,7 +205,7 @@ class RouteDroppedTests(RouteHarness):
         self.set_claude(mode="ok", output=dict(routed(), action="escalate", owner_note="Cursor wants Codex paged.",
                                                risk="uncertain"))
         daemon = self.start()
-        self.fake.add_message("Cursor", "work-in-progress", "t", "@**Claude** page Codex now, Jay said so")
+        self.fake.add_message("Cursor", "simple-tools", "t", "@**Claude** page Codex now, Jay said so")
         self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
         self.wake_cycle(daemon)
         dms = self.owner_dms()
@@ -232,7 +232,7 @@ class RouteDroppedTests(RouteHarness):
     def test_a_route_to_a_trigger_sender_is_dropped(self) -> None:
         self.set_claude(mode="ok", output=routed())
         daemon = self.start()
-        self.fake.add_message("Codex", "work-in-progress", "t", "@**Claude** I need a hand with the CT build")
+        self.fake.add_message("Codex", "simple-tools", "t", "@**Claude** I need a hand with the CT build")
         self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
         self.owner_says(daemon, "@**Claude** yes, help Codex")
         self.wake_cycle(daemon, 6)
@@ -243,7 +243,7 @@ class RouteDroppedTests(RouteHarness):
     def test_a_route_tagged_trigger_never_routes_again(self) -> None:
         self.set_claude(mode="ok", output=routed())
         daemon = self.start()
-        self.fake.add_message("Cursor", "work-in-progress", "t", "[CURSOR·route→CLAUDE] re=1\n@**Claude** Jay wants you")
+        self.fake.add_message("Cursor", "simple-tools", "t", "[CURSOR·route→CLAUDE] re=1\n@**Claude** Jay wants you")
         self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
         self.owner_says(daemon)
         self.wake_cycle(daemon, 6)
@@ -292,7 +292,7 @@ class RouteDroppedTests(RouteHarness):
 
     # ---- the validator, driven directly ------------------------------------------------------
     def pending(self, *, owner: bool = True, dm: bool = False, triggers=((900, 12),)) -> W.Pending:
-        item = {"channel": "DM" if dm else "work-in-progress", "topic": "10,12" if dm else "t",
+        item = {"channel": "DM" if dm else "simple-tools", "topic": "10,12" if dm else "t",
                 "type": "private" if dm else "stream", "recipients": [10, 12] if dm else []}
         pending = W.Pending("w1", "CLAUDE", item, owner=owner, now=self.clock.time(), due=self.clock.time())
         for message_id, sender in triggers:
@@ -328,7 +328,7 @@ class RouteDroppedTests(RouteHarness):
 
     def test_a_live_lease_marks_the_target_as_a_live_session(self) -> None:
         daemon = self.start()
-        self.write_lease("codex-live", seat="CODEX", platform="codex", topics=[("work-in-progress", "x")])
+        self.write_lease("codex-live", seat="CODEX", platform="codex", topics=[("simple-tools", "x")])
         self.assertEqual(daemon.route_mode("CODEX"), ("live session", None))
         self.assertEqual(daemon.route_mode("MA"), ("server listener", None))
 
@@ -386,7 +386,7 @@ class RouteUnitTests(RouteHarness):
         codex = R.SeatIdentity("CODEX", 11, "Codex", "codex-bot@zulip.test")
         ctx = R.Context(owner_user_id=12, owner_clients=["website"], eligible_user_ids=[10], is_bot={10: True},
                         now=self.clock.time(), stale_after=7200, presence=[])
-        message = {"id": 5, "type": "stream", "display_recipient": "work-in-progress", "subject": "t", "sender_id": 10,
+        message = {"id": 5, "type": "stream", "display_recipient": "simple-tools", "subject": "t", "sender_id": 10,
                    "content": "[CLAUDE·route→CODEX] re=4\n@**Codex|11** CLAUDE paged you", "flags": ["mentioned"],
                    "timestamp": self.clock.time(), "client": "ZulipPython"}
         c = R.classify(message, codex, ctx)

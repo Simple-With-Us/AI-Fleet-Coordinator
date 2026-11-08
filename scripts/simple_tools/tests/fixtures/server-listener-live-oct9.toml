@@ -1,5 +1,5 @@
 # Fixture:  a live /data/listener.toml as seeded on Fri, Oct 9 and pinned by daemon init (tests only).
-# work-in-progress listener config for the SERVER instance (the Coolify container on the Hetzner box).
+# simple-tools listener config for the SERVER instance (the Coolify container on the Hetzner box).
 # Design:  docs/protocols/eavesdropper-server.md in AI-Fleet-Coordinator.
 #
 # It holds no secrets.  Each seat's Zulip email and API key (a Grok Bot persona's or a cloud seat's), ZULIP_SITE,
@@ -47,7 +47,7 @@ budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner
 # so its @-mentions and DMs are captured at zero tokens under /data/<SEAT>/, and its key is checked at
 # connect (a member or moderator bot, and the key's own bot must be the seat).  They have no wake
 # adapter, so nothing is woken, and nothing reads those inboxes yet:  the hosted MCP inbox tool asks
-# Zulip itself.  Read one inside the container with `work-in-progress inbox --local --as <SEAT>`.  Their
+# Zulip itself.  Read one inside the container with `simple-tools inbox --local --as <SEAT>`.  Their
 # variables are ZULIP_<CODE>_EMAIL and ZULIP_<CODE>_API_KEY, and they reach the container only when the
 # app restarts (a reload does not read the environment).  The partition gives all five to "server".
 [seat.MA]

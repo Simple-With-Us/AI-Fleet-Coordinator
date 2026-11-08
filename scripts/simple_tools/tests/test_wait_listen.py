@@ -22,16 +22,16 @@ def shown_ids(output: str) -> list[int]:
 class WaitTests(Harness):
     def seed_cursor(self, topic: str = "t") -> int:
         """Give this session a saved cursor for the topic by reading it once."""
-        seed = self.fake.add_message("Codex", "work-in-progress", topic, "seed")
+        seed = self.fake.add_message("Codex", "simple-tools", topic, "seed")
         self.assertEqual(self.run_cli("read", "--topic", topic, "--new").code, 0)
         return seed
 
     def cursor(self, topic: str = "t") -> int:
-        return json.loads(self.state_path().read_text())["cursors"]["work-in-progress\u0000" + topic]
+        return json.loads(self.state_path().read_text())["cursors"]["simple-tools\u0000" + topic]
 
     def test_backfill_path_delivers_what_arrived_while_away_and_exits_0(self) -> None:
         self.seed_cursor()
-        missed = self.fake.add_message("Codex", "work-in-progress", "t", "while you were out")
+        missed = self.fake.add_message("Codex", "simple-tools", "t", "while you were out")
         started = time.monotonic()
         result = self.run_cli("wait", "--topic", "t", "--timeout", "30")
         self.assertEqual(result.code, 0, result.err)
@@ -44,7 +44,7 @@ class WaitTests(Harness):
 
     def test_register_happens_before_the_backfill_fetch(self) -> None:
         self.seed_cursor()
-        self.fake.add_message("Codex", "work-in-progress", "t", "pending")
+        self.fake.add_message("Codex", "simple-tools", "t", "pending")
         before = len(self.fake.requests)
         self.assertEqual(self.run_cli("wait", "--topic", "t", "--timeout", "30").code, 0)
         log = self.fake.request_log()[before:]
@@ -56,14 +56,14 @@ class WaitTests(Harness):
     def test_register_narrow_is_pair_shaped_and_events_are_raw(self) -> None:
         self.run_cli("wait", "--topic", "t", "--timeout", "0.2")
         registration = self.fake.registrations[0]
-        self.assertEqual(registration["narrow"], [["channel", "work-in-progress"], ["topic", "t"]])
+        self.assertEqual(registration["narrow"], [["channel", "simple-tools"], ["topic", "t"]])
         self.assertEqual(registration["params"]["event_types"], '["message"]')
         self.assertEqual(registration["params"]["apply_markdown"], "false")
 
     def test_event_path_delivers_a_message_that_arrives_while_waiting(self) -> None:
         self.seed_cursor()
         # Added once wait's long poll is open, so the backfill is over and only the event can carry it.
-        self.fake.when(self.fake.polling(), lambda: self.fake.add_message("Codex", "work-in-progress", "t", "late news"))
+        self.fake.when(self.fake.polling(), lambda: self.fake.add_message("Codex", "simple-tools", "t", "late news"))
         result = self.run_cli("wait", "--topic", "t", "--timeout", "20")
         self.assertEqual(result.code, 0, result.err)
         self.assertIn("late news", result.out)
@@ -82,7 +82,7 @@ class WaitTests(Harness):
     def test_no_saved_cursor_sets_it_to_the_newest_and_prints_no_history(self) -> None:
         newest = 0
         for n in range(3):
-            newest = self.fake.add_message("Codex", "work-in-progress", "t", "history %d" % n)
+            newest = self.fake.add_message("Codex", "simple-tools", "t", "history %d" % n)
         result = self.run_cli("wait", "--topic", "t", "--timeout", "0.5")
         self.assertEqual(result.code, 4)
         self.assertEqual(result.out, "")
@@ -95,7 +95,7 @@ class WaitTests(Harness):
             time.sleep(0.3)
             self.run_cli("post", "--topic", "t", "my own words")
             time.sleep(0.3)
-            self.fake.add_message("Codex", "work-in-progress", "t", "a real answer")
+            self.fake.add_message("Codex", "simple-tools", "t", "a real answer")
 
         thread = threading.Thread(target=chatter, daemon=True)
         thread.start()
@@ -113,14 +113,14 @@ class WaitTests(Harness):
     def test_sibling_session_wakes_wait_and_is_labelled(self) -> None:
         self.seed_cursor()
         threading.Timer(0.3, lambda: self.fake.add_message(
-            self.fake.me, "work-in-progress", "t", "[CLAUDE·aaaabbbb] hello from my other session")).start()
+            self.fake.me, "simple-tools", "t", "[CLAUDE·aaaabbbb] hello from my other session")).start()
         result = self.run_cli("wait", "--topic", "t", "--timeout", "20")
         self.assertEqual(result.code, 0, result.err)
         self.assertIn("(sibling)", result.out)
 
     def test_other_topics_do_not_wake_wait(self) -> None:
         self.seed_cursor()
-        threading.Timer(0.2, lambda: self.fake.add_message("Codex", "work-in-progress", "elsewhere", "noise")).start()
+        threading.Timer(0.2, lambda: self.fake.add_message("Codex", "simple-tools", "elsewhere", "noise")).start()
         self.assertEqual(self.run_cli("wait", "--topic", "t", "--timeout", "1.0").code, 4)
 
     def test_bad_event_queue_id_recovers_by_registering_again_and_backfilling(self) -> None:
@@ -129,7 +129,7 @@ class WaitTests(Harness):
         def expire_then_post() -> None:
             with self.fake.cond:
                 self.fake.expire_queues()  # the server forgets the queue ...
-                self.fake.add_message("Codex", "work-in-progress", "t", "sent while the queue was gone", deliver=False)
+                self.fake.add_message("Codex", "simple-tools", "t", "sent while the queue was gone", deliver=False)
 
         self.fake.when(self.fake.polling(), expire_then_post)  # ... once the first long poll is open
         result = self.run_cli("wait", "--topic", "t", "--timeout", "20")
@@ -147,7 +147,7 @@ class WaitTests(Harness):
 
     def test_a_fresh_session_that_posts_then_waits_sees_a_reply_that_came_in_early(self) -> None:
         self.assertEqual(self.run_cli("post", "--topic", "t", "question?").code, 0)
-        reply = self.fake.add_message("Codex", "work-in-progress", "t", "the quick answer")  # before wait even starts
+        reply = self.fake.add_message("Codex", "simple-tools", "t", "the quick answer")  # before wait even starts
         result = self.run_cli("wait", "--topic", "t", "--timeout", "10")
         self.assertEqual(result.code, 0, result.err)
         self.assertEqual(shown_ids(result.out), [reply])
@@ -161,11 +161,11 @@ class WaitTests(Harness):
         self.assertEqual(self.cursor("fresh topic"), self.fake.messages[-1]["id"])
 
     def test_a_message_landing_between_register_and_the_first_baseline_is_not_lost(self) -> None:
-        self.fake.add_message("Codex", "work-in-progress", "t", "old history")
+        self.fake.add_message("Codex", "simple-tools", "t", "old history")
         self.fake.inject("GET", "messages", delay=0.5)  # the baseline fetch is slow ...
         # ... and the message is added the moment the queue exists, so it lands before that fetch returns
         self.fake.when(lambda: self.fake.registrations,
-                       lambda: self.fake.add_message("Codex", "work-in-progress", "t", "arrived in the gap"))
+                       lambda: self.fake.add_message("Codex", "simple-tools", "t", "arrived in the gap"))
         result = self.run_cli("wait", "--topic", "t", "--timeout", "10")
         self.assertEqual(result.code, 0, result.err)
         self.assertIn("arrived in the gap", result.out)
@@ -174,8 +174,8 @@ class WaitTests(Harness):
     def test_backfill_pages_past_a_full_page_of_this_sessions_own_posts(self) -> None:
         self.seed_cursor()
         for n in range(cli.BACKFILL_LIMIT):  # a whole page the delivery filter skips
-            self.fake.add_message(self.fake.me, "work-in-progress", "t", OWN + "own %d" % n)
-        peer = self.fake.add_message("Codex", "work-in-progress", "t", "the real question")
+            self.fake.add_message(self.fake.me, "simple-tools", "t", OWN + "own %d" % n)
+        peer = self.fake.add_message("Codex", "simple-tools", "t", "the real question")
         result = self.run_cli("wait", "--topic", "t", "--timeout", "3")
         self.assertEqual(result.code, 0, result.err)  # without paging this is a timeout, or a later message
         self.assertEqual(shown_ids(result.out), [peer])
@@ -185,7 +185,7 @@ class WaitTests(Harness):
     def test_wait_survives_a_gateway_error_on_the_long_poll(self) -> None:
         self.seed_cursor()
         self.fake.inject("GET", "events", status=502, body=GATEWAY)
-        self.fake.when(self.fake.polling(2), lambda: self.fake.add_message("Codex", "work-in-progress", "t", "after the blip"))
+        self.fake.when(self.fake.polling(2), lambda: self.fake.add_message("Codex", "simple-tools", "t", "after the blip"))
         result = self.run_cli("wait", "--topic", "t", "--timeout", "20")
         self.assertEqual(result.code, 0, result.err)
         self.assertIn("after the blip", result.out)
@@ -194,7 +194,7 @@ class WaitTests(Harness):
 
     def test_wait_survives_a_gateway_error_on_the_backfill(self) -> None:
         self.seed_cursor()
-        self.fake.add_message("Codex", "work-in-progress", "t", "waiting for you")
+        self.fake.add_message("Codex", "simple-tools", "t", "waiting for you")
         self.fake.inject("GET", "messages", status=503, body=GATEWAY)
         result = self.run_cli("wait", "--topic", "t", "--timeout", "20")
         self.assertEqual(result.code, 0, result.err)
@@ -202,7 +202,7 @@ class WaitTests(Harness):
 
     def test_a_failed_print_leaves_the_message_unseen_for_the_next_read(self) -> None:
         seed = self.seed_cursor()
-        missed = self.fake.add_message("Codex", "work-in-progress", "t", "must not be lost")
+        missed = self.fake.add_message("Codex", "simple-tools", "t", "must not be lost")
         code = self.run_with_closed_stdout("wait", "--topic", "t", "--timeout", "5")
         self.assertEqual(code, 0)  # a closed pipe ends the command quietly
         self.assertEqual(self.cursor(), seed)  # the cursor did not pass the message that was never shown
@@ -222,14 +222,14 @@ class WaitTests(Harness):
 
     def test_a_failed_print_during_the_listen_backfill_leaves_the_message_unseen(self) -> None:
         seed = self.seed_cursor()
-        missed = self.fake.add_message("Codex", "work-in-progress", "t", "also must not be lost")
+        missed = self.fake.add_message("Codex", "simple-tools", "t", "also must not be lost")
         self.assertEqual(self.run_with_closed_stdout("listen", "--topic", "t"), 0)
         self.assertEqual(self.cursor(), seed)
         self.assertEqual(shown_ids(self.run_cli("read", "--topic", "t", "--new").out), [missed])
 
     def test_a_failed_queue_delete_is_a_warning_not_a_failure(self) -> None:
         self.seed_cursor()
-        self.fake.add_message("Codex", "work-in-progress", "t", "news")
+        self.fake.add_message("Codex", "simple-tools", "t", "news")
         self.fake.inject("DELETE", "events", status=500, body={"result": "error", "msg": "boom", "code": "INTERNAL"})
         result = self.run_cli("wait", "--topic", "t", "--timeout", "10")
         self.assertEqual(result.code, 0, result.err)
@@ -247,7 +247,7 @@ class WaitTests(Harness):
 
     def test_json_mode_prints_json_lines(self) -> None:
         self.seed_cursor()
-        self.fake.add_message("Codex", "work-in-progress", "t", "as json")
+        self.fake.add_message("Codex", "simple-tools", "t", "as json")
         result = self.run_cli("wait", "--topic", "t", "--timeout", "10", "--json")
         self.assertEqual(json.loads(result.out)["content"], "as json")
 
@@ -291,7 +291,7 @@ class ListenTests(Harness):
         while time.monotonic() < deadline:
             try:
                 cursors = json.loads(self.state_path().read_text())["cursors"]
-                if cursors.get("work-in-progress\u0000" + topic, 0) >= at_least:
+                if cursors.get("simple-tools\u0000" + topic, 0) >= at_least:
                     return
             except (OSError, ValueError, KeyError):
                 pass
@@ -301,9 +301,9 @@ class ListenTests(Harness):
     def test_streams_messages_from_each_topic_and_exits_after_max_messages(self) -> None:
         run = self.start_listen("--topic", "a", "--topic", "b", "--max-messages", "2")
         self.wait_for_queues(2, scopes=2)
-        self.fake.add_message("Codex", "work-in-progress", "a", "news in a")
-        self.fake.add_message("Cursor", "work-in-progress", "b", "news in b")
-        self.fake.add_message("Codex", "work-in-progress", "c", "unwatched")
+        self.fake.add_message("Codex", "simple-tools", "a", "news in a")
+        self.fake.add_message("Cursor", "simple-tools", "b", "news in b")
+        self.fake.add_message("Codex", "simple-tools", "c", "unwatched")
         result = run.join()
         self.assertEqual(result.code, 0, result.err)
         self.assertIn("news in a", result.out)
@@ -327,7 +327,7 @@ class ListenTests(Harness):
         self.wait_for_queues(1)
         self.run_cli("post", "--topic", "a", "my own words")
         self.run_cli("post", "--topic", "a", "--no-tag", "my own untagged words")  # only the ledger knows it is mine
-        self.fake.add_message(self.fake.me, "work-in-progress", "a", "[CLAUDE\u00b7aaaabbbb] other session here")
+        self.fake.add_message(self.fake.me, "simple-tools", "a", "[CLAUDE\u00b7aaaabbbb] other session here")
         result = run.join()
         self.assertEqual(result.code, 0, result.err)
         self.assertNotIn("my own words", result.out)
@@ -342,7 +342,7 @@ class ListenTests(Harness):
         self.assertEqual(len(mention_registration), 1)
         self.fake.add_message("Codex", "other", "elsewhere", "plain chatter, nobody mentioned")
         self.fake.add_message("Jay Wedgeworth", "other", "elsewhere", "ping @**Claude** over here")
-        self.fake.add_message("Codex", "work-in-progress", "a", "also @**Claude** in a watched topic")
+        self.fake.add_message("Codex", "simple-tools", "a", "also @**Claude** in a watched topic")
         result = run.join()
         self.assertEqual(result.code, 0, result.err)
         self.assertNotIn("plain chatter", result.out)
@@ -354,10 +354,10 @@ class ListenTests(Harness):
         run = self.start_listen("--topic", "a", "--topic", "b", "--topic", "c", "--topic", "d", "--max-messages", "2")
         self.wait_for_queues(1, scopes=4)
         self.assertEqual(len(self.fake.registrations), 1)
-        self.assertEqual(self.fake.registrations[0]["narrow"], [["channel", "work-in-progress"]])
-        self.fake.add_message("Codex", "work-in-progress", "zzz", "not a listed topic")
-        self.fake.add_message("Codex", "work-in-progress", "d", "in d")
-        self.fake.add_message("Codex", "work-in-progress", "b", "in b")
+        self.assertEqual(self.fake.registrations[0]["narrow"], [["channel", "simple-tools"]])
+        self.fake.add_message("Codex", "simple-tools", "zzz", "not a listed topic")
+        self.fake.add_message("Codex", "simple-tools", "d", "in d")
+        self.fake.add_message("Codex", "simple-tools", "b", "in b")
         result = run.join()
         self.assertNotIn("not a listed topic", result.out)
         self.assertIn("in d", result.out)
@@ -366,11 +366,11 @@ class ListenTests(Harness):
     def test_expired_queue_is_re_registered_and_backfilled(self) -> None:
         run = self.start_listen("--topic", "a", "--max-messages", "2")
         self.wait_for_queues(1)
-        first = self.fake.add_message("Codex", "work-in-progress", "a", "first")
+        first = self.fake.add_message("Codex", "simple-tools", "a", "first")
         self.wait_for_cursor("a", first)  # the first message is printed before the queue goes away
         with self.fake.cond:
             self.fake.expire_queues()
-            self.fake.add_message("Codex", "work-in-progress", "a", "second, while the queue was gone", deliver=False)
+            self.fake.add_message("Codex", "simple-tools", "a", "second, while the queue was gone", deliver=False)
         result = run.join()
         self.assertEqual(result.code, 0, result.err)
         self.assertIn("first", result.out)
@@ -378,17 +378,17 @@ class ListenTests(Harness):
         self.assertEqual(len(self.fake.registrations), 2)
 
     def test_startup_backfills_from_a_saved_cursor(self) -> None:
-        self.fake.add_message("Codex", "work-in-progress", "a", "seed")
+        self.fake.add_message("Codex", "simple-tools", "a", "seed")
         self.run_cli("read", "--topic", "a", "--new")
-        self.fake.add_message("Codex", "work-in-progress", "a", "missed while down")
+        self.fake.add_message("Codex", "simple-tools", "a", "missed while down")
         result = self.run_in_thread("listen", "--topic", "a", "--max-messages", "1", events_timeout=3.0).join()
         self.assertEqual(result.code, 0, result.err)
         self.assertIn("missed while down", result.out)
 
     def test_startup_backfill_pages_through_a_backlog_bigger_than_one_page(self) -> None:
-        self.fake.add_message("Codex", "work-in-progress", "a", "seed")
+        self.fake.add_message("Codex", "simple-tools", "a", "seed")
         self.run_cli("read", "--topic", "a", "--new")
-        ids = [self.fake.add_message("Codex", "work-in-progress", "a", "backlog %d" % n) for n in range(cli.BACKFILL_LIMIT + 50)]
+        ids = [self.fake.add_message("Codex", "simple-tools", "a", "backlog %d" % n) for n in range(cli.BACKFILL_LIMIT + 50)]
         result = self.run_in_thread("listen", "--topic", "a", "--max-messages", str(len(ids)), events_timeout=3.0).join(60)
         self.assertEqual(result.code, 0, result.err)
         self.assertEqual(shown_ids(result.out), ids)
@@ -410,15 +410,15 @@ class ListenTests(Harness):
     def test_cursor_advances_as_messages_print(self) -> None:
         run = self.start_listen("--topic", "a", "--max-messages", "1")
         self.wait_for_queues(1)
-        message_id = self.fake.add_message("Codex", "work-in-progress", "a", "x")
+        message_id = self.fake.add_message("Codex", "simple-tools", "a", "x")
         run.join()
         cursors = json.loads(self.state_path().read_text())["cursors"]
-        self.assertEqual(cursors["work-in-progress\u0000a"], message_id)
+        self.assertEqual(cursors["simple-tools\u0000a"], message_id)
 
     def test_json_lines(self) -> None:
         run = self.start_listen("--topic", "a", "--max-messages", "1", "--json")
         self.wait_for_queues(1)
-        self.fake.add_message("Codex", "work-in-progress", "a", "structured")
+        self.fake.add_message("Codex", "simple-tools", "a", "structured")
         data = json.loads(run.join().out.splitlines()[0])
         self.assertEqual((data["topic"], data["content"], data["is_bot"]), ("a", "structured", True))
 

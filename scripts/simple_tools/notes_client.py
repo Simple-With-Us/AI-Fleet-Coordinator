@@ -756,7 +756,7 @@ def _fleet_tool(host, seat, tool, args, write=False):
 
     try:
         if host._fleet_client is None:
-            host._fleet_client = Client(host.bearer_file, seat, identity_env=host.env)
+            host._fleet_client = Client(host.own_bearer(seat), seat, identity_env=host.env)
         if seat is not None and host._fleet_client.seat != canonical_hint(seat):
             raise FleetError("not_authorized", "fleet bearer does not name the requested bot")
         result = host._fleet_client.call(tool, args, write)

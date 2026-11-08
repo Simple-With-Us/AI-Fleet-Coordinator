@@ -2,7 +2,7 @@
 
 This document distinguishes BotFleet's native Zulip listener from the Operator and the Muse wake router.  There is no native listener inside Codex that independently receives Zulip messages.
 
-![Diagram of the BotFleet and Operator Zulip message routing paths](zulip-wake-routing.svg)
+![Diagram of the BotFleet and Simple-Tools Zulip message routing paths](zulip-wake-routing.svg)
 
 ## The Flow
 
@@ -17,8 +17,8 @@ flowchart TD
     BFD --> BFW[Wake the existing BotFleet role]
     BFW --> BFR[Reply through that role's Zulip identity]
 
-    B -->|Operator seat bot| ASQ[That seat's durable inbox]
-    ASQ --> ASL[Operator listener]
+    B -->|Simple-Tools seat bot| ASQ[That seat's durable inbox]
+    ASQ --> ASL[Simple-Tools listener]
     ASL --> M{Muse wake enabled for this seat?}
     M -->|Yes| MR[Muse tool-less wake router]
     M -->|No| I[Message remains in seat inbox]
@@ -41,9 +41,15 @@ BotFleet's native listener belongs to the BotFleet server.  Each role bot uses i
 
 An outgoing webhook is an additional ingress option for direct messages and explicit mentions.  It must acknowledge Zulip quickly, enqueue the event, and let the role reply later through Zulip's API.  Keep the native event listener for catch-up and followed topics.  Do not deactivate or convert the old role identities until the receiver is deployed, every credential consumer is refreshed, and real DM/mention acceptance plus reply are verified.
 
-### Operator Listener And Muse
+### Simple-Tools Listener And Muse
 
-Operator runs one listener that owns the Zulip credentials assigned to its configured seats.  Zulip delivers a DM or explicit mention to the addressed bot; the listener records it in that seat's durable inbox.  With the owner's routing policy, every such wake should enter the Muse wake path, for owner and peer messages alike.  Muse is the listener's tool-less routing runtime, not a Zulip bot and not a listener running inside Codex.
+Simple-Tools runs one listener that owns the Zulip credentials assigned to its configured seats.  Zulip delivers a DM or explicit mention to the addressed bot; the listener records it in that seat's durable inbox.  Muse is the listener's tool-less routing runtime, not a Zulip bot and not a listener running inside Codex.
+
+**The owner's ruling (owner, Nov 7, 2026).**  "Seat wake doesn't need an agent."  "Only the operator does headless runs sometimes."  "Wake agent should use operator for headless agent when needed only if unable to determine with deterministic code, and then should use a preset I made on openrouter."  "Consultant is an agent needed minority of the time hopefully."  So a seat wake is deterministic delivery, and the only model run is the Operator's consultant, started only when deterministic code cannot decide.  This replaces the Oct 14, 2026 policy that sent every DM and mention through the Muse wake path.
+
+**What runs today.**  The router's deterministic rules run first (the no-wake marker, a live session's lease, a bound chat's nudge), but a seat configured with a `claude`, `muse` or `openrouter` wake still starts a model on its own behalf, with any configured fallback behind it, and where a seat's Muse wake is enabled the Muse router below chooses the destination.  The record-only model gate (PR #1506, [listener design section 3.4a](simple-tools-listener.md#34a-model-gate-phase-1-record-only)) records for each model start why it happened and whether a deterministic rule could have decided it, and `simple-chat status` counts the avoidable ones.  It changes no decision.
+
+**What is pending.**  Phase 2 is not built.  PR #1506 lists AA's readings of the owner's lines, which are readings and not rulings:  converge the per-seat model wakes onto the Operator's one consultant run (removing the `claude`, `muse` and `openrouter` seat wakes and their fallbacks), fix the per-seat model run an `@all` starts, and move the Mac bridge consult onto the owner's OpenRouter preset.  ECHO's candidate for that preset, `@preset/operator-inbox-router` version 3, is held and applied nowhere until ECHO's coordinator releases it.
 
 Muse can receive a bounded list of existing chats and request one exact destination.  The listener refreshes that record before queueing a fixed reminder.  It cannot create a replacement chat, change a model, or choose an arbitrary host.  If no exact safe destination or supported delivery adapter exists, leave the message in the inbox or hold it for review.
 
@@ -61,14 +67,14 @@ An OWNER topic (a topic whose name starts `OWNER `) is where a decision waits on
 
 ### Codex Delivery
 
-Codex receives Zulip through Operator, the existing Operator listener.  The native adapter can enqueue a fixed reminder for an exact loaded desktop thread through Codex’s supported durable queue API, after checking its host, UUID, workspace and open rollout.  Muse selects the destination; Operator verifies it and enqueues the reminder.  Queue acknowledgment and actual turn pickup are separate receipts.  The bridge remains off until a source is explicitly activated and verified; unsupported or unavailable destinations stay in the inbox.  See [Native Codex Wake Delivery](native-codex-wakes.md) for the transport and activation contract.
+Codex receives Zulip through Operator, the existing Simple-Tools listener.  The native adapter can enqueue a fixed reminder for an exact loaded desktop thread through Codex’s supported durable queue API, after checking its host, UUID, workspace and open rollout.  Muse selects the destination; Operator verifies it and enqueues the reminder.  Queue acknowledgment and actual turn pickup are separate receipts.  The bridge remains off until a source is explicitly activated and verified; unsupported or unavailable destinations stay in the inbox.  See [Native Codex Wake Delivery](native-codex-wakes.md) for the transport and activation contract.
 
 ## Related Files
 
 - [Zulip Fleet Guide](zulip-fleet-guide.md) — realm, bot membership, inbox, and message rules.
 - [Zulip Wake Audit](zulip-wake-audit-2026-10-13.md) — current transport and catalog capabilities.
 - [Muse Inbox Bridge](muse-inbox-bridge.md) — default-off, source-qualified Mac and server inbox decision path.
-- [The Operator](eavesdropper.md) — listener lifecycle, budgets, and routing controls.
+- [The Operator](simple-tools-listener.md) — listener lifecycle, budgets, and routing controls.
 - [BotFleet Outgoing Webhook Migration](zulip-outgoing-migration.md) — receiver readiness and bot cutover gates.
 - AFC-305 Universal Chat Routing — existing-chat discovery and wake coverage work.
 

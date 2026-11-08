@@ -115,7 +115,7 @@ export async function resolveGrVerifyKey(env) {
  * factory and `resolveKey` to the Infisical-only resolver;  both are
  * injectable for tests.
  */
-export async function serveGrBearerVerify(request, env, gates, { resolveKey = resolveGrVerifyKey, eventsOnlySeats = [] } = {}) {
+export async function serveGrBearerVerify(request, env, gates, { resolveKey = resolveGrVerifyKey, eventsOnlySeats = [], identityCache = null, cacheMs = 0 } = {}) {
   const key = await resolveKey(env);
   if (request.method !== "POST") return jsonResponse({ ok: false, reason: "method_not_allowed" }, 405);
   const declared = Number(request.headers.get("content-length") ?? "0");
@@ -125,8 +125,35 @@ export async function serveGrBearerVerify(request, env, gates, { resolveKey = re
   if (!checked.ok) return jsonResponse({ ok: false, reason: checked.reason }, checked.status);
 
   const { identity, hash } = checked.query;
+  // `cacheMs` is config.grVerifyCacheMs (an hour by default, owner ruling
+  // 2026-11-06);  with 0 nothing is stored, so this lookup always misses and
+  // every call verifies live.
+  // The route's own key space in the identity cache:  an entry here says only
+  // "this bearer verifies for Git" (a GR-only bearer can earn one), so /mcp must
+  // never read it, and this route never reads /mcp's.  The seat is the entry's,
+  // so an admin eviction of the seat drops it too.  An entry may not outlive the
+  // bearer it stands for.
+  const cacheKey = `gr-verify:${hash}`;
+  const cached = identityCache?.get(cacheKey);
+  if (cached?.seat === identity && cached.expires_at > Date.now() && !eventsOnlySeats.includes(identity)) {
+    // verified_at is when the gate last checked this bearer live, so the
+    // relay can end its own window an hour after THAT check, not an hour
+    // after this cached answer:  the two layers together stay within one
+    // window (owner ruling 2026-11-06:  an hour after checking the token).
+    return jsonResponse({ ok: true, identity, expires_at: cached.expires_at, verified_at: cached.verifiedAt }, 200);
+  }
+  // When the live check starts, on the cache's clock:  a refusal or eviction
+  // recorded after this point wins over this call's (older) positive answer.
+  const since = identityCache?.now();
   const identityGate = gates(env, identity);
-  const verdict = await identityGate.gbBearerCheck(hash);
+  let verdict;
+  try {
+    verdict = await identityGate.gbBearerCheck(hash);
+  } catch {
+    // The gate could not answer, which is not a refusal:  a plain 503 that says
+    // so, never a 200 refusal.  The relay still fails closed on it.
+    return new Response(JSON.stringify({ ok: false, reason: "unavailable" }), { status: 503, headers: { "Content-Type": "application/json", "Cache-Control": "no-store", "Retry-After": "30" } });
+  }
   if (!verdict.ok) {
     if (verdict.reason === "expired") {
       // The refusal audit is required:  if the write fails the route errors
@@ -137,15 +164,27 @@ export async function serveGrBearerVerify(request, env, gates, { resolveKey = re
       // against the claimed identity - the relay-facing view of a storm.
       try { await identityGate.gbBearerMismatch(identity, new Set([...GB_IDENTITIES, ...BEARER_SEATS])); } catch { /* A counter is observability, never the security path. */ }
     }
+    identityCache?.evict(cacheKey);
     return jsonResponse({ ok: false, reason: verdict.reason }, 200);
   }
-  const state = await identityGate.getState();
-  if (state.paused) return jsonResponse({ ok: false, reason: "paused" }, 200);
+  // The pause flag rides the bearer check's own answer (R1):  no second
+  // gate RPC for the one boolean, and the refusal stays in this position.
+  if (verdict.paused) {
+    identityCache?.evict(cacheKey);
+    return jsonResponse({ ok: false, reason: "paused" }, 200);
+  }
   // A wake-only (events-only) seat's bearer stays minted but verifies refused
   // here, so GR-MCP fails closed to 401 while the seat carries no tools.  The
   // refusal follows the same reviewed EVENTS_ONLY_SEATS var as the /mcp tool
   // surface;  lifting the var restores access without a re-mint.
   if (eventsOnlySeats.includes(identity)) return jsonResponse({ ok: false, reason: "events_only" }, 200);
-  const status = await identityGate.gbBearerStatus();
-  return jsonResponse({ ok: true, identity, expires_at: status.expires_at ?? 0 }, 200);
+  const expiresAt = verdict.expires_at ?? 0;
+  // The window never runs past the bearer's own expiry.  One clock reading
+  // (the cache's own clock, Date.now in production) both caps the window and
+  // starts it, so the entry ends no later than the bearer even when the
+  // millisecond ticks in between.
+  const now = identityCache ? identityCache.now() : Date.now();
+  const ttlMs = Math.min(cacheMs, expiresAt - now);
+  if (ttlMs > 0) identityCache?.set(cacheKey, { seat: identity, via: "gr-verify", expires_at: expiresAt }, ttlMs, now, { since });
+  return jsonResponse({ ok: true, identity, expires_at: expiresAt, verified_at: now }, 200);
 }

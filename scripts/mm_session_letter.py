@@ -16,6 +16,7 @@ given an explicit transport - asks the registry host through the transport comma
 kind of hop the other letter paths make.  An explicit MM_OPERATOR_REGISTRY_CMD always wins
 over a local file:  after the store moves, a retired local file left behind must never become
 a second allocator.
+When SIMPLE_TOOLS_OPERATOR_REGISTRY_URL names the registry API, that explicit HTTPS route takes precedence over both local files and the transport command.
 
 A thread and its child both hold a letter, and they are placed the way every other platform
 places them (owner ruling, Nov 1 2026):  a main chat takes the next doubled pair in order
@@ -44,7 +45,11 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 import unicodedata
+import urllib.error
+import urllib.parse
+import urllib.request
 from collections.abc import Iterator
 
 from simple_tools import secretscan
@@ -253,6 +258,166 @@ REMOTE_TIMEOUT = 6
 NO_REGISTRY_ERROR = "no Operator registry on this host"
 
 
+# ---- the registry transports ------------------------------------------------------
+#
+# registry_call reaches the Operator's registry three ways, in this order:
+#
+#   1. HTTPS, when SIMPLE_TOOLS_OPERATOR_REGISTRY_URL names the Operator's registry API
+#      (the listener at operator.simplewithus.com, served under /registry/v1/):  the call
+#      is signed per principal with the key the key ref names (see _registry_https_call).
+#      The explicit URL is the cutover, and it wins over both routes below.
+#   2. The local registry CLI over the local file, when this host keeps a copy.
+#   3. The transport command (remote_registry_call, below), when this host keeps no
+#      copy:  the host that holds the registry is asked through the command the host
+#      configuration names.
+#
+# Neither variable set is today's behaviour for a host that keeps a copy, exactly:
+# the transition is safe because setting the URL is the cutover, not the code.
+
+#: The registry ops the API serves as GET reads;  every other op is a POST write.
+_REGISTRY_READ_OPS = ("resolve", "history", "held", "pending-outbox")
+
+#: CLI spellings that name a registry field under another name, folded for the API.
+_REGISTRY_ARG_ALIASES = {
+    "location": "verified_host",
+    "scope": "profile_scope",
+    "session_id": "native_session_id",
+}
+
+
+class _RegistryNoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):  # a signed request never follows a redirect
+        return None
+
+
+_REGISTRY_OPENER = urllib.request.build_opener(_RegistryNoRedirect)
+
+
+def _registry_params(args: list[str]) -> dict:
+    """The registry CLI arguments after the op, as one JSON-ready mapping.
+
+    `--name=value` and `--name value` both fold to the field the API names, and a bare
+    `--flag` folds to True, so the HTTPS transport carries exactly what the
+    local CLI would have parsed."""
+    params: dict = {}
+    index = 0
+    while index < len(args):
+        token = args[index]
+        index += 1
+        if not token.startswith("--"):
+            params.setdefault("_args", []).append(token)
+            continue
+        name, equals, value = token[2:].partition("=")
+        key = _REGISTRY_ARG_ALIASES.get(name.replace("-", "_"), name.replace("-", "_"))
+        if equals:
+            params[key] = value
+        elif index < len(args) and not args[index].startswith("--"):
+            params[key] = args[index]
+            index += 1
+        else:
+            params[key] = True
+    return params
+
+
+def _registry_https_call(args: list[str], base_url: str, *, timeout: int) -> dict:
+    """One registry call over the Operator's HTTPS registry API, answered as its JSON.
+
+    The principal is SIMPLE_TOOLS_OPERATOR_REGISTRY_PRINCIPAL, else this seat.  The key
+    is read from the environment variable the key ref SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY_ENV
+    names (default SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY itself):  the `key_env` pattern the
+    listener already uses, so the key is named, never carried in this file, and never
+    logged.  The URL must be https, except for a loopback stub in a test."""
+    from simple_tools import listener_registry as RG
+
+    op = args[0] if args else ""
+    if op not in RG.OPS:
+        return {"error": "unknown registry op %r" % op, "code": "bad_op"}
+    parts = urllib.parse.urlsplit(base_url)
+    loopback = parts.hostname in ("127.0.0.1", "localhost", "::1")
+    if parts.scheme != "https" and not (parts.scheme == "http" and loopback):
+        return {
+            "error": "the registry URL must be https",
+            "code": "not_configured",
+        }
+    env = os.environ
+    principal = (env.get("SIMPLE_TOOLS_OPERATOR_REGISTRY_PRINCIPAL") or "").strip().upper() or SEAT
+    key_env = (
+        env.get("SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY_ENV") or ""
+    ).strip() or "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY"
+    key = (env.get(key_env) or "").strip()
+    if not key:
+        return {
+            "error": "the registry key env %s is not set" % key_env,
+            "code": "not_configured",
+        }
+    params = _registry_params(args[1:])
+    # The local CLI's --db names a file on the registry's host, not a field of the call.
+    params.pop("db", None)
+    # mark-exported names its ids positionally on the CLI;  the API names them in the body.
+    positional = params.pop("_args", [])
+    if positional and op == "mark-exported":
+        params["outbox_ids"] = positional
+    path = RG.PREFIX + op
+    if op in _REGISTRY_READ_OPS:
+        method = "GET"
+        query = urllib.parse.urlencode(
+            {name: value for name, value in params.items() if value is not True}
+        )
+        body = b""
+    else:
+        method = "POST"
+        query = ""
+        body = json.dumps(params).encode("utf-8")
+    url = base_url.rstrip("/") + path + (("?" + query) if query else "")
+    request = urllib.request.Request(url, data=body if method == "POST" else None, method=method)
+    # An explicit User-Agent:  the API's host is Cloudflare-fronted and Cloudflare
+    # answers 1010 to Python's default urllib agent (the deploy-mapped-worker
+    # note), so the default would never reach the listener.
+    request.add_header("User-Agent", "mm-session-letter/1.0")
+    for name, value in RG.headers(key, method, path, query, principal, body, time.time()).items():
+        request.add_header(name, value)
+    try:
+        with _REGISTRY_OPENER.open(request, timeout=timeout) as response:
+            raw = response.read()
+    except urllib.error.HTTPError as exc:
+        raw = exc.read() or b""
+        try:
+            answer = json.loads(raw.decode("utf-8"))
+        except (UnicodeError, ValueError):
+            answer = None
+        if isinstance(answer, dict):
+            answer.setdefault("code", "http_%s" % exc.code)
+            if method == "POST" and exc.code >= 500:
+                # A server-side failure can surface after the write was applied
+                # (the listener failing mid-answer, a proxy answering for it), so
+                # a write's outcome is unknown, as on the timeout path below.  A
+                # 4xx answer is the API's own refusal, spoken for itself:  the
+                # write was not applied and the outcome is known.
+                answer.setdefault("outcome", "outcome_unknown")
+            return answer
+        refusal = {"error": "the registry answered HTTP %s" % exc.code, "code": "http_error"}
+        if method == "POST" and exc.code >= 500:
+            refusal["outcome"] = "outcome_unknown"
+        return refusal
+    except (urllib.error.URLError, TimeoutError, OSError):
+        # A write may have been applied before the answer was lost, as on the local path.
+        answer = {"error": "the registry did not answer in time", "code": "timeout"}
+        if method == "POST":
+            answer["outcome"] = "outcome_unknown"
+        return answer
+    try:
+        answer = json.loads(raw.decode("utf-8"))
+    except (UnicodeError, ValueError):
+        return {"error": "unreadable answer", "code": "bad_json", "outcome": "outcome_unknown"}
+    if not isinstance(answer, dict):
+        return {
+            "error": "the registry answer was not an object",
+            "code": "bad_shape",
+            "outcome": "outcome_unknown",
+        }
+    return answer
+
+
 def _with_registry_code(answer: dict) -> dict:
     """A registry answer, with the code the helper uses for a host that keeps no registry."""
     if answer.get("error") == NO_REGISTRY_ERROR and not answer.get("code"):
@@ -268,7 +433,7 @@ def remote_registry_call(args: list, transport: str = "", timeout: int = REMOTE_
     flag, a remote path or a remote interpreter.  A transport command name that is not
     a plain command name is refused, never run.
     """
-    dest = transport or DEFAULT_TRANSPORT
+    dest = transport or str(os.environ.get(ENV_TRANSPORT) or "").strip() or DEFAULT_TRANSPORT
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._@-]*", dest):
         # Something the shell could read as an option or a second word:  refuse it
         # rather than run it.  A refused transport is a fault of this host's
@@ -383,7 +548,14 @@ def transport() -> str:
 
 
 def registry_call(args: list[str], *, timeout: int = 25) -> dict:
-    """Run the Operator's registry CLI and return its JSON answer."""
+    """Run the Operator's registry CLI and return its JSON answer.
+
+    The HTTPS registry API comes first when SIMPLE_TOOLS_OPERATOR_REGISTRY_URL names
+    it:  that explicit transport is the cutover, and it wins over the local file and
+    the transport command alike.  With no URL set, the routes below are unchanged."""
+    url = (os.environ.get("SIMPLE_TOOLS_OPERATOR_REGISTRY_URL") or "").strip()
+    if url:
+        return _registry_https_call(args, url, timeout=timeout)
     transport_name = str(os.environ.get(ENV_TRANSPORT) or "").strip()
     local_db = registry_db()
     scripts = repo_scripts_dir()

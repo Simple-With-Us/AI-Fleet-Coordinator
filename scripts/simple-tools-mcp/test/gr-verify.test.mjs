@@ -8,6 +8,9 @@ import { verifyGrRequest, serveGrBearerVerify, GR_VERIFY_CONTRACT, GR_VERIFY_KEY
 import { wakeSignature, WAKE_SIGNATURE_HEADER } from "../src/wake.js";
 import { newGbBearer, sha256Hex, GB_BEARER_TTL_MS } from "../src/gb-bearer.js";
 import * as S from "../src/seat-state.js";
+import { IdentityCache } from "../src/identity-cache.js";
+import { loadConfig } from "../src/config.js";
+import { testEnv } from "./helpers.mjs";
 
 globalThis.crypto ??= webcrypto;
 
@@ -33,11 +36,15 @@ async function signedBody(fields) {
 
 function fakeGates(store, state = { paused: false }) {
   return (env, seat) => ({
-    gbBearerCheck: (hash) => S.gbBearerCheck(store, hash),
+    // The pause flag rides gbBearerCheck's answer (R1):  the fake models
+    // pause where the real gate keeps it, in the store, not via getState.
+    gbBearerCheck: async (hash) => {
+      if (state.paused !== undefined) await store.put("paused", state.paused);
+      return S.gbBearerCheck(store, hash);
+    },
     gbBearerStatus: () => S.gbBearerStatus(store),
     gbBearerMismatch: (identity, configured) => S.gbBearerMismatch(store, identity, configured),
     gbBearerMismatches: () => S.gbBearerMismatches(store),
-    getState: async () => state,
     audit: async () => {},
   });
 }
@@ -193,4 +200,193 @@ test("the route fails closed when the verify key resolves empty (Infisical-only,
   const resp = await serveGrBearerVerify(req, { [GR_VERIFY_KEY_VAR]: KEY }, fakeGates(memStore()), { resolveKey: async () => "" });
   assert.equal(resp.status, 404);
   assert.equal((await resp.json()).reason, "not_configured");
+});
+
+async function verifyCall(identity, hash, gates, options) {
+  const { bytes, signature } = await signedBody({ contract: GR_VERIFY_CONTRACT, identity, hash, sent_at: Math.floor(Date.now() / 1000) });
+  const req = new Request("https://x.test/internal/gr-bearer-verify", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", [WAKE_SIGNATURE_HEADER]: signature },
+    body: bytes,
+  });
+  const resp = await serveGrBearerVerify(req, {}, gates, { resolveKey: async () => KEY, ...options });
+  return { status: resp.status, retryAfter: resp.headers.get("retry-after"), body: await resp.json() };
+}
+
+function countingGates(store) {
+  const rpc = { check: 0, status: 0 };
+  const base = fakeGates(store, {});
+  return { rpc, gates: (env, seat) => {
+    const gate = base(env, seat);
+    return { ...gate, gbBearerCheck: (hash) => { rpc.check += 1; return gate.gbBearerCheck(hash); }, gbBearerStatus: () => { rpc.status += 1; return gate.gbBearerStatus(); } };
+  } };
+}
+
+test("a live bearer costs one RPC, and its answer carries the bearer's own expiry", async () => {
+  const { hash } = await newGbBearer(ID);
+  const store = memStore();
+  const expiresAt = Date.now() + GB_BEARER_TTL_MS;
+  await S.gbBearerMint(store, { hash, by: "fixture@example.test", expiresAt });
+  const { rpc, gates } = countingGates(store);
+  const live = await verifyCall(ID, hash, gates);
+  assert.equal(live.body.expires_at, expiresAt);
+  assert.deepEqual(rpc, { check: 1, status: 0 });
+});
+
+test("the default window reuses a positive verify for an hour, then a pause bites (owner 2026-11-06)", async () => {
+  const { hash } = await newGbBearer(ID);
+  const store = memStore();
+  await S.gbBearerMint(store, { hash, by: "fixture@example.test", expiresAt: Date.now() + GB_BEARER_TTL_MS });
+  let now = 1_000_000;
+  const identityCache = new IdentityCache({ now: () => now });
+  const options = { identityCache, cacheMs: loadConfig(testEnv()).grVerifyCacheMs };
+  assert.equal(options.cacheMs, 3_600_000);
+  const state = { paused: false };
+  assert.equal((await verifyCall(ID, hash, fakeGates(store, state), options)).body.ok, true);
+  assert.equal(identityCache.get(`gr-verify:${hash}`).expiresAt - now, 3_600_000, "the window is the hour");
+  state.paused = true;
+  now += 3_599_000;
+  assert.equal((await verifyCall(ID, hash, fakeGates(store, state), options)).body.ok, true, "inside the hour the checked answer stands");
+  now += 2_000;
+  assert.equal((await verifyCall(ID, hash, fakeGates(store, state), options)).body.reason, "paused", "past the hour it re-verifies live");
+});
+
+test("a window of 0 verifies live on every call, so a pause bites on the next call", async () => {
+  const { hash } = await newGbBearer(ID);
+  const store = memStore();
+  await S.gbBearerMint(store, { hash, by: "fixture@example.test", expiresAt: Date.now() + GB_BEARER_TTL_MS });
+  const identityCache = new IdentityCache();
+  const options = { identityCache, cacheMs: loadConfig(testEnv({ GR_VERIFY_CACHE_MS: "0" })).grVerifyCacheMs };
+  const state = { paused: false };
+  assert.equal((await verifyCall(ID, hash, fakeGates(store, state), options)).body.ok, true);
+  assert.equal(identityCache.get(`gr-verify:${hash}`), null, "nothing is stored");
+  state.paused = true;
+  assert.equal((await verifyCall(ID, hash, fakeGates(store, state), options)).body.reason, "paused");
+});
+
+test("a cached verify's window is capped at the bearer's own expiry", async () => {
+  const { hash } = await newGbBearer(ID);
+  const store = memStore();
+  const expiresAt = Date.now() + 10 * 60_000;
+  await S.gbBearerMint(store, { hash, by: "fixture@example.test", expiresAt });
+  const identityCache = new IdentityCache();
+  await verifyCall(ID, hash, countingGates(store).gates, { identityCache, cacheMs: 3_600_000 });
+  const entry = identityCache.get(`gr-verify:${hash}`);
+  assert.ok(entry.expiresAt <= expiresAt, "the entry ends no later than the bearer");
+});
+
+test("the expiry cap holds even when the clock ticks between reads", async () => {
+  // A clock that advances 1 ms per read, as a slow runner does at random:  the
+  // window must be capped and started from the same reading.
+  const { hash } = await newGbBearer(ID);
+  const store = memStore();
+  let t = Date.now();
+  const tick = () => (t += 1);
+  const expiresAt = t + 10 * 60_000;
+  await S.gbBearerMint(store, { hash, by: "fixture@example.test", expiresAt });
+  const identityCache = new IdentityCache({ now: tick });
+  await verifyCall(ID, hash, countingGates(store).gates, { identityCache, cacheMs: 3_600_000 });
+  const entry = identityCache.entries.get(`gr-verify:${hash}`);
+  assert.ok(entry, "the verify was cached");
+  assert.ok(entry.expiresAt <= expiresAt, `the entry (${entry.expiresAt}) ends no later than the bearer (${expiresAt})`);
+});
+
+test("a live answer says when it was verified, and a cached one keeps that time", async () => {
+  const { hash } = await newGbBearer(ID);
+  const store = memStore();
+  await S.gbBearerMint(store, { hash, by: "fixture@example.test", expiresAt: Date.now() + GB_BEARER_TTL_MS });
+  let now = 5_000_000;
+  const identityCache = new IdentityCache({ now: () => now });
+  const { gates } = countingGates(store);
+  const live = await verifyCall(ID, hash, gates, { identityCache, cacheMs: 3_600_000 });
+  assert.equal(live.body.verified_at, 5_000_000);
+  now += 50 * 60_000;
+  const cached = await verifyCall(ID, hash, gates, { identityCache, cacheMs: 3_600_000 });
+  assert.equal(cached.body.verified_at, 5_000_000, "the relay ends its own window an hour after the live check");
+});
+
+test("a slow positive verify never overwrites a refusal that landed while it was in flight", async () => {
+  const { hash } = await newGbBearer(ID);
+  const store = memStore();
+  await S.gbBearerMint(store, { hash, by: "fixture@example.test", expiresAt: Date.now() + GB_BEARER_TTL_MS });
+  let now = 1_000_000;
+  const identityCache = new IdentityCache({ now: () => now });
+  const base = fakeGates(store, {});
+  let release;
+  const held = new Promise((resolve) => { release = resolve; });
+  let calls = 0;
+  const gates = (env, seat) => {
+    const gate = base(env, seat);
+    return { ...gate, gbBearerCheck: async (h) => {
+      calls += 1;
+      if (calls === 1) { const answer = await gate.gbBearerCheck(h); await held; return answer; }
+      return { ok: false, reason: "mismatch" };
+    } };
+  };
+  const options = { identityCache, cacheMs: 3_600_000 };
+  const slow = verifyCall(ID, hash, gates, options);
+  while (calls === 0) await new Promise((r) => setTimeout(r, 1));
+  now += 5;
+  assert.equal((await verifyCall(ID, hash, gates, options)).body.ok, false, "the newer call is refused");
+  now += 5;
+  release();
+  assert.equal((await slow).body.ok, true, "the slow call answers what it was told");
+  assert.equal(identityCache.get(`gr-verify:${hash}`), null, "the older positive answer did not replace the refusal");
+});
+
+test("the identity cache answers a repeat verify with no RPC, under its own key", async () => {
+  const { hash } = await newGbBearer(ID);
+  const store = memStore();
+  const expiresAt = Date.now() + GB_BEARER_TTL_MS;
+  // mcp_accept false:  a GR-only bearer, which /mcp must keep refusing.
+  await S.gbBearerMint(store, { hash, by: "fixture@example.test", expiresAt });
+  const { rpc, gates } = countingGates(store);
+  const identityCache = new IdentityCache();
+  const options = { identityCache, cacheMs: 60_000 };
+  const first = await verifyCall(ID, hash, gates, options);
+  assert.equal(first.body.ok, true);
+  const again = await verifyCall(ID, hash, gates, options);
+  assert.deepEqual(again.body, { ok: true, identity: ID, expires_at: expiresAt, verified_at: first.body.verified_at });
+  assert.equal(rpc.check, 1);
+  assert.equal(identityCache.get(hash), null, "the /mcp key stays empty:  a GR-only bearer earns no /mcp pass");
+  // An admin eviction of the seat reaches it.
+  identityCache.evictSeat(ID);
+  assert.equal((await verifyCall(ID, hash, gates, options)).body.ok, true);
+  assert.equal(rpc.check, 2);
+});
+
+test("a cached verify never outlives the bearer, another identity misses, and a window of 0 turns it off", async () => {
+  const { hash } = await newGbBearer(ID);
+  const store = memStore();
+  await S.gbBearerMint(store, { hash, by: "fixture@example.test", expiresAt: Date.now() + GB_BEARER_TTL_MS });
+  const { rpc, gates } = countingGates(store);
+  const identityCache = new IdentityCache();
+  const options = { identityCache, cacheMs: 60_000 };
+  await verifyCall(ID, hash, gates, options);
+  identityCache.entries.get(`gr-verify:${hash}`).expires_at = Date.now() - 1;
+  await verifyCall(ID, hash, gates, options);
+  assert.equal(rpc.check, 2, "past the bearer's expiry the entry is no answer");
+  const off = countingGates(store);
+  await verifyCall(ID, hash, off.gates, { identityCache: new IdentityCache(), cacheMs: 0 });
+  await verifyCall(ID, hash, off.gates, { identityCache: new IdentityCache(), cacheMs: 0 });
+  assert.equal(off.rpc.check, 2);
+});
+
+test("a refused bearer and a paused seat are not cached, and a pause evicts", async () => {
+  const { hash } = await newGbBearer(ID);
+  const store = memStore();
+  await S.gbBearerMint(store, { hash, by: "fixture@example.test", expiresAt: Date.now() + GB_BEARER_TTL_MS });
+  const state = { paused: true };
+  const identityCache = new IdentityCache();
+  const options = { identityCache, cacheMs: 60_000 };
+  assert.equal((await verifyCall(ID, hash, fakeGates(store, state), options)).body.reason, "paused");
+  assert.equal(identityCache.get(`gr-verify:${hash}`), null);
+  assert.equal((await verifyCall(ID, "0".repeat(64), fakeGates(store, { paused: false }), options)).body.reason, "mismatch");
+  assert.equal(identityCache.get(`gr-verify:${"0".repeat(64)}`), null);
+});
+
+test("a gate that cannot answer is a 503 with Retry-After, never a 200 refusal", async () => {
+  const gates = () => ({ gbBearerCheck: async () => { throw new Error("Exceeded allowed volume of requests in Durable Objects free tier"); } });
+  const answer = await verifyCall(ID, "a".repeat(64), gates);
+  assert.deepEqual([answer.status, answer.retryAfter, answer.body], [503, "30", { ok: false, reason: "unavailable" }]);
 });

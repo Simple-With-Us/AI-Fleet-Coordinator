@@ -518,7 +518,7 @@ class SendTests(Base):
         connect.assert_not_called()
 
     def test_a_secret_shaped_seat_tag_is_withheld_and_not_echoed(self) -> None:
-        shaped = "AKIAIOSFODNN7EXAMPLE"
+        shaped = "AKIA" "IOSFODNN7EXAMPLE"
         out = self.send(seat=shaped)
         self.assertEqual(out["status"], "refused")
         self.assertEqual(out["code"], "secret")

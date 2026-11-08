@@ -11,9 +11,11 @@ import time
 from typing import Any, Protocol
 
 from . import live as L
+from . import operator_registry as OR
 
 SUPPORTED_PLATFORM = "grok-leader"
-SUPPORTED_PLATFORMS = {"grok-leader", "cursor-cloud", "codex"}
+# The same table the registry derives from:  one source of truth for what this tree can deliver to.
+SUPPORTED_PLATFORMS = set(OR.implemented_wake_platforms())
 TERMINAL_KEEP_SECONDS = 90 * 86400
 _SEAT_RE = re.compile(r"^[A-Z0-9][A-Z0-9_-]{0,31}$")
 _BINDING_FIELDS = ("channel", "topic", "platform", "host", "session_id", "cwd")
@@ -48,7 +50,7 @@ def nudge_text(channel: str, topic: str, message_id: str, source_seat: str | Non
 class ChatNudges:
     """Per-seat exact chat bindings and durable nudge queue.
 
-    `root` is the simple-tools state root.  Registry and queue share one private file under
+    `root` is the Simple-Tools state root.  Registry and queue share one private file under
     `<root>/<seat>` with a state lock for short updates and a separate dispatch lock for one
     serialized transport attempt.
     """

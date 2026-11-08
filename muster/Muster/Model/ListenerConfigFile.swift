@@ -1,8 +1,8 @@
 import Foundation
 
-// The listener's own configuration file:  `~/.simple-tools/listener.toml`.
+// The eavesdropper's own configuration file:  `~/.simple-tools/listener.toml`.
 //
-// This is not a general TOML implementation.  It reads and writes the shape the listener
+// This is not a general TOML implementation.  It reads and writes the shape the eavesdropper
 // actually uses:  scalars,  string arrays,  and inline tables such as
 //
 //     [seat.MM]
@@ -22,7 +22,7 @@ import Foundation
 //
 // MARK: - Values
 
-/// A value in the listener's configuration file.
+/// A value in the eavesdropper's configuration file.
 enum ListenerConfigValue: Equatable {
     case text(String)
     case bool(Bool)
@@ -84,15 +84,26 @@ enum ListenerConfigValue: Equatable {
         return String(format: "%g", number)
     }
 
+    /// A string as TOML holds it.
+    ///
+    /// It walks scalars and not characters:  a carriage return and a line feed together are one
+    /// `Character`,  which matched no case and reached the file raw.  TOML forbids every control
+    /// character in a basic string,  and one left in would make `tomllib` refuse the whole file.
     static func quote(_ value: String) -> String {
         var result = "\""
-        for character in value {
-            switch character {
+        for scalar in value.unicodeScalars {
+            switch scalar {
             case "\"": result += "\\\""
             case "\\": result += "\\\\"
             case "\n": result += "\\n"
+            case "\r": result += "\\r"
             case "\t": result += "\\t"
-            default: result.append(character)
+            default:
+                if scalar.value < 0x20 || scalar.value == 0x7F {
+                    result += String(format: "\\u%04X", scalar.value)
+                } else {
+                    result.unicodeScalars.append(scalar)
+                }
             }
         }
         result += "\""
@@ -247,6 +258,11 @@ private struct ListenerConfigScanner {
                 case "n": result.append("\n")
                 case "t": result.append("\t")
                 case "r": result.append("\r")
+                case "b": result.append("\u{08}")
+                case "f": result.append("\u{0C}")
+                case "u", "U":
+                    guard let scalar = parseHexScalar(digits: escaped == "u" ? 4 : 8) else { return nil }
+                    result.unicodeScalars.append(scalar)
                 case "\"": result.append("\"")
                 case "\\": result.append("\\")
                 default: result.append(escaped)
@@ -257,6 +273,18 @@ private struct ListenerConfigScanner {
             index = text.index(after: index)
         }
         return nil
+    }
+
+    /// The scalar a `\u` or `\U` escape names,  or nil when the digits do not name one.
+    private mutating func parseHexScalar(digits: Int) -> Unicode.Scalar? {
+        var hex = ""
+        for _ in 0..<digits {
+            guard let digit = peek(), digit.isHexDigit else { return nil }
+            hex.append(digit)
+            index = text.index(after: index)
+        }
+        guard let code = UInt32(hex, radix: 16) else { return nil }
+        return Unicode.Scalar(code)
     }
 
     mutating func parseBareValue() -> ListenerConfigNode? {
@@ -362,7 +390,7 @@ private struct ListenerConfigScanner {
 
 // MARK: - The document
 
-/// The listener's configuration file.
+/// The eavesdropper's configuration file.
 ///
 /// Reading gives the values the file holds.  Writing changes one value and nothing else.
 struct ListenerConfigDocument: Equatable {
@@ -380,6 +408,8 @@ struct ListenerConfigDocument: Equatable {
         var assignments: [Assignment]
         /// The line the section header is on,  or nil for the region before the first header.
         var headerLine: Int?
+        /// The lines in this section this app could not read.
+        var problems: [String] = []
     }
 
     let text: String
@@ -396,7 +426,7 @@ struct ListenerConfigDocument: Equatable {
 
         for (number, line) in lines.enumerated() {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
-            // A section header may carry a comment:  the listener's own file has one.
+            // A section header may carry a comment:  the eavesdropper's own file has one.
             if trimmed.hasPrefix("["), !trimmed.hasPrefix("[["),
                let close = trimmed.firstIndex(of: "]") {
                 let name = String(trimmed[trimmed.index(after: trimmed.startIndex)..<close])
@@ -410,17 +440,23 @@ struct ListenerConfigDocument: Equatable {
             guard !trimmed.isEmpty, !trimmed.hasPrefix("#") else { continue }
             var scanner = ListenerConfigScanner(line)
             guard let key = scanner.parseKey() else {
-                problems.append("Line \(number + 1) is not a key this app can read.")
+                let problem = "Line \(number + 1) is not a key this app can read."
+                problems.append(problem)
+                current.problems.append(problem)
                 continue
             }
             scanner.skipBlanks()
             guard scanner.peek() == "=" else {
-                problems.append("Line \(number + 1) is not a key this app can read.")
+                let problem = "Line \(number + 1) is not a key this app can read."
+                problems.append(problem)
+                current.problems.append(problem)
                 continue
             }
             scanner.index = line.index(after: scanner.index)
             guard let node = scanner.parseValue(), scanner.onlyCommentRemains() else {
-                problems.append("Line \(number + 1) holds a value this app cannot read.")
+                let problem = "Line \(number + 1) holds a value this app cannot read."
+                problems.append(problem)
+                current.problems.append(problem)
                 continue
             }
             current.assignments.append(Assignment(key: key, node: node, line: number))
@@ -458,11 +494,30 @@ struct ListenerConfigDocument: Equatable {
         value(section: section, key: key, subPath: subPath) != nil
     }
 
+    /// The seats the file has a section for.
+    ///
+    /// A dotted header such as `[seat.MM.budget]` is a table inside the MM seat,  not a seat of
+    /// its own.
+    var seatTags: [String] {
+        var tags: [String] = []
+        for section in sections where section.name.hasPrefix("seat.") {
+            let tag = String(section.name.dropFirst("seat.".count).prefix { $0 != "." })
+            if !tag.isEmpty, !tags.contains(tag) { tags.append(tag) }
+        }
+        return tags
+    }
+
+    /// The sections that belong to a seat:  its own,  and any table inside it.
+    func sections(ofSeat tag: String) -> [Section] {
+        sections.filter { $0.name == "seat.\(tag)" || $0.name.hasPrefix("seat.\(tag).") }
+    }
+
     // MARK: Writing
 
     enum WriteError: Error, Equatable, LocalizedError {
         case pathIsEmpty
         case notATable(String)
+        case heldInItsOwnSection(String)
 
         var errorDescription: String? {
             switch self {
@@ -470,6 +525,8 @@ struct ListenerConfigDocument: Equatable {
                 return "The setting has no name, so nothing was written."
             case .notATable(let name):
                 return "The \(name) value is not a group of settings, so nothing was written."
+            case .heldInItsOwnSection(let name):
+                return "The file keeps \(name) under its own [\(name)] header, and this app cannot change it there, so nothing was written."
             }
         }
     }
@@ -486,6 +543,12 @@ struct ListenerConfigDocument: Equatable {
         to newValue: ListenerConfigValue
     ) throws -> String {
         var lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+
+        // `[seat.MM.budget]` already defines this key,  so a `budget = ...` line would define it
+        // twice.  TOML refuses a duplicate,  and the eavesdropper would then read an empty config.
+        guard !sections.contains(where: { $0.name == "\(section).\(key)" }) else {
+            throw WriteError.heldInItsOwnSection("\(section).\(key)")
+        }
 
         guard let found = sections.first(where: { $0.name == section }) else {
             // A section the file does not have yet:  add it at the end.
@@ -514,7 +577,17 @@ struct ListenerConfigDocument: Equatable {
         }
 
         guard let entry = locate(assignment.node, path: subPath) else {
-            throw WriteError.notATable("\(section).\(key)")
+            // The table is there and this key is not in it yet:  add the key to the table.
+            guard let line = inserting(
+                path: subPath,
+                value: newValue,
+                into: assignment.node,
+                line: lines[assignment.line]
+            ) else {
+                throw WriteError.notATable("\(section).\(key)")
+            }
+            lines[assignment.line] = line
+            return lines.joined(separator: "\n")
         }
         lines[assignment.line] = replacing(entry.range, in: lines[assignment.line], with: newValue.tomlText)
         return lines.joined(separator: "\n")
@@ -527,6 +600,67 @@ struct ListenerConfigDocument: Equatable {
               let entry = entries.first(where: { $0.key == step }) else { return nil }
         return locate(entry.node, path: Array(path.dropFirst()))
     }
+
+    /// A line with a new key added to an inline table,  or nil when the path runs into a value
+    /// that is not a table.
+    ///
+    /// The key goes after the table's last entry,  with no trailing comma:  TOML 1.0 forbids one
+    /// inside an inline table.
+    private func inserting(
+        path: [String],
+        value: ListenerConfigValue,
+        into node: ListenerConfigNode,
+        line: String
+    ) -> String? {
+        guard let step = path.first, let entries = node.tableEntries else { return nil }
+        let rest = Array(path.dropFirst())
+        if let entry = entries.first(where: { $0.key == step }) {
+            return inserting(path: rest, value: value, into: entry.node, line: line)
+        }
+        let text = "\(step) = \(ListenerConfigValue.nested(path: rest, value: value).tomlText)"
+        var result = line
+        if let last = entries.last {
+            result.insert(contentsOf: ", \(text)", at: last.node.range.upperBound)
+        } else {
+            result.replaceSubrange(node.range, with: "{ \(text) }")
+        }
+        return result
+    }
+
+    /// The file's text with a seat's section taken out,  along with any table inside it.
+    ///
+    /// Comments and blank lines just above the next section stay,  because they belong to what
+    /// follows.  This is the repair for a section the eavesdropper refuses:  every other line of the
+    /// file is left as it was.
+    func removingSeat(_ tag: String) -> String {
+        var lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let headers = Set(sections.compactMap(\.headerLine))
+        var ranges: [Range<Int>] = []
+        for header in sections(ofSeat: tag).compactMap(\.headerLine) {
+            var end = lines.count
+            var index = header + 1
+            while index < lines.count {
+                let trimmed = lines[index].trimmingCharacters(in: .whitespaces)
+                if headers.contains(index) || trimmed.hasPrefix("[[") {
+                    end = index
+                    break
+                }
+                index += 1
+            }
+            while end > header + 1 {
+                let trimmed = lines[end - 1].trimmingCharacters(in: .whitespaces)
+                guard trimmed.isEmpty || trimmed.hasPrefix("#") else { break }
+                end -= 1
+            }
+            ranges.append(header..<end)
+        }
+        // From the bottom up,  so a removal does not move the lines of the next one.
+        for range in ranges.sorted(by: { $0.lowerBound > $1.lowerBound }) {
+            lines.removeSubrange(range)
+        }
+        return lines.joined(separator: "\n")
+    }
+
     /// The file's text with one value removed.
     ///
     /// Removing a key inside an inline table removes that key and its value,  and leaves
@@ -578,7 +712,7 @@ struct ListenerConfigDocument: Equatable {
             // The comma has to stay inside the removed range.  A range that started after
             // it would leave the comma behind as a trailing comma,  and TOML 1.0 forbids one
             // inside an inline table:  `tomllib.load` would reject the whole file,  and the
-            // listener would fall back to an empty config.  So the range covers
+            // eavesdropper would fall back to an empty config.  So the range covers
             // ", key = value",  not "key = value".
             var back = start
             while back > line.startIndex {

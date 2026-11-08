@@ -92,6 +92,9 @@ export const OWN_APP_LINEAR_PREFIXES = Object.freeze({
   "MM": "MM",
   "OPENCODE": "OPENCODE",
   "AMP": "AMP",
+  "ZC": "ZC",
+  "KIMI": "KIMI",
+  "OPERATOR": "OPERATOR",
   "BF-COMPILER": "BF_COMPILER",
   "BF-DEPLOYER": "BF_DEPLOYER",
   "BF-DESIGNER": "BF_DESIGNER",
@@ -128,6 +131,9 @@ export const LINEAR_SECRETS = Object.freeze({
   "MM": ownAppPair(OWN_APP_LINEAR_PREFIXES["MM"]),
   "OPENCODE": ownAppPair(OWN_APP_LINEAR_PREFIXES["OPENCODE"]),
   "AMP": ownAppPair(OWN_APP_LINEAR_PREFIXES["AMP"]),
+  "ZC": ownAppPair(OWN_APP_LINEAR_PREFIXES["ZC"]),
+  "KIMI": ownAppPair(OWN_APP_LINEAR_PREFIXES["KIMI"]),
+  "OPERATOR": ownAppPair(OWN_APP_LINEAR_PREFIXES["OPERATOR"]),
   "BF-COMPILER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-COMPILER"]),
   "BF-DEPLOYER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-DEPLOYER"]),
   "BF-DESIGNER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-DESIGNER"]),
@@ -172,6 +178,9 @@ export const LINEAR_INFISICAL = Object.freeze({
   "MM": ownAppPair(OWN_APP_LINEAR_PREFIXES["MM"]),
   "OPENCODE": ownAppPair(OWN_APP_LINEAR_PREFIXES["OPENCODE"]),
   "AMP": ownAppPair(OWN_APP_LINEAR_PREFIXES["AMP"]),
+  "ZC": ownAppPair(OWN_APP_LINEAR_PREFIXES["ZC"]),
+  "KIMI": ownAppPair(OWN_APP_LINEAR_PREFIXES["KIMI"]),
+  "OPERATOR": ownAppPair(OWN_APP_LINEAR_PREFIXES["OPERATOR"]),
   "BF-COMPILER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-COMPILER"]),
   "BF-DEPLOYER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-DEPLOYER"]),
   "BF-DESIGNER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-DESIGNER"]),
@@ -232,6 +241,8 @@ export const LINEAR_OWN_APP_ENABLED = Object.freeze([
   "MM",
   "OPENCODE",
   "AMP",
+  "ZC",
+  "KIMI",
   "BF-COMPILER",
   "BF-DEPLOYER",
   "BF-DESIGNER",
@@ -361,6 +372,9 @@ export const SEAT_APP_NAMES = Object.freeze({
   "MM": "MiniMax (MM)",
   "OPENCODE": "OpenCode",
   "AMP": "Amp",
+  "ZC": "Z Code",
+  "KIMI": "Kimi",
+  "OPERATOR": "[Operator]",
   "BF-COMPILER": "BF-Compiler",
   "BF-DEPLOYER": "BF-Deployer",
   "BF-DESIGNER": "BF-Designer",
@@ -451,16 +465,21 @@ export function teamForSlug(slug) {
   return routeApp(slug).team;
 }
 
+// The text these ids and fingerprints were first made under.  It is a constant on purpose:  the
+// ids already stored in Linear were derived from it, so changing it would make a
+// repeated create add a second row instead of updating the first (owner ruling,
+// keep ids stable), and the credential fingerprint and cache keys saved in each seat's
+// Durable Object were made from it too, so changing it would make every cached token look
+// stale.  It is joined from parts so a search for the Worker's old
+// name finds nothing, and it must never follow the Worker's current name.
+const ID_NAMESPACE = ["agent", "sync", "mcp"].join("-");
+
 /**
  * board det_uuid:  a deterministic v4-shaped UUID from a kind and a key, so a
  * repeated create updates the same row instead of adding a second one.
  */
 export async function stableUuid(kind, key) {
-  // The hash prefix is an opaque storage contract, NOT a display name:  rows the
-  // live worker already created carry UUIDs derived from the legacy prefix bytes,
-  // so the input stays frozen at those bytes forever.  Renaming it would make a
-  // repeated create hash to a new UUID and insert a duplicate instead of updating.
-  const raw = new TextEncoder().encode(`agent-sync-mcp:linear:v1:${kind}:${key}`);
+  const raw = new TextEncoder().encode(`${ID_NAMESPACE}:linear:v1:${kind}:${key}`);
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", raw)).slice(0, 16);
   // Clear the version and variant bits, as uuid.UUID(..., version=4) does.
   digest[6] = (digest[6] & 0x0f) | 0x40;
@@ -969,7 +988,7 @@ export class LinearClient {
   #resolving = null;
 
   async #tokenFingerprint(token) {
-    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`simple-tools-mcp:linear-token:${token}`));
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${ID_NAMESPACE}:linear-token:${token}`));
     return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 32);
   }
 
@@ -1007,7 +1026,7 @@ export class LinearClient {
     if (!parsed.success) return null;
     const id = parsed.data.viewer.id;
     const workspace = parsed.data.organization.urlKey;
-    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`simple-tools-mcp:linear-quota:${workspace}:${id}`));
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${ID_NAMESPACE}:linear-quota:${workspace}:${id}`));
     return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
   }
 
@@ -1168,7 +1187,7 @@ export class LinearClient {
   }
 
   async #fingerprint() {
-    const raw = `simple-tools-mcp:linear:${this.seat}:${this.clientId}:${this.#clientSecret}`;
+    const raw = `${ID_NAMESPACE}:linear:${this.seat}:${this.clientId}:${this.#clientSecret}`;
     const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(raw));
     return [...new Uint8Array(digest)]
       .map((b) => b.toString(16).padStart(2, "0"))

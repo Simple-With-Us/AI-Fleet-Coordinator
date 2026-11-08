@@ -11,7 +11,10 @@ import { DEFAULT_CALLBACK_HOSTS, isHostPattern } from "./events.js";
 // D1:  the only hostname this Worker answers on.  It is a constant, not a var,
 // so a config edit cannot widen the Host check.
 //
-// Unknown hosts are refused; no alias, redirect or alternate host is served.
+// No other hostname is answered, aliased or redirected here.  Any request naming
+// another host is refused like any other unknown Host (policy.js `hostAllowed`,
+// 404 at index.js).  Nothing may introduce a second accepted host without a new
+// owner decision.
 export const PUBLIC_HOST = "agents.simplewithus.com";
 export const ISSUER = `https://${PUBLIC_HOST}`;
 
@@ -61,6 +64,23 @@ export const SHARED_IDENTITY_SEATS = Object.freeze(["CURSOR", "GROK-WEB"]);
 // Phase 0 durations.
 export const ARM_WINDOW_MS = 10 * 60 * 1000;
 export const GRANT_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
+// The in-isolate verified-identity cache window (R4, src/identity-cache.js):
+// how long one isolate may reuse a positive gate verification before it
+// re-verifies live.  The GATE_IDENTITY_CACHE_MS var overrides it per deploy;
+// 0 disables the cache.  The owner accepts the revocation latency this
+// creates (2026-11-03 ruling:  pause and epoch are not the real kill path),
+// and src/identity-cache.js states the full trade.
+export const GATE_IDENTITY_CACHE_MS = 60 * 60 * 1000;
+// The Git bearer verify cache (AFC-617), separate from the window above, which
+// never reaches this route:  how long one isolate may reuse a positive
+// /internal/gr-bearer-verify answer.  One hour by default (owner ruling
+// 2026-11-06:  a checked token may work for an hour, because a seat is never cut
+// off through the tools), so a pause or revocation can reach Git calls, writes
+// included, up to an hour late in an isolate.  An entry never outlives the
+// bearer's own expiry.  The GR_VERIFY_CACHE_MS var overrides it per deploy, 0
+// turns it off, and the cap matches the relay's own positive verify cache cap
+// (git-relay/git_relay/shared_bearer.py).
+export const GR_VERIFY_CACHE_MAX_MS = 60 * 60 * 1000;
 export const ACCESS_TOKEN_TTL_S = 60 * 60;
 export const REFRESH_TOKEN_TTL_S = 90 * 24 * 60 * 60;
 
@@ -102,7 +122,7 @@ export const SEAT_SECRETS = Object.freeze({
   WISE: Object.freeze({ key: "ZULIP_KEY_WISE", email: "ZULIP_EMAIL_WISE", infisical: Object.freeze({ name: "WISE_ZULIP_KEY", path: "/zulip" }) }),
 });
 
-// The shared HMAC key the server listener signs each seat's wake with
+// The shared HMAC key the server eavesdropper signs each seat's wake with
 // (POST /internal/wake/<SEAT>, src/wake.js).  Only this table turns a seat
 // from the path into a secret name, so a path can never pick another secret.
 // A seat whose secret is unset answers 404 there.
@@ -111,6 +131,19 @@ export const WAKE_SECRETS = Object.freeze({
   "GROK-WEB": "WAKE_HMAC_KEY_GROK_WEB",
   ECHO: "WAKE_HMAC_KEY_ECHO",
   WISE: "WAKE_HMAC_KEY_INSTINCT",
+});
+
+// Read-only listener keys for seats that have no wake route (OPS-1047).  WAKE_SECRETS above is
+// the wake table:  /internal/wake/<SEAT>, the spike route and MCP Events all consult it, and MA
+// must never gain a wake route (test/ma-seat.test.mjs pins that).  A seat listed here instead
+// gets only a listener read key:  the name resolves like a wake key (Infisical /wake, with the
+// Worker secret of the same name as fallback) but is consulted solely when a ListenerClient is
+// built (src/eavesdropper.js listenerSecretName, called from src/index.js).  MA's daemon side
+// reads the same value as MA_ROUTINE_KEY (listener_api_keys:  a seat with no hmac routine falls
+// back to <CODE>_ROUTINE_KEY), so it is the existing per-seat read-key mechanism, not a new
+// credential family.
+export const LISTENER_READ_SECRETS = Object.freeze({
+  MA: "WAKE_HMAC_KEY_MA",
 });
 
 // The Operator notes API key (AFC-486, docs/protocols/operator-notes.md):  the Worker signs every notes_* request
@@ -188,6 +221,27 @@ export function loadConfig(env) {
     if (!KNOWN_SEATS.includes(seat)) throw new Error(`config: unknown events-only seat ${seat}`);
   }
 
+  // The verified-identity cache window is a var for the same reason:  a
+  // reviewed deploy-time change, never a source edit.  Absent means the
+  // compiled default;  0 disables the cache;  anything malformed fails
+  // closed like every other var.
+  const gateIdentityCacheRaw = env.GATE_IDENTITY_CACHE_MS;
+  let gateIdentityCacheMs = GATE_IDENTITY_CACHE_MS;
+  if (gateIdentityCacheRaw !== undefined && gateIdentityCacheRaw !== null && String(gateIdentityCacheRaw).trim() !== "") {
+    gateIdentityCacheMs = Number(gateIdentityCacheRaw);
+    if (!Number.isSafeInteger(gateIdentityCacheMs) || gateIdentityCacheMs < 0) throw new Error("config: GATE_IDENTITY_CACHE_MS must be a non-negative integer number of milliseconds");
+  }
+
+  // The Git bearer verify window:  absent or empty means the compiled hour, 0
+  // turns it off, and this var alone controls it.  Anything malformed or past
+  // the relay's cap fails closed.
+  const grVerifyCacheRaw = env.GR_VERIFY_CACHE_MS;
+  let grVerifyCacheMs = GR_VERIFY_CACHE_MAX_MS;
+  if (grVerifyCacheRaw !== undefined && grVerifyCacheRaw !== null && String(grVerifyCacheRaw).trim() !== "") {
+    grVerifyCacheMs = Number(grVerifyCacheRaw);
+    if (!Number.isSafeInteger(grVerifyCacheMs) || grVerifyCacheMs < 0 || grVerifyCacheMs > GR_VERIFY_CACHE_MAX_MS) throw new Error(`config: GR_VERIFY_CACHE_MS must be an integer from 0 to ${GR_VERIFY_CACHE_MAX_MS} milliseconds`);
+  }
+
   const seatsRaw = parseJsonVar(env, "SEATS");
   if (typeof seatsRaw !== "object" || Array.isArray(seatsRaw)) throw new Error("config: SEATS must be an object");
   const seats = {};
@@ -249,7 +303,7 @@ export function loadConfig(env) {
     }
   }
 
-  // The owner's pinned Zulip user id and human clients (listener rule):  the
+  // The owner's pinned Zulip user id and human clients (eavesdropper rule):  the
   // `owner` flag on a message is a routing hint, never authority.
   const ownerUserId = Number(env.OWNER_USER_ID);
   if (!Number.isSafeInteger(ownerUserId) || ownerUserId <= 0) throw new Error("config: OWNER_USER_ID must be a Zulip user id");
@@ -319,6 +373,8 @@ export function loadConfig(env) {
     scopes: SCOPES,
     hostedSeats: Object.freeze(hostedSeats),
     eventsOnlySeats: Object.freeze(eventsOnlySeats),
+    gateIdentityCacheMs,
+    grVerifyCacheMs,
     seats: Object.freeze(seats),
     redirectSeats,
     redirectOwner,

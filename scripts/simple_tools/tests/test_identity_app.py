@@ -6,6 +6,7 @@ seat runs in, from the top-level `seatApps` key of fleet-apps.json (kept out of 
 read).  These tests pin both functions, the registry data they read, the check that guards the data, the
 onboarding script that writes it, and the board script's own alias tables (it imports no package, so it keeps
 its own copy and these tests keep it resolvable)."""
+
 from __future__ import annotations
 
 import copy
@@ -28,8 +29,19 @@ ONBOARD = REPO / "scripts" / "onboard-new-agent.sh"
 HOST = "simplewithus.zulipchat.com"
 
 # Every spelling the owner's GROK-BUILD rule accepts (the same list test_seat_alias.py holds).
-GROK_BUILD_SPELLINGS = ("GROK-BUILD", "Grok-Build", "grok-build", "grok_build", "Grok Build", "GROK.BUILD",
-                        "Grok (Build)", "grok/build/", "GrokBuild", "GROK--BUILD!!", "  grok build  ")
+GROK_BUILD_SPELLINGS = (
+    "GROK-BUILD",
+    "Grok-Build",
+    "grok-build",
+    "grok_build",
+    "Grok Build",
+    "GROK.BUILD",
+    "Grok (Build)",
+    "grok/build/",
+    "GrokBuild",
+    "GROK--BUILD!!",
+    "  grok build  ",
+)
 
 
 def registry_data() -> dict:
@@ -45,10 +57,228 @@ def load_board():
 
 
 def load_check():
-    spec = importlib.util.spec_from_file_location("check_fleet_registry_f2", REPO / "scripts" / "check-fleet-registry.py")
+    spec = importlib.util.spec_from_file_location(
+        "check_fleet_registry_f2", REPO / "scripts" / "check-fleet-registry.py"
+    )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
+
+class RoleLaneBlockTests(unittest.TestCase):
+    """AFC-620:  a pattern's `lane` block makes BF-<ROLE>/GB-<ROLE> lane-eligible;  the schema is
+    strict and the rendered folders and prefixes collide with no seat row and no other pattern."""
+
+    def _data(self, lane: object, match: str = "BF-*") -> dict:
+        row = {"match": match, "app": "botfleet"}
+        if lane is not None:
+            row["lane"] = lane
+        return {
+            "seats": [],
+            "seatApps": {"bySeat": {}, "extraSeats": {}, "patterns": [row]},
+        }
+
+    def test_a_lane_block_parses_and_roles_resolve(self) -> None:
+        lane = {
+            "roles": ["FIXER", "COMPILER"],
+            "folderTemplate": "bf-<role>",
+            "branchTemplate": "bf-<role>/",
+        }
+        reg = I.parse_seat_registry(self._data(lane))
+        rl = I.role_lane_seat("BF-FIXER", reg)
+        self.assertIsNotNone(rl)
+        self.assertEqual(
+            (rl.seat, rl.role, rl.app, rl.folder, rl.branch_prefix),
+            ("BF-FIXER", "FIXER", "botfleet", "bf-fixer", "bf-fixer/"),
+        )
+        self.assertEqual(I.role_lane_roles("BF-FIXER", reg), ("FIXER", "COMPILER"))
+
+    def test_an_unlisted_role_and_an_unmatched_tag_resolve_to_none(self) -> None:
+        lane = {
+            "roles": ["FIXER"],
+            "folderTemplate": "bf-<role>",
+            "branchTemplate": "bf-<role>/",
+        }
+        reg = I.parse_seat_registry(self._data(lane))
+        self.assertIsNone(I.role_lane_seat("BF-BUILDER", reg))
+        self.assertEqual(I.role_lane_roles("BF-BUILDER", reg), ("FIXER",))
+        self.assertIsNone(I.role_lane_seat("NOPE-1", reg))
+        self.assertEqual(I.role_lane_roles("NOPE-1", reg), ())
+
+    def test_a_pattern_without_a_lane_block_grants_no_role_lanes(self) -> None:
+        reg = I.parse_seat_registry(self._data(None))
+        self.assertIsNone(I.role_lane_seat("BF-FIXER", reg))
+
+    def test_bad_lane_blocks_are_refused(self) -> None:
+        good = {
+            "roles": ["FIXER"],
+            "folderTemplate": "bf-<role>",
+            "branchTemplate": "bf-<role>/",
+        }
+        bad = (
+            {"roles": []},
+            {"roles": ["fixer"]},
+            {"roles": ["FIXER", "FIXER"]},
+            {**good, "folderTemplate": "bf"},
+            {**good, "branchTemplate": "bf-<role>"},
+            {**good, "folderTemplate": "BF-<role>"},
+            "not-a-mapping",
+        )
+        for lane in bad:
+            with self.subTest(lane=lane):
+                with self.assertRaises(I.SeatRegistryError):
+                    I.parse_seat_registry(self._data(lane))
+        with self.assertRaises(I.SeatRegistryError):
+            I.parse_seat_registry(self._data(good, match="BOTH-*-SIDES-*"))
+
+    def test_a_suffixed_match_is_not_lane_enabled(self) -> None:
+        good = {
+            "roles": ["FIXER"],
+            "folderTemplate": "bf-<role>",
+            "branchTemplate": "bf-<role>/",
+        }
+        with self.assertRaises(I.SeatRegistryError):
+            I.parse_seat_registry(self._data(good, match="BF-*-BOT"))
+
+    def test_renders_must_be_kebab_slugs(self) -> None:
+        for role in ("FIXER-", "FI--XER"):
+            lane = {
+                "roles": [role],
+                "folderTemplate": "bf-<role>",
+                "branchTemplate": "bf-<role>/",
+            }
+            with self.subTest(role=role):
+                with self.assertRaises(I.SeatRegistryError):
+                    I.parse_seat_registry(self._data(lane))
+        long_role = "F" * 45
+        with self.assertRaises(I.SeatRegistryError):
+            I.parse_seat_registry(
+                self._data(
+                    {
+                        "roles": [long_role],
+                        "folderTemplate": "bf-<role>",
+                        "branchTemplate": "bf-<role>/",
+                    }
+                )
+            )
+
+    def test_the_check_flags_duplicate_renders_and_mixed_case_suffixes(self) -> None:
+        check = load_check()
+        lane = {
+            "roles": ["FIXER"],
+            "folderTemplate": "bf-<role>",
+            "branchTemplate": "bf-<role>/",
+        }
+        data = {
+            "seats": [],
+            "seatApps": {
+                "bySeat": {},
+                "extraSeats": {},
+                "patterns": [
+                    {"match": "BF-*", "app": "botfleet", "lane": lane},
+                    {"match": "BF-F*", "app": "botfleet", "lane": lane},
+                ],
+            },
+        }
+        errors = check.seat_apps_errors(data)
+        self.assertTrue(any("rendered by both" in e for e in errors), errors)
+        data2 = self._data(lane)
+        data2["seats"] = [
+            {"tag": "SQUAT", "worktreeSuffix": "BF-Fixer", "branchPrefixes": []}
+        ]
+        data2["seatApps"]["bySeat"] = {"SQUAT": "claude-code"}
+        errors2 = check.seat_apps_errors(data2)
+        self.assertTrue(any("worktreeSuffix" in e for e in errors2), errors2)
+
+    def test_the_check_reports_seat_and_pattern_collisions(self) -> None:
+        check = load_check()
+        data = self._data(
+            {
+                "roles": ["FIXER"],
+                "folderTemplate": "bf-<role>",
+                "branchTemplate": "bf-<role>/",
+            }
+        )
+        data["seats"] = [
+            {
+                "tag": "SQUATTER",
+                "worktreeSuffix": "bf-fixer",
+                "branchPrefixes": ["squatter/"],
+            }
+        ]
+        data["seatApps"]["bySeat"] = {"SQUATTER": "claude-code"}
+        errors = check.seat_apps_errors(data)
+        self.assertTrue(any("worktreeSuffix" in e for e in errors), errors)
+        data2 = self._data(
+            {
+                "roles": ["FIXER"],
+                "folderTemplate": "bf-<role>",
+                "branchTemplate": "bf-<role>/",
+            }
+        )
+        data2["seats"] = [
+            {
+                "tag": "SQUATTER",
+                "worktreeSuffix": "squatter",
+                "branchPrefixes": ["bf-fixer/"],
+            }
+        ]
+        data2["seatApps"]["bySeat"] = {"SQUATTER": "claude-code"}
+        errors = check.seat_apps_errors(data2)
+        self.assertTrue(any("branchPrefix" in e for e in errors), errors)
+        data3 = self._data(
+            {
+                "roles": ["FIXER"],
+                "folderTemplate": "dup-<role>",
+                "branchTemplate": "bf-<role>/",
+            }
+        )
+        data3["seatApps"]["patterns"].append(
+            {
+                "match": "GB-*",
+                "app": "grok-bot",
+                "lane": {
+                    "roles": ["FIXER"],
+                    "folderTemplate": "dup-<role>",
+                    "branchTemplate": "gb-<role>/",
+                },
+            }
+        )
+        errors = check.seat_apps_errors(data3)
+        self.assertTrue(any("rendered by both" in e for e in errors), errors)
+
+    def test_the_committed_registry_lane_blocks_are_consistent(self) -> None:
+        data = registry_data()
+        reg = I.parse_seat_registry(data)
+        bf = I.role_lane_seat("BF-ORACLE", reg)
+        self.assertEqual((bf.folder, bf.branch_prefix), ("bf-oracle", "bf-oracle/"))
+        gb = I.role_lane_seat("GB-PUBLISHER", reg)
+        self.assertEqual(
+            (gb.folder, gb.branch_prefix), ("gb-publisher", "gb-publisher/")
+        )
+        self.assertIsNone(
+            I.role_lane_seat("BF-BUILDER", reg),
+            "BF-BUILDER was renamed to BF-ENGINEER (#1390)",
+        )
+        # The reconciled roster (BotFleet #1390:  BF-BUILDER renamed to BF-ENGINEER, BF-TRADER added):
+        # both families carry the same current twelve roles.
+        twelve = (
+            "COMPILER",
+            "DEPLOYER",
+            "DESIGNER",
+            "DIRECTOR",
+            "ENGINEER",
+            "FIXER",
+            "HOUSEKEEPER",
+            "MONITOR",
+            "ORACLE",
+            "PLUMBER",
+            "PUBLISHER",
+            "TRADER",
+        )
+        self.assertEqual(I.role_lane_roles("BF-ORACLE", reg), twelve)
+        self.assertEqual(I.role_lane_roles("GB-ORACLE", reg), twelve)
+        self.assertEqual(load_check().seat_apps_errors(data), [])
 
 
 class RealRegistryCase(unittest.TestCase):
@@ -58,7 +288,9 @@ class RealRegistryCase(unittest.TestCase):
 
 
 class StrictSeatTests(RealRegistryCase):
-    def test_every_grok_build_spelling_still_resolves_to_grok_through_both(self) -> None:
+    def test_every_grok_build_spelling_still_resolves_to_grok_through_both(
+        self,
+    ) -> None:
         for raw in GROK_BUILD_SPELLINGS:
             with self.subTest(raw=raw):
                 self.assertEqual(I.canonical_seat(raw), "GROK")
@@ -78,8 +310,15 @@ class StrictSeatTests(RealRegistryCase):
         old = os.environ.get(I.ENV_APPS_JSON)
         os.environ[I.ENV_APPS_JSON] = "/nonexistent/fleet-apps.json"
         try:
-            for raw, want in (("nope", "NOPE"), ("  mm ", "MM"), ("Totally Unknown!", "TOTALLY UNKNOWN!"), ("", ""),
-                              (None, ""), ("minimax", "MINIMAX"), ("monet", "MONET")):
+            for raw, want in (
+                ("nope", "NOPE"),
+                ("  mm ", "MM"),
+                ("Totally Unknown!", "TOTALLY UNKNOWN!"),
+                ("", ""),
+                (None, ""),
+                ("minimax", "MINIMAX"),
+                ("monet", "MONET"),
+            ):
                 with self.subTest(raw=raw):
                     self.assertEqual(I.canonical_seat(raw), want)
         finally:
@@ -89,8 +328,24 @@ class StrictSeatTests(RealRegistryCase):
                 os.environ[I.ENV_APPS_JSON] = old
 
     def test_unknown_names_raise_in_both_functions(self) -> None:
-        for raw in ("NOPE", "", None, "  ", "claude code", "../x", "BF-", "BF-*", "BF-A B", "XBF-PLUMBER", "GB",
-                    "BF", "BF--", "GROKBUILDER", "grok-build-bot", "A" * 40):
+        for raw in (
+            "NOPE",
+            "",
+            None,
+            "  ",
+            "claude code",
+            "../x",
+            "BF-",
+            "BF-*",
+            "BF-A B",
+            "XBF-PLUMBER",
+            "GB",
+            "BF",
+            "BF--",
+            "GROKBUILDER",
+            "grok-build-bot",
+            "A" * 40,
+        ):
             with self.subTest(raw=raw):
                 with self.assertRaises(I.UnknownSeat):
                     I.strict_seat(raw, registry=self.reg)
@@ -128,7 +383,11 @@ class SeatAppTests(RealRegistryCase):
         self.assertEqual(self.app("bf-director"), "botfleet")
         self.assertEqual(self.app("GB-PLUMBER"), "grok-bot")
         self.assertEqual(self.app("GB-COMPILER"), "grok-bot")
-        self.assertEqual(self.app("GROK-BOT"), "grok-bot", "the fleet-wide row is the same app as its personas")
+        self.assertEqual(
+            self.app("GROK-BOT"),
+            "grok-bot",
+            "the fleet-wide row is the same app as its personas",
+        )
 
     def test_the_extra_seat_has_no_row_in_seats_and_still_has_an_app(self) -> None:
         self.assertEqual(self.app("JET"), "chatgpt")
@@ -145,44 +404,87 @@ class SeatAppTests(RealRegistryCase):
 
     def test_grok_and_grok_web_are_two_apps_and_echo_with_instinct_is_one(self) -> None:
         self.assertNotEqual(self.app("GROK"), self.app("GROK-WEB"))
-        self.assertEqual((self.app("GROK"), self.app("GROK-WEB")), ("grok-terminal", "grok-web"))
+        self.assertEqual(
+            (self.app("GROK"), self.app("GROK-WEB")), ("grok-terminal", "grok-web")
+        )
         self.assertEqual(self.app("ECHO"), self.app("WISE"))
-        self.assertNotIn(self.app("GROK-WEB"), {self.app("GROK-BOT"), self.app("CURSOR")})
+        self.assertNotIn(
+            self.app("GROK-WEB"), {self.app("GROK-BOT"), self.app("CURSOR")}
+        )
 
     def test_the_plan_table_is_what_the_registry_says(self) -> None:
-        want = {"CLAUDE": "claude-code", "CODEX": "codex", "CURSOR": "cursor", "GROK": "grok-terminal",
-                "GROK-WEB": "grok-web", "AG": "antigravity", "MM": "minimax-code", "MC": "muse-code",
-                "MA": "muse-assist", "CLUTCH": "clutch", "FX": "fx", "OPENCODE": "opencode", "GROK-BOT": "grok-bot",
-                "ECHO": "instinct", "WISE": "instinct", "KIMI": "kimi", "ZC": "zcode"}
+        want = {
+            "CLAUDE": "claude-code",
+            "CODEX": "codex",
+            "CURSOR": "cursor",
+            "GROK": "grok-terminal",
+            "GROK-WEB": "grok-web",
+            "AG": "antigravity",
+            "MM": "minimax-code",
+            "MC": "muse-code",
+            "MA": "muse-assist",
+            "CLUTCH": "clutch",
+            "FX": "fx",
+            "OPENCODE": "opencode",
+            "GROK-BOT": "grok-bot",
+            "ECHO": "instinct",
+            "WISE": "instinct",
+            "KIMI": "kimi-code",
+            "ZC": "zcode",
+        }
         self.assertEqual(dict(self.reg.by_seat), want)
-        self.assertEqual(dict(self.reg.extra), {"AMP": "amp", "JET": "chatgpt", "JET-CHAT": "chatgpt", "OPERATOR": "operator"})
+        self.assertEqual(
+            dict(self.reg.extra),
+            {
+                "AMP": "amp",
+                "JET": "chatgpt",
+                "JET-CHAT": "chatgpt",
+                "OPERATOR": "operator",
+            },
+        )
 
     def test_an_unknown_seat_is_never_a_new_app(self) -> None:
         for raw in ("MINIMAX", "MONET", "ACME", "BF-"):
-            with self.subTest(raw=raw):
-                with self.assertRaises(I.UnknownSeat):
-                    self.app(raw)
+            with self.subTest(raw=raw), self.assertRaises(I.UnknownSeat):
+                self.app(raw)
 
     def test_the_pattern_emails_agree_with_how_a_bot_signs(self) -> None:
         # seat_tag_for() turns a bot email into the tag it signs;  the pattern's zulipEmail must be the
         # inverse, or a message from bf-<role>-bot@ would be a seat the registry does not know.
-        by_app = {p["app"]: p["zulipEmail"] for p in registry_data()["seatApps"]["patterns"]}
+        by_app = {
+            p["app"]: p["zulipEmail"] for p in registry_data()["seatApps"]["patterns"]
+        }
         for role in ("plumber", "director", "housekeeper"):
-            for app, template, prefix in (("botfleet", by_app["botfleet"], "BF-"), ("grok-bot", by_app["grok-bot"], "GB-")):
+            for app, template, prefix in (
+                ("botfleet", by_app["botfleet"], "BF-"),
+                ("grok-bot", by_app["grok-bot"], "GB-"),
+            ):
                 with self.subTest(role=role, app=app):
                     email = template.replace("<role>", role)
                     self.assertTrue(email.endswith("-bot@" + HOST), email)
-                    tag = I.seat_tag_for({"is_bot": True, "email": email, "full_name": "x"})
+                    tag = I.seat_tag_for(
+                        {"is_bot": True, "email": email, "full_name": "x"}
+                    )
                     self.assertEqual(tag, prefix + role.upper())
                     self.assertEqual(I.strict_seat(tag, registry=self.reg), tag)
                     self.assertEqual(self.app(tag), app)
 
     def test_the_hosted_seat_signs_the_tag_the_registry_lists(self) -> None:
         # ECHO and WISE were hosted seats; they moved to the seats table (owner decision Sun, Oct 11, 2026).
-        for local, tag, app in (("openai-dot", "JET", "chatgpt"), ("muse-assist", "MA", "muse-assist"),
-                                ("grok-build", "GROK", "grok-terminal"), ("mm", "MM", "minimax-code")):
+        for local, tag, app in (
+            ("openai-dot", "JET", "chatgpt"),
+            ("muse-assist", "MA", "muse-assist"),
+            ("grok-build", "GROK", "grok-terminal"),
+            ("mm", "MM", "minimax-code"),
+        ):
             with self.subTest(tag=tag):
-                got = I.seat_tag_for({"is_bot": True, "email": "%s-bot@%s" % (local, HOST), "full_name": "x"})
+                got = I.seat_tag_for(
+                    {
+                        "is_bot": True,
+                        "email": "%s-bot@%s" % (local, HOST),
+                        "full_name": "x",
+                    }
+                )
                 self.assertEqual(got, tag)
                 self.assertEqual(self.app(got), app)
 
@@ -190,7 +492,13 @@ class SeatAppTests(RealRegistryCase):
         # Their bot emails keep working after the move from extraSeats to the seats table.
         for local, tag in (("instinct-bat", "ECHO"), ("instinct-owl", "WISE")):
             with self.subTest(tag=tag):
-                got = I.seat_tag_for({"is_bot": True, "email": "%s-bot@%s" % (local, HOST), "full_name": "x"})
+                got = I.seat_tag_for(
+                    {
+                        "is_bot": True,
+                        "email": "%s-bot@%s" % (local, HOST),
+                        "full_name": "x",
+                    }
+                )
                 self.assertEqual(got, tag)
                 self.assertEqual(self.app(got), "instinct")
 
@@ -226,9 +534,18 @@ class RegistryDataTests(unittest.TestCase):
                 continue
             for prefix in row.get("branchPrefixes", []):
                 # ECHO and WISE both claim instinct/ (owner decision Sun, Oct 11, 2026).
-                if prefix == "instinct/" and tag in ("ECHO", "WISE") and seen.get(prefix) in ("ECHO", "WISE"):
+                if (
+                    prefix == "instinct/"
+                    and tag in ("ECHO", "WISE")
+                    and seen.get(prefix) in ("ECHO", "WISE")
+                ):
                     continue
-                self.assertNotIn(prefix, seen, "%s and %s both claim branch prefix %s" % (tag, seen.get(prefix), prefix))
+                self.assertNotIn(
+                    prefix,
+                    seen,
+                    "%s and %s both claim branch prefix %s"
+                    % (tag, seen.get(prefix), prefix),
+                )
                 seen[prefix] = tag
 
     def test_the_seats_the_lane_tool_reads_are_otherwise_unchanged(self) -> None:
@@ -241,7 +558,10 @@ class RegistryDataTests(unittest.TestCase):
     def test_the_key_is_top_level_beside_seats_and_has_the_three_parts(self) -> None:
         apps = self.data["seatApps"]
         self.assertEqual(set(apps) - {"notes"}, {"bySeat", "extraSeats", "patterns"})
-        self.assertEqual([(p["match"], p["app"]) for p in apps["patterns"]], [("BF-*", "botfleet"), ("GB-*", "grok-bot")])
+        self.assertEqual(
+            [(p["match"], p["app"]) for p in apps["patterns"]],
+            [("BF-*", "botfleet"), ("GB-*", "grok-bot")],
+        )
 
     def test_the_realm_host_in_the_pattern_emails_is_the_registry_realm(self) -> None:
         for pattern in self.data["seatApps"]["patterns"]:
@@ -260,7 +580,11 @@ class BoardAliasTests(RealRegistryCase):
         cls.board = load_board()
 
     def test_every_seat_alias_target_resolves(self) -> None:
-        self.assertIn("MINIMAX", self.board.SEAT_ALIASES, "the board maps MINIMAX itself:  identity does not")
+        self.assertIn(
+            "MINIMAX",
+            self.board.SEAT_ALIASES,
+            "the board maps MINIMAX itself:  identity does not",
+        )
         for alias, target in self.board.SEAT_ALIASES.items():
             with self.subTest(alias=alias, target=target):
                 self.assertEqual(I.strict_seat(target, registry=self.reg), target)
@@ -272,13 +596,17 @@ class BoardAliasTests(RealRegistryCase):
             with self.subTest(alias=alias):
                 self.assertEqual(I.strict_seat(target, registry=self.reg), target)
                 self.assertEqual(I.seat_app(target, registry=self.reg), "instinct")
-                self.assertEqual(I.strict_seat(alias, registry=self.reg), target)  # INSTINCT stays an accepted spelling (fleet-apps.json)
+                self.assertEqual(
+                    I.strict_seat(alias, registry=self.reg), target
+                )  # INSTINCT stays an accepted spelling (fleet-apps.json)
 
     def test_every_bf_role_gives_a_botfleet_seat(self) -> None:
         self.assertTrue(self.board.BF_ROLES)
         for role in sorted(self.board.BF_ROLES):
             with self.subTest(role=role):
-                self.assertEqual(I.seat_app("BF-" + role, registry=self.reg), "botfleet")
+                self.assertEqual(
+                    I.seat_app("BF-" + role, registry=self.reg), "botfleet"
+                )
 
     def test_every_board_roster_seat_and_clutch_lineage_target_resolves(self) -> None:
         for seat in sorted(self.board.SEAT_ROSTER):
@@ -289,7 +617,9 @@ class BoardAliasTests(RealRegistryCase):
         for retired in sorted(self.board.CLUTCH_LINEAGE):
             with self.subTest(retired=retired):
                 with self.assertRaises(I.UnknownSeat):
-                    I.strict_seat(retired, registry=self.reg)  # the board folds these into CLUTCH:  identity does not
+                    I.strict_seat(
+                        retired, registry=self.reg
+                    )  # the board folds these into CLUTCH:  identity does not
 
 
 class LoaderTests(unittest.TestCase):
@@ -303,9 +633,14 @@ class LoaderTests(unittest.TestCase):
         return str(self.path)
 
     def small(self) -> dict:
-        return {"seats": [{"tag": "AAA"}, {"tag": "OLD", "retired": True}],
-                "seatApps": {"bySeat": {"AAA": "aaa-app"}, "extraSeats": {"HOSTED": "hosted"},
-                             "patterns": [{"match": "ZZ-*", "app": "zz"}]}}
+        return {
+            "seats": [{"tag": "AAA"}, {"tag": "OLD", "retired": True}],
+            "seatApps": {
+                "bySeat": {"AAA": "aaa-app"},
+                "extraSeats": {"HOSTED": "hosted"},
+                "patterns": [{"match": "ZZ-*", "app": "zz"}],
+            },
+        }
 
     def test_a_small_registry_answers_through_the_file(self) -> None:
         path = self.write(self.small())
@@ -317,7 +652,9 @@ class LoaderTests(unittest.TestCase):
             I.strict_seat("old", registry=reg)
         self.assertTrue(cm.exception.retired)
 
-    def test_the_environment_variable_moves_the_registry_and_is_read_per_call(self) -> None:
+    def test_the_environment_variable_moves_the_registry_and_is_read_per_call(
+        self,
+    ) -> None:
         path = self.write(self.small())
         old = os.environ.get(I.ENV_APPS_JSON)
         os.environ[I.ENV_APPS_JSON] = path
@@ -336,16 +673,26 @@ class LoaderTests(unittest.TestCase):
 
     def test_a_changed_file_is_read_again(self) -> None:
         path = self.write(self.small())
-        self.assertEqual(I.seat_app("AAA", registry=I.load_seat_registry(path)), "aaa-app")
+        self.assertEqual(
+            I.seat_app("AAA", registry=I.load_seat_registry(path)), "aaa-app"
+        )
         data = self.small()
         data["seatApps"]["bySeat"]["AAA"] = "renamed-app-with-longer-name"
         self.write(data)
-        self.assertEqual(I.seat_app("AAA", registry=I.load_seat_registry(path)), "renamed-app-with-longer-name")
+        self.assertEqual(
+            I.seat_app("AAA", registry=I.load_seat_registry(path)),
+            "renamed-app-with-longer-name",
+        )
 
     def test_an_unreadable_registry_is_not_an_unknown_seat(self) -> None:
         # A caller that turns an unknown claimant into an orphan must never turn a missing file into orphans.
-        for setup in (lambda: str(self.tmp / "missing.json"),
-                      lambda: (self.path.write_text("{not json", encoding="utf-8"), str(self.path))[1]):
+        for setup in (
+            lambda: str(self.tmp / "missing.json"),
+            lambda: (
+                self.path.write_text("{not json", encoding="utf-8"),
+                str(self.path),
+            )[1],
+        ):
             with self.subTest():
                 path = setup()
                 with self.assertRaises(I.SeatRegistryError):
@@ -358,28 +705,38 @@ class LoaderTests(unittest.TestCase):
             data = self.small()
             mutate(data["seatApps"])
             return data
+
         cases = {
             "no key": {"seats": []},
             "not an object": {"seats": [], "seatApps": []},
             "bySeat missing": broken(lambda a: a.pop("bySeat")),
             "extraSeats a list": broken(lambda a: a.__setitem__("extraSeats", [])),
             "patterns a dict": broken(lambda a: a.__setitem__("patterns", {})),
-            "app with a space": broken(lambda a: a["bySeat"].__setitem__("AAA", "Claude Code")),
+            "app with a space": broken(
+                lambda a: a["bySeat"].__setitem__("AAA", "Claude Code")
+            ),
             "app empty": broken(lambda a: a["bySeat"].__setitem__("AAA", "")),
             "app not a string": broken(lambda a: a["bySeat"].__setitem__("AAA", 7)),
-            "pattern without app": broken(lambda a: a["patterns"].append({"match": "QQ-*"})),
-            "pattern with a regex": broken(lambda a: a["patterns"].append({"match": "QQ.*", "app": "qq"})),
-            "pattern lower case": broken(lambda a: a["patterns"].append({"match": "qq-*", "app": "qq"})),
+            "pattern without app": broken(
+                lambda a: a["patterns"].append({"match": "QQ-*"})
+            ),
+            "pattern with a regex": broken(
+                lambda a: a["patterns"].append({"match": "QQ.*", "app": "qq"})
+            ),
+            "pattern lower case": broken(
+                lambda a: a["patterns"].append({"match": "qq-*", "app": "qq"})
+            ),
             "pattern not an object": broken(lambda a: a["patterns"].append("QQ-*")),
         }
         for name, data in cases.items():
-            with self.subTest(name):
-                with self.assertRaises(I.SeatRegistryError):
-                    I.parse_seat_registry(data)
+            with self.subTest(name), self.assertRaises(I.SeatRegistryError):
+                I.parse_seat_registry(data)
         with self.assertRaises(I.SeatRegistryError):
             I.parse_seat_registry([])
 
-    def test_a_live_seat_with_no_app_is_known_but_a_registry_error_for_seat_app(self) -> None:
+    def test_a_live_seat_with_no_app_is_known_but_a_registry_error_for_seat_app(
+        self,
+    ) -> None:
         data = self.small()
         data["seats"].append({"tag": "NEWBIE"})
         reg = I.parse_seat_registry(data)
@@ -389,7 +746,10 @@ class LoaderTests(unittest.TestCase):
 
     def test_the_first_matching_pattern_wins_and_a_star_needs_a_tail(self) -> None:
         data = self.small()
-        data["seatApps"]["patterns"] = [{"match": "ZZ-*", "app": "first"}, {"match": "ZZ-A*", "app": "second"}]
+        data["seatApps"]["patterns"] = [
+            {"match": "ZZ-*", "app": "first"},
+            {"match": "ZZ-A*", "app": "second"},
+        ]
         reg = I.parse_seat_registry(data)
         self.assertEqual(I.seat_app("ZZ-ALPHA", registry=reg), "first")
         with self.assertRaises(I.UnknownSeat):
@@ -421,54 +781,95 @@ class CheckTests(unittest.TestCase):
         self.assertIn("live seat CODEX has no app in seatApps.bySeat", errors[0])
 
     def test_a_new_live_seat_row_without_an_app_is_reported(self) -> None:
-        errors = self.errors(lambda d: d["seats"].append({"tag": "NEWSEAT", "worktreeSuffix": "newseat"}))
+        errors = self.errors(
+            lambda d: d["seats"].append({"tag": "NEWSEAT", "worktreeSuffix": "newseat"})
+        )
         self.assertTrue(any("NEWSEAT has no app" in e for e in errors), errors)
 
     def test_a_retired_seat_needs_no_app_and_may_not_have_one(self) -> None:
-        self.assertEqual(self.errors(), [], "MONET and the other retired rows have no bySeat entry")
-        errors = self.errors(lambda d: d["seatApps"]["bySeat"].__setitem__("MONET", "claude-code"))
+        self.assertEqual(
+            self.errors(), [], "MONET and the other retired rows have no bySeat entry"
+        )
+        errors = self.errors(
+            lambda d: d["seatApps"]["bySeat"].__setitem__("MONET", "claude-code")
+        )
         self.assertTrue(any("MONET" in e and "is retired" in e for e in errors), errors)
 
     def test_a_row_tag_is_read_upper_case_as_identity_reads_it(self) -> None:
         def lower_case_the_codex_row(d) -> None:
             next(r for r in d["seats"] if r["tag"] == "CODEX")["tag"] = " codex "
-        self.assertEqual(self.errors(lower_case_the_codex_row), [], "no false 'has no app' or 'not a row' report")
+
+        self.assertEqual(
+            self.errors(lower_case_the_codex_row),
+            [],
+            "no false 'has no app' or 'not a row' report",
+        )
 
         def lower_case_a_retired_row(d) -> None:
             next(r for r in d["seats"] if r["tag"] == "MONET")["tag"] = "monet"
+
         self.assertEqual(self.errors(lower_case_a_retired_row), [])
-        errors = self.errors(lambda d: (lower_case_a_retired_row(d), d["seatApps"]["bySeat"].__setitem__("MONET", "x")))
+        errors = self.errors(
+            lambda d: (
+                lower_case_a_retired_row(d),
+                d["seatApps"]["bySeat"].__setitem__("MONET", "x"),
+            )
+        )
         self.assertTrue(any("MONET" in e and "is retired" in e for e in errors), errors)
 
     def test_a_by_seat_entry_for_no_row_is_reported(self) -> None:
-        errors = self.errors(lambda d: d["seatApps"]["bySeat"].__setitem__("GHOST", "ghost"))
-        self.assertTrue(any("GHOST" in e and "not a row of seats" in e for e in errors), errors)
+        errors = self.errors(
+            lambda d: d["seatApps"]["bySeat"].__setitem__("GHOST", "ghost")
+        )
+        self.assertTrue(
+            any("GHOST" in e and "not a row of seats" in e for e in errors), errors
+        )
 
     def test_an_extra_seat_that_has_a_row_is_reported(self) -> None:
-        errors = self.errors(lambda d: d["seatApps"]["extraSeats"].__setitem__("CODEX", "codex"))
+        errors = self.errors(
+            lambda d: d["seatApps"]["extraSeats"].__setitem__("CODEX", "codex")
+        )
         self.assertTrue(any("extraSeats lists CODEX" in e for e in errors), errors)
 
     def test_a_seats_row_that_a_pattern_also_matches_is_reported(self) -> None:
-        errors = self.errors(lambda d: d["seats"].append({"tag": "BF-WIDGET", "worktreeSuffix": "bf-widget"}))
+        errors = self.errors(
+            lambda d: d["seats"].append(
+                {"tag": "BF-WIDGET", "worktreeSuffix": "bf-widget"}
+            )
+        )
         self.assertTrue(any("BF-WIDGET" in e and "BF-*" in e for e in errors), errors)
 
     def test_a_lower_case_key_is_reported(self) -> None:
-        errors = self.errors(lambda d: d["seatApps"]["extraSeats"].__setitem__("jet2", "chatgpt"))
+        errors = self.errors(
+            lambda d: d["seatApps"]["extraSeats"].__setitem__("jet2", "chatgpt")
+        )
         self.assertTrue(any("jet2" in e and "upper case" in e for e in errors), errors)
 
     def test_a_malformed_key_is_one_clear_error(self) -> None:
         def drop(d):
             del d["seatApps"]
+
         errors = self.errors(drop)
         self.assertEqual(len(errors), 1)
         self.assertTrue(errors[0].startswith("seatApps:"), errors)
-        errors = self.errors(lambda d: d["seatApps"]["bySeat"].__setitem__("CODEX", "Open AI"))
+        errors = self.errors(
+            lambda d: d["seatApps"]["bySeat"].__setitem__("CODEX", "Open AI")
+        )
         self.assertEqual(len(errors), 1, errors)
 
     def test_a_pattern_email_off_the_realm_or_without_a_role_is_reported(self) -> None:
-        for bad in ("bf-plumber-bot@" + HOST, "bf-<role>-bot@example.com", "<role>-<role>-bot@" + HOST, "bf-<role>@" + HOST):
+        for bad in (
+            "bf-plumber-bot@" + HOST,
+            "bf-<role>-bot@example.com",
+            "<role>-<role>-bot@" + HOST,
+            "bf-<role>@" + HOST,
+        ):
             with self.subTest(bad=bad):
-                errors = self.errors(lambda d: d["seatApps"]["patterns"][0].__setitem__("zulipEmail", bad))
+                errors = self.errors(
+                    lambda d: d["seatApps"]["patterns"][0].__setitem__(
+                        "zulipEmail", bad
+                    )
+                )
                 self.assertTrue(any("zulipEmail" in e for e in errors), errors)
 
     def test_main_runs_the_check(self) -> None:
@@ -490,15 +891,29 @@ class OnboardScriptTests(unittest.TestCase):
         self.registry = self.tmp / "fleet-apps.json"
         shutil.copy(REGISTRY_PATH, self.registry)
 
-    def run_script(self, *args: str, shell: str = "bash") -> subprocess.CompletedProcess:
-        env = {k: v for k, v in os.environ.items() if k not in ("AGENT_SEAT", "AGENT_LAUNCH_SEAT", "AGENT_LAUNCHER")}
-        return subprocess.run([shell, str(self.tmp / "scripts" / "onboard-new-agent.sh"), *args],
-                              stdin=subprocess.DEVNULL, capture_output=True, text=True, env=env, timeout=60)
+    def run_script(
+        self, *args: str, shell: str = "bash"
+    ) -> subprocess.CompletedProcess:
+        env = {
+            k: v
+            for k, v in os.environ.items()
+            if k not in ("AGENT_SEAT", "AGENT_LAUNCH_SEAT", "AGENT_LAUNCHER")
+        }
+        return subprocess.run(
+            [shell, str(self.tmp / "scripts" / "onboard-new-agent.sh"), *args],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=60,
+        )
 
     def before(self) -> str:
         return self.registry.read_text(encoding="utf-8")
 
-    def test_without_an_app_a_new_seat_is_refused_and_the_apps_in_use_are_listed(self) -> None:
+    def test_without_an_app_a_new_seat_is_refused_and_the_apps_in_use_are_listed(
+        self,
+    ) -> None:
         was = self.before()
         got = self.run_script("--tag", "NEWSEAT")
         self.assertEqual(got.returncode, 1, got.stderr)
@@ -511,7 +926,9 @@ class OnboardScriptTests(unittest.TestCase):
         was = self.before()
         for bad in ("Claude Code", "NEW", "a_b", "-x", "x-", "a--b"):
             with self.subTest(bad=bad):
-                self.assertEqual(self.run_script("--tag", "NEWSEAT", "--app", bad).returncode, 1)
+                self.assertEqual(
+                    self.run_script("--tag", "NEWSEAT", "--app", bad).returncode, 1
+                )
         self.assertEqual(self.before(), was)
 
     def test_a_dry_run_needs_no_app_and_changes_nothing(self) -> None:
@@ -522,7 +939,9 @@ class OnboardScriptTests(unittest.TestCase):
         self.assertEqual(self.before(), was)
 
     def test_a_new_seat_gets_a_row_and_an_app_and_the_check_passes(self) -> None:
-        got = self.run_script("--tag", "NEWSEAT", "--notes-name", "Newseat", "--app", "newseat-code")
+        got = self.run_script(
+            "--tag", "NEWSEAT", "--notes-name", "Newseat", "--app", "newseat-code"
+        )
         self.assertEqual(got.returncode, 0, got.stderr)
         self.assertIn("set seatApps.bySeat[NEWSEAT] = newseat-code", got.stdout)
         data = json.loads(self.before())
@@ -555,7 +974,9 @@ class OnboardScriptTests(unittest.TestCase):
                 self.assertEqual(self.before(), was)
         self.assertEqual(load_check().seat_apps_errors(json.loads(self.before())), [])
 
-    def test_the_tag_is_upper_cased_so_a_lower_case_tag_never_writes_a_duplicate_key(self) -> None:
+    def test_the_tag_is_upper_cased_so_a_lower_case_tag_never_writes_a_duplicate_key(
+        self,
+    ) -> None:
         was = self.before()
         got = self.run_script("--tag", "codex")
         self.assertEqual(got.returncode, 0, got.stderr)
@@ -578,7 +999,11 @@ class OnboardScriptTests(unittest.TestCase):
         self.assertIn("already gives CODEX the app codex", got.stdout)
 
     def test_the_ignored_apps_flag_takes_a_value_only_when_one_follows(self) -> None:
-        for args in (("--apps", "--tag", "CODEX"), ("--apps", "old-value", "--tag", "CODEX"), ("--tag", "CODEX", "--apps")):
+        for args in (
+            ("--apps", "--tag", "CODEX"),
+            ("--apps", "old-value", "--tag", "CODEX"),
+            ("--tag", "CODEX", "--apps"),
+        ):
             with self.subTest(args=args):
                 got = self.run_script(*args)
                 self.assertEqual(got.returncode, 0, got.stderr)
@@ -592,7 +1017,9 @@ class OnboardScriptTests(unittest.TestCase):
         self.assertEqual(self.run_script("--tag", "CODEX").returncode, 1)
         got = self.run_script("--tag", "CODEX", "--app", "codex")
         self.assertEqual(got.returncode, 0, got.stderr)
-        self.assertEqual(json.loads(self.before())["seatApps"]["bySeat"]["CODEX"], "codex")
+        self.assertEqual(
+            json.loads(self.before())["seatApps"]["bySeat"]["CODEX"], "codex"
+        )
 
 
 if __name__ == "__main__":

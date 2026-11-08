@@ -446,7 +446,7 @@ Agent names are stripped from titles; HTML site shows logos instead.
 ### Merged PRs
 
 - **AFC** [#280](https://github.com/jaywedgeworth22/AI-Fleet-Coordinator/pull/280): Rename: ai-fleet-coordinator → AI-Fleet-Coordinator _(by jaywedgeworth22)_
-- **AFC** `Codex` [#281](https://github.com/jaywedgeworth22/AI-Fleet-Coordinator/pull/281): docs([retired identifier]): no merge while — review is pending (owner ruling 2026-09-23) _(by jaywedgeworth22)_
+- **AFC** `Codex` [#281](https://github.com/jaywedgeworth22/AI-Fleet-Coordinator/pull/281): docs(simple-tools): no merge while — review is pending (owner ruling 2026-09-23) _(by jaywedgeworth22)_
 - **BF** [#525](https://github.com/jaywedgeworth22/BotFleet/pull/525): fix(companion): APNs HTTP/2 transport hardening + circuit breaker _(by jaywedgeworth22)_
 - **BF** [#526](https://github.com/jaywedgeworth22/BotFleet/pull/526): chore(updater): transition-capable bootstrap before bundle rename _(by jaywedgeworth22)_
 - **BF** `Grok` [#528](https://github.com/jaywedgeworth22/BotFleet/pull/528): feat(ui): capability matrix + usage expand + API-vs-sub projection + — quota _(by jaywedgeworth22)_

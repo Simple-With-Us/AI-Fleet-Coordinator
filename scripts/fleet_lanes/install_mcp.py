@@ -191,8 +191,11 @@ JSON_TARGETS: Tuple[JsonTarget, ...] = (
                     "has answered it.  OpenCode also reads a project .opencode/opencode.json; "
                     "this is the global file"),
     JsonTarget("kimi", "Kimi Code", ".kimi-code", ".kimi-code/mcp.json", ("mcpServers",),
-               _build_kimi, _command_args_of,
-               note="engine-only CLI with no default seat: fleet-recall only"),
+               _build_kimi, _command_args_of, seat="KIMI",
+               note="Moonshot AI Kimi Code CLI, seat KIMI"),
+    JsonTarget("zcode", "Z Code", ".zcode", ".zcode/cli/config.json", ("mcpServers",),
+               _build_kimi, _command_args_of, seat="ZC",
+               note="Z Code desktop IDE, seat ZC"),
     JsonTarget("copilot", "GitHub Copilot CLI", ".copilot", ".copilot/mcp-config.json", ("mcpServers",),
                _build_copilot, _command_args_of,
                note="no default seat: fleet-recall only.  Copilot already holds about a dozen servers"),
@@ -214,7 +217,7 @@ CLUTCH_BLOCK = "mcp-simple-chat"
 MCP_CLIENT_PLUGIN = "@deepseek-ai/dsh-mcp-client"
 TARGET_KEYS = tuple(t.key for t in JSON_TARGETS) + (CLUTCH_KEY,)
 ALIASES = {"muse-code": "muse", "mc": "muse", "mm": "minimax", "kimi-code": "kimi", "copilot-cli": "copilot",
-           "dsh": "clutch"}
+           "dsh": "clutch", "z-code": "zcode", "zc": "zcode"}
 
 
 # --------------------------------------------------------------------------- one config, one server

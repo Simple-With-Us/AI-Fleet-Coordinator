@@ -142,7 +142,7 @@ class PureTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             data = Path(tmp) / "f.json"
             data.write_text(
-                json.dumps({"/eavesdropper": {"SENTRY_FLEET_DSN": "https://a@h/5", "OTHER": "x"}})
+                json.dumps({"/simple-tools": {"SENTRY_FLEET_DSN": "https://a@h/5", "OTHER": "x"}})
             )
             env = {
                 "FLEET_SECRETS_BIN": str(fake),
@@ -150,7 +150,7 @@ class PureTests(unittest.TestCase):
                 "PATH": os.environ["PATH"],
             }
             self.assertEqual(HB._fleet_secrets_dsn(env, tmp), "https://a@h/5")
-            data.write_text(json.dumps({"/eavesdropper": {}}))
+            data.write_text(json.dumps({"/simple-tools": {}}))
             self.assertEqual(HB._fleet_secrets_dsn(env, tmp), "")
 
     def test_monitor_slug_per_instance(self) -> None:

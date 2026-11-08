@@ -1,7 +1,5 @@
 # 2026-10-08 — Sentence gap: the chat entity returns, GitHub and Zulip use U+00A0
 
-Historical identifiers have been redacted. These records do not certify current deployment state.
-
 Type: Fleet change  (board `86aa2176`)
 > **Correction, 2026-10-20, and its own reversal the same day.**  A note here briefly said the MiniMax Code pane does NOT decode the `&nbsp;` entity and that the gap there is a real U+00A0 plus a normal space.  That was an inference, it was never owner-verified, and the owner reversed it:  the MiniMax Code chat pane decodes the entity, the same form as the Claude Code Code tab (owner-verified 2026-10-18, reaffirmed 2026-10-20).  See the `sentence-gap` skill for the per-surface table.
 
@@ -39,7 +37,7 @@ This reverses the 2026-09-04 ruling that put two ASCII spaces in the Code tab.
 | HTML, JSX, SwiftUI product copy; Apple Notes `--html` | A real U+00A0 plus a space, or `SENTENCE_GAP`. |
 
 The owner must never see the six characters `&nbsp;`.  If a surface shows them, stop using
-the entity there, report the surface in [retired identifier], and treat it as unknown until it is
+the entity there, report the surface in #Work-In-Progress, and treat it as unknown until it is
 tested.  When a surface needs a mechanism to show two spaces, use it without asking.
 
 Producing U+00A0 through a tool:  write two ASCII spaces after each sentence, then run
@@ -103,7 +101,7 @@ output holds a U+00A0 before `gh pr create --body-file` or `simple-chat post`.
 - `FLEET-PROTOCOL.md` § Sentence Gap (the authoritative per-surface table), the Zulip summary
   line, the Cursor and load-path notes, the skills catalog row, and the history entry.
 - `FLEET-UI-COPY.md`, `TEMPLATE-AGENTS.md`, `docs/protocols/zulip-fleet-guide.md`
-  (Writing Rules), and the retired-row text in `[retired identifier]`.
+  (Writing Rules).
 - `docs/SENTENCE-GAP-PORTABLE-SKILL.md` and the canonical pack skills `sentence-gap`,
   `owner-copy`, `fleet-coordination`, `land-lane`, `codex-triage`, re-rendered into
   `skills/`, `.claude/skills`, `.cursor/skills`, `.grok/skills`, and every

@@ -1,7 +1,5 @@
 # Muster fleet overhaul sweep
 
-Historical identifiers have been redacted. These records do not certify current deployment state.
-
 Owner-directed fleet-mode sweep: seven tiered auditors produced about 95 findings across Muster and the fleet scripts, synthesized into ten file-disjoint fix batches plus one follow-up.  Cheaper models took mechanical batches; the frontier model took only git-relay secret handling and synthesis.  Gates below ran in this lane after integration, not only in worker worktrees.
 
 ## What landed
@@ -25,6 +23,6 @@ Owner-directed fleet-mode sweep: seven tiered auditors produced about 95 finding
 
 * Wave 1's first run died on subscription quota; two batches were salvaged from retained worktrees and re-gated here before commit.
 * The audit's adversarial critic pass failed on spilled inputs, so workers re-verified each citation before fixing; remaining unaudited depth includes BotFleet VM internals inside Muster FleetServices and per-verb git-relay workflow bodies.
-* Pre-existing failures reproduced on untouched bases and left alone: relay `test_policy_credential` and ECHO custody (Mac Python lacks `os.getxattr`), one daemon entry-script test, 22 [retired identifier] macOS snapshot mismatches, and Muster app signing locally (suite runs with signing disabled).
+* Pre-existing failures reproduced on untouched bases and left alone: relay `test_policy_credential` and ECHO custody (Mac Python lacks `os.getxattr`), one daemon entry-script test, 22 simple-tools macOS snapshot mismatches, and Muster app signing locally (suite runs with signing disabled).
 * Deferred large Muster builds needing owner decisions: Registry editing for fleet-apps and fleet-seats, Linear actions inside Muster, held-back queue inspection with editable daemon settings, Coolify start/stop/env/logs allowlist growth, and a unified Mac Processes view.
 * The Linear issue for this sweep could not be filed at claim time because hosted board writes were broken (batch one of this sweep).  File and claim it as soon as the merged runtime sync makes the fixed CLI live, then close it from the claim topic.

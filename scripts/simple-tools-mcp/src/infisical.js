@@ -8,9 +8,10 @@
 // Modes (env.INFISICAL_MODE):
 //   "off"      - never call Infisical; env bindings only (current behavior).
 //   "fallback" - Infisical first, env binding on miss/failure.  TRANSITIONAL
-//                only: every read a binding serves is console.warn'ed and
-//                counted in stats.fallbacks, so verification can prove the
-//                service-token path serves before "required" is turned on.
+//                only: every read a binding serves is counted in
+//                stats.fallbacks, and each name is console.warn'ed once per
+//                isolate, so verification can prove the service-token path
+//                serves before "required" is turned on.
 //                An optional, undeclared name that is in neither Infisical
 //                nor a binding is counted apart (stats.absent):  "required"
 //                answers it the same way (capability off), so it is not a
@@ -18,22 +19,41 @@
 //   "required" - Infisical only.  A miss or fetch failure throws
 //                InfisicalError; nothing silently falls back.  Steady state.
 //
-// Rotation semantics: values cache for CACHE_TTL_MS per (path, name), so an
-// Infisical-side rotation propagates within a minute with no redeploy.  The
-// token itself is never cached here beyond the env binding, never logged.
+// Rotation semantics: values cache for the INFISICAL_CACHE_TTL_S window (60
+// seconds when unset) per (path, name), so an Infisical-side rotation
+// propagates within that window with no redeploy.  The isolated mint-key reads
+// and failed listings always use 60 seconds.  The token itself is never cached
+// here beyond the env binding, never logged.
 
-import { z } from "zod";
 import { INFISICAL_EXPECT_DEFAULT } from "./infisical-manifest.js";
 import { readBodyBytes } from "./wake.js";
 
 // Both Infisical answers are untrusted input:  parsed with these schemas
 // before anything reads them (kody 4365623474).  Unknown extra fields pass;
 // a missing or mistyped field the Worker relies on does not.
-const SecretResponse = z.object({ secret: z.object({ secretValue: z.string() }).passthrough() }).passthrough();
-const FolderListing = z.object({
-  secrets: z.array(z.object({ secretKey: z.string(), secretValue: z.string() }).passthrough()),
-  totalCount: z.number().int().nonnegative().optional(),
-}).passthrough();
+// AFC-617:  a folder listing used to go through a zod schema that copies every row (".passthrough()"), and
+// zod runs without its code-generating fast path in workerd, so one refresh of five folders cost about
+// 9 ms of Worker CPU before any secret was read, and the first zod parse of an isolate cost more.  These two
+// checks accept and refuse exactly what those schemas did and build no copy.  test/cpu-paths.test.mjs holds
+// the schemas they replace and compares them on a table of bodies.
+const isPlainObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+
+/** The answer for one secret ({ secret: { secretValue: string } }, extra keys allowed) when it has that shape, else null. */
+export function checkedSecret(value) {
+  return isPlainObject(value) && isPlainObject(value.secret) && typeof value.secret.secretValue === "string" ? value : null;
+}
+
+// A listing is an object whose `secrets` is an array of objects with string `secretKey` and `secretValue`, and
+// an optional non-negative safe-integer `totalCount`.
+export function checkedListing(value) {
+  if (!isPlainObject(value) || !Array.isArray(value.secrets)) return null;
+  const { secrets, totalCount } = value;
+  if (totalCount !== undefined && !(Number.isSafeInteger(totalCount) && totalCount >= 0)) return null;
+  for (const item of secrets) {
+    if (!isPlainObject(item) || typeof item.secretKey !== "string" || typeof item.secretValue !== "string") return null;
+  }
+  return { secrets, totalCount };
+}
 
 // Explicit limits before the schemas see an answer (kody 4366922682):  the
 // body is read up to a byte cap (a longer one is refused unread), then the
@@ -41,14 +61,23 @@ const FolderListing = z.object({
 // A listing of one scoped folder is a few KiB;  the caps leave wide room.
 export const INFISICAL_LIMITS = Object.freeze({ secretBytes: 256 * 1024, listingBytes: 2 * 1024 * 1024, depth: 32, nodes: 50_000 });
 
-function withinShape(value) {
-  const stack = [[value, 0]];
-  let nodes = 0;
-  while (stack.length) {
-    const [node, depth] = stack.pop();
-    nodes += 1;
-    if (nodes > INFISICAL_LIMITS.nodes || depth > INFISICAL_LIMITS.depth) return false;
-    if (node && typeof node === "object") for (const child of Object.values(node)) stack.push([child, depth + 1]);
+// The same walk as before (depth-first, no recursion), with the depth kept beside the node instead of in a
+// fresh pair per node:  a listing is hundreds of nodes and this ran on every refresh (AFC-617).
+export function withinShape(value) {
+  const nodes = [value];
+  const depths = [0];
+  let seen = 0;
+  while (nodes.length) {
+    const node = nodes.pop();
+    const depth = depths.pop();
+    seen += 1;
+    if (seen > INFISICAL_LIMITS.nodes || depth > INFISICAL_LIMITS.depth) return false;
+    if (node && typeof node === "object") {
+      for (const child of Object.values(node)) {
+        nodes.push(child);
+        depths.push(depth + 1);
+      }
+    }
   }
   return true;
 }
@@ -89,7 +118,19 @@ export class InfisicalError extends Error {
   }
 }
 
+// The default window, and the fixed one for a failed listing and for the isolated
+// (mint-capable) reads below:  a failure heals and a signing key rotates within a minute.
 const CACHE_TTL_MS = 60_000;
+// AFC-617:  a refresh costs about 5 subrequests and 8 ms of Worker CPU per isolate, and
+// every isolate paid it every minute.  INFISICAL_CACHE_TTL_S (10 to 3600) widens only the
+// window for successful values, folder listings and remembered 404s;  unset or invalid
+// keeps 60 seconds.  A rotation then reaches an isolate within that window, not within a minute.
+const TTL_MIN_S = 10;
+const TTL_MAX_S = 3600;
+function ttlMs(env) {
+  const seconds = Number(env?.INFISICAL_CACHE_TTL_S);
+  return Number.isFinite(seconds) && seconds >= TTL_MIN_S && seconds <= TTL_MAX_S ? Math.floor(seconds) * 1000 : CACHE_TTL_MS;
+}
 const cache = new Map(); // "path\0name" -> { value, at }
 const stats = { fetched: 0, cacheHits: 0, fallbacks: 0, absent: 0 };
 // Folder listings warm the same per-name cache; while a folder's listing is
@@ -102,6 +143,22 @@ const folderWarm = new Map();
 // one doomed per-name subrequest each (kody 4365623733:  an outage would
 // otherwise cost ~90 subrequests per request).
 const folderFailed = new Map();
+// Listings in flight, by mode and folder (prefetchFolder shares them).
+const folderInflight = new Map();
+// A name Infisical just answered 404 for, outside any listing:  until the entry
+// ages out, no further per-name subrequest for it (AFC-617).  Same decisions as
+// a fresh 404, only without the subrequest.
+const missed = new Map();
+// One infisical_fallback line per isolate per name and code (AFC-617:  13,000
+// lines a day for the same names), and the same for a failed listing per folder
+// and code.  stats.fallbacks still counts every read.
+const fallbackLogged = new Set();
+
+function logOnce(key, event, fields) {
+  if (fallbackLogged.has(key)) return;
+  fallbackLogged.add(key);
+  logEvent(event, fields);
+}
 
 export function infisicalStats() {
   return { ...stats };
@@ -116,9 +173,12 @@ export function _resetInfisicalForTests() {
   stats.absent = 0;
   folderWarm.clear();
   folderFailed.clear();
+  folderInflight.clear();
+  missed.clear();
+  fallbackLogged.clear();
 }
 
-const fresh = (at) => at !== undefined && Date.now() - at < CACHE_TTL_MS;
+const fresh = (at, ttl = CACHE_TTL_MS) => at !== undefined && Date.now() - at < ttl;
 
 /** Declared-configured secrets:  comma list of `path:name` (e.g.
  * "/wake:WAKE_HMAC_KEY_JET").  A genuine 404 for a DECLARED secret throws
@@ -158,11 +218,11 @@ async function fetchRaw(env, path, name, { tokenOverride, tokenBinding = "INFISI
   });
   if (res.status === 404) throw new InfisicalError(`Infisical has no ${name} at ${path}`, { code: "not_found", status: 404 });
   if (!res.ok) throw new InfisicalError(`Infisical answered ${res.status} for ${name} at ${path}`, { code: "infisical_unavailable", status: res.status });
-  const parsed = SecretResponse.safeParse(await boundedJson(res, INFISICAL_LIMITS.secretBytes));
-  if (!parsed.success) throw new InfisicalError(`Infisical's answer for ${name} at ${path} failed schema validation`, { code: "invalid_response" });
+  const answer = checkedSecret(await boundedJson(res, INFISICAL_LIMITS.secretBytes));
+  if (!answer) throw new InfisicalError(`Infisical's answer for ${name} at ${path} failed schema validation`, { code: "invalid_response" });
   // Trimmed like every legacy binding read (kody 4366922800):  a padded record
   // never reaches Zulip as a wrong key, and whitespace alone is absence.
-  const value = parsed.data.secret.secretValue.trim();
+  const value = answer.secret.secretValue.trim();
   if (value === "") throw new InfisicalError(`Infisical returned no value for ${name} at ${path}`, { code: "not_found" });
   return value;
 }
@@ -177,8 +237,39 @@ async function fetchRaw(env, path, name, { tokenOverride, tokenBinding = "INFISI
 export async function prefetchFolder(env, path) {
   const m = mode(env);
   if (m === "off") return;
-  if (fresh(folderWarm.get(path))) return;
+  if (fresh(folderWarm.get(path), ttlMs(env))) return;
   if (m === "fallback" && fresh(folderFailed.get(path))) return;
+  // AFC-617:  requests that find a folder stale together share one refresh, where each used to list it again.
+  // A refresh that fails fails every request that waited on it (in required mode), and the next one tries again.
+  const key = `${m}\u0001${path}`;
+  // A workerd isolate serves many requests, and a refresh started by a request that is then cancelled may
+  // never settle.  A waiter therefore shares a refresh only while it is young, gives up on it after
+  // INFLIGHT_SHARE_MS, and then lists the folder itself, so a stuck refresh costs one bounded wait.
+  const running = folderInflight.get(key);
+  if (running && Date.now() - running.at < INFLIGHT_SHARE_MS) {
+    let timer;
+    const giveUp = new Promise((resolve) => { timer = setTimeout(resolve, INFLIGHT_SHARE_MS - (Date.now() - running.at), STUCK); });
+    try {
+      const outcome = await Promise.race([running.promise, giveUp]);
+      if (outcome !== STUCK) return;
+    } finally {
+      clearTimeout(timer);
+    }
+    if (folderInflight.get(key) === running) folderInflight.delete(key);
+  }
+  const entry = { at: Date.now(), promise: null };
+  entry.promise = refreshFolder(env, path, m).finally(() => {
+    if (folderInflight.get(key) === entry) folderInflight.delete(key);
+  });
+  folderInflight.set(key, entry);
+  return entry.promise;
+}
+
+// How long a request waits on another request's listing before it lists the folder itself.
+const INFLIGHT_SHARE_MS = 10_000;
+const STUCK = Symbol("stuck");
+
+async function refreshFolder(env, path, m) {
   const token = typeof env.INFISICAL_SERVICE_TOKEN === "string" ? env.INFISICAL_SERVICE_TOKEN.trim() : "";
   const workspace = String(env.INFISICAL_WORKSPACE_ID ?? "").trim();
   const environment = String(env.INFISICAL_ENVIRONMENT ?? "prod").trim() || "prod";
@@ -193,11 +284,11 @@ export async function prefetchFolder(env, path) {
     // shape doubt (no array, non-string fields, pagination markers) refuses
     // to warm:  an empty-looking malformed listing must never deactivate
     // tools or masquerade as drift.
-    const parsed = FolderListing.safeParse(await boundedJson(res, INFISICAL_LIMITS.listingBytes));
-    if (!parsed.success) {
+    const listing = checkedListing(await boundedJson(res, INFISICAL_LIMITS.listingBytes));
+    if (!listing) {
       throw new InfisicalError(`Infisical listing for ${path} failed schema validation`, { code: "invalid_listing" });
     }
-    const { secrets: items, totalCount } = parsed.data;
+    const { secrets: items, totalCount } = listing;
     if (totalCount !== undefined && totalCount !== items.length) {
       throw new InfisicalError(`Infisical listing for ${path} is truncated (${items.length} of ${totalCount})`, { code: "truncated_listing" });
     }
@@ -212,7 +303,7 @@ export async function prefetchFolder(env, path) {
   } catch (error) {
     if (m === "required") throw error instanceof InfisicalError ? error : new InfisicalError(String(error));
     folderFailed.set(path, Date.now());
-    logEvent("infisical_listing_failed", { path, code: errorCode(error), status: error?.status ?? null, bindings_serve_s: CACHE_TTL_MS / 1000 });
+    logOnce(`listing\u0001${path}\u0001${errorCode(error)}`, "infisical_listing_failed", { path, code: errorCode(error), status: error?.status ?? null, bindings_serve_s: CACHE_TTL_MS / 1000 });
   }
 }
 
@@ -232,20 +323,28 @@ export async function resolveSecret(env, { name, path, envName, optional = false
   };
   if (m === "off") return legacyValue();
   const cacheKey = `${path}${name}`;
+  const ttl = ttlMs(env);
   const hit = cache.get(cacheKey);
-  if (hit && Date.now() - hit.at < CACHE_TTL_MS) {
+  if (hit && Date.now() - hit.at < ttl) {
     stats.cacheHits++;
     return hit.value;
   }
   // A fresh folder listing is authoritative for absence: no subrequest.
-  const listed = fresh(folderWarm.get(path));
+  const listed = fresh(folderWarm.get(path), ttl);
   // Fallback mode, folder listing just failed:  no per-name subrequest either.
   const unusable = m === "fallback" && !listed && fresh(folderFailed.get(path));
   try {
-    if (listed) throw new InfisicalError(`Infisical has no ${name} at ${path}`, { code: "not_found", status: 404 });
+    if (listed || fresh(missed.get(cacheKey), ttl)) throw new InfisicalError(`Infisical has no ${name} at ${path}`, { code: "not_found", status: 404 });
     if (unusable) throw new InfisicalError(`Infisical listing for ${path} failed recently`, { code: "infisical_unavailable" });
-    const value = await fetchRaw(env, path, name);
+    let value;
+    try {
+      value = await fetchRaw(env, path, name);
+    } catch (error) {
+      if (error instanceof InfisicalError && error.code === "not_found") missed.set(cacheKey, Date.now());
+      throw error;
+    }
     cache.set(cacheKey, { value, at: Date.now() });
+    missed.delete(cacheKey);
     stats.fetched++;
     return value;
   } catch (error) {
@@ -268,7 +367,7 @@ export async function resolveSecret(env, { name, path, envName, optional = false
       return "";
     }
     stats.fallbacks++;
-    logEvent("infisical_fallback", { path, name, binding: envName, served: Boolean(value), code: errorCode(error), status: error?.status ?? null });
+    logOnce(`${cacheKey}\u0001${errorCode(error)}`, "infisical_fallback", { path, name, binding: envName, served: Boolean(value), code: errorCode(error), status: error?.status ?? null });
     return value;
   }
 }
@@ -301,6 +400,9 @@ export async function resolveWakeKeys(env, names) {
 //   - fail closed:  no binding answers "" in off/fallback mode and throws in
 //     required mode;  a genuine 404 answers "" (capability off) while an
 //     outage or a scope denial throws in required mode, as elsewhere.
+//   - a 404 is remembered for the TTL, so an absent key costs one subrequest a
+//     minute, not one per Git call (AFC-617).  Only a success and a 404 are held:
+//     an outage is retried on the next call, as a mint needs.
 
 const isolatedCache = new Map();
 
@@ -324,9 +426,12 @@ export async function resolveSecretIsolated(env, { name, path, tokenBinding }) {
     stats.fetched++;
     return value;
   } catch (error) {
-    if (error instanceof InfisicalError && error.code === "not_found") return "";
+    if (error instanceof InfisicalError && error.code === "not_found") {
+      isolatedCache.set(cacheKey, { value: "", at: Date.now() });
+      return "";
+    }
     if (m === "required") throw error instanceof InfisicalError ? error : new InfisicalError(String(error));
-    logEvent("infisical_isolated_failed", { path, name, binding: tokenBinding, code: errorCode(error), status: error?.status ?? null });
+    logOnce(`isolated\u0001${cacheKey}\u0001${errorCode(error)}`, "infisical_isolated_failed", { path, name, binding: tokenBinding, code: errorCode(error), status: error?.status ?? null });
     return "";
   }
 }

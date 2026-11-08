@@ -140,7 +140,7 @@ class OutgoingWebhookReceiverTests(ListenerHarness):
         daemon = self.daemon()
         self.assertTrue(daemon.connect_seat("CLAUDE"))
         runner = daemon.seats["CLAUDE"]
-        msg_id = self.fake.add_message("Jay Wedgeworth", "work-in-progress", "AFC-309 webhook test", "wake Codex",
+        msg_id = self.fake.add_message("Jay Wedgeworth", "simple-tools", "AFC-309 webhook test", "wake Codex",
                                        deliver=False)
         original_cursor = runner.cursor
 
@@ -164,7 +164,7 @@ class OutgoingWebhookReceiverTests(ListenerHarness):
         daemon = self.daemon()
         self.assertTrue(daemon.connect_seat("CLAUDE"))
         runner = daemon.seats["CLAUDE"]
-        msg_id = self.fake.add_message("Jay Wedgeworth", "work-in-progress", "AFC-309 spool retry",
+        msg_id = self.fake.add_message("Jay Wedgeworth", "simple-tools", "AFC-309 spool retry",
                                        "wake Codex", deliver=False)
         self.assertEqual(daemon._accept_outgoing_webhook("CLAUDE", BOT_EMAIL, msg_id), "accepted")
         original_remove = daemon.webhook_spool.remove
@@ -187,9 +187,9 @@ class OutgoingWebhookReceiverTests(ListenerHarness):
         daemon = self.daemon()
         self.assertTrue(daemon.connect_seat("CLAUDE"))
         runner = daemon.seats["CLAUDE"]
-        first_id = self.fake.add_message("Jay Wedgeworth", "work-in-progress", "AFC-309 retry head",
+        first_id = self.fake.add_message("Jay Wedgeworth", "simple-tools", "AFC-309 retry head",
                                          "older deferred event", deliver=False)
-        later_id = self.fake.add_message("Jay Wedgeworth", "work-in-progress", "AFC-309 ready tail",
+        later_id = self.fake.add_message("Jay Wedgeworth", "simple-tools", "AFC-309 ready tail",
                                          "ready event", deliver=False)
         daemon.webhook_spool.add("GONE", 1)
         daemon.webhook_spool.add("CLAUDE", first_id)
@@ -206,7 +206,7 @@ class OutgoingWebhookReceiverTests(ListenerHarness):
         self.write_config(extra_daemon='outgoing_webhook_seats = ["CLAUDE"]')
         daemon = self.daemon()
         self.assertTrue(daemon.connect_seat("CLAUDE"))
-        msg_id = self.fake.add_message("Jay Wedgeworth", "work-in-progress", "AFC-309 spoof", "ignore this body",
+        msg_id = self.fake.add_message("Jay Wedgeworth", "simple-tools", "AFC-309 spoof", "ignore this body",
                                        deliver=False)
         self.assertEqual(daemon._accept_outgoing_webhook("CLAUDE", "other@zulip.test", msg_id), "rejected")
         self.assertEqual(daemon.webhook_spool.pending(), [])
@@ -221,23 +221,29 @@ class OutgoingWebhookReceiverTests(ListenerHarness):
         allowed = self.daemon()
         self.assertTrue(allowed.connect_seat("CLAUDE"))
 
-    def test_a_marker_message_through_the_outgoing_webhook_spool_is_suppressed(self):
+    def test_a_marker_message_through_the_outgoing_webhook_spool_reaches_the_inbox_without_a_wake(self):
         # The spool stores authenticated metadata only:  the daemon re-fetches the authoritative
-        # message and routes it, so the router's no-wake gate covers this path too (AFC-468).
+        # message and routes it, so the router's no-wake rule covers this path too (AFC-468).
+        # OPS-1036:  the marker suppresses the wake, not the delivery — the message still lands
+        # in the seat inbox, and its row carries no wake.
         self.write_config(extra_daemon='outgoing_webhook_seats = ["CLAUDE"]')
         daemon = self.daemon()
         self.assertTrue(daemon.connect_seat("CLAUDE"))
+        # A non-owner sender tagging the seat under test, so the assertion exercises the
+        # tagged-recipient path OPS-1036 fixes and not the owner branch of the seat inbox.
         msg_id = self.fake.add_message(
-            "Jay Wedgeworth", "work-in-progress", "AFC-309 no-wake", ":eyes: @**Codex** wake up",
+            "Codex", "simple-tools", "AFC-309 no-wake", ":eyes: @**Claude** wake up",
             deliver=False,
         )
         self.assertEqual(daemon._accept_outgoing_webhook("CLAUDE", BOT_EMAIL, msg_id), "accepted")
         daemon._drain_outgoing_webhook_spool()
+        rows = [row for row in self.inbox("CLAUDE") if row["id"] == msg_id]
         self.assertEqual(
-            [row["id"] for row in self.inbox("CLAUDE") if row["id"] == msg_id],
-            [],
-            "the marker message never reaches the seat inbox",
+            [row["id"] for row in rows],
+            [msg_id],
+            "the marker message still reaches the seat inbox",
         )
+        self.assertFalse(rows[0]["wake_worthy"], "and the inbox row wakes nobody")
 
     def test_an_unmarked_message_through_the_outgoing_webhook_spool_still_routes(self):
         # The control:  the same path without the marker does deliver, so the test above is
@@ -246,16 +252,18 @@ class OutgoingWebhookReceiverTests(ListenerHarness):
         daemon = self.daemon()
         self.assertTrue(daemon.connect_seat("CLAUDE"))
         msg_id = self.fake.add_message(
-            "Jay Wedgeworth", "work-in-progress", "AFC-309 control", "@**Codex** wake up",
+            "Codex", "simple-tools", "AFC-309 control", "@**Claude** wake up",
             deliver=False,
         )
         self.assertEqual(daemon._accept_outgoing_webhook("CLAUDE", BOT_EMAIL, msg_id), "accepted")
         daemon._drain_outgoing_webhook_spool()
+        rows = [row for row in self.inbox("CLAUDE") if row["id"] == msg_id]
         self.assertEqual(
-            [row["id"] for row in self.inbox("CLAUDE") if row["id"] == msg_id],
+            [row["id"] for row in rows],
             [msg_id],
             "the unmarked message reaches the seat inbox",
         )
+        self.assertTrue(rows[0]["wake_worthy"], "and the unmarked row is wake-worthy")
 
 
 if __name__ == "__main__":

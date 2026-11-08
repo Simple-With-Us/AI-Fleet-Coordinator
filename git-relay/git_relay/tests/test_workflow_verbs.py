@@ -96,6 +96,36 @@ class Tests(unittest.TestCase):
             Client(), Policy(read_only), Minter(), "swu-wise", "wf_file_get", REPO
         )
 
+    def test_draft_transitions_mint_contents_write_and_enforce_ceiling(self):
+        # GitHub draft/ready GraphQL mutations need contents:write as well as PR write.
+        for action in ("wf_pr_draft", "wf_pr_ready"):
+            with self.subTest(action=action):
+                minter = Minter()
+                WorkflowVerbs.for_action(Client(), Policy(), minter, "swu-wise", action, REPO)
+                self.assertEqual(
+                    minter.calls[0][2],
+                    {
+                        "pull_requests": "write",
+                        "contents": "write",
+                        "metadata": "read",
+                    },
+                )
+                for ceiling in (
+                    {"pull_requests": "write", "contents": "read", "metadata": "read"},
+                    {"pull_requests": "read", "contents": "write", "metadata": "read"},
+                ):
+                    denied_minter = Minter()
+                    with self.assertRaises(Refused):
+                        WorkflowVerbs.for_action(
+                            Client(),
+                            Policy(ceiling),
+                            denied_minter,
+                            "swu-wise",
+                            action,
+                            REPO,
+                        )
+                    self.assertEqual(denied_minter.calls, [])
+
     def test_denied_repo_action_and_unknown_action_and_mint_failure(self):
         with self.assertRaises(Refused):
             WorkflowVerbs.for_action(Client(), Policy(), Minter(), "swu-wise", "wf_tree", "x/y")
@@ -208,10 +238,29 @@ class Tests(unittest.TestCase):
                 s.run("wf_code_search", {"repo": REPO, "term": term})
 
     def test_reads_are_bounded_projections_and_incomplete(self):
-        pulls = [{"number": i, "head": {"ref": "h", "sha": SHA}, "title": "t"} for i in range(500)]
-        s, _ = svc(pulls)
+        def row(i):
+            return {
+                "number": i,
+                "state": "open",
+                "draft": False,
+                "head": {"ref": "h", "sha": SHA},
+                "base": {"ref": "main", "sha": SHA},
+                "title": "t",
+                "user": {"login": "jay", "type": "User"},
+                "created_at": "2026-11-02T00:00:00Z",
+                "updated_at": "2026-11-03T00:00:00Z",
+                "merged_at": None,
+            }
+
+        # a full page followed by a short page: everything read, complete true
+        s, _ = svc([row(i) for i in range(1, 31)], [row(i) for i in range(31, 60)])
         out = s.run("wf_pr_list", {"repo": REPO})
-        self.assertEqual(len(out["pulls"]), 100)
+        self.assertEqual(len(out["pulls"]), 59)
+        self.assertTrue(out["complete"])
+        # pages never short: the bound is hit, complete stays false (fail closed)
+        s, _ = svc(*[[row(30 * p + i + 1) for i in range(30)] for p in range(10)])
+        out = s.run("wf_pr_list", {"repo": REPO})
+        self.assertEqual(len(out["pulls"]), 300)
         self.assertFalse(out["complete"])
         s, c = svc({"workflow_runs": [{"id": 1, "conclusion": "failure", "secret": "x"}]})
         out = s.run("wf_runs", {"repo": REPO, "head_sha": SHA, "status": "completed"})
@@ -274,15 +323,19 @@ class Tests(unittest.TestCase):
     def test_wf_checks_reads_check_runs_for_a_ref(self):
         s, c = svc(
             {
+                "total_count": 1,
                 "check_runs": [
                     {
                         "id": 1,
                         "name": "Kody Code Review",
                         "status": "completed",
                         "conclusion": "success",
+                        "completed_at": "2026-11-03T00:00:00Z",
+                        "head_sha": SHA,
+                        "app": {"id": 123, "slug": "kody-ai"},
                         "extra": "x",
                     }
-                ]
+                ],
             }
         )
         out = s.run("wf_checks", {"repo": REPO, "ref": SHA})

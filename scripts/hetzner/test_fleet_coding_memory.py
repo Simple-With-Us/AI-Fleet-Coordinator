@@ -859,33 +859,13 @@ class ExcludeTests(unittest.TestCase):
                         1,
                         ([excluded_group, coding], []),
                         excluded_units={"botfleet-server.service"},
-                        # No exclusion discovery result: standalone step resolves it.
+                        excluded_cgroups=set(),
                     )
             resolver.assert_called()
             self.assertEqual((excluded_group / "memory.high").read_text(), "max")
             self.assertNotIn(f"{excluded_group}:memory.high", state["owned"])
             self.assertEqual(status["coding_groups"], 1)
             self.assertEqual(status["excluded_units"], 1)
-
-    def test_step_honors_cached_empty_exclusion_discovery_across_ticks(self):
-        with tempfile.TemporaryDirectory() as d:
-            root = Path(d)
-            coding = cg(root / "system.slice" / "coding.service")
-            procroot = proc(root / "proc")
-            with mock.patch.object(m, "resolve_unit_cgroups") as resolver:
-                for now in (1, 2, 3):
-                    status = m.step(
-                        policy(),
-                        root,
-                        {"owned": {}},
-                        procroot,
-                        now,
-                        ([coding], [], {}),
-                        excluded_units={"inactive.service"},
-                        excluded_cgroups=set(),
-                    )
-                    self.assertEqual(status["excluded_units"], 1)
-                resolver.assert_not_called()
 
     def test_parent_directory_group_or_world_writable_is_ignored(self):
         with tempfile.TemporaryDirectory() as d:

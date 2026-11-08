@@ -1,7 +1,5 @@
 # Open-session handoff — 2026-08-21
 
-Historical identifiers have been redacted. These records do not certify current deployment state.
-
 **Author:** MONET (Mac) · **Scope:** every unarchived Claude Code session on the Mac as of
 2026-08-21 ~16:30 CT · **Purpose:** any fleet agent can pick up any lane below without
 re-reading the original transcript.
@@ -405,7 +403,7 @@ file before assuming it finished.
 
 - Claim on THE BOARD before substantial work (`simple-board list` → `simple-board claim <id> --by <SEAT>
   --env Mac --where "..."`), land the `docs/EFFORT-LOG.md` row, post start and closeout to
-  `[retired identifier]`.
+  `#Work-In-Progress`.
 - Branch under your own seat prefix and work in `~/apps/*`, never a top-level `~/Code/*`
   checkout (fleet #62).  `code-main-keeper` returns those to `main`.
 - Two spaces between sentences everywhere — two literal ASCII spaces in files like this one,

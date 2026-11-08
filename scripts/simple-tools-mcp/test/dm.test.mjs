@@ -353,7 +353,8 @@ test("dm_send:  text that looks like a secret is refused before any request, and
   assert.equal(fake.requests.length, before, "no request, not even users/me");
   ok(await tools.call("zulip_dm_send", { user_ids: [jay.user_id], text: "the body that must not be stored" }), "zulip_dm_send");
   ok(await tools.call("zulip_dm_read", { user_ids: [jay.user_id] }), "zulip_dm_read");
-  const [read, sent, , refusedRow] = await S.callTail(gate.store, 10);
+  // A successful read writes no row (owner 2026-11-06), so the newest row is the send.
+  const [sent, , refusedRow] = await S.callTail(gate.store, 10);
   assert.equal(sent.tool, "zulip_dm_send");
   assert.deepEqual(sent.recipient_ids, [jay.user_id]);
   assert.equal(sent.message_id, fake.messages.at(-1).id);
@@ -361,8 +362,6 @@ test("dm_send:  text that looks like a secret is refused before any request, and
   assert.ok(Number.isInteger(sent.body_len) && /^[0-9a-f]{12}$/.test(sent.idem_ref));
   assert.equal(sent.channel_id, undefined);
   assert.equal(sent.topic, undefined);
-  assert.equal(read.tool, "zulip_dm_read");
-  assert.deepEqual(read.recipient_ids, [jay.user_id]);
   assert.equal(refusedRow.error_code, "refused_secret");
   const everything = JSON.stringify([await S.callTail(gate.store, 20), logs, await S.tail(gate.store, 50)]);
   const [, basic] = basicForms(BOT_EMAIL, fake.key);
@@ -462,8 +461,8 @@ test("dm_send counts against the seat's write budget with post:  one hourly allo
 test("inbox lists DMs sent to the bot as dm true, beside channel mentions, and never the bot's own sends", async () => {
   const { fake, tools, jay, codex } = harness();
   fake.me.full_name = "Claude";
-  const mention = fake.addMessage("Codex", "work-in-progress", "ask", "@**Claude** can you look");
-  fake.addMessage("Codex", "work-in-progress", "ask", "no mention");
+  const mention = fake.addMessage("Codex", "simple-tools", "ask", "@**Claude** can you look");
+  fake.addMessage("Codex", "simple-tools", "ask", "no mention");
   const dm = fake.addDm(jay, [], "a plain DM, no mention");
   fake.addDm(fake.me, [jay], "my own DM to Jay");
   const group = fake.addDm(codex, [fake.me, jay], "group DM");
@@ -477,7 +476,7 @@ test("inbox lists DMs sent to the bot as dm true, beside channel mentions, and n
   assert.deepEqual(items.map((i) => i.dm), [undefined, true, true]);
   assert.deepEqual(items[1].dm_user_ids, [jay.user_id]);
   assert.deepEqual(items[2].dm_user_ids.sort(), [codex.user_id, jay.user_id].sort());
-  assert.equal(items[0].channel, "work-in-progress");
+  assert.equal(items[0].channel, "simple-tools");
   // since_id and limit apply to the merged list.
   assert.deepEqual(ok(await tools.call("zulip_inbox", { since_id: dm.id }), "zulip_inbox").ids, [group.id]);
   assert.deepEqual(ok(await tools.call("zulip_inbox", { limit: 2 }), "zulip_inbox").ids, [dm.id, group.id]);

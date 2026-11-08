@@ -62,7 +62,7 @@ LIVE_DEFAULTS = {
     "owner_per_day": 20,
     "loop_turns": 3,
 }
-# The channel the owner renamed to #Work-In-Progress on 2026-10-22.  This literal cannot come from
+# The fleet's coordination channel, #Work-In-Progress.  This literal cannot come from
 # `zulip.DEFAULT_CHANNEL`:  live.py sits on the hook fast path, and test_live.py forbids importing
 # simple_tools.zulip there.  test_default_channel.py holds the two in step.
 DEFAULT_PRESENCE = [
@@ -73,7 +73,7 @@ DEFAULT_PRESENCE = [
 ]
 MARKER_BEGIN = "BEGIN_UNTRUSTED_ZULIP"
 MARKER_END = "END_UNTRUSTED_ZULIP"
-REWAKE_HEADER = "[eavesdropper rewake]"
+REWAKE_HEADER = "[simple-tools rewake]"
 # The daemon's own line, outside the markers, that goes with every batch that carries bodies.  It
 # points a live session at the peer-request screen (FLEET-PROTOCOL Precedence rule 3, owner 2026-10-08).
 SCREEN_LINE = (
@@ -847,7 +847,7 @@ def claim(
     now: float,
     stale_seconds: float,
     select: Callable[[Mapping[str, Any]], bool] | None = None,
-    header: str = "[eavesdropper]",
+    header: str = "[simple-tools]",
 ) -> tuple[str, list[dict[str, Any]]]:
     """Take undelivered items (those `select` accepts), mark them delivered, return the wrapped text.
 
@@ -962,7 +962,7 @@ def replay(
     items = [i for i in read_jsonl(paths.live_inbox(lease_id)) if i.get("seq") in wanted]
     if not items:
         return ""
-    return "[eavesdropper replay] %d item%s\n%s\n%s\n%s" % (
+    return "[simple-tools replay] %d item%s\n%s\n%s\n%s" % (
         len(items),
         "" if len(items) == 1 else "s",
         owner_line(items),

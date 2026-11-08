@@ -116,6 +116,28 @@ export function grantSummaryIsLive(grant, now = Date.now()) {
 }
 
 /**
+ * `lookup` (a KV list) behind a cache of positive answers, in the identity
+ * cache so an admin eviction of the seat drops them.  A negative answer is never
+ * cached:  it stays retryable, and a new grant works at once.  `lookup` returns
+ * false, true, or { expiresAt } (the grant's expiry in seconds, when it has
+ * one), and a positive entry never outlives that expiry.
+ */
+export async function cachedGrantExists(cache, { seat, grantRef, ttlMs, lookup }) {
+  const key = `grant:${seat}:${grantRef}`;
+  if (cache.get(key)) return true;
+  const since = cache.now();
+  const found = await lookup();
+  if (!found) return false;
+  let ttl = ttlMs;
+  const expiresAt = typeof found === "object" ? found.expiresAt : undefined;
+  // One clock reading caps the window at the grant's expiry and starts it.
+  const now = cache.now();
+  if (typeof expiresAt === "number" && Number.isFinite(expiresAt)) ttl = Math.min(ttl, expiresAt * 1000 - now);
+  if (ttl > 0) cache.set(key, { seat, via: "grant" }, ttl, now, { since });
+  return true;
+}
+
+/**
  * The route.  Answers 200 with { ok: true, seat } for a live, unspent,
  * request-bound assertion, or 200 with { ok: false, reason } for a
  * well-formed query whose assertion fails - the route's own auth is the

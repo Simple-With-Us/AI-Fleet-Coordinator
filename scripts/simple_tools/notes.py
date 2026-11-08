@@ -1160,7 +1160,7 @@ def run_direct(
     try:
         if action in BODY_ACTIONS:
             if flags.get("html"):
-                fd, html_file = tempfile.mkstemp(prefix="simple-notes-", suffix=".html")
+                fd, html_file = tempfile.mkstemp(prefix="simple-tools-note-", suffix=".html")
                 os.fchmod(fd, 0o600)
                 with os.fdopen(fd, "wb") as out:
                     out.write(markdown.encode("utf-8"))

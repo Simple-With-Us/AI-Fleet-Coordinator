@@ -10,8 +10,10 @@ Nothing here reads ~/apps or the network.
 
 from __future__ import annotations
 
+import hashlib
 import importlib.machinery
 import importlib.util
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -52,7 +54,7 @@ class StripHeader(unittest.TestCase):
         )
 
 
-class ProtocolRows(unittest.TestCase):
+class SimpleToolsRows(unittest.TestCase):
     def test_a_headered_copy_with_every_row_passes(self) -> None:
         text = HEADER.format(sha="b" * 64) + FULL_BODY
         self.assertEqual(reg.simple_tools_errors(APPS, text, "coordinator FLEET-PROTOCOL.md"), [])
@@ -92,11 +94,31 @@ class ProtocolRows(unittest.TestCase):
         data = {"seats": [{"tag": "OPS"}]}
         row = "**Engine-only CLIs** (Droid)\n"
         self.assertEqual(
-            reg.engine_only_errors(
-                data, reg.strip_generated_header(HEADER.format(sha="d" * 64) + row)
-            ),
+            reg.engine_only_errors(data, HEADER.format(sha="d" * 64) + row),
             [],
         )
+
+    def test_active_kimi_passes_only_with_the_exact_legacy_mirror(self) -> None:
+        mirror = (SCRIPTS.parent / "FLEET-PROTOCOL.md").read_text()
+        data = {"seats": [{"tag": "KIMI", "notesName": "Kimi"}]}
+        self.assertEqual(reg.engine_only_errors(data, mirror), [])
+
+    def test_active_kimi_is_rejected_when_a_changed_mirror_still_calls_it_engine_only(self) -> None:
+        mirror = (SCRIPTS.parent / "FLEET-PROTOCOL.md").read_text()
+        header = reg._GENERATED_BODY_SHA256.match(mirror)
+        self.assertIsNotNone(header)
+        body = mirror[header.end() :]
+        row = re.search(r"\*\*Engine-only CLIs\*\*\s*\(([^)]*)\)", body)
+        self.assertIsNotNone(row)
+        updated_row = row.group(1) + ", Kimi"
+        body = body[: row.start(1)] + updated_row + body[row.end(1) :]
+        changed_mirror = HEADER.format(sha=hashlib.sha256(body.encode("utf-8")).hexdigest()) + body
+
+        errors = reg.engine_only_errors(
+            {"seats": [{"tag": "KIMI", "notesName": "Kimi"}]}, changed_mirror
+        )
+        self.assertEqual(len(errors), 1)
+        self.assertIn("live seat KIMI (", errors[0])
 
 
 if __name__ == "__main__":

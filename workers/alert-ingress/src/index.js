@@ -61,6 +61,8 @@ import {
 } from "./zulip.js";
 import { renderRaw } from "./raw.js";
 import { isSevereCpu, resourceMentions } from "./resource.js";
+import { BudgetExceeded, createBudget, guardOff, guardOffResponse } from "./budget-guard.mjs";
+import { DeliveryBreaker, NEW_KEYS_PER_DAY, secondsToNextDay } from "./breaker.js";
 
 const DEFAULT_CHANNEL = "alerts";
 // The standing blocks keep DEFAULT_CHANNEL, which also names their records;
@@ -138,6 +140,46 @@ const PER_INCIDENT_SOURCES = new Set(["pagerduty"]);
 const closedKey = (k) => `closed:${k}`;
 // Source names are route segments, so they are bounded and boring.
 const SOURCE_TOKEN = /^[a-z0-9_-]{1,32}$/;
+// The incidents waiting out their hold.  The sweep reads only these, so an idle
+// sweep costs a few rows instead of about eight per tracked state.  Writer
+// storage, not the overlay:  nothing older than this index can be in it.
+const pendingKey = (k) => `pending:${k}`;
+const PENDING_PREFIX = "pending:";
+const PENDING_SCAN_LIMIT = 500;
+// Where the next sweep resumes when the index is longer than one read, so every
+// entry takes its turn.  Written only while the index is over that length.
+const PENDING_CURSOR = "sweep:pending-cursor";
+// When the full state scan last rebuilt the index and repaired legacy markers.
+const RECONCILED_AT = "sweep:reconciled-at";
+// Hourly, because an incident missing from the index is an alert nobody hears
+// about until this runs.  Code without the index, such as a rollback that is later
+// rolled forward, writes exactly that.  An hour costs about five rows per state.
+const RECONCILE_EVERY_MS = 60 * 60 * 1000;
+// A source's bot is rate limited until this time, from Zulip's Retry-After.
+const zulipPauseKey = (source) => `zulip-pause:${source}`;
+const ZULIP_PAUSE_DEFAULT_S = 60;
+const ZULIP_PAUSE_MAX_S = 3600;
+// Work held back during a pause or a shed, which the next sweep catches up on.
+const QUEUED_EVENT_PREFIX = "queued-event:";
+const DIRTY_TOPIC_PREFIX = "dirty-topic:";
+const dirtyTopicKey = (source, topic) =>
+  `${DIRTY_TOPIC_PREFIX}${JSON.stringify([source, topic])}`;
+const CATCH_UP_BATCH = 10;
+// A held line Zulip did not confirm gets this many tries, one per sweep.
+const QUEUED_LINE_ATTEMPTS = 3;
+// A repeat delivery refreshes `updated` at most this often.
+const STATE_TOUCH_MS = 10 * 60 * 1000;
+const NOTICE_EVERY_MS = 60 * 60 * 1000;
+const NOTICE_DAILY_MS = 24 * 60 * 60 * 1000;
+// A notice that failed to send is tried again this soon, not a whole interval on.
+const NOTICE_RETRY_MS = 5 * 60 * 1000;
+const NOTICE_SOURCES = ["datadog", "betterstack", "pagerduty", "sentry", "generic"];
+// Below the free plan's 50 subrequests, so a large backlog finishes on later
+// sweeps instead of being killed part way through one.
+const sweepBudget = createBudget({
+  worker: "alert-ingress",
+  perInvocation: { zulipCall: 40 },
+});
 
 /**
  * The credential names one source may use, most specific first.
@@ -659,6 +701,33 @@ async function refreshStatus(env, source, channel, topic, options = {}) {
   if (!credential) {
     throw credentialError(source, missingCredentialNames(env, source));
   }
+  // The whole read-decide-write section of one topic runs under that topic's
+  // lock, so two refreshes cannot both read "no standing message yet" and
+  // both post one.
+  return withTopicLock(`${source}\u0000${channel}\u0000${topic}`, () =>
+    refreshStatusLocked(env, source, channel, topic, { ...options, credential }),
+  );
+}
+
+/** One lock per source, channel and topic; a second refresh waits for the first. */
+const topicLocks = new Map();
+
+function withTopicLock(key, fn) {
+  const previous = topicLocks.get(key) || Promise.resolve();
+  const run = previous.then(fn, fn);
+  const settled = run.then(
+    () => {},
+    () => {},
+  );
+  topicLocks.set(key, settled);
+  settled.then(() => {
+    if (topicLocks.get(key) === settled) topicLocks.delete(key);
+  });
+  return run;
+}
+
+async function refreshStatusLocked(env, source, channel, topic, options = {}) {
+  const credential = options.credential;
   const states = await collectStates(env, source, channel, topic);
   const content = renderStatus({
     topic,
@@ -723,20 +792,33 @@ async function refreshStatus(env, source, channel, topic, options = {}) {
   if (barrier?.outcome === "unknown" && !statusId) {
     throw deliveryError(source, "unknown", { code: null, retryAfter: null });
   }
+  // An unchanged block is not a new delivery, so it costs no PATCH and no
+  // delivery rows.  All of these must hold:  the outcome row alone can be from
+  // an older pass through this revision (A, B, A), and a refusal leaves the
+  // barrier `ok` at a revision that never landed.  The operator routes do not
+  // pass this option, so a manual rebuild always writes.
+  if (
+    options.skipUnchanged &&
+    !options.adoptId &&
+    statusId &&
+    prior?.outcome === "ok" &&
+    barrier?.outcome === "ok" &&
+    barrier.revision === revision &&
+    barrier.id === statusId
+  ) {
+    return content;
+  }
   // Commit uncertainty before crossing the network.  A crash or ambiguous reply
   // cannot turn a possibly accepted create into another automatic POST.  The
   // barrier carries the message id as well: an id means the write can be
   // retried, and no id means the write may have created a message nobody
   // knows about, so no further POST may happen for this topic.
-  await env.WRITER_STORAGE.put(outcomeKey, {
-    outcome: "unknown",
-    id: statusId,
+  await claimDeliveryBarrier(env, {
+    source,
+    outcomeKey,
+    barrierKey,
     revision,
-  });
-  await env.WRITER_STORAGE.put(barrierKey, {
-    outcome: "unknown",
-    id: statusId,
-    revision,
+    statusId,
   });
   try {
     const id = await writeStatus({
@@ -755,17 +837,24 @@ async function refreshStatus(env, source, channel, topic, options = {}) {
     }
     await env.WRITER_STORAGE.put(outcomeKey, { outcome: "ok", id, revision });
     await env.WRITER_STORAGE.put(barrierKey, { outcome: "ok", id, revision });
-    await env.ALERT_STATE.put(
+    await putIfChanged(
+      env,
       statusKey(source, channel, topic),
       JSON.stringify(id),
     );
-    await env.ALERT_STATE.put(statusOwnerKey(id), JSON.stringify(source));
+    await putIfChanged(env, statusOwnerKey(id), JSON.stringify(source));
   } catch (error) {
-    const outcome = error?.outcome === "refused" ? "refused" : "unknown";
+    const rateLimited = error?.outcome === "rate_limited";
+    const outcome =
+      error?.outcome === "refused" || rateLimited ? "refused" : "unknown";
     const detail = {
       code: Number.isInteger(error?.status) ? error.status : null,
       retryAfter: Number.isInteger(error?.retryAfter) ? error.retryAfter : null,
     };
+    if (rateLimited) {
+      await noteRateLimit(env, source, detail.retryAfter);
+      await markTopicDirty(env, source, topic);
+    }
     if (outcome === "refused") {
       // A refusal is definitive: nothing was delivered, so the row is
       // released and a later attempt may try again.  The code and the retry
@@ -790,6 +879,31 @@ async function refreshStatus(env, source, channel, topic, options = {}) {
   return content;
 }
 
+/**
+ * Claim the uncertainty barrier of one source, channel and topic.
+ *
+ * The check and the claim are one transaction, so two refreshes cannot both
+ * see an open barrier and both write.  A barrier that is still `unknown` with
+ * no message id refuses the claim outright: the write it covers may have
+ * created a message nobody knows about.
+ */
+async function claimDeliveryBarrier(env, { source, outcomeKey, barrierKey, revision, statusId }) {
+  const storage = env.WRITER_STORAGE;
+  const claim = async (txn) => {
+    const barrier = await txn.get(barrierKey);
+    if (barrier?.outcome === "unknown" && !(barrier.id && statusId)) {
+      throw deliveryError(source, "unknown", { code: null, retryAfter: null });
+    }
+    await txn.put(outcomeKey, { outcome: "unknown", id: statusId, revision });
+    await txn.put(barrierKey, { outcome: "unknown", id: statusId, revision });
+  };
+  if (typeof storage.transaction === "function") {
+    await storage.transaction(claim);
+    return;
+  }
+  await claim(storage);
+}
+
 function advanceRevision(previous, next) {
   const prior = Number.isSafeInteger(previous?.transitionRevision)
     ? previous.transitionRevision
@@ -812,31 +926,180 @@ function transitionIdentity(key, action, previous, next) {
   ];
 }
 
-async function sendEventOnce(env, identity, args) {
-  if (!env.WRITER_STORAGE) throw new Error("durable writer required");
+/** Write a record only when its value differs:  a read is far cheaper than a write. */
+async function putIfChanged(env, key, value) {
+  if ((await env.ALERT_STATE.get(key)) === value) return;
+  await env.ALERT_STATE.put(key, value);
+}
+
+/** True when a state differs from the stored one in more than its timestamp. */
+function stateChanged(previous, next) {
+  if (!previous) return true;
+  const { updated: _a, ...before } = previous;
+  const { updated: _b, ...after } = next;
+  return JSON.stringify(before) !== JSON.stringify(after);
+}
+
+/** The time this source's bot may call Zulip again, or 0. */
+async function zulipPausedUntil(env, source) {
+  return Number(await env.WRITER_STORAGE?.get(zulipPauseKey(source))) || 0;
+}
+
+/** Honor a 429's Retry-After, bounded so a bad header cannot silence alerts for long. */
+async function noteRateLimit(env, source, retryAfter) {
+  const seconds = Math.min(
+    Number.isInteger(retryAfter) && retryAfter > 0 ? retryAfter : ZULIP_PAUSE_DEFAULT_S,
+    ZULIP_PAUSE_MAX_S,
+  );
+  await env.WRITER_STORAGE?.put(zulipPauseKey(source), Date.now() + seconds * 1000);
+  console.error(
+    JSON.stringify({ event: "alert.zulip_rate_limited", source, retryAfter: seconds }),
+  );
+}
+
+/** Ask the next sweep for one refresh of this standing block. */
+async function markTopicDirty(env, source, topic) {
+  const key = dirtyTopicKey(source, topic);
+  if ((await env.WRITER_STORAGE?.get(key)) === undefined) {
+    await env.WRITER_STORAGE?.put(key, 1);
+  }
+}
+
+/** Hold a timeline line for the next sweep, under its own transition identity. */
+async function queueEvent(env, source, identity, args) {
+  const { email: _email, apiKey: _apiKey, ...line } = args;
+  const key = QUEUED_EVENT_PREFIX + (await eventDigest(identity));
+  await env.WRITER_STORAGE?.put(key, { source, identity, line });
+}
+
+/**
+ * Tell the operators about a guard that tripped, at most once per interval.
+ * It never throws, because it runs on paths that are already failing.
+ */
+async function notifyOperator(env, kind, what, source, everyMs = NOTICE_EVERY_MS) {
+  console.error(JSON.stringify({ event: "alert.operator_notice", kind }));
+  const storage = env.WRITER_STORAGE;
+  if (!storage) return;
+  const key = `notice:${kind}`;
+  const now = Date.now();
+  const sender = [source, ...NOTICE_SOURCES].find(
+    (name) => name && resolveCredential(env, name),
+  );
+  try {
+    if (now - (Number(await storage.get(key)) || 0) < everyMs) return;
+    if (!sender || (await zulipPausedUntil(env, sender)) > now) return;
+    const credential = resolveCredential(env, sender);
+    await storage.put(key, now);
+    const posted = await postEvent({
+      email: credential.email,
+      apiKey: credential.apiKey,
+      channel: LOG_CHANNEL,
+      topic: "alert-ingress",
+      severity: "SEVERE",
+      service: "alert-ingress",
+      what,
+    });
+    // An answer with no message id is not a delivered notice.  At worst the retry
+    // repeats a notice that did land, which beats a guard nobody hears about.
+    if (!posted) {
+      // Zulip answered 2xx with no usable id.  The label is for the log alone, so it
+      // can be told from a network failure or a storage failure, which log null.
+      const error = new Error("operator notice was not confirmed");
+      error.outcome = "unconfirmed";
+      throw error;
+    }
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        event: "alert.operator_notice_failed",
+        kind,
+        status: error?.status ?? null,
+        outcome: error?.outcome ?? null,
+      }),
+    );
+    try {
+      await storage.put(key, now - everyMs + NOTICE_RETRY_MS);
+      if (error?.outcome === "rate_limited") {
+        await noteRateLimit(env, sender, error.retryAfter);
+      }
+    } catch {}
+  }
+}
+
+/** A delivery that was not recorded, so the vendor must keep its retry. */
+function shedRefused(retryAfter, reason) {
+  const error = new Error("delivery shed");
+  error.code = "shed_refused";
+  error.retryAfter = retryAfter;
+  error.reason = reason;
+  return error;
+}
+
+/** Log and count a delivery that was shed or refused, so none is lost silently. */
+function recordShed(env, source, reason, refused) {
+  const noted = env.ALERT_BREAKER?.noteShed(source, reason) ?? { today: null, log: true };
+  if (!noted.log) return;
+  console.error(
+    JSON.stringify({
+      event: refused ? "alert.delivery_refused" : "alert.delivery_shed",
+      source,
+      reason,
+      today: noted.today,
+    }),
+  );
+}
+
+function inventoryBoundError() {
+  const error = new Error("inventory bound exceeded");
+  error.code = "inventory_bound";
+  return error;
+}
+
+async function eventDigest(identity) {
   const digest = await crypto.subtle.digest(
     "SHA-256",
     new TextEncoder().encode(JSON.stringify(identity)),
   );
-  const key =
-    "event:" +
-    [...new Uint8Array(digest)]
-      .map((value) => value.toString(16).padStart(2, "0"))
-      .join("");
+  return [...new Uint8Array(digest)]
+    .map((value) => value.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+// Returns the message id, or null when Zulip did not confirm the line.  The row
+// stays `unknown`, so a later call does not post again unless `replayUnknown` says
+// that a repeated line is the better risk.
+async function sendEventOnce(env, identity, args, { replayUnknown = false } = {}) {
+  if (!env.WRITER_STORAGE) throw new Error("durable writer required");
+  const key = "event:" + (await eventDigest(identity));
   const prior = await env.WRITER_STORAGE.get(key);
   if (prior?.outcome === "ok") return prior.id;
-  if (prior?.outcome === "unknown") return null;
+  if (prior?.outcome === "unknown" && !replayUnknown) return null;
   await env.WRITER_STORAGE.put(key, { outcome: "unknown" });
+  const unconfirmed = () => {
+    console.error(JSON.stringify({ event: "alert.event_unconfirmed" }));
+    return null;
+  };
   try {
     const id = await postEvent(args);
-    if (id) await env.WRITER_STORAGE.put(key, { outcome: "ok", id });
+    if (!id) return unconfirmed();
+    await env.WRITER_STORAGE.put(key, { outcome: "ok", id });
     return id;
   } catch (error) {
+    if (error?.outcome === "rate_limited") {
+      // Nothing landed, so the same transition may be sent again after the pause.
+      await env.WRITER_STORAGE.put(key, { outcome: "refused" });
+      const limited = new Error("event rate limited");
+      limited.code = "zulip_rate_limited";
+      limited.retryAfter = error.retryAfter;
+      throw limited;
+    }
     if (error?.outcome === "refused") {
       await env.WRITER_STORAGE.put(key, { outcome: "refused" });
-      throw new Error("event definitively refused");
+      const refused = new Error("event definitively refused");
+      refused.code = "event_refused";
+      throw refused;
     }
-    return null;
+    return unconfirmed();
   }
 }
 
@@ -855,22 +1118,42 @@ async function postRawCopy(env, source, payload) {
     const pinned = await env.ALERT_STATE.get(svcKey(event.key), "json");
     topic = boundedTopic(typeof pinned === "string" && pinned ? pinned : event.service) || source;
   } catch {
-    // An identity the event path refuses still leaves a raw record, by source.
+    // A body the event path refuses still leaves a raw record, by source.
   }
   try {
-    await postRaw({
+    const id = await postRaw({
       email: credential.email,
       apiKey: credential.apiKey,
       channel: RAW_CHANNEL,
       topic,
       content: renderRaw(source, payload),
     });
-  } catch {
-    console.error(JSON.stringify({ event: "alert.raw_copy_failed", source }));
+    // A 2xx with no usable id may or may not have landed.  It changes nothing, as
+    // with any failure of this copy, but it leaves a trace.
+    if (!id) console.error(JSON.stringify({ event: "alert.raw_copy_unconfirmed", source }));
+  } catch (error) {
+    // Its own guard:  this promise is awaited in the route's `finally`, where a
+    // rejection would turn an event already recorded into a 503.
+    if (error?.outcome === "rate_limited") {
+      try {
+        await noteRateLimit(env, source, error.retryAfter);
+      } catch {}
+    }
+    console.error(
+      JSON.stringify({
+        event: "alert.raw_copy_failed",
+        source,
+        status: error?.status ?? null,
+        outcome: error?.outcome ?? null,
+      }),
+    );
   }
 }
 
-async function handleEvent(source, payload, env) {
+// `options.shed` and `options.paused` both skip every Zulip call.  A shed comes
+// from the breaker and a pause from a Zulip 429.
+async function handleEvent(source, payload, env, options = {}) {
+  const { shed = false, paused = false, breaker = null } = options;
   // The route is authoritative: it names the source, and the source names the
   // credential, the state namespace and the standing message.
   const sourceName = String(source || "generic").toLowerCase();
@@ -882,13 +1165,19 @@ async function handleEvent(source, payload, env) {
   const event = normalize(sourceName, payload);
   const channel = DEFAULT_CHANNEL;
   const perIncident = PER_INCIDENT_SOURCES.has(sourceName);
-  if (perIncident && (await env.ALERT_STATE.get(closedKey(event.key)))) {
+  let reopening = false;
+  // Named before the rename below can change the key, so a reopen clears the
+  // tombstone it found rather than another incident's.
+  const tombstone = closedKey(event.key);
+  if (perIncident && (await env.ALERT_STATE.get(tombstone))) {
     // The incident closed and was pruned.  Only a reopen revives it;
     // anything else is a late or repeated delivery about a closed incident.
     if (!event.reopened) {
       return { action: "ignored", posted: false, status: null, statusDelivery: null };
     }
-    await env.ALERT_STATE.delete(closedKey(event.key));
+    // A reopen mints the incident afresh, which a shed does not record.
+    if (shed) throw shedRefused(breaker?.retryAfter ?? 60, breaker?.reason ?? "shed");
+    reopening = true;
   }
   // Keep the original topic for a stable key when vendor labels change.  The
   // svc: pin and the state read are independent, so they run in parallel.
@@ -921,53 +1210,136 @@ async function handleEvent(source, payload, env) {
   });
   // Datadog's CPU monitor already requires sustained saturation.  Do not
   // make a severe CPU event wait through the ingress hold a second time.
-  if (result.state.phase === "pending" && isSevereCpu(event.key, result.state.severity)) {
+  // While Zulip cannot be called it stays pending, and the sweep promotes it.
+  if (
+    !shed &&
+    !paused &&
+    result.state.phase === "pending" &&
+    isSevereCpu(event.key, result.state.severity)
+  ) {
     result = sweep(result.state, now, { minOpenMs: 0 }) || result;
   }
 
   result.state = advanceRevision(prev, result.state);
-  const inventory = await collectStates(env, sourceName, channel, topic);
-  if (
-    !inventory.some((row) => row.key === event.key) &&
-    inventory.length >= MAX_KEYS
-  )
-    throw new Error("inventory bound exceeded");
+  if (shed) {
+    // A vendor's retry is its only redelivery, so 200 is answered only when the
+    // state is safe:  nothing new to record, or recorded below.  An unknown
+    // incident is not recorded in a storm, because a unique-key storm is what
+    // would fill the inventory, so it keeps its retry.
+    if (!prev && result.state.phase !== "ok") {
+      throw shedRefused(breaker?.retryAfter ?? 60, breaker?.reason ?? "shed");
+    }
+    if (!prev || !stateChanged(prev, result.state)) {
+      return { action: "shed", posted: false, status: null, statusDelivery: { outcome: "shed" } };
+    }
+    if (!(await breaker?.spendShedWrite())) {
+      throw shedRefused(breaker?.retryAfter ?? 60, "shed-writes");
+    }
+  } else {
+    // A delivery with no row is the dearest kind, so it has a daily cap of its
+    // own.  A recovery of something never recorded has nothing to lose.  A new
+    // incident keeps its retry, its raw copy is already on its way to
+    // #Alerts-Raw, and the route logs and counts the refusal.
+    if (!prev && breaker?.newKeyAllowed && !breaker.newKeyAllowed()) {
+      if (result.state.phase === "ok") {
+        return {
+          action: "shed",
+          reason: "new-keys",
+          posted: false,
+          status: null,
+          statusDelivery: { outcome: "shed" },
+        };
+      }
+      await notifyOperator(
+        env,
+        `new-keys:${sourceName}`,
+        `${sourceName} is past the daily cap of ${NEW_KEYS_PER_DAY} new incidents, so new ones are refused for the vendor to retry.  Known incidents still move.  /status counts what was refused.`,
+        sourceName,
+      );
+      throw shedRefused(secondsToNextDay(now), "new-keys");
+    }
+    // A recovery of something never recorded has nothing to record, and a closed
+    // row would cost as much as a transition and take a place in the inventory.
+    // A per-incident source keeps its tombstone, because that one row stops a late
+    // trigger from opening what the vendor already closed.
+    if (!prev && result.state.phase === "ok") {
+      if (perIncident) await env.ALERT_STATE.put(closedKey(event.key), String(now));
+      return { action: result.action, posted: false, status: null, statusDelivery: null };
+    }
+    // Over the bound, an incident already recorded still moves, so a recovery
+    // cannot be lost, and a new one is refused with a notice instead of
+    // failing the same way forever with nobody told.
+    let inventory = null;
+    try {
+      inventory = await collectStates(env, sourceName, channel, topic);
+    } catch (error) {
+      if (error?.code !== "inventory_bound") throw error;
+    }
+    const known = inventory
+      ? inventory.some((row) => row.key === event.key)
+      : !!prev;
+    if (!known && (!inventory || inventory.length >= MAX_KEYS)) {
+      await notifyOperator(
+        env,
+        `inventory:${sourceName}`,
+        `The ${sourceName} inventory is over its ${MAX_KEYS}-key bound, so new incidents are being refused.  Closed rows need pruning.`,
+        sourceName,
+      );
+      throw shedRefused(3600, "inventory");
+    }
+  }
+  if (event.identityRedacted) {
+    console.error(JSON.stringify({ event: "alert.identity_redacted", source: sourceName }));
+  }
+  if (reopening) await env.ALERT_STATE.delete(tombstone);
   let posted = null;
+  let rateLimited = false;
   const sev =
     result.state.phase === "alerting" ? result.state.severity : "INFO";
-  if (result.action === "announce" || result.action === "update") {
-    posted = await sendEventOnce(
-      env,
-      transitionIdentity(event.key, result.action, prev, result.state),
-      {
-        email: credential.email,
-        apiKey: credential.apiKey,
-        channel: LOG_CHANNEL,
-        topic,
-        severity: sev,
-        service: event.service,
-        what: result.state.text,
-        link: result.state.link,
-        mentions: resourceMentions(event.key, result.state.severity),
-      },
-    );
-  } else if (result.action === "resolve") {
-    posted = await sendEventOnce(
-      env,
-      transitionIdentity(event.key, result.action, prev, result.state),
-      {
-        email: credential.email,
-        apiKey: credential.apiKey,
-        channel: LOG_CHANNEL,
-        topic,
-        severity: "INFO",
-        service: event.service,
-        what: "recovered",
-        link: event.link,
-      },
-    );
+  const line =
+    result.action === "announce" || result.action === "update"
+      ? {
+          severity: sev,
+          what: result.state.text,
+          link: result.state.link,
+          mentions: resourceMentions(event.key, result.state.severity),
+        }
+      : result.action === "resolve"
+        ? { severity: "INFO", what: "recovered", link: event.link }
+        : null;
+  // A storm's timeline is noise, so a shed queues no line.  A pause is short and
+  // its lines are real, so they wait for the sweep.
+  if (line && !shed) {
+    const identity = transitionIdentity(event.key, result.action, prev, result.state);
+    const args = {
+      email: credential.email,
+      apiKey: credential.apiKey,
+      channel: LOG_CHANNEL,
+      topic,
+      service: event.service,
+      ...line,
+    };
+    if (paused) {
+      await queueEvent(env, sourceName, identity, args);
+    } else {
+      try {
+        posted = await sendEventOnce(env, identity, args);
+      } catch (error) {
+        if (error?.code !== "zulip_rate_limited") throw error;
+        rateLimited = true;
+        await noteRateLimit(env, sourceName, error.retryAfter);
+        await queueEvent(env, sourceName, identity, args);
+      }
+    }
   }
+  // Spent only now, once the delivery is sure to be recorded:  a vendor retrying
+  // an inventory or a Zulip refusal costs no allowance, and a recovery of an
+  // incident never recorded has already returned, so it cannot use up what a real
+  // new incident needs.  A shed never reaches here with no row.
+  if (!prev) await breaker?.spendNewKey?.();
 
+  const wasPending = prev?.phase === "pending";
+  const isPending = result.state.phase === "pending";
   if (perIncident && result.state.phase === "ok") {
     // A closed incident is pruned:  its row leaves the standing block and its
     // records leave the inventory, and the tombstone keeps it closed.
@@ -981,17 +1353,43 @@ async function handleEvent(source, payload, env) {
       await env.ALERT_STATE.delete(key);
     }
   } else {
-    await env.ALERT_STATE.put(stateKey(event.key), JSON.stringify(result.state));
-    await env.ALERT_STATE.put(svcKey(event.key), JSON.stringify(event.service));
+    // The index goes first:  a crash then leaves an entry the sweep discards,
+    // never a pending incident the sweep cannot see.
+    if (isPending && !wasPending) {
+      await env.WRITER_STORAGE?.put(pendingKey(event.key), 1);
+    }
+    // A repeat on a closed row leaves `updated` where it was, so it is not a touch.
+    const touched =
+      result.state.updated !== prev?.updated &&
+      now - (prev?.updated || 0) >= STATE_TOUCH_MS;
+    if (stateChanged(prev, result.state) || touched) {
+      await env.ALERT_STATE.put(stateKey(event.key), JSON.stringify(result.state));
+    }
+    await putIfChanged(env, svcKey(event.key), JSON.stringify(event.service));
     // The source is recorded with the state so the sweep can resolve the right
     // vendor credential for this incident.
-    await env.ALERT_STATE.put(srcKey(event.key), JSON.stringify(sourceName));
+    await putIfChanged(env, srcKey(event.key), JSON.stringify(sourceName));
     if (event.key === `${sourceName}:${event.service.toLowerCase()}`) {
-      await env.ALERT_STATE.put(svcNameKey(sourceName, event.service), JSON.stringify(event.key));
+      await putIfChanged(env, svcNameKey(sourceName, event.service), JSON.stringify(event.key));
     }
-    await env.ALERT_STATE.put(indexPrefix(sourceName, channel, topic) + event.key, "1");
+    await putIfChanged(env, indexPrefix(sourceName, channel, topic) + event.key, "1");
   }
-  await env.ALERT_STATE.put(topicKey(sourceName, channel, topic), "1");
+  if (wasPending && !isPending) {
+    await env.WRITER_STORAGE?.delete?.(pendingKey(event.key));
+  }
+  await putIfChanged(env, topicKey(sourceName, channel, topic), "1");
+
+  // No Zulip call now:  the state is recorded, so the vendor gets its 200 and
+  // the next sweep rewrites the block once, however many events arrived.
+  if (shed || paused || rateLimited) {
+    await markTopicDirty(env, sourceName, topic);
+    return {
+      action: shed ? "shed" : result.action,
+      posted: false,
+      status: null,
+      statusDelivery: { outcome: shed ? "shed" : "paused" },
+    };
+  }
 
   // Every outcome refreshes the standing status, which is what makes the
   // channel readable at a glance instead of by scrolling.
@@ -1005,9 +1403,12 @@ async function handleEvent(source, payload, env) {
   try {
     status = await refreshStatus(env, sourceName, channel, topic, {
       credential,
+      skipUnchanged: true,
     });
   } catch (error) {
-    if (error?.code === "status_held") {
+    if (error?.code === "inventory_bound") {
+      statusDelivery = { outcome: "overflow" };
+    } else if (error?.code === "status_held") {
       // The standing block for this topic is held: a standing message exists
       // that no source has claimed, so it is neither edited nor duplicated.
       // The event was accepted and recorded, so the webhook must not fail
@@ -1044,38 +1445,41 @@ async function handleEvent(source, payload, env) {
 async function runSweep(env) {
   const now = Date.now();
   const minOpenMs = Number(env.MIN_OPEN_MS) || DEFAULT_MIN_OPEN_MS;
-  const all = { keys: await listAll(env.ALERT_STATE, "state:") };
-  await collectTopics(env); // Complete every dependent inventory before the first send.
+  const storage = env.WRITER_STORAGE;
+  const calls = sweepBudget.invocation();
+  const { keys, checked, overflow, page } = await pendingForSweep(env, now);
+  let examined = null;
   let promoted = 0;
+  let deferred = 0;
   // Topics are per source: two vendors can share a service name, and each
   // one owns its own standing message.
   const dirtyTopics = new Map();
-  for (const { name } of all.keys) {
-    const key = name.slice("state:".length);
+  // The inventory a promotion depends on, read before its first send.  A topic
+  // that cannot be read fails here, with nothing posted.  One that is only over
+  // its bound still promotes, because an announced alert beats a current block.
+  const preflighted = new Set();
+  for (const key of keys) {
+    const name = stateKey(key);
+    // Promotion is the only step that can stop the loop, so anything that returns
+    // to the top of it has been looked at.
+    const lookedAt = examined;
+    examined = key;
     // One incident can fail for many reasons, and none of them may abort the
     // batch: a source lookup that throws, a credential that cannot be
     // resolved, a state that cannot be read.  Every item is handled on its
     // own, and the sweep continues with the next one.
     try {
       const prev = await env.ALERT_STATE.get(name, "json");
-      if (!prev) continue;
-      const source = await resolveStateSource(env, key);
-      // Records written before vendor routing have no per-source indices, so
-      // the new readers cannot see them.  Recreate the indices here -- before
-      // the promotion below refreshes the standing status from them -- so a
-      // legacy incident is never announced while the dashboard still reports
-      // zero monitored incidents.  New incidents always carry their markers,
-      // so after one pass this is a single cheap existence check per state.
-      const service = (await env.ALERT_STATE.get(svcKey(key), "json")) || key;
-      const topic = boundedTopic(service);
-      const marker = indexPrefix(source, DEFAULT_CHANNEL, topic) + key;
-      if ((await env.ALERT_STATE.get(marker)) === null) {
-        await env.ALERT_STATE.put(marker, "1");
-        await env.ALERT_STATE.put(topicKey(source, DEFAULT_CHANNEL, topic), "1");
+      if (prev?.phase !== "pending") {
+        await storage?.delete?.(pendingKey(key));
+        continue;
       }
       const s = sweep(prev, now, { minOpenMs });
       if (!s) continue;
       s.state = advanceRevision(prev, s.state);
+      const source = await resolveStateSource(env, key);
+      const service = (await env.ALERT_STATE.get(svcKey(key), "json")) || key;
+      const topic = boundedTopic(service);
       const credential = resolveCredential(env, source);
       // No credential of its own means no post at all: the incident stays
       // pending until the source has one, and it is never sent as another bot.
@@ -1083,6 +1487,20 @@ async function runSweep(env) {
         console.error(JSON.stringify({ event: "alert.credential_unavailable" }));
         continue;
       }
+      if ((await zulipPausedUntil(env, source)) > now) {
+        deferred++;
+        continue;
+      }
+      const preflightKey = `${source}\u0000${topic}`;
+      if (!preflighted.has(preflightKey)) {
+        try {
+          await collectStates(env, source, DEFAULT_CHANNEL, topic);
+        } catch (error) {
+          if (error?.code !== "inventory_bound") throw error;
+        }
+        preflighted.add(preflightKey);
+      }
+      calls.spend("zulipCall");
       await sendEventOnce(
         env,
         transitionIdentity(key, "announce", prev, s.state),
@@ -1099,23 +1517,276 @@ async function runSweep(env) {
         },
       );
       await env.ALERT_STATE.put(name, JSON.stringify(s.state));
-      await env.ALERT_STATE.put(srcKey(key), JSON.stringify(source));
+      await putIfChanged(env, srcKey(key), JSON.stringify(source));
+      await storage?.delete?.(pendingKey(key));
       promoted++;
       dirtyTopics.set(`${source}\u0000${topic}`, { source, topic });
-    } catch {
-      console.error(JSON.stringify({ event: "alert.promotion_failed" }));
+    } catch (error) {
+      // The budget is spent, so the rest wait for the next sweep.
+      if (error instanceof BudgetExceeded) {
+        // This one did not get its turn, so the next sweep starts with it.
+        examined = lookedAt;
+        deferred++;
+        break;
+      }
+      if (error?.code === "zulip_rate_limited") {
+        const source = await resolveStateSource(env, key).catch(() => null);
+        if (source) await noteRateLimit(env, source, error.retryAfter);
+        deferred++;
+        continue;
+      }
+      console.error(
+        JSON.stringify({ event: "alert.promotion_failed", code: error?.code ?? null }),
+      );
     }
+  }
+  await movePendingCursor(storage, page, examined);
+  deferred += await flushQueuedEvents(env, calls, now);
+  for (const { source, topic } of await listDirtyTopics(env)) {
+    dirtyTopics.set(`${source}\u0000${topic}`, { source, topic });
   }
   // One status refresh per source and topic, however many incidents promoted
   // in it, and all in parallel instead of one rebuild per incident.
   await mapBounded([...dirtyTopics.values()], async ({ source, topic }) => {
     try {
-      await refreshStatus(env, source, DEFAULT_CHANNEL, topic);
-    } catch {
+      if ((await zulipPausedUntil(env, source)) > Date.now()) {
+        await markTopicDirty(env, source, topic);
+        deferred++;
+        return;
+      }
+      calls.spend("zulipCall");
+      await storage?.delete?.(dirtyTopicKey(source, topic));
+      await refreshStatus(env, source, DEFAULT_CHANNEL, topic, { skipUnchanged: true });
+    } catch (error) {
+      if (error instanceof BudgetExceeded) {
+        await markTopicDirty(env, source, topic);
+        deferred++;
+        return;
+      }
+      // An ambiguous write to a message this source owns is safe to repeat, so it
+      // stays on the list.  A refusal or a held topic will not improve by retrying.
+      if (error?.code === "status_delivery_failed" && error.outcome === "unknown") {
+        const barrier = await storage?.get(deliveryBarrierKey(source, DEFAULT_CHANNEL, topic));
+        if (barrier?.id) await markTopicDirty(env, source, topic);
+      }
       console.error(JSON.stringify({ event: "alert.status_refresh_failed" }));
     }
   });
-  return { promoted, checked: all.keys.length };
+  return { promoted, checked, deferred, overflow };
+}
+
+/**
+ * The incidents to look at:  the pending index, rebuilt from every state row on
+ * the first sweep after a deploy that adds it, then hourly as a self-heal.
+ *
+ * That full pass also does the legacy marker repair.  Records written before
+ * vendor routing have no per-source indices, so the new readers cannot see them.
+ * It stays rather than being removed, because the writer's storage cannot be read
+ * from outside to show that no such record is left.
+ */
+async function pendingForSweep(env, now) {
+  const storage = env.WRITER_STORAGE;
+  const usable = typeof storage?.list === "function";
+  if (usable && now - (Number(await storage.get(RECONCILED_AT)) || 0) < RECONCILE_EVERY_MS) {
+    const page = await pendingPage(storage);
+    return { keys: page.keys, checked: page.keys.length, overflow: false, page };
+  }
+  let all;
+  try {
+    all = await listAll(env.ALERT_STATE, "state:");
+  } catch (error) {
+    if (error?.code !== "inventory_bound" || !usable) throw error;
+    // Promotions keep running from the index, so one overflow cannot stop them.
+    await notifyOperator(
+      env,
+      "inventory:state",
+      `The state inventory is over its ${MAX_KEYS}-key bound, so the reconcile cannot run.  Closed rows need pruning.`,
+    );
+    await stampReconciled(storage, now);
+    const page = await pendingPage(storage);
+    return { keys: page.keys, checked: page.keys.length, overflow: true, page };
+  }
+  const keys = [];
+  const keep = new Set();
+  // What the index already holds.  An unchanged entry costs no write:  rewriting
+  // each one hourly is 24 rows a day per pending incident, to store the same 1.
+  // A failed read must not cost the sweep:  this pass already holds every state
+  // row, so it promotes from those.  With the index unknown it adds each pending
+  // entry and removes none, and the next reconcile puts the rest right.
+  let present = null;
+  if (usable) {
+    try {
+      present = await allPending(storage);
+    } catch {
+      present = null;
+      console.error(JSON.stringify({ event: "alert.pending_index_failed" }));
+    }
+  }
+  for (const { name } of all) {
+    const key = name.slice("state:".length);
+    try {
+      const state = await env.ALERT_STATE.get(name, "json");
+      if (!state) continue;
+      const source = await resolveStateSource(env, key);
+      const service = (await env.ALERT_STATE.get(svcKey(key), "json")) || key;
+      const topic = boundedTopic(service);
+      const marker = indexPrefix(source, DEFAULT_CHANNEL, topic) + key;
+      if ((await env.ALERT_STATE.get(marker)) === null) {
+        await env.ALERT_STATE.put(marker, "1");
+        await env.ALERT_STATE.put(topicKey(source, DEFAULT_CHANNEL, topic), "1");
+      }
+      if (state.phase !== "pending") continue;
+      keys.push(key);
+      keep.add(key);
+      if (!present?.has(key)) await storage?.put(pendingKey(key), 1);
+    } catch {
+      // A row that cannot be read keeps any index entry it has.
+      keep.add(key);
+      console.error(JSON.stringify({ event: "alert.promotion_failed", code: "reconcile" }));
+    }
+  }
+  if (usable) {
+    // Tidying the index must not cost the promotions, which have not run yet.  A
+    // stale entry that stays is dropped when a sweep reads it or by the next pass.
+    try {
+      for (const key of present ?? []) {
+        if (!keep.has(key)) await storage.delete?.(pendingKey(key));
+      }
+    } catch {
+      console.error(JSON.stringify({ event: "alert.pending_reconcile_write_failed", step: "delete" }));
+    }
+    await stampReconciled(storage, now);
+  }
+  return { keys, checked: all.length, overflow: false, page: null };
+}
+
+/** Record the pass.  If that fails, the next sweep repeats it and nothing else is lost. */
+async function stampReconciled(storage, now) {
+  try {
+    await storage.put(RECONCILED_AT, now);
+  } catch {
+    console.error(JSON.stringify({ event: "alert.pending_reconcile_write_failed", step: "stamp" }));
+  }
+}
+
+/** One sweep's turn at the pending index, resuming where the last one stopped. */
+async function pendingPage(storage) {
+  const cursor = (await storage.get(PENDING_CURSOR)) || null;
+  const listed = await storage.list({
+    prefix: PENDING_PREFIX,
+    limit: PENDING_SCAN_LIMIT,
+    ...(cursor ? { startAfter: pendingKey(cursor) } : {}),
+  });
+  const keys = [...listed.keys()].map((name) => name.slice(PENDING_PREFIX.length));
+  return { keys, cursor, full: keys.length >= PENDING_SCAN_LIMIT };
+}
+
+/** Every entry of the pending index, for the hourly reconcile. */
+async function allPending(storage) {
+  const present = new Set();
+  let after;
+  for (let turn = 0; turn < 20; turn++) {
+    const listed = await storage.list({
+      prefix: PENDING_PREFIX,
+      limit: PENDING_SCAN_LIMIT,
+      ...(after ? { startAfter: after } : {}),
+    });
+    for (const name of listed.keys()) {
+      present.add(name.slice(PENDING_PREFIX.length));
+      after = name;
+    }
+    if (listed.size < PENDING_SCAN_LIMIT) break;
+  }
+  return present;
+}
+
+/** Save where the next sweep resumes.  It costs a row only while the index is long. */
+async function movePendingCursor(storage, page, examined) {
+  if (!page) return;
+  try {
+    if (page.full) {
+      if (examined && examined !== page.cursor) await storage.put(PENDING_CURSOR, examined);
+    } else if (page.cursor) {
+      await storage.delete?.(PENDING_CURSOR);
+    }
+  } catch {
+    // A cursor that did not move repeats a turn, and the next sweep tries again.
+    console.error(JSON.stringify({ event: "alert.pending_cursor_failed" }));
+  }
+}
+
+/** Post the timeline lines a pause held back.  Returns how many still wait. */
+async function flushQueuedEvents(env, calls, now) {
+  const storage = env.WRITER_STORAGE;
+  if (typeof storage?.list !== "function") return 0;
+  const queued = await storage.list({ prefix: QUEUED_EVENT_PREFIX, limit: CATCH_UP_BATCH });
+  let waiting = 0;
+  for (const [key, item] of queued) {
+    try {
+      if ((await zulipPausedUntil(env, item.source)) > now) {
+        waiting++;
+        continue;
+      }
+      const credential = resolveCredential(env, item.source);
+      if (!credential) {
+        await storage.delete?.(key);
+        continue;
+      }
+      calls.spend("zulipCall");
+      const id = await sendEventOnce(
+        env,
+        item.identity,
+        { ...item.line, email: credential.email, apiKey: credential.apiKey },
+        { replayUnknown: true },
+      );
+      if (id) {
+        await storage.delete?.(key);
+        continue;
+      }
+      // Zulip did not confirm it, and this line may carry the only ping for an
+      // alert, so it is sent again on the next sweeps:  a repeated line beats a
+      // missing one.  It is bounded, because a row kept for good would hold a place
+      // in the batch, and giving up is logged and told to the operators.
+      const attempts = (Number(item.attempts) || 0) + 1;
+      if (attempts < QUEUED_LINE_ATTEMPTS) {
+        await storage.put(key, { ...item, attempts });
+        waiting++;
+        continue;
+      }
+      await storage.delete?.(key);
+      console.error(JSON.stringify({ event: "alert.queued_event_abandoned", source: item.source }));
+      await notifyOperator(
+        env,
+        `queued-line:${item.source}`,
+        `A held ${item.source} timeline line was not confirmed by Zulip after ${QUEUED_LINE_ATTEMPTS} tries, so it may be missing from ${LOG_CHANNEL}.  The incident itself is recorded and shows in its standing block.`,
+        item.source,
+      );
+    } catch (error) {
+      if (error instanceof BudgetExceeded) return waiting + 1;
+      if (error?.code === "zulip_rate_limited") {
+        await noteRateLimit(env, item.source, error.retryAfter);
+        waiting++;
+        continue;
+      }
+      console.error(JSON.stringify({ event: "alert.queued_event_failed", source: item.source }));
+      // A definitive refusal will not improve with retries every five minutes.
+      // Anything else, such as a storage error, may not have sent the line at all.
+      if (error?.code === "event_refused") await storage.delete?.(key);
+      else waiting++;
+    }
+  }
+  return waiting;
+}
+
+/** The standing blocks waiting for a refresh, at most one batch per sweep. */
+async function listDirtyTopics(env) {
+  const storage = env.WRITER_STORAGE;
+  if (typeof storage?.list !== "function") return [];
+  const listed = await storage.list({ prefix: DIRTY_TOPIC_PREFIX, limit: CATCH_UP_BATCH * 2 });
+  return [...listed.keys()].map((key) => {
+    const [source, topic] = JSON.parse(key.slice(DIRTY_TOPIC_PREFIX.length));
+    return { source, topic };
+  });
 }
 
 /** The source that owns a state: its recorded source, else its key prefix. */
@@ -1154,8 +1825,12 @@ const handler = {
     // shape is unchanged; the per-source breakdown is added beside it.
     if (url.pathname === "/status") {
       const collected = await collectTopics(env);
+      // What the guards shed today, where an operator can read it.  A breaker that
+      // cannot read its count must not take the read down with it.
+      const guards = await env.ALERT_BREAKER?.snapshot().catch(() => null);
       return json({
         generatedAt: new Date().toISOString(),
+        guards: guards ?? null,
         channel: DEFAULT_CHANNEL,
         summary: {
           topics: Object.keys(collected.topics).length,
@@ -1436,6 +2111,20 @@ const handler = {
       );
     }
 
+    // An authenticated sender posting nothing means real events are being lost
+    // at the vendor.  The entry point lets one such delivery through per isolate
+    // per day so that it is reported here, with the throttle in durable storage.
+    if (raw === "") {
+      await notifyOperator(
+        env,
+        `empty-body:${source}`,
+        `${source} is delivering webhooks with an empty body, so its incidents are not reaching #Alerts.  Its webhook needs a body at the vendor.`,
+        source,
+        NOTICE_DAILY_MS,
+      );
+      return json({ error: "empty body" }, 400);
+    }
+
     let payload;
     try {
       payload = JSON.parse(raw);
@@ -1461,20 +2150,55 @@ const handler = {
     if (source === "pagerduty" && !pagerDutyIncidentEvent(payload)) {
       return json({ action: "ignored", posted: false });
     }
+    const breaker = env.ALERT_BREAKER ? await env.ALERT_BREAKER.admit(source) : null;
+    const shed = breaker?.shed === true;
+    if (breaker?.trippedNow) {
+      await notifyOperator(
+        env,
+        `breaker:${breaker.reason}:${source}`,
+        `Alert storm from ${source}:  past the ${breaker.reason === "day" ? "daily" : "per-minute"} delivery cap, so its deliveries are being recorded without Zulip calls, and new incidents are refused for the vendor to retry.`,
+        source,
+      );
+    }
+    const paused = !shed && (await zulipPausedUntil(env, source)) > Date.now();
     // The raw copy runs beside the event path rather than before it, so a
     // delivery waits for one Zulip round trip, not two.  It is awaited before
     // the response either way, because the writer's request is what keeps it
-    // alive, and postRawCopy never throws.
-    const rawCopy = postRawCopy(env, source, payload);
+    // alive, and postRawCopy never throws.  A shed or a pause skips it, because
+    // these copies are what would keep Zulip rate limiting the bot.
+    const rawCopy = shed || paused ? null : postRawCopy(env, source, payload);
     try {
-      return json(await handleEvent(source, payload, env));
+      return json(
+        await handleEvent(source, payload, env, {
+          shed,
+          paused,
+          breaker: breaker && {
+            ...breaker,
+            spendShedWrite: () => env.ALERT_BREAKER.spendShedWrite(),
+            newKeyAllowed: () => env.ALERT_BREAKER.newKeyAllowed(source),
+            spendNewKey: () => env.ALERT_BREAKER.spendNewKey(source),
+          },
+        }).then((result) => {
+          if (result.action === "shed") {
+            recordShed(env, source, result.reason ?? breaker?.reason ?? "shed", false);
+          }
+          return result;
+        }),
+      );
     } catch (error) {
-      // A body whose identity looks like a credential is refused before it
-      // becomes a key.  That is the sender's bad request, so it answers 400
-      // naming the field, never the value, rather than escaping as a writer
-      // outage that a vendor would retry.
-      if (error?.code === "invalid_identity") {
-        return json({ error: "invalid payload", field: error.field }, 400);
+      // Nothing was recorded, so the vendor keeps its retry.
+      if (error?.code === "shed_refused") {
+        recordShed(env, source, error.reason, true);
+        return new Response(
+          JSON.stringify({ error: "delivery shed", reason: error.reason }),
+          {
+            status: 503,
+            headers: {
+              "Content-Type": "application/json",
+              "Retry-After": String(error.retryAfter),
+            },
+          },
+        );
       }
       if (error?.code === "credential_unavailable") {
         return json(
@@ -1506,6 +2230,7 @@ export const __testing = {
   runSweep,
   collectStates,
   collectTopics,
+  pendingKey,
   sourcesForTopic,
   parseTopicKey,
   parseLegacyTopicKey,
@@ -1530,6 +2255,7 @@ export const __testing = {
 };
 
 const MAX_KEYS = 2000;
+const STATUS_MEMO_MS = 30_000;
 // Object-envelope nesting bound.  A JSON:API vendor body reaches four levels
 // (data.relationships.monitor.data); anything deeper is rejected, not walked.
 const MAX_PAYLOAD_DEPTH = 6;
@@ -1555,7 +2281,7 @@ async function listAll(kv, prefix) {
     });
     if (!Array.isArray(result.keys)) throw new Error("invalid inventory");
     keys.push(...result.keys);
-    if (keys.length > MAX_KEYS) throw new Error("inventory bound exceeded");
+    if (keys.length > MAX_KEYS) throw inventoryBoundError();
     if (result.list_complete === true || result.listComplete === true)
       return keys;
     if (
@@ -1904,8 +2630,11 @@ export class AlertWriter {
     this.ctx = ctx;
     this.env = env;
     this.tail = Promise.resolve();
+    this.breaker = new DeliveryBreaker(ctx.storage);
+    this.statusBody = null;
   }
   fetch(request) {
+    if (guardOff(this.env)) return guardOffResponse();
     const task = this.tail.then(() => this.dispatch(request));
     this.tail = task.catch(() => {});
     return task;
@@ -1944,9 +2673,16 @@ export class AlertWriter {
     }
   }
   async dispatch(request) {
+    // The writer is one object, so this bounds a full /status read to one per
+    // window however many isolates ask.  Anything else may change what it says.
+    const isStatus = new URL(request.url).pathname === "/status";
+    if (!isStatus) this.statusBody = null;
     const storage = this.ctx.storage,
       legacy = this.env.ALERT_STATE,
       imported = await this.legacyImported();
+    if (isStatus && this.statusBody && this.statusBody.expires > Date.now()) {
+      return new Response(this.statusBody.text, { headers: { "Content-Type": "application/json" } });
+    }
     const overlay = {
       async get(key, type) {
         let value = await storage.get(`kv:${key}`);
@@ -1975,7 +2711,7 @@ export class AlertWriter {
         });
         const names = new Set(previous.map((k) => k.name));
         for (const key of local.keys()) names.add(key.slice(3));
-        if (names.size > MAX_KEYS) throw new Error("inventory bound exceeded");
+        if (names.size > MAX_KEYS) throw inventoryBoundError();
         return {
           keys: [...names].map((name) => ({ name })),
           list_complete: true,
@@ -1983,12 +2719,25 @@ export class AlertWriter {
       },
     };
     try {
-      return await handler.fetch(
+      const response = await handler.fetch(
         request,
-        { ...this.env, ALERT_STATE: overlay, WRITER_STORAGE: storage },
+        { ...this.env, ALERT_STATE: overlay, WRITER_STORAGE: storage, ALERT_BREAKER: this.breaker },
         {},
       );
-    } catch {
+      if (isStatus && response.status === 200) {
+        const text = await response.text();
+        this.statusBody = { text, expires: Date.now() + STATUS_MEMO_MS };
+        return new Response(text, { headers: { "Content-Type": "application/json" } });
+      }
+      return response;
+    } catch (error) {
+      console.error(
+        JSON.stringify({
+          event: "alert.writer_failed",
+          path: new URL(request.url).pathname,
+          code: error?.code ?? null,
+        }),
+      );
       return json({ error: "writer unavailable", stale: true }, 503);
     }
   }
@@ -2001,8 +2750,65 @@ export class AlertWriter {
 const WRITER_OBJECT_NAME = "alerts-v1";
 const writerFor = (env) =>
   env.ALERT_WRITER.get(env.ALERT_WRITER.idFromName(WRITER_OBJECT_NAME));
+
+/** One line for a writer that could not be reached.  Nothing from the error's text. */
+function logWriterUnreachable(where, error) {
+  console.error(
+    JSON.stringify({
+      event: "alert.writer_unreachable",
+      where,
+      name: error?.name ?? null,
+      capped: /Exceeded allowed volume/.test(String(error?.message)),
+    }),
+  );
+}
+
+let statusMemo = null;
+/**
+ * GET /status from this isolate's memory, so a burst of readers wakes the writer
+ * at most once per 30 seconds per isolate, and the writer's own copy bounds the
+ * full read.  Memory rather than the Cache API, because the Cache API is only
+ * documented as working on custom domains and this Worker runs on workers.dev.
+ * The query string is not part of the key, so it cannot be used to miss.  Still
+ * unauthenticated:  Usage Monitor's /ops reads it with no token, so a bearer has
+ * to land there first.  A HEAD reads the same copy, and reaches the writer as a
+ * GET, so a bodyless reply can never be kept.
+ */
+async function cachedStatus(incoming, env) {
+  let served = "hit";
+  if (!statusMemo || statusMemo.expires <= Date.now()) {
+    const response = await writerFor(env).fetch(new Request(new URL("/status", incoming.url).toString()));
+    if (response.status !== 200) return response;
+    statusMemo = { text: await response.text(), expires: Date.now() + STATUS_MEMO_MS };
+    served = "miss";
+  }
+  return new Response(incoming.method === "HEAD" ? null : statusMemo.text, {
+    headers: {
+      "Content-Type": "application/json",
+      "cache-control": `public, max-age=${STATUS_MEMO_MS / 1000}`,
+      "x-status-cache": served,
+    },
+  });
+}
+
+const EMPTY_BODY_REPORT_MS = 24 * 60 * 60 * 1000;
+const emptyBodyReported = new Map();
+/**
+ * Whether this empty delivery should reach the writer, which reports it once a
+ * day.  Only a sender that proved itself may wake the writer this way, and at
+ * most once a day per isolate, so nearly every empty delivery is answered here
+ * without waking it.  The writer's durable throttle bounds the notice itself.
+ */
+async function emptyBodyReportDue(request, env, source) {
+  if ((emptyBodyReported.get(source) || 0) > Date.now()) return false;
+  if (!(await verify(request, "", env, source))) return false;
+  emptyBodyReported.set(source, Date.now() + EMPTY_BODY_REPORT_MS);
+  return true;
+}
+
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
+    if (guardOff(env)) return guardOffResponse();
     const path = new URL(request.url).pathname;
     if (path === "/health") return handler.fetch(request, env, {});
     const hook = path.match(/^\/webhook\/([a-z0-9_-]{1,32})$/i);
@@ -2032,16 +2838,58 @@ export default {
     if (operator && !authorized(request, env)) return json({ error: "unauthorized" }, 401);
     if (!env.ALERT_WRITER)
       return json({ error: "durable writer unavailable", stale: true }, 503);
-    return writerFor(env).fetch(request);
+    // An empty body cannot be an alert, so it is refused without waking the writer.
+    if (
+      hook &&
+      (request.headers.get("content-length") === "0" || request.body === null) &&
+      !(await emptyBodyReportDue(request, env, hook[1].toLowerCase()))
+    ) {
+      return json({ error: "empty body" }, 400);
+    }
+    try {
+      if (path === "/status") {
+        // Any other method would walk around the cache and wake the writer,
+        // with no credential, on every request.
+        if (request.method !== "GET" && request.method !== "HEAD") {
+          return json({ error: "GET only" }, 405);
+        }
+        return await cachedStatus(request, env);
+      }
+      return await writerFor(env).fetch(request);
+    } catch (error) {
+      // Still a 5xx:  the vendor's retry is the only redelivery, and nothing was
+      // recorded here, so answering 200 would lose the event for good.
+      logWriterUnreachable(hook ? hook[1].toLowerCase() : path, error);
+      return new Response(
+        JSON.stringify({ error: "writer unavailable", stale: true }),
+        {
+          status: 503,
+          headers: { "Content-Type": "application/json", "Retry-After": "60" },
+        },
+      );
+    }
   },
   async scheduled(event, env, ctx) {
+    if (guardOff(env)) return;
     if (!env.ALERT_WRITER || !env.INGRESS_SHARED_TOKEN) return;
     ctx.waitUntil(
-      writerFor(env).fetch(
-        new Request("https://internal/sweep", {
-          headers: { authorization: `Bearer ${env.INGRESS_SHARED_TOKEN}` },
-        }),
-      ),
+      (async () => {
+        try {
+          const response = await writerFor(env).fetch(
+            new Request("https://internal/sweep", {
+              headers: { authorization: `Bearer ${env.INGRESS_SHARED_TOKEN}` },
+            }),
+          );
+          if (!response.ok) {
+            console.error(
+              JSON.stringify({ event: "alert.sweep_failed", status: response.status }),
+            );
+          }
+          await response.body?.cancel?.();
+        } catch (error) {
+          logWriterUnreachable("sweep", error);
+        }
+      })(),
     );
   },
 };
@@ -2056,4 +2904,7 @@ Object.assign(__testing, {
   sendEventOnce,
   transitionIdentity,
   advanceRevision,
+  resetStatusMemo() {
+    statusMemo = null;
+  },
 });

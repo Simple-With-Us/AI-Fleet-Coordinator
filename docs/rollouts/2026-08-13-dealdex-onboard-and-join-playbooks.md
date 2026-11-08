@@ -1,7 +1,5 @@
 # 2026-08-13 — DealDex fleet join + onboard playbooks
 
-Historical identifiers have been redacted. These records do not certify current deployment state.
-
 ## Context & Objective
 
 Owner asked to (1) link `~/Code/DealDex` to GitHub `DealDex`, (2) register
@@ -19,7 +17,7 @@ procedure for onboarding new agents and new apps.
   `TEMPLATE-AGENTS.md`, digest + calendar `DEFAULT_REPOS`, Slack comment tags,
   `agent-logos/app-dd.png`, `setup-agent-lanes.sh` (grok + monet).
 - Live machine mirrors under `/Users/jay/apps` updated in the same session
-  (protocol, [retired identifier], quickstart, UI copy, ios-fleet, DEALDEX board).
+  (protocol, FLEET-PROTOCOL, quickstart, UI copy, ios-fleet, DEALDEX board).
 
 ## Decisions & Trade-offs
 

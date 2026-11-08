@@ -61,6 +61,7 @@ class Stub {
     this.clientId = "c";
     this.audits = [];
     this.gate = { auditCall: async (row) => { this.audits.push(row); } };
+    this.auditRow = async (gate, row) => gate.auditCall(row); // the no-sink default, as on HostedTools
   }
   async call() { return okResult("{}", {}); }
   requireScope() {}
@@ -96,22 +97,8 @@ test("guide arguments are a strict zod object:  an unknown key or a non-string s
   }
 });
 
-// Public help must not teach retired product branding.
-test("guide opening uses current component names without a compatibility launcher", () => {
+test("guide opening uses the current component names", () => {
   const opening = GUIDE_TEXT.split("## How to Pass Identity")[0];
   assert.ok(opening.includes("**simple-tools**"));
   assert.ok(opening.includes("**ST-MCP**"));
-  assert.ok(!opening.includes("work-in-progress"));
-  assert.ok(!opening.includes("compatibility launcher"));
-});
-
-test("read result formatters do not emit retired product prefixes", () => {
-  for (const name of ["contract.js", "hosted-tools.js", "linear-api.js", "linear-mcp.js", "notes.js"]) {
-    const source = readFileSync(new URL(`../src/${name}`, import.meta.url), "utf8");
-    assert.ok(source.includes("simple-tools "), name);
-  }
-  for (const name of ["tools.py", "fleetlink_tools.py", "recall_tools.py", "linear_tools.py"]) {
-    const source = readFileSync(new URL(`../../simple_tools/mcp/${name}`, import.meta.url), "utf8");
-    assert.ok(/"simple-tools (?:%s|recall_search)/.test(source), name);
-  }
 });

@@ -140,7 +140,7 @@ class Harness(unittest.TestCase):
             "SIMPLE_TOOLS_STATE_DIR": str(self.state_dir),
             # The fake realm's channels are its own;  pin the default to one of them so a
             # test never depends on the channel the live realm happens to use.
-            "SIMPLE_TOOLS_CHANNEL": "work-in-progress",
+            "SIMPLE_TOOLS_CHANNEL": "simple-tools",
             "AGENT_SEAT": "CLAUDE",
             "CLAUDE_CODE_SESSION_ID": SESSION,
             # The DM rule defaults ON (owner decision, Oct 22 2026):  a seat may not open a new

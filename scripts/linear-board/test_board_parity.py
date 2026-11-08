@@ -27,7 +27,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
-from test_board import BoardTest, MockLinear, load_cli, make_handler
+from test_board import CLIENT_ID, CLIENT_SECRET, BoardTest, MockLinear, load_cli, make_handler
 
 CATALOG = HERE / "catalog"
 FIXTURES = json.loads((HERE / "testdata" / "simple-tools-fixtures.json").read_text())
@@ -483,7 +483,14 @@ class CommandsCliTests(ParityCliTest):
 
 class RunCliTests(ParityCliTest):
     def test_run_read_sends_the_named_document(self):
-        p = self.board("run", "get_issue", "--arg", "id=123", drop=("AGENT_SEAT",))
+        p = self.board(
+            "run",
+            "get_issue",
+            "--arg",
+            "id=123",
+            drop=("AGENT_SEAT",),
+            extra={"LINEAR_CLIENT_ID": CLIENT_ID, "LINEAR_CLIENT_SECRET": CLIENT_SECRET},
+        )
         ((op, q, v),) = self.mock.api_requests
         self.assertEqual(op, "SimpleToolsNamed")
         doc, variables = CLI.build_named_operation(CLI.named_command("get_issue"), {"id": "123"})
@@ -583,7 +590,9 @@ class RunCliTests(ParityCliTest):
         )
         self.assertIn("belongs to a different request", p.stderr)
         self.assertEqual(len(self.mock.api_requests), 1)
-        record = self.tmp / "cache" / "Fleet.linear-api.json"
+        record = (
+            self.tmp / "cache" / "CLAUDE.linear-api.json"
+        )  # the idempotency file is named for the acting seat app now, not the retired shared "Fleet" app
         self.assertEqual(oct(record.stat().st_mode & 0o777), "0o600")
 
     def test_an_unknown_outcome_is_never_replayed(self):
@@ -633,8 +642,8 @@ class RunCliTests(ParityCliTest):
     def test_writes_check_the_seat_apps_identity(self):
         cid, secret = "claude-app-client-id", "claude-app-client-secret-value"
         self.mock.add_client(cid, secret, "Codex")  # swapped credentials
-        self.ops_put("CLAUDE_LINEAR_CLIENT_ID", cid)
-        self.ops_put("CLAUDE_LINEAR_CLIENT_SECRET", secret)
+        self.afc_put("LINEAR_CLAUDE_CLIENT_ID", cid)
+        self.afc_put("LINEAR_CLAUDE_CLIENT_SECRET", secret)
         out = self.board(
             "run", "archive_issue", "--arg", "id=OPS-10", "--idempotency-key", "k", code=4
         )
@@ -652,6 +661,7 @@ class ApiCliTests(ParityCliTest):
             "query Q($n: Int) { viewer { id } }",
             "--vars",
             '{"n": 2}',
+            extra={"LINEAR_CLIENT_ID": CLIENT_ID, "LINEAR_CLIENT_SECRET": CLIENT_SECRET},
             drop=("AGENT_SEAT",),
         )
         self.assertEqual(
@@ -728,7 +738,13 @@ class ApiCliTests(ParityCliTest):
         self.assertIn('body: "[CLAUDE\\u00b75e55105a] inline \\"quoted\\""', sent)
 
     def test_api_schema(self):
-        p = self.board("api", "schema", "Issue", drop=("AGENT_SEAT",))
+        p = self.board(
+            "api",
+            "schema",
+            "Issue",
+            drop=("AGENT_SEAT",),
+            extra={"LINEAR_CLIENT_ID": CLIENT_ID, "LINEAR_CLIENT_SECRET": CLIENT_SECRET},
+        )
         self.assertIn("Issue  (OBJECT)  4 fields", p.stdout)
         self.assertIn("  id: ID!", p.stdout)
         self.assertIn("  comments(first: Int): CommentConnection", p.stdout)
@@ -749,6 +765,7 @@ class McpCliTests(ParityCliTest):
             "search_documentation",
             "--args-json",
             '{"query": "cycles"}',
+            extra={"LINEAR_CLIENT_ID": CLIENT_ID, "LINEAR_CLIENT_SECRET": CLIENT_SECRET},
             drop=("AGENT_SEAT",),
         )
         self.assertEqual(p.stdout.strip(), "Cycles group issues into time boxes.")

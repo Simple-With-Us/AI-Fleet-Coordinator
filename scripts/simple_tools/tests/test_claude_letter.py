@@ -3,6 +3,7 @@ The registry side runs against a temporary registry;  the hook runs in process, 
 that hands the remote command to the same registry side."""
 from __future__ import annotations
 
+import contextlib
 import io
 import json
 import os
@@ -73,13 +74,15 @@ class Base(unittest.TestCase):
         """Shrink the pair space, so reuse and eviction can be reached without 676 chats."""
         return mock.patch.dict(OR.LETTER_SPACES, {"double": tuple(pairs)})
 
-    def app_record(self, host: str, cli: str, started_by: str = "") -> None:
+    def app_record(self, host: str, cli: str, started_by: str = "", title: str = "", source: str = "") -> None:
         """The desktop app's record of a chat, laid out as the app lays it out, in this test's home (the Mac's)."""
         folder = os.path.join(AL.store_root(self.home), "acct", "org")
         os.makedirs(folder, exist_ok=True)
         body: dict = {"sessionId": host, "cliSessionId": cli}
         if started_by:
             body["spawnedFrom"] = {"sessionId": started_by}
+        if title:
+            body.update(title=title, titleSource=source)
         with open(os.path.join(folder, host + ".json"), "w", encoding="utf-8") as fh:
             json.dump(body, fh)
 
@@ -741,6 +744,74 @@ class HookTests(Base):
             env=env, runner=runner or FakeSsh(self), **kw,
         )
 
+    def test_a_title_an_agent_set_gets_the_model_to_put_the_letter_back(self) -> None:
+        self.app_record(self.PARENT, "p-0001")
+        self.app_record(self.CHILD, "c-0001", started_by=self.PARENT, title="iPhone parity", source="tool")
+        self.begin("p-0001", host=self.PARENT)
+        child = self.begin("c-0001", host=self.CHILD)
+        self.assertIn('title "AB: iPhone parity"', child["additionalContext"])
+        self.assertIn("set_session_title", child["additionalContext"])
+        self.assertIn("Claude AB", child["additionalContext"])  # the letter's own reminder is still there
+
+    def test_the_rename_is_asked_for_once_and_not_once_it_took(self) -> None:
+        env = self.server_env(CLAUDE_CODE_HOST_SESSION_ID=self.CHILD)
+        self.app_record(self.CHILD, "c-0001", title="Task", source="tool")
+        start = self.hook({"hook_event_name": "SessionStart", "session_id": "c-0001", "source": "startup"}, env=env)
+        self.assertIn("set_session_title", start["additionalContext"])
+        prompt = {"hook_event_name": "UserPromptSubmit", "session_id": "c-0001", "prompt": "go"}
+        first = self.hook(prompt, env=env) or {}
+        self.assertNotIn("set_session_title", first.get("additionalContext", ""))
+        later = self.hook(prompt, env=env, now=time.time() + CL.RETRY_SECONDS + 1) or {}
+        self.assertIn("set_session_title", later.get("additionalContext", ""))
+        self.app_record(self.CHILD, "c-0001", title="AA: Task", source="tool")
+        done = self.hook(prompt, env=env, now=time.time() + 3 * CL.RETRY_SECONDS) or {}
+        self.assertNotIn("set_session_title", done.get("additionalContext", ""))
+
+    def test_only_an_agents_title_on_this_chats_own_record_asks_for_a_rename(self) -> None:
+        for sid, record_cli, title, source in (
+            ("a-0001", "a-0001", "Named By A Person", "user"),
+            ("b-0001", "b-0001", "Generated", "auto"),
+            ("d-0001", "someone-else", "Outer Chat", "tool"),
+        ):
+            with self.subTest(source=source):
+                self.app_record(self.CHILD, record_cli, title=title, source=source)
+                out = self.begin(sid, host=self.CHILD)
+                self.assertNotIn("set_session_title", out["additionalContext"])
+
+    def test_a_secret_in_an_agents_title_stops_the_rename_and_never_reaches_the_model(self) -> None:
+        word = "ghp" + "_" + "a1B2" * 9
+        assigned = "pass" + "word=" + "Xk29dmQ7vLp3Zt8w"
+        for sid, title in (("c-0001", "Rotate %s now" % word), ("c-0002", "Set %s today" % assigned)):
+            with self.subTest(sid=sid):
+                self.app_record(self.CHILD, sid, title=title, source="tool")
+                out = self.begin(sid, host=self.CHILD)
+                self.assertNotIn("set_session_title", out["additionalContext"])
+                self.assertNotIn(title, json.dumps(out))
+
+    def test_a_long_agent_title_is_cut_at_a_word(self) -> None:
+        self.app_record(self.CHILD, "c-0001", title="word " * 100, source="tool")
+        out = self.begin("c-0001", host=self.CHILD)
+        asked = out["additionalContext"].split('title "', 1)[1].split('"', 1)[0]
+        self.assertTrue(asked.endswith(" word"), asked[-12:])
+        self.assertLessEqual(len(asked), len("AA: ") + CL.AGENT_TITLE_CHARS)
+
+    def test_an_agent_title_of_new_chat_is_not_a_title(self) -> None:
+        self.app_record(self.CHILD, "c-0001", title=CL.PLACEHOLDER, source="tool")
+        out = self.begin("c-0001", host=self.CHILD)
+        self.assertNotIn("set_session_title", out["additionalContext"])
+
+    def test_an_earlier_letter_does_not_stack_and_a_parents_acronym_stays(self) -> None:
+        self.app_record(self.CHILD, "c-0001", title="PR: Review", source="tool")
+        out = self.begin("c-0001", host=self.CHILD)
+        self.assertIn('title "AA: PR: Review"', out["additionalContext"])
+        chat = CL.Chat(
+            self.server_env(CLAUDE_CODE_HOST_SESSION_ID=self.CHILD), "CLAUDE", "server", "c-0001",
+            runner=FakeSsh(self), now=time.time(),
+        )
+        self.app_record(self.CHILD, "c-0001", title="AA: Review", source="tool")
+        fix = CL._agent_title_fix(chat, {"state": "open", "label": "AB", "held_labels": ["AA"]})
+        self.assertIn('title "AB: Review"', fix)
+
     def test_a_chat_the_app_started_is_titled_with_the_pair_after_its_parents(self) -> None:
         self.app_record(self.PARENT, "p-0001")
         self.app_record(self.CHILD, "c-0001", started_by=self.PARENT)
@@ -750,6 +821,27 @@ class HookTests(Base):
         self.assertEqual((parent["sessionTitle"], child["sessionTitle"]), ("AA: New Chat", "AB: New Chat"))
         self.assertIn("Claude AB", child["additionalContext"])
         self.assertIn("--host-session-id=" + self.CHILD, ssh.calls[0][8])
+
+    def test_a_chat_the_app_started_is_told_to_put_its_letter_on_the_apps_title(self) -> None:
+        self.app_record(self.PARENT, "p-0001")
+        self.app_record(self.CHILD, "c-0001", started_by=self.PARENT)
+        parent = self.begin("p-0001", host=self.PARENT)
+        child = self.begin("c-0001", host=self.CHILD)
+        self.assertIn("mcp__ccd_session_mgmt__set_session_title", child["additionalContext"])
+        self.assertIn('"AB: <that title>"', child["additionalContext"])
+        self.assertNotIn("set_session_title", parent["additionalContext"])
+
+    def test_a_resumed_chat_the_app_started_is_not_told_again(self) -> None:
+        self.app_record(self.PARENT, "p-0001")
+        self.app_record(self.CHILD, "c-0001", started_by=self.PARENT)
+        self.begin("p-0001", host=self.PARENT)
+        self.begin("c-0001", host=self.CHILD)
+        again = self.hook(
+            {"hook_event_name": "SessionStart", "session_id": "c-0001", "source": "resume", "session_title": "AB: Fix It"},
+            env=self.server_env(CLAUDE_CODE_HOST_SESSION_ID=self.CHILD), runner=FakeSsh(self),
+        )
+        self.assertIn("Claude AB", again["additionalContext"])
+        self.assertNotIn("set_session_title", again["additionalContext"])
 
     def test_a_chat_with_no_app_id_in_its_environment_is_still_placed_by_its_session_uuid(self) -> None:
         self.app_record(self.PARENT, "p-0001")
@@ -1657,127 +1749,199 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class RegistryRemoteTests(Base):
-    """LETTER_REGISTRY_REMOTE:  the registry host named outright, decoupled from where the chat runs.
+class RegistryModuleDispatchTest(Base):
+    """`simple-chat letter registry-module` runs the registry's own CLI.
 
-    A Mac chat (platform darwin, no location override) registers locally while no destination is
-    named, and over the hop once one is:  the destination wins, a failure of it is an error answer
-    and never a quiet local write, and this host keeps no registry file of its own."""
+    The `letter registry` verb above is the Claude hook's shape.  The registry's own
+    CLI is the canonical one, with the per-op arguments every platform's helper
+    speaks, and it is what a remote host runs for another platform (AFC-412).
+    """
 
-    class RemoteSsh:
-        """The hop to the registry host:  checks the command's shape and runs the registry side
-        in process against the REMOTE state dir, so the two sides never share a file."""
-
-        def __init__(self, test: "RegistryRemoteTests", fail: Exception | None = None):
-            self.test, self.fail, self.calls = test, fail, []
-
-        def __call__(self, cmd, **kwargs):
-            self.calls.append(cmd)
-            if self.fail is not None:
-                raise self.fail
-            self.test.assertEqual(
-                cmd[:7], ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=4", "--"]
-            )
-            self.test.assertEqual(cmd[7], "registry-host")
-            words = shlex.split(cmd[8])
-            self.test.assertEqual(words[:3], ["$HOME/.local/bin/simple-chat", "letter", "registry"])
-            out = io.StringIO()
-            code = CL.registry_main(words[3:], env=self.test.remote_env(), stdout=out)
-            return SimpleNamespace(stdout=out.getvalue(), returncode=code)
-
-        def ops(self) -> list[str]:
-            return [shlex.split(c[8])[3] for c in self.calls]
-
-    def setUp(self) -> None:
-        super().setUp()
-        self.remote_state = os.path.join(self.tmp.name, "remote-state")
-        self.remote_db = os.path.join(self.remote_state, "operator", "registry.sqlite3")
-        OR.SessionRegistry(self.remote_db).close_db()  # the canonical registry, on the registry host
-        os.remove(self.db)  # once the registry lives elsewhere this host keeps no copy at all
-
-    def remote_env(self, **extra: str) -> dict[str, str]:
-        return self.env(SIMPLE_TOOLS_STATE_DIR=self.remote_state, **extra)
-
-    def mac_hook(self, payload: dict, runner, **extra: str):
+    def test_the_module_cli_registers_a_session_through_the_letter_command(self) -> None:
         out = io.StringIO()
-        env = self.env(**extra)
-        code = CL.hook(env, io.StringIO(json.dumps(payload)), out, runner=runner, platform="darwin")
+        with (
+            mock.patch.dict(os.environ, {"SIMPLE_TOOLS_STATE_DIR": self.state}),
+            contextlib.redirect_stdout(out),
+        ):
+            code = CL.main(
+                [
+                    "registry-module",
+                    "register",
+                    "--platform=minimax",
+                    "--location=server",
+                    "--scope=default",
+                    "--session-id=s-0001",
+                    "--seat=MM",
+                    "--source=a test",
+                ]
+            )
         self.assertEqual(code, 0)
-        text = out.getvalue().strip()
-        return json.loads(text)["hookSpecificOutput"] if text else None
+        answer = json.loads(out.getvalue().splitlines()[-1])
+        self.assertEqual(answer["label"], "AA")
+        self.assertEqual(answer["created"], True)
 
-    def start(self, sid: str, runner, **extra: str):
-        return self.mac_hook(
-            {"hook_event_name": "SessionStart", "session_id": sid, "source": "startup"}, runner, **extra
-        )
+    def test_the_module_cli_speaks_the_same_dialect_the_minimax_helper_speaks(self) -> None:
+        # The MiniMax helper asks for a letter with these exact arguments, so the
+        # dialect a remote host runs has to accept them.
+        out = io.StringIO()
+        with (
+            mock.patch.dict(os.environ, {"SIMPLE_TOOLS_STATE_DIR": self.state}),
+            contextlib.redirect_stdout(out),
+        ):
+            code = CL.main(
+                [
+                    "registry-module",
+                    "register",
+                    "--platform=minimax",
+                    "--location=server",
+                    "--scope=default",
+                    "--session-id=s-0002",
+                    "--seat=MM",
+                    "--source=the MM seat's session-letter hook",
+                    "--letter-space=double",
+                    "--letter-pick=primary",
+                ]
+            )
+        self.assertEqual(code, 0)
+        answer = json.loads(out.getvalue().splitlines()[-1])
+        self.assertTrue(answer["label"])
 
-    def remote_lookup(self, sid: str, location: str = "mac") -> dict | None:
-        reg = OR.SessionRegistry(self.remote_db)
-        try:
-            return reg.lookup(CL.PLATFORM, location, CL.SCOPE, sid)
-        finally:
-            reg.close_db()
+    def test_the_module_cli_reports_a_refusal_as_an_answer(self) -> None:
+        # A refusal is a readable answer with an error, never a traceback.
+        out = io.StringIO()
+        with (
+            mock.patch.dict(os.environ, {"SIMPLE_TOOLS_STATE_DIR": self.state}),
+            contextlib.redirect_stdout(out),
+        ):
+            code = CL.main(["registry-module", "register", "--platform=minimax"])
+        self.assertEqual(code, 2)
+        answer = json.loads(out.getvalue().splitlines()[-1])
+        self.assertIn("error", answer)
 
-    def test_a_mac_session_registers_over_the_hop_and_keeps_no_local_file(self) -> None:
-        ssh = self.RemoteSsh(self)
-        out = self.start("a-0001", ssh, LETTER_REGISTRY_REMOTE="registry-host")
-        self.assertEqual(ssh.ops(), ["register"])
-        rec = self.remote_lookup("a-0001")
-        self.assertIsNotNone(rec)
-        self.assertIsNone(self.remote_lookup("a-0001", location="server"),
-                          "the location stays where the session runs")
-        self.assertFalse(os.path.exists(self.db), "no local registry file is created")
+    def test_the_module_cli_answers_the_stream_the_caller_gave_it(self) -> None:
+        # The module's CLI writes to stdout itself, so the answer has to be redirected
+        # into the stream the caller passed:  an answer goes where the caller reads it.
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, {"SIMPLE_TOOLS_STATE_DIR": self.state}):
+            code = CL.main(
+                [
+                    "registry-module",
+                    "register",
+                    "--platform=minimax",
+                    "--location=server",
+                    "--scope=default",
+                    "--session-id=s-0011",
+                    "--seat=MM",
+                    "--source=a test",
+                ],
+                stdout=out,
+            )
+        answer = json.loads(out.getvalue().splitlines()[-1])
+        self.assertEqual(code, 0)
+        self.assertEqual(answer["label"], "AA")
 
-    def test_a_mac_session_without_the_setting_registers_locally_as_before(self) -> None:
-        OR.SessionRegistry(self.db).close_db()  # the Mac's registry exists, as it does today
-        ssh = self.RemoteSsh(self, fail=AssertionError("the hop must not be tried"))
-        out = self.start("a-0002", ssh)
-        self.assertEqual(ssh.calls, [])
-        self.assertTrue(os.path.exists(self.db), "the Mac-local registry is used")
+    def test_the_module_cli_never_brings_a_registry_into_being(self) -> None:
+        # A host with no registry must not grow one:  a second registry hands out
+        # letters that collide with the ones the Operator keeps.
+        missing = os.path.join(self.tmp.name, "no-registry-here")
+        out = io.StringIO()
+        with (
+            mock.patch.dict(
+                os.environ,
+                {
+                    "SIMPLE_TOOLS_STATE_DIR": missing,
+                    "SIMPLE_TOOLS_OPERATOR_REGISTRY": "",
+                },
+            ),
+            contextlib.redirect_stdout(out),
+        ):
+            code = CL.main(
+                [
+                    "registry-module",
+                    "register",
+                    "--platform=minimax",
+                    "--location=server",
+                    "--scope=default",
+                    "--session-id=s-0009",
+                    "--seat=MM",
+                    "--source=a test",
+                ]
+            )
+        answer = json.loads(out.getvalue().splitlines()[-1])
+        self.assertEqual(code, 3)
+        self.assertIn("no Operator registry", answer["error"])
+        self.assertFalse(os.path.exists(os.path.join(missing, "operator", "registry.sqlite3")))
+
+    def test_the_module_cli_checks_the_file_the_cli_will_open(self) -> None:
+        # The guard has to look at the file the CLI will open:  an explicit --db names
+        # it, and a guard that checked another one would pass while the CLI opened or
+        # created a second registry.
+        missing = os.path.join(self.tmp.name, "named-by-the-caller.sqlite3")
+        out = io.StringIO()
+        with (
+            mock.patch.dict(os.environ, {"SIMPLE_TOOLS_STATE_DIR": self.state}),
+            contextlib.redirect_stdout(out),
+        ):
+            code = CL.main(
+                [
+                    "registry-module",
+                    "register",
+                    "--platform=minimax",
+                    "--location=server",
+                    "--scope=default",
+                    "--session-id=s-0012",
+                    "--seat=MM",
+                    "--source=a test",
+                    "--db",
+                    missing,
+                ]
+            )
+        answer = json.loads(out.getvalue().splitlines()[-1])
+        self.assertEqual(code, 3)
+        self.assertIn("no Operator registry", answer["error"])
+        self.assertFalse(os.path.exists(missing))
+
+    def test_the_module_cli_reopens_a_closed_session(self) -> None:
+        # The far host runs the reopen, so a chat that comes back to life gets its
+        # letter back on the host that holds the registry.
+        out = io.StringIO()
+        with (
+            mock.patch.dict(os.environ, {"SIMPLE_TOOLS_STATE_DIR": self.state}),
+            contextlib.redirect_stdout(out),
+        ):
+            code = CL.main(
+                [
+                    "registry-module",
+                    "register",
+                    "--platform=minimax",
+                    "--location=server",
+                    "--scope=default",
+                    "--session-id=s-0010",
+                    "--seat=MM",
+                    "--source=a test",
+                ]
+            )
+        self.assertEqual(code, 0)
+        made = json.loads(out.getvalue().splitlines()[-1])
         reg = OR.SessionRegistry(self.db)
-        try:
-            self.assertIsNotNone(reg.lookup(CL.PLATFORM, "mac", CL.SCOPE, "a-0002"))
-        finally:
-            reg.close_db()
-
-    def test_a_failed_hop_is_an_error_answer_and_never_a_local_fallback(self) -> None:
-        ssh = self.RemoteSsh(self, fail=OSError("no route"))
-        out = self.start("a-0003", ssh, LETTER_REGISTRY_REMOTE="registry-host")
-        self.assertEqual(ssh.ops(), ["register"])
-        self.assertIn("No Operator letter yet", (out or {}).get("additionalContext", ""))
-        self.assertFalse(os.path.exists(self.db), "a failed hop never becomes a local write")
-        self.assertIsNone(self.remote_lookup("a-0003"))
-
-    def test_a_destination_that_is_not_plain_is_refused_by_its_own_name(self) -> None:
-        ssh = self.RemoteSsh(self, fail=AssertionError("a refused destination is never run"))
-        out = self.start("a-0004", ssh, LETTER_REGISTRY_REMOTE="-oProxyCommand=touch /tmp/x")
-        self.assertEqual(ssh.calls, [])
-        self.assertIn("LETTER_REGISTRY_REMOTE does not name an ssh destination",
-                      (out or {}).get("additionalContext", ""))
-        self.assertFalse(os.path.exists(self.db))
-
-    def test_the_parent_is_resolved_where_the_app_record_is(self) -> None:
-        # Chat A is started on this Mac;  the desktop app then starts chat B from A.  The registry
-        # host holds no copy of the app's records, so the hook names the parent it resolved here.
-        from simple_tools.tests.test_claude_app_lineage import write as write_app_record
-
-        write_app_record(self.home, "local_11111111-1111-4111-8111-111111111111",
-                         {"cliSessionId": "33333333-3333-4333-8333-333333333333"})
-        write_app_record(self.home, "local_22222222-2222-4222-8222-222222222222",
-                         {"cliSessionId": "44444444-4444-4444-8444-444444444444",
-                          "spawnedFrom": {"sessionId": "local_11111111-1111-4111-8111-111111111111",
-                                          "title": "t", "handOff": True}})
-        ssh = self.RemoteSsh(self)
-        self.start("33333333-3333-4333-8333-333333333333", ssh,
-                   LETTER_REGISTRY_REMOTE="registry-host",
-                   CLAUDE_CODE_HOST_SESSION_ID="local_11111111-1111-4111-8111-111111111111")
-        self.start("44444444-4444-4444-8444-444444444444", ssh,
-                   LETTER_REGISTRY_REMOTE="registry-host",
-                   CLAUDE_CODE_HOST_SESSION_ID="local_22222222-2222-4222-8222-222222222222")
-        self.assertEqual(ssh.ops(), ["register", "register"])
-        argv = shlex.split(ssh.calls[1][8])
-        self.assertIn("--parent-session-id=33333333-3333-4333-8333-333333333333", argv)
-        child = self.remote_lookup("44444444-4444-4444-8444-444444444444")
-        self.assertIsNotNone(child)
-        parent = self.remote_lookup("33333333-3333-4333-8333-333333333333")
-        self.assertEqual(child["label"][0], parent["label"][0], "the child takes the parent's pair")
+        reg.close(made["record_id"], actor="MM", source="the test", reason="stale")
+        reg.close_db()
+        out = io.StringIO()
+        with (
+            mock.patch.dict(os.environ, {"SIMPLE_TOOLS_STATE_DIR": self.state}),
+            contextlib.redirect_stdout(out),
+        ):
+            code = CL.main(
+                [
+                    "registry-module",
+                    "reopen",
+                    "--record-id=" + made["record_id"],
+                    "--actor=MM",
+                    "--source=a test",
+                    "--letter-pick=oldest",
+                ]
+            )
+        answer = json.loads(out.getvalue().splitlines()[-1])
+        self.assertEqual(code, 0)
+        self.assertEqual(answer["outcome"], "reopened")
+        self.assertEqual(answer["label"], made["label"])

@@ -152,7 +152,7 @@ host settings are provisioned here.
 
 ## Fixture verification
 
-`python3 -m unittest discover -s scripts/simple_tools/tests -p 'test_seat_control.py'`
+`python3 -m unittest discover -s simple_tools/tests -p 'test_seat_control.py'`
 from `scripts/` runs local-only fixtures for identity separation, host mismatch,
 stale/ambiguous targets, permissions, mutation gating, idempotency, unknown
 outcomes, bounded output, audit redaction, busy/queued state, and cancellation

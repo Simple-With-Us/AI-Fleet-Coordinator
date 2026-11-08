@@ -15,20 +15,33 @@ service is the one that does not depend on the Mac.
 |---|---|---|---|
 | GET | `/health` | none | `{ok, name, version, fleet_rag, collection, points, backend_ok, mcp, recall}` — `points` is the live count, cached 30 s; `ok` is the process, `backend_ok` is Qdrant |
 | GET | `/recall/stats` | bearer | `recall_stats()` |
-| POST | `/recall/search` | bearer | `recall_search(**body)` — `query` required; `limit`, `category`, `app`, `source`, `seat`, `since_days` |
+| POST | `/recall/search` | bearer | `recall_search(**body)` — `query` required; `limit`, `category`, `app`, `source`, `seat`, `since_days`, `include_retracted` |
 | POST | `/recall/contribute` | bearer | `recall_contribute(**body)` — `text`, `category`, **`seat` required**; `app`, `title`, `url`.  `force`, if present, is dropped before validation (the local duplicate-guard knob; not part of this tool schema) |
+| POST | `/recall/correct` | bearer | `recall_correct(**body)` — `doc_id`, `text`, `reason`, **`seat` required**; `title`, `url`, `expected_revision` |
+| POST | `/recall/retract` | bearer | `recall_retract(**body)` — `doc_id`, `reason`, **`seat` required**; `expected_revision` |
 | POST | `/mcp` | bearer | streamable-HTTP JSON-RPC: `initialize` (sets `MCP-Session-Id`), `notifications/*` (202), `ping`, `tools/list`, `tools/call`, `server/discover` — same framing as seat-mcp, so a client can swap the URL |
 
 Auth is `Authorization: Bearer <RECALL_API_TOKEN>` on everything except `/health`, compared in
-constant time over bytes (a non-ASCII bearer is simply wrong — 401, never a traceback);
+constant time over bytes (a non-ASCII bearer is simply wrong — 401, never a traceback).  An
+OWNER mutation additionally requires the distinct `RECALL_OWNER_TOKEN`; with it unset the
+service refuses that mutation 403, so a client-supplied `seat: "OWNER"` is never enough.
 anything else answers 401 with `WWW-Authenticate: Bearer`.  REST errors are
 `{"ok": false, "error": ...}` — 400 for caller mistakes (including a body the peer closed
 mid-way), 408 for a body that stalls past the socket timeout, 411 for a chunked body (send
 `Content-Length`), 413 over 2 MB, 502 (exception class only) when Qdrant or TEI fails.  MCP tool
 errors come back as `isError: true` results so the model sees them; unknown tools / methods are
 JSON-RPC errors (-32602 / -32601); a message whose `id` is absent **or null** is a notification
-(202, no body).  `seat` is required on `recall_contribute` and the process's own `AGENT_SEAT` is
-never used for a remote caller.
+(202, no body).  `seat` is required on every mutation and the process's own `AGENT_SEAT` is
+never used for a remote caller.  A mutation may be made by the contribution's owning seat or
+the `OWNER` admin seat.  A correction keeps the same point and `doc_id`, moves the old text
+into `revisions[]`, and searches only the replacement.  A same-text metadata correction updates
+the same point and audit; a completely unchanged correction answers `unchanged`.  Re-contributing
+text whose deterministic point id already exists answers `duplicate`, including after retraction
+or correction, rather than overwriting audit.  A retraction keeps the point as audit
+metadata, excludes it from normal search, and is idempotent; `include_retracted=true` is the
+search audit view.  Reasons, titles and URLs are scrubbed and gitleaks-gated like contribution
+text.  The service serializes its one-point read-modify-write in-process; do not scale the
+service to multiple write replicas without an external mutation lock or leader.
 
 **Keep-alive discipline.**  The server speaks HTTP/1.1 behind Traefik, which pools connections.
 Every reply sent before the request body was consumed — 401, 411, 413, a 404/405 on a POST, and
@@ -48,21 +61,25 @@ stalled body on an authenticated POST is answered **408** with close.  Neither p
 `handle_error`, so there is no traceback, and an idle keep-alive connection is closed by
 `http.server` after the same timeout (Traefik reconnects transparently).
 
-**Contribute gate.**  `recall_contribute` over this surface is gated exactly as on the Mac: the
-regex scrub runs, then gitleaks scans the scrubbed text and refuses anything it still flags
+**Mutation gate.**  `recall_contribute`, `recall_correct` and `recall_retract` over this surface
+are gated exactly as on the Mac: the regex scrub runs, then gitleaks scans the scrubbed text or
+metadata and refuses anything it still flags
 (fail closed if gitleaks cannot deliver a verdict).  `bootstrap.sh` and the `Dockerfile`
 install the pinned gitleaks release (`GITLEAKS_VERSION`, default `8.30.1`) for that reason.  If
 the download fails the service still starts, the log says so, and every contribution's
 `scrubbed` list carries `gitleaks-unavailable` so callers can see the gate was regex-only.
 
-Configuration is **Infisical-first** (see `INFISICAL.md` at the repo root): on startup the service loads every key below from the **AI Fleet Coordinator** Infisical project into an in-memory cache, refreshed in the background; the container never reads `~/.secrets`.  The machine identity (`INFISICAL_AUTOMATION_CLIENT_ID` / `INFISICAL_AUTOMATION_CLIENT_SECRET`) reaches the container through the environment.  When no identity is configured, the keys below fall back to the process environment exactly as before.  Admin changes go through `POST /admin/settings` (write-through to Infisical) with the admin bearer, or the Infisical UI/API plus `POST /admin/reload-settings` / `SIGHUP`.
+Configuration is **Infisical-first** (see `INFISICAL.md` at the repo root): when `INFISICAL_TOKEN` is bound, the service verifies that scoped reader before loading managed settings from the **AI Fleet Coordinator** Infisical project into an in-memory cache, refreshed in the background; the container never reads `~/.secrets`.  A present malformed token or mismatched grant fails the read and startup without falling back to environment copies.  With no reader bound, the existing complete explicit-environment configuration route remains available; required `RECALL_API_TOKEN` configuration still refuses startup if absent.  Admin writes use the separate `INFISICAL_WRITE_TOKEN`; without it, write-through is refused.  Admin changes can also go through the Infisical UI/API plus `POST /admin/reload-settings` / `SIGHUP`.
 
 | Variable | Required | Notes |
 |---|---|---|
 | `RECALL_API_TOKEN` | yes | bearer for every non-health route; the process refuses to start without it |
+| `INFISICAL_TOKEN` | for Infisical reads | scoped read-only service token for the AI Fleet Coordinator project and settings path; bind from the Recall read grant when using managed settings |
+| `INFISICAL_WRITE_TOKEN` | no | separate write-capable service token for admin settings updates |
 | `RECALL_ADMIN_TOKEN` | for admin routes | bearer for `GET`/`POST` `/admin/settings` and `POST` `/admin/reload-settings`; the admin surface answers 403 until it is set |
+| `RECALL_OWNER_TOKEN` | for OWNER recall mutations | distinct bearer proving the owner identity for `recall_correct` / `recall_retract`; those calls answer 403 until it is set |
 | `QDRANT_URL` | yes | `http://100.69.77.26:6333` from a container on the box (see *Network*) |
-| `QDRANT_API_KEY` | yes | write key, used only by `recall_contribute` |
+| `QDRANT_API_KEY` | yes | write key, used only by the three mutation tools |
 | `QDRANT_READONLY_API_KEY` | no | used for every read when present |
 | `QDRANT_FLEET_COLLECTION` | yes | `fleet-agents` |
 | `TEI_URL` | yes | `http://100.69.77.26:8081` |
@@ -271,7 +288,8 @@ env_http_headers = { "Authorization" = "RECALL_AUTH_HEADER", "CF-Access-Client-I
 ```
 
 The tracked example is `scripts/seat-mcp/mcp.example.json` (entry `fleet-recall`).  Tools:
-`recall_search`, `recall_stats`, `recall_contribute` (pass `seat`).
+`recall_search`, `recall_stats`, `recall_contribute`, `recall_correct`, `recall_retract`
+(pass `seat` for mutations).
 
 ## Tests
 

@@ -2,9 +2,26 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { SHARED_CHATGPT_SEATS, loadConfig, PUBLIC_HOST, ISSUER, RESOURCE, REFRESH_TOKEN_TTL_S, ACCESS_TOKEN_TTL_S, GATE_LOG_NAME, KNOWN_SEATS, SEAT_SECRETS, PROPS_PHASE, PINNED_OPERATOR_USER_ID } from "../src/config.js";
+import { SHARED_CHATGPT_SEATS, loadConfig, PUBLIC_HOST, ISSUER, RESOURCE, REFRESH_TOKEN_TTL_S, ACCESS_TOKEN_TTL_S, GATE_LOG_NAME, KNOWN_SEATS, SEAT_SECRETS, PROPS_PHASE, PINNED_OPERATOR_USER_ID, GR_VERIFY_CACHE_MAX_MS } from "../src/config.js";
 import { REALM } from "../src/zulip.js";
 import { ROOT, wranglerConfig, testEnv, CHATGPT_REDIRECT } from "./helpers.mjs";
+
+test("GR_VERIFY_CACHE_MS:  the Git bearer verify cache is an hour by default (owner 2026-11-06), set by its own var alone, and capped at the relay's hour", () => {
+  assert.equal(GR_VERIFY_CACHE_MAX_MS, 3_600_000);
+  assert.equal(loadConfig(testEnv()).grVerifyCacheMs, 3_600_000);
+  assert.equal(loadConfig(wranglerConfig().vars).grVerifyCacheMs, 3_600_000, "production ships the hour");
+  assert.equal(loadConfig(testEnv({ GR_VERIFY_CACHE_MS: "" })).grVerifyCacheMs, 3_600_000);
+  assert.equal(loadConfig(testEnv({ GR_VERIFY_CACHE_MS: "0" })).grVerifyCacheMs, 0, "0 still turns it off");
+  assert.equal(loadConfig(testEnv({ GR_VERIFY_CACHE_MS: "60000" })).grVerifyCacheMs, 60_000);
+  // Neither setting moves the other.
+  const identityOff = loadConfig(testEnv({ GATE_IDENTITY_CACHE_MS: "0" }));
+  assert.deepEqual([identityOff.gateIdentityCacheMs, identityOff.grVerifyCacheMs], [0, 3_600_000]);
+  const gitOff = loadConfig(testEnv({ GR_VERIFY_CACHE_MS: "0" }));
+  assert.deepEqual([gitOff.gateIdentityCacheMs, gitOff.grVerifyCacheMs], [3_600_000, 0]);
+  for (const bad of ["3600001", "-1", "1.5", "soon"]) {
+    assert.throws(() => loadConfig(testEnv({ GR_VERIFY_CACHE_MS: bad })), /GR_VERIFY_CACHE_MS/, bad);
+  }
+});
 
 test("wrangler.jsonc vars load, and Access fails closed until the AUD is set", () => {
   const vars = wranglerConfig().vars;
@@ -155,7 +172,7 @@ test("config refuses loose or ambiguous allowlists", () => {
     [{ PUBLIC_HOST: "evil.example" }, /PUBLIC_HOST/],
     [{ SEATS: "{not json" }, /not valid JSON/],
     [{ SEATS: "" }, /not set/],
-    [{ CHANNELS_DENY: { "work-in-progress": 642232 } }, /JSON array of stream ids/],
+    [{ CHANNELS_DENY: { "simple-tools": 642232 } }, /JSON array of stream ids/],
     [{ CHANNELS_DENY: ["642232"] }, /must be stream ids/],
     [{ CHANNELS_DENY: [0] }, /must be stream ids/],
     [{ CHANNELS_DENY: [642232, 642232] }, /listed twice/],

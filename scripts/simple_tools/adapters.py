@@ -139,7 +139,7 @@ def claude_env(
     ZULIP_* and ANTHROPIC_API_KEY are dropped, so the run uses the claude.ai login.
 
     With `seat` (a wake, or test-wake), the listener acts as the reference launcher
-    (FLEET-PROTOCOL § Identity Rules › Launcher Contract):  it sets AGENT_LAUNCHER=eavesdropper-wake,
+    (FLEET-PROTOCOL § Identity Rules › Launcher Contract):  it sets AGENT_LAUNCHER=simple-tools-wake,
     AGENT_LAUNCH_SEAT and AGENT_SEAT to the seat it is waking, and SIMPLE_TOOLS_ATTACH=0, fresh, after
     every inherited identity variable was dropped.  The wake has no tools and posts nothing itself
     (the daemon posts its validated reply as the seat's bot), so this only keeps the seat explicit."""
@@ -438,7 +438,10 @@ def pin_state(paths: L.SeatPaths, claude: str | None) -> dict[str, Any]:
     """Why the wake pin does or does not match the binary (AFC-256).  `pinned()` is a plain bool and
     cannot tell a seat that was never pinned from one whose pin went stale, and the two need different
     answers from the owner:  the first is a fresh install waiting on manual test 3, the second means a
-    claude auto-update moved the realpath and every wake since has been degrading to inbox-only.
+    claude auto-update moved the realpath out from under the pin.  The state is reported, never
+    repaired here -- no read ever rewrites a pin -- and which states hold a wake is the daemon's
+    call:  since the owner's 2026-11-03 ruling a drifted pin is advisory (the daemon logs the drift
+    and runs the installed binary), while a seat that was never pinned still waits.
 
     `why` is None when pinned, else `no_claude` (no binary to pin), `not_pinned` (nothing recorded yet)
     or `pin_stale` (a pin was recorded and the binary has since moved).  `pinned_claude` is the realpath
@@ -534,6 +537,7 @@ def pin_candidate(paths: L.SeatPaths, claude: str, now: float) -> str | None:
 # (owner 2026-10-11:  cost is not the concern;  spam and cascade are).
 #
 #     muse exec --model muse-spark-1.3-contributor --reasoning-effort minimal
+#               --contributor-mode on
 #               --prompt-file <prompt> --output-schema <schema>
 #               --json --approval-mode never
 #               --disable-shell --disable-write --disable-web-tools
@@ -709,7 +713,12 @@ def muse_argv(muse: str, model: str) -> list[str]:
 
     The three path slots are filled in by MuseRunner.run against the wake dir;  the fleet tag set
     (the enum of the schema's route seat) travels in the schema file itself (wakes.schema_text),
-    which is why it is not an argv parameter here."""
+    which is why it is not an argv parameter here.
+
+    Contributor mode is named on the command line, not inherited (owner directive, 2026-11-03):
+    the wake's model is the contributor tier, and `--contributor-mode on` is a per-run override
+    that is never persisted, so naming it keeps the run on contributor terms even if the ambient
+    settings.json flag ever flips off under it."""
     return [
         muse,
         "exec",
@@ -721,6 +730,8 @@ def muse_argv(muse: str, model: str) -> list[str]:
         MUSE_REASONING_EFFORT,
         "--provider",
         MUSE_PROVIDER,
+        "--contributor-mode",
+        "on",
         "--prompt-file",
         MUSE_PROMPT_SLOT,
         "--output-schema",
@@ -748,6 +759,11 @@ def muse_env(
 
     Every ANTHROPIC_*, CLAUDE_*, AGENT_*, ZULIP_* and MUSE_* variable is dropped, so the run uses
     the muse subscription login the daemon's user already has and never a second seat's identity.
+    One credential is carried through on purpose:  META_API_KEY, when the environment the daemon
+    itself runs in carries one.  A headless run cannot read the login Keychain item (the consent
+    prompt is unreachable to it), so the daemon's environment is the injection point the owner
+    authorized (2026-11-03);  the key stays out of config files and off the command line, and an
+    absent or empty value invents nothing -- the run then uses the subscription login as before.
     With `seat` (a wake, or test-wake) the listener is the reference launcher (FLEET-PROTOCOL
     Identity Rules):  it names the seat it is waking and clears every inherited identity variable
     first.  The wake has no tools and posts nothing itself (the daemon posts its validated reply as
@@ -761,6 +777,9 @@ def muse_env(
         "TMPDIR": env.get("TMPDIR") or "/tmp",
         "PATH": wake_path,
     }
+    api_key = env.get("META_API_KEY")
+    if api_key:
+        out["META_API_KEY"] = api_key
     if seat:
         out.update(
             {
@@ -1027,9 +1046,12 @@ def muse_pin_state(paths: L.SeatPaths, muse: str | None) -> dict[str, Any]:
     yet), `pin_unverified` (a pin from before the fingerprint existed, so it vouches for nothing
     about this command), `pin_stale` (the binary moved, or the command, contract or schema changed
     under it), or `pin_unreadable` (the contract or schema could not be read, so nothing can be
-    verified).  A seat whose muse pin has never been verified HOLDS and says why:  it never
-    self-heals, because the pin records that a person checked this build's wake contract.  The
-    last three are named apart because the remediation differs:  a moved binary and a changed
+    verified).  The state is reported, never repaired here:  no read ever rewrites a pin, because
+    the pin records that a person checked this build's wake contract.  Which states hold a wake
+    and which merely drift is the daemon's call -- since the owner's 2026-11-03 ruling a recorded
+    pin that drifted (`pin_stale`, `pin_unverified`) is advisory and the wake runs on the
+    installed build, while no pin, no binary and an unreadable contract still hold.  The last
+    three are named apart because the remediation differs:  a moved binary and a changed
     contract both end in re-pinning, an unreadable contract does not, and only one of them is a
     moved binary."""
     if not muse:
@@ -1252,7 +1274,7 @@ def muse_pin_candidate(paths: L.SeatPaths, muse: str, now: float) -> str | None:
 # quota app) publishes what each provider has left;  a wake whose provider is spent is refused
 # BEFORE the subprocess spawns, so an exhausted seat costs no run, no queue slot and no retry.
 #
-# The source is the Usage Monitor snapshot (docs/protocols/eavesdropper.md), read with the
+# The source is the Usage Monitor snapshot (docs/protocols/simple-tools-listener.md), read with the
 # same rules the rest of the fleet uses for it:  a regular same-user file, no symlink, capped size,
 # and a 15-minute expiry (the producer's 5-minute cadence plus two missed cycles).  A file that is
 # missing, stale, malformed or simply has no window for this provider NEVER blocks a wake:  this is
@@ -1423,8 +1445,8 @@ def quota_red(provider: str, now: float | None = None, path: str | None = None) 
 # --------------------------------------------------------------------------------------------
 #
 #   mcode exec --prompt-mode work --permission off --output-format json
-#             --model minimax/MiniMax-M3.1-Flash
-#             --output-schema <schema> --max-steps N --timeout 4m --cwd <inert dir>
+#             --model minimax/MiniMax-M3.1-Flash --effort low
+#             --output-schema <schema> --max-steps N --timeout 210s --cwd <inert dir>
 #             -o <last-message file> --prompt
 #
 # The same contract shape as muse:  `--output-schema` shapes the final answer, `--permission off`
@@ -1462,9 +1484,27 @@ MCODE_MAX_STEPS = 16
 # timeout here means no answer at all rather than a slower answer.  The margin over the measured
 # run is therefore worth more than the 30s it adds to a path that already spent the primary's
 # 240s.  It is still 30s under the outer deadline, so the daemon's kill stays a backstop.
-MCODE_TIMEOUT = "3m30s"
+#
+# The single-unit form is load-bearing, not style:  mcode 0.6.12 rejects the compound duration
+# "3m30s" at argv validation (verified live, 2026-11-03), so the same 210 seconds is spelled
+# "210s", the form mcode accepts.
+MCODE_TIMEOUT = "210s"
 MCODE_PROMPT_MODE = "work"
 MCODE_PERMISSION = "off"
+# The reasoning effort, named on every fallback run (owner directive, 2026-11-03:  "don't do
+# default").  An unset effort is not a neutral middle:  MiniMax's own default is MAX, the
+# highest and most expensive thinking tier, so a fallback wake left unset would pay the top
+# reasoning price for a bounded four-message prompt.  The owner's determination is that
+# MiniMax-M3.1 at its lowest effort is cheaper and faster than M3 at none, so the floor is
+# asked for explicitly rather than inherited from whatever the install's default happens
+# to be.
+#
+# The floor's NAME differs from muse's, because the two runtimes' vocabularies differ:
+# muse's lowest tier is `minimal`, but mcode 0.6.12 has no `minimal` level at all and
+# rejects it at argv validation ("Available levels: default, low, medium, high, xhigh,
+# max";  verified live, 2026-11-03).  mcode's lowest named tier is `low`.  Do not unify
+# the two constants:  each names the floor its own runtime actually accepts.
+MCODE_REASONING_EFFORT = "low"
 # The fallback's PROMPT BOUND, and the reason the step budget is provable at all.  mcode has no
 # sandbox and no tool-deny switch, so `--max-steps` is the ONLY bound on how much the fallback may
 # act, and the step cost grows with the prompt:  the daemon can build a wake prompt with up to
@@ -1518,6 +1558,8 @@ def mcode_argv(mcode: str, model: str = MCODE_DEFAULT_MODEL) -> list[str]:
         "json",
         "--model",
         model,
+        "--effort",
+        MCODE_REASONING_EFFORT,
         "--input",
         "-",
         "--output-schema",
@@ -1769,8 +1811,10 @@ def mcode_wake_fingerprint(mcode: str, model: str = MCODE_DEFAULT_MODEL) -> str 
 def mcode_pin_state(
     paths: L.SeatPaths, mcode: str | None, model: str = MCODE_DEFAULT_MODEL
 ) -> dict[str, Any]:
-    """Why the fallback pin does or does not match the command.  Same never-self-heal rule as the
-    other two, on its own file, so a fallback is only trusted once a person verified it.
+    """Why the fallback pin does or does not match the command.  Same reporting discipline as the
+    other two, on its own file:  the states are named apart, never repaired on read, and the
+    daemon decides which of them hold the fallback (a recorded pin that drifted is advisory
+    since the owner's 2026-11-03 ruling, exactly as for the primaries).
 
     `why` is None when pinned, else `no_mcode` (no binary to pin), `not_pinned` (nothing recorded),
     `pin_unverified` (a pin from before the fingerprint existed, so it vouches for nothing about
@@ -2136,13 +2180,33 @@ def openrouter_url_problem(url: str) -> str | None:
     return None
 
 
+# The same full slug shape the consult-backup declaration validates, so a malformed preset-like id
+# never takes the preset branch (it keeps the plain request shape and fails validation elsewhere).
+_OPENROUTER_PRESET_RE = re.compile(r"@preset/[A-Za-z0-9][A-Za-z0-9._-]{0,79}")
+
+
 def openrouter_request_body(model: str, system: str, user: str, schema: str) -> dict[str, Any]:
     """The one request body, for the call and for the pin's fingerprint (with placeholders).
 
     No `tools`, no `tool_choice`, no `stream` and no plugin:  the model is offered nothing to call.
-    `provider.require_parameters` makes OpenRouter refuse a provider that cannot honor the strict
-    `response_format` (or the reasoning setting) instead of quietly dropping it."""
-    return {
+    For a plain model `provider.require_parameters` makes OpenRouter refuse a provider that cannot
+    honor the strict `response_format` (or the reasoning setting) instead of quietly dropping it;  a
+    preset-referencing model (`@preset/<slug>`) sends NO `provider` object, so the preset's own
+    provider settings govern (see the comment below).  A preset model also sends "tools": [], which keeps the REQUEST tool-free but cannot
+    disarm a tooled preset:  per the documented preset semantics request tools UNION with preset
+    tools (a same-identity request tool overrides one preset entry, and an empty array overrides
+    nothing), and the latest preset version is always served with no immutable version binding at
+    inference.  No request field documented for this call removes a preset's tools, so that
+    property rests on the preset's own zero-tool configuration, read by a person through an
+    authenticated preset read (a management-key endpoint - it cannot live in this runtime without
+    handing the runtime a workspace admin credential, and even a per-call read would race a
+    dashboard edit).  The code-side backstops are "tool_choice": "none" and the response path:  a
+    completion carrying a tool call is a fixed-phrase failure, so the consult settles as a hold and
+    nothing is delivered.  Not verified:  whether "tool_choice": "none" also disables a preset's
+    server tools.  Not covered:  any tool or plugin influence that leaves no tool call in the
+    response (it is neither prevented nor detected here) - the named residual if a preset is ever
+    changed to add tools or plugins.  A request that is tool-free is not thereby server tool-free."""
+    body = {
         "model": model,
         "messages": [
             {"role": "system", "content": system},
@@ -2162,6 +2226,30 @@ def openrouter_request_body(model: str, system: str, user: str, schema: str) -> 
         "reasoning": dict(OPENROUTER_REASONING),
         "stream": False,
     }
+    if _OPENROUTER_PRESET_RE.fullmatch(model):
+        body.pop("provider")
+        # No `provider` object for a preset.  The owner chose the live preset (WhatsApp, Nov 7 2026,
+        # 6:34 PM CT), so its provider block (order, fallbacks, exclusions, data collection) is his
+        # dashboard's to set.  OpenRouter documents request-over-preset as a shallow merge, and
+        # `provider` is one top-level field, so sending even `{"require_parameters": true}` is
+        # expected to replace that whole block;  the Nov 7 two-call sample (sent with it) was served
+        # by Nebius for the MiniMax model although the preset's order named only Meta and Minimax,
+        # which fits a replaced block but does not prove one.  The cost of leaving it out:
+        # `require_parameters` is no longer sent by this code, so refusing a provider that cannot
+        # honor the strict `response_format` now depends on the preset's own provider setting.  The
+        # answer is still parsed against the strict schema, so an ignored `response_format` ends as
+        # a failed consult and a hold, not as a delivered answer.
+        # Request tool-free is NOT server tool-free.  Request tools UNION with preset tools
+        # (documented OpenRouter preset semantics), so the empty array cannot disarm a tooled
+        # preset.  "tool_choice": "none" is meant to stop the model calling tools, but whether it
+        # also covers a preset's server tools is unverified.  Only a returned tool call is detected
+        # (the response path refuses it);  tool or plugin influence with no tool call is neither
+        # prevented nor detected.  Server tool-free rests on the preset's own zero-tool,
+        # zero-plugin configuration as read by a person, and a later edit to the live preset is
+        # not seen by this code.
+        body["tools"] = []
+        body["tool_choice"] = "none"
+    return body
 
 
 def openrouter_http_reason(status: int) -> str:
@@ -3191,7 +3279,7 @@ def board_app(topic: str, acronyms: set[str]) -> str:
 
 # The daemon files this board item with no agent session behind it, and `board file` needs a session id from every
 # seat but the single-thread ones (AFC-361).  A label that is not a transcript id resolves to no session.
-BOARD_SESSION_LABEL = "eavesdropper-wake"
+BOARD_SESSION_LABEL = "simple-tools-wake"
 
 
 def board_argv(

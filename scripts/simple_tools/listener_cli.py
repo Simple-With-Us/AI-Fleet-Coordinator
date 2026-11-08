@@ -156,6 +156,14 @@ def installed_plugin_version(home: str) -> str | None:
 # --------------------------------------------------------------------------------------------
 
 
+def _check_defer_scope(seat: str | None, defer: bool) -> None:
+    """AFC-652:  --defer is fleet-wide drain semantics (wakes defer, broadcasts park, the
+    Linear hook gates);  a per-seat marker would arm the hook and defer one seat's wakes
+    without parking broadcasts, so the CLI refuses the combination."""
+    if defer and seat is not None:
+        raise Z.UsageError("--defer marks a fleet-wide drain window; it cannot take --seat")
+
+
 def cmd_daemon(rt: Any, args: argparse.Namespace) -> int:
     sub = args.daemon_command
     root = _root(rt)
@@ -302,7 +310,10 @@ def cmd_daemon(rt: Any, args: argparse.Namespace) -> int:
         from .daemon import set_pause
 
         seat = Z.normalise_seat(args.seat) if args.seat else None
-        set_pause(root, seat, wakes_only=args.wakes_only, by="cli", now=time.time())
+        _check_defer_scope(seat, args.defer)
+        set_pause(
+            root, seat, wakes_only=args.wakes_only, by="cli", now=time.time(), defer=args.defer
+        )
         rt.out(
             "paused %s%s; resume with: simple-chat daemon resume%s\n"
             % (
@@ -334,7 +345,82 @@ def cmd_daemon(rt: Any, args: argparse.Namespace) -> int:
         return cmd_init(rt, args)
     if sub == "test-wake":
         return cmd_test_wake(rt, args)
+    if sub == "check-config":
+        return cmd_check_config(rt, args)
     raise Z.UsageError("unknown daemon command %r" % sub)
+
+
+# --------------------------------------------------------------------------------------------
+# check-config
+# --------------------------------------------------------------------------------------------
+
+
+def cmd_check_config(rt: Any, args: argparse.Namespace) -> int:
+    """Would the listener take this candidate listener.toml?  The listener's own TOML read, its
+    from_dict and its seat partition check run on the candidate and on the current file, so a tool
+    that writes the file (Muster's Wake & Listener panel) can refuse a bad edit before it lands and
+    does not have to copy the rules.  It reads two files and changes nothing.
+
+    `ok` means the candidate parses, the partition refuses nothing in it, and it brings no error the
+    current file does not already have.  An existing soft error on another seat does not block an
+    edit;  an existing partition refusal does, because the listener would refuse any reload of it.
+
+    `--partition` names the partition to judge by.  The running listener can read another checkout's
+    copy than this command's, and that copy is the one that can refuse the file, so a tool that knows
+    it (the status's `partition_file`) passes it."""
+    root = _root(rt)
+    current = _config_path(rt)
+    partition_file = (
+        os.path.expanduser(args.partition) if args.partition else C.partition_path(rt.env)
+    )
+    partition, partition_problem = C.load_partition(partition_file)
+    env_instance = (rt.env.get(C.ENV_INSTANCE) or "").strip().casefold() or None
+
+    def judge(path: str) -> tuple[list[str], list[str]]:
+        cfg = C.load(root, path)
+        if partition_problem:
+            refused = [partition_problem + "; cannot check the seat partition, so no seat is held"]
+        else:
+            refused = C.partition_errors(
+                cfg, partition, partition_file=partition_file, env_instance=env_instance
+            )
+        return list(cfg.errors), refused
+
+    raw, parse_error = L.load_config(root, args.file)
+    if parse_error is None and not raw:
+        parse_error = "%s holds no settings" % args.file
+    errors: list[str] = []
+    refused: list[str] = []
+    new_errors: list[str] = []
+    if parse_error is None:
+        errors, refused = judge(args.file)
+        before_errors, before_refused = judge(current)
+        before = set(before_errors) | set(before_refused)
+        new_errors = [e for e in errors + refused if e not in before]
+    ok = parse_error is None and not new_errors and not refused
+    if getattr(args, "json", False):
+        rt.out(
+            json.dumps(
+                {
+                    "ok": ok,
+                    "candidate": args.file,
+                    "current": current,
+                    "partition_file": partition_file,
+                    "parse_error": parse_error,
+                    "errors": errors,
+                    "new_errors": new_errors,
+                    "refused": refused,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n"
+        )
+    else:
+        rt.out("the listener would %s %s\n" % ("take" if ok else "not take", args.file))
+        for problem in ([parse_error] if parse_error else []) + refused + new_errors:
+            rt.out("  %s\n" % problem)
+    return 0 if ok else 1
 
 
 # --------------------------------------------------------------------------------------------
@@ -347,6 +433,56 @@ def _wake_loop_status_line(status: dict[str, Any]) -> str | None:
     if type(enabled) is not bool:
         return None
     return "wake loop prevention: " + ("ON" if enabled else "OFF (topic loop guard bypassed)")
+
+
+def _bridge_gate_counts(root: str, now: float) -> dict[str, Any] | None:
+    """The Mac bridge's consult counts per seat, from `muse-bridge-mac.json`, or None when the file is
+    there and cannot be trusted.  A file that does not exist is a real zero (`{}`): a Mac that has not
+    consulted yet.  A file that cannot be read, is not JSON, or is not the bridge's shape is None, and
+    status then prints no bridge line at all, because a false zero would say the bridge is quiet."""
+    path = os.path.join(L.listener_dir(root), "muse-bridge-mac.json")
+    try:
+        with open(path, "rb") as fh:
+            data = json.loads(fh.read())
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError, RecursionError):
+        return None
+    decisions = data.get("decisions") if isinstance(data, dict) else None
+    if not isinstance(decisions, dict):
+        return None
+    try:
+        return W.gate_counts([d for d in decisions.values() if isinstance(d, dict)], now, W.DAY)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _gate_status_lines(
+    root: str,
+    seat: str,
+    bridge_counts: dict[str, Any] | None,
+    now: float,
+    *,
+    ledger: bool,
+    bridged: bool,
+) -> list[str]:
+    """The model gate's status lines for one seat (phase 1): `model starts 24h N (avoidable M)` from the
+    seat's own wake ledger, and `bridge consults 24h N (avoidable M)` from the Mac bridge's decisions.  The
+    ledger is read from its END, down to the window, so the cost is the day and not the 90 days a ledger
+    keeps.  Read-only, and never a reason for `status` to fail.  A line is printed only when what it
+    counts could be read: a ledger that cannot be read leaves its line out, and `bridge_counts` None (a
+    server listener, which has no bridge file, or a file that cannot be trusted) leaves out the bridge line."""
+    lines: list[str] = []
+    if ledger:
+        try:
+            rows = W.rows_since(L.SeatPaths(root, seat).wakes, now - W.DAY)
+            if rows is not None:
+                lines.append(W.gate_line(W.gate_counts(rows, now, W.DAY).get(seat)))
+        except Exception:  # noqa: BLE001
+            pass
+    if bridge_counts is not None and (bridged or seat in bridge_counts):
+        lines.append(W.bridge_line(bridge_counts.get(seat)))
+    return lines
 
 
 def cmd_status(rt: Any, args: argparse.Namespace) -> int:
@@ -437,7 +573,12 @@ def cmd_status(rt: Any, args: argparse.Namespace) -> int:
             lines.append(
                 "paused: %s"
                 % ", ".join(
-                    "%s%s" % (k, " (wakes only)" if (v or {}).get("wakes_only") else "")
+                    "%s%s%s"
+                    % (
+                        k,
+                        " (wakes only)" if (v or {}).get("wakes_only") else "",
+                        " (drain)" if (v or {}).get("defer") else "",
+                    )
                     for k, v in sorted(pause.items())
                 )
             )
@@ -447,6 +588,14 @@ def cmd_status(rt: Any, args: argparse.Namespace) -> int:
             lines.append("%-12s NOT LOADED  nothing is captured for this seat" % seat)
             for problem in why or []:
                 lines.append("  RED %s" % problem)
+        # The Mac bridge's decisions, read once:  each carries the gate of its own consult.  Only a Mac
+        # listener has the file, so a server listener never prints a bridge line, and a file that cannot
+        # be trusted prints none either (None), where a missing one is a real zero.
+        bridge_counts = (
+            _bridge_gate_counts(root, time.time())
+            if (status.get("instance") or "mac") == "mac"
+            else None
+        )
         for seat, s in sorted((status.get("seats") or {}).items()):
             routine = s.get("routine") or {}
             if s.get("wake") == "claude":
@@ -511,6 +660,17 @@ def cmd_status(rt: Any, args: argparse.Namespace) -> int:
                     routes,
                 )
             )
+            bridged = bool(s.get("muse_bridge"))
+            for gate_text in _gate_status_lines(
+                root,
+                seat,
+                bridge_counts,
+                time.time(),
+                ledger=s.get("wake") != "inbox"
+                or bridged,  # an unbridged inbox seat starts no model
+                bridged=bridged,
+            ):
+                lines.append("  " + gate_text)
             for red in s.get("red") or []:
                 lines.append("  RED %s" % red)
             held = _held_line(s.get("held_back"))
@@ -527,6 +687,14 @@ def cmd_status(rt: Any, args: argparse.Namespace) -> int:
                         lease.get("pending"),
                     )
                 )
+        # A seat of the server that the Mac bridge consulted for is not in this listener's own status.  Its
+        # consults are in the Mac's bridge file, so they are shown; its wake ledger is on the server, which
+        # this command does not read, so its starts and forwards are not.
+        for remote in sorted(set(bridge_counts or {}) - set(status.get("seats") or {})):
+            lines.append(
+                "%-12s %s  (not a seat of this listener: only the Mac bridge's consults are visible here)"
+                % (remote, W.bridge_line(bridge_counts[remote]))
+            )
         loop_status = _wake_loop_status_line(status)
         if loop_status:
             lines.append(loop_status)
@@ -1265,7 +1433,7 @@ def cmd_inbox_local(rt: Any, args: argparse.Namespace) -> int:
                 for n in notes
             ]
             rt.out(
-                "[eavesdropper owner queue] %d item%s\n%s\n"
+                "[simple-tools owner queue] %d item%s\n%s\n"
                 % (
                     len(notes),
                     "" if len(notes) == 1 else "s",
@@ -1382,6 +1550,45 @@ def cmd_listener(rt: Any, args: argparse.Namespace) -> int:
             L.DRAIN_PER_MESSAGE,
         )
         return 0
+    if action == "pending-inbox":
+        view = LR.pending_inbox_view(root, seat, after_seq=args.after_seq, limit=args.limit)
+        if as_json:
+            return emit(view)
+        if not view["items"]:
+            if view["count"]:
+                rt.out(
+                    "simple-chat: %d wake-worthy item%s pending for %s after seq %d "
+                    "(latest_seq %d;  --limit 0 shows none)\n"
+                    % (
+                        view["count"],
+                        "" if view["count"] == 1 else "s",
+                        seat,
+                        view["after_seq"],
+                        view["latest_seq"],
+                    )
+                )
+                return 0
+            rt.err(
+                "simple-chat: no wake-worthy items pending for %s after seq %d (latest_seq %d)"
+                % (seat, view["after_seq"], view["latest_seq"])
+            )
+            return 0
+        _fenced(
+            rt,
+            "[simple-chat listener pending-inbox] %d of %d pending item%s for %s after seq %d "
+            "(latest_seq %d;  read-only, no cursor moved)"
+            % (
+                len(view["items"]),
+                view["count"],
+                "" if view["count"] == 1 else "s",
+                seat,
+                view["after_seq"],
+                view["latest_seq"],
+            ),
+            view["items"],
+            L.DRAIN_PER_MESSAGE,
+        )
+        return 0
     if action == "ack":
         return emit(
             {"seat": seat, "cursor": LR.ack_inbox(root, seat, args.seq)},
@@ -1397,7 +1604,7 @@ def cmd_listener(rt: Any, args: argparse.Namespace) -> int:
             return emit(view)
         _fenced(
             rt,
-            "[eavesdropper owner queue] %d note%s for %s (%d not surfaced)"
+            "[simple-tools owner queue] %d note%s for %s (%d not surfaced)"
             % (len(view["items"]), "" if len(view["items"]) == 1 else "s", seat, view["pending"]),
             view["items"],
         )
@@ -1588,9 +1795,28 @@ def add_parsers(
     q = add("pause", "kill switch: stop wakes and live interrupts (capture continues)", dsub)
     q.add_argument("--seat", metavar="S", help="one seat (default: every seat)")
     q.add_argument("--wakes-only", action="store_true", help="stop headless wakes only")
+    q.add_argument(
+        "--defer",
+        action="store_true",
+        help="mark this pause as a qualified drain window: wakes defer instead of dropping, "
+        "broadcast effects park durably, and the Linear hook refuses new events (AFC-652; "
+        "fleet-wide only, cannot combine with --seat)",
+    )
     q = add("resume", "lift a pause", dsub)
     q.add_argument("--seat", metavar="S", help="one seat (default: every pause)")
     add("reload", "re-read listener.toml (SIGHUP to the running listener)", dsub)
+    q = add(
+        "check-config",
+        "would the listener take this candidate listener.toml?  Runs its own read, rules and seat "
+        "partition check, and changes nothing",
+        dsub,
+    )
+    q.add_argument("--file", metavar="PATH", required=True, help="the candidate file to check")
+    q.add_argument(
+        "--partition",
+        metavar="PATH",
+        help="the seat partition to judge by (default: this checkout's copy)",
+    )
     q = add("chats", "discover, inspect, or manage existing-chat Zulip nudges", dsub)
     csub = q.add_subparsers(dest="chats_action", metavar="ACTION", required=True)
     c = csub.add_parser("catalog", parents=[common])
@@ -1660,7 +1886,7 @@ def add_parsers(
 
     p = add(
         "listener",
-        "this seat's own listener records:  status, inbox, ack, owner-queue, surface, wakes, "
+        "this seat's own listener records:  status, inbox, pending-inbox, ack, owner-queue, surface, wakes, "
         "held-back, clear-held, leases, live, drain, nudges (no Zulip login)",
     )
     lsub = p.add_subparsers(dest="listener_action", metavar="ACTION", required=True)
@@ -1677,6 +1903,20 @@ def add_parsers(
     q.add_argument(
         "--delivered", action="store_true", help="also show items already delivered to a session"
     )
+    q = add(
+        "pending-inbox",
+        "wake-worthy seat-inbox items after --after-seq (bodies are untrusted data); never moves any cursor",
+        lsub,
+    )
+    q.add_argument(
+        "--after-seq",
+        dest="after_seq",
+        type=int,
+        default=0,
+        metavar="N",
+        help="items after this seq",
+    )
+    q.add_argument("--limit", type=int, default=20, metavar="N")
     q = add("ack", "move the seat-inbox cursor forward to --seq (never back)", lsub)
     q.add_argument("--seq", type=int, required=True, metavar="N")
     q = add("owner-queue", "notes the listener queued for the owner, after the surfaced mark", lsub)

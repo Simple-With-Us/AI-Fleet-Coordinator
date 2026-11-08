@@ -6,6 +6,8 @@ between the two marker comments differs from the file;  ``--write`` rewrites the
 
 from __future__ import annotations
 
+import json
+
 from . import values
 from .registry import REGISTRY, Spec
 
@@ -70,6 +72,72 @@ def rows() -> list[str]:
 
 def block() -> str:
     return "\n".join([BEGIN, "", HEADER] + rows() + ["", END])
+
+
+# The shape of registry.json.  Muster reads it and falls back to the INFISICAL.md table for a
+# schema it does not know, so a field is added under a new number, never changed in place.
+JSON_SCHEMA = 1
+
+
+def _local_sentence(spec: Spec) -> str:
+    """The local-file rule as a sentence the owner reads."""
+    if spec.local == "deny" or spec.kind == "str":
+        return "A local file cannot change this."
+    return {
+        "bool": f"A local file can only set it to {str(spec.safe).lower()}.",
+        "enum": f"A local file can only move it toward {spec.choices[0]}." if spec.choices else "",
+        "int": "A local file can only lower it."
+        if spec.narrower == "min"
+        else "A local file can only raise it.",
+        "list": "A local file can only remove entries.",
+        "caps": "A local file can only lower a number.",
+    }[spec.kind]
+
+
+def _entry(spec: Spec) -> dict:
+    default = None if spec.secret else values.default_value(spec)
+    return {
+        "name": spec.name,
+        "label": spec.label,
+        "group": spec.group,
+        "owner": spec.owner,
+        "kind": spec.kind,
+        "kind_text": _kind(spec),
+        "choices": list(spec.choices),
+        "minimum": spec.minimum if spec.kind == "int" else None,
+        "maximum": spec.maximum if spec.kind == "int" else None,
+        "unit": spec.unit,
+        "step": spec.step,
+        "secret": spec.secret,
+        "default": None if default is None else values.render(spec, default),
+        "default_text": _default(spec).replace("`", ""),
+        "cap_names": sorted(spec.default) if spec.kind == "caps" and spec.default else [],
+        "safe": spec.safe,
+        "narrower": spec.narrower if spec.kind == "int" else None,
+        "local": spec.local,
+        "local_rule": _local_sentence(spec),
+        "hosts": spec.hosts,
+        "consumers": [{"name": plain, "path": path} for plain, path in spec.consumers],
+        "requires": [{"value": value, "knob": other} for value, other in spec.requires],
+        "consequences": [{"value": value, "text": text} for value, text in spec.consequences],
+        # The engine's own check, so the editor can say what is wrong before the plan does.
+        "pattern": "" if spec.secret else (spec.pattern or ""),
+        "format": spec.format,
+        "example": spec.example,
+        "once": spec.once,
+        "requires_explicit": spec.requires_explicit,
+        "note": spec.note,
+    }
+
+
+def json_text() -> str:
+    """registry.json:  every field Muster's Controls tab shows, in the registry's order."""
+    doc = {
+        "schema": JSON_SCHEMA,
+        "generated_by": "python3 -m fleet_knobs inventory --write-json fleet_knobs/registry.json",
+        "knobs": [_entry(spec) for spec in REGISTRY],
+    }
+    return json.dumps(doc, indent=1, ensure_ascii=False) + "\n"
 
 
 def _bounds(text: str):

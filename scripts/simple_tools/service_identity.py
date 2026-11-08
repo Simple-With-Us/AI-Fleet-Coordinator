@@ -67,13 +67,37 @@ def operator_credentials(env, home=None, fetch=None):
     from . import zulip as Z
 
     _, expected_email = operator_identity(env)
-    project = env.get(PROJECT_ENV, "").strip()
-    if not project:
-        raise Z.CredentialError("Set " + PROJECT_ENV)
     names = ("ZULIP_OPERATOR_EMAIL", "ZULIP_OPERATOR_API_KEY")
     where = "OPERATOR service: Fleet-OPS {} keys {}; no fallback".format(
         OPERATOR_INFISICAL_PATH, ", ".join(names)
     )
+    # The server instance's loader (server/infisical_env.py) reads exactly these two names from
+    # /zulip_operator with its own read-only service token and puts them in the daemon's
+    # environment, because that image ships no fleet-secrets and holds no machine identity.  When
+    # both are there they are the answer;  a half-set pair, an unresolved reference or a value for
+    # another address is refused rather than completed from somewhere else.
+    held = {n: str(env.get(n) or "").strip() for n in names}
+    if any(held.values()):
+        if not all(held.values()):
+            raise Z.CredentialError(f"{where}: only one of the two names is set")
+        # Any "${" is refused, not only a whole-value reference:  the loader's own rule
+        # (server/infisical_env.py), so a partial reference never goes out as a credential.
+        if any("${" in value for value in held.values()):
+            raise Z.CredentialError("Operator unresolved reference: " + ", ".join(names))
+        creds = Z.env_credentials(
+            dict(held, ZULIP_SITE=env.get("ZULIP_SITE", "")),
+            email_env=names[0],
+            key_env=names[1],
+            site_env="ZULIP_SITE",
+            label=OPERATOR,
+        )
+        creds = replace(creds, source=f"loader env (Fleet-OPS prod {OPERATOR_INFISICAL_PATH})")
+        if creds.email.casefold() != expected_email:
+            raise Z.CredentialError(f"{where}: not the pinned service bot")
+        return creds
+    project = env.get(PROJECT_ENV, "").strip()
+    if not project:
+        raise Z.CredentialError("Set " + PROJECT_ENV)
     if not Z.infisical_enabled(env):
         raise Z.CredentialError(f"cannot read {where}: SIMPLE_TOOLS_INFISICAL turns Infisical off")
     try:
@@ -149,7 +173,7 @@ def operator_credentials(env, home=None, fetch=None):
         creds = Z.env_credentials(
             selected, email_env=names[0], key_env=names[1], site_env="ZULIP_SITE", label=OPERATOR
         )
-        # The values came from fleet-secrets, not the ambient environment:  report that provenance.
+        # The values came from the Infisical reader, not the ambient environment:  report that provenance.
         creds = replace(
             creds, source=f"infisical Fleet-OPS prod {OPERATOR_INFISICAL_PATH} {names[1]}"
         )

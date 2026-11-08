@@ -9,7 +9,7 @@ Modules:
   cli     the argparse front end (`main(argv) -> int`); `scripts/simple-chat` and
         `scripts/simple-notes` are the entry points (this package path is unchanged)
 
-The listener (docs/protocols/eavesdropper.md):
+The listener (docs/protocols/simple-tools-listener.md):
   live          leases, live inboxes, claiming, untrusted wrapping, light config (hook fast path)
   attach        `simple-chat attach` and `detach`: the Claude Code hooks, rewake, drain and wait
   router        pure routing and the wake prefilter

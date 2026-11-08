@@ -43,6 +43,11 @@
               "doc"
             ],
             "description": "Category to filter by."
+          },
+          "include_retracted": {
+            "type": "boolean",
+            "default": false,
+            "description": "Include retracted contributions for audit; normal search hides them."
           }
         }
       },
@@ -202,6 +207,199 @@
       "annotations": {
         "readOnlyHint": false,
         "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "recall_correct",
+      "title": "Recall Correct",
+      "description": "Correct one of this seat's fleet recall contributions by exact doc_id.  The same lesson id stays in use, the old text remains in its revision audit, and search sees only the replacement.  OWNER may correct any contribution.  A retracted contribution is not resurrected.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "doc_id",
+          "text",
+          "reason"
+        ],
+        "properties": {
+          "doc_id": {
+            "type": "string",
+            "pattern": "^contrib/[A-Z][A-Z0-9_-]{0,31}/\\d{4}-\\d{2}-\\d{2}/[0-9a-f]{8}$",
+            "description": "Exact contrib/... lesson id."
+          },
+          "text": {
+            "type": "string",
+            "minLength": 40,
+            "maxLength": 4000,
+            "description": "Replacement lesson text, 40 to 4000 characters."
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 500,
+            "description": "Why the correction is being made."
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "Optional replacement title."
+          },
+          "url": {
+            "type": "string",
+            "maxLength": 500,
+            "pattern": "^https?://\\S+$",
+            "description": "Optional replacement source link."
+          },
+          "expected_revision": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Optional revision you read; a mismatch refuses the write."
+          },
+          "idempotency_key": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{8,64}$",
+            "description": "Any unique string; a retry with the same key returns the first correction instead of sending again."
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "id",
+          "doc_id",
+          "seat",
+          "revision",
+          "status"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "doc_id": {
+            "type": "string"
+          },
+          "seat": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer"
+          },
+          "status": {
+            "type": "string"
+          },
+          "corrected_at": {
+            "type": "integer"
+          },
+          "corrected_by": {
+            "type": "string"
+          },
+          "previous_content_hash": {
+            "type": "string"
+          },
+          "content_hash": {
+            "type": "string"
+          },
+          "scrubbed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "duplicate": {
+            "type": "boolean"
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "recall_retract",
+      "title": "Recall Retract",
+      "description": "Retract (take back) one of this seat's fleet recall contributions by exact doc_id.  The lesson stays as audit metadata with actor, time and reason, but normal search excludes it; recall_search with include_retracted=true shows it.  OWNER may retract any contribution.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "doc_id",
+          "reason"
+        ],
+        "properties": {
+          "doc_id": {
+            "type": "string",
+            "pattern": "^contrib/[A-Z][A-Z0-9_-]{0,31}/\\d{4}-\\d{2}-\\d{2}/[0-9a-f]{8}$",
+            "description": "Exact contrib/... lesson id."
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 500,
+            "description": "Why the contribution is being retracted."
+          },
+          "expected_revision": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Optional revision you read; a mismatch refuses the write."
+          },
+          "idempotency_key": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{8,64}$",
+            "description": "Any unique string; a retry with the same key returns the first retraction instead of sending again."
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "id",
+          "doc_id",
+          "seat",
+          "revision",
+          "retracted",
+          "status"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "doc_id": {
+            "type": "string"
+          },
+          "seat": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer"
+          },
+          "retracted": {
+            "type": "boolean"
+          },
+          "retracted_at": {
+            "type": "integer"
+          },
+          "retracted_by": {
+            "type": "string"
+          },
+          "retraction_reason": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "duplicate": {
+            "type": "boolean"
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
         "idempotentHint": true,
         "openWorldHint": false
       }

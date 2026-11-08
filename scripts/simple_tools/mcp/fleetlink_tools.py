@@ -59,7 +59,7 @@ INFISICAL_PROJECT = "ai-fleet-coordinator"  # the project that folder lives in (
 INFISICAL_LABEL = "Infisical AI Fleet Coordinator"
 TOKEN_CACHE_TTL = 600.0
 FETCH_TIMEOUT_S = (
-    60.0  # one `fleet-secrets get`:  the machine-identity login and the export, under load
+    60.0  # one scoped `fleet-secrets get`:  metadata verification and export, under load
 )
 KEY_ABSENT_EXIT = (
     3  # fleet-secrets: the key is not there (a failure of any other kind says nothing about it)
@@ -505,6 +505,12 @@ def summary(data: Mapping[str, Any]) -> dict[str, Any]:
         and all(isinstance(s, dict) and _is_str(s.get("slug")) for s in shares)
     ):
         out["slugs"] = [s["slug"] for s in shares]
+    cursor = data.get("next")
+    if "next" in data and (
+        cursor is None
+        or (isinstance(cursor, str) and re.fullmatch(r"[0-9]{1,16}:shr_[A-Za-z0-9]{1,64}", cursor))
+    ):
+        out["next"] = cursor
     teams = data.get("teams")
     if (
         isinstance(teams, list)

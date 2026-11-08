@@ -216,13 +216,11 @@ class SpecializeTests(unittest.TestCase):
         self.assertIn(f"{BRANCH_PREFIX}/{BRANCH_EXAMPLE_SLUG}", grok_bot)
         self.assertNotIn("claude/afc-123-zulip-cutover", grok_bot)
 
-    def test_kimi_retired_banner(self) -> None:
+    def test_kimi_active_banner(self) -> None:
         out = specialize_from_monet(_session(), SEATS["kimi"], skill_name="session-start")
-        self.assertIn("[KIMI]", out)
-        self.assertIn("Retired seat", out)
-        self.assertNotIn("Start every Kimi", out)
-        self.assertNotIn("triple-claim before editing", out)
-        self.assertFalse(SEATS["kimi"].write_home)
+        self.assertIn("[KIMI·session8]", out)
+        self.assertIn("Moonshot AI Kimi Code CLI", out)
+        self.assertTrue(SEATS["kimi"].write_home)
 
     def test_renoir_stays_uninstalled(self) -> None:
         self.assertFalse(SEATS["renoir"].write_home)
@@ -539,9 +537,8 @@ class PerSeatVoiceTests(unittest.TestCase):
 
     def test_kimi_is_kimi_voiced(self) -> None:
         out = specialize_from_monet(_session(), SEATS["kimi"], skill_name="session-start")
-        self.assertIn("[KIMI]", out)
-        self.assertIn("Retired", out)
-        self.assertNotIn("Start every Kimi", out)
+        self.assertIn("[KIMI·session8]", out)
+        self.assertNotIn("Retired", out)
         self.assertNotIn("You are **MONET**", out)
         self.assertNotIn("AGENT_SEAT=MONET", out)
 
@@ -635,12 +632,16 @@ class CoordinatorSelfIdTests(unittest.TestCase):
         self.assertIn("| MM | `MiniMax` | `minimax/` |", text)
         self.assertNotRegex(text, r"(?m)^\| DSH \|")
         self.assertIn("DSH, DeepSeek Harness (2026-09-19)", text)
-        self.assertIn("`[MM]`", text)
+        # A post header names MiniMax as MM.  The Nov 5 post-header rule
+        # replaced the bare `[MM]` example with `[MM: HH.1.M 📁AFC, OPS]`,
+        # so accept either header form but never the old MINIMAX tag.
+        self.assertRegex(text, r"`\[MM(?:\]|: )")
+        self.assertNotIn("[MINIMAX", text)
         self.assertNotIn("| **MiniMax (`MINIMAX`)** |", text)
         self.assertNotIn("| **DeepSeek (`DEEPSEEK`)** |", text)
         coord = _coord()
         self.assertIn("MiniMax (MM): `MM` (display `MiniMax`, prefix `minimax/`", coord)
-        self.assertIn("Retired: MONET, RENOIR, HARNESS, DSH, KIMI have no bot", coord)
+        self.assertIn("Retired: MONET, RENOIR, HARNESS, DSH have no bot", coord)
         self.assertNotIn("MiniMax: `[MINIMAX]`", coord)
         self.assertNotIn("DeepSeek: `[DEEPSEEK]`", coord)
 
@@ -648,7 +649,23 @@ class CoordinatorSelfIdTests(unittest.TestCase):
         text = _protocol_doc_path().read_text(encoding="utf-8")
         self.assertIn("| `AFC` |", text)
         self.assertIn("Simple-With-Us/AI-Fleet-Coordinator", text)
-        self.assertIn("[AFC] sync-N", text)
+        # AFC is the repo acronym, never a seat or a signature.  Before the
+        # Nov 5 post-header rule the coordinator signed `[AFC] sync-N`; since
+        # then AFC appears only in the header's repo list after the folder
+        # mark.  Either way the sender is never FLEET.  Apostrophes are
+        # compared straight, so a typographic one in the handbook passes too.
+        plain = text.replace("’", "'")
+        self.assertIn(
+            "`AFC` is AI-Fleet-Coordinator and `OPS` is Fleet-OPS:  repo acronyms used for "
+            "board items, topics and links, never seats, bots or signatures.",
+            plain,
+        )
+        self.assertTrue(
+            "[AFC] sync-N" in plain
+            or "with `AFC` or `OPS` in the header's repo list after `📁`, never as the sender"
+            in plain,
+            "the AFC bullet must say how AFC appears in a post",
+        )
         # The fleet-wide wake rule now lives in "Undirected, Directed, and
         # Fleet-Wide"; `fleet` is a recipient only, never a sender or an acronym.
         self.assertIn("### Undirected, Directed, and Fleet-Wide", text)
@@ -738,17 +755,13 @@ class CoordinatorSelfIdTests(unittest.TestCase):
                 out = specialize_from_monet(src, seat, skill_name=name)
                 for phrase in self.AFC_SIGNATURE_PHRASES:
                     self.assertNotIn(phrase, out, f"{key}/{name}: {phrase}")
-        stop = specialize_from_monet(
-            _load_skill("session-start"), SEATS["kimi"], skill_name="session-start"
-        )
-        self.assertIn("`AFC` is a repo acronym, never a sender or a signature", stop)
 
     def test_by_seat_catalog_matches_specialization(self) -> None:
         kimi_ss = Path(DOCS, "by-seat", "kimi", "session-start", "SKILL.md").read_text(
             encoding="utf-8"
         )
-        self.assertNotIn("Start every Kimi", kimi_ss)
-        self.assertIn("Retired seat", kimi_ss)
+        self.assertIn("Start every Kimi", kimi_ss)
+        self.assertNotIn("Retired seat", kimi_ss)
         gb = Path(DOCS, "by-seat", "grok-bot", "session-start", "SKILL.md").read_text(
             encoding="utf-8"
         )
@@ -799,6 +812,8 @@ class ZulipIdentityAndRetirementTests(unittest.TestCase):
         "MM",
         "MC",
         "MA",
+        "KIMI",
+        "ZC",
     }
 
     def test_grok_roster_mention_is_grok_build_not_grok_build_tag(self) -> None:
@@ -834,7 +849,7 @@ class ZulipIdentityAndRetirementTests(unittest.TestCase):
 
     def test_retired_seats_have_no_bot_home_or_install_banner(self) -> None:
         retired = {k: s for k, s in SEATS.items() if s.retired}
-        self.assertEqual(set(retired), {"monet", "renoir", "deepseek", "kimi"})
+        self.assertEqual(set(retired), {"monet", "renoir", "deepseek"})
         for key, seat in retired.items():
             self.assertEqual(seat.zulip_bot, "", key)
             self.assertFalse(seat.write_home, key)
@@ -850,25 +865,18 @@ class ZulipIdentityAndRetirementTests(unittest.TestCase):
                 self.assertNotIn(fragment, dest + "/", dest)
             self.assertNotIn("/by-seat/", dest)
         tags = {seat.tag for _dest, seat in platform_installs()}
-        self.assertFalse(tags & {"MONET", "RENOIR", "DSH", "KIMI"}, tags)
+        self.assertFalse(tags & {"MONET", "RENOIR", "DSH"}, tags)
         self.assertIn("CLUTCH", tags)
 
     def test_retired_session_start_is_inert(self) -> None:
-        for key in ("monet", "renoir", "deepseek", "kimi"):
+        for key in ("monet", "renoir", "deepseek"):
             seat = SEATS[key]
             out = specialize_from_monet(_session(), seat, skill_name="session-start")
             front = out.split("---")[1]
             self.assertIn(f"{seat.tag} is retired", front, key)
             self.assertNotIn("Start every", out, key)
             self.assertNotIn("triple-claim before editing", out.split("---")[1], key)
-            if key == "kimi":
-                # Kimi's copy is only a Stop section.  MONET, RENOIR and DSH keep
-                # their body until the peer-screen lane lands (STOP_ONLY_RETIRED).
-                self.assertIn("## Stop", out, key)
-                self.assertNotIn("## 1. Identity", out, key)
-                self.assertIn("`AFC`", out, key)
-            else:
-                self.assertNotIn("## Stop", out, key)
+            self.assertNotIn("## Stop", out, key)
 
     def test_set_yaml_description_replaces_inline_and_folded_values(self) -> None:
         folded = "---\nname: x\ndescription: >-\n  old one\n  old two\n---\n\n# X\n"
@@ -1024,9 +1032,6 @@ class AgentSeatPinTests(unittest.TestCase):
 
     def test_every_render_has_one_block_and_no_bare_assignment(self) -> None:
         for key, out in self._renders():
-            if key == "kimi":  # STOP-only retired copy: the identity section is cut
-                self.assertEqual(self._exports(out), [], key)
-                continue
             self.assertEqual(self._exports(out), [self.EXPORT], key)
             self.assertTrue(self._block(out), key)
             self.assertNotRegex(out, r"(?m)^export AGENT_SEAT=[^\"]", key)
@@ -1034,7 +1039,7 @@ class AgentSeatPinTests(unittest.TestCase):
 
     def test_exclusive_seat_block_names_its_own_seat_and_platform(self) -> None:
         for key, seat in SEATS.items():
-            if key in {"kimi", "grok-bot"}:
+            if key == "grok-bot":
                 continue
             out = specialize_from_monet(_session(), seat, skill_name="session-start")
             if seat.retired:
@@ -1051,9 +1056,6 @@ class AgentSeatPinTests(unittest.TestCase):
 
     def test_t15_every_render_carries_the_launcher_clause(self) -> None:
         for key, out in self._renders():
-            if key == "kimi":
-                self.assertNotIn(LAUNCHER_CLAUSE, out)
-                continue
             self.assertIn(LAUNCHER_CLAUSE, out, key)
             self.assertIn("you have no seat: do no fleet action", out, key)
             if not SEATS.get(key) or not SEATS[key].retired:
@@ -1104,8 +1106,6 @@ class AgentSeatPinTests(unittest.TestCase):
             return done.returncode, done.stdout, done.stderr
 
         for key, out in self._renders():
-            if key == "kimi":
-                continue
             block = self._block(out)
             check = subprocess.run(["bash", "-n", "-c", block], capture_output=True, text=True)
             self.assertEqual(check.returncode, 0, f"{key}: {check.stderr}")
@@ -1500,43 +1500,6 @@ class InstallerRepoOnlyTests(unittest.TestCase):
             for d, _dirs, files in os.walk(self.home)
             for f in files
         )
-
-    def test_purge_removes_a_skill_left_under_a_renamed_old_name(self) -> None:
-        """TEMPORARY with RENAMED_SKILL_OLD_NAMES:  delete this test and the next one when the rename is complete."""
-        from fleet_skill_identity import RENAMED_SKILL_OLD_NAMES
-
-        old = "obsolete-tools-guide"
-        self.assertFalse(RENAMED_SKILL_OLD_NAMES)
-        self.installer.RENAMED_SKILL_OLD_NAMES = frozenset({old})
-        self.addCleanup(setattr, self.installer, "RENAMED_SKILL_OLD_NAMES", RENAMED_SKILL_OLD_NAMES)
-        dest = self.home / ".claude" / "skills"
-        (dest / old).mkdir(parents=True)
-        (dest / old / "SKILL.md").write_text("stale\n", encoding="utf-8")
-        (dest / f"{old}.zip").write_bytes(b"stale")
-        keep = dest / "session-start"
-        keep.mkdir(parents=True)
-        (keep / "SKILL.md").write_text("keep\n", encoding="utf-8")
-        self.installer._purge_retired(str(dest), install_target=True)
-        self.assertFalse((dest / old).exists())
-        self.assertFalse((dest / f"{old}.zip").exists())
-        self.assertTrue((keep / "SKILL.md").is_file())
-
-    def test_a_renamed_name_is_never_purged_from_the_source_pack(self) -> None:
-        """TEMPORARY with RENAMED_SKILL_OLD_NAMES.  Removing a renamed skill from the repo is a git operation."""
-        old = "obsolete-tools-guide"
-        docs = self.repo / "docs" / "fleet-skills"
-        (docs / old).mkdir(parents=True)
-        (docs / old / "SKILL.md").write_text("local edit\n", encoding="utf-8")
-        self.installer._purge_retired(str(docs))
-        self.assertTrue((docs / old / "SKILL.md").is_file())
-        names = catalog_skill_names(str(docs))
-        self.assertIn(old, names)
-
-    def test_the_live_pack_exposes_the_new_guide_name_only(self) -> None:
-        """TEMPORARY with RENAMED_SKILL_OLD_NAMES."""
-        names = catalog_skill_names(DOCS)
-        self.assertIn("simple-tools-guide", names)
-        self.assertNotIn("obsolete-tools-guide", names)
 
     def test_repo_only_renders_platform_copies_and_skips_home(self) -> None:
         out = self._run(["--repo-only"])

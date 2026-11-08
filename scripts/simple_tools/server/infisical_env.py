@@ -3,19 +3,22 @@
 
     infisical_env.py <program> [args ...]
 
-entrypoint.sh runs this only when INFISICAL_CLIENT_ID, INFISICAL_CLIENT_SECRET and INFISICAL_PROJECT_ID are
-all set (a Universal Auth machine identity with read-only access to the folder).  It logs in, reads one folder
-(INFISICAL_ENVIRONMENT, default prod; INFISICAL_SECRET_PATH, default /zulip), copies the allowlisted names into
+entrypoint.sh runs this only when INFISICAL_TOKEN and INFISICAL_PROJECT_ID are
+set.  The scoped primary service token is used directly as a bearer to read the
+configured folder (INFISICAL_SECRET_PATH, default /zulip) and /operator.  Its exact
+read-only prod grant must contain only those paths, with duplicates removed.  If
+INFISICAL_LISTENER_READ_PROJECT_ID enables the secondary project read, it also requires
+INFISICAL_LISTENER_READ_TOKEN, a different read-only token scoped only to prod /zulip
+in that project.  The primary token is never reused for the secondary project.  Each
+path's token metadata is verified before its raw secret values are requested.  The
+loader copies the allowlisted names into
 the environment, removes the identity from it, and execs <program> with that environment.  exec keeps the
 listener as the container's PID 1, so SIGTERM still reaches the daemon and it deletes its queues on the way out.
 
 The allowlist is built from the seat partition (every seat it gives to "server"), so nothing else in the folder
-(BotFleet bots, webhook HEADER entries, generic names) ever reaches the container:
+(BotFleet bots, Mac seats, webhook HEADER entries, generic names) ever reaches the container:
 
     ZULIP_<CODE>_EMAIL, ZULIP_<CODE>_API_KEY            a seat's Zulip pair
-    <STEM>_ZULIP_EMAIL, <STEM>_ZULIP_KEY                the same pair under its Fleet-OPS file-stem name
-                                                         (CLAUDE_ZULIP_EMAIL, GROK_BUILD_ZULIP_KEY, ...), for
-                                                         the seats the single-server consolidation moved here
     ZULIP_OUTGOING_<CODE>_TOKEN                         an optional Zulip outgoing-webhook token
     ZULIP_ALERT_<CODE>_ENDPOINT, ZULIP_ALERT_<CODE>_KEY  a Grok Bot routine webhook (URL and bare key)
     <CODE>_ROUTINE_URL, <CODE>_ROUTINE_KEY               the listener's default routine names
@@ -26,19 +29,10 @@ The allowlist is built from the seat partition (every seat it gives to "server")
                                                          Operator opened (dm_policy.py)
     OPERATOR_NOTES_{WORKER,SERVER,RUNNER}_KEY            the notes queue's three keys, from the folder /operator
                                                          (AFC-486), with the same login
-
-The Operator's own credential pair (ZULIP_OPERATOR_EMAIL, ZULIP_OPERATOR_API_KEY) and identity pins
-(OPERATOR_ZULIP_USER_ID, OPERATOR_ZULIP_EMAIL) live in the Fleet-OPS project's /zulip_operator folder
-(service_identity.py), NOT in this loader's primary /zulip folder.  When INFISICAL_FLEET_OPS_PROJECT_ID is
-set, this loader makes one more read of that folder with the same login and injects exactly the two
-identity pins (OPERATOR_ZULIP_USER_ID, OPERATOR_ZULIP_EMAIL);  the credential pair is NEVER injected -
-the factory reads it through the custody-checked service-token reader instead - so the daemon's
-supported Operator factory (service_identity.operator_credentials) and the DM policy's identity pins
-resolve on the server, which has no fleet-secrets binary.  Two guards keep the
-injected identity pinned:  an OPERATOR_ZULIP_EMAIL that disagrees with one already pinned in the
-container environment is refused (neither pin is injected), and a ZULIP_OPERATOR_EMAIL credential that
-disagrees with the pin is refused (the pair is not injected).  Both refusals are one log line naming the
-stage, never a value.  Without INFISICAL_FLEET_OPS_PROJECT_ID the folder is not read and the line says so.
+    ZULIP_OPERATOR_EMAIL, ZULIP_OPERATOR_API_KEY         the Operator bot's own address and key (AFC-602), from
+                                                         Fleet-OPS prod /zulip_operator, read with their own
+                                                         read-only token (INFISICAL_OPERATOR_VOICE_TOKEN);  a
+                                                         failed read never stops the listener
 
 CODE is the seat with hyphens as underscores.  An Infisical value wins over a container variable of the same
 name, so a rotation in Infisical takes effect on the next restart even if Coolify still holds an old copy.
@@ -46,10 +40,9 @@ The Operator's two names live in the Operator's own folder (/zulip_operator), so
 folder has to point INFISICAL_SECRET_PATH at it;  a container that reads /zulip has to carry the two names
 there instead.  Either way the host provides them, and the runtime never guesses an id.
 
-Infisical (fleet-secrets' source project) is the intended source of these variables;  Coolify copies are only a
-fallback.  On any failure (login refused, network, a bad response) it logs one ERROR line naming the stage and the
-HTTP status, never a body or a value, and starts the listener with the container's own environment (the identity
-removed), so a deployment that still carries Coolify copies keeps working.  A successful load logs one line with
+Infisical is the intended source of these variables.  Missing or invalid service-token configuration and any
+primary fetch failure stop startup; the listener never falls back to container copies.  Errors name the stage and HTTP status,
+never a body or a value.  A successful load logs one line with
 the variable count and how many GB seats got both Zulip names from Infisical (names only).  No value is ever
 printed or logged.
 """
@@ -67,10 +60,43 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable, Mapping
+from datetime import UTC, datetime
 
 API_DEFAULT = "https://app.infisical.com/api"
-IDENTITY = ("INFISICAL_CLIENT_ID", "INFISICAL_CLIENT_SECRET")
-REQUIRED = IDENTITY + ("INFISICAL_PROJECT_ID",)
+TOKEN = "INFISICAL_TOKEN"
+LISTENER_READ_TOKEN = "INFISICAL_LISTENER_READ_TOKEN"
+#: The Operator's own voice (AFC-602):  a third, separate read-only token, scoped to exactly the
+#: Fleet-OPS prod folder that holds the Operator bot's address and key.  Its project is the one the
+#: container already names in INFISICAL_FLEET_OPS_PROJECT_ID.  The image ships no fleet-secrets and
+#: carries no machine identity (this loader strips them), so this is the Operator's only route to
+#: its credential on the server;  without the token the Operator stays unavailable, visibly.
+OPERATOR_VOICE_TOKEN = "INFISICAL_OPERATOR_VOICE_TOKEN"
+OPERATOR_VOICE_PROJECT = "INFISICAL_FLEET_OPS_PROJECT_ID"
+OPERATOR_VOICE_PATH = "/zulip_operator"
+OPERATOR_VOICE_NAMES = frozenset({"ZULIP_OPERATOR_EMAIL", "ZULIP_OPERATOR_API_KEY"})
+AUTH_ENV_VARS = frozenset(
+    {
+        TOKEN,
+        LISTENER_READ_TOKEN,
+        OPERATOR_VOICE_TOKEN,
+        "INFISICAL_AI_FLEET_COORDINATOR_TOKEN",
+        "INFISICAL_WRITE_TOKEN",
+        "INFISICAL_CLIENT_ID",
+        "INFISICAL_CLIENT_SECRET",
+        "INFISICAL_UNIVERSAL_AUTH_CLIENT_ID",
+        "INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET",
+        "INFISICAL_AUTOMATION_CLIENT_ID",
+        "INFISICAL_AUTOMATION_CLIENT_SECRET",
+        "INFISICAL_SHARED_CLIENT_ID",
+        "INFISICAL_SHARED_CLIENT_SECRET",
+    }
+)
+REQUIRED = (TOKEN, "INFISICAL_PROJECT_ID")
+SERVICE_TOKEN_RE = re.compile(r"^st\.\S{17,2045}$")
+PROJECT_ID_RE = re.compile(r"^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$")
+UNRESOLVED_REFERENCE_RE = re.compile(r"\$\{[^}]+\}")
+MAX_METADATA_BYTES = 128 * 1024
+MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 TIMEOUT_SECONDS = 8.0
 ATTEMPTS = 2  # per request; worst case stays well inside the 60-second health start period
 PARTITION_DEFAULT = os.path.join(
@@ -98,16 +124,6 @@ OPERATOR_PATH = "/operator"
 OPERATOR_NAMES = frozenset(
     {"OPERATOR_NOTES_WORKER_KEY", "OPERATOR_NOTES_SERVER_KEY", "OPERATOR_NOTES_RUNNER_KEY"}
 )
-# The Operator service identity (scripts/simple_tools/service_identity.py):  ONLY the pinned service
-# bot's two non-secret identity pins, from the Fleet-OPS project's own folder.  The credential pair
-# (ZULIP_OPERATOR_EMAIL / ZULIP_OPERATOR_API_KEY) is NEVER loaded into the environment:  those values
-# reach the daemon only through the scoped-service-token reader (operator_identity_reader.py), per the
-# owner's clarified normal method - service tokens, nothing sensitive in env.  The project id is
-# INFISICAL_FLEET_OPS_PROJECT_ID, the same setting every other fleet credential read uses.
-FLEET_OPS_PROJECT_ENV = "INFISICAL_FLEET_OPS_PROJECT_ID"
-OPERATOR_SERVICE_PATH = "/zulip_operator"
-OPERATOR_SERVICE_NAMES = frozenset({"OPERATOR_ZULIP_USER_ID", "OPERATOR_ZULIP_EMAIL"})
-_PROJECT_ID_RE = re.compile(r"^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$")
 _SEAT_RE = re.compile(r"^[A-Z0-9][A-Z0-9-]*$")
 
 
@@ -129,28 +145,12 @@ def server_codes(partition_file: str) -> set[str]:
     }
 
 
-# The prefix of a seat's Fleet-OPS /zulip key names:  the credential-file stem in upper case with
-# non-alphanumerics as underscores (zulip.infisical_prefix_for_stem over zulip.credential_file_name,
-# copied here because this loader runs before the package is importable - keep the two in step).
-# For every seat that is the code itself (CLAUDE -> CLAUDE_ZULIP_EMAIL, MM -> MM_ZULIP_KEY);  the
-# overrides are the seats whose credential FILE stem is not the plain code (GROK's file is
-# Grok-Build, so GROK -> GROK_BUILD_ZULIP_KEY).
-_STEM_OVERRIDES = {"GROK": "GROK_BUILD"}
-
-
-def seat_stem_prefix(code: str) -> str:
-    return _STEM_OVERRIDES.get(code, code)
-
-
 def allowed_names(codes: set[str]) -> set[str]:
     names: set[str] = set(SHARED_NAMES)
     for code in codes:
-        stem = seat_stem_prefix(code)
         names |= {
             "ZULIP_%s_EMAIL" % code,
             "ZULIP_%s_API_KEY" % code,
-            "%s_ZULIP_EMAIL" % stem,
-            "%s_ZULIP_KEY" % stem,
             "ZULIP_OUTGOING_%s_TOKEN" % code,
             "ZULIP_ALERT_%s_ENDPOINT" % code,
             "ZULIP_ALERT_%s_KEY" % code,
@@ -191,6 +191,7 @@ def _request(
     *,
     body: dict | None = None,
     token: str | None = None,
+    max_bytes: int = MAX_RESPONSE_BYTES,
     opener: Callable = _OPENER.open,
     sleep: Callable[[float], None] = time.sleep,
 ) -> dict:
@@ -205,7 +206,10 @@ def _request(
             req.add_header("Authorization", "Bearer " + token)
         try:
             with opener(req, timeout=TIMEOUT_SECONDS) as resp:
-                payload = json.loads(resp.read().decode("utf-8"))
+                raw = resp.read(max_bytes + 1)
+            if len(raw) > max_bytes:
+                raise LoadError("%s: the response exceeds the size limit" % stage)
+            payload = json.loads(raw.decode("utf-8"))
             if not isinstance(payload, dict):
                 raise LoadError("%s: the response is not a JSON object" % stage)
             return payload
@@ -223,21 +227,83 @@ def _request(
     raise LoadError("%s: %s" % (stage, last))
 
 
-def login(env: Mapping[str, str], **kw) -> str:
-    """An access token for the machine identity.  Raises LoadError."""
-    got = _request(
-        "login",
-        api_base(env) + "/v1/auth/universal-auth/login",
-        body={
-            "clientId": env["INFISICAL_CLIENT_ID"].strip(),
-            "clientSecret": env["INFISICAL_CLIENT_SECRET"].strip(),
-        },
+def _safe_folder(path: str) -> str:
+    if (
+        not isinstance(path, str)
+        or not path.startswith("/")
+        or any(part in (".", "..") for part in path.split("/"))
+    ):
+        raise LoadError("configuration: invalid Infisical folder")
+    return path
+
+
+def verify_service_token(
+    env: Mapping[str, str],
+    token: str,
+    *,
+    project_id: str,
+    expected_paths: tuple[str, ...],
+    **kw,
+) -> None:
+    """Check the token's own exact prod/read grant before requesting secret values."""
+    if not PROJECT_ID_RE.fullmatch(project_id):
+        raise LoadError("service-token metadata: project id is invalid")
+    paths = tuple(dict.fromkeys(_safe_folder(path) for path in expected_paths))
+    if not paths:
+        raise LoadError("service-token metadata: folder grant is invalid")
+    base = api_base(env)
+    metadata = _request(
+        "service-token metadata",
+        base + "/v2/service-token",
+        token=token,
+        max_bytes=MAX_METADATA_BYTES,
         **kw,
     )
-    token = got.get("accessToken")
-    if not isinstance(token, str) or not token:
-        raise LoadError("login: no access token in the response")
-    return token
+    token_id = metadata.get("id")
+    if (
+        not isinstance(token_id, str)
+        or not token_id
+        or ("_id" in metadata and metadata.get("_id") != token_id)
+        or not isinstance(metadata.get("name"), str)
+        or not metadata["name"]
+        or ("projectId" in metadata and metadata.get("projectId") != project_id)
+        or metadata.get("workspace") != project_id
+    ):
+        raise LoadError("service-token metadata: project identity did not match")
+    scopes = metadata.get("scopes")
+    if not isinstance(scopes, list):
+        raise LoadError("service-token metadata: folder scope is invalid")
+    actual_paths = []
+    for scope in scopes:
+        if (
+            not isinstance(scope, dict)
+            or set(scope) != {"environment", "secretPath"}
+            or scope.get("environment") != "prod"
+            or not isinstance(scope.get("secretPath"), str)
+        ):
+            raise LoadError("service-token metadata: folder scope is invalid")
+        actual_paths.append(_safe_folder(scope["secretPath"]))
+    if len(actual_paths) != len(set(actual_paths)) or set(actual_paths) != set(paths):
+        raise LoadError("service-token metadata: folder scope did not match")
+    permissions = metadata.get("permissions")
+    if (
+        not isinstance(permissions, list)
+        or any(not isinstance(permission, str) for permission in permissions)
+        or len(permissions) != len(set(permissions))
+        or set(permissions) != {"read"}
+    ):
+        raise LoadError("service-token metadata: read-only permission did not match")
+    expires_at = metadata.get("expiresAt")
+    if expires_at is None:
+        return
+    if not isinstance(expires_at, str):
+        raise LoadError("service-token metadata: expiry is invalid")
+    try:
+        expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+    except ValueError:
+        raise LoadError("service-token metadata: expiry is invalid") from None
+    if expiry.tzinfo is None or expiry <= datetime.now(UTC):
+        raise LoadError("service-token metadata: expiry is invalid")
 
 
 def fetch(
@@ -245,46 +311,64 @@ def fetch(
     *,
     path: str | None = None,
     token: str | None = None,
+    expected_paths: tuple[str, ...] | None = None,
     stage: str = "read",
     strict: bool = False,
     **kw,
 ) -> dict[str, str]:
-    """{name: value} for every secret in one folder (default INFISICAL_SECRET_PATH, else /zulip).  Logs in first
-    unless `token` is given.  Raises LoadError."""
+    """{name: value} for every secret in one folder using a scoped service token."""
     base = api_base(env)
     if token is None:
-        token = login(env, **kw)
+        token = (env.get(TOKEN) or "").strip()
+    if not isinstance(token, str) or not SERVICE_TOKEN_RE.fullmatch(token):
+        raise LoadError("service-token: INFISICAL_TOKEN is missing or invalid")
+    project_id = (env.get("INFISICAL_PROJECT_ID") or "").strip()
+    environment = (env.get("INFISICAL_ENVIRONMENT") or "prod").strip()
+    requested_path = _safe_folder(path or (env.get("INFISICAL_SECRET_PATH") or "/zulip").strip())
+    if environment != "prod":
+        raise LoadError("configuration: prod is the only supported Infisical environment")
+    grant_paths = expected_paths or (requested_path,)
+    if requested_path not in grant_paths:
+        raise LoadError("service-token metadata: requested folder is outside the verified grant")
+    verify_service_token(env, token, project_id=project_id, expected_paths=tuple(grant_paths), **kw)
     query = urllib.parse.urlencode(
         {
-            "workspaceId": env["INFISICAL_PROJECT_ID"].strip(),
-            "environment": (env.get("INFISICAL_ENVIRONMENT") or "prod").strip(),
-            "secretPath": path or (env.get("INFISICAL_SECRET_PATH") or "/zulip").strip(),
-            "expandSecretReferences": "true",
+            "workspaceId": project_id,
+            "environment": environment,
+            "secretPath": requested_path,
+            "viewSecretValue": "true",
+            "expandSecretReferences": "false",
+            "recursive": "false",
+            "include_imports": "false",
         }
     )
-    got = _request(stage, base + "/v3/secrets/raw?" + query, token=token, **kw)
+    got = _request(
+        stage, base + "/v3/secrets/raw?" + query, token=token, max_bytes=MAX_RESPONSE_BYTES, **kw
+    )
     secrets = got.get("secrets")
-    if not isinstance(secrets, list):
-        raise LoadError("read: no secrets list in the response")
-    if strict and (
-        len(secrets) > 2000 or ("totalCount" in got and got["totalCount"] != len(secrets))
+    if (
+        not isinstance(secrets, list)
+        or len(secrets) > 2000
+        or ("totalCount" in got and got["totalCount"] != len(secrets))
     ):
-        raise LoadError("read listener keys: incomplete listing")
+        raise LoadError("read: no secrets list in the response")
     out: dict[str, str] = {}
     for item in secrets:
-        if strict and (
+        if (
             not isinstance(item, dict)
             or not isinstance(item.get("secretKey"), str)
             or not isinstance(item.get("secretValue"), str)
+            or item.get("type") != "shared"
+            or item.get("secretValueHidden") is True
+            or ("workspace" in item and item["workspace"] != project_id)
+            or ("environment" in item and item["environment"] != environment)
+            or ("secretPath" in item and item["secretPath"] != requested_path)
             or item["secretKey"] in out
         ):
-            raise LoadError("read listener keys: invalid or duplicate listing")
-        if (
-            isinstance(item, dict)
-            and isinstance(item.get("secretKey"), str)
-            and isinstance(item.get("secretValue"), str)
-        ):
-            out[item["secretKey"]] = item["secretValue"]
+            raise LoadError("%s: invalid or unverified listing" % stage)
+        if UNRESOLVED_REFERENCE_RE.search(item["secretValue"]):
+            raise LoadError("%s: secret value contains an unresolved reference" % stage)
+        out[item["secretKey"]] = item["secretValue"]
     return out
 
 
@@ -308,22 +392,29 @@ LISTENER_READ_CODES = frozenset(
 )
 
 
-def listener_read_keys(
-    env: Mapping[str, str], codes: set[str], token: str, **kw
-) -> tuple[dict[str, str], str]:
-    """An opt-in second native read, same identity, only the 13 server-seat HMAC read keys."""
+def listener_read_keys(env: Mapping[str, str], codes: set[str], **kw) -> tuple[dict[str, str], str]:
+    """An opt-in second project read with its own exact-scope token binding."""
     project = (env.get(LISTENER_READ_PROJECT) or "").strip()
     if not project:
         return {}, ""
     if not re.fullmatch(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", project):
         return {}, "; listener read keys not loaded (invalid project id)"
+    token = (env.get(LISTENER_READ_TOKEN) or "").strip()
+    if not SERVICE_TOKEN_RE.fullmatch(token):
+        return {}, "; listener read keys not loaded (dedicated service token is missing or invalid)"
     names = {code + "_ROUTINE_KEY" for code in LISTENER_READ_CODES & codes}
     if not names:
         return {}, "; listener read keys: no eligible server seats"
     source = dict(env, INFISICAL_PROJECT_ID=project, INFISICAL_ENVIRONMENT="prod")
     try:
         found = fetch(
-            source, path="/zulip", token=token, stage="read listener keys", strict=True, **kw
+            source,
+            path="/zulip",
+            token=token,
+            expected_paths=("/zulip",),
+            stage="read listener keys",
+            strict=True,
+            **kw,
         )
         keys = {
             name: value
@@ -338,67 +429,51 @@ def listener_read_keys(
         return {}, "; listener read keys not loaded (%s)" % exc
 
 
-def operator_service_identity(
-    env: Mapping[str, str], token: str, **kw
-) -> tuple[dict[str, str], str]:
-    """The pinned Operator service identity from Fleet-OPS /zulip_operator, same login.
+def operator_voice_keys(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
+    """The Operator bot's own address and key, read with their own exact-scope token binding.
 
-    Returns ({name: value}, one log fragment).  Opt-in:  no read at all without a well-formed
-    INFISICAL_FLEET_OPS_PROJECT_ID.  The identity stays pinned two ways, each a refusal of the
-    affected names with a log line, never a stopped listener and never a value:
-      * an OPERATOR_ZULIP_EMAIL the folder carries that disagrees with one already pinned in the
-        container environment refuses both pins (the host keeps its pin;  nothing overrides it);
-      The folder's credential pair is not read here at all (the loader injects pins only).
-    """
-    project = (env.get(FLEET_OPS_PROJECT_ENV) or "").strip()
-    if not project:
-        return {}, "; Operator service identity not loaded (%s not set)" % FLEET_OPS_PROJECT_ENV
-    if not _PROJECT_ID_RE.fullmatch(project):
-        return {}, "; Operator service identity not loaded (invalid %s)" % FLEET_OPS_PROJECT_ENV
+    Never fatal:  the listener runs without them and the Operator then says so in its status
+    (`operator_voice`), so a missing token, a wrong scope or an outage only shortens the log line."""
+    token = (env.get(OPERATOR_VOICE_TOKEN) or "").strip()
+    if not token:
+        return {}, "; operator voice keys not loaded (no dedicated token)"
+    project = (env.get(OPERATOR_VOICE_PROJECT) or "").strip()
+    if not PROJECT_ID_RE.fullmatch(project):
+        return {}, "; operator voice keys not loaded (invalid project id)"
+    if not SERVICE_TOKEN_RE.fullmatch(token):
+        return {}, "; operator voice keys not loaded (dedicated service token is invalid)"
     source = dict(env, INFISICAL_PROJECT_ID=project, INFISICAL_ENVIRONMENT="prod")
     try:
         found = fetch(
             source,
-            path=OPERATOR_SERVICE_PATH,
+            path=OPERATOR_VOICE_PATH,
             token=token,
-            stage="read operator service",
-            strict=True,
+            expected_paths=(OPERATOR_VOICE_PATH,),
+            stage="read operator voice",
             **kw,
         )
     except LoadError as exc:
-        return {}, "; Operator service identity not loaded (%s)" % exc
-    values = {name: found[name] for name in OPERATOR_SERVICE_NAMES if name in found}
-    pinned_env = (env.get("OPERATOR_ZULIP_EMAIL") or "").strip()
-    pin = (values.get("OPERATOR_ZULIP_EMAIL") or "").strip()
-    if pinned_env and pin and pin.casefold() != pinned_env.casefold():
-        values.pop("OPERATOR_ZULIP_USER_ID", None)
-        values.pop("OPERATOR_ZULIP_EMAIL", None)
-        pin = pinned_env
-        refused = "; Operator service pins refused (folder pin disagrees with the host pin)"
-    else:
-        refused = ""
-    if (values.get("OPERATOR_ZULIP_USER_ID") or "").strip():
-        try:
-            if int(values["OPERATOR_ZULIP_USER_ID"].strip()) <= 0:
-                raise ValueError()
-        except (ValueError, TypeError):
-            values.pop("OPERATOR_ZULIP_USER_ID", None)
-            refused += "; OPERATOR_ZULIP_USER_ID refused (not a positive id)"
-    loaded = sorted(values)
-    note = "; Operator service identity from %s: %d of %d" % (
-        OPERATOR_SERVICE_PATH,
-        len(loaded),
-        len(OPERATOR_SERVICE_NAMES),
+        return {}, "; operator voice keys not loaded (%s)" % exc
+    keys = {
+        name: value.strip()
+        for name, value in found.items()
+        if name in OPERATOR_VOICE_NAMES and value.strip() and "${" not in value
+    }
+    if set(keys) != OPERATOR_VOICE_NAMES:
+        return {}, "; operator voice keys not loaded (%d of %d names present)" % (
+            len(keys),
+            len(OPERATOR_VOICE_NAMES),
+        )
+    return keys, "; operator voice keys from %s: %d of %d" % (
+        OPERATOR_VOICE_PATH,
+        len(keys),
+        len(OPERATOR_VOICE_NAMES),
     )
-    missing = sorted(OPERATOR_SERVICE_NAMES - set(loaded))
-    if missing:
-        note += " (not loaded: " + ", ".join(missing) + ")"
-    return values, note + refused
 
 
 def build_env(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
-    """(the environment to exec with, the one log line).  The identity is always removed."""
-    out = {k: v for k, v in env.items() if k not in IDENTITY}
+    """(the environment to exec with, the one log line).  Bootstrap credentials are removed."""
+    out = {k: v for k, v in env.items() if k not in AUTH_ENV_VARS}
     # Opt-in native secondary keys never fall back to primary-project or container copies.
     secondary_names = {code + "_ROUTINE_KEY" for code in LISTENER_READ_CODES}
     if (env.get(LISTENER_READ_PROJECT) or "").strip():
@@ -406,37 +481,39 @@ def build_env(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
             out.pop(name, None)
     missing = [name for name in REQUIRED if not (env.get(name) or "").strip()]
     if missing:
-        return (
-            out,
-            "Infisical not used (%s not set); starting with the container environment"
-            % ", ".join(missing),
-        )
+        raise LoadError("configuration: missing " + ", ".join(missing))
+    if not SERVICE_TOKEN_RE.fullmatch((env.get(TOKEN) or "").strip()):
+        raise LoadError("service-token: INFISICAL_TOKEN is invalid")
+    project_id = (env.get("INFISICAL_PROJECT_ID") or "").strip()
+    if not PROJECT_ID_RE.fullmatch(project_id):
+        raise LoadError("configuration: INFISICAL_PROJECT_ID is invalid")
     partition = env.get("SIMPLE_TOOLS_PARTITION") or PARTITION_DEFAULT
     try:
         codes = server_codes(partition)
     except (OSError, tomllib.TOMLDecodeError) as exc:
-        return out, (
-            "Infisical load skipped (cannot read the seat partition: %s); starting with the container "
-            "environment" % type(exc).__name__
-        )
+        raise LoadError("partition: " + type(exc).__name__) from None
     allowed = allowed_names(codes)
     if not codes:
-        return (
-            out,
-            "Infisical load skipped (the seat partition gives no seat to server); starting with the container environment",
-        )
+        raise LoadError("partition: no seat is assigned to server")
+    primary_path = _safe_folder((env.get("INFISICAL_SECRET_PATH") or "/zulip").strip())
+    primary_paths = tuple(dict.fromkeys((primary_path, OPERATOR_PATH)))
     try:
-        token = login(env, **kw)
-        found = fetch(env, token=token, **kw)
+        token = (env.get(TOKEN) or "").strip()
+        found = fetch(env, token=token, expected_paths=primary_paths, **kw)
     except LoadError as exc:
-        return out, "Infisical load failed (%s); starting with the container environment" % exc
+        raise exc
     # The Operator's notes-queue keys (AFC-486) live in their own folder.  A failed read of it never stops the
     # listener:  the queue then refuses every principal, and the line says so.
     try:
         operator = {
             name: value
             for name, value in fetch(
-                env, path=OPERATOR_PATH, token=token, stage="read operator", **kw
+                env,
+                path=OPERATOR_PATH,
+                token=token,
+                expected_paths=primary_paths,
+                stage="read operator",
+                **kw,
             ).items()
             if name in OPERATOR_NAMES
         }
@@ -447,12 +524,12 @@ def build_env(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
         )
     except LoadError as exc:
         operator, operator_note = {}, "; notes-queue keys not loaded (%s)" % exc
-    service_id, service_note = operator_service_identity(env, token, **kw)
-    read_keys, read_note = listener_read_keys(env, codes, token, **kw)
+    read_keys, read_note = listener_read_keys(env, codes, **kw)
     if (env.get(LISTENER_READ_PROJECT) or "").strip():
         found = {name: value for name, value in found.items() if name not in secondary_names}
-    found = dict(found, **operator, **service_id, **read_keys)
-    allowed = allowed | set(operator) | set(service_id)
+    voice_keys, voice_note = operator_voice_keys(env, **kw)
+    found = dict(found, **operator, **read_keys, **voice_keys)
+    allowed = allowed | set(operator) | set(voice_keys)
     loaded = sorted(name for name in found if name in allowed)
     replaced = sum(1 for name in loaded if name in env)
     for name in loaded:
@@ -479,7 +556,7 @@ def build_env(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
     ignored = len(found) - len(loaded)
     return out, (
         f"loaded {len(loaded)} variables from Infisical ({where}; {replaced} replaced a container value, "
-        f"{ignored} other names in the folder ignored){coverage}{operator_note}{service_note}{read_note}"
+        f"{ignored} other names in the folder ignored){coverage}{operator_note}{read_note}{voice_note}"
     )
 
 
@@ -487,9 +564,12 @@ def main(argv: list[str]) -> int:
     if len(argv) < 2:
         log("usage: infisical_env.py <program> [args ...]")
         return 2
-    env, line = build_env(os.environ)
-    # A failed or skipped load means the container runs on Coolify copies:  make that stand out in the log.
-    log(("ERROR: " if line.startswith(("Infisical load", "Infisical not used")) else "") + line)
+    try:
+        env, line = build_env(os.environ)
+    except LoadError as exc:
+        log("ERROR: " + str(exc))
+        return 1
+    log(line)
     os.execve(argv[1], argv[1:], env)
     return 127  # not reached
 

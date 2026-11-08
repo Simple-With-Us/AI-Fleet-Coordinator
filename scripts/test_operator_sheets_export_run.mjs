@@ -204,6 +204,7 @@ test("runOnce delegates to drainOutbox and marks only confirmed writes", async (
     async markExported(ids) { marked.push(...ids); },
   };
   const adapter = {
+    async inspect() { return { sessions: { rowCount: 1 }, events: { rowCount: 1 } }; },
     async validateHeaders() {},
     async readRows() { return { rows: [] }; },
     async appendSession() { throw new Error("never for an event"); },

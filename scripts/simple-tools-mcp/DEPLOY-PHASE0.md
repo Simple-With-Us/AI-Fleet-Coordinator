@@ -4,13 +4,18 @@ Ordered steps to put the Phase 0 stub on `https://agents.simplewithus.com`.  The
 
 Everything runs from `scripts/simple-tools-mcp/` in a checkout of the merged commit (a fresh worktree off `origin/main`, never `~/Code/AI-Fleet-Coordinator`).  `infra_phase0.py` loads the Global key inside its own process from the environment, else `fleet-secrets get` (OPS-818;  the flat file is no longer read) and never prints it.  Every step is a dry run until `--apply`.  Do not merge stderr into output (`2>&1`) on any command that touches a secret.
 
-## Current-state preflight
+## What can hold the hostname (read-only probe: `python3 -I infra_phase0.py status`)
 
-Read the live Worker, custom-domain, Access, DNS and tunnel state before any change.
-The current public endpoint is `https://agents.simplewithus.com`.  Existing deployments
-must preserve the live namespace IDs, bindings and stored state.  Do not treat this
-runbook as approval for DNS or tunnel changes.  Additional cleanup targets use
-`--cleanup-target ZONE:HOST` and require separate target-specific approval.
+| Thing | State |
+| --- | --- |
+| DNS in zone `simplewithus.com` | a proxied `CNAME` for the hostname to a `*.cfargotunnel.com` name, if one exists |
+| Cloudflare Tunnel "Jay's Tunnel" | an ingress rule for the hostname aimed at `http://localhost:8787`, if one exists.  **A rule is live, not dead config:**  `status` names the process listening on that local port (8787 is `wrangler dev`'s default port).  Through a proxied CNAME the internet reaches it with no Access.  That exposure ends when step 4 deletes the CNAME |
+| Worker routes and Worker custom domains | none for this hostname |
+| Access apps | none cover this hostname.  `agents.jays.services` (`1e1a5fc4`) allows `mail@jays.services` and `jaywedgeworth22@gmail.com` through identity provider `76030d10-ec5b-46ff-ba9d-a4412cd755ce` (type One-time PIN), 24-hour session.  The new app allows `mail@jays.services` only (spec 3.3) |
+
+What must change for the custom domain to bind:  the CNAME must go.  Cloudflare refuses a Worker custom domain on a hostname that already has a DNS record, and wrangler creates the domain's own record when it binds.  The tunnel rule does not block the bind, but once DNS stops pointing at the tunnel it is a dead rule aimed at a local dev port, and it comes back to life if anyone re-adds a CNAME.  Removing it (step 7) is a required step, done right after the deploy is verified.
+
+**Do not wait for the deploy to close the exposure.**  If Jay wants it closed now, either stop the node process on port 8787 (tell the Congress.Trade owner first) or run step 4 early.  The hostname then does not resolve until step 5, which only affects a service nobody should be using.
 
 ## Step 0:  Preflight
 
@@ -102,11 +107,11 @@ What it checks, with the curl equivalent for a by-hand look:
 | --- | --- |
 | `curl -s https://agents.simplewithus.com/.well-known/oauth-authorization-server` | 200;  `issuer` is `https://agents.simplewithus.com` with no trailing slash;  `authorization_endpoint` `/authorize`;  `token_endpoint` `/oauth/token`;  `code_challenge_methods_supported` `["S256"]`;  `authorization_response_iss_parameter_supported` true;  `client_id_metadata_document_supported` true;  no `registration_endpoint` |
 | `curl -s https://agents.simplewithus.com/.well-known/oauth-protected-resource/mcp` | 200;  `resource` `https://agents.simplewithus.com/mcp`;  `authorization_servers[0]` byte-equal to `issuer` |
-| `curl -si -X POST https://agents.simplewithus.com/mcp -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"check","version":"0"}}}'` | 401 with `WWW-Authenticate: Bearer resource_metadata="https://agents.simplewithus.com/.well-known/oauth-protected-resource/mcp"` |
+| `curl -si -X POST https://agents.simplewithus.com/mcp -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"check","version":"0"}}}'` | 401 with a `WWW-Authenticate` header (scheme `Bearer`) with `resource_metadata="https://agents.simplewithus.com/.well-known/oauth-protected-resource/mcp"` |
 | `curl -si https://agents.simplewithus.com/mcp` | 401 |
 | `curl -si https://agents.simplewithus.com/authorize` and `/admin` | 302 to `https://silent-frost-37e0.cloudflareaccess.com/…` (Access, before the Worker) |
 | `curl -si -X POST https://agents.simplewithus.com/admin/action -d action=arm` | stopped by Access (302 to the team domain, or an Access 401/403), never the Worker's own "Sign-In Required" page:  proves the `/admin` destination covers subpaths |
-| `curl -s https://agents.simplewithus.com/health` | 200 `{"ok":true}` (the fleet admin panel's simple-tools card probes this URL;  without it the card goes red) |
+| `curl -s https://agents.simplewithus.com/health` | 200 `{"ok":true}` (the fleet admin panel's Simple Tools card probes this URL;  without it the card goes red) |
 | `curl -si https://agents.simplewithus.com/` and `/oauth/register` and `/post` | 404 |
 | workers.dev | `https://simple-tools-mcp.<account subdomain>.workers.dev` does not serve this Worker (the script looks up the subdomain) |
 | custom domain | bound to service `simple-tools-mcp` |

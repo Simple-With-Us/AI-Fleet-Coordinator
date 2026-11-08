@@ -24,15 +24,14 @@ What this does, in order:
      (workers/alert-ingress/src/index.js, credentialSlug()).
 
 Every credential is read from the environment first and from `fleet-secrets`
-second, so a value the environment already holds is never fetched again.
+second, so a value the environment already holds is never fetched again.  Folder reads and
+generated-secret writes use separate, caller-scoped Infisical service tokens.
 
 Names and lengths are printed; no value is ever printed, logged or persisted.
 The values live in this process's memory for the length of the run.
 
 `fleet-secrets set` cannot write these names (its allowlist covers CACHE_*
-under /linear and the CLI logins), so the write goes through the automation
-identity's API, the pattern scripts/simple-tools-mcp/scripts/populate-scoped-folders.py
-already uses.
+under /linear and the CLI logins), so writes use the scoped AFC write token.
 """
 
 import json
@@ -46,6 +45,9 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+from fleet_secrets import core as scoped_secrets
 
 # Project identifiers, pinned: a copy must read from and write to exactly this
 # project (populate-scoped-folders.py, kody 4365623903).  Neither is a credential.
@@ -105,6 +107,9 @@ GENERATED = (
 VENDOR_ISSUED = ("SENTRY_WEBHOOK_SECRET",)
 
 FLEET_SECRETS_ABSENT = 3
+READ_TOKEN_AFC = "ALERT_INGRESS_AFC_READ_TOKEN"
+READ_TOKEN_FLEETOPS = "ALERT_INGRESS_FLEETOPS_READ_TOKEN"
+WRITE_TOKEN_AFC = "ALERT_INGRESS_AFC_WRITE_TOKEN"
 
 # Exit codes the shell reads:  124 is a timeout, 127 a missing executable.
 EXIT_TIMEOUT = 124
@@ -158,15 +163,7 @@ def fleet_secrets_get(name, project, path):
     so a literal ${...} is never returned.  Any other failure raises with a
     reason word only;  stderr is discarded unread so no server text leaks.
     """
-    argv = [
-        fleet_secrets_binary(),
-        "get",
-        name,
-        "--path",
-        path,
-        "--project",
-        project,
-    ]
+    argv, env = fleet_secrets_batch([name], project, path)
     try:
         proc = subprocess.run(
             argv,
@@ -175,6 +172,7 @@ def fleet_secrets_get(name, project, path):
             stderr=subprocess.DEVNULL,
             timeout=90,
             check=False,
+            env=env,
         )
     except subprocess.TimeoutExpired:
         raise ReadError(f"{name}:  fleet-secrets timed out", EXIT_TIMEOUT) from None
@@ -215,9 +213,31 @@ def fleet_secrets_batch(names, project, path):
     older one that takes a single name, so the repo's own copy is preferred
     when it sits next to this script.
     """
+    token_name = READ_TOKEN_AFC if project == AFC_SLUG else READ_TOKEN_FLEETOPS
+    token = (os.environ.get(token_name) or "").strip()
+    if (
+        not token.startswith("st.")
+        or not 20 <= len(token) <= 2048
+        or any(c.isspace() for c in token)
+    ):
+        raise ReadError(f"{token_name} is missing or invalid")
     package = pathlib.Path(__file__).resolve().parent.parent / "fleet_secrets"
+    env = dict(os.environ)
+    for name in (
+        "INFISICAL_TOKEN",
+        "INFISICAL_AI_FLEET_COORDINATOR_TOKEN",
+        READ_TOKEN_AFC,
+        READ_TOKEN_FLEETOPS,
+    ):
+        env.pop(name, None)
+    if project == AFC_SLUG:
+        env["INFISICAL_AI_FLEET_COORDINATOR_TOKEN"] = token
+    else:
+        env["INFISICAL_TOKEN"] = token
+    env[scoped_secrets.ENV_READ_PATHS] = path
+    if project == AFC_SLUG:
+        env["INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID"] = AFC
     if (package / "__main__.py").is_file():
-        env = dict(os.environ)
         root = str(package.parent)
         existing = env.get("PYTHONPATH")
         env["PYTHONPATH"] = root + (os.pathsep + existing if existing else "")
@@ -237,7 +257,7 @@ def fleet_secrets_batch(names, project, path):
         )
     return (
         [fleet_secrets_binary(), "get", *names, "--path", path, "--project", project],
-        None,
+        env,
     )
 
 
@@ -374,28 +394,14 @@ def api(method, url, token, data=None, timeout=35, write=None):
         raise ReadError("not-json") from None
 
 
-def infisical_login(values):
-    """The automation identity's access token.  Never printed.
-
-    The values arrive from the caller, so the fleet-ops folder is read once
-    for the whole run instead of once per credential.
-    """
-    client_id = values.get("INFISICAL_AUTOMATION_CLIENT_ID", "")
-    client_secret = values.get("INFISICAL_AUTOMATION_CLIENT_SECRET", "")
-    if not client_id:
-        raise ReadError("INFISICAL_AUTOMATION_CLIENT_ID is absent")
-    if not client_secret:
-        raise ReadError("INFISICAL_AUTOMATION_CLIENT_SECRET is absent")
-    answer = api(
-        "POST",
-        f"{INFISICAL_BASE}/api/v1/auth/universal-auth/login",
-        None,
-        {"clientId": client_id, "clientSecret": client_secret},
-        write=False,
-    )
-    token = answer.get("accessToken") if isinstance(answer, dict) else None
-    if not isinstance(token, str) or not token:
-        raise ReadError("login-refused")
+def require_service_token(token, name):
+    if (
+        not isinstance(token, str)
+        or not token.startswith("st.")
+        or not 20 <= len(token) <= 2048
+        or any(c.isspace() for c in token)
+    ):
+        raise ReadError(f"{name} is missing or invalid")
     return token
 
 
@@ -405,6 +411,13 @@ def infisical_upsert(token, name, value):
     Infisical creates the path when it is new, so the four generated secrets
     land beside the bot pairs.
     """
+    token = require_service_token(token, WRITE_TOKEN_AFC)
+    env = {key: item for key, item in os.environ.items() if key not in scoped_secrets.AUTH_ENV_VARS}
+    env[scoped_secrets.ENV_WRITE_PATHS] = SECRET_PATH
+    try:
+        scoped_secrets.verify_service_token(token, AFC, SECRET_PATH, env, writer=True)
+    except scoped_secrets.SecretsError:
+        raise ReadError(f"{WRITE_TOKEN_AFC} scope verification failed") from None
     api(
         "POST",
         f"{INFISICAL_BASE}/api/v3/secrets/raw/{urllib.parse.quote(name)}",
@@ -493,7 +506,7 @@ def main():
     #    the Cloudflare token.  One batched read of the folder, so it is
     #    exported once for the whole run.  It is read before the login, so a
     #    missing Cloudflare token is found before anything is written.
-    fleetops_names = ["INFISICAL_AUTOMATION_CLIENT_ID", "INFISICAL_AUTOMATION_CLIENT_SECRET"]
+    fleetops_names = []
     if not dry:
         fleetops_names.append("CLOUDFLARE_FLEET_API_TOKEN")
     try:
@@ -504,11 +517,13 @@ def main():
 
     # 3. The generated secrets:  read what exists, create what does not.
     created = []
-    try:
-        infisical_token = infisical_login(fleetops)
-    except ReadError as error:
-        print(f"STOP: the Infisical login failed ({error}).  Nothing was written.")
-        return error.code
+    infisical_token = (os.environ.get(WRITE_TOKEN_AFC) or "").strip()
+    if not dry:
+        try:
+            infisical_token = require_service_token(infisical_token, WRITE_TOKEN_AFC)
+        except ReadError as error:
+            print(f"STOP: {error}.  Nothing was written.")
+            return error.code
 
     for name in GENERATED:
         existing = from_env[name] or fetched.get(name)

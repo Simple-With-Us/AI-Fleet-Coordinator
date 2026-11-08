@@ -68,6 +68,11 @@ if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "handbook-ser
     from simple_tools.handbook_service import main as handbook_main
     sys.exit(handbook_main(sys.argv[2:]))
 
+# Muster's read-only Operator service (AFC-654):  not a roster seat, never routed to a seat's hosted server.
+if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "muster-service":
+    from simple_tools.muster_service import main as muster_main
+    sys.exit(muster_main(sys.argv[2:]))
+
 # --- seat remote defaults (host helper, optional) ---
 _SEAT_HELPER_ANCHOR = "/"
 

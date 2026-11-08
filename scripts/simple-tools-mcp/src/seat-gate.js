@@ -13,6 +13,7 @@
 import { DurableObject } from "cloudflare:workers";
 import * as state from "./seat-state.js";
 import * as wa from "./wa/state.js";
+import { guardOff } from "./budget-guard.mjs";
 
 export class SeatGate extends DurableObject {
   // AFC-545: the WhatsApp send switch and the owner binding are Worker
@@ -33,6 +34,12 @@ export class SeatGate extends DurableObject {
     return result;
   }
   async alarm() {
+    // The usage guard stopped this Worker:  no sweep and no flush, one quiet
+    // recheck an hour so the chain resumes on its own after the guard clears.
+    if (guardOff(this.env)) {
+      await this.store.setAlarm(Date.now() + 3600000);
+      return;
+    }
     // The mismatch counter flushes ONLY when due:  this handler also fires
     // every second while the wa sweep's busy chain drains, and an
     // unconditional flush would turn that cadence back into a write per
@@ -261,6 +268,10 @@ export class SeatGate extends DurableObject {
 
   auditCall(row) {
     return state.auditCall(this.store, row);
+  }
+
+  auditCallBatch(entries) {
+    return state.auditCallBatch(this.store, entries);
   }
 
   callTail(limit) {

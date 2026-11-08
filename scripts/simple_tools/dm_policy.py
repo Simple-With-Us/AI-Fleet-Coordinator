@@ -26,7 +26,7 @@ one topic per discussion, mentioning only the participants;  a seat's ping to Ja
 Pending-for-Jay topic there, never a new DM.  The stream is keyed on the **id** (646987), never the
 name, because the live display name differs from Jay's spelling and has changed before.
 
-The block is behind `SIMPLE_TOOLS_DM_RULE` and defaults **on** (hard cutover).  Set it to `off`,
+The block is behind `SIMPLE_TOOLS_DM_RULE` and defaults **on**.  Set it to `off`,
 `0`, `false` or `no` to restore today's behaviour; nothing else turns it off.
 
 Python 3.11+, standard library only.
@@ -73,7 +73,7 @@ GUIDANCE_PEOPLE = (
 class DmRefused(Z.SimpleToolsError):
     """A seat tried to open a direct message on its own.  Carries the audit `reason`.
 
-    An SimpleToolsError, so the CLI exits 3 (a refusal) and not 2 (a malformed command):  a caller can
+    A SimpleToolsError, so the CLI exits 3 (a refusal) and not 2 (a malformed command):  a caller can
     tell "the rule said no" from "you typed it wrong"."""
 
     code = "dm_not_allowed"

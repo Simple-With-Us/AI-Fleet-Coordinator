@@ -51,6 +51,46 @@ function harness(fetchImpl, enabled=true) {
   const gr=new GrRelayClient({baseUrl:'https://broker.invalid',accessId:'private-access-identifier',accessSecret:'private-access-secret',bearer:'caller-own-bearer',fetch:fetchImpl});
   return new HostedTools({seat:'JET-CHAT',scopes:['zulip:read','zulip:write'],clientId:'test',grantRef:'abc123',paused:false,config:{...loadConfig(testEnv()),grWorkflowEnabled:enabled},zulip:null,key:'',gate,gr,log:()=>{},sleep:async()=>{}});
 }
+test('Draft workflow diagnostics cross transport and hosted mapping without replay or prose',async()=>{
+  for (const code of ['graphql_forbidden','graphql_not_found','graphql_unprocessable','graphql_rate_limited','private-provider-text',null,['graphql_forbidden']]) {
+    let calls=0;
+    const tools=harness(async()=>{
+      calls++;
+      return new Response(JSON.stringify({error:'private-provider-text',outcome:'unknown',retryable:false,github_code:code}),{status:502});
+    });
+    const result=await tools.call('gr_wf_pr_draft',{repo,number:1});
+    assert.equal(result.isError,true);
+    const error=JSON.parse(result.content[0].text);
+    assert.equal(error.code,'outcome_unknown');
+    assert.equal(error.retryable,false);
+    assert.match(error.message,/Do not retry blindly/);
+    assert.equal(error.github_code,typeof code==='string'&&code.startsWith('graphql_')?code:undefined);
+    assert.doesNotMatch(JSON.stringify(result),/private-provider-text/);
+    assert.equal(calls,1);
+  }
+});
+test('held and unknown answers carry only a validated allowlisted github_code',async()=>{
+  for(const [status,outcome,code,want] of [
+    [409,'pending','graphql_forbidden','graphql_forbidden'],
+    [409,'unknown','graphql_rate_limited','graphql_rate_limited'],
+    [409,'pending','private-provider-text',undefined],
+    [409,'pending',{code:'graphql_forbidden'},undefined],
+    [409,'pending',['graphql_forbidden'],undefined],
+    [409,'pending',null,undefined],
+    [502,'unknown','graphql_not_found','graphql_not_found'],
+    [502,'unknown','private-provider-text',undefined],
+  ]) {
+    let calls=0;
+    const tools=harness(async()=>{calls++;return new Response(JSON.stringify({error:'private-provider-text',outcome,retryable:false,github_code:code}),{status});});
+    const result=await tools.call('gr_wf_pr_draft',{repo,number:1});
+    assert.equal(result.isError,true);
+    const error=JSON.parse(result.content[0].text);
+    assert.equal(error.code,'outcome_unknown');
+    assert.equal(error.github_code,want);
+    assert.doesNotMatch(JSON.stringify(result),/private-provider-text/);
+    assert.equal(calls,1);
+  }
+});
 test('default-off discovery, cache separation and direct-call denial',async()=>{
   assert.equal(loadConfig(testEnv({GR_WORKFLOW_TOOLS:""})).grWorkflowEnabled,false);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
@@ -253,7 +293,7 @@ test('merge queue closed inputs fixed own-bearer calls and unknown writes',async
  }
 });
 test('fixed PR controls and thread reads preserve scope and UNKNOWN',async()=>{
- for(const action of ['wf_pr_ready','wf_pr_draft','wf_automerge_disable','wf_automerge_enable','wf_review_threads']){
+ for(const action of ['wf_pr_ready','wf_pr_draft','wf_pr_reopen','wf_automerge_disable','wf_automerge_enable','wf_review_threads']){
   const args={repo,number:1,...(action==='wf_automerge_enable'?{method:'SQUASH'}:{})};
   const t=harness(async(url)=>{assert.ok(url.endsWith('/v1/'+action));return new Response(JSON.stringify(action==='wf_review_threads'?{threads:{nodes:[]}}:{pull:{id:'PR_abc'}}));});
   assert.ok(!(await t.call('gr_'+action,args)).isError,action);
@@ -361,7 +401,7 @@ test('relation provider-pattern scanner and request bounds fail closed',async()=
  assert.equal(calls,0);
 });
 test('bounded git object fixed own-bearer calls and unknown blob creates',async()=>{
- for(const [action,args,reply] of [['wf_git_blob_get',{sha:'a'.repeat(40)},{blob:{sha:'a'.repeat(40),size:2,text:'hi'}}],['wf_git_blob_create',{text:'hi'},{blob:{sha:'a'.repeat(40),size:2}}],['wf_git_commit_get',{sha:'a'.repeat(40)},{commit:{sha:'a'.repeat(40),tree_sha:'b'.repeat(40),parents:[],message:'message'}}],['wf_git_tree_get',{sha:'a'.repeat(40)},{tree:{sha:'a'.repeat(40),entries:[],truncated:false}}]]){
+ for(const [action,args,reply] of [['wf_git_blob_get',{sha:'a'.repeat(40)},{blob:{sha:'a'.repeat(40),size:2,text:'hi'}}],['wf_git_blob_create',{text:'hi'},{blob:{sha:'a'.repeat(40),size:2}}],['wf_git_commit_get',{sha:'a'.repeat(40)},{commit:{sha:'a'.repeat(40),tree_sha:'b'.repeat(40),parents:[],message:'message',author:{name:'n',email:'e',date:'d'},committer:{name:'n',email:'e',date:'d'},author_account:null,committer_account:null}}],['wf_git_tree_get',{sha:'a'.repeat(40)},{tree:{sha:'a'.repeat(40),entries:[],truncated:false}}]]){
   assert.ok(validWfV1Args(action,{repo,...args}));assert.ok(!validWfV1Args(action,{repo,...args,url:'https://evil.invalid'}));
   const t=harness(async(url,init)=>{assert.ok(url.endsWith('/v1/'+action));assert.equal(init.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify(reply));});assert.ok(!(await t.call('gr_'+action,{repo,...args})).isError);
  }
@@ -405,7 +445,7 @@ test('comment and release lifecycle envelopes and write UNKNOWN',async()=>{
 test('actual review regression',()=>{for(const id of [0,-1,true,'1']) assert.ok(!validWfV1Response('wf_run_delete',{completed:true,run_id:id}));});
 
 test('bounded git object fixed own-bearer calls and unknown blob creates',async()=>{
- for(const [action,args,reply] of [['wf_git_blob_get',{sha:'a'.repeat(40)},{blob:{sha:'a'.repeat(40),size:2,text:'hi'}}],['wf_git_blob_create',{text:'hi'},{blob:{sha:'a'.repeat(40),size:2}}],['wf_git_commit_get',{sha:'a'.repeat(40)},{commit:{sha:'a'.repeat(40),tree_sha:'b'.repeat(40),parents:[],message:'message'}}],['wf_git_tree_get',{sha:'a'.repeat(40)},{tree:{sha:'a'.repeat(40),entries:[],truncated:false}}]]){
+ for(const [action,args,reply] of [['wf_git_blob_get',{sha:'a'.repeat(40)},{blob:{sha:'a'.repeat(40),size:2,text:'hi'}}],['wf_git_blob_create',{text:'hi'},{blob:{sha:'a'.repeat(40),size:2}}],['wf_git_commit_get',{sha:'a'.repeat(40)},{commit:{sha:'a'.repeat(40),tree_sha:'b'.repeat(40),parents:[],message:'message',author:{name:'n',email:'e',date:'d'},committer:{name:'n',email:'e',date:'d'},author_account:null,committer_account:null}}],['wf_git_tree_get',{sha:'a'.repeat(40)},{tree:{sha:'a'.repeat(40),entries:[],truncated:false}}]]){
   assert.ok(validWfV1Args(action,{repo,...args}));assert.ok(!validWfV1Args(action,{repo,...args,url:'https://evil.invalid'}));
   const t=harness(async(url,init)=>{assert.ok(url.endsWith('/v1/'+action));assert.equal(init.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify(reply));});assert.ok(!(await t.call('gr_'+action,{repo,...args})).isError);
  }
@@ -662,7 +702,7 @@ test('rename strict receipts correlate paths branch and prior blob and use calle
 });
 
 test('bounded git object fixed own-bearer calls and unknown blob creates',async()=>{
- for(const [action,args,reply] of [['wf_git_blob_get',{sha:'a'.repeat(40)},{blob:{sha:'a'.repeat(40),size:2,text:'hi'}}],['wf_git_blob_create',{text:'hi'},{blob:{sha:'a'.repeat(40),size:2}}],['wf_git_commit_get',{sha:'a'.repeat(40)},{commit:{sha:'a'.repeat(40),tree_sha:'b'.repeat(40),parents:[],message:'message'}}],['wf_git_tree_get',{sha:'a'.repeat(40)},{tree:{sha:'a'.repeat(40),entries:[],truncated:false}}]]){
+ for(const [action,args,reply] of [['wf_git_blob_get',{sha:'a'.repeat(40)},{blob:{sha:'a'.repeat(40),size:2,text:'hi'}}],['wf_git_blob_create',{text:'hi'},{blob:{sha:'a'.repeat(40),size:2}}],['wf_git_commit_get',{sha:'a'.repeat(40)},{commit:{sha:'a'.repeat(40),tree_sha:'b'.repeat(40),parents:[],message:'message',author:{name:'n',email:'e',date:'d'},committer:{name:'n',email:'e',date:'d'},author_account:null,committer_account:null}}],['wf_git_tree_get',{sha:'a'.repeat(40)},{tree:{sha:'a'.repeat(40),entries:[],truncated:false}}]]){
   assert.ok(validWfV1Args(action,{repo,...args}));assert.ok(!validWfV1Args(action,{repo,...args,url:'https://evil.invalid'}));
   const t=harness(async(url,init)=>{assert.ok(url.endsWith('/v1/'+action));assert.equal(init.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify(reply));});assert.ok(!(await t.call('gr_'+action,{repo,...args})).isError);
  }
@@ -922,8 +962,9 @@ test('compare graph page correlates immutable SHA inputs and excludes patches/fi
  const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_compare_commits_page'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify(receipt));});assert.ok(!(await t.call('gr_wf_compare_commits_page',args)).isError);
 });
 test('PR list pages remain non-snapshot metadata with bounded correlated receipts',async()=>{
- const args={repo,head:'release/a',base:'main',page:2,per_page:1},row={number:2,state:'open',draft:false,head_ref:'release/a',head_sha:'a'.repeat(40),base_ref:'main',base_sha:'b'.repeat(40)},receipt={pulls:[row],page:2,has_more:true,snapshot:false};
+ const args={repo,head:'release/a',base:'main',page:2,per_page:1},row={number:2,state:'open',draft:false,head_ref:'release/a',head_sha:'a'.repeat(40),base_ref:'main',base_sha:'b'.repeat(40),merged_at:null},receipt={pulls:[row],page:2,has_more:true,snapshot:false};
  assert.equal(validWfV1Response('wf_pr_list_page',receipt,args),true);assert.equal(validWfV1Response('wf_pr_list_page',{...receipt,pulls:[{...row,state:'closed'}]},args),false);assert.equal(validWfV1Response('wf_pr_list_page',{...receipt,snapshot:true},args),false);assert.equal(validWfV1Response('wf_pr_list_page',{...receipt,pulls:[{...row,title:'omitted'}]},args),false);
+ assert.equal(validWfV1Response('wf_pr_list_page',{...receipt,pulls:[{...row,merged_at:'2026-11-07T05:00:00Z'}]},args),false);assert.equal(validWfV1Response('wf_pr_list_page',{pulls:[{...row,state:'closed',merged_at:'2026-11-07T05:00:00Z'}],page:1,has_more:false,snapshot:false},{repo,state:'all'}),true);
  const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_pr_list_page'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify(receipt));});assert.ok(!(await t.call('gr_wf_pr_list_page',args)).isError);
 });
 
@@ -939,7 +980,7 @@ test('new label and discussion boundaries reject embedded provider shapes and ma
 });
 
 test('PR list retains provider branch metadata without widening write refs',()=>{
- const args={repo:'Simple-With-Us/AI-Fleet-Coordinator'},row={number:2,state:'open',draft:false,head_ref:'deps/pkg@1.2+build#2',head_sha:'a'.repeat(40),base_ref:'main',base_sha:'b'.repeat(40)},body={pulls:[row],page:1,has_more:false,snapshot:false};
+ const args={repo:'Simple-With-Us/AI-Fleet-Coordinator'},row={number:2,state:'open',draft:false,head_ref:'deps/pkg@1.2+build#2',head_sha:'a'.repeat(40),base_ref:'main',base_sha:'b'.repeat(40),merged_at:null},body={pulls:[row],page:1,has_more:false,snapshot:false};
  assert.equal(validWfV1Response('wf_pr_list_page',body,args),true);
  assert.equal(validWfV1Args('wf_pr_list_page',{...args,head:row.head_ref}),false);
  for(const head_ref of ['a..b','a@{b','a\n','a/.bad','a.lock'])assert.equal(validWfV1Response('wf_pr_list_page',{...body,pulls:[{...row,head_ref}]},args),false);
@@ -971,7 +1012,7 @@ test('Git blob and commit receipts keep credential rejection through main valida
   assert.equal(validWfV1Response('wf_git_commit_get',{commit:{sha:'a'.repeat(40),tree_sha:'b'.repeat(40),parents:[],message:text}}),false);
  }
  assert.equal(validWfV1Response('wf_git_blob_get',{blob:{sha:'a'.repeat(40),size:2,text:'hi'}}),true);
- assert.equal(validWfV1Response('wf_git_commit_get',{commit:{sha:'a'.repeat(40),tree_sha:'b'.repeat(40),parents:[],message:'safe'}}),true);
+ assert.equal(validWfV1Response('wf_git_commit_get',{commit:{sha:'a'.repeat(40),tree_sha:'b'.repeat(40),parents:[],message:'safe',author:{name:'n',email:'e',date:'d'},committer:{name:'n',email:'e',date:'d'},author_account:null,committer_account:null}}),true);
 });
 
 test('history receipts bind requested page size and conservative has_more',()=>{
@@ -1091,4 +1132,117 @@ test('Actions inventory attempts: exact identities, bounded pages, secret metada
  assert.equal(validWfV1Response('wf_run_attempt_jobs',{jobs:[{...state,id:8,run_attempt:3}],...identity,total:1,page:1,has_more:true,snapshot:false},{repo,...identity,per_page:1}),false);
  assert.equal(validWfV1Response('wf_caches_page',{caches:[cache,cache],total:2,page:1,has_more:false,snapshot:false},{repo}),false);
  assert.equal(validWfV1Args('wf_run_attempt_get',{repo,...identity,run_attempt:true}),false);
+});
+
+// ---- R-verbs corrective v2 ----
+const S40='a'.repeat(40);
+test('v2: custody verb arg contracts',()=>{
+  for(const a of ['wf_pr_create','wf_pr_edit','wf_pr_close']){
+    const tool=WF_V1_TOOLS.find(t=>t.name==='gr_'+a);
+    assert.ok(tool,a);
+    assert.equal(tool.inputSchema.additionalProperties,false);
+    assert.ok(!WF_V1_READ_ACTIONS.includes(a),a+' is a write');
+  }
+  assert.deepEqual(WF_V1_TOOLS.find(t=>t.name==='gr_wf_pr_create').inputSchema.required,['repo','base','head','title','body','expected_head_sha']);
+  assert.deepEqual(WF_V1_TOOLS.find(t=>t.name==='gr_wf_pr_edit').inputSchema.required,['repo','number','expected_head_sha','expected_base_ref']);
+  assert.deepEqual(WF_V1_TOOLS.find(t=>t.name==='gr_wf_pr_close').inputSchema.required,['repo','number','expected_head_sha','expected_base_ref']);
+});
+test('v2: custody verb arg validation',()=>{
+  assert.ok(validWfV1Args('wf_pr_create',{repo,base:'main',head:'wise/x',title:'t',body:'b',expected_head_sha:S40}));
+  assert.ok(!validWfV1Args('wf_pr_create',{repo,base:'main',head:'other:branch',title:'t',body:'b',expected_head_sha:S40}));
+  assert.ok(!validWfV1Args('wf_pr_create',{repo,base:'main',head:'wise/x',title:'t',body:'b'}));
+  assert.ok(!validWfV1Args('wf_pr_create',{repo,base:'main',head:'wise/x',title:'t'.repeat(257),body:'b',expected_head_sha:S40}));
+  assert.ok(validWfV1Args('wf_pr_edit',{repo,number:7,title:'n',expected_head_sha:S40,expected_base_ref:'main'}));
+  assert.ok(validWfV1Args('wf_pr_edit',{repo,number:7,expected_head_sha:S40,expected_base_ref:'main'}));
+  assert.ok(!validWfV1Args('wf_pr_edit',{repo,number:7,title:'n',expected_head_sha:S40}));
+  assert.ok(validWfV1Args('wf_pr_close',{repo,number:7,expected_head_sha:S40,expected_base_ref:'main'}));
+  assert.ok(!validWfV1Args('wf_pr_close',{repo,number:7,expected_head_sha:S40,expected_base_ref:'main',delete_branch:true}));
+});
+test('v2: custody receipts cross-checked against args',async()=>{
+  const createOk=harness(async()=>new Response(JSON.stringify({pull:{number:7,state:'open',head_ref:'wise/x',head_sha:S40,base_ref:'main'}})));
+  assert.ok(!(await createOk.call('gr_wf_pr_create',{repo,base:'main',head:'wise/x',title:'t',body:'b',expected_head_sha:S40})).isError);
+  const createWrongBase=harness(async()=>new Response(JSON.stringify({pull:{number:7,state:'open',head_ref:'wise/x',head_sha:S40,base_ref:'release'}})));
+  assert.ok((await createWrongBase.call('gr_wf_pr_create',{repo,base:'main',head:'wise/x',title:'t',body:'b',expected_head_sha:S40})).isError);
+  const editEcho=harness(async()=>new Response(JSON.stringify({pull:{number:7,state:'open',head_sha:S40,base_ref:'main',head_repo:repo,title:'n',body:'b'}})));
+  assert.ok(!(await editEcho.call('gr_wf_pr_edit',{repo,number:7,title:'n',expected_head_sha:S40,expected_base_ref:'main'})).isError);
+  const editMoved=harness(async()=>new Response(JSON.stringify({pull:{number:7,state:'open',head_sha:'b'.repeat(40),base_ref:'main',head_repo:repo,title:'n',body:'b'}})));
+  assert.ok((await editMoved.call('gr_wf_pr_edit',{repo,number:7,title:'n',expected_head_sha:S40,expected_base_ref:'main'})).isError);
+  const editTitleMismatch=harness(async()=>new Response(JSON.stringify({pull:{number:7,state:'open',head_sha:S40,base_ref:'main',head_repo:repo,title:'OTHER',body:'b'}})));
+  assert.ok((await editTitleMismatch.call('gr_wf_pr_edit',{repo,number:7,title:'n',expected_head_sha:S40,expected_base_ref:'main'})).isError);
+  const closeOk=harness(async()=>new Response(JSON.stringify({pull:{number:7,state:'closed',head_sha:S40,base_ref:'main'}})));
+  assert.ok(!(await closeOk.call('gr_wf_pr_close',{repo,number:7,expected_head_sha:S40,expected_base_ref:'main'})).isError);
+  const closeStillOpen=harness(async()=>new Response(JSON.stringify({pull:{number:7,state:'open',head_sha:S40,base_ref:'main'}})));
+  assert.ok((await closeStillOpen.call('gr_wf_pr_close',{repo,number:7,expected_head_sha:S40,expected_base_ref:'main'})).isError);
+  const createForeignHead=harness(async()=>new Response(JSON.stringify({pull:{number:7,state:'open',head_ref:'wise/x',head_sha:'c'.repeat(40),base_ref:'main'}})));
+  assert.ok((await createForeignHead.call('gr_wf_pr_create',{repo,base:'main',head:'wise/x',title:'t',body:'b',expected_head_sha:S40})).isError);
+  const editRetarget=harness(async()=>new Response(JSON.stringify({pull:{number:7,state:'open',head_sha:S40,base_ref:'release',head_repo:repo,title:'n',body:'b'}})));
+  assert.ok((await editRetarget.call('gr_wf_pr_edit',{repo,number:7,title:'n',expected_head_sha:S40,expected_base_ref:'main'})).isError);
+  const editForkRepo=harness(async()=>new Response(JSON.stringify({pull:{number:7,state:'open',head_sha:S40,base_ref:'main',head_repo:'other/repo',title:'n',body:'b'}})));
+  assert.ok((await editForkRepo.call('gr_wf_pr_edit',{repo,number:7,title:'n',expected_head_sha:S40,expected_base_ref:'main'})).isError);
+  const closeRetarget=harness(async()=>new Response(JSON.stringify({pull:{number:7,state:'closed',head_sha:S40,base_ref:'release'}})));
+  assert.ok((await closeRetarget.call('gr_wf_pr_close',{repo,number:7,expected_head_sha:S40,expected_base_ref:'main'})).isError);
+});
+test('v2: checks census contract and sha pin',()=>{
+  assert.ok(!validWfV1Args('wf_checks',{repo,ref:'main'}));
+  assert.ok(validWfV1Args('wf_checks',{repo,ref:S40}));
+  const row={id:1,name:'kody',status:'completed',conclusion:'success',completed_at:'2026-11-03T00:00:00Z',head_sha:S40,app_id:123,app_slug:'kody-ai'};
+  assert.ok(validWfV1Response('wf_checks',{checks:[row],complete:true},{repo,ref:S40}));
+  assert.ok(validWfV1Response('wf_checks',{checks:[],complete:'unknown'},{repo,ref:S40}));
+  assert.ok(!validWfV1Response('wf_checks',{checks:[{...row,id:2},{...row,id:2}],complete:false},{repo,ref:S40}));
+  assert.ok(!validWfV1Response('wf_checks',{checks:[{...row,head_sha:'b'.repeat(40)}],complete:false},{repo,ref:S40}));
+  assert.ok(!validWfV1Response('wf_checks',{checks:[row],complete:'true'},{repo,ref:S40}));
+});
+test('v2: pr inventory strict rows',()=>{
+  const row={number:7,title:'t',draft:false,head_ref:'wise/x',head_sha:S40,base_ref:'main',base_sha:S40,author:'jay',author_type:'User',created_at:'2026-11-02T00:00:00Z',updated_at:'2026-11-03T00:00:00Z',merged_at:null,auto_merge:false};
+  assert.ok(validWfV1Response('wf_pr_list',{pulls:[row],complete:false},{repo}));
+  assert.ok(!validWfV1Response('wf_pr_list',{pulls:[row,row],complete:false},{repo}));
+  assert.ok(!validWfV1Response('wf_pr_list',{pulls:[{...row,author_type:7}],complete:false},{repo}));
+});
+test('v2: merge_guarded optional commit text',()=>{
+  assert.ok(validWfV1Args('wf_merge_guarded',{repo,number:9,expected_head_sha:S40,method:'squash',commit_title:'t',commit_message:'m'}));
+  assert.ok(validWfV1Args('wf_merge_guarded',{repo,number:9,expected_head_sha:S40,method:'squash',commit_message:''}));
+  assert.ok(!validWfV1Args('wf_merge_guarded',{repo,number:9,expected_head_sha:S40,method:'squash',commit_title:'x'.repeat(257)}));
+  assert.ok(!validWfV1Args('wf_merge_guarded',{repo,number:9,expected_head_sha:S40,method:'squash',commit_title:'ghp_'+'x'.repeat(24)}));
+});
+test('v2: opt-in larger-text class',()=>{
+  const big='x'.repeat(83854);
+  assert.ok(!validWfV1Args('wf_git_blob_create',{repo,text:big}));
+  assert.ok(validWfV1Args('wf_git_blob_create',{repo,text:big,allow_large_text:true}));
+  assert.ok(!validWfV1Args('wf_git_blob_create',{repo,text:'x'.repeat(100001),allow_large_text:true}));
+  assert.ok(!validWfV1Args('wf_git_blob_create',{repo,text:big,allow_large_text:'yes'}));
+  const files=[0,1,2].map(i=>({path:'f'+i+'.txt',text:'y'.repeat(20000),mode:'100644'}));
+  assert.ok(!validWfV1Args('wf_git_tree_create',{repo,base_tree:S40,files}));
+  assert.ok(validWfV1Args('wf_git_tree_create',{repo,base_tree:S40,files,allow_large_text:true}));
+  assert.ok(validWfV1Args('wf_git_blob_get',{repo,sha:S40,allow_large_text:true}));
+  const raw='x'.repeat(83854);
+  assert.ok(validWfV1Response('wf_git_blob_get',{blob:{sha:S40,size:83854,text:raw}},{repo,sha:S40,allow_large_text:true}));
+  assert.ok(!validWfV1Response('wf_git_blob_get',{blob:{sha:S40,size:83854,text:raw}},{repo,sha:S40}));
+});
+test('v2: custody verbs dispatch end-to-end with args forwarded',async()=>{
+  let seen=null;
+  const t=harness(async(url,init)=>{seen={url,body:JSON.parse(init.body)};return new Response(JSON.stringify({pull:{number:7,state:'closed',head_sha:S40,base_ref:'main'}}));});
+  const args={repo,number:7,expected_head_sha:S40,expected_base_ref:'main'};
+  const r=await t.call('gr_wf_pr_close',args);
+  assert.ok(!r.isError,r.content?.[0]?.text);
+  assert.equal(seen.url,'https://broker.invalid/v1/wf_pr_close');
+  assert.deepEqual(seen.body,args);
+});
+test('v2: blob_create response size follows the allow_large_text opt-in',()=>{
+  const S40b='a'.repeat(40);
+  const mk=(size)=>({blob:{sha:S40b,size}});
+  assert.equal(validWfV1Response('wf_git_blob_create',mk(50000),{repo,allow_large_text:true}),true);
+  assert.equal(validWfV1Response('wf_git_blob_create',mk(50000),{repo}),false);
+  assert.equal(validWfV1Response('wf_git_blob_create',mk(100001),{repo,allow_large_text:true}),false);
+  assert.equal(validWfV1Response('wf_git_blob_create',mk(40000),{repo}),true);
+});
+test('v2: blob_create custody dispatch end-to-end follows the opt-in',async()=>{
+  const S40b='a'.repeat(40);
+  const okLarge=harness(async()=>new Response(JSON.stringify({blob:{sha:S40b,size:50000}})));
+  assert.ok(!(await okLarge.call('gr_wf_git_blob_create',{repo,text:'x'.repeat(30000),allow_large_text:true})).isError);
+  const noFlag=harness(async()=>new Response(JSON.stringify({blob:{sha:S40b,size:50000}})));
+  assert.ok((await noFlag.call('gr_wf_git_blob_create',{repo,text:'x'.repeat(30000)})).isError);
+  const falseOk=harness(async()=>new Response(JSON.stringify({blob:{sha:S40b,size:40000}})));
+  assert.ok(!(await falseOk.call('gr_wf_git_blob_create',{repo,text:'x'.repeat(30000),allow_large_text:false})).isError);
+  const falseOver=harness(async()=>new Response(JSON.stringify({blob:{sha:S40b,size:40001}})));
+  assert.ok((await falseOver.call('gr_wf_git_blob_create',{repo,text:'x'.repeat(30000),allow_large_text:false})).isError);
 });

@@ -200,7 +200,7 @@ class KindTests(Tree):
             self.assertEqual(self.kind(), "headless", words)
 
     def test_a_launcher_the_opt_outs_and_the_helper_mark_take_no_letter(self) -> None:
-        for env in ({"AGENT_LAUNCHER": "botfleet"}, {"AGENT_LAUNCH_SEAT": "CODEX"}, {"AGENT_LAUNCHER": "eavesdropper-wake"},
+        for env in ({"AGENT_LAUNCHER": "botfleet"}, {"AGENT_LAUNCH_SEAT": "CODEX"}, {"AGENT_LAUNCHER": "simple-tools-wake"},
                     {"SESSION_LETTER": "0"}, {"MUSE_LETTER": "0"}, {MR.HELPER_MARK: "1"}):
             self.muse(env=env)
             self.assertEqual(self.kind(), "headless", env)

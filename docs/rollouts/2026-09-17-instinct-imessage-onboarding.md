@@ -1,7 +1,5 @@
 # 2026-09-17 — Onboarding prompt for INSTINCT, the iMessage interface seat
 
-Historical identifiers have been redacted. These records do not certify current deployment state.
-
 PR #251.  Branch `claude/instinct-imessage-onboarding-n6u9oh` (Claude Code cloud, seat CLAUDE).
 
 ## Context
@@ -18,7 +16,7 @@ one-off join.
   needs before its first session), the prompt itself, the Agent Seat row text, a "how to tell it
   took" list, and the existing iMessage jobs the prompt builds on.
 - `STATUS.md` and `docs/EFFORT-LOG.md` rows for this unit.
-- Follow-up section for a browser-only runtime (added the same day after Instinct reported a form-only vault and no MCP client): board by browser session and by GitHub issue, no Slack write until a Mac-side bridge exists, no recall or seat-mcp, revised first unit.  Facts checked in `scripts/mac-collab/mac-collab-server.py`, `scripts/mac-collab/sync_board.py`, and `[retired identifier]`.
+- Follow-up section for a browser-only runtime (added the same day after Instinct reported a form-only vault and no MCP client): board by browser session and by GitHub issue, no Slack write until a Mac-side bridge exists, no recall or seat-mcp, revised first unit.  Facts checked in `scripts/mac-collab/mac-collab-server.py`, `scripts/mac-collab/sync_board.py`, and `scripts/simple-tools-push/daemon.js`.
 
 ## Decisions
 
@@ -63,10 +61,10 @@ deterministic pieces:
   Basic, Bearer, and the existing cookie path are unchanged.  Tests:
   `scripts/mac-collab/test_login_form.py` (8).
 - `scripts/github-outbox-bridge.py` + `scripts/launchd/com.jay.github-outbox-bridge.plist`: every
-  120 s, post new comments on a private outbox issue to `[retired identifier]` through the loopback relay
+  120 s, post new comments on a private outbox issue to `#Work-In-Progress` through the loopback relay
   as `username=<SEAT>` after a header-shape check (rocket = posted; confused + reply = rejected),
   and mirror skim matches back as `<!-- outbox-bridge:slack -->` comments marked as data.  Tokens
-  from `[retired identifier]` only.  Relay failures keep the comment queued and note the outage
+  from `~/.secrets/simple-tools.env` only.  Relay failures keep the comment queued and note the outage
   on the issue once after three ticks.  Single-flight `flock`.  Stdlib only; compiles and tests on
   Python 3.10 (the Mac runs 3.9; no 3.10+ syntax used).  Tests: `scripts/test_github_outbox_bridge.py`
   (14).

@@ -4,12 +4,11 @@
 # It holds no secrets.  Each seat's Zulip email and API key, ZULIP_SITE, and each routine's URL and sender key reach
 # the container as environment variables, from one of two sources under the same names.  Infisical (fleet-secrets'
 # source) is the intended one;  Coolify copies are the fallback:
-#   - Infisical at start:  when Coolify sets INFISICAL_CLIENT_ID, INFISICAL_CLIENT_SECRET and INFISICAL_PROJECT_ID
-#     (a read-only machine identity), the entrypoint loads the listener's variables from Infisical (project
+#   - Infisical at start:  when Coolify binds a scoped INFISICAL_TOKEN service token, the entrypoint loads
+#     the listener's variables from Infisical (project
 #     "AI Fleet Coordinator", environment prod, folder /zulip) on every start (server/infisical_env.py), and an
 #     Infisical value wins over a Coolify one of the same name;
-#   - fallback, runtime-only Coolify variables copied from that folder (the entrypoint logs an ERROR when a
-#     partial Infisical identity forces this).
+#   - environment backfills are accepted for names not stored in Infisical; the scoped token is still required.
 # ZULIP_SITE is never in Infisical:  Coolify sets it.  The Zulip names are the defaults (ZULIP_<CODE>_EMAIL and
 # ZULIP_<CODE>_API_KEY, where CODE is the seat with hyphens as underscores).  A Grok Bot persona's routine reads
 # the webhook names Infisical already holds, ZULIP_ALERT_GB_<ROLE>_ENDPOINT (the https URL) and
@@ -22,7 +21,7 @@
 # `simple-chat daemon reload` (or a restart) applies it.  Until then nothing is treated as the
 # owner and nothing wakes.  A reload re-reads only this file:  a new or changed environment
 # variable reaches the listener only when the container restarts.  A section changed here never reaches a live
-# volume by itself:  server/apply_live_config.py copies the JET and GB sections into /data/listener.toml, adds
+# volume by itself:  server/apply_live_config.py copies the JET, GB and BF sections into /data/listener.toml, adds
 # [listener_api], [notes_queue] and [linear_projects] only where the live file has none (it never changes one that
 # is there), and leaves [daemon] (the pins) untouched.  Never mount this file as a single file, because `daemon init` replaces it
 # atomically.  Every seat here must be "server" in docs/protocols/simple-tools-partition.toml:  a seat is never
@@ -30,9 +29,17 @@
 
 [daemon]
 instance = "server"
-# Sender eligibility also includes the eleven BF bots.  That allowlist does not enable a queue:
-# only BF-DIRECTOR has a server section, and it stays disabled.
-outgoing_webhook_seats = ["ECHO", "INSTINCT", "JET", "GB-COMPILER", "GB-DIRECTOR", "GB-TRADER", "GB-DEPLOYER", "GB-DESIGNER", "GB-ORACLE", "GB-PUBLISHER", "GB-PLUMBER", "GB-FIXER", "GB-HOUSEKEEPER", "GB-MONITOR", "GB-ENGINEER", "BF-BUILDER", "BF-COMPILER", "BF-DEPLOYER", "BF-DESIGNER", "BF-DIRECTOR", "BF-FIXER", "BF-HOUSEKEEPER", "BF-MONITOR", "BF-ORACLE", "BF-PLUMBER", "BF-PUBLISHER"]
+# Sender eligibility also includes the twelve BF bots, and every one of them now holds a
+# queue as well (a [seat.BF-*] section each, below):  the allowlist names who may send, the
+# sections hold their inboxes (owner, Fri, Nov 6:  every seat working through the Operator).
+# WISE is the canonical seat name (identity.py:  INSTINCT is an accepted alias spelling of
+# it, and config.py only upper-cases this list, it does not canonicalize aliases), so the
+# list names WISE:  an INSTINCT entry here would never match the [seat.WISE] runner or its bot.
+# A live volume seeded before this list took this shape keeps its own [daemon] list until it
+# is edited by hand (apply_live_config.py never touches [daemon]):  rename INSTINCT to WISE,
+# drop the retired BF-BUILDER, and add BF-ENGINEER and BF-TRADER, in the same pass that
+# renames the volume's [seat.INSTINCT] section and /data/INSTINCT state to WISE.
+outgoing_webhook_seats = ["ECHO", "WISE", "JET", "GB-COMPILER", "GB-DIRECTOR", "GB-TRADER", "GB-DEPLOYER", "GB-DESIGNER", "GB-ORACLE", "GB-PUBLISHER", "GB-PLUMBER", "GB-FIXER", "GB-HOUSEKEEPER", "GB-MONITOR", "GB-ENGINEER", "BF-COMPILER", "BF-DEPLOYER", "BF-DESIGNER", "BF-DIRECTOR", "BF-ENGINEER", "BF-FIXER", "BF-HOUSEKEEPER", "BF-MONITOR", "BF-ORACLE", "BF-PLUMBER", "BF-PUBLISHER", "BF-TRADER"]
 owner_user_id = 0                 # pinned by `simple-chat daemon init`, never derived at runtime
 eligible_user_ids = []            # optional extra pins:  every fleet bot is eligible at runtime (owner 2026-10-09)
 owner_clients = ["website", "ZulipMobile", "ZulipFlutter", "ZulipElectron", "ZulipDesktop"]
@@ -253,19 +260,100 @@ wake = "http"
 routine = { url_env = "ZULIP_ALERT_GB_TRADER_ENDPOINT", key_env = "ZULIP_ALERT_GB_TRADER_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
 budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner_per_day = 20, owner_per_topic_per_hour = 6, usd_per_day = 2.0, board_per_day = 0 }
 
-# BF-DIRECTOR (BotFleet role).  The one BotFleet seat the listener holds:  the other ten are
-# "none" because BotFleet drives its own roles, but the owner wants Director woken from here
-# (owner, Mon, Oct 13).  The Zulip guide records bf-director-bot@ (realm verified 2026-10-13).
-# Disabled until ZULIP_ALERT_BF_DIRECTOR_ENDPOINT and ZULIP_ALERT_BF_DIRECTOR_KEY are in
-# Infisical; flipping enabled to true arms it.  outgoing_webhook_seats includes this seat so a
-# migrated type-3 bot can wake other seats while this section stays off.
+# BotFleet role seats (owner, Fri, Nov 6:  every seat working, all through the Operator).
+# BotFleet has no wake path of its own, so each BF seat holds its queue here with
+# wake = "inbox":  its @-mentions and DMs are captured under /data/<SEAT>/ like the cloud
+# seats', and a seat gets an http wake when BotFleet exposes a routine endpoint for it
+# (the GB personas' pattern).  Each section reads the seat's Zulip pair from Infisical
+# (ZULIP_BF_<ROLE>_EMAIL and ZULIP_BF_<ROLE>_API_KEY, both inventoried) and its outgoing
+# token (ZULIP_OUTGOING_BF_<ROLE>_TOKEN, inventoried) delivers its webhook posts here.
+
+# BF-DIRECTOR (BotFleet role).  The Zulip guide records bf-director-bot@ (realm verified 2026-10-13).
+# Its http wake stays off until a BotFleet routine endpoint exists to point it at:  the
+# routine line is kept, commented, with the variable names it will use.
 [seat.BF-DIRECTOR]
 instance = "server"
-enabled = false
+enabled = true
 creds = "env"                     # ZULIP_BF_DIRECTOR_EMAIL, ZULIP_BF_DIRECTOR_API_KEY; the site from ZULIP_SITE
-wake = "http"
-routine = { url_env = "ZULIP_ALERT_BF_DIRECTOR_ENDPOINT", key_env = "ZULIP_ALERT_BF_DIRECTOR_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
-budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner_per_day = 20, owner_per_topic_per_hour = 6, usd_per_day = 2.0, board_per_day = 0 }
+wake = "inbox"
+# routine = { url_env = "ZULIP_ALERT_BF_DIRECTOR_ENDPOINT", key_env = "ZULIP_ALERT_BF_DIRECTOR_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
+
+# BF-COMPILER (BotFleet role).
+[seat.BF-COMPILER]
+instance = "server"
+enabled = true
+creds = "env"                     # ZULIP_BF_COMPILER_EMAIL, ZULIP_BF_COMPILER_API_KEY; the site from ZULIP_SITE
+wake = "inbox"
+
+# BF-DEPLOYER (BotFleet role).
+[seat.BF-DEPLOYER]
+instance = "server"
+enabled = true
+creds = "env"                     # ZULIP_BF_DEPLOYER_EMAIL, ZULIP_BF_DEPLOYER_API_KEY; the site from ZULIP_SITE
+wake = "inbox"
+
+# BF-DESIGNER (BotFleet role).
+[seat.BF-DESIGNER]
+instance = "server"
+enabled = true
+creds = "env"                     # ZULIP_BF_DESIGNER_EMAIL, ZULIP_BF_DESIGNER_API_KEY; the site from ZULIP_SITE
+wake = "inbox"
+
+# BF-ENGINEER (BotFleet role; replaced BF-BUILDER, owner 2026-11-01).
+[seat.BF-ENGINEER]
+instance = "server"
+enabled = true
+creds = "env"                     # ZULIP_BF_ENGINEER_EMAIL, ZULIP_BF_ENGINEER_API_KEY; the site from ZULIP_SITE
+wake = "inbox"
+
+# BF-FIXER (BotFleet role).
+[seat.BF-FIXER]
+instance = "server"
+enabled = true
+creds = "env"                     # ZULIP_BF_FIXER_EMAIL, ZULIP_BF_FIXER_API_KEY; the site from ZULIP_SITE
+wake = "inbox"
+
+# BF-HOUSEKEEPER (BotFleet role).
+[seat.BF-HOUSEKEEPER]
+instance = "server"
+enabled = true
+creds = "env"                     # ZULIP_BF_HOUSEKEEPER_EMAIL, ZULIP_BF_HOUSEKEEPER_API_KEY; the site from ZULIP_SITE
+wake = "inbox"
+
+# BF-MONITOR (BotFleet role).
+[seat.BF-MONITOR]
+instance = "server"
+enabled = true
+creds = "env"                     # ZULIP_BF_MONITOR_EMAIL, ZULIP_BF_MONITOR_API_KEY; the site from ZULIP_SITE
+wake = "inbox"
+
+# BF-ORACLE (BotFleet role).
+[seat.BF-ORACLE]
+instance = "server"
+enabled = true
+creds = "env"                     # ZULIP_BF_ORACLE_EMAIL, ZULIP_BF_ORACLE_API_KEY; the site from ZULIP_SITE
+wake = "inbox"
+
+# BF-PLUMBER (BotFleet role).
+[seat.BF-PLUMBER]
+instance = "server"
+enabled = true
+creds = "env"                     # ZULIP_BF_PLUMBER_EMAIL, ZULIP_BF_PLUMBER_API_KEY; the site from ZULIP_SITE
+wake = "inbox"
+
+# BF-PUBLISHER (BotFleet role).
+[seat.BF-PUBLISHER]
+instance = "server"
+enabled = true
+creds = "env"                     # ZULIP_BF_PUBLISHER_EMAIL, ZULIP_BF_PUBLISHER_API_KEY; the site from ZULIP_SITE
+wake = "inbox"
+
+# BF-TRADER (BotFleet role).
+[seat.BF-TRADER]
+instance = "server"
+enabled = true
+creds = "env"                     # ZULIP_BF_TRADER_EMAIL, ZULIP_BF_TRADER_API_KEY; the site from ZULIP_SITE
+wake = "inbox"
 
 # GB-ENGINEER (Engineering seat, engineer-grok-bot@).  Enabled:  the seat's Zulip bot pair, outgoing token and
 # ZULIP_ALERT_GB_ENGINEER_ENDPOINT / _KEY are set on the live container like the other personas'.
@@ -277,88 +365,3 @@ creds = "env"                     # ZULIP_GB_ENGINEER_EMAIL, ZULIP_GB_ENGINEER_A
 wake = "http"
 routine = { url_env = "ZULIP_ALERT_GB_ENGINEER_ENDPOINT", key_env = "ZULIP_ALERT_GB_ENGINEER_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
 budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner_per_day = 20, owner_per_topic_per_hour = 6, usd_per_day = 2.0, board_per_day = 0 }
-
-# ---------------------------------------------------------------------------
-# The nine seats moved off the owner's Mac (single-server consolidation, owner direction
-# Nov 2 2026: one server eavesdropper, the Operator's registry and wake functions on the
-# server too).  Each holds a queue with inbox capture here:  its @-mentions and DMs are
-# captured at zero tokens under /data/<SEAT>/, and its key is checked at connect (a member
-# or moderator bot, and the key's own bot must be the seat).
-#
-# wake = "inbox" is deliberate and fail-closed:  a seat's wake adapter is enabled only when
-# that seat's native exact-thread delivery binding is grounded and reviewed per seat.  No
-# generic replacement runtime is configured for these seats, and no paid runtime is armed
-# here.  Mac-local exact-thread execution (for example the CODEX desktop queue) is the thin
-# Mac alerter's hook mode (scripts/simple_tools/wake_alerter.py), a narrow actuator, never
-# another queue-holding eavesdropper.
-#
-# Each section reads the seat's existing Fleet-OPS /zulip pair by name (<STEM>_ZULIP_EMAIL
-# and <STEM>_ZULIP_KEY, the same names the Mac read), injected into the container environment
-# by server/infisical_env.py at start;  the loader's allowlist covers exactly these names for
-# the seats this file configures.  The site comes from ZULIP_SITE as with every server seat.
-# A name absent from the folder is reported in the loader's startup line (names only) and the
-# seat connects when its pair appears on a later restart.
-
-[seat.CLAUDE]
-instance = "server"
-creds = "env"
-email_env = "CLAUDE_ZULIP_EMAIL"
-key_env = "CLAUDE_ZULIP_KEY"
-wake = "inbox"
-
-[seat.CODEX]
-instance = "server"
-creds = "env"
-email_env = "CODEX_ZULIP_EMAIL"
-key_env = "CODEX_ZULIP_KEY"
-wake = "inbox"
-
-[seat.AG]
-instance = "server"
-creds = "env"
-email_env = "AG_ZULIP_EMAIL"
-key_env = "AG_ZULIP_KEY"
-wake = "inbox"
-
-[seat.CURSOR]
-instance = "server"
-creds = "env"
-email_env = "CURSOR_ZULIP_EMAIL"
-key_env = "CURSOR_ZULIP_KEY"
-wake = "inbox"
-
-# GROK posts as grok-build-bot@:  its Fleet-OPS /zulip names carry the Grok-Build stem.
-[seat.GROK]
-instance = "server"
-creds = "env"
-email_env = "GROK_BUILD_ZULIP_EMAIL"
-key_env = "GROK_BUILD_ZULIP_KEY"
-wake = "inbox"
-
-[seat.CLUTCH]
-instance = "server"
-creds = "env"
-email_env = "CLUTCH_ZULIP_EMAIL"
-key_env = "CLUTCH_ZULIP_KEY"
-wake = "inbox"
-
-[seat.FX]
-instance = "server"
-creds = "env"
-email_env = "FX_ZULIP_EMAIL"
-key_env = "FX_ZULIP_KEY"
-wake = "inbox"
-
-[seat.MM]
-instance = "server"
-creds = "env"
-email_env = "MM_ZULIP_EMAIL"
-key_env = "MM_ZULIP_KEY"
-wake = "inbox"
-
-[seat.MC]
-instance = "server"
-creds = "env"
-email_env = "MC_ZULIP_EMAIL"
-key_env = "MC_ZULIP_KEY"
-wake = "inbox"

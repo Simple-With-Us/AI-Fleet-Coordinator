@@ -400,7 +400,7 @@ class OperatorOpenedDmTests(unittest.TestCase):
 class RefusalExitCodeTests(unittest.TestCase):
     """A refusal is not a malformed command:  the CLI must exit 3 so a caller can tell them apart."""
 
-    def test_the_refusal_is_a_simpletools_error_with_exit_code_three(self) -> None:
+    def test_the_refusal_is_an_simpletools_error_with_exit_code_three(self) -> None:
         self.assertTrue(issubclass(DMP.DmRefused, Z.SimpleToolsError))
         self.assertEqual(DMP.DmRefused.exit_code, 3)
         self.assertEqual(DMP.DmRefused("no", reason="seat").exit_code, 3)

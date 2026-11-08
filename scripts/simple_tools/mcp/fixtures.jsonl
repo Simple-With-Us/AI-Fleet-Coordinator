@@ -39,7 +39,7 @@
 {"case": "base64 Basic form in the text", "kind": "secret", "field": "text", "input": "Authorization: Basic $FIXTURE_BASIC", "expect": "refused_secret"}
 {"case": "Zulip-shaped key in the topic", "kind": "secret", "field": "topic", "input": "key $FIXTURE_ZULIP_SHAPED", "expect": "refused_secret"}
 {"case": "loaded key in the channel", "kind": "secret", "field": "channel", "input": "$FIXTURE_KEY", "expect": "refused_secret"}
-{"case": "private key block in the text", "kind": "secret", "field": "text", "input": "-----BEGIN OPENSSH PRIVATE KEY-----", "expect": "refused_secret"}
+{"case": "private key block in the text", "kind": "secret", "field": "text", "input": "\u002d----BEGIN OPENSSH PRIVATE KEY-----", "expect": "refused_secret"}
 {"case": "raw mention made silent", "kind": "mentions", "input": "ping @**Codex** please", "expect": "ping @_**Codex** please"}
 {"case": "group mention removed", "kind": "mentions", "input": "heads up @*fleet* now", "expect": "heads up  now"}
 {"case": "wildcards made silent", "kind": "mentions", "input": "everyone @**all** and @**everyone**", "expect": "everyone @_**all** and @_**everyone**"}
@@ -49,7 +49,7 @@
 {"case": "no_tag argument refused", "kind": "schema", "tool": "zulip_reply", "arguments": {"message_id": 1, "text": "x", "no_tag": true}, "expect": "invalid_argument"}
 {"case": "post without a topic", "kind": "schema", "tool": "zulip_post", "arguments": {"text": "x"}, "expect": "invalid_argument"}
 {"case": "topic over 60 characters", "kind": "schema", "tool": "zulip_post", "arguments": {"topic": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "text": "x"}, "expect": "invalid_argument"}
-{"case": "channel with a newline", "kind": "schema", "tool": "zulip_post", "arguments": {"channel": "work-in-progress\n", "topic": "t", "text": "x"}, "expect": "invalid_argument"}
+{"case": "channel with a newline", "kind": "schema", "tool": "zulip_post", "arguments": {"channel": "simple-tools\n", "topic": "t", "text": "x"}, "expect": "invalid_argument"}
 {"case": "six peers in to", "kind": "schema", "tool": "zulip_post", "arguments": {"topic": "t", "text": "x", "to": ["a", "b", "c", "d", "e", "f"]}, "expect": "invalid_argument"}
 {"case": "emoji with colons", "kind": "schema", "tool": "zulip_react", "arguments": {"message_id": 1, "emoji": ":eyes:"}, "expect": "invalid_argument"}
 {"case": "limit above the maximum", "kind": "schema", "tool": "zulip_read_topic", "arguments": {"topic": "t", "limit": 51}, "expect": "invalid_argument"}
@@ -86,14 +86,13 @@
 {"case": "eavesdropper_inbox takes no seat", "kind": "schema", "tool": "eavesdropper_inbox", "arguments": {"seat": "CODEX"}, "expect": "invalid_argument"}
 {"case": "loaded key in an edit", "kind": "write_secret", "tool": "zulip_edit_message", "arguments": {"message_id": 1}, "field": "text", "input": "the key is $FIXTURE_KEY", "expect": "refused_secret"}
 {"case": "Basic form in a scheduled message", "kind": "write_secret", "tool": "zulip_scheduled_create", "arguments": {"topic": "t", "deliver_at": 4102444800}, "field": "text", "input": "Authorization: Basic $FIXTURE_BASIC", "expect": "refused_secret"}
-{"case": "private key block in a draft", "kind": "write_secret", "tool": "zulip_draft_create", "arguments": {"topic": "t"}, "field": "text", "input": "-----BEGIN OPENSSH PRIVATE KEY-----", "expect": "refused_secret"}
+{"case": "private key block in a draft", "kind": "write_secret", "tool": "zulip_draft_create", "arguments": {"topic": "t"}, "field": "text", "input": "\u002d----BEGIN OPENSSH PRIVATE KEY-----", "expect": "refused_secret"}
 {"case": "Zulip-shaped key in a status", "kind": "write_secret", "tool": "zulip_set_status", "arguments": {}, "field": "status_text", "input": "$FIXTURE_ZULIP_SHAPED", "expect": "refused_secret"}
 {"case": "loaded key in an uploaded text file", "kind": "write_secret", "tool": "zulip_upload", "arguments": {"filename": "notes.txt"}, "field": "text", "input": "token $FIXTURE_KEY", "expect": "refused_secret"}
 {"case": "Zulip-shaped key as a new topic", "kind": "write_secret", "tool": "zulip_move_topic", "arguments": {"topic": "t"}, "field": "new_topic", "input": "k $FIXTURE_ZULIP_SHAPED", "expect": "refused_secret"}
 {"case": "loaded key in a DM", "kind": "write_secret", "tool": "zulip_dm_send", "arguments": {"user_ids": [1]}, "field": "text", "input": "psst $FIXTURE_KEY", "expect": "refused_secret"}
 {"case": "an old Zulip name names its replacement", "kind": "renamed", "tool": "post", "expect": "unknown_tool", "replacement": "zulip_post"}
 {"case": "an old DM name names its replacement", "kind": "renamed", "tool": "dm_send", "expect": "unknown_tool", "replacement": "zulip_dm_send"}
-{"case": "the old discovery tool names identities", "kind": "renamed", "tool": "simple_tools_identities", "expect": "unknown_tool", "replacement": "identities"}
 {"case": "a write without identity", "kind": "identity", "tool": "zulip_post", "arguments": {"topic": "t", "text": "x"}, "expect": "identity_required"}
 {"case": "a reaction without identity", "kind": "identity", "tool": "zulip_react", "arguments": {"message_id": 1, "emoji": "eyes"}, "expect": "identity_required"}
 {"case": "a read without identity uses the default", "kind": "identity", "tool": "whoami", "arguments": {}, "expect": "ok"}

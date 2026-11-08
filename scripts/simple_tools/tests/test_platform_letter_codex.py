@@ -996,7 +996,7 @@ class ScopeTests(HookBase):
     def test_a_launcher_run_session_takes_no_letter(self) -> None:
         sid = self.add(1)
         for extra in ({"AGENT_LAUNCHER": "botfleet"}, {"AGENT_LAUNCH_SEAT": "CODEX"},
-                      {"AGENT_LAUNCHER": "eavesdropper-wake", "AGENT_LAUNCH_SEAT": "CODEX"}):
+                      {"AGENT_LAUNCHER": "simple-tools-wake", "AGENT_LAUNCH_SEAT": "CODEX"}):
             self.assertIsNone(self.start(sid, env=self.env(**extra)))
             self.nothing_happened(sid)
 
