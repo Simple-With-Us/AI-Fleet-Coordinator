@@ -570,7 +570,8 @@ final class SeatActivityTests: XCTestCase {
         )
         let shown = SeatActivityText.display(model.headline)
         XCTAssertTrue(shown.contains("1 of 1 seat held by the Mac is connected, and 1 is working on the Mac."), shown)
-        XCTAssertTrue(shown.contains("3 seats are held by the server, which Muster cannot read yet."), shown)
+        XCTAssertTrue(shown.contains("3 seats are held by the server."), shown)
+        XCTAssertFalse(shown.contains("cannot read"), shown)
         XCTAssertTrue(shown.contains(".\u{00A0} "), shown)
         XCTAssertFalse(shown.contains("  "))
     }
