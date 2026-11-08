@@ -193,8 +193,11 @@ struct FleetGridView: View {
                         }
                         legend
                             .padding(.top, 18)
-                        if let manifest = store.manifest {
-                            complianceSection(manifest)
+                        // Each fleet-wide rule with the engine's last result for it (GRID-18):
+                        // the manifest's rules, then any the engine answered for or cannot run.
+                        let complianceStatuses = store.complianceStatuses
+                        if !complianceStatuses.isEmpty {
+                            complianceSection(complianceStatuses, rules: store.manifest?.allComplianceRules ?? [])
                                 .padding(.top, 22)
                         }
                         // The engine's own list of rules it cannot run,  from the last trusted
@@ -418,29 +421,31 @@ struct FleetGridView: View {
         }
     }
 
-    /// The manifest's fleet-wide rules, grouped by the place each is about, each rule once.
+    /// The fleet-wide rules, each with the engine's last result for it (GRID-18), grouped by
+    /// the place each is about, each rule once.
     ///
-    /// The app does not read these rules' results, so no rule here wears a green:  a rule
-    /// says only whether its check exists, in neutral words, and a rule with no check yet
-    /// says that instead.
-    private func complianceSection(_ manifest: SeatManifest) -> some View {
-        let rules = manifest.allComplianceRules
-        let byID = Dictionary(rules.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+    /// The state comes from `FleetStore.complianceStatuses`, never from the manifest alone:  a
+    /// rule wears a result's colour only when the engine answered for it, and a rule that is
+    /// not built, not in the answer or not answered wears the neutral colour
+    /// (`GridPresentation.ComplianceRuleLook`).
+    private func complianceSection(_ statuses: [ComplianceRuleStatus], rules: [ComplianceRule]) -> some View {
+        let byID = Dictionary(statuses.map { ($0.ruleID, $0) }, uniquingKeysWith: { first, _ in first })
+        let rulesByID = Dictionary(rules.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         return VStack(alignment: .leading, spacing: 12) {
             Divider()
             Text(GridPresentation.complianceHeading)
                 .font(.headline)
-            Text(GridPresentation.complianceExplanation)
+            Text(GridPresentation.complianceResultsExplanation)
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            ForEach(GridPresentation.complianceGroups(rules)) { group in
+            ForEach(GridPresentation.complianceStatusGroups(statuses)) { group in
                 VStack(alignment: .leading, spacing: 6) {
                     Text(group.heading)
                         .font(.subheadline.weight(.semibold))
                     ForEach(group.ruleIDs, id: \.self) { ruleID in
-                        if let rule = byID[ruleID] {
-                            complianceRow(rule)
+                        if let status = byID[ruleID] {
+                            complianceRow(status, rule: rulesByID[ruleID])
                         }
                     }
                 }
@@ -448,44 +453,54 @@ struct FleetGridView: View {
         }
     }
 
-    /// One fleet-wide rule:  its id, its owner, where it applies and whether its check exists.
-    private func complianceRow(_ rule: ComplianceRule) -> some View {
-        let status = GridPresentation.complianceStatus(rule)
+    /// One fleet-wide rule:  its id, its owner, the places it is about, its result and what
+    /// that result means.
+    private func complianceRow(_ status: ComplianceRuleStatus, rule: ComplianceRule?) -> some View {
+        let look = GridPresentation.ComplianceRuleLook.of(status)
+        let tint = look.colourState?.tint ?? Color.secondary
         return VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 8) {
-                Text(rule.id)
+                Text(status.ruleID)
                     .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                if let owner = rule.ownerSeat, !owner.isEmpty {
+                    .textSelection(.enabled)
+                if let owner = status.ownerSeat, !owner.isEmpty {
                     Text("owner: \(owner)")
                         .font(.system(size: 9, weight: .semibold, design: .monospaced))
                         .padding(.horizontal, 6)
                         .padding(.vertical, 1)
                         .background(Color.secondary.opacity(0.14), in: Capsule())
                 }
-                ForEach(rule.scope ?? [], id: \.self) { scope in
-                    Text(GridPresentation.scopeWords(scope))
-                        .font(.system(size: 9, weight: .semibold))
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 1)
-                        .background(Color.accentColor.opacity(0.12), in: Capsule())
+                Text(status.placeWords)
+                    .font(.system(size: 9, weight: .semibold))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 1)
+                    .background(Color.accentColor.opacity(0.12), in: Capsule())
+                // The result, with a symbol as well as a colour, so it never rests on its
+                // colour alone.
+                Label {
+                    Text(look.word)
+                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                } icon: {
+                    Image(systemName: look.symbol)
+                        .font(.system(size: 8, weight: .semibold))
+                        .foregroundStyle(tint)
                 }
-                Text(status.text)
-                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(status.isBuilt ? Color.secondary : Color.orange)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 1)
+                .background(look.colourState?.background ?? Color.secondary.opacity(0.1), in: Capsule())
+                .accessibilityElement(children: .combine)
                 Spacer()
             }
-            if let reason = rule.implementationReason, !reason.isEmpty {
-                Text(reason)
-                    .font(.system(size: 10))
-                    .foregroundStyle(status.isBuilt ? Color.secondary : Color.orange)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            if let target = rule.check?.target, !target.isEmpty {
+            Text(status.sentence)
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let target = rule?.check?.target, !target.isEmpty {
                 Text("Target:  \(target)")
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(.secondary)
             }
-            if let checkType = rule.check?.type, !checkType.isEmpty {
+            if let checkType = rule?.check?.type, !checkType.isEmpty {
                 Text("Check type:  \(checkType)")
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(.tertiary)
