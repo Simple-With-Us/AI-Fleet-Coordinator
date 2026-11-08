@@ -5223,13 +5223,9 @@ class Daemon:
                 self._operator_refused("broadcast-audit", exc, seat=seat, id=message_id)
             else:
                 failure = BAUD.dm_failure_outcome(exc)
-            self.log.write(
-                "peer-broadcast-all",
-                id=message_id,
-                seat=seat,
-                outcome=BAUD.REMINDER_UNKNOWN if failure == BAUD.UNKNOWN else BAUD.REMINDER_FAILED,
-                error=type(exc).__name__,
-            )
+            # Durable before the completion log:  once a peer-broadcast-all row exists,
+            # the ledger already shows its outcome, so nothing can read the log saying
+            # failed while the durable row still shows the previous attempts/due.
             if failure == BAUD.UNKNOWN:
                 self._fail_broadcast_effect(
                     mid,
@@ -5238,8 +5234,7 @@ class Daemon:
                     "owner, so it is never resent" % type(exc).__name__,
                     state="unknown",
                 )
-                return
-            if failure == BAUD.RETRY and attempt < BAUD.REMINDER_MAX_ATTEMPTS:
+            elif failure == BAUD.RETRY and attempt < BAUD.REMINDER_MAX_ATTEMPTS:
                 self._update_broadcast_effect_detail(
                     mid,
                     "audit",
@@ -5248,6 +5243,23 @@ class Daemon:
                         "attempts": attempt + 1,
                     },
                 )
+            else:
+                if failure == BAUD.RETRY:
+                    reason = "reminder send still failing after %d attempts (%s)" % (
+                        attempt + 1,
+                        type(exc).__name__,
+                    )
+                else:
+                    reason = "reminder send failed permanently (%s)" % type(exc).__name__
+                self._fail_broadcast_effect(mid, "audit", reason)
+            self.log.write(
+                "peer-broadcast-all",
+                id=message_id,
+                seat=seat,
+                outcome=BAUD.REMINDER_UNKNOWN if failure == BAUD.UNKNOWN else BAUD.REMINDER_FAILED,
+                error=type(exc).__name__,
+            )
+            if failure == BAUD.RETRY and attempt < BAUD.REMINDER_MAX_ATTEMPTS:
                 self.log.write(
                     "peer-broadcast-all-retry",
                     id=message_id,
@@ -5255,15 +5267,6 @@ class Daemon:
                     attempt=attempt + 1,
                     error=type(exc).__name__,
                 )
-                return
-            if failure == BAUD.RETRY:
-                reason = "reminder send still failing after %d attempts (%s)" % (
-                    attempt + 1,
-                    type(exc).__name__,
-                )
-            else:
-                reason = "reminder send failed permanently (%s)" % type(exc).__name__
-            self._fail_broadcast_effect(mid, "audit", reason)
             return
         reminder_id = result.get("id")
         self._finish_broadcast_effect(
