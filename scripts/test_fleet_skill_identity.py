@@ -660,7 +660,8 @@ class CoordinatorSelfIdTests(unittest.TestCase):
         )
         self.assertTrue(
             "[AFC] sync-N" in text
-            or "with `AFC` or `OPS` in the header’s repo list after `📁`, never as the sender" in text,
+            or "with `AFC` or `OPS` in the header’s repo list after `📁`, never as the sender"
+            in text,
             "the AFC bullet must say how AFC appears in a post",
         )
         # The fleet-wide wake rule now lives in "Undirected, Directed, and
