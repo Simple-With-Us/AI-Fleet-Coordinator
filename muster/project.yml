@@ -126,6 +126,7 @@ targets:
       - path: Muster/Model/HogHunterMacReport.swift
       - path: Muster/Model/OpsAuditLog.swift
       - path: Muster/Model/OpsControl.swift
+      - path: Muster/Model/ServerUnitStatus.swift
       - path: Muster/Model/KnobRegistry.swift
       - path: Muster/Model/MachineStatus.swift
       # Report age and verdict at a moment, and the words for them (ReportFreshnessTests).

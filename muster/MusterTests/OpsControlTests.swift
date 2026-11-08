@@ -56,8 +56,8 @@ final class OpsCommandBuilderTests: XCTestCase {
     func test_a_server_run_waits_minutes_and_a_dead_link_is_noticed() throws {
         XCTAssertTrue(OpsControlRoute.sshOptions.contains("ServerAliveInterval=15"))
         XCTAssertTrue(OpsControlRoute.sshOptions.contains("ServerAliveCountMax=3"))
-        // The two status reads are `--plan` only,  so they have no run to time.
-        for tag in OpsActionCase.allCases where tag != .resourceStatus && tag != .eavesdropperStatus {
+        // The status reads are `--plan` only,  so they have no run to time.
+        for tag in OpsActionCase.allCases where !tag.isPlanOnly {
             let action = tag.sample
             let run = try exampleBuilder().invocation(for: action, mode: .yes)
             XCTAssertEqual(run.timeout, action.runsOnServer ? 180 : 900, "\(tag)")
@@ -539,7 +539,7 @@ final class OpsResultParserTests: XCTestCase {
         for tag in OpsActionCase.allCases {
             XCTAssertEqual(
                 tag.sample.changesNothing,
-                tag == .logs || tag == .resourceStatus || tag == .eavesdropperStatus,
+                tag == .logs || tag == .resourceStatus || tag == .eavesdropperStatus || tag == .unitStatus,
                 "\(tag)"
             )
         }
@@ -787,6 +787,7 @@ final class OpsWireContractTests: XCTestCase {
         case "coolifyRedeploy": return .coolifyRedeploy(uuid: target, name: "example-app")
         case "resourceStatus": return .resourceStatus
         case "eavesdropperStatus": return .eavesdropperStatus
+        case "unitStatus": return .unitStatus(unit: target)
         default: return nil
         }
     }

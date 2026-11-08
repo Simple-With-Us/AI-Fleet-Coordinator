@@ -22,8 +22,10 @@ else.
 
   cd scripts && python3 test_muster_approval.py
 
-The chain vectors T1 to T23 (`muster trust-list chain --yes`) belong to the next slice and are not run
-here; `test_chain_vectors_are_deferred` lists them.
+The trust-list chain verb (`muster trust-list chain --yes`, spec 5.3 sections 5, 8 and 12, P3 and C1 to
+C5) is tested from `ChainVectorTests` on: every chain vector of section 16 from the fixture's
+`frozenExpected` (a Milestone 1 to 4 helper refuses every rule C entry `reopen_unavailable`), then the
+parse, the rate step, the stored list, the lock, the write, a crash at each step of it and chains at once.
 """
 
 import ast
@@ -36,6 +38,7 @@ import inspect
 import io
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -1076,22 +1079,6 @@ class VectorTests(Checks):
             printed["body"]["planSHA256"],
         )
 
-    def test_chain_vectors_are_deferred(self):
-        # T1 to T23 (T9 retired) are the next slice's: `muster trust-list chain` is not built here.
-        self.assertGreaterEqual(len(FIXTURE["chainVectors"]), 22)
-        env = Env(self)
-        for command, expected in (
-            ("muster trust-list chain --yes", "bad_command"),
-            ("muster trust-list chain --plan", "mode_not_allowed"),
-        ):
-            answer, code, _ = module_request(env, command, b'{"protocol":"muster-helper/1"}', NOW)
-            self.assertRefused(answer, code, expected, verified=False)
-        print(
-            "deferred chain vectors:",
-            ", ".join(item["id"].split(" ")[0] for item in FIXTURE["chainVectors"]),
-            file=sys.stderr,
-        )
-
 
 # MARK: - P0 to P3: key, pin, command line and standard input
 
@@ -1505,7 +1492,6 @@ class CommandTests(Checks):
         for command in (
             "mac restart com.jay.x --yes",
             "pm2 restart shellular --yes",
-            "muster trust-list chain --yes",
             "muster trust-list other --plan",
             "muster trust-list current other --plan",
             "muster trust-list current --json",
@@ -1539,32 +1525,22 @@ class CommandTests(Checks):
                 self.assertRefused(answer, code, "bad_command", verified=False)
                 self.assertEqual(backend.events, [])
 
-    def test_the_chain_verb_is_not_built_and_says_so_in_the_codes_section_15_has(self):
-        # NOT BUILT: `--plan` is `mode_not_allowed` (section 4: chain accepts only `--yes`), and
-        # `--yes`, which would accept a chain, is `bad_command`.  Neither is counted, claims anything
-        # or reaches the backend, and the route stays inert: nothing here writes `muster-trust.json`.
-        for command, expected in (
-            ("muster trust-list chain --plan", "mode_not_allowed"),
-            ("muster trust-list chain --yes", "bad_command"),
-        ):
-            with self.subTest(command=command):
-                env = Env(self)
-                answer, code, backend = module_request(
-                    env, command, b'{"protocol":"muster-helper/1","chain":[]}', NOW
-                )
-                self.assertRefused(answer, code, expected, verified=False)
-                self.assertEqual(answer["body"]["claimed"], {})
-                self.assertEqual(backend.events, [])
-                self.assertFalse((env.state / "muster-rate.json").exists())
-                self.assertIsNone(env.ledger)
-        # The doc strings say it plainly, where a reader of the code finds it first.
-        self.assertIn("NOT BUILT", ma.__doc__)
-        self.assertIn("inert", ma.__doc__)
-        self.assertIn("NOT BUILT", inspect.getsource(foc.run_from_muster))
+    def test_the_chain_verb_has_one_mode_and_its_plan_mode_is_not_allowed(self):
+        # `--plan` is `mode_not_allowed` (section 4: chain accepts only `--yes`): not counted, nothing
+        # claimed, no backend.  The `--yes` mode is tested from `ChainVectorTests` on.
+        env = Env(self)
+        answer, code, backend = module_request(
+            env, "muster trust-list chain --plan", b'{"protocol":"muster-helper/1","chain":[]}', NOW
+        )
+        self.assertRefused(answer, code, "mode_not_allowed", verified=False)
+        self.assertEqual(answer["body"]["claimed"], {})
+        self.assertEqual(backend.events, [])
+        self.assertFalse((env.state / "muster-rate.json").exists())
+        self.assertIsNone(env.ledger)
 
-    def test_without_the_chain_verb_nothing_can_make_an_approval_succeed_on_a_server(self):
-        # Nothing in this slice writes the stored list, so on a server where none was put there
-        # every approval is `no_trust_list`.
+    def test_with_nothing_stored_every_approval_is_no_trust_list(self):
+        # Until a chain has been accepted nothing has written the stored list, so on a server where none
+        # was put there every approval is `no_trust_list`.
         env = Env(self, stored=None)
         answer, code, _ = module_request(env, COMMAND, stdin_of(approval()), NOW)
         self.assertRefused(answer, code, "no_trust_list", verified=False)
@@ -9001,14 +8977,14 @@ class DocumentedBoundariesTests(Checks):
             "plan_mismatch",
             "plan_refused",
             "internal_error",
+            "chain_refused",
         }
         self.assertEqual(ma.ANSWERED_CODES, section_15)
         # The module defines no error constant outside that set, and none of the old ad-hoc ones.
         defined = {v for k, v in vars(ma).items() if k.startswith("ERR_")}
         self.assertEqual(defined, section_15)
         self.assertFalse(hasattr(ma, "ERR_HELPER_ERROR"))
-        # Section 15's own table, in the repository's spec: this slice answers all of it but
-        # `chain_refused`, which belongs to the chain verb.
+        # Section 15's own table, in the repository's spec: the flow answers all of it.
         text = SPEC_PATH.read_text(encoding="utf-8")
         start = text.index("## 15.")
         table = text[start : text.index("Exit status:", start)]
@@ -9018,7 +8994,7 @@ class DocumentedBoundariesTests(Checks):
                 codes |= set(
                     part for part in row.split("|")[1].replace("`", " ").replace(",", " ").split()
                 )
-        self.assertEqual(codes - {"chain_refused"}, section_15)
+        self.assertEqual(codes, section_15)
 
     def test_no_code_is_answered_that_the_flow_does_not_name(self):
         # Every `Refusal(...)` and `refusal(...)` in the engine names a constant of that set.
@@ -9050,6 +9026,2981 @@ class DocumentedBoundariesTests(Checks):
         self.assertLessEqual(
             names, {"__future__", "base64", "datetime", "json", "os", "re", "stat", "cryptography"}
         )
+
+
+# MARK: - The trust-list chain verb (sections 5, 8 and 12: P3 and C1 to C5)
+
+CHAIN_COMMAND = "muster trust-list chain --yes"
+CHAIN_PLAN_COMMAND = "muster trust-list chain --plan"
+# The reading of the clock in the spec's T7 refusal: the vectors run at it unless a test says otherwise.
+CHAIN_NOW = FIXTURE["answers"]["chainRefusalT7"]["answer"]["body"]["refusedAt"]
+TRUST_NAME = "muster-trust.json"
+ROTATED_OWNER = "owner after rotation (T24 only)"
+# Every chain vector the spec prints, T9 having been retired (a number is never reused).
+CHAIN_VECTOR_NUMBERS = [*range(1, 9), *range(10, 28)]
+# The vectors that reach rule C: a Milestone 1 to 4 helper refuses each `reopen_unavailable`.
+RULE_C_VECTORS = {"T4", "T5", "T8", "T15", "T18", "T20", "T21", "T22", "T23"}
+
+
+def chain_stdin(*documents):
+    return compact({"protocol": "muster-helper/1", "chain": list(documents)})
+
+
+def printed(*names):
+    """The lists section 16 prints, by the name its chain table uses."""
+    return [FIXTURE["lists"][name] for name in names]
+
+
+def entry_sha256(document):
+    """The entry hash, made without the code under test: SHA-256 of the whole signed object."""
+    return hashlib.sha256(compact(document)).hexdigest()
+
+
+def body_sha256(document):
+    return hashlib.sha256(compact(document["body"])).hexdigest()
+
+
+def rotate_history(env):
+    """Pin the rotated history (T24 only): version 1 closed with its body hash, then the new owner key."""
+    lines = FIXTURE["historyRotated"].split("\n")
+    write_file(env.etc / "owner-history.jsonl", (FIXTURE["historyRotated"] + "\n").encode(), 0o644)
+    write_file(env.etc / "owner.pub", (json.loads(lines[-1])["ownerKey"] + "\n").encode(), 0o644)
+
+
+def reversed_keys(value):
+    """`value` with every object's keys in reverse order (a different formatting of the same list)."""
+    if isinstance(value, dict):
+        return {name: reversed_keys(value[name]) for name in sorted(value, reverse=True)}
+    if isinstance(value, list):
+        return [reversed_keys(item) for item in value]
+    return value
+
+
+def stored_bytes(env):
+    path = env.state / TRUST_NAME
+    return path.read_bytes() if path.exists() else None
+
+
+def leftovers(env):
+    """Temporary files of a write of the trust list that are still in the state directory."""
+    return sorted(p.name for p in env.state.iterdir() if p.name.startswith(".muster-trust.json."))
+
+
+def countersignature(signer, device_id, body):
+    return {
+        "deviceId": device_id,
+        "signature": b64u(sign(signer, b"muster-trust-countersign/1\n" + compact(body))),
+    }
+
+
+def next_rule_a(previous, owner=OWNER, countersigner=DEVICE_A, **changes):
+    """The list after `previous` under rule A, owner-signed and countersigned by device A (on every
+    list of the vectors).  `changes` are body fields set before anything is signed."""
+    body = json.loads(json.dumps(previous["body"]))
+    body["version"] += 1
+    body["previousSHA256"] = body_sha256(previous)
+    body["issuedAt"] = "2026-11-07T21:%02d:00Z" % body["version"]
+    body.update(changes)
+    document = resign(body, owner)
+    document["countersignatures"] = [
+        countersignature(countersigner, BASE_APPROVAL["deviceId"], body)
+    ]
+    return document
+
+
+def long_chain(count):
+    """`count` lists from version 1, each a valid rule A step on the one before."""
+    documents = printed("v1")
+    while len(documents) < count:
+        documents.append(next_rule_a(documents[-1]))
+    return documents
+
+
+def ack_body(newest, at=CHAIN_NOW, current=True):
+    return {
+        "at": at,
+        "closed": newest["body"]["closed"],
+        "contract": "muster-signed-ack/1",
+        "finalRefusals": [],
+        "helperTrustListVersion": newest["body"]["version"],
+        "signedByCurrentKey": current,
+        "trustListSHA256": body_sha256(newest),
+    }
+
+
+class ChainChecks(Checks):
+    """What a chain answer must look like, shared by the classes below."""
+
+    def chain_world(self, held="v1", rotated=False, **kwargs):
+        env = Env(self, stored=held, **kwargs)
+        if rotated:
+            rotate_history(env)
+        return env
+
+    def ask(self, env, *documents, command=CHAIN_COMMAND, now=CHAIN_NOW, raw=None, backend=None):
+        stdin = chain_stdin(*documents) if raw is None else raw
+        return module_request(env, command, stdin, now, backend)
+
+    def assertChainRefused(self, answer, code, reason, refused=None, version=None):
+        """`chain_refused` for `reason`, naming `refused` (a list), with `version` as the held version."""
+        self.assertRefused(answer, code, "chain_refused", verified=False, reason=reason)
+        body = answer["body"]
+        self.assertNotIn("claimed", body)
+        self.assertEqual(body["helperTrustListVersion"], version)
+        if refused is not None:
+            self.assertEqual(
+                body["chain"],
+                {
+                    "version": refused["body"]["version"],
+                    "entrySHA256": entry_sha256(refused),
+                    "final": False,
+                },
+            )
+
+    def assertOtherRefusal(self, answer, code, expected, version=None):
+        """Any refusal that is not C3's: its `chain` field is null and it carries no `claimed`."""
+        self.assertRefused(answer, code, expected, verified=False)
+        body = answer["body"]
+        self.assertIn("chain", body)
+        self.assertIsNone(body["chain"])
+        self.assertNotIn("claimed", body)
+        self.assertEqual(body["helperTrustListVersion"], version)
+
+    def assertAccepted(self, env, answer, code, newest, current=True, at=CHAIN_NOW):
+        self.assertEqual(code, 0, answer)
+        self.assertEqual(answer["kind"], "ack")
+        self.assertSigned(answer)
+        self.assertEqual(answer["body"], ack_body(newest, at, current))
+        self.assertEqual(stored_bytes(env), compact(newest))
+        self.assertEqual(leftovers(env), [])
+
+
+# MARK: - The vectors
+
+
+class ChainVectorTests(ChainChecks):
+    """Section 16's chain vectors, driven from the fixture's `frozenExpected` (never `proposalExpected`,
+    which is the OPEN proposal's answer for a rule C row) through the module, the helper in process and
+    the helper as a real process fed over standard input."""
+
+    def row_world(self, row):
+        return self.chain_world(row["held"], rotated=row["history"] == "historyRotated")
+
+    def row_stdin(self, row):
+        return chain_stdin(*printed(*row["chain"]))
+
+    def check_row(self, row, env, answer, code, before, audit_rows):
+        expected = row["frozenExpected"]
+        names = row["chain"]
+        if expected == "ack":
+            newest = FIXTURE["lists"][names[-1]]
+            self.assertAccepted(env, answer, code, newest)
+            held_version = (
+                None if row["held"] is None else FIXTURE["lists"][row["held"]]["body"]["version"]
+            )
+            self.assertEqual(len(audit_rows), 1, audit_rows)
+            fields = dict(audit_rows[0])
+            fields.pop("time", None)
+            fields.pop("host", None)
+            verb = fields.pop("verb")
+            if "scope" in fields:  # the module's fake backend records the scope apart
+                self.assertEqual((fields.pop("scope"), verb), ("muster", "trust-list"))
+            else:  # the helper's own row writes both words in its `verb`
+                self.assertEqual(verb, "muster trust-list")
+            self.assertEqual(
+                fields,
+                {
+                    "target": "chain",
+                    "result": "accepted",
+                    "route": "from-muster",
+                    "via": "muster-ios",
+                    "trustListVersion": newest["body"]["version"],
+                    "trustListSHA256": body_sha256(newest),
+                    "fromVersion": held_version,
+                },
+            )
+        else:
+            refused = FIXTURE["lists"][names[expected["atEntry"] - 1]]
+            self.assertChainRefused(
+                answer, code, expected["reason"], refused, expected["helperTrustListVersion"]
+            )
+            self.assertEqual(answer["body"]["errorCode"], expected["errorCode"])
+            self.assertEqual(stored_bytes(env), before, "a refused chain stores nothing")
+            self.assertEqual(leftovers(env), [])
+            self.assertEqual(audit_rows, [], "a refused chain writes no audit row")
+
+    def test_the_fixture_carries_every_vector_and_marks_the_rule_c_rows(self):
+        rows = FIXTURE["chainVectors"]
+        self.assertEqual(
+            sorted(int(row["id"].split(" ")[0][1:]) for row in rows), CHAIN_VECTOR_NUMBERS
+        )
+        self.assertNotIn(9, CHAIN_VECTOR_NUMBERS)
+        self.assertEqual({r["id"].split(" ")[0] for r in rows if r["ruleC"]}, RULE_C_VECTORS)
+        for row in rows:
+            with self.subTest(vector=row["id"]):
+                self.assertEqual(
+                    set(row),
+                    {
+                        "id",
+                        "held",
+                        "chain",
+                        "history",
+                        "ruleC",
+                        "frozenExpected",
+                        "proposalExpected",
+                    },
+                )
+                self.assertIn(row["history"], ("history", "historyRotated"))
+                # Only T24 runs under the rotated history.
+                self.assertEqual(row["history"] == "historyRotated", row["id"].startswith("T24 "))
+                expected = row["frozenExpected"]
+                if row["ruleC"]:
+                    self.assertEqual(expected["reason"], "reopen_unavailable")
+                else:
+                    self.assertNotEqual(
+                        expected == "ack" or expected["reason"], "reopen_unavailable"
+                    )
+                if expected != "ack":
+                    self.assertEqual(expected["errorCode"], "chain_refused")
+                    self.assertIn(expected["reason"], ma.CHAIN_REFUSED_REASONS)
+
+    def test_a_rule_c_row_is_refused_at_its_first_entry_except_t5_at_its_fourth(self):
+        for row in FIXTURE["chainVectors"]:
+            if row["ruleC"]:
+                at = 4 if row["id"].startswith("T5 ") else 1
+                self.assertEqual(row["frozenExpected"]["atEntry"], at, row["id"])
+        # T5 holds nothing, so it is refused with no version to report.
+        t5 = next(row for row in FIXTURE["chainVectors"] if row["id"].startswith("T5 "))
+        self.assertIsNone(t5["frozenExpected"]["helperTrustListVersion"])
+
+    def test_every_vector_through_the_module(self):
+        for row in FIXTURE["chainVectors"]:
+            with self.subTest(vector=row["id"]):
+                env = self.row_world(row)
+                before = stored_bytes(env)
+                answer, code, backend = module_request(
+                    env, CHAIN_COMMAND, self.row_stdin(row), CHAIN_NOW
+                )
+                self.check_row(row, env, answer, code, before, backend.rows)
+                self.assertEqual(backend.events.count("run"), 0)
+                self.assertEqual(
+                    backend.events, ["lock", "unlock"] if row["frozenExpected"] == "ack" else []
+                )
+
+    def test_every_vector_through_the_helper_in_process(self):
+        for row in FIXTURE["chainVectors"]:
+            with self.subTest(vector=row["id"]):
+                env = self.row_world(row)
+                before = stored_bytes(env)
+                answer, code, runner, rows = helper_request(
+                    env, CHAIN_COMMAND, self.row_stdin(row), CHAIN_NOW
+                )
+                self.check_row(row, env, answer, code, before, rows)
+                self.assertEqual(runner.calls, [], "no command is run for a chain")
+
+    def test_every_vector_through_the_helper_as_a_subprocess_over_stdin(self):
+        for row in FIXTURE["chainVectors"]:
+            with self.subTest(vector=row["id"]):
+                env = self.row_world(row)
+                before = stored_bytes(env)
+                answer, code, calls, rows = subprocess_request(
+                    self, env, CHAIN_COMMAND, self.row_stdin(row), CHAIN_NOW
+                )
+                self.check_row(row, env, answer, code, before, rows)
+                self.assertEqual(calls, [])
+
+    def test_the_printed_answers_are_what_the_flow_signs_byte_for_byte(self):
+        # T2 and T3's acknowledgements and T7's refusal, at the clock readings they print: the whole
+        # answer, signature included (signing is deterministic), and so its line and body hash.
+        for name, vector, field in (
+            ("ackT2", "T2 ", "at"),
+            ("ackT3", "T3 ", "at"),
+            ("chainRefusalT7", "T7 ", "refusedAt"),
+        ):
+            with self.subTest(answer=name):
+                row = next(r for r in FIXTURE["chainVectors"] if r["id"].startswith(vector))
+                reading = FIXTURE["answers"][name]["answer"]["body"][field]
+                for variant in ("module", "helper", "subprocess"):
+                    env = self.row_world(row)
+                    stdin = self.row_stdin(row)
+                    if variant == "module":
+                        answer, _, _ = module_request(env, CHAIN_COMMAND, stdin, reading)
+                    elif variant == "helper":
+                        answer, _, _, _ = helper_request(env, CHAIN_COMMAND, stdin, reading)
+                    else:
+                        answer, _, _, _ = subprocess_request(
+                            self, env, CHAIN_COMMAND, stdin, reading
+                        )
+                    printed_answer = FIXTURE["answers"][name]
+                    self.assertEqual(answer, printed_answer["answer"], variant)
+                    self.assertEqual(ma.encode_answer(answer), printed_answer["line"], variant)
+                    self.assertEqual(
+                        hashlib.sha256(ma.canonical_bytes(answer["body"])).hexdigest(),
+                        printed_answer["bodySHA256"],
+                    )
+
+    def test_the_spec_prints_the_entry_hashes_the_helper_computes(self):
+        # v4 and its tampered copy T15 share a body hash and differ in entry hash (section 16).
+        text = SPEC_PATH.read_text(encoding="utf-8")
+        v4, t15 = FIXTURE["lists"]["v4"], FIXTURE["lists"]["T15 list"]
+        self.assertEqual(body_sha256(v4), body_sha256(t15))
+        self.assertNotEqual(entry_sha256(v4), entry_sha256(t15))
+        for digest in (entry_sha256(v4), entry_sha256(t15), body_sha256(v4)):
+            self.assertIn(digest, text)
+        answer, _, _ = module_request(
+            self.chain_world("v3"), CHAIN_COMMAND, chain_stdin(v4), CHAIN_NOW
+        )
+        self.assertEqual(answer["body"]["chain"]["entrySHA256"], entry_sha256(v4))
+
+    def test_the_acknowledgement_names_the_body_hash_and_not_the_entry_hash(self):
+        v2 = FIXTURE["lists"]["v2"]
+        answer, code, _ = module_request(
+            self.chain_world("v1"), CHAIN_COMMAND, chain_stdin(v2), CHAIN_NOW
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(answer["body"]["trustListSHA256"], body_sha256(v2))
+        self.assertNotEqual(body_sha256(v2), entry_sha256(v2))
+
+    def test_t5_stores_nothing_not_even_the_entries_before_the_one_it_refuses(self):
+        row = next(r for r in FIXTURE["chainVectors"] if r["id"].startswith("T5 "))
+        env = self.row_world(row)
+        answer, code, backend = module_request(env, CHAIN_COMMAND, self.row_stdin(row), CHAIN_NOW)
+        self.assertChainRefused(
+            answer, code, "reopen_unavailable", FIXTURE["lists"]["v4"], version=None
+        )
+        self.assertFalse((env.state / TRUST_NAME).exists())
+        self.assertEqual(backend.events, [], "the lock is not taken for a refused chain")
+        self.assertEqual(backend.rows, [])
+
+
+class ChainRulesTests(ChainChecks):
+    """Section 8's checks one at a time, beyond the printed vectors."""
+
+    def reason_of(self, held, *documents, rotated=False):
+        """(the reason, the version of the refused entry) of a chain that must be `chain_refused`."""
+        env = self.chain_world(held, rotated=rotated)
+        answer, code, backend = self.ask(env, *documents)
+        self.assertEqual(code, 2, answer)
+        self.assertEqual(answer["body"]["errorCode"], "chain_refused", answer)
+        self.assertEqual(backend.rows, [])
+        if held is None:
+            self.assertFalse((env.state / TRUST_NAME).exists())
+        return answer["body"]["reason"], answer["body"]["chain"]["version"]
+
+    def test_a_thirty_two_entry_chain_from_nothing_is_accepted_and_the_newest_is_stored(self):
+        documents = long_chain(32)
+        env = self.chain_world(None)
+        answer, code, backend = self.ask(env, *documents)
+        self.assertAccepted(env, answer, code, documents[-1])
+        self.assertEqual(answer["body"]["helperTrustListVersion"], 32)
+        self.assertEqual(len(backend.rows), 1)
+        self.assertEqual(backend.rows[0]["fromVersion"], None)
+        self.assertEqual(backend.rows[0]["trustListVersion"], 32)
+        # Only the newest entry is stored, and the walk reached all 32 (the last has version 32).
+        self.assertEqual(json.loads(stored_bytes(env))["body"]["version"], 32)
+
+    def test_a_chain_continues_from_what_is_held(self):
+        documents = long_chain(10)
+        env = self.chain_world(None)
+        env.store(documents[3])
+        answer, code, backend = self.ask(env, *documents[4:])
+        self.assertAccepted(env, answer, code, documents[-1])
+        self.assertEqual(backend.rows[0]["fromVersion"], 4)
+        self.assertEqual(backend.rows[0]["trustListVersion"], 10)
+
+    def test_one_bad_entry_anywhere_refuses_the_whole_chain_and_stores_nothing(self):
+        documents = long_chain(32)
+        for index in (0, 1, 15, 30, 31):
+            with self.subTest(index=index):
+                bad = json.loads(json.dumps(documents))
+                # A countersignature that does not verify breaks rule A (check 8); the first list may
+                # carry none at all.
+                if index == 0:
+                    bad[0]["countersignatures"] = [
+                        {"deviceId": BASE_APPROVAL["deviceId"], "signature": "A" * 86}
+                    ]
+                else:
+                    bad[index]["countersignatures"][0]["signature"] = "A" * 86
+                env = self.chain_world(None)
+                answer, code, backend = self.ask(env, *bad)
+                self.assertEqual(answer["body"]["errorCode"], "chain_refused", answer)
+                self.assertEqual(answer["body"]["chain"]["version"], index + 1)
+                self.assertFalse((env.state / TRUST_NAME).exists(), "none of the chain is kept")
+                self.assertEqual(backend.rows, [])
+                self.assertEqual(backend.events, [])
+
+    def test_entries_that_do_not_ascend_are_version_gap_and_not_bad_input(self):
+        v1, v2, v3 = printed("v1", "v2", "v3")
+        for held, documents, version in (
+            (None, [v2], 2),
+            (None, [v1, v1], 1),
+            (None, [v1, v3], 3),
+            (None, [v2, v1], 2),
+            ("v1", [v1], 1),
+            ("v1", [v3], 3),
+            ("v2", [v1, v2], 1),
+        ):
+            with self.subTest(held=held, versions=[d["body"]["version"] for d in documents]):
+                env = self.chain_world(held)
+                answer, code, _ = self.ask(env, *documents)
+                self.assertChainRefused(
+                    answer,
+                    code,
+                    "version_gap",
+                    None,
+                    None if held is None else FIXTURE["lists"][held]["body"]["version"],
+                )
+                self.assertEqual(answer["body"]["chain"]["version"], version)
+
+    def test_replaying_an_accepted_chain_is_version_gap(self):
+        env = self.chain_world(None)
+        documents = printed("v1", "v2")
+        answer, code, _ = self.ask(env, *documents)
+        self.assertEqual(code, 0)
+        answer, code, _ = self.ask(env, *documents, now=later(60))
+        self.assertChainRefused(answer, code, "version_gap", documents[0], 2)
+        self.assertEqual(stored_bytes(env), compact(documents[-1]))
+
+    def test_a_chain_whose_owner_key_is_not_the_pinned_one_is_refused(self):
+        rogue = KEYS["rogue owner (not pinned)"]
+        v1 = printed("v1")[0]
+        rogue_pub = b64u(spki(rogue))
+        # The list names the rogue key and is signed by it: check 3.
+        body = json.loads(json.dumps(v1["body"]))
+        body["ownerKey"] = rogue_pub
+        document = resign(body, rogue)
+        env = self.chain_world(None)
+        answer, code, _ = self.ask(env, document)
+        self.assertChainRefused(answer, code, "owner_key", document, None)
+        # It names the pinned key but the rogue key signed it: check 4.
+        body = json.loads(json.dumps(v1["body"]))
+        document = resign(body, rogue)
+        answer, code, _ = self.ask(env, document, now=later(60))
+        self.assertChainRefused(answer, code, "owner_signature", document, None)
+        # It is the pinned key's own signature on a body that names another key: check 3 first.
+        body = json.loads(json.dumps(v1["body"]))
+        body["ownerKey"] = rogue_pub
+        document = resign(body, OWNER)
+        answer, code, _ = self.ask(env, document, now=later(120))
+        self.assertChainRefused(answer, code, "owner_key", document, None)
+        self.assertFalse((env.state / TRUST_NAME).exists())
+
+    def test_the_owner_signature_covers_the_list_prefix_and_the_body(self):
+        # The pinned key's signature over the body WITHOUT the `muster-trust-list/1` line does not
+        # verify: the prefix is part of what is signed (section 2).
+        v1 = json.loads(json.dumps(printed("v1")[0]))
+        v1["ownerSignature"] = b64u(sign(OWNER, compact(v1["body"])))
+        answer, code, _ = self.ask(self.chain_world(None), v1)
+        self.assertChainRefused(answer, code, "owner_signature", v1, None)
+
+    def test_a_countersignature_uses_its_own_prefix_and_the_previous_lists_device(self):
+        v1, v2 = printed("v1", "v2")
+        # Signed over the body under the trust list prefix instead of the countersign prefix.
+        wrong = json.loads(json.dumps(v2))
+        wrong["countersignatures"] = [
+            {
+                "deviceId": BASE_APPROVAL["deviceId"],
+                "signature": b64u(
+                    sign(DEVICE_A, b"muster-trust-list/1\n" + compact(wrong["body"]))
+                ),
+            }
+        ]
+        answer, code, _ = self.ask(self.chain_world("v1"), wrong)
+        self.assertChainRefused(answer, code, "countersignature", wrong, 1)
+        # Signed with device A's REQUEST key (a key of the device that is not its approval key).
+        request_key = KEYS["device A request"]
+        wrong = json.loads(json.dumps(v2))
+        wrong["countersignatures"] = [
+            countersignature(request_key, BASE_APPROVAL["deviceId"], wrong["body"])
+        ]
+        answer, code, _ = self.ask(self.chain_world("v1"), wrong)
+        self.assertChainRefused(answer, code, "countersignature", wrong, 1)
+        # Two countersignatures, one good and one from a device that is not on the previous list.
+        wrong = json.loads(json.dumps(v2))
+        wrong["countersignatures"].append(
+            countersignature(KEYS["device B approval"], DEVICE_B, wrong["body"])
+        )
+        answer, code, _ = self.ask(self.chain_world("v1"), wrong)
+        self.assertChainRefused(answer, code, "countersignature", wrong, 1)
+        # No countersignature at all.
+        wrong = json.loads(json.dumps(v2))
+        wrong["countersignatures"] = []
+        answer, code, _ = self.ask(self.chain_world("v1"), wrong)
+        self.assertChainRefused(answer, code, "countersignature", wrong, 1)
+        # Two countersignatures naming one device: check 6, before the rule.
+        twice = json.loads(json.dumps(v2))
+        twice["countersignatures"] = twice["countersignatures"] * 2
+        answer, code, _ = self.ask(self.chain_world("v1"), twice)
+        self.assertChainRefused(answer, code, "countersignature", twice, 1)
+        # And the good one is accepted.
+        answer, code, _ = self.ask(self.chain_world("v1"), v2)
+        self.assertEqual(code, 0)
+
+    def test_the_countersigner_must_be_on_the_previous_list_not_this_one(self):
+        # Device B is on the NEW list (v2) and not on the previous (v1): B's countersignature over v2
+        # is valid and is still refused.
+        v2 = json.loads(json.dumps(printed("v2")[0]))
+        v2["countersignatures"] = [
+            countersignature(KEYS["device B approval"], DEVICE_B, v2["body"])
+        ]
+        answer, code, _ = self.ask(self.chain_world("v1"), v2)
+        self.assertChainRefused(answer, code, "countersignature", v2, 1)
+
+    def test_a_closed_list_may_neither_carry_a_countersignature_nor_a_reopen_tag(self):
+        v3 = json.loads(json.dumps(printed("v3")[0]))
+        v3["countersignatures"] = printed("v2")[0]["countersignatures"]
+        answer, code, _ = self.ask(self.chain_world("v2"), v3)
+        self.assertChainRefused(answer, code, "closed_rule", v3, 2)
+        body = json.loads(json.dumps(printed("v3")[0]["body"]))
+        body["reopenTag"] = "a" * 64
+        tagged = resign(body)
+        answer, code, _ = self.ask(self.chain_world("v2"), tagged)
+        self.assertChainRefused(answer, code, "closed_rule", tagged, 2)
+
+    def test_the_first_list_may_not_be_closed_countersigned_or_tagged(self):
+        v1 = printed("v1")[0]
+        closed = json.loads(json.dumps(v1["body"]))
+        closed["devices"] = []
+        closed["closed"] = True
+        tagged = json.loads(json.dumps(v1["body"]))
+        tagged["reopenTag"] = "b" * 64
+        for name, document in (
+            ("closed", resign(closed)),
+            ("countersigned", dict(v1, countersignatures=printed("v2")[0]["countersignatures"])),
+            ("tagged", resign(tagged)),
+        ):
+            with self.subTest(case=name):
+                answer, code, _ = self.ask(self.chain_world(None), document)
+                self.assertChainRefused(answer, code, "first_rule", document, None)
+
+    def test_a_normal_change_may_not_carry_a_reopen_tag(self):
+        body = json.loads(json.dumps(printed("v2")[0]["body"]))
+        body["reopenTag"] = "c" * 64
+        document = resign(body)
+        document["countersignatures"] = [
+            countersignature(DEVICE_A, BASE_APPROVAL["deviceId"], body)
+        ]
+        answer, code, _ = self.ask(self.chain_world("v1"), document)
+        self.assertChainRefused(answer, code, "first_rule", document, 1)
+
+    def test_a_close_may_keep_or_remove_service_keys_and_never_swap_or_add_one(self):
+        v2 = printed("v2")[0]
+        base = json.loads(json.dumps(printed("v3")[0]["body"]))
+        helper_pub = v2["body"]["services"]["serverHelper"]
+        other_pub = b64u(spki(KEYS["rogue helper (not enrolled)"]))
+        cases = (
+            ("kept", {"serverHelper": helper_pub}, None),
+            ("removed other", {"macPublisher": None}, None),
+            ("swapped", {"serverHelper": other_pub}, "services_changed"),
+            ("added", {"macPublisher": other_pub}, "services_changed"),
+            ("both server keys removed", {"serverHelper": None}, "server_keys_removed"),
+        )
+        for name, services, reason in cases:
+            with self.subTest(case=name):
+                body = json.loads(json.dumps(base))
+                body["services"].update(services)
+                document = resign(body)
+                env = self.chain_world("v2")
+                answer, code, _ = self.ask(env, document)
+                if reason is None:
+                    self.assertEqual(code, 0, answer)
+                else:
+                    self.assertChainRefused(answer, code, reason, document, 2)
+
+    def test_rule_a_may_not_leave_the_list_without_a_server_key_when_it_had_one(self):
+        # Vector T25 is the printed case; these are its boundaries.
+        helper_pub = printed("v2")[0]["body"]["services"]["serverHelper"]
+        publisher_pub = b64u(spki(KEYS["rogue helper (not enrolled)"]))
+        other_pub = b64u(spki(KEYS["server helper"]))
+
+        def services(**named):
+            result = dict.fromkeys(
+                (
+                    "macPublisher",
+                    "macExecutor",
+                    "macAgreement",
+                    "serverPublisher",
+                    "serverExecutor",
+                    "serverExecutorAgreement",
+                    "serverHelper",
+                )
+            )
+            result.update(named)
+            return result
+
+        both = services(serverHelper=helper_pub, serverPublisher=publisher_pub)
+        for name, held_services, new_services, refused in (
+            (
+                "helper swapped for a publisher",
+                services(serverHelper=helper_pub),
+                services(serverPublisher=publisher_pub),
+                False,
+            ),
+            (
+                "helper removed, publisher kept",
+                both,
+                services(serverPublisher=publisher_pub),
+                False,
+            ),
+            ("publisher removed, helper kept", both, services(serverHelper=helper_pub), False),
+            ("both removed", both, services(), True),
+            ("helper removed, none else", services(serverHelper=helper_pub), services(), True),
+            (
+                "publisher removed, none else",
+                services(serverPublisher=publisher_pub),
+                services(),
+                True,
+            ),
+            ("none before, none after", services(), services(), False),
+            ("none before, one added", services(), services(serverHelper=helper_pub), False),
+            (
+                "other keys change freely",
+                services(serverHelper=helper_pub),
+                services(serverHelper=helper_pub, macPublisher=other_pub),
+                False,
+            ),
+        ):
+            with self.subTest(case=name):
+                held = json.loads(json.dumps(printed("v1")[0]["body"]))
+                held["services"] = held_services
+                held_doc = resign(held)
+                step = json.loads(json.dumps(held))
+                step["version"] = 2
+                step["previousSHA256"] = body_sha256(held_doc)
+                step["services"] = new_services
+                document = resign(step)
+                document["countersignatures"] = [
+                    countersignature(DEVICE_A, BASE_APPROVAL["deviceId"], step)
+                ]
+                env = self.chain_world(held_doc)
+                answer, code, _ = self.ask(env, document)
+                if refused:
+                    self.assertChainRefused(answer, code, "server_keys_removed", document, 1)
+                else:
+                    self.assertEqual(code, 0, answer)
+
+    def test_a_list_may_hold_sixty_four_devices(self):
+        body = json.loads(json.dumps(printed("v1")[0]["body"]))
+        first = body["devices"][0]
+        body["devices"] = [first] + [
+            dict(first, deviceId="d-%024x" % (n + 1), name="Phone %d" % n) for n in range(63)
+        ]
+        document = resign(body)
+        env = self.chain_world(None)
+        answer, code, _ = self.ask(env, document)
+        self.assertAccepted(env, answer, code, document)
+
+    def test_the_check_order_is_the_specs_when_several_checks_fail_at_once(self):
+        # Each pair breaks two checks at once; the earlier one in section 8's order is the answer.
+        v1, v2 = printed("v1", "v2")
+
+        def tamper(document, **body_changes):
+            body = json.loads(json.dumps(document["body"]))
+            body.update(body_changes)
+            return resign(body), body
+
+        # version_gap (1) before previous_hash (2)
+        document, _ = tamper(v2, version=5, previousSHA256="0" * 64)
+        self.assertEqual(self.reason_of("v1", document)[0], "version_gap")
+        # previous_hash (2) before owner_key (3)
+        document, _ = tamper(
+            v2, previousSHA256="0" * 64, ownerKey=b64u(spki(KEYS["rogue owner (not pinned)"]))
+        )
+        self.assertEqual(self.reason_of("v1", document)[0], "previous_hash")
+        # owner_key (3) before owner_signature (4)
+        document, _ = tamper(v2, ownerKey=b64u(spki(KEYS["rogue owner (not pinned)"])))
+        document["ownerSignature"] = b64u(sign(KEYS["rogue owner (not pinned)"], b"x"))
+        self.assertEqual(self.reason_of("v1", document)[0], "owner_key")
+        # owner_signature (4) before duplicate_device (5)
+        document, body = tamper(v2, devices=v2["body"]["devices"] + v2["body"]["devices"][:1])
+        document["ownerSignature"] = b64u(sign(OWNER, b"x"))
+        self.assertEqual(self.reason_of("v1", document)[0], "owner_signature")
+        # duplicate_device (5) before countersignature (6)
+        document, body = tamper(v2, devices=v2["body"]["devices"] + v2["body"]["devices"][:1])
+        document["countersignatures"] = v2["countersignatures"] * 2
+        self.assertEqual(self.reason_of("v1", document)[0], "duplicate_device")
+        # countersignature (6) before closed_rule (7)
+        document, body = tamper(v2, closed=True)
+        document["countersignatures"] = v2["countersignatures"] * 2
+        self.assertEqual(self.reason_of("v1", document)[0], "countersignature")
+        # closed_rule (7) before the rule (8)
+        document, body = tamper(v2, closed=True)
+        self.assertEqual(self.reason_of("v1", document)[0], "closed_rule")
+
+    def test_a_chain_of_entries_walks_each_against_the_one_before_it(self):
+        # v3 closes the list v2 and must be judged against v2's services and server keys, not the held v1.
+        env = self.chain_world("v1")
+        answer, code, _ = self.ask(env, *printed("v2", "v3"))
+        self.assertAccepted(env, answer, code, printed("v3")[0])
+        self.assertEqual(answer["body"]["closed"], True)
+
+    def test_a_close_after_a_close_is_rule_b_and_not_rule_c(self):
+        # A second close on a closed list is rule B (this list is closed), not rule C.
+        v3 = printed("v3")[0]
+        body = json.loads(json.dumps(v3["body"]))
+        body["version"] = 4
+        body["previousSHA256"] = body_sha256(v3)
+        body["issuedAt"] = "2026-11-07T21:04:00Z"
+        document = resign(body)
+        env = self.chain_world("v3")
+        answer, code, _ = self.ask(env, document)
+        self.assertAccepted(env, answer, code, document)
+
+    def test_rotation_the_old_key_signs_up_to_its_line_and_the_new_key_after_it(self):
+        v1 = printed("v1")[0]
+        new_owner = KEYS[ROTATED_OWNER]
+        new_pub = b64u(spki(new_owner))
+        old_pub = b64u(spki(OWNER))
+        # Under the rotated history version 1 is the old key's and must hash to its line's toSHA256:
+        # the real v1 is accepted, and its acknowledgement says it is not signed by the current key.
+        env = self.chain_world(None, rotated=True)
+        answer, code, _ = self.ask(env, v1)
+        self.assertAccepted(env, answer, code, v1, current=False)
+        self.assertFalse(answer["body"]["signedByCurrentKey"])
+        # An approval is refused by the pre-rotation list (section 10): `no_trust_list`.
+        approval_answer, approval_code, _ = module_request(
+            env, COMMAND, stdin_of(approval()), "2026-11-07T21:00:30Z"
+        )
+        self.assertRefused(approval_answer, approval_code, "no_trust_list", verified=False)
+        self.assertEqual(approval_answer["body"]["helperTrustListVersion"], 1)
+        # Version 2 signed by the NEW key and naming it: accepted, and signed by the current key.
+        v2 = next_rule_a(v1, owner=new_owner, ownerKey=new_pub)
+        answer, code, _ = self.ask(env, v2, now=later(60))
+        self.assertAccepted(env, answer, code, v2, current=True, at=ma.format_time(later(60)))
+        approval_answer, approval_code, _ = module_request(
+            env, COMMAND, stdin_of(approval()), "2026-11-07T21:00:30Z"
+        )
+        self.assertDone(approval_answer, approval_code)
+        # Version 3 signed by the RETIRED key is refused, and so is one that names it.
+        for step, (signer, named) in enumerate(
+            ((OWNER, old_pub), (OWNER, new_pub), (new_owner, old_pub))
+        ):
+            with self.subTest(
+                signed_by="old" if signer is OWNER else "new", names=named == old_pub
+            ):
+                v3 = next_rule_a(v2, owner=signer, ownerKey=named)
+                answer, code, _ = self.ask(env, v3, now=later(120 + 20 * step))
+                expected = "owner_key" if named == old_pub else "owner_signature"
+                self.assertChainRefused(answer, code, expected, v3, 2)
+
+    def test_a_chain_across_the_rotation_walks_both_keys(self):
+        v1 = printed("v1")[0]
+        new_owner = KEYS[ROTATED_OWNER]
+        v2 = next_rule_a(v1, owner=new_owner, ownerKey=b64u(spki(new_owner)))
+        env = self.chain_world(None, rotated=True)
+        answer, code, _ = self.ask(env, v1, v2)
+        self.assertAccepted(env, answer, code, v2, current=True)
+        # The retired key cannot take version 2.
+        bad = next_rule_a(v1)
+        env = self.chain_world(None, rotated=True)
+        answer, code, _ = self.ask(env, v1, bad)
+        self.assertChainRefused(answer, code, "owner_key", bad, None)
+        self.assertFalse((env.state / TRUST_NAME).exists())
+
+    def test_the_held_list_at_a_rotation_line_must_hash_to_it_or_the_helper_is_state_unsafe(self):
+        # T24's list held under the rotated history: version 1 with a body hash its line did not name.
+        env = self.chain_world("T24 list", rotated=True)
+        answer, code, backend = self.ask(env, *printed("v1"))
+        self.assertOtherRefusal(answer, code, "state_unsafe", None)
+        self.assertEqual(backend.events, [], "refused at C2, before the lock")
+        # The same list held under the ordinary history is just a held version 1.
+        env = self.chain_world("T24 list")
+        answer, code, _ = self.ask(env, printed("v2")[0])
+        self.assertRefused(answer, code, "chain_refused", verified=False, reason="previous_hash")
+        self.assertEqual(answer["body"]["helperTrustListVersion"], 1)
+        # The real v1 held under the rotated history is fine (its hash is the line's).
+        env = self.chain_world("v1", rotated=True)
+        new_owner = KEYS[ROTATED_OWNER]
+        v2 = next_rule_a(printed("v1")[0], owner=new_owner, ownerKey=b64u(spki(new_owner)))
+        answer, code, _ = self.ask(env, v2)
+        self.assertAccepted(env, answer, code, v2)
+
+    def test_the_hash_of_the_body_and_not_of_the_signatures_is_what_the_history_names(self):
+        # The history line names the body hash.  A copy of version 1 with different countersignatures
+        # or another (valid) owner signature has the same body hash and is accepted at version 1.
+        v1 = json.loads(json.dumps(printed("v1")[0]))
+        v1["ownerSignature"] = b64u(
+            OWNER.sign(b"muster-trust-list/1\n" + compact(v1["body"]), ec.ECDSA(hashes.SHA256()))
+        )
+        env = self.chain_world(None, rotated=True)
+        answer, code, _ = self.ask(env, v1)
+        self.assertEqual(code, 0, answer)
+        self.assertEqual(answer["body"]["trustListSHA256"], body_sha256(printed("v1")[0]))
+        self.assertEqual(stored_bytes(env), compact(v1))
+
+
+# MARK: - P3 for a chain: standard input
+
+
+def with_change(document, path, value):
+    """A deep copy of `document` with the value at `path` (a list of keys and indexes) replaced."""
+    copy = json.loads(json.dumps(document))
+    target = copy
+    for step in path[:-1]:
+        target = target[step]
+    target[path[-1]] = value
+    return copy
+
+
+def without(document, path):
+    copy = json.loads(json.dumps(document))
+    target = copy
+    for step in path[:-1]:
+        target = target[step]
+    del target[path[-1]]
+    return copy
+
+
+class ChainInputTests(ChainChecks):
+    """A chain document that is malformed in any way is `bad_input` at P3: before the rate step, the
+    list, the lock or anything that could be written.  Formatting does not matter, but structure does."""
+
+    def refuse(self, raw, expected="bad_input", held="v1"):
+        env = self.chain_world(held)
+        before = stored_bytes(env)
+        answer, code, backend = self.ask(env, raw=raw)
+        self.assertOtherRefusal(answer, code, expected)
+        self.assertEqual(backend.events, [])
+        self.assertEqual(backend.rows, [])
+        self.assertFalse(
+            (env.state / "muster-rate.json").exists(), "refused while parsing is not counted"
+        )
+        self.assertEqual(stored_bytes(env), before)
+        return answer
+
+    def refuse_entry(self, entry, label, held="v1"):
+        with self.subTest(case=label):
+            self.refuse(chain_stdin(entry), held=held)
+
+    V2 = FIXTURE["lists"]["v2"]
+
+    def test_every_body_field_is_required(self):
+        for name in self.V2["body"]:
+            self.refuse_entry(without(self.V2, ["body", name]), "missing " + name)
+
+    def test_every_entry_key_is_required_and_no_other_is_allowed(self):
+        for name in ("body", "ownerSignature", "countersignatures"):
+            self.refuse_entry(without(self.V2, [name]), "missing " + name)
+        self.refuse_entry(dict(self.V2, extra=1), "an extra entry key")
+        self.refuse_entry(with_change(self.V2, ["body", "extra"], 1), "an extra body key")
+        self.refuse_entry(
+            with_change(self.V2, ["body", "devices", 0, "extra"], 1), "an extra device key"
+        )
+        self.refuse_entry(
+            with_change(self.V2, ["body", "services", "extra"], None), "an extra service"
+        )
+        self.refuse_entry(
+            with_change(self.V2, ["countersignatures", 0, "extra"], 1), "an extra cs key"
+        )
+
+    def test_every_nested_key_is_required(self):
+        for name in self.V2["body"]["devices"][0]:
+            self.refuse_entry(without(self.V2, ["body", "devices", 0, name]), "device " + name)
+        for name in self.V2["body"]["services"]:
+            self.refuse_entry(without(self.V2, ["body", "services", name]), "service " + name)
+        for name in self.V2["countersignatures"][0]:
+            self.refuse_entry(without(self.V2, ["countersignatures", 0, name]), "cs " + name)
+
+    BAD_VALUES = (
+        (["body", "contract"], ["muster-trust-list/2", "", 5, None, ["muster-trust-list/1"]]),
+        (["body", "version"], [0, -1, True, False, "2", None, [2], {"v": 2}, 2**53]),
+        (
+            ["body", "previousSHA256"],
+            ["xyz", "A" * 64, "a" * 63, "a" * 65, 5, "", True, ["a" * 64]],
+        ),
+        (
+            ["body", "issuedAt"],
+            [
+                "2026-13-01T00:00:00Z",
+                "2026-02-30T00:00:00Z",
+                "2026-11-07 20:00:00",
+                "2026-11-07T20:00:00+00:00",
+                "2026-11-07T20:00:00z",
+                "",
+                5,
+                None,
+            ],
+        ),
+        (["body", "ownerKey"], ["AAAA", "", 5, None, "A" * 201, "!!!!", [], ["x"]]),
+        (["body", "closed"], [0, 1, "false", "true", None, [], {}]),
+        (["body", "devices"], [None, {}, "x", 5, True]),
+        (["body", "services"], [None, [], "x", 5]),
+        (["body", "reopenTag"], ["xyz", "A" * 64, "a" * 63, 5, "", True]),
+        (["ownerSignature"], ["", "A" * 101, "AA=", 5, None, "AA AA", ["A"], "Aé"]),
+        (["countersignatures"], [None, {}, "x", 5]),
+        (["body", "devices", 0], [None, 5, "x", [], []]),
+        (
+            ["body", "devices", 0, "deviceId"],
+            ["d-1", "D-" + "A" * 24, "d-" + "a" * 23, "d-" + "a" * 25, 5, None, ""],
+        ),
+        (["body", "devices", 0, "name"], ["", "x" * 41, 5, None, "café", "tab\there"]),
+        (["body", "devices", 0, "approvalKey"], ["AAAA", "", 5, None, "x" * 201]),
+        (["body", "devices", 0, "requestKey"], ["AAAA", "", 5, None]),
+        (["body", "devices", 0, "readingKey"], ["AAAA", "", 5, None]),
+        (["body", "devices", 0, "notificationKey"], ["AAAA", "", 5, None]),
+        (["body", "services", "serverHelper"], ["AAAA", "", 5, True, []]),
+        (["body", "services", "macPublisher"], ["AAAA", "", 5, True, []]),
+        (["countersignatures", 0], [None, 5, "x", []]),
+        (["countersignatures", 0, "deviceId"], ["d-1", "D-" + "A" * 24, 5, None, ""]),
+        (["countersignatures", 0, "signature"], ["", "A" * 101, "AA=", 5, None, "AA AA"]),
+    )
+
+    def test_every_field_has_its_type_and_pattern(self):
+        for path, values in self.BAD_VALUES:
+            for value in values:
+                self.refuse_entry(
+                    with_change(self.V2, path, value), "%s = %r" % ("/".join(map(str, path)), value)
+                )
+
+    def test_a_key_must_be_a_p256_key_so_that_an_accepted_list_can_always_be_read_back(self):
+        # A string that looks like base64url is not enough: the helper stores the list, and its own
+        # reader holds every key of it to be a P-256 key (section 2).  A chain it could not read back
+        # would wedge the route.  The Ed25519 key below is well formed, a valid key, and not P-256.
+        not_p256 = "MCowBQYDK2VwAyEA" + "A" * 43
+        for path in (
+            ["body", "ownerKey"],
+            ["body", "devices", 0, "approvalKey"],
+            ["body", "services", "serverHelper"],
+        ):
+            self.refuse_entry(with_change(self.V2, path, not_p256), "/".join(map(str, path)))
+
+    def test_sixty_five_devices_and_sixty_five_countersignatures_are_too_many(self):
+        first = self.V2["body"]["devices"][0]
+        many = [dict(first, deviceId="d-%024x" % n) for n in range(65)]
+        self.refuse_entry(with_change(self.V2, ["body", "devices"], many), "65 devices")
+        many_cs = [{"deviceId": "d-%024x" % n, "signature": "A" * 86} for n in range(65)]
+        self.refuse_entry(
+            with_change(self.V2, ["countersignatures"], many_cs), "65 countersignatures"
+        )
+        # Sixty-four are the most: these reach the walk and are refused there for their own reason.
+        env = self.chain_world("v1")
+        answer, code, _ = self.ask(
+            env, with_change(self.V2, ["countersignatures"], many_cs[:64]), now=later(60)
+        )
+        self.assertEqual(answer["body"]["errorCode"], "chain_refused", answer)
+
+    def test_a_chain_holds_one_to_thirty_two_entries(self):
+        self.refuse(chain_stdin(), "bad_input")
+        documents = long_chain(33)
+        self.assertEqual(len(documents), 33)
+        self.refuse(chain_stdin(*documents), "bad_input", held=None)
+        # Thirty-three entries are bad_input whatever they are: even thirty-three copies of one.
+        self.refuse(chain_stdin(*([FIXTURE["lists"]["v1"]] * 33)), "bad_input")
+
+    def test_the_document_is_exactly_protocol_and_chain(self):
+        good = json.loads(chain_stdin(self.V2))
+        for name, document in (
+            ("no protocol", {"chain": good["chain"]}),
+            ("no chain", {"protocol": "muster-helper/1"}),
+            ("an extra key", dict(good, extra=1)),
+            ("another protocol", dict(good, protocol="muster-helper/2")),
+            ("a protocol that is not text", dict(good, protocol=1)),
+            ("a chain that is null", dict(good, chain=None)),
+            ("a chain that is an object", dict(good, chain=good["chain"][0])),
+            ("a chain that is a string", dict(good, chain="x")),
+            ("an approval instead", {"protocol": "muster-helper/1", "approval": {}}),
+            ("a job instead", {"protocol": "muster-helper/1", "job": {}}),
+            ("an array", [good]),
+            ("a number", 5),
+            ("null", None),
+        ):
+            with self.subTest(case=name):
+                self.refuse(compact(document))
+        self.refuse(compact({"protocol": "muster-helper/1", "chain": [None]}))
+        self.refuse(compact({"protocol": "muster-helper/1", "chain": [[]]}))
+        self.refuse(compact({"protocol": "muster-helper/1", "chain": [5, "x"]}))
+
+    def test_hostile_json_is_bad_input(self):
+        base = chain_stdin(self.V2)
+        text = base.decode()
+        for name, raw in (
+            ("empty", b""),
+            ("whitespace only", b" \n\t "),
+            ("not JSON", b"muster"),
+            ("truncated", base[: len(base) // 2]),
+            ("trailing garbage", base + b"x"),
+            ("two documents", base + base),
+            ("a byte order mark", b"\xef\xbb\xbf" + base),
+            ("not UTF-8", base.replace(b'"chain"', b'"ch\xffin"')),
+            ("overlong UTF-8", b'{"protocol":"muster-helper/1","chain":[],"\xc0\xaf":1}'),
+            ("a lone surrogate", text.replace('"chain"', '"ch\\ud800in"').encode()),
+            ("a non-ASCII string", text.replace("Test Phone A", "Tést Phone A").encode("utf-8")),
+            ("an escaped control character", text.replace("Test Phone A", "T\\u0007st").encode()),
+            ("a NUL", base.replace(b"Test Phone A", b"Test\x00Phone")),
+            ("NaN", base.replace(b'"version":2', b'"version":NaN')),
+            ("Infinity", base.replace(b'"version":2', b'"version":Infinity')),
+            ("-Infinity", base.replace(b'"version":2', b'"version":-Infinity')),
+            ("a float", base.replace(b'"version":2', b'"version":2.0')),
+            ("an exponent", base.replace(b'"version":2', b'"version":2e0')),
+            ("a huge integer", base.replace(b'"version":2', b'"version":' + b"9" * 400)),
+            ("an integer past 2^53", base.replace(b'"version":2', b'"version":9007199254740993')),
+            ("a duplicate top-level key", base[:-1] + b',"protocol":"muster-helper/1"}'),
+            ("a duplicate body key", base.replace(b'"version":2', b'"version":2,"version":2')),
+            (
+                "a duplicate device key",
+                base.replace(b'"name":"Test Phone A"', b'"name":"Test Phone A","name":"x"'),
+            ),
+            (
+                "a duplicate escaped key",
+                base.replace(b'"version":2', b'"version":2,"v\\u0065rsion":2'),
+            ),
+            (
+                "a depth bomb",
+                b'{"protocol":"muster-helper/1","chain":' + b"[" * 20000 + b"]" * 20000 + b"}",
+            ),
+            (
+                "an object depth bomb",
+                b'{"protocol":"muster-helper/1","chain":['
+                + b'{"a":' * 9000
+                + b"1"
+                + b"}" * 9000
+                + b"]}",
+            ),
+            ("single quotes", base.replace(b'"', b"'")),
+            ("comments", b"/* x */" + base),
+            ("a trailing comma", base[:-2] + b",]}"),
+        ):
+            with self.subTest(case=name):
+                self.refuse(raw)
+
+    def test_formatting_and_key_order_do_not_matter(self):
+        # Section 5: the helper works from the parsed values, and computes canonical bytes itself.
+        v2 = self.V2
+        reversed_keys = json.dumps(
+            {"protocol": "muster-helper/1", "chain": [v2]}, indent=4, sort_keys=True
+        )
+        for name, raw in (
+            ("indented and sorted", reversed_keys.encode()),
+            ("with CRLF", reversed_keys.replace("\n", "\r\n").encode()),
+            ("with tabs", reversed_keys.replace("    ", "\t").encode()),
+            ("an escaped key", chain_stdin(v2).replace(b'"version"', b'"v\\u0065rsion"', 1)),
+            ("an escaped value", chain_stdin(v2).replace(b"Test Phone A", b"Test \\u0050hone A")),
+            ("padded", b"\n  " + chain_stdin(v2) + b"  \n"),
+        ):
+            with self.subTest(case=name):
+                env = self.chain_world("v1")
+                answer, code, _ = self.ask(env, raw=raw)
+                self.assertEqual(code, 0, (name, answer))
+                self.assertEqual(answer["kind"], "ack")
+                # What is stored is the canonical bytes of what was parsed, whatever was sent.
+                parsed = json.loads(raw)["chain"][0]
+                self.assertEqual(stored_bytes(env), ma.canonical_bytes(parsed))
+
+    def test_the_input_limit_is_65536_bytes_for_a_chain_and_4096_for_everything_else(self):
+        raw = chain_stdin(self.V2)
+        for size, expected in ((65536, None), (65537, "input_too_large")):
+            with self.subTest(size=size):
+                env = self.chain_world("v1")
+                padded = raw + b" " * (size - len(raw))
+                self.assertEqual(len(padded), size)
+                answer, code, backend = self.ask(env, raw=padded)
+                if expected is None:
+                    self.assertEqual(code, 0, answer)
+                else:
+                    self.assertOtherRefusal(answer, code, expected)
+                    self.assertEqual(backend.events, [])
+                    self.assertFalse((env.state / "muster-rate.json").exists())
+        # The other commands keep their 4,096: a plan, an acknowledgement and an approval.
+        env = self.chain_world("v1")
+        for command, document in (
+            (PLAN_COMMAND, job_stdin()),
+            (CURRENT_COMMAND, CURRENT_STDIN),
+            (COMMAND, stdin_of(approval())),
+        ):
+            with self.subTest(command=command):
+                for size, expected in ((4096, None), (4097, "input_too_large")):
+                    padded = document + b" " * (size - len(document))
+                    answer, code, _ = module_request(env, command, padded, later(100 * size))
+                    if expected:
+                        self.assertRefused(answer, code, expected, verified=False)
+                    else:
+                        self.assertNotEqual(answer["body"].get("errorCode"), "input_too_large")
+
+    def test_the_helper_reads_at_most_the_limit_plus_one_byte(self):
+        env = self.chain_world("v1")
+        seen = []
+
+        def read(limit):
+            seen.append(limit)
+            return (b" " * (limit + 5))[: limit + 1]
+
+        answer, code = ma.handle_request(
+            env.module_config(CHAIN_NOW), FakeBackend(), CHAIN_COMMAND, True, read, mt
+        )
+        self.assertEqual(seen, [65536])
+        self.assertOtherRefusal(answer, code, "input_too_large")
+        seen.clear()
+        ma.handle_request(env.module_config(CHAIN_NOW), FakeBackend(), COMMAND, True, read, mt)
+        ma.handle_request(env.module_config(CHAIN_NOW), FakeBackend(), PLAN_COMMAND, True, read, mt)
+        self.assertEqual(seen, [4096, 4096])
+
+    def test_a_stdin_that_cannot_be_read_is_bad_input(self):
+        env = self.chain_world("v1")
+
+        def broken(limit):
+            raise OSError("closed")
+
+        answer, code = ma.handle_request(
+            env.module_config(CHAIN_NOW), FakeBackend(), CHAIN_COMMAND, True, broken, mt
+        )
+        self.assertOtherRefusal(answer, code, "bad_input")
+
+    def test_the_helper_entry_reads_a_chain_of_up_to_65536_bytes_from_a_pipe(self):
+        # The real reader (`read_stdin_limited`) in a real process: a padded chain of exactly 65,536
+        # bytes is accepted and one byte more is not.
+        raw = chain_stdin(self.V2)
+        for size, expected in ((65536, "ack"), (65537, "input_too_large")):
+            with self.subTest(size=size):
+                env = self.chain_world("v1")
+                answer, code, _, _ = subprocess_request(
+                    self, env, CHAIN_COMMAND, raw + b" " * (size - len(raw)), CHAIN_NOW
+                )
+                self.assertEqual(answer["kind"], "ack" if expected == "ack" else "refusal")
+                if expected != "ack":
+                    self.assertEqual(answer["body"]["errorCode"], expected)
+
+    def test_a_list_too_large_for_the_stored_file_is_bad_input(self):
+        # The stored file may be 65,536 bytes at most (section 11); a list whose canonical bytes
+        # exceed that could be accepted and then never read.  It is refused instead.
+        v1 = FIXTURE["lists"]["v1"]
+        with mock.patch.object(ma, "TRUST_FILE_MAX_BYTES", len(compact(v1)) - 1):
+            self.refuse(chain_stdin(v1), held=None)
+        with mock.patch.object(ma, "TRUST_FILE_MAX_BYTES", len(compact(v1))):
+            env = self.chain_world(None)
+            answer, code, _ = self.ask(env, v1)
+            self.assertEqual(code, 0, answer)
+            self.assertEqual(len(stored_bytes(env)), ma.TRUST_FILE_MAX_BYTES)
+            # And what was stored is read back: the route answers about it.
+            answer, code, _ = module_request(env, CURRENT_COMMAND, CURRENT_STDIN, later(100))
+            self.assertEqual(code, 0, answer)
+
+
+class ChainCommandTests(ChainChecks):
+    V2 = FIXTURE["lists"]["v2"]
+
+    def test_only_the_yes_mode_of_chain_exists(self):
+        env = self.chain_world("v1")
+        before = stored_bytes(env)
+        for command, expected in (
+            (CHAIN_PLAN_COMMAND, "mode_not_allowed"),
+            ("muster trust-list chain", "bad_command"),
+            ("muster trust-list chain --json", "bad_command"),
+            ("muster trust-list chain --YES", "bad_command"),
+            ("muster trust-list chain now --yes", "bad_command"),
+            ("muster trust-list chain-list --yes", "bad_command"),
+            ("muster trust-list Chain --yes", "bad_command"),
+            ("muster trust-list chain  --yes", "bad_command"),
+            (" muster trust-list chain --yes", "bad_command"),
+            ("muster trust-list chain --yes ", "bad_command"),
+            ("server trust-list chain --yes", "bad_command"),
+            ("muster trust-list current --yes", "mode_not_allowed"),
+            ("mac trust-list chain --yes", "bad_command"),
+        ):
+            with self.subTest(command=command):
+                answer, code, backend = module_request(
+                    env, command, chain_stdin(self.V2), CHAIN_NOW
+                )
+                self.assertRefused(answer, code, expected, verified=False)
+                self.assertEqual(answer["body"]["claimed"], {})
+                self.assertNotIn("chain", answer["body"])
+                self.assertEqual(backend.events, [])
+                self.assertFalse((env.state / "muster-rate.json").exists())
+        self.assertEqual(stored_bytes(env), before)
+
+    def test_chain_is_refused_with_the_extra_argument_of_the_forced_command(self):
+        env = self.chain_world("v1")
+        answer, code, _ = module_request(
+            env, CHAIN_COMMAND, chain_stdin(self.V2), CHAIN_NOW, argv_ok=False
+        )
+        self.assertRefused(answer, code, "bad_command", verified=False)
+
+    def test_the_pin_and_the_key_are_checked_before_the_chain_is_read(self):
+        # P0 and P1 come before anything is read from standard input.
+        def must_not_read(limit):
+            raise AssertionError("standard input was read")
+
+        env = self.chain_world("v1", key=False)
+        answer, code = ma.handle_request(
+            env.module_config(CHAIN_NOW), FakeBackend(), CHAIN_COMMAND, True, must_not_read, mt
+        )
+        self.assertEqual(code, 2)
+        self.assertEqual(answer["body"]["errorCode"], "helper_key_missing")
+        self.assertIsNone(answer["signature"])
+        env = self.chain_world("v1")
+        os.chmod(env.etc / "owner.pub", 0o666)
+        answer, code = ma.handle_request(
+            env.module_config(CHAIN_NOW), FakeBackend(), CHAIN_COMMAND, True, must_not_read, mt
+        )
+        self.assertRefused(answer, code, "pin_unsafe", verified=False)
+        self.assertNotIn("chain", answer["body"], "the command was not parsed yet")
+        # P2 comes before P3 too: a bad command never reads its input.
+        env = self.chain_world("v1")
+        answer, code = ma.handle_request(
+            env.module_config(CHAIN_NOW), FakeBackend(), CHAIN_PLAN_COMMAND, True, must_not_read, mt
+        )
+        self.assertRefused(answer, code, "mode_not_allowed", verified=False)
+
+    def test_a_pin_that_cannot_be_trusted_refuses_the_chain_and_stores_nothing(self):
+        for name, damage in (
+            ("owner.pub group-writable", lambda env: os.chmod(env.etc / "owner.pub", 0o664)),
+            ("history missing", lambda env: os.unlink(env.etc / "owner-history.jsonl")),
+            ("history empty", lambda env: write_file(env.etc / "owner-history.jsonl", b"", 0o644)),
+        ):
+            with self.subTest(case=name):
+                env = self.chain_world(None)
+                damage(env)
+                answer, code, backend = self.ask(env, FIXTURE["lists"]["v1"])
+                self.assertRefused(answer, code, "pin_unsafe", verified=False)
+                self.assertFalse((env.state / TRUST_NAME).exists())
+                self.assertFalse((env.state / "muster-rate.json").exists(), "not counted")
+                self.assertEqual(backend.events, [])
+
+
+# MARK: - C1 to C5: the rate step, the stored list, the lock and the write
+
+
+class ChainStateTests(ChainChecks):
+    """C2: the stored list is read without a lock, and anything wrong with it is `state_unsafe`
+    (reported with no version, since nothing could be read), counted by the rate step that came first."""
+
+    V1 = FIXTURE["lists"]["v1"]
+
+    def damage(self, env, name):
+        path = env.state / TRUST_NAME
+        v1 = self.V1
+        if name == "symbolic link":
+            victim = env.root / "victim"
+            write_file(victim, b"precious", 0o600)
+            os.symlink(victim, path)
+        elif name == "empty":
+            write_file(path, b"", 0o600)
+        elif name == "hard link":
+            env.store(v1)
+            os.link(path, env.root / "twin")
+        elif name == "mode 0644":
+            env.store(v1, mode=0o644)
+        elif name == "mode 0640":
+            env.store(v1, mode=0o640)
+        elif name == "oversize":
+            write_file(path, json.dumps(v1).encode() + b" " * 70000, 0o600)
+        elif name == "one byte over the limit":
+            raw = json.dumps(v1).encode()
+            write_file(path, raw + b" " * (65537 - len(raw)), 0o600)
+        elif name == "garbage":
+            write_file(path, b"not json", 0o600)
+        elif name == "a list in an array":
+            write_file(path, json.dumps([v1]).encode(), 0o600)
+        elif name == "directory":
+            os.mkdir(path, 0o700)
+        elif name == "fifo":
+            os.mkfifo(path, 0o600)
+        elif name == "two devices with one id":
+            body = json.loads(json.dumps(v1["body"]))
+            body["devices"] = body["devices"] * 2
+            env.store(resign(body))
+        elif name == "closed with a device":
+            body = json.loads(json.dumps(v1["body"]))
+            body["closed"] = True
+            env.store(resign(body))
+        elif name == "two countersignatures for one device":
+            env.store(
+                dict(
+                    FIXTURE["lists"]["v2"],
+                    countersignatures=FIXTURE["lists"]["v2"]["countersignatures"] * 2,
+                )
+            )
+        elif name == "version zero":
+            body = json.loads(json.dumps(v1["body"]))
+            body["version"] = 0
+            env.store(resign(body))
+        elif name == "a key that is not P-256":
+            body = json.loads(json.dumps(v1["body"]))
+            body["services"]["serverHelper"] = "MCowBQYDK2VwAyEA" + "A" * 43
+            env.store(resign(body))
+        else:
+            raise AssertionError(name)
+
+    NAMES = (
+        "symbolic link",
+        "empty",
+        "hard link",
+        "mode 0644",
+        "mode 0640",
+        "oversize",
+        "one byte over the limit",
+        "garbage",
+        "a list in an array",
+        "directory",
+        "fifo",
+        "two devices with one id",
+        "closed with a device",
+        "two countersignatures for one device",
+        "version zero",
+        "a key that is not P-256",
+    )
+
+    def test_a_stored_list_that_cannot_be_trusted_is_state_unsafe_and_nothing_is_written(self):
+        for name in self.NAMES:
+            with self.subTest(case=name):
+                env = self.chain_world(None)
+                self.damage(env, name)
+                names_before = sorted(p.name for p in env.state.iterdir())
+                # A regression that waits on the FIFO fails here after 15 seconds instead of hanging.
+                answer, code, backend = self.run_within(
+                    15,
+                    lambda: self.ask(env, FIXTURE["lists"]["v2"]),
+                    unblock=lambda: self.release_fifo(env.state / TRUST_NAME),
+                )
+                self.assertOtherRefusal(answer, code, "state_unsafe", None)
+                self.assertEqual(backend.events, [], "refused at C2, before the lock")
+                self.assertEqual(backend.rows, [])
+                self.assertEqual(leftovers(env), [])
+                after = sorted(p.name for p in env.state.iterdir())
+                # Only the rate step's files appeared: it came first and counted the request.
+                self.assertEqual(
+                    sorted(set(after) - set(names_before)), ["muster-rate.json", "muster-rate.lock"]
+                )
+                events = json.loads((env.state / "muster-rate.json").read_text())["events"]
+                self.assertEqual([event[:2] for event in events], [["chain", "chain"]])
+                if name == "symbolic link":
+                    self.assertEqual((env.root / "victim").read_bytes(), b"precious")
+
+    def test_a_stored_list_owned_by_another_account_is_state_unsafe(self):
+        env = self.chain_world("v1")
+        with self.foreign_owner(env.state / TRUST_NAME):
+            answer, code, _ = self.ask(env, FIXTURE["lists"]["v2"])
+        self.assertOtherRefusal(answer, code, "state_unsafe", None)
+
+    def test_a_stored_list_of_exactly_65536_bytes_is_read(self):
+        env = self.chain_world(None)
+        raw = json.dumps(self.V1).encode()
+        write_file(env.state / TRUST_NAME, raw + b" " * (65536 - len(raw)), 0o600)
+        answer, code, _ = self.ask(env, FIXTURE["lists"]["v2"])
+        self.assertEqual(code, 0, answer)
+
+    def test_a_stored_list_in_any_formatting_is_read_and_replaced_by_canonical_bytes(self):
+        v1, v2 = self.V1, FIXTURE["lists"]["v2"]
+        for name, raw in (
+            ("indented with a line feed", (json.dumps(v1, indent=2) + "\n").encode()),
+            ("keys in reverse order", json.dumps(reversed_keys(v1), indent=1).encode()),
+            ("spaced", json.dumps(v1).encode()),
+            ("crlf", json.dumps(v1, indent=2).replace("\n", "\r\n").encode() + b"\r\n"),
+        ):
+            with self.subTest(case=name):
+                env = self.chain_world(None)
+                write_file(env.state / TRUST_NAME, raw, 0o600)
+                answer, code, _ = self.ask(env, v2)
+                self.assertAccepted(env, answer, code, v2)
+
+    def test_a_rate_limit_comes_before_the_stored_list_is_read(self):
+        env = self.chain_world(None)
+        self.damage(env, "garbage")
+        answer, code, _ = self.ask(env, FIXTURE["lists"]["v2"])
+        self.assertOtherRefusal(answer, code, "state_unsafe", None)
+        answer, code, _ = self.ask(env, FIXTURE["lists"]["v2"], now=epoch(CHAIN_NOW) + 5)
+        self.assertOtherRefusal(answer, code, "rate_limited", None)
+
+    def test_a_chain_that_is_refused_for_its_content_still_counts(self):
+        env = self.chain_world("v1")
+        answer, code, _ = self.ask(env, FIXTURE["lists"]["T7 list"])
+        self.assertChainRefused(answer, code, "previous_hash", FIXTURE["lists"]["T7 list"], 1)
+        answer, code, _ = self.ask(env, FIXTURE["lists"]["v2"], now=epoch(CHAIN_NOW) + 5)
+        self.assertOtherRefusal(answer, code, "rate_limited", None)
+
+
+class OrderBackend(FakeBackend):
+    """A backend that notes what the stored list held when the audit row was asked for."""
+
+    def __init__(self, env, **kwargs):
+        super().__init__(**kwargs)
+        self.env = env
+        self.held_at_audit = "never"
+
+    def audit(self, scope, verb, target, result, fields):
+        self.events.append("audit")
+        self.held_at_audit = stored_bytes(self.env)
+        return super().audit(scope, verb, target, result, fields)
+
+
+class ChainLockWindowTests(ChainChecks):
+    """C4: the action lock, then the stored list again, and `trust_list_changed` unless it is the list
+    C2 read (its body hash, and a list held exactly when C2 found one)."""
+
+    V1 = FIXTURE["lists"]["v1"]
+    V2 = FIXTURE["lists"]["v2"]
+
+    def changed(self, held, document, between, version, *, accepted=False):
+        env = self.chain_world(held)
+        before = stored_bytes(env)
+        backend = FakeBackend(on_lock=lambda: between(env))
+        answer, code, backend = self.ask(env, document, backend=backend)
+        if accepted:
+            return env, answer, code, backend
+        self.assertOtherRefusal(answer, code, "trust_list_changed", version)
+        self.assertEqual(backend.rows, [], "nothing was written, so there is no row")
+        self.assertEqual(backend.events, ["lock", "unlock"])
+        self.assertEqual(leftovers(env), [])
+        return env, answer, code, before
+
+    def test_the_stored_list_replaced_between_c2_and_c4(self):
+        env, _, _, _ = self.changed("v1", self.V2, lambda env: env.store(FIXTURE["lists"]["v3"]), 1)
+        # The replacement is what is on disk afterwards: the chain did not overwrite it.
+        self.assertEqual(json.loads(stored_bytes(env))["body"]["version"], 3)
+
+    def test_a_list_stored_after_c2_where_none_was_held(self):
+        env, _, _, _ = self.changed(None, self.V1, lambda env: env.store(self.V1), None)
+        self.assertEqual(json.loads(stored_bytes(env)), self.V1)
+        self.assertNotEqual(stored_bytes(env), compact(self.V1), "the other writer's bytes remain")
+
+    def test_a_list_removed_after_c2(self):
+        env, _, _, _ = self.changed("v1", self.V2, lambda env: os.unlink(env.state / TRUST_NAME), 1)
+        self.assertFalse((env.state / TRUST_NAME).exists(), "and the chain did not store itself")
+
+    def test_the_same_body_with_other_signatures_is_the_same_list(self):
+        # C4 compares the body hash (section 12, v5.3): an owner signature made again over the same
+        # body is not a change, and the chain goes on.
+        def resigned(env):
+            doc = json.loads(json.dumps(self.V1))
+            doc["ownerSignature"] = b64u(
+                OWNER.sign(
+                    b"muster-trust-list/1\n" + compact(doc["body"]), ec.ECDSA(hashes.SHA256())
+                )
+            )
+            self.assertNotEqual(doc["ownerSignature"], self.V1["ownerSignature"])
+            env.store(doc)
+
+        env, answer, code, _ = self.changed("v1", self.V2, resigned, 1, accepted=True)
+        self.assertAccepted(env, answer, code, self.V2)
+
+    def test_the_same_file_written_again_is_not_a_change(self):
+        env, answer, code, _ = self.changed(
+            "v1", self.V2, lambda env: env.store(self.V1), 1, accepted=True
+        )
+        self.assertAccepted(env, answer, code, self.V2)
+
+    def test_a_stored_list_that_cannot_be_read_again_is_state_unsafe(self):
+        env, _, _, _ = self.changed_unsafe(
+            lambda env: write_file(env.state / TRUST_NAME, b"{", 0o600)
+        )
+        self.assertEqual((env.state / TRUST_NAME).read_bytes(), b"{")
+
+    def changed_unsafe(self, between):
+        env = self.chain_world("v1")
+        backend = FakeBackend(on_lock=lambda: between(env))
+        answer, code, backend = self.ask(env, self.V2, backend=backend)
+        self.assertOtherRefusal(answer, code, "state_unsafe", 1)
+        self.assertEqual(backend.rows, [])
+        self.assertEqual(leftovers(env), [])
+        return env, answer, code, backend
+
+    def test_a_link_put_in_place_of_the_stored_list_is_never_followed_or_written_through(self):
+        victim_holder = []
+
+        def link(env):
+            victim = env.root / "victim"
+            write_file(victim, b"precious", 0o600)
+            os.unlink(env.state / TRUST_NAME)
+            os.symlink(victim, env.state / TRUST_NAME)
+            victim_holder.append(victim)
+
+        env, _, _, _ = self.changed_unsafe(link)
+        self.assertEqual(victim_holder[0].read_bytes(), b"precious")
+        self.assertTrue((env.state / TRUST_NAME).is_symlink(), "the link itself is untouched")
+
+    def test_a_busy_action_lock_is_action_busy_and_nothing_is_written(self):
+        env = self.chain_world("v1")
+        before = stored_bytes(env)
+        answer, code, backend = self.ask(env, self.V2, backend=FakeBackend(busy=True))
+        self.assertOtherRefusal(answer, code, "action_busy", 1)
+        self.assertEqual(stored_bytes(env), before)
+        self.assertEqual(backend.rows, [])
+        self.assertEqual(backend.events, [])
+
+    def test_an_unsafe_action_lock_is_state_unsafe(self):
+        class Unsafe(FakeBackend):
+            def lock(self):
+                class Held:
+                    def __enter__(self):
+                        raise ma.LockUnsafe
+
+                    def __exit__(self, *exc):
+                        return False
+
+                return Held()
+
+        env = self.chain_world("v1")
+        before = stored_bytes(env)
+        answer, code, backend = self.ask(env, self.V2, backend=Unsafe())
+        self.assertOtherRefusal(answer, code, "state_unsafe", 1)
+        self.assertEqual(stored_bytes(env), before)
+
+    def test_the_write_comes_before_the_audit_row_and_both_are_under_the_lock(self):
+        env = self.chain_world("v1")
+        backend = OrderBackend(env)
+        answer, code, backend = self.ask(env, self.V2, backend=backend)
+        self.assertAccepted(env, answer, code, self.V2)
+        self.assertEqual(backend.events, ["lock", "audit", "unlock"])
+        self.assertEqual(backend.held_at_audit, compact(self.V2), "durable before the row")
+
+    def test_the_locks_a_chain_takes_are_the_rate_lock_alone_and_then_the_action_lock(self):
+        import fcntl
+
+        real = fcntl.flock
+
+        def acquisitions(document, held="v1"):
+            taken = []
+
+            def flock(fd, operation):
+                if operation & fcntl.LOCK_EX:
+                    try:
+                        taken.append(os.path.basename(os.readlink(f"/proc/self/fd/{fd}")))
+                    except OSError:
+                        taken.append("?")
+                return real(fd, operation)
+
+            env = self.chain_world(held)
+            with mock.patch.object(fcntl, "flock", flock):
+                answer, code, _, _ = helper_request(
+                    env, CHAIN_COMMAND, chain_stdin(document), CHAIN_NOW
+                )
+            return answer, code, [n for n in taken if n in ("ops-control.lock", "muster-rate.lock")]
+
+        answer, code, taken = acquisitions(self.V2)
+        self.assertEqual(code, 0, answer)
+        self.assertEqual(taken, ["muster-rate.lock", "ops-control.lock"])
+        answer, code, taken = acquisitions(FIXTURE["lists"]["T7 list"])
+        self.assertEqual(answer["body"]["reason"], "previous_hash")
+        self.assertEqual(
+            taken, ["muster-rate.lock"], "a chain refused at C3 never takes the action lock"
+        )
+        answer, code, taken = acquisitions(dict(self.V2, extra=1))
+        self.assertEqual(answer["body"]["errorCode"], "bad_input")
+        self.assertEqual(taken, [], "a chain refused at P3 takes no lock")
+
+    def test_a_chain_does_not_touch_the_ledger(self):
+        env = self.chain_world(None)
+        answer, code, _ = self.ask(env, self.V1)
+        self.assertEqual(code, 0)
+        self.assertFalse((env.state / "muster-nonces.jsonl").exists())
+
+
+class ChainFaultTests(ChainChecks):
+    """C5's faults, in process: before the rename nothing is stored and no file is left behind; after
+    it the list is held, and the same chain sent again is `version_gap`."""
+
+    V1 = FIXTURE["lists"]["v1"]
+    V2 = FIXTURE["lists"]["v2"]
+
+    @contextlib.contextmanager
+    def failing(self, name, newest):
+        """Make step `name` of the write of `newest` fail with an I/O error, and nothing else."""
+        import errno
+
+        error = OSError(errno.EIO, "injected")
+        real_open, real_fsync, real_rename = os.open, os.fsync, os.rename
+        real_write = ma._write_all
+        calls = {"fsync": 0}
+        target = compact(newest)
+
+        def opener(path, *args, **kwargs):
+            if str(path).startswith(".muster-trust.json."):
+                raise error
+            return real_open(path, *args, **kwargs)
+
+        def writer(fd, data):
+            if bytes(data) == target:
+                raise error
+            return real_write(fd, data)
+
+        def fsync(fd):
+            calls["fsync"] += 1
+            if calls["fsync"] == {"file fsync": 1, "directory fsync": 2}[name]:
+                raise error
+            return real_fsync(fd)
+
+        def rename(src, dst, *args, **kwargs):
+            if str(src).startswith(".muster-trust.json."):
+                raise error
+            return real_rename(src, dst, *args, **kwargs)
+
+        patches = {
+            "temp file": mock.patch.object(os, "open", opener),
+            "write": mock.patch.object(ma, "_write_all", writer),
+            "file fsync": mock.patch.object(os, "fsync", fsync),
+            "rename": mock.patch.object(os, "rename", rename),
+            "directory fsync": mock.patch.object(os, "fsync", fsync),
+        }
+        with patches[name]:
+            yield
+
+    BEFORE_THE_RENAME = ("temp file", "write", "file fsync", "rename")
+
+    def test_a_fault_before_the_rename_is_internal_error_and_nothing_is_stored(self):
+        for name in self.BEFORE_THE_RENAME:
+            with self.subTest(fault=name):
+                env = self.chain_world("v1")
+                before = stored_bytes(env)
+                with self.failing(name, self.V2):
+                    answer, code, backend = self.ask(env, self.V2)
+                self.assertOtherRefusal(answer, code, "internal_error", 1)
+                self.assertEqual(stored_bytes(env), before, "the held list is untouched")
+                self.assertEqual(leftovers(env), [], "the temporary file is removed")
+                self.assertEqual(backend.rows, [], "no row for a chain that was not stored")
+                # Nothing lingers: the same chain sent again is accepted.
+                answer, code, _ = self.ask(env, self.V2, now=later(60))
+                self.assertAccepted(env, answer, code, self.V2, at=ma.format_time(later(60)))
+
+    def test_a_fault_before_the_rename_from_nothing_leaves_nothing(self):
+        for name in self.BEFORE_THE_RENAME:
+            with self.subTest(fault=name):
+                env = self.chain_world(None)
+                with self.failing(name, self.V1):
+                    answer, code, _ = self.ask(env, self.V1)
+                self.assertOtherRefusal(answer, code, "internal_error", None)
+                self.assertFalse((env.state / TRUST_NAME).exists())
+                self.assertEqual(leftovers(env), [])
+
+    def test_a_fault_after_the_rename_is_internal_error_and_the_list_is_held(self):
+        env = self.chain_world("v1")
+        with self.failing("directory fsync", self.V2):
+            answer, code, backend = self.ask(env, self.V2)
+        self.assertOtherRefusal(answer, code, "internal_error", 1)
+        self.assertEqual(stored_bytes(env), compact(self.V2), "the rename had happened")
+        self.assertEqual(leftovers(env), [])
+        # The sender learns it from `current --plan`, and a resend is `version_gap`.
+        answer, code, _ = module_request(env, CURRENT_COMMAND, CURRENT_STDIN, later(60))
+        self.assertEqual(answer["body"]["helperTrustListVersion"], 2)
+        self.assertEqual(answer["body"]["trustListSHA256"], body_sha256(self.V2))
+        answer, code, _ = self.ask(env, self.V2, now=later(120))
+        self.assertChainRefused(answer, code, "version_gap", self.V2, 2)
+
+    def test_a_failed_audit_append_after_the_rename_is_not_a_fault(self):
+        for how in ("raises", "returns false"):
+            with self.subTest(audit=how):
+                env = self.chain_world("v1")
+                backend = FakeBackend()
+                if how == "raises":
+                    backend.audit = mock.Mock(side_effect=RuntimeError("the log is gone"))
+                else:
+                    backend.audit = mock.Mock(return_value=False)
+                answer, code, _ = self.ask(env, self.V2, backend=backend)
+                self.assertAccepted(env, answer, code, self.V2)
+                self.assertEqual(backend.audit.call_count, 1)
+
+    def test_a_failed_audit_append_in_the_helper_is_not_a_fault_either(self):
+        env = self.chain_world("v1")
+        with mock.patch.object(foc, "audit", return_value=False):
+            answer, code, _, rows = helper_request(
+                env, CHAIN_COMMAND, chain_stdin(self.V2), CHAIN_NOW
+            )
+        self.assertAccepted(env, answer, code, self.V2)
+        self.assertEqual(rows, [])
+        with mock.patch.object(foc, "audit", side_effect=OSError("disk full")):
+            answer, code, _, _ = helper_request(
+                self.chain_world("v1"), CHAIN_COMMAND, chain_stdin(self.V2), CHAIN_NOW
+            )
+        self.assertEqual(code, 0, answer)
+
+    def test_a_fault_while_signing_the_acknowledgement_is_internal_error_with_the_list_held(self):
+        env = self.chain_world("v1")
+        real_sign = ma.HelperKey.sign
+
+        def sign_unless_ack(self, message):
+            if message.startswith(b"muster-signed-ack/1\n"):
+                raise RuntimeError("injected")
+            return real_sign(self, message)
+
+        backend = FakeBackend()
+        with mock.patch.object(ma.HelperKey, "sign", sign_unless_ack):
+            answer, code, backend = self.ask(env, self.V2, backend=backend)
+        self.assertOtherRefusal(answer, code, "internal_error", 1)
+        self.assertEqual(stored_bytes(env), compact(self.V2))
+        self.assertEqual(
+            len(backend.rows), 1, "the list was durable and the row was appended first"
+        )
+        answer, code, _ = self.ask(env, self.V2, now=later(60))
+        self.assertChainRefused(answer, code, "version_gap", self.V2, 2)
+
+    def test_an_unexpected_exception_at_any_step_is_internal_error(self):
+        for name, patch in (
+            (
+                "reading the stored list",
+                mock.patch.object(ma, "load_stored_list", side_effect=RuntimeError("x")),
+            ),
+            (
+                "walking the chain",
+                mock.patch.object(ma, "walk_chain", side_effect=RuntimeError("x")),
+            ),
+            (
+                "the history comparison",
+                mock.patch.object(ma, "history_hash_matches", side_effect=RuntimeError("x")),
+            ),
+            ("the rate step", mock.patch.object(ma, "check_rate", side_effect=RuntimeError("x"))),
+        ):
+            with self.subTest(step=name):
+                env = self.chain_world("v1")
+                before = stored_bytes(env)
+                with patch:
+                    answer, code, backend = self.ask(env, self.V2)
+                self.assertRefused(answer, code, "internal_error", verified=False)
+                self.assertEqual(stored_bytes(env), before)
+                self.assertEqual(backend.rows, [])
+                self.assertEqual(leftovers(env), [])
+                self.assertIsNone(answer["body"]["chain"])
+
+    def test_the_temporary_file_is_opened_the_way_the_spec_says(self):
+        opened = []
+        real_open = os.open
+
+        def spy(path, flags, *args, **kwargs):
+            if str(path).startswith(".muster-trust.json."):
+                opened.append((str(path), flags, args[0] if args else kwargs.get("mode")))
+            return real_open(path, flags, *args, **kwargs)
+
+        env = self.chain_world(None)
+        with mock.patch.object(os, "open", spy):
+            answer, code, _ = self.ask(env, self.V1)
+        self.assertEqual(code, 0, answer)
+        self.assertEqual(len(opened), 1)
+        path, flags, mode = opened[0]
+        self.assertRegex(path, r"^\.muster-trust\.json\.[0-9a-f]{16}\.tmp$")
+        wanted = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+        self.assertEqual(flags & wanted, wanted)
+        self.assertEqual(mode, 0o600)
+        # And the file it left is private, a regular file with one link, owned by the account.
+        info = os.stat(env.state / TRUST_NAME)
+        self.assertTrue(stat.S_ISREG(info.st_mode))
+        self.assertEqual(stat.S_IMODE(info.st_mode), 0o600)
+        self.assertEqual((info.st_nlink, info.st_uid), (1, UID))
+
+    def test_the_file_is_synced_and_the_directory_too_in_that_order(self):
+        events = []
+        real_fsync, real_rename = os.fsync, os.rename
+
+        def fsync(fd):
+            mode = os.fstat(fd).st_mode
+            events.append("fsync " + ("directory" if stat.S_ISDIR(mode) else "file"))
+            return real_fsync(fd)
+
+        def rename(src, dst, *args, **kwargs):
+            if str(src).startswith(".muster-trust.json."):
+                events.append("rename")
+            return real_rename(src, dst, *args, **kwargs)
+
+        env = self.chain_world(None)
+        with mock.patch.object(os, "fsync", fsync), mock.patch.object(os, "rename", rename):
+            answer, code, _ = self.ask(env, self.V1)
+        self.assertEqual(code, 0, answer)
+        self.assertEqual(events, ["fsync file", "rename", "fsync directory"])
+
+    def test_the_rate_step_does_not_sync(self):
+        # Section 12: a lost rate update only forgets recent requests, so C1 makes no fsync (a refused
+        # chain therefore makes none at all).
+        calls = []
+        real_fsync = os.fsync
+
+        def fsync(fd):
+            calls.append(fd)
+            return real_fsync(fd)
+
+        env = self.chain_world("v1")
+        with mock.patch.object(os, "fsync", fsync):
+            answer, code, _ = self.ask(env, FIXTURE["lists"]["T7 list"])
+        self.assertEqual(answer["body"]["reason"], "previous_hash")
+        self.assertEqual(calls, [])
+
+
+class ChainThenApprovalTests(ChainChecks):
+    """The route comes alive with the first chain: approvals stop answering `no_trust_list`."""
+
+    def test_an_approval_before_and_after_the_first_chain_through_the_module(self):
+        env = Env(self, stored=None)
+        answer, code, _ = module_request(env, COMMAND, stdin_of(approval()), NOW)
+        self.assertRefused(answer, code, "no_trust_list", verified=False)
+        self.assertIsNone(answer["body"]["helperTrustListVersion"])
+        answer, code, _ = self.ask(env, FIXTURE["lists"]["v1"])
+        self.assertEqual(code, 0, answer)
+        answer, code, backend = module_request(env, COMMAND, stdin_of(approval()), NOW)
+        self.assertDone(answer, code)
+        self.assertEqual(answer["body"]["helperTrustListVersion"], 1)
+        self.assertEqual(backend.events.count("run"), 1)
+
+    def test_an_approval_before_and_after_the_first_chain_through_the_helper(self):
+        env = Env(self, stored=None)
+        answer, code, runner, _ = helper_request(env, COMMAND, stdin_of(approval()), NOW)
+        self.assertRefused(answer, code, "no_trust_list", verified=False)
+        self.assertEqual(runner.calls, [])
+        answer, code, _, rows = helper_request(
+            env, CHAIN_COMMAND, chain_stdin(FIXTURE["lists"]["v1"]), CHAIN_NOW
+        )
+        self.assertEqual(code, 0, answer)
+        answer, code, runner, rows = helper_request(env, COMMAND, stdin_of(approval()), NOW)
+        self.assertDone(answer, code)
+        self.assertEqual(
+            runner.calls, [[SYSTEMCTL, "--user", "restart", "fleet-server-status.timer"]]
+        )
+        self.assertEqual([row["result"] for row in rows], ["accepted", "done"])
+
+    def test_an_approval_before_and_after_the_first_chain_as_two_subprocesses(self):
+        env = Env(self, stored=None)
+        answer, code, _, _ = subprocess_request(self, env, COMMAND, stdin_of(approval()), NOW)
+        self.assertRefused(answer, code, "no_trust_list", verified=False)
+        answer, code, _, _ = subprocess_request(
+            self, env, CHAIN_COMMAND, chain_stdin(FIXTURE["lists"]["v1"]), CHAIN_NOW
+        )
+        self.assertEqual(code, 0, answer)
+        answer, code, calls, _ = subprocess_request(self, env, COMMAND, stdin_of(approval()), NOW)
+        self.assertDone(answer, code)
+        self.assertEqual(calls, [[SYSTEMCTL, "--user", "restart", "fleet-server-status.timer"]])
+
+    def test_a_device_added_by_a_chain_can_approve_and_one_removed_by_a_close_cannot(self):
+        device_b = approval(signer=KEYS["device B approval"], deviceId=DEVICE_B)
+        env = Env(self, stored="v1")
+        answer, code, _ = module_request(env, COMMAND, stdin_of(device_b), NOW)
+        self.assertRefused(answer, code, "unknown_device", verified=False)
+        answer, code, _ = self.ask(env, FIXTURE["lists"]["v2"])
+        self.assertEqual(code, 0, answer)
+        answer, code, _ = module_request(env, COMMAND, stdin_of(device_b), NOW)
+        self.assertDone(answer, code)
+        self.assertEqual(answer["body"]["helperTrustListVersion"], 2)
+        # The close (rule B) leaves no device: every approval is `unknown_device` again.
+        answer, code, _ = self.ask(env, FIXTURE["lists"]["v3"], now=later(60))
+        self.assertEqual(code, 0, answer)
+        again = approval(
+            signer=KEYS["device B approval"], deviceId=DEVICE_B, approvalNonce="b" * 32
+        )
+        answer, code, _ = module_request(env, COMMAND, stdin_of(again), later(70))
+        self.assertRefused(answer, code, "unknown_device", verified=False)
+        self.assertEqual(answer["body"]["helperTrustListVersion"], 3)
+
+    def test_the_acknowledgement_after_a_chain_is_the_acknowledgement_of_what_was_stored(self):
+        env = Env(self, stored=None)
+        answer, code, _ = self.ask(env, *printed("v1", "v2"))
+        written = answer
+        answer, code, _ = module_request(env, CURRENT_COMMAND, CURRENT_STDIN, CHAIN_NOW)
+        self.assertEqual(code, 0)
+        self.assertEqual(answer["body"], written["body"])
+
+    def test_the_budgets_of_the_classes_are_separate(self):
+        # A chain is not a plan, an acknowledgement or an approval: none uses another's budget.
+        env = Env(self, stored="v1")
+        self.assertEqual(self.ask(env, FIXTURE["lists"]["T7 list"])[1], 2)
+        self.assertEqual(module_request(env, CURRENT_COMMAND, CURRENT_STDIN, CHAIN_NOW)[1], 0)
+        self.assertEqual(module_request(env, PLAN_COMMAND, job_stdin(), CHAIN_NOW)[1], 0)
+        answer, code, _ = module_request(env, COMMAND, stdin_of(approval()), NOW)
+        self.assertNotEqual(answer["body"].get("errorCode"), "rate_limited")
+        events = json.loads((env.state / "muster-rate.json").read_text())["events"]
+        self.assertEqual(
+            sorted({event[0] for event in events}), ["chain", "current", "plan", "yes"]
+        )
+
+
+class ChainAuditTests(ChainChecks):
+    def test_only_an_accepted_chain_writes_a_row(self):
+        env = Env(self, stored="v1")
+        v2 = FIXTURE["lists"]["v2"]
+        # Accepted: one row.
+        answer, code, _, rows = helper_request(env, CHAIN_COMMAND, chain_stdin(v2), CHAIN_NOW)
+        self.assertEqual(code, 0)
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row["verb"], "muster trust-list")
+        self.assertEqual(row["target"], "chain")
+        self.assertEqual(row["result"], "accepted")
+        self.assertEqual(row["host"], "server")
+        self.assertEqual(
+            {k: v for k, v in row.items() if k not in ("time", "host", "verb", "target", "result")},
+            {
+                "route": "from-muster",
+                "via": "muster-ios",
+                "trustListVersion": 2,
+                "trustListSHA256": body_sha256(v2),
+                "fromVersion": 1,
+            },
+        )
+        for name in ("jobId", "deviceId", "approvalNonce", "planSHA256", "errorCode"):
+            self.assertNotIn(name, row)
+        # A replay (version_gap), a refusal at C3, a malformed input, a request over the rate limit:
+        # each is refused, and none adds a row.
+        base = epoch(CHAIN_NOW)
+        for raw, when, expected in (
+            (chain_stdin(v2), base + 20, "chain_refused"),
+            (chain_stdin(FIXTURE["lists"]["T7 list"]), base + 40, "chain_refused"),
+            (b"{}", base + 60, "bad_input"),
+            (chain_stdin(FIXTURE["lists"]["v3"]), base + 62, None),  # accepted: the second row
+            (chain_stdin(FIXTURE["lists"]["v4"]), base + 65, "rate_limited"),
+        ):
+            answer, code, _, rows = helper_request(env, CHAIN_COMMAND, raw, when)
+            if expected is None:
+                self.assertEqual(code, 0, answer)
+            else:
+                self.assertEqual(answer["body"]["errorCode"], expected, answer)
+        self.assertEqual(
+            [r["trustListVersion"] for r in rows], [2, 3], "one row per accepted chain"
+        )
+
+    def test_the_row_of_a_first_chain_has_a_null_from_version(self):
+        env = Env(self, stored=None)
+        _, code, _, rows = helper_request(
+            env, CHAIN_COMMAND, chain_stdin(FIXTURE["lists"]["v1"]), CHAIN_NOW
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("fromVersion", rows[0])
+        self.assertIsNone(rows[0]["fromVersion"])
+        self.assertEqual(rows[0]["trustListVersion"], 1)
+
+    def test_a_chain_refused_for_any_reason_writes_no_row_through_the_helper(self):
+        env = Env(self, stored="v1")
+        for index, document in enumerate(
+            (FIXTURE["lists"]["T7 list"], FIXTURE["lists"]["T11 list"], FIXTURE["lists"]["v4"])
+        ):
+            answer, code, _, rows = helper_request(
+                env, CHAIN_COMMAND, chain_stdin(document), later(100 + 20 * index)
+            )
+            self.assertEqual(code, 2, answer)
+            self.assertEqual(rows, [])
+
+
+# MARK: - C1: the rate limits of the `chain` class
+
+
+class ChainRateTests(ChainChecks):
+    """One chain per 10 seconds and 30 an hour, counted before anything but the pin and the input,
+    counting every request that passed the rate step (whatever came after it)."""
+
+    T7 = FIXTURE["lists"]["T7 list"]
+    BASE_MS = epoch(CHAIN_NOW) * 1000
+
+    def at(self, offset_ms):
+        return (self.BASE_MS + offset_ms) / 1000
+
+    def refused(self, env, offset_ms):
+        return self.ask(env, self.T7, now=self.at(offset_ms))
+
+    def test_two_chains_9999_milliseconds_apart_are_rate_limited_and_10000_are_not(self):
+        env = self.chain_world("v1")
+        answer, code, _ = self.refused(env, 0)
+        self.assertChainRefused(answer, code, "previous_hash", self.T7, 1)
+        answer, code, backend = self.refused(env, 9999)
+        self.assertOtherRefusal(answer, code, "rate_limited", None)
+        self.assertEqual((backend.events, backend.rows), ([], []))
+        answer, code, _ = self.refused(env, 10000)
+        self.assertChainRefused(answer, code, "previous_hash", self.T7, 1)
+        # The request that was refused rate_limited was not counted: the spacing runs from 10,000.
+        answer, code, _ = self.refused(env, 19999)
+        self.assertOtherRefusal(answer, code, "rate_limited", None)
+        answer, code, _ = self.refused(env, 20000)
+        self.assertChainRefused(answer, code, "previous_hash", self.T7, 1)
+
+    def test_a_rate_limited_chain_stores_nothing_and_leaves_the_held_list(self):
+        env = self.chain_world("v1")
+        self.refused(env, 0)
+        before = stored_bytes(env)
+        answer, code, _ = self.ask(env, FIXTURE["lists"]["v2"], now=self.at(5000))
+        self.assertOtherRefusal(answer, code, "rate_limited", None)
+        self.assertEqual(stored_bytes(env), before)
+        self.assertEqual(leftovers(env), [])
+        self.assertEqual(env.audit_rows(), [])
+
+    def test_thirty_chains_in_an_hour_are_the_most_and_the_hour_is_inclusive(self):
+        env = self.chain_world("v1")
+        for index in range(30):
+            answer, code, _ = self.refused(env, index * 10_000)
+            self.assertEqual(answer["body"]["reason"], "previous_hash", index)
+        # The 31st, though the spacing is long over, is over the cap.
+        answer, code, _ = self.refused(env, 300_000)
+        self.assertOtherRefusal(answer, code, "rate_limited", None)
+        # An event exactly 3,600,000 ms old still counts, and one millisecond older has left the hour.
+        answer, code, _ = self.refused(env, 3_600_000)
+        self.assertOtherRefusal(answer, code, "rate_limited", None)
+        answer, code, _ = self.refused(env, 3_600_001)
+        self.assertEqual(answer["body"]["reason"], "previous_hash", answer)
+
+    def test_a_chain_that_is_accepted_counts_like_one_that_is_refused(self):
+        env = self.chain_world(None)
+        documents = long_chain(32)
+        answer, code, _ = self.ask(env, *documents, now=self.at(0))
+        self.assertEqual(code, 0, answer)
+        # The same chain again is `version_gap` (it is held now) and counts all the same.
+        for index in range(1, 30):
+            answer, code, _ = self.ask(env, *documents, now=self.at(index * 10_000))
+            self.assertEqual(answer["body"]["reason"], "version_gap", index)
+        answer, code, _ = self.ask(env, *documents, now=self.at(400_000))
+        self.assertOtherRefusal(answer, code, "rate_limited", None)
+
+    def test_the_hourly_cap_and_spacing_are_the_specs(self):
+        self.assertEqual(ma.RATE_LIMITS["chain"], (10_000, 30))
+        self.assertEqual(ma.CHAIN_TARGET, "chain")
+
+    def test_requests_refused_while_parsing_are_not_counted(self):
+        env = self.chain_world("v1")
+        for index in range(100):
+            for raw in (b"", b"{}", b"x" * 70000, chain_stdin()):
+                answer, code, _ = self.ask(env, raw=raw, now=self.at(0))
+        self.assertFalse((env.state / "muster-rate.json").exists())
+        answer, code, _ = self.refused(env, 0)
+        self.assertEqual(answer["body"]["reason"], "previous_hash")
+        events = json.loads((env.state / "muster-rate.json").read_text())["events"]
+        self.assertEqual(len(events), 1)
+
+    def test_a_chain_refused_for_the_pin_or_the_command_is_not_counted_either(self):
+        env = self.chain_world("v1")
+        os.chmod(env.etc / "owner.pub", 0o666)
+        self.assertRefused(self.ask(env, self.T7)[0], 2, "pin_unsafe", verified=False)
+        os.chmod(env.etc / "owner.pub", 0o644)
+        self.assertRefused(
+            self.ask(env, self.T7, command=CHAIN_PLAN_COMMAND)[0],
+            2,
+            "mode_not_allowed",
+            verified=False,
+        )
+        self.assertFalse((env.state / "muster-rate.json").exists())
+
+    def test_a_clock_stepped_back_never_holds_the_chain_key(self):
+        env = self.chain_world("v1")
+        later_ms = self.BASE_MS + 3_600_000
+        document = {"contract": "muster-rate/1", "events": [["chain", "chain", later_ms]]}
+        write_file(env.state / "muster-rate.json", ma.canonical_bytes(document), 0o600)
+        answer, code, _ = self.refused(env, 0)
+        self.assertOtherRefusal(answer, code, "rate_limited", None)
+        answer, code, _ = self.refused(env, 10_000)
+        self.assertEqual(answer["body"]["reason"], "previous_hash")
+
+    def test_a_rate_lock_held_elsewhere_for_more_than_the_wait_is_rate_limited(self):
+        import fcntl
+
+        env = self.chain_world("v1")
+        self.refused(env, 0)  # creates the lock file
+        fd = os.open(env.state / "muster-rate.lock", os.O_RDWR)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        self.addCleanup(os.close, fd)
+        before = stored_bytes(env)
+        with mock.patch.object(ma, "RATE_LOCK_WAIT", 0.3):
+            answer, code, _ = self.run_within(
+                15,
+                lambda: self.ask(env, FIXTURE["lists"]["v2"], now=self.at(100_000)),
+                unblock=lambda: fcntl.flock(fd, fcntl.LOCK_UN),
+            )
+        self.assertOtherRefusal(answer, code, "rate_limited", None)
+        self.assertEqual(stored_bytes(env), before)
+
+    def test_an_unreadable_rate_file_is_state_unsafe_for_a_chain_too(self):
+        env = self.chain_world("v1")
+        write_file(env.state / "muster-rate.json", b"{", 0o600)
+        before = stored_bytes(env)
+        answer, code, _ = self.ask(env, FIXTURE["lists"]["v2"])
+        self.assertOtherRefusal(answer, code, "state_unsafe", None)
+        self.assertEqual(stored_bytes(env), before)
+
+
+# MARK: - Real processes: a crash at every step of C5, and chains at once
+
+CHAIN_DRIVER = r"""
+import importlib.util, json, os, signal, sys, time
+from pathlib import Path
+spec = json.load(open(sys.argv[1]))
+loaded = importlib.util.spec_from_file_location("foc", spec["helper"])
+foc = importlib.util.module_from_spec(loaded)
+loaded.loader.exec_module(foc)
+point = spec.get("kill_at")
+real_load = foc._load_muster_modules
+
+def die():
+    os.kill(os.getpid(), signal.SIGKILL)
+
+def mark(word):
+    if spec.get("marker"):
+        Path(spec["marker"]).write_text(word)
+
+def wait_for_release(path):
+    # The test releases this process by creating the file; a lost test cannot leave it for ever.
+    if not path:
+        return
+    deadline = time.monotonic() + 60
+    while not Path(path).exists():
+        if time.monotonic() > deadline:
+            os._exit(3)
+        time.sleep(0.01)
+
+def patched(ctx):
+    modules = real_load(ctx)
+    if not modules:
+        return modules
+    module = modules[0]
+    if not spec.get("real_rate"):
+        module.RATE_LIMITS["chain"] = (0, 100000)
+    real_replace = module._replace_file
+
+    def replace(dir_fd, name, data, uid, durable):
+        if name != "muster-trust.json":
+            return real_replace(dir_fd, name, data, uid, durable)
+        mark("in-lock")
+        time.sleep(spec.get("hold", 0))
+        wait_for_release(spec.get("release_in_lock"))
+        if point == "before_temp":
+            die()
+        real_fsync, real_rename = os.fsync, os.rename
+        count = [0]
+
+        def fsync(fd):
+            count[0] += 1
+            if count[0] == 1 and point == "before_fsync":
+                die()
+            real_fsync(fd)
+            if count[0] == 1 and point == "before_rename":
+                die()
+            if count[0] == 2 and point == "after_dir_fsync":
+                die()
+
+        def rename(src, dst, *args, **kwargs):
+            real_rename(src, dst, *args, **kwargs)
+            if point == "after_rename":
+                die()
+
+        os.fsync, os.rename = fsync, rename
+        try:
+            return real_replace(dir_fd, name, data, uid, durable)
+        finally:
+            os.fsync, os.rename = real_fsync, real_rename
+
+    module._replace_file = replace
+    return modules
+
+foc._load_muster_modules = patched
+real_lock = foc._MusterBackend.lock
+
+def lock(self):
+    if spec.get("release_before_lock"):
+        mark("before-lock")
+        wait_for_release(spec["release_before_lock"])
+    return real_lock(self)
+
+foc._MusterBackend.lock = lock
+if point == "after_audit":
+    real_audit = foc.audit
+
+    def audit(*args, **kwargs):
+        real_audit(*args, **kwargs)
+        die()
+
+    foc.audit = audit
+config = {k: v for k, v in spec["config"].items() if k != "now"}
+config["clock_state"] = lambda: (0, 0, 175000)
+ctx = foc.Context(platform="linux", home=Path(spec["home"]), runner=lambda argv, **kw: (0, b""),
+                  config_path=Path(spec["allowlist"]), now=time.time, environ={"HOME": spec["home"]})
+sys.exit(foc.main(["--from-muster"], ctx=ctx, muster={"config": config}))
+"""
+
+
+class ChainProcessTests(ChainChecks):
+    """Real processes with the real clock, a signal that cannot be caught, and the real locks."""
+
+    V1 = FIXTURE["lists"]["v1"]
+    V2 = FIXTURE["lists"]["v2"]
+
+    def driver(self, env):
+        path = env.root / "chain_driver.py"
+        if not path.exists():
+            partial = env.root / f"chain_driver.py.{os.getpid()}.partial"
+            partial.write_text(CHAIN_DRIVER)
+            os.replace(partial, path)
+        return path
+
+    def launch(self, env, *documents, command=CHAIN_COMMAND, **extra):
+        import time
+
+        spec_path = env.root / f"chain-spec-{time.monotonic_ns()}.json"
+        spec = {
+            "helper": str(checkout() / "fleet-ops-control.py"),
+            "home": str(env.home),
+            "allowlist": str(env.allowlist),
+            "config": {k: v for k, v in env.config(NOW).items() if k != "clock_state"},
+        }
+        spec.update(extra)
+        spec_path.write_text(json.dumps(spec))
+        process = subprocess.Popen(
+            [sys.executable, "-I", str(self.driver(env)), str(spec_path)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env={"SSH_ORIGINAL_COMMAND": command},
+        )
+        process.stdin.write(chain_stdin(*documents))
+        process.stdin.close()
+        return process
+
+    def finish(self, process):
+        out, err = process.communicate(timeout=120)
+        self.assertEqual(err, b"")
+        return json.loads(out) if out else None
+
+    def wait_for(self, path, process):
+        import time
+
+        deadline = time.monotonic() + 30
+        while not path.exists():
+            if process.poll() is not None:
+                self.fail("the process ended before it reached the marker")
+            if time.monotonic() > deadline:
+                process.kill()
+                self.fail("the process never reached the marker")
+            time.sleep(0.01)
+
+    def current(self, env):
+        """What `trust-list current` says now, asked at the real time (the processes ran at it)."""
+        import time
+
+        answer, _, _ = module_request(env, CURRENT_COMMAND, CURRENT_STDIN, time.time())
+        return answer["body"]
+
+    # -- a crash at every step of C5
+
+    POINTS_BEFORE_THE_RENAME = ("before_temp", "before_fsync", "before_rename")
+    POINTS_AFTER_THE_RENAME = ("after_rename", "after_dir_fsync", "after_audit")
+
+    def test_kill_nine_before_the_rename_leaves_what_was_held_and_never_a_partial_list(self):
+        for held, newest in ((None, self.V1), ("v1", self.V2)):
+            for point in self.POINTS_BEFORE_THE_RENAME:
+                with self.subTest(held=held, point=point):
+                    env = self.chain_world(held)
+                    before = stored_bytes(env)
+                    process = self.launch(env, newest, kill_at=point)
+                    self.assertIsNone(self.finish(process), "no answer")
+                    self.assertEqual(process.returncode, -9)
+                    self.assertEqual(stored_bytes(env), before, "nothing stored")
+                    self.assertEqual(env.audit_rows(), [])
+                    # The process could not remove its temporary file, once it had made one; it is
+                    # harmless to the next request, which is accepted as if nothing had happened and
+                    # sweeps the leftover.
+                    self.assertEqual(len(leftovers(env)), 0 if point == "before_temp" else 1, point)
+                    process = self.launch(env, newest)
+                    answer = self.finish(process)
+                    self.assertEqual(answer["kind"], "ack", answer)
+                    self.assertEqual(stored_bytes(env), compact(newest))
+                    self.assertEqual(len(env.audit_rows()), 1)
+                    self.assertEqual(leftovers(env), [], "swept by the next chain")
+
+    def test_kill_nine_after_the_rename_leaves_the_new_list_and_a_resend_is_version_gap(self):
+        for held, newest in ((None, self.V1), ("v1", self.V2)):
+            for point in self.POINTS_AFTER_THE_RENAME:
+                with self.subTest(held=held, point=point):
+                    env = self.chain_world(held)
+                    process = self.launch(env, newest, kill_at=point)
+                    self.assertIsNone(self.finish(process), "no answer")
+                    self.assertEqual(process.returncode, -9)
+                    self.assertEqual(stored_bytes(env), compact(newest), "the list is held")
+                    self.assertEqual(
+                        len(env.audit_rows()), 1 if point == "after_audit" else 0, point
+                    )
+                    self.assertEqual(
+                        self.current(env)["helperTrustListVersion"], newest["body"]["version"]
+                    )
+                    process = self.launch(env, newest)
+                    answer = self.finish(process)
+                    self.assertEqual(answer["body"]["errorCode"], "chain_refused", answer)
+                    self.assertEqual(answer["body"]["reason"], "version_gap")
+                    self.assertEqual(stored_bytes(env), compact(newest))
+
+    def test_a_reader_sees_the_held_list_until_the_rename_and_the_new_one_after_never_a_mixture(
+        self,
+    ):
+        env = self.chain_world("v1")
+        old, new = stored_bytes_of(self, "v1"), compact(self.V2)
+        marker, release = env.root / "marker", env.root / "release"
+        process = self.launch(env, self.V2, release_in_lock=str(release), marker=str(marker))
+        self.wait_for(marker, process)
+        # The writer is inside the lock and has written nothing yet: the held list is what is read.
+        seen = {stored_bytes(env) for _ in range(200)}
+        self.assertEqual(seen, {old})
+        release.write_text("go")
+        while process.poll() is None:  # and while it writes, never a mixture
+            seen.add(stored_bytes(env))
+        self.assertEqual(self.finish(process)["kind"], "ack")
+        seen.add(stored_bytes(env))
+        self.assertLessEqual(seen, {old, new})
+        self.assertIn(new, seen)
+
+    # -- chains at once
+
+    def outcomes(self, processes):
+        words = []
+        for process in processes:
+            answer = self.finish(process)
+            words.append(answer["kind"] if answer["kind"] == "ack" else answer["body"]["errorCode"])
+            if answer["kind"] != "ack" and answer["body"]["errorCode"] == "chain_refused":
+                words[-1] = "chain_refused:" + answer["body"]["reason"]
+        return words
+
+    def test_trust_list_changed_when_another_chain_lands_between_c2_and_c4(self):
+        env = self.chain_world(None)
+        marker, release = env.root / "slow", env.root / "release"
+        slow = self.launch(env, self.V1, release_before_lock=str(release), marker=str(marker))
+        self.wait_for(marker, slow)  # the slow one has read nothing held and walked the chain
+        fast = self.launch(env, self.V1)
+        self.assertEqual(self.finish(fast)["kind"], "ack")
+        release.write_text("go")
+        answer = self.finish(slow)
+        self.assertEqual(answer["body"]["errorCode"], "trust_list_changed", answer)
+        self.assertIsNone(answer["body"]["helperTrustListVersion"])
+        self.assertEqual(stored_bytes(env), compact(self.V1))
+        self.assertEqual(len(env.audit_rows()), 1, "only the chain that was stored left a row")
+
+    def test_action_busy_while_another_chain_holds_the_lock(self):
+        env = self.chain_world(None)
+        marker, release = env.root / "holder", env.root / "release"
+        holder = self.launch(env, self.V1, release_in_lock=str(release), marker=str(marker))
+        self.wait_for(marker, holder)  # it is inside the lock
+        other = self.launch(env, self.V1)
+        answer = self.finish(other)
+        self.assertEqual(answer["body"]["errorCode"], "action_busy", answer)
+        release.write_text("go")
+        self.assertEqual(self.finish(holder)["kind"], "ack")
+        self.assertEqual(stored_bytes(env), compact(self.V1))
+        self.assertEqual(len(env.audit_rows()), 1)
+
+    def test_version_gap_when_the_other_chain_landed_before_this_one_read(self):
+        env = self.chain_world(None)
+        self.assertEqual(self.finish(self.launch(env, self.V1))["kind"], "ack")
+        answer = self.finish(self.launch(env, self.V1))
+        self.assertEqual(answer["body"]["errorCode"], "chain_refused")
+        self.assertEqual(answer["body"]["reason"], "version_gap")
+        self.assertEqual(answer["body"]["helperTrustListVersion"], 1)
+
+    def test_eight_processes_presenting_the_same_chain_at_once_store_it_once(self):
+        env = self.chain_world(None)
+        processes = [self.launch(env, self.V1, hold=0.3) for _ in range(8)]
+        words = self.outcomes(processes)
+        self.assertEqual(words.count("ack"), 1, words)
+        self.assertLessEqual(
+            set(words) - {"ack"},
+            {"action_busy", "trust_list_changed", "chain_refused:version_gap"},
+            words,
+        )
+        self.assertEqual(stored_bytes(env), compact(self.V1))
+        self.assertEqual(len(env.audit_rows()), 1)
+        self.assertEqual(leftovers(env), [])
+
+    def test_two_different_chains_at_once_store_exactly_one_of_them(self):
+        for _ in range(3):
+            env = self.chain_world(None)
+            first = self.launch(env, self.V1, self.V2, hold=0.3)
+            second = self.launch(env, self.V1, hold=0.3)
+            words = self.outcomes([first, second])
+            self.assertEqual(words.count("ack"), 1, words)
+            stored = json.loads(stored_bytes(env))
+            self.assertIn(stored["body"]["version"], (1, 2))
+            self.assertEqual(len(env.audit_rows()), 1)
+            self.assertEqual(
+                stored_bytes(env), compact(self.V2 if stored["body"]["version"] == 2 else self.V1)
+            )
+
+
+def stored_bytes_of(test, name):
+    """The bytes `Env` wrote for the stored list `name` (json.dumps, spaced), for comparison."""
+    return json.dumps(FIXTURE["lists"][name]).encode()
+
+
+# MARK: - Review of the chain verb: boundaries, an unlocked reader, a trickle, the sweep
+
+
+class ChainBoundaryTests(ChainChecks):
+    """Cases the two independent reviews found missing: each kills a lenient edit of the walk or of the
+    parse that the first suite let survive."""
+
+    def test_the_owner_signature_over_the_countersign_prefix_is_refused(self):
+        # Domain separation: the owner key's signature over `muster-trust-countersign/1` + body (what a
+        # device that shares the owner's key would have made) is not an owner signature.
+        v1 = json.loads(json.dumps(printed("v1")[0]))
+        v1["ownerSignature"] = b64u(
+            sign(OWNER, b"muster-trust-countersign/1\n" + compact(v1["body"]))
+        )
+        answer, code, _ = self.ask(self.chain_world(None), v1)
+        self.assertChainRefused(answer, code, "owner_signature", v1, None)
+
+    def test_a_countersignature_over_the_bare_body_is_refused(self):
+        v2 = json.loads(json.dumps(printed("v2")[0]))
+        v2["countersignatures"] = [
+            {
+                "deviceId": BASE_APPROVAL["deviceId"],
+                "signature": b64u(sign(DEVICE_A, compact(v2["body"]))),
+            }
+        ]
+        answer, code, _ = self.ask(self.chain_world("v1"), v2)
+        self.assertChainRefused(answer, code, "countersignature", v2, 1)
+
+    def test_an_open_list_with_no_device_is_closed_rule(self):
+        # Check 7 is "exactly when": closed with a device is T16, and open with none is the other way.
+        body = json.loads(json.dumps(printed("v1")[0]["body"]))
+        body["devices"] = []
+        body["closed"] = False
+        document = resign(body)
+        answer, code, _ = self.ask(self.chain_world(None), document)
+        self.assertChainRefused(answer, code, "closed_rule", document, None)
+
+    def test_a_list_for_an_old_version_may_not_name_the_current_pinned_key(self):
+        # The history assigns version 1 to the old key, and the pin is the new key.  A version 1 whose
+        # ownerKey names the new key, signed by the old key, is check 3 (owner_key), not accepted.
+        env = self.chain_world(None)
+        new_pub = b64u(spki(KEYS[ROTATED_OWNER]))
+        body = json.loads(json.dumps(printed("v1")[0]["body"]))
+        body["ownerKey"] = new_pub
+        document = resign(body, OWNER)
+        lines = [
+            {
+                "fromVersion": 1,
+                "ownerKey": b64u(spki(OWNER)),
+                "toSHA256": hashlib.sha256(compact(body)).hexdigest(),
+                "toVersion": 1,
+            },
+            {"fromVersion": 2, "ownerKey": new_pub, "toSHA256": None, "toVersion": None},
+        ]
+        history = "".join(compact(line).decode() + "\n" for line in lines)
+        write_file(env.etc / "owner-history.jsonl", history.encode(), 0o644)
+        write_file(env.etc / "owner.pub", (new_pub + "\n").encode(), 0o644)
+        answer, code, _ = self.ask(env, document)
+        self.assertChainRefused(answer, code, "owner_key", document, None)
+
+    def test_the_largest_legal_version_is_accepted(self):
+        # Section 2: integers up to 2^53 - 1 (sixteen digits).  A held list at 2^53 - 2 and a successor.
+        body = json.loads(json.dumps(printed("v2")[0]["body"]))
+        body["version"] = 2**53 - 2
+        held = resign(body)
+        env = self.chain_world(None)
+        env.store(held)
+        document = next_rule_a(held, issuedAt="2026-11-07T21:00:00Z")
+        self.assertEqual(document["body"]["version"], 2**53 - 1)
+        answer, code, _ = self.ask(env, document)
+        self.assertAccepted(env, answer, code, document)
+
+    def test_c4_compares_the_body_and_not_the_version(self):
+        # The held list is replaced between C2 and C4 by a different owner-signed list of the SAME
+        # version.  The version is unchanged; the body is not, so it is `trust_list_changed`.
+        v1 = printed("v1")[0]
+        body = json.loads(json.dumps(v1["body"]))
+        body["issuedAt"] = "2026-11-07T19:00:00Z"
+        other = resign(body)
+        self.assertEqual(other["body"]["version"], v1["body"]["version"])
+        self.assertNotEqual(body_sha256(other), body_sha256(v1))
+        env = self.chain_world("v1")
+        backend = FakeBackend(on_lock=lambda: env.store(other))
+        answer, code, backend = self.ask(env, printed("v2")[0], backend=backend)
+        self.assertOtherRefusal(answer, code, "trust_list_changed", 1)
+        self.assertEqual(json.loads(stored_bytes(env)), other, "the replacement is untouched")
+        self.assertEqual(backend.rows, [])
+
+
+class UnlockedReaderTests(Checks):
+    """The stored list is read without a lock because it changes only by rename.  A reader that opened
+    the old file just before a rename sees it with no link left (`st_nlink` 0), and that is no fault."""
+
+    @staticmethod
+    def no_link(path):
+        """`os.fstat` as it is, except that the file at `path` is reported with no link left."""
+        target = os.stat(path)
+        real = os.fstat
+
+        def fstat(fd):
+            info = real(fd)
+            if (info.st_dev, info.st_ino) == (target.st_dev, target.st_ino):
+                fields = list(tuple(info))
+                fields[3] = 0
+                return os.stat_result(fields)
+            return info
+
+        return mock.patch.object(os, "fstat", fstat)
+
+    def test_a_read_only_open_of_the_stored_list_with_no_link_left_is_accepted(self):
+        env = Env(self, stored="v1")
+        dir_fd = ma.open_state_dir(env.module_config(NOW))
+        self.addCleanup(os.close, dir_fd)
+        with self.no_link(env.state / TRUST_NAME):
+            self.assertEqual(ma.load_stored_list(dir_fd, UID).version, 1)
+            opened = ma._open_state_file(dir_fd, TRUST_NAME, UID, os.O_RDONLY, unlinked_ok=True)
+            os.close(opened[0])
+
+    def test_nothing_but_the_stored_list_accepts_a_file_with_no_link_left(self):
+        # Section 11 asks for exactly one link; only the stored list, which a chain replaces by rename,
+        # may be seen with none (the finding on PR 1543).  The helper key is never replaced that way.
+        env = Env(self, stored="v1")
+        dir_fd = ma.open_state_dir(env.module_config(NOW))
+        self.addCleanup(os.close, dir_fd)
+        with self.no_link(env.state / "muster-helper.key"):
+            with self.assertRaises(ma.KeyUnusable):
+                ma.load_helper_key(dir_fd, UID)
+            with self.assertRaises(ma.StateUnsafe):
+                ma._open_state_file(dir_fd, "muster-helper.key", UID, os.O_RDONLY)
+        # The default of the opener is the strict rule, for the stored list's name as for any other.
+        with self.no_link(env.state / TRUST_NAME), self.assertRaises(ma.StateUnsafe):
+            ma._open_state_file(dir_fd, TRUST_NAME, UID, os.O_RDONLY)
+        # Through the flow: the helper key with no link left is the unusable key, so the route is unsigned.
+        with self.no_link(env.state / "muster-helper.key"):
+            answer, code, _ = module_request(env, CURRENT_COMMAND, CURRENT_STDIN, NOW)
+        self.assertEqual((answer, code), (ma.unsigned_helper_key_missing(), 2))
+
+    def test_every_unlocked_read_of_the_stored_list_survives_it(self):
+        # Y2 (an approval), K2 (`current`) and C2 (a chain) all read the list without a lock.
+        env = Env(self, stored="v1")
+        with self.no_link(env.state / TRUST_NAME):
+            answer, code, _ = module_request(env, CURRENT_COMMAND, CURRENT_STDIN, NOW)
+            self.assertEqual(code, 0, answer)
+            self.assertEqual(answer["body"]["helperTrustListVersion"], 1)
+            answer, code, _ = module_request(env, COMMAND, stdin_of(approval()), NOW)
+            self.assertDone(answer, code)
+            answer, code, _ = module_request(env, PLAN_COMMAND, job_stdin(), later(100))
+            self.assertEqual(answer["body"]["helperTrustListVersion"], 1)
+        env = Env(self, stored="v1")
+        with self.no_link(env.state / TRUST_NAME):
+            answer, code, _ = module_request(
+                env, CHAIN_COMMAND, chain_stdin(FIXTURE["lists"]["v2"]), CHAIN_NOW
+            )
+        self.assertEqual(code, 0, answer)
+
+    def test_a_handle_that_can_write_to_a_file_with_no_link_left_is_refused(self):
+        env = Env(self, stored="v1")
+        dir_fd = ma.open_state_dir(env.module_config(NOW))
+        self.addCleanup(os.close, dir_fd)
+        for name, flags in (
+            ("muster-nonces.jsonl", os.O_RDWR | os.O_APPEND),
+            ("muster-rate.json", os.O_RDWR),
+            ("muster-rate.lock", os.O_RDWR),
+            ("muster-rate.json", os.O_WRONLY),
+        ):
+            with self.subTest(name=name, flags=flags):
+                write_file(env.state / name, b"", 0o600)
+                with self.no_link(env.state / name), self.assertRaises(ma.StateUnsafe):
+                    ma._open_state_file(dir_fd, name, UID, flags)
+                # Asking for the stored list's allowance does not help a handle that can write.
+                with self.no_link(env.state / name), self.assertRaises(ma.StateUnsafe):
+                    ma._open_state_file(dir_fd, name, UID, flags, unlinked_ok=True)
+        # Through the flow: a plan counts in the rate file, which is opened to be written.
+        env = Env(self, stored="v1")
+        module_request(env, PLAN_COMMAND, job_stdin(), NOW)
+        with self.no_link(env.state / "muster-rate.json"):
+            answer, code, _ = module_request(env, PLAN_COMMAND, job_stdin(), later(100))
+        self.assertRefused(answer, code, "state_unsafe", verified=False)
+
+    def test_a_file_with_two_links_is_still_refused_read_only_too(self):
+        env = Env(self, stored="v1")
+        os.link(env.state / TRUST_NAME, env.root / "twin")
+        dir_fd = ma.open_state_dir(env.module_config(NOW))
+        self.addCleanup(os.close, dir_fd)
+        with self.assertRaises(ma.StateUnsafe):
+            ma.load_stored_list(dir_fd, UID)
+
+    def test_readers_racing_the_chains_own_writer_never_see_a_fault(self):
+        # The real writer (`_replace_file`, as C5 calls it) against three readers.  Before the fix about
+        # one read in twenty failed; a few hundred renames, bounded in time, show it at once.
+        import threading
+        import time
+
+        env = Env(self, stored="v1")
+        dir_fd = ma.open_state_dir(env.module_config(NOW))
+        self.addCleanup(os.close, dir_fd)
+        documents = [compact(FIXTURE["lists"]["v1"]), compact(FIXTURE["lists"]["v2"])]
+        done = threading.Event()
+        problems = []
+        reads = [0]
+
+        def writer():
+            deadline = time.monotonic() + 20
+            try:
+                for index in range(600):
+                    if time.monotonic() > deadline:
+                        break
+                    ma._replace_file(dir_fd, TRUST_NAME, documents[index % 2], UID, False)
+            finally:
+                done.set()
+
+        def reader():
+            while not done.is_set():
+                try:
+                    stored = ma.load_stored_list(dir_fd, UID)
+                    reads[0] += 1
+                    if stored is None or stored.version not in (1, 2):
+                        problems.append("read " + repr(stored))
+                except Exception as exc:  # noqa: BLE001 - every kind of failure is a problem here
+                    problems.append(type(exc).__name__ + ": " + str(exc))
+
+        threads = [threading.Thread(target=writer)] + [
+            threading.Thread(target=reader) for _ in range(3)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(60)
+        self.assertFalse([t for t in threads if t.is_alive()], "a thread did not finish")
+        self.assertGreater(reads[0], 50)
+        self.assertEqual(problems[:3], [], "%d of %d reads failed" % (len(problems), reads[0]))
+
+
+class ChainStdinDeadlineTests(ChainChecks):
+    """The deadline for standard input is a total, not a wait per read: a sender that trickles one byte
+    at a time must not hold the helper (and the chain's lock-free steps) for ever."""
+
+    def trickle(self, interval):
+        import threading
+        import time
+
+        read_end, write_end = os.pipe()
+        stop = threading.Event()
+
+        def drip():
+            try:
+                for _ in range(60):
+                    if stop.is_set():
+                        break
+                    os.write(write_end, b" ")
+                    time.sleep(interval)
+            except OSError:
+                pass
+            finally:
+                with contextlib.suppress(OSError):
+                    os.close(write_end)
+
+        thread = threading.Thread(target=drip, daemon=True)
+        thread.start()
+
+        def cleanup():
+            stop.set()
+            thread.join(10)
+            with contextlib.suppress(OSError):
+                os.close(read_end)
+
+        self.addCleanup(cleanup)
+        return read_end
+
+    def test_a_trickle_ends_at_the_total_deadline_and_not_later(self):
+        import time
+
+        read_end = self.trickle(0.1)
+        started = time.monotonic()
+        with self.assertRaises(TimeoutError):
+            self.run_within(15, lambda: ma.read_stdin_limited(read_end, 65536, 0.5))
+        elapsed = time.monotonic() - started
+        self.assertGreaterEqual(elapsed, 0.45)
+        self.assertLess(elapsed, 3.0, "the deadline was reset by each byte")
+
+    def test_a_chain_that_trickles_in_is_bad_input_at_the_deadline(self):
+        import time
+
+        read_end = self.trickle(0.1)
+        env = self.chain_world("v1")
+        started = time.monotonic()
+        answer, code = self.run_within(
+            15,
+            lambda: ma.handle_request(
+                env.module_config(CHAIN_NOW),
+                FakeBackend(),
+                CHAIN_COMMAND,
+                True,
+                lambda limit: ma.read_stdin_limited(read_end, limit, 0.5),
+                mt,
+            ),
+        )
+        self.assertOtherRefusal(answer, code, "bad_input")
+        self.assertLess(time.monotonic() - started, 3.0)
+        self.assertFalse((env.state / "muster-rate.json").exists())
+
+
+class ChainTemporaryFileTests(ChainChecks):
+    """The temporary file of C5: removed after any fault, and what a crash leaves is swept by the next
+    chain and nothing else is touched."""
+
+    V1 = FIXTURE["lists"]["v1"]
+    V2 = FIXTURE["lists"]["v2"]
+    LEFTOVER = ".muster-trust.json.0123456789abcdef.tmp"
+
+    def test_the_temporary_file_is_removed_after_any_fault_and_not_only_an_oserror(self):
+        for exc in (MemoryError("injected"), RuntimeError("injected"), OSError("injected")):
+            with self.subTest(fault=type(exc).__name__):
+                env = self.chain_world("v1")
+                before = stored_bytes(env)
+                with mock.patch.object(os, "fsync", side_effect=exc):
+                    answer, code, backend = self.ask(env, self.V2)
+                self.assertOtherRefusal(answer, code, "internal_error", 1)
+                self.assertEqual(stored_bytes(env), before)
+                self.assertEqual(leftovers(env), [], "the temporary file is gone")
+                self.assertEqual(backend.rows, [])
+        # The same through the writer itself.
+        env = self.chain_world("v1")
+        dir_fd = ma.open_state_dir(env.module_config(NOW))
+        self.addCleanup(os.close, dir_fd)
+        with (
+            mock.patch.object(os, "fsync", side_effect=MemoryError("injected")),
+            self.assertRaises(MemoryError),
+        ):
+            ma._replace_file(dir_fd, TRUST_NAME, b"x", UID, True)
+        self.assertEqual(leftovers(env), [])
+
+    def test_a_leftover_of_a_crashed_write_is_swept_by_the_next_chain(self):
+        env = self.chain_world("v1")
+        names = [
+            ".muster-trust.json.0123456789abcdef.tmp",
+            ".muster-trust.json.fedcba9876543210.tmp",
+            ".muster-trust.json.00000000deadbeef.tmp",
+        ]
+        write_file(env.state / names[0], b"", 0o600)
+        write_file(env.state / names[1], compact(self.V2)[:100], 0o600)
+        write_file(env.state / names[2], compact(self.V2), 0o600)
+        self.assertEqual(leftovers(env), sorted(names))
+        answer, code, _ = self.ask(env, self.V2)
+        self.assertAccepted(env, answer, code, self.V2)
+        self.assertEqual(leftovers(env), [])
+
+    def test_the_sweep_runs_under_the_action_lock_and_before_the_write(self):
+        env = self.chain_world("v1")
+        write_file(env.state / self.LEFTOVER, b"", 0o600)
+        seen = []
+        backend = FakeBackend(on_lock=lambda: seen.append(leftovers(env)))
+        answer, code, _ = self.ask(env, self.V2, backend=backend)
+        self.assertAccepted(env, answer, code, self.V2)
+        self.assertEqual(seen, [[self.LEFTOVER]], "still there when the lock was taken")
+
+    def test_nothing_but_a_regular_file_of_that_exact_name_is_touched(self):
+        env = self.chain_world("v1")
+        state = env.state
+        victim = env.root / "victim"
+        write_file(victim, b"precious", 0o600)
+        keep = {}  # name -> how to see it is unchanged
+        os.symlink(victim, state / ".muster-trust.json.1111111111111111.tmp")
+        os.mkdir(state / ".muster-trust.json.2222222222222222.tmp", 0o700)
+        write_file(state / ".muster-trust.json.3333333333333333.tmp", b"two links", 0o600)
+        os.link(state / ".muster-trust.json.3333333333333333.tmp", env.root / "second-name-of-it")
+        for name in (
+            ".muster-trust.json.abc.tmp",
+            ".muster-trust.json.0123456789abcdef.tmp2",
+            ".muster-trust.json.0123456789abcdef.tmp.bak",
+            ".muster-trust.json.0123456789ABCDEF.tmp",
+            ".muster-trust.json.0123456789abcde.tmp",
+            ".muster-trust.json.0123456789abcdef0.tmp",
+            "muster-trust.json.0123456789abcdef.tmp",
+            "x.muster-trust.json.0123456789abcdef.tmp",
+            ".muster-rate.json.0123456789abcdef.tmp",
+            ".muster-nonces.jsonl.0123456789abcdef.tmp",
+            ".muster-trust.json",
+            ".muster-trust.json.0123456789abcdef",
+        ):
+            write_file(state / name, b"keep " + name.encode(), 0o600)
+            keep[name] = b"keep " + name.encode()
+        before = sorted(p.name for p in state.iterdir())
+        answer, code, _ = self.ask(env, self.V2)
+        self.assertEqual(code, 0, answer)
+        self.assertEqual(stored_bytes(env), compact(self.V2))
+        after = sorted(p.name for p in state.iterdir())
+        # The write added muster-rate.json and muster-rate.lock (the rate step) and nothing else.
+        self.assertEqual(sorted(set(after) - set(before)), ["muster-rate.json", "muster-rate.lock"])
+        self.assertEqual(sorted(set(before) - set(after)), [])
+        self.assertTrue((state / ".muster-trust.json.1111111111111111.tmp").is_symlink())
+        self.assertEqual(victim.read_bytes(), b"precious")
+        self.assertTrue((state / ".muster-trust.json.2222222222222222.tmp").is_dir())
+        self.assertEqual(
+            (state / ".muster-trust.json.3333333333333333.tmp").read_bytes(), b"two links"
+        )
+        for name, content in keep.items():
+            self.assertEqual((state / name).read_bytes(), content, name)
+
+    def test_a_file_of_another_account_is_not_touched(self):
+        env = self.chain_world("v1")
+        write_file(env.state / self.LEFTOVER, b"theirs", 0o600)
+        real = os.stat
+
+        def stat_as_another_account(path, *args, **kwargs):
+            info = real(path, *args, **kwargs)
+            if str(path) == self.LEFTOVER:
+                fields = list(tuple(info))
+                fields[4] = UID + 1000
+                return os.stat_result(fields)
+            return info
+
+        with mock.patch.object(os, "stat", stat_as_another_account):
+            answer, code, _ = self.ask(env, self.V2)
+        self.assertEqual(code, 0, answer)
+        self.assertEqual((env.state / self.LEFTOVER).read_bytes(), b"theirs")
+
+    def test_a_chain_that_is_refused_or_busy_sweeps_nothing(self):
+        env = self.chain_world("v1")
+        write_file(env.state / self.LEFTOVER, b"", 0o600)
+        answer, code, _ = self.ask(env, FIXTURE["lists"]["T7 list"])
+        self.assertEqual(answer["body"]["reason"], "previous_hash")
+        answer, code, _ = self.ask(env, self.V2, now=later(60), backend=FakeBackend(busy=True))
+        self.assertOtherRefusal(answer, code, "action_busy", 1)
+        self.assertEqual(leftovers(env), [self.LEFTOVER])
+
+    def test_a_failing_sweep_never_stops_the_write(self):
+        for how in ("listing", "unlink", "stat"):
+            with self.subTest(fails=how):
+                env = self.chain_world("v1")
+                write_file(env.state / self.LEFTOVER, b"", 0o600)
+                injected = OSError("injected")
+                if how == "listing":
+                    patch = mock.patch.object(os, "listdir", side_effect=injected)
+                elif how == "unlink":
+                    real = os.unlink
+
+                    def refuse_unlink(path, *args, **kwargs):
+                        if str(path) == self.LEFTOVER:
+                            raise injected
+                        return real(path, *args, **kwargs)
+
+                    patch = mock.patch.object(os, "unlink", refuse_unlink)
+                else:
+                    real_stat = os.stat
+
+                    def refuse_stat(path, *args, **kwargs):
+                        if str(path) == self.LEFTOVER:
+                            raise injected
+                        return real_stat(path, *args, **kwargs)
+
+                    patch = mock.patch.object(os, "stat", refuse_stat)
+                with patch:
+                    answer, code, _ = self.ask(env, self.V2)
+                self.assertEqual(code, 0, answer)
+                self.assertEqual(stored_bytes(env), compact(self.V2))
+
+    def test_a_signing_fault_that_repeats_is_the_unsigned_helper_key_missing(self):
+        # The refusal that would say `internal_error` is signed with the same key: when signing fails
+        # every time the only answer left is the unsigned one.  The list is held, with its row.
+        env = self.chain_world("v1")
+        backend = FakeBackend()
+        with mock.patch.object(ma.HelperKey, "sign", side_effect=RuntimeError("injected")):
+            answer, code, backend = self.ask(env, self.V2, backend=backend)
+        self.assertEqual(code, 2)
+        self.assertEqual(answer["body"]["errorCode"], "helper_key_missing")
+        self.assertIsNone(answer["signature"])
+        self.assertEqual(stored_bytes(env), compact(self.V2))
+        self.assertEqual(len(backend.rows), 1)
+
+    def test_no_audit_row_when_only_the_directory_sync_fails(self):
+        # A row means the list was durable (section 14); the list is held, `current --plan` is authoritative,
+        # and the audit tail is best effort.
+        env = self.chain_world("v1")
+        calls = {"n": 0}
+        real = os.fsync
+
+        def fsync(fd):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise OSError("injected")
+            return real(fd)
+
+        with mock.patch.object(os, "fsync", fsync):
+            answer, code, backend = self.ask(env, self.V2)
+        self.assertOtherRefusal(answer, code, "internal_error", 1)
+        self.assertEqual(stored_bytes(env), compact(self.V2))
+        self.assertEqual(backend.rows, [])
+
+
+# MARK: - What is written down
+
+
+class DocumentedChainTests(ChainChecks):
+    def test_the_chain_constants_are_the_specs(self):
+        self.assertEqual(
+            (ma.CHAIN_STDIN_LIMIT, ma.CHAIN_MIN_ENTRIES, ma.CHAIN_MAX_ENTRIES), (65536, 1, 32)
+        )
+        self.assertEqual(ma.STDIN_LIMIT, 4096)
+        self.assertEqual(ma.COUNTERSIGN_PREFIX, b"muster-trust-countersign/1\n")
+        self.assertEqual(ma.TRUST_LIST_PREFIX, b"muster-trust-list/1\n")
+        self.assertEqual(ma.CHAIN_AUDIT_RESULT, "accepted")
+        self.assertEqual(ma.STATE_TRUST_NAME, "muster-trust.json")
+
+    def test_the_reasons_are_section_15s_closed_list_less_the_open_proposals(self):
+        text = SPEC_PATH.read_text(encoding="utf-8")
+        row = next(line for line in text.splitlines() if line.startswith("| `chain_refused` |"))
+        words = set(re.findall(r"`([a-z_]+)`", row)) - {"chain_refused", "reason"}
+        proposal = {"reopen_unrecorded", "reopen_tag", "reopen_device"}
+        self.assertLessEqual(proposal, words)
+        self.assertEqual(set(ma.CHAIN_REFUSED_REASONS), words - proposal)
+        self.assertEqual(len(set(ma.CHAIN_REFUSED_REASONS)), len(ma.CHAIN_REFUSED_REASONS))
+        self.assertIn("history_hash", ma.CHAIN_REFUSED_REASONS)
+
+    def test_the_vectors_reach_every_reason_the_helper_can_answer(self):
+        reasons = {
+            row["frozenExpected"]["reason"]
+            for row in FIXTURE["chainVectors"]
+            if row["frozenExpected"] != "ack"
+        }
+        self.assertEqual(reasons, set(ma.CHAIN_REFUSED_REASONS))
+
+    def test_the_checks_of_section_8_are_in_the_order_the_code_applies_them(self):
+        text = SPEC_PATH.read_text(encoding="utf-8")
+        start = text.index("**The checks, in order.**")
+        table = text[start : text.index("Exactly one rule applies", start)]
+        rows = [line for line in table.splitlines() if re.match(r"\| [1-8] \|", line)]
+        self.assertEqual(len(rows), 8)
+        spec_order = []
+        for row in rows:
+            spec_order += re.findall(r"`([a-z_]+)`", row.split("|")[3])
+        # The spec's reasons in the spec's order are a subsequence of the code's list: the code adds
+        # `first_rule` (check 2, and the rules) and `services_changed`/`server_keys_removed`/
+        # `reopen_unavailable` (check 8, "as the rule says") that the table names by reference.
+        wanted = [name for name in spec_order if name in ma.CHAIN_REFUSED_REASONS]
+        positions = [ma.CHAIN_REFUSED_REASONS.index(name) for name in wanted]
+        self.assertEqual(positions, sorted(positions))
+        self.assertEqual(
+            wanted,
+            [
+                "version_gap",
+                "first_rule",
+                "previous_hash",
+                "owner_key",
+                "history_hash",
+                "owner_signature",
+                "duplicate_device",
+                "countersignature",
+                "closed_rule",
+            ],
+        )
+
+    def test_the_module_says_the_chain_verb_is_built_and_what_is_not(self):
+        self.assertIn("THE CHAIN VERB", ma.__doc__)
+        self.assertIn("rule C", ma.__doc__)
+        self.assertIn("reopen_unavailable", ma.__doc__)
+        self.assertNotIn("is not built (the spec's section 17A is open)", ma.__doc__)
+        self.assertIn("trust-list chain --yes", foc.__doc__)
+        self.assertIn("trust-list chain --yes", inspect.getsource(foc.run_from_muster))
+        self.assertNotIn("NOT BUILT", inspect.getsource(foc.run_from_muster))
+
+    def test_the_audit_names_the_helper_accepts_include_the_chain_rows_fields(self):
+        for name in ("route", "via", "trustListVersion", "trustListSHA256", "fromVersion"):
+            self.assertIn(name, foc.MUSTER_AUDIT_NAMES)
+        # A row with a null from-version and a hash is written, and nothing else is let through.
+        env = Env(self)
+        ctx = foc.Context(platform="linux", home=env.home, runner=FakeRunner())
+        foc.audit(
+            ctx,
+            "muster",
+            "trust-list",
+            "chain",
+            "accepted",
+            extra={
+                "route": "from-muster",
+                "via": "muster-ios",
+                "trustListVersion": 3,
+                "trustListSHA256": "a" * 64,
+                "fromVersion": None,
+                "somethingElse": "x",
+            },
+        )
+        row = env.audit_rows()[-1]
+        self.assertEqual(row["fromVersion"], None)
+        self.assertEqual(row["trustListVersion"], 3)
+        self.assertNotIn("somethingElse", row)
+
+    def test_the_rollout_note_exists_and_leaves_a_no_break_space_after_every_sentence(self):
+        note = (HERE.parent / "docs" / "rollouts" / "2026-11-08-trust-list-chain.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertGreater(len(note), 2000)
+        inside = False
+        for number, line in enumerate(note.splitlines(), 1):
+            if line.startswith("```"):
+                inside = not inside
+            if inside or line.startswith(("|", "#")):
+                continue
+            self.assertIsNone(re.search(r"[.?!]  \S", line), (number, line))
+            self.assertIsNone(re.search(r"[.?!] [A-Z]", line), (number, line))
+        self.assertIn(".  ", note)
 
 
 if __name__ == "__main__":

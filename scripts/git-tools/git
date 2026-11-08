@@ -869,7 +869,7 @@ def discover_tools(bearer: str, deadline: float | None = None) -> dict:
 
 _PATTERN_CHECK_MAX_S = 5  # per-validation wall-clock cap on ALL pattern work, inside the overall budget
 
-# The exact contract for untrusted patterns:  only these 19 patterns - the reviewed catalog's complete
+# The exact contract for untrusted patterns:  only these 20 patterns - the reviewed catalog's complete
 # set, sha256 of the pattern text - may ever be compiled or searched.  Anything unrecognized fails
 # closed, on every platform.  There is NO heuristic:  widening this set is a reviewed code change, and
 # each member's compile size and match cost are verified facts, not estimates.
@@ -887,6 +887,7 @@ _KNOWN_PATTERN_DIGESTS = frozenset(
     "7a3e89f559ebec394da08a91160bb5eab26b2ef30d26eeb88c270079b58d2e2f",
     "7b8be75214feb9b9cc29abc256a0996c92dcd7d05abfb1ca5f7b922d58aaffec",
     "88b2ed1aec9cd281271858178ffa9dc52d0f283a9c71e2b8fb843199216bd11d",
+    "a654b0a196893e4f921c650cf5c9d9d6496a366dbcca86e7adbfd02346d353cc",
     "a6aa272af8e604e6e4097952430e60ec47a3a0578c73732ac48fcdb785db9cb5",
     "ab10742c40c95e23b40b24a42ff97316a3eaa79654b6afb5f2decd39f1ec47f6",
     "b9c4b86e8e227fb8026d44a0115b4e31e00ec77b831c6c430431d5dc6be67a67",

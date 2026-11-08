@@ -12,12 +12,14 @@ AGENT_SEAT leaks in.
 from __future__ import annotations
 
 import datetime as dt
+import inspect
 import io
 import json
 import os
 import shutil
 import subprocess
 import tempfile
+import types
 import unittest
 from collections.abc import Callable
 from pathlib import Path
@@ -287,7 +289,12 @@ class World:
         def exec_fn(a: list[str], cwd, child_env, timeout) -> D.CmdResult:
             calls.append(list(a))
             if override is not None:
-                forced = override(list(a))
+                # An override that declares a `cwd` parameter is told which tree is asking.
+                forced = (
+                    override(list(a), cwd=cwd)
+                    if "cwd" in inspect.signature(override).parameters
+                    else override(list(a))
+                )
                 if forced is not None:
                     return forced
             if a[0] == "gh":
@@ -761,6 +768,50 @@ class PruneTests(WorldCase):
         self.assertTrue(
             (self.w.trees["DealDex"] / "one.txt").exists(),
             "the integration tree was touched",
+        )
+
+    def test_a_lowercase_github_origin_reads_the_relay_in_the_registry_spelling(self) -> None:
+        # The server's origin is github.com/simple-with-us/...;  GitHub ignores case, but the
+        # relay's seat policy does not, and it refused the lowercase owner (reason seat_policy).
+        apps = (
+            ("DealDex", 13, "feature/thirteen"),
+            ("Socratic-Trade", 14, "feature/fourteen"),
+        )
+        for repo, number, head in apps:
+            lane = self.w.new_lane(f"pr{number}-sweep", repo=repo)
+            self.w.commit(lane)
+            self.w.push(lane, head)
+            self.w.merged_pr(lane, head, number=number, repo=repo)
+
+        asked: set[str] = set()
+
+        def lowercase_origin(
+            argv: list[str], cwd: Path | str | None = None
+        ) -> D.CmdResult | None:
+            # Each integration tree answers with the lowercase form of ITS OWN repo.
+            name = Path(str(cwd)).name
+            if "remote.origin.url" in argv and name in self.w.trees:
+                asked.add(name)
+                url = f"https://github.com/simple-with-us/{name}.git\n"
+                return D.CmdResult(0, url, "")
+            return None
+
+        res = self.w.run("prune", "--json", override=lowercase_origin)
+        self.assertEqual(res.rc, 0, res.err)
+        self.assertEqual(asked, {"DealDex", "Socratic-Trade"})
+        for _, number, _ in apps:
+            row = res.row(f"claude-pr{number}-sweep")
+            self.assertEqual(row["action"], "remove", row)
+            self.assertIn(f"PR #{number} merged", row["reason"])
+        queries = [
+            json.loads(call[call.index("--args-json") + 1])
+            for call in res.calls
+            if call[:1] == ["simple-git"]
+        ]
+        self.assertTrue(queries)
+        self.assertEqual(
+            {q["repo"] for q in queries},
+            {"Simple-With-Us/DealDex", "Simple-With-Us/Socratic-Trade"},
         )
 
     def test_dirty_untracked_and_unpushed_lanes_are_kept(self) -> None:
@@ -1429,6 +1480,48 @@ class RetireTests(WorldCase):
         self.merged("noseat", 401)
         self.assertEqual(
             self.w.run("retire", "noseat", env={"AGENT_SEAT": None}).rc, 64
+        )
+
+
+class OwnerRepoTests(unittest.TestCase):
+    """_owner_repo: the remote's repo in the registry's spelling when they are the same repo."""
+
+    def owner_repo(self, url: str | None, known: str) -> str | None:
+        app = types.SimpleNamespace(owner_repo=known)
+
+        def run(argv: list[str], cwd: Path | None = None) -> D.CmdResult:
+            return D.CmdResult(0, url, "") if url is not None else D.CmdResult(1, "", "")
+
+        return R._owner_repo(run, app, Path("."))  # type: ignore[arg-type]
+
+    def test_the_same_repo_in_another_case_uses_the_registry_spelling(self) -> None:
+        for url in (
+            "https://github.com/simple-with-us/AI-Fleet-Coordinator.git",
+            "git@github.com:SIMPLE-WITH-US/ai-fleet-coordinator.git",
+            "https://github.com/Simple-With-Us/AI-Fleet-Coordinator",
+        ):
+            self.assertEqual(
+                self.owner_repo(url, "Simple-With-Us/AI-Fleet-Coordinator"),
+                "Simple-With-Us/AI-Fleet-Coordinator",
+                url,
+            )
+
+    def test_a_remote_naming_another_repo_keeps_its_own_name(self) -> None:
+        self.assertEqual(
+            self.owner_repo("https://github.com/someone/DealDex.git", "Simple-With-Us/DealDex"),
+            "someone/DealDex",
+        )
+
+    def test_no_usable_remote_falls_back_to_the_registry(self) -> None:
+        self.assertEqual(self.owner_repo(None, "Simple-With-Us/DealDex"), "Simple-With-Us/DealDex")
+        self.assertEqual(
+            self.owner_repo("file:///tmp/origin.git", "Simple-With-Us/DealDex"),
+            "Simple-With-Us/DealDex",
+        )
+
+    def test_a_remote_with_no_registry_spelling_is_used_as_is(self) -> None:
+        self.assertEqual(
+            self.owner_repo("https://github.com/simple-with-us/X.git", ""), "simple-with-us/X"
         )
 
 

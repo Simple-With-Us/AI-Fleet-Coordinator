@@ -1,17 +1,24 @@
 """muster_approval: the approval engine of the helper's `--from-muster` entry.
 
 This module is the security core of `fleet-ops-control.py --from-muster`.  It implements
-`server-route-spec.md` version 5 for the approval-bearing request, the plan request and the
-acknowledgement request: the standard-input protocol, the check order P0 to P3, Y1 to Y10, R1 to R3 and
-K1 to K3, the canonical bytes, the eleven approval field patterns, the ECDSA P-256 / SHA-256 DER
-signature check, the kernel clock check, the two-minute window, the nonce ledger, the rate limits,
-signed plans, results, refusals and acknowledgements, and the verb table.
+`server-route-spec.md` version 5.3 for the approval-bearing request, the plan request, the
+acknowledgement request and the trust-list chain request: the standard-input protocol, the check order
+P0 to P3, Y1 to Y10, R1 to R3, K1 to K3 and C1 to C5, the canonical bytes, the eleven approval field
+patterns, the ECDSA P-256 / SHA-256 DER signature check, the kernel clock check, the two-minute window,
+the nonce ledger, the rate limits, signed plans, results, refusals and acknowledgements, and the verb
+table.
 
-NOT BUILT.  `muster trust-list chain` is not built (the spec's section 17A is open): `--plan` is
-`mode_not_allowed`, as section 4 says of it, and `--yes`, which would accept a chain, is `bad_command`.
-Nothing else writes `muster-trust.json`, so until the chain slice lands every approval answers
-`no_trust_list`: the route is inert.  The reopen record's rules, the final-refusal store and rotation
-are not built either.
+THE CHAIN VERB.  `muster trust-list chain --yes` (standard input `{"protocol":"muster-helper/1",
+"chain":[...]}`, 1 to 32 entries, at most 65,536 bytes) is the only thing that writes `muster-trust.json`.
+It verifies a chain of owner-signed trust lists against the owner pin and history (`/etc/muster`, read at
+P1) and the list the helper holds, all or none, and stores the newest entry as its canonical bytes, so the
+file's SHA-256 is that entry's `entrySHA256` (spec 5.3, sections 8 and 12, C1 to C5).  `chain --plan`
+stays `mode_not_allowed`.  Until a chain is accepted the route stays inert: with nothing stored every
+approval answers `no_trust_list`.
+
+NOT BUILT, in the chain verb: rule C (reopen), the use of the reopen record, the final-refusal store and
+rotation.  A rule C entry is refused `chain_refused` with reason `reopen_unavailable` once checks 1 to 7
+have passed, nothing is recorded as final, and `finalRefusals` is always `[]` (spec sections 8 and 17A).
 
 What it does not do, by design:
 
@@ -43,8 +50,9 @@ first slice, and the points BB's build raised) is one named constant or function
   OPEN-4  Signature and window are checked before `ops-control.lock`; under it the stored list is read
           again and `trust_list_changed` refuses if it moved; an approval gets an audit row only once
           Y8 has spent its nonce (`AUDIT_FROM_STEP`).
-  OPEN-5  `muster-trust.json` is never created here: absent means nothing is held, and an empty,
-          unparseable or unsafe file is `state_unsafe` (`load_stored_list`).
+  OPEN-5  `muster-trust.json` is never created by a read: absent means nothing is held, and an empty,
+          unparseable or unsafe file is `state_unsafe` (`load_stored_list`).  Only the chain verb
+          writes it, as one whole file by temporary file and rename (`_Flow._store_chain`).
 
 Behaviours that the spec leaves to the build, stated here so that no reader has to find them in code:
 
@@ -119,6 +127,10 @@ ROUTE = "from-muster"
 VIA = "muster-ios"
 
 STDIN_LIMIT = 4096
+# Section 5: `muster trust-list chain --yes` alone may send up to this many bytes, in 1 to 32 entries.
+CHAIN_STDIN_LIMIT = 65536
+CHAIN_MIN_ENTRIES = 1
+CHAIN_MAX_ENTRIES = 32
 STDIN_TIMEOUT = 10.0
 SSH_COMMAND_MAX = 256
 # The same class as the helper's SSH_SAFE_RE (a test keeps the two equal).
@@ -162,6 +174,7 @@ VERIFIED_FIELDS = (
 
 APPROVAL_HEAD = "muster-approve/1"
 TRUST_LIST_PREFIX = b"muster-trust-list/1\n"
+COUNTERSIGN_PREFIX = b"muster-trust-countersign/1\n"
 SIGNED_PREFIX = {
     "plan": b"muster-signed-plan/1\n",
     "result": b"muster-signed-result/1\n",
@@ -208,8 +221,7 @@ LIST_MAX_COUNTERSIGNATURES = 64
 # `current` requests carry nothing that can be authenticated, so they are counted first, before
 # anything else; the `yes` class is counted last, inside the action lock, after the signature, the
 # window and the ledger have passed, so that nothing unauthenticated can use its budget.  The `chain`
-# class belongs to the next slice; it is listed so that the rate file's format and its 810-event
-# bound are final.
+# class is counted at C1, before anything else but the pin and the input, like `plan` and `current`.
 RATE_LIMITS = {
     "plan": (5000, 120),
     "yes": (2000, 60),
@@ -278,6 +290,7 @@ ERR_PLAN_MISMATCH = "plan_mismatch"
 ERR_RATE_LIMITED = "rate_limited"
 ERR_PLAN_REFUSED = "plan_refused"
 ERR_INTERNAL_ERROR = "internal_error"
+ERR_CHAIN_REFUSED = "chain_refused"
 # The `detail` of a result for a fault after Y8 that has no better name (section 12).
 INTERNAL_ERROR_DETAIL = "internal_error"
 # Section 4: the reasons a plan refusal may carry: the planner's own `error_code` when it gives one
@@ -301,6 +314,25 @@ PLAN_REFUSED_REASONS = (
     "report_stale",
     "revision_stale",
 )
+# Section 15 (v5.3): the reasons of a `chain_refused`, in the order of section 8's checks.  The three
+# reasons of the OPEN reopen proposal (`reopen_unrecorded`, `reopen_tag`, `reopen_device`) are not
+# answered: a rule C entry is `reopen_unavailable` here, whatever the record holds.
+CHAIN_REFUSED_REASONS = (
+    "version_gap",
+    "first_rule",
+    "previous_hash",
+    "owner_key",
+    "history_hash",
+    "owner_signature",
+    "duplicate_device",
+    "countersignature",
+    "closed_rule",
+    "services_changed",
+    "server_keys_removed",
+    "reopen_unavailable",
+)
+# Section 14 (v5.3): the audit row of an accepted chain.
+CHAIN_AUDIT_RESULT = "accepted"
 # Every code the flow may answer.  A test keeps this equal to the codes of section 15.
 ANSWERED_CODES = frozenset(
     {
@@ -327,6 +359,7 @@ ANSWERED_CODES = frozenset(
         ERR_RATE_LIMITED,
         ERR_PLAN_REFUSED,
         ERR_INTERNAL_ERROR,
+        ERR_CHAIN_REFUSED,
     }
 )
 
@@ -334,8 +367,8 @@ ANSWERED_CODES = frozenset(
 OUTCOMES = ("done", "submitted", "failed", "unknown", "planned")
 
 # The verb table of section 4.  The `server` scope has the change verbs and the read verbs; the
-# `muster` scope has `trust-list current` only (`trust-list chain` waits for section 17A).  The `mac`
-# and `pm2` scopes and `server eavesdropper-status` are not offered.
+# `muster` scope has `trust-list current` (`--plan`) and `trust-list chain` (`--yes`).  The `mac` and
+# `pm2` scopes and `server eavesdropper-status` are not offered.
 CHANGE_VERBS = ("start", "stop", "restart", "logs", "update", "redeploy", "resource-policy")
 READ_VERBS = ("resource-status", "seat-inventory", "update-status")
 SERVER_SCOPE = "server"
@@ -367,11 +400,13 @@ class StrictJSONError(ValueError):
 class Refusal(Exception):
     """A refusal with one of section 15's codes."""
 
-    def __init__(self, code, detail="", reason=None):
+    def __init__(self, code, detail="", reason=None, chain=None):
         super().__init__(code)
         self.code = code
         self.detail = detail
         self.reason = reason
+        # The refused entry of a `chain_refused` (section 13): {"version", "entrySHA256", "final"}.
+        self.chain = chain
 
 
 class StateUnsafe(Exception):
@@ -394,6 +429,15 @@ class LedgerAppendFault(Exception):
 
 class RateLimited(Exception):
     pass
+
+
+class ChainRefused(Exception):
+    """C3: `entry` of the chain fails one of section 8's checks, for `reason` (the first that fails)."""
+
+    def __init__(self, reason, entry):
+        super().__init__(reason)
+        self.reason = reason
+        self.entry = entry
 
 
 class PinUnsafe(Exception):
@@ -864,11 +908,13 @@ def open_state_dir(config):
     return _open_directory(config.state_dir, config.uid, 0o077)
 
 
-def _open_state_file(dir_fd, name, uid, flags, create=False):
+def _open_state_file(dir_fd, name, uid, flags, create=False, unlinked_ok=False):
     """(descriptor, created) for a file in the state directory, or None when it is absent.
 
     Opened with O_NOFOLLOW and O_CLOEXEC, then fstat-checked: a regular file, owned by `uid`, with no
-    group or other bit and exactly one link.  `create` makes an absent file with O_CREAT | O_EXCL and mode 0600."""
+    group or other bit and exactly one link.  `create` makes an absent file with O_CREAT | O_EXCL and mode 0600.
+    `unlinked_ok` relaxes "exactly one link" to "one link or none":  only the read of the stored list asks for it,
+    and only a read-only handle gets it (see the check below)."""
     base = flags | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
     created = False
     try:
@@ -890,12 +936,19 @@ def _open_state_file(dir_fd, name, uid, flags, create=False):
         raise StateUnsafe("a state file cannot be opened") from None
     try:
         info = os.fstat(fd)
-        # One name only: a second hard link could let another path write what this one reads.
+        # One name only: a second hard link could let another path write what this one reads.  The
+        # stored list alone may have no name left (nlink 0): an unlocked reader that opened it just before
+        # a chain's rename sees its old inode unlinked, and the file is whole (it changes only by rename),
+        # so that is no fault.  Nothing else is replaced by rename while it is read (the helper key never
+        # is), and a handle that can write to a file nothing links to is refused whatever the caller asks,
+        # so every other file keeps exactly one link.
+        may_be_unlinked = unlinked_ok and not flags & (os.O_WRONLY | os.O_RDWR)
         if (
             not stat.S_ISREG(info.st_mode)
             or info.st_uid != uid
             or info.st_mode & 0o077
-            or info.st_nlink != 1
+            or info.st_nlink > 1
+            or (info.st_nlink == 0 and not may_be_unlinked)
         ):
             raise StateUnsafe("a state file is not a private regular file")
     except BaseException:
@@ -952,6 +1005,29 @@ def _replace_file(dir_fd, name, data, uid, durable):
         with contextlib.suppress(OSError):
             os.unlink(temporary, dir_fd=dir_fd)
         raise
+
+
+# What a crash leaves of a write of the stored list: `_replace_file` names its temporary file this way.
+_STORED_LIST_TEMPORARY_RE = re.compile(r"\.muster-trust\.json\.[0-9a-f]{16}\.tmp")
+
+
+def sweep_stored_list_temporaries(dir_fd, uid):
+    """Remove the temporary files that earlier writes of the stored list left behind, and nothing else.
+
+    A kill between the open of the temporary file and the rename leaves it there, and nothing ever
+    reads it.  A name must be exactly `.muster-trust.json.`, 16 lowercase hex characters and `.tmp`,
+    and the entry must be a regular file (looked at without following a link) owned by `uid` with one
+    link.  Every error is ignored: this is housekeeping, and the write that follows does not depend on
+    it.  Called under `ops-control.lock`, where the chain verb is the only writer of such files, so
+    none of them is live."""
+    with contextlib.suppress(Exception):
+        for name in os.listdir(dir_fd):
+            if not _STORED_LIST_TEMPORARY_RE.fullmatch(name):
+                continue
+            with contextlib.suppress(OSError):
+                info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+                if stat.S_ISREG(info.st_mode) and info.st_uid == uid and info.st_nlink == 1:
+                    os.unlink(name, dir_fd=dir_fd)
 
 
 # MARK: - The helper key (P0)
@@ -1064,16 +1140,36 @@ class StoredList:
         self.version = body["version"]
         self.owner_key = body["ownerKey"]
         self.closed = body["closed"]
+        self.body_bytes = canonical_bytes(body)
         # The hash Y2 notes and Y7 compares: of the canonical body, so a signature never changes it.
-        self.body_sha256 = sha256_hex(canonical_bytes(body))
+        self.body_sha256 = sha256_hex(self.body_bytes)
 
 
-def parse_stored_list(raw):
-    """A StoredList from the stored file's bytes, or ValueError when it is not a well-formed list."""
-    try:
-        doc = parse_strict_json(raw)
-    except StrictJSONError:
-        raise ValueError("not strict JSON") from None
+class ListEntry(StoredList):
+    """One signed trust list as parsed (a chain entry or the stored file): its body, signatures and devices.
+
+    `device_ids` keeps every device in order, duplicates included (check 5 refuses them), and `devices`
+    maps each id to its approval key.  `canonical` is the canonical bytes of the whole signed object
+    (section 2), the bytes the chain verb stores, and `entry_sha256` is their SHA-256, the entry hash."""
+
+    def __init__(self, document, device_ids):
+        body = document["body"]
+        devices = {device["deviceId"]: device["approvalKey"] for device in body["devices"]}
+        super().__init__(body, document["ownerSignature"], devices)
+        self.countersignatures = document["countersignatures"]
+        self.device_ids = device_ids
+        self.canonical = canonical_bytes(document)
+        self.entry_sha256 = sha256_hex(self.canonical)
+
+
+def parse_list_document(doc):
+    """The ListEntry of one signed trust list (a value of strict JSON), or ValueError.
+
+    This is the structure only (section 5, and section 8's field patterns, "checked at P3"): the three
+    keys, every body field with its type and pattern, every key a P-256 key (section 2), at most 64
+    devices and 64 countersignatures.  The numbered checks of section 8 are the chain walk's and have
+    their own reasons: two devices with one id (check 5), two countersignatures naming one device
+    (check 6) and `closed` disagreeing with `devices` (check 7) are well-formed here."""
     if type(doc) is not dict or set(doc) != _LIST_KEYS:
         raise ValueError("not a trust list")
     body = doc["body"]
@@ -1100,13 +1196,9 @@ def parse_stored_list(raw):
         if value is not None:
             load_p256_public(value)
     devices_list = body["devices"]
-    if (
-        type(devices_list) is not list
-        or len(devices_list) > LIST_MAX_DEVICES
-        or body["closed"] != (len(devices_list) == 0)
-    ):
+    if type(devices_list) is not list or len(devices_list) > LIST_MAX_DEVICES:
         raise ValueError("bad devices")
-    devices = {}
+    device_ids = []
     for device in devices_list:
         if type(device) is not dict or set(device) != _DEVICE_KEYS:
             raise ValueError("bad device")
@@ -1115,14 +1207,13 @@ def parse_stored_list(raw):
         if (
             type(device_id) is not str
             or not DEVICE_ID_RE.fullmatch(device_id)
-            or device_id in devices
             or type(name) is not str
             or not 1 <= len(name) <= 40
         ):
             raise ValueError("bad device")
         for role in ("approvalKey", "requestKey", "readingKey", "notificationKey"):
             load_p256_public(device[role])
-        devices[device_id] = device["approvalKey"]
+        device_ids.append(device_id)
     if type(doc["ownerSignature"]) is not str or not SIGNATURE_RE.fullmatch(doc["ownerSignature"]):
         raise ValueError("bad owner signature")
     countersignatures = doc["countersignatures"]
@@ -1138,7 +1229,38 @@ def parse_stored_list(raw):
             or not SIGNATURE_RE.fullmatch(item["signature"])
         ):
             raise ValueError("bad countersignature")
-    return StoredList(body, doc["ownerSignature"], devices)
+    try:
+        entry = ListEntry(doc, device_ids)
+    except NotCanonical:
+        raise ValueError("a trust list that has no canonical form") from None
+    if len(entry.canonical) > TRUST_FILE_MAX_BYTES:
+        # The stored file would be unreadable (section 11), so the list is not accepted.  This is defence
+        # in depth: a maximal valid entry (64 devices and 64 countersignatures at their longest) is about
+        # 55 KB, so no list that passed the checks above reaches it today; it keeps the invariant
+        # "an accepted list is readable" if a limit above is ever raised.
+        raise ValueError("a trust list larger than the stored file may be")
+    return entry
+
+
+def parse_stored_list(raw):
+    """A ListEntry from the stored file's bytes, or ValueError when it is not a well-formed list.
+
+    The reader is strict where the chain's structural parse is not: a stored file satisfies the list-local
+    checks of section 8 too (no two devices with one id, no two countersignatures naming one device,
+    `closed` exactly when there is no device), because a chain never stores a list that fails them."""
+    try:
+        doc = parse_strict_json(raw)
+    except StrictJSONError:
+        raise ValueError("not strict JSON") from None
+    entry = parse_list_document(doc)
+    if len(set(entry.device_ids)) != len(entry.device_ids):
+        raise ValueError("duplicate device")
+    named = [item["deviceId"] for item in entry.countersignatures]
+    if len(set(named)) != len(named):
+        raise ValueError("two countersignatures name one device")
+    if entry.closed != (not entry.device_ids):
+        raise ValueError("closed does not follow devices")
+    return entry
 
 
 def load_stored_list(dir_fd, uid):
@@ -1146,7 +1268,7 @@ def load_stored_list(dir_fd, uid):
 
     OPEN-5: the file is never created here.  Absent is `no list`; empty, unreadable or malformed is
     `state_unsafe`, never `none`, so that damage cannot roll the helper back to a first list."""
-    opened = _open_state_file(dir_fd, STATE_TRUST_NAME, uid, os.O_RDONLY)
+    opened = _open_state_file(dir_fd, STATE_TRUST_NAME, uid, os.O_RDONLY, unlinked_ok=True)
     if opened is None:
         return None
     fd = opened[0]
@@ -1171,6 +1293,144 @@ def stored_list_is_current(stored, pin):
     except NotCanonical:
         return False
     return verify_signature(pin.owner_key, stored.owner_signature, message)
+
+
+# MARK: - The trust-list chain (sections 5 and 8, P3 and C3)
+
+
+def parse_chain_document(doc):
+    """The ListEntry of each entry of a chain request document, in order, or ValueError (P3).
+
+    `{"protocol":"muster-helper/1","chain":[signed list, ...]}`, 1 to 32 entries.  Whether the entries
+    ascend is check 1 of the walk (`version_gap`), not a question of structure."""
+    if type(doc) is not dict or set(doc) != {"protocol", "chain"} or doc["protocol"] != PROTOCOL:
+        raise ValueError("not a chain request")
+    chain = doc["chain"]
+    if type(chain) is not list or not CHAIN_MIN_ENTRIES <= len(chain) <= CHAIN_MAX_ENTRIES:
+        raise ValueError("a chain holds 1 to 32 entries")
+    return [parse_list_document(item) for item in chain]
+
+
+def history_hash_matches(pin, version, body_sha256):
+    """Section 10 (v5.3): when `version` is the `toVersion` of a history line, the body hash of the
+    list at that version is that line's `toSHA256`.  Any other version has nothing to compare."""
+    return all(
+        line["toVersion"] != version or line["toSHA256"] == body_sha256 for line in pin.history
+    )
+
+
+def _server_keys_removed(previous, entry):
+    """True when the previous list named `serverHelper` or `serverPublisher` and this one names neither."""
+    before = previous.body["services"]
+    after = entry.body["services"]
+    return bool(before["serverHelper"] or before["serverPublisher"]) and not (
+        after["serverHelper"] or after["serverPublisher"]
+    )
+
+
+def _services_kept(previous, entry):
+    """True when every `services` value is the previous one or null."""
+    before = previous.body["services"]
+    return all(
+        value is None or value == before[name] for name, value in entry.body["services"].items()
+    )
+
+
+def _countersigned_by_previous(previous, entry):
+    """True when there is at least one countersignature and each verifies with the `approvalKey` of a
+    device on the previous list."""
+    if not entry.countersignatures:
+        return False
+    message = COUNTERSIGN_PREFIX + entry.body_bytes
+    for item in entry.countersignatures:
+        approval_key = previous.devices.get(item["deviceId"])
+        if approval_key is None or not verify_signature(approval_key, item["signature"], message):
+            return False
+    return True
+
+
+def _rule_failure(previous, entry):
+    """Check 8: the one rule that applies, its conditions in the order written.  The reason or None."""
+    body = entry.body
+    if previous is None:
+        # First: not closed, no countersignatures, no reopen tag.
+        if entry.closed or entry.countersignatures or body["reopenTag"] is not None:
+            return "first_rule"
+        return None
+    if entry.closed:
+        # B, close: no countersignatures and no reopen tag, services kept or removed, a server key kept.
+        if entry.countersignatures or body["reopenTag"] is not None:
+            return "closed_rule"
+        if not _services_kept(previous, entry):
+            return "services_changed"
+        if _server_keys_removed(previous, entry):
+            return "server_keys_removed"
+        return None
+    if previous.closed:
+        # C, reopen, is OPEN (section 17A): every verifier of Milestones 1 to 4 refuses it.
+        return "reopen_unavailable"
+    # A, normal change.
+    if body["reopenTag"] is not None:
+        return "first_rule"
+    if not _countersigned_by_previous(previous, entry):
+        return "countersignature"
+    if _server_keys_removed(previous, entry):
+        return "server_keys_removed"
+    return None
+
+
+def entry_failure(previous, entry, pin):
+    """Section 8's checks 1 to 8 for one entry, in order: the reason of the first that fails, else None.
+
+    `previous` is the list the verifier holds or the entry before this one (None when nothing is held).
+    The owner signature is checked with the key the history assigns to this version, never with the
+    entry's own `ownerKey`."""
+    # 1
+    if entry.version != (1 if previous is None else previous.version + 1):
+        return "version_gap"
+    # 2
+    if previous is None:
+        if entry.body["previousSHA256"] is not None:
+            return "first_rule"
+    elif entry.body["previousSHA256"] != previous.body_sha256:
+        return "previous_hash"
+    # 3
+    assigned = pin.key_for_version(entry.version)
+    if assigned is None or entry.owner_key != assigned:
+        return "owner_key"
+    if not history_hash_matches(pin, entry.version, entry.body_sha256):
+        return "history_hash"
+    # 4
+    if not verify_signature(assigned, entry.owner_signature, TRUST_LIST_PREFIX + entry.body_bytes):
+        return "owner_signature"
+    # 5
+    if len(set(entry.device_ids)) != len(entry.device_ids):
+        return "duplicate_device"
+    # 6
+    named = [item["deviceId"] for item in entry.countersignatures]
+    if len(set(named)) != len(named):
+        return "countersignature"
+    # 7
+    if entry.closed != (not entry.device_ids):
+        return "closed_rule"
+    # 8
+    return _rule_failure(previous, entry)
+
+
+def walk_chain(entries, held, pin):
+    """The newest entry of a chain every entry of which passes section 8, or ChainRefused (C3).
+
+    All or none: nothing is kept of an entry before the whole chain has passed, and the first failure
+    ends the walk.  `held` is the stored list (None when the helper holds none), `pin` what P1 read."""
+    if not entries:
+        raise ValueError("an empty chain")
+    previous = held
+    for entry in entries:
+        reason = entry_failure(previous, entry, pin)
+        if reason is not None:
+            raise ChainRefused(reason, entry)
+        previous = entry
+    return previous
 
 
 # MARK: - The approval (section 6) and the plan request (section 5)
@@ -1272,16 +1532,14 @@ def parse_command(ssh_command, argv_ok, target_ok):
     if mode_word not in ("--plan", "--yes"):
         raise Refusal(ERR_BAD_COMMAND)
     if scope == MUSTER_SCOPE:
-        # Only `trust-list current` is built in this slice.  `trust-list chain` is NOT BUILT (it waits
-        # for section 17A): `--plan` is `mode_not_allowed`, as section 4 says of it, and `--yes`, which
-        # would accept a chain, is `bad_command`, the one code section 15 has for a command this
-        # helper does not carry out.
+        # `trust-list current` is a plan-mode read and `trust-list chain` a `--yes` that needs no
+        # device approval (section 4): the other mode of each is `mode_not_allowed`.
         if verb != TRUST_LIST_VERB or target not in (CURRENT_TARGET, CHAIN_TARGET):
             raise Refusal(ERR_BAD_COMMAND)
         if target == CHAIN_TARGET:
             if mode_word == "--plan":
                 raise Refusal(ERR_MODE_NOT_ALLOWED)
-            raise Refusal(ERR_BAD_COMMAND)
+            return Command(scope, verb, target, "yes", "chain")
         if mode_word != "--plan":
             raise Refusal(ERR_MODE_NOT_ALLOWED)
         return Command(scope, verb, target, "plan", "current")
@@ -1635,17 +1893,22 @@ class _Flow:
         self.trust_version = stored.version if stored is not None else None
         return stored
 
-    def refusal(self, code, reason=None):
+    def refusal(self, code, reason=None, chain=None):
         body = {
             "verified": self.verified,
             "errorCode": code,
-            "reason": reason if code == ERR_PLAN_REFUSED else None,
+            "reason": reason if code in (ERR_PLAN_REFUSED, ERR_CHAIN_REFUSED) else None,
             "helperTrustListVersion": self.trust_version,
             "refusedAt": format_time(self._now()),
         }
         if self.verified:
             for name in VERIFIED_FIELDS:
                 body[name] = self.fields[name]
+        elif self.command is not None and self.command.kind == "chain":
+            # Section 13, the chain row: the refused entry when C3 refused one, else null, and nothing
+            # `claimed` (a chain carries no job).  A refusal before P2 has parsed the command, or of
+            # any other command, has the usual `claimed`.
+            body["chain"] = chain
         else:
             body["claimed"] = dict(self.claimed)
         return signed_answer(self.key, "refusal", body), 2
@@ -1720,12 +1983,13 @@ class _Flow:
             self.command = None
             return self.refusal(exc.code)
         command = self.command
-        # P3
+        # P3: a chain alone may be up to CHAIN_STDIN_LIMIT bytes (section 5).
+        limit = CHAIN_STDIN_LIMIT if command.kind == "chain" else STDIN_LIMIT
         try:
-            raw = read_stdin(STDIN_LIMIT)
+            raw = read_stdin(limit)
         except (OSError, TimeoutError, ValueError):
             return self.refusal(ERR_BAD_INPUT)
-        if len(raw) > STDIN_LIMIT:
+        if len(raw) > limit:
             return self.refusal(ERR_INPUT_TOO_LARGE)
         try:
             doc = parse_strict_json(raw)
@@ -1734,6 +1998,8 @@ class _Flow:
         try:
             if command.kind == "current":
                 parse_current_document(doc)
+            elif command.kind == "chain":
+                entries = parse_chain_document(doc)
             elif command.mode == "plan":
                 job = parse_plan_document(doc)
             else:
@@ -1743,11 +2009,13 @@ class _Flow:
         try:
             if command.kind == "current":
                 return self._current()
+            if command.kind == "chain":
+                return self._chain(entries)
             if command.mode == "plan":
                 return self._plan(job)
             return self._approved(approval)
         except Refusal as exc:
-            return self.refusal(exc.code, exc.reason)
+            return self.refusal(exc.code, exc.reason, exc.chain)
 
     # -- K1 to K3: the acknowledgement of what the helper holds
 
@@ -1776,6 +2044,100 @@ class _Flow:
             }
         body["finalRefusals"] = []
         body["at"] = format_time(self._now())
+        return signed_answer(self.key, "ack", body), 0
+
+    # -- C1 to C5: a trust-list chain
+
+    def _chain(self, entries):
+        """C1 to C5 (section 12, v5.3).  No device approval, and no clock check."""
+        self._rate("chain", CHAIN_TARGET)  # C1: the rate lock alone, released before any other lock
+        # C2: read without a lock (the file changes only by rename).  A held list whose body hash is
+        # not the `toSHA256` of its history line is damaged or forked: `state_unsafe`, with no version
+        # reported, since the helper cannot vouch for what it read.
+        try:
+            held = load_stored_list(self.dir_fd, self.config.uid)
+        except StateUnsafe:
+            raise Refusal(ERR_STATE_UNSAFE) from None
+        if held is not None and not history_hash_matches(self.pin, held.version, held.body_sha256):
+            raise Refusal(ERR_STATE_UNSAFE)
+        self.trust_version = held.version if held is not None else None
+        # C3: the whole chain against C2's list and P1's copy of /etc/muster.  Nothing is recorded,
+        # because a refusal here is never final (section 11, 17A).
+        try:
+            newest = walk_chain(entries, held, self.pin)
+        except ChainRefused as refused:
+            raise Refusal(
+                ERR_CHAIN_REFUSED,
+                reason=refused.reason,
+                chain={
+                    "version": refused.entry.version,
+                    "entrySHA256": refused.entry.entry_sha256,
+                    "final": False,
+                },
+            ) from None
+        with contextlib.ExitStack() as locked:
+            # C4: the action lock, then the stored list again.
+            try:
+                locked.enter_context(self.backend.lock())
+            except LockBusy:
+                raise Refusal(ERR_ACTION_BUSY) from None
+            except LockUnsafe:
+                raise Refusal(ERR_STATE_UNSAFE) from None
+            self._check_chain_unchanged(held)
+            return self._store_chain(newest, held)
+
+    def _check_chain_unchanged(self, held):
+        """C4: the stored list must be the one C2 read, whatever changed it meanwhile.
+
+        Its body hash must be C2's, and a list must be held now exactly when C2 found one: a list stored
+        where C2 found none, and one removed, are `trust_list_changed` as well."""
+        try:
+            again = load_stored_list(self.dir_fd, self.config.uid)
+        except StateUnsafe:
+            raise Refusal(ERR_STATE_UNSAFE) from None
+        if (again is None) != (held is None) or (
+            again is not None and again.body_sha256 != held.body_sha256
+        ):
+            raise Refusal(ERR_TRUST_LIST_CHANGED)
+
+    def _store_chain(self, newest, held):
+        """C5, under the action lock: the newest entry written durably, then the audit row, then the
+        signed acknowledgement of the list just written.  Temporary files that a crashed write left are
+        swept first (`sweep_stored_list_temporaries`).
+
+        A failure before the rename is `internal_error` and nothing is stored (`_replace_file` removes
+        its temporary file).  A failure after it (the directory `fsync`, the signing) is `internal_error`
+        too, but the list is held: the sender learns that from `trust-list current`, and the same chain
+        sent again is `version_gap`.  A failed audit append is not a fault: the list is durable."""
+        sweep_stored_list_temporaries(self.dir_fd, self.config.uid)
+        try:
+            _replace_file(
+                self.dir_fd, STATE_TRUST_NAME, newest.canonical, self.config.uid, durable=True
+            )
+        except OSError:
+            raise Refusal(ERR_INTERNAL_ERROR) from None
+        with contextlib.suppress(Exception):
+            self.backend.audit(
+                MUSTER_SCOPE,
+                TRUST_LIST_VERB,
+                CHAIN_TARGET,
+                CHAIN_AUDIT_RESULT,
+                {
+                    "route": ROUTE,
+                    "via": VIA,
+                    "trustListVersion": newest.version,
+                    "trustListSHA256": newest.body_sha256,
+                    "fromVersion": None if held is None else held.version,
+                },
+            )
+        body = {
+            "helperTrustListVersion": newest.version,
+            "closed": newest.closed,
+            "signedByCurrentKey": stored_list_is_current(newest, self.pin),
+            "trustListSHA256": newest.body_sha256,
+            "finalRefusals": [],
+            "at": format_time(self._now()),
+        }
         return signed_answer(self.key, "ack", body), 0
 
     # -- R1 to R3: a plan or a read
