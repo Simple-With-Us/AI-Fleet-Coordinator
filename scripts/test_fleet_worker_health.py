@@ -82,7 +82,6 @@ class WorkerHealthReader(unittest.TestCase):
                 fwh.write_atomic(os.path.join(link, "worker-health.json"), {"schemaVersion": 1})
             self.assertEqual(os.listdir(real), [])
 
-
     def test_a_folder_swapped_for_a_symlink_after_the_check_is_refused(self):
         # Kody, PR 1477:  the folder is opened with O_NOFOLLOW and used through that descriptor,
         # so passing the early check is not enough to write through a link.

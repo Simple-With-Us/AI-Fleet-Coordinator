@@ -3338,7 +3338,9 @@ def write_report(path: Path, report_doc: dict) -> None:
     dir_fd = open_report_folder(path.parent)
     try:
         tmp = f".report.{os.getpid()}.{secrets.token_hex(8)}.tmp"
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=dir_fd)
+        fd = os.open(
+            tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=dir_fd
+        )
         try:
             os.fchmod(fd, 0o600)
             with os.fdopen(fd, "w") as handle:
@@ -3373,7 +3375,9 @@ def open_report_folder(folder: Path) -> int:
         return os.open(str(folder), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     except OSError as error:
         if error.errno in (errno.ELOOP, errno.ENOTDIR):
-            raise ValueError(f"refusing to write the report through a symlinked folder:  {folder}") from error
+            raise ValueError(
+                f"refusing to write the report through a symlinked folder:  {folder}"
+            ) from error
         raise
 
 

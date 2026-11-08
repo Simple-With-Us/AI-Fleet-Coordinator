@@ -223,7 +223,9 @@ def write_atomic(path, doc):
         raise
     try:
         tmp = ".mac-services-%d-%s" % (os.getpid(), secrets.token_hex(8))
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=dir_fd)
+        fd = os.open(
+            tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=dir_fd
+        )
         try:
             os.fchmod(fd, 0o600)
             with os.fdopen(fd, "w") as handle:
