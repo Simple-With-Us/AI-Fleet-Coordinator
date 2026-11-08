@@ -16,11 +16,12 @@ import Foundation
 //     machine's eavesdropper holds each seat
 //   * the fleet chat CLI (`simple-chat`),  which holds the seat's last Zulip post
 //
-// Muster runs on the Mac and reads only the Mac's eavesdropper.  A seat the partition
-// gives to the server is shown as held by the server,  and its eavesdropper columns say
-// that they are not read here:  never Unknown in orange,  and never zero.  A session that
-// runs on the server attaches to no eavesdropper this Mac can read,  so every session
-// count here is a count of sessions on the Mac.
+// This model reads only the Mac's eavesdropper.  A seat the partition gives to the server
+// is shown as held by the server,  and its Mac eavesdropper facts say that they are not read
+// here:  never Unknown in orange,  and never zero.  Every session count here is a count of
+// sessions the Mac's eavesdropper holds.  The view shows a server seat's state from the
+// server's own eavesdropper instead (`ServerSeatRowPresentation`,  read through
+// `ServerEavesdropperStatusStore`),  which this model never mixes into its own facts.
 //
 // The panel is read only.  It runs `users` and `search`,  and nothing else:  the runner
 // in `SeatActivityReader` refuses any other verb.
@@ -388,7 +389,7 @@ enum SeatPlace: Equatable, Sendable {
     var notHereReason: String {
         switch self {
         case .server:
-            return "The server's eavesdropper holds this seat,  and Muster reads only the Mac's,  so this is not read here."
+            return "The server's eavesdropper holds this seat,  so the Mac's eavesdropper says nothing about it,  and this is not read here."
         case .noEavesdropper:
             return "No eavesdropper holds this seat,  so no eavesdropper reports on it."
         case .markedForTheServer:
@@ -434,7 +435,7 @@ enum SeatPlaceGroup: String, CaseIterable, Identifiable, Sendable {
         case .mac:
             return "The Mac's eavesdropper holds these seats,  and their sessions,  state and quota come from it."
         case .server:
-            return "The server's eavesdropper holds these seats.  Muster cannot read it yet,  so only their last post is shown."
+            return "The server's eavesdropper holds these seats.  Muster reads it through the server's control helper,  and each row shows what the server says about that seat,  beside its last post."
         case .noEavesdropper:
             return "No eavesdropper holds these seats,  so only their last post is shown."
         case .notKnown:
@@ -905,9 +906,11 @@ struct SeatActivityModel: Equatable, Sendable {
         }
         let server = rows.filter { $0.place == .server }.count + otherServerSeats.count
         if server > 0 {
+            // What the server's eavesdropper says about them is in their rows,  from its own
+            // store (`ServerEavesdropperStatusStore`),  not in this model.
             sentences.append(server == 1
-                ? "1 seat is held by the server,  which Muster cannot read yet."
-                : "\(server) seats are held by the server,  which Muster cannot read yet.")
+                ? "1 seat is held by the server."
+                : "\(server) seats are held by the server.")
         }
         let unknown = rows.filter { $0.place.group == .notKnown }.count
         if unknown > 0 {

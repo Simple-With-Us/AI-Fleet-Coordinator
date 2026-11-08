@@ -150,6 +150,8 @@ targets:
       - path: Muster/Model/SeatActivity.swift
       - path: Muster/Model/SeatActivityReader.swift
       - path: Muster/Model/SeatActivityStore.swift
+      # What a server seat's row shows from the server eavesdropper's reading (ServerSeatRowTests).
+      - path: Muster/Model/ServerSeatRow.swift
       - path: Muster/Model/FleetViewStore.swift
       - path: Muster/Model/WakeLedger.swift
       - path: Muster/Model/WakeSettings.swift

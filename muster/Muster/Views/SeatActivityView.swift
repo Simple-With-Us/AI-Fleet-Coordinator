@@ -6,15 +6,20 @@ import SwiftUI
 /// only thing it runs is the fleet chat CLI's read-only verbs,  and the seat it reads as
 /// is a bot seat.
 ///
-/// Rows sit under the machine whose eavesdropper holds the seat,  from the seat partition.
-/// Muster reads only the Mac's eavesdropper,  so a seat the server holds says "Not read here" in
-/// its eavesdropper columns,  in plain text:  that is where the seat lives,  not a fault.
+/// Rows sit under the machine whose eavesdropper holds the seat,  from the seat partition,
+/// and each row names that machine.  A seat the Mac holds reads from the Mac's eavesdropper.
+/// A seat the server holds reads from the server's eavesdropper,  through the server's control
+/// helper (`ServerEavesdropperStatusStore`):  its cells show the server's facts only from a
+/// current reading,  and otherwise say why there are none (`ServerSeatRowPresentation`).
 /// A source that could not be read shows Unknown in that column with the reason under the
 /// row.  A row never shows an empty list or a zero where a source failed.
 struct SeatActivityView: View {
     @EnvironmentObject private var store: FleetStore
     @Environment(\.scenePhase) private var scenePhase
     @ObservedObject private var activity = SeatActivityStore.shared
+    /// The server eavesdropper's reading,  held for the whole app.  Its read is one read-only
+    /// run of `server eavesdropper-status`,  and a second request while one runs joins it.
+    @ObservedObject private var serverStatus = ServerEavesdropperStatusStore.shared
     /// The seats whose session list is open.
     @State private var expanded: Set<String> = []
 
@@ -98,6 +103,17 @@ struct SeatActivityView: View {
                 await activity.timerTick(roster: seatsRoster, minimumAge: SeatActivityView.foregroundMinimumSeconds)
             }
         }
+        .task {
+            // The server's eavesdropper,  read on its own so the Mac's slower read never holds
+            // it up:  on a visit,  then on the same slow clock,  only while the app is in front.
+            await serverStatus.refreshIfOlder(than: SeatActivityView.foregroundMinimumSeconds)
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: UInt64(SeatActivityView.refreshSeconds) * 1_000_000_000)
+                if Task.isCancelled { break }
+                guard activity.isActive else { continue }
+                await serverStatus.refreshIfOlder(than: SeatActivityView.foregroundMinimumSeconds)
+            }
+        }
         .onChange(of: scenePhase) { _, phase in
             // A read costs one question per seat,  so neither the timer nor this reads while
             // the app is in the background:  the reading on screen is still the last one.
@@ -105,6 +121,9 @@ struct SeatActivityView: View {
             guard phase == .active else { return }
             Task {
                 await activity.refreshIfOlder(than: SeatActivityView.foregroundMinimumSeconds, roster: seatsRoster)
+            }
+            Task {
+                await serverStatus.refreshIfOlder(than: SeatActivityView.foregroundMinimumSeconds)
             }
         }
     }
@@ -119,6 +138,7 @@ struct SeatActivityView: View {
                 Spacer()
                 Button {
                     Task { await activity.refresh(roster: seatsRoster) }
+                    Task { await serverStatus.refresh() }
                 } label: {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }
@@ -187,7 +207,10 @@ struct SeatActivityView: View {
         } else {
             text += ",  which could not be used this time."
         }
-        text += "  Sessions shown are on the Mac only:  a session on the server attaches to no eavesdropper Muster can read."
+        let minutes = Int(ReducedEavesdropperStatus.freshnessWindow / 60)
+        text += "  A seat held by the server shows what the server's eavesdropper says,  read through the server's control helper,"
+            + "  and an answer more than \(minutes) minutes old is shown only as old evidence."
+        text += "  A Mac seat's sessions are the ones the Mac's eavesdropper holds,  and a server seat's are the ones the server's eavesdropper holds."
         if !model.partitionPath.isEmpty {
             text += "  Where each seat is held comes from the seat partition,  \(model.partitionPath)."
         }
@@ -250,13 +273,24 @@ struct SeatActivityView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            if group.kind == .server {
+                Text(SeatActivityText.display(ServerSeatRowPresentation.groupLine(
+                    reading: serverStatus.reading,
+                    readAt: serverStatus.readAt,
+                    loading: serverStatus.loading,
+                    now: Date()
+                )))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if group.kind == .server, let note = model.otherServerSeatsNote {
                 Text(SeatActivityText.display(note))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            tableHeader
+            tableHeader(group.kind)
             ForEach(group.rows) { row in
                 rowView(row, readAt: model.readAt)
             }
@@ -265,13 +299,15 @@ struct SeatActivityView: View {
 
     // MARK: The table
 
-    private var tableHeader: some View {
+    /// The column names.  The server's group names the server in its columns,  so its cells are
+    /// never read as the Mac's.
+    private func tableHeader(_ kind: SeatPlaceGroup) -> some View {
         HStack(alignment: .top, spacing: 8) {
             Text("Seat")
                 .frame(width: seatWidth, alignment: .leading)
-            Text("Sessions On The Mac")
+            Text(kind == .server ? "Sessions The Server Holds" : "Sessions On The Mac")
                 .frame(width: sessionWidth, alignment: .leading)
-            Text("Eavesdropper")
+            Text(kind == .server ? "Server Eavesdropper" : "Eavesdropper")
                 .frame(width: listenerWidth, alignment: .leading)
             Text("Quota")
                 .frame(width: quotaWidth, alignment: .leading)
@@ -285,7 +321,10 @@ struct SeatActivityView: View {
 
     /// One seat's row.
     private func rowView(_ row: SeatActivityRow, readAt: Date?) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
+        // A seat the server holds reads from the server's eavesdropper;  every other row is
+        // built from the Mac's,  exactly as before.
+        let server: ServerSeatRowPresentation? = row.place == .server ? serverPresentation(row) : nil
+        return VStack(alignment: .leading, spacing: 3) {
             HStack(alignment: .top, spacing: 8) {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(row.seat)
@@ -295,15 +334,40 @@ struct SeatActivityView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                    switch row.place {
+                    case .mac:
+                        placeTag(.mac)
+                    case .server:
+                        placeTag(.server)
+                    default:
+                        EmptyView()
+                    }
                 }
                 .frame(width: seatWidth, alignment: .leading)
 
-                sessionCell(row)
-                listenerCell(row)
-                quotaCell(row, readAt: readAt)
+                if let server {
+                    serverSessionCell(row, server)
+                    serverListenerCell(server)
+                    serverQuotaCell(server)
+                } else {
+                    sessionCell(row)
+                    listenerCell(row)
+                    quotaCell(row, readAt: readAt)
+                }
                 postCell(row)
             }
-            if expanded.contains(row.seat), !row.sessions.isEmpty {
+            if let server, expanded.contains(row.seat), !server.sessionLines.isEmpty {
+                VStack(alignment: .leading, spacing: 1) {
+                    ForEach(Array(server.sessionLines.enumerated()), id: \.offset) { item in
+                        Text(item.element)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .padding(.leading, seatWidth + 8)
+            }
+            if server == nil, expanded.contains(row.seat), !row.sessions.isEmpty {
                 VStack(alignment: .leading, spacing: 1) {
                     ForEach(row.sessions) { session in
                         Text(SeatActivityText.display(session.line))
@@ -325,8 +389,108 @@ struct SeatActivityView: View {
                 }
                 .padding(.leading, seatWidth + 8)
             }
+            if let server, let note = server.note {
+                Text("\(ServerSeatRowPresentation.noteColumn): \(SeatActivityText.display(note))")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(server.noteIsProblem ? Color.orange : Color.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.leading, seatWidth + 8)
+            }
         }
         .padding(.vertical, 4)
+    }
+
+    /// What the server's eavesdropper says about a seat the server holds,  as its row shows it.
+    private func serverPresentation(_ row: SeatActivityRow) -> ServerSeatRowPresentation {
+        ServerSeatRowPresentation(
+            reading: serverStatus.seat(row.seat),
+            status: serverStatus.reading?.status,
+            readAt: serverStatus.readAt,
+            loading: serverStatus.loading,
+            now: Date()
+        )
+    }
+
+    /// The machine whose eavesdropper holds the seat,  in words with its symbol beside them.
+    private func placeTag(_ host: FleetHost) -> some View {
+        Label(host.heading, systemImage: host.systemImage)
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .accessibilityElement(children: .combine)
+    }
+
+    // MARK: The server's cells
+
+    /// The live sessions the server's eavesdropper holds for the seat,  which opens their list.
+    private func serverSessionCell(_ row: SeatActivityRow, _ server: ServerSeatRowPresentation) -> some View {
+        Group {
+            if server.sessionLines.isEmpty {
+                cellText(server.sessions, emphasised: server.sessionsLive)
+            } else {
+                Button {
+                    if expanded.contains(row.seat) {
+                        expanded.remove(row.seat)
+                    } else {
+                        expanded.insert(row.seat)
+                    }
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: expanded.contains(row.seat) ? "chevron.down" : "chevron.right")
+                            .font(.caption2)
+                            .accessibilityHidden(true)
+                        cellText(server.sessions, emphasised: server.sessionsLive)
+                    }
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(
+                    expanded.contains(row.seat)
+                        ? "Hide the server's session list for \(row.seat)"
+                        : "Show the server's session list for \(row.seat)"
+                )
+            }
+        }
+        .frame(width: sessionWidth, alignment: .leading)
+        .help(server.isCurrent
+            ? "The live sessions the server's eavesdropper holds for this seat."
+            : SeatActivityText.display(server.help))
+    }
+
+    /// The server eavesdropper's state for the seat,  or why there is no current one.
+    private func serverListenerCell(_ server: ServerSeatRowPresentation) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(server.state)
+                .font(.subheadline.monospaced())
+                .foregroundStyle(server.stateIsProblem ? Color.orange : Color.secondary)
+            ForEach(server.details, id: \.self) { line in
+                Text(line)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: listenerWidth, alignment: .leading)
+        .help(SeatActivityText.display(server.help))
+    }
+
+    /// The provider quota the server's eavesdropper reads for the seat.
+    private func serverQuotaCell(_ server: ServerSeatRowPresentation) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(server.quota)
+                .font(
+                    server.quotaIsProblem
+                        ? Font.subheadline.weight(.semibold).monospaced()
+                        : Font.subheadline.monospaced()
+                )
+                .foregroundStyle(server.quotaIsProblem ? Color.orange : Color.secondary)
+            if let reset = server.quotaReset {
+                Text(SeatActivityText.resetText(reset, now: Date()))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: quotaWidth, alignment: .leading)
+        .help(server.isCurrent
+            ? "The provider quota the server's eavesdropper reads for this seat."
+            : SeatActivityText.display(server.help))
     }
 
     /// The live session count on the Mac,  which opens the session list.

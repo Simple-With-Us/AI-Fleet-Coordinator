@@ -181,7 +181,7 @@ extension MusterDestination {
             return "The fleet's app list, with each seat's lanes, pull requests and claims."
         case .seats:
             // Zulip refuses presence for bot users,  so the panel no longer reads it.
-            return "Sessions and quota come from the Mac's listener, and the last post from Zulip.\(gap)Sessions shown are on the Mac only."
+            return "Mac seats come from the Mac's listener, server seats from the server's eavesdropper, and the last post from Zulip."
         case .controls:
             return "Shared values in the fleet's secret store, as the Mac's copy shows them."
         case .hosts:
