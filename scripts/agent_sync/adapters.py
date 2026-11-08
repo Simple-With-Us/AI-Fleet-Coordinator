@@ -2184,9 +2184,10 @@ def openrouter_request_body(model: str, system: str, user: str, schema: str) -> 
     """The one request body, for the call and for the pin's fingerprint (with placeholders).
 
     No `tools`, no `tool_choice`, no `stream` and no plugin:  the model is offered nothing to call.
-    `provider.require_parameters` makes OpenRouter refuse a provider that cannot honor the strict
-    `response_format` (or the reasoning setting) instead of quietly dropping it.  A preset-referencing
-    model (`@preset/<slug>`) also sends "tools": [], which keeps the REQUEST tool-free but cannot
+    For a plain model `provider.require_parameters` makes OpenRouter refuse a provider that cannot
+    honor the strict `response_format` (or the reasoning setting) instead of quietly dropping it;  a
+    preset-referencing model (`@preset/<slug>`) sends NO `provider` object, so the preset's own
+    provider settings govern (see the comment below).  A preset model also sends "tools": [], which keeps the REQUEST tool-free but cannot
     disarm a tooled preset:  per the documented preset semantics request tools UNION with preset
     tools (a same-identity request tool overrides one preset entry, and an empty array overrides
     nothing), and the latest preset version is always served with no immutable version binding at
@@ -2214,19 +2215,23 @@ def openrouter_request_body(model: str, system: str, user: str, schema: str) -> 
                 "schema": json.loads(schema),
             },
         },
-        # Open policy question (AFC-649, not decided here):  for an `@preset/<slug>` model the preset
-        # may also carry a provider block (order, fallbacks, data collection).  OpenRouter documents
-        # request-over-preset as a shallow merge, which suggests this request-level object replaces
-        # the preset's whole provider block, but that has not been observed.  Two approved synthetic
-        # calls (Nov 7 2026) succeeded with this exact object on both chosen models, so it is kept
-        # as the tested safeguard;  which provider policy actually governs is still unproven.
-        "provider": {"require_parameters": True},
         "temperature": OPENROUTER_TEMPERATURE,
         "max_tokens": OPENROUTER_MAX_TOKENS,
         "reasoning": dict(OPENROUTER_REASONING),
         "stream": False,
     }
     if model.startswith("@preset/"):
+        # No `provider` object for a preset.  The owner chose the live preset (WhatsApp, Nov 7 2026,
+        # 6:34 PM CT), so its provider block (order, fallbacks, exclusions, data collection) is his
+        # dashboard's to set.  OpenRouter documents request-over-preset as a shallow merge, and
+        # `provider` is one top-level field, so sending even `{"require_parameters": true}` is
+        # expected to replace that whole block;  the Nov 7 two-call sample (sent with it) was served
+        # by Nebius for the MiniMax model although the preset's order named only Meta and Minimax,
+        # which fits a replaced block but does not prove one.  The cost of leaving it out:
+        # `require_parameters` is no longer sent by this code, so refusing a provider that cannot
+        # honor the strict `response_format` now depends on the preset's own provider setting.  The
+        # answer is still parsed against the strict schema, so an ignored `response_format` ends as
+        # a failed consult and a hold, not as a delivered answer.
         # Request tool-free is NOT server tool-free.  Request tools UNION with preset tools
         # (documented OpenRouter preset semantics), so the empty array cannot disarm a tooled
         # preset.  "tool_choice": "none" is meant to stop the model calling tools, but whether it

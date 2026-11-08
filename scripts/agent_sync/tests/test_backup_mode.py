@@ -143,6 +143,16 @@ class PresetRequestShapeTests(unittest.TestCase):
         self.assertEqual(body["tools"], [])
         self.assertEqual(body["tool_choice"], "none")
 
+    def test_a_preset_request_sends_no_provider_object(self):
+        # `provider` is one top-level field of a shallow merge: sending any of it would be expected
+        # to replace the dashboard preset's whole provider block.
+        body = A.openrouter_request_body("@preset/some-slug", "sys", "user", "{}")
+        self.assertNotIn("provider", body)
+
+    def test_a_plain_model_request_keeps_require_parameters(self):
+        body = A.openrouter_request_body("provider/name", "sys", "user", "{}")
+        self.assertEqual(body["provider"], {"require_parameters": True})
+
     def test_a_plain_model_request_sends_neither(self):
         body = A.openrouter_request_body("provider/name", "sys", "user", "{}")
         self.assertNotIn("tools", body)
