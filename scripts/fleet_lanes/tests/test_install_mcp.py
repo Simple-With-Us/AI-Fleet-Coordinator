@@ -318,7 +318,7 @@ class SimpleChatTests(HomeCase):
 
     def test_unknown_key_with_same_argv_is_not_proof_of_ownership(self) -> None:
         self.mkdir(*TOOL_DIRS.values())
-        foreign = {"command": self.simple_chat, "args": ["mcp", "--default-seat", "MC"]}
+        foreign = {"command": self.simple_tools, "args": ["mcp", "--default-seat", "MC"]}
         self.write(".config/muse/settings.json", json.dumps({"mcpServers": {"owner-chat": foreign}}))
         code, out, _ = self.run_cli("apply", "muse", "--with-simple-chat")
         self.assertEqual(code, M.EXIT_OK, out)
