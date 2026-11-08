@@ -6210,15 +6210,19 @@ class WorkflowVerbs:
             # Only immutable, reviewed source/output fixture pairs can preserve
             # dedicated source lines. Registry is empty until owner policy approval.
             preserve = reviewed_base(repo, path, raw)
+            # Scan every complete input, even an eligible reviewed fixture. A
+            # finding may be retained only after exact output/origin validation.
+            base_finding = find_secret(raw.decode("utf-8"))
             if (
-                (not preserve and find_secret(raw.decode("utf-8")))
+                (base_finding and not preserve)
                 or self._provider_token_text(raw.decode("utf-8"))
                 or self.bearer in raw.decode("utf-8")
             ):
                 raise ValueError()
             result = apply_reviewed_patch(repo, path, raw, args.get("edits"), known=[self.bearer])
+            result_finding = find_secret(result.decode("utf-8"))
             if (
-                (not preserve and find_secret(result.decode("utf-8")))
+                (result_finding and not preserve)
                 or self._provider_token_text(result.decode("utf-8"))
                 or self.bearer
                 and self.bearer in result.decode("utf-8")

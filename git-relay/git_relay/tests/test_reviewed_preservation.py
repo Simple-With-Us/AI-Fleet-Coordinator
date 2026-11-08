@@ -246,3 +246,24 @@ class PreservationWorkflowTests(unittest.TestCase):
                 with self.assertRaises(Refused):
                     Multi(c).run("wf_file_patch", args)
             self.assertTrue(all(x[0] == "GET" for x in c.calls))
+
+
+class CompleteScanRegressionTests(PreservationWorkflowTests):
+    def test_reviewed_source_and_result_each_run_full_scan(self):
+        import base64
+        from git_relay import workflow_verbs
+        from git_relay.tests.test_workflow_verbs import Client, Multi
+
+        args, replies, record = self.setup_case(("Authorization: Bearer " + "a" * 24 + "\n").encode())
+        base = base64.b64decode(replies[3]["content"]).decode()
+        result = base.replace("other = old", "other = new")
+        client = Client(*replies)
+        original = workflow_verbs.find_secret
+        with (
+            patch.object(candidate, "REVIEWED_PRESERVATIONS", frozenset({record})),
+            patch.object(workflow_verbs, "find_secret", wraps=original) as full_scan,
+        ):
+            Multi(client).run("wf_file_patch", args)
+        scanned = [call.args[0] for call in full_scan.call_args_list]
+        self.assertIn(base, scanned)
+        self.assertIn(result, scanned)
