@@ -192,7 +192,11 @@ class WorkflowPrElevation(unittest.TestCase):
         else:
             pr = {"head": {"sha": SHA}, "base": {"ref": "main"}}
             client = Client(pr, {"files": files}, {"message": "ok"})
-        args = self.MERGE if action == "wf_merge_guarded" else {"repo": REPO, "number": 7, "expected_head_sha": SHA}
+        args = (
+            self.MERGE
+            if action == "wf_merge_guarded"
+            else {"repo": REPO, "number": 7, "expected_head_sha": SHA}
+        )
         handle = WorkflowVerbs.for_action(
             client, Policy(ceiling), minter, "swu-wise", action, REPO, args=args
         )
@@ -262,8 +266,13 @@ class WorkflowPrElevation(unittest.TestCase):
         client = Client({"head": {"sha": "c" * 40}, "base": {"ref": "main"}})
         args = {"repo": REPO, "number": 7, "expected_head_sha": SHA}
         handle = WorkflowVerbs.for_action(
-            client, Policy({**CEILING, "workflows": "write"}), minter, "swu-wise",
-            "wf_update_branch", REPO, args=args,
+            client,
+            Policy({**CEILING, "workflows": "write"}),
+            minter,
+            "swu-wise",
+            "wf_update_branch",
+            REPO,
+            args=args,
         )
         with self.assertRaises(Refused):
             handle.run("wf_update_branch", args)
@@ -272,11 +281,20 @@ class WorkflowPrElevation(unittest.TestCase):
 
     def update_branch(self, files, ceiling=None):
         minter = Minter()
-        client = Client({"head": {"sha": SHA}, "base": {"ref": "release/2026 nov"}}, {"files": files}, {"message": "ok"})
+        client = Client(
+            {"head": {"sha": SHA}, "base": {"ref": "release/2026 nov"}},
+            {"files": files},
+            {"message": "ok"},
+        )
         args = {"repo": REPO, "number": 7, "expected_head_sha": SHA}
         handle = WorkflowVerbs.for_action(
-            client, Policy(ceiling or {**CEILING, "workflows": "write"}), minter, "swu-wise",
-            "wf_update_branch", REPO, args=args,
+            client,
+            Policy(ceiling or {**CEILING, "workflows": "write"}),
+            minter,
+            "swu-wise",
+            "wf_update_branch",
+            REPO,
+            args=args,
         )
         return client, minter, handle, args
 
