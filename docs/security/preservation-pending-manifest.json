@@ -1,49 +1,214 @@
 {
-  "status": "PROPOSAL ONLY",
+  "status": "INACTIVE SOURCE REVIEW PENDING; bounded fixture policy approved23:07Nov7",
   "active": false,
   "preservation": [
     {
       "repo": "Simple-With-Us/AI-Fleet-Coordinator",
       "path": "scripts/fleet_lanes/tests/test_install_mcp.py",
       "source_path": "scripts/fleet_lanes/tests/test_install_mcp.py",
-      "source_commit": "8ac91e28906a26b677338ec8bf844bc0d3bd061e",
+      "source_commit": "26e1f04cd67a911e0842e0b5feea6c189a0834c3",
       "base_sha256": "09ffbff844379d950e6f8bd6e40d78848b66210b7e3e640a6148294cda6c75e2",
       "target_sha256": "e59b1610dde3808e1924433de8c80513662a6c60767d85aeafd40b6674c3b6c7",
       "edits": [
         {
-          "start": 2273,
-          "end": 2306,
-          "text": "    def simple_chat(self) -> str:\n"
+          "start": 2281,
+          "end": 2281,
+          "text": "simple_ch"
         },
         {
-          "start": 5260,
-          "end": 5341,
-          "text": "        self.assertEqual(argv, [self.simple_chat, \"mcp\", \"--default-seat\", \"MC\"])\n"
+          "start": 2282,
+          "end": 2285,
+          "text": ""
         },
         {
-          "start": 15104,
-          "end": 15225,
-          "text": "class SimpleChatTests(HomeCase):\n    def test_only_fixed_seat_tools_get_simple_chat_and_never_a_pinned_seat(self) -> None:\n"
+          "start": 2286,
+          "end": 2291,
+          "text": ""
         },
         {
-          "start": 16299,
-          "end": 16388,
-          "text": "                self.assertEqual(argv, [self.simple_chat, \"mcp\", \"--default-seat\", seat])\n"
+          "start": 5297,
+          "end": 5297,
+          "text": "simple_ch"
         },
         {
-          "start": 16692,
-          "end": 16767,
-          "text": "    def test_unknown_key_with_same_argv_is_not_proof_of_ownership(self) -> None:\n"
+          "start": 5298,
+          "end": 5301,
+          "text": ""
         },
         {
-          "start": 16807,
-          "end": 17056,
-          "text": "        foreign = {\"command\": self.simple_chat, \"args\": [\"mcp\", \"--default-seat\", \"MC\"]}\n        self.write(\".config/muse/settings.json\", json.dumps({\"mcpServers\": {\"owner-chat\": foreign}}))\n"
+          "start": 5302,
+          "end": 5307,
+          "text": ""
         },
         {
-          "start": 17246,
-          "end": 17290,
-          "text": "        self.assertEqual(doc[\"owner-chat\"], foreign)\n"
+          "start": 15110,
+          "end": 15112,
+          "text": "Simpl"
+        },
+        {
+          "start": 15113,
+          "end": 15114,
+          "text": "Cha"
+        },
+        {
+          "start": 15115,
+          "end": 15119,
+          "text": ""
+        },
+        {
+          "start": 15175,
+          "end": 15175,
+          "text": "simple_ch"
+        },
+        {
+          "start": 15176,
+          "end": 15179,
+          "text": ""
+        },
+        {
+          "start": 15180,
+          "end": 15185,
+          "text": ""
+        },
+        {
+          "start": 16344,
+          "end": 16344,
+          "text": "simple_ch"
+        },
+        {
+          "start": 16345,
+          "end": 16348,
+          "text": ""
+        },
+        {
+          "start": 16349,
+          "end": 16354,
+          "text": ""
+        },
+        {
+          "start": 16705,
+          "end": 16709,
+          "text": "unknown_ke"
+        },
+        {
+          "start": 16711,
+          "end": 16714,
+          "text": "w"
+        },
+        {
+          "start": 16715,
+          "end": 16719,
+          "text": ""
+        },
+        {
+          "start": 16721,
+          "end": 16722,
+          "text": ""
+        },
+        {
+          "start": 16723,
+          "end": 16730,
+          "text": "s"
+        },
+        {
+          "start": 16734,
+          "end": 16738,
+          "text": "argv"
+        },
+        {
+          "start": 16739,
+          "end": 16742,
+          "text": ""
+        },
+        {
+          "start": 16744,
+          "end": 16744,
+          "text": "_no"
+        },
+        {
+          "start": 16745,
+          "end": 16745,
+          "text": "_p"
+        },
+        {
+          "start": 16746,
+          "end": 16748,
+          "text": "oof_of_ownersh"
+        },
+        {
+          "start": 16749,
+          "end": 16751,
+          "text": "p"
+        },
+        {
+          "start": 16815,
+          "end": 16816,
+          "text": "for"
+        },
+        {
+          "start": 16817,
+          "end": 16817,
+          "text": "i"
+        },
+        {
+          "start": 16818,
+          "end": 16821,
+          "text": "n"
+        },
+        {
+          "start": 16823,
+          "end": 16853,
+          "text": ""
+        },
+        {
+          "start": 16871,
+          "end": 16871,
+          "text": "simple_ch"
+        },
+        {
+          "start": 16872,
+          "end": 16875,
+          "text": ""
+        },
+        {
+          "start": 16876,
+          "end": 16881,
+          "text": ""
+        },
+        {
+          "start": 16922,
+          "end": 16985,
+          "text": ""
+        },
+        {
+          "start": 17047,
+          "end": 17048,
+          "text": "{\"mcpS"
+        },
+        {
+          "start": 17049,
+          "end": 17049,
+          "text": "rvers\": {\"owner-chat\": forei"
+        },
+        {
+          "start": 17050,
+          "end": 17053,
+          "text": "n}}"
+        },
+        {
+          "start": 17265,
+          "end": 17270,
+          "text": "Equal"
+        },
+        {
+          "start": 17271,
+          "end": 17285,
+          "text": ""
+        },
+        {
+          "start": 17288,
+          "end": 17288,
+          "text": "[\"owner-chat\"], foreign"
         },
         {
           "start": 17332,
@@ -51,193 +216,2613 @@
           "text": ""
         },
         {
-          "start": 17369,
-          "end": 17466,
-          "text": "    def test_known_hosted_wrapper_entry_is_not_rewritten(self) -> None:\n"
+          "start": 17382,
+          "end": 17383,
+          "text": "known_"
         },
         {
-          "start": 17506,
-          "end": 18305,
-          "text": "        foreign = {\"command\": self.path(\".local/libexec/mc-simple-tools\")}\n        self.write(\".config/muse/settings.json\", json.dumps({\"mcpServers\": {\"mc-simple-tools\": foreign}}))\n"
+          "start": 17384,
+          "end": 17403,
+          "text": "o"
         },
         {
-          "start": 18433,
-          "end": 18507,
-          "text": "        self.assertEqual(doc[\"mc-simple-tools\"], foreign)\n        self.run_cli(\"remove\", \"muse\", \"--with-simple-chat\")\n        self.assertEqual(self.load(\".config/muse/settings.json\")[\"mcpServers\"][\"mc-simple-tools\"], foreign)\n"
+          "start": 17405,
+          "end": 17408,
+          "text": "ed"
         },
         {
-          "start": 18508,
-          "end": 19167,
-          "text": "    def test_refused_current_entry_preserves_all_foreign_entries(self) -> None:\n        self.mkdir(*TOOL_DIRS.values())\n        entries = {\"owner-chat\": {\"command\": \"/owner/hosted\"},\n                   \"simple-chat\": {\"command\": \"/owner/custom\"}}\n        self.write(\".config/muse/settings.json\", json.dumps({\"mcpServers\": entries}))\n        self.run_cli(\"apply\", \"muse\", \"--with-simple-chat\")\n        self.assertEqual({key: self.load(\".config/muse/settings.json\")[\"mcpServers\"][key] for key in entries}, entries)\n"
+          "start": 17410,
+          "end": 17411,
+          "text": "rapp"
         },
         {
-          "start": 19168,
-          "end": 19269,
-          "text": "    def test_clutch_apply_and_remove_preserve_unknown_blocks(self) -> None:\n"
+          "start": 17412,
+          "end": 17433,
+          "text": "r"
         },
         {
-          "start": 19463,
+          "start": 17443,
+          "end": 17443,
+          "text": "not_"
+        },
+        {
+          "start": 17445,
+          "end": 17448,
+          "text": "writt"
+        },
+        {
+          "start": 17449,
+          "end": 17450,
+          "text": "n"
+        },
+        {
+          "start": 17514,
+          "end": 17515,
+          "text": "f"
+        },
+        {
+          "start": 17516,
+          "end": 17517,
+          "text": "reign"
+        },
+        {
+          "start": 17519,
+          "end": 17549,
+          "text": ""
+        },
+        {
+          "start": 17567,
+          "end": 17591,
+          "text": ""
+        },
+        {
+          "start": 17592,
+          "end": 17608,
+          "text": ""
+        },
+        {
+          "start": 17610,
+          "end": 17660,
+          "text": ""
+        },
+        {
+          "start": 17661,
+          "end": 17715,
+          "text": ""
+        },
+        {
+          "start": 17718,
+          "end": 17718,
+          "text": "lo"
+        },
+        {
+          "start": 17719,
+          "end": 17722,
+          "text": "al/l"
+        },
+        {
+          "start": 17723,
+          "end": 17724,
+          "text": "bexec"
+        },
+        {
+          "start": 17726,
+          "end": 17759,
+          "text": ""
+        },
+        {
+          "start": 17760,
+          "end": 17808,
+          "text": ""
+        },
+        {
+          "start": 17816,
+          "end": 17819,
+          "text": ""
+        },
+        {
+          "start": 17820,
+          "end": 17820,
+          "text": "ools"
+        },
+        {
+          "start": 17822,
+          "end": 18069,
+          "text": ""
+        },
+        {
+          "start": 18070,
+          "end": 18181,
+          "text": ""
+        },
+        {
+          "start": 18259,
+          "end": 18264,
+          "text": "mc"
+        },
+        {
+          "start": 18266,
+          "end": 18269,
+          "text": "imple-tools"
+        },
+        {
+          "start": 18272,
+          "end": 18275,
+          "text": "f"
+        },
+        {
+          "start": 18276,
+          "end": 18279,
+          "text": "reig"
+        },
+        {
+          "start": 18280,
+          "end": 18300,
+          "text": ""
+        },
+        {
+          "start": 18463,
+          "end": 18468,
+          "text": "mc"
+        },
+        {
+          "start": 18470,
+          "end": 18473,
+          "text": "imple-tools"
+        },
+        {
+          "start": 18477,
+          "end": 18478,
+          "text": "foreign)\n        self.run_cli("
+        },
+        {
+          "start": 18479,
+          "end": 18479,
+          "text": "remove\", \"muse\", \"--with-simple-chat\")\n        self.assertEqual(self.load(\"."
+        },
+        {
+          "start": 18481,
+          "end": 18481,
+          "text": "nfig/"
+        },
+        {
+          "start": 18482,
+          "end": 18482,
+          "text": "use/settings.json\")[\""
+        },
+        {
+          "start": 18483,
+          "end": 18494,
+          "text": "cpS"
+        },
+        {
+          "start": 18496,
+          "end": 18497,
+          "text": "vers\"][\"m"
+        },
+        {
+          "start": 18498,
+          "end": 18499,
+          "text": "-"
+        },
+        {
+          "start": 18500,
+          "end": 18500,
+          "text": "imple-"
+        },
+        {
+          "start": 18502,
+          "end": 18503,
+          "text": "ols"
+        },
+        {
+          "start": 18504,
+          "end": 18505,
+          "text": "], foreign"
+        },
+        {
+          "start": 18521,
+          "end": 18527,
+          "text": ""
+        },
+        {
+          "start": 18529,
+          "end": 18531,
+          "text": "fused_cur"
+        },
+        {
+          "start": 18533,
+          "end": 18534,
+          "text": "nt"
+        },
+        {
+          "start": 18535,
+          "end": 18535,
+          "text": "en"
+        },
+        {
+          "start": 18536,
+          "end": 18538,
+          "text": "ry"
+        },
+        {
+          "start": 18542,
+          "end": 18542,
+          "text": "serves"
+        },
+        {
+          "start": 18543,
+          "end": 18543,
+          "text": "all_fo"
+        },
+        {
+          "start": 18545,
+          "end": 18545,
+          "text": "ig"
+        },
+        {
+          "start": 18546,
+          "end": 18548,
+          "text": "_"
+        },
+        {
+          "start": 18549,
+          "end": 18553,
+          "text": "n"
+        },
+        {
+          "start": 18554,
+          "end": 18562,
+          "text": "ries"
+        },
+        {
+          "start": 18597,
+          "end": 18597,
+          "text": "*TOOL_DIRS.values())\n        entries = {\"owner-chat\": {\"command\": \"/owner/hosted\"},\n                   \"simple-chat\": {\"command\": \"/owner/custom\"}}\n        self.write("
+        },
+        {
+          "start": 18600,
+          "end": 18601,
+          "text": "onfig/m"
+        },
+        {
+          "start": 18602,
+          "end": 18602,
+          "text": "se/se"
+        },
+        {
+          "start": 18603,
+          "end": 18603,
+          "text": "tings.json\", json.dumps({\"m"
+        },
+        {
+          "start": 18604,
+          "end": 18607,
+          "text": "pServer"
+        },
+        {
+          "start": 18608,
+          "end": 18609,
+          "text": ""
+        },
+        {
+          "start": 18610,
+          "end": 18610,
+          "text": ": entries})"
+        },
+        {
+          "start": 18643,
+          "end": 18645,
+          "text": "m"
+        },
+        {
+          "start": 18646,
+          "end": 18649,
+          "text": "se"
+        },
+        {
+          "start": 18671,
+          "end": 18943,
+          "text": ""
+        },
+        {
+          "start": 18971,
+          "end": 18974,
+          "text": "{k"
+        },
+        {
+          "start": 18975,
+          "end": 19006,
+          "text": "y:"
+        },
+        {
+          "start": 19012,
+          "end": 19014,
+          "text": "lo"
+        },
+        {
+          "start": 19020,
+          "end": 19021,
+          "text": "onfig/m"
+        },
+        {
+          "start": 19022,
+          "end": 19022,
+          "text": "se/se"
+        },
+        {
+          "start": 19023,
+          "end": 19034,
+          "text": "t"
+        },
+        {
+          "start": 19035,
+          "end": 19035,
+          "text": "ng"
+        },
+        {
+          "start": 19037,
+          "end": 19046,
+          "text": "json"
+        },
+        {
+          "start": 19048,
+          "end": 19074,
+          "text": "["
+        },
+        {
+          "start": 19078,
+          "end": 19081,
+          "text": "Servers\"][key] for key in "
+        },
+        {
+          "start": 19084,
+          "end": 19085,
+          "text": "rie"
+        },
+        {
+          "start": 19086,
+          "end": 19090,
+          "text": "}"
+        },
+        {
+          "start": 19092,
+          "end": 19093,
+          "text": ""
+        },
+        {
+          "start": 19094,
+          "end": 19129,
+          "text": ""
+        },
+        {
+          "start": 19131,
+          "end": 19135,
+          "text": "ri"
+        },
+        {
+          "start": 19136,
+          "end": 19149,
+          "text": ""
+        },
+        {
+          "start": 19150,
+          "end": 19165,
+          "text": ""
+        },
+        {
+          "start": 19181,
+          "end": 19181,
+          "text": "clutch_"
+        },
+        {
+          "start": 19187,
+          "end": 19187,
+          "text": "and_"
+        },
+        {
+          "start": 19189,
+          "end": 19197,
+          "text": "mov"
+        },
+        {
+          "start": 19202,
+          "end": 19202,
+          "text": "serve"
+        },
+        {
+          "start": 19203,
+          "end": 19205,
+          "text": "u"
+        },
+        {
+          "start": 19206,
+          "end": 19209,
+          "text": "known"
+        },
+        {
+          "start": 19215,
+          "end": 19236,
+          "text": ""
+        },
+        {
+          "start": 19237,
+          "end": 19253,
+          "text": ""
+        },
+        {
+          "start": 19471,
+          "end": 19472,
+          "text": "for"
+        },
+        {
+          "start": 19473,
+          "end": 19473,
+          "text": "i"
+        },
+        {
+          "start": 19474,
+          "end": 19477,
+          "text": "n"
+        },
+        {
+          "start": 19520,
+          "end": 19520,
+          "text": "owner-ch"
+        },
+        {
+          "start": 19521,
+          "end": 19524,
+          "text": ""
+        },
+        {
+          "start": 19525,
+          "end": 19530,
+          "text": ""
+        },
+        {
+          "start": 19568,
+          "end": 19582,
+          "text": "f"
+        },
+        {
+          "start": 19583,
+          "end": 19594,
+          "text": ""
+        },
+        {
+          "start": 19596,
+          "end": 19598,
+          "text": "ig"
+        },
+        {
+          "start": 19599,
+          "end": 19632,
+          "text": ")"
+        },
+        {
+          "start": 19640,
+          "end": 19655,
+          "text": ""
+        },
+        {
+          "start": 19747,
+          "end": 19752,
+          "text": "In"
+        },
+        {
+          "start": 19753,
+          "end": 19754,
+          "text": "f"
+        },
+        {
+          "start": 19755,
+          "end": 19756,
+          "text": "r"
+        },
+        {
+          "start": 19757,
+          "end": 19757,
+          "text": "ign"
+        },
+        {
+          "start": 19758,
+          "end": 19788,
+          "text": ""
+        },
+        {
+          "start": 19804,
+          "end": 19851,
+          "text": ""
+        },
+        {
+          "start": 19878,
+          "end": 19879,
+          "text": "s"
+        },
+        {
+          "start": 19880,
+          "end": 19881,
+          "text": "lf.read(path)"
+        },
+        {
+          "start": 19923,
           "end": 19923,
-          "text": "        foreign = current.replace(\"mcp-simple-chat\", \"mcp-owner-chat\")\n        self.write(path, current + foreign)\n        self.run_cli(\"apply\", \"clutch\", \"--with-simple-chat\", \"--no-dsh-check\")\n        self.assertIn(foreign, self.read(path))\n        self.assertEqual(self.read(path).count(\"fleet:begin mcp-simple-chat\"), 1)\n        self.run_cli(\"remove\", \"clutch\", \"--with-simple-chat\", \"--no-dsh-check\")\n        self.assertIn(foreign, self.read(path))\n"
+          "text": "        self.run_cli(\"remove\", \"clutch\", \"--with-simple-chat\", \"--no-dsh-check\")\n        self.assertIn(foreign, self.read(path))\n"
         },
         {
-          "start": 19924,
-          "end": 19997,
-          "text": "    def test_without_the_flag_simple_chat_is_never_written(self) -> None:\n"
+          "start": 19954,
+          "end": 19954,
+          "text": "simple_ch"
         },
         {
-          "start": 26601,
-          "end": 26675,
-          "text": "    def test_the_simple_chat_block_is_created_with_a_header(self) -> None:\n"
+          "start": 19955,
+          "end": 19958,
+          "text": ""
         },
         {
-          "start": 27237,
-          "end": 27310,
-          "text": "        self.assertIn('        command: \"%s\"\\n' % self.simple_chat, text)\n"
+          "start": 19959,
+          "end": 19964,
+          "text": ""
         },
         {
-          "start": 28644,
-          "end": 28728,
-          "text": "        text = self.read(self.patch()).replace(self.simple_chat, \"/old/simple-chat\")\n"
+          "start": 26618,
+          "end": 26618,
+          "text": "simple_ch"
         },
         {
-          "start": 28971,
-          "end": 29015,
-          "text": "        self.assertIn(self.simple_chat, new)\n"
+          "start": 26619,
+          "end": 26622,
+          "text": ""
         },
         {
-          "start": 37334,
-          "end": 37430,
-          "text": "    def test_from_another_seat_the_simple_chat_probe_is_skipped_and_never_started(self) -> None:\n"
+          "start": 26623,
+          "end": 26628,
+          "text": ""
+        },
+        {
+          "start": 27292,
+          "end": 27292,
+          "text": "simple_ch"
+        },
+        {
+          "start": 27293,
+          "end": 27296,
+          "text": ""
+        },
+        {
+          "start": 27297,
+          "end": 27302,
+          "text": ""
+        },
+        {
+          "start": 28696,
+          "end": 28696,
+          "text": "simple_ch"
+        },
+        {
+          "start": 28697,
+          "end": 28700,
+          "text": ""
+        },
+        {
+          "start": 28701,
+          "end": 28706,
+          "text": ""
+        },
+        {
+          "start": 28998,
+          "end": 28998,
+          "text": "simple_ch"
+        },
+        {
+          "start": 28999,
+          "end": 29002,
+          "text": ""
+        },
+        {
+          "start": 29003,
+          "end": 29008,
+          "text": ""
+        },
+        {
+          "start": 37369,
+          "end": 37369,
+          "text": "simple_ch"
+        },
+        {
+          "start": 37370,
+          "end": 37373,
+          "text": ""
+        },
+        {
+          "start": 37374,
+          "end": 37379,
+          "text": ""
         }
       ],
       "active": false,
-      "policy_approval_pending": true,
+      "policy_approval_pending": false,
       "source_review_pending": true
     },
     {
       "repo": "Simple-With-Us/AI-Fleet-Coordinator",
       "path": "scripts/simple_tools/tests/test_claude_letter.py",
       "source_path": "scripts/agent_sync/tests/test_claude_letter.py",
-      "source_commit": "8ac91e28906a26b677338ec8bf844bc0d3bd061e",
+      "source_commit": "26e1f04cd67a911e0842e0b5feea6c189a0834c3",
       "base_sha256": "ea2dd468ed680e534ededd8c554176e0b55f087cbf6b77e8f20446d96288545e",
       "target_sha256": "dac88beb815fad7b2a92646f0104daafbc5a5e85240e6d5dce51bdacd236cff5",
       "edits": [
         {
-          "start": 326,
-          "end": 344,
+          "start": 333,
+          "end": 351,
           "text": ""
         },
         {
-          "start": 590,
-          "end": 728,
-          "text": "from simple_tools import claude_app_lineage as AL\nfrom simple_tools import claude_letter as CL\nfrom simple_tools import operator_registry as OR\n"
+          "start": 595,
+          "end": 597,
+          "text": "simpl"
         },
         {
-          "start": 1294,
-          "end": 1397,
-          "text": "        env = {\"HOME\": self.home, \"SIMPLE_TOOLS_STATE_DIR\": self.state, \"CLAUDE_CODE_ENTRYPOINT\": \"cli\"}\n"
+          "start": 598,
+          "end": 599,
+          "text": "_"
         },
         {
-          "start": 18171,
-          "end": 18290,
-          "text": "        # of the three markers that matter is enough on its own, which is what exercises the SIMPLE_TOOLS_ATTACH=0 line.\n"
+          "start": 600,
+          "end": 601,
+          "text": "ool"
         },
         {
-          "start": 18484,
-          "end": 18522,
-          "text": "            \"SIMPLE_TOOLS_ATTACH\": \"0\",\n"
+          "start": 602,
+          "end": 605,
+          "text": ""
         },
         {
-          "start": 18686,
-          "end": 18767,
-          "text": "        for key in (\"AGENT_LAUNCHER\", \"AGENT_LAUNCH_SEAT\", \"SIMPLE_TOOLS_ATTACH\"):\n"
+          "start": 643,
+          "end": 645,
+          "text": "simpl"
         },
         {
-          "start": 19015,
-          "end": 19113,
-          "text": "        self.assertTrue(CL.in_scope({\"CLAUDE_CODE_ENTRYPOINT\": \"cli\", \"SIMPLE_TOOLS_ATTACH\": \"1\"}))\n"
+          "start": 646,
+          "end": 647,
+          "text": "_"
         },
         {
-          "start": 19402,
-          "end": 19470,
-          "text": "            env={\"HOME\": self.home, \"SIMPLE_TOOLS_STATE_DIR\": other},\n"
+          "start": 648,
+          "end": 649,
+          "text": "ool"
         },
         {
-          "start": 94244,
-          "end": 94308,
-          "text": "            AGENT_SESSION=\"bf-thread-1\", SIMPLE_TOOLS_ATTACH=\"0\",\n"
+          "start": 650,
+          "end": 653,
+          "text": ""
         },
         {
-          "start": 94663,
-          "end": 94754,
-          "text": "        for env in (botfleet, {\"SIMPLE_TOOLS_ATTACH\": \"0\"}, {\"AGENT_LAUNCHER\": \"opencode\"}):\n"
+          "start": 686,
+          "end": 688,
+          "text": "simpl"
         },
         {
-          "start": 102445,
-          "end": 102558,
-          "text": "class RegistryRemoteTests(Base):\n    \"\"\"LETTER_REGISTRY_REMOTE:  the registry host named outright, decoupled from where the chat runs.\n"
+          "start": 689,
+          "end": 690,
+          "text": "_"
         },
         {
-          "start": 102559,
-          "end": 102810,
-          "text": "    A Mac chat (platform darwin, no location override) registers locally while no destination is\n    named, and over the hop once one is:  the destination wins, a failure of it is an error answer\n    and never a quiet local write, and this host keeps no registry file of its own.\"\"\"\n"
+          "start": 691,
+          "end": 692,
+          "text": "ool"
         },
         {
-          "start": 102811,
-          "end": 102901,
-          "text": "    class RemoteSsh:\n        \"\"\"The hop to the registry host:  checks the command's shape and runs the registry side\n        in process against the REMOTE state dir, so the two sides never share a file.\"\"\"\n\n        def __init__(self, test: \"RegistryRemoteTests\", fail: Exception | None = None):\n            self.test, self.fail, self.calls = test, fail, []\n\n        def __call__(self, cmd, **kwargs):\n            self.calls.append(cmd)\n            if self.fail is not None:\n                raise self.fail\n            self.test.assertEqual(\n                cmd[:7], [\"ssh\", \"-T\", \"-o\", \"BatchMode=yes\", \"-o\", \"ConnectTimeout=4\", \"--\"]\n            )\n            self.test.assertEqual(cmd[7], \"registry-host\")\n            words = shlex.split(cmd[8])\n            self.test.assertEqual(words[:3], [\"$HOME/.local/bin/simple-chat\", \"letter\", \"registry\"])\n            out = io.StringIO()\n            code = CL.registry_main(words[3:], env=self.test.remote_env(), stdout=out)\n            return SimpleNamespace(stdout=out.getvalue(), returncode=code)\n\n        def ops(self) -> list[str]:\n            return [shlex.split(c[8])[3] for c in self.calls]\n\n    def setUp(self) -> None:\n        super().setUp()\n        self.remote_state = os.path.join(self.tmp.name, \"remote-state\")\n        self.remote_db = os.path.join(self.remote_state, \"operator\", \"registry.sqlite3\")\n        OR.SessionRegistry(self.remote_db).close_db()  # the canonical registry, on the registry host\n        os.remove(self.db)  # once the registry lives elsewhere this host keeps no copy at all\n\n    def remote_env(self, **extra: str) -> dict[str, str]:\n        return self.env(SIMPLE_TOOLS_STATE_DIR=self.remote_state, **extra)\n\n    def mac_hook(self, payload: dict, runner, **extra: str):\n"
+          "start": 693,
+          "end": 696,
+          "text": ""
         },
         {
-          "start": 102929,
-          "end": 103465,
-          "text": "        env = self.env(**extra)\n        code = CL.hook(env, io.StringIO(json.dumps(payload)), out, runner=runner, platform=\"darwin\")\n"
+          "start": 1329,
+          "end": 1331,
+          "text": "SIMPL"
         },
         {
-          "start": 103499,
-          "end": 103658,
-          "text": "        text = out.getvalue().strip()\n        return json.loads(text)[\"hookSpecificOutput\"] if text else None\n"
+          "start": 1332,
+          "end": 1333,
+          "text": "_"
         },
         {
-          "start": 103659,
-          "end": 104708,
-          "text": "    def start(self, sid: str, runner, **extra: str):\n        return self.mac_hook(\n            {\"hook_event_name\": \"SessionStart\", \"session_id\": sid, \"source\": \"startup\"}, runner, **extra\n        )\n"
+          "start": 1334,
+          "end": 1335,
+          "text": "OOL"
         },
         {
-          "start": 104709,
-          "end": 105252,
-          "text": "    def remote_lookup(self, sid: str, location: str = \"mac\") -> dict | None:\n        reg = OR.SessionRegistry(self.remote_db)\n        try:\n            return reg.lookup(CL.PLATFORM, location, CL.SCOPE, sid)\n        finally:\n            reg.close_db()\n"
+          "start": 1336,
+          "end": 1339,
+          "text": ""
         },
         {
-          "start": 105253,
-          "end": 106175,
-          "text": "    def test_a_mac_session_registers_over_the_hop_and_keeps_no_local_file(self) -> None:\n        ssh = self.RemoteSsh(self)\n        out = self.start(\"a-0001\", ssh, LETTER_REGISTRY_REMOTE=\"registry-host\")\n        self.assertEqual(ssh.ops(), [\"register\"])\n        rec = self.remote_lookup(\"a-0001\")\n        self.assertIsNotNone(rec)\n        self.assertIsNone(self.remote_lookup(\"a-0001\", location=\"server\"),\n                          \"the location stays where the session runs\")\n        self.assertFalse(os.path.exists(self.db), \"no local registry file is created\")\n"
+          "start": 18264,
+          "end": 18266,
+          "text": "SIMPL"
         },
         {
-          "start": 106176,
-          "end": 107424,
-          "text": "    def test_a_mac_session_without_the_setting_registers_locally_as_before(self) -> None:\n        OR.SessionRegistry(self.db).close_db()  # the Mac's registry exists, as it does today\n        ssh = self.RemoteSsh(self, fail=AssertionError(\"the hop must not be tried\"))\n        out = self.start(\"a-0002\", ssh)\n        self.assertEqual(ssh.calls, [])\n        self.assertTrue(os.path.exists(self.db), \"the Mac-local registry is used\")\n        reg = OR.SessionRegistry(self.db)\n        try:\n            self.assertIsNotNone(reg.lookup(CL.PLATFORM, \"mac\", CL.SCOPE, \"a-0002\"))\n        finally:\n            reg.close_db()\n"
+          "start": 18267,
+          "end": 18268,
+          "text": "_"
         },
         {
-          "start": 107425,
-          "end": 108618,
-          "text": "    def test_a_failed_hop_is_an_error_answer_and_never_a_local_fallback(self) -> None:\n        ssh = self.RemoteSsh(self, fail=OSError(\"no route\"))\n        out = self.start(\"a-0003\", ssh, LETTER_REGISTRY_REMOTE=\"registry-host\")\n        self.assertEqual(ssh.ops(), [\"register\"])\n        self.assertIn(\"No Operator letter yet\", (out or {}).get(\"additionalContext\", \"\"))\n        self.assertFalse(os.path.exists(self.db), \"a failed hop never becomes a local write\")\n        self.assertIsNone(self.remote_lookup(\"a-0003\"))\n"
+          "start": 18269,
+          "end": 18270,
+          "text": "OOL"
         },
         {
-          "start": 108619,
-          "end": 110341,
-          "text": "    def test_a_destination_that_is_not_plain_is_refused_by_its_own_name(self) -> None:\n        ssh = self.RemoteSsh(self, fail=AssertionError(\"a refused destination is never run\"))\n        out = self.start(\"a-0004\", ssh, LETTER_REGISTRY_REMOTE=\"-oProxyCommand=touch /tmp/x\")\n        self.assertEqual(ssh.calls, [])\n        self.assertIn(\"LETTER_REGISTRY_REMOTE does not name an ssh destination\",\n                      (out or {}).get(\"additionalContext\", \"\"))\n        self.assertFalse(os.path.exists(self.db))\n\n    def test_the_parent_is_resolved_where_the_app_record_is(self) -> None:\n        # Chat A is started on this Mac;  the desktop app then starts chat B from A.  The registry\n        # host holds no copy of the app's records, so the hook names the parent it resolved here.\n        from simple_tools.tests.test_claude_app_lineage import write as write_app_record\n\n        write_app_record(self.home, \"local_11111111-1111-4111-8111-111111111111\",\n                         {\"cliSessionId\": \"33333333-3333-4333-8333-333333333333\"})\n        write_app_record(self.home, \"local_22222222-2222-4222-8222-222222222222\",\n                         {\"cliSessionId\": \"44444444-4444-4444-8444-444444444444\",\n                          \"spawnedFrom\": {\"sessionId\": \"local_11111111-1111-4111-8111-111111111111\",\n                                          \"title\": \"t\", \"handOff\": True}})\n        ssh = self.RemoteSsh(self)\n        self.start(\"33333333-3333-4333-8333-333333333333\", ssh,\n                   LETTER_REGISTRY_REMOTE=\"registry-host\",\n                   CLAUDE_CODE_HOST_SESSION_ID=\"local_11111111-1111-4111-8111-111111111111\")\n        self.start(\"44444444-4444-4444-8444-444444444444\", ssh,\n                   LETTER_REGISTRY_REMOTE=\"registry-host\",\n                   CLAUDE_CODE_HOST_SESSION_ID=\"local_22222222-2222-4222-8222-222222222222\")\n        self.assertEqual(ssh.ops(), [\"register\", \"register\"])\n        argv = shlex.split(ssh.calls[1][8])\n        self.assertIn(\"--parent-session-id=33333333-3333-4333-8333-333333333333\", argv)\n        child = self.remote_lookup(\"44444444-4444-4444-8444-444444444444\")\n        self.assertIsNotNone(child)\n        parent = self.remote_lookup(\"33333333-3333-4333-8333-333333333333\")\n        self.assertEqual(child[\"label\"][0], parent[\"label\"][0], \"the child takes the parent's pair\")\n"
+          "start": 18271,
+          "end": 18274,
+          "text": ""
+        },
+        {
+          "start": 18497,
+          "end": 18499,
+          "text": "SIMPL"
+        },
+        {
+          "start": 18500,
+          "end": 18501,
+          "text": "_"
+        },
+        {
+          "start": 18502,
+          "end": 18503,
+          "text": "OOL"
+        },
+        {
+          "start": 18504,
+          "end": 18507,
+          "text": ""
+        },
+        {
+          "start": 18746,
+          "end": 18748,
+          "text": "SIMPL"
+        },
+        {
+          "start": 18749,
+          "end": 18750,
+          "text": "_"
+        },
+        {
+          "start": 18751,
+          "end": 18752,
+          "text": "OOL"
+        },
+        {
+          "start": 18753,
+          "end": 18756,
+          "text": ""
+        },
+        {
+          "start": 19086,
+          "end": 19088,
+          "text": "SIMPL"
+        },
+        {
+          "start": 19089,
+          "end": 19090,
+          "text": "_"
+        },
+        {
+          "start": 19091,
+          "end": 19092,
+          "text": "OOL"
+        },
+        {
+          "start": 19093,
+          "end": 19096,
+          "text": ""
+        },
+        {
+          "start": 19439,
+          "end": 19441,
+          "text": "SIMPL"
+        },
+        {
+          "start": 19442,
+          "end": 19443,
+          "text": "_"
+        },
+        {
+          "start": 19444,
+          "end": 19445,
+          "text": "OOL"
+        },
+        {
+          "start": 19446,
+          "end": 19449,
+          "text": ""
+        },
+        {
+          "start": 94285,
+          "end": 94287,
+          "text": "SIMPL"
+        },
+        {
+          "start": 94288,
+          "end": 94289,
+          "text": "_"
+        },
+        {
+          "start": 94290,
+          "end": 94291,
+          "text": "OOL"
+        },
+        {
+          "start": 94292,
+          "end": 94295,
+          "text": ""
+        },
+        {
+          "start": 94695,
+          "end": 94697,
+          "text": "SIMPL"
+        },
+        {
+          "start": 94698,
+          "end": 94699,
+          "text": "_"
+        },
+        {
+          "start": 94700,
+          "end": 94701,
+          "text": "OOL"
+        },
+        {
+          "start": 94702,
+          "end": 94705,
+          "text": ""
+        },
+        {
+          "start": 102459,
+          "end": 102460,
+          "text": "Rem"
+        },
+        {
+          "start": 102461,
+          "end": 102464,
+          "text": "t"
+        },
+        {
+          "start": 102465,
+          "end": 102473,
+          "text": ""
+        },
+        {
+          "start": 102477,
+          "end": 102477,
+          "text": "s"
+        },
+        {
+          "start": 102492,
+          "end": 102498,
+          "text": "LETTER_REGISTRY_REMOTE:  th"
+        },
+        {
+          "start": 102499,
+          "end": 102511,
+          "text": ""
+        },
+        {
+          "start": 102520,
+          "end": 102521,
+          "text": " host named outright, decoupled from where the chat runs.\n\n    A Mac chat (platform darwin, no location override) registers locally while no destination is\n    named, and over the hop once one is:  the destination wins, a failure of it is an error answer\n    and never a quiet local write, and this host keeps no registry file of its own.\"\"\"\n\n    class Re"
+        },
+        {
+          "start": 102523,
+          "end": 102523,
+          "text": "teSsh:\n        \"\"\"The hop to the registry host:  checks the comman"
+        },
+        {
+          "start": 102524,
+          "end": 102526,
+          "text": "'s shap"
+        },
+        {
+          "start": 102527,
+          "end": 102528,
+          "text": " and"
+        },
+        {
+          "start": 102546,
+          "end": 102547,
+          "text": " side\n        in proces"
+        },
+        {
+          "start": 102549,
+          "end": 102549,
+          "text": "against the REMOTE state dir, s"
+        },
+        {
+          "start": 102550,
+          "end": 102550,
+          "text": " the t"
+        },
+        {
+          "start": 102551,
+          "end": 102551,
+          "text": "o sides "
+        },
+        {
+          "start": 102552,
+          "end": 102552,
+          "text": "ever"
+        },
+        {
+          "start": 102553,
+          "end": 102556,
+          "text": "share a file"
+        },
+        {
+          "start": 102557,
+          "end": 102557,
+          "text": "\"\"\""
+        },
+        {
+          "start": 102563,
+          "end": 102563,
+          "text": "    def __init__(self, test: \"RegistryRemote"
+        },
+        {
+          "start": 102564,
+          "end": 102565,
+          "text": "ests\", fail: Exception | Non"
+        },
+        {
+          "start": 102567,
+          "end": 102568,
+          "text": "= None):\n            se"
+        },
+        {
+          "start": 102569,
+          "end": 102571,
+          "text": "f."
+        },
+        {
+          "start": 102573,
+          "end": 102573,
+          "text": "st, self.fail, self.calls = test, fail, []\n\n        def __call__(self, cmd, **kwa"
+        },
+        {
+          "start": 102574,
+          "end": 102574,
+          "text": "gs):\n"
+        },
+        {
+          "start": 102575,
+          "end": 102575,
+          "text": "           self.calls.append(cmd)\n            if self.fail is not None:\n                raise self.fail\n            self.test.assertEqual(\n                cmd[:7], [\"ssh\", \"-T\", \"-o\", \"BatchMode=yes\", \"-o\", \"ConnectTimeout=4\", \"--\"]\n            )\n            self.test.assertEqual(cmd[7], \""
+        },
+        {
+          "start": 102583,
+          "end": 102584,
+          "text": "-host\")\n"
+        },
+        {
+          "start": 102585,
+          "end": 102587,
+          "text": "           wo"
+        },
+        {
+          "start": 102588,
+          "end": 102597,
+          "text": "d"
+        },
+        {
+          "start": 102599,
+          "end": 102616,
+          "text": "="
+        },
+        {
+          "start": 102619,
+          "end": 102620,
+          "text": "lex.s"
+        },
+        {
+          "start": 102621,
+          "end": 102623,
+          "text": "lit(cmd[8])\n"
+        },
+        {
+          "start": 102625,
+          "end": 102626,
+          "text": "          self.test.assertEqual(words[:3], [\"$HOME/.local/bin/simple-c"
+        },
+        {
+          "start": 102627,
+          "end": 102627,
+          "text": "at\", \"l"
+        },
+        {
+          "start": 102628,
+          "end": 102628,
+          "text": "tter\","
+        },
+        {
+          "start": 102629,
+          "end": 102629,
+          "text": "\""
+        },
+        {
+          "start": 102637,
+          "end": 102643,
+          "text": "\"])"
+        },
+        {
+          "start": 102648,
+          "end": 102648,
+          "text": "        out = io.StringIO()\n            code = "
+        },
+        {
+          "start": 102650,
+          "end": 102651,
+          "text": ".registry_main(words[3:], env=self.test.remote_env(), stdout=out)\n            return SimpleNamespace(stdout=out.getvalue(), returncode=code)\n\n        def ops(self) -> list[str]:\n            return [shlex.split(c[8])[3] for c"
+        },
+        {
+          "start": 102653,
+          "end": 102653,
+          "text": "n "
+        },
+        {
+          "start": 102654,
+          "end": 102654,
+          "text": "elf.calls]\n\n    def setUp(self) -> None:\n        super().setUp()\n        self.remote_state = os.path.join(self.tmp.name, \"remote-state\")\n        self.remote_db = os.path.join(self.remote_state, \"operator\", \"registry.sqlite3\")\n        OR.SessionRegistry(self.remote_db).close_db()  #"
+        },
+        {
+          "start": 102669,
+          "end": 102669,
+          "text": "registry, "
+        },
+        {
+          "start": 102671,
+          "end": 102678,
+          "text": ""
+        },
+        {
+          "start": 102683,
+          "end": 102684,
+          "text": "r"
+        },
+        {
+          "start": 102685,
+          "end": 102692,
+          "text": ""
+        },
+        {
+          "start": 102693,
+          "end": 102697,
+          "text": "is"
+        },
+        {
+          "start": 102698,
+          "end": 102703,
+          "text": ""
+        },
+        {
+          "start": 102706,
+          "end": 102709,
+          "text": "hos"
+        },
+        {
+          "start": 102710,
+          "end": 102723,
+          "text": ""
+        },
+        {
+          "start": 102728,
+          "end": 102728,
+          "text": "    o"
+        },
+        {
+          "start": 102729,
+          "end": 102753,
+          "text": "."
+        },
+        {
+          "start": 102757,
+          "end": 102757,
+          "text": "ve(self.db)  # once "
+        },
+        {
+          "start": 102758,
+          "end": 102758,
+          "text": "h"
+        },
+        {
+          "start": 102759,
+          "end": 102759,
+          "text": " registry lives elsewhere this"
+        },
+        {
+          "start": 102765,
+          "end": 102768,
+          "text": "keep"
+        },
+        {
+          "start": 102770,
+          "end": 102771,
+          "text": "n"
+        },
+        {
+          "start": 102772,
+          "end": 102773,
+          "text": " copy"
+        },
+        {
+          "start": 102775,
+          "end": 102777,
+          "text": ""
+        },
+        {
+          "start": 102778,
+          "end": 102781,
+          "text": ""
+        },
+        {
+          "start": 102782,
+          "end": 102783,
+          "text": "a"
+        },
+        {
+          "start": 102784,
+          "end": 102809,
+          "text": "l"
+        },
+        {
+          "start": 102819,
+          "end": 102819,
+          "text": "remo"
+        },
+        {
+          "start": 102821,
+          "end": 102823,
+          "text": ""
+        },
+        {
+          "start": 102824,
+          "end": 102826,
+          "text": ""
+        },
+        {
+          "start": 102827,
+          "end": 102857,
+          "text": ""
+        },
+        {
+          "start": 102858,
+          "end": 102885,
+          "text": "v"
+        },
+        {
+          "start": 102890,
+          "end": 102890,
+          "text": ", **extra: str"
+        },
+        {
+          "start": 102895,
+          "end": 102896,
+          "text": "dict[str, str]:\n        return self.env(SIMPLE_TOOLS_STATE_DIR=self.rem"
+        },
+        {
+          "start": 102897,
+          "end": 102897,
+          "text": "te_state, **extra)\n\n    def mac_hook(self, payload: dict, run"
+        },
+        {
+          "start": 102899,
+          "end": 102899,
+          "text": "r, **extra: str)"
+        },
+        {
+          "start": 102937,
+          "end": 102975,
+          "text": ""
+        },
+        {
+          "start": 102978,
+          "end": 102983,
+          "text": ""
+        },
+        {
+          "start": 102984,
+          "end": 103008,
+          "text": "="
+        },
+        {
+          "start": 103014,
+          "end": 103018,
+          "text": ""
+        },
+        {
+          "start": 103019,
+          "end": 103037,
+          "text": ""
+        },
+        {
+          "start": 103038,
+          "end": 103039,
+          "text": "v(**"
+        },
+        {
+          "start": 103042,
+          "end": 103046,
+          "text": ""
+        },
+        {
+          "start": 103047,
+          "end": 103065,
+          "text": "a"
+        },
+        {
+          "start": 103066,
+          "end": 103067,
+          "text": ""
+        },
+        {
+          "start": 103068,
+          "end": 103083,
+          "text": ""
+        },
+        {
+          "start": 103101,
+          "end": 103103,
+          "text": "hook(env, io.Str"
+        },
+        {
+          "start": 103105,
+          "end": 103105,
+          "text": "gIO"
+        },
+        {
+          "start": 103106,
+          "end": 103150,
+          "text": "j"
+        },
+        {
+          "start": 103151,
+          "end": 103156,
+          "text": ""
+        },
+        {
+          "start": 103157,
+          "end": 103157,
+          "text": "n."
+        },
+        {
+          "start": 103159,
+          "end": 103159,
+          "text": "mps(pay"
+        },
+        {
+          "start": 103160,
+          "end": 103162,
+          "text": "oad))"
+        },
+        {
+          "start": 103163,
+          "end": 103164,
+          "text": ""
+        },
+        {
+          "start": 103165,
+          "end": 103165,
+          "text": "out,"
+        },
+        {
+          "start": 103166,
+          "end": 103185,
+          "text": ""
+        },
+        {
+          "start": 103186,
+          "end": 103191,
+          "text": "unn"
+        },
+        {
+          "start": 103193,
+          "end": 103194,
+          "text": "=runner"
+        },
+        {
+          "start": 103195,
+          "end": 103196,
+          "text": ""
+        },
+        {
+          "start": 103197,
+          "end": 103219,
+          "text": ""
+        },
+        {
+          "start": 103228,
+          "end": 103229,
+          "text": "\"darw"
+        },
+        {
+          "start": 103231,
+          "end": 103235,
+          "text": ""
+        },
+        {
+          "start": 103236,
+          "end": 103463,
+          "text": ""
+        },
+        {
+          "start": 103507,
+          "end": 103511,
+          "text": "t"
+        },
+        {
+          "start": 103512,
+          "end": 103513,
+          "text": "xt"
+        },
+        {
+          "start": 103516,
+          "end": 103527,
+          "text": ""
+        },
+        {
+          "start": 103543,
+          "end": 103543,
+          "text": "tri"
+        },
+        {
+          "start": 103544,
+          "end": 103552,
+          "text": ""
+        },
+        {
+          "start": 103553,
+          "end": 103558,
+          "text": ""
+        },
+        {
+          "start": 103568,
+          "end": 103568,
+          "text": "return json.loads(text)[\"hookSpecificOutput\"] if text else None\n\n    def start(self, sid: str, runner, **extra: str):\n        return "
+        },
+        {
+          "start": 103573,
+          "end": 103573,
+          "text": "m"
+        },
+        {
+          "start": 103574,
+          "end": 103574,
+          "text": "c_hook(\n            {\"hook_event_name\": \"Se"
+        },
+        {
+          "start": 103576,
+          "end": 103577,
+          "text": "ionSta"
+        },
+        {
+          "start": 103579,
+          "end": 103592,
+          "text": ""
+        },
+        {
+          "start": 103593,
+          "end": 103600,
+          "text": ""
+        },
+        {
+          "start": 103603,
+          "end": 103603,
+          "text": "session_id\": sid, \"source\": \"startup\"}, runner, **extra\n        )\n\n    def remote_lookup(self, sid: str, location: str = \"mac\") -> dict | None:\n        reg = OR.SessionRegistry(self.remote_db)\n        try:\n            return reg.lookup(CL.PL"
+        },
+        {
+          "start": 103604,
+          "end": 103605,
+          "text": "TFORM, location, CL.SCOPE, sid)\n        finally:\n            reg.close_db()\n\n    def test_a_mac_session_registers_over_the_hop_and_keeps_no_local_file(self) -> None:\n        ssh = self.RemoteSsh(self)\n        out = self.start(\"a-0001\", ssh, LETTER_REGISTRY_REMOTE=\"registry-host"
+        },
+        {
+          "start": 103633,
+          "end": 103635,
+          "text": ""
+        },
+        {
+          "start": 103636,
+          "end": 103639,
+          "text": "sh.ops(), "
+        },
+        {
+          "start": 103641,
+          "end": 103642,
+          "text": ""
+        },
+        {
+          "start": 103644,
+          "end": 103669,
+          "text": "gi"
+        },
+        {
+          "start": 103670,
+          "end": 103795,
+          "text": ""
+        },
+        {
+          "start": 103798,
+          "end": 103917,
+          "text": "\"]"
+        },
+        {
+          "start": 103927,
+          "end": 103929,
+          "text": "rec = self.remo"
+        },
+        {
+          "start": 103930,
+          "end": 103932,
+          "text": "e_lookup"
+        },
+        {
+          "start": 103933,
+          "end": 103933,
+          "text": "\"a-0001\")"
+        },
+        {
+          "start": 103942,
+          "end": 103999,
+          "text": ""
+        },
+        {
+          "start": 104004,
+          "end": 104004,
+          "text": "a"
+        },
+        {
+          "start": 104005,
+          "end": 104005,
+          "text": "ser"
+        },
+        {
+          "start": 104006,
+          "end": 104007,
+          "text": "IsNo"
+        },
+        {
+          "start": 104008,
+          "end": 104008,
+          "text": "Non"
+        },
+        {
+          "start": 104009,
+          "end": 104010,
+          "text": "(rec"
+        },
+        {
+          "start": 104011,
+          "end": 104012,
+          "text": ""
+        },
+        {
+          "start": 104021,
+          "end": 104026,
+          "text": "self.assertIsN"
+        },
+        {
+          "start": 104028,
+          "end": 104029,
+          "text": ""
+        },
+        {
+          "start": 104030,
+          "end": 104032,
+          "text": "(se"
+        },
+        {
+          "start": 104033,
+          "end": 104035,
+          "text": "f"
+        },
+        {
+          "start": 104038,
+          "end": 104145,
+          "text": ""
+        },
+        {
+          "start": 104147,
+          "end": 104148,
+          "text": "te_look"
+        },
+        {
+          "start": 104149,
+          "end": 104149,
+          "text": "p(\"a-0001\", "
+        },
+        {
+          "start": 104150,
+          "end": 104150,
+          "text": "ocation=\"s"
+        },
+        {
+          "start": 104151,
+          "end": 104151,
+          "text": "rver"
+        },
+        {
+          "start": 104152,
+          "end": 104152,
+          "text": ")"
+        },
+        {
+          "start": 104174,
+          "end": 104200,
+          "text": ""
+        },
+        {
+          "start": 104207,
+          "end": 104212,
+          "text": ""
+        },
+        {
+          "start": 104213,
+          "end": 104228,
+          "text": "he"
+        },
+        {
+          "start": 104229,
+          "end": 104251,
+          "text": ""
+        },
+        {
+          "start": 104259,
+          "end": 104269,
+          "text": ""
+        },
+        {
+          "start": 104270,
+          "end": 104971,
+          "text": ""
+        },
+        {
+          "start": 104974,
+          "end": 105072,
+          "text": ""
+        },
+        {
+          "start": 105073,
+          "end": 105480,
+          "text": ""
+        },
+        {
+          "start": 105492,
+          "end": 105879,
+          "text": ""
+        },
+        {
+          "start": 105886,
+          "end": 105899,
+          "text": ""
+        },
+        {
+          "start": 105900,
+          "end": 105957,
+          "text": "r"
+        },
+        {
+          "start": 105958,
+          "end": 106041,
+          "text": ""
+        },
+        {
+          "start": 106043,
+          "end": 106159,
+          "text": ""
+        },
+        {
+          "start": 106160,
+          "end": 107326,
+          "text": ""
+        },
+        {
+          "start": 107368,
+          "end": 107369,
+          "text": ""
+        },
+        {
+          "start": 107370,
+          "end": 107370,
+          "text": "elf"
+        },
+        {
+          "start": 107371,
+          "end": 107388,
+          "text": "db)"
+        },
+        {
+          "start": 107391,
+          "end": 107391,
+          "text": "n"
+        },
+        {
+          "start": 107392,
+          "end": 107395,
+          "text": " loc"
+        },
+        {
+          "start": 107396,
+          "end": 107401,
+          "text": "l"
+        },
+        {
+          "start": 107402,
+          "end": 107403,
+          "text": ""
+        },
+        {
+          "start": 107411,
+          "end": 107412,
+          "text": " file i"
+        },
+        {
+          "start": 107413,
+          "end": 107416,
+          "text": " crea"
+        },
+        {
+          "start": 107418,
+          "end": 107419,
+          "text": "d"
+        },
+        {
+          "start": 107420,
+          "end": 107422,
+          "text": ""
+        },
+        {
+          "start": 107438,
+          "end": 107438,
+          "text": "a_mac_session_wi"
+        },
+        {
+          "start": 107440,
+          "end": 107443,
+          "text": ""
+        },
+        {
+          "start": 107444,
+          "end": 107445,
+          "text": ""
+        },
+        {
+          "start": 107446,
+          "end": 107459,
+          "text": "t"
+        },
+        {
+          "start": 107464,
+          "end": 107465,
+          "text": "sett"
+        },
+        {
+          "start": 107466,
+          "end": 107466,
+          "text": "ng_registers_"
+        },
+        {
+          "start": 107467,
+          "end": 107473,
+          "text": "o"
+        },
+        {
+          "start": 107474,
+          "end": 107479,
+          "text": "a"
+        },
+        {
+          "start": 107481,
+          "end": 107481,
+          "text": "y"
+        },
+        {
+          "start": 107482,
+          "end": 107482,
+          "text": "as_bef"
+        },
+        {
+          "start": 107483,
+          "end": 107484,
+          "text": "r"
+        },
+        {
+          "start": 107485,
+          "end": 107486,
+          "text": ""
+        },
+        {
+          "start": 107510,
+          "end": 107514,
+          "text": "OR.S"
+        },
+        {
+          "start": 107515,
+          "end": 107516,
+          "text": "ssionRe"
+        },
+        {
+          "start": 107517,
+          "end": 107519,
+          "text": "ist"
+        },
+        {
+          "start": 107520,
+          "end": 107520,
+          "text": "y(self."
+        },
+        {
+          "start": 107521,
+          "end": 107529,
+          "text": "b).c"
+        },
+        {
+          "start": 107531,
+          "end": 107533,
+          "text": "se_db()"
+        },
+        {
+          "start": 107534,
+          "end": 107536,
+          "text": " #"
+        },
+        {
+          "start": 107541,
+          "end": 107542,
+          "text": "Mac's reg"
+        },
+        {
+          "start": 107543,
+          "end": 107546,
+          "text": "s"
+        },
+        {
+          "start": 107547,
+          "end": 107568,
+          "text": "ry"
+        },
+        {
+          "start": 107571,
+          "end": 107573,
+          "text": ""
+        },
+        {
+          "start": 107574,
+          "end": 107575,
+          "text": "sts, as "
+        },
+        {
+          "start": 107578,
+          "end": 107580,
+          "text": ""
+        },
+        {
+          "start": 107581,
+          "end": 107586,
+          "text": "o"
+        },
+        {
+          "start": 107588,
+          "end": 107588,
+          "text": " today"
+        },
+        {
+          "start": 107597,
+          "end": 107648,
+          "text": ""
+        },
+        {
+          "start": 107650,
+          "end": 107650,
+          "text": "h"
+        },
+        {
+          "start": 107651,
+          "end": 107694,
+          "text": "="
+        },
+        {
+          "start": 107697,
+          "end": 107698,
+          "text": "lf.Rem"
+        },
+        {
+          "start": 107699,
+          "end": 107703,
+          "text": "t"
+        },
+        {
+          "start": 107704,
+          "end": 107706,
+          "text": "S"
+        },
+        {
+          "start": 107707,
+          "end": 107736,
+          "text": ""
+        },
+        {
+          "start": 107737,
+          "end": 107742,
+          "text": ""
+        },
+        {
+          "start": 107747,
+          "end": 107756,
+          "text": ""
+        },
+        {
+          "start": 107758,
+          "end": 107758,
+          "text": "fail=AssertionError("
+        },
+        {
+          "start": 107759,
+          "end": 107768,
+          "text": ""
+        },
+        {
+          "start": 107771,
+          "end": 107776,
+          "text": " hop must not b"
+        },
+        {
+          "start": 107777,
+          "end": 107777,
+          "text": " t"
+        },
+        {
+          "start": 107778,
+          "end": 107782,
+          "text": ""
+        },
+        {
+          "start": 107783,
+          "end": 107784,
+          "text": ""
+        },
+        {
+          "start": 107785,
+          "end": 107786,
+          "text": "d"
+        },
+        {
+          "start": 107787,
+          "end": 107787,
+          "text": ")"
+        },
+        {
+          "start": 107803,
+          "end": 107897,
+          "text": ""
+        },
+        {
+          "start": 107905,
+          "end": 107934,
+          "text": ""
+        },
+        {
+          "start": 107935,
+          "end": 107948,
+          "text": ""
+        },
+        {
+          "start": 107950,
+          "end": 107990,
+          "text": "\""
+        },
+        {
+          "start": 107991,
+          "end": 108241,
+          "text": ""
+        },
+        {
+          "start": 108244,
+          "end": 108245,
+          "text": "0"
+        },
+        {
+          "start": 108248,
+          "end": 108249,
+          "text": ""
+        },
+        {
+          "start": 108250,
+          "end": 108371,
+          "text": ""
+        },
+        {
+          "start": 108373,
+          "end": 108469,
+          "text": "h"
+        },
+        {
+          "start": 108496,
+          "end": 108496,
+          "text": "ssh."
+        },
+        {
+          "start": 108497,
+          "end": 108500,
+          "text": "alls"
+        },
+        {
+          "start": 108502,
+          "end": 108557,
+          "text": ""
+        },
+        {
+          "start": 108558,
+          "end": 108565,
+          "text": ""
+        },
+        {
+          "start": 108587,
+          "end": 108591,
+          "text": "Tru"
+        },
+        {
+          "start": 108608,
+          "end": 108672,
+          "text": ""
+        },
+        {
+          "start": 108676,
+          "end": 108676,
+          "text": ".db"
+        },
+        {
+          "start": 108677,
+          "end": 108677,
+          "text": ","
+        },
+        {
+          "start": 108678,
+          "end": 108715,
+          "text": "\""
+        },
+        {
+          "start": 108719,
+          "end": 108749,
+          "text": "M"
+        },
+        {
+          "start": 108751,
+          "end": 108754,
+          "text": "-l"
+        },
+        {
+          "start": 108755,
+          "end": 108756,
+          "text": "ca"
+        },
+        {
+          "start": 108757,
+          "end": 108818,
+          "text": ""
+        },
+        {
+          "start": 108827,
+          "end": 108842,
+          "text": ""
+        },
+        {
+          "start": 108844,
+          "end": 108857,
+          "text": "s"
+        },
+        {
+          "start": 108858,
+          "end": 108937,
+          "text": "u"
+        },
+        {
+          "start": 108939,
+          "end": 108976,
+          "text": ""
+        },
+        {
+          "start": 108977,
+          "end": 109073,
+          "text": ""
+        },
+        {
+          "start": 109074,
+          "end": 109484,
+          "text": ""
+        },
+        {
+          "start": 109536,
+          "end": 109536,
+          "text": "try:\n            self.assertIsNotNone("
+        },
+        {
+          "start": 109540,
+          "end": 109541,
+          "text": ""
+        },
+        {
+          "start": 109543,
+          "end": 109545,
+          "text": "okup"
+        },
+        {
+          "start": 109546,
+          "end": 109546,
+          "text": "CL.PLATFORM, \""
+        },
+        {
+          "start": 109548,
+          "end": 109554,
+          "text": ""
+        },
+        {
+          "start": 109555,
+          "end": 109574,
+          "text": ""
+        },
+        {
+          "start": 109577,
+          "end": 109594,
+          "text": "CL.SCOPE"
+        },
+        {
+          "start": 109596,
+          "end": 109598,
+          "text": "\""
+        },
+        {
+          "start": 109599,
+          "end": 109601,
+          "text": "-0002\"))\n        fi"
+        },
+        {
+          "start": 109602,
+          "end": 109606,
+          "text": ""
+        },
+        {
+          "start": 109608,
+          "end": 109611,
+          "text": "ly:"
+        },
+        {
+          "start": 109612,
+          "end": 109612,
+          "text": "    "
+        },
+        {
+          "start": 109635,
+          "end": 109635,
+          "text": "\n    def test_a_failed_hop_is_an_error_answer_and_never_a_local_fallback(self) -> None:\n        ssh = self.RemoteSsh(self, fail=OSError(\"no route\"))\n"
+        },
+        {
+          "start": 109649,
+          "end": 109649,
+          "text": "self.start(\"a-0003\", ssh, LETTER_REGISTRY_REMOTE=\"reg"
+        },
+        {
+          "start": 109650,
+          "end": 109653,
+          "text": "s"
+        },
+        {
+          "start": 109655,
+          "end": 109661,
+          "text": "y-host\""
+        },
+        {
+          "start": 109671,
+          "end": 109672,
+          "text": "self.assertEqual(ssh.ops(), [\"reg"
+        },
+        {
+          "start": 109673,
+          "end": 109673,
+          "text": "s"
+        },
+        {
+          "start": 109674,
+          "end": 109677,
+          "text": "er\"])"
+        },
+        {
+          "start": 109686,
+          "end": 109743,
+          "text": ""
+        },
+        {
+          "start": 109748,
+          "end": 109748,
+          "text": "a"
+        },
+        {
+          "start": 109749,
+          "end": 109749,
+          "text": "ser"
+        },
+        {
+          "start": 109750,
+          "end": 109750,
+          "text": "In(\"No Oper"
+        },
+        {
+          "start": 109752,
+          "end": 109752,
+          "text": "or l"
+        },
+        {
+          "start": 109753,
+          "end": 109753,
+          "text": "tter yet\", (out or {"
+        },
+        {
+          "start": 109755,
+          "end": 109755,
+          "text": ".get(\"additionalContext\""
+        },
+        {
+          "start": 109756,
+          "end": 109756,
+          "text": " \"\"))"
+        },
+        {
+          "start": 109765,
+          "end": 109765,
+          "text": "self.assertFalse(os.path.exists(self.db),"
+        },
+        {
+          "start": 109766,
+          "end": 109766,
+          "text": "\"a"
+        },
+        {
+          "start": 109767,
+          "end": 109767,
+          "text": "failed"
+        },
+        {
+          "start": 109768,
+          "end": 109768,
+          "text": "hop"
+        },
+        {
+          "start": 109769,
+          "end": 109769,
+          "text": "never be"
+        },
+        {
+          "start": 109771,
+          "end": 109772,
+          "text": "mes a local wri"
+        },
+        {
+          "start": 109774,
+          "end": 109799,
+          "text": "\""
+        },
+        {
+          "start": 109800,
+          "end": 109801,
+          "text": ""
+        },
+        {
+          "start": 109810,
+          "end": 109810,
+          "text": "self.assertIsNone(self.remote_lookup(\"a-0003\""
+        },
+        {
+          "start": 109811,
+          "end": 109811,
+          "text": ")\n\n    def test_a_destination_that_is_not_plain_is_refused_by_its_own_name(self) -> None"
+        },
+        {
+          "start": 109821,
+          "end": 109829,
+          "text": "ssh"
+        },
+        {
+          "start": 109832,
+          "end": 109834,
+          "text": "self"
+        },
+        {
+          "start": 109835,
+          "end": 109835,
+          "text": "Re"
+        },
+        {
+          "start": 109836,
+          "end": 109836,
+          "text": "oteSsh(self, f"
+        },
+        {
+          "start": 109838,
+          "end": 109838,
+          "text": "l=Assertio"
+        },
+        {
+          "start": 109839,
+          "end": 109839,
+          "text": "Error"
+        },
+        {
+          "start": 109840,
+          "end": 109840,
+          "text": "\"a refused destination is never run\"))"
+        },
+        {
+          "start": 109849,
+          "end": 109849,
+          "text": "out"
+        },
+        {
+          "start": 109850,
+          "end": 109850,
+          "text": "="
+        },
+        {
+          "start": 109851,
+          "end": 109851,
+          "text": "self.start(\"a-0004\","
+        },
+        {
+          "start": 109852,
+          "end": 109852,
+          "text": "ssh,"
+        },
+        {
+          "start": 109853,
+          "end": 109853,
+          "text": "LETTER_REGISTRY_REMOTE=\"-oProxyCommand=touch"
+        },
+        {
+          "start": 109854,
+          "end": 109858,
+          "text": "/tmp/x\")"
+        },
+        {
+          "start": 109867,
+          "end": 109867,
+          "text": "self.assertEqual(ssh.calls,"
+        },
+        {
+          "start": 109868,
+          "end": 109897,
+          "text": "[])"
+        },
+        {
+          "start": 109906,
+          "end": 109906,
+          "text": "self.assertIn(\"LETTER_REGISTRY_REMOTE"
+        },
+        {
+          "start": 109907,
+          "end": 109907,
+          "text": "does"
+        },
+        {
+          "start": 109908,
+          "end": 109908,
+          "text": "not"
+        },
+        {
+          "start": 109909,
+          "end": 109909,
+          "text": "name"
+        },
+        {
+          "start": 109910,
+          "end": 109910,
+          "text": "an"
+        },
+        {
+          "start": 109911,
+          "end": 109911,
+          "text": "ssh"
+        },
+        {
+          "start": 109912,
+          "end": 109920,
+          "text": "d"
+        },
+        {
+          "start": 109921,
+          "end": 109921,
+          "text": "stinati"
+        },
+        {
+          "start": 109922,
+          "end": 109924,
+          "text": ""
+        },
+        {
+          "start": 109948,
+          "end": 109954,
+          "text": "  (out "
+        },
+        {
+          "start": 109956,
+          "end": 109961,
+          "text": " {}).get("
+        },
+        {
+          "start": 109962,
+          "end": 109966,
+          "text": ""
+        },
+        {
+          "start": 109968,
+          "end": 109968,
+          "text": "ditionalCont"
+        },
+        {
+          "start": 109969,
+          "end": 109970,
+          "text": "xt"
+        },
+        {
+          "start": 109971,
+          "end": 109980,
+          "text": ", "
+        },
+        {
+          "start": 109981,
+          "end": 109983,
+          "text": "\"))"
+        },
+        {
+          "start": 109992,
+          "end": 109992,
+          "text": "self.assertFalse(os.path.exists(self.db))\n\n    def test_the_parent_is_resolved_where_the_app_record_is(self) -> None:\n"
+        },
+        {
+          "start": 110000,
+          "end": 110000,
+          "text": "# Chat A is started on this Mac;  the desktop app then starts chat B from A.  The registry\n"
+        },
+        {
+          "start": 110004,
+          "end": 110007,
+          "text": "    # host holds no copy of the "
+        },
+        {
+          "start": 110008,
+          "end": 110008,
+          "text": "pp's re"
+        },
+        {
+          "start": 110009,
+          "end": 110009,
+          "text": "ords, so the hook names the parent it resolved here.\n        from simple_"
+        },
+        {
+          "start": 110011,
+          "end": 110011,
+          "text": "ols.tests.test_claude_app_lineage impo"
+        },
+        {
+          "start": 110012,
+          "end": 110015,
+          "text": "t write as write_app_record\n\n        write_app_record(self.home, \"local_11111111-1111-4111-8111-111111111111"
+        },
+        {
+          "start": 110038,
+          "end": 110038,
+          "text": "     {"
+        },
+        {
+          "start": 110039,
+          "end": 110039,
+          "text": "cliSessionId\": \"33333333"
+        },
+        {
+          "start": 110040,
+          "end": 110040,
+          "text": "3333"
+        },
+        {
+          "start": 110041,
+          "end": 110044,
+          "text": "4333-8333-333333333333\"})\n        w"
+        },
+        {
+          "start": 110045,
+          "end": 110050,
+          "text": "i"
+        },
+        {
+          "start": 110052,
+          "end": 110052,
+          "text": "_app_record(self.home, \"local_22222222-2222-4222-8222-222222222222\",\n                         {\"cliSessionId\": \"44444444-4444-4444-8444-444444444444\",\n                          \"spawnedFrom\": {\"sessionId\": \"local_11111111-1111-4111-8111-111111111111\",\n                                          \"title\": \"t\", \"handOff\": True}})\n        ssh = self.RemoteSsh(self)\n        self.start(\"33333333-3333-4333-8333-333333333333\", ssh,\n                   LETTER_REGISTRY_REMOTE=\"registry-ho"
+        },
+        {
+          "start": 110076,
+          "end": 110076,
+          "text": "CLAUDE_CODE_HOST_SESSION_ID=\"local_11111111-1111-4111-8111-111111111111\")\n"
+        },
+        {
+          "start": 110077,
+          "end": 110077,
+          "text": "       self.start("
+        },
+        {
+          "start": 110078,
+          "end": 110078,
+          "text": "44444444"
+        },
+        {
+          "start": 110079,
+          "end": 110079,
+          "text": "4444"
+        },
+        {
+          "start": 110080,
+          "end": 110081,
+          "text": "4444-8444-444444444444\", ssh,\n                   LETTER_REGISTRY_REMOTE=\"r"
+        },
+        {
+          "start": 110082,
+          "end": 110082,
+          "text": "gis"
+        },
+        {
+          "start": 110083,
+          "end": 110085,
+          "text": ""
+        },
+        {
+          "start": 110086,
+          "end": 110086,
+          "text": "y"
+        },
+        {
+          "start": 110087,
+          "end": 110092,
+          "text": "h"
+        },
+        {
+          "start": 110093,
+          "end": 110096,
+          "text": ""
+        },
+        {
+          "start": 110117,
+          "end": 110118,
+          "text": "   CLAUDE_CODE_HOST_SESSION_ID=\"local_22222222-2222-4222-8222-222222222222\")"
+        },
+        {
+          "start": 110127,
+          "end": 110127,
+          "text": "self.assertEqual(ssh.ops(),"
+        },
+        {
+          "start": 110128,
+          "end": 110128,
+          "text": "[\"register\","
+        },
+        {
+          "start": 110129,
+          "end": 110131,
+          "text": "\"register\"]"
+        },
+        {
+          "start": 110142,
+          "end": 110146,
+          "text": ""
+        },
+        {
+          "start": 110147,
+          "end": 110147,
+          "text": "gv"
+        },
+        {
+          "start": 110150,
+          "end": 110151,
+          "text": ""
+        },
+        {
+          "start": 110152,
+          "end": 110155,
+          "text": "h"
+        },
+        {
+          "start": 110156,
+          "end": 110166,
+          "text": ""
+        },
+        {
+          "start": 110167,
+          "end": 110175,
+          "text": "x"
+        },
+        {
+          "start": 110181,
+          "end": 110181,
+          "text": "(ssh.ca"
+        },
+        {
+          "start": 110182,
+          "end": 110182,
+          "text": "ls[1][8])\n        self.assertIn(\"--parent-sess"
+        },
+        {
+          "start": 110183,
+          "end": 110183,
+          "text": "on-id=33333333-3333-4333-8333-333333333333\", argv)\n        child = self.remote_lookup(\"44444444-4444-4444-8444-444444444444\")\n        self.assertIsNotNo"
+        },
+        {
+          "start": 110185,
+          "end": 110185,
+          "text": "(child)\n        parent = "
+        },
+        {
+          "start": 110186,
+          "end": 110186,
+          "text": "elf.remote_lookup"
+        },
+        {
+          "start": 110187,
+          "end": 110189,
+          "text": "\"33333333"
+        },
+        {
+          "start": 110190,
+          "end": 110192,
+          "text": "3333-4333-8333-333333333333\""
+        },
+        {
+          "start": 110220,
+          "end": 110221,
+          "text": "hil"
+        },
+        {
+          "start": 110222,
+          "end": 110315,
+          "text": ""
+        },
+        {
+          "start": 110324,
+          "end": 110324,
+          "text": "[0]"
+        },
+        {
+          "start": 110326,
+          "end": 110327,
+          "text": "p"
+        },
+        {
+          "start": 110328,
+          "end": 110329,
+          "text": "r"
+        },
+        {
+          "start": 110330,
+          "end": 110330,
+          "text": "nt"
+        },
+        {
+          "start": 110339,
+          "end": 110339,
+          "text": "[0], \"the child takes the parent's pair\""
         }
       ],
       "active": false,
-      "policy_approval_pending": true,
+      "policy_approval_pending": false,
       "source_review_pending": true
     },
     {
       "repo": "Simple-With-Us/AI-Fleet-Coordinator",
       "path": "scripts/simple_tools/tests/test_server_rollout.py",
       "source_path": "scripts/agent_sync/tests/test_server_rollout.py",
-      "source_commit": "8ac91e28906a26b677338ec8bf844bc0d3bd061e",
+      "source_commit": "26e1f04cd67a911e0842e0b5feea6c189a0834c3",
       "base_sha256": "a7dd31b6b705036a45c622c84b21f8bcc7debefb126827a4b0fe962383295dc4",
       "target_sha256": "90a2aa829662f067238e91101c4f77b3147bfda85bbc8ff24f647c656d8c5b79",
       "edits": [
@@ -247,156 +2832,476 @@
           "text": "import uuid\n"
         },
         {
-          "start": 509,
-          "end": 544,
-          "text": "from simple_tools import config as C\n"
+          "start": 514,
+          "end": 516,
+          "text": "simpl"
         },
         {
-          "start": 588,
-          "end": 644,
-          "text": "SERVER_DIR = REPO / \"scripts\" / \"simple_tools\" / \"server\"\n"
+          "start": 517,
+          "end": 518,
+          "text": "_"
         },
         {
-          "start": 1090,
-          "end": 1198,
-          "text": "    spec = importlib.util.spec_from_file_location(\"simple_tools_server_\" + name, SERVER_DIR / (name + \".py\"))\n"
+          "start": 519,
+          "end": 520,
+          "text": "ool"
         },
         {
-          "start": 1849,
-          "end": 1946,
-          "text": "    def __init__(self, client_id: str, client_secret: str, secrets_map: dict[str, str],\n                 operator: dict[str, str] | None = None) -> None:\n"
+          "start": 521,
+          "end": 524,
+          "text": ""
         },
         {
-          "start": 2043,
-          "end": 2043,
-          "text": "        # The Fleet-OPS project's /zulip_operator folder;  None is a host whose project has no such folder.\n        self.operator = operator\n"
+          "start": 621,
+          "end": 623,
+          "text": "simpl"
         },
         {
-          "start": 2102,
-          "end": 2102,
-          "text": "        self.pin = \"st.\" + secrets.token_hex(16)\n"
+          "start": 624,
+          "end": 625,
+          "text": "_"
         },
         {
-          "start": 3250,
-          "end": 3330,
-          "text": "                dedicated = self.headers.get(\"Authorization\") == \"Bearer \" + fake.pin\n                if not dedicated and self.headers.get(\"Authorization\") != \"Bearer \" + fake.token:\n"
+          "start": 626,
+          "end": 627,
+          "text": "ool"
         },
         {
-          "start": 4071,
-          "end": 4071,
-          "text": "                    if dedicated:\n                        metadata.update(projectId=InfisicalEnvTests.FLEET_OPS,\n                                        workspace=InfisicalEnvTests.FLEET_OPS,\n                                        scopes=[{\"environment\": \"prod\", \"secretPath\": \"/zulip_operator\"}])\n"
+          "start": 628,
+          "end": 631,
+          "text": ""
         },
         {
-          "start": 4380,
-          "end": 4380,
-          "text": "                if \"secretPath=%2Fzulip_operator\" in self.path:\n                    if fake.operator is None or \"environment=prod\" not in self.path:\n                        return self._send(404, {\"message\": \"no folder\"})\n                    return self._send(200, {\"secrets\": [\n                        {\"secretKey\": k, \"secretValue\": v, \"workspace\": InfisicalEnvTests.FLEET_OPS,\n                         \"environment\": \"prod\", \"secretPath\": \"/zulip_operator\", \"type\": \"shared\"}\n                        for k, v in fake.operator.items()]})\n"
+          "start": 1141,
+          "end": 1143,
+          "text": "simpl"
         },
         {
-          "start": 5650,
-          "end": 5724,
-          "text": "        self.tmp = Path(tempfile.mkdtemp(prefix=\"simple-tools-infisical-\"))\n"
+          "start": 1144,
+          "end": 1145,
+          "text": "_"
         },
         {
-          "start": 6337,
-          "end": 6548,
-          "text": "            \"ZULIP_BF_BUILDER_API_KEY\": \"bf-\" + secrets.token_hex(8),     # a BotFleet bot:  not a server seat\n            \"ZULIP_CLAUDE_API_KEY\": \"zk-\" + secrets.token_hex(8),         # CLAUDE:  a server seat now\n            \"ZULIP_GROK_BUILD_API_KEY\": \"gb-\" + secrets.token_hex(8),     # GROK-BUILD:  on no instance\n"
+          "start": 1146,
+          "end": 1147,
+          "text": "ool"
         },
         {
-          "start": 7529,
-          "end": 7598,
-          "text": "                     \"ZULIP_ALERT_GB_FIXER_KEY\", \"ZULIP_JET_EMAIL\", \"ZULIP_CLAUDE_API_KEY\"):\n"
+          "start": 1148,
+          "end": 1151,
+          "text": ""
         },
         {
-          "start": 7703,
-          "end": 7808,
-          "text": "        for name in (\"ZULIP_ALERT_GB_FIXER_HEADER\", \"ZULIP_BF_BUILDER_API_KEY\", \"ZULIP_GROK_BUILD_API_KEY\"):\n"
+          "start": 1935,
+          "end": 1935,
+          "text": ",\n                 operator: dict[str, str] | None = None"
         },
         {
-          "start": 8093,
-          "end": 8210,
-          "text": "        self.assertIn(\"loaded 6 variables from Infisical (prod /zulip; 1 replaced a container value, 5 other\", line)\n"
+          "start": 2051,
+          "end": 2051,
+          "text": "# The Fleet-OPS project's /zulip_operator folder;  None is a host whose project has no such folder.\n        self.operator = operator\n        "
         },
         {
-          "start": 8505,
-          "end": 8597,
-          "text": "                      SENTRY_API_TOKEN=\"sntrys_never\", SIMPLE_TOOLS_SENTRY_DSN_OTHER=\"never\")\n"
+          "start": 2101,
+          "end": 2101,
+          "text": "\n        self.pin = \"st.\" + secrets.token_hex(16)"
         },
         {
-          "start": 8856,
-          "end": 8967,
-          "text": "        self.assertNotIn(\"SIMPLE_TOOLS_SENTRY_DSN_OTHER\", out)\n        self.assertIn(\"loaded 7 variables\", line)\n"
+          "start": 3266,
+          "end": 3266,
+          "text": "dedicated = self.headers.get(\"Authorization\") == \"Bearer \" + fake.pin\n                "
         },
         {
-          "start": 9629,
-          "end": 9679,
-          "text": "        self.assertIn(\"loaded 6 variables\", line)\n"
+          "start": 3268,
+          "end": 3268,
+          "text": " not dedicated and"
         },
         {
-          "start": 12252,
-          "end": 12507,
-          "text": "        # CLAUDE moved to the server in the single-server consolidation, so its names load there now.\n        self.assertIn(\"ZULIP_CLAUDE_API_KEY\", names)\n        self.assertIn(\"CLAUDE_ZULIP_KEY\", names)\n        for name in (\"ZULIP_GROK_BUILD_API_KEY\", \"ZULIP_BF_BUILDER_EMAIL\", \"ZULIP_EMAIL\", \"ZULIP_API_KEY\",\n                     \"ZULIP_ZC_API_KEY\", \"ZULIP_KIMI_API_KEY\", \"ZULIP_AMP_API_KEY\", \"ZULIP_SITE\", \"ZULIP_ALERT_GB_TRADER_HEADER\"):\n"
+          "start": 4091,
+          "end": 4091,
+          "text": "if dedicated:\n                        metadata.update(projectId=InfisicalEnvTests.FLEET_OPS,\n                                        workspace=InfisicalEnvTests.FLEET_OPS,\n                                        scopes=[{\"environment\": \"prod\", \"secretPath\": \"/zulip_operator\"}])\n                    "
         },
         {
-          "start": 12549,
-          "end": 12549,
-          "text": "\n    # Runtime-derived fixture id:  deterministic, no committed inventory-shaped literal.\n    FLEET_OPS = str(uuid.uuid5(uuid.NAMESPACE_URL, \"simple-tools/tests/server-rollout/fleet-ops\"))\n\n    def operator_folder_reads(self, fake: FakeInfisical) -> list[str]:\n        return [p for m, p in fake.requests if m == \"GET\" and \"zulip_operator\" in p]\n\n    def test_the_operator_service_identity_loads_from_its_own_project(self) -> None:\n        ops = {\n            \"ZULIP_OPERATOR_EMAIL\": \"operator-bot@zulip.test\",\n            \"ZULIP_OPERATOR_API_KEY\": \"zk-\" + secrets.token_hex(12),\n            \"OPERATOR_ZULIP_USER_ID\": \"1217148\",\n            \"OPERATOR_ZULIP_EMAIL\": \"operator-bot@zulip.test\",\n            \"ZULIP_CLAUDE_API_KEY\": \"not-the-operator-folder's-name\",  # not a service name:  dropped here\n        }\n        with FakeInfisical(self.cid, self.csecret, self.values, operator=ops) as fake:\n            out, line = IE.operator_service_identity(self.env(fake, INFISICAL_FLEET_OPS_PROJECT_ID=self.FLEET_OPS, INFISICAL_OPERATOR_VOICE_TOKEN=fake.pin))\n        for name in (\"OPERATOR_ZULIP_USER_ID\", \"OPERATOR_ZULIP_EMAIL\"):\n            self.assertEqual(out[name], ops[name], \"%s comes from the Fleet-OPS folder\" % name)\n        # The credential pair is NEVER injected into the environment, even though the folder\n        # carries it:  the Operator's credentials reach the daemon only through the\n        # scoped-service-token reader, per the owner's clarified normal method.\n        self.assertNotIn(\"ZULIP_OPERATOR_EMAIL\", out)\n        self.assertNotIn(\"ZULIP_OPERATOR_API_KEY\", out)\n        self.assertNotIn(\"ZULIP_CLAUDE_API_KEY\", out, \"the helper returns only service pins\")\n        self.assertIn(\"Operator service identity from /zulip_operator: 2 of 2\", line)\n        reads = self.operator_folder_reads(fake)\n        self.assertEqual(len(reads), 1)\n        self.assertIn(\"workspaceId=%s\" % self.FLEET_OPS, reads[0])\n        for value in ops.values():\n            self.assertNotIn(value, line)\n\n    def test_a_folder_pin_that_disagrees_with_the_host_pin_is_refused(self) -> None:\n        ops = {\n            \"ZULIP_OPERATOR_EMAIL\": \"operator-bot@zulip.test\",\n            \"ZULIP_OPERATOR_API_KEY\": \"zk-\" + secrets.token_hex(12),\n            \"OPERATOR_ZULIP_USER_ID\": \"1217148\",\n            \"OPERATOR_ZULIP_EMAIL\": \"other-bot@zulip.test\",\n        }\n        env = self.env  # bound before the with, for readability below\n        with FakeInfisical(self.cid, self.csecret, self.values, operator=ops) as fake:\n            out, line = IE.operator_service_identity(env(fake, INFISICAL_FLEET_OPS_PROJECT_ID=self.FLEET_OPS, INFISICAL_OPERATOR_VOICE_TOKEN=fake.pin,\n                                         OPERATOR_ZULIP_EMAIL=\"operator-bot@zulip.test\"))\n        self.assertNotIn(\"OPERATOR_ZULIP_USER_ID\", out, \"both pins are refused on a disagreement\")\n        self.assertNotIn(\"OPERATOR_ZULIP_EMAIL\", out, \"the conflicting folder cannot override the host\")\n        self.assertNotIn(\"ZULIP_OPERATOR_API_KEY\", out, \"the pair never loads, pin or no pin\")\n        self.assertIn(\"Operator service pins refused (folder pin disagrees with the host pin)\", line)\n        self.assertNotIn(ops[\"ZULIP_OPERATOR_API_KEY\"], line)\n        self.assertNotIn(\"other-bot@zulip.test\", line)\n\n    def test_the_operator_credential_pair_is_never_injected(self) -> None:\n        # Even with no pins anywhere, the folder's credential pair does not enter the\n        # environment:  no Zulip key pair rides env on the normal service-token path.\n        ops = {\n            \"ZULIP_OPERATOR_EMAIL\": \"someone-else@zulip.test\",\n            \"ZULIP_OPERATOR_API_KEY\": \"zk-\" + secrets.token_hex(12),\n        }\n        with FakeInfisical(self.cid, self.csecret, self.values, operator=ops) as fake:\n            out, line = IE.operator_service_identity(self.env(fake, INFISICAL_FLEET_OPS_PROJECT_ID=self.FLEET_OPS, INFISICAL_OPERATOR_VOICE_TOKEN=fake.pin))\n        self.assertNotIn(\"ZULIP_OPERATOR_API_KEY\", out)\n        self.assertNotIn(\"ZULIP_OPERATOR_EMAIL\", out)\n        self.assertNotIn(ops[\"ZULIP_OPERATOR_API_KEY\"], line)\n        self.assertNotIn(\"someone-else@zulip.test\", line)\n\n    def test_a_non_numeric_operator_user_id_is_refused_alone(self) -> None:\n        ops = {\n            \"ZULIP_OPERATOR_EMAIL\": \"operator-bot@zulip.test\",\n            \"ZULIP_OPERATOR_API_KEY\": \"zk-\" + secrets.token_hex(12),\n            \"OPERATOR_ZULIP_USER_ID\": \"not-a-number\",\n            \"OPERATOR_ZULIP_EMAIL\": \"operator-bot@zulip.test\",\n        }\n        with FakeInfisical(self.cid, self.csecret, self.values, operator=ops) as fake:\n            out, line = IE.operator_service_identity(self.env(fake, INFISICAL_FLEET_OPS_PROJECT_ID=self.FLEET_OPS, INFISICAL_OPERATOR_VOICE_TOKEN=fake.pin))\n        self.assertNotIn(\"OPERATOR_ZULIP_USER_ID\", out)\n        self.assertNotIn(\"ZULIP_OPERATOR_API_KEY\", out, \"the pair never loads\")\n        self.assertIn(\"OPERATOR_ZULIP_USER_ID refused (not a positive id)\", line)\n        self.assertNotIn(\"not-a-number\", line)\n\n    def test_no_operator_folder_is_a_note_not_a_stop(self) -> None:\n        with FakeInfisical(self.cid, self.csecret, self.values) as fake:  # operator=None: no such folder\n            out, line = IE.operator_service_identity(self.env(fake, INFISICAL_FLEET_OPS_PROJECT_ID=self.FLEET_OPS, INFISICAL_OPERATOR_VOICE_TOKEN=fake.pin))\n        self.assertNotIn(\"ZULIP_OPERATOR_API_KEY\", out)\n        self.assertIn(\"Operator service identity not loaded\", line)\n        self.assertEqual(len(self.operator_folder_reads(fake)), 1, \"the folder was asked for once\")\n\n    def test_operator_pins_never_reuse_primary_listener_token(self):\n        with FakeInfisical(self.cid, self.csecret, self.values, operator={\"OPERATOR_ZULIP_USER_ID\": \"12\"}) as fake:\n            out, line = IE.build_env(self.env(fake, INFISICAL_FLEET_OPS_PROJECT_ID=self.FLEET_OPS))\n        self.assertNotIn(\"OPERATOR_ZULIP_USER_ID\", out)\n        self.assertEqual(self.operator_folder_reads(fake), [])\n        self.assertIn(\"no dedicated token\", line)\n\n    def test_the_allowlist_covers_every_name_the_sample_seats_read(self) -> None:\n        # The loader and the shipped config must agree exactly:  every email_env/key_env a server\n        # seat section reads is allowlisted, or the loader never injects it and the seat cannot\n        # connect.  GROK's section reads the GROK_BUILD stem names (its bot file is Grok-Build).\n        sample = tomllib.loads((SERVER_DIR / \"listener.toml\").read_text())\n        names = IE.allowed_names(IE.server_codes(IE.PARTITION_DEFAULT))\n        read = set()\n        for section in sample.get(\"seat\", {}).values():\n            for field in (\"email_env\", \"key_env\"):\n                if section.get(field):\n                    read.add(section[field])\n        self.assertTrue(read, \"the sample's seat sections name their variables\")\n        self.assertEqual(read - names, set())\n        self.assertIn(\"GROK_BUILD_ZULIP_KEY\", read & names)\n"
+          "start": 4377,
+          "end": 4377,
+          "text": "})\n                if \"secretPath=%2Fzulip_operator\" in self.path:\n                    if fake.operator is None or \"environment=prod\" not in self.path:\n                        return self._send(404, {\"message\": \"no folder\"})\n                    return self._send(200, {\"secrets\": [\n                        {\"secretKey\": k, \"secretValue\": v, \"workspace\": InfisicalEnvTests.FLEET_OPS,\n                         \"environment\": \"prod\", \"secretPath\": \"/zulip_operator\", \"type\": \"shared\"}\n                        for k, v in fake.operator.items()]"
         },
         {
-          "start": 13554,
-          "end": 13638,
-          "text": "        self.assertIn(\"simple-chat: loaded 6 variables from Infisical\", run.stderr)\n"
+          "start": 5699,
+          "end": 5701,
+          "text": "simpl"
         },
         {
-          "start": 13768,
-          "end": 13871,
-          "text": "        env = {**env, \"SIMPLE_TOOLS_STATE_DIR\": str(self.tmp / \"data\"), \"SIMPLE_TOOLS_INSTANCE\": \"server\"}\n"
+          "start": 5702,
+          "end": 5703,
+          "text": "-"
         },
         {
-          "start": 14449,
-          "end": 14533,
-          "text": "        self.assertIn(\"simple-chat: loaded 6 variables from Infisical\", run.stderr)\n"
+          "start": 5704,
+          "end": 5705,
+          "text": "ool"
         },
         {
-          "start": 17496,
-          "end": 17566,
-          "text": "        self.tmp = Path(tempfile.mkdtemp(prefix=\"simple-tools-apply-\"))\n"
+          "start": 5706,
+          "end": 5709,
+          "text": ""
         },
         {
-          "start": 26021,
-          "end": 26220,
-          "text": "        # A seat that is on no instance in the server's live file is a partition problem the merge cannot fix.\n        self.live.write_text(self.live.read_text() + '\\n[seat.GROK-BUILD]\\nbot = \"Grok\"\\nwake = \"http\"\\n')\n"
+          "start": 6411,
+          "end": 6412,
+          "text": ""
         },
         {
-          "start": 26409,
-          "end": 26451,
-          "text": "        self.assertIn(\"seat GROK-BUILD\", out)\n"
+          "start": 6414,
+          "end": 6425,
+          "text": "a"
+        },
+        {
+          "start": 6435,
+          "end": 6438,
+          "text": "bo"
+        },
+        {
+          "start": 6497,
+          "end": 6500,
+          "text": "zk"
+        },
+        {
+          "start": 6537,
+          "end": 6537,
+          "text": "CLAUDE:  "
+        },
+        {
+          "start": 6539,
+          "end": 6542,
+          "text": "server"
+        },
+        {
+          "start": 6547,
+          "end": 6547,
+          "text": " now\n            \"ZULIP_GROK_BUILD_API_KEY\": \"gb-\" + secrets.token_hex(8),     # GROK-BUILD:  on no instance"
+        },
+        {
+          "start": 7595,
+          "end": 7595,
+          "text": ", \"ZULIP_CLAUDE_API_KEY\""
+        },
+        {
+          "start": 7790,
+          "end": 7791,
+          "text": "GROK_BUI"
+        },
+        {
+          "start": 7792,
+          "end": 7794,
+          "text": ""
+        },
+        {
+          "start": 7795,
+          "end": 7796,
+          "text": ""
+        },
+        {
+          "start": 8123,
+          "end": 8124,
+          "text": "6"
+        },
+        {
+          "start": 8560,
+          "end": 8562,
+          "text": "SIMPL"
+        },
+        {
+          "start": 8563,
+          "end": 8564,
+          "text": "_"
+        },
+        {
+          "start": 8565,
+          "end": 8566,
+          "text": "OOL"
+        },
+        {
+          "start": 8567,
+          "end": 8570,
+          "text": ""
+        },
+        {
+          "start": 8882,
+          "end": 8884,
+          "text": "SIMPL"
+        },
+        {
+          "start": 8885,
+          "end": 8886,
+          "text": "_"
+        },
+        {
+          "start": 8887,
+          "end": 8888,
+          "text": "OOL"
+        },
+        {
+          "start": 8889,
+          "end": 8892,
+          "text": ""
+        },
+        {
+          "start": 8947,
+          "end": 8948,
+          "text": "7"
+        },
+        {
+          "start": 9659,
+          "end": 9660,
+          "text": "6"
+        },
+        {
+          "start": 12260,
+          "end": 12260,
+          "text": "# CLAUDE moved to the server in the single-server consolidation, so its names load there now.\n        self.assertIn(\"ZULIP_CLAUDE_API_KEY\", names)\n        self.assertIn(\"CLAUDE_ZULIP_KEY\", names)\n        "
+        },
+        {
+          "start": 12280,
+          "end": 12281,
+          "text": "GROK_BUI"
+        },
+        {
+          "start": 12282,
+          "end": 12284,
+          "text": ""
+        },
+        {
+          "start": 12285,
+          "end": 12286,
+          "text": ""
+        },
+        {
+          "start": 12330,
+          "end": 12333,
+          "text": "EM"
+        },
+        {
+          "start": 12334,
+          "end": 12335,
+          "text": ""
+        },
+        {
+          "start": 12336,
+          "end": 12340,
+          "text": "L"
+        },
+        {
+          "start": 12349,
+          "end": 12354,
+          "text": ""
+        },
+        {
+          "start": 12393,
+          "end": 12396,
+          "text": "ZC"
+        },
+        {
+          "start": 12414,
+          "end": 12414,
+          "text": "KIMI_API_K"
+        },
+        {
+          "start": 12415,
+          "end": 12419,
+          "text": "Y"
+        },
+        {
+          "start": 12427,
+          "end": 12427,
+          "text": "P_AM"
+        },
+        {
+          "start": 12452,
+          "end": 12473,
+          "text": ""
+        },
+        {
+          "start": 12541,
+          "end": 12541,
+          "text": " names)\n\n    # Runtime-derived fixture id:  deterministic, no committed inventory-shaped literal.\n    FLEET_OPS = str(uuid.uuid5(uuid.NAMESPACE_URL, \"simple-tools/tests/server-rollout/fleet-ops\"))\n\n    def operator_folder_reads(self, fake: FakeInfisical) -> list[str]:\n        return [p for m, p in fake.requests if m == \"GET\" and \"zulip_operator\" in p]\n\n    def test_the_operator_service_identity_loads_from_its_own_project(self) -> None:\n        ops = {\n            \"ZULIP_OPERATOR_EMAIL\": \"operator-bot@zulip.test\",\n            \"ZULIP_OPERATOR_API_KEY\": \"zk-\" + secrets.token_hex(12),\n            \"OPERATOR_ZULIP_USER_ID\": \"1217148\",\n            \"OPERATOR_ZULIP_EMAIL\": \"operator-bot@zulip.test\",\n            \"ZULIP_CLAUDE_API_KEY\": \"not-the-operator-folder's-name\",  # not a service name:  dropped here\n        }\n        with FakeInfisical(self.cid, self.csecret, self.values, operator=ops) as fake:\n            out, line = IE.operator_service_identity(self.env(fake, INFISICAL_FLEET_OPS_PROJECT_ID=self.FLEET_OPS, INFISICAL_OPERATOR_VOICE_TOKEN=fake.pin))\n        for name in (\"OPERATOR_ZULIP_USER_ID\", \"OPERATOR_ZULIP_EMAIL\"):\n            self.assertEqual(out[name], ops[name], \"%s comes from the Fleet-OPS folder\" % name)\n        # The credential pair is NEVER injected into the environment, even though the folder\n        # carries it:  the Operator's credentials reach the daemon only through the\n        # scoped-service-token reader, per the owner's clarified normal method.\n        self.assertNotIn(\"ZULIP_OPERATOR_EMAIL\", out)\n        self.assertNotIn(\"ZULIP_OPERATOR_API_KEY\", out)\n        self.assertNotIn(\"ZULIP_CLAUDE_API_KEY\", out, \"the helper returns only service pins\")\n        self.assertIn(\"Operator service identity from /zulip_operator: 2 of 2\", line)\n        reads = self.operator_folder_reads(fake)\n        self.assertEqual(len(reads), 1)\n        self.assertIn(\"workspaceId=%s\" % self.FLEET_OPS, reads[0])\n        for value in ops.values():\n            self.assertNotIn(value, line)\n\n    def test_a_folder_pin_that_disagrees_with_the_host_pin_is_refused(self) -> None:\n        ops = {\n            \"ZULIP_OPERATOR_EMAIL\": \"operator-bot@zulip.test\",\n            \"ZULIP_OPERATOR_API_KEY\": \"zk-\" + secrets.token_hex(12),\n            \"OPERATOR_ZULIP_USER_ID\": \"1217148\",\n            \"OPERATOR_ZULIP_EMAIL\": \"other-bot@zulip.test\",\n        }\n        env = self.env  # bound before the with, for readability below\n        with FakeInfisical(self.cid, self.csecret, self.values, operator=ops) as fake:\n            out, line = IE.operator_service_identity(env(fake, INFISICAL_FLEET_OPS_PROJECT_ID=self.FLEET_OPS, INFISICAL_OPERATOR_VOICE_TOKEN=fake.pin,\n                                         OPERATOR_ZULIP_EMAIL=\"operator-bot@zulip.test\"))\n        self.assertNotIn(\"OPERATOR_ZULIP_USER_ID\", out, \"both pins are refused on a disagreement\")\n        self.assertNotIn(\"OPERATOR_ZULIP_EMAIL\", out, \"the conflicting folder cannot override the host\")\n        self.assertNotIn(\"ZULIP_OPERATOR_API_KEY\", out, \"the pair never loads, pin or no pin\")\n        self.assertIn(\"Operator service pins refused (folder pin disagrees with the host pin)\", line)\n        self.assertNotIn(ops[\"ZULIP_OPERATOR_API_KEY\"], line)\n        self.assertNotIn(\"other-bot@zulip.test\", line)\n\n    def test_the_operator_credential_pair_is_never_injected(self) -> None:\n        # Even with no pins anywhere, the folder's credential pair does not enter the\n        # environment:  no Zulip key pair rides env on the normal service-token path.\n        ops = {\n            \"ZULIP_OPERATOR_EMAIL\": \"someone-else@zulip.test\",\n            \"ZULIP_OPERATOR_API_KEY\": \"zk-\" + secrets.token_hex(12),\n        }\n        with FakeInfisical(self.cid, self.csecret, self.values, operator=ops) as fake:\n            out, line = IE.operator_service_identity(self.env(fake, INFISICAL_FLEET_OPS_PROJECT_ID=self.FLEET_OPS, INFISICAL_OPERATOR_VOICE_TOKEN=fake.pin))\n        self.assertNotIn(\"ZULIP_OPERATOR_API_KEY\", out)\n        self.assertNotIn(\"ZULIP_OPERATOR_EMAIL\", out)\n        self.assertNotIn(ops[\"ZULIP_OPERATOR_API_KEY\"], line)\n        self.assertNotIn(\"someone-else@zulip.test\", line)\n\n    def test_a_non_numeric_operator_user_id_is_refused_alone(self) -> None:\n        ops = {\n            \"ZULIP_OPERATOR_EMAIL\": \"operator-bot@zulip.test\",\n            \"ZULIP_OPERATOR_API_KEY\": \"zk-\" + secrets.token_hex(12),\n            \"OPERATOR_ZULIP_USER_ID\": \"not-a-number\",\n            \"OPERATOR_ZULIP_EMAIL\": \"operator-bot@zulip.test\",\n        }\n        with FakeInfisical(self.cid, self.csecret, self.values, operator=ops) as fake:\n            out, line = IE.operator_service_identity(self.env(fake, INFISICAL_FLEET_OPS_PROJECT_ID=self.FLEET_OPS, INFISICAL_OPERATOR_VOICE_TOKEN=fake.pin))\n        self.assertNotIn(\"OPERATOR_ZULIP_USER_ID\", out)\n        self.assertNotIn(\"ZULIP_OPERATOR_API_KEY\", out, \"the pair never loads\")\n        self.assertIn(\"OPERATOR_ZULIP_USER_ID refused (not a positive id)\", line)\n        self.assertNotIn(\"not-a-number\", line)\n\n    def test_no_operator_folder_is_a_note_not_a_stop(self) -> None:\n        with FakeInfisical(self.cid, self.csecret, self.values) as fake:  # operator=None: no such folder\n            out, line = IE.operator_service_identity(self.env(fake, INFISICAL_FLEET_OPS_PROJECT_ID=self.FLEET_OPS, INFISICAL_OPERATOR_VOICE_TOKEN=fake.pin))\n        self.assertNotIn(\"ZULIP_OPERATOR_API_KEY\", out)\n        self.assertIn(\"Operator service identity not loaded\", line)\n        self.assertEqual(len(self.operator_folder_reads(fake)), 1, \"the folder was asked for once\")\n\n    def test_operator_pins_never_reuse_primary_listener_token(self):\n        with FakeInfisical(self.cid, self.csecret, self.values, operator={\"OPERATOR_ZULIP_USER_ID\": \"12\"}) as fake:\n            out, line = IE.build_env(self.env(fake, INFISICAL_FLEET_OPS_PROJECT_ID=self.FLEET_OPS))\n        self.assertNotIn(\"OPERATOR_ZULIP_USER_ID\", out)\n        self.assertEqual(self.operator_folder_reads(fake), [])\n        self.assertIn(\"no dedicated token\", line)\n\n    def test_the_allowlist_covers_every_name_the_sample_seats_read(self) -> None:\n        # The loader and the shipped config must agree exactly:  every email_env/key_env a server\n        # seat section reads is allowlisted, or the loader never injects it and the seat cannot\n        # connect.  GROK's section reads the GROK_BUILD stem names (its bot file is Grok-Build).\n        sample = tomllib.loads((SERVER_DIR / \"listener.toml\").read_text())\n        names = IE.allowed_names(IE.server_codes(IE.PARTITION_DEFAULT))\n        read = set()\n        for section in sample.get(\"seat\", {}).values():\n            for field in (\"email_env\", \"key_env\"):\n                if section.get(field):\n                    read.add(section[field])\n        self.assertTrue(read, \"the sample's seat sections name their variables\")\n        self.assertEqual(read - names, set())\n        self.assertIn(\"GROK_BUILD_ZULIP_KEY\", read &"
+        },
+        {
+          "start": 13597,
+          "end": 13598,
+          "text": "6"
+        },
+        {
+          "start": 13791,
+          "end": 13793,
+          "text": "SIMPL"
+        },
+        {
+          "start": 13794,
+          "end": 13795,
+          "text": "_"
+        },
+        {
+          "start": 13796,
+          "end": 13797,
+          "text": "OOL"
+        },
+        {
+          "start": 13798,
+          "end": 13801,
+          "text": ""
+        },
+        {
+          "start": 13839,
+          "end": 13841,
+          "text": "SIMPL"
+        },
+        {
+          "start": 13842,
+          "end": 13843,
+          "text": "_"
+        },
+        {
+          "start": 13844,
+          "end": 13845,
+          "text": "OOL"
+        },
+        {
+          "start": 13846,
+          "end": 13849,
+          "text": ""
+        },
+        {
+          "start": 14492,
+          "end": 14493,
+          "text": "6"
+        },
+        {
+          "start": 17545,
+          "end": 17547,
+          "text": "simpl"
+        },
+        {
+          "start": 17548,
+          "end": 17549,
+          "text": "-"
+        },
+        {
+          "start": 17550,
+          "end": 17551,
+          "text": "ool"
+        },
+        {
+          "start": 17552,
+          "end": 17555,
+          "text": ""
+        },
+        {
+          "start": 26033,
+          "end": 26037,
+          "text": ""
+        },
+        {
+          "start": 26041,
+          "end": 26041,
+          "text": " that is on no instance"
+        },
+        {
+          "start": 26175,
+          "end": 26176,
+          "text": "GROK-BUI"
+        },
+        {
+          "start": 26177,
+          "end": 26179,
+          "text": ""
+        },
+        {
+          "start": 26180,
+          "end": 26181,
+          "text": ""
+        },
+        {
+          "start": 26191,
+          "end": 26197,
+          "text": "Grok"
+        },
+        {
+          "start": 26208,
+          "end": 26214,
+          "text": "http"
+        },
+        {
+          "start": 26437,
+          "end": 26438,
+          "text": "GROK-BUI"
+        },
+        {
+          "start": 26439,
+          "end": 26441,
+          "text": ""
+        },
+        {
+          "start": 26442,
+          "end": 26443,
+          "text": ""
         }
       ],
       "active": false,
-      "policy_approval_pending": true,
+      "policy_approval_pending": false,
       "source_review_pending": true
     },
     {
       "repo": "Simple-With-Us/AI-Fleet-Coordinator",
       "path": "scripts/simple-tools-mcp/package-lock.json",
       "source_path": "scripts/agent-sync-mcp/package-lock.json",
-      "source_commit": "8ac91e28906a26b677338ec8bf844bc0d3bd061e",
-      "base_sha256": "be70b1dbccf425d1515fa5ebcdd3c5d5699b13d3292798c6ddd9480dd356b960",
-      "target_sha256": "f4ba42e3005e2a394cc21fa96e556b75c0f34c60159a44282e38f01d8fb3a3b2",
+      "source_commit": "26e1f04cd67a911e0842e0b5feea6c189a0834c3",
+      "base_sha256": "790dced27d6553003dddffa7843768231dbc51727c6a0930e3732f44be75a846",
+      "target_sha256": "05eaec9a2e0673f727a3f5dc43ca75d63e1b96abd1ee5c186f6192aacf3755e9",
       "edits": [
         {
-          "start": 2,
-          "end": 30,
-          "text": "  \"name\": \"simple-tools-mcp\",\n"
+          "start": 13,
+          "end": 15,
+          "text": "simpl"
         },
         {
-          "start": 129,
-          "end": 161,
-          "text": "      \"name\": \"simple-tools-mcp\",\n"
+          "start": 16,
+          "end": 17,
+          "text": "-"
+        },
+        {
+          "start": 18,
+          "end": 19,
+          "text": "ool"
+        },
+        {
+          "start": 20,
+          "end": 23,
+          "text": ""
+        },
+        {
+          "start": 144,
+          "end": 146,
+          "text": "simpl"
+        },
+        {
+          "start": 147,
+          "end": 148,
+          "text": "-"
+        },
+        {
+          "start": 149,
+          "end": 150,
+          "text": "ool"
+        },
+        {
+          "start": 151,
+          "end": 154,
+          "text": ""
         }
       ],
       "active": false,
-      "policy_approval_pending": true,
+      "policy_approval_pending": false,
       "source_review_pending": true
     }
   ],
