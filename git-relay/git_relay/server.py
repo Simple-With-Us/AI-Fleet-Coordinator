@@ -422,7 +422,7 @@ class Relay:
             except PolicyDenied as exc:
                 self._release(key, "refused")
                 outcome = "denied"
-                detail = {"reason": str(exc)}
+                detail = _denied_audit_detail(action, canonical, exc)
                 return 403, {"error": str(exc)}
             except (PreReadUnavailable, DispatchPreReadUnavailable):
                 self._release(key, "refused")
@@ -449,7 +449,7 @@ class Relay:
             except ValueError as exc:
                 self._release(key, "refused")
                 outcome = "bad_request"
-                detail = {"reason": str(exc)}
+                detail = _denied_audit_detail(action, canonical, exc)
                 return 400, {"error": str(exc)}
             except RelayGitHubError as exc:
                 # Audit only allow-listed scalar fields:  an upstream error message
@@ -685,6 +685,21 @@ _WORKFLOW_AUDIT_SCALARS = (
     "method",
     "path",
 )
+
+
+def _denied_audit_detail(action: str, canonical: dict, exc: Exception) -> dict:
+    """A denied call's audit detail:  the refusal reason plus, for workflow actions,
+    the same bounded scalar allowlist a successful call audits.  The message, edits
+    and file content are never logged - they can carry a private payload.  This is
+    what lets a guarded transaction bind a denied probe call to its one-time proof
+    id through a structured, non-secret field (the probe path)."""
+    detail: dict = {"reason": str(exc)}
+    if action in SeatPolicy.WORKFLOW_ACTIONS and isinstance(canonical, dict):
+        for key in _WORKFLOW_AUDIT_SCALARS:
+            value = canonical.get(key)
+            if isinstance(value, (int, str)) and not isinstance(value, bool):
+                detail[key] = value
+    return detail
 
 
 def _workflow_audit_detail(canonical: dict, result: dict) -> dict:

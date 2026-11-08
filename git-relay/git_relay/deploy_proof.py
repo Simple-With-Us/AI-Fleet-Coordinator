@@ -10,10 +10,12 @@ write can satisfy, so no answer - expected or not - can produce a mutation.
 import hashlib
 import hmac
 import json
+import os
+import re
+import tempfile
 import time
 from urllib.error import HTTPError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
-
 
 # The git null object id. It never names a real object: a branch head is always
 # an existing commit (the null id marks an unborn or deleted ref), and a blob
@@ -23,6 +25,19 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 # the relay's ref/commit/blob comparisons cannot match it, and the provider's
 # createCommitOnBranch enforces expectedHeadOid server-side.
 NULL_OID = "0" * 40
+
+# One-time proof ids: a bounded git-path-safe charset, because the id rides the
+# negative probe's PATH (the structured, non-secret field the relay audits for
+# a denied workflow call - never the message or edits, which can carry a
+# private payload).
+PROOF_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+
+
+def probe_path(proof_id):
+    """The negative probe's path, carrying the one-time proof id into the audit row."""
+    if not isinstance(proof_id, str) or not PROOF_ID.fullmatch(proof_id):
+        raise ValueError("invalid proof id")
+    return "deploy-proof/%s.probe" % proof_id
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -108,18 +123,22 @@ class ExternalProof(RuntimeProof):
     """Own-seat, no-write runtime proof from outside the relay host.
 
     Same probes as the local proof, against the relay's external URL, plus a
-    receipt the deployment transaction can audit: the negative probe's message
-    carries the one-time proof id, so the denied call the relay audits (the
-    current API records the canonical arguments of a denied call in its audit
-    detail) is findable by exactly that id. The proof never assumes the
-    manifest digest of the deployed image was already logged: it accepts the
-    documented refusal set and records which refusal answered.
+    receipt the deployment transaction can audit. The negative probe's PATH
+    carries the one-time proof id: the relay audits a denied workflow call's
+    allowlisted scalars (path among them), never the message or edits, so the
+    actual audit row is findable by exactly that id. The proof never assumes
+    the manifest digest of the deployed image was already logged: it accepts
+    the documented refusal set and records which refusal answered.
 
     The negative probe is mutation-free by construction, not merely denied
     first: it pins NULL_OID as expected head and base blob, which no ref,
     commit or blob can equal, so even a service that unexpectedly ALLOWS the
     call cannot complete the provider write. An unexpected answer is recorded
     REFUSED and halts the transaction regardless.
+
+    The record binds the exact policy transaction it proves for: policy_before
+    and policy_after are the full canonical digests (seat_add_policy.digest) of
+    the live policy and of the live policy plus the one added seat.
 
     Timeout recovery contract: a transport error or timeout yields an
     INCONCLUSIVE record, never a signed success. An inconclusive probe left the
@@ -129,14 +148,18 @@ class ExternalProof(RuntimeProof):
 
     URL = "https://agents.simplewithus.com/v1/"
 
-    def __call__(self, seat, proof_id):
+    def __call__(self, seat, proof_id, policy_before, policy_after):
+        path = probe_path(proof_id)
         record = {
-            "v": 1,
+            "v": 2,
             "seat": seat,
             "proof_id": proof_id,
             "ts": int(time.time()),
             "url": self.URL,
             "repo": self.REPO,
+            "probe_path": path,
+            "policy_before": policy_before,
+            "policy_after": policy_after,
         }
         try:
             status, repo = self.call("wf_repo_get", {"repo": self.REPO})
@@ -154,7 +177,7 @@ class ExternalProof(RuntimeProof):
         probe = {
             "repo": self.REPO,
             "branch": "main",
-            "path": "README.md",
+            "path": path,
             "message": "Bounded external negative probe %s: default branch must refuse" % proof_id,
             "expected_head_sha": NULL_OID,
             "base_blob_sha": NULL_OID,
@@ -185,11 +208,145 @@ def sign_receipt(key, record):
     }
 
 
-def verify_receipt(key, receipt, *, seat, now, seen_proof_ids, window_s=RECEIPT_WINDOW_S):
-    """Return the proven record, or refuse: forged, stale, replayed or wrong-seat.
+class ReplayStore:
+    """Durable accepted-proof store: survives a process restart, fails closed.
 
-    seen_proof_ids is the caller's accepted-id store; a proof id is added only
-    after this accepts, so a replayed receipt is refused on every later use.
+    One small JSON document, rewritten atomically (same-directory temporary
+    file, fsync, os.replace, directory fsync). A missing file is an empty
+    store; a malformed one refuses everything (it is never silently reset). An
+    id is recorded only after every receipt gate has passed, and once recorded
+    it is never dropped: a replayed receipt is refused on every later use, by
+    any process reading this file.
+    """
+
+    MAX_ENTRIES = 1024
+    _FIELDS = ("proof_id", "ts", "seat", "policy_before", "policy_after")
+
+    def __init__(self, path):
+        self._path = path
+        try:
+            with open(path, "rb") as fh:
+                raw = fh.read(1 << 20)
+        except FileNotFoundError:
+            self._entries = []
+            return
+        except OSError as exc:
+            raise ValueError("proof replay store unreadable") from exc
+        try:
+            doc = json.loads(raw.decode("utf-8"))
+            entries = doc["accepted"]
+            if not isinstance(entries, list):
+                raise TypeError()
+            self._entries = [
+                {field: e[field] for field in self._FIELDS}
+                for e in entries
+                if isinstance(e, dict)
+            ]
+            for entry in self._entries:
+                if (
+                    not isinstance(entry["proof_id"], str)
+                    or not isinstance(entry["ts"], int)
+                    or any(not isinstance(entry[f], str) for f in self._FIELDS if f != "ts")
+                ):
+                    raise TypeError()
+        except (ValueError, TypeError, KeyError, UnicodeError) as exc:
+            raise ValueError("proof replay store malformed") from exc
+
+    def seen(self, proof_id):
+        return any(entry["proof_id"] == proof_id for entry in self._entries)
+
+    def add(self, record):
+        if len(self._entries) >= self.MAX_ENTRIES:
+            raise ValueError("proof replay store at capacity; reconcile it")
+        self._entries.append({field: record[field] for field in self._FIELDS})
+        directory = os.path.dirname(os.path.abspath(self._path))
+        fd, tmp = tempfile.mkstemp(dir=directory, prefix=".proof-store-", suffix=".tmp")
+        try:
+            data = json.dumps({"v": 1, "accepted": self._entries}, sort_keys=True).encode()
+            view = memoryview(data)
+            while view:
+                written = os.write(fd, view)
+                if written <= 0:
+                    raise OSError("short write to proof replay store")
+                view = view[written:]
+            os.fsync(fd)
+            os.close(fd)
+            fd = None
+            os.replace(tmp, self._path)
+            dfd = os.open(directory, os.O_RDONLY)
+            try:
+                os.fsync(dfd)
+            finally:
+                os.close(dfd)
+        finally:
+            if fd is not None:
+                os.close(fd)
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+
+
+def _audit_row_binds(record, rows):
+    """Exactly one actual relay audit row must name this proof run.
+
+    The row the relay wrote for the denied probe carries the allowlisted
+    scalars: the same seat, action and repo, a denial outcome, the probe path
+    (which names the one-time proof id) and exactly the refusal the proof
+    recorded. The receipt is the operator's signed claim; this is the
+    authoritative half, from the relay's own log.
+    """
+    matches = 0
+    for row in rows or ():
+        if (
+            isinstance(row, dict)
+            and row.get("seat") == record["seat"]
+            and row.get("action") == "wf_file_patch"
+            and row.get("repo") == record["repo"]
+            and row.get("result") in ("bad_request", "denied")
+            and row.get("path") == record["probe_path"]
+            and row.get("reason") == record.get("refusal")
+        ):
+            matches += 1
+    if matches != 1:
+        raise ValueError("proof not bound to the relay audit")
+
+
+def read_audit_rows(path, max_bytes=4 * 1024 * 1024):
+    """Parse the relay's append-only audit log into rows; any malformed line refuses."""
+    with open(path, "rb") as fh:
+        raw = fh.read(max_bytes + 1)
+    if len(raw) > max_bytes:
+        raise ValueError("audit log too large to verify against")
+    rows = []
+    for line in raw.decode("utf-8").splitlines():
+        if line.strip():
+            row = json.loads(line)
+            if isinstance(row, dict):
+                rows.append(row)
+    return rows
+
+
+def verify_receipt(
+    key,
+    receipt,
+    *,
+    seat,
+    now,
+    store,
+    policy_before,
+    policy_after,
+    audit_rows,
+    window_s=RECEIPT_WINDOW_S,
+):
+    """Return the proven record, or refuse it.
+
+    Gates, in order: shape, HMAC (forged or tampered), outcome (only PROVEN is
+    a proof), staleness (outside the window), seat (names another seat),
+    transaction binding (names another policy before/after pair), probe-path
+    consistency (path must be probe_path(proof_id)), replay (the durable store
+    has already accepted this id), and audit binding (the relay's own log must
+    hold exactly one matching denial row). The id enters the durable store only
+    after every gate passes, so a crash before the store write can never accept
+    a receipt it later replays - the retry simply runs the gates again.
     """
     if not isinstance(receipt, dict) or set(receipt) != {"record", "hmac"}:
         raise ValueError("receipt shape")
@@ -204,8 +361,15 @@ def verify_receipt(key, receipt, *, seat, now, seen_proof_ids, window_s=RECEIPT_
     ts = record.get("ts")
     if not isinstance(ts, int) or not 0 <= now - ts <= window_s:
         raise ValueError("receipt stale")
-    if record.get("proof_id") in seen_proof_ids:
-        raise ValueError("receipt replayed")
     if record.get("seat") != seat:
         raise ValueError("receipt names another seat")
+    if record.get("policy_before") != policy_before or record.get("policy_after") != policy_after:
+        raise ValueError("receipt names another transaction")
+    proof_id = record.get("proof_id")
+    if record.get("probe_path") != probe_path(proof_id):
+        raise ValueError("receipt probe path inconsistent")
+    if store.seen(proof_id):
+        raise ValueError("receipt replayed")
+    _audit_row_binds(record, audit_rows)
+    store.add(record)
     return record
