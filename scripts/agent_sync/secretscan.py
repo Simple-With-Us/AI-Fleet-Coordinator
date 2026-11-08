@@ -151,8 +151,14 @@ def scan(text: str, known: Iterable[str] = ()) -> str | None:
 
 # Exact generic-fixture approvals are release code, never caller input. Each
 # entry requires immutable full-content review and a durable review record in
-# the source change. Empty until that review is completed and findings fixed.
-_REVIEWED_GENERIC_FIXTURES: frozenset[tuple[str, str, str]] = frozenset()
+# the source change. See docs/security/reviewed-generic-fixtures.md.
+_REVIEWED_GENERIC_FIXTURES: frozenset[tuple[str, str, str]] = frozenset({
+    (
+        "Simple-With-Us/CodeCaps",
+        "ios/CodeCapsCompanion/Widgets/WidgetPresentation.swift",
+        "d6bd7e7ff0a69af9cfd4002f1e21db90f66b87315a4dc69cbd2fc1c585be0b2b",
+    ),
+})
 _GENERIC_ASSIGNMENTS = frozenset({"assigned credential", "assigned secret"})
 
 
