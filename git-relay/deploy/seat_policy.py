@@ -283,7 +283,9 @@ def read_unit(name: str, show=None, cat=None) -> Unit:
             elif ident == SEATS_CREDENTIAL and source:
                 policies.append(source)
     if len(policies) > 1:
-        raise SystemExit(f"{name}:  more than one {SEATS_CREDENTIAL} LoadCredential;  refusing as ambiguous")
+        raise SystemExit(
+            f"{name}:  more than one {SEATS_CREDENTIAL} LoadCredential;  refusing as ambiguous"
+        )
     if not relay or len(files) != 1 or len(tokens) != 1:
         raise SystemExit(
             f"{name}:  expected a WorkingDirectory, one EnvironmentFile and one "
@@ -454,11 +456,15 @@ def _seat_policy_source(unit: Unit) -> tuple[str, bool]:
         raise SystemExit(
             f"{unit.config}:  expected exactly one {SEATS_CREDENTIAL_VAR} line, found {len(hits)}"
         )
-    value = hits[0].split("=", 1)[1].strip().strip("'\"") if hits else unit.environment.get(
-        SEATS_CREDENTIAL_VAR, ""
+    value = (
+        hits[0].split("=", 1)[1].strip().strip("'\"")
+        if hits
+        else unit.environment.get(SEATS_CREDENTIAL_VAR, "")
     )
     if hits and SEATS_CREDENTIAL_VAR in unit.environment:
-        raise SystemExit(f"{unit.config}:  {SEATS_CREDENTIAL_VAR} is set twice;  refusing as ambiguous")
+        raise SystemExit(
+            f"{unit.config}:  {SEATS_CREDENTIAL_VAR} is set twice;  refusing as ambiguous"
+        )
     if value != SEATS_CREDENTIAL:
         raise SystemExit(f"{unit.config}:  {SEATS_CREDENTIAL_VAR} must name {SEATS_CREDENTIAL}")
     if (

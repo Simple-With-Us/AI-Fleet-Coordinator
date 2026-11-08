@@ -365,7 +365,9 @@ class InstallSeatTests(unittest.TestCase):
         os.chmod(self.seats_path, 0o600)
         link = self.seats_path.parent / "link.json"
         link.symlink_to(self.seats_path)
-        self.assertEqual(self.install(self.args2(), self.credential_unit(seat_credential=str(link))), 2)
+        self.assertEqual(
+            self.install(self.args2(), self.credential_unit(seat_credential=str(link))), 2
+        )
         os.chmod(self.seats_path.parent, 0o777)
         try:
             self.assertEqual(self.install(self.args2(), self.credential_unit()), 2)
@@ -388,7 +390,9 @@ class InstallSeatTests(unittest.TestCase):
         self.assertEqual(none.seat_credential, "")
         with self.assertRaises(SystemExit):
             sp.read_unit(
-                "git-relay.service", show=show, cat=cat + "LoadCredential=seat-policy:/etc/r/other\n"
+                "git-relay.service",
+                show=show,
+                cat=cat + "LoadCredential=seat-policy:/etc/r/other\n",
             )
 
     def test_the_units_actual_audit_path_is_honored(self):
