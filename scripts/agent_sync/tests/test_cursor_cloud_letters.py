@@ -5,12 +5,14 @@ registry;  the Cursor API and `simple-chat dm` are replaced."""
 
 from __future__ import annotations
 
+import datetime
 import io
 import json
 import os
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 from agent_sync import cursor_cloud_letters as CCL
 from agent_sync import operator_registry as OR
@@ -20,8 +22,14 @@ A1 = "bc-11111111-aaaa-4bbb-8ccc-000000000001"
 A2 = "bc-22222222-aaaa-4bbb-8ccc-000000000002"
 
 
-def agent(sid: str, title: str) -> dict:
-    return {"session_id": sid, "title": title, "url": "https://cursor.com/agents?id=" + sid, "platform": "cursor-cloud"}
+def stamp(hours_ago: float) -> str:
+    when = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=hours_ago)
+    return when.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def agent(sid: str, title: str, hours_ago: float = 1) -> dict:
+    return {"session_id": sid, "title": title, "url": "https://cursor.com/agents?id=" + sid, "platform": "cursor-cloud",
+            "updated_at": stamp(hours_ago)}
 
 
 class Fake:
@@ -150,6 +158,78 @@ class SweepTests(unittest.TestCase):
         self.agents = everyone
         self.run_sweep()
         self.assertEqual(len(self.dm.calls), 1)
+
+
+    def test_an_agent_untouched_past_the_window_takes_no_letter_and_wakes_no_bot(self) -> None:
+        self.agents = [agent(A1, "GB-Director: an old chat", hours_ago=24 * 20), agent(A2, "fix the login page")]
+        out = self.run_sweep()
+        self.assertEqual((out["agents"], out["stale"]), (1, 1))
+        self.assertEqual(self.dm.calls, [])
+        reg = OR.SessionRegistry(self.db)
+        try:
+            self.assertIsNone(reg.lookup("cursor", "cloud", PL.SCOPE, A1))
+        finally:
+            reg.close_db()
+        self.assertRegex(self.label(A2), r"^[A-Z]{2}$")
+
+    def test_an_agent_that_ages_out_and_wakes_again_is_not_told_twice(self) -> None:
+        self.run_sweep()
+        self.assertEqual(len(self.dm.calls), 1)
+        self.agents[0] = agent(A1, "GB-Director: tidy the board", hours_ago=40)  # past the window, still open
+        self.run_sweep()
+        self.assertIn(A1, CCL.read_state(self.env))
+        self.agents[0] = agent(A1, "GB-Director: tidy the board")  # it wakes before the registry frees its letter
+        self.run_sweep()
+        self.assertEqual(len(self.dm.calls), 1)
+
+    def test_an_agent_with_no_readable_time_is_skipped(self) -> None:
+        no_time = agent(A1, "GB-Director: tidy the board")
+        del no_time["updated_at"]
+        self.agents = [no_time, dict(agent(A2, "GB-Fixer: x"), updated_at="yesterday")]
+        out = self.run_sweep()
+        self.assertEqual((out["agents"], out["stale"]), (0, 2))
+        self.assertEqual(self.dm.calls, [])
+
+
+class RecentTests(unittest.TestCase):
+    def test_window(self) -> None:
+        now = datetime.datetime(2026, 11, 8, 12, 0, tzinfo=datetime.timezone.utc).timestamp()
+        self.assertTrue(CCL.recent({"updated_at": "2026-11-08T00:00:01.000Z"}, now))
+        self.assertTrue(CCL.recent({"updated_at": "2026-11-07T00:00:00+00:00"}, now))
+        self.assertFalse(CCL.recent({"updated_at": "2026-11-06T23:59:59Z"}, now))
+        self.assertTrue(CCL.recent({"updated_at": now - 3600}, now))  # epoch seconds
+        self.assertTrue(CCL.recent({"updated_at": int((now - 3600) * 1000)}, now))  # epoch milliseconds
+        self.assertFalse(CCL.recent({"updated_at": now - 40 * 3600}, now))
+        self.assertFalse(CCL.recent({"updated_at": "yesterday"}, now))
+        self.assertFalse(CCL.recent({"updated_at": True}, now))
+        self.assertFalse(CCL.recent({}, now))
+
+
+class TransportTests(unittest.TestCase):
+    """The sweep's own Cursor transport:  built with the 30 second timeout, and a partial discovery is not complete."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.env = {"HOME": tmp.name, "AGENT_SYNC_STATE_DIR": os.path.join(tmp.name, "state"), "AGENT_SEAT": "CLAUDE"}
+
+    def built(self, status: str) -> tuple[mock.MagicMock, dict]:
+        fake = mock.MagicMock()
+        fake.return_value.discover.return_value = []
+        fake.return_value.last_discovery_status = status
+        with mock.patch("agent_sync.cursor_chat_transport.CursorCloudTransport", fake):
+            out = CCL.sweep(self.env, runner=Fake(), transport=lambda argv: {})
+        return fake, out
+
+    def test_it_builds_the_transport_with_the_long_timeout(self) -> None:
+        fake, out = self.built("complete")
+        fake.assert_called_once_with(timeout_seconds=CCL.API_TIMEOUT)
+        self.assertEqual(CCL.API_TIMEOUT, 30)
+        self.assertTrue(out["complete"])
+
+    def test_a_partial_discovery_is_reported_as_not_complete(self) -> None:
+        _, out = self.built("partial")
+        self.assertFalse(out["complete"])
 
 
 class TitleTests(unittest.TestCase):
