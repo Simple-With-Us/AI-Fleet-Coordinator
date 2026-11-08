@@ -2914,7 +2914,7 @@ class TestVerifiedSecret(unittest.TestCase):
         self.assertEqual(child["INFISICAL_FLEET_OPS_PROJECT_ID"], "project-uuid")
         self.assertNotIn("ENVIRONMENT", child)
         self.assertNotIn("INFISICAL_PROJECT_ID", child)
-        self.assertNotIn("HOME", child)  # no incidental ~/.agent-sync resolution
+        self.assertNotIn("HOME", child)  # no incidental ~/.simple-tools resolution
         self.assertNotIn("GIT_RELAY_SEATS_JSON", child)
 
     def test_unreadable_credential_file_fails_closed(self):
@@ -3071,7 +3071,7 @@ class TestProductionCredentialBinding(unittest.TestCase):
 
 class TestScopedChildProjectBinding(unittest.TestCase):
     """The scoped CLI child must carry the SUPPORTED fleet-secrets variable
-    names and cannot fall through to ~/.agent-sync file resolution."""
+    names and cannot fall through to ~/.simple-tools file resolution."""
 
     def _creds(self):
         directory = pathlib.Path(tempfile.mkdtemp())

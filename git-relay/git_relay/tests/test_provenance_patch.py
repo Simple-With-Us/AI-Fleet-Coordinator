@@ -104,7 +104,7 @@ class ReviewRegressionTests(unittest.TestCase):
 
         import git_relay.patch_secretscan as bundled
 
-        original = Path(__file__).resolve().parents[3] / "scripts" / "agent_sync" / "secretscan.py"
+        original = Path(__file__).resolve().parents[3] / "scripts" / "simple_tools" / "secretscan.py"
         self.assertEqual(Path(bundled.__file__).read_bytes(), original.read_bytes())
 
     def test_short_known_and_repeated_match_budget(self):
