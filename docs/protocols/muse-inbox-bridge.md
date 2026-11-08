@@ -44,6 +44,8 @@ metadata in a bounded prompt, while its subprocess has no launcher seat and no t
 does the original seat's write.  A source-qualified key prevents the same Zulip message addressed
 to two bots from collapsing into one decision or chat nudge.
 
+**The consult under the owner's ruling (owner, Nov 7, 2026).**  "Wake agent should use operator for headless agent when needed only if unable to determine with deterministic code, and then should use a preset I made on openrouter."  The bridge consult is a model start of that kind.  Today it is the pinned Muse call above, or, while an operator has declared the AFC-649 known-cap mode (`[muse_bridge] consult_backup`, absent by default, with a required `review_by` time past which every consult holds), one tool-less OpenRouter call to the declared model or `@preset/` reference.  PR #1506 stamps every bridge decision with a record-only gate verdict (`gate`, `gate_avoidable`) and logs one `model-gate` event per consult that starts a model;  it changes no decision.  Making the owner's preset the consult's standing runtime is pending Phase 2:  it is one of AA's readings of the owner's lines that PR #1506 lists, not a ruling.  ECHO's candidate, `@preset/operator-inbox-router` version 3, is held and applied nowhere until ECHO's coordinator releases it.
+
 ## Activation Gate
 
 Configuration is local and remains off in the shipped sample.  On the Mac, set
@@ -120,7 +122,7 @@ Echo-owned wake-capable chat.  The DM ownership gate therefore produces a visibl
 it cannot be redirected to a GROK or CURSOR chat.  A public Echo mention may choose a listed,
 fresh chat of another seat.  Adding an Echo-owned adapter is a separate delivery task.
 
-The protocol is source-generic for the configured Mac and server seats.  Grok Bot personas can
+The protocol is source-generic for the configured Mac and server seats.  Grok Bot seats can
 offer their existing HTTP routine as a fixed delivery resource when explicitly cut over, keeping
 their original role credentials, routine and listener budget.  JET, the remaining server cloud
 seats, and other Mac seats require separate activation evidence.  The existing CLAUDE Muse path
