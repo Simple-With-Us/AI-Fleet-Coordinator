@@ -51,6 +51,31 @@ def _remote_command(remote_app: str) -> str:
     )
 
 
+# The consult asks for one decision shape: action none, chat_target set, every other field null.
+# These are the only fields a rejected answer can be blamed on, so the detail names a field from
+# this fixed list and never a key or a value the model chose.
+_CONSULT_NULL_FIELDS = ("reply", "board", "owner_note", "route", "chat_inspect")
+
+
+def _invalid_detail(obj: Any, why: str | None) -> str:
+    """Why a consult answer was not the chat-target selection, as a fixed code (no model text).
+
+    The validator's reasons are fixed strings except for the key names in a "keys" mismatch, which
+    come from the answer, so that one collapses to `keys_mismatch`.  An answer that validated but
+    is not the selection shape is named by its action or by the first non-null field."""
+    if why:
+        return "keys_mismatch" if why.startswith("keys ") else why[:80]
+    if not isinstance(obj, dict):
+        return "not_object"
+    action = obj.get("action")
+    if action != "none":
+        return "action_%s" % (action if action in W.ACTIONS else "unknown")
+    for key in _CONSULT_NULL_FIELDS:
+        if obj.get(key) is not None:
+            return "unexpected_%s" % key
+    return "unknown"
+
+
 class DeliveryRefused(ValueError):
     """A recorded decision can no longer be delivered for this message (stale, paused, loop guard,
     destination gone, or a server refusal).  Terminal for the item, unlike a transport failure."""
@@ -738,7 +763,12 @@ class MacBridge:
                 for key in ("reply", "board", "owner_note", "route", "chat_inspect")
             )
         ):
-            return {"kind": "hold", "reason": "invalid_decision", "model_attempted": True}
+            return {
+                "kind": "hold",
+                "reason": "invalid_decision",
+                "detail": _invalid_detail(obj, why),
+                "model_attempted": True,
+            }
         target_id = obj.get("chat_target")
         if target_id is None:
             return {"kind": "hold", "reason": "no_target", "model_attempted": True}

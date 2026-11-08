@@ -450,6 +450,38 @@ class BackupAnswerShapeTest(unittest.TestCase):
         self.assertEqual(decision["reason"], "invalid_decision")
 
 
+    def test_invalid_decision_names_a_fixed_code_never_model_text(self) -> None:
+        base = {"action": "none", "board": None, "owner_note": None, "reply": None, "risk": None}
+        cases = [
+            ("not an object", "just words"),
+            ("unexpected_reply", {**base, "reply": "hello"}),
+            ("keys_mismatch", {**base, "surprise-key-from-the-model": 1}),
+            ("keys_mismatch", {"action": "none"}),
+            ("action_reply", {**base, "action": "reply", "reply": "hi"}),
+            ("action_escalate", {**base, "action": "escalate", "risk": "high"}),
+            ("action not in the enum", {**base, "action": "launch-the-missiles"}),
+            (
+                "chat_target is exclusive; action must be none and other actions null",
+                {**base, "reply": "hello", "chat_target": "a" * 64},
+            ),
+            ("risk not in the enum", {**base, "risk": "extreme"}),
+        ]
+        for code, parsed in cases:
+            with self.subTest(code=code, parsed=str(parsed)[:40]):
+                self.bridge._consult_backup = lambda item, model, parsed=parsed: (
+                    "answered",
+                    parsed,
+                    [SERVED],
+                )
+                decision = self.bridge._decide_inner(
+                    _item(message_id=79), "muse", "m", BM.OPENROUTER, GOOD_MODEL
+                )
+                self.assertEqual(decision["reason"], "invalid_decision")
+                self.assertEqual(decision["detail"], code)
+                self.assertNotIn("surprise", decision["detail"])
+                self.assertNotIn("missiles", decision["detail"])
+
+
 class ChargedReviewTest(unittest.TestCase):
     """Crash-point semantics for an ambiguous backup attempt (AFC-649)."""
 
