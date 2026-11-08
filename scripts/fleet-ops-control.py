@@ -44,7 +44,7 @@ What it promises:
     accepts only a `server` verb, one target, one of `--plan` or `--yes` and an optional
     `--json`.  Anything more is refused.
   * `server eavesdropper-status server --plan` reads the server eavesdropper's `status.json`
-    with `docker exec --user agentsync eavesdropper /bin/cat /data/listener/status.json` (docker
+    with `docker exec --user simpletools eavesdropper /bin/cat /data/listener/status.json` (docker
     group membership, no sudo, run as the container's own unprivileged account, a pinned
     environment with an empty private docker config, at most 1 MiB, 15 seconds) and answers it
     reduced to names, counts, tokens and times by `scripts/reduced_status.py`.  It
@@ -130,15 +130,15 @@ SYSTEMCTL_CANDIDATES = ("/usr/bin/systemctl", "/bin/systemctl")
 JOURNALCTL_CANDIDATES = ("/usr/bin/journalctl", "/bin/journalctl")
 DOCKER_CANDIDATES = ("/usr/bin/docker", "/bin/docker")
 # `server eavesdropper-status` reads the status document of the server's eavesdropper (the
-# listener daemon) out of its container with one fixed argv, `docker exec --user agentsync
+# listener daemon) out of its container with one fixed argv, `docker exec --user simpletools
 # eavesdropper /bin/cat /data/listener/status.json`: no shell, no sudo, no flag or path from the
 # request.  The caller's account needs only membership of the `docker` group, and the read runs
 # as the container's own unprivileged account (the file is 0600 and that account's), never as
-# root.  /data is the daemon's AGENT_SYNC_STATE_DIR, a docker volume, and the listener's own
+# root.  /data is the daemon's SIMPLE_TOOLS_STATE_DIR, a docker volume, and the listener's own
 # `listener_dir` puts status.json at <state dir>/listener/status.json.
 EAVESDROPPER_TARGET = "server"
 EAVESDROPPER_CONTAINER = "eavesdropper"
-EAVESDROPPER_USER = "agentsync"
+EAVESDROPPER_USER = "simpletools"
 EAVESDROPPER_CAT = "/bin/cat"
 EAVESDROPPER_STATUS_PATH = "/data/listener/status.json"
 EAVESDROPPER_STATUS_MAX_BYTES = 1024 * 1024
@@ -863,7 +863,7 @@ def read_eavesdropper_status(ctx):
     """(the status.json document, None) or (None, a reason word from EAVESDROPPER_UNAVAILABLE).
 
     One argv, run without a shell and without sudo:
-    `docker exec --user agentsync eavesdropper /bin/cat /data/listener/status.json`.  The environment is
+    `docker exec --user simpletools eavesdropper /bin/cat /data/listener/status.json`.  The environment is
     pinned (`_docker_env`, with an empty private temporary directory as the docker config), the
     read stops at the first byte past the limit and answers `too_large` at once, and the reason
     word is all a caller learns of a failure: docker's own words are only compared with known
@@ -871,7 +871,7 @@ def read_eavesdropper_status(ctx):
 
     Privilege: the caller's account reaches the docker socket (root:docker, mode 0660) through its
     membership of the `docker` group, so no sudo, no sudoers entry and no root shell is used.
-    `--user agentsync` runs `cat` as the container's own unprivileged account, which owns the
+    `--user simpletools` runs `cat` as the container's own unprivileged account, which owns the
     0600 file, so the read is no wider than that account's.  The container, the user and the
     path are constants here, so no word from a request can reach docker."""
     argv = [

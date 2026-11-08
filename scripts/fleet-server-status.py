@@ -218,7 +218,7 @@ UNIT_SOURCE_FOLDERS = (
     "scripts/systemd",
     "scripts/host",
     "scripts/hetzner",
-    "scripts/agent_sync/server",
+    "scripts/simple_tools/server",
 )
 # The properties read to find a unit's installed files,  and nothing else.
 UNIT_FILE_PROPERTIES = ("Id", "LoadState", "FragmentPath", "DropInPaths", "Triggers")
