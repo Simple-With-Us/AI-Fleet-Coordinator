@@ -106,6 +106,9 @@ targets:
       - path: Muster/Model/FleetAdmin.swift
       - path: Muster/Model/FleetConfigContract.swift
       - path: Muster/Model/FleetGrid.swift
+      # The grid's words:  scope, state spellings, the legend, where a seat and a rule are
+      # read, the watch line and the panel's selection key (GridPresentationTests).
+      - path: Muster/Model/GridPresentation.swift
       - path: Muster/Model/FleetRegistry.swift
       - path: Muster/Model/FleetStore.swift
       - path: Muster/Model/MusterNavigation.swift

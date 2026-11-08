@@ -41,8 +41,15 @@ struct OverviewView: View {
                     placeCard(menu.serverCard)
                 }
                 Divider()
-                Label("Seat Setup \(FleetHost.mac.onTitle)", systemImage: "square.grid.3x3")
-                    .font(.title3.weight(.semibold))
+                VStack(alignment: .leading, spacing: 2) {
+                    Label("Seat Setup \(FleetHost.mac.onTitle)", systemImage: "square.grid.3x3")
+                        .font(.title3.weight(.semibold))
+                    // The counts below prove the Mac's config and nothing else.
+                    Text(GridPresentation.overviewScope)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 VStack(alignment: .leading, spacing: 4) {
                     verdictRow
                     if let meaning = RunVerdict.meaning(phase: store.phase, verdict: store.summary?.overallVerdict) {
@@ -155,17 +162,19 @@ struct OverviewView: View {
         }
     }
 
-    /// What the watcher holds,  when it holds anything.
-    @ViewBuilder
+    /// What the watcher is set to watch,  always shown:  a watcher that is off or watching
+    /// nothing is a warning,  never a hidden line.
     private var watchLine: some View {
-        if monitor.isWatching {
-            Label(
-                "Watching \(monitor.watchedPathCount) paths on the Mac for \(monitor.watchedSeats.count) seats",
-                systemImage: "eye"
-            )
+        let line = GridPresentation.WatchLine.make(
+            isWatching: monitor.isWatching,
+            pathCount: monitor.watchedPathCount,
+            seatCount: monitor.watchedSeats.count,
+            recheckSeconds: DriftMonitor.safetyNetInterval
+        )
+        return Label(line.text, systemImage: line.tone == .watching ? "eye" : "eye.slash")
             .font(.callout)
-            .foregroundStyle(.secondary)
-        }
+            .foregroundStyle(line.tone == .watching ? Color.secondary : Color.orange)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     /// One count,  opening the grid on the seats it counts.  A nil count reads unknown,
