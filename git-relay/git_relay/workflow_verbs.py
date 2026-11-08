@@ -5514,7 +5514,8 @@ class WorkflowVerbs:
                     or hashlib.sha1(
                         b"blob " + str(len(decoded_raw)).encode() + b"\0" + decoded_raw,
                         usedforsecurity=False,
-                    ).hexdigest() != sha
+                    ).hexdigest()
+                    != sha
                 ):
                     raise Refused("unverifiable blob reference")
                 if unreviewed_file_secret(repo, path, decoded_raw):
