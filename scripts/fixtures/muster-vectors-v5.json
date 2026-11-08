@@ -1,5 +1,5 @@
 {
- "about": "Public test data only: every key is derived from a label and used nowhere else.\u00a0 Section 16 of docs/muster-ios/server-route-spec.md prints the vectors of keys, canonicalForm, pin, history, reopen, lists, listBodyHashes, approvals, answers (the answer objects and their bodySHA256) and illustrativePlan, and a test checks that this file still equals the spec's text.\u00a0 Everything else was made by running muster_approval.py and fleet-ops-control.py themselves: answers[].line and lineSHA256 (the whole answer line, one canonical-JSON line and a line feed), badSignatures, generatedAnswers, generatedPlans and resourceFieldScales.\u00a0 To regenerate this file, run python3 scripts/make_muster_vectors.py --write; a test regenerates it and fails when it differs, so it cannot drift from the code.\u00a0 The chain slice must read the T-lists and entry hashes from the spec text, section 16: chainVectors holds only each vector's id and its expected answer, and the 50 or so hashes of the chain vectors are not here.",
+ "about": "Public test data only: every key is derived from a label and used nowhere else.\u00a0 Section 16 of docs/muster-ios/server-route-spec.md prints the vectors of keys, canonicalForm, pin, history, reopen, lists, listBodyHashes, approvals, answers (the answer objects and their bodySHA256) and illustrativePlan, and a test checks that this file still equals the spec's text.\u00a0 Everything else was made by running muster_approval.py and fleet-ops-control.py themselves: answers[].line and lineSHA256 (the whole answer line, one canonical-JSON line and a line feed), badSignatures, generatedAnswers, generatedPlans and resourceFieldScales.\u00a0 To regenerate this file, run python3 scripts/make_muster_vectors.py --write; a test regenerates it and fails when it differs, so it cannot drift from the code.\u00a0 The chain vectors' lists are here too: lists holds every list section 16 prints, keyed by the name its chain table uses (v1 to v4, \"v4 at 20:55\" and the T-lists, such as \"T6 list\"), and historyRotated is the two-line owner history that T24 alone runs under.\u00a0 Each chainVectors row gives its id, held list (null for nothing), chain, history, ruleC, frozenExpected (what a Milestone 1 to 4 helper must answer, where every rule C entry is refused reopen_unavailable) and proposalExpected (the printed cell: for a rule C row, the OPEN proposal's answer, which the frozen helper must not be tested against).\u00a0 The entry hashes are not here: the chain slice computes them from the lists, and section 16 prints them.",
  "answers": {
   "ackT2": {
    "answer": {
@@ -933,92 +933,376 @@
  },
  "chainVectors": [
   {
-   "expected": "ack",
-   "id": "T1 first list"
+   "chain": [
+    "v1"
+   ],
+   "frozenExpected": "ack",
+   "held": null,
+   "history": "history",
+   "id": "T1 first list",
+   "proposalExpected": "ack",
+   "ruleC": false
   },
   {
-   "expected": "ack",
-   "id": "T2 rule A"
+   "chain": [
+    "v2"
+   ],
+   "frozenExpected": "ack",
+   "held": "v1",
+   "history": "history",
+   "id": "T2 rule A",
+   "proposalExpected": "ack",
+   "ruleC": false
   },
   {
-   "expected": "ack",
-   "id": "T3 rule B"
+   "chain": [
+    "v3"
+   ],
+   "frozenExpected": "ack",
+   "held": "v2",
+   "history": "history",
+   "id": "T3 rule B",
+   "proposalExpected": "ack",
+   "ruleC": false
   },
   {
-   "expected": "ack",
-   "id": "T4 rule C after an abandoned first code"
+   "chain": [
+    "v4"
+   ],
+   "frozenExpected": {
+    "atEntry": 1,
+    "errorCode": "chain_refused",
+    "helperTrustListVersion": 3,
+    "reason": "reopen_unavailable"
+   },
+   "held": "v3",
+   "history": "history",
+   "id": "T4 rule C after an abandoned first code",
+   "proposalExpected": "ack",
+   "ruleC": true
   },
   {
-   "expected": "ack",
-   "id": "T5 whole history"
+   "chain": [
+    "v1",
+    "v2",
+    "v3",
+    "v4"
+   ],
+   "frozenExpected": {
+    "atEntry": 4,
+    "errorCode": "chain_refused",
+    "helperTrustListVersion": null,
+    "reason": "reopen_unavailable"
+   },
+   "held": null,
+   "history": "history",
+   "id": "T5 whole history",
+   "proposalExpected": "ack",
+   "ruleC": true
   },
   {
-   "expected": "`chain_refused`, reason `services_changed`",
-   "id": "T6 close that swaps a service key"
+   "chain": [
+    "T6 list"
+   ],
+   "frozenExpected": {
+    "atEntry": 1,
+    "errorCode": "chain_refused",
+    "helperTrustListVersion": 1,
+    "reason": "services_changed"
+   },
+   "held": "v1",
+   "history": "history",
+   "id": "T6 close that swaps a service key",
+   "proposalExpected": "`chain_refused`, reason `services_changed`",
+   "ruleC": false
   },
   {
-   "expected": "`chain_refused`, reason `previous_hash`",
-   "id": "T7 wrong previous hash"
+   "chain": [
+    "T7 list"
+   ],
+   "frozenExpected": {
+    "atEntry": 1,
+    "errorCode": "chain_refused",
+    "helperTrustListVersion": 1,
+    "reason": "previous_hash"
+   },
+   "held": "v1",
+   "history": "history",
+   "id": "T7 wrong previous hash",
+   "proposalExpected": "`chain_refused`, reason `previous_hash`",
+   "ruleC": false
   },
   {
-   "expected": "`chain_refused`, reason `reopen_tag`",
-   "id": "T8 reopen with an unrecorded code"
+   "chain": [
+    "T8 list"
+   ],
+   "frozenExpected": {
+    "atEntry": 1,
+    "errorCode": "chain_refused",
+    "helperTrustListVersion": 3,
+    "reason": "reopen_unavailable"
+   },
+   "held": "v3",
+   "history": "history",
+   "id": "T8 reopen with an unrecorded code",
+   "proposalExpected": "`chain_refused`, reason `reopen_tag`",
+   "ruleC": true
   },
   {
-   "expected": "`chain_refused`, reason `version_gap`",
-   "id": "T10 gap"
+   "chain": [
+    "T10 list"
+   ],
+   "frozenExpected": {
+    "atEntry": 1,
+    "errorCode": "chain_refused",
+    "helperTrustListVersion": 1,
+    "reason": "version_gap"
+   },
+   "held": "v1",
+   "history": "history",
+   "id": "T10 gap",
+   "proposalExpected": "`chain_refused`, reason `version_gap`",
+   "ruleC": false
   },
   {
-   "expected": "`chain_refused`, reason `owner_key`",
-   "id": "T11 wrong owner key"
+   "chain": [
+    "T11 list"
+   ],
+   "frozenExpected": {
+    "atEntry": 1,
+    "errorCode": "chain_refused",
+    "helperTrustListVersion": 1,
+    "reason": "owner_key"
+   },
+   "held": "v1",
+   "history": "history",
+   "id": "T11 wrong owner key",
+   "proposalExpected": "`chain_refused`, reason `owner_key`",
+   "ruleC": false
   },
   {
-   "expected": "`chain_refused`, reason `owner_signature`",
-   "id": "T12 bad owner signature"
+   "chain": [
+    "T12 list"
+   ],
+   "frozenExpected": {
+    "atEntry": 1,
+    "errorCode": "chain_refused",
+    "helperTrustListVersion": 1,
+    "reason": "owner_signature"
+   },
+   "held": "v1",
+   "history": "history",
+   "id": "T12 bad owner signature",
+   "proposalExpected": "`chain_refused`, reason `owner_signature`",
+   "ruleC": false
   },
   {
-   "expected": "`chain_refused`, reason `duplicate_device`",
-   "id": "T13 duplicate device"
+   "chain": [
+    "T13 list"
+   ],
+   "frozenExpected": {
+    "atEntry": 1,
+    "errorCode": "chain_refused",
+    "helperTrustListVersion": 1,
+    "reason": "duplicate_device"
+   },
+   "held": "v1",
+   "history": "history",
+   "id": "T13 duplicate device",
+   "proposalExpected": "`chain_refused`, reason `duplicate_device`",
+   "ruleC": false
   },
   {
-   "expected": "`chain_refused`, reason `countersignature`",
-   "id": "T14 rule A countersigned by a newcomer"
+   "chain": [
+    "T14 list"
+   ],
+   "frozenExpected": {
+    "atEntry": 1,
+    "errorCode": "chain_refused",
+    "helperTrustListVersion": 1,
+    "reason": "countersignature"
+   },
+   "held": "v1",
+   "history": "history",
+   "id": "T14 rule A countersigned by a newcomer",
+   "proposalExpected": "`chain_refused`, reason `countersignature`",
+   "ruleC": false
   },
   {
-   "expected": "`chain_refused`, reason `countersignature`",
-   "id": "T15 tampered copy of version 4"
+   "chain": [
+    "T15 list"
+   ],
+   "frozenExpected": {
+    "atEntry": 1,
+    "errorCode": "chain_refused",
+    "helperTrustListVersion": 3,
+    "reason": "reopen_unavailable"
+   },
+   "held": "v3",
+   "history": "history",
+   "id": "T15 tampered copy of version 4",
+   "proposalExpected": "`chain_refused`, reason `countersignature`",
+   "ruleC": true
   },
   {
-   "expected": "`chain_refused`, reason `closed_rule`",
-   "id": "T16 closed flag with a device"
+   "chain": [
+    "T16 list"
+   ],
+   "frozenExpected": {
+    "atEntry": 1,
+    "errorCode": "chain_refused",
+    "helperTrustListVersion": 1,
+    "reason": "closed_rule"
+   },
+   "held": "v1",
+   "history": "history",
+   "id": "T16 closed flag with a device",
+   "proposalExpected": "`chain_refused`, reason `closed_rule`",
+   "ruleC": false
   },
   {
-   "expected": "`chain_refused`, reason `first_rule`",
-   "id": "T17 first list naming a predecessor"
+   "chain": [
+    "T17 list"
+   ],
+   "frozenExpected": {
+    "atEntry": 1,
+    "errorCode": "chain_refused",
+    "helperTrustListVersion": null,
+    "reason": "first_rule"
+   },
+   "held": null,
+   "history": "history",
+   "id": "T17 first list naming a predecessor",
+   "proposalExpected": "`chain_refused`, reason `first_rule`",
+   "ruleC": false
   },
   {
-   "expected": "`chain_refused`, reason `reopen_unrecorded`",
-   "id": "T18 reopen without a tag"
+   "chain": [
+    "T18 list"
+   ],
+   "frozenExpected": {
+    "atEntry": 1,
+    "errorCode": "chain_refused",
+    "helperTrustListVersion": 3,
+    "reason": "reopen_unavailable"
+   },
+   "held": "v3",
+   "history": "history",
+   "id": "T18 reopen without a tag",
+   "proposalExpected": "`chain_refused`, reason `reopen_unrecorded`",
+   "ruleC": true
   },
   {
-   "expected": "`chain_refused`, reason `server_keys_removed`",
-   "id": "T19 close that removes both server keys"
+   "chain": [
+    "T19 list"
+   ],
+   "frozenExpected": {
+    "atEntry": 1,
+    "errorCode": "chain_refused",
+    "helperTrustListVersion": 1,
+    "reason": "server_keys_removed"
+   },
+   "held": "v1",
+   "history": "history",
+   "id": "T19 close that removes both server keys",
+   "proposalExpected": "`chain_refused`, reason `server_keys_removed`",
+   "ruleC": false
   },
   {
-   "expected": "`chain_refused`, reason `reopen_device`",
-   "id": "T20 reopen with the wrong device"
+   "chain": [
+    "T20 list"
+   ],
+   "frozenExpected": {
+    "atEntry": 1,
+    "errorCode": "chain_refused",
+    "helperTrustListVersion": 3,
+    "reason": "reopen_unavailable"
+   },
+   "held": "v3",
+   "history": "history",
+   "id": "T20 reopen with the wrong device",
+   "proposalExpected": "`chain_refused`, reason `reopen_device`",
+   "ruleC": true
   },
   {
-   "expected": "`chain_refused`, reason `reopen_tag`",
-   "id": "T21 reopen with a retired code"
+   "chain": [
+    "T21 list"
+   ],
+   "frozenExpected": {
+    "atEntry": 1,
+    "errorCode": "chain_refused",
+    "helperTrustListVersion": 3,
+    "reason": "reopen_unavailable"
+   },
+   "held": "v3",
+   "history": "history",
+   "id": "T21 reopen with a retired code",
+   "proposalExpected": "`chain_refused`, reason `reopen_tag`",
+   "ruleC": true
   },
   {
-   "expected": "ack",
-   "id": "T22 a second valid version 4"
+   "chain": [
+    "v4 at 20:55"
+   ],
+   "frozenExpected": {
+    "atEntry": 1,
+    "errorCode": "chain_refused",
+    "helperTrustListVersion": 3,
+    "reason": "reopen_unavailable"
+   },
+   "held": "v3",
+   "history": "history",
+   "id": "T22 a second valid version 4",
+   "proposalExpected": "ack",
+   "ruleC": true
   },
   {
-   "expected": "`chain_refused`, reason `reopen_unavailable`",
-   "id": "T23 v4 under version 5 as frozen"
+   "chain": [
+    "T24 list"
+   ],
+   "frozenExpected": {
+    "atEntry": 1,
+    "errorCode": "chain_refused",
+    "helperTrustListVersion": null,
+    "reason": "history_hash"
+   },
+   "held": null,
+   "history": "historyRotated",
+   "id": "T24 a version 1 the rotated history did not close",
+   "proposalExpected": "`chain_refused`, reason `history_hash`",
+   "ruleC": false
+  },
+  {
+   "chain": [
+    "T25 list"
+   ],
+   "frozenExpected": {
+    "atEntry": 1,
+    "errorCode": "chain_refused",
+    "helperTrustListVersion": 1,
+    "reason": "server_keys_removed"
+   },
+   "held": "v1",
+   "history": "history",
+   "id": "T25 rule A that removes both server keys",
+   "proposalExpected": "`chain_refused`, reason `server_keys_removed`",
+   "ruleC": false
+  },
+  {
+   "chain": [
+    "v4"
+   ],
+   "frozenExpected": {
+    "atEntry": 1,
+    "errorCode": "chain_refused",
+    "helperTrustListVersion": 3,
+    "reason": "reopen_unavailable"
+   },
+   "held": "v3",
+   "history": "history",
+   "id": "T23 v4 under version 5 as frozen",
+   "proposalExpected": "`chain_refused`, reason `reopen_unavailable`",
+   "ruleC": true
   }
  ],
  "generatedAnswers": [
@@ -1655,6 +1939,7 @@
   }
  ],
  "history": "{\"fromVersion\":1,\"ownerKey\":\"MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEVzkkcfsegaoVRZFzkDIoVF5bEqxUarf9x8v30K8pWB_JGjq4wKAmg96uVQ704aEAZtLFNi_PbZfc69WlOvJovw\",\"toSHA256\":null,\"toVersion\":null}",
+ "historyRotated": "{\"fromVersion\":1,\"ownerKey\":\"MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEVzkkcfsegaoVRZFzkDIoVF5bEqxUarf9x8v30K8pWB_JGjq4wKAmg96uVQ704aEAZtLFNi_PbZfc69WlOvJovw\",\"toSHA256\":\"0dfd951c5317bb228f6e95931175b59d3e0a206e08b5e4c2fed06070b7ff934e\",\"toVersion\":1}\n{\"fromVersion\":2,\"ownerKey\":\"MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEupDAVWZ7zS6qwoDX4eW_6TvQjFea1VKKb5WgUXz_nASY71O6DavTImTpgwYibD3eVn_C_mgjpEsYh6Do7Crpsw\",\"toSHA256\":null,\"toVersion\":null}",
  "illustrativePlan": "{\"action\":\"restart\",\"auditTarget\":\"fleet-server-status.timer\",\"commands\":[[\"/usr/bin/systemctl\",\"--user\",\"restart\",\"fleet-server-status.timer\"]],\"contract\":\"fleet-ops-plan/1\",\"scope\":\"server\",\"target\":\"fleet-server-status.timer\"}",
  "keys": {
   "device A approval": {
@@ -1681,6 +1966,10 @@
    "fingerprint": "2d0a d701 cd97 12e6 2fc0 0c40 08b8 1f44 2427 a5b1 c565 b548 1c97 70d5 1e88 aef2",
    "public": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEVzkkcfsegaoVRZFzkDIoVF5bEqxUarf9x8v30K8pWB_JGjq4wKAmg96uVQ704aEAZtLFNi_PbZfc69WlOvJovw"
   },
+  "owner after rotation (T24 only)": {
+   "fingerprint": "f57d 7b3a ed19 d1cf 752b 3a29 f523 2a34 e7a0 fa9f c8b5 f0c8 2059 909a cdbd dc3d",
+   "public": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEupDAVWZ7zS6qwoDX4eW_6TvQjFea1VKKb5WgUXz_nASY71O6DavTImTpgwYibD3eVn_C_mgjpEsYh6Do7Crpsw"
+  },
   "rogue helper (not enrolled)": {
    "fingerprint": "34be 9604 70e0 e4e5 753a aa11 66d7 3b8a ef20 b05a b453 7467 54d5 2a05 4fb5 660c",
    "public": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAESUQZoy7P6Eua62UCeJvTZF7LzCX2Jb4L9NN_raKYT6_yDrRqx-ud2pf-Ogw66b1Dsj8-Hfcb82GN-8sUCuqhHw"
@@ -1700,6 +1989,640 @@
   "v4": "5911cecb01736c03a12bd355b3d74ace6e0164b78d2dac4f0ee2cc81fa711e0f"
  },
  "lists": {
+  "T10 list": {
+   "body": {
+    "closed": false,
+    "contract": "muster-trust-list/1",
+    "devices": [
+     {
+      "approvalKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEgLxT0run_JYlj2CY2lEYFAhCfGMoh-1Q2HxSODhM4j0boQdGe-OA9Sa_WOPmi0p15BDqD_ZxBkiKyYljQyj0Lg",
+      "deviceId": "d-ae9428d695e414bcefc0ef5b",
+      "name": "Test Phone A",
+      "notificationKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAETc9UlPQaEGmS86h02BDlWsQALVfu2oYjQHRbDkyhxmec9zFNnpDTkWOX-Ki1D1Ty3BKQIAkVU6cp0FyJ5AsZYQ",
+      "readingKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEa_YIgLInEJOjngBXp3gB4F6BWt_SAEZMeOU0yDY-uyRpmrHR7-5x2LLCAEZY6QpIq_VcytQlySQQAoy9y86sIw",
+      "requestKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAENKYBMrkHEF5vbsQDSgfcQUiD_12yOXThq2Nn06nVIeFabNxtAoJZBWoi4GSXcnf_CZ1eBGiAOp_GLzJJktVBUg"
+     }
+    ],
+    "issuedAt": "2026-11-07T20:20:00Z",
+    "ownerKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEVzkkcfsegaoVRZFzkDIoVF5bEqxUarf9x8v30K8pWB_JGjq4wKAmg96uVQ704aEAZtLFNi_PbZfc69WlOvJovw",
+    "previousSHA256": "0dfd951c5317bb228f6e95931175b59d3e0a206e08b5e4c2fed06070b7ff934e",
+    "reopenTag": null,
+    "services": {
+     "macAgreement": null,
+     "macExecutor": null,
+     "macPublisher": null,
+     "serverExecutor": null,
+     "serverExecutorAgreement": null,
+     "serverHelper": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE7eq30mr1oP043ORJ4UfBGVRKXGDc655WHh8DvUh6Jdbp3jTGbZSbdaiTTFrK5bdAkMBRMt8uVfIQeyCAQv5OBg",
+     "serverPublisher": null
+    },
+    "version": 3
+   },
+   "countersignatures": [
+    {
+     "deviceId": "d-ae9428d695e414bcefc0ef5b",
+     "signature": "MEQCIEJt50Efc30icup-j8t-i2xwChCOfLYbSsLbMR_qwZSZAiA9zP4HMFZr__d1bqCRhoDby3WKluPeKiY12v6LFgtfdg"
+    }
+   ],
+   "ownerSignature": "MEQCIDqGiyKA85gxRP7Me9X5c9L3IeA7L1TBcU4RfYxOT8sQAiAkN_Os0Li9TAlsyRPUW9L4KW2DBdORkIDKq33zV5tp8w"
+  },
+  "T11 list": {
+   "body": {
+    "closed": false,
+    "contract": "muster-trust-list/1",
+    "devices": [
+     {
+      "approvalKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEgLxT0run_JYlj2CY2lEYFAhCfGMoh-1Q2HxSODhM4j0boQdGe-OA9Sa_WOPmi0p15BDqD_ZxBkiKyYljQyj0Lg",
+      "deviceId": "d-ae9428d695e414bcefc0ef5b",
+      "name": "Test Phone A",
+      "notificationKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAETc9UlPQaEGmS86h02BDlWsQALVfu2oYjQHRbDkyhxmec9zFNnpDTkWOX-Ki1D1Ty3BKQIAkVU6cp0FyJ5AsZYQ",
+      "readingKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEa_YIgLInEJOjngBXp3gB4F6BWt_SAEZMeOU0yDY-uyRpmrHR7-5x2LLCAEZY6QpIq_VcytQlySQQAoy9y86sIw",
+      "requestKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAENKYBMrkHEF5vbsQDSgfcQUiD_12yOXThq2Nn06nVIeFabNxtAoJZBWoi4GSXcnf_CZ1eBGiAOp_GLzJJktVBUg"
+     },
+     {
+      "approvalKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEuupAUkUqXTeWrCnK_xO-dZ-76OtdQ8e6ftZNWdPKGnllCdHfNA3pwHxj7I84TnMKeBWEGpILKbT_pJMyOr3urg",
+      "deviceId": "d-629e62343180ad883d8f7a47",
+      "name": "Test iPad B",
+      "notificationKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE_bA9-74nJfUWF1TD3uDhUMf_aVzkanRJaNlEVktoBFLNh8q5pVQGt60EPbZxxPKws9ZEa324ck7CIuKTOXKbMA",
+      "readingKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAES3Gma5eyi9qXqF_Vm1wmgoCzO--_JXrGwLucGoRP8rz_pSI_p_W-AOULR1jsYIbIgRASoNX96Y1swYGCB12cpQ",
+      "requestKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEVWOuw9sD6n17pCEXE7zqP_HsA7Unt3pigQFwB-BvnKq93d2MT8XODx-KN05M36ZZiyIDAlhHSWqmKp7XmrZMXw"
+     }
+    ],
+    "issuedAt": "2026-11-07T20:10:00Z",
+    "ownerKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEBeBfmdTfUbAQUH7Kn-LAXnK7MimR4Lg0OOCy8BI6RXyduxyJtlDpjqGgL6nSMQBY5bwmQsZ1g6QuSCxhz4I1aQ",
+    "previousSHA256": "0dfd951c5317bb228f6e95931175b59d3e0a206e08b5e4c2fed06070b7ff934e",
+    "reopenTag": null,
+    "services": {
+     "macAgreement": null,
+     "macExecutor": null,
+     "macPublisher": null,
+     "serverExecutor": null,
+     "serverExecutorAgreement": null,
+     "serverHelper": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE7eq30mr1oP043ORJ4UfBGVRKXGDc655WHh8DvUh6Jdbp3jTGbZSbdaiTTFrK5bdAkMBRMt8uVfIQeyCAQv5OBg",
+     "serverPublisher": null
+    },
+    "version": 2
+   },
+   "countersignatures": [
+    {
+     "deviceId": "d-ae9428d695e414bcefc0ef5b",
+     "signature": "MEUCIGxzEqBy4gcndxdhjkuLAVSQpCi8T9ID4CAdxSQm0Q00AiEAupl85-d5QVtC-0lYpKZdM14IS2jLJFdCc0B16LkzcZY"
+    }
+   ],
+   "ownerSignature": "MEYCIQDOtMgPn1kEBih9TlIWxxZC53sxRDdYPp5xf2QjI-DzqQIhAJu9u0-PRzj80sTKBKLBVXBhoFT9KPTlEQFCdDyV3Rat"
+  },
+  "T12 list": {
+   "body": {
+    "closed": false,
+    "contract": "muster-trust-list/1",
+    "devices": [
+     {
+      "approvalKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEgLxT0run_JYlj2CY2lEYFAhCfGMoh-1Q2HxSODhM4j0boQdGe-OA9Sa_WOPmi0p15BDqD_ZxBkiKyYljQyj0Lg",
+      "deviceId": "d-ae9428d695e414bcefc0ef5b",
+      "name": "Test Phone A",
+      "notificationKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAETc9UlPQaEGmS86h02BDlWsQALVfu2oYjQHRbDkyhxmec9zFNnpDTkWOX-Ki1D1Ty3BKQIAkVU6cp0FyJ5AsZYQ",
+      "readingKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEa_YIgLInEJOjngBXp3gB4F6BWt_SAEZMeOU0yDY-uyRpmrHR7-5x2LLCAEZY6QpIq_VcytQlySQQAoy9y86sIw",
+      "requestKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAENKYBMrkHEF5vbsQDSgfcQUiD_12yOXThq2Nn06nVIeFabNxtAoJZBWoi4GSXcnf_CZ1eBGiAOp_GLzJJktVBUg"
+     },
+     {
+      "approvalKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEuupAUkUqXTeWrCnK_xO-dZ-76OtdQ8e6ftZNWdPKGnllCdHfNA3pwHxj7I84TnMKeBWEGpILKbT_pJMyOr3urg",
+      "deviceId": "d-629e62343180ad883d8f7a47",
+      "name": "Test iPad B",
+      "notificationKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE_bA9-74nJfUWF1TD3uDhUMf_aVzkanRJaNlEVktoBFLNh8q5pVQGt60EPbZxxPKws9ZEa324ck7CIuKTOXKbMA",
+      "readingKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAES3Gma5eyi9qXqF_Vm1wmgoCzO--_JXrGwLucGoRP8rz_pSI_p_W-AOULR1jsYIbIgRASoNX96Y1swYGCB12cpQ",
+      "requestKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEVWOuw9sD6n17pCEXE7zqP_HsA7Unt3pigQFwB-BvnKq93d2MT8XODx-KN05M36ZZiyIDAlhHSWqmKp7XmrZMXw"
+     }
+    ],
+    "issuedAt": "2026-11-07T20:10:00Z",
+    "ownerKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEVzkkcfsegaoVRZFzkDIoVF5bEqxUarf9x8v30K8pWB_JGjq4wKAmg96uVQ704aEAZtLFNi_PbZfc69WlOvJovw",
+    "previousSHA256": "0dfd951c5317bb228f6e95931175b59d3e0a206e08b5e4c2fed06070b7ff934e",
+    "reopenTag": null,
+    "services": {
+     "macAgreement": null,
+     "macExecutor": null,
+     "macPublisher": null,
+     "serverExecutor": null,
+     "serverExecutorAgreement": null,
+     "serverHelper": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE7eq30mr1oP043ORJ4UfBGVRKXGDc655WHh8DvUh6Jdbp3jTGbZSbdaiTTFrK5bdAkMBRMt8uVfIQeyCAQv5OBg",
+     "serverPublisher": null
+    },
+    "version": 2
+   },
+   "countersignatures": [
+    {
+     "deviceId": "d-ae9428d695e414bcefc0ef5b",
+     "signature": "MEQCIDYTYV54V_tX9CKZhk9P7RG6H0eKLKEnZiq0o5SfQuuCAiAHP9hX8KctsDEFpKTknVzrWngPo_CawkTJHlVPXc06Xw"
+    }
+   ],
+   "ownerSignature": "MEUCIQDE30-GFX_rUidfw_YRShwgpye5ti6gQvTcoxxGsCpEAAIgA11DYHpzbNWNkK91ib5xaVrQ79aQR48eSxzsOsInupA"
+  },
+  "T13 list": {
+   "body": {
+    "closed": false,
+    "contract": "muster-trust-list/1",
+    "devices": [
+     {
+      "approvalKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEgLxT0run_JYlj2CY2lEYFAhCfGMoh-1Q2HxSODhM4j0boQdGe-OA9Sa_WOPmi0p15BDqD_ZxBkiKyYljQyj0Lg",
+      "deviceId": "d-ae9428d695e414bcefc0ef5b",
+      "name": "Test Phone A",
+      "notificationKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAETc9UlPQaEGmS86h02BDlWsQALVfu2oYjQHRbDkyhxmec9zFNnpDTkWOX-Ki1D1Ty3BKQIAkVU6cp0FyJ5AsZYQ",
+      "readingKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEa_YIgLInEJOjngBXp3gB4F6BWt_SAEZMeOU0yDY-uyRpmrHR7-5x2LLCAEZY6QpIq_VcytQlySQQAoy9y86sIw",
+      "requestKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAENKYBMrkHEF5vbsQDSgfcQUiD_12yOXThq2Nn06nVIeFabNxtAoJZBWoi4GSXcnf_CZ1eBGiAOp_GLzJJktVBUg"
+     },
+     {
+      "approvalKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEgLxT0run_JYlj2CY2lEYFAhCfGMoh-1Q2HxSODhM4j0boQdGe-OA9Sa_WOPmi0p15BDqD_ZxBkiKyYljQyj0Lg",
+      "deviceId": "d-ae9428d695e414bcefc0ef5b",
+      "name": "Test Phone A",
+      "notificationKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAETc9UlPQaEGmS86h02BDlWsQALVfu2oYjQHRbDkyhxmec9zFNnpDTkWOX-Ki1D1Ty3BKQIAkVU6cp0FyJ5AsZYQ",
+      "readingKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEa_YIgLInEJOjngBXp3gB4F6BWt_SAEZMeOU0yDY-uyRpmrHR7-5x2LLCAEZY6QpIq_VcytQlySQQAoy9y86sIw",
+      "requestKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAENKYBMrkHEF5vbsQDSgfcQUiD_12yOXThq2Nn06nVIeFabNxtAoJZBWoi4GSXcnf_CZ1eBGiAOp_GLzJJktVBUg"
+     }
+    ],
+    "issuedAt": "2026-11-07T20:10:00Z",
+    "ownerKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEVzkkcfsegaoVRZFzkDIoVF5bEqxUarf9x8v30K8pWB_JGjq4wKAmg96uVQ704aEAZtLFNi_PbZfc69WlOvJovw",
+    "previousSHA256": "0dfd951c5317bb228f6e95931175b59d3e0a206e08b5e4c2fed06070b7ff934e",
+    "reopenTag": null,
+    "services": {
+     "macAgreement": null,
+     "macExecutor": null,
+     "macPublisher": null,
+     "serverExecutor": null,
+     "serverExecutorAgreement": null,
+     "serverHelper": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE7eq30mr1oP043ORJ4UfBGVRKXGDc655WHh8DvUh6Jdbp3jTGbZSbdaiTTFrK5bdAkMBRMt8uVfIQeyCAQv5OBg",
+     "serverPublisher": null
+    },
+    "version": 2
+   },
+   "countersignatures": [
+    {
+     "deviceId": "d-ae9428d695e414bcefc0ef5b",
+     "signature": "MEYCIQDntVslIpf3b9voKlUjtgjvYcrOKR4nz3Q0hBfiGdTcqAIhAMeLVebXlVFzbjl5QZo1zgpNaQaU7skfYZYTd1A9mj2A"
+    }
+   ],
+   "ownerSignature": "MEYCIQCHOxw8AzIXmUSyDNpBC77Gc-xI5WHx0T_SicTeDKqlrgIhAKVHXGQYaW-RbuHH504Q-qmtxiHZuILvMjzBaDt9X-Ce"
+  },
+  "T14 list": {
+   "body": {
+    "closed": false,
+    "contract": "muster-trust-list/1",
+    "devices": [
+     {
+      "approvalKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEgLxT0run_JYlj2CY2lEYFAhCfGMoh-1Q2HxSODhM4j0boQdGe-OA9Sa_WOPmi0p15BDqD_ZxBkiKyYljQyj0Lg",
+      "deviceId": "d-ae9428d695e414bcefc0ef5b",
+      "name": "Test Phone A",
+      "notificationKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAETc9UlPQaEGmS86h02BDlWsQALVfu2oYjQHRbDkyhxmec9zFNnpDTkWOX-Ki1D1Ty3BKQIAkVU6cp0FyJ5AsZYQ",
+      "readingKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEa_YIgLInEJOjngBXp3gB4F6BWt_SAEZMeOU0yDY-uyRpmrHR7-5x2LLCAEZY6QpIq_VcytQlySQQAoy9y86sIw",
+      "requestKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAENKYBMrkHEF5vbsQDSgfcQUiD_12yOXThq2Nn06nVIeFabNxtAoJZBWoi4GSXcnf_CZ1eBGiAOp_GLzJJktVBUg"
+     },
+     {
+      "approvalKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEuupAUkUqXTeWrCnK_xO-dZ-76OtdQ8e6ftZNWdPKGnllCdHfNA3pwHxj7I84TnMKeBWEGpILKbT_pJMyOr3urg",
+      "deviceId": "d-629e62343180ad883d8f7a47",
+      "name": "Test iPad B",
+      "notificationKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE_bA9-74nJfUWF1TD3uDhUMf_aVzkanRJaNlEVktoBFLNh8q5pVQGt60EPbZxxPKws9ZEa324ck7CIuKTOXKbMA",
+      "readingKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAES3Gma5eyi9qXqF_Vm1wmgoCzO--_JXrGwLucGoRP8rz_pSI_p_W-AOULR1jsYIbIgRASoNX96Y1swYGCB12cpQ",
+      "requestKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEVWOuw9sD6n17pCEXE7zqP_HsA7Unt3pigQFwB-BvnKq93d2MT8XODx-KN05M36ZZiyIDAlhHSWqmKp7XmrZMXw"
+     }
+    ],
+    "issuedAt": "2026-11-07T20:10:00Z",
+    "ownerKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEVzkkcfsegaoVRZFzkDIoVF5bEqxUarf9x8v30K8pWB_JGjq4wKAmg96uVQ704aEAZtLFNi_PbZfc69WlOvJovw",
+    "previousSHA256": "0dfd951c5317bb228f6e95931175b59d3e0a206e08b5e4c2fed06070b7ff934e",
+    "reopenTag": null,
+    "services": {
+     "macAgreement": null,
+     "macExecutor": null,
+     "macPublisher": null,
+     "serverExecutor": null,
+     "serverExecutorAgreement": null,
+     "serverHelper": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE7eq30mr1oP043ORJ4UfBGVRKXGDc655WHh8DvUh6Jdbp3jTGbZSbdaiTTFrK5bdAkMBRMt8uVfIQeyCAQv5OBg",
+     "serverPublisher": null
+    },
+    "version": 2
+   },
+   "countersignatures": [
+    {
+     "deviceId": "d-629e62343180ad883d8f7a47",
+     "signature": "MEQCIA822LZH4C8O1ZwblWQnBaD-XxFvo4DPnLDe43hdkJgQAiA308DQ9VxVtpnLP4IvEXTD_O9wv0CnlMJR-EIGbhZo9g"
+    }
+   ],
+   "ownerSignature": "MEYCIQCFuKCTZ523TAkne09GVbLaFQbQwlDfVzbpRo2vpzRxBgIhAMczoI9kkV8YAyeBqh90KIEP6w2CVjs62H700g6iP-HR"
+  },
+  "T15 list": {
+   "body": {
+    "closed": false,
+    "contract": "muster-trust-list/1",
+    "devices": [
+     {
+      "approvalKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAETH7k5HURk_7DG-eMy6GVf66aD_dyBNIDRLa3uTE8mP92HxEXdfjyCUxsXHR34I0zbGhv7AWgXnX6fPjnCPKg6w",
+      "deviceId": "d-f4e396a67ceefe6a551abbc0",
+      "name": "Test Phone C",
+      "notificationKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEH-LOtR0pZ4orjdPxCYFfcdDQE-d2eXu_PdcNi1LBbnoqwMECfkwCwmFjjwClFRIBG0HSthRfgZDrEA_lasDHcg",
+      "readingKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAED0rgDuFHSq-VF_k0617gyxsiHFtUDxsfckW3O1JTVER4MvMB_Ua3isHPgsjowUyL8_2wOhTroMi4mHR3bY_2tg",
+      "requestKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEKCWVuPOr3TdZSendYJNllk98wOyLQ95mAdO7y4Hwqm5ZV-T4ISvA2sZy_tfact4OYzDc0pYxciaedztE5EKi8Q"
+     }
+    ],
+    "issuedAt": "2026-11-07T20:50:00Z",
+    "ownerKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEVzkkcfsegaoVRZFzkDIoVF5bEqxUarf9x8v30K8pWB_JGjq4wKAmg96uVQ704aEAZtLFNi_PbZfc69WlOvJovw",
+    "previousSHA256": "5e06787afce950d2f803ac3716dc9ee0d033798f2803eb3393b6b3fa53e88ce8",
+    "reopenTag": "98e5f483cf1d368013391fb0437be628a7105d78712382ddb9be9b4c82c9c8e9",
+    "services": {
+     "macAgreement": null,
+     "macExecutor": null,
+     "macPublisher": null,
+     "serverExecutor": null,
+     "serverExecutorAgreement": null,
+     "serverHelper": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE7eq30mr1oP043ORJ4UfBGVRKXGDc655WHh8DvUh6Jdbp3jTGbZSbdaiTTFrK5bdAkMBRMt8uVfIQeyCAQv5OBg",
+     "serverPublisher": null
+    },
+    "version": 4
+   },
+   "countersignatures": [
+    {
+     "deviceId": "d-ae9428d695e414bcefc0ef5b",
+     "signature": "MEUCIE4y0Nw-usi5qjTr5LM5H1UD7wPsyjaEMQvvPeOAey9bAiEAwMlxVs09BAVXcFFsVq7OjkYsfbjW2YyW5i5vGTFlWhU"
+    }
+   ],
+   "ownerSignature": "MEUCIQDR0Lv-HcSFsAsR-39-qSn8MjL3mizHd8ltR8cy8LfP9wIgO2tuOksY4ScwjQLkFEZ88hCvzU9-tefjShWWEJUzP5Q"
+  },
+  "T16 list": {
+   "body": {
+    "closed": true,
+    "contract": "muster-trust-list/1",
+    "devices": [
+     {
+      "approvalKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEgLxT0run_JYlj2CY2lEYFAhCfGMoh-1Q2HxSODhM4j0boQdGe-OA9Sa_WOPmi0p15BDqD_ZxBkiKyYljQyj0Lg",
+      "deviceId": "d-ae9428d695e414bcefc0ef5b",
+      "name": "Test Phone A",
+      "notificationKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAETc9UlPQaEGmS86h02BDlWsQALVfu2oYjQHRbDkyhxmec9zFNnpDTkWOX-Ki1D1Ty3BKQIAkVU6cp0FyJ5AsZYQ",
+      "readingKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEa_YIgLInEJOjngBXp3gB4F6BWt_SAEZMeOU0yDY-uyRpmrHR7-5x2LLCAEZY6QpIq_VcytQlySQQAoy9y86sIw",
+      "requestKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAENKYBMrkHEF5vbsQDSgfcQUiD_12yOXThq2Nn06nVIeFabNxtAoJZBWoi4GSXcnf_CZ1eBGiAOp_GLzJJktVBUg"
+     }
+    ],
+    "issuedAt": "2026-11-07T20:10:00Z",
+    "ownerKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEVzkkcfsegaoVRZFzkDIoVF5bEqxUarf9x8v30K8pWB_JGjq4wKAmg96uVQ704aEAZtLFNi_PbZfc69WlOvJovw",
+    "previousSHA256": "0dfd951c5317bb228f6e95931175b59d3e0a206e08b5e4c2fed06070b7ff934e",
+    "reopenTag": null,
+    "services": {
+     "macAgreement": null,
+     "macExecutor": null,
+     "macPublisher": null,
+     "serverExecutor": null,
+     "serverExecutorAgreement": null,
+     "serverHelper": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE7eq30mr1oP043ORJ4UfBGVRKXGDc655WHh8DvUh6Jdbp3jTGbZSbdaiTTFrK5bdAkMBRMt8uVfIQeyCAQv5OBg",
+     "serverPublisher": null
+    },
+    "version": 2
+   },
+   "countersignatures": [],
+   "ownerSignature": "MEUCIQCl1yGFLOWgYjpoCS0TuuyP7jtQZErHuBUKqlfYAec8qwIgQWfSPmscPnhTWhKYi1Hez13vmlHGe8ATXDVjDlZomSI"
+  },
+  "T17 list": {
+   "body": {
+    "closed": false,
+    "contract": "muster-trust-list/1",
+    "devices": [
+     {
+      "approvalKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEgLxT0run_JYlj2CY2lEYFAhCfGMoh-1Q2HxSODhM4j0boQdGe-OA9Sa_WOPmi0p15BDqD_ZxBkiKyYljQyj0Lg",
+      "deviceId": "d-ae9428d695e414bcefc0ef5b",
+      "name": "Test Phone A",
+      "notificationKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAETc9UlPQaEGmS86h02BDlWsQALVfu2oYjQHRbDkyhxmec9zFNnpDTkWOX-Ki1D1Ty3BKQIAkVU6cp0FyJ5AsZYQ",
+      "readingKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEa_YIgLInEJOjngBXp3gB4F6BWt_SAEZMeOU0yDY-uyRpmrHR7-5x2LLCAEZY6QpIq_VcytQlySQQAoy9y86sIw",
+      "requestKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAENKYBMrkHEF5vbsQDSgfcQUiD_12yOXThq2Nn06nVIeFabNxtAoJZBWoi4GSXcnf_CZ1eBGiAOp_GLzJJktVBUg"
+     }
+    ],
+    "issuedAt": "2026-11-07T20:00:00Z",
+    "ownerKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEVzkkcfsegaoVRZFzkDIoVF5bEqxUarf9x8v30K8pWB_JGjq4wKAmg96uVQ704aEAZtLFNi_PbZfc69WlOvJovw",
+    "previousSHA256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "reopenTag": null,
+    "services": {
+     "macAgreement": null,
+     "macExecutor": null,
+     "macPublisher": null,
+     "serverExecutor": null,
+     "serverExecutorAgreement": null,
+     "serverHelper": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE7eq30mr1oP043ORJ4UfBGVRKXGDc655WHh8DvUh6Jdbp3jTGbZSbdaiTTFrK5bdAkMBRMt8uVfIQeyCAQv5OBg",
+     "serverPublisher": null
+    },
+    "version": 1
+   },
+   "countersignatures": [],
+   "ownerSignature": "MEUCIQDABl1QK-EVORC8hjsoA5Gyeu4Kg7BdoA_yCxTKiQC7JwIgMSfNn3tcz63piNnI5lvUFCYRZdgEOszkWPWe4tsU018"
+  },
+  "T18 list": {
+   "body": {
+    "closed": false,
+    "contract": "muster-trust-list/1",
+    "devices": [
+     {
+      "approvalKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAETH7k5HURk_7DG-eMy6GVf66aD_dyBNIDRLa3uTE8mP92HxEXdfjyCUxsXHR34I0zbGhv7AWgXnX6fPjnCPKg6w",
+      "deviceId": "d-f4e396a67ceefe6a551abbc0",
+      "name": "Test Phone C",
+      "notificationKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEH-LOtR0pZ4orjdPxCYFfcdDQE-d2eXu_PdcNi1LBbnoqwMECfkwCwmFjjwClFRIBG0HSthRfgZDrEA_lasDHcg",
+      "readingKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAED0rgDuFHSq-VF_k0617gyxsiHFtUDxsfckW3O1JTVER4MvMB_Ua3isHPgsjowUyL8_2wOhTroMi4mHR3bY_2tg",
+      "requestKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEKCWVuPOr3TdZSendYJNllk98wOyLQ95mAdO7y4Hwqm5ZV-T4ISvA2sZy_tfact4OYzDc0pYxciaedztE5EKi8Q"
+     }
+    ],
+    "issuedAt": "2026-11-07T20:50:00Z",
+    "ownerKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEVzkkcfsegaoVRZFzkDIoVF5bEqxUarf9x8v30K8pWB_JGjq4wKAmg96uVQ704aEAZtLFNi_PbZfc69WlOvJovw",
+    "previousSHA256": "5e06787afce950d2f803ac3716dc9ee0d033798f2803eb3393b6b3fa53e88ce8",
+    "reopenTag": null,
+    "services": {
+     "macAgreement": null,
+     "macExecutor": null,
+     "macPublisher": null,
+     "serverExecutor": null,
+     "serverExecutorAgreement": null,
+     "serverHelper": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE7eq30mr1oP043ORJ4UfBGVRKXGDc655WHh8DvUh6Jdbp3jTGbZSbdaiTTFrK5bdAkMBRMt8uVfIQeyCAQv5OBg",
+     "serverPublisher": null
+    },
+    "version": 4
+   },
+   "countersignatures": [
+    {
+     "deviceId": "d-f4e396a67ceefe6a551abbc0",
+     "signature": "MEUCIQC1yKbBZ-jBIevame4bd36b27bBo4lPbEAF5wn5J7O3jQIgBcnw6YNncLx9iD86tOBLgG3prdUpkpzbfJo9qqg_lxA"
+    }
+   ],
+   "ownerSignature": "MEUCIDIWWOpwHR_lf4OG5gb2MlYKKpk-U5VtxlCJiao8FAnAAiEAxTTd7M7sGnpwYhftRZfVlQ0dz6e7qzccMA-qOMM-bSE"
+  },
+  "T19 list": {
+   "body": {
+    "closed": true,
+    "contract": "muster-trust-list/1",
+    "devices": [],
+    "issuedAt": "2026-11-07T20:10:00Z",
+    "ownerKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEVzkkcfsegaoVRZFzkDIoVF5bEqxUarf9x8v30K8pWB_JGjq4wKAmg96uVQ704aEAZtLFNi_PbZfc69WlOvJovw",
+    "previousSHA256": "0dfd951c5317bb228f6e95931175b59d3e0a206e08b5e4c2fed06070b7ff934e",
+    "reopenTag": null,
+    "services": {
+     "macAgreement": null,
+     "macExecutor": null,
+     "macPublisher": null,
+     "serverExecutor": null,
+     "serverExecutorAgreement": null,
+     "serverHelper": null,
+     "serverPublisher": null
+    },
+    "version": 2
+   },
+   "countersignatures": [],
+   "ownerSignature": "MEUCIDVjSg_TZTl_CW15iPrsjqA4pMz1wETx3xpbovVDt1uFAiEAgQa-v_ourVZUoFFUHbr9VXV8u8mQIn8-jXbIr0K_oTA"
+  },
+  "T20 list": {
+   "body": {
+    "closed": false,
+    "contract": "muster-trust-list/1",
+    "devices": [
+     {
+      "approvalKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEuupAUkUqXTeWrCnK_xO-dZ-76OtdQ8e6ftZNWdPKGnllCdHfNA3pwHxj7I84TnMKeBWEGpILKbT_pJMyOr3urg",
+      "deviceId": "d-629e62343180ad883d8f7a47",
+      "name": "Test iPad B",
+      "notificationKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE_bA9-74nJfUWF1TD3uDhUMf_aVzkanRJaNlEVktoBFLNh8q5pVQGt60EPbZxxPKws9ZEa324ck7CIuKTOXKbMA",
+      "readingKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAES3Gma5eyi9qXqF_Vm1wmgoCzO--_JXrGwLucGoRP8rz_pSI_p_W-AOULR1jsYIbIgRASoNX96Y1swYGCB12cpQ",
+      "requestKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEVWOuw9sD6n17pCEXE7zqP_HsA7Unt3pigQFwB-BvnKq93d2MT8XODx-KN05M36ZZiyIDAlhHSWqmKp7XmrZMXw"
+     }
+    ],
+    "issuedAt": "2026-11-07T20:50:00Z",
+    "ownerKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEVzkkcfsegaoVRZFzkDIoVF5bEqxUarf9x8v30K8pWB_JGjq4wKAmg96uVQ704aEAZtLFNi_PbZfc69WlOvJovw",
+    "previousSHA256": "5e06787afce950d2f803ac3716dc9ee0d033798f2803eb3393b6b3fa53e88ce8",
+    "reopenTag": "368c3e1db040ba98f33cb202502b0961b3ba6288b715ceef789f361fa0d3800c",
+    "services": {
+     "macAgreement": null,
+     "macExecutor": null,
+     "macPublisher": null,
+     "serverExecutor": null,
+     "serverExecutorAgreement": null,
+     "serverHelper": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE7eq30mr1oP043ORJ4UfBGVRKXGDc655WHh8DvUh6Jdbp3jTGbZSbdaiTTFrK5bdAkMBRMt8uVfIQeyCAQv5OBg",
+     "serverPublisher": null
+    },
+    "version": 4
+   },
+   "countersignatures": [
+    {
+     "deviceId": "d-629e62343180ad883d8f7a47",
+     "signature": "MEQCIHOR4elOIfK3NP4PADHU9IY8gZiuzfSGZRLWPqsC9r1UAiBECgiS6uaf0KQp6sdQnNRjfflCbu5BUoJzxNhs8ftA6g"
+    }
+   ],
+   "ownerSignature": "MEUCIQC4T3c8v712RIq-9BPip0IVX23xUS0VaCb2vBzs6sAjngIgDaKuK2UzR-55OPUC2asYYeLc4luv2ZJl4Dpu88Ya_Js"
+  },
+  "T21 list": {
+   "body": {
+    "closed": false,
+    "contract": "muster-trust-list/1",
+    "devices": [
+     {
+      "approvalKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAETH7k5HURk_7DG-eMy6GVf66aD_dyBNIDRLa3uTE8mP92HxEXdfjyCUxsXHR34I0zbGhv7AWgXnX6fPjnCPKg6w",
+      "deviceId": "d-f4e396a67ceefe6a551abbc0",
+      "name": "Test Phone C",
+      "notificationKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEH-LOtR0pZ4orjdPxCYFfcdDQE-d2eXu_PdcNi1LBbnoqwMECfkwCwmFjjwClFRIBG0HSthRfgZDrEA_lasDHcg",
+      "readingKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAED0rgDuFHSq-VF_k0617gyxsiHFtUDxsfckW3O1JTVER4MvMB_Ua3isHPgsjowUyL8_2wOhTroMi4mHR3bY_2tg",
+      "requestKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEKCWVuPOr3TdZSendYJNllk98wOyLQ95mAdO7y4Hwqm5ZV-T4ISvA2sZy_tfact4OYzDc0pYxciaedztE5EKi8Q"
+     }
+    ],
+    "issuedAt": "2026-11-07T20:50:00Z",
+    "ownerKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEVzkkcfsegaoVRZFzkDIoVF5bEqxUarf9x8v30K8pWB_JGjq4wKAmg96uVQ704aEAZtLFNi_PbZfc69WlOvJovw",
+    "previousSHA256": "5e06787afce950d2f803ac3716dc9ee0d033798f2803eb3393b6b3fa53e88ce8",
+    "reopenTag": "9477dc539be54017c596289fc8859de13c6f1ab807958d3dad6413238fb97988",
+    "services": {
+     "macAgreement": null,
+     "macExecutor": null,
+     "macPublisher": null,
+     "serverExecutor": null,
+     "serverExecutorAgreement": null,
+     "serverHelper": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE7eq30mr1oP043ORJ4UfBGVRKXGDc655WHh8DvUh6Jdbp3jTGbZSbdaiTTFrK5bdAkMBRMt8uVfIQeyCAQv5OBg",
+     "serverPublisher": null
+    },
+    "version": 4
+   },
+   "countersignatures": [
+    {
+     "deviceId": "d-f4e396a67ceefe6a551abbc0",
+     "signature": "MEYCIQDnZIxoSIiTpEylaV6cA_fS8szQquS5LuXVPV1cfe1_7wIhAOWenYAoyLdN43eGgAePoAiT3lbvAyOs8-Yf2EOwDrOI"
+    }
+   ],
+   "ownerSignature": "MEQCIBusjBYWAvZHntfKtH9kDWcOYroie-O2sdcWlnFvNCJhAiA--FEu69qrAVhKuE2UBrqotCXKi8SntkHIMwP946_mHw"
+  },
+  "T24 list": {
+   "body": {
+    "closed": false,
+    "contract": "muster-trust-list/1",
+    "devices": [
+     {
+      "approvalKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEgLxT0run_JYlj2CY2lEYFAhCfGMoh-1Q2HxSODhM4j0boQdGe-OA9Sa_WOPmi0p15BDqD_ZxBkiKyYljQyj0Lg",
+      "deviceId": "d-ae9428d695e414bcefc0ef5b",
+      "name": "Test Phone A",
+      "notificationKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAETc9UlPQaEGmS86h02BDlWsQALVfu2oYjQHRbDkyhxmec9zFNnpDTkWOX-Ki1D1Ty3BKQIAkVU6cp0FyJ5AsZYQ",
+      "readingKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEa_YIgLInEJOjngBXp3gB4F6BWt_SAEZMeOU0yDY-uyRpmrHR7-5x2LLCAEZY6QpIq_VcytQlySQQAoy9y86sIw",
+      "requestKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAENKYBMrkHEF5vbsQDSgfcQUiD_12yOXThq2Nn06nVIeFabNxtAoJZBWoi4GSXcnf_CZ1eBGiAOp_GLzJJktVBUg"
+     }
+    ],
+    "issuedAt": "2026-11-07T20:05:00Z",
+    "ownerKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEVzkkcfsegaoVRZFzkDIoVF5bEqxUarf9x8v30K8pWB_JGjq4wKAmg96uVQ704aEAZtLFNi_PbZfc69WlOvJovw",
+    "previousSHA256": null,
+    "reopenTag": null,
+    "services": {
+     "macAgreement": null,
+     "macExecutor": null,
+     "macPublisher": null,
+     "serverExecutor": null,
+     "serverExecutorAgreement": null,
+     "serverHelper": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE7eq30mr1oP043ORJ4UfBGVRKXGDc655WHh8DvUh6Jdbp3jTGbZSbdaiTTFrK5bdAkMBRMt8uVfIQeyCAQv5OBg",
+     "serverPublisher": null
+    },
+    "version": 1
+   },
+   "countersignatures": [],
+   "ownerSignature": "MEUCIAaMIGeuZ34v74Ad1Jdx-0rSzk0h3l8N40hqHv-IyD1QAiEAtRe6el3FtB6GNrGtwZR6f_E4yjIQvku_tQx898C7uPw"
+  },
+  "T25 list": {
+   "body": {
+    "closed": false,
+    "contract": "muster-trust-list/1",
+    "devices": [
+     {
+      "approvalKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEgLxT0run_JYlj2CY2lEYFAhCfGMoh-1Q2HxSODhM4j0boQdGe-OA9Sa_WOPmi0p15BDqD_ZxBkiKyYljQyj0Lg",
+      "deviceId": "d-ae9428d695e414bcefc0ef5b",
+      "name": "Test Phone A",
+      "notificationKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAETc9UlPQaEGmS86h02BDlWsQALVfu2oYjQHRbDkyhxmec9zFNnpDTkWOX-Ki1D1Ty3BKQIAkVU6cp0FyJ5AsZYQ",
+      "readingKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEa_YIgLInEJOjngBXp3gB4F6BWt_SAEZMeOU0yDY-uyRpmrHR7-5x2LLCAEZY6QpIq_VcytQlySQQAoy9y86sIw",
+      "requestKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAENKYBMrkHEF5vbsQDSgfcQUiD_12yOXThq2Nn06nVIeFabNxtAoJZBWoi4GSXcnf_CZ1eBGiAOp_GLzJJktVBUg"
+     },
+     {
+      "approvalKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEuupAUkUqXTeWrCnK_xO-dZ-76OtdQ8e6ftZNWdPKGnllCdHfNA3pwHxj7I84TnMKeBWEGpILKbT_pJMyOr3urg",
+      "deviceId": "d-629e62343180ad883d8f7a47",
+      "name": "Test iPad B",
+      "notificationKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE_bA9-74nJfUWF1TD3uDhUMf_aVzkanRJaNlEVktoBFLNh8q5pVQGt60EPbZxxPKws9ZEa324ck7CIuKTOXKbMA",
+      "readingKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAES3Gma5eyi9qXqF_Vm1wmgoCzO--_JXrGwLucGoRP8rz_pSI_p_W-AOULR1jsYIbIgRASoNX96Y1swYGCB12cpQ",
+      "requestKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEVWOuw9sD6n17pCEXE7zqP_HsA7Unt3pigQFwB-BvnKq93d2MT8XODx-KN05M36ZZiyIDAlhHSWqmKp7XmrZMXw"
+     }
+    ],
+    "issuedAt": "2026-11-07T20:10:00Z",
+    "ownerKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEVzkkcfsegaoVRZFzkDIoVF5bEqxUarf9x8v30K8pWB_JGjq4wKAmg96uVQ704aEAZtLFNi_PbZfc69WlOvJovw",
+    "previousSHA256": "0dfd951c5317bb228f6e95931175b59d3e0a206e08b5e4c2fed06070b7ff934e",
+    "reopenTag": null,
+    "services": {
+     "macAgreement": null,
+     "macExecutor": null,
+     "macPublisher": null,
+     "serverExecutor": null,
+     "serverExecutorAgreement": null,
+     "serverHelper": null,
+     "serverPublisher": null
+    },
+    "version": 2
+   },
+   "countersignatures": [
+    {
+     "deviceId": "d-ae9428d695e414bcefc0ef5b",
+     "signature": "MEUCIQCAlGFqQxrq1Rqbcu9naVLFqkBqLWJvOkdJryDj6UY43wIgNcGJmVax4q-shuNZZgiuSW7OwoF4xJ0vqsNO-rzbk-c"
+    }
+   ],
+   "ownerSignature": "MEYCIQDMlQQ6pt2Irt3n6EUuA9v9GbyPNESSxP8pD9sWr0lOnwIhAMM1Sjf7LBmWIihdYS4HraOj9VCvQuTHiL5fG8FBUHKs"
+  },
+  "T6 list": {
+   "body": {
+    "closed": true,
+    "contract": "muster-trust-list/1",
+    "devices": [],
+    "issuedAt": "2026-11-07T20:10:00Z",
+    "ownerKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEVzkkcfsegaoVRZFzkDIoVF5bEqxUarf9x8v30K8pWB_JGjq4wKAmg96uVQ704aEAZtLFNi_PbZfc69WlOvJovw",
+    "previousSHA256": "0dfd951c5317bb228f6e95931175b59d3e0a206e08b5e4c2fed06070b7ff934e",
+    "reopenTag": null,
+    "services": {
+     "macAgreement": null,
+     "macExecutor": null,
+     "macPublisher": null,
+     "serverExecutor": null,
+     "serverExecutorAgreement": null,
+     "serverHelper": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAESUQZoy7P6Eua62UCeJvTZF7LzCX2Jb4L9NN_raKYT6_yDrRqx-ud2pf-Ogw66b1Dsj8-Hfcb82GN-8sUCuqhHw",
+     "serverPublisher": null
+    },
+    "version": 2
+   },
+   "countersignatures": [],
+   "ownerSignature": "MEUCICW2-FeDJ-0Ue0wZxH_ZZQI7L6n7P9EBBei2vHpky9aFAiEAhmEBazsuNAGcyyowY2y6iKRhoCPAThUwwiwfycF5UlI"
+  },
+  "T7 list": {
+   "body": {
+    "closed": false,
+    "contract": "muster-trust-list/1",
+    "devices": [
+     {
+      "approvalKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEgLxT0run_JYlj2CY2lEYFAhCfGMoh-1Q2HxSODhM4j0boQdGe-OA9Sa_WOPmi0p15BDqD_ZxBkiKyYljQyj0Lg",
+      "deviceId": "d-ae9428d695e414bcefc0ef5b",
+      "name": "Test Phone A",
+      "notificationKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAETc9UlPQaEGmS86h02BDlWsQALVfu2oYjQHRbDkyhxmec9zFNnpDTkWOX-Ki1D1Ty3BKQIAkVU6cp0FyJ5AsZYQ",
+      "readingKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEa_YIgLInEJOjngBXp3gB4F6BWt_SAEZMeOU0yDY-uyRpmrHR7-5x2LLCAEZY6QpIq_VcytQlySQQAoy9y86sIw",
+      "requestKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAENKYBMrkHEF5vbsQDSgfcQUiD_12yOXThq2Nn06nVIeFabNxtAoJZBWoi4GSXcnf_CZ1eBGiAOp_GLzJJktVBUg"
+     },
+     {
+      "approvalKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEuupAUkUqXTeWrCnK_xO-dZ-76OtdQ8e6ftZNWdPKGnllCdHfNA3pwHxj7I84TnMKeBWEGpILKbT_pJMyOr3urg",
+      "deviceId": "d-629e62343180ad883d8f7a47",
+      "name": "Test iPad B",
+      "notificationKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE_bA9-74nJfUWF1TD3uDhUMf_aVzkanRJaNlEVktoBFLNh8q5pVQGt60EPbZxxPKws9ZEa324ck7CIuKTOXKbMA",
+      "readingKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAES3Gma5eyi9qXqF_Vm1wmgoCzO--_JXrGwLucGoRP8rz_pSI_p_W-AOULR1jsYIbIgRASoNX96Y1swYGCB12cpQ",
+      "requestKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEVWOuw9sD6n17pCEXE7zqP_HsA7Unt3pigQFwB-BvnKq93d2MT8XODx-KN05M36ZZiyIDAlhHSWqmKp7XmrZMXw"
+     }
+    ],
+    "issuedAt": "2026-11-07T20:10:00Z",
+    "ownerKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEVzkkcfsegaoVRZFzkDIoVF5bEqxUarf9x8v30K8pWB_JGjq4wKAmg96uVQ704aEAZtLFNi_PbZfc69WlOvJovw",
+    "previousSHA256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "reopenTag": null,
+    "services": {
+     "macAgreement": null,
+     "macExecutor": null,
+     "macPublisher": null,
+     "serverExecutor": null,
+     "serverExecutorAgreement": null,
+     "serverHelper": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE7eq30mr1oP043ORJ4UfBGVRKXGDc655WHh8DvUh6Jdbp3jTGbZSbdaiTTFrK5bdAkMBRMt8uVfIQeyCAQv5OBg",
+     "serverPublisher": null
+    },
+    "version": 2
+   },
+   "countersignatures": [
+    {
+     "deviceId": "d-ae9428d695e414bcefc0ef5b",
+     "signature": "MEYCIQDmVC5PrE99Ih2d1s96ZkFcIEg07EP-jXGBuYGJ9nNxBwIhAKS0-hsnudSBFBzQL6r6OGrqljrQxEnf9_ZWUeYFyiSc"
+    }
+   ],
+   "ownerSignature": "MEQCIGP6vYReSz9LDrop-FCOwedo9N8nsL2iBucXlzYBKLQIAiBLVa2gdZQrx-Q__XkOfrZ1WFSDgLWwCBCJJiwWUMUHcA"
+  },
+  "T8 list": {
+   "body": {
+    "closed": false,
+    "contract": "muster-trust-list/1",
+    "devices": [
+     {
+      "approvalKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAETH7k5HURk_7DG-eMy6GVf66aD_dyBNIDRLa3uTE8mP92HxEXdfjyCUxsXHR34I0zbGhv7AWgXnX6fPjnCPKg6w",
+      "deviceId": "d-f4e396a67ceefe6a551abbc0",
+      "name": "Test Phone C",
+      "notificationKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEH-LOtR0pZ4orjdPxCYFfcdDQE-d2eXu_PdcNi1LBbnoqwMECfkwCwmFjjwClFRIBG0HSthRfgZDrEA_lasDHcg",
+      "readingKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAED0rgDuFHSq-VF_k0617gyxsiHFtUDxsfckW3O1JTVER4MvMB_Ua3isHPgsjowUyL8_2wOhTroMi4mHR3bY_2tg",
+      "requestKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEKCWVuPOr3TdZSendYJNllk98wOyLQ95mAdO7y4Hwqm5ZV-T4ISvA2sZy_tfact4OYzDc0pYxciaedztE5EKi8Q"
+     }
+    ],
+    "issuedAt": "2026-11-07T20:50:00Z",
+    "ownerKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEVzkkcfsegaoVRZFzkDIoVF5bEqxUarf9x8v30K8pWB_JGjq4wKAmg96uVQ704aEAZtLFNi_PbZfc69WlOvJovw",
+    "previousSHA256": "5e06787afce950d2f803ac3716dc9ee0d033798f2803eb3393b6b3fa53e88ce8",
+    "reopenTag": "cf21cb1b1ae0a19198d139ae53228122f57996b742561545ad5dd49b3708c422",
+    "services": {
+     "macAgreement": null,
+     "macExecutor": null,
+     "macPublisher": null,
+     "serverExecutor": null,
+     "serverExecutorAgreement": null,
+     "serverHelper": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE7eq30mr1oP043ORJ4UfBGVRKXGDc655WHh8DvUh6Jdbp3jTGbZSbdaiTTFrK5bdAkMBRMt8uVfIQeyCAQv5OBg",
+     "serverPublisher": null
+    },
+    "version": 4
+   },
+   "countersignatures": [
+    {
+     "deviceId": "d-f4e396a67ceefe6a551abbc0",
+     "signature": "MEUCIQC-WFgJyZOzQXnTlGK5U92oXbe0ZBb-8ye19Gg9DyUMKwIgIqkRFWpQj02Huk3kwW4b6FquRS9YUluJtAZ61VBmqZY"
+    }
+   ],
+   "ownerSignature": "MEQCIAvrD4BBNITvGdy2JfajuJtXVZsPnlIFXr9Lh1BX78e7AiAzi-24tJKko4Xj21x0UOYlAnl5lq4EoBunIKKob2cw6A"
+  },
   "v1": {
    "body": {
     "closed": false,
@@ -1836,6 +2759,43 @@
     }
    ],
    "ownerSignature": "MEUCIQDR0Lv-HcSFsAsR-39-qSn8MjL3mizHd8ltR8cy8LfP9wIgO2tuOksY4ScwjQLkFEZ88hCvzU9-tefjShWWEJUzP5Q"
+  },
+  "v4 at 20:55": {
+   "body": {
+    "closed": false,
+    "contract": "muster-trust-list/1",
+    "devices": [
+     {
+      "approvalKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAETH7k5HURk_7DG-eMy6GVf66aD_dyBNIDRLa3uTE8mP92HxEXdfjyCUxsXHR34I0zbGhv7AWgXnX6fPjnCPKg6w",
+      "deviceId": "d-f4e396a67ceefe6a551abbc0",
+      "name": "Test Phone C",
+      "notificationKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEH-LOtR0pZ4orjdPxCYFfcdDQE-d2eXu_PdcNi1LBbnoqwMECfkwCwmFjjwClFRIBG0HSthRfgZDrEA_lasDHcg",
+      "readingKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAED0rgDuFHSq-VF_k0617gyxsiHFtUDxsfckW3O1JTVER4MvMB_Ua3isHPgsjowUyL8_2wOhTroMi4mHR3bY_2tg",
+      "requestKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEKCWVuPOr3TdZSendYJNllk98wOyLQ95mAdO7y4Hwqm5ZV-T4ISvA2sZy_tfact4OYzDc0pYxciaedztE5EKi8Q"
+     }
+    ],
+    "issuedAt": "2026-11-07T20:55:00Z",
+    "ownerKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEVzkkcfsegaoVRZFzkDIoVF5bEqxUarf9x8v30K8pWB_JGjq4wKAmg96uVQ704aEAZtLFNi_PbZfc69WlOvJovw",
+    "previousSHA256": "5e06787afce950d2f803ac3716dc9ee0d033798f2803eb3393b6b3fa53e88ce8",
+    "reopenTag": "b199d430607e77d3e6a4ab354cf1a52a4faec626b2b994bb200c22d68fb5e1b0",
+    "services": {
+     "macAgreement": null,
+     "macExecutor": null,
+     "macPublisher": null,
+     "serverExecutor": null,
+     "serverExecutorAgreement": null,
+     "serverHelper": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE7eq30mr1oP043ORJ4UfBGVRKXGDc655WHh8DvUh6Jdbp3jTGbZSbdaiTTFrK5bdAkMBRMt8uVfIQeyCAQv5OBg",
+     "serverPublisher": null
+    },
+    "version": 4
+   },
+   "countersignatures": [
+    {
+     "deviceId": "d-f4e396a67ceefe6a551abbc0",
+     "signature": "MEUCIQDeWNKle0weRXipGwQTz8Q152R6UrqV6OM46oqejENyPwIgdF0IoYKJMOWLGzCc_yIvZSyjsVTRDoZTgOerNRbcfT0"
+    }
+   ],
+   "ownerSignature": "MEUCIAFrdPeP4rX7Z4ThaoiyzZWFdZW1FWTmIHPY-vOPH1LzAiEAjt-3ef-sLqAHMWgP_KhdfsuO7DfyompJJa6qr8ytbeA"
   }
  },
  "pin": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEVzkkcfsegaoVRZFzkDIoVF5bEqxUarf9x8v30K8pWB_JGjq4wKAmg96uVQ704aEAZtLFNi_PbZfc69WlOvJovw",

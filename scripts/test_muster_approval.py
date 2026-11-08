@@ -1077,8 +1077,8 @@ class VectorTests(Checks):
         )
 
     def test_chain_vectors_are_deferred(self):
-        # T1 to T23 (T9 retired) are the next slice's: `muster trust-list chain` is not built here.
-        self.assertGreaterEqual(len(FIXTURE["chainVectors"]), 22)
+        # T1 to T25 (T9 retired) are the next slice's: `muster trust-list chain` is not built here.
+        self.assertGreaterEqual(len(FIXTURE["chainVectors"]), 24)
         env = Env(self)
         for command, expected in (
             ("muster trust-list chain --yes", "bad_command"),
