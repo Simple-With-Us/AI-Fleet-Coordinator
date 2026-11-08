@@ -147,6 +147,7 @@ class SelectTest(unittest.TestCase):
         self.assertEqual(runtime, OPENROUTER)
         self.assertIsNone(hold)
 
+
 class PresetRequestShapeTests(unittest.TestCase):
     """What the request does and does not say about a preset's tools (see the adapters comment)."""
 

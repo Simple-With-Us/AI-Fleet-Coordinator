@@ -356,11 +356,15 @@ def parse_declaration(raw: Any) -> BackupDeclaration | None:
             return None
     elif expected_raw is None:
         expected_raw = [model]
-    if not isinstance(expected_raw, list) or not expected_raw or any(
-        not isinstance(entry, str)
-        or _PRESET_RE.fullmatch(entry)
-        or not re.fullmatch(C.OPENROUTER_MODEL_PATTERN, entry)
-        for entry in expected_raw
+    if (
+        not isinstance(expected_raw, list)
+        or not expected_raw
+        or any(
+            not isinstance(entry, str)
+            or _PRESET_RE.fullmatch(entry)
+            or not re.fullmatch(C.OPENROUTER_MODEL_PATTERN, entry)
+            for entry in expected_raw
+        )
     ):
         return None
     if not isinstance(reason, str) or not reason.strip():
