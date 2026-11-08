@@ -60,12 +60,20 @@ enum EavesdropperStatusText {
     static let notReported = "Not reported"
     static let gap = ServerStatusCopy.sentenceGap
 
-    /// `text` without control characters, trimmed and cut to `limit` characters, or nil when
-    /// nothing is left.
+    /// `text` without control or formatting characters, trimmed and cut to `limit` characters,
+    /// or nil when nothing is left.  A line break or tab becomes a space, so the words on either
+    /// side stay apart, and bidirectional and zero-width marks are dropped (Sentry, PR 1483).
     static func plain(_ text: String, limit: Int) -> String? {
         var scalars = String.UnicodeScalarView()
-        for scalar in text.unicodeScalars where !CharacterSet.controlCharacters.contains(scalar) {
-            scalars.append(scalar)
+        for scalar in text.unicodeScalars {
+            if CharacterSet.newlines.contains(scalar) || scalar == "\t" {
+                scalars.append(" ")
+            } else if CharacterSet.controlCharacters.contains(scalar)
+                        || scalar.properties.generalCategory == .format {
+                continue
+            } else {
+                scalars.append(scalar)
+            }
         }
         let trimmed = String(scalars).trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return nil }

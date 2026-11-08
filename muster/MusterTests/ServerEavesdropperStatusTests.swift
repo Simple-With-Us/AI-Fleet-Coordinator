@@ -307,6 +307,18 @@ final class ServerEavesdropperAnswerTests: XCTestCase {
 
     /// Every scalar can be null:  each fact reads as not reported, never as zero, healthy or
     /// connected, and an odd field costs only that field.
+    /// A line break or tab keeps the words apart, and control, bidirectional and zero-width
+    /// characters never reach the screen (Sentry, PR 1483).
+    func test_text_from_the_document_is_made_plain() {
+        XCTAssertEqual(EavesdropperStatusText.plain("Fix\nbug", limit: 40), "Fix bug")
+        XCTAssertEqual(EavesdropperStatusText.plain("a\tb\r\nc", limit: 40), "a b  c")
+        XCTAssertEqual(EavesdropperStatusText.plain("a\u{2028}b\u{2029}c", limit: 40), "a b c")
+        XCTAssertEqual(EavesdropperStatusText.plain("ab\u{202E}cd\u{200B}e\u{2066}f", limit: 40), "abcdef")
+        XCTAssertEqual(EavesdropperStatusText.plain("x\u{0007}y", limit: 40), "xy")
+        XCTAssertNil(EavesdropperStatusText.plain(" \n\u{200B}\t ", limit: 40))
+        XCTAssertEqual(EavesdropperStatusText.plain("abcdef", limit: 3), "abc")
+    }
+
     func test_every_scalar_null_reads_as_not_reported() throws {
         let status = try document(allNullDocument)
         XCTAssertNil(status.instance)
