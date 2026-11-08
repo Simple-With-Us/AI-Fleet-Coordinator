@@ -218,6 +218,7 @@ class SeatPolicy:
         "wf_pr_reopen",
         "wf_automerge_enable",
         "wf_automerge_disable",
+        "wf_review_thread_comments",
         "wf_review_threads",
         "wf_assignees_add",
         "wf_assignees_remove",
