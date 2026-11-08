@@ -135,6 +135,10 @@ SHIPPED = (
     "scripts/simple-git",
     "scripts/git-tools/",
     "scripts/simple_tools/",
+    # The ZC wake bridge and the letter hook's wrapper are roots of their own (OPS-1048), not
+    # under a directory the list already covers.
+    "scripts/zc-wake-bridge",
+    "scripts/zcode-letter-hook/",
     "scripts/linear-board/",
     "fleet-apps.json",
     "docs/protocols/simple-tools-partition.toml",
@@ -182,6 +186,10 @@ SHIPPED_EXACT = frozenset(
         "scripts/simple_tools/operator_sheets_drain.mjs",
         # AFC-564:  mirrors the release EXACT entry for the OpenCode letter plugin.
         "scripts/simple_tools/opencode_letter_plugin/index.js",
+        # OPS-1048:  mirror the release EXACT entries for the ZC wake bridge and the letter hook's
+        # wrapper (the receiver the seat's http routine POSTs to, and the copy the install writes).
+        "scripts/zc-wake-bridge",
+        "scripts/zcode-letter-hook/platform-letter",
         # The scoped verifier library the new knobs and recall bundles depend on.  The generic
         # secrets CLI does not ship, so only these two modules are listed.
         "scripts/fleet_secrets/__init__.py",

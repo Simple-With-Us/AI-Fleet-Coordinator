@@ -1353,6 +1353,15 @@ class Chat:
             out = io.StringIO()
             registry_main(argv, env=self.env, stdout=out)
             return _answer(_last_json(out.getvalue()))
+        from . import registry_api as RA
+
+        if RA.base_url(self.env):
+            # The explicit URL is the cutover (registry_api):  a hook on a host off the
+            # registry calls the Operator's API itself, under the location it was installed
+            # with, and never hops over ssh to a host whose own call would land here anyway.
+            out = io.StringIO()
+            registry_main(argv, env=self.env, stdout=out)
+            return _answer(_last_json(out.getvalue()))
         dest = self.remote
         if not DEST_RE.fullmatch(dest):
             # Empty, or something ssh could read as an option: refuse it rather than run it.
