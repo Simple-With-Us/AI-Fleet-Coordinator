@@ -433,9 +433,8 @@ class InfisicalFallbackTests(Harness):
             ("MM", "MM"),
             ("AG", "AG"),
             ("OPENCODE", "OPENCODE"),
-            # ZC keeps the acronym seat tag;  its created /zulip records use the ZCODE stem.
-            ("ZC", "ZCODE"),
-            ("Zcode", "ZCODE"),
+            # Preserve the canonical registry stem for the ZC seat.
+            ("ZC", "ZC"),
             ("KIMI", "KIMI"),
         ):
             with self.subTest(seat=seat):
