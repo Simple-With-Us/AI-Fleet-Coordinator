@@ -127,6 +127,11 @@ class HookTests(Base):
         self.assertEqual(self.hook(payload("SessionStart")), {})
         self.assertIsNone(self.lookup())
 
+    def test_an_unreadable_process_table_fails_closed(self) -> None:
+        with mock.patch.object(PZ, "zcode_arguments", return_value=None):
+            self.assertEqual(self.hook(payload("SessionStart")), {})
+        self.assertIsNone(self.lookup())
+
     def test_an_event_it_does_not_hook_answers_nothing(self) -> None:
         self.assertEqual(self.hook(payload("Stop")), {})
         self.assertEqual(self.calls, [])
@@ -144,6 +149,13 @@ class HookTests(Base):
 
 
 class KindTests(unittest.TestCase):
+    def test_process_walk(self) -> None:
+        rows = {10: (9, ["sh", "-c", "hook"]), 9: (8, ["node", "/x/zcode.cjs", "-p", "probe"])}
+        with mock.patch.object(PZ, "process_row", side_effect=lambda pid: rows.get(pid, (0, []))):
+            self.assertEqual(PZ.zcode_arguments(10), ["-p", "probe"])
+        with mock.patch.object(PZ, "process_row", return_value=(0, [])):
+            self.assertIsNone(PZ.zcode_arguments(10))
+
     def test_one_shot_flags(self) -> None:
         self.assertTrue(PZ.one_shot(["-p", "x"]))
         self.assertTrue(PZ.one_shot(["--prompt=x"]))

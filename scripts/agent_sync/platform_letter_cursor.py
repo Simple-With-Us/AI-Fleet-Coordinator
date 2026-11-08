@@ -31,7 +31,9 @@ import sys
 from collections.abc import Mapping
 from typing import Any, TextIO
 
+from . import live as L
 from . import platform_letter as PL
+from . import session_ids as SI
 
 PLATFORM = "cursor"
 SEAT = "CURSOR"
@@ -47,9 +49,34 @@ def _text(value: object) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
+def cloud_mark(env: Mapping[str, str], cid: str) -> str:
+    """The file that says a conversation is a Cloud agent's, kept from its sessionStart for its later events."""
+    return os.path.join(L.state_root(env), SEAT, "cloud-agents", cid)
+
+
 def cursor_kind(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
-    """ "headless" for a Cloud agent (its letter comes from `cursor_cloud_letters`), else "chat"."""
-    return "headless" if payload.get("is_background_agent") is True else "chat"
+    """ "headless" for a Cloud agent (its letter comes from `cursor_cloud_letters`), else "chat".
+
+    Only sessionStart says `is_background_agent`, so its answer is kept in a mark file, and a later event of the same
+    conversation (beforeSubmitPrompt has no such field) is judged by the mark.  A conversation with no mark and no
+    field is a local chat, such as one resumed from before the install, which never had a sessionStart here."""
+    try:
+        safe = SI.check(_text(payload.get("conversation_id")), "the conversation id")  # no "/" can reach the path
+    except ValueError:
+        safe = ""
+    flag = payload.get("is_background_agent")
+    if flag is True:
+        if safe:
+            try:
+                os.makedirs(os.path.dirname(cloud_mark(env, safe)), mode=0o700, exist_ok=True)
+                with open(cloud_mark(env, safe), "w", encoding="utf-8"):
+                    pass
+            except OSError:
+                pass  # without the mark a later event of this agent may register it; its hooks reach no registry
+        return "headless"
+    if flag is None and safe and os.path.exists(cloud_mark(env, safe)):
+        return "headless"
+    return "chat"
 
 
 def no_title(payload: Mapping[str, Any], env: Mapping[str, str] | None = None) -> str:
@@ -141,6 +168,4 @@ def entry(command: str, timeout: int, event: str) -> dict[str, Any]:
     return {"command": command, "timeout": timeout, "failClosed": False}
 
 
-INSTALL = PL.JsonHookInstaller(
-    path=HOOKS_FILE, events=HOOK_TIMEOUTS, locate=versioned_hooks, build=entry
-)
+INSTALL = PL.JsonHookInstaller(path=HOOKS_FILE, events=HOOK_TIMEOUTS, locate=versioned_hooks, build=entry)

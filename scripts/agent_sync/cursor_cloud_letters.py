@@ -54,6 +54,13 @@ STATE_FILE = "cloud-letters.json"
 DM_TIMEOUT = 30
 # "GB-Director: words", with or without a letter in front:  the bot's name, then its words.
 BOT_TITLE = re.compile(r"^(?:[A-Z]{1,2}: )?(GB-[A-Za-z][A-Za-z0-9]{0,31})\s*:\s*(\S.*)$")
+# The marks Zulip reads as markup, a mention, a stream link or an emoji, kept out of a title quoted in a DM.
+MARKUP = re.compile(r"[`*_~@#\[\]<>|$:!\\]")
+# A Cloud agent's link, as the Cursor API gives it.
+CURSOR_LINK = re.compile(r"https://cursor\.com/[A-Za-z0-9/?=&._-]{1,200}")
+# The whole sweep's budget for DMs:  past it, the rest wait for the next run, so one slow `simple-chat` cannot hold the
+# run past the timer's next start.  A registration still happens for every agent.
+DM_BUDGET = 180
 
 Runner = Callable[..., Any]
 Transport = Callable[[list[str]], Mapping[str, Any]]
@@ -81,6 +88,8 @@ def read_state(env: Mapping[str, str]) -> dict[str, Any]:
 def write_state(env: Mapping[str, str], state: Mapping[str, Any]) -> None:
     path = state_path(env)
     folder = os.path.dirname(path)
+    if os.path.islink(folder):
+        raise ValueError("the state folder is a symlink")  # a link could put private state anywhere
     os.makedirs(folder, mode=0o700, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=folder, prefix=".cloud-letters-", suffix=".tmp")
     try:
@@ -89,6 +98,11 @@ def write_state(env: Mapping[str, str], state: Mapping[str, Any]) -> None:
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(tmp, path)
+        dir_fd = os.open(folder, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(dir_fd)  # the rename itself survives a crash
+        finally:
+            os.close(dir_fd)
     except BaseException:
         try:
             os.unlink(tmp)
@@ -126,15 +140,8 @@ def register(
     if transport is None and local_registry(env):
         transport = in_process(env)
     chat = PL.Chat(
-        SPEC,
-        env,
-        LOCATION,
-        str(agent["session_id"]),
-        runner=runner,
-        now=now,
-        remote=remote,
-        transport=transport,
-        seat=PC.SEAT,
+        SPEC, env, LOCATION, str(agent["session_id"]), runner=runner, now=now, remote=remote,
+        transport=transport, seat=PC.SEAT,
     )
     return chat.registry("register", title=PL.bare(agent.get("title") or ""))
 
@@ -142,12 +149,20 @@ def register(
 def message(bot: str, agent: Mapping[str, Any], label: str, generation: int, words: str) -> str:
     """The DM to the bot a chat is named for.  Rendered copy:  a sentence gap is U+00A0 plus a space."""
     gen = " (gen %d)" % generation if generation > 1 else ""
-    link = str(agent.get("url") or agent.get("session_id"))
+    url = str(agent.get("url") or "")
+    link = url if CURSOR_LINK.fullmatch(url) else str(agent.get("session_id"))
+    title, words = plain(agent.get("title")), plain(words)
     return (
         'Your Cursor Cloud chat %s ("%s") holds Operator letter %s%s, and it is addressed as "@**Cursor** %s".  '
         'Please rename it to "%s: %s: %s" so its title carries the letter.'
-        % (link, PL.one_line(agent.get("title")), label, gen, label, label, bot, words)
+        % (link, title, label, gen, label, label, bot, words)
     )
+
+
+def plain(text: object) -> str:
+    """A chat title as plain words for a Zulip DM:  one line with the marks Zulip reads as markup or a mention taken
+    out, so a title can neither format the message nor @-mention anyone."""
+    return PL.one_line(MARKUP.sub("", PL.one_line(text)))[:200]
 
 
 def send_dm(bot: str, text: str, env: Mapping[str, str], runner: Runner) -> str:
@@ -156,11 +171,7 @@ def send_dm(bot: str, text: str, env: Mapping[str, str], runner: Runner) -> str:
     try:
         proc = runner(
             ["simple-chat", "dm", "--to", bot, "--", text],
-            capture_output=True,
-            text=True,
-            timeout=DM_TIMEOUT,
-            stdin=subprocess.DEVNULL,
-            env=dict(env),
+            capture_output=True, text=True, timeout=DM_TIMEOUT, stdin=subprocess.DEVNULL, env=dict(env),
         )
     except subprocess.TimeoutExpired:
         return "unknown"
@@ -169,7 +180,9 @@ def send_dm(bot: str, text: str, env: Mapping[str, str], runner: Runner) -> str:
     if proc.returncode == 0:
         return "sent"
     said = (str(proc.stdout or "") + str(proc.stderr or "")).lower()
-    return "refused" if "refus" in said or "unknown" in said or "ambiguous" in said else "unknown"
+    # Only an answer that names the bot and refuses it is a refusal;  any other failure may have sent.
+    named = bot.lower() in said and ("refus" in said or "unknown" in said or "ambiguous" in said)
+    return "refused" if named else "unknown"
 
 
 def sweep(
@@ -182,9 +195,12 @@ def sweep(
     remote: str = "",
     dry_run: bool = False,
     now: float | None = None,
+    clock: Callable[[], float] = time.monotonic,
+    budget: float = DM_BUDGET,
 ) -> dict[str, Any]:
     """One pass over the open Cloud agents.  Answers counts and one row per agent, with no secrets in it."""
     now = time.time() if now is None else now
+    started = clock()
     if discover is None:
         from .cursor_chat_transport import CursorCloudTransport
 
@@ -221,15 +237,17 @@ def sweep(
         told = state.get(sid) if isinstance(state.get(sid), dict) else {}
         current = PL.one_line(agent.get("title"))
         wanted = {"bot": bot, "label": label, "generation": generation}
-        if (
-            bot
-            and not current.startswith(label + ": ")
-            and {k: told.get(k) for k in wanted} != wanted
-        ):
-            outcome = send_dm(bot, message(bot, agent, label, generation, words), env, runner)
-            row["dm"] = outcome
-            if outcome != "not-started":
-                state[sid] = dict(wanted, outcome=outcome, at=now)
+        if bot and not current.startswith(label + ": ") and {k: told.get(k) for k in wanted} != wanted:
+            if clock() - started > budget:
+                row["dm"] = "deferred"  # the next run sends it
+            else:
+                outcome = send_dm(bot, message(bot, agent, label, generation, words), env, runner)
+                row["dm"] = outcome
+                # A sent DM is done, and so is one whose outcome is unknown:  it may have reached Zulip, and a bot is
+                # never woken twice for one letter.  A refusal or a DM that never started sent nothing, so the next
+                # run tries again.
+                if outcome in ("sent", "unknown"):
+                    state[sid] = dict(wanted, outcome=outcome, at=now)
         rows.append(row)
     if not dry_run:
         if whole:
@@ -246,9 +264,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="cursor_cloud_letters")
     sub = parser.add_subparsers(dest="command", required=True)
     s = sub.add_parser("sweep", help="give open Cursor Cloud agents letters and tell their GB bots")
-    s.add_argument(
-        "--dry-run", action="store_true", help="read the agents and print what it would do"
-    )
+    s.add_argument("--dry-run", action="store_true", help="read the agents and print what it would do")
     s.add_argument("--remote", default="", help="the ssh destination that holds the registry")
     args = parser.parse_args(argv)
     env = os.environ

@@ -86,6 +86,8 @@ class HookTests(Base):
 
     def test_a_cloud_agent_is_left_to_the_cloud_sweep(self) -> None:
         self.assertEqual(self.hook(payload("sessionStart", is_background_agent=True)), {})
+        # beforeSubmitPrompt carries no is_background_agent:  the mark from sessionStart keeps it the sweep's
+        self.assertEqual(self.hook(payload("beforeSubmitPrompt")), {})
         self.assertIsNone(self.lookup())
         self.assertEqual(self.calls, [])
 

@@ -78,14 +78,17 @@ def process_row(pid: int) -> tuple[int, list[str]]:
     return int(words[0]), words[1:]
 
 
-def zcode_arguments(pid: int | None = None, hops: int = PROCESS_HOPS) -> list[str]:
+def zcode_arguments(pid: int | None = None, hops: int = PROCESS_HOPS) -> list[str] | None:
     """The arguments after the `zcode` word of the process that runs this hook, or [] when none is found.  Z Code runs
     on node, so the word is looked for anywhere in a process's arguments, not only first."""
+    # [] when the processes could be read and none is Z Code's;  None when not even the hook's parent could be read.
     pid = os.getppid() if pid is None else pid
-    for _ in range(hops):
+    for hop in range(hops):
         if pid <= 1:
             return []
         parent, words = process_row(pid)
+        if not words:
+            return None if hop == 0 else []
         for i, word in enumerate(words):
             if os.path.basename(word) in ("zcode", "zcode.cjs"):
                 return words[i + 1 :]
@@ -100,11 +103,13 @@ def one_shot(words: list[str]) -> bool:
 
 def zcode_kind(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
     """ "subagent" for any agent but the main one (Z Code names no parent, so it takes no letter), "headless" for a
-    `zcode -p` run, else "chat".  A host where no process can be read counts as a chat."""
+    `zcode -p` run, else "chat".  A run whose processes cannot be read takes no letter."""
     agent = _text(payload.get("agent_type")) or _text(payload.get("agentName"))
     if agent and agent != MAIN_AGENT:
         return "subagent"
-    if one_shot(zcode_arguments()):
+    # When not even the hook's own parent can be read, a one-shot run cannot be told from a chat:  fail closed.
+    words = zcode_arguments()
+    if words is None or one_shot(words):
         return "headless"
     return "chat"
 

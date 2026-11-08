@@ -105,11 +105,35 @@ class SweepTests(unittest.TestCase):
         self.run_sweep()
         self.assertEqual(len(self.dm.calls), 1)
 
-    def test_a_refused_name_is_not_asked_again(self) -> None:
+    def test_a_refused_name_sent_nothing_so_the_next_run_tries_again(self) -> None:
         self.dm = Fake(code=2, out="refused: unknown name GB-Director")
         self.assertEqual(self.run_sweep()["rows"][0]["dm"], "refused")
         self.run_sweep()
+        self.assertEqual(len(self.dm.calls), 2)
+
+    def test_a_failure_that_names_no_bot_may_have_sent_so_it_is_not_repeated(self) -> None:
+        self.dm = Fake(code=1, out="unknown error after posting")
+        self.assertEqual(self.run_sweep()["rows"][0]["dm"], "unknown")
+        self.run_sweep()
         self.assertEqual(len(self.dm.calls), 1)
+
+    def test_past_the_budget_a_dm_waits_for_the_next_run(self) -> None:
+        ticks = iter([0.0, 1000.0, 1000.0])
+        out = self.run_sweep(clock=lambda: next(ticks), budget=60)
+        self.assertEqual(out["rows"][0]["dm"], "deferred")
+        self.assertEqual(self.dm.calls, [])
+        self.assertIn("label", out["rows"][1])  # every agent is still registered
+        self.run_sweep()
+        self.assertEqual(len(self.dm.calls), 1)
+
+    def test_a_title_cannot_mention_anyone_or_format_the_dm(self) -> None:
+        self.agents = [dict(agent(A1, "GB-Director: ping @**all** `x` [y](z)"), url="javascript:alert(1)")]
+        self.run_sweep()
+        text = self.dm.calls[0][-1]
+        self.assertNotIn("@**all**", text)
+        self.assertNotIn("`", text)
+        self.assertNotIn("javascript", text)
+        self.assertIn(A1, text)
 
     def test_a_gone_agent_is_forgotten(self) -> None:
         self.run_sweep()
