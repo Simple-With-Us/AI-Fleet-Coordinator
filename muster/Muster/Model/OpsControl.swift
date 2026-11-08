@@ -1144,6 +1144,8 @@ struct OpsOutcome: Equatable {
     /// when the helper said it ran:  a plan ran nothing,  a refusal ran nothing,  a failure
     /// stopped part way,  and a lost answer cannot say.
     var commandsHeading: String {
+        // A read that could not read anything planned nothing either, even through `--plan`.
+        if kind == .unavailable { return "What Was Read" }
         if isPlan || kind == .planned { return "The Plan" }
         switch kind {
         case .refused: return "Not Run"
