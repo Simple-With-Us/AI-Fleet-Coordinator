@@ -296,7 +296,12 @@ def sweep(
             for sid in [k for k in state if k not in open_ids]:
                 del state[sid]  # the agent is gone; its letter is the registry's to free
         write_state(env, state)
-    return {"agents": len(agents), "stale": len(found) - len(agents), "complete": whole, "rows": rows}
+    return {
+        "agents": len(agents),
+        "stale": len(found) - len(agents),
+        "complete": whole,
+        "rows": rows,
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -314,8 +319,15 @@ def main(argv: list[str] | None = None) -> int:
         out = sweep(env, remote=remote, dry_run=args.dry_run)
     except Exception as exc:  # noqa: BLE001 - one line for the log, never a traceback with a key in it
         # The Cursor API failure carries only an HTTP status and a code, never the response text.
-        print(json.dumps({"error": type(exc).__name__, "status": getattr(exc, "status", None),
-                          "code": getattr(exc, "code", None)}))
+        print(
+            json.dumps(
+                {
+                    "error": type(exc).__name__,
+                    "status": getattr(exc, "status", None),
+                    "code": getattr(exc, "code", None),
+                }
+            )
+        )
         return 1
     print(json.dumps(out, sort_keys=True))
     return 1 if any("error" in row for row in out["rows"]) else 0
