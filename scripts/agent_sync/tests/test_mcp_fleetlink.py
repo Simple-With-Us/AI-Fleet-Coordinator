@@ -633,3 +633,29 @@ if __name__ == "__main__":
     import unittest
 
     unittest.main()
+
+
+class PaginationSummaryTests(__import__("unittest").TestCase):
+    def test_cursor_survives_bad_share_metadata_and_exhaustion_is_explicit(self):
+        for shares in [[{"slug": 7}], [{"slug": "ok"}] * 201, None, []]:
+            for cursor in ["1794000000:shr_abc123", None, "bad cursor", "1:shr_a\n"]:
+                with self.subTest(shares_type=type(shares).__name__, cursor=cursor):
+                    result = FL.summary({"shares": shares, "next": cursor})
+                    if cursor is None or cursor == "1794000000:shr_abc123":
+                        self.assertIn("next", result)
+                        self.assertEqual(result["next"], cursor)
+                    else:
+                        self.assertNotIn("next", result)
+        self.assertNotIn("next", FL.summary({"shares": []}))
+
+    def test_all_remote_consumers_preserve_fixed_status_codes(self):
+        import ast
+        root = Path(__file__).resolve().parents[3]
+        for rel in ["scripts/agent_sync/cli.py", "scripts/recall", "scripts/linear-board/board", "scripts/git-tools/git"]:
+            tree = ast.parse((root / rel).read_text())
+            nodes = [n for n in tree.body if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "_REMOTE_CODES" for t in n.targets)]
+            self.assertEqual(len(nodes), 1, rel)
+            constants = ast.literal_eval(nodes[0].value.args[0])
+            self.assertIn("fleetlink_not_found", constants, rel)
+            self.assertIn("fleetlink_expired", constants, rel)
+            self.assertNotIn("malicious_code", constants, rel)
