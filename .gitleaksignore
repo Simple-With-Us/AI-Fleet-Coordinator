@@ -102,3 +102,4 @@ fd45e8fcde90f68f0900e3d57e29bb01d0558a92:scripts/test_fleet_seat_inventory.py:ge
 ac764c34b5d3eb5b9eaa949a195e2152cfcad617:muster/MusterTests/ConfigFileReaderTests.swift:generic-api-key:219
 ac764c34b5d3eb5b9eaa949a195e2152cfcad617:muster/MusterTests/ConfigFileReaderTests.swift:generic-api-key:311
 ac764c34b5d3eb5b9eaa949a195e2152cfcad617:muster/MusterTests/ConfigFileReaderTests.swift:curl-auth-header:329
+146b582e95374699d93f905d8cfd8a8db33ab074:muster/MusterTests/ConfigFileReaderTests.swift:generic-api-key:219

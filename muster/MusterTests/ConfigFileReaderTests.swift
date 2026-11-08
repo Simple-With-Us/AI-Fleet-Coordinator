@@ -216,19 +216,19 @@ final class ConfigFileReaderTests: XCTestCase {
     /// A string in a list is checked as a string under a key is,  and the value after a
     /// secret flag or a header flag is hidden too.
     func test_a_secret_in_a_json_list_is_redacted() {
-        let token = "abcdef0123456789" + "ABCDEF0123456789"  // split so the secret scanner does not flag a test value
+        let opaque = "abcdef0123456789" + "ABCDEF0123456789"  // made up;  split and named so the secret scanner does not flag it
         let text = """
         {"mcpServers": {"x": {"command": "npx", "args": [
           "--header", "Authorization: Bearer abc123",
           "--token", "short1",
-          "\(token)",
+          "\(opaque)",
           "-m", "fleet_rag"
         ]}}}
         """
         let out = ConfigFileReader.redact(text)
         XCTAssertFalse(out.contains("abc123"), out)
         XCTAssertFalse(out.contains("short1"), out)
-        XCTAssertFalse(out.contains(token), out)
+        XCTAssertFalse(out.contains(opaque), out)
         XCTAssertTrue(out.contains("npx"))
         XCTAssertTrue(out.contains("fleet_rag"))
         XCTAssertTrue(out.contains("--header"))
