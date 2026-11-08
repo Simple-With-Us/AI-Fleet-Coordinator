@@ -283,12 +283,18 @@ def export_local(root: str, cfg: C.Config, cursors: Mapping[str, Any]) -> dict[s
 # verified embedding is MSP turn/completed params.error.quota, and the bridge's headless exec runs
 # never see it), so nothing here tries to infer a cap from error text, exit codes, or record
 # shapes.  The mode is entered only by explicit operator declaration and exited only by explicit
-# removal or by its own stated review time.
+# removal or, when the operator chose to state one, by its own review time.
 #
-# EXPIRY IS A HOLD, NOT A REVERT.  When the declared review time passes, consults HOLD:  pending rows
-# stay pending, no cursor advances, no runtime is invoked at all, and a review-due signal is logged.
-# The mode never silently outlives its stated condition, and expiry never switches to unverified
-# model behavior (neither back to the capped primary nor onward on the backup).
+# NO EXPIRY BY DEFAULT.  review_by is OPTIONAL.  A declaration without it (absent or null) never
+# expires:  the mode runs until the operator removes it, and a review is a check, not a shutoff
+# (owner direction, WhatsApp 2026-11-07 22:21 CT: "don't have it expire by default").  A review_by that IS given must be a
+# finite epoch after declared_at, or the declaration is misconfigured and fails closed - a bad
+# date never silently turns into "no expiry".
+#
+# EXPIRY IS A HOLD, NOT A REVERT.  When an explicitly declared review time passes, consults HOLD:
+# pending rows stay pending, no cursor advances, no runtime is invoked at all, and a review-due
+# signal is logged.  Expiry never switches to unverified model behavior (neither back to the capped
+# primary nor onward on the backup).
 #
 # ABSENT VS MALFORMED.  A declaration that was never configured (absent/null) selects the primary,
 # i.e. exactly the behavior the bridge has today.  A declaration that IS configured but partial or
@@ -302,7 +308,7 @@ MUSE = "muse"
 OPENROUTER = "openrouter"
 HOLD = "backup_review_due"
 
-_REQUIRED_KEYS = ("runtime", "model", "reason", "declared_at", "review_by")
+_REQUIRED_KEYS = ("runtime", "model", "reason", "declared_at")
 
 
 @dataclass(frozen=True)
@@ -321,14 +327,15 @@ class BackupDeclaration:
                 any slug, and this set is the only code-side fingerprint of it.  Optional with a
                 plain model, where it defaults to that model itself.
     reason:     the operator's own words for why the mode was entered (logged verbatim).
-    declared_at / review_by: epoch seconds.  review_by is REQUIRED - the mode must state the
-                condition it lives under, and that condition includes when it is re-examined."""
+    declared_at: epoch seconds.
+    review_by:  OPTIONAL epoch seconds, None when the operator declared no expiry (the default).
+                When set, consults hold once it passes."""
 
     runtime: str
     model: str
     reason: str
     declared_at: float
-    review_by: float
+    review_by: float | None
     expected_models: tuple
 
 
@@ -342,7 +349,7 @@ def parse_declaration(raw: Any) -> BackupDeclaration | None:
     model = raw["model"]
     reason = raw["reason"]
     declared_at = raw["declared_at"]
-    review_by = raw["review_by"]
+    review_by = raw.get("review_by")
     if runtime != OPENROUTER:
         return None
     if not isinstance(model, str) or not re.fullmatch(C.OPENROUTER_MODEL_PATTERN, model):
@@ -369,7 +376,7 @@ def parse_declaration(raw: Any) -> BackupDeclaration | None:
         return None
     if not isinstance(reason, str) or not reason.strip():
         return None
-    for value in (declared_at, review_by):
+    for value in (declared_at,) if review_by is None else (declared_at, review_by):
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             return None
         try:
@@ -377,14 +384,14 @@ def parse_declaration(raw: Any) -> BackupDeclaration | None:
                 return None
         except OverflowError:
             return None
-    if review_by <= declared_at:
+    if review_by is not None and review_by <= declared_at:
         return None
     return BackupDeclaration(
         runtime=OPENROUTER,
         model=model,
         reason=reason.strip(),
         declared_at=float(declared_at),
-        review_by=float(review_by),
+        review_by=None if review_by is None else float(review_by),
         expected_models=tuple(expected_raw),
     )
 
@@ -399,10 +406,10 @@ def select_consult_runtime(
     """(which runtime a bridge consult uses, the declaration, why consults hold).
 
     (MUSE, None, None)          - never enabled: no declaration configured.
-    (OPENROUTER, decl, None)    - a complete declaration inside its stated window.
+    (OPENROUTER, decl, None)    - a complete declaration: no review_by (never expires) or inside its window.
     (HOLD, None, MISCONFIGURED) - a declaration IS configured but partial or malformed: fail
                                   closed, preserve pending work, never silently use the primary.
-    (HOLD, decl, REVIEW_DUE)    - the declaration's review time has passed: hold every consult,
+    (HOLD, decl, REVIEW_DUE)    - an explicit review_by has passed: hold every consult,
                                   preserve pending work, signal for re-examination.  No runtime runs."""
     if raw is None:
         return MUSE, None, None
@@ -410,7 +417,7 @@ def select_consult_runtime(
     if decl is None:
         return HOLD, None, MISCONFIGURED
     moment = time.time() if now is None else now
-    if moment >= decl.review_by:
+    if decl.review_by is not None and moment >= decl.review_by:
         return HOLD, decl, REVIEW_DUE
     return OPENROUTER, decl, None
 
