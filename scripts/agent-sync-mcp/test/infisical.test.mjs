@@ -590,6 +590,26 @@ test("prefetchFolder: a failed shared listing fails every request waiting on it 
   assert.equal(calls.length, 2, "a failure is not remembered in required mode:  the next request lists again");
 });
 
+test("prefetchFolder: a waiter does not hang on a listing that never settles, it lists the folder itself (AFC-617, sentry)", async (t) => {
+  _resetInfisicalForTests();
+  const { prefetchFolder } = await import("../src/infisical.js");
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  let calls = 0;
+  globalThis.fetch = (url) => {
+    calls++;
+    if (calls === 1) return new Promise(() => {});
+    return Promise.resolve(new Response(JSON.stringify({ secrets: [{ secretKey: "A", secretValue: "va" }] }), { status: 200, headers: { "content-type": "application/json" } }));
+  };
+  prefetchFolder(ENV, "/tools").catch(() => {});
+  const waiter = prefetchFolder(ENV, "/tools");
+  await Promise.resolve();
+  t.mock.timers.tick(10_001);
+  await waiter;
+  assert.equal(calls, 2, "the waiter gave up on the stuck listing and listed once itself");
+  await prefetchFolder(ENV, "/tools");
+  assert.equal(calls, 2, "its listing warmed the folder");
+});
+
 test("authenticated reads never follow a redirect (kody 4365623359)", async () => {
   _resetInfisicalForTests();
   const { prefetchFolder } = await import("../src/infisical.js");

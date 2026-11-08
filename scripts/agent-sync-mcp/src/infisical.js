@@ -242,12 +242,32 @@ export async function prefetchFolder(env, path) {
   // AFC-617:  requests that find a folder stale together share one refresh, where each used to list it again.
   // A refresh that fails fails every request that waited on it (in required mode), and the next one tries again.
   const key = `${m}\u0001${path}`;
+  // A workerd isolate serves many requests, and a refresh started by a request that is then cancelled may
+  // never settle.  A waiter therefore shares a refresh only while it is young, gives up on it after
+  // INFLIGHT_SHARE_MS, and then lists the folder itself, so a stuck refresh costs one bounded wait.
   const running = folderInflight.get(key);
-  if (running) return running;
-  const refresh = refreshFolder(env, path, m).finally(() => folderInflight.delete(key));
-  folderInflight.set(key, refresh);
-  return refresh;
+  if (running && Date.now() - running.at < INFLIGHT_SHARE_MS) {
+    let timer;
+    const giveUp = new Promise((resolve) => { timer = setTimeout(resolve, INFLIGHT_SHARE_MS - (Date.now() - running.at), STUCK); });
+    try {
+      const outcome = await Promise.race([running.promise, giveUp]);
+      if (outcome !== STUCK) return;
+    } finally {
+      clearTimeout(timer);
+    }
+    if (folderInflight.get(key) === running) folderInflight.delete(key);
+  }
+  const entry = { at: Date.now(), promise: null };
+  entry.promise = refreshFolder(env, path, m).finally(() => {
+    if (folderInflight.get(key) === entry) folderInflight.delete(key);
+  });
+  folderInflight.set(key, entry);
+  return entry.promise;
 }
+
+// How long a request waits on another request's listing before it lists the folder itself.
+const INFLIGHT_SHARE_MS = 10_000;
+const STUCK = Symbol("stuck");
 
 async function refreshFolder(env, path, m) {
   const token = typeof env.INFISICAL_SERVICE_TOKEN === "string" ? env.INFISICAL_SERVICE_TOKEN.trim() : "";

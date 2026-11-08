@@ -165,6 +165,17 @@ export async function answerLifecycle(request, { seat, config }) {
 // A plain tools/call frame this module recognised, by the rebuilt request that carries its bytes.
 const CALLS = new WeakMap();
 
+/** Whether an own `__proto__` key sits at any depth of parsed JSON (parsed JSON has no cycles). */
+function hasProtoKey(root) {
+  const stack = [root];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (Object.hasOwn(current, "__proto__")) return true;
+    for (const value of Object.values(current)) if (typeof value === "object" && value !== null) stack.push(value);
+  }
+  return false;
+}
+
 /**
  * The frame's call when it is exactly the shape the SDK would accept without adding or changing
  * anything:  an id, a tool name, and arguments that are a plain object or absent.  A `_meta`, a task,
@@ -177,7 +188,7 @@ function toolCallFrame(body) {
   if (!isObject(params) || Object.keys(params).some((key) => key !== "name" && key !== "arguments")) return null;
   if (typeof params.name !== "string" || params.name === "") return null;
   const args = params.arguments;
-  if (args !== undefined && (!isObject(args) || Object.hasOwn(args, "__proto__"))) return null;
+  if (args !== undefined && (!isObject(args) || hasProtoKey(args))) return null;
   return { id, name: params.name, args };
 }
 
@@ -224,7 +235,15 @@ function textBlock(block) {
 function normalizedResult(result) {
   const out = {};
   if (result._meta !== undefined) out._meta = result._meta;
-  out.content = Array.isArray(result.content) ? result.content.map(textBlock) : result.content ?? [];
+  if (result.content === undefined) out.content = [];
+  else if (Array.isArray(result.content)) out.content = result.content.map(textBlock);
+  else {
+    // The SDK refuses a result whose content is not a list, with this message (its schema's one issue);
+    // test/mcp-call.test.mjs compares it with the SDK's own answer.
+    const received = result.content === null ? "null" : typeof result.content;
+    const issues = [{ expected: "array", code: "invalid_type", path: ["content"], message: `Invalid input: expected array, received ${received}` }];
+    throw new ProtocolError(ProtocolErrorCode.InvalidParams, `Invalid tools/call result: ${JSON.stringify(issues, null, 2)}`);
+  }
   if (result.structuredContent !== undefined) out.structuredContent = result.structuredContent;
   if (result.isError !== undefined) out.isError = result.isError;
   for (const key of Object.keys(result)) if (!RESULT_KEYS.has(key)) out[key] = result[key];

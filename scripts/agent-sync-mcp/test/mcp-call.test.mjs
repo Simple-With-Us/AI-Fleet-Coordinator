@@ -75,6 +75,11 @@ const OUTCOMES = {
   "an array with no content key": async () => ({ structuredContent: [3] }),
   "a tool error": async () => ({ isError: true, content: [text("nope")], structuredContent: { code: "x" } }),
   "a tool error with an array": async () => ({ isError: true, content: [], structuredContent: [9] }),
+  "content as a string": async () => ({ content: "plain" }),
+  "content as an object": async () => ({ content: { a: 1 } }),
+  "content as null": async () => ({ content: null }),
+  "content as a number": async () => ({ content: 5 }),
+  "content as a boolean": async () => ({ content: true }),
   "a thrown Error": async () => { throw new Error("boom"); },
   "a thrown error with a code and data": async () => { throw Object.assign(new Error("coded"), { code: -32001, data: { x: 1, y: [2] } }); },
   "a thrown error with the moved code": async () => { throw Object.assign(new Error("moved"), { code: -32002 }); },
@@ -152,6 +157,8 @@ test("a frame with anything unusual in it stays with the SDK, which answers it",
     ["a wrong Accept", good, { accept: "application/json" }],
     ["an unsupported protocol header", good, { "mcp-protocol-version": "1999-01-01" }],
     ["a __proto__ key in the arguments", '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"whoami","arguments":{"__proto__":{"x":1},"y":2}}}', {}],
+    ["a nested __proto__ key in the arguments", '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"whoami","arguments":{"a":{"__proto__":{"x":1}},"y":2}}}', {}],
+    ["a __proto__ key inside an array in the arguments", '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"whoami","arguments":{"a":[{"b":{"__proto__":1}}]}}}', {}],
   ];
   for (const [label, frame, headers] of cases) {
     try {
