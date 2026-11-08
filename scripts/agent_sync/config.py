@@ -389,6 +389,7 @@ class Config:
         # The production application the Mac bridge reaches, from the operator's
         # own config.  Empty when the bridge is off.
         self.muse_bridge_remote_app = ""
+        self.muse_bridge_consult_backup: dict[str, Any] | None = None
         self.errors: list[str] = []
         # Seats a config problem kept out entirely (AFC-358):  seat -> why.  They have no runner, so
         # status shows them as a red row instead of letting them vanish.
@@ -664,6 +665,13 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         errors.append("muse_bridge.remote_seats must be unique canonical seat names")
     else:
         cfg.muse_bridge_remote_seats = tuple(remote_seats)
+    # AFC-649 known-cap mode:  an explicit operator declaration that the primary consult runtime
+    # is capped and the approved backup serves consults.  Stored raw and validated at consult
+    # time (agent_sync.backup_mode):  absent/null means never enabled and the primary runs as
+    # today;  a configured-but-malformed declaration fails CLOSED there, holding consults and
+    # preserving pending work instead of erroring the whole config load.
+    backup = bridge.get("consult_backup")
+    cfg.muse_bridge_consult_backup = backup if backup is None or isinstance(backup, dict) else {}
     daemon = raw.get("daemon") or {}
     if not isinstance(daemon, dict):
         errors.append("[daemon] must be a table")
