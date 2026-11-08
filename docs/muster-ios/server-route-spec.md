@@ -328,8 +328,8 @@ Requests refused at P0 to P3 are not counted by the rate limits;  each is refuse
 - **The clamp:**  on every read of the rate file, each stored event dated after `now` is treated as made at `now` (its time becomes `min(at, now)`), so a clock stepped back never holds a key.  That clamped list is what the spacing and the cap count.  When the clamp changed any event and the request is refused, the clamped list is still written back (best effort:  a failed write is not an error), and the refused request is not recorded.  When the request is accepted, its event `[class, key, now]` is appended to the clamped list and written (durably for `yes`, Y8b).
 - **What counts:**  every request that passes the rate step, whatever happens after it.  A request refused `rate_limited` is not counted.  For `yes` the rate step is Y8b, under `ops-control.lock`, so nothing before Y8b uses the `yes` budget:  `bad_signature`, `unknown_device`, `field_mismatch`, `no_trust_list`, `state_unsafe`, `clock_unsynced`, `window_too_long`, `expired`, `not_yet_valid`, `action_busy`, `trust_list_changed`, `ledger_corrupt`, `replayed_nonce` and `internal_error` before Y8b never count.  A captured approval replayed any number of times never counts (it is refused at Y8a or earlier), and junk can never lock the owner out.  Everything after Y8c counts, because it spent a nonce:  `plan_mismatch` at Y9 and a failed run at Y10 included.  A fault at Y8c is `internal_error` (Faults, below) and its Y8b event stays counted;  only an approval that verified can reach it.
 - **The file:**  `/home/jay/.local/state/fleet-tools/muster-rate.json`, the canonical JSON of `{"contract":"muster-rate/1","events":[[class,key,milliseconds],…]}`, oldest first.  Every update drops events with `now − at > 3,600,000` and is written by a temporary file and `rename` (no `fsync`:  a lost update only forgets recent requests), except that a `yes` event is made durable at Y8b before its nonce is spent.  An empty file means no events.  A file larger than 128 KiB, with more than 810 events, with an event that is not `[known class, string key of at most 300 characters, integer time]`, with times not in non-decreasing order, or that fails §11's checks or does not parse, is `state_unsafe`, and stays so until repaired in a shell.
-- **The lock:**  `/home/jay/.local/state/fleet-tools/muster-rate.lock`, an exclusive `flock` of its own (never `ops-control.lock` itself), and never held while taking another lock.  The lock order is the same everywhere:  `ops-control.lock`, then the rate lock.  Y8b takes the rate lock while holding `ops-control.lock`;  R1 and K1 (`plan` and `current`), and C1, only ever take the rate lock, and release it before any other lock is taken.  The helper waits for it at most 2 seconds, then answers `rate_limited` without counting (at Y8b, with the nonce unspent).
-- **Residual:**  `plan` and `current` requests are unsigned, so their rate steps cannot be authenticated:  anyone who can reach the route, an exploited `muster-exec` included, can use up the `plan` and `current` budgets, which delays the owner's own plans and acknowledgements (and, once the chain slice lands, the same holds for the `chain` budget at C1).  Nobody can use up the `yes` budget that way:  it counts only approvals that verified and are about to spend their nonce, and each nonce is spent once, so neither junk nor a replayed capture makes the owner's real approval `rate_limited`.  An exploited `muster-exec` can already withhold every request, so the `plan` and `current` exposure adds no new power.
+- **The lock:**  `/home/jay/.local/state/fleet-tools/muster-rate.lock`, an exclusive `flock` of its own (never `ops-control.lock` itself), and never held while taking another lock.  The lock order is the same everywhere:  `ops-control.lock`, then the rate lock.  Y8b takes the rate lock while holding `ops-control.lock`;  R1 and K1 (`plan` and `current`), and C1, only ever take the rate lock, and release it before any other lock is taken.  The helper waits for it at most 2 seconds, then answers `rate_limited` without counting (at Y8b, with the nonce unspent).  So an approval holds `ops-control.lock` through Y8b for at most that 2-second wait plus two `fsync`s.  The rate step stays under it on purpose:  the event and the nonce are written by one holder in that order, so no other approval runs between the check and the spend, and a nonce is never spent without its event.  `plan` and `current` hold the rate lock only to read and rewrite one file of at most 128 KiB, without `fsync`, so the 2-second wait is reached only when something has wedged.  An approval that meets the lock at Y7 answers `action_busy`, spends nothing, and may be retried inside its window.
+- **Residual:**  `plan` and `current` requests are unsigned, so their rate steps cannot be authenticated:  anyone who can reach the route, an exploited `muster-exec` included, can use up the `plan` and `current` budgets, which delays the owner's own plans and acknowledgements (and, once the chain slice lands, the same holds for the `chain` budget at C1).  Nobody can use up the `yes` budget that way:  it counts only approvals that verified and are about to spend their nonce, and each nonce is spent once, so neither junk nor a replayed capture makes the owner's real approval `rate_limited`.  An exploited `muster-exec` can already withhold every request, so the `plan` and `current` exposure adds no new power.  A flood of unsigned or wrongly signed `yes` requests costs the server one helper start each, and the signature check adds little to that:  on this server one P-256 check took a median 0.084 ms, against 50 ms to start `python3 -I` with the helper's imports (measured Nov 7, 2026).  So the `yes` class has no unauthenticated gate before Y5:  such a gate would cut almost no work and would bring back the lockout this order removes.  The transport in front of `muster-exec` limits who can start the helper at all.
 
 **`server … --yes`, an approval (OPEN-4):**
 
@@ -1375,27 +1375,27 @@ Each is `muster trust-list chain --yes` with the lists named, under the pin, his
 
 | Vector | Held Before | Chain | Expected | Final | Why |
 | --- | --- | --- | --- | --- | --- |
-| T1 first list | nothing | v1 | ack |  | Holding nothing, version 1 under rule First.  |
-| T2 rule A | v1 | v2 | ack |  | Adds device B, countersigned by device A from version 1.  |
-| T3 rule B | v2 | v3 | ack |  | Closes the list:  no devices, services unchanged, owner signature only.  |
-| T4 rule C after an abandoned first code | v3 | v4 | ack |  | Reopens with device C.  Two record lines name version 4;  the list is tagged with the newer one, the only line that counts, and names exactly its device.  |
-| T5 whole history | nothing | v1, v2, v3, v4 | ack |  | A late verifier walks First, A, B and C from nothing.  |
-| T6 close that swaps a service key | v1 | T6 list | `chain_refused`, reason `services_changed` | yes | A close may only keep or remove service keys.  |
-| T7 wrong previous hash | v1 | T7 list | `chain_refused`, reason `previous_hash` | no | previousSHA256 is all zeros;  nothing else is wrong.  |
-| T8 reopen with an unrecorded code | v3 | T8 list | `chain_refused`, reason `reopen_tag` | yes | The newest line for version 4 does not make this tag (nor does any other line).  |
-| T10 gap | v1 | T10 list | `chain_refused`, reason `version_gap` | no | Version 3 held over version 1, with previousSHA256 naming version 1, so only the version check fails.  |
-| T11 wrong owner key | v1 | T11 list | `chain_refused`, reason `owner_key` | no | Names a key the history does not assign;  signed by the pinned key, so only check 3 fails.  |
-| T12 bad owner signature | v1 | T12 list | `chain_refused`, reason `owner_signature` | yes | Names the pinned key but is signed by another.  |
-| T13 duplicate device | v1 | T13 list | `chain_refused`, reason `duplicate_device` | yes | Device A listed twice.  |
-| T14 rule A countersigned by a newcomer | v1 | T14 list | `chain_refused`, reason `countersignature` | yes | Only device B countersigns, and B is not on version 1.  |
-| T15 tampered copy of version 4 | v3 | T15 list | `chain_refused`, reason `countersignature` | yes | v4's own body and owner signature, countersigned by A instead of C.  Same body hash as v4, different entry hash.  |
-| T16 closed flag with a device | v1 | T16 list | `chain_refused`, reason `closed_rule` | yes | closed is true while devices is not empty.  |
-| T17 first list naming a predecessor | nothing | T17 list | `chain_refused`, reason `first_rule` | yes | Version 1 with a non-null previousSHA256.  |
-| T18 reopen without a tag | v3 | T18 list | `chain_refused`, reason `reopen_unrecorded` | no | A rule C entry whose reopenTag is null.  |
-| T19 close that removes both server keys | v1 | T19 list | `chain_refused`, reason `server_keys_removed` | yes | serverHelper set to null, leaving no server key to acknowledge a later reopen.  |
-| T20 reopen with the wrong device | v3 | T20 list | `chain_refused`, reason `reopen_device` | yes | Tagged with the newest code for version 4, but that line names device C and the list names device B.  |
-| T21 reopen with a retired code | v3 | T21 list | `chain_refused`, reason `reopen_tag` | yes | Identical to v4 except that it is tagged with the first code, which the newer line for version 4 retired.  |
-| T22 a second valid version 4 | v3 | v4 at 20:55 | ack |  | Signed at 20:55 with the same code and device:  a server could hold this instead of v4 (R5).  |
+| T1 first list | nothing | v1 | ack |  | Holding nothing, version 1 under rule First. |
+| T2 rule A | v1 | v2 | ack |  | Adds device B, countersigned by device A from version 1. |
+| T3 rule B | v2 | v3 | ack |  | Closes the list:  no devices, services unchanged, owner signature only. |
+| T4 rule C after an abandoned first code | v3 | v4 | ack |  | Reopens with device C.  Two record lines name version 4;  the list is tagged with the newer one, the only line that counts, and names exactly its device. |
+| T5 whole history | nothing | v1, v2, v3, v4 | ack |  | A late verifier walks First, A, B and C from nothing. |
+| T6 close that swaps a service key | v1 | T6 list | `chain_refused`, reason `services_changed` | yes | A close may only keep or remove service keys. |
+| T7 wrong previous hash | v1 | T7 list | `chain_refused`, reason `previous_hash` | no | previousSHA256 is all zeros;  nothing else is wrong. |
+| T8 reopen with an unrecorded code | v3 | T8 list | `chain_refused`, reason `reopen_tag` | yes | The newest line for version 4 does not make this tag (nor does any other line). |
+| T10 gap | v1 | T10 list | `chain_refused`, reason `version_gap` | no | Version 3 held over version 1, with previousSHA256 naming version 1, so only the version check fails. |
+| T11 wrong owner key | v1 | T11 list | `chain_refused`, reason `owner_key` | no | Names a key the history does not assign;  signed by the pinned key, so only check 3 fails. |
+| T12 bad owner signature | v1 | T12 list | `chain_refused`, reason `owner_signature` | yes | Names the pinned key but is signed by another. |
+| T13 duplicate device | v1 | T13 list | `chain_refused`, reason `duplicate_device` | yes | Device A listed twice. |
+| T14 rule A countersigned by a newcomer | v1 | T14 list | `chain_refused`, reason `countersignature` | yes | Only device B countersigns, and B is not on version 1. |
+| T15 tampered copy of version 4 | v3 | T15 list | `chain_refused`, reason `countersignature` | yes | v4's own body and owner signature, countersigned by A instead of C.  Same body hash as v4, different entry hash. |
+| T16 closed flag with a device | v1 | T16 list | `chain_refused`, reason `closed_rule` | yes | closed is true while devices is not empty. |
+| T17 first list naming a predecessor | nothing | T17 list | `chain_refused`, reason `first_rule` | yes | Version 1 with a non-null previousSHA256. |
+| T18 reopen without a tag | v3 | T18 list | `chain_refused`, reason `reopen_unrecorded` | no | A rule C entry whose reopenTag is null. |
+| T19 close that removes both server keys | v1 | T19 list | `chain_refused`, reason `server_keys_removed` | yes | serverHelper set to null, leaving no server key to acknowledge a later reopen. |
+| T20 reopen with the wrong device | v3 | T20 list | `chain_refused`, reason `reopen_device` | yes | Tagged with the newest code for version 4, but that line names device C and the list names device B. |
+| T21 reopen with a retired code | v3 | T21 list | `chain_refused`, reason `reopen_tag` | yes | Identical to v4 except that it is tagged with the first code, which the newer line for version 4 retired. |
+| T22 a second valid version 4 | v3 | v4 at 20:55 | ack |  | Signed at 20:55 with the same code and device:  a server could hold this instead of v4 (R5). |
 
 ### Frozen Version 5 Vector
 
@@ -1403,7 +1403,7 @@ What every verifier in Milestones 1 to 4 must answer for a rule C entry.
 
 | Vector | Held Before | Chain | Expected | Final | Why |
 | --- | --- | --- | --- | --- | --- |
-| T23 v4 under version 5 as frozen | v3 | v4 | `chain_refused`, reason `reopen_unavailable` | no | The same chain as T4, judged by a Milestone 1 to 4 verifier:  checks 1 to 7 pass, and rule C is not available.  |
+| T23 v4 under version 5 as frozen | v3 | v4 | `chain_refused`, reason `reopen_unavailable` | no | The same chain as T4, judged by a Milestone 1 to 4 verifier:  checks 1 to 7 pass, and rule C is not available. |
 
 ### Recovery Vectors
 
@@ -1411,11 +1411,11 @@ OPEN proposal (§9, §17A).  Muster holds an entry pending and sees one verifie
 
 | Vector | Pending | Acknowledgement Says | Muster Must | Why |
 | --- | --- | --- | --- | --- |
-| R1 a final refusal of a tampered copy | v4 | holds version 3, body `5e06787afce950d2…`;  final refusal of version 4, entry `8ae6c261f7a4867b…`, `countersignature` | keep waiting | The refused entry is T15:  the same body hash as v4, a different entry hash.  |
-| R2 after a non-final refusal | v4 | holds version 3, body `5e06787afce950d2…` | keep waiting | The server refused v4 with version_gap (sent out of order);  non-final reasons are never recorded.  |
-| R3 coverage | v4 | holds version 4, body `5911cecb01736c03…` | apply | The acknowledgement names version 4 with v4's body hash.  |
-| R4 a final refusal of the pending entry itself | T8 list | holds version 3, body `5e06787afce950d2…`;  final refusal of version 4, entry `bdd8258defb64bf1…`, `reopen_tag` | discard | Pending entry T8 (as if the check group had been bypassed) was refused for a final reason;  it can never be accepted.  |
-| R5 the server holds a different version 4 | v4 | holds version 4, body `a477b60535bfe9d1…` | adopt the server's chain | Muster fetches the chain the acknowledgement covers and walks it under §8;  it never signs a redo.  |
+| R1 a final refusal of a tampered copy | v4 | holds version 3, body `5e06787afce950d2…`;  final refusal of version 4, entry `8ae6c261f7a4867b…`, `countersignature` | keep waiting | The refused entry is T15:  the same body hash as v4, a different entry hash. |
+| R2 after a non-final refusal | v4 | holds version 3, body `5e06787afce950d2…` | keep waiting | The server refused v4 with version_gap (sent out of order);  non-final reasons are never recorded. |
+| R3 coverage | v4 | holds version 4, body `5911cecb01736c03…` | apply | The acknowledgement names version 4 with v4's body hash. |
+| R4 a final refusal of the pending entry itself | T8 list | holds version 3, body `5e06787afce950d2…`;  final refusal of version 4, entry `bdd8258defb64bf1…`, `reopen_tag` | discard | Pending entry T8 (as if the check group had been bypassed) was refused for a final reason;  it can never be accepted. |
+| R5 the server holds a different version 4 | v4 | holds version 4, body `a477b60535bfe9d1…` | adopt the server's chain | Muster fetches the chain the acknowledgement covers and walks it under §8;  it never signs a redo. |
 
 ### Approval Vectors
 
