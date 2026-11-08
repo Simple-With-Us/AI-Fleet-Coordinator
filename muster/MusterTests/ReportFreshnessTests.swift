@@ -117,6 +117,113 @@ final class ReportFreshnessTests: XCTestCase {
         XCTAssertEqual(lapsed.state, .unknown)
     }
 
+    // MARK: - Fleet Hosts:  the doctor's report and the Worker card,  aged on the tick
+
+    /// Fleet Hosts ages the doctor's report it read once,  so the page stops calling it current
+    /// at the 45 minute mark without reading the file again,  and says the doctor wrote it.
+    func test_the_doctors_report_crosses_its_window_on_screen_and_says_who_wrote_it() {
+        var reading = FleetToolsReading()
+        reading.generatedAt = written
+        reading.isCurrent = true
+        reading.verdict = .passed
+        reading.age = "1m"
+
+        let early = reading.freshness(now: written.addingTimeInterval(44 * 60))
+        let current = reading.aged(by: early)
+        XCTAssertTrue(current.isCurrent)
+        XCTAssertEqual(current.verdict, .passed)
+        XCTAssertEqual(current.age, "44m")
+        XCTAssertEqual(ReportFreshnessCopy.ageLine(.doctorOnMac, early),
+                       "Doctor's report written on this Mac 44 minutes ago.")
+        XCTAssertNil(ReportFreshnessCopy.verdictNote(.doctorOnMac, early))
+
+        let late = reading.freshness(now: written.addingTimeInterval(46 * 60))
+        let lapsed = reading.aged(by: late)
+        XCTAssertFalse(lapsed.isCurrent)
+        XCTAssertEqual(lapsed.verdict, .unknown)
+        XCTAssertEqual(lapsed.age, "46m")
+        XCTAssertEqual(ReportFreshnessCopy.ageLine(.doctorOnMac, late),
+                       "Doctor's report written on this Mac 46 minutes ago.")
+        XCTAssertEqual(ReportFreshnessCopy.verdictNote(.doctorOnMac, late),
+                       "It is past its 45 minute window, so its rows are old evidence, not current health.\(gap)The doctor writes a new one every 15 minutes;  if none arrives, check the Fleet Tools Doctor in Background Agents.")
+    }
+
+    /// The Worker card ages its file the same way,  and names the Mac's collector as the writer.
+    func test_a_worker_health_file_crosses_its_window_without_a_new_read() {
+        var reading = WorkerHealthReading()
+        reading.generatedAt = written
+        reading.isCurrent = true
+        reading.reachable = true
+        reading.state = .passed
+        reading.age = "1m"
+        let origin = ReportOrigin.macCollector("the Worker health collector")
+
+        let early = reading.freshness(now: written.addingTimeInterval(44 * 60))
+        let current = reading.aged(by: early)
+        XCTAssertTrue(current.isCurrent)
+        XCTAssertEqual(current.state, .passed)
+        XCTAssertEqual(current.age, "44m")
+        XCTAssertEqual(ReportFreshnessCopy.ageLine(origin, early),
+                       "Written by the Worker health collector on this Mac 44 minutes ago.")
+        XCTAssertNil(ReportFreshnessCopy.verdictNote(origin, early))
+
+        let late = reading.freshness(now: written.addingTimeInterval(46 * 60))
+        let lapsed = reading.aged(by: late)
+        XCTAssertFalse(lapsed.isCurrent)
+        XCTAssertEqual(lapsed.state, .unknown)
+        XCTAssertEqual(lapsed.age, "46m")
+        XCTAssertEqual(ReportFreshnessCopy.verdictNote(origin, late),
+                       "It is past its 45 minute window, so its rows are old evidence, not current health.")
+    }
+
+    /// A read from before the Mac slept is not current on either card until the files are read
+    /// again,  however young the report looked then.
+    func test_fleet_hosts_read_before_the_wake_is_not_current_until_read_again() {
+        let readBefore = written.addingTimeInterval(60)
+        let woke = written.addingTimeInterval(4 * 60)
+        let moment = written.addingTimeInterval(5 * 60)
+
+        var tools = FleetToolsReading()
+        tools.generatedAt = written
+        tools.isCurrent = true
+        tools.verdict = .passed
+        tools.hosts = [
+            FleetToolsHostVerdict(host: "mac", reachable: true, state: .passed, failing: 0, unknown: 0,
+                                  stale: 0, current: 3, absent: 0, notableRows: [], reason: nil,
+                                  generatedAt: written, age: "0s", expected: nil, doctorCommit: nil),
+        ]
+        let checking = tools.freshness(now: moment, readAt: readBefore, wokeAt: woke)
+        XCTAssertEqual(checking.verdict, .checking)
+        let agedTools = tools.aged(by: checking)
+        XCTAssertFalse(agedTools.isCurrent)
+        XCTAssertEqual(agedTools.hosts.first?.state, .unproven)
+        XCTAssertTrue(tools.aged(by: tools.freshness(now: moment, readAt: moment, wokeAt: woke)).isCurrent)
+
+        var health = WorkerHealthReading()
+        health.generatedAt = written
+        health.isCurrent = true
+        health.state = .passed
+        XCTAssertFalse(health.aged(by: health.freshness(now: moment, readAt: readBefore, wokeAt: woke)).isCurrent)
+        XCTAssertTrue(health.aged(by: health.freshness(now: moment, readAt: moment, wokeAt: woke)).isCurrent)
+    }
+
+    /// A report the reader already refused keeps the reader's words:  ageing has no time to add.
+    func test_ageing_leaves_a_report_with_a_problem_as_the_reader_said_it() {
+        var tools = FleetToolsReading()
+        tools.generatedAt = now.addingTimeInterval(5 * 60)
+        tools.age = "0s"
+        tools.problem = "The report is dated in the future,  so nothing in it is current."
+        let agedTools = tools.aged(by: tools.freshness(now: now))
+        XCTAssertEqual(agedTools.problem, tools.problem)
+        XCTAssertEqual(agedTools.age, "0s")
+
+        var health = WorkerHealthReading()
+        health.problem = "The file could not be read:\(gap)the file is not there"
+        let agedHealth = health.aged(by: health.freshness(now: now))
+        XCTAssertEqual(agedHealth.problem, health.problem)
+        XCTAssertNil(agedHealth.age)
+    }
+
     func test_a_report_dated_ahead_of_the_clock_is_not_current() {
         let freshness = ReportFreshness(generatedAt: now.addingTimeInterval(5 * 60), maxAge: 45 * 60, now: now)
         XCTAssertEqual(freshness.verdict, .futureDated)
@@ -227,6 +334,37 @@ final class ReportFreshnessTests: XCTestCase {
         XCTAssertFalse(failed.blocked)
         XCTAssertEqual(failed.note,
                        "The server did not answer at 2:14 PM.\(gap)The plan asks the server first, and nothing runs if it cannot.")
+    }
+
+    /// Resource Limits reads the server itself,  so its own read after the doctor's failed try
+    /// is an answer:  the page is not turned off while it shows a read it has just made.
+    func test_a_direct_read_after_the_failed_try_counts_as_an_answer() {
+        let checked = at("2026-11-07T20:10:00Z")
+        let reach = ServerReach.unreachable(checkedAt: checked, lastReportAt: nil)
+        let direct = at("2026-11-07T20:13:00Z")
+
+        let gate = ServerActionGate.make(reach: reach,
+                                         asked: ServerAskResult.latest(asked: nil, directReadAt: direct))
+        XCTAssertFalse(gate.blocked)
+        XCTAssertEqual(gate.note, "The server answered at 2:13 PM, after the Mac's last failed try.")
+
+        // A direct read from before the failed try does not outrank it.
+        let earlier = ServerAskResult.latest(asked: nil, directReadAt: at("2026-11-07T20:05:00Z"))
+        XCTAssertTrue(ServerActionGate.make(reach: reach, asked: earlier).blocked)
+
+        // An ask that failed after the direct read is the newest word,  and one from before it
+        // gives way to the read.
+        let failedLater = ServerAskResult(answered: false, at: at("2026-11-07T20:14:00Z"))
+        XCTAssertEqual(ServerAskResult.latest(asked: failedLater, directReadAt: direct), failedLater)
+        XCTAssertTrue(ServerActionGate.make(reach: reach,
+                                            asked: ServerAskResult.latest(asked: failedLater, directReadAt: direct)).blocked)
+        let failedEarlier = ServerAskResult(answered: false, at: at("2026-11-07T20:11:00Z"))
+        XCTAssertEqual(ServerAskResult.latest(asked: failedEarlier, directReadAt: direct),
+                       ServerAskResult(answered: true, at: direct))
+
+        // Without a direct read the ask stands as it is.
+        XCTAssertNil(ServerAskResult.latest(asked: nil, directReadAt: nil))
+        XCTAssertEqual(ServerAskResult.latest(asked: failedLater, directReadAt: nil), failedLater)
     }
 
     func test_fetch_is_offered_where_the_menu_offers_it() {
@@ -527,5 +665,62 @@ final class ReportFreshnessTests: XCTestCase {
         shown.takeCollected(agents(at: now, problem: "The collector failed."))
         XCTAssertEqual(shown.reading?.problem, "The collector failed.")
         XCTAssertNil(shown.collectProblem)
+    }
+
+    // MARK: - The views use it
+    //
+    // The views are not in the test bundle,  so their wiring is pinned by their source,  as
+    // FleetViewFilterBarTests and ReadCadenceTests pin theirs.  The behaviour they call is
+    // tested above.
+
+    private func source(_ path: String) throws -> String {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+        return try String(contentsOf: root.appendingPathComponent(path), encoding: .utf8)
+    }
+
+    /// Fleet Hosts reads again on the tick and on wake,  ages both files on a 30 second tick,
+    /// says who wrote each one,  and names its button for what it reads.
+    func test_fleet_hosts_ages_its_reports_on_the_tick_and_says_who_wrote_them() throws {
+        let view = try source("Muster/Views/FleetHostsView.swift")
+        XCTAssertTrue(view.contains(".rereadsOnTickAndWake(onWake: { wokeAt = Date() }) {\n            await load()"))
+        XCTAssertTrue(view.contains("TimelineView(.periodic(from: .now, by: ReportFreshness.tickInterval))"))
+        XCTAssertTrue(view.contains("let freshness = raw.freshness(now: now, readAt: readAt, wokeAt: wokeAt)\n        let reading = raw.aged(by: freshness)"))
+        XCTAssertTrue(view.contains("let freshness = raw.freshness(now: now, readAt: readAt, wokeAt: wokeAt)\n        let health = raw.aged(by: freshness)"))
+        XCTAssertTrue(view.contains("ReportAgeText(origin: .doctorOnMac, freshness: freshness)"))
+        XCTAssertTrue(view.contains(".macCollector(\"the Worker health collector\")"))
+        XCTAssertTrue(view.contains("Label(\"Read The Mac's Reports Again\""))
+        XCTAssertTrue(view.contains("guard !loading else { return }"))
+        XCTAssertTrue(view.contains("readAt = Date()"))
+        // The old words named a report's age as when the page read it.
+        XCTAssertFalse(view.contains("Report read"))
+        XCTAssertFalse(view.contains("Text(\"read \\("))
+        XCTAssertFalse(view.contains("Label(\"Refresh\""))
+        XCTAssertFalse(view.contains(".task { await load() }"), "a read only on appear goes stale while open")
+    }
+
+    /// Apps & Work's header works its age out on the tick and is tinted by its tone.
+    func test_apps_and_work_header_ages_on_the_tick() throws {
+        let view = try source("Muster/FleetView.swift")
+        let tick = try XCTUnwrap(view.range(of: "TimelineView(.periodic(from: .now, by: ReportFreshness.tickInterval)) { context in")?.lowerBound)
+        let header = try XCTUnwrap(view.range(of: "refreshClock.headerText(now: context.date)")?.lowerBound)
+        XCTAssertLessThan(tick, header, "the header line is worked out inside the tick")
+        XCTAssertTrue(view.contains(".foregroundStyle(headerTint(now: context.date))"))
+        XCTAssertTrue(view.contains("FleetViewFreshness.tone(collectedAt: refreshClock.collectedAt, now: now)"))
+        XCTAssertFalse(view.contains("if let stamp = refreshClock.headerText {"), "the header kept a frozen age")
+    }
+
+    /// Resource Limits turns Review Change off when the Mac could not reach the server,  with
+    /// the reason and Ask The Server Now beside it,  as Server Updates does.
+    func test_resource_limits_gates_its_changes_on_the_server_reach() throws {
+        let view = try source("Muster/Views/ResourceLimitsView.swift")
+        XCTAssertTrue(view.contains("@EnvironmentObject private var watch: PlaceWatch"))
+        XCTAssertTrue(view.contains("ServerActionGate.make(reach: ServerReach.make(status: watch.status, tools: watch.tools),"))
+        XCTAssertTrue(view.contains("ServerAskResult.latest(asked: watch.asked,"))
+        XCTAssertTrue(view.contains("|| gate.blocked)"))
+        XCTAssertTrue(view.contains("guard !serverGate.blocked,"))
+        XCTAssertTrue(view.contains("Button(\"Ask The Server Now\") { watch.askServer() }"))
+        XCTAssertTrue(view.contains("                receiptStatus\n                serverGateNote\n"),
+                      "the reason shows under the read's own status")
     }
 }

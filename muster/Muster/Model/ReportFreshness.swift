@@ -408,6 +408,18 @@ struct ServerActionGate: Equatable {
     }
 }
 
+extension ServerAskResult {
+    /// The newest word from the server:  the last Ask The Server Now,  or a read a panel made of
+    /// the server itself,  whichever came later.  A direct read that came back is an answer as
+    /// good as an ask,  so a panel that has just read the server is not turned off by an older
+    /// failed try,  and an ask that failed after it still counts.
+    static func latest(asked: ServerAskResult?, directReadAt: Date?) -> ServerAskResult? {
+        guard let directReadAt else { return asked }
+        if let asked, asked.at > directReadAt { return asked }
+        return ServerAskResult(answered: true, at: directReadAt)
+    }
+}
+
 // MARK: - The server:  what "changed" means
 
 /// The words for the server report's file list.
