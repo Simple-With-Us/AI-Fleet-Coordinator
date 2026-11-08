@@ -12,7 +12,11 @@ def blob(raw):
 
 class PatchTests(unittest.TestCase):
     def setup_case(self):
-        raw = b"const apiKey = " + b"stsProviderCredential(provider);\n" + b"other = old;\n"
+        raw = (
+            b"const apiKey = "
+            + b"stsProviderCredential(provider);\n"
+            + b"other = old;\n"
+        )
         result = raw.replace(b"other = old", b"other = new")
         args = dict(
             repo=REPO,
@@ -21,7 +25,9 @@ class PatchTests(unittest.TestCase):
             message="fix",
             expected_head_sha=SHA,
             base_blob_sha=blob(raw),
-            edits=[dict(start=raw.index(b"old"), end=raw.index(b"old") + 3, text="new")],
+            edits=[
+                dict(start=raw.index(b"old"), end=raw.index(b"old") + 3, text="new")
+            ],
         )
         replies = [
             dict(default_branch="main"),
@@ -35,7 +41,9 @@ class PatchTests(unittest.TestCase):
                 content=base64.b64encode(raw).decode(),
             ),
             dict(tree=[dict(path="server", type="tree", sha="c" * 40)]),
-            dict(tree=[dict(path="index.ts", type="blob", mode="100644", sha=blob(raw))]),
+            dict(
+                tree=[dict(path="index.ts", type="blob", mode="100644", sha=blob(raw))]
+            ),
             dict(
                 data=dict(
                     createCommitOnBranch=dict(
@@ -53,15 +61,20 @@ class PatchTests(unittest.TestCase):
         args, replies = self.setup_case()
         c = Client(*replies)
         out = Multi(c).run("wf_file_patch", args)
-        self.assertEqual(out, dict(branch="feature/x", path="server/index.ts", commit="e" * 40))
+        self.assertEqual(
+            out, dict(branch="feature/x", path="server/index.ts", commit="e" * 40)
+        )
         writes = [(m, p, b) for m, p, b, _ in c.calls if m != "GET"]
         self.assertEqual(len(writes), 1)
         self.assertEqual(writes[0][1], "/graphql")
         payload = writes[0][2]
         self.assertEqual(payload["variables"]["input"]["expectedHeadOid"], SHA)
-        self.assertEqual(payload["variables"]["input"]["branch"]["repositoryNameWithOwner"], REPO)
         self.assertEqual(
-            payload["variables"]["input"]["fileChanges"]["additions"][0]["path"], args["path"]
+            payload["variables"]["input"]["branch"]["repositoryNameWithOwner"], REPO
+        )
+        self.assertEqual(
+            payload["variables"]["input"]["fileChanges"]["additions"][0]["path"],
+            args["path"],
         )
 
     def test_pins_fail_before_write(self):
@@ -69,7 +82,16 @@ class PatchTests(unittest.TestCase):
             (0, dict(default_branch="feature/x")),
             (1, dict(object=dict(sha="f" * 40))),
             (2, dict(sha="f" * 40, tree=dict(sha="b" * 40))),
-            (3, dict(type="file", path="other", sha="f" * 40, encoding="base64", content="eA==")),
+            (
+                3,
+                dict(
+                    type="file",
+                    path="other",
+                    sha="f" * 40,
+                    encoding="base64",
+                    content="eA==",
+                ),
+            ),
             (
                 3,
                 dict(
@@ -133,3 +155,83 @@ class PatchTests(unittest.TestCase):
         with self.assertRaises(Refused):
             Multi(c).run("wf_file_patch", args)
         self.assertTrue(all(m == "GET" for m, *_ in c.calls))
+
+
+class ExecutablePatchTests(PatchTests):
+    def executable_case(self):
+        args, old = self.setup_case()
+        old[0]["node_id"] = "R_repository"
+        old[5]["tree"][0]["mode"] = "100755"
+        raw = base64.b64decode(old[3]["content"]).replace(b"other = old", b"other = new")
+        tree_sha, new = "d" * 40, "e" * 40
+        tail = [
+            {"sha": blob(raw)},
+            {"sha": tree_sha},
+            {"tree": [{"path": "server", "type": "tree", "sha": "c" * 40}]},
+            {
+                "tree": [
+                    {
+                        "path": "index.ts",
+                        "type": "blob",
+                        "mode": "100755",
+                        "sha": blob(raw),
+                    }
+                ]
+            },
+            {"sha": new, "tree": {"sha": tree_sha}, "parents": [{"sha": SHA}]},
+            {
+                "type": "file",
+                "path": args["path"],
+                "sha": blob(raw),
+                "encoding": "base64",
+                "content": base64.b64encode(raw).decode(),
+            },
+            {"data": {"updateRefs": {"clientMutationId": new}}},
+            {"object": {"sha": new}},
+        ]
+        return args, old[:6] + tail
+
+    def test_executable_mode_and_atomic_before_oid(self):
+        args, replies = self.executable_case()
+        c = Client(*replies)
+        out = Multi(c).run("wf_file_patch", args)
+        self.assertEqual(out["commit"], "e" * 40)
+        trees = [
+            body
+            for method, path, body, _ in c.calls
+            if method == "POST" and path.endswith("/git/trees")
+        ]
+        self.assertEqual(trees[0]["tree"][0]["mode"], "100755")
+        graph = [body for method, path, body, _ in c.calls if path == "/graphql"]
+        self.assertEqual(len(graph), 1)
+        update = graph[0]["variables"]["input"]["refUpdates"]
+        self.assertEqual(
+            update,
+            [
+                {
+                    "name": "refs/heads/feature/x",
+                    "beforeOid": SHA,
+                    "afterOid": "e" * 40,
+                    "force": False,
+                }
+            ],
+        )
+        self.assertFalse(any(method == "PATCH" for method, *_ in c.calls))
+
+    def test_bad_immutable_receipts_never_publish_a_ref(self):
+        for at in [6, 7, 9, 10, 11]:
+            args, replies = self.executable_case()
+            replies[at] = {}
+            c = Client(*replies)
+            with self.subTest(at=at), self.assertRaises(Refused):
+                Multi(c).run("wf_file_patch", args)
+            self.assertFalse(any(path == "/graphql" for _, path, *_ in c.calls))
+
+    def test_bad_final_ref_or_mutation_receipt_is_unknown(self):
+        for at in [12, 13]:
+            args, replies = self.executable_case()
+            replies[at] = {"data": {"updateRefs": {}}} if at == 12 else {}
+            c = Client(*replies)
+            with self.subTest(at=at), self.assertRaises(WriteOutcomeUnknown):
+                Multi(c).run("wf_file_patch", args)
+
