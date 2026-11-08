@@ -108,7 +108,11 @@ def ok(pub, sig, data):
 
 def calendar_time(s):
     """v5.4:  §2's form, and a real calendar time."""
-    m = re.fullmatch(r"([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})Z", s) if isinstance(s, str) else None
+    m = (
+        re.fullmatch(r"([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})Z", s)
+        if isinstance(s, str)
+        else None
+    )
     if not m:
         return False
     try:
@@ -131,8 +135,17 @@ def p3(e):
     if not isinstance(e, dict) or sorted(e) != ["body", "countersignatures", "ownerSignature"]:
         return ["entry keys"]
     b = e["body"]
-    want = ["closed", "contract", "devices", "issuedAt", "ownerKey", "previousSHA256", "reopenTag",
-            "services", "version"]
+    want = [
+        "closed",
+        "contract",
+        "devices",
+        "issuedAt",
+        "ownerKey",
+        "previousSHA256",
+        "reopenTag",
+        "services",
+        "version",
+    ]
     if not isinstance(b, dict) or sorted(b) != want:
         return ["body keys"]
     if b["contract"] != "muster-trust-list/1":
@@ -151,8 +164,14 @@ def p3(e):
     if not isinstance(devs, list) or len(devs) > 64:
         return bad + ["devices"]
     for d in devs:
-        if not isinstance(d, dict) or sorted(d) != ["approvalKey", "deviceId", "name", "notificationKey",
-                                                    "readingKey", "requestKey"]:
+        if not isinstance(d, dict) or sorted(d) != [
+            "approvalKey",
+            "deviceId",
+            "name",
+            "notificationKey",
+            "readingKey",
+            "requestKey",
+        ]:
             return bad + ["device"]
         if not (isinstance(d["deviceId"], str) and re.fullmatch(r"d-[0-9a-f]{24}", d["deviceId"])):
             bad.append("deviceId")
@@ -161,8 +180,20 @@ def p3(e):
         for k in ("approvalKey", "requestKey", "readingKey", "notificationKey"):
             key(d[k], "device " + k)
     s = b["services"]
-    if not isinstance(s, dict) or len(s) != 7 or not {"macPublisher", "macExecutor", "macAgreement",
-            "serverPublisher", "serverExecutor", "serverExecutorAgreement", "serverHelper"} == set(s):
+    if (
+        not isinstance(s, dict)
+        or len(s) != 7
+        or not {
+            "macPublisher",
+            "macExecutor",
+            "macAgreement",
+            "serverPublisher",
+            "serverExecutor",
+            "serverExecutorAgreement",
+            "serverHelper",
+        }
+        == set(s)
+    ):
         return bad + ["services"]
     for k, v in s.items():
         if v is not None:
@@ -174,9 +205,14 @@ def p3(e):
     if not isinstance(cs, list) or len(cs) > 64:
         return bad + ["countersignatures"]
     for c in cs:
-        if not (isinstance(c, dict) and sorted(c) == ["deviceId", "signature"]
-                and isinstance(c["deviceId"], str) and re.fullmatch(r"d-[0-9a-f]{24}", c["deviceId"])
-                and isinstance(c["signature"], str) and re.fullmatch(sig_re, c["signature"])):
+        if not (
+            isinstance(c, dict)
+            and sorted(c) == ["deviceId", "signature"]
+            and isinstance(c["deviceId"], str)
+            and re.fullmatch(r"d-[0-9a-f]{24}", c["deviceId"])
+            and isinstance(c["signature"], str)
+            and re.fullmatch(sig_re, c["signature"])
+        ):
             bad.append("countersignature")
     try:
         canon(e)
@@ -481,7 +517,11 @@ check(
 
 # -------- v5.4 strictness, built here from v1 and checked by this file's own P3 and checks
 def priv(label):
-    s = int.from_bytes(hashlib.sha256(("muster test key " + label).encode()).digest(), "big") % (N - 1) + 1
+    s = (
+        int.from_bytes(hashlib.sha256(("muster test key " + label).encode()).digest(), "big")
+        % (N - 1)
+        + 1
+    )
     return ec.derive_private_key(s, ec.SECP256R1())
 
 
@@ -519,7 +559,10 @@ strict_cases = {
 for what, body in strict_cases.items():
     got = p3(resigned(body))
     check(len(got) == 1, "v5.4 %s:  P3 should refuse it for one reason, got %s" % (what, got))
-check(p3(resigned(dict(v1b))) == [] and failures(None, resigned(dict(v1b))) == [], "re-signed v1 passes")
+check(
+    p3(resigned(dict(v1b))) == [] and failures(None, resigned(dict(v1b))) == [],
+    "re-signed v1 passes",
+)
 open_empty = resigned(dict(v1b, devices=[]))
 check(
     p3(open_empty) == [] and failures(None, open_empty) == ["closed_rule"],
