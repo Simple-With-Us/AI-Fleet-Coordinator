@@ -103,3 +103,7 @@ ac764c34b5d3eb5b9eaa949a195e2152cfcad617:muster/MusterTests/ConfigFileReaderTest
 ac764c34b5d3eb5b9eaa949a195e2152cfcad617:muster/MusterTests/ConfigFileReaderTests.swift:generic-api-key:311
 ac764c34b5d3eb5b9eaa949a195e2152cfcad617:muster/MusterTests/ConfigFileReaderTests.swift:curl-auth-header:329
 146b582e95374699d93f905d8cfd8a8db33ab074:muster/MusterTests/ConfigFileReaderTests.swift:generic-api-key:219
+# A variable named key in the Muster route's trust-file reader (PR #1505, its first commit):  the scanner read
+# the attribute test on the line as a generic assignment.  It holds a loaded public key object and no credential.
+# The next commit renames it, so this silences the one historical commit only.
+2806257467c58038e67c191580bb9a1665f48422:scripts/muster_agent/muster_trust_files.py:generic-api-key:101

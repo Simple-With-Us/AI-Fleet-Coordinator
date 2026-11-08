@@ -469,6 +469,105 @@ enum GridPresentation {
         default: return 3
         }
     }
+
+    // MARK: Compliance results (GRID-18)
+
+    /// How one compliance rule's result is drawn in the rules list:  its word, the symbol
+    /// beside it, and the grid state whose colour it wears.
+    ///
+    /// A result wears the grid's own colour for its state, so a rule that passed is the green
+    /// of a passing cell, and a failing one is never calmer than the cell it would be.  A rule
+    /// with no result (not built yet, left out of the answer, or not answered) claims nothing,
+    /// so it wears the neutral colour:  never green, and never red.
+    struct ComplianceRuleLook: Equatable {
+        /// The word the badge shows:  the status's own (`ComplianceRuleStatus.word`), or the
+        /// drawn state's grid word when a failing flag escalated a calm-looking state.
+        let word: String
+        let symbol: String
+        /// The state whose colour the rule wears, or nil for the neutral colour.
+        let colourState: CellState?
+
+        static func of(_ status: ComplianceRuleStatus) -> ComplianceRuleLook {
+            switch status.standing {
+            case .answered(let state):
+                // A result the engine flagged as failing while its state reads calm:  the
+                // flag wins, so the rule never wears a calm colour over a failure.
+                let shown = status.isFailing && !state.isRed && state != .drift ? CellState.unknown : state
+                // The word follows the state drawn, so a calm word never sits on the red it was
+                // escalated to;  an answer that was not escalated keeps the status's own word.
+                let word = shown == state ? status.word : shown.gridWord
+                return ComplianceRuleLook(word: word, symbol: shown.gridSymbol, colourState: shown)
+            case .notBuilt:
+                return ComplianceRuleLook(word: status.word, symbol: "hammer", colourState: nil)
+            case .notInAnswer:
+                return ComplianceRuleLook(word: status.word, symbol: "questionmark.circle", colourState: nil)
+            case .notAnswered:
+                return ComplianceRuleLook(word: status.word, symbol: GridPresentation.checkingSymbol, colourState: nil)
+            }
+        }
+    }
+
+    /// The rules' statuses grouped by the places they are about, each rule once, in the
+    /// store's order (the manifest's) within a group.
+    ///
+    /// A group's heading is its rules' own `placeWords`, and the groups sort as
+    /// `complianceGroups` sorts them:  the Mac, then the server, then the fleet, then the rest.
+    static func complianceStatusGroups(_ statuses: [ComplianceRuleStatus]) -> [ComplianceGroup] {
+        var order: [String] = []
+        var members: [String: [String]] = [:]
+        var rank: [String: Int] = [:]
+        var seen: Set<String> = []
+        for status in statuses where seen.insert(status.ruleID).inserted {
+            let heading = status.placeWords
+            if members[heading] == nil {
+                order.append(heading)
+                rank[heading] = scopeRank(status.scope.filter { !$0.isEmpty })
+            }
+            members[heading, default: []].append(status.ruleID)
+        }
+        let sorted = order.enumerated().sorted { lhs, rhs in
+            let left = rank[lhs.element] ?? 9
+            let right = rank[rhs.element] ?? 9
+            return left == right ? lhs.offset < rhs.offset : left < right
+        }
+        return sorted.map { ComplianceGroup(heading: $0.element, ruleIDs: members[$0.element] ?? []) }
+    }
+
+    /// The heading over the compliance results that failed in the last trusted run, which
+    /// Drift History shows beside the red count.
+    static func complianceFailuresTitle(count: Int) -> String {
+        "Compliance Rules Failing Now (\(count))"
+    }
+
+    /// What that list is.
+    static let complianceFailuresExplanation = "These fleet-wide rules failed in the last check that could be trusted."
+        + ServerStatusCopy.sentenceGap + "A rule is about a place rather than a seat, so it reaches no cell in the grid."
+
+    /// The grid state whose colour a failing compliance result wears:  its own state's when
+    /// that is a warning colour, and UNKNOWN's red when the engine flagged a calm-looking
+    /// state as failing, so a failure never wears a calm colour.
+    static func colourState(of failure: DriftComplianceFailure) -> CellState {
+        let state = CellState(checkState: CheckState(envelopeValue: failure.state))
+        return state.isRed || state == .drift ? state : .unknown
+    }
+
+    // MARK: Paths not watched (GRID-37)
+
+    /// The heading over the paths no started watch covers, or nil when every path has one.
+    static func unwatchedPathsTitle(_ coverage: DriftWatchCoverage) -> String? {
+        let count = coverage.unwatchedPaths.count
+        guard count > 0 else { return nil }
+        return "Paths Not Watched (\(count))"
+    }
+
+    /// What that list is.
+    static let unwatchedPathsExplanation = "A watch could not be started on these paths, so a change to one is seen only when the seat setup is checked again."
+
+    /// Each path no started watch covers, in the watch list's order, with the home folder
+    /// written as `~`.
+    static func unwatchedPathLines(_ coverage: DriftWatchCoverage) -> [String] {
+        coverage.unwatchedPaths.map { ($0.path as NSString).abbreviatingWithTildeInPath }
+    }
 }
 
 // MARK: - The grid's one spelling of each state
