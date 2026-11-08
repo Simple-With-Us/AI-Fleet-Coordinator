@@ -211,6 +211,11 @@ def _retry_after_seconds(headers) -> int | None:
     return None
 
 
+# A compare answer pages only its commits:  the whole file list, patches included, comes with every
+# page, so ``per_page`` does not bound it and it keeps the plain bound.
+_COMPARE_ROUTE = re.compile(r"/repos/[^/?]+/[^/?]+/compare/")
+
+
 def response_limit(method: str, path: str) -> int:
     """The response bound for one call:  MAX_PAGE_BODY for a paged GET, else MAX_BODY.
 
@@ -218,8 +223,10 @@ def response_limit(method: str, path: str) -> int:
     contains ``per_page=`` sits in the path (``?`` is quoted there), so it never widens a read.
     """
     if method == "GET":
-        query = path.partition("?")[2]
-        if any(key == "per_page" for key, _ in parse_qsl(query, keep_blank_values=True)):
+        route, _, query = path.partition("?")
+        if not _COMPARE_ROUTE.match(route) and any(
+            key == "per_page" for key, _ in parse_qsl(query, keep_blank_values=True)
+        ):
             return MAX_PAGE_BODY
     return MAX_BODY
 

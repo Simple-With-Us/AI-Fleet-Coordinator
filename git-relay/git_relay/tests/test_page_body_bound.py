@@ -66,6 +66,9 @@ class ResponseLimit(unittest.TestCase):
             "/repos/o/r/pulls?xper_page=1",
             "/repos/o/r/pulls?per_page_x=1",
             "/repos/o/r/pulls",
+            # A compare pages only its commits;  the file list and patches come whole.
+            "/repos/o/r/compare/main...feature?per_page=50&page=1",
+            "/repos/Simple-With-Us/AI-Fleet-Coordinator/compare/a%2Fb...c?per_page=1",
         ]
         for path in plain:
             self.assertEqual(response_limit("GET", path), MAX_BODY, path)
@@ -84,6 +87,14 @@ class PagedRead(unittest.TestCase):
         data = big_list(50, 24000)
         with self.assertRaises(RelayGitHubError) as caught:
             client_for(data)._call("GET", "/repos/o/r/pulls/5")
+        self.assertEqual(caught.exception.code, "response_too_large")
+        self.assertIn("1 MiB", caught.exception.message)
+
+    def test_a_compare_keeps_the_small_bound_because_per_page_does_not_size_it(self):
+        data = big_list(50, 24000)
+        self.assertGreater(len(data), MAX_BODY)
+        with self.assertRaises(RelayGitHubError) as caught:
+            client_for(data)._call("GET", "/repos/o/r/compare/main...feature?per_page=50&page=1")
         self.assertEqual(caught.exception.code, "response_too_large")
         self.assertIn("1 MiB", caught.exception.message)
 
