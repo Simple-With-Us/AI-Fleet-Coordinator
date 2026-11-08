@@ -25,13 +25,14 @@ standard library only.  It reads launchctl and changes nothing else.
 """
 
 import argparse
+import errno
 import json
 import os
 import plistlib
 import re
+import secrets
 import subprocess
 import sys
-import tempfile
 import time
 
 SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -207,30 +208,39 @@ def document(
 
 
 def write_atomic(path, doc):
+    """Atomic and private, through one O_NOFOLLOW descriptor for the state folder:  the temporary
+    file, the rename and the folder fsync all use it, so a folder swapped for a symlink after the
+    check cannot redirect the write (Kody, PR 1477)."""
     directory = os.path.dirname(path)
     if os.path.islink(directory):
         raise OSError("state directory is a symlink; refusing to write")
     os.makedirs(directory, mode=0o700, exist_ok=True)
-    if os.path.islink(directory):
-        raise OSError("state directory is a symlink; refusing to write")
-    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".mac-services-")
     try:
-        with os.fdopen(fd, "w") as handle:
-            json.dump(doc, handle, indent=2, sort_keys=True)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, path)
-        dir_fd = os.open(directory, os.O_RDONLY)
-        try:
-            os.fsync(dir_fd)
-        finally:
-            os.close(dir_fd)
-    except BaseException:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
+        dir_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as error:
+        if error.errno in (errno.ELOOP, errno.ENOTDIR):
+            raise OSError("state directory is a symlink; refusing to write") from error
         raise
+    try:
+        tmp = ".mac-services-%d-%s" % (os.getpid(), secrets.token_hex(8))
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=dir_fd)
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w") as handle:
+                json.dump(doc, handle, indent=2, sort_keys=True)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp, os.path.basename(path), src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        except BaseException:
+            try:
+                os.unlink(tmp, dir_fd=dir_fd)
+            except OSError:
+                pass
+            raise
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
 
 
 def main(argv=None, runner=subprocess.run):

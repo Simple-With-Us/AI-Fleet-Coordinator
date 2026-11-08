@@ -190,7 +190,7 @@ final class ConfigFileReaderTests: XCTestCase {
     /// A long path is not a secret,  even though it is long.
     func test_a_long_path_is_not_a_secret() {
         XCTAssertFalse(
-            ConfigFileReader.looksLikeSecretValue("/Users/jay/apps/lane-tools/fleet-guard-hook")
+            ConfigFileReader.looksLikeSecretValue("/tmp/fixture-apps/lane-tools/fleet-guard-hook")
         )
     }
 
@@ -308,7 +308,7 @@ final class ConfigFileReaderTests: XCTestCase {
     /// A key in a URL's query,  or a token in its path,  is a secret even when the URL has a
     /// port,  and a path made of words is not.
     func test_a_url_key_or_path_token_is_a_secret() {
-        XCTAssertTrue(ConfigFileReader.looksLikeSecretValue("http://h:8080/x?key=" + "AIza" + "SyA0123456789abcdefghijklmnopqrstu"))
+        XCTAssertTrue(ConfigFileReader.looksLikeSecretValue("http://h:8080/x?key=test-value"))
         XCTAssertTrue(ConfigFileReader.looksLikeSecretValue("https://h.example.test/x?sig=abc&code=xyz"))
         XCTAssertTrue(ConfigFileReader.looksLikeSecretValue("http://host.example.test:8443/hooks/T0123ABCDEFabcdef0123456"))
         XCTAssertFalse(ConfigFileReader.looksLikeSecretValue("https://github.com/Simple-With-Us/AI-Fleet-Coordinator"))
@@ -381,7 +381,7 @@ final class ConfigFileReaderTests: XCTestCase {
         let home = try makeHome()
         defer { try? FileManager.default.removeItem(at: home) }
         let original = """
-        {"z": {"command": "/Users/jay/bin/guard"},
+        {"z": {"command": "/tmp/fixture-apps/bin/guard"},
          "a": 1}
         """
         try original.write(to: home.appendingPathComponent(".claude/settings.json"), atomically: true, encoding: .utf8)
@@ -400,7 +400,7 @@ final class ConfigFileReaderTests: XCTestCase {
     /// A secret string is hidden where it stands,  and the rest of the file keeps its bytes.
     func test_a_json_secret_is_hidden_in_place() {
         let original = """
-        {"z": "/Users/jay/x",
+        {"z": "/tmp/fixture-apps/x",
          "apiKey": "sk-LIVE_SECRET_VALUE",
          "a": 1}
         """
@@ -416,11 +416,11 @@ final class ConfigFileReaderTests: XCTestCase {
     /// A secret key that holds an object is hidden by rewriting the file,  and the rewrite
     /// says so and keeps slashes as they are.
     func test_a_rewritten_json_file_says_so_and_keeps_its_slashes() {
-        let hidden = ConfigFileReader.redaction(of: #"{"credentials": {"user": "jay"}, "path": "/Users/jay/x"}"#)
+        let hidden = ConfigFileReader.redaction(of: #"{"credentials": {"user": "fixture-user"}, "path": "/tmp/fixture-apps/x"}"#)
         XCTAssertTrue(hidden.reformatted)
         XCTAssertEqual(hidden.replaced, 1)
-        XCTAssertFalse(hidden.text.contains("\"jay\""), hidden.text)
-        XCTAssertTrue(hidden.text.contains("/Users/jay/x"), hidden.text)
+        XCTAssertFalse(hidden.text.contains("\"fixture-user\""), hidden.text)
+        XCTAssertTrue(hidden.text.contains("/tmp/fixture-apps/x"), hidden.text)
         XCTAssertFalse(hidden.text.contains("\\/"), hidden.text)
         let read = ConfigFileRead(
             state: .text,

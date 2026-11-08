@@ -407,7 +407,7 @@ enum ConfigFileReader {
         guard text.count >= 12 else { return false }
         // A URL is a secret only when it carries a credential:  a password or a token
         // in its user part,  before an `@`,  a secret-named query value,  or a token-shaped
-        // path segment or query value (a webhook's path,  `?key=AIza…`).  A host and a port
+        // path segment or query value (a webhook's path,  `?key=…`).  A host and a port
         // (`localhost:8080`) are not a password.
         if let scheme = text.range(of: "://") {
             let afterScheme = text[scheme.upperBound...]

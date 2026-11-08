@@ -77,11 +77,11 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
 import stat
 import subprocess
 import sys
-import tempfile
 import time
 import urllib.request
 from collections.abc import Callable
@@ -3328,41 +3328,53 @@ def combined_report(docs: list) -> dict:
 
 def write_report(path: Path, report_doc: dict) -> None:
     """Atomic and private:  a 0600 temporary file in the same folder, fsynced, then renamed over.
-    The folder must be a real directory (a symlink is refused, before the folder is made and again
-    after, as fleet-server-status.py does), created 0700 when absent, and it is fsynced after the
-    rename."""
+    The folder must be a real directory, created 0700 when absent.  It is opened once with
+    O_NOFOLLOW, and the temporary file, the rename and the folder fsync all go through that one
+    descriptor, so a folder swapped for a symlink after the check cannot redirect the report
+    (Kody, PR 1477).  A symlinked folder is refused with ValueError."""
     if path.parent.is_symlink():
         raise ValueError(f"refusing to write the report through a symlinked folder:  {path.parent}")
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    if path.parent.is_symlink():
-        raise ValueError(f"refusing to write the report through a symlinked folder:  {path.parent}")
-    fd, tmp = tempfile.mkstemp(prefix=".report.", suffix=".tmp", dir=str(path.parent))
+    dir_fd = open_report_folder(path.parent)
     try:
-        os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "w") as handle:
-            json.dump(report_doc, handle, indent=2)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp, path)
-    except BaseException:
+        tmp = f".report.{os.getpid()}.{secrets.token_hex(8)}.tmp"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=dir_fd)
         try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-    # The rename has already replaced the report atomically;  syncing the folder makes that rename
-    # survive a power cut, as the other collectors do.  A file system that does not support a folder
-    # fsync says so with EINVAL or ENOTSUP, and only that answer is let through:  a lost rename then
-    # leaves the previous report, which a reader ages out to unknown.  Any other failure is raised.
-    dir_fd = os.open(str(path.parent), os.O_RDONLY)
-    try:
-        os.fsync(dir_fd)
-    except OSError as error:
-        if error.errno not in FOLDER_FSYNC_UNSUPPORTED:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w") as handle:
+                json.dump(report_doc, handle, indent=2)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp, path.name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        except BaseException:
+            try:
+                os.unlink(tmp, dir_fd=dir_fd)
+            except OSError:
+                pass
             raise
+        # The rename has already replaced the report atomically;  syncing the folder makes that rename
+        # survive a power cut, as the other collectors do.  A file system that does not support a folder
+        # fsync says so with EINVAL or ENOTSUP, and only that answer is let through:  a lost rename then
+        # leaves the previous report, which a reader ages out to unknown.  Any other failure is raised.
+        try:
+            os.fsync(dir_fd)
+        except OSError as error:
+            if error.errno not in FOLDER_FSYNC_UNSUPPORTED:
+                raise
     finally:
         os.close(dir_fd)
+
+
+def open_report_folder(folder: Path) -> int:
+    """The report folder as a descriptor, refusing a symlink (ELOOP) or a non-folder (ENOTDIR) at the
+    moment it is opened, not before."""
+    try:
+        return os.open(str(folder), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as error:
+        if error.errno in (errno.ELOOP, errno.ENOTDIR):
+            raise ValueError(f"refusing to write the report through a symlinked folder:  {folder}") from error
+        raise
 
 
 # The errors a file system gives when it does not support fsync on a folder at all.

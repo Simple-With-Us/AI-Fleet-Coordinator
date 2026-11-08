@@ -1753,6 +1753,19 @@ class ReportAndRunTests(HomeCase):
             doctor.write_report(self.home / "state/fleet-tools/report.json", {"schemaVersion": 1})
         self.assertEqual(list(real.iterdir()), [])
 
+
+    def test_a_folder_swapped_for_a_symlink_after_the_check_is_refused(self):
+        # Kody, PR 1477:  the folder is opened with O_NOFOLLOW and used through that descriptor,
+        # so passing the early check is not enough to write through a link.
+        real = self.home / "elsewhere"
+        real.mkdir()
+        (self.home / "state").mkdir()
+        (self.home / "state/fleet-tools").symlink_to(real)
+        with mock.patch.object(doctor.Path, "is_symlink", return_value=False):
+            with self.assertRaises(ValueError):
+                doctor.write_report(self.home / "state/fleet-tools/report.json", {"schemaVersion": 1})
+        self.assertEqual(list(real.iterdir()), [])
+
     def test_the_report_folder_is_fsynced_after_the_rename(self):
         # BACKEND-36:  the rename only survives a power cut once the folder itself is synced.
         synced = []

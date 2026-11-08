@@ -335,6 +335,20 @@ class Writing(unittest.TestCase):
                 fms.write_atomic(os.path.join(link, "mac-services.json"), {})
             self.assertEqual(os.listdir(real), [])
 
+
+    def test_a_folder_swapped_for_a_symlink_after_the_check_is_refused(self):
+        # Kody, PR 1477:  the folder is opened with O_NOFOLLOW and used through that descriptor,
+        # so passing the early check is not enough to write through a link.
+        with tempfile.TemporaryDirectory() as d:
+            real = os.path.join(d, "real")
+            os.makedirs(real)
+            link = os.path.join(d, "link")
+            os.symlink(real, link)
+            with mock.patch.object(fms.os.path, "islink", return_value=False):
+                with self.assertRaises(OSError):
+                    fms.write_atomic(os.path.join(link, "mac-services.json"), {"schemaVersion": 1})
+            self.assertEqual(os.listdir(real), [])
+
     def test_the_folder_is_fsynced_after_the_rename(self):
         # BACKEND-36:  the rename only survives a power cut once the folder itself is synced.
         synced = []
