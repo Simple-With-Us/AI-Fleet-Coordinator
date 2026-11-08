@@ -493,7 +493,11 @@ def file_digests(path, limit=FILE_READ_LIMIT):
         if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
             return None
         header = b"blob %d\x00" % info.st_size
-        plain, sha1_blob, sha256_blob = hashlib.sha256(), hashlib.sha1(header), hashlib.sha256(header)
+        plain, sha1_blob, sha256_blob = (
+            hashlib.sha256(),
+            hashlib.sha1(header),
+            hashlib.sha256(header),
+        )
         seen = 0
         while seen <= info.st_size:
             chunk = os.read(descriptor, 65536)
@@ -510,7 +514,10 @@ def file_digests(path, limit=FILE_READ_LIMIT):
     if seen != info.st_size:
         data = read_bounded(path, limit)
         return None if data is None else (short_digest(data), blob_ids(data))
-    return plain.hexdigest()[:16], {"sha1": sha1_blob.hexdigest(), "sha256": sha256_blob.hexdigest()}
+    return plain.hexdigest()[:16], {
+        "sha1": sha1_blob.hexdigest(),
+        "sha256": sha256_blob.hexdigest(),
+    }
 
 
 def changed_at(before, digest, modified, moment):
