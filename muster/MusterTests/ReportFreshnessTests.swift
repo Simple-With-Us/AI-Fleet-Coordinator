@@ -691,7 +691,8 @@ final class ReportFreshnessTests: XCTestCase {
         XCTAssertTrue(view.contains(".macCollector(\"the Worker health collector\")"))
         XCTAssertTrue(view.contains("Label(\"Read The Mac's Reports Again\""))
         XCTAssertTrue(view.contains("guard !loading else { return }"))
-        XCTAssertTrue(view.contains("readAt = Date()"))
+        XCTAssertTrue(view.contains("readAt = started"))
+        XCTAssertFalse(view.contains("readAt = Date()"), "a read stamped when it finished can carry pre-sleep bytes past a wake")
         // The old words named a report's age as when the page read it.
         XCTAssertFalse(view.contains("Report read"))
         XCTAssertFalse(view.contains("Text(\"read \\("))
@@ -722,5 +723,41 @@ final class ReportFreshnessTests: XCTestCase {
         XCTAssertTrue(view.contains("Button(\"Ask The Server Now\") { watch.askServer() }"))
         XCTAssertTrue(view.contains("                receiptStatus\n                serverGateNote\n"),
                       "the reason shows under the read's own status")
+    }
+
+    /// A wake after a read started means its bytes may be from before the sleep.
+    func test_a_wake_after_a_read_started_calls_for_another_read() {
+        let started = Date(timeIntervalSince1970: 1_800_000_000)
+        XCTAssertFalse(ReadStamp.wokeDuringRead(started: started, wokeAt: nil))
+        XCTAssertFalse(ReadStamp.wokeDuringRead(started: started, wokeAt: started.addingTimeInterval(-5)),
+                       "a wake before the read started is covered by that read")
+        XCTAssertFalse(ReadStamp.wokeDuringRead(started: started, wokeAt: started))
+        XCTAssertTrue(ReadStamp.wokeDuringRead(started: started, wokeAt: started.addingTimeInterval(2)))
+    }
+
+    /// A read stamped when it started,  with the wake it straddled,  still reads as checking.
+    func test_a_read_stamped_at_its_start_stays_checking_across_a_wake_mid_read() {
+        let generated = Date(timeIntervalSince1970: 1_800_000_000)
+        let started = generated.addingTimeInterval(60)
+        let woke = started.addingTimeInterval(1)
+        let freshness = ReportFreshness(generatedAt: generated, maxAge: 45 * 60,
+                                        now: woke.addingTimeInterval(1), readAt: started, wokeAt: woke)
+        XCTAssertEqual(freshness.verdict, .checking)
+    }
+
+    /// Every panel that reads files on a tick and on wake stamps the read with its start.
+    func test_panels_stamp_a_read_with_its_start() throws {
+        for path in ["Muster/Views/FleetHostsView.swift", "Muster/Views/VirtualMachinesView.swift"] {
+            let view = try source(path)
+            XCTAssertTrue(view.contains("started = Date()"), path)
+            XCTAssertTrue(view.contains("readAt = started"), path)
+            XCTAssertTrue(view.contains("} while ReadStamp.wokeDuringRead(started: started, wokeAt: wokeAt)"), path)
+            XCTAssertFalse(view.contains("readAt = Date()"), path)
+        }
+        let operations = try source("Muster/Views/OperationsView.swift")
+        let start = try XCTUnwrap(operations.range(of: "let started = Date()")?.lowerBound)
+        let read = try XCTUnwrap(operations.range(of: "MacServicesReportReader.read(at: servicesURL)")?.lowerBound)
+        XCTAssertLessThan(start, read, "the stamp is taken before the read")
+        XCTAssertTrue(operations.contains("readAt = started"))
     }
 }

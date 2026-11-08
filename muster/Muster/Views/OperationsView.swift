@@ -486,6 +486,10 @@ struct OperationsView: View {
                 let servicesURL = MacServicesReportReader.reportURL()
                 let allowlistURL = OpsAllowlist.url(repoRoot: FleetConfigLocation.resolve().repoRoot)
                 let auditURL = OpsAuditLog.logURL()
+                // Stamped with the time the read started,  so bytes read before a sleep are never
+                // stamped after the wake.  A wake mid-read queues its own pass through
+                // refreshRequests,  so the loop reads again.
+                let started = Date()
                 let (readServices, readAllowlist, readAudit) = await Task.detached(priority: .userInitiated) {
                     (
                         MacServicesReportReader.read(at: servicesURL),
@@ -498,7 +502,7 @@ struct OperationsView: View {
                 // Only a read that the rows now come from counts as read after a wake:  a file
                 // that was discarded leaves the rows checking.
                 if agents.takeSaved(readServices) {
-                    readAt = Date()
+                    readAt = started
                 }
                 allowlist = readAllowlist
                 allowlistPath = allowlistURL.path

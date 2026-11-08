@@ -549,21 +549,30 @@ struct FleetHostsView: View {
 
     /// Reads both files again,  off the main thread.  A read already in flight is not doubled:
     /// the tick,  the wake and the button all land here.
+    ///
+    /// The read is stamped with the time it started,  not the time it finished,  so bytes read
+    /// before a sleep are never stamped after the wake.  A wake that lands while a read is in
+    /// flight (its own reread is dropped by the guard) gets one more read,  so the page does
+    /// not wait for the next minute to leave "checking".
     private func load() async {
         guard !loading else { return }
         loading = true
         defer { loading = false }
         let url = FleetToolsReportReader.reportURL()
         let healthURL = WorkerHealthReportReader.reportURL()
-        let (result, health) = await Task.detached(priority: .userInitiated) {
-            (FleetToolsReportReader.read(at: url), WorkerHealthReportReader.read(at: healthURL))
-        }.value
-        reading = result
-        workerHealth = health
-        readAt = Date()
-        if expandedHost == nil {
-            expandedHost = result.hosts.first?.host
-        }
+        var started = Date()
+        repeat {
+            started = Date()
+            let (result, health) = await Task.detached(priority: .userInitiated) {
+                (FleetToolsReportReader.read(at: url), WorkerHealthReportReader.read(at: healthURL))
+            }.value
+            reading = result
+            workerHealth = health
+            readAt = started
+            if expandedHost == nil {
+                expandedHost = result.hosts.first?.host
+            }
+        } while ReadStamp.wokeDuringRead(started: started, wokeAt: wokeAt)
     }
 }
 
