@@ -257,7 +257,7 @@ export function loadConfig(env) {
     if (!Number.isSafeInteger(gateIdentityCacheMs) || gateIdentityCacheMs < 0) throw new Error("config: GATE_IDENTITY_CACHE_MS must be a non-negative integer number of milliseconds");
   }
 
-  // Same shape for the shared wake envelope:  absent means the compiled
+  // Same shape for the webhook route's wake envelope:  absent means the compiled
   // default;  anything malformed fails closed like every other var.
   const eventWakeRateLimitRaw = env.EVENT_WAKE_RATE_LIMIT;
   let eventWakeRateLimit = WAKE_RATE_LIMIT;

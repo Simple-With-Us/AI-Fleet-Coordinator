@@ -310,8 +310,8 @@ test("wake release retries are visible with actionable callback guidance", async
 
 test("wake refusals (budget, custody cap, tombstoned replay, fenced reclaim) are visible with their own guidance", async () => {
   const cases = [
-    ["event_wake_rate_limited", /hourly wake budget, shared by the listener and webhook wakes, is spent/],
-    ["event_wake_custody_full", /maximum number of wake ids whose delivery outcome is unknown/],
+    ["event_wake_rate_limited", /hourly webhook wake budget is spent \(listener wakes count toward it but are never refused\)/],
+    ["event_wake_custody_full", /maximum number of webhook wake ids whose delivery outcome is unknown, so every new webhook wake is refused;  Zulip mention wakes are not affected/],
     ["event_wake_tombstoned_replay", /earlier delivery of it had an unknown outcome/],
     ["event_wake_reclaim_fenced", /earlier request died after it may have dispatched/],
   ];
