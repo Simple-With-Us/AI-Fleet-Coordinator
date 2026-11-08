@@ -1577,3 +1577,71 @@ class OpenCodeCatalogTests(unittest.TestCase):
             if r["platform"] == "opencode" and r["status"] == "available"
         ]
         self.assertEqual(len(rows), MAX_FILES_PER_SOURCE)
+
+
+class AntigravityCatalogTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.home = Path(self.tmp.name) / "home"
+        self.home.mkdir()
+        self.clock = FakeClock()
+
+    def catalog(self, **kwargs):
+        return ChatCatalog(
+            home=self.home,
+            host="test-host",
+            clock=self.clock,
+            grok_transport=FakeGrok(),
+            cursor_transport=FakeCursor(),
+            **kwargs,
+        )
+
+    def test_antigravity_scanner_and_find_read_summaries_db(self) -> None:
+        db = self.home / ".gemini/antigravity-cli/conversation_summaries.db"
+        db.parent.mkdir(parents=True)
+        conn = sqlite3.connect(db)
+        with conn:
+            conn.execute(
+                "CREATE TABLE conversation_summaries ("
+                "conversation_id TEXT PRIMARY KEY, title TEXT, created_at TEXT, updated_at TEXT,"
+                " workspace_uris TEXT, killed INTEGER DEFAULT 0)"
+            )
+            conn.execute(
+                "INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    "4aade78e-6a38-40ed-9fc2-11a6eeac6189",
+                    "Operator Setup",
+                    "2026-11-08T00:00:00Z",
+                    "2026-11-08T01:00:00Z",
+                    '["file:///Users/x/Code/AI-Fleet-Coordinator"]',
+                    0,
+                ),
+            )
+            conn.execute(
+                "INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    "cd6b94bc-8497-4f06-974b-9e247440c923",
+                    "Killed Chat",
+                    "2026-11-08T00:00:00Z",
+                    "2026-11-08T02:00:00Z",
+                    '["/repo"]',
+                    1,
+                ),
+            )
+        conn.close()
+        cat = self.catalog()
+        rows = [r for r in cat.discover() if r["platform"] == "antigravity"]
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row["session_id"], "4aade78e-6a38-40ed-9fc2-11a6eeac6189")
+        self.assertEqual(row["seat"], "AG")
+        self.assertEqual(row["title"], "Operator Setup")
+        self.assertEqual(row["cwd"], "/Users/x/Code/AI-Fleet-Coordinator")
+        self.assertEqual(row["status"], "metadata-only")
+        self.assertFalse(row["capabilities"]["wake"])
+        found = cat.find("antigravity", "4aade78e-6a38-40ed-9fc2-11a6eeac6189")
+        self.assertIsNotNone(found)
+        self.assertEqual(found["title"], "Operator Setup")
+        self.assertIsNone(cat.find("antigravity", "cd6b94bc-8497-4f06-974b-9e247440c923"))
+        self.assertIsNone(cat.find("antigravity", "missing"))

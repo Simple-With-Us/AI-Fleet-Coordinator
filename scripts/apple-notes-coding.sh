@@ -541,7 +541,7 @@ fi
 # Data copy of fleet-apps.json `sessionIds`;  scripts/test_session_ids_parity.py keeps it equal.
 SESSION_ID_PATTERN='^[A-Za-z0-9][A-Za-z0-9._:-]{3,127}$'
 SESSION_GENERIC_ENV="AGENT_SESSION"
-SESSION_FALLBACK_ENV="CLAUDE_CODE_SESSION_ID CODEX_THREAD_ID CURSOR_CONVERSATION_ID CURSOR_AGENT_CHAT_ID GROK_SESSION_ID OPENCODE_SESSION_ID __MAVIS_RUNTIME_SESSION_ID"
+SESSION_FALLBACK_ENV="ANTIGRAVITY_CONVERSATION_ID CLAUDE_CODE_SESSION_ID CODEX_THREAD_ID CURSOR_CONVERSATION_ID CURSOR_AGENT_CHAT_ID GROK_SESSION_ID OPENCODE_SESSION_ID __MAVIS_RUNTIME_SESSION_ID"
 
 _session_seat_token() {  # $1 = a seat or Notes name -> the canonical seat tag, upper case ("" when nothing usable)
   local t
@@ -579,6 +579,7 @@ _session_exempt() {  # $1 = seat tag:  one thread with the owner, so no session 
 
 _session_envs() {  # $1 = seat tag -> the platform variables to try, in order
   case "$1" in
+    AG) echo ANTIGRAVITY_CONVERSATION_ID ;;
     CLAUDE) echo CLAUDE_CODE_SESSION_ID ;;
     CODEX) echo CODEX_THREAD_ID ;;
     CURSOR) echo CURSOR_CONVERSATION_ID CURSOR_AGENT_CHAT_ID ;;
@@ -591,6 +592,7 @@ _session_envs() {  # $1 = seat tag -> the platform variables to try, in order
 
 _session_own_var() {  # $1 = seat tag -> its own variable, for the refusal text
   case "$1" in
+    AG) echo ANTIGRAVITY_CONVERSATION_ID ;;
     CLAUDE) echo CLAUDE_CODE_SESSION_ID ;; CODEX) echo CODEX_THREAD_ID ;; CURSOR) echo CURSOR_CONVERSATION_ID ;;
     GROK) echo GROK_SESSION_ID ;; MM) echo __MAVIS_RUNTIME_SESSION_ID ;; OPENCODE) echo OPENCODE_SESSION_ID ;;
   esac

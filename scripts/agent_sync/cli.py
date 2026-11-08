@@ -217,8 +217,9 @@ class Agent:
             )
         session_id = (
             getattr(args, "session", None)
-            or env.get("CLAUDE_CODE_SESSION_ID")
             or env.get("AGENT_SESSION")
+            or env.get("CLAUDE_CODE_SESSION_ID")
+            or env.get("ANTIGRAVITY_CONVERSATION_ID")
         )
         self.tag = Z.session_tag(session_id)
         # The FULL session id, kept beside the 8-character tag:  the tag is what a post carries, so
@@ -784,7 +785,7 @@ def _common_parent() -> argparse.ArgumentParser:
         "--session",
         metavar="ID",
         default=argparse.SUPPRESS,
-        help="session id (default: env CLAUDE_CODE_SESSION_ID, then AGENT_SESSION)",
+        help="session id (default: env AGENT_SESSION, CLAUDE_CODE_SESSION_ID, then ANTIGRAVITY_CONVERSATION_ID)",
     )
     group.add_argument(
         "--json",
