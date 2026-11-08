@@ -1,6 +1,6 @@
-import unittest
 import base64
 import hashlib
+import unittest
 from unittest.mock import patch
 
 from git_relay import same_path_reuse
@@ -16,8 +16,12 @@ BLOB = hashlib.sha1(b"blob " + str(len(RAW)).encode() + b"\0" + RAW).hexdigest()
 
 
 def blob_receipt(raw=RAW):
-    return {"sha": BLOB, "size": len(raw), "encoding": "base64", "content": base64.b64encode(raw).decode()}
-
+    return {
+        "sha": BLOB,
+        "size": len(raw),
+        "encoding": "base64",
+        "content": base64.b64encode(raw).decode(),
+    }
 
 
 def receipts(size=12):
@@ -167,7 +171,9 @@ class ReuseWorkflowTests(unittest.TestCase):
         ).run("wf_git_tree_create", args)
 
     def test_fixed_tree_payload_and_no_ref_or_blob_operation(self):
-        client = Client(*receipts(), blob_receipt(), {"sha": "f" * 40, "truncated": False, "tree": []})
+        client = Client(
+            *receipts(), blob_receipt(), {"sha": "f" * 40, "truncated": False, "tree": []}
+        )
         self.assertEqual(self.handle(client, self.args())["tree"]["files"], 1)
         self.assertEqual(
             client.calls[-1][:3],
@@ -227,7 +233,6 @@ class ReuseWorkflowTests(unittest.TestCase):
             self.handle(Boom(), self.args())
 
     def test_raw_budget_is_charged_for_every_reference(self):
-        from git_relay.workflow_verbs import MAX_FILE_RAW, MAX_FILES_RAW
 
         size = len(RAW)
         args = self.args()
@@ -281,7 +286,9 @@ class ReviewedByteGuards(ReuseWorkflowTests):
                 # Path/message guards also use find_secret, so allow the path.
                 scan.side_effect = lambda text: "baseline" if "Authorization:" in text else None
                 self.assertEqual(self.handle(client, args)["tree"]["files"], 1)
-                self.assertTrue(any("Authorization:" in call.args[0] for call in scan.call_args_list))
+                self.assertTrue(
+                    any("Authorization:" in call.args[0] for call in scan.call_args_list)
+                )
 
     def test_blob_receipt_substitution_refused_before_tree_write(self):
         for update in [{"sha": "e" * 40}, {"size": 999}, {"encoding": "utf8"}, {"content": "!"}]:

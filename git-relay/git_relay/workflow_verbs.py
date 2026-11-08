@@ -5515,15 +5515,14 @@ class WorkflowVerbs:
                                 or not isinstance(blob.get("content"), str)
                             ):
                                 raise ValueError("invalid reviewed blob receipt")
-                            raw = base64.b64decode(
-                                "".join(blob["content"].split()), validate=True
-                            )
+                            raw = base64.b64decode("".join(blob["content"].split()), validate=True)
                             if (
                                 len(raw) > MAX_FILE_RAW
                                 or len(raw) != blob["size"]
                                 or hashlib.sha1(
                                     b"blob " + str(len(raw)).encode() + b"\0" + raw
-                                ).hexdigest() != sha
+                                ).hexdigest()
+                                != sha
                             ):
                                 raise ValueError("invalid reviewed blob identity")
                             source_cache[key] = raw.decode("utf-8", "strict")
@@ -5533,7 +5532,9 @@ class WorkflowVerbs:
                         # Always execute the full scanner. Only the exact immutable
                         # reviewed fixture may retain its baseline shaped finding.
                         find_secret(decoded)
-                        if self._provider_token_text(decoded) or (self.bearer and self.bearer in decoded):
+                        if self._provider_token_text(decoded) or (
+                            self.bearer and self.bearer in decoded
+                        ):
                             raise ValueError("absolute credential guard")
                     except RelayGitHubError as exc:
                         if exc.status in (0, 408) or exc.status >= 500:
