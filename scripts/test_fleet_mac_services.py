@@ -361,8 +361,18 @@ class Document(unittest.TestCase):
         control = self.write_control(
             [
                 {"label": "com.jay.a", "actions": ["stop"], "role": "boss", "stopConsequence": ""},
-                {"label": "com.jay.b", "actions": ["stop"], "role": 3, "stopConsequence": "x" * 201},
-                {"label": "com.jay.c", "actions": ["stop"], "role": None, "stopConsequence": "two\nlines"},
+                {
+                    "label": "com.jay.b",
+                    "actions": ["stop"],
+                    "role": 3,
+                    "stopConsequence": "x" * 201,
+                },
+                {
+                    "label": "com.jay.c",
+                    "actions": ["stop"],
+                    "role": None,
+                    "stopConsequence": "two\nlines",
+                },
                 {"label": "com.jay.d", "actions": ["stop"], "stopConsequence": "Café closes"},
                 {"label": "com.jay.e", "actions": ["stop"], "stopConsequence": ["a list"]},
                 {"label": "com.jay.f", "actions": ["stop"], "stopConsequence": "y" * 200},
