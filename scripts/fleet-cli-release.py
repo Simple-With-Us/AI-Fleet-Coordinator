@@ -50,7 +50,9 @@ MAX_BUNDLE_BYTES = 8 * 1024 * 1024
 # The 159th is scripts/zcode-letter-hook/platform-letter, the ZC letter hook's wrapper (OPS-1048):  the copy the
 # install writes to ~/.local/bin/zc-letter/platform-letter, which sources the shared registry env before it execs
 # the checkout's real platform-letter.
-MAX_FILES = 159
+# The 160th is scripts/ag-wake-bridge, the AG seat's wake webhook receiver and deliverer (AFC-665;  its systemd
+# unit template stays repo-only under agent_sync/server/).
+MAX_FILES = 160
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MARKER = "# fleet-cli managed wrapper v1"
 # Retention:  a receive keeps the newest KEEP_RELEASES releases and deletes older ones, but never `current`,
@@ -138,6 +140,8 @@ EXACT = frozenset(
         # registry env file before it execs this checkout's real platform-letter).
         "scripts/zc-wake-bridge",
         "scripts/zcode-letter-hook/platform-letter",
+        # AFC-665:  the AG seat's wake bridge (delivering Operator wakes via the local agy CLI daemon API).
+        "scripts/ag-wake-bridge",
     }
 )
 # What every release ever installed contains.  verify_retained, rollback and status judge a retained

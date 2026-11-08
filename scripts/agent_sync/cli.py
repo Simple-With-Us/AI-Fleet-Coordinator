@@ -218,6 +218,7 @@ class Agent:
         session_id = (
             getattr(args, "session", None)
             or env.get("CLAUDE_CODE_SESSION_ID")
+            or env.get("ANTIGRAVITY_CONVERSATION_ID")
             or env.get("AGENT_SESSION")
         )
         self.tag = Z.session_tag(session_id)

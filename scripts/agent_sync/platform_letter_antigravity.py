@@ -1,6 +1,7 @@
-"""Antigravity (the `agy` CLI, Antigravity.app and the Antigravity IDE; seat AG, Mac only) on `platform-letter`
-(AFC-564, owner request Oct 29, 2026): an Operator session letter on every interactive Antigravity conversation.  The
-library (`platform_letter`) does the registering, the note and the retries; this file is what is Antigravity's own.
+"""Antigravity (the `agy` CLI, Antigravity.app and the Antigravity IDE; seat AG, on the Mac and on the server) on
+`platform-letter` (AFC-564 / AFC-665, owner request Oct 29, 2026): an Operator session letter on every interactive
+Antigravity conversation.  The library (`platform_letter`) does the registering, the note and the retries; this file
+is what is Antigravity's own.
 
 TITLES ARE BLOCKED.  The owner asked for "XX: Title" in the chat title, and Antigravity gives a hook no way to set one,
 so this adapter registers the chat and tells the chat its letter, and does not touch the title (`title_writer` and
@@ -75,9 +76,11 @@ SOURCE = "antigravity-letter-hook"
 DISPLAY = "Antigravity"
 
 ENV_CONVERSATION = "ANTIGRAVITY_CONVERSATION_ID"
+ENV_OFF = "ANTIGRAVITY_LETTER"
 HOOKS_FILE = os.path.join(".gemini", "config", "hooks.json")
 GROUP = "session-letter"
 HOOK_TIMEOUTS = {"SessionStart": 20, "PreInvocation": 15}
+STORE_PRODUCTS = ("antigravity-cli", "antigravity")
 
 STORE_WAIT = 0.5  # seconds to wait for a locked summaries database before reading nothing
 PS = "/bin/ps"
@@ -195,11 +198,11 @@ def antigravity_kind(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
     one started, else "chat".  A host where no process can be read counts as a chat."""
     if one_shot(agy_arguments()):
         return "headless"
-    return "subagent" if _text(payload.get("parentConversationId")) else "chat"
+    return "subagent" if antigravity_parent(payload, env) else "chat"
 
 
 # --------------------------------------------------------------------------------------------
-# The title agy shows (read only)
+# The title and lineage agy stores (read only)
 # --------------------------------------------------------------------------------------------
 
 
@@ -217,24 +220,79 @@ def summaries_db(payload: Mapping[str, Any]) -> str:
     return path if os.path.isfile(path) else ""
 
 
+def candidate_dbs(payload: Mapping[str, Any], env: Mapping[str, str] | None = None) -> list[str]:
+    """The summaries databases to consult for `payload`: the one its `artifactDirectoryPath` names first, then the
+    host's `~/.gemini/antigravity-cli` and `~/.gemini/antigravity` stores when `HOME` is set."""
+    found: list[str] = []
+    direct = summaries_db(payload)
+    if direct:
+        found.append(direct)
+    home = _text((env or {}).get("HOME"))
+    if home:
+        for product in STORE_PRODUCTS:
+            cand = os.path.join(home, ".gemini", product, "conversation_summaries.db")
+            if cand not in found and os.path.isfile(cand):
+                found.append(cand)
+    return found
+
+
+def antigravity_parent(payload: Mapping[str, Any], env: Mapping[str, str] | None = None) -> str:
+    """The parent conversation's native id, from `parentConversationId` in the payload or `parent_conversation_id` in
+    the summaries database."""
+    direct = _text(payload.get("parentConversationId"))
+    if direct:
+        return direct
+    cid = _text(payload.get("conversationId")) or _text(payload.get("session_id"))
+    if not cid:
+        return ""
+    for db in candidate_dbs(payload, env):
+        try:
+            conn = sqlite3.connect("%s?mode=ro" % Path(db).as_uri(), uri=True, timeout=STORE_WAIT)
+            try:
+                row = conn.execute(
+                    "SELECT parent_conversation_id FROM conversation_summaries WHERE conversation_id = ?",
+                    (cid,),
+                ).fetchone()
+            finally:
+                conn.close()
+        except (sqlite3.Error, OSError, ValueError):
+            continue
+        if row and isinstance(row[0], str) and row[0].strip():
+            return row[0].strip()
+    return ""
+
+
+def antigravity_chat_payload(sid: str) -> Mapping[str, Any]:
+    """The start payload a conversation's own SessionStart would carry, so the library can enroll a parent that
+    holds no live registration before its sub-agent."""
+    return {
+        "hook_event_name": "SessionStart",
+        "session_id": sid,
+        "conversationId": sid,
+        "source": "startup",
+    }
+
+
 def stored_title(payload: Mapping[str, Any], env: Mapping[str, str] | None = None) -> str:
     """The conversation's title as agy shows it in `/resume` (its own, or the one it generated), "" when unknown.
     The database is opened read only and never written: a hook runs inside a CLI that owns it."""
-    db = summaries_db(payload)
     cid = _text(payload.get("conversationId")) or _text(payload.get("session_id"))
-    if not db or not cid:
+    if not cid:
         return ""
-    try:
-        conn = sqlite3.connect("%s?mode=ro" % Path(db).as_uri(), uri=True, timeout=STORE_WAIT)
+    for db in candidate_dbs(payload, env):
         try:
-            row = conn.execute(
-                "SELECT title FROM conversation_summaries WHERE conversation_id = ?", (cid,)
-            ).fetchone()
-        finally:
-            conn.close()
-    except (sqlite3.Error, OSError, ValueError):
-        return ""
-    return PL.tidy(row[0]) if row and isinstance(row[0], str) else ""
+            conn = sqlite3.connect("%s?mode=ro" % Path(db).as_uri(), uri=True, timeout=STORE_WAIT)
+            try:
+                row = conn.execute(
+                    "SELECT title FROM conversation_summaries WHERE conversation_id = ?", (cid,)
+                ).fetchone()
+            finally:
+                conn.close()
+        except (sqlite3.Error, OSError, ValueError):
+            continue
+        if row and isinstance(row[0], str) and PL.tidy(row[0]):
+            return PL.tidy(row[0])
+    return ""
 
 
 SPEC = PL.PlatformSpec(
@@ -245,14 +303,16 @@ SPEC = PL.PlatformSpec(
     session_id=PL.either(
         PL.from_payload("session_id", "conversationId"), PL.from_env(ENV_CONVERSATION)
     ),
-    parent_id=PL.from_payload("parentConversationId"),
+    parent_id=antigravity_parent,
     kind=antigravity_kind,
     current_title=stored_title,
     stored_title=stored_title,
     events={"SessionStart": "start", "PreInvocation": "prompt"},
     close_reasons=(),
+    chat_payload=antigravity_chat_payload,
     output="json",
-    locations=("mac",),
+    locations=("mac", "server"),
+    env_off=ENV_OFF,
 )
 
 
@@ -276,10 +336,12 @@ def message_for(body: Mapping[str, Any], env: Mapping[str, str], sid: str) -> st
     the library's own."""
     context = _text(body.get("context"))  # not `tidy`: the library's sentence gaps stay as they are
     label = _text(body.get("label"))
-    head, mark, _ = context.partition("Operator session letter:")
+    head, mark, tail = context.partition("Operator session letter:")
     if not (label and mark):
         return context
-    gen = _note(env, sid).get("generation") or 1
+    note = _note(env, sid)
+    gen = note.get("generation") or 1
+    where = "server" if (note.get("location") == "server" or ", on the server." in tail) else "Mac"
     ref = "%s %s%s" % (
         DISPLAY,
         label,
@@ -287,9 +349,9 @@ def message_for(body: Mapping[str, Any], env: Mapping[str, str], sid: str) -> st
     )
     # Rendered copy: a sentence gap is U+00A0 plus a space.
     return (
-        '%sOperator session letter: %s, on the Mac.  This chat is addressed as "@**%s** %s".  Antigravity gives a '
+        '%sOperator session letter: %s, on the %s.  This chat is addressed as "@**%s** %s".  Antigravity gives a '
         "hook no way to set a chat's title, so the title does not carry the letter; a name the owner gives this "
-        'chat should start with "%s: ".' % (head, ref, DISPLAY, label, label)
+        'chat should start with "%s: ".' % (head, ref, where, DISPLAY, label, label)
     )
 
 
@@ -511,3 +573,138 @@ def install(options: PL.InstallOptions, env: Mapping[str, str], stdout: TextIO) 
             answer["enabled_group"] = GROUP
             answer["enable_backup"] = backup
     return PL._emit(stdout, answer, code)
+
+
+def sweep_main(argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int:
+    """`sweep [--apply] [--db FILE] [--location server|mac]`: close the registrations of conversations the summaries
+    store has marked `killed` (or dropped), which fire no SessionEnd hook of their own.  Without --apply it only
+    reports."""
+    import argparse
+    import re
+
+    parser = argparse.ArgumentParser(prog="platform-letter-antigravity sweep")
+    parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--db", default="")
+    parser.add_argument("--location", default="server", choices=PL.LOCATIONS)
+    args = parser.parse_args(argv)
+    home = str(env.get("HOME") or os.path.expanduser("~"))
+    dbs = (
+        [args.db]
+        if args.db
+        else [
+            os.path.join(home, ".gemini", product, "conversation_summaries.db")
+            for product in STORE_PRODUCTS
+            if os.path.isfile(os.path.join(home, ".gemini", product, "conversation_summaries.db"))
+        ]
+    )
+    if not dbs or not all(os.path.isfile(p) for p in dbs):
+        stdout.write(
+            json.dumps({"error": "no Antigravity summaries database at %s" % (args.db or home)}) + "\n"
+        )
+        return 2
+    shape = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+    gone: list[str] = []
+    known: set[str] = set()
+    for path in dbs:
+        try:
+            conn = sqlite3.connect("%s?mode=ro" % Path(path).as_uri(), uri=True, timeout=5)
+            try:
+                rows = conn.execute(
+                    "SELECT conversation_id FROM conversation_summaries WHERE COALESCE(killed, 0) != 0"
+                ).fetchall()
+                every = conn.execute(
+                    "SELECT conversation_id FROM conversation_summaries WHERE COALESCE(killed, 0) = 0"
+                ).fetchall()
+            finally:
+                conn.close()
+        except sqlite3.Error as exc:
+            stdout.write(
+                json.dumps({"error": "the store could not be read (%s)" % type(exc).__name__}) + "\n"
+            )
+            return 2
+        for r in rows:
+            if isinstance(r[0], str) and shape.fullmatch(r[0]) and r[0] not in gone:
+                gone.append(r[0])
+        for r in every:
+            if isinstance(r[0], str) and shape.fullmatch(r[0]):
+                known.add(r[0])
+    from . import registry_api as RA
+
+    env = PL.with_registry_env(env)
+    if RA.base_url(env):
+        answer = RA.call(env, "history", {"platform": PLATFORM, "limit": 1000})
+        history = answer.get("items") if isinstance(answer, dict) else None
+        if isinstance(history, list):
+            for row in history:
+                sid = str((row or {}).get("native_session_id") or "")
+                host = str((row or {}).get("verified_host") or "")
+                if (
+                    shape.fullmatch(sid)
+                    and (not host or host == args.location)
+                    and not (row or {}).get("closed_at")
+                    and str((row or {}).get("state") or "") != "closed"
+                    and sid not in known
+                    and sid not in gone
+                ):
+                    gone.append(sid)
+    closed = []
+    failed = []
+    absent = []
+    for sid in gone:
+        if not args.apply:
+            closed.append({"session_id": sid, "would_close": True})
+            continue
+        buf = io.StringIO()
+        code = PL.registry_main(
+            ["close", "--platform", PLATFORM, "--location", args.location, "--session-id", sid],
+            env=env,
+            stdout=buf,
+        )
+        line = PL._last_json(buf.getvalue())
+        text = str((line or {}).get("error") or "")
+        if (
+            code != 0
+            and PL._NOT_REGISTERED_MARK not in text
+            and "no session with this identity" not in text
+            and text != PL.NO_REGISTRATION
+        ):
+            stdout.write(buf.getvalue())
+            failed.append(sid)
+        elif code != 0:
+            absent.append(sid)
+        else:
+            closed.append({"session_id": sid, "closed": True})
+    stdout.write(
+        json.dumps(
+            {
+                "platform": PLATFORM,
+                "found": len(gone),
+                "closed": closed,
+                "absent": absent,
+                "failed": failed,
+            }
+        )
+        + "\n"
+    )
+    return 0 if not failed else 1
+
+
+def main(
+    argv: list[str] | None = None,
+    *,
+    env: Mapping[str, str] | None = None,
+    stdout: TextIO | None = None,
+) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    env = os.environ if env is None else env
+    out = stdout or sys.stdout
+    if argv[:1] == ["sweep"]:
+        return sweep_main(argv[1:], env, out)
+    out.write(
+        "usage: python3 -m agent_sync.platform_letter_antigravity sweep [--apply] [--db FILE] [--location server|mac]\n"
+    )
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

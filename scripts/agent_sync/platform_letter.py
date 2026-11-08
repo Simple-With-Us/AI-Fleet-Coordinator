@@ -881,6 +881,64 @@ _NOT_REGISTERED_MARK = "is not registered on"
 #: listener answers in well under a second.  The batch callers of registry_api (the
 #: operator-registry CLI) keep its longer default.
 _API_TIMEOUT = 6
+REGISTRY_ENV_SUBPATH = os.path.join(".local", "bin", "mm-registry-env")
+
+
+def with_registry_env(env: Mapping[str, str]) -> Mapping[str, str]:
+    """Return `env` enriched from `$HOME/.local/bin/mm-registry-env` when no registry API URL or SSH remote is set.
+
+    Hook processes launched by Antigravity, Codex, OpenCode, Muse and ZCode inherit no login profile, so on both the
+    server and the Mac the shared registry env file is where `SIMPLE_TOOLS_OPERATOR_REGISTRY_URL` and the signing key
+    live.  Unit tests pass a temporary `HOME` (or no `HOME`) without that file, so their local-store and SSH-hop paths
+    stay untouched."""
+    from . import registry_api as RA
+
+    if RA.base_url(env) or _text(env.get(ENV_REMOTE)) or _text(env.get(ENV_REMOTE_FALLBACK)):
+        return env
+    home = _text(env.get("HOME"))
+    if not home:
+        return env
+    path = os.path.join(home, REGISTRY_ENV_SUBPATH)
+    if not os.path.isfile(path):
+        return env
+    names = (RA.URL_ENV, RA.PRINCIPAL_ENV, RA.KEY_ENV, RA.KEY_REF_ENV)
+    script = (
+        '. "$1" >/dev/null 2>&1 || true\n'
+        'for k in %s; do\n'
+        '  eval "v=\\${$k:-}"\n'
+        '  [ -n "$v" ] && printf "%%s=%%s\\0" "$k" "$v"\n'
+        'done\n'
+        'ref="${%s:-}"\n'
+        'if [ -n "$ref" ]; then\n'
+        '  eval "rv=\\${$ref:-}"\n'
+        '  [ -n "$rv" ] && printf "%%s=%%s\\0" "$ref" "$rv"\n'
+        'fi\n'
+    ) % (" ".join(names), RA.KEY_REF_ENV)
+    try:
+        proc = subprocess.run(
+            ["/bin/sh", "-c", script, "mm-registry-env", path],
+            env=dict(env),
+            capture_output=True,
+            timeout=5,
+            stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return env
+    if proc.returncode != 0 or not proc.stdout:
+        return env
+    merged = dict(env)
+    for item in proc.stdout.split(b"\0"):
+        if not item or b"=" not in item:
+            continue
+        k, _, v = item.partition(b"=")
+        try:
+            key_str = k.decode("utf-8")
+            val_str = v.decode("utf-8").strip()
+        except UnicodeDecodeError:
+            continue
+        if val_str and not _text(merged.get(key_str)):
+            merged[key_str] = val_str
+    return merged
 
 
 def _call_api(env: Mapping[str, str], op: str, params: Mapping[str, Any]) -> dict[str, Any]:
@@ -1106,6 +1164,8 @@ def registry_main(
     args.seat = args.seat or "OPERATOR"
     args.source = args.source.strip() or "platform-letter:" + args.platform
     db = args.db or OR.registry_db_path(L.state_root(env), env)
+    if not registry_api.base_url(env) and not os.path.isfile(db):
+        env = with_registry_env(env)
     if registry_api.base_url(env):
         # The registry API is the store now:  with its URL configured (the daemon's own
         # configuration), the server's store answers and the local file is never opened.
@@ -1355,12 +1415,13 @@ class Chat:
             return _answer(_last_json(out.getvalue()))
         from . import registry_api as RA
 
-        if RA.base_url(self.env):
+        env = self.env if (RA.base_url(self.env) or self.remote) else with_registry_env(self.env)
+        if RA.base_url(env):
             # The explicit URL is the cutover (registry_api):  a hook on a host off the
             # registry calls the Operator's API itself, under the location it was installed
             # with, and never hops over ssh to a host whose own call would land here anyway.
             out = io.StringIO()
-            registry_main(argv, env=self.env, stdout=out)
+            registry_main(argv, env=env, stdout=out)
             return _answer(_last_json(out.getvalue()))
         dest = self.remote
         if not DEST_RE.fullmatch(dest):

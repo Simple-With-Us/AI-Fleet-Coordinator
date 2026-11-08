@@ -18,6 +18,7 @@ export const GENERIC_ENV = "AGENT_SESSION";
 export const EXEMPT_SEATS = Object.freeze(["ECHO", "GROK-BOT", "JET", "JET-CHAT", "MA", "WISE"]);
 export const EXEMPT_PATTERNS = Object.freeze(["GB-*"]);
 export const ENV_BY_SEAT = Object.freeze({
+  AG: Object.freeze(["ANTIGRAVITY_CONVERSATION_ID"]),
   CLAUDE: Object.freeze(["CLAUDE_CODE_SESSION_ID"]),
   CODEX: Object.freeze(["CODEX_THREAD_ID"]),
   CURSOR: Object.freeze(["CURSOR_CONVERSATION_ID", "CURSOR_AGENT_CHAT_ID"]),
@@ -26,6 +27,7 @@ export const ENV_BY_SEAT = Object.freeze({
   OPENCODE: Object.freeze(["OPENCODE_SESSION_ID"]),
 });
 export const FALLBACK_ENV = Object.freeze([
+  "ANTIGRAVITY_CONVERSATION_ID",
   "CLAUDE_CODE_SESSION_ID",
   "CODEX_THREAD_ID",
   "CURSOR_CONVERSATION_ID",
