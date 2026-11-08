@@ -1695,7 +1695,11 @@ w(
     "`pin_unsafe` for a chain, `bad_command` for `muster trust-list chain --yes` with a fifth word, and `mode_not_allowed` for `muster trust-list chain --plan` (each with `claimed` `{}` and no `chain`), against `bad_input` and `rate_limited` for a chain (`chain` `null` and no `claimed`);  "
     "the T24 list held under the rotated history (`state_unsafe` at C2 with `helperTrustListVersion` `null`);  "
     "a signing fault at C5 after the rename that repeats when the refusal is signed (the unsigned `helper_key_missing`, and the list held) and one that does not (the signed `internal_error`, and the list held);  "
-    "and a failed directory `fsync` at C5 (`internal_error`, the list held, and no audit row)."
+    "and a failed directory `fsync` at C5 (`internal_error`, the list held, and no audit row);  "
+    "from version 5.5:  a stale temporary file named `.muster-trust.json.`, 16 lowercase hex characters and `.tmp`, a regular file of the helper's account with one link, is gone after an accepted chain;  "
+    "a file of another name (15 or 17 hex characters, upper-case hex, or another state file's prefix), a symbolic link or a directory of that name, a file of that name with two links, and one owned by another account are left alone;  "
+    "a chain refused before C5 (at C3, or `action_busy` at C4) sweeps nothing;  "
+    "and a sweep whose listing, `stat` or `unlink` fails still lets the chain be accepted."
 )
 
 with open(SPEC, encoding="utf-8") as f:
