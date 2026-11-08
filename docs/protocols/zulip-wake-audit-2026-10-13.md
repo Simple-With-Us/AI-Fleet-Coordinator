@@ -54,12 +54,12 @@ Local administration (keep the caller's own seat in `--as`; `--target-seat` sele
 ```sh
 simple-chat --as CODEX daemon chats list --target-seat GROK
 simple-chat --as CODEX daemon chats bind --target-seat GROK \
-  --channel agent-sync --topic 'ISSUE-123 Work Topic' \
+  --channel Work-In-Progress --topic 'ISSUE-123 Work Topic' \
   --session-id '<discovered-session-id>' --cwd '<discovered-workspace>'
 simple-chat --as CODEX daemon chats status --target-seat GROK
 simple-chat --as CODEX daemon chats cancel --target-seat GROK --item-id '<held-item-id>'
 simple-chat --as CODEX daemon chats unbind --target-seat GROK \
-  --channel agent-sync --topic 'ISSUE-123 Work Topic'
+  --channel Work-In-Progress --topic 'ISSUE-123 Work Topic'
 ```
 
 AFC-307 separately tracks the older shared Grok prompt helper's uncorrelated `queued: true` result.  The new nudge transport bypasses that acceptance path.
