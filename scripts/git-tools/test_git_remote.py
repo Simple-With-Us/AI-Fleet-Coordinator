@@ -959,6 +959,104 @@ class TestOutcomes(unittest.TestCase):
         self.assertIn("outcome_unknown", err)
         self.assertNotIn("may or may not have been applied", err)
 
+    def _refused(self, sc):
+        t = FakeTransport(
+            call_results={
+                "gr_wf_issue_create": {
+                    "isError": True,
+                    "structuredContent": sc,
+                    "content": [{"type": "text", "text": "x"}],
+                }
+            }
+        )
+        code, out, err = run_cli(
+            ["call", "gr_wf_issue_create", "--args-json", '{"title":"t"}'],
+            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            transport=t,
+        )
+        self.assertEqual(code, 1, err)
+        return err
+
+    def test_relay_refused_shows_closed_reason_and_github_status(self):
+        err = self._refused(
+            {
+                "code": "relay_refused",
+                "reason": "github_refused",
+                "github_status": 404,
+                "message": "SECRETBODY",
+            }
+        )
+        self.assertIn("relay_refused (reason=github_refused, github_status=404)", err)
+        self.assertNotIn("SECRETBODY", err)
+
+    def test_relay_refused_seat_policy_reason_without_status(self):
+        err = self._refused({"code": "relay_refused", "reason": "seat_policy"})
+        self.assertIn("relay_refused (reason=seat_policy)", err)
+        self.assertNotIn("github_status", err)
+
+    def test_relay_refused_unknown_reason_and_bad_status_are_not_shown(self):
+        err = self._refused({"code": "relay_refused", "reason": "echo SECRETINPUT"})
+        self.assertNotIn("SECRETINPUT", err)
+        self.assertNotIn("reason=", err)
+        for bad in (200, 429, 500, True, "404", 99999):
+            err = self._refused(
+                {"code": "relay_refused", "reason": "github_refused", "github_status": bad}
+            )
+            self.assertIn("(reason=github_refused)", err)
+            self.assertNotIn("github_status", err)
+
+    def test_refusal_reason_set_matches_the_hosted_front_source(self):
+        # Drift guard:  the CLI's closed set must equal the hosted front's REFUSAL_REASONS
+        # (gr-refusal.js: the base reasons plus every distinct BAD_REQUEST_REASONS value).
+        import re
+
+        root = Path(__file__).resolve().parent.parent
+        src_path = root / "agent-sync-mcp" / "src" / "gr-refusal.js"
+        if not src_path.exists():
+            self.skipTest("hosted front source not in this checkout")
+        src = src_path.read_text(encoding="utf-8")
+        base = re.search(r"REFUSAL_BASE_REASONS = Object\.freeze\(\[(.*?)\]\)", src, re.DOTALL)
+        bad = re.search(r"BAD_REQUEST_REASONS = new Map\(\[(.*?)\]\);", src, re.DOTALL)
+        self.assertTrue(base and bad)
+        want = set(re.findall(r'"([a-z_]+)"', base.group(1)))
+        want |= set(re.findall(r'"[^"]+",\s*"(bad_request_[a-z_]+)"', bad.group(1)))
+        self.assertEqual(set(git._REFUSAL_REASONS), want)
+
+    def test_relay_refused_without_reason_is_unchanged(self):
+        err = self._refused({"code": "relay_refused"})
+        self.assertIn("failed on the hosted server: relay_refused", err)
+        self.assertNotIn("reason=", err)
+
+    def test_reason_from_another_candidate_is_not_attributed(self):
+        # structuredContent says relay_refused with no reason;  a reason in a different object
+        # (the first text part) must not be shown as this refusal's cause.
+        t = FakeTransport(
+            call_results={
+                "gr_wf_issue_create": {
+                    "isError": True,
+                    "structuredContent": {"code": "relay_refused"},
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json.dumps({"code": "upstream_error", "reason": "seat_policy"}),
+                        }
+                    ],
+                }
+            }
+        )
+        code, out, err = run_cli(
+            ["call", "gr_wf_issue_create", "--args-json", '{"title":"t"}'],
+            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            transport=t,
+        )
+        self.assertEqual(code, 1, err)
+        self.assertIn("relay_refused", err)
+        self.assertNotIn("reason=", err)
+
+    def test_reason_is_shown_only_for_relay_refused(self):
+        err = self._refused({"code": "upstream_error", "reason": "seat_policy"})
+        self.assertNotIn("reason=", err)
+
     def test_rate_limited_shows_bounded_retry_after(self):
         t = FakeTransport(
             call_results={

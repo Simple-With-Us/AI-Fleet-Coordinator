@@ -114,7 +114,10 @@ OPENROUTER_DEFAULT_MODEL = "meta/muse-spark-1.3-contributor"
 OPENROUTER_FALLBACK_MODEL = "~deepseek/deepseek-flash-latest"
 # `provider/name`, with an optional leading `~`.  No `:` suffix on purpose:  OpenRouter's `:online`
 # adds web search and `:nitro` or `:floor` re-route, and an unattended no-tools wake wants none of them.
-OPENROUTER_MODEL_PATTERN = r"^~?[A-Za-z0-9][A-Za-z0-9._-]{0,39}/[A-Za-z0-9][A-Za-z0-9._-]{0,79}$"
+OPENROUTER_MODEL_PATTERN = r"^(~?[A-Za-z0-9][A-Za-z0-9._-]{0,39}/[A-Za-z0-9][A-Za-z0-9._-]{0,79}|@preset/[A-Za-z0-9][A-Za-z0-9._-]{0,79})$"
+# An `@preset/<slug>` reference is accepted too:  the preset then supplies the model list and any
+# system prompt, and the slug itself is what the pin fingerprints, so an edit on the dashboard
+# changes behavior without changing the fingerprint.
 # Wakes the budget holds back (heldback.py), per seat:  `held_back = { max = 200, overflow_max = 1000,
 # ttl_hours = 24, items_in_wake = 20, owner_digest_minutes = 60, catch_up = true }`.  max is the records
 # with names;  past it the oldest move to a compact overflow tier (still listed by id), and only past
@@ -386,6 +389,7 @@ class Config:
         # The production application the Mac bridge reaches, from the operator's
         # own config.  Empty when the bridge is off.
         self.muse_bridge_remote_app = ""
+        self.muse_bridge_consult_backup: dict[str, Any] | None = None
         self.errors: list[str] = []
         # Seats a config problem kept out entirely (AFC-358):  seat -> why.  They have no runner, so
         # status shows them as a red row instead of letting them vanish.
@@ -398,6 +402,7 @@ class Config:
         # it a seat cannot be told "the Operator opened this DM" from "a seat opened it", and the
         # runtime refuses by name instead of guessing.
         self.operator_user_id = 0
+        self.operator_email = ""
         self.eligible_user_ids: set[int] = set()
         # `[operator] dm_allow`:  the user ids besides the pinned owner that the Operator may hand a
         # tagged address's candidate list to (AFC-412).  The list carries internal session ids and
@@ -660,6 +665,13 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         errors.append("muse_bridge.remote_seats must be unique canonical seat names")
     else:
         cfg.muse_bridge_remote_seats = tuple(remote_seats)
+    # AFC-649 known-cap mode:  an explicit operator declaration that the primary consult runtime
+    # is capped and the approved backup serves consults.  Stored raw and validated at consult
+    # time (agent_sync.backup_mode):  absent/null means never enabled and the primary runs as
+    # today;  a configured-but-malformed declaration fails CLOSED there, holding consults and
+    # preserving pending work instead of erroring the whole config load.
+    backup = bridge.get("consult_backup")
+    cfg.muse_bridge_consult_backup = backup if backup is None or isinstance(backup, dict) else {}
     daemon = raw.get("daemon") or {}
     if not isinstance(daemon, dict):
         errors.append("[daemon] must be a table")
@@ -681,6 +693,16 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         errors.append("daemon.operator_user_id must be a user id (0 means not pinned yet)")
     else:
         cfg.operator_user_id = operator
+    # The Operator bot's address, pinned beside its id so the voice can tell the pinned bot
+    # without an environment variable (a LaunchAgent that does not carry one still speaks).  Like
+    # the id it is per-host inventory, so none is committed;  "" means not pinned.
+    operator_email = daemon.get("operator_email", "")
+    if not isinstance(operator_email, str) or (
+        operator_email.strip() and "@" not in operator_email
+    ):
+        errors.append("daemon.operator_email must be the Operator bot's address (or empty)")
+    else:
+        cfg.operator_email = operator_email.strip().casefold()
     eligible = daemon.get("eligible_user_ids", [])
     if not isinstance(eligible, list) or not all(
         isinstance(i, int) and not isinstance(i, bool) for i in eligible
@@ -1071,7 +1093,7 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
             # An OpenRouter model id is `provider/name` (and may start with `~`), not a CLI alias.
             if not isinstance(model, str) or not re.fullmatch(OPENROUTER_MODEL_PATTERN, model):
                 wake_problems.append(
-                    "seat.%s.model must be an OpenRouter model such as %s"
+                    "seat.%s.model must be an OpenRouter model such as %s or an @preset/ reference"
                     % (seat_name, OPENROUTER_DEFAULT_MODEL)
                 )
         elif not isinstance(model, str) or not re.fullmatch(r"[a-z0-9.\-\[\]]{1,60}", model):
@@ -1159,7 +1181,7 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
             OPENROUTER_MODEL_PATTERN, fallback_model
         ):
             wake_problems.append(
-                "seat.%s.fallback_model must be an OpenRouter model such as %s"
+                "seat.%s.fallback_model must be an OpenRouter model such as %s or an @preset/ reference"
                 % (seat_name, OPENROUTER_FALLBACK_MODEL)
             )
         elif fallback == "openrouter" and wake == "openrouter" and fallback_model == model:

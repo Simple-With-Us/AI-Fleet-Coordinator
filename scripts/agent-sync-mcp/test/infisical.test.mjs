@@ -644,6 +644,53 @@ test("cache expiry: a rotated value is picked up after the TTL", async () => {
   }
 });
 
+test("INFISICAL_CACHE_TTL_S widens the window for listings and values;  unset, out of range or invalid keeps 60 seconds (AFC-617)", async () => {
+  const { prefetchFolder } = await import("../src/infisical.js");
+  const realNow = Date.now;
+  try {
+    // [setting, seconds later, still fresh]
+    for (const [setting, secondsLater, stillFresh] of [[undefined, 59, true], [undefined, 61, false], ["300", 120, true], ["300", 299, true], ["300", 301, false], [300, 120, true], ["10", 11, false], ["5", 61, false], ["99999", 61, false], ["abc", 61, false], ["", 61, false]]) {
+      _resetInfisicalForTests();
+      const env = { ...ENV, ...(setting === undefined ? {} : { INFISICAL_CACHE_TTL_S: setting }) };
+      const calls = mockFetch([["/api/v3/secrets/raw?", { body: { secrets: [{ secretKey: "A", secretValue: "v" }] } }]]);
+      Date.now = realNow;
+      await prefetchFolder(env, "/tools");
+      assert.equal(calls.length, 1);
+      const start = realNow();
+      Date.now = () => start + secondsLater * 1000;
+      await prefetchFolder(env, "/tools");
+      assert.equal(calls.length, stillFresh ? 1 : 2, `listing, setting ${JSON.stringify(setting)} at +${secondsLater}s`);
+      // A listed value is read from the same window.
+      assert.equal(await resolveSecret(env, { name: "A", path: "/tools", envName: "L" }), "v");
+    }
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test("a wider INFISICAL_CACHE_TTL_S never lengthens the retry after a failed listing, which stays 60 seconds", async () => {
+  _resetInfisicalForTests();
+  const { prefetchFolder } = await import("../src/infisical.js");
+  let calls = 0;
+  globalThis.fetch = async () => { calls += 1; throw new Error("socket hangup"); };
+  const realWarn = console.warn;
+  console.warn = () => {};
+  const realNow = Date.now;
+  try {
+    const env = { ...ENV, INFISICAL_MODE: "fallback", INFISICAL_CACHE_TTL_S: "300", LEGACY: "v0" };
+    await prefetchFolder(env, "/tools");
+    await prefetchFolder(env, "/tools");
+    assert.equal(calls, 1, "a failed listing is not retried inside 60 seconds");
+    const start = realNow();
+    Date.now = () => start + 61_000;
+    await prefetchFolder(env, "/tools");
+    assert.equal(calls, 2, "and is retried after 60 seconds, not after the wider window");
+  } finally {
+    console.warn = realWarn;
+    Date.now = realNow;
+  }
+});
+
 test("folder 404 (missing folder) in required mode throws as unavailable, not as per-name absence", async () => {
   _resetInfisicalForTests();
   const { prefetchFolder } = await import("../src/infisical.js");

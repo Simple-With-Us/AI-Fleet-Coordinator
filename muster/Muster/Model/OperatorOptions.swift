@@ -69,6 +69,9 @@ struct OperatorOptions: Equatable {
     var brokenRules: [String] = []
     /// The one thing that is wrong with a section the file holds,  or nil when nothing is.
     var problem: String?
+    /// Why the configuration file was not read,  when it was not.  Then nothing is known about
+    /// its Operator section,  and the file is never said to have none.
+    var notRead: String?
 
     /// Whether the configuration file gives the Operator the identity the runtime requires.
     ///
@@ -77,8 +80,16 @@ struct OperatorOptions: Equatable {
         isConfigured && brokenRules.isEmpty
     }
 
+    /// Whether the file was read,  so what it holds for the Operator is known.
+    var isKnown: Bool {
+        notRead == nil
+    }
+
     /// The Operator's state, in one line.
     var summary: String {
+        if notRead != nil {
+            return "The Mac's configuration file was not read, so whether it holds a [seat.OPERATOR] section is not known.\u{00A0} The Mac needs none:  the eavesdropper builds the Operator's client from Fleet-OPS /zulip_operator on first use."
+        }
         if !isConfigured {
             return "The Mac's file has no [seat.OPERATOR] section, and the Mac needs none:  the eavesdropper builds the Operator's client from Fleet-OPS /zulip_operator on first use."
         }
@@ -89,10 +100,27 @@ struct OperatorOptions: Equatable {
     }
 
     /// The options the configuration file gives the Operator.
-    static func build(from config: ListenerConfigDocument) -> OperatorOptions {
-        let section = "seat.\(seatTag)"
-        let isConfigured = config.sections.contains { $0.name == section }
-        guard isConfigured else {
+    ///
+    /// `configProblem` is why a file that is there could not be read:  an empty document then
+    /// stands for a file nobody read, not for a file with no section.  A file that is not there
+    /// is known to hold no section, so the caller passes nothing for it.  The eavesdropper
+    /// upper-cases a seat section's name, so `[seat.operator]` is the Operator's section too.
+    static func build(from config: ListenerConfigDocument, configProblem: String? = nil) -> OperatorOptions {
+        if let configProblem {
+            return OperatorOptions(
+                isConfigured: false,
+                bot: nil,
+                creds: nil,
+                wake: nil,
+                brokenRules: [],
+                problem: nil,
+                notRead: configProblem
+            )
+        }
+        let found = config.sections.first {
+            $0.name.hasPrefix("seat.") && $0.name.dropFirst("seat.".count).uppercased() == seatTag
+        }
+        guard let section = found?.name else {
             return OperatorOptions(
                 isConfigured: false,
                 bot: nil,

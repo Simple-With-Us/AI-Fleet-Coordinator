@@ -36,6 +36,8 @@ INFISICAL_WORKSPACE_ID`, value from the Fleet-OPS project page, on stdin).
   DECLARED configured throws visibly;  a secret absent from the declaration
   list is an intentionally-off capability and reads as empty.
 
+**How long a read is kept (`INFISICAL_CACHE_TTL_S`, AFC-617).**  An isolate keeps each successful Infisical read, each folder listing and each remembered 404 for `INFISICAL_CACHE_TTL_S` seconds (a plain var, 10 to 3600; unset or invalid means 60).  `wrangler.jsonc` sets 300.  A refresh is about five subrequests and 8 ms of Worker CPU on the request that triggers it, and every active isolate paid it every minute, which put sparse tools over Workers Free's 10 ms CPU limit.  The trade is rotation speed: a secret rotated in Infisical reaches an isolate within the window (5 minutes), not within one minute.  Remove the var to return to 60.  A failed folder listing is still retried after 60 seconds, and the mint-capable isolated reads (the Git assertion signing key) still expire after 60, whatever the var says.
+
 **The proof before `required`.**  Run `fallback` and exercise the Worker (an
 `/mcp` session per seat, `/admin`).  `required` is turned on only when
 `/admin` shows 0 fallbacks and the Worker log has no `infisical_fallback`

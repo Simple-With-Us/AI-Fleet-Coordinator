@@ -178,6 +178,9 @@ struct FleetOverviewView: View {
         switch place {
         case .complianceGrid:
             guard let redCount = monitor.redCount else { return "?" }
+            // An old check,  as after a long sleep,  is not a clean grid.
+            if let checkedAt = monitor.lastRunAt,
+               !SeatCheckFreshness.isCurrent(checkedAt: checkedAt, now: watch.now) { return "?" }
             return redCount > 0 ? "\(redCount)" : nil
         case .services:
             // Measured against the watch's tick,  the clock the Mac card and the menu use,  so
@@ -189,7 +192,7 @@ struct FleetOverviewView: View {
             return PlaceHealthWords.badge(menu.server.health)
         case .overview, .macAgents, .driftHistory, .wakeAndListener, .seatDetail,
              .serverResourceLimits, .serverUpdates, .appsAndWork, .seats, .controls,
-             .hosts, .virtualMachines, .actionHistory:
+             .hosts, .appProcesses, .virtualMachines, .actionHistory:
             return nil
         }
     }
@@ -230,6 +233,8 @@ struct FleetOverviewView: View {
             OperationsView(part: .updates)
         case .hosts:
             FleetHostsView()
+        case .appProcesses:
+            AppProcessesView()
         case .virtualMachines:
             VirtualMachinesView()
         case .actionHistory:
@@ -253,13 +258,25 @@ struct FleetOverviewView: View {
                         .foregroundStyle(.secondary)
                 }
                 Divider().frame(height: 14)
-                Text(store.commandLine.isEmpty ? "no engine located" : store.commandLine)
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .textSelection(.enabled)
-                    .help(store.commandLine)
+                // Plain words in the bar;  the raw command the app ran is in the tooltip
+                // and one click from the clipboard, for whoever debugs the engine.
+                if store.commandLine.isEmpty {
+                    Text("No engine found")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                } else {
+                    Label("Engine On The Mac", systemImage: "terminal")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .help(store.commandLine)
+                        .contextMenu {
+                            Button("Copy The Command") {
+                                let pasteboard = NSPasteboard.general
+                                pasteboard.clearContents()
+                                pasteboard.setString(store.commandLine, forType: .string)
+                            }
+                        }
+                }
                 Spacer(minLength: 8)
                 Text(generatedText)
                     .font(.system(size: 10))

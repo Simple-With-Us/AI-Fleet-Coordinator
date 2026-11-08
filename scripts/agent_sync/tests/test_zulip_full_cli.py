@@ -119,6 +119,31 @@ class MessageCommandTests(Harness):
             "@**Jay Wedgeworth|%d** third words" % FAKE_OWNER_ID,
         )
 
+    def test_edit_keeps_owner_from_a_compact_intro(self) -> None:
+        self.pin_owner()
+        posted = self.fake.add_message(
+            "Claude",
+            "agent-sync",
+            "t",
+            "[CLAUDE 📁AFC →OWNER] @**Jay Wedgeworth|%d** first" % FAKE_OWNER_ID,
+        )
+        result = self.run_cli("edit", "--id", str(posted), "second words")
+        self.assertEqual(result.code, 0, result.err)
+        self.assertEqual(
+            self.fake._find(posted)["content"],
+            "[CLAUDE·%s→OWNER] @**Jay Wedgeworth|%d** second words" % (TAG, FAKE_OWNER_ID),
+        )
+        multi = self.fake.add_message(
+            "Claude",
+            "agent-sync",
+            "t",
+            "👀 [MM: HH.1.M 📁AFC,OPS →OWNER] first",
+        )
+        # This harness posts as CLAUDE, so an MM intro is not this seat's tag.
+        missed = self.run_cli("edit", "--id", str(multi), "second words")
+        self.assertEqual(missed.code, 0, missed.err)
+        self.assertNotIn("→OWNER", self.fake._find(multi)["content"])
+
     def test_edit_does_not_invent_owner_from_quoted_text(self) -> None:
         posted = self.fake.add_message(
             "Claude", "agent-sync", "t", "[CLAUDE·%s] quoted [CLAUDE·x→OWNER] hi" % TAG

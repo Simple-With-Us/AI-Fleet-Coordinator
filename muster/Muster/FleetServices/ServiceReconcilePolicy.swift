@@ -79,6 +79,8 @@ public enum ServicePolicyTable {
             "Starting it clears BotFleet's deliberate-stop marker, so only the owner starts it."),
         row("app.botfleet.companion", .leaveAlone,
             "It only serves BotFleet Server, which Muster leaves alone, so Muster leaves it alone too."),
+        row("com.jay.operator", .leaveAlone,
+            "launchd keeps the Mac's eavesdropper alive itself, so a stop is deliberate and Muster never starts it on its own."),
         row("shellular", .keepRunning,
             "A long-running job in the pm2 ecosystem file, and starting it again is safe."),
         row("code-main-keeper", .keepRunning,
@@ -112,7 +114,6 @@ public enum ServicePolicyTable {
     /// The allowlisted LaunchAgents the Services list does not show,  by label.  Muster
     /// leaves every one of them alone.
     private static let agents: [(String, String)] = [
-        ("com.jay.agent-sync-runtime-sync", handReason),
         ("com.jay.botfleet-server", handReason),
         ("com.jay.fleet-gdrive-backup", scheduledReason),
         ("com.jay.fleet-mac-services", scheduledReason),
@@ -131,6 +132,7 @@ public enum ServicePolicyTable {
         ("com.jay.operator-notes-runner", keepAliveReason),
         ("com.jay.operator-wake-alerter", handReason),
         ("com.jay.sim-idle-reaper", scheduledReason),
+        ("com.jay.simple-tools-runtime-sync", handReason),
         ("com.jays.weekly-fleet-mode-digest", scheduledReason),
     ]
 

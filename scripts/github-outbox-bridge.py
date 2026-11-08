@@ -111,9 +111,9 @@ def load_env_tokens(path: Path) -> dict:
 def _own_intro_re(seat: str):
     """Legacy [SEAT]/[SEAT->]/[SEAT·...] or folder-tag intros for this seat (Policy 2026-11-05)."""
     s = re.escape(seat)
-    # Optional leading 👀, then either a tight legacy tag or a spaced folder-tag intro.
+    # Optional leading 👀 or :eyes:, then a tight legacy tag or a folder-tag intro.
     return re.compile(
-        r"^(?:👀\s*)?(?:"
+        r"^(?:(?:👀|:eyes:)\s*)?(?:"
         r"\[" + s + r"(?:\]|->|·)"
         r"|"
         r"\[\s*" + s + r"(?:\s*:\s*[A-Za-z0-9]+(?:[.-]\d+[.-][MSC]|-\d+-[MSC]))?\s+📁"
@@ -126,6 +126,35 @@ def _first_content_line(text: str) -> str:
         if line.strip():
             return line.strip()
     return ""
+
+
+# A folder code is a repo token.  FLEET is never one (it is the fleet wake);
+# OPS is Fleet-OPS and counts.  Empty segments and non-tokens are malformed.
+_FOLDER_TOKEN_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
+
+
+def _folder_repo_codes(intro_span: str):
+    """Real repo codes inside a closed intro, or None when the tag has no 📁.
+
+    An empty list means 📁 is present but the list is empty or malformed.
+    A body `repo:` line must not salvage that.  FLEET is dropped and does
+    not count; at least one other code is required.
+    """
+    if "📁" not in intro_span:
+        return None
+    after = intro_span.split("📁", 1)[1]
+    after = re.split(r"\s*(?:→|->)", after, maxsplit=1)[0]
+    after = after.split("]", 1)[0].strip()
+    if not after:
+        return []
+    real = []
+    for part in (piece.strip() for piece in after.split(",")):
+        if not _FOLDER_TOKEN_RE.match(part):
+            return []
+        if part.upper() == "FLEET":
+            continue
+        real.append(part)
+    return real
 
 
 def header_error(text: str, seat: str):
@@ -143,12 +172,15 @@ def header_error(text: str, seat: str):
     has_folder_repos = False
     # Folder-tag intros: only treat 📁 inside the matched intro span as a folder list
     # (a 📁 later on the first line, e.g. in a legacy-tag subject, must not trigger this).
+    # They must close with ] on the first line; a body repo: must not salvage.
     if intro and "📁" in intro.group():
         if first.find("]", intro.start()) < 0:
             return "folder-tag intro must close with ] on the first line"
         tag_end = first.find("]", intro.start())
         intro_span = first[intro.start() : tag_end + 1]
-        if not _folder_list_ok(intro_span):
+        # Empty or malformed 📁 (including FLEET-only) is rejected even when a
+        # later line carries repo:.  That line does not repair the intro.
+        if not _folder_repo_codes(intro_span):
             return "repo: <project> must be the first body line"
         has_folder_repos = True
     has_repo_line = any(re.match(r"^\s*repo:\s*\S", line) for line in lines[1:6])
@@ -161,21 +193,6 @@ def header_error(text: str, seat: str):
     if len(text) > MAX_OUTBOUND_CHARS:
         return "longer than %d characters" % MAX_OUTBOUND_CHARS
     return None
-
-
-def _folder_list_ok(intro_span: str) -> bool:
-    """True when a closed intro tag's 📁 list has ≥1 real repo token and no empty commas.
-
-    Tokens are taken after 📁 and before → / -> / ]. Each comma-separated piece must be
-    non-empty and start with a letter or digit (rejects empty 📁, 📁→peers, 📁,, trailing ,).
-    """
-    m = re.search(r"📁(.*?)(?:→|->|\])", intro_span)
-    if not m:
-        return False
-    tokens = [t.strip() for t in m.group(1).split(",")]
-    if not tokens or any(t == "" for t in tokens):
-        return False
-    return all(re.match(r"^[A-Za-z0-9]", t) for t in tokens)
 
 
 def _looks_like_status_body(first_line: str, body_lines) -> bool:

@@ -107,6 +107,47 @@ class PostTests(Harness):
         message_id = self.fake.messages[-1]["id"]
         self.assertIn("posted id %d" % message_id, result.out)
 
+    def test_an_intro_in_the_text_leads_the_line(self) -> None:
+        # The seat's compact intro is line 1.  --to labels go inside the bracket, not in front.
+        result = self.run_cli(
+            "post", "--topic", "t", "--to", "codex", "[GB-PLUMBER 📁AFC] please look"
+        )
+        self.assertEqual(result.code, 0, result.err)
+        content = self.last_post().form["content"]
+        self.assertTrue(content.startswith("[GB-PLUMBER 📁AFC →CODEX] "), content)
+        self.assertIn("@**Codex** please look", content)
+        self.assertNotIn("[CLAUDE", content)
+        multi = self.run_cli(
+            "post", "--topic", "t", "--to", "codex", "[MM: HH.1.M 📁AFC,OPS] ping"
+        )
+        self.assertEqual(multi.code, 0, multi.err)
+        self.assertTrue(
+            self.last_post().form["content"].startswith("[MM: HH.1.M 📁AFC,OPS →CODEX] "),
+            self.last_post().form["content"],
+        )
+        kept = self.run_cli(
+            "post", "--topic", "t", "--to", "Cursor", "[GB-PLUMBER 📁AFC →CODEX] please"
+        )
+        self.assertEqual(kept.code, 0, kept.err)
+        self.assertTrue(
+            self.last_post().form["content"].startswith("[GB-PLUMBER 📁AFC →CODEX,CURSOR] "),
+            self.last_post().form["content"],
+        )
+        quiet = self.run_cli("post", "--topic", "t", "--quiet", "[JET 📁ST,CTS] hello")
+        self.assertEqual(quiet.code, 0, quiet.err)
+        quiet_body = self.last_post().form["content"]
+        self.assertTrue(quiet_body.startswith(":eyes: [JET 📁ST,CTS] "), quiet_body)
+        self.assertNotIn("[CLAUDE", quiet_body)
+        already = self.run_cli("post", "--topic", "t", "--quiet", "👀 [GB-DIRECTOR 📁AFC] hello")
+        self.assertEqual(already.code, 0, already.err)
+        eyes = self.last_post().form["content"]
+        self.assertTrue(eyes.startswith("👀 [GB-DIRECTOR 📁AFC] "), eyes)
+        self.assertNotIn(":eyes:", eyes)
+        self.assertEqual(eyes.count("👀"), 1)
+        raw = self.run_cli("post", "--topic", "t", "--no-tag", "[JET 📁AFC] hello")
+        self.assertEqual(raw.code, 0, raw.err)
+        self.assertEqual(self.last_post().form["content"], "[JET 📁AFC] hello")
+
     def test_post_records_the_id_in_the_session_ledger(self) -> None:
         self.run_cli("post", "--topic", "t", "hello")
         ledger = json.loads(self.state_path().read_text())["posted"]
