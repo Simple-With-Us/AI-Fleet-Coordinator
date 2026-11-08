@@ -25,6 +25,12 @@ protocol DriftWatching: AnyObject {
     func disarm(_ watches: [DriftWatchList.Watch])
     /// Stop watching and release every stream.
     func stop()
+    /// The watches whose stream is running now,  in the order they were armed (GRID-37).
+    ///
+    /// Only a stream that started counts:  a stream that could not be made,  or whose start
+    /// failed,  is not here,  so a count of these is what is actually watched and never what
+    /// was asked for.
+    var startedWatches: [DriftWatchList.Watch] { get }
 }
 
 /// The watcher built on FSEvents.
@@ -47,10 +53,23 @@ final class FSEventsDriftWatcher: DriftWatching {
     private var streams: [ArmedStream] = []
     private var context: WatchContext?
     private let queue: DispatchQueue
+    /// Starts a stream,  and says whether it started.  The app calls `FSEventStreamStart`;  a
+    /// test hands in its own to make a start fail.
+    private let startStream: (FSEventStreamRef) -> Bool
 
-    init(queue: DispatchQueue = DispatchQueue(label: "muster.drift.fsevents", qos: .utility)) {
+    init(
+        queue: DispatchQueue = DispatchQueue(label: "muster.drift.fsevents", qos: .utility),
+        startStream: @escaping (FSEventStreamRef) -> Bool = { FSEventStreamStart($0) }
+    ) {
         self.queue = queue
+        self.startStream = startStream
     }
+
+    /// The watches whose stream started and is running now.
+    var startedWatches: [DriftWatchList.Watch] { streams.map { $0.watch } }
+
+    /// How many streams started and are running now.
+    var startedStreamCount: Int { streams.count }
 
     deinit {
         stop()
@@ -136,7 +155,14 @@ final class FSEventsDriftWatcher: DriftWatching {
         )
         guard let stream else { return nil }
         FSEventStreamSetDispatchQueue(stream, queue)
-        FSEventStreamStart(stream)
+        // A stream whose start fails watches nothing.  It is let go here and left out of the
+        // armed list,  so it is counted as failed and asked for again after the next run,
+        // never counted as watching.  It never started,  so it is not stopped first.
+        guard startStream(stream) else {
+            FSEventStreamInvalidate(stream)
+            FSEventStreamRelease(stream)
+            return nil
+        }
         return stream
     }
 

@@ -40,7 +40,9 @@ final class FleetStore: ObservableObject {
     /// The surfaces the engine names and does not check,  from the last trusted run.
     @Published private(set) var uncovered: [UncoveredSurface] = []
     /// The fleet-wide rules the engine cannot run yet,  from the last trusted run.
-    @Published private(set) var notImplemented: [NotImplementedRule] = []
+    @Published private(set) var notImplemented: [NotImplementedRule] = [] {
+        didSet { complianceCache = nil }
+    }
     /// Why the manifest could not be read,  when it is there and cannot be read.
     ///
     /// The manifest is read again before each run when the file changed,  so the
@@ -126,7 +128,9 @@ final class FleetStore: ObservableObject {
     /// It is written on the main thread only.  A reader off the main thread (the panel
     /// reads a cell's artifacts in a detached task) reads `manifestSnapshot` under
     /// `inputsLock` instead,  so a re-read during that task is never a data race.
-    @Published private(set) var manifest: SeatManifest?
+    @Published private(set) var manifest: SeatManifest? = nil {
+        didSet { complianceCache = nil }
+    }
     /// The manifest as readers off the main thread see it,  guarded by `inputsLock`.
     private var manifestSnapshot: SeatManifest?
     private let inputsLock = NSLock()
@@ -137,9 +141,13 @@ final class FleetStore: ObservableObject {
     /// Whether the two files have been read at all.
     private var inputsRead = false
     /// Whether the results came from an engine answer,  rather than from nothing.
-    private var answered = false
+    private var answered = false {
+        didSet { complianceCache = nil }
+    }
     private let runEngine: EngineRunning
-    private var results: [CheckResult] = []
+    private var results: [CheckResult] = [] {
+        didSet { complianceCache = nil }
+    }
     private var cellsByKey: [String: GridCell] = [:]
 
     /// Called when a run finishes,  with whether the run could be trusted.
@@ -150,6 +158,80 @@ final class FleetStore: ObservableObject {
 
     /// Whether a run is in flight.
     var isRunning: Bool { phase == .running }
+
+    /// When the run in flight started,  on the wall clock,  or nil when none is in flight.
+    ///
+    /// The drift monitor reads it after a wake:  a run that started before the Mac slept,  or
+    /// in the wait for the network after the wake,  may have read the Mac without its network,
+    /// and one that started once that wait was over is the run the wake asks for.
+    private(set) var runStartedAt: Date?
+
+    /// When the run that landed last started,  on the wall clock,  or nil when none has landed
+    /// or the last refresh found no engine to run.
+    ///
+    /// It is set as the run lands and kept until the next one lands,  because `runStartedAt` is
+    /// already nil by the time the drift monitor hears the run finished.  The monitor reads it
+    /// to tell a run that started after a wake from one that only landed after it.
+    private(set) var lastLandedRunStartedAt: Date?
+
+    // MARK: Compliance rules (GRID-18)
+
+    /// The engine's results for the fleet-wide compliance rules,  from the last answer.
+    ///
+    /// The grid's cells are one seat against one config kind,  so these results reach no
+    /// cell.  They are kept here instead of being dropped.  They are empty before the first
+    /// answer and after a failed run,  and while a run is in flight they are the last answer's
+    /// (`isShowingLastAnswer`).
+    var complianceResults: [CheckResult] {
+        answered ? results.filter { $0.isCompliance } : []
+    }
+
+    /// Every compliance rule the manifest names or the engine answered for,  each with its
+    /// real state,  in manifest order.
+    ///
+    /// A rule the engine did not run,  or cannot run yet,  never reads as passing:  it reads as
+    /// not built,  not in the answer or not answered.
+    var complianceStatuses: [ComplianceRuleStatus] {
+        builtCompliance.statuses
+    }
+
+    /// One compliance rule's state,  or nil when neither the manifest nor the engine names it.
+    func complianceStatus(ruleID: String) -> ComplianceRuleStatus? {
+        builtCompliance.byRuleID[ruleID]
+    }
+
+    /// The statuses built from one answer,  with a lookup by rule.
+    private struct ComplianceCache {
+        let statuses: [ComplianceRuleStatus]
+        let byRuleID: [String: ComplianceRuleStatus]
+    }
+
+    /// The statuses built from the current manifest and answer,  or nil when one of them has
+    /// changed since they were built.  Each input clears it when it is set,  so a list of R
+    /// rules is built once per answer and not once per row.
+    private var complianceCache: ComplianceCache?
+
+    /// How many times the statuses were built,  so a test can see the cache hold.
+    private(set) var complianceBuildCount = 0
+
+    /// The statuses for the current manifest and answer,  built the first time they are asked
+    /// for after either changes.
+    private var builtCompliance: ComplianceCache {
+        if let complianceCache { return complianceCache }
+        let statuses = ComplianceStatusBuilder.build(
+            rules: manifest?.allComplianceRules ?? [],
+            results: results,
+            notImplemented: notImplemented,
+            answered: answered
+        )
+        let built = ComplianceCache(
+            statuses: statuses,
+            byRuleID: Dictionary(statuses.map { ($0.ruleID, $0) }, uniquingKeysWith: { first, _ in first })
+        )
+        complianceBuildCount += 1
+        complianceCache = built
+        return built
+    }
 
     /// The app's store:  the engine this Mac has,  run by `EngineRunner`.
     convenience init() {
@@ -433,11 +515,16 @@ final class FleetStore: ObservableObject {
             notImplemented = []
             answered = false
             isChecking = false
+            lastLandedRunStartedAt = nil
             phase = .failed(
                 "no engine checkout was found;  set FLEET_ENGINE_ROOT to a checkout that "
                     + "carries scripts/fleet_config"
             )
             rebuild()
+            // No engine is a run that could not be trusted,  and a watcher has to hear that
+            // like any other failure:  the drift monitor then clears its count and its alerts,
+            // and its safety net waits a whole interval before it asks again.
+            onRunFinished?(false)
             return
         }
         let box = RefreshBox()
@@ -449,6 +536,7 @@ final class FleetStore: ObservableObject {
         }
         refreshBox = box
         refreshLock.unlock()
+        runStartedAt = Date()
         phase = .running
         isChecking = true
         rebuild()
@@ -466,6 +554,8 @@ final class FleetStore: ObservableObject {
     /// Take what the run produced.
     private func apply(_ run: EngineRun) {
         isChecking = false
+        lastLandedRunStartedAt = runStartedAt
+        runStartedAt = nil
         guard let envelope = run.envelope else {
             results = []
             summary = nil
