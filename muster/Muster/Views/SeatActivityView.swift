@@ -137,6 +137,14 @@ struct SeatActivityView: View {
                 .font(.body)
                 .fixedSize(horizontal: false, vertical: true)
                 .help("A seat is working when it has a live session on the Mac, or the Mac's eavesdropper is running a wake for it.")
+            // Whether a session on this Mac is woken again on a new message, from the same state
+            // as the rows.  Each session's own watcher is in its line.
+            if let rewake = model.rewake {
+                Label(SeatActivityText.display(rewake.sentence), systemImage: rewake.isProblem ? "exclamationmark.triangle" : "arrow.uturn.backward.circle")
+                    .font(.subheadline)
+                    .foregroundStyle(rewake.isProblem ? Color.orange : Color.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             HStack(spacing: 8) {
                 if let readAt = model.readAt {
                     Text("Read \(FleetTime.clock(readAt))")

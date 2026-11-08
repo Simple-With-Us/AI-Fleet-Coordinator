@@ -309,4 +309,29 @@ enum FleetTime {
         if hour12 == 0 { hour12 = 12 }
         return String(format: "%d:%02d %@", hour12, minute, suffix)
     }
+
+    /// A moment on Jay's clock that may not be today:  the time alone when it falls on the same
+    /// day as `now` in America/Chicago,  and the weekday and date before it when it does not,
+    /// with the year when that differs too:  `2:46 PM`,  `Mon, Nov 9, 3:00 PM`,
+    /// `Fri, Jan 1, 2027, 9:00 AM`.
+    ///
+    /// A weekly quota that resets in four days,  or a pause set days ago,  is never shown as a
+    /// bare time that reads as today.
+    static func when(_ date: Date, now: Date = Date()) -> String {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/Chicago") ?? .current
+        if calendar.isDate(date, inSameDayAs: now) {
+            return clock(date)
+        }
+        let parts = calendar.dateComponents([.weekday, .month, .day, .year], from: date)
+        let weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+        let months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+        let weekday = parts.weekday.map { weekdays[max(0, min(6, $0 - 1))] } ?? ""
+        let month = parts.month.map { months[max(0, min(11, $0 - 1))] } ?? ""
+        var text = "\(weekday), \(month) \(parts.day ?? 0)"
+        if let year = parts.year, year != calendar.component(.year, from: now) {
+            text += ", \(year)"
+        }
+        return "\(text), \(clock(date))"
+    }
 }
