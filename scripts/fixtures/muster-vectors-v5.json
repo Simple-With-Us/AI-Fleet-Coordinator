@@ -1,5 +1,5 @@
 {
- "about": "Public test data only: every key is derived from a label and used nowhere else.  The strings of this file are printed in section 16 of docs/muster-ios/server-route-spec.md (only the notes are its own), and a test checks that they still are.  The chain slice must read the T-lists and entry hashes from the spec text, section 16: chainVectors holds only each vector's id and its expected answer, and the 50 or so hashes of the chain vectors are not here.",
+ "about": "Public test data only: every key is derived from a label and used nowhere else.\u00a0 Section 16 of docs/muster-ios/server-route-spec.md prints the vectors of keys, canonicalForm, pin, history, reopen, lists, listBodyHashes, approvals, answers (the answer objects and their bodySHA256) and illustrativePlan, and a test checks that this file still equals the spec's text.\u00a0 Everything else was made by running muster_approval.py and fleet-ops-control.py themselves: answers[].line and lineSHA256 (the whole answer line, one canonical-JSON line and a line feed), badSignatures, generatedAnswers, generatedPlans and resourceFieldScales.\u00a0 To regenerate this file, run python3 scripts/make_muster_vectors.py --write; a test regenerates it and fails when it differs, so it cannot drift from the code.\u00a0 The chain slice must read the T-lists and entry hashes from the spec text, section 16: chainVectors holds only each vector's id and its expected answer, and the 50 or so hashes of the chain vectors are not here.",
  "answers": {
   "ackT2": {
    "answer": {
@@ -17,7 +17,9 @@
     "protocol": "muster-helper/1",
     "signature": "MEQCIFhV5Qz7or-RV1MPPcYCbJPOcjDNBLkFG9Upx3cklnWWAiAuc9m4lzy6f_xgbI8dHGLZlMr9bRngI3Rdx2A0xwPfCA"
    },
-   "bodySHA256": "9d298b221e08f88f8f2579f7cd9d9576625e3866f561e15721ddc83fddc215dd"
+   "bodySHA256": "9d298b221e08f88f8f2579f7cd9d9576625e3866f561e15721ddc83fddc215dd",
+   "line": "{\"body\":{\"at\":\"2026-11-07T20:12:02Z\",\"closed\":false,\"contract\":\"muster-signed-ack/1\",\"finalRefusals\":[],\"helperTrustListVersion\":2,\"signedByCurrentKey\":true,\"trustListSHA256\":\"c2b6d904493faab638728e46b4e43adf939825611f70e3190671af90ee511024\"},\"keyId\":\"38fbd10025f412d0\",\"kind\":\"ack\",\"protocol\":\"muster-helper/1\",\"signature\":\"MEQCIFhV5Qz7or-RV1MPPcYCbJPOcjDNBLkFG9Upx3cklnWWAiAuc9m4lzy6f_xgbI8dHGLZlMr9bRngI3Rdx2A0xwPfCA\"}\n",
+   "lineSHA256": "7c55dce0ebd418808264010f43be5940cbd530477f4f9b6945553b0d3bf1c2f4"
   },
   "ackT3": {
    "answer": {
@@ -35,7 +37,9 @@
     "protocol": "muster-helper/1",
     "signature": "MEQCIBz42pls5KK5Y2NElye4f8_6lUYfGxJ6aWlyws0a_cNzAiAGyw3Y7S0mJmpVzpWJ2oUC-ITrsIVLTzmxdT_n6E2tFQ"
    },
-   "bodySHA256": "4980ff6b3ac2e8aba483bb620c9d497564a3906459c53f6e4a73fe614f1db543"
+   "bodySHA256": "4980ff6b3ac2e8aba483bb620c9d497564a3906459c53f6e4a73fe614f1db543",
+   "line": "{\"body\":{\"at\":\"2026-11-07T20:22:02Z\",\"closed\":true,\"contract\":\"muster-signed-ack/1\",\"finalRefusals\":[],\"helperTrustListVersion\":3,\"signedByCurrentKey\":true,\"trustListSHA256\":\"5e06787afce950d2f803ac3716dc9ee0d033798f2803eb3393b6b3fa53e88ce8\"},\"keyId\":\"38fbd10025f412d0\",\"kind\":\"ack\",\"protocol\":\"muster-helper/1\",\"signature\":\"MEQCIBz42pls5KK5Y2NElye4f8_6lUYfGxJ6aWlyws0a_cNzAiAGyw3Y7S0mJmpVzpWJ2oUC-ITrsIVLTzmxdT_n6E2tFQ\"}\n",
+   "lineSHA256": "ec27675073be9dd6be604144aca3f3000b1240bfe9ab34bbde204fac8abf5393"
   },
   "chainRefusalT7": {
    "answer": {
@@ -57,7 +61,9 @@
     "protocol": "muster-helper/1",
     "signature": "MEUCIBeOMeZWVmAl0KKbKsOg5NFa11knxMAv2wgHs9jWvXIHAiEA4V8NGSNeUWv2i7EnvxnbqepllmVpOAiQzmyts4DOXzg"
    },
-   "bodySHA256": "b2d1e8effab6fdd11c54ab286de0e74543ae33f19812f2a7132c0631b6edca6d"
+   "bodySHA256": "b2d1e8effab6fdd11c54ab286de0e74543ae33f19812f2a7132c0631b6edca6d",
+   "line": "{\"body\":{\"chain\":{\"entrySHA256\":\"540040efe15dcefb0c5f1d31749bafd66c22475e5630a327f4e817cdee5ececc\",\"final\":false,\"version\":2},\"contract\":\"muster-signed-refusal/1\",\"errorCode\":\"chain_refused\",\"helperTrustListVersion\":1,\"reason\":\"previous_hash\",\"refusedAt\":\"2026-11-07T20:11:00Z\",\"verified\":false},\"keyId\":\"38fbd10025f412d0\",\"kind\":\"refusal\",\"protocol\":\"muster-helper/1\",\"signature\":\"MEUCIBeOMeZWVmAl0KKbKsOg5NFa11knxMAv2wgHs9jWvXIHAiEA4V8NGSNeUWv2i7EnvxnbqepllmVpOAiQzmyts4DOXzg\"}\n",
+   "lineSHA256": "d643c5e0d4edb0720ce9fcda3674076e1354a59916d907b7298f24ff0e62a9f3"
   },
   "plan": {
    "answer": {
@@ -81,7 +87,9 @@
     "protocol": "muster-helper/1",
     "signature": "MEQCIBI-WzxlGZY8xxVBbDfsF3MHFzjcQtzIuF8oDmr4gdIwAiAjElcSer1SSIzSYv4nfUINKMoEJcdiRUrWTF6DR3Hipg"
    },
-   "bodySHA256": "e5b96a09d1ced478758f712c44d03de5ab448b179615eee4574c745c72444d8c"
+   "bodySHA256": "e5b96a09d1ced478758f712c44d03de5ab448b179615eee4574c745c72444d8c",
+   "line": "{\"body\":{\"action\":\"restart\",\"claimed\":{\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"jobId\":\"job7k2m9q4x1\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\"},\"contract\":\"muster-signed-plan/1\",\"helperTrustListVersion\":1,\"host\":\"server\",\"issuedAt\":\"2026-11-07T20:59:50Z\",\"plan\":\"{\\\"action\\\":\\\"restart\\\",\\\"auditTarget\\\":\\\"fleet-server-status.timer\\\",\\\"commands\\\":[[\\\"/usr/bin/systemctl\\\",\\\"--user\\\",\\\"restart\\\",\\\"fleet-server-status.timer\\\"]],\\\"contract\\\":\\\"fleet-ops-plan/1\\\",\\\"scope\\\":\\\"server\\\",\\\"target\\\":\\\"fleet-server-status.timer\\\"}\",\"planSHA256\":\"f162187bfc6725679de05bd66a6a1c1ae68c2e99b5ad3263330f99ec4103be4d\",\"target\":\"fleet-server-status.timer\"},\"keyId\":\"38fbd10025f412d0\",\"kind\":\"plan\",\"protocol\":\"muster-helper/1\",\"signature\":\"MEQCIBI-WzxlGZY8xxVBbDfsF3MHFzjcQtzIuF8oDmr4gdIwAiAjElcSer1SSIzSYv4nfUINKMoEJcdiRUrWTF6DR3Hipg\"}\n",
+   "lineSHA256": "6d32d50db29cfebfb36503c1b53e577f6240c3968f48b64974202dff9f91e315"
   },
   "refusalV3": {
    "answer": {
@@ -108,7 +116,9 @@
     "protocol": "muster-helper/1",
     "signature": "MEUCIHAe62OgP73rmOwN7Ky9mjZBR1uwWXunD7OjUTDP1fkBAiEA2rNL6Vvp4fWWXms2xUSou9fmOGl1xjPkpHT6fSstli0"
    },
-   "bodySHA256": "f4a7c0ea905cc4bcfc14a5b8c783043f4e15dca1801fc87deeb573bad46564f1"
+   "bodySHA256": "f4a7c0ea905cc4bcfc14a5b8c783043f4e15dca1801fc87deeb573bad46564f1",
+   "line": "{\"body\":{\"claimed\":{\"action\":\"restart\",\"approvalNonce\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"host\":\"server\",\"jobId\":\"job7k2m9q4x1\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\",\"planSHA256\":\"f162187bfc6725679de05bd66a6a1c1ae68c2e99b5ad3263330f99ec4103be4d\",\"target\":\"fleet-server-status.timer\"},\"contract\":\"muster-signed-refusal/1\",\"errorCode\":\"bad_signature\",\"helperTrustListVersion\":1,\"reason\":null,\"refusedAt\":\"2026-11-07T21:00:31Z\",\"verified\":false},\"keyId\":\"38fbd10025f412d0\",\"kind\":\"refusal\",\"protocol\":\"muster-helper/1\",\"signature\":\"MEUCIHAe62OgP73rmOwN7Ky9mjZBR1uwWXunD7OjUTDP1fkBAiEA2rNL6Vvp4fWWXms2xUSou9fmOGl1xjPkpHT6fSstli0\"}\n",
+   "lineSHA256": "2381022d4b5a395530116cbf4016496d72012721f225c5370ee133a5787d1f3c"
   },
   "refusalV6": {
    "answer": {
@@ -133,7 +143,9 @@
     "protocol": "muster-helper/1",
     "signature": "MEQCIB_8NHvQdv48xg8TgovOU637BcoC9lqMwR_kYuEYfdgnAiBV4XQMbyQdqc5Yv4mA14m58zWHOspy6MTf_aP1I6EE6w"
    },
-   "bodySHA256": "113a684901cfd1c87f6a7cd0585bcc3cb568ebb1fc668ee31e3e43fee036c067"
+   "bodySHA256": "113a684901cfd1c87f6a7cd0585bcc3cb568ebb1fc668ee31e3e43fee036c067",
+   "line": "{\"body\":{\"action\":\"restart\",\"approvalNonce\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"contract\":\"muster-signed-refusal/1\",\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"errorCode\":\"plan_mismatch\",\"helperTrustListVersion\":1,\"host\":\"server\",\"jobId\":\"job7k2m9q4x1\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\",\"planSHA256\":\"f162187bfc6725679de05bd66a6a1c1ae68c2e99b5ad3263330f99ec4103be4d\",\"reason\":null,\"refusedAt\":\"2026-11-07T21:00:31Z\",\"target\":\"fleet-server-status.timer\",\"verified\":true},\"keyId\":\"38fbd10025f412d0\",\"kind\":\"refusal\",\"protocol\":\"muster-helper/1\",\"signature\":\"MEQCIB_8NHvQdv48xg8TgovOU637BcoC9lqMwR_kYuEYfdgnAiBV4XQMbyQdqc5Yv4mA14m58zWHOspy6MTf_aP1I6EE6w\"}\n",
+   "lineSHA256": "b8138c1271f2ac6108ce68cd37a2c8164b0cc28cbbae483b3bcf62d184fa723c"
   },
   "result": {
    "answer": {
@@ -159,7 +171,9 @@
     "protocol": "muster-helper/1",
     "signature": "MEUCIQDFqIlO-vpC-wNdOSG5Ur01GaDAX4Dsx-rnrD4dPtbt5AIgCQNAsiX-Gogq0eugYSG74vfOHC-VsbzPPJrq7yCyXTw"
    },
-   "bodySHA256": "fb00db21378ae4d8e6a8bf31a04d5d221ea1533f6461fdf4e08432187971a134"
+   "bodySHA256": "fb00db21378ae4d8e6a8bf31a04d5d221ea1533f6461fdf4e08432187971a134",
+   "line": "{\"body\":{\"action\":\"restart\",\"approvalNonce\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"auditId\":\"a1b2c3d4\",\"contract\":\"muster-signed-result/1\",\"detail\":\"restarted\",\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"finishedAt\":\"2026-11-07T21:00:33Z\",\"helperTrustListVersion\":1,\"host\":\"server\",\"jobId\":\"job7k2m9q4x1\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\",\"outcome\":\"done\",\"outputB64\":null,\"planSHA256\":\"f162187bfc6725679de05bd66a6a1c1ae68c2e99b5ad3263330f99ec4103be4d\",\"target\":\"fleet-server-status.timer\"},\"keyId\":\"38fbd10025f412d0\",\"kind\":\"result\",\"protocol\":\"muster-helper/1\",\"signature\":\"MEUCIQDFqIlO-vpC-wNdOSG5Ur01GaDAX4Dsx-rnrD4dPtbt5AIgCQNAsiX-Gogq0eugYSG74vfOHC-VsbzPPJrq7yCyXTw\"}\n",
+   "lineSHA256": "318b7d507873253b2e7102fa87bb009069c64e2462c8364dce26d523a89812a4"
   }
  },
  "approvals": [
@@ -406,6 +420,512 @@
    "title": "nothing stored"
   }
  ],
+ "badSignatures": [
+  {
+   "answer": {
+    "body": {
+     "claimed": {
+      "action": "restart",
+      "approvalNonce": "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+      "deviceId": "d-ae9428d695e414bcefc0ef5b",
+      "host": "server",
+      "jobId": "job7k2m9q4x1",
+      "jobNonce": "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+      "planSHA256": "f162187bfc6725679de05bd66a6a1c1ae68c2e99b5ad3263330f99ec4103be4d",
+      "target": "fleet-server-status.timer"
+     },
+     "contract": "muster-signed-refusal/1",
+     "errorCode": "bad_signature",
+     "helperTrustListVersion": 1,
+     "reason": null,
+     "refusedAt": "2026-11-07T21:00:30Z",
+     "verified": false
+    },
+    "keyId": "38fbd10025f412d0",
+    "kind": "refusal",
+    "protocol": "muster-helper/1",
+    "signature": "MEUCIH6rM9Hzb3cUcIYNJoRviumztSD4xlEDrFNdRwElwY36AiEAvjBovmB1fL-d6QxicBdRPjdtgRRqMI-ntuZuc6JFahg"
+   },
+   "bodySHA256": "07b410dbdc6e27c7e5d3905ae7459e634c401f598086a950b73897b03c0e197f",
+   "exitStatus": 2,
+   "expected": {
+    "errorCode": "bad_signature",
+    "kind": "refusal",
+    "verified": false
+   },
+   "id": "leading-zero",
+   "line": "{\"body\":{\"claimed\":{\"action\":\"restart\",\"approvalNonce\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"host\":\"server\",\"jobId\":\"job7k2m9q4x1\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\",\"planSHA256\":\"f162187bfc6725679de05bd66a6a1c1ae68c2e99b5ad3263330f99ec4103be4d\",\"target\":\"fleet-server-status.timer\"},\"contract\":\"muster-signed-refusal/1\",\"errorCode\":\"bad_signature\",\"helperTrustListVersion\":1,\"reason\":null,\"refusedAt\":\"2026-11-07T21:00:30Z\",\"verified\":false},\"keyId\":\"38fbd10025f412d0\",\"kind\":\"refusal\",\"protocol\":\"muster-helper/1\",\"signature\":\"MEUCIH6rM9Hzb3cUcIYNJoRviumztSD4xlEDrFNdRwElwY36AiEAvjBovmB1fL-d6QxicBdRPjdtgRRqMI-ntuZuc6JFahg\"}\n",
+   "lineSHA256": "cde8f7e2c4511c9f35e76f17a3a37fefd86c1dd94cceb52c27078620ec107319",
+   "now": "2026-11-07T21:00:30Z",
+   "signature": "MEUCIQBu6s4f44AlP2qHKn-HUlnpFawHmT3emRI7c70M4m5oDQIgV5yhcfFAgpEdkbVdLHMUezoJuJQoNLjUgOpTnUDGNI8",
+   "stdin": "{\"approval\":{\"action\":\"restart\",\"approvalNonce\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"expiresAt\":\"2026-11-07T21:02:00Z\",\"host\":\"server\",\"issuedAt\":\"2026-11-07T21:00:00Z\",\"jobId\":\"job7k2m9q4x1\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\",\"planSHA256\":\"f162187bfc6725679de05bd66a6a1c1ae68c2e99b5ad3263330f99ec4103be4d\",\"signature\":\"MEUCIQBu6s4f44AlP2qHKn-HUlnpFawHmT3emRI7c70M4m5oDQIgV5yhcfFAgpEdkbVdLHMUezoJuJQoNLjUgOpTnUDGNI8\",\"target\":\"fleet-server-status.timer\"},\"protocol\":\"muster-helper/1\"}",
+   "stored": "v1",
+   "title": "An INTEGER with an unnecessary leading zero byte"
+  },
+  {
+   "answer": {
+    "body": {
+     "claimed": {
+      "action": "restart",
+      "approvalNonce": "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+      "deviceId": "d-ae9428d695e414bcefc0ef5b",
+      "host": "server",
+      "jobId": "job7k2m9q4x1",
+      "jobNonce": "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+      "planSHA256": "f162187bfc6725679de05bd66a6a1c1ae68c2e99b5ad3263330f99ec4103be4d",
+      "target": "fleet-server-status.timer"
+     },
+     "contract": "muster-signed-refusal/1",
+     "errorCode": "bad_signature",
+     "helperTrustListVersion": 1,
+     "reason": null,
+     "refusedAt": "2026-11-07T21:00:30Z",
+     "verified": false
+    },
+    "keyId": "38fbd10025f412d0",
+    "kind": "refusal",
+    "protocol": "muster-helper/1",
+    "signature": "MEUCIH6rM9Hzb3cUcIYNJoRviumztSD4xlEDrFNdRwElwY36AiEAvjBovmB1fL-d6QxicBdRPjdtgRRqMI-ntuZuc6JFahg"
+   },
+   "bodySHA256": "07b410dbdc6e27c7e5d3905ae7459e634c401f598086a950b73897b03c0e197f",
+   "exitStatus": 2,
+   "expected": {
+    "errorCode": "bad_signature",
+    "kind": "refusal",
+    "verified": false
+   },
+   "id": "negative-integer",
+   "line": "{\"body\":{\"claimed\":{\"action\":\"restart\",\"approvalNonce\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"host\":\"server\",\"jobId\":\"job7k2m9q4x1\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\",\"planSHA256\":\"f162187bfc6725679de05bd66a6a1c1ae68c2e99b5ad3263330f99ec4103be4d\",\"target\":\"fleet-server-status.timer\"},\"contract\":\"muster-signed-refusal/1\",\"errorCode\":\"bad_signature\",\"helperTrustListVersion\":1,\"reason\":null,\"refusedAt\":\"2026-11-07T21:00:30Z\",\"verified\":false},\"keyId\":\"38fbd10025f412d0\",\"kind\":\"refusal\",\"protocol\":\"muster-helper/1\",\"signature\":\"MEUCIH6rM9Hzb3cUcIYNJoRviumztSD4xlEDrFNdRwElwY36AiEAvjBovmB1fL-d6QxicBdRPjdtgRRqMI-ntuZuc6JFahg\"}\n",
+   "lineSHA256": "cde8f7e2c4511c9f35e76f17a3a37fefd86c1dd94cceb52c27078620ec107319",
+   "now": "2026-11-07T21:00:30Z",
+   "signature": "MEQCIO7qzh_jgCU_aocqf4dSWekVrAeZPd6ZEjtzvQzibmgNAiBXnKFx8UCCkR2RtV0scxR7Ogm4lCg0uNSA6lOdQMY0jw",
+   "stdin": "{\"approval\":{\"action\":\"restart\",\"approvalNonce\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"expiresAt\":\"2026-11-07T21:02:00Z\",\"host\":\"server\",\"issuedAt\":\"2026-11-07T21:00:00Z\",\"jobId\":\"job7k2m9q4x1\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\",\"planSHA256\":\"f162187bfc6725679de05bd66a6a1c1ae68c2e99b5ad3263330f99ec4103be4d\",\"signature\":\"MEQCIO7qzh_jgCU_aocqf4dSWekVrAeZPd6ZEjtzvQzibmgNAiBXnKFx8UCCkR2RtV0scxR7Ogm4lCg0uNSA6lOdQMY0jw\",\"target\":\"fleet-server-status.timer\"},\"protocol\":\"muster-helper/1\"}",
+   "stored": "v1",
+   "title": "An INTEGER whose high bit is set and that has no zero byte before it (a negative number)"
+  },
+  {
+   "answer": {
+    "body": {
+     "claimed": {
+      "action": "restart",
+      "approvalNonce": "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+      "deviceId": "d-ae9428d695e414bcefc0ef5b",
+      "host": "server",
+      "jobId": "job7k2m9q4x1",
+      "jobNonce": "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+      "planSHA256": "f162187bfc6725679de05bd66a6a1c1ae68c2e99b5ad3263330f99ec4103be4d",
+      "target": "fleet-server-status.timer"
+     },
+     "contract": "muster-signed-refusal/1",
+     "errorCode": "bad_signature",
+     "helperTrustListVersion": 1,
+     "reason": null,
+     "refusedAt": "2026-11-07T21:00:30Z",
+     "verified": false
+    },
+    "keyId": "38fbd10025f412d0",
+    "kind": "refusal",
+    "protocol": "muster-helper/1",
+    "signature": "MEUCIH6rM9Hzb3cUcIYNJoRviumztSD4xlEDrFNdRwElwY36AiEAvjBovmB1fL-d6QxicBdRPjdtgRRqMI-ntuZuc6JFahg"
+   },
+   "bodySHA256": "07b410dbdc6e27c7e5d3905ae7459e634c401f598086a950b73897b03c0e197f",
+   "exitStatus": 2,
+   "expected": {
+    "errorCode": "bad_signature",
+    "kind": "refusal",
+    "verified": false
+   },
+   "id": "trailing-byte",
+   "line": "{\"body\":{\"claimed\":{\"action\":\"restart\",\"approvalNonce\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"host\":\"server\",\"jobId\":\"job7k2m9q4x1\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\",\"planSHA256\":\"f162187bfc6725679de05bd66a6a1c1ae68c2e99b5ad3263330f99ec4103be4d\",\"target\":\"fleet-server-status.timer\"},\"contract\":\"muster-signed-refusal/1\",\"errorCode\":\"bad_signature\",\"helperTrustListVersion\":1,\"reason\":null,\"refusedAt\":\"2026-11-07T21:00:30Z\",\"verified\":false},\"keyId\":\"38fbd10025f412d0\",\"kind\":\"refusal\",\"protocol\":\"muster-helper/1\",\"signature\":\"MEUCIH6rM9Hzb3cUcIYNJoRviumztSD4xlEDrFNdRwElwY36AiEAvjBovmB1fL-d6QxicBdRPjdtgRRqMI-ntuZuc6JFahg\"}\n",
+   "lineSHA256": "cde8f7e2c4511c9f35e76f17a3a37fefd86c1dd94cceb52c27078620ec107319",
+   "now": "2026-11-07T21:00:30Z",
+   "signature": "MEQCIG7qzh_jgCU_aocqf4dSWekVrAeZPd6ZEjtzvQzibmgNAiBXnKFx8UCCkR2RtV0scxR7Ogm4lCg0uNSA6lOdQMY0jwA",
+   "stdin": "{\"approval\":{\"action\":\"restart\",\"approvalNonce\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"expiresAt\":\"2026-11-07T21:02:00Z\",\"host\":\"server\",\"issuedAt\":\"2026-11-07T21:00:00Z\",\"jobId\":\"job7k2m9q4x1\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\",\"planSHA256\":\"f162187bfc6725679de05bd66a6a1c1ae68c2e99b5ad3263330f99ec4103be4d\",\"signature\":\"MEQCIG7qzh_jgCU_aocqf4dSWekVrAeZPd6ZEjtzvQzibmgNAiBXnKFx8UCCkR2RtV0scxR7Ogm4lCg0uNSA6lOdQMY0jwA\",\"target\":\"fleet-server-status.timer\"},\"protocol\":\"muster-helper/1\"}",
+   "stored": "v1",
+   "title": "A byte after the SEQUENCE"
+  },
+  {
+   "answer": {
+    "body": {
+     "claimed": {
+      "action": "restart",
+      "approvalNonce": "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+      "deviceId": "d-ae9428d695e414bcefc0ef5b",
+      "host": "server",
+      "jobId": "job7k2m9q4x1",
+      "jobNonce": "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+      "planSHA256": "f162187bfc6725679de05bd66a6a1c1ae68c2e99b5ad3263330f99ec4103be4d",
+      "target": "fleet-server-status.timer"
+     },
+     "contract": "muster-signed-refusal/1",
+     "errorCode": "bad_signature",
+     "helperTrustListVersion": 1,
+     "reason": null,
+     "refusedAt": "2026-11-07T21:00:30Z",
+     "verified": false
+    },
+    "keyId": "38fbd10025f412d0",
+    "kind": "refusal",
+    "protocol": "muster-helper/1",
+    "signature": "MEUCIH6rM9Hzb3cUcIYNJoRviumztSD4xlEDrFNdRwElwY36AiEAvjBovmB1fL-d6QxicBdRPjdtgRRqMI-ntuZuc6JFahg"
+   },
+   "bodySHA256": "07b410dbdc6e27c7e5d3905ae7459e634c401f598086a950b73897b03c0e197f",
+   "exitStatus": 2,
+   "expected": {
+    "errorCode": "bad_signature",
+    "kind": "refusal",
+    "verified": false
+   },
+   "id": "long-form-length",
+   "line": "{\"body\":{\"claimed\":{\"action\":\"restart\",\"approvalNonce\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"host\":\"server\",\"jobId\":\"job7k2m9q4x1\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\",\"planSHA256\":\"f162187bfc6725679de05bd66a6a1c1ae68c2e99b5ad3263330f99ec4103be4d\",\"target\":\"fleet-server-status.timer\"},\"contract\":\"muster-signed-refusal/1\",\"errorCode\":\"bad_signature\",\"helperTrustListVersion\":1,\"reason\":null,\"refusedAt\":\"2026-11-07T21:00:30Z\",\"verified\":false},\"keyId\":\"38fbd10025f412d0\",\"kind\":\"refusal\",\"protocol\":\"muster-helper/1\",\"signature\":\"MEUCIH6rM9Hzb3cUcIYNJoRviumztSD4xlEDrFNdRwElwY36AiEAvjBovmB1fL-d6QxicBdRPjdtgRRqMI-ntuZuc6JFahg\"}\n",
+   "lineSHA256": "cde8f7e2c4511c9f35e76f17a3a37fefd86c1dd94cceb52c27078620ec107319",
+   "now": "2026-11-07T21:00:30Z",
+   "signature": "MIFEAiBu6s4f44AlP2qHKn-HUlnpFawHmT3emRI7c70M4m5oDQIgV5yhcfFAgpEdkbVdLHMUezoJuJQoNLjUgOpTnUDGNI8",
+   "stdin": "{\"approval\":{\"action\":\"restart\",\"approvalNonce\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"expiresAt\":\"2026-11-07T21:02:00Z\",\"host\":\"server\",\"issuedAt\":\"2026-11-07T21:00:00Z\",\"jobId\":\"job7k2m9q4x1\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\",\"planSHA256\":\"f162187bfc6725679de05bd66a6a1c1ae68c2e99b5ad3263330f99ec4103be4d\",\"signature\":\"MIFEAiBu6s4f44AlP2qHKn-HUlnpFawHmT3emRI7c70M4m5oDQIgV5yhcfFAgpEdkbVdLHMUezoJuJQoNLjUgOpTnUDGNI8\",\"target\":\"fleet-server-status.timer\"},\"protocol\":\"muster-helper/1\"}",
+   "stored": "v1",
+   "title": "The SEQUENCE length in long form (0x81) where the short form is the only one allowed"
+  },
+  {
+   "answer": {
+    "body": {
+     "claimed": {
+      "action": "restart",
+      "approvalNonce": "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+      "deviceId": "d-ae9428d695e414bcefc0ef5b",
+      "host": "server",
+      "jobId": "job7k2m9q4x1",
+      "jobNonce": "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+      "planSHA256": "f162187bfc6725679de05bd66a6a1c1ae68c2e99b5ad3263330f99ec4103be4d",
+      "target": "fleet-server-status.timer"
+     },
+     "contract": "muster-signed-refusal/1",
+     "errorCode": "bad_signature",
+     "helperTrustListVersion": 1,
+     "reason": null,
+     "refusedAt": "2026-11-07T21:00:30Z",
+     "verified": false
+    },
+    "keyId": "38fbd10025f412d0",
+    "kind": "refusal",
+    "protocol": "muster-helper/1",
+    "signature": "MEUCIH6rM9Hzb3cUcIYNJoRviumztSD4xlEDrFNdRwElwY36AiEAvjBovmB1fL-d6QxicBdRPjdtgRRqMI-ntuZuc6JFahg"
+   },
+   "bodySHA256": "07b410dbdc6e27c7e5d3905ae7459e634c401f598086a950b73897b03c0e197f",
+   "exitStatus": 2,
+   "expected": {
+    "errorCode": "bad_signature",
+    "kind": "refusal",
+    "verified": false
+   },
+   "id": "r-zero",
+   "line": "{\"body\":{\"claimed\":{\"action\":\"restart\",\"approvalNonce\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"host\":\"server\",\"jobId\":\"job7k2m9q4x1\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\",\"planSHA256\":\"f162187bfc6725679de05bd66a6a1c1ae68c2e99b5ad3263330f99ec4103be4d\",\"target\":\"fleet-server-status.timer\"},\"contract\":\"muster-signed-refusal/1\",\"errorCode\":\"bad_signature\",\"helperTrustListVersion\":1,\"reason\":null,\"refusedAt\":\"2026-11-07T21:00:30Z\",\"verified\":false},\"keyId\":\"38fbd10025f412d0\",\"kind\":\"refusal\",\"protocol\":\"muster-helper/1\",\"signature\":\"MEUCIH6rM9Hzb3cUcIYNJoRviumztSD4xlEDrFNdRwElwY36AiEAvjBovmB1fL-d6QxicBdRPjdtgRRqMI-ntuZuc6JFahg\"}\n",
+   "lineSHA256": "cde8f7e2c4511c9f35e76f17a3a37fefd86c1dd94cceb52c27078620ec107319",
+   "now": "2026-11-07T21:00:30Z",
+   "signature": "MCUCAQACIFecoXHxQIKRHZG1XSxzFHs6CbiUKDS41IDqU51AxjSP",
+   "stdin": "{\"approval\":{\"action\":\"restart\",\"approvalNonce\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"expiresAt\":\"2026-11-07T21:02:00Z\",\"host\":\"server\",\"issuedAt\":\"2026-11-07T21:00:00Z\",\"jobId\":\"job7k2m9q4x1\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\",\"planSHA256\":\"f162187bfc6725679de05bd66a6a1c1ae68c2e99b5ad3263330f99ec4103be4d\",\"signature\":\"MCUCAQACIFecoXHxQIKRHZG1XSxzFHs6CbiUKDS41IDqU51AxjSP\",\"target\":\"fleet-server-status.timer\"},\"protocol\":\"muster-helper/1\"}",
+   "stored": "v1",
+   "title": "r equal to 0"
+  },
+  {
+   "answer": {
+    "body": {
+     "claimed": {
+      "action": "restart",
+      "approvalNonce": "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+      "deviceId": "d-ae9428d695e414bcefc0ef5b",
+      "host": "server",
+      "jobId": "job7k2m9q4x1",
+      "jobNonce": "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+      "planSHA256": "f162187bfc6725679de05bd66a6a1c1ae68c2e99b5ad3263330f99ec4103be4d",
+      "target": "fleet-server-status.timer"
+     },
+     "contract": "muster-signed-refusal/1",
+     "errorCode": "bad_signature",
+     "helperTrustListVersion": 1,
+     "reason": null,
+     "refusedAt": "2026-11-07T21:00:30Z",
+     "verified": false
+    },
+    "keyId": "38fbd10025f412d0",
+    "kind": "refusal",
+    "protocol": "muster-helper/1",
+    "signature": "MEUCIH6rM9Hzb3cUcIYNJoRviumztSD4xlEDrFNdRwElwY36AiEAvjBovmB1fL-d6QxicBdRPjdtgRRqMI-ntuZuc6JFahg"
+   },
+   "bodySHA256": "07b410dbdc6e27c7e5d3905ae7459e634c401f598086a950b73897b03c0e197f",
+   "exitStatus": 2,
+   "expected": {
+    "errorCode": "bad_signature",
+    "kind": "refusal",
+    "verified": false
+   },
+   "id": "s-equals-n",
+   "line": "{\"body\":{\"claimed\":{\"action\":\"restart\",\"approvalNonce\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"host\":\"server\",\"jobId\":\"job7k2m9q4x1\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\",\"planSHA256\":\"f162187bfc6725679de05bd66a6a1c1ae68c2e99b5ad3263330f99ec4103be4d\",\"target\":\"fleet-server-status.timer\"},\"contract\":\"muster-signed-refusal/1\",\"errorCode\":\"bad_signature\",\"helperTrustListVersion\":1,\"reason\":null,\"refusedAt\":\"2026-11-07T21:00:30Z\",\"verified\":false},\"keyId\":\"38fbd10025f412d0\",\"kind\":\"refusal\",\"protocol\":\"muster-helper/1\",\"signature\":\"MEUCIH6rM9Hzb3cUcIYNJoRviumztSD4xlEDrFNdRwElwY36AiEAvjBovmB1fL-d6QxicBdRPjdtgRRqMI-ntuZuc6JFahg\"}\n",
+   "lineSHA256": "cde8f7e2c4511c9f35e76f17a3a37fefd86c1dd94cceb52c27078620ec107319",
+   "now": "2026-11-07T21:00:30Z",
+   "signature": "MEUCIG7qzh_jgCU_aocqf4dSWekVrAeZPd6ZEjtzvQzibmgNAiEA_____wAAAAD__________7zm-q2nF56E87nKwvxjJVE",
+   "stdin": "{\"approval\":{\"action\":\"restart\",\"approvalNonce\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"expiresAt\":\"2026-11-07T21:02:00Z\",\"host\":\"server\",\"issuedAt\":\"2026-11-07T21:00:00Z\",\"jobId\":\"job7k2m9q4x1\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\",\"planSHA256\":\"f162187bfc6725679de05bd66a6a1c1ae68c2e99b5ad3263330f99ec4103be4d\",\"signature\":\"MEUCIG7qzh_jgCU_aocqf4dSWekVrAeZPd6ZEjtzvQzibmgNAiEA_____wAAAAD__________7zm-q2nF56E87nKwvxjJVE\",\"target\":\"fleet-server-status.timer\"},\"protocol\":\"muster-helper/1\"}",
+   "stored": "v1",
+   "title": "s equal to the curve order n"
+  },
+  {
+   "answer": {
+    "body": {
+     "claimed": {
+      "action": "restart",
+      "approvalNonce": "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+      "deviceId": "d-ae9428d695e414bcefc0ef5b",
+      "host": "server",
+      "jobId": "job7k2m9q4x1",
+      "jobNonce": "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+      "planSHA256": "f162187bfc6725679de05bd66a6a1c1ae68c2e99b5ad3263330f99ec4103be4d",
+      "target": "fleet-server-status.timer"
+     },
+     "contract": "muster-signed-refusal/1",
+     "errorCode": "bad_signature",
+     "helperTrustListVersion": 1,
+     "reason": null,
+     "refusedAt": "2026-11-07T21:00:30Z",
+     "verified": false
+    },
+    "keyId": "38fbd10025f412d0",
+    "kind": "refusal",
+    "protocol": "muster-helper/1",
+    "signature": "MEUCIH6rM9Hzb3cUcIYNJoRviumztSD4xlEDrFNdRwElwY36AiEAvjBovmB1fL-d6QxicBdRPjdtgRRqMI-ntuZuc6JFahg"
+   },
+   "bodySHA256": "07b410dbdc6e27c7e5d3905ae7459e634c401f598086a950b73897b03c0e197f",
+   "exitStatus": 2,
+   "expected": {
+    "errorCode": "bad_signature",
+    "kind": "refusal",
+    "verified": false
+   },
+   "id": "truncated",
+   "line": "{\"body\":{\"claimed\":{\"action\":\"restart\",\"approvalNonce\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"host\":\"server\",\"jobId\":\"job7k2m9q4x1\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\",\"planSHA256\":\"f162187bfc6725679de05bd66a6a1c1ae68c2e99b5ad3263330f99ec4103be4d\",\"target\":\"fleet-server-status.timer\"},\"contract\":\"muster-signed-refusal/1\",\"errorCode\":\"bad_signature\",\"helperTrustListVersion\":1,\"reason\":null,\"refusedAt\":\"2026-11-07T21:00:30Z\",\"verified\":false},\"keyId\":\"38fbd10025f412d0\",\"kind\":\"refusal\",\"protocol\":\"muster-helper/1\",\"signature\":\"MEUCIH6rM9Hzb3cUcIYNJoRviumztSD4xlEDrFNdRwElwY36AiEAvjBovmB1fL-d6QxicBdRPjdtgRRqMI-ntuZuc6JFahg\"}\n",
+   "lineSHA256": "cde8f7e2c4511c9f35e76f17a3a37fefd86c1dd94cceb52c27078620ec107319",
+   "now": "2026-11-07T21:00:30Z",
+   "signature": "MEQCIG7qzh_jgCU_aocqf4dSWekVrAeZPd6ZEjtzvQzibmgNAiBXnKFx8UCCkR2RtV0scxR7Ogm4lCg0uNSA6lOdQMY0",
+   "stdin": "{\"approval\":{\"action\":\"restart\",\"approvalNonce\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"expiresAt\":\"2026-11-07T21:02:00Z\",\"host\":\"server\",\"issuedAt\":\"2026-11-07T21:00:00Z\",\"jobId\":\"job7k2m9q4x1\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\",\"planSHA256\":\"f162187bfc6725679de05bd66a6a1c1ae68c2e99b5ad3263330f99ec4103be4d\",\"signature\":\"MEQCIG7qzh_jgCU_aocqf4dSWekVrAeZPd6ZEjtzvQzibmgNAiBXnKFx8UCCkR2RtV0scxR7Ogm4lCg0uNSA6lOdQMY0\",\"target\":\"fleet-server-status.timer\"},\"protocol\":\"muster-helper/1\"}",
+   "stored": "v1",
+   "title": "The DER cut one byte short (a wrong length)"
+  },
+  {
+   "answer": {
+    "body": {
+     "claimed": {
+      "action": "restart",
+      "approvalNonce": "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+      "deviceId": "d-ae9428d695e414bcefc0ef5b",
+      "host": "server",
+      "jobId": "job7k2m9q4x1",
+      "jobNonce": "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+      "planSHA256": "f162187bfc6725679de05bd66a6a1c1ae68c2e99b5ad3263330f99ec4103be4d",
+      "target": "fleet-server-status.timer"
+     },
+     "contract": "muster-signed-refusal/1",
+     "errorCode": "bad_signature",
+     "helperTrustListVersion": 1,
+     "reason": null,
+     "refusedAt": "2026-11-07T21:00:30Z",
+     "verified": false
+    },
+    "keyId": "38fbd10025f412d0",
+    "kind": "refusal",
+    "protocol": "muster-helper/1",
+    "signature": "MEUCIH6rM9Hzb3cUcIYNJoRviumztSD4xlEDrFNdRwElwY36AiEAvjBovmB1fL-d6QxicBdRPjdtgRRqMI-ntuZuc6JFahg"
+   },
+   "bodySHA256": "07b410dbdc6e27c7e5d3905ae7459e634c401f598086a950b73897b03c0e197f",
+   "exitStatus": 2,
+   "expected": {
+    "errorCode": "bad_signature",
+    "kind": "refusal",
+    "verified": false
+   },
+   "id": "stray-trailing-bits",
+   "line": "{\"body\":{\"claimed\":{\"action\":\"restart\",\"approvalNonce\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"host\":\"server\",\"jobId\":\"job7k2m9q4x1\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\",\"planSHA256\":\"f162187bfc6725679de05bd66a6a1c1ae68c2e99b5ad3263330f99ec4103be4d\",\"target\":\"fleet-server-status.timer\"},\"contract\":\"muster-signed-refusal/1\",\"errorCode\":\"bad_signature\",\"helperTrustListVersion\":1,\"reason\":null,\"refusedAt\":\"2026-11-07T21:00:30Z\",\"verified\":false},\"keyId\":\"38fbd10025f412d0\",\"kind\":\"refusal\",\"protocol\":\"muster-helper/1\",\"signature\":\"MEUCIH6rM9Hzb3cUcIYNJoRviumztSD4xlEDrFNdRwElwY36AiEAvjBovmB1fL-d6QxicBdRPjdtgRRqMI-ntuZuc6JFahg\"}\n",
+   "lineSHA256": "cde8f7e2c4511c9f35e76f17a3a37fefd86c1dd94cceb52c27078620ec107319",
+   "now": "2026-11-07T21:00:30Z",
+   "signature": "MEQCIG7qzh_jgCU_aocqf4dSWekVrAeZPd6ZEjtzvQzibmgNAiBXnKFx8UCCkR2RtV0scxR7Ogm4lCg0uNSA6lOdQMY0jx",
+   "stdin": "{\"approval\":{\"action\":\"restart\",\"approvalNonce\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"expiresAt\":\"2026-11-07T21:02:00Z\",\"host\":\"server\",\"issuedAt\":\"2026-11-07T21:00:00Z\",\"jobId\":\"job7k2m9q4x1\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\",\"planSHA256\":\"f162187bfc6725679de05bd66a6a1c1ae68c2e99b5ad3263330f99ec4103be4d\",\"signature\":\"MEQCIG7qzh_jgCU_aocqf4dSWekVrAeZPd6ZEjtzvQzibmgNAiBXnKFx8UCCkR2RtV0scxR7Ogm4lCg0uNSA6lOdQMY0jx\",\"target\":\"fleet-server-status.timer\"},\"protocol\":\"muster-helper/1\"}",
+   "stored": "v1",
+   "title": "The same bytes, but the last base64url character carries bits the length leaves unused"
+  },
+  {
+   "answer": {
+    "body": {
+     "claimed": {
+      "action": "restart",
+      "approvalNonce": "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+      "deviceId": "d-ae9428d695e414bcefc0ef5b",
+      "host": "server",
+      "jobId": "job7k2m9q4x1",
+      "jobNonce": "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+      "planSHA256": "f162187bfc6725679de05bd66a6a1c1ae68c2e99b5ad3263330f99ec4103be4d",
+      "target": "fleet-server-status.timer"
+     },
+     "contract": "muster-signed-refusal/1",
+     "errorCode": "bad_signature",
+     "helperTrustListVersion": 1,
+     "reason": null,
+     "refusedAt": "2026-11-07T21:00:30Z",
+     "verified": false
+    },
+    "keyId": "38fbd10025f412d0",
+    "kind": "refusal",
+    "protocol": "muster-helper/1",
+    "signature": "MEUCIH6rM9Hzb3cUcIYNJoRviumztSD4xlEDrFNdRwElwY36AiEAvjBovmB1fL-d6QxicBdRPjdtgRRqMI-ntuZuc6JFahg"
+   },
+   "bodySHA256": "07b410dbdc6e27c7e5d3905ae7459e634c401f598086a950b73897b03c0e197f",
+   "exitStatus": 2,
+   "expected": {
+    "errorCode": "bad_signature",
+    "kind": "refusal",
+    "verified": false
+   },
+   "id": "impossible-length",
+   "line": "{\"body\":{\"claimed\":{\"action\":\"restart\",\"approvalNonce\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"host\":\"server\",\"jobId\":\"job7k2m9q4x1\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\",\"planSHA256\":\"f162187bfc6725679de05bd66a6a1c1ae68c2e99b5ad3263330f99ec4103be4d\",\"target\":\"fleet-server-status.timer\"},\"contract\":\"muster-signed-refusal/1\",\"errorCode\":\"bad_signature\",\"helperTrustListVersion\":1,\"reason\":null,\"refusedAt\":\"2026-11-07T21:00:30Z\",\"verified\":false},\"keyId\":\"38fbd10025f412d0\",\"kind\":\"refusal\",\"protocol\":\"muster-helper/1\",\"signature\":\"MEUCIH6rM9Hzb3cUcIYNJoRviumztSD4xlEDrFNdRwElwY36AiEAvjBovmB1fL-d6QxicBdRPjdtgRRqMI-ntuZuc6JFahg\"}\n",
+   "lineSHA256": "cde8f7e2c4511c9f35e76f17a3a37fefd86c1dd94cceb52c27078620ec107319",
+   "now": "2026-11-07T21:00:30Z",
+   "signature": "MEQCIG7qzh_jgCU_aocqf4dSWekVrAeZPd6ZEjtzvQzibmgNAiBXnKFx8UCCkR2RtV0scxR7Ogm4lCg0uNSA6lOdQMY0j",
+   "stdin": "{\"approval\":{\"action\":\"restart\",\"approvalNonce\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"expiresAt\":\"2026-11-07T21:02:00Z\",\"host\":\"server\",\"issuedAt\":\"2026-11-07T21:00:00Z\",\"jobId\":\"job7k2m9q4x1\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\",\"planSHA256\":\"f162187bfc6725679de05bd66a6a1c1ae68c2e99b5ad3263330f99ec4103be4d\",\"signature\":\"MEQCIG7qzh_jgCU_aocqf4dSWekVrAeZPd6ZEjtzvQzibmgNAiBXnKFx8UCCkR2RtV0scxR7Ogm4lCg0uNSA6lOdQMY0j\",\"target\":\"fleet-server-status.timer\"},\"protocol\":\"muster-helper/1\"}",
+   "stored": "v1",
+   "title": "A base64url string whose length is 1 modulo 4, which no byte string encodes to"
+  },
+  {
+   "answer": {
+    "body": {
+     "claimed": {},
+     "contract": "muster-signed-refusal/1",
+     "errorCode": "bad_input",
+     "helperTrustListVersion": null,
+     "reason": null,
+     "refusedAt": "2026-11-07T21:00:30Z",
+     "verified": false
+    },
+    "keyId": "38fbd10025f412d0",
+    "kind": "refusal",
+    "protocol": "muster-helper/1",
+    "signature": "MEQCIDhcXDGUM_otFAb0_ZjG6ujbvGvhbsFNKpX5oNnJp2R2AiBuOIMI1HwxTAWdN0S-Fs2Gl7jHsjHAmAo5OSv33WYxEw"
+   },
+   "bodySHA256": "b53050edfeb9b4d272c5d95eaa9622f96153038332535fa1cd287198de7dae4f",
+   "exitStatus": 2,
+   "expected": {
+    "errorCode": "bad_input",
+    "kind": "refusal",
+    "verified": false
+   },
+   "id": "padding-present",
+   "line": "{\"body\":{\"claimed\":{},\"contract\":\"muster-signed-refusal/1\",\"errorCode\":\"bad_input\",\"helperTrustListVersion\":null,\"reason\":null,\"refusedAt\":\"2026-11-07T21:00:30Z\",\"verified\":false},\"keyId\":\"38fbd10025f412d0\",\"kind\":\"refusal\",\"protocol\":\"muster-helper/1\",\"signature\":\"MEQCIDhcXDGUM_otFAb0_ZjG6ujbvGvhbsFNKpX5oNnJp2R2AiBuOIMI1HwxTAWdN0S-Fs2Gl7jHsjHAmAo5OSv33WYxEw\"}\n",
+   "lineSHA256": "88956a2ec050fbcdcbebc2e4711fa5fb45c1749baf7578280fd5ae0741641fcf",
+   "now": "2026-11-07T21:00:30Z",
+   "signature": "MEQCIG7qzh_jgCU_aocqf4dSWekVrAeZPd6ZEjtzvQzibmgNAiBXnKFx8UCCkR2RtV0scxR7Ogm4lCg0uNSA6lOdQMY0jw==",
+   "stdin": "{\"approval\":{\"action\":\"restart\",\"approvalNonce\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"expiresAt\":\"2026-11-07T21:02:00Z\",\"host\":\"server\",\"issuedAt\":\"2026-11-07T21:00:00Z\",\"jobId\":\"job7k2m9q4x1\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\",\"planSHA256\":\"f162187bfc6725679de05bd66a6a1c1ae68c2e99b5ad3263330f99ec4103be4d\",\"signature\":\"MEQCIG7qzh_jgCU_aocqf4dSWekVrAeZPd6ZEjtzvQzibmgNAiBXnKFx8UCCkR2RtV0scxR7Ogm4lCg0uNSA6lOdQMY0jw==\",\"target\":\"fleet-server-status.timer\"},\"protocol\":\"muster-helper/1\"}",
+   "stored": "v1",
+   "title": "The signature with base64 padding"
+  },
+  {
+   "answer": {
+    "body": {
+     "claimed": {},
+     "contract": "muster-signed-refusal/1",
+     "errorCode": "bad_input",
+     "helperTrustListVersion": null,
+     "reason": null,
+     "refusedAt": "2026-11-07T21:00:30Z",
+     "verified": false
+    },
+    "keyId": "38fbd10025f412d0",
+    "kind": "refusal",
+    "protocol": "muster-helper/1",
+    "signature": "MEQCIDhcXDGUM_otFAb0_ZjG6ujbvGvhbsFNKpX5oNnJp2R2AiBuOIMI1HwxTAWdN0S-Fs2Gl7jHsjHAmAo5OSv33WYxEw"
+   },
+   "bodySHA256": "b53050edfeb9b4d272c5d95eaa9622f96153038332535fa1cd287198de7dae4f",
+   "exitStatus": 2,
+   "expected": {
+    "errorCode": "bad_input",
+    "kind": "refusal",
+    "verified": false
+   },
+   "id": "over-100-characters",
+   "line": "{\"body\":{\"claimed\":{},\"contract\":\"muster-signed-refusal/1\",\"errorCode\":\"bad_input\",\"helperTrustListVersion\":null,\"reason\":null,\"refusedAt\":\"2026-11-07T21:00:30Z\",\"verified\":false},\"keyId\":\"38fbd10025f412d0\",\"kind\":\"refusal\",\"protocol\":\"muster-helper/1\",\"signature\":\"MEQCIDhcXDGUM_otFAb0_ZjG6ujbvGvhbsFNKpX5oNnJp2R2AiBuOIMI1HwxTAWdN0S-Fs2Gl7jHsjHAmAo5OSv33WYxEw\"}\n",
+   "lineSHA256": "88956a2ec050fbcdcbebc2e4711fa5fb45c1749baf7578280fd5ae0741641fcf",
+   "now": "2026-11-07T21:00:30Z",
+   "signature": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+   "stdin": "{\"approval\":{\"action\":\"restart\",\"approvalNonce\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"expiresAt\":\"2026-11-07T21:02:00Z\",\"host\":\"server\",\"issuedAt\":\"2026-11-07T21:00:00Z\",\"jobId\":\"job7k2m9q4x1\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\",\"planSHA256\":\"f162187bfc6725679de05bd66a6a1c1ae68c2e99b5ad3263330f99ec4103be4d\",\"signature\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"target\":\"fleet-server-status.timer\"},\"protocol\":\"muster-helper/1\"}",
+   "stored": "v1",
+   "title": "More than the 100 characters a signature field may hold"
+  },
+  {
+   "answer": {
+    "body": {
+     "claimed": {},
+     "contract": "muster-signed-refusal/1",
+     "errorCode": "bad_input",
+     "helperTrustListVersion": null,
+     "reason": null,
+     "refusedAt": "2026-11-07T21:00:30Z",
+     "verified": false
+    },
+    "keyId": "38fbd10025f412d0",
+    "kind": "refusal",
+    "protocol": "muster-helper/1",
+    "signature": "MEQCIDhcXDGUM_otFAb0_ZjG6ujbvGvhbsFNKpX5oNnJp2R2AiBuOIMI1HwxTAWdN0S-Fs2Gl7jHsjHAmAo5OSv33WYxEw"
+   },
+   "bodySHA256": "b53050edfeb9b4d272c5d95eaa9622f96153038332535fa1cd287198de7dae4f",
+   "exitStatus": 2,
+   "expected": {
+    "errorCode": "bad_input",
+    "kind": "refusal",
+    "verified": false
+   },
+   "id": "empty",
+   "line": "{\"body\":{\"claimed\":{},\"contract\":\"muster-signed-refusal/1\",\"errorCode\":\"bad_input\",\"helperTrustListVersion\":null,\"reason\":null,\"refusedAt\":\"2026-11-07T21:00:30Z\",\"verified\":false},\"keyId\":\"38fbd10025f412d0\",\"kind\":\"refusal\",\"protocol\":\"muster-helper/1\",\"signature\":\"MEQCIDhcXDGUM_otFAb0_ZjG6ujbvGvhbsFNKpX5oNnJp2R2AiBuOIMI1HwxTAWdN0S-Fs2Gl7jHsjHAmAo5OSv33WYxEw\"}\n",
+   "lineSHA256": "88956a2ec050fbcdcbebc2e4711fa5fb45c1749baf7578280fd5ae0741641fcf",
+   "now": "2026-11-07T21:00:30Z",
+   "signature": "",
+   "stdin": "{\"approval\":{\"action\":\"restart\",\"approvalNonce\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"expiresAt\":\"2026-11-07T21:02:00Z\",\"host\":\"server\",\"issuedAt\":\"2026-11-07T21:00:00Z\",\"jobId\":\"job7k2m9q4x1\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\",\"planSHA256\":\"f162187bfc6725679de05bd66a6a1c1ae68c2e99b5ad3263330f99ec4103be4d\",\"signature\":\"\",\"target\":\"fleet-server-status.timer\"},\"protocol\":\"muster-helper/1\"}",
+   "stored": "v1",
+   "title": "An empty signature"
+  },
+  {
+   "answer": {
+    "body": {
+     "action": "restart",
+     "approvalNonce": "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+     "auditId": "a1b2c3d4e5f6",
+     "contract": "muster-signed-result/1",
+     "detail": "done",
+     "deviceId": "d-ae9428d695e414bcefc0ef5b",
+     "finishedAt": "2026-11-07T21:00:30Z",
+     "helperTrustListVersion": 1,
+     "host": "server",
+     "jobId": "job7k2m9q4x1",
+     "jobNonce": "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+     "outcome": "done",
+     "outputB64": null,
+     "planSHA256": "f162187bfc6725679de05bd66a6a1c1ae68c2e99b5ad3263330f99ec4103be4d",
+     "target": "fleet-server-status.timer"
+    },
+    "keyId": "38fbd10025f412d0",
+    "kind": "result",
+    "protocol": "muster-helper/1",
+    "signature": "MEQCIA2NNZipyLe-VDkZ7NdZ476whOGukWzzoXQGGr6HF3XeAiAl8xl3gaMOTiJbXN4URRk4gvQcI5jMqbyNqHp0gDI4yA"
+   },
+   "bodySHA256": "9b2c6456d64f87a32a76dcfb4b4ed8d5d6935d86a39b9e33722aa8a137d5418a",
+   "exitStatus": 0,
+   "expected": {
+    "kind": "result",
+    "outcome": "done"
+   },
+   "id": "high-s-twin",
+   "line": "{\"body\":{\"action\":\"restart\",\"approvalNonce\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"auditId\":\"a1b2c3d4e5f6\",\"contract\":\"muster-signed-result/1\",\"detail\":\"done\",\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"finishedAt\":\"2026-11-07T21:00:30Z\",\"helperTrustListVersion\":1,\"host\":\"server\",\"jobId\":\"job7k2m9q4x1\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\",\"outcome\":\"done\",\"outputB64\":null,\"planSHA256\":\"f162187bfc6725679de05bd66a6a1c1ae68c2e99b5ad3263330f99ec4103be4d\",\"target\":\"fleet-server-status.timer\"},\"keyId\":\"38fbd10025f412d0\",\"kind\":\"result\",\"protocol\":\"muster-helper/1\",\"signature\":\"MEQCIA2NNZipyLe-VDkZ7NdZ476whOGukWzzoXQGGr6HF3XeAiAl8xl3gaMOTiJbXN4URRk4gvQcI5jMqbyNqHp0gDI4yA\"}\n",
+   "lineSHA256": "ddc85f4fccb3885afd451c4f85e531fa904426012fdc6f57893f60a55e719394",
+   "now": "2026-11-07T21:00:30Z",
+   "signature": "MEUCIG7qzh_jgCU_aocqf4dSWekVrAeZPd6ZEjtzvQzibmgNAiEAqGNejQ6_fW_ibkqi04zrhILdQhl-4uWwcs93Jbuc8MI",
+   "stdin": "{\"approval\":{\"action\":\"restart\",\"approvalNonce\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"expiresAt\":\"2026-11-07T21:02:00Z\",\"host\":\"server\",\"issuedAt\":\"2026-11-07T21:00:00Z\",\"jobId\":\"job7k2m9q4x1\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\",\"planSHA256\":\"f162187bfc6725679de05bd66a6a1c1ae68c2e99b5ad3263330f99ec4103be4d\",\"signature\":\"MEUCIG7qzh_jgCU_aocqf4dSWekVrAeZPd6ZEjtzvQzibmgNAiEAqGNejQ6_fW_ibkqi04zrhILdQhl-4uWwcs93Jbuc8MI\",\"target\":\"fleet-server-status.timer\"},\"protocol\":\"muster-helper/1\"}",
+   "stored": "v1",
+   "title": "The other form of V1's signature, s replaced by n - s:  valid, and accepted (no low-S rule)"
+  }
+ ],
  "canonical": {
   "expected": "{\"B\":null,\"a\":\"x\",\"a10\":[\"/usr/bin/systemctl\",7,true,null],\"a9\":{\"b\":-3,\"y\":\"a\\\"b\\\\c\"},\"z\":\"fleet-ops-plan/1\"}",
   "sha256": "ed2ca98a1b511830878f0ac78679fc93aa79617fa3cb99001328163f55705ce4",
@@ -499,6 +1019,639 @@
   {
    "expected": "`chain_refused`, reason `reopen_unavailable`",
    "id": "T23 v4 under version 5 as frozen"
+  }
+ ],
+ "generatedAnswers": [
+  {
+   "answer": {
+    "body": {
+     "at": "2026-11-07T21:00:30Z",
+     "closed": false,
+     "contract": "muster-signed-ack/1",
+     "finalRefusals": [],
+     "helperTrustListVersion": null,
+     "signedByCurrentKey": false,
+     "trustListSHA256": null
+    },
+    "keyId": "38fbd10025f412d0",
+    "kind": "ack",
+    "protocol": "muster-helper/1",
+    "signature": "MEUCIEo04PGpMk2lG1FPfg_G3t-M_bguUMbKWRRFjeIQzQRsAiEAxUPctXYom1NQ9XbgBFtChxN09uERTngL3nwDvr4NLCc"
+   },
+   "bodySHA256": "03b5e4c071872deeed6f539030277d117ba61167ab2ac35ea058ab36a43e9626",
+   "command": "muster trust-list current --plan",
+   "exitStatus": 0,
+   "id": "ackNothingHeld",
+   "line": "{\"body\":{\"at\":\"2026-11-07T21:00:30Z\",\"closed\":false,\"contract\":\"muster-signed-ack/1\",\"finalRefusals\":[],\"helperTrustListVersion\":null,\"signedByCurrentKey\":false,\"trustListSHA256\":null},\"keyId\":\"38fbd10025f412d0\",\"kind\":\"ack\",\"protocol\":\"muster-helper/1\",\"signature\":\"MEUCIEo04PGpMk2lG1FPfg_G3t-M_bguUMbKWRRFjeIQzQRsAiEAxUPctXYom1NQ9XbgBFtChxN09uERTngL3nwDvr4NLCc\"}\n",
+   "lineSHA256": "f0a222d6098ac92dd87b5aaba4c6172ee1b5528c714a252b707090dccea92655",
+   "now": "2026-11-07T21:00:30Z",
+   "setup": {
+    "stored": "none"
+   },
+   "stdin": "{\"protocol\":\"muster-helper/1\"}",
+   "title": "The acknowledgement when the helper holds no list"
+  },
+  {
+   "answer": {
+    "body": {
+     "claimed": {
+      "deviceId": "d-ae9428d695e414bcefc0ef5b",
+      "jobId": "job7k2m9q4x1",
+      "jobNonce": "0f1e2d3c4b5a69788796a5b4c3d2e1f0"
+     },
+     "contract": "muster-signed-refusal/1",
+     "errorCode": "plan_refused",
+     "helperTrustListVersion": null,
+     "reason": "allowlist_miss",
+     "refusedAt": "2026-11-07T21:00:30Z",
+     "verified": false
+    },
+    "keyId": "38fbd10025f412d0",
+    "kind": "refusal",
+    "protocol": "muster-helper/1",
+    "signature": "MEQCIBs4GxwFnfV0o62oVKDKNtOBp_MYoeoo_Cx31TdLnYAEAiAMuSs_sBFrOWpTRfXp2Hqasmd5pJUTNJsvIYHmEwDIJA"
+   },
+   "bodySHA256": "634fa5990fb66c4971edf2b44a0b151c30159b36ce64026be120b450fe8f9532",
+   "command": "server restart not-listed.service --plan",
+   "exitStatus": 2,
+   "id": "planRefusedAllowlistMiss",
+   "line": "{\"body\":{\"claimed\":{\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"jobId\":\"job7k2m9q4x1\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\"},\"contract\":\"muster-signed-refusal/1\",\"errorCode\":\"plan_refused\",\"helperTrustListVersion\":null,\"reason\":\"allowlist_miss\",\"refusedAt\":\"2026-11-07T21:00:30Z\",\"verified\":false},\"keyId\":\"38fbd10025f412d0\",\"kind\":\"refusal\",\"protocol\":\"muster-helper/1\",\"signature\":\"MEQCIBs4GxwFnfV0o62oVKDKNtOBp_MYoeoo_Cx31TdLnYAEAiAMuSs_sBFrOWpTRfXp2Hqasmd5pJUTNJsvIYHmEwDIJA\"}\n",
+   "lineSHA256": "513c354410fe59a8926e31f8760ab4fda954b11ddc7df2c291d6fee05b3ef2e8",
+   "now": "2026-11-07T21:00:30Z",
+   "setup": {
+    "stored": "v1"
+   },
+   "stdin": "{\"job\":{\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"jobId\":\"job7k2m9q4x1\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\"},\"protocol\":\"muster-helper/1\"}",
+   "title": "A plan request for a unit that is not on the allowlist: plan_refused, reason allowlist_miss"
+  },
+  {
+   "answer": {
+    "body": {
+     "action": "logs",
+     "approvalNonce": "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+     "auditId": "a1b2c3d4e5f6",
+     "contract": "muster-signed-result/1",
+     "detail": "3 journal lines",
+     "deviceId": "d-ae9428d695e414bcefc0ef5b",
+     "finishedAt": "2026-11-07T21:00:30Z",
+     "helperTrustListVersion": 1,
+     "host": "server",
+     "jobId": "job7k2m9q4x1",
+     "jobNonce": "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+     "outcome": "done",
+     "outputB64": "bGluZSBvbmUKbGluZSB0d28KbmHDr3ZlIHRocmVlCg",
+     "planSHA256": "f568a2a74be62d654cd23657903fbec952a451bfc1778031235d53a561ed7a87",
+     "target": "fleet-server-status.timer"
+    },
+    "keyId": "38fbd10025f412d0",
+    "kind": "result",
+    "protocol": "muster-helper/1",
+    "signature": "MEYCIQCzu8FBrgzsjg0o2MdohfFsH391KJhamlEXc7U0QFoFUwIhAOonT3UfSN9pDKxdAA9LfVxstZRo0WvBTc3eb9Mi_Xi8"
+   },
+   "bodySHA256": "fe6d8f8e63f63c5c6c79a60a94d13276bf2cf24c677e21b88f182cdd406aeeee",
+   "command": "server logs fleet-server-status.timer --yes",
+   "exitStatus": 0,
+   "id": "logsResult",
+   "line": "{\"body\":{\"action\":\"logs\",\"approvalNonce\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"auditId\":\"a1b2c3d4e5f6\",\"contract\":\"muster-signed-result/1\",\"detail\":\"3 journal lines\",\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"finishedAt\":\"2026-11-07T21:00:30Z\",\"helperTrustListVersion\":1,\"host\":\"server\",\"jobId\":\"job7k2m9q4x1\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\",\"outcome\":\"done\",\"outputB64\":\"bGluZSBvbmUKbGluZSB0d28KbmHDr3ZlIHRocmVlCg\",\"planSHA256\":\"f568a2a74be62d654cd23657903fbec952a451bfc1778031235d53a561ed7a87\",\"target\":\"fleet-server-status.timer\"},\"keyId\":\"38fbd10025f412d0\",\"kind\":\"result\",\"protocol\":\"muster-helper/1\",\"signature\":\"MEYCIQCzu8FBrgzsjg0o2MdohfFsH391KJhamlEXc7U0QFoFUwIhAOonT3UfSN9pDKxdAA9LfVxstZRo0WvBTc3eb9Mi_Xi8\"}\n",
+   "lineSHA256": "fb54dcc1ce76be0a2584f2bd96d1b244663b7a975e5e9114cc51bcc08d26aa43",
+   "now": "2026-11-07T21:00:30Z",
+   "setup": {
+    "stored": "v1"
+   },
+   "stdin": "{\"approval\":{\"action\":\"logs\",\"approvalNonce\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"expiresAt\":\"2026-11-07T21:02:00Z\",\"host\":\"server\",\"issuedAt\":\"2026-11-07T21:00:00Z\",\"jobId\":\"job7k2m9q4x1\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\",\"planSHA256\":\"f568a2a74be62d654cd23657903fbec952a451bfc1778031235d53a561ed7a87\",\"signature\":\"MEUCIQCFk1p5kg5TLi0C1rZVu6iq2EagNqz01QTcZOKykvjsbQIgFrqAE4wgek0L02ea_a286q16MoQ-sm2FcZn0Oag4O2o\",\"target\":\"fleet-server-status.timer\"},\"protocol\":\"muster-helper/1\"}",
+   "title": "An approved journal read: a done result whose outputB64 is the log text (UTF-8)"
+  },
+  {
+   "answer": {
+    "body": {
+     "action": "update-status",
+     "auditId": null,
+     "claimed": {
+      "deviceId": "d-ae9428d695e414bcefc0ef5b",
+      "jobId": "job7k2m9q4x1",
+      "jobNonce": "0f1e2d3c4b5a69788796a5b4c3d2e1f0"
+     },
+     "contract": "muster-signed-result/1",
+     "detail": "the captured update service invocation completed successfully",
+     "finishedAt": "2026-11-07T21:00:30Z",
+     "helperTrustListVersion": 1,
+     "host": "server",
+     "outcome": "planned",
+     "outputB64": "eyJiYXNlbGluZVN0YXJ0TW9ub3RvbmljIjogNTAwLCAiY29tbWFuZHMiOiBbXSwgImRldGFpbCI6ICJ0aGUgY2FwdHVyZWQgdXBkYXRlIHNlcnZpY2UgaW52b2NhdGlvbiBjb21wbGV0ZWQgc3VjY2Vzc2Z1bGx5IiwgImV4ZWN1dGlvblN0YXRlIjogImNvbXBsZXRlZCIsICJpbnZvY2F0aW9uSUQiOiAiYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWEiLCAib2siOiB0cnVlLCAicmVzdWx0IjogImRvbmUiLCAidGFyZ2V0IjogImZsZWV0LWNsaS5hYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYS41MDAiLCAidmVyYiI6ICJzZXJ2ZXIgdXBkYXRlLXN0YXR1cyIsICJ2ZXJpZmllZCI6IHRydWV9",
+     "planSHA256": null,
+     "target": "fleet-cli.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.500"
+    },
+    "keyId": "38fbd10025f412d0",
+    "kind": "result",
+    "protocol": "muster-helper/1",
+    "signature": "MEQCICM58nA2yPQTI0cd1sFqOCoZlPWf-xDMn2G-B9G9kks5AiBUAoBtDAmnniH8FB59klXITTEfccDiiLbVMccHWeW1HQ"
+   },
+   "bodySHA256": "ec9bbf8b49b695155d43d24288ec9b56b105e9d4100e948bee94a6a20f87a06f",
+   "command": "server update-status fleet-cli.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.500 --plan",
+   "exitStatus": 0,
+   "id": "updateStatusRead",
+   "line": "{\"body\":{\"action\":\"update-status\",\"auditId\":null,\"claimed\":{\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"jobId\":\"job7k2m9q4x1\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\"},\"contract\":\"muster-signed-result/1\",\"detail\":\"the captured update service invocation completed successfully\",\"finishedAt\":\"2026-11-07T21:00:30Z\",\"helperTrustListVersion\":1,\"host\":\"server\",\"outcome\":\"planned\",\"outputB64\":\"eyJiYXNlbGluZVN0YXJ0TW9ub3RvbmljIjogNTAwLCAiY29tbWFuZHMiOiBbXSwgImRldGFpbCI6ICJ0aGUgY2FwdHVyZWQgdXBkYXRlIHNlcnZpY2UgaW52b2NhdGlvbiBjb21wbGV0ZWQgc3VjY2Vzc2Z1bGx5IiwgImV4ZWN1dGlvblN0YXRlIjogImNvbXBsZXRlZCIsICJpbnZvY2F0aW9uSUQiOiAiYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWEiLCAib2siOiB0cnVlLCAicmVzdWx0IjogImRvbmUiLCAidGFyZ2V0IjogImZsZWV0LWNsaS5hYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYS41MDAiLCAidmVyYiI6ICJzZXJ2ZXIgdXBkYXRlLXN0YXR1cyIsICJ2ZXJpZmllZCI6IHRydWV9\",\"planSHA256\":null,\"target\":\"fleet-cli.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.500\"},\"keyId\":\"38fbd10025f412d0\",\"kind\":\"result\",\"protocol\":\"muster-helper/1\",\"signature\":\"MEQCICM58nA2yPQTI0cd1sFqOCoZlPWf-xDMn2G-B9G9kks5AiBUAoBtDAmnniH8FB59klXITTEfccDiiLbVMccHWeW1HQ\"}\n",
+   "lineSHA256": "d519689114e5208dc62c2822aa7fa8887a9253dbb21b30432eacec208e14f5c9",
+   "now": "2026-11-07T21:00:30Z",
+   "setup": {
+    "audit": [
+     {
+      "baselineStartMonotonic": 500,
+      "host": "server",
+      "invocationID": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "result": "submitted",
+      "route": "sudo-system-update",
+      "target": "fleet-cli",
+      "time": "2026-11-07T20:00:00Z",
+      "verb": "server update"
+     }
+    ],
+    "stored": "v1",
+    "updateProperties": {
+     "active": "inactive",
+     "code": 1,
+     "exited": 950,
+     "invocation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "started": 900
+    }
+   },
+   "stdin": "{\"job\":{\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"jobId\":\"job7k2m9q4x1\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\"},\"protocol\":\"muster-helper/1\"}",
+   "title": "A read verb: the update's status, a planned result with outputB64 and the request's claimed job"
+  },
+  {
+   "answer": {
+    "body": {
+     "claimed": {
+      "deviceId": "d-ae9428d695e414bcefc0ef5b",
+      "jobId": "job7k2m9q4x1",
+      "jobNonce": "0f1e2d3c4b5a69788796a5b4c3d2e1f0"
+     },
+     "contract": "muster-signed-refusal/1",
+     "errorCode": "plan_refused",
+     "helperTrustListVersion": null,
+     "reason": "receipt_context_mismatch",
+     "refusedAt": "2026-11-07T21:00:30Z",
+     "verified": false
+    },
+    "keyId": "38fbd10025f412d0",
+    "kind": "refusal",
+    "protocol": "muster-helper/1",
+    "signature": "MEUCIQCzC_iDmmwgma1IzfV2ZJAVgeAX27PX-MZZP2Tw2Z3kMgIgbXqbH0o3n-XWJKJ_XDz7R848l0B1XHH5IriWaFyg6AQ"
+   },
+   "bodySHA256": "32b7d90a3a08260a7c7935cd0b1f4fac5f488d6aae286fff3dc74cd5de74c862",
+   "command": "server update-status fleet-cli.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.500 --plan",
+   "exitStatus": 2,
+   "id": "planRefusedReceiptMismatch",
+   "line": "{\"body\":{\"claimed\":{\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"jobId\":\"job7k2m9q4x1\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\"},\"contract\":\"muster-signed-refusal/1\",\"errorCode\":\"plan_refused\",\"helperTrustListVersion\":null,\"reason\":\"receipt_context_mismatch\",\"refusedAt\":\"2026-11-07T21:00:30Z\",\"verified\":false},\"keyId\":\"38fbd10025f412d0\",\"kind\":\"refusal\",\"protocol\":\"muster-helper/1\",\"signature\":\"MEUCIQCzC_iDmmwgma1IzfV2ZJAVgeAX27PX-MZZP2Tw2Z3kMgIgbXqbH0o3n-XWJKJ_XDz7R848l0B1XHH5IriWaFyg6AQ\"}\n",
+   "lineSHA256": "31c7f86e8fa729f914cbe5c8ad24d22d5b0145cc96506b465fed89203587cd1f",
+   "now": "2026-11-07T21:00:30Z",
+   "setup": {
+    "audit": [
+     {
+      "baselineStartMonotonic": 499,
+      "host": "server",
+      "invocationID": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "result": "submitted",
+      "route": "sudo-system-update",
+      "target": "fleet-cli",
+      "time": "2026-11-07T20:00:00Z",
+      "verb": "server update"
+     }
+    ],
+    "stored": "v1",
+    "updateProperties": {
+     "active": "inactive",
+     "code": 1,
+     "exited": 950,
+     "invocation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "started": 900
+    }
+   },
+   "stdin": "{\"job\":{\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"jobId\":\"job7k2m9q4x1\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\"},\"protocol\":\"muster-helper/1\"}",
+   "title": "update-status with a baseline that is not the recorded one: plan_refused, reason receipt_context_mismatch"
+  },
+  {
+   "answer": {
+    "body": {
+     "action": "update",
+     "approvalNonce": "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+     "auditId": null,
+     "contract": "muster-signed-result/1",
+     "detail": "plan_refused: update_busy",
+     "deviceId": "d-ae9428d695e414bcefc0ef5b",
+     "finishedAt": "2026-11-07T21:00:30Z",
+     "helperTrustListVersion": 1,
+     "host": "server",
+     "jobId": "job7k2m9q4x1",
+     "jobNonce": "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+     "outcome": "failed",
+     "outputB64": null,
+     "planSHA256": "81d487cf43d641b5ce0d97cb338902246b47b68a2a0778c9a6ff30b8f011f810",
+     "target": "fleet-cli"
+    },
+    "keyId": "38fbd10025f412d0",
+    "kind": "result",
+    "protocol": "muster-helper/1",
+    "signature": "MEYCIQCqIljzp55-JjslF6ECSwg9LfW85rH_cN-M2j0sOiyfUAIhAL4-xJ9jfJrdxvdMOhFh6X5VEO_rFmZpw6SSg4VMe_BA"
+   },
+   "bodySHA256": "f3de1c3961c35599cd8a72077b987c1ce71f221378c37c7a7ec9603aa08d6c58",
+   "command": "server update fleet-cli --yes",
+   "exitStatus": 1,
+   "id": "failedResultPlanRefused",
+   "line": "{\"body\":{\"action\":\"update\",\"approvalNonce\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"auditId\":null,\"contract\":\"muster-signed-result/1\",\"detail\":\"plan_refused: update_busy\",\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"finishedAt\":\"2026-11-07T21:00:30Z\",\"helperTrustListVersion\":1,\"host\":\"server\",\"jobId\":\"job7k2m9q4x1\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\",\"outcome\":\"failed\",\"outputB64\":null,\"planSHA256\":\"81d487cf43d641b5ce0d97cb338902246b47b68a2a0778c9a6ff30b8f011f810\",\"target\":\"fleet-cli\"},\"keyId\":\"38fbd10025f412d0\",\"kind\":\"result\",\"protocol\":\"muster-helper/1\",\"signature\":\"MEYCIQCqIljzp55-JjslF6ECSwg9LfW85rH_cN-M2j0sOiyfUAIhAL4-xJ9jfJrdxvdMOhFh6X5VEO_rFmZpw6SSg4VMe_BA\"}\n",
+   "lineSHA256": "f128d7a8eeb57d83c0fb26b84133fcc21a755cb440a40b0269a91646ee3b5d76",
+   "now": "2026-11-07T21:00:30Z",
+   "setup": {
+    "stored": "v1",
+    "updateProperties": {
+     "active": "activating",
+     "code": 0,
+     "exited": 0,
+     "invocation": "",
+     "started": 0
+    },
+    "updateWorld": true
+   },
+   "stdin": "{\"approval\":{\"action\":\"update\",\"approvalNonce\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"expiresAt\":\"2026-11-07T21:02:00Z\",\"host\":\"server\",\"issuedAt\":\"2026-11-07T21:00:00Z\",\"jobId\":\"job7k2m9q4x1\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\",\"planSHA256\":\"81d487cf43d641b5ce0d97cb338902246b47b68a2a0778c9a6ff30b8f011f810\",\"signature\":\"MEYCIQCfWe1MfdvznJZYxKj8Y4wY-R1XZioAlJAwLRH1UARyrgIhAM_RXzMP2rDMug1-Kcl_tfH74oq2bVROExAERSicLkV6\",\"target\":\"fleet-cli\"},\"protocol\":\"muster-helper/1\"}",
+   "title": "An approved update whose unit is busy when it runs: a failed result, detail plan_refused: update_busy"
+  },
+  {
+   "answer": {
+    "body": {
+     "action": "restart",
+     "approvalNonce": "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+     "auditId": "a1b2c3d4e5f6",
+     "contract": "muster-signed-result/1",
+     "detail": "systemctl restart exited 124",
+     "deviceId": "d-ae9428d695e414bcefc0ef5b",
+     "finishedAt": "2026-11-07T21:00:30Z",
+     "helperTrustListVersion": 1,
+     "host": "server",
+     "jobId": "job7k2m9q4x1",
+     "jobNonce": "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+     "outcome": "unknown",
+     "outputB64": null,
+     "planSHA256": "f162187bfc6725679de05bd66a6a1c1ae68c2e99b5ad3263330f99ec4103be4d",
+     "target": "fleet-server-status.timer"
+    },
+    "keyId": "38fbd10025f412d0",
+    "kind": "result",
+    "protocol": "muster-helper/1",
+    "signature": "MEUCIQDdegUZycJFvByHjj7YN5DbyJHl6IbSkX7Cbaj9mygwVwIgTzUjnfiatE-FVuh5-QGb1leB7iyTgjXzL5yHrlFIzlM"
+   },
+   "bodySHA256": "06acb3ed861257055faab06d991e606562fc9598e543b44e2e12755cbc59511a",
+   "command": "server restart fleet-server-status.timer --yes",
+   "exitStatus": 1,
+   "id": "unknownResult",
+   "line": "{\"body\":{\"action\":\"restart\",\"approvalNonce\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"auditId\":\"a1b2c3d4e5f6\",\"contract\":\"muster-signed-result/1\",\"detail\":\"systemctl restart exited 124\",\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"finishedAt\":\"2026-11-07T21:00:30Z\",\"helperTrustListVersion\":1,\"host\":\"server\",\"jobId\":\"job7k2m9q4x1\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\",\"outcome\":\"unknown\",\"outputB64\":null,\"planSHA256\":\"f162187bfc6725679de05bd66a6a1c1ae68c2e99b5ad3263330f99ec4103be4d\",\"target\":\"fleet-server-status.timer\"},\"keyId\":\"38fbd10025f412d0\",\"kind\":\"result\",\"protocol\":\"muster-helper/1\",\"signature\":\"MEUCIQDdegUZycJFvByHjj7YN5DbyJHl6IbSkX7Cbaj9mygwVwIgTzUjnfiatE-FVuh5-QGb1leB7iyTgjXzL5yHrlFIzlM\"}\n",
+   "lineSHA256": "0c0c96e2c48883cd96be991e02173b52faa310ae6aae3ce38986939fc612e785",
+   "now": "2026-11-07T21:00:30Z",
+   "setup": {
+    "runnerStatus": 124,
+    "stored": "v1"
+   },
+   "stdin": "{\"approval\":{\"action\":\"restart\",\"approvalNonce\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"expiresAt\":\"2026-11-07T21:02:00Z\",\"host\":\"server\",\"issuedAt\":\"2026-11-07T21:00:00Z\",\"jobId\":\"job7k2m9q4x1\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\",\"planSHA256\":\"f162187bfc6725679de05bd66a6a1c1ae68c2e99b5ad3263330f99ec4103be4d\",\"signature\":\"MEQCIG7qzh_jgCU_aocqf4dSWekVrAeZPd6ZEjtzvQzibmgNAiBXnKFx8UCCkR2RtV0scxR7Ogm4lCg0uNSA6lOdQMY0jw\",\"target\":\"fleet-server-status.timer\"},\"protocol\":\"muster-helper/1\"}",
+   "title": "An approved restart whose command was killed at its time limit: outcome unknown, exit status 1"
+  },
+  {
+   "answer": {
+    "body": {
+     "action": "restart",
+     "approvalNonce": "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+     "contract": "muster-signed-refusal/1",
+     "deviceId": "d-ae9428d695e414bcefc0ef5b",
+     "errorCode": "rate_limited",
+     "helperTrustListVersion": 1,
+     "host": "server",
+     "jobId": "job7k2m9q4x1",
+     "jobNonce": "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+     "planSHA256": "f162187bfc6725679de05bd66a6a1c1ae68c2e99b5ad3263330f99ec4103be4d",
+     "reason": null,
+     "refusedAt": "2026-11-07T21:00:30Z",
+     "target": "fleet-server-status.timer",
+     "verified": true
+    },
+    "keyId": "38fbd10025f412d0",
+    "kind": "refusal",
+    "protocol": "muster-helper/1",
+    "signature": "MEYCIQCTfpGsuf1HyMuykWUVdwOJ3FqreKanJ5G0V75bkxw_awIhALGmdPUp_0REL2fUPmPwqb58GuHUnlhkdwBRrTEcHFXu"
+   },
+   "bodySHA256": "e7fb1a91109d35acd04acf6b0dca4d55193c6067dcfade2c1b019ae400eba9de",
+   "command": "server restart fleet-server-status.timer --yes",
+   "exitStatus": 2,
+   "id": "rateLimitedRefusal",
+   "line": "{\"body\":{\"action\":\"restart\",\"approvalNonce\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"contract\":\"muster-signed-refusal/1\",\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"errorCode\":\"rate_limited\",\"helperTrustListVersion\":1,\"host\":\"server\",\"jobId\":\"job7k2m9q4x1\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\",\"planSHA256\":\"f162187bfc6725679de05bd66a6a1c1ae68c2e99b5ad3263330f99ec4103be4d\",\"reason\":null,\"refusedAt\":\"2026-11-07T21:00:30Z\",\"target\":\"fleet-server-status.timer\",\"verified\":true},\"keyId\":\"38fbd10025f412d0\",\"kind\":\"refusal\",\"protocol\":\"muster-helper/1\",\"signature\":\"MEYCIQCTfpGsuf1HyMuykWUVdwOJ3FqreKanJ5G0V75bkxw_awIhALGmdPUp_0REL2fUPmPwqb58GuHUnlhkdwBRrTEcHFXu\"}\n",
+   "lineSHA256": "00c5b954b2ad8ad38cb4d90a39e738aa5a90b09559df1567dc61c6ce36fbd271",
+   "now": "2026-11-07T21:00:30Z",
+   "setup": {
+    "rate": [
+     [
+      "yes",
+      "restart fleet-server-status.timer",
+      1794085229000
+     ]
+    ],
+    "stored": "v1"
+   },
+   "stdin": "{\"approval\":{\"action\":\"restart\",\"approvalNonce\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"expiresAt\":\"2026-11-07T21:02:00Z\",\"host\":\"server\",\"issuedAt\":\"2026-11-07T21:00:00Z\",\"jobId\":\"job7k2m9q4x1\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\",\"planSHA256\":\"f162187bfc6725679de05bd66a6a1c1ae68c2e99b5ad3263330f99ec4103be4d\",\"signature\":\"MEQCIG7qzh_jgCU_aocqf4dSWekVrAeZPd6ZEjtzvQzibmgNAiBXnKFx8UCCkR2RtV0scxR7Ogm4lCg0uNSA6lOdQMY0jw\",\"target\":\"fleet-server-status.timer\"},\"protocol\":\"muster-helper/1\"}",
+   "title": "A verified approval inside the two-second spacing of the last restart: rate_limited, nonce unspent"
+  },
+  {
+   "answer": {
+    "body": {
+     "action": "resource-policy",
+     "approvalNonce": "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+     "contract": "muster-signed-refusal/1",
+     "deviceId": "d-ae9428d695e414bcefc0ef5b",
+     "errorCode": "plan_mismatch",
+     "helperTrustListVersion": 1,
+     "host": "server",
+     "jobId": "job7k2m9q4x1",
+     "jobNonce": "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+     "planSHA256": "5e1432afe06bd7099e5b7c43d5d52933a1364165fe135da94cf30a7ddd8e6c56",
+     "reason": null,
+     "refusedAt": "2026-11-07T21:00:30Z",
+     "target": "cpu-weight.100.722e7e49cb546718d6800bfd94399fff789d564cec5cf05f0b9b7d6c7e4b78a4",
+     "verified": true
+    },
+    "keyId": "38fbd10025f412d0",
+    "kind": "refusal",
+    "protocol": "muster-helper/1",
+    "signature": "MEUCIEy2Amu5raFsqRBh8m3Jfni1vOINBBiCJy82fOazCAcaAiEA9oFjOLk0sIKR5ujWzyt5k2BlaOSMYzg9_wWZ4cnJ5KI"
+   },
+   "bodySHA256": "2ccdf195ce0ae66698f4153e504c35b2ed667467f2b4f505b5bc207cf03391aa",
+   "command": "server resource-policy cpu-weight.100.722e7e49cb546718d6800bfd94399fff789d564cec5cf05f0b9b7d6c7e4b78a4 --yes",
+   "exitStatus": 2,
+   "id": "planMismatchResourcePolicy",
+   "line": "{\"body\":{\"action\":\"resource-policy\",\"approvalNonce\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"contract\":\"muster-signed-refusal/1\",\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"errorCode\":\"plan_mismatch\",\"helperTrustListVersion\":1,\"host\":\"server\",\"jobId\":\"job7k2m9q4x1\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\",\"planSHA256\":\"5e1432afe06bd7099e5b7c43d5d52933a1364165fe135da94cf30a7ddd8e6c56\",\"reason\":null,\"refusedAt\":\"2026-11-07T21:00:30Z\",\"target\":\"cpu-weight.100.722e7e49cb546718d6800bfd94399fff789d564cec5cf05f0b9b7d6c7e4b78a4\",\"verified\":true},\"keyId\":\"38fbd10025f412d0\",\"kind\":\"refusal\",\"protocol\":\"muster-helper/1\",\"signature\":\"MEUCIEy2Amu5raFsqRBh8m3Jfni1vOINBBiCJy82fOazCAcaAiEA9oFjOLk0sIKR5ujWzyt5k2BlaOSMYzg9_wWZ4cnJ5KI\"}\n",
+   "lineSHA256": "ba066f516547a780364f07263ad89149b120ba7e9ffcd408fe0e332348f28e1e",
+   "now": "2026-11-07T21:00:30Z",
+   "setup": {
+    "resource": true,
+    "stored": "v1"
+   },
+   "stdin": "{\"approval\":{\"action\":\"resource-policy\",\"approvalNonce\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"expiresAt\":\"2026-11-07T21:02:00Z\",\"host\":\"server\",\"issuedAt\":\"2026-11-07T21:00:00Z\",\"jobId\":\"job7k2m9q4x1\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\",\"planSHA256\":\"5e1432afe06bd7099e5b7c43d5d52933a1364165fe135da94cf30a7ddd8e6c56\",\"signature\":\"MEYCIQDc85rA6p0rsKW9YrXF2uhmoEyWu6iMQcqjEmaQumrkTAIhANheoifcYt5Dmsuvt3A5OJU7f-dvJnyhhTJJugD0aRqu\",\"target\":\"cpu-weight.100.722e7e49cb546718d6800bfd94399fff789d564cec5cf05f0b9b7d6c7e4b78a4\"},\"protocol\":\"muster-helper/1\"}",
+   "title": "A verified resource-policy approval whose plan hash is not the plan's: plan_mismatch, nonce spent"
+  },
+  {
+   "answer": {
+    "body": {
+     "contract": "muster-signed-refusal/1",
+     "errorCode": "helper_key_missing"
+    },
+    "keyId": null,
+    "kind": "refusal",
+    "protocol": "muster-helper/1",
+    "signature": null
+   },
+   "command": "server restart fleet-server-status.timer --yes",
+   "exitStatus": 2,
+   "id": "helperKeyMissing",
+   "line": "{\"body\":{\"contract\":\"muster-signed-refusal/1\",\"errorCode\":\"helper_key_missing\"},\"keyId\":null,\"kind\":\"refusal\",\"protocol\":\"muster-helper/1\",\"signature\":null}\n",
+   "lineSHA256": "f496f69bc7a513ca29824bb1bcac1235a6b5f8f47ea6b980ea5f26ae2e960855",
+   "now": "2026-11-07T21:00:30Z",
+   "setup": {
+    "key": false,
+    "stored": "v1"
+   },
+   "stdin": "{\"approval\":{\"action\":\"restart\",\"approvalNonce\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"expiresAt\":\"2026-11-07T21:02:00Z\",\"host\":\"server\",\"issuedAt\":\"2026-11-07T21:00:00Z\",\"jobId\":\"job7k2m9q4x1\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\",\"planSHA256\":\"f162187bfc6725679de05bd66a6a1c1ae68c2e99b5ad3263330f99ec4103be4d\",\"signature\":\"MEQCIG7qzh_jgCU_aocqf4dSWekVrAeZPd6ZEjtzvQzibmgNAiBXnKFx8UCCkR2RtV0scxR7Ogm4lCg0uNSA6lOdQMY0jw\",\"target\":\"fleet-server-status.timer\"},\"protocol\":\"muster-helper/1\"}",
+   "title": "The unsigned answer when the helper has no usable key: helper_key_missing, keyId and signature null"
+  }
+ ],
+ "generatedPlans": [
+  {
+   "answer": {
+    "body": {
+     "action": "restart",
+     "claimed": {
+      "deviceId": "d-ae9428d695e414bcefc0ef5b",
+      "jobId": "jobplanuser01",
+      "jobNonce": "0f1e2d3c4b5a69788796a5b4c3d2e1f0"
+     },
+     "contract": "muster-signed-plan/1",
+     "helperTrustListVersion": 1,
+     "host": "server",
+     "issuedAt": "2026-11-07T21:00:30Z",
+     "plan": "{\"action\":\"restart\",\"auditTarget\":\"fleet-server-status.timer\",\"commands\":[[\"/usr/bin/systemctl\",\"--user\",\"restart\",\"fleet-server-status.timer\"]],\"contract\":\"fleet-ops-plan/1\",\"scope\":\"server\",\"target\":\"fleet-server-status.timer\"}",
+     "planSHA256": "f162187bfc6725679de05bd66a6a1c1ae68c2e99b5ad3263330f99ec4103be4d",
+     "target": "fleet-server-status.timer"
+    },
+    "keyId": "38fbd10025f412d0",
+    "kind": "plan",
+    "protocol": "muster-helper/1",
+    "signature": "MEQCIDYToYRMENggmzxTsKcXR2Ysr96RigAHx0_5SUcGTZvUAiASsxkYv2NvVVIkOmOYjKlg5rf4GGCKellsvydF7wP4Rw"
+   },
+   "bodySHA256": "d6350ea3216d943e8cc4b8e4e049100fdcf77a18f7c675d57853402771249b67",
+   "command": "server restart fleet-server-status.timer --plan",
+   "exitStatus": 0,
+   "id": "restartPlanUserScope",
+   "line": "{\"body\":{\"action\":\"restart\",\"claimed\":{\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"jobId\":\"jobplanuser01\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\"},\"contract\":\"muster-signed-plan/1\",\"helperTrustListVersion\":1,\"host\":\"server\",\"issuedAt\":\"2026-11-07T21:00:30Z\",\"plan\":\"{\\\"action\\\":\\\"restart\\\",\\\"auditTarget\\\":\\\"fleet-server-status.timer\\\",\\\"commands\\\":[[\\\"/usr/bin/systemctl\\\",\\\"--user\\\",\\\"restart\\\",\\\"fleet-server-status.timer\\\"]],\\\"contract\\\":\\\"fleet-ops-plan/1\\\",\\\"scope\\\":\\\"server\\\",\\\"target\\\":\\\"fleet-server-status.timer\\\"}\",\"planSHA256\":\"f162187bfc6725679de05bd66a6a1c1ae68c2e99b5ad3263330f99ec4103be4d\",\"target\":\"fleet-server-status.timer\"},\"keyId\":\"38fbd10025f412d0\",\"kind\":\"plan\",\"protocol\":\"muster-helper/1\",\"signature\":\"MEQCIDYToYRMENggmzxTsKcXR2Ysr96RigAHx0_5SUcGTZvUAiASsxkYv2NvVVIkOmOYjKlg5rf4GGCKellsvydF7wP4Rw\"}\n",
+   "lineSHA256": "29db850add79bab88000813ac1177eb41108b156f145c72e473849a72627398a",
+   "now": "2026-11-07T21:00:30Z",
+   "plan": "{\"action\":\"restart\",\"auditTarget\":\"fleet-server-status.timer\",\"commands\":[[\"/usr/bin/systemctl\",\"--user\",\"restart\",\"fleet-server-status.timer\"]],\"contract\":\"fleet-ops-plan/1\",\"scope\":\"server\",\"target\":\"fleet-server-status.timer\"}",
+   "planSHA256": "f162187bfc6725679de05bd66a6a1c1ae68c2e99b5ad3263330f99ec4103be4d",
+   "setup": {
+    "stored": "v1"
+   },
+   "stdin": "{\"job\":{\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"jobId\":\"jobplanuser01\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\"},\"protocol\":\"muster-helper/1\"}",
+   "title": "restart of a user-scope unit: the argv has --user"
+  },
+  {
+   "answer": {
+    "body": {
+     "action": "restart",
+     "claimed": {
+      "deviceId": "d-ae9428d695e414bcefc0ef5b",
+      "jobId": "jobplansystem1",
+      "jobNonce": "0f1e2d3c4b5a69788796a5b4c3d2e1f0"
+     },
+     "contract": "muster-signed-plan/1",
+     "helperTrustListVersion": 1,
+     "host": "server",
+     "issuedAt": "2026-11-07T21:00:30Z",
+     "plan": "{\"action\":\"restart\",\"auditTarget\":\"botfleet-server.service\",\"commands\":[[\"/usr/bin/systemctl\",\"restart\",\"botfleet-server.service\"]],\"contract\":\"fleet-ops-plan/1\",\"scope\":\"server\",\"target\":\"botfleet-server.service\"}",
+     "planSHA256": "227b77614ece73e51feb0aaee86d66e2c0ea5d2238646295efb09ea43cfc65bd",
+     "target": "botfleet-server.service"
+    },
+    "keyId": "38fbd10025f412d0",
+    "kind": "plan",
+    "protocol": "muster-helper/1",
+    "signature": "MEQCIEq6pkD7YFLTksLoTf_YGM7O-YKc65oPEMI1rwEyLMeQAiAE9IeWc219_pZJfKIdw_3vx_GiXMiNv9dlny9h31ytww"
+   },
+   "bodySHA256": "969d41dda3cdbedf1f11e101843bd3614a0f492871ad4c4eb48fd264d21d3e66",
+   "command": "server restart botfleet-server.service --plan",
+   "exitStatus": 0,
+   "id": "restartPlanSystemScope",
+   "line": "{\"body\":{\"action\":\"restart\",\"claimed\":{\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"jobId\":\"jobplansystem1\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\"},\"contract\":\"muster-signed-plan/1\",\"helperTrustListVersion\":1,\"host\":\"server\",\"issuedAt\":\"2026-11-07T21:00:30Z\",\"plan\":\"{\\\"action\\\":\\\"restart\\\",\\\"auditTarget\\\":\\\"botfleet-server.service\\\",\\\"commands\\\":[[\\\"/usr/bin/systemctl\\\",\\\"restart\\\",\\\"botfleet-server.service\\\"]],\\\"contract\\\":\\\"fleet-ops-plan/1\\\",\\\"scope\\\":\\\"server\\\",\\\"target\\\":\\\"botfleet-server.service\\\"}\",\"planSHA256\":\"227b77614ece73e51feb0aaee86d66e2c0ea5d2238646295efb09ea43cfc65bd\",\"target\":\"botfleet-server.service\"},\"keyId\":\"38fbd10025f412d0\",\"kind\":\"plan\",\"protocol\":\"muster-helper/1\",\"signature\":\"MEQCIEq6pkD7YFLTksLoTf_YGM7O-YKc65oPEMI1rwEyLMeQAiAE9IeWc219_pZJfKIdw_3vx_GiXMiNv9dlny9h31ytww\"}\n",
+   "lineSHA256": "2f0163a93c49cadc74cc6ba7b3760a228ec41fab2b34f17273c3230794694cba",
+   "now": "2026-11-07T21:00:30Z",
+   "plan": "{\"action\":\"restart\",\"auditTarget\":\"botfleet-server.service\",\"commands\":[[\"/usr/bin/systemctl\",\"restart\",\"botfleet-server.service\"]],\"contract\":\"fleet-ops-plan/1\",\"scope\":\"server\",\"target\":\"botfleet-server.service\"}",
+   "planSHA256": "227b77614ece73e51feb0aaee86d66e2c0ea5d2238646295efb09ea43cfc65bd",
+   "setup": {
+    "stored": "v1"
+   },
+   "stdin": "{\"job\":{\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"jobId\":\"jobplansystem1\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\"},\"protocol\":\"muster-helper/1\"}",
+   "title": "restart of a system-scope unit: no --user in the argv"
+  },
+  {
+   "answer": {
+    "body": {
+     "action": "redeploy",
+     "claimed": {
+      "deviceId": "d-ae9428d695e414bcefc0ef5b",
+      "jobId": "jobplanredeploy",
+      "jobNonce": "0f1e2d3c4b5a69788796a5b4c3d2e1f0"
+     },
+     "contract": "muster-signed-plan/1",
+     "helperTrustListVersion": 1,
+     "host": "server",
+     "issuedAt": "2026-11-07T21:00:30Z",
+     "plan": "{\"action\":\"redeploy\",\"auditTarget\":\"Caf? App\",\"commands\":[[\"coolify\",\"GET\",\"/api/v1/deploy?uuid=abc123def456\"]],\"contract\":\"fleet-ops-plan/1\",\"scope\":\"server\",\"target\":\"abc123def456\"}",
+     "planSHA256": "f228b73868d712cd10dfc1377531457ea7d2ce88683511ae5c3b6c975073fb8c",
+     "target": "abc123def456"
+    },
+    "keyId": "38fbd10025f412d0",
+    "kind": "plan",
+    "protocol": "muster-helper/1",
+    "signature": "MEQCIHvkQ9a3WXnN6loBp4vy6vkFLmS0k27ej_sOdCRaxNcbAiBmZJ0dbZg4G-Zx9rPU4E-PsKUczozOxp1MwYvkzi4aBg"
+   },
+   "bodySHA256": "95ec2a4c18d027f997f224ca0d682b7e1cbb725f88fb36ce48251174ece994be",
+   "command": "server redeploy abc123def456 --plan",
+   "exitStatus": 0,
+   "id": "redeployPlanNonAscii",
+   "line": "{\"body\":{\"action\":\"redeploy\",\"claimed\":{\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"jobId\":\"jobplanredeploy\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\"},\"contract\":\"muster-signed-plan/1\",\"helperTrustListVersion\":1,\"host\":\"server\",\"issuedAt\":\"2026-11-07T21:00:30Z\",\"plan\":\"{\\\"action\\\":\\\"redeploy\\\",\\\"auditTarget\\\":\\\"Caf? App\\\",\\\"commands\\\":[[\\\"coolify\\\",\\\"GET\\\",\\\"/api/v1/deploy?uuid=abc123def456\\\"]],\\\"contract\\\":\\\"fleet-ops-plan/1\\\",\\\"scope\\\":\\\"server\\\",\\\"target\\\":\\\"abc123def456\\\"}\",\"planSHA256\":\"f228b73868d712cd10dfc1377531457ea7d2ce88683511ae5c3b6c975073fb8c\",\"target\":\"abc123def456\"},\"keyId\":\"38fbd10025f412d0\",\"kind\":\"plan\",\"protocol\":\"muster-helper/1\",\"signature\":\"MEQCIHvkQ9a3WXnN6loBp4vy6vkFLmS0k27ej_sOdCRaxNcbAiBmZJ0dbZg4G-Zx9rPU4E-PsKUczozOxp1MwYvkzi4aBg\"}\n",
+   "lineSHA256": "ba8be8c001900511200c2e1b24e78c8ee72fecad4d529a5fb1b0505519b8d843",
+   "now": "2026-11-07T21:00:30Z",
+   "plan": "{\"action\":\"redeploy\",\"auditTarget\":\"Caf? App\",\"commands\":[[\"coolify\",\"GET\",\"/api/v1/deploy?uuid=abc123def456\"]],\"contract\":\"fleet-ops-plan/1\",\"scope\":\"server\",\"target\":\"abc123def456\"}",
+   "planSHA256": "f228b73868d712cd10dfc1377531457ea7d2ce88683511ae5c3b6c975073fb8c",
+   "setup": {
+    "report": [
+     {
+      "name": "Caf\u00e9 App",
+      "status": "running",
+      "type": "application",
+      "uuid": "abc123def456",
+      "uuidSource": "label"
+     }
+    ],
+    "stored": "v1"
+   },
+   "stdin": "{\"job\":{\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"jobId\":\"jobplanredeploy\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\"},\"protocol\":\"muster-helper/1\"}",
+   "title": "redeploy of an application named Caf\u00e9 App: the plan's auditTarget has one ? for the \u00e9"
+  },
+  {
+   "answer": {
+    "body": {
+     "action": "resource-policy",
+     "claimed": {
+      "deviceId": "d-ae9428d695e414bcefc0ef5b",
+      "jobId": "jobplanresource",
+      "jobNonce": "0f1e2d3c4b5a69788796a5b4c3d2e1f0"
+     },
+     "contract": "muster-signed-plan/1",
+     "helperTrustListVersion": 1,
+     "host": "server",
+     "issuedAt": "2026-11-07T21:00:30Z",
+     "plan": "{\"auditTarget\":\"cpu-weight\",\"contract\":\"fleet-resource-plan/1\",\"field\":\"cpu-weight\",\"new\":100,\"old\":50,\"revision\":\"722e7e49cb546718d6800bfd94399fff789d564cec5cf05f0b9b7d6c7e4b78a4\"}",
+     "planSHA256": "ff37002cd02ae3e7b8d453dfa18e60f7e4dcee1024e5f085a60c237a56273fa8",
+     "target": "cpu-weight.100.722e7e49cb546718d6800bfd94399fff789d564cec5cf05f0b9b7d6c7e4b78a4"
+    },
+    "keyId": "38fbd10025f412d0",
+    "kind": "plan",
+    "protocol": "muster-helper/1",
+    "signature": "MEUCIQCY15ik5Qr5vrXYn_UYSDwBB7lcsp9BvIZHpKTwIuqFBAIgOZsiXy7HMwFLCbltyc_pYoJYqIGljk5KXHDd_ECZkUM"
+   },
+   "bodySHA256": "323247f771ac92df5272eccd709bed2ff9ce439e8aba7deb846457691d552071",
+   "command": "server resource-policy cpu-weight.100.722e7e49cb546718d6800bfd94399fff789d564cec5cf05f0b9b7d6c7e4b78a4 --plan",
+   "exitStatus": 0,
+   "id": "resourcePlanCpuWeight",
+   "line": "{\"body\":{\"action\":\"resource-policy\",\"claimed\":{\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"jobId\":\"jobplanresource\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\"},\"contract\":\"muster-signed-plan/1\",\"helperTrustListVersion\":1,\"host\":\"server\",\"issuedAt\":\"2026-11-07T21:00:30Z\",\"plan\":\"{\\\"auditTarget\\\":\\\"cpu-weight\\\",\\\"contract\\\":\\\"fleet-resource-plan/1\\\",\\\"field\\\":\\\"cpu-weight\\\",\\\"new\\\":100,\\\"old\\\":50,\\\"revision\\\":\\\"722e7e49cb546718d6800bfd94399fff789d564cec5cf05f0b9b7d6c7e4b78a4\\\"}\",\"planSHA256\":\"ff37002cd02ae3e7b8d453dfa18e60f7e4dcee1024e5f085a60c237a56273fa8\",\"target\":\"cpu-weight.100.722e7e49cb546718d6800bfd94399fff789d564cec5cf05f0b9b7d6c7e4b78a4\"},\"keyId\":\"38fbd10025f412d0\",\"kind\":\"plan\",\"protocol\":\"muster-helper/1\",\"signature\":\"MEUCIQCY15ik5Qr5vrXYn_UYSDwBB7lcsp9BvIZHpKTwIuqFBAIgOZsiXy7HMwFLCbltyc_pYoJYqIGljk5KXHDd_ECZkUM\"}\n",
+   "lineSHA256": "0b98ccb8d82649105577ce399188e0848e702b0d4722beaf46deae1f3cc197ef",
+   "now": "2026-11-07T21:00:30Z",
+   "plan": "{\"auditTarget\":\"cpu-weight\",\"contract\":\"fleet-resource-plan/1\",\"field\":\"cpu-weight\",\"new\":100,\"old\":50,\"revision\":\"722e7e49cb546718d6800bfd94399fff789d564cec5cf05f0b9b7d6c7e4b78a4\"}",
+   "planSHA256": "ff37002cd02ae3e7b8d453dfa18e60f7e4dcee1024e5f085a60c237a56273fa8",
+   "setup": {
+    "resource": true,
+    "stored": "v1"
+   },
+   "stdin": "{\"job\":{\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"jobId\":\"jobplanresource\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\"},\"protocol\":\"muster-helper/1\"}",
+   "title": "cpu-weight 50 to 100: old and new are the value itself (scale 1)"
+  },
+  {
+   "answer": {
+    "body": {
+     "action": "resource-policy",
+     "claimed": {
+      "deviceId": "d-ae9428d695e414bcefc0ef5b",
+      "jobId": "jobplanresource",
+      "jobNonce": "0f1e2d3c4b5a69788796a5b4c3d2e1f0"
+     },
+     "contract": "muster-signed-plan/1",
+     "helperTrustListVersion": 1,
+     "host": "server",
+     "issuedAt": "2026-11-07T21:00:30Z",
+     "plan": "{\"auditTarget\":\"ram-budget-gib\",\"contract\":\"fleet-resource-plan/1\",\"field\":\"ram-budget-gib\",\"new\":12884901888,\"old\":8589934592,\"revision\":\"722e7e49cb546718d6800bfd94399fff789d564cec5cf05f0b9b7d6c7e4b78a4\"}",
+     "planSHA256": "8dc800ce66c5a352bd2341191d36212f28c148b9c4e6de7f9080a7eff311e5b3",
+     "target": "ram-budget-gib.12.722e7e49cb546718d6800bfd94399fff789d564cec5cf05f0b9b7d6c7e4b78a4"
+    },
+    "keyId": "38fbd10025f412d0",
+    "kind": "plan",
+    "protocol": "muster-helper/1",
+    "signature": "MEUCIGqYb80Fw-5K0rFMuW4qveVbQcuWAdUZqDzZ16KUMKAzAiEApXvtAiCqNKKcwUIKRiuPi0oO3HAXLOdJm9e-hJUrc-4"
+   },
+   "bodySHA256": "7a098bda5644863445f5990781c8f06c407ceced14c580171db16a456f7a9e1a",
+   "command": "server resource-policy ram-budget-gib.12.722e7e49cb546718d6800bfd94399fff789d564cec5cf05f0b9b7d6c7e4b78a4 --plan",
+   "exitStatus": 0,
+   "id": "resourcePlanRamBudget",
+   "line": "{\"body\":{\"action\":\"resource-policy\",\"claimed\":{\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"jobId\":\"jobplanresource\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\"},\"contract\":\"muster-signed-plan/1\",\"helperTrustListVersion\":1,\"host\":\"server\",\"issuedAt\":\"2026-11-07T21:00:30Z\",\"plan\":\"{\\\"auditTarget\\\":\\\"ram-budget-gib\\\",\\\"contract\\\":\\\"fleet-resource-plan/1\\\",\\\"field\\\":\\\"ram-budget-gib\\\",\\\"new\\\":12884901888,\\\"old\\\":8589934592,\\\"revision\\\":\\\"722e7e49cb546718d6800bfd94399fff789d564cec5cf05f0b9b7d6c7e4b78a4\\\"}\",\"planSHA256\":\"8dc800ce66c5a352bd2341191d36212f28c148b9c4e6de7f9080a7eff311e5b3\",\"target\":\"ram-budget-gib.12.722e7e49cb546718d6800bfd94399fff789d564cec5cf05f0b9b7d6c7e4b78a4\"},\"keyId\":\"38fbd10025f412d0\",\"kind\":\"plan\",\"protocol\":\"muster-helper/1\",\"signature\":\"MEUCIGqYb80Fw-5K0rFMuW4qveVbQcuWAdUZqDzZ16KUMKAzAiEApXvtAiCqNKKcwUIKRiuPi0oO3HAXLOdJm9e-hJUrc-4\"}\n",
+   "lineSHA256": "65ff143a5eb00b44fdb999eff5a92d5d970c60ce83eba171d4f793c8cf2baa9d",
+   "now": "2026-11-07T21:00:30Z",
+   "plan": "{\"auditTarget\":\"ram-budget-gib\",\"contract\":\"fleet-resource-plan/1\",\"field\":\"ram-budget-gib\",\"new\":12884901888,\"old\":8589934592,\"revision\":\"722e7e49cb546718d6800bfd94399fff789d564cec5cf05f0b9b7d6c7e4b78a4\"}",
+   "planSHA256": "8dc800ce66c5a352bd2341191d36212f28c148b9c4e6de7f9080a7eff311e5b3",
+   "setup": {
+    "resource": true,
+    "stored": "v1"
+   },
+   "stdin": "{\"job\":{\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"jobId\":\"jobplanresource\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\"},\"protocol\":\"muster-helper/1\"}",
+   "title": "ram-budget-gib 8 to 12: old and new are in bytes (scale 1073741824)"
+  },
+  {
+   "answer": {
+    "body": {
+     "action": "resource-policy",
+     "claimed": {
+      "deviceId": "d-ae9428d695e414bcefc0ef5b",
+      "jobId": "jobplanresource",
+      "jobNonce": "0f1e2d3c4b5a69788796a5b4c3d2e1f0"
+     },
+     "contract": "muster-signed-plan/1",
+     "helperTrustListVersion": 1,
+     "host": "server",
+     "issuedAt": "2026-11-07T21:00:30Z",
+     "plan": "{\"auditTarget\":\"borrow-idle\",\"contract\":\"fleet-resource-plan/1\",\"field\":\"borrow-idle\",\"new\":false,\"old\":true,\"revision\":\"722e7e49cb546718d6800bfd94399fff789d564cec5cf05f0b9b7d6c7e4b78a4\"}",
+     "planSHA256": "1320cf44116b49581403a37c93ee8bb5a463e7644de75704f425f5c4c8f97fc7",
+     "target": "borrow-idle.0.722e7e49cb546718d6800bfd94399fff789d564cec5cf05f0b9b7d6c7e4b78a4"
+    },
+    "keyId": "38fbd10025f412d0",
+    "kind": "plan",
+    "protocol": "muster-helper/1",
+    "signature": "MEUCIBu9Q8Rqx0h4_1NkqF3brRG4FC2odMTF1nXqVV-z_-66AiEA6yuOge0FLxxksdGa2gBR7pm_B8BGth-4ms8B7b0BKQA"
+   },
+   "bodySHA256": "fc55fda29ac8296dea639aca114c20c3f9902dc64db48f6996e5acfe9fe7c784",
+   "command": "server resource-policy borrow-idle.0.722e7e49cb546718d6800bfd94399fff789d564cec5cf05f0b9b7d6c7e4b78a4 --plan",
+   "exitStatus": 0,
+   "id": "resourcePlanBorrowIdle",
+   "line": "{\"body\":{\"action\":\"resource-policy\",\"claimed\":{\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"jobId\":\"jobplanresource\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\"},\"contract\":\"muster-signed-plan/1\",\"helperTrustListVersion\":1,\"host\":\"server\",\"issuedAt\":\"2026-11-07T21:00:30Z\",\"plan\":\"{\\\"auditTarget\\\":\\\"borrow-idle\\\",\\\"contract\\\":\\\"fleet-resource-plan/1\\\",\\\"field\\\":\\\"borrow-idle\\\",\\\"new\\\":false,\\\"old\\\":true,\\\"revision\\\":\\\"722e7e49cb546718d6800bfd94399fff789d564cec5cf05f0b9b7d6c7e4b78a4\\\"}\",\"planSHA256\":\"1320cf44116b49581403a37c93ee8bb5a463e7644de75704f425f5c4c8f97fc7\",\"target\":\"borrow-idle.0.722e7e49cb546718d6800bfd94399fff789d564cec5cf05f0b9b7d6c7e4b78a4\"},\"keyId\":\"38fbd10025f412d0\",\"kind\":\"plan\",\"protocol\":\"muster-helper/1\",\"signature\":\"MEUCIBu9Q8Rqx0h4_1NkqF3brRG4FC2odMTF1nXqVV-z_-66AiEA6yuOge0FLxxksdGa2gBR7pm_B8BGth-4ms8B7b0BKQA\"}\n",
+   "lineSHA256": "6bf0957534a15f2cccf116b02136b9008b2c4b2b85bc1b5d222a3849e92a7b98",
+   "now": "2026-11-07T21:00:30Z",
+   "plan": "{\"auditTarget\":\"borrow-idle\",\"contract\":\"fleet-resource-plan/1\",\"field\":\"borrow-idle\",\"new\":false,\"old\":true,\"revision\":\"722e7e49cb546718d6800bfd94399fff789d564cec5cf05f0b9b7d6c7e4b78a4\"}",
+   "planSHA256": "1320cf44116b49581403a37c93ee8bb5a463e7644de75704f425f5c4c8f97fc7",
+   "setup": {
+    "resource": true,
+    "stored": "v1"
+   },
+   "stdin": "{\"job\":{\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"jobId\":\"jobplanresource\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\"},\"protocol\":\"muster-helper/1\"}",
+   "title": "borrow-idle true to 0: old and new are the policy's own values (true, then a number)"
   }
  ],
  "history": "{\"fromVersion\":1,\"ownerKey\":\"MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEVzkkcfsegaoVRZFzkDIoVF5bEqxUarf9x8v30K8pWB_JGjq4wKAmg96uVQ704aEAZtLFNi_PbZfc69WlOvJovw\",\"toSHA256\":null,\"toVersion\":null}",
@@ -690,5 +1843,13 @@
   "{\"code\":\"9d0b3e51a7c2f4086e1d5b9a3c7f2e04\",\"createdAt\":\"2026-11-07T20:30:00Z\",\"deviceId\":\"d-f4e396a67ceefe6a551abbc0\",\"version\":4}",
   "{\"code\":\"4f2a9c0e7b1d6e3a8c5f0b2d9e7a1c4b\",\"createdAt\":\"2026-11-07T20:45:00Z\",\"deviceId\":\"d-f4e396a67ceefe6a551abbc0\",\"version\":4}"
  ],
+ "resourceFieldScales": {
+  "borrow-idle": 1,
+  "cpu-cores": 1,
+  "cpu-weight": 1,
+  "ram-budget-gib": 1073741824,
+  "ram-critical-gib": 1073741824,
+  "ram-reserve-gib": 1073741824
+ },
  "specVersion": 5
 }

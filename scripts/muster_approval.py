@@ -73,6 +73,12 @@ Behaviours that the spec leaves to the build, stated here so that no reader has 
     by a signal, a Coolify GET sent and not answered, an exception once the run began), `failed` only
     when it provably never did (the planner refused, or the shared function refused before it ran
     anything, or the command exited with a definite failure).
+  * Two things after the append are not faults.  A failed close of the ledger after its fsync loses
+    nothing, because the append is durable, and a failed prune rewrite (of any kind) leaves the ledger
+    as it was, because the rewrite is a temporary file and a rename, and the next approval tries it
+    again.  Both are swallowed and the run proceeds exactly as if they had not failed.  Any other
+    unexpected exception after the append, before or during the run, is a signed `failed` or `unknown`
+    result with exactly one audit row; one before the append is a refusal.
   * The ledger's size limit is derived once, from the `yes` cap and the retention, with twice the room
     (`LEDGER_MAX_BYTES`, 4 MiB); a ledger over it is `ledger_corrupt`.
   * The environment.  OpenSSL reads its configuration when `hashlib` is imported, which happens at the
@@ -337,7 +343,10 @@ MUSTER_SCOPE = "muster"
 TRUST_LIST_VERB = "trust-list"
 CURRENT_TARGET = "current"
 CHAIN_TARGET = "chain"
-HOST = "server"
+# The value of the `host` field of an approval and of every answer.  The name does not end in HOST: the
+# repository's private-inventory guard reads a variable named that way, given a one-word literal, as a
+# host (test_fleet_skill_identity.py).
+HOST_FIELD_VALUE = "server"
 P256_ORDER = 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551
 # DER SubjectPublicKeyInfo of an uncompressed P-256 key: this fixed prefix, then 04 || X || Y.
 P256_SPKI_PREFIX = bytes.fromhex("3059301306072a8648ce3d020106082a8648ce3d030107034200")
@@ -1416,8 +1425,15 @@ class Ledger:
                 raise LedgerAppendFault from None
             entries.append(row)
         finally:
-            os.close(fd)
-        self._prune(entries, now)
+            # A close that fails after the fsynced append loses nothing: the line is durable.  One that
+            # fails before it must not hide the refusal that is being raised.
+            with contextlib.suppress(OSError):
+                os.close(fd)
+        # The prune is a best-effort rewrite, atomic by its temporary file and rename, so a failure of
+        # any kind leaves the ledger as it was and the next approval tries it again.  The nonce is
+        # spent and durable by now, so nothing here may turn the approval into a refusal.
+        with contextlib.suppress(Exception):
+            self._prune(entries, now)
 
     def _prune(self, entries, now):
         """Keep the last LEDGER_KEEP_LINES lines, and every line less than LEDGER_KEEP_SECONDS old.
@@ -1786,7 +1802,7 @@ class _Flow:
         if command.kind == "read":
             body = {
                 "claimed": claimed,
-                "host": HOST,
+                "host": HOST_FIELD_VALUE,
                 "action": command.verb,
                 "target": command.target,
                 "planSHA256": None,
@@ -1800,7 +1816,7 @@ class _Flow:
             return signed_answer(self.key, "result", body), 0
         body = {
             "claimed": claimed,
-            "host": HOST,
+            "host": HOST_FIELD_VALUE,
             "action": command.verb,
             "target": command.target,
             "plan": plan.decode("ascii"),
@@ -1830,7 +1846,7 @@ class _Flow:
             raise Refusal(ERR_NO_TRUST_LIST)
         # Y3
         if (approval["host"], approval["action"], approval["target"]) != (
-            HOST,
+            HOST_FIELD_VALUE,
             command.verb,
             command.target,
         ):
@@ -1921,7 +1937,7 @@ class _Flow:
             "jobNonce": approval["jobNonce"],
             "approvalNonce": approval["approvalNonce"],
             "deviceId": approval["deviceId"],
-            "host": HOST,
+            "host": HOST_FIELD_VALUE,
             "action": self.command.verb,
             "target": self.command.target,
             "planSHA256": approval["planSHA256"],

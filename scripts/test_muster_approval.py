@@ -73,6 +73,7 @@ def load(name, filename):
 ma = load("muster_approval_under_test", "muster_approval.py")
 mt = load("muster_trust_files_under_test", "muster_agent/muster_trust_files.py")
 foc = load("foc_under_test", "fleet-ops-control.py")
+make = load("make_muster_vectors_under_test", "make_muster_vectors.py")
 
 N = 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551
 UID = os.getuid()
@@ -7687,6 +7688,152 @@ class AppendFaultTests(Checks):
         self.assertFalse(issubclass(ma.LedgerAppendFault, ma.StateUnsafe))
 
 
+class PostAppendNonFaultTests(Checks):
+    """After the nonce is durably appended, a failed close of the ledger and a failed prune rewrite
+    are not faults: the append is durable, the prune is atomic and the next approval retries it, so
+    the run proceeds as if neither had failed.  Faults before the append stay refusals, and any other
+    unexpected exception after it stays a signed result with one audit row."""
+
+    @staticmethod
+    def failing_ledger_close():
+        real = os.close
+
+        def close(fd):
+            try:
+                target = os.readlink(f"/proc/self/fd/{fd}")
+            except OSError:
+                target = ""
+            real(fd)
+            if target.endswith("muster-nonces.jsonl"):
+                raise OSError(5, "close")
+
+        return mock.patch.object(os, "close", close)
+
+    def test_a_close_that_fails_after_the_fsynced_append_is_a_done_run_with_one_row(self):
+        env = Env(self)
+        with self.failing_ledger_close():
+            answer, code, runner, rows = helper_request(env, COMMAND, stdin_of(approval()), NOW)
+        self.assertDone(answer, code)
+        self.assertEqual(env.ledger.count(b"\n"), 1)
+        self.assertIn(BASE_APPROVAL["approvalNonce"].encode(), env.ledger)
+        self.assertEqual([row["result"] for row in rows], ["done"])
+        self.assertEqual(len(runner.calls), 1, "it ran, once")
+        # The nonce is spent: the same approval is a replay.
+        answer, code, backend = module_request(env, COMMAND, stdin_of(approval()), later(10))
+        self.assertRefused(answer, code, "replayed_nonce", verified=True)
+
+    def test_a_close_that_fails_before_the_append_does_not_hide_the_refusal(self):
+        corrupt = Env(self, ledger=b"not a ledger line\n")
+        replayed = Env(self, ledger=ledger_line(BASE_APPROVAL["approvalNonce"]))
+        with self.failing_ledger_close():
+            answer, code, backend = module_request(corrupt, COMMAND, stdin_of(approval()), NOW)
+            self.assertRefused(answer, code, "ledger_corrupt", verified=True)
+            answer, code, backend = module_request(replayed, COMMAND, stdin_of(approval()), NOW)
+            self.assertRefused(answer, code, "replayed_nonce", verified=True)
+            self.assertEqual(backend.events.count("run"), 0)
+
+    def test_a_prune_that_raises_anything_is_swallowed_and_the_run_proceeds(self):
+        for error in (
+            OSError(5, "rewrite"),
+            RuntimeError("boom"),
+            TypeError("a date was not a number"),
+            ValueError("bad"),
+            KeyError("expiresAt"),
+        ):
+            with self.subTest(error=type(error).__name__):
+                env = Env(self)
+                with mock.patch.object(ma.Ledger, "_prune", side_effect=error):
+                    answer, code, runner, rows = helper_request(
+                        env, COMMAND, stdin_of(approval()), NOW
+                    )
+                self.assertDone(answer, code)
+                self.assertEqual(
+                    env.ledger.count(b"\n"), 1, "the ledger is as it was, plus the line"
+                )
+                self.assertEqual([row["result"] for row in rows], ["done"])
+                answer, code, _ = module_request(env, COMMAND, stdin_of(approval()), later(10))
+                self.assertRefused(answer, code, "replayed_nonce", verified=True)
+
+    def test_a_repeated_prune_failure_never_turns_an_approval_into_a_refusal(self):
+        env = Env(self)
+        with mock.patch.object(ma.Ledger, "_prune", side_effect=RuntimeError("boom")):
+            for step in range(3):
+                nonce = "%032x" % (step + 1)
+                answer, code, _ = module_request(
+                    env, COMMAND, stdin_of(approval(approvalNonce=nonce)), later(10 * step)
+                )
+                self.assertDone(answer, code)
+        self.assertEqual(env.ledger.count(b"\n"), 3)
+
+    def old_ledger(self):
+        """4,100 lines whose approvals expired weeks ago: the next prune would drop the first of them."""
+        return b"".join(
+            ledger_line(
+                "%032x" % index, expires="2026-10-01T00:00:00Z", recorded="2026-10-01T00:00:00Z"
+            )
+            for index in range(1, ma.LEDGER_KEEP_LINES + 5)
+        )
+
+    def strays(self, env):
+        return sorted(p.name for p in env.state.iterdir() if p.name.startswith(".muster-nonces"))
+
+    def test_a_rewrite_that_fails_leaves_the_ledger_intact_and_no_temporary_file(self):
+        import errno
+
+        old = self.old_ledger()
+        real_rename = os.rename
+
+        def rename(source, destination, *args, **kwargs):
+            if str(source).startswith(".muster-nonces.jsonl."):
+                raise OSError(errno.EIO, "rename")
+            return real_rename(source, destination, *args, **kwargs)
+
+        env = Env(self, ledger=old)
+        with mock.patch.object(os, "rename", rename):
+            answer, code, _ = module_request(env, COMMAND, stdin_of(approval()), NOW)
+        self.assertDone(answer, code)
+        self.assertTrue(env.ledger.startswith(old), "the old lines are all still there")
+        self.assertEqual(env.ledger.count(b"\n"), ma.LEDGER_KEEP_LINES + 5)
+        self.assertEqual(self.strays(env), [], "the temporary file was cleaned up")
+        # The next approval retries the rewrite, and it works.
+        answer, code, _ = module_request(
+            env, COMMAND, stdin_of(approval(approvalNonce="9" * 32)), later(10)
+        )
+        self.assertDone(answer, code)
+        self.assertEqual(env.ledger.count(b"\n"), ma.LEDGER_KEEP_LINES)
+        self.assertEqual(self.strays(env), [])
+
+    def test_a_rewrite_that_raises_something_other_than_an_oserror_is_swallowed_too(self):
+        env = Env(self, ledger=self.old_ledger())
+        real = ma._replace_file
+
+        def replace(dir_fd, name, data, uid, durable):
+            if name == ma.STATE_LEDGER_NAME:
+                raise ValueError("the rewrite broke")
+            return real(dir_fd, name, data, uid, durable)
+
+        with mock.patch.object(ma, "_replace_file", replace):
+            answer, code, _ = module_request(env, COMMAND, stdin_of(approval()), NOW)
+        self.assertDone(answer, code)
+        self.assertEqual(env.ledger.count(b"\n"), ma.LEDGER_KEEP_LINES + 5)
+
+    def test_any_other_fault_after_the_append_is_still_a_signed_result_with_one_row(self):
+        def explode(*args, **kwargs):
+            raise OSError("the status of the work was lost")
+
+        env = Env(self)
+        with (
+            mock.patch.object(ma.Ledger, "_prune", side_effect=RuntimeError("boom")),
+            self.failing_ledger_close(),
+            mock.patch.object(foc, "execute", explode),
+        ):
+            answer, code, _, rows = helper_request(env, COMMAND, stdin_of(approval()), NOW)
+        self.assertEqual((code, answer["kind"]), (1, "result"), answer)
+        self.assertEqual(answer["body"]["outcome"], "unknown")
+        self.assertEqual([row["result"] for row in rows], ["unknown"])
+        self.assertEqual(env.ledger.count(b"\n"), 1)
+
+
 class Y8FaultTests(Checks):
     """An unexpected exception inside Y8 happens before any nonce is spent: the refusal
     `internal_error` (exit 2), no audit row, nothing on the ledger."""
@@ -8207,21 +8354,503 @@ class FixtureLeavesTests(Checks):
             for index, inner in enumerate(value):
                 yield from self.leaves(inner, path + "[%d]" % index)
 
-    def test_every_long_leaf_is_in_section_16(self):
-        text = SPEC_PATH.read_text(encoding="utf-8").replace("  ", "  ")
+    # What the code makes (the generator's additions) is not printed in the spec: the whole answer
+    # lines and their hashes, and the signature, answer and plan entries that were made by running it.
+    MADE = ("badSignatures", "generatedAnswers", "generatedPlans", "resourceFieldScales")
+
+    def test_every_long_leaf_the_spec_prints_is_in_section_16(self):
+        text = SPEC_PATH.read_text(encoding="utf-8").replace("\u00a0 ", "  ")
         section = text[text.index("## 16.") : text.index("## 17.")]
         checked = 0
         for path, leaf in self.leaves(FIXTURE):
+            top = path.split("/")[1].split("[")[0]
+            if top in self.MADE or path.endswith(("/line", "/lineSHA256")):
+                continue
             if len(leaf) < 32 or path.endswith("/note") or path == "/about":
                 continue
             checked += 1
             self.assertIn(leaf, section, path)
         self.assertGreater(checked, 150)
 
+    def test_what_the_code_makes_is_not_taken_for_what_the_spec_prints(self):
+        # The exclusion above is exactly the generator's additions.
+        printed = make.from_spec(SPEC_PATH.read_text(encoding="utf-8"))
+        self.assertEqual(set(FIXTURE) - set(printed) - {"about"}, set(self.MADE))
+
     def test_the_fixture_says_where_the_chain_slice_must_read_its_lists(self):
         about = FIXTURE["about"]
         for words in ("chain", "section 16", "T-lists", "entry hashes"):
             self.assertIn(words, about)
+
+
+class FixtureGeneratorTests(Checks):
+    """The fixture is what `scripts/make_muster_vectors.py` makes from the spec and the code, so it can
+    never drift from either."""
+
+    def committed(self):
+        return (HERE / "fixtures" / "muster-vectors-v5.json").read_text(encoding="utf-8")
+
+    def test_the_fixture_is_what_the_generator_makes(self):
+        made = make.render(make.generate(SPEC_PATH.read_text(encoding="utf-8")))
+        self.assertEqual(
+            made,
+            self.committed(),
+            "scripts/fixtures/muster-vectors-v5.json differs from what scripts/make_muster_vectors.py "
+            "makes:  run `python3 scripts/make_muster_vectors.py --write` and review the change",
+        )
+
+    def test_a_fresh_process_makes_the_same_bytes(self):
+        # A different process (and hash seed) checks the committed file: nothing in it depends on
+        # the run, the order of a dictionary, the clock, the host or a random number.
+        result = subprocess.run(
+            [sys.executable, "-I", str(HERE / "make_muster_vectors.py"), "--check"],
+            capture_output=True,
+            env={"PYTHONHASHSEED": "random"},
+            timeout=300,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_the_check_says_so_when_the_file_differs_and_write_rewrites_it(self):
+        with tempfile.TemporaryDirectory() as folder:
+            other = Path(folder) / "muster-vectors-v5.json"
+            other.write_text(self.committed())
+            stub = mock.patch.object(make, "generate", lambda text: {"changed": 1})
+            with stub, mock.patch.object(make, "FIXTURE_PATH", other):
+                errors = io.StringIO()
+                with contextlib.redirect_stderr(errors), contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(make.main(["--check"]), 1)
+                    self.assertIn("--write", errors.getvalue())
+                    self.assertEqual(make.main(["--write"]), 0)
+                    self.assertEqual(other.read_text(), make.render({"changed": 1}))
+                    self.assertEqual(make.main(["--check"]), 0)
+
+    def test_the_about_note_says_how_to_regenerate_it(self):
+        about = FIXTURE["about"]
+        self.assertIn("python3 scripts/make_muster_vectors.py --write", about)
+        self.assertEqual(about, make.ABOUT)
+
+    def test_what_the_spec_prints_is_what_the_spec_prints(self):
+        printed = make.from_spec(SPEC_PATH.read_text(encoding="utf-8"))
+        for name, value in printed.items():
+            if name == "answers":
+                for answer, entry in value.items():
+                    kept = {k: v for k, v in FIXTURE["answers"][answer].items() if k in entry}
+                    self.assertEqual(kept, entry, answer)
+            else:
+                self.assertEqual(FIXTURE[name], value, name)
+        added = set(FIXTURE) - set(printed)
+        self.assertEqual(
+            added,
+            {"about", "badSignatures", "generatedAnswers", "generatedPlans", "resourceFieldScales"},
+        )
+
+    def test_the_keys_are_test_keys_derived_from_their_labels(self):
+        for label, entry in FIXTURE["keys"].items():
+            key = KEYS[label]
+            self.assertEqual(b64u(spki(key)), entry["public"], label)
+            self.assertEqual(
+                make.b64u(spki(make.derive(label))), entry["public"], "the generator's own"
+            )
+
+
+class FixtureAnswerLineTests(Checks):
+    """The whole answer line of every signed answer: the one canonical-JSON line and its line feed."""
+
+    def every_answer(self):
+        for name, entry in FIXTURE["answers"].items():
+            yield "answers." + name, entry["answer"], entry
+        for section in ("badSignatures", "generatedAnswers", "generatedPlans"):
+            for entry in FIXTURE[section]:
+                yield f"{section}.{entry['id']}", entry["answer"], entry
+
+    def test_each_line_is_the_canonical_bytes_of_its_answer_and_a_line_feed(self):
+        count = 0
+        for name, answer, entry in self.every_answer():
+            with self.subTest(answer=name):
+                line = entry["line"]
+                self.assertEqual(line, ma.encode_answer(answer))
+                self.assertEqual(line, ma.canonical_bytes(answer).decode("ascii") + "\n")
+                self.assertTrue(line.endswith("}\n"))
+                self.assertEqual(line.count("\n"), 1, "one line")
+                self.assertEqual(json.loads(line), answer)
+                self.assertEqual(entry["lineSHA256"], hashlib.sha256(line.encode()).hexdigest())
+                count += 1
+        self.assertEqual(count, 7 + 13 + 10 + 6)
+
+    def test_each_signed_answer_verifies_under_its_own_prefix(self):
+        for name, answer, entry in self.every_answer():
+            with self.subTest(answer=name):
+                if answer["signature"] is None:
+                    self.assertEqual(answer, ma.unsigned_helper_key_missing())
+                    continue
+                self.assertSigned(answer)
+                digest = hashlib.sha256(ma.canonical_bytes(answer["body"])).hexdigest()
+                self.assertEqual(entry["bodySHA256"], digest)
+
+    def test_the_unsigned_answer_is_the_same_line_whoever_writes_it(self):
+        entry = next(e for e in FIXTURE["generatedAnswers"] if e["id"] == "helperKeyMissing")
+        self.assertEqual(entry["answer"], foc.MUSTER_UNSIGNED_ANSWER)
+        self.assertEqual(
+            entry["line"],
+            json.dumps(foc.MUSTER_UNSIGNED_ANSWER, sort_keys=True, separators=(",", ":")) + "\n",
+        )
+        self.assertEqual(
+            entry["answer"],
+            {
+                "protocol": "muster-helper/1",
+                "kind": "refusal",
+                "body": {"contract": "muster-signed-refusal/1", "errorCode": "helper_key_missing"},
+                "keyId": None,
+                "signature": None,
+            },
+        )
+        self.assertEqual(entry["exitStatus"], 2)
+
+
+class FixtureBadSignatureTests(Checks):
+    """Each wrong signature, as data: the signature, the approval stdin that carries it, and the refusal."""
+
+    CASES = (
+        "leading-zero",
+        "negative-integer",
+        "trailing-byte",
+        "long-form-length",
+        "r-zero",
+        "s-equals-n",
+        "truncated",
+        "stray-trailing-bits",
+        "impossible-length",
+        "padding-present",
+        "over-100-characters",
+        "empty",
+        "high-s-twin",
+    )
+    BAD_INPUT = {"padding-present", "over-100-characters", "empty"}
+
+    def entries(self):
+        return {entry["id"]: entry for entry in FIXTURE["badSignatures"]}
+
+    def test_the_cases_are_these_and_in_this_order(self):
+        self.assertEqual([entry["id"] for entry in FIXTURE["badSignatures"]], list(self.CASES))
+
+    def test_each_case_carries_its_signature_in_v1s_approval_and_nothing_else_changes(self):
+        v1 = json.loads(FIXTURE["approvals"][0]["stdin"])["approval"]
+        for case_id, entry in self.entries().items():
+            with self.subTest(case=case_id):
+                document = json.loads(entry["stdin"])
+                self.assertEqual(entry["stdin"].encode(), stdin_of(document["approval"]))
+                self.assertEqual(document["approval"]["signature"], entry["signature"])
+                self.assertEqual(
+                    {**document["approval"], "signature": None}, {**v1, "signature": None}
+                )
+                self.assertEqual((entry["stored"], entry["now"]), ("v1", NOW))
+
+    def test_each_case_is_refused_as_it_says_and_the_one_good_twin_is_accepted(self):
+        for case_id, entry in self.entries().items():
+            with self.subTest(case=case_id):
+                answer, code, backend = module_request(
+                    Env(self), COMMAND, entry["stdin"].encode(), NOW
+                )
+                if case_id == "high-s-twin":
+                    self.assertEqual(entry["expected"], {"kind": "result", "outcome": "done"})
+                    self.assertDone(answer, code)
+                    continue
+                expected = "bad_input" if case_id in self.BAD_INPUT else "bad_signature"
+                self.assertEqual(
+                    entry["expected"], {"kind": "refusal", "errorCode": expected, "verified": False}
+                )
+                self.assertRefused(answer, code, expected, verified=False)
+                self.assertEqual(answer, entry["answer"])
+                self.assertEqual(code, entry["exitStatus"])
+                self.assertEqual(backend.events, [])
+
+    def test_no_wrong_signature_verifies_and_the_twin_does(self):
+        v1 = json.loads(FIXTURE["approvals"][0]["stdin"])["approval"]
+        text = text_of(v1)
+        device_a = FIXTURE["lists"]["v1"]["body"]["devices"][0]["approvalKey"]
+        for case_id, entry in self.entries().items():
+            with self.subTest(case=case_id):
+                self.assertEqual(
+                    ma.verify_signature(device_a, entry["signature"], text),
+                    case_id == "high-s-twin",
+                )
+
+    @staticmethod
+    def contents(sig):
+        """(r bytes, s bytes) of a DER signature with short-form lengths, as written."""
+        position, out = 2, []
+        for _ in range(2):
+            length = sig[position + 1]
+            out.append(sig[position + 2 : position + 2 + length])
+            position += 2 + length
+        return out
+
+    def test_each_case_is_the_fault_its_title_names(self):
+        entries = self.entries()
+        valid = FIXTURE["approvals"][0]["signature"]
+        valid_der = unb64u(valid)
+        r, s = (int.from_bytes(part, "big") for part in self.contents(valid_der))
+        der = {
+            case_id: unb64u(entries[case_id]["signature"])
+            for case_id in (
+                "leading-zero",
+                "negative-integer",
+                "trailing-byte",
+                "long-form-length",
+                "r-zero",
+                "s-equals-n",
+                "truncated",
+                "high-s-twin",
+            )
+        }
+        zero = self.contents(der["leading-zero"])[0]
+        self.assertEqual(zero[0], 0)
+        self.assertFalse(zero[1] & 0x80 and zero[1] != 0, "no sign bit needs that zero byte")
+        self.assertGreaterEqual(self.contents(der["negative-integer"])[0][0], 0x80)
+        self.assertEqual(der["trailing-byte"], valid_der + b"\x00")
+        self.assertEqual(der["long-form-length"][:2], b"\x30\x81")
+        self.assertEqual(self.contents(der["r-zero"])[0], b"\x00")
+        self.assertEqual(int.from_bytes(self.contents(der["s-equals-n"])[1], "big"), N)
+        self.assertEqual(der["truncated"], valid_der[:-1])
+        stray = entries["stray-trailing-bits"]["signature"]
+        self.assertEqual(unb64u(stray), valid_der)
+        self.assertNotEqual(stray, valid)
+        self.assertEqual(len(entries["impossible-length"]["signature"]) % 4, 1)
+        self.assertTrue(entries["padding-present"]["signature"].endswith("="))
+        self.assertEqual(len(entries["over-100-characters"]["signature"]), 101)
+        self.assertEqual(entries["empty"]["signature"], "")
+        high = [int.from_bytes(part, "big") for part in self.contents(der["high-s-twin"])]
+        self.assertEqual(high, [r, N - s])
+        self.assertGreater(high[1], N // 2)
+
+
+class FixtureGeneratedEntryTests(Checks):
+    """Each generated answer and plan is made again by the module and the helper, and says what it
+    claims to say."""
+
+    def entries(self):
+        return {e["id"]: e for e in FIXTURE["generatedAnswers"] + FIXTURE["generatedPlans"]}
+
+    def test_the_entries_are_these(self):
+        self.assertEqual(
+            [e["id"] for e in FIXTURE["generatedAnswers"]],
+            [
+                "ackNothingHeld",
+                "planRefusedAllowlistMiss",
+                "logsResult",
+                "updateStatusRead",
+                "planRefusedReceiptMismatch",
+                "failedResultPlanRefused",
+                "unknownResult",
+                "rateLimitedRefusal",
+                "planMismatchResourcePolicy",
+                "helperKeyMissing",
+            ],
+        )
+        self.assertEqual(
+            [e["id"] for e in FIXTURE["generatedPlans"]],
+            [
+                "restartPlanUserScope",
+                "restartPlanSystemScope",
+                "redeployPlanNonAscii",
+                "resourcePlanCpuWeight",
+                "resourcePlanRamBudget",
+                "resourcePlanBorrowIdle",
+            ],
+        )
+
+    def test_each_entry_is_made_again_by_the_module_and_the_helper(self):
+        for entry_id, entry in self.entries().items():
+            with self.subTest(entry=entry_id):
+                answer, line, code = make.run_request(
+                    FIXTURE, entry["setup"], entry["command"], entry["stdin"], entry["now"]
+                )
+                self.assertEqual(answer, entry["answer"])
+                self.assertEqual(line, entry["line"])
+                self.assertEqual(code, entry["exitStatus"])
+                self.assertEqual(hashlib.sha256(line.encode()).hexdigest(), entry["lineSHA256"])
+
+    def test_the_approvals_name_the_plan_the_helper_makes_for_them(self):
+        for entry_id in ("logsResult", "unknownResult", "rateLimitedRefusal"):
+            entry = self.entries()[entry_id]
+            with self.subTest(entry=entry_id):
+                approval_in = json.loads(entry["stdin"])["approval"]
+                verb, target = approval_in["action"], approval_in["target"]
+                plan, _, code = make.run_request(
+                    FIXTURE, entry["setup"], f"server {verb} {target} --plan", make.job_stdin()
+                )
+                self.assertEqual(code, 0)
+                self.assertEqual(plan["body"]["planSHA256"], approval_in["planSHA256"])
+                device_a = FIXTURE["lists"]["v1"]["body"]["devices"][0]["approvalKey"]
+                self.assertTrue(
+                    ma.verify_signature(device_a, approval_in["signature"], text_of(approval_in))
+                )
+
+    def test_nothing_held_is_an_acknowledgement_with_null_hash_and_version(self):
+        body = self.entries()["ackNothingHeld"]["answer"]["body"]
+        self.assertEqual(self.entries()["ackNothingHeld"]["answer"]["kind"], "ack")
+        self.assertEqual(
+            {
+                k: body[k]
+                for k in (
+                    "helperTrustListVersion",
+                    "closed",
+                    "signedByCurrentKey",
+                    "trustListSHA256",
+                )
+            },
+            {
+                "helperTrustListVersion": None,
+                "closed": False,
+                "signedByCurrentKey": False,
+                "trustListSHA256": None,
+            },
+        )
+        self.assertEqual(body["finalRefusals"], [])
+        self.assertEqual(self.entries()["ackNothingHeld"]["exitStatus"], 0)
+
+    def test_a_plan_refusal_names_its_reason_and_is_never_verified(self):
+        for entry_id, reason in (
+            ("planRefusedAllowlistMiss", "allowlist_miss"),
+            ("planRefusedReceiptMismatch", "receipt_context_mismatch"),
+        ):
+            entry = self.entries()[entry_id]
+            body = entry["answer"]["body"]
+            with self.subTest(entry=entry_id):
+                self.assertEqual(entry["answer"]["kind"], "refusal")
+                self.assertEqual((body["errorCode"], body["reason"]), ("plan_refused", reason))
+                self.assertFalse(body["verified"])
+                self.assertEqual(body["claimed"], JOB)
+                self.assertIsNone(body["helperTrustListVersion"], "the list is read at R3")
+                self.assertEqual(entry["exitStatus"], 2)
+                self.assertIn(reason, ma.PLAN_REFUSED_REASONS)
+
+    def test_after_the_nonce_the_same_reason_is_a_failed_results_detail(self):
+        entry = self.entries()["failedResultPlanRefused"]
+        body = entry["answer"]["body"]
+        self.assertEqual(entry["answer"]["kind"], "result")
+        self.assertEqual((body["outcome"], body["detail"]), ("failed", "plan_refused: update_busy"))
+        self.assertEqual(entry["exitStatus"], 1)
+        self.assertEqual(body["helperTrustListVersion"], 1)
+
+    def test_a_read_result_carries_output_and_a_done_logs_result_carries_the_text(self):
+        logs = self.entries()["logsResult"]["answer"]["body"]
+        self.assertEqual(unb64u(logs["outputB64"]).decode("utf-8"), make.JOURNAL_TEXT)
+        self.assertIn("ï", make.JOURNAL_TEXT)
+        self.assertEqual(
+            (logs["outcome"], logs["detail"], logs["auditId"]),
+            ("done", "3 journal lines", make.AUDIT_ID),
+        )
+        read = self.entries()["updateStatusRead"]["answer"]["body"]
+        self.assertEqual(
+            (read["outcome"], read["claimed"], read["planSHA256"]), ("planned", JOB, None)
+        )
+        self.assertNotIn("approvalNonce", read)
+        observed = json.loads(unb64u(read["outputB64"]))
+        self.assertEqual(observed["executionState"], "completed")
+        self.assertEqual(observed["baselineStartMonotonic"], make.RECEIPT_BASELINE)
+
+    def test_an_unknown_outcome_is_exit_one_and_a_rate_limit_is_a_verified_refusal(self):
+        unknown = self.entries()["unknownResult"]
+        self.assertEqual(unknown["answer"]["body"]["outcome"], "unknown")
+        self.assertEqual(unknown["exitStatus"], 1)
+        self.assertEqual(unknown["setup"]["runnerStatus"], 124)
+        limited = self.entries()["rateLimitedRefusal"]
+        body = limited["answer"]["body"]
+        self.assertEqual((body["errorCode"], body["verified"]), ("rate_limited", True))
+        self.assertEqual(body["approvalNonce"], BASE_APPROVAL["approvalNonce"])
+        self.assertIsNone(body["reason"])
+        self.assertEqual(limited["exitStatus"], 2)
+        key, at = limited["setup"]["rate"][0][1], limited["setup"]["rate"][0][2]
+        self.assertEqual(key, "restart fleet-server-status.timer")
+        self.assertEqual(epoch(NOW) * 1000 - at, 1000, "one second inside the two-second spacing")
+
+    def test_a_plan_mismatch_is_a_verified_refusal_of_a_resource_policy_change(self):
+        entry = self.entries()["planMismatchResourcePolicy"]
+        body = entry["answer"]["body"]
+        self.assertEqual((body["errorCode"], body["verified"]), ("plan_mismatch", True))
+        self.assertEqual(body["action"], "resource-policy")
+        self.assertEqual(entry["exitStatus"], 2)
+        refused = FIXTURE["answers"]["refusalV6"]["answer"]["body"]
+        self.assertEqual((refused["errorCode"], refused["verified"]), ("plan_mismatch", True))
+
+    def test_each_plan_is_canonical_and_hashes_to_its_hash(self):
+        for entry in FIXTURE["generatedPlans"]:
+            with self.subTest(plan=entry["id"]):
+                body = entry["answer"]["body"]
+                plan = body["plan"]
+                self.assertEqual(entry["plan"], plan)
+                self.assertEqual(entry["planSHA256"], body["planSHA256"])
+                self.assertEqual(
+                    hashlib.sha256(plan.encode("ascii")).hexdigest(), body["planSHA256"]
+                )
+                self.assertEqual(ma.canonical_bytes(json.loads(plan)), plan.encode("ascii"))
+                self.assertEqual(body["claimed"].keys(), JOB.keys())
+                self.assertEqual(entry["exitStatus"], 0)
+
+    def plan_of(self, entry_id):
+        return json.loads(self.entries()[entry_id]["plan"])
+
+    def test_a_system_unit_has_no_user_flag_and_a_user_unit_has(self):
+        user = self.plan_of("restartPlanUserScope")
+        system = self.plan_of("restartPlanSystemScope")
+        self.assertEqual(
+            user["commands"],
+            [["/usr/bin/systemctl", "--user", "restart", "fleet-server-status.timer"]],
+        )
+        self.assertEqual(
+            system["commands"], [["/usr/bin/systemctl", "restart", "botfleet-server.service"]]
+        )
+        self.assertEqual((user["contract"], system["contract"]), ("fleet-ops-plan/1",) * 2)
+        self.assertEqual(system["auditTarget"], "botfleet-server.service")
+
+    def test_a_non_ascii_application_name_is_one_question_mark_per_code_point(self):
+        plan = self.plan_of("redeployPlanNonAscii")
+        self.assertEqual(plan["auditTarget"], "Caf? App")
+        self.assertEqual(plan["auditTarget"], foc.printable_ascii("Café App"))
+        self.assertEqual(
+            plan["commands"], [["coolify", "GET", f"/api/v1/deploy?uuid={make.APPLICATION}"]]
+        )
+        report = self.entries()["redeployPlanNonAscii"]["setup"]["report"]
+        self.assertEqual(report[0]["name"], "Café App", "the row keeps the real name")
+
+    def test_the_generators_fake_clock_advances_with_a_sleep(self):
+        # A wait that the broker makes for the controller must end at its deadline, whatever code is
+        # behind it: a clock that never moves made a mutant of the broker hang the mutation check.
+        import types
+
+        context = types.SimpleNamespace()
+        make._resource_context(context, make.modules()[3])
+        before = context.resource_monotonic()
+        context.resource_sleep(0.25)
+        self.assertEqual(context.resource_monotonic(), before + 0.25)
+        context.resource_sleep(15)
+        self.assertGreaterEqual(context.resource_monotonic(), before + 15)
+
+    def test_a_resource_plan_holds_the_codes_own_units(self):
+        import fleet_resource_control as frc
+
+        cpu = self.plan_of("resourcePlanCpuWeight")
+        ram = self.plan_of("resourcePlanRamBudget")
+        borrow = self.plan_of("resourcePlanBorrowIdle")
+        for plan in (cpu, ram, borrow):
+            self.assertEqual(plan["contract"], "fleet-resource-plan/1")
+            self.assertEqual(plan["auditTarget"], plan["field"])
+            self.assertRegex(plan["revision"], r"[0-9a-f]{64}")
+        self.assertEqual((cpu["old"], cpu["new"]), (50, 100))
+        self.assertEqual((ram["old"], ram["new"]), (8 * frc.GIB, 12 * frc.GIB))
+        self.assertEqual((ram["old"], ram["new"]), (8589934592, 12884901888))
+        self.assertEqual((borrow["old"], borrow["new"]), (True, False))
+        self.assertIs(borrow["old"], True)
+        self.assertIs(borrow["new"], False)
+        self.assertEqual(
+            FIXTURE["resourceFieldScales"],
+            {field: scale for field, (key, scale) in frc.FIELDS.items()},
+        )
+        self.assertEqual(FIXTURE["resourceFieldScales"]["ram-budget-gib"], frc.GIB)
+        self.assertEqual(cpu["revision"], ram["revision"])
+        self.assertEqual(cpu["revision"], make.resource_revision())
 
 
 class CiSkipTests(Checks):
