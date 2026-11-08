@@ -96,15 +96,15 @@ does it today.
 
 | Requirement | Where it lives today | State |
 | --- | --- | --- |
-| The Operator as a service seat | `scripts/agent_sync/config.py`: the `OPERATOR` seat requires `bot = "Operator"`, `creds = "infisical"` and `wake = "inbox"` | built |
-| The Operator's identity, read from the environment | `scripts/agent_sync/service_identity.py`, `scripts/agent_sync/dm_policy.py`: `operator_user_id(env, pinned)` | built |
-| The Operator's direct message rule | `scripts/agent_sync/dm_policy.py`: `check_new_dm()` lets the Operator open a direct message for its one clarifying question and, with `status=True`, for its status message; `scripts/agent_sync/zulip.py`: `check_dm_guard()` refuses a direct message that does not carry the owner, and `ZulipClient.operator_status_dm` is the one exemption, for the status message alone | built for the status message, narrower than the Oct 26 ruling |
-| Session letters | `scripts/agent_sync/operator_registry.py`: the `sessions` and `alias_assignments` tables, one live holder per `(platform, letter)`, generation on recycle | built (AFC-412) |
-| The registry on the Fleet Reference sheet | `scripts/agent_sync/operator_sheets_export.mjs`: the exporter writes the Sessions (`2033000102`) and Events (`2033000103`) tabs and never touches Reference (`2033000101`) | built (AFC-412 PR2) |
-| The Zulip to Linear mirror | `scripts/agent_sync/linear_relay.py`: one comment per `(issue, topic)`, edited in place, ten minute batching, direct messages and private streams excluded | built (AFC-502, PR #899) |
-| The listener's read API the eavesdropper reads | `scripts/agent_sync/listener_api.py`: five signed GET endpoints under `/listener/v1/<SEAT>/<record>` | built (AFC-330 part B) |
+| The Operator as a service seat | `scripts/simple_tools/config.py`: the `OPERATOR` seat requires `bot = "Operator"`, `creds = "infisical"` and `wake = "inbox"` | built |
+| The Operator's identity, read from the environment | `scripts/simple_tools/service_identity.py`, `scripts/simple_tools/dm_policy.py`: `operator_user_id(env, pinned)` | built |
+| The Operator's direct message rule | `scripts/simple_tools/dm_policy.py`: `check_new_dm()` lets the Operator open a direct message for its one clarifying question and, with `status=True`, for its status message; `scripts/simple_tools/zulip.py`: `check_dm_guard()` refuses a direct message that does not carry the owner, and `ZulipClient.operator_status_dm` is the one exemption, for the status message alone | built for the status message, narrower than the Oct 26 ruling |
+| Session letters | `scripts/simple_tools/operator_registry.py`: the `sessions` and `alias_assignments` tables, one live holder per `(platform, letter)`, generation on recycle | built (AFC-412) |
+| The registry on the Fleet Reference sheet | `scripts/simple_tools/operator_sheets_export.mjs`: the exporter writes the Sessions (`2033000102`) and Events (`2033000103`) tabs and never touches Reference (`2033000101`) | built (AFC-412 PR2) |
+| The Zulip to Linear mirror | `scripts/simple_tools/linear_relay.py`: one comment per `(issue, topic)`, edited in place, ten minute batching, direct messages and private streams excluded | built (AFC-502, PR #899) |
+| The listener's read API the eavesdropper reads | `scripts/simple_tools/listener_api.py`: five signed GET endpoints under `/listener/v1/<SEAT>/<record>` | built (AFC-330 part B) |
 | The Operator waking MM on Lark | `docs/protocols/lark-mm-bridge.md`: the Operator runs the bridge with `--signal` and the text, and the bridge, the only holder of the Lark bot identity, sends it, runs the seat turn and puts the answer back in the same chat | built |
-| The Fleet Reference sheet adapter | `scripts/agent_sync/operator_sheets_google.mjs`: the Google Sheets transport behind the exporter's adapter surface (`inspect()`, `validateHeaders()`, `readRows()`, `appendSession()`, `updateSessionRow()`, `appendEvent()`), with `SESSION_HEADERS` and `EVENT_HEADERS` as the authoritative header contract | built (AFC-428) |
+| The Fleet Reference sheet adapter | `scripts/simple_tools/operator_sheets_google.mjs`: the Google Sheets transport behind the exporter's adapter surface (`inspect()`, `validateHeaders()`, `readRows()`, `appendSession()`, `updateSessionRow()`, `appendEvent()`), with `SESSION_HEADERS` and `EVENT_HEADERS` as the authoritative header contract | built (AFC-428) |
 
 Two facts about the existing code shape the discussion below.
 
@@ -114,8 +114,8 @@ is relayed today.  What is wrong is the keying, not the detection:  `ledger_key
 topic)` folds that message into the standing comment for `(issue, topic)`, so a message about an
 issue the topic is not about lands in a comment that claims the topic is about it.
 
-**The wake tag is composed for every seat, including the Operator.**  `scripts/agent_sync/wakes.py`
-builds `"[%s·wake] re=%d\n%s"`, and `scripts/agent_sync/adapters.py` sets the same shape as the
+**The wake tag is composed for every seat, including the Operator.**  `scripts/simple_tools/wakes.py`
+builds `"[%s·wake] re=%d\n%s"`, and `scripts/simple_tools/adapters.py` sets the same shape as the
 adapter's `reply_prefix`.  There is no path today that lets a seat speak in its own right with
 its own tag instead of the wake-reply tag.
 
@@ -228,7 +228,7 @@ Three concrete changes carry that:
     loop guard and the router read (a `·wake` post never wakes anyone) and the label that says
     which seat's consultant wrote the text.  The Operator's own messages (its questions, its
     status messages, the `@all` reminder, tagged `[OPERATOR·note]`) keep their own tags.  See
-    `agent-sync-listener.md`, "The Operator's voice".
+    `simple-tools-listener.md`, "The Operator's voice".
 
 3.  **The pairing test decides whether the Operator speaks, and the direct message carries what
     it says.**  A message that pairs with a thread gets the Operator's own message, and that
@@ -237,10 +237,10 @@ Three concrete changes carry that:
     thread gets the Operator's question, and that goes by direct message too.  The direct message
     is the fleet's exception, used only by the Operator:  that question and the exchange it opens,
     and, as a separate direct message, the candidate list that tells the sender of a tagged address
-    which sessions the letter could mean (`scripts/agent_sync/operator_candidates.py`).  That list
+    which sessions the letter could mean (`scripts/simple_tools/operator_candidates.py`).  That list
     carries the fleet's internal session inventory, so it goes only to the pinned owner or to a user
     the owner has allowed in `[operator] dm_allow`, and the gate that decides it is
-    `operator_dm_allowed()` in `scripts/agent_sync/daemon.py`.  Jay's Oct 26 ruling is what moved
+    `operator_dm_allowed()` in `scripts/simple_tools/daemon.py`.  Jay's Oct 26 ruling is what moved
     it:  the Operator may speak to anyone and converse with them, and it converses by direct
     message rather than in a channel post, so that conversations do not get bloated.  The question
     itself is bounded:  it asks about a tag to wake, and it is not an opening for an open-ended
@@ -312,7 +312,7 @@ summary and not for itself.
 The Sessions tab already carries a Host column for the location, so the tab needs one new
 column and not two.
 
-**The sheet adapter is `scripts/agent_sync/operator_sheets_google.mjs`.**  It is the Google
+**The sheet adapter is `scripts/simple_tools/operator_sheets_google.mjs`.**  It is the Google
 Sheets transport the exporter writes through (`inspect()`, `validateHeaders()`, `readRows()`,
 `appendSession()`, `updateSessionRow()`, `appendEvent()`), and its `SESSION_HEADERS` and
 `EVENT_HEADERS` are the authoritative header contract the tabs are validated against.  So the new
@@ -347,16 +347,16 @@ index needs a separately qualified runner lease and destination-mutation contrac
 
 **The citations for the pieces this discussion rests on.**
 
-*  The wake tag composer:  `scripts/agent_sync/wakes.py`, `"[%s·wake] re=%d\n%s"`.
-*  The owner-in-the-direct-message guard, merged Oct 25, 2026:  `scripts/agent_sync/zulip.py`,
+*  The wake tag composer:  `scripts/simple_tools/wakes.py`, `"[%s·wake] re=%d\n%s"`.
+*  The owner-in-the-direct-message guard, merged Oct 25, 2026:  `scripts/simple_tools/zulip.py`,
   `direct_recipient_sets()` and `check_dm_guard()`, and the client call site that runs the guard for
   a POST and a PATCH.  Pull request 947, AFC-469.
 *  The Lark bridge:  `docs/protocols/lark-mm-bridge.md` and `scripts/lark-mm-bridge.py`, and the
   Operator's signal path through `--signal`.
-*  The relay:  `scripts/agent_sync/linear_relay.py`, `find_issue_ids()` and `ledger_key()`.
-*  The registry and the letters:  `scripts/agent_sync/operator_registry.py`, the `sessions` and
+*  The relay:  `scripts/simple_tools/linear_relay.py`, `find_issue_ids()` and `ledger_key()`.
+*  The registry and the letters:  `scripts/simple_tools/operator_registry.py`, the `sessions` and
   `alias_assignments` tables.
-*  The exporter:  `scripts/agent_sync/operator_sheets_export.mjs`.
+*  The exporter:  `scripts/simple_tools/operator_sheets_export.mjs`.
 
 ### 3.4: The Linear mirror, one message at a time
 
@@ -464,7 +464,7 @@ Zulip only.
 *  **The Operator's own voice on the server.**  The Operator seat is already a service seat with
     its credentials from Infisical and its identity read from the environment.  What is missing is
     the Operator publishing its own threads rather than a seat reporting on them.
-*  **The Lark path.**  Built, but not running on the Mac from Nov 2 to Nov 7, 2026 (AFC-490).  The managed runtime was renamed from agent-sync-runtime to simple-tools-runtime on Nov 2, and the installed bridge, which only knew the old name, crash-looped on `ModuleNotFoundError: agent_sync` (over 10,000 launchd runs, last exit 1).  `scripts/lark-mm-bridge.py` now finds either name, and the Mac's copy is reinstalled from it.  A signal reaching MM's Lark chat has to be checked again after that reinstall, and this line says so until it has been.
+*  **The Lark path.**  Built, but not running on the Mac from Nov 2 to Nov 7, 2026 (AFC-490).  The installed bridge could not find the managed runtime's `simple_tools` package and crash-looped on `ModuleNotFoundError` (over 10,000 launchd runs, last exit 1).  `scripts/lark-mm-bridge.py` now looks in its own scripts folder and then in the managed runtime, and the Mac's copy is reinstalled from it.  A signal reaching MM's Lark chat has to be checked again after that reinstall, and this line says so until it has been.
 *  **The WhatsApp receive half.**  Owned by CODEX as the approved executor, with Jet owning the
     subscription, the binding ceremony and the acceptance receipts.  Blocked on the deployed
     Worker being behind the merged read-routing, on the poller being stopped with the binding

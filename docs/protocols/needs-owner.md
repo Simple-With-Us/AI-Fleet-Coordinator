@@ -19,7 +19,7 @@ the one-tap and Linear answers, the Grok Bot mirror and the OWNER-topic router r
 - An answer is verified before it is acted on:  a tap counted only when the reactor's user id equals the pinned `owner_user_id`;  a Zulip reply through `simple-chat verify-owner-msg` (owner id, human client, right topic, newer than the notice);  a Linear comment whose author equals `OWNER_LINEAR_USER_ID`.  The records say a reply exists, nothing more.
 - Exit codes:  0 done (a filed item with its notice pending is still done);  1 something failed (Linear, the network, a missing tool);  2 refused;  3 `status` or `adopt` named something that is not a needs-owner item;  4 to 7 the `simple-board` CLI's own code, passed through when a write failed (7 means Linear writes are off).
 - **C6-2.**  `needs-owner notify` (CLAUDE only) sends the notice of an item whose own seat could not (after 2 minutes, urgent first, under the caps), records the first answer to each open item as one `owner replied:` Linear comment, wakes the filer with one directed note (or leaves an entry in `pending-CLAUDE.json` for CLAUDE's own items), asks again once for two different taps and once for a tap on a risky option, and mirrors Grok Bot `needs-owner-request` blocks into Linear.  It never closes, edits or restates an item, posts nothing while paused, holds one lock, and logs ids and reason words only.  Records count only from who may write them.  OWNER topics never peer-wake, except its note.
-- Stable copy at `~/apps/needs-owner` runs under `python3 -I` with only the package, `fleet_knobs/` (the notifier's knob reader) and the three F3 files it loads by path (`agent_sync/identity.py`, `secretscan.py`, `textsafe.py`).  The install proof is `--help` and `--version` of that copy under `python3 -I`:  both load the package and the three F3 files before they parse anything, so a copy that lacks or has damaged one fails them (exit 1).  Tests use fakes that parse argv with the real `simple-board` and `simple-chat` parsers and print the real `read --json` keys.
+- Stable copy at `~/apps/needs-owner` runs under `python3 -I` with only the package, `fleet_knobs/` (the notifier's knob reader) and the three F3 files it loads by path (`simple_tools/identity.py`, `secretscan.py`, `textsafe.py`).  The install proof is `--help` and `--version` of that copy under `python3 -I`:  both load the package and the three F3 files before they parse anything, so a copy that lacks or has damaged one fails them (exit 1).  Tests use fakes that parse argv with the real `simple-board` and `simple-chat` parsers and print the real `read --json` keys.
 - A post that may have landed is found again by its `Ref:` line (`notify.find_notice`):  only a message from a bot (`is_bot` true) of the filing seat or of CLAUDE, only when the line stands alone and is not quoted, and the oldest such message wins.  A person's quote-and-reply, or a peer who copies the public uid, is never taken for the notice.
 
 ## Why This Exists
@@ -123,7 +123,7 @@ simple-chat post --as SEAT --session needsown --json --topic "OWNER <ID> <subjec
 ```
 
 with the message on standard input.  The mention of Jay comes from the owner id pinned in
-`~/.agent-sync/listener.toml` (`--to-owner`), never from a typed name.  The message holds the question and
+`~/.simple-tools/listener.toml` (`--to-owner`), never from a typed name.  The message holds the question and
 options (every word the filer wrote goes through `render_untrusted`), a keycap emoji on each low-stakes
 option **by its own position** (a low-stakes option 3 is 3️⃣) with "Tap to answer", the recommendation, the
 Linear link, "Answer here or as a comment on the Linear issue.", and a reference line with the uid.
@@ -137,7 +137,7 @@ Linear link, "Answer here or as a comment on the Linear issue.", and a reference
 | `[needs-owner] block` then the fenced block | `adopt` | an issue filed earlier became an item |
 | `owner replied:  msg <id>` / `reaction <n> on msg <id>` / `comment <id>` | the notifier (C6-2) | Jay replied;  **never holds the answer** |
 
-Readers accept any whitespace where the writers put one.  Reasons are `no_credential`, `send_failed`, `no_agent_sync`, `unsent` and `held`
+Readers accept any whitespace where the writers put one.  Reasons are `no_credential`, `send_failed`, `no_simple_tools`, `unsent` and `held`
 (`adopt --no-notify` marks the item `held`, so the fallback notifier leaves it alone until it is announced for real).
 
 **Who may write a record.**  Anyone who can comment can type a record, so a record counts only when the comment is signed by a seat that may
@@ -292,7 +292,7 @@ which posts no topic of its own, records the persona's message as the notice and
 in the message id, and the message ids already mirrored are kept in the state), so within about 5 minutes of the post.  A block that is wrong gets **one** reply with a reason word
 (`seat_is_not_the_sender`, `not_json`, `secret_or_personal_data`, ...) and no Linear item.  A topic opened by anyone else is ignored, and so is a persona's block in a topic someone else opened.
 
-**The router rule** (`scripts/agent_sync/router.py`, described in `docs/protocols/agent-sync-listener.md`):  nothing a peer posts in a topic that starts `OWNER ` wakes anyone, except this
+**The router rule** (`scripts/simple_tools/router.py`, described in `docs/protocols/simple-tools-listener.md`):  nothing a peer posts in a topic that starts `OWNER ` wakes anyone, except this
 notifier's note (CLAUDE's bot, tag `[CLAUDE·needsown→`).  The owner's own message there wakes only the seats it mentions.
 
 **The knobs** (Infisical, project "AI Fleet Coordinator", prod only;  read through `fleet_knobs`, one fetch a run, the last-known-good copy when Infisical is unreachable):
@@ -331,7 +331,7 @@ board, the network, a missing tool);  2 refused;  3 `status` or `adopt` named so
 ## Installing
 
 `scripts/needs_owner/install.sh` prints a plan;  `--apply` copies `needs-owner`, the `needs_owner` package
-(without its tests) and the three F3 files it loads by path (`agent_sync/identity.py`, `secretscan.py`,
+(without its tests) and the three F3 files it loads by path (`simple_tools/identity.py`, `secretscan.py`,
 `textsafe.py`) and `fleet_knobs/` (the K1 knob reader the notifier uses, without its tests) to `~/apps/needs-owner`, links `~/.local/bin/needs-owner`, and proves the copy by running
 `python3 -I ~/apps/needs-owner/needs-owner --help` and `--version`, which load the package and the three F3 files
 (a missing or damaged file fails them).  The proof does not run a verb;  the tests do that through a copy (`notify` also runs from it, and says so when
@@ -343,7 +343,7 @@ arguments.
 ## Tests
 
 `cd scripts && python3 -m unittest discover -s needs_owner/tests -t .` (CI runs it;  about four minutes).  The router rule is tested in
-`agent_sync/tests/test_router.py`, the `reactions` and `owner_user_id` fields in `agent_sync/tests/test_safety_commands.py`, and the comment account fields
+`simple_tools/tests/test_router.py`, the `reactions` and `owner_user_id` fields in `simple_tools/tests/test_safety_commands.py`, and the comment account fields
 in `linear-board/test_board.py` (`CommentAuthorTests`).  The notifier tests run `notify` in process with a fixed clock and fake K1 knobs (and one class against
 the real `fleet_knobs` and a fake `infisical`), and a LaunchAgent test parses the plist.  The fakes parse
 argv with the real `simple-board` and `simple-chat` parsers, so a wrong flag fails here too, and the fake board hands

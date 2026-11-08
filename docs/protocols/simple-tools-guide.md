@@ -16,7 +16,7 @@ One connection can act as several bots, so the connection says who **may** act a
 4. The identity must be in the connection's allowed set (next section), or the call is refused with `identity_not_allowed`, which names the set in `allowed`.
 5. The server uses **that identity's own** credential and keeps every check against it (Zulip `users/me` must be that bot; a Linear write must come from that identity's own app).  Naming a bot never borrows another bot's key.  A launcher pin (`AGENT_LAUNCH_SEAT`) still wins: the only valid `identity` is the pinned seat.
 6. Old tool names are gone, not aliased.  A call to one answers `unknown_tool` with the new name in `replacement`.
-7. Every write is audited with the connection, the claimed identity and the tool (hosted: the seat-gate audit log; stdio and CLI: `~/.agent-sync/logs/identity.jsonl`, ids only).  Posts carry the tag `[IDENTITY·session]` built from the claimed identity.
+7. Every write is audited with the connection, the claimed identity and the tool (hosted: the seat-gate audit log; stdio and CLI: `~/.simple-tools/logs/identity.jsonl`, ids only).  Posts carry the tag `[IDENTITY·session]` built from the claimed identity.
 
 Three tools stand alone and need no identity:
 
@@ -32,7 +32,7 @@ Call `identities` first when a client is new, then `whoami` with an `identity` t
 ## Which Connection a Client Gets
 
 - **A Mac or server app that can run a local command** uses the **stdio** server: `{"command": "simple-chat", "args": ["mcp"]}` in its MCP config.  No OAuth, no arming, no `--as` needed (pass `--as` or `--default-seat` only to give reads a default).  Never put a Zulip key in the config.
-- **A client that only speaks remote MCP** (a web app, a phone, a Mac app with no local command support) uses **ST-MCP**, the hosted server, at `https://agents.simplewithus.com/mcp` with OAuth.  The owner arms the seat in `https://agents.simplewithus.com/admin` first, then the client starts its sign-in and the owner approves it; steps per app are in `scripts/agent-sync-mcp/ARMING-JAY.md`.  The armed seat becomes the grant's default identity.
+- **A client that only speaks remote MCP** (a web app, a phone, a Mac app with no local command support) uses **ST-MCP**, the hosted server, at `https://agents.simplewithus.com/mcp` with OAuth.  The owner arms the seat in `https://agents.simplewithus.com/admin` first, then the client starts its sign-in and the owner approves it; steps per app are in `scripts/simple-tools-mcp/ARMING-JAY.md`.  The armed seat becomes the grant's default identity.
 
 Allowed sets, as the code builds them:
 
@@ -45,7 +45,7 @@ Allowed sets, as the code builds them:
 | Stdio or CLI on the server | Every agent bot whose credential the server holds |
 | Any stdio or CLI session under a launcher (`AGENT_LAUNCHER`) | The launcher's seat alone |
 
-Never in any set: the owner's own account and the integration bots (BetterStack, Datadog, Linear, PagerDuty, Sentry).  A Grok Bot persona is in a set only when enabled in `scripts/agent_sync/mcp/gb-identities.json` (the one list both servers read); `GB-ENGINEER` is not enabled yet.
+Never in any set: the owner's own account and the integration bots (BetterStack, Datadog, Linear, PagerDuty, Sentry).  A Grok Bot persona is in a set only when enabled in `scripts/simple_tools/mcp/gb-identities.json` (the one list both servers read); `GB-ENGINEER` is not enabled yet.
 
 What differs on hosted: a read tool needs the grant's `zulip:read` scope and a write tool `zulip:write` (every family, not only Zulip); a paused seat answers `paused`; a seat or family that is not set up answers `not_configured` (Linear is on only for the GROK-WEB and CURSOR groups; FleetLink, recall and the eavesdropper reader need their server secrets).
 
@@ -186,7 +186,7 @@ From a shell, `simple-board run NAME` is the tool `linear_NAME` (`simple-board r
 
 ### fleetlink
 
-Same names and arguments on both servers, as the identity's own FleetLink bot.  Shares land in the Fleet team where every seat can read and edit them unless `personal` is true.  FleetLink content is fenced as untrusted (`BEGIN_UNTRUSTED_FLEETLINK` and `END_UNTRUSTED_FLEETLINK`), and text that would land on a link is refused when it looks like a secret.  Hosted needs the server's FleetLink secrets.  Stdio runs FleetLink's own CLI (`fleetlink`, or `AGENT_SYNC_FLEETLINK_CLI`) with the seat's token: `FLEETLINK_TOKEN_<SEAT>`, else `FLEETLINK_TOKEN` (no launcher, and `AGENT_SEAT` unset or the same seat; a seat from `--as` or `--default-seat` counts as `AGENT_SEAT`), else `FLEETLINK_TOKEN_<SEAT>` in Infisical AI Fleet Coordinator `/fleetlink` (hyphens as underscores); without one it answers `not_configured`.
+Same names and arguments on both servers, as the identity's own FleetLink bot.  Shares land in the Fleet team where every seat can read and edit them unless `personal` is true.  FleetLink content is fenced as untrusted (`BEGIN_UNTRUSTED_FLEETLINK` and `END_UNTRUSTED_FLEETLINK`), and text that would land on a link is refused when it looks like a secret.  Hosted needs the server's FleetLink secrets.  Stdio runs FleetLink's own CLI (`fleetlink`, or `SIMPLE_TOOLS_FLEETLINK_CLI`) with the seat's token: `FLEETLINK_TOKEN_<SEAT>`, else `FLEETLINK_TOKEN` (no launcher, and `AGENT_SEAT` unset or the same seat; a seat from `--as` or `--default-seat` counts as `AGENT_SEAT`), else `FLEETLINK_TOKEN_<SEAT>` in Infisical AI Fleet Coordinator `/fleetlink` (hyphens as underscores); without one it answers `not_configured`.
 
 | Tool | R/W | Purpose |
 |---|---|---|
@@ -243,7 +243,7 @@ A relay refusal arrives as a tool error carrying the relay's own HTTP status, ne
 
 ## Old Names and New Names
 
-Removed names are not aliased.  Calling one returns `unknown_tool` with the replacement (below).  Generated from `scripts/agent_sync/mcp/renamed-tools.json`.
+Removed names are not aliased.  Calling one returns `unknown_tool` with the replacement (below).  Generated from `scripts/simple_tools/mcp/renamed-tools.json`.
 
 | Old name | Use now |
 |---|---|
@@ -289,7 +289,6 @@ Removed names are not aliased.  Calling one returns `unknown_tool` with the rep
 | `draft_edit` | `zulip_draft_edit` |
 | `draft_delete` | `zulip_draft_delete` |
 | `typing` | `zulip_typing` |
-| `agent_sync_identities` | `identities` |
 | `listener_status` | `eavesdropper_status` |
 | `listener_inbox` | `eavesdropper_inbox` |
 | `listener_owner_queue` | `eavesdropper_owner_queue` |
@@ -336,7 +335,7 @@ Long text stays out of `argv`: `--body-file PATH` (a file you own, mode 0600 or 
 
 ## Errors and Exit Codes
 
-Tool errors come back with `isError: true` and an object `{code, message, retryable, …}` (also in `_meta["agent-sync/error"]`).
+Tool errors come back with `isError: true` and an object `{code, message, retryable, …}` (also in `_meta["simple-tools/error"]`).
 
 | Code | Meaning and what to do |
 |---|---|

@@ -14,7 +14,7 @@ explicitly cut over.  Deploying this code alone does not change CLAUDE's Muse pi
 2. The Mac bridge reads Mac inboxes directly.  For server seats it uses the existing ssh path to
    the target its own module resolves, which is private deployment inventory tracked under
    AFC-505 and not the `HOUSEKEEPER_SSH_ALIAS` knob the other tools use, and the one fixed Coolify
-   application ID to call `agent_sync.muse_bridge export` inside the listener container.  That ID is
+   application ID to call `simple_tools.muse_bridge export` inside the listener container.  That ID is
    operator-owned runtime configuration:  the operator's own listener config carries it as
    `muse_bridge.remote_app`, and the bridge refuses to run without it.  Export
    sends at most eight classified rows per seat, with content capped at
@@ -26,7 +26,7 @@ explicitly cut over.  Deploying this code alone does not change CLAUDE's Muse pi
    nudge and checks the same seat for a private DM, low risk for a peer, source pause, exact host,
    platform, workspace, and wake capability.  A model cannot choose a command, endpoint, host, bot
    key, or arbitrary role.  Unknown, stale, read-only, and ambiguous destinations are held.
-4. The Mac returns a source-qualified decision through `agent_sync.muse_bridge submit` over the same
+4. The Mac returns a source-qualified decision through `simple_tools.muse_bridge submit` over the same
    SSH path.  The server reopens its own inbox row, checks the seat, message ID, sequence, pause,
    loop guard, and configured routine.  A native approval is claimed durably before its original
    `SeatRunner` invokes the original routine with that seat's credentials and existing budget gate.
@@ -60,9 +60,9 @@ operator must run the bridge canary and inspect the result, then pin the fresh c
 
 ```sh
 cd scripts
-python3 -m agent_sync.muse_bridge_mac probe
-python3 -m agent_sync.muse_bridge_mac pin
-python3 -m agent_sync.muse_bridge_mac status
+python3 -m simple_tools.muse_bridge_mac probe
+python3 -m simple_tools.muse_bridge_mac pin
+python3 -m simple_tools.muse_bridge_mac status
 ```
 
 These commands are **not** part of deployment and were not run for this change.  If the binary,
@@ -127,5 +127,5 @@ seats, and other Mac seats require separate activation evidence.  The existing C
 continues as is unless deliberately moved.  BotFleet is a separate listener: its native
 `ZulipSession.poll` → `hub.handleMessage` → persisted per-role queue → `dispatchNext/startTurn`
 path needs a separate Muse admission adapter after classification and before `startTurn`.  This
-change creates no second BotFleet Agent-Sync queue and does not use outgoing callbacks as its
+change creates no second BotFleet Simple-Tools queue and does not use outgoing callbacks as its
 primary intake.
