@@ -593,3 +593,7 @@ Hosted-OAuth parity (the `gr_*` tools on a seat's OAuth connection, not only on 
 ### 7. Seat cutover
 
 Per seat, at its own pace:  mint or confirm its shared bearer on the admin page, point the seat at GR-MCP (stdio) or the Worker's `gr_*` tools, verify one action end to end, then retire that seat's interim AFC-460 shell/cache path.  The interim path stays working for seats that have not moved;  retiring it fleet-wide is its own owner decision.
+
+## 2026-11-08 addendum: scoped per-Worker deploy token uses `versions upload` + `versions deploy`
+
+The per-Worker deploy token (`CLOUDFLARE_ECHO_ST_MCP_DEPLOY`, Fleet-OPS `prod` `/cloudflare`, read through the scoped reader registered on the Fleet Reference "Infisical Service Tokens" tab) cannot complete plain `wrangler deploy`: the custom-domain trigger step fails with Cloudflare code 10084 ("The zone "agents.simplewithus.com" does not exist on your account") because the scoped token cannot see the zone. The script upload succeeds but nothing is promoted; the existing custom-domain attachment is untouched. Deploy instead with `npx wrangler versions upload --message ...` followed by `npx wrangler versions deploy <version-id>@100 --yes` - a traffic-only promotion that does not touch triggers or domains. Full record with the verbatim error and promotion proof: [ops/2026-11-08-scoped-deploy-token-route.md](ops/2026-11-08-scoped-deploy-token-route.md). Do not widen the token or return to the retired Global-key route without the owner.
