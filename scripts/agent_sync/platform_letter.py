@@ -907,16 +907,16 @@ def with_registry_env(env: Mapping[str, str]) -> Mapping[str, str]:
     names = (RA.URL_ENV, RA.PRINCIPAL_ENV, RA.KEY_ENV, RA.KEY_REF_ENV)
     script = (
         '. "$1" >/dev/null 2>&1 || true\n'
-        'for k in %s; do\n'
+        "for k in %s; do\n"
         '  eval "v=\\${$k:-}"\n'
         '  [ -n "$v" ] && printf "%%s=%%s\\0" "$k" "$v"\n'
-        'done\n'
+        "done\n"
         'ref="${%s:-}"\n'
         'if [ -n "$ref" ]; then\n'
         '  eval "rv=\\${$ref:-}"\n'
         '  [ -n "$rv" ] && printf "%%s=%%s\\0" "$ref" "$rv"\n'
-        'fi\n'
-        'exit 0\n'
+        "fi\n"
+        "exit 0\n"
     ) % (" ".join(names), RA.KEY_REF_ENV)
     try:
         proc = subprocess.run(

@@ -681,7 +681,8 @@ def sweep_main(argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int:
     )
     if not dbs or not all(os.path.isfile(p) for p in dbs):
         stdout.write(
-            json.dumps({"error": "no Antigravity summaries database at %s" % (args.db or home)}) + "\n"
+            json.dumps({"error": "no Antigravity summaries database at %s" % (args.db or home)})
+            + "\n"
         )
         return 2
     shape = _SAFE_CID_RE
@@ -713,7 +714,8 @@ def sweep_main(argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int:
                 conn.close()
         except sqlite3.Error as exc:
             stdout.write(
-                json.dumps({"error": "the store could not be read (%s)" % type(exc).__name__}) + "\n"
+                json.dumps({"error": "the store could not be read (%s)" % type(exc).__name__})
+                + "\n"
             )
             return 2
         for r in rows:
@@ -748,6 +750,7 @@ def sweep_main(argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int:
         for sid in gone:
             closed.append({"session_id": sid, "would_close": True})
     elif gone:
+
         def _close_one(sid: str) -> tuple[str, int, str]:
             buf = io.StringIO()
             code = PL.registry_main(
