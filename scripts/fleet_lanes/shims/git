@@ -199,10 +199,33 @@ if [ -z "$_fleet_slow" ]; then
       esac
       ;;
     '') _fleet_exec "$_fleet_real" "$@" ;;
+    commit|stash)
+      # The mirror rule:  a write inside a ~/Code clone gets a warning (or a block, by the mode file).  Anywhere else this stays out of
+      # Python.  --git-dir, --work-tree, GIT_DIR and a second -C are not followed, so they run git.
+      if [ -n "$_fleet_where" ] || [ -n "${GIT_DIR:-}" ] || [ -n "${GIT_WORK_TREE:-}" ]; then
+        _fleet_exec "$_fleet_real" "$@"
+      fi
+      _fleet_at=$PWD
+      if [ -n "$_fleet_cset" ]; then
+        case $_fleet_cdir in
+          /*) _fleet_at=$_fleet_cdir ;;
+          *) _fleet_at=$PWD/$_fleet_cdir ;;
+        esac
+      fi
+      case /$_fleet_at/ in
+        */../*) _fleet_slow=1 ;;  # the shell does not fold these
+        *)
+          case $_fleet_at/ in
+            "${FLEET_CODE_ROOT:-${HOME:-/nonexistent-home}/Code}"/*) _fleet_slow=1 ;;
+          esac
+          ;;
+      esac
+      [ -n "$_fleet_slow" ] || _fleet_exec "$_fleet_real" "$@"
+      ;;
     # A builtin cannot be aliased, so these never make a checkout.  Only real builtins belong here:  an alias wins over an external
     # command, so `ls`, `gui`, `lfs`, `submodule` and the like go through the alias walk below.
-    status|diff|log|add|commit|push|rev-parse|config|ls-files|show|branch|checkout|switch|merge|rebase|\
-    reset|restore|stash|tag|init|rm|mv|cat-file|for-each-ref|show-ref|symbolic-ref|rev-list|merge-base|blame|\
+    status|diff|log|add|push|rev-parse|config|ls-files|show|branch|checkout|switch|merge|rebase|\
+    reset|restore|tag|init|rm|mv|cat-file|for-each-ref|show-ref|symbolic-ref|rev-list|merge-base|blame|\
     grep|gc|apply|cherry-pick|revert|am|describe|shortlog|ls-remote|ls-tree|diff-tree|diff-index|diff-files|\
     update-index|update-ref|hash-object|read-tree|write-tree|commit-tree|check-ignore|check-attr|check-ref-format|\
     name-rev|clean|sparse-checkout|version|help|count-objects|verify-pack|pack-objects|index-pack|\
@@ -231,7 +254,7 @@ if [ -z "$_fleet_slow" ]; then
             break
           fi
           case $_fleet_v in
-            *clone*|*worktree*|*archive*|*checkout-index*) _fleet_slow=1; break ;;
+            *clone*|*worktree*|*archive*|*checkout-index*|*commit*|*stash*) _fleet_slow=1; break ;;
             '!'*git*) _fleet_slow=1; break ;;
             '!'*) _fleet_end=1; break ;;
           esac
@@ -282,7 +305,9 @@ fi
 # runs in the background because POSIX sh has no timeout, with its own file descriptors so nothing can hold a caller's pipe open.
 # A sleep that could not run answers non-zero and kills nothing.  Callers parse git's output, and a broken interpreter talks (a loader
 # error, a traceback), so Python gets none of the caller's streams.  A deny reason comes back through a file, and is printed here.
-_fleet_note=$(/usr/bin/mktemp 2>/dev/null)
+# mktemp honours TMPDIR, and a TMPDIR that names a missing folder makes it fail;  /tmp is the fallback, so a warning or a deny reason
+# is never lost to the environment.
+_fleet_note=$(/usr/bin/mktemp 2>/dev/null || /usr/bin/mktemp /tmp/fleet-git-shim.XXXXXX 2>/dev/null)
 FLEET_GIT_SHIM_DENY_NOTE=$_fleet_note "$_fleet_py" -I "$_fleet_mod" "$@" </dev/null >/dev/null 2>&1 &
 _fleet_pid=$!
 (
@@ -306,6 +331,13 @@ if [ $_fleet_rc -eq 77 ]; then
   fi
   /bin/rm -f "$_fleet_note" 2>/dev/null
   exit 128
+fi
+if [ $_fleet_rc -eq 78 ]; then
+  # The mirror rule's warning:  git still runs.  Python decided and logged it, so an empty note is no failure to record.
+  if [ -s "$_fleet_note" ]; then
+    /bin/cat "$_fleet_note" >&2
+  fi
+  _fleet_rc=0
 fi
 /bin/rm -f "$_fleet_note" 2>/dev/null
 # main() exits 0 even when it crashes, so anything else means it never ran, and with no stderr only this says so.

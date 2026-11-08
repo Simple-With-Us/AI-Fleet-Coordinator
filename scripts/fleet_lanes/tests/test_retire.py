@@ -218,12 +218,56 @@ class World:
         return _git(args, cwd=str(cwd), env=self.env, check=check)
 
     def gh(self, argv: list[str]) -> D.CmdResult:
+        # lane.py's own `gh pr view` (lane new --review); retire no longer calls gh at all.
         repo = argv[argv.index("--repo") + 1]
         pool = list(self.prs.get(repo, []))
         if "--head" in argv:
             name = argv[argv.index("--head") + 1]
             pool = [p for p in pool if p.get("headRefName") == name]
         return D.CmdResult(0, json.dumps(pool), "")
+
+    def relay(self, argv: list[str]) -> D.CmdResult:
+        """The seat's simple-git relay page, answered from the same fixtures in relay shape."""
+        if argv[1:3] != ["call", "gr_wf_pr_list_page"]:
+            return D.CmdResult(1, "", "unexpected simple-git call")
+        query = json.loads(argv[argv.index("--args-json") + 1])
+        repo = query["repo"]
+        if repo not in self.prs:
+            return D.CmdResult(1, "", "relay refused")
+        pool = list(self.prs[repo])
+        if "head" in query:
+            pool = [p for p in pool if p.get("headRefName") == query["head"]]
+        per_page = int(query["per_page"])
+        page = int(query.get("page", 1))
+        chunk = pool[(page - 1) * per_page : page * per_page]
+        rows = []
+        for p in chunk:
+            state = {"OPEN": "open"}.get(p["state"], "closed")
+            rows.append(
+                {
+                    "number": p["number"],
+                    "state": state,
+                    "title": "",
+                    "head_ref": p["headRefName"],
+                    "head_sha": p["headRefOid"],
+                    "base_ref": "main",
+                    "base_sha": "0" * 40,
+                    "draft": False,
+                    "merged_at": "2026-11-06T00:00:00Z" if p["state"] == "MERGED" else None,
+                    "updated_at": "2026-11-06T00:00:00Z",
+                    "html_url": "https://example.invalid/pr",
+                }
+            )
+        out = {
+            "structured": {
+                "pulls": rows,
+                "page": page,
+                "per_page": per_page,
+                "has_more": page * per_page < len(pool),
+            },
+            "text": "",
+        }
+        return D.CmdResult(0, json.dumps(out), "")
 
     def run(
         self,
@@ -248,6 +292,8 @@ class World:
                     return forced
             if a[0] == "gh":
                 return self.gh(list(a))
+            if a[0] == "simple-git":
+                return self.relay(list(a))
             if a[0] == "lsof":
                 return self.lsof()
             return K.default_exec(a, cwd, child_env, timeout)
@@ -423,33 +469,24 @@ class AllowlistTests(unittest.TestCase):
             ["git", "checkout", "--", "docs/a.md"],
             ["git", "rev-parse", "--verify", "-q", "refs/remotes/origin/main:docs/a.md"],
             [
-                "gh",
-                "pr",
-                "list",
-                "--repo",
-                "Simple-With-Us/DealDex",
-                "--state",
-                "all",
-                "--limit",
-                "1000",
+                "simple-git",
+                "call",
+                "gr_wf_pr_list_page",
+                "--args-json",
+                '{"page":1,"per_page":50,"repo":"Simple-With-Us/DealDex","state":"all"}',
                 "--json",
-                R.GH_FIELDS,
             ],
             [
-                "gh",
-                "pr",
-                "list",
-                "--repo",
-                "Simple-With-Us/DealDex",
-                "--state",
-                "all",
-                "--head",
-                "claude/x",
-                "--limit",
-                "20",
+                "simple-git",
+                "call",
+                "gr_wf_pr_list_page",
+                "--args-json",
+                '{"head":"claude/x","per_page":20,"repo":"Simple-With-Us/DealDex","state":"all"}',
                 "--json",
-                R.GH_FIELDS,
             ],
+            ["git", "rev-parse", "--verify", "-q", "HEAD^{tree}"],
+            ["git", "rev-parse", "--verify", "-q", self.SHA + "^{tree}"],
+            ["git", "rev-list", "--max-count=100", "--format=%T", "refs/remotes/origin/main"],
             ["lsof", "-d", "cwd", "-Fpcn"],
         ]:
             with self.subTest(argv=argv):
@@ -538,6 +575,33 @@ class AllowlistTests(unittest.TestCase):
             ["gh", "pr", "merge", "1"],
             ["gh", "pr", "list", "--repo", "a/b"],
             ["gh", "api", "graphql"],
+            [
+                "simple-git",
+                "call",
+                "gr_wf_pr_merge_guarded",
+                "--args-json",
+                '{"repo":"Simple-With-Us/DealDex"}',
+                "--json",
+            ],
+            [
+                "simple-git",
+                "call",
+                "gr_wf_pr_list_page",
+                "--args-json",
+                '{"page":21,"per_page":50,"repo":"Simple-With-Us/DealDex","state":"all"}',
+                "--json",
+            ],
+            [
+                "simple-git",
+                "call",
+                "gr_wf_pr_list_page",
+                "--args-json",
+                '{"per_page":50,"repo":"Simple-With-Us/DealDex","state":"all"}',
+                "--json",
+            ],
+            ["git", "rev-list", "--max-count=101", "--format=%T", "refs/remotes/origin/main"],
+            ["git", "rev-list", "--max-count=100", "--format=%T", "main"],
+            ["git", "rev-list", "--max-count=100", "refs/remotes/origin/main"],
             ["lsof"],
             ["lsof", "-p", "1"],
             ["bash", "-c", "true"],
@@ -590,7 +654,7 @@ class DecideTests(unittest.TestCase):
             "keep marker": facts(keep_marker=True),
             "status failed": facts(dirty=None),
             "dirty": facts(dirty=2),
-            "gh failed": facts(pr=R.PrView(found=False)),
+            "relay failed": facts(pr=R.PrView(found=False)),
             "open pr": facts(pr=R.PrView(open_number=9)),
             "unpushed": facts(unpushed=3, pr=R.PrView()),
             "not done": facts(pr=R.PrView()),
@@ -809,6 +873,40 @@ class PruneTests(WorldCase):
         row = res.row("claude-squashed")
         self.assertEqual(row["action"], "remove", row)
         self.assertIn("HEAD is the PR head", row["reason"])
+
+    def test_squash_merge_with_a_rewritten_head_is_covered_by_tree_equality(
+        self,
+    ) -> None:
+        # The hard AFC-647 case: the PR was squash-merged, so its head is a commit that
+        # never contained the lane's HEAD (the lane kept moving, or the head ref is simply
+        # another sha), and the lane branch was never pushed anywhere live.  Neither the
+        # PR head nor ancestry can vouch — only the identical tree on origin/main can.
+        lane = self.w.new_lane("treefall")
+        self.w.commit(lane)  # writes claude-treefall.txt with the lane's tree
+        tree = self.w.trees["DealDex"]  # the integration tree, on main
+        (tree / "claude-treefall.txt").write_text(
+            "claude-treefall.txt\n", encoding="utf-8"
+        )
+        self.w.git(["add", "claude-treefall.txt"], tree)
+        self.w.git(["commit", "-q", "-m", "squash of claude/treefall"], tree)
+        self.w.git(["push", "-q", "origin", "main"], tree)
+        squash_sha = self.w.git(["rev-parse", "HEAD"], tree)
+        self.w.old_pr("claude/treefall", squash_sha, number=33, state="MERGED")
+        res = self.w.run("prune", "--json")
+        row = res.row("claude-treefall")
+        self.assertEqual(row["action"], "remove", row)
+        self.assertIn("tree is on origin/main", row["reason"])
+
+    def test_a_merged_pr_name_alone_does_not_cover_an_unlanded_tree(self) -> None:
+        # Same shape, but the lane's tree never landed: the stale-PR hold must win.
+        lane = self.w.new_lane("unlanded")
+        self.w.commit(lane)
+        other = self.w.git(["rev-parse", "HEAD"], self.w.trees["DealDex"])
+        self.w.old_pr("claude/unlanded", other, number=34, state="MERGED")
+        res = self.w.run("prune", "--json")
+        row = res.row("claude-unlanded")
+        self.assertEqual(row["action"], "keep", row)
+        self.assertIn("no merged or closed PR holds HEAD", row["reason"])
 
     def test_an_open_pr_keeps_the_lane(self) -> None:
         lane = self.w.new_lane("open")

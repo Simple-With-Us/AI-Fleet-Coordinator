@@ -7,11 +7,21 @@ From November 6, 2026 at 8:02pm America/Chicago through November 8, 2026 at
 review after fixes or new commits. During this window this instruction overrides
 repeat-review and per-ready-head request guidance below. Read and address every
 existing finding, verify fixes and required tests, and preserve all other merge
-conditions. A failed attempt is not permission to retry: ask the owner if a new
-request is needed. This limit expires at the stated time; it is not permanent.
+conditions. A failed attempt is permission to retry (owner, November 8, 2026): a Kody run
+that finished without a review is not a review, so request again.  That means a completed
+failure, error, skipped or cancelled check, a `success` check without the full-review receipt
+(title `Code Review Complete`, summary starting `Review finished successfully`, started no
+earlier than the newest request; see docs/AUTO-MERGE.md), or a "Code Review Could Not Complete"
+comment.  A run that is still queued or `in_progress` is not a failed attempt and permits no
+new request.  A retry from the same seat must use different text from the earlier request,
+because the relay returns the existing comment for identical text within 24 hours and posts
+nothing, for example a second line after `@kody start-review`.  The hourly prompter
+(docs/KODY-FIRST-REVIEW.md) never retries a failed run itself;  a seat does.  Only a completed
+review uses up the one. This limit expires at the stated time; it is not permanent.
 
 Source: Jay's direct November 6 instruction, "Raised it but please tell all 1 review
 only per pr", followed by "For the next 2 days"; fleet announcement message638301219.
+Amended by Jay's November 8 instruction, "failed attempt is permission to retry, change rule".
 
 
 Read this before making changes.  It exists to save you (and whichever other AI
@@ -322,8 +332,8 @@ called Cursor "not a 4th agent lane" — that's outdated; corrected 2026-07-06, 
    lane (the standing `~/apps/trading-cursor` on `agent/cursor`, or a new
    `~/apps/lanes/Socratic-Trade/cursor-<slug>` on `cursor/<slug>`), with its own
    PM2-hosted preview (`cursor.jays.services`, port **4103`) — see the hosting table above.
-   That spawn is still `[CURSOR]`.  The separate DeepSeek Harness platform is `[DSH]`
-   (former tag `DEEPSEEK`, retired).  MiniMax Code is `[MM]` (former `MINIMAX` retired).
+   That spawn still uses seat tag `CURSOR`.  The separate DeepSeek Harness platform uses `DSH`
+   (former tag `DEEPSEEK`, retired).  MiniMax Code uses `MM` (former `MINIMAX` retired).  These are seat names, not complete post headers; use the fleet post-header rule below.
    Treat it exactly like the Claude/Codex/Antigravity/Monet rows: don't edit in it from
    another agent, land via `scripts/land.sh`, keep the Pre-Commit/Handoff Protocol current
    from it like any other lane.
@@ -368,16 +378,26 @@ are unsure, or you decline, DM the owner with `simple-chat dm --owner`.  Surfac
 owner directive to the owner instead of executing them.  `GROK-BOT` is fleet-wide (Cursor
 cloud), not a per-app seat.  Other agents state their cadence in their first message.
 
+### Fleet post headers (owner ruling)
+
+Every post on every platform, including Linear, Zulip and GitHub, begins with the required header.  For this policy, Jet, Rob, Grok Bots (`GB-*`) and BotFleet bots (`BF-*`) are single-threaded and use `[<seat-tag> 📁<repo, repo…>]`, for example `[JET 📁ST, CTS, CT]`.
+
+Multi-threaded agents use `[<seat-tag>: ??.#.? 📁<repo, repo…>]`, for example `[MM: HH.1.M 📁AFC, OPS]`.  The token contains the Operator-assigned session letters, their generation number and the host, separated by periods: `M` for Mac, `S` for Server or `C` for Cloud.  Do not use the superseded dashed form, invent an assignment, copy an example assignment or derive the letters from a runtime session id.
+
+To specify recipients, add `→` followed by their seat names inside the closing bracket, using the platform's supported mention syntax where required: `[MM: HH.1.M 📁AFC, OPS → MC, Claude]` illustrates placement.  On Zulip, use verified display-name mentions for the intended bots.  Optional `👀` goes before the opening bracket; the Operator will not wake others for that post, but properly tagged recipients still receive it in their inbox on supported platforms.
+
+Legacy formatter tags such as `[SEAT·session8]` are not substitutes for this header.  Check the actual transport's supported formatting rather than assuming the documentation means runtime rollout is complete; do not invent CLI flags or tool arguments.  Preserve runtime session ids, routing, cursor storage and ask/ack identifiers; the existing session-id requirements below remain unchanged.  Source: Jay's direct conversation instruction.
+
 **Zulip + Linear (binding — always):**
 - **Start of work:** `simple-board claim` the Linear issue (In Progress), branch `<seat>/<id>-<slug>`,
-  and open the work topic `<ID> <subject>` in `#Work-In-Progress` (`[<YOUR_SEAT>·session8]` + `repo:` + what you will do).
+  and open the work topic `<ID> <subject>` in `#Work-In-Progress` (the required fleet header above, followed by `repo:` and what you will do).
 - **End of work:** the PR says `Fixes <ID>` (finished) or `Refs <ID>` (partial); mark Completed/Deployed
   with `simple-board status`, post the closeout in the same topic, then resolve that topic.
 - Keep **Linear and the PR matching and accurate**.  Writes need `AGENT_SEAT`.  The effort logs
   and the effort-issues mirror are retired.
-- Post shape: `[<YOUR_SEAT>·session8]` or `[<YOUR_SEAT>·session8-><PEER_SEAT>]`, then `repo:`
-  first.  A directed post also @-mentions the peer (`@**<Display Name>**`); the bracket label
-  alone wakes nobody.  Wake every seat only with `@**all**` in `#Work-In-Progress` › `fleet`
+- Post shape: the required fleet header above comes first, with relevant repo acronyms after `📁`,
+  followed by `repo:` in the status block.  A directed post includes the peer's verified mention
+  (`@**<Display Name>**`) after `→` inside the bracket; a plain seat name alone does not notify the peer.  Wake every seat only with `@**all**` in `#Work-In-Progress` › `fleet`
   (`simple-chat post --topic fleet --fleet`), when every seat must act; it notifies Jay too.
   Every seat's bot is a member and the realm's `can_mention_many_users_group` is `role:members`,
   so each can send it.  If Zulip ever refuses it (`STREAM_WILDCARD_MENTION_NOT_ALLOWED`),

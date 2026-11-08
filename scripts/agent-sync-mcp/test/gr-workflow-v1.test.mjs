@@ -962,8 +962,9 @@ test('compare graph page correlates immutable SHA inputs and excludes patches/fi
  const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_compare_commits_page'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify(receipt));});assert.ok(!(await t.call('gr_wf_compare_commits_page',args)).isError);
 });
 test('PR list pages remain non-snapshot metadata with bounded correlated receipts',async()=>{
- const args={repo,head:'release/a',base:'main',page:2,per_page:1},row={number:2,state:'open',draft:false,head_ref:'release/a',head_sha:'a'.repeat(40),base_ref:'main',base_sha:'b'.repeat(40)},receipt={pulls:[row],page:2,has_more:true,snapshot:false};
+ const args={repo,head:'release/a',base:'main',page:2,per_page:1},row={number:2,state:'open',draft:false,head_ref:'release/a',head_sha:'a'.repeat(40),base_ref:'main',base_sha:'b'.repeat(40),merged_at:null},receipt={pulls:[row],page:2,has_more:true,snapshot:false};
  assert.equal(validWfV1Response('wf_pr_list_page',receipt,args),true);assert.equal(validWfV1Response('wf_pr_list_page',{...receipt,pulls:[{...row,state:'closed'}]},args),false);assert.equal(validWfV1Response('wf_pr_list_page',{...receipt,snapshot:true},args),false);assert.equal(validWfV1Response('wf_pr_list_page',{...receipt,pulls:[{...row,title:'omitted'}]},args),false);
+ assert.equal(validWfV1Response('wf_pr_list_page',{...receipt,pulls:[{...row,merged_at:'2026-11-07T05:00:00Z'}]},args),false);assert.equal(validWfV1Response('wf_pr_list_page',{pulls:[{...row,state:'closed',merged_at:'2026-11-07T05:00:00Z'}],page:1,has_more:false,snapshot:false},{repo,state:'all'}),true);
  const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_pr_list_page'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify(receipt));});assert.ok(!(await t.call('gr_wf_pr_list_page',args)).isError);
 });
 
@@ -979,7 +980,7 @@ test('new label and discussion boundaries reject embedded provider shapes and ma
 });
 
 test('PR list retains provider branch metadata without widening write refs',()=>{
- const args={repo:'Simple-With-Us/AI-Fleet-Coordinator'},row={number:2,state:'open',draft:false,head_ref:'deps/pkg@1.2+build#2',head_sha:'a'.repeat(40),base_ref:'main',base_sha:'b'.repeat(40)},body={pulls:[row],page:1,has_more:false,snapshot:false};
+ const args={repo:'Simple-With-Us/AI-Fleet-Coordinator'},row={number:2,state:'open',draft:false,head_ref:'deps/pkg@1.2+build#2',head_sha:'a'.repeat(40),base_ref:'main',base_sha:'b'.repeat(40),merged_at:null},body={pulls:[row],page:1,has_more:false,snapshot:false};
  assert.equal(validWfV1Response('wf_pr_list_page',body,args),true);
  assert.equal(validWfV1Args('wf_pr_list_page',{...args,head:row.head_ref}),false);
  for(const head_ref of ['a..b','a@{b','a\n','a/.bad','a.lock'])assert.equal(validWfV1Response('wf_pr_list_page',{...body,pulls:[{...row,head_ref}]},args),false);

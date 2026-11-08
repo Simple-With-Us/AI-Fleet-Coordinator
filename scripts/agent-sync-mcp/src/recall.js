@@ -16,6 +16,10 @@ import { resolveSecret } from "./infisical.js";
 
 export const RECALL_HOST = "recall.jays.services";
 export const RECALL_TIMEOUT_MS = 10_000;
+// recall_search only:  a read, so a longer wait is safe (no write can be left unknown).  A direct
+// hybrid search with rerank measured 21 s against the live service, over the 10 s above, so
+// searches timed out while the service was healthy.  45 s is about twice that measurement.
+export const RECALL_SEARCH_TIMEOUT_MS = 45_000;
 export const RECALL_USER_AGENT = "agent-sync-mcp/2.0";
 export const RECALL_RESPONSE_LIMIT = 1_000_000; // bytes
 export const RECALL_JSON_DEPTH_LIMIT = 64;
@@ -281,10 +285,11 @@ export function recallBaseUrl(raw) {
 }
 
 export class RecallClient {
-  constructor({ baseUrl, token, accessId, accessSecret, ownerToken = "", fetch: fetchImpl, timeoutMs = RECALL_TIMEOUT_MS }) {
+  constructor({ baseUrl, token, accessId, accessSecret, ownerToken = "", fetch: fetchImpl, timeoutMs = RECALL_TIMEOUT_MS, searchTimeoutMs = RECALL_SEARCH_TIMEOUT_MS }) {
     this.baseUrl = baseUrl;
     this.fetch = fetchImpl;
     this.timeoutMs = timeoutMs;
+    this.searchTimeoutMs = searchTimeoutMs;
     // Private fields:  never enumerable, so a stray JSON.stringify of the client shows none of them.
     this.#headers = {
       Authorization: `Bearer ${token}`,
@@ -311,7 +316,7 @@ export class RecallClient {
   }
 
   search(body) {
-    return this.request("POST", "/recall/search", body);
+    return this.request("POST", "/recall/search", body, this.#headers, this.searchTimeoutMs);
   }
 
   contribute(body) {
@@ -331,8 +336,8 @@ export class RecallClient {
   }
 
   /** One call.  Returns the parsed JSON object on 2xx with ok true;  throws RecallError otherwise. */
-  async request(method, path, body, headers = this.#headers) {
-    const init = { method, headers: { ...headers }, redirect: "manual", signal: AbortSignal.timeout(this.timeoutMs) };
+  async request(method, path, body, headers = this.#headers, timeoutMs = this.timeoutMs) {
+    const init = { method, headers: { ...headers }, redirect: "manual", signal: AbortSignal.timeout(timeoutMs) };
     if (body !== undefined) {
       init.headers["Content-Type"] = "application/json";
       init.body = JSON.stringify(body);

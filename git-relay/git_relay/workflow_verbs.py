@@ -34,6 +34,7 @@ import zlib
 from urllib.parse import quote, urlsplit
 
 from .github_client import MAX_DOWNLOAD_CHUNK, RelayGitHubError
+from .provider_scan import PROVIDER_PATTERN, provider_token_text
 from .reviewed_fixtures import unreviewed_file_secret
 from .secret_scan import find_secret
 from .server import PreReadUnavailable, _perm_within_ceiling
@@ -786,9 +787,7 @@ class WorkflowVerbs:
             raise RelayGitHubError(502, "repository metadata name unverifiable") from None
         if not 1 <= length <= maximum:
             raise RelayGitHubError(502, "repository metadata name unverifiable")
-        if find_secret(value) or re.search(
-            r"\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}", value
-        ):
+        if find_secret(value) or re.search(PROVIDER_PATTERN, value):
             raise Refused("credential-shaped repository metadata name refused")
         return value
 
@@ -830,7 +829,7 @@ class WorkflowVerbs:
         withheld = bool(
             find_secret(body)
             or re.search(
-                r"sk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|sk_(?:live|test)_[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}",
+                PROVIDER_PATTERN + "|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}",
                 body,
             )
         )
@@ -860,7 +859,7 @@ class WorkflowVerbs:
             size > 32768
             or find_secret(body)
             or re.search(
-                r"sk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|sk_(?:live|test)_[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}",
+                PROVIDER_PATTERN + "|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}",
                 body,
             )
         ):
@@ -1006,7 +1005,7 @@ class WorkflowVerbs:
             or find_secret(row["tag_name"])
             or re.search(r"[\x00-\x20\x7f]", row["tag_name"])
             or re.search(
-                r"sk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|sk_(?:live|test)_[A-Za-z0-9]{16,}",
+                PROVIDER_PATTERN,
                 row["tag_name"],
             )
             or type(row.get("draft")) is not bool
@@ -1159,11 +1158,7 @@ class WorkflowVerbs:
 
     @staticmethod
     def _provider_token_text(value):
-        return bool(
-            re.search(
-                r"sk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|sk_(?:live|test)_[A-Za-z0-9]{16,}", value
-            )
-        )
+        return provider_token_text(value)
 
     @classmethod
     def _issue_text(cls, args, key, required=True):
@@ -1509,9 +1504,7 @@ class WorkflowVerbs:
         ):
             raise RelayGitHubError(502, "issue relation receipt unverifiable")
         title = data["title"]
-        if find_secret(title) or re.search(
-            r"\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}", title
-        ):
+        if find_secret(title) or re.search(PROVIDER_PATTERN, title):
             title = "<withheld: credential-shaped title>"
         url = data.get("repository_url")
         bound = None
@@ -1526,9 +1519,7 @@ class WorkflowVerbs:
                 and not parsed.fragment
                 and _REPO.fullmatch(candidate)
             ):
-                if find_secret(candidate) or re.search(
-                    r"\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{20,}", candidate
-                ):
+                if find_secret(candidate) or re.search(PROVIDER_PATTERN, candidate):
                     raise RelayGitHubError(502, "issue relation receipt unverifiable")
                 bound = candidate
         return {**{k: data[k] for k in ("id", "number", "state")}, "title": title, "repo": bound}
@@ -2676,7 +2667,7 @@ class WorkflowVerbs:
                     or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}(?:\[bot\])?", v)
                     or find_secret(v)
                     or re.search(
-                        r"sk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|sk_(?:live|test)_[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}",
+                        PROVIDER_PATTERN + "|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}",
                         v,
                     )
                     for v in rows
@@ -3966,7 +3957,7 @@ class WorkflowVerbs:
                 len(raw) > limit
                 or find_secret(value)
                 or re.search(
-                    r"sk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|sk_(?:live|test)_[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}",
+                    PROVIDER_PATTERN + "|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}",
                     value,
                 )
             ):
@@ -4034,9 +4025,7 @@ class WorkflowVerbs:
                 or not re.fullmatch(r"[A-Za-z0-9_. /-]{1,100}", value)
                 or any(segment in (".", "..") for segment in value.split("/"))
                 or find_secret(value)
-                or re.search(
-                    r"sk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|sk_(?:live|test)_[A-Za-z0-9]{16,}", value
-                )
+                or re.search(PROVIDER_PATTERN, value)
             ):
                 raise Refused("invalid additive label")
         folded = [x.casefold() for x in labels]
@@ -4096,7 +4085,7 @@ class WorkflowVerbs:
                 or not re.fullmatch(r"[A-Za-z0-9_. /-]{1,100}", item["name"])
                 or find_secret(item["name"])
                 or re.search(
-                    r"sk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|sk_(?:live|test)_[A-Za-z0-9]{16,}",
+                    PROVIDER_PATTERN,
                     item["name"],
                 )
             ):
@@ -4164,7 +4153,7 @@ class WorkflowVerbs:
             withheld = bool(
                 find_secret(body)
                 or re.search(
-                    r"sk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|sk_(?:live|test)_[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}",
+                    PROVIDER_PATTERN + "|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}",
                     body,
                 )
             )
@@ -4272,7 +4261,11 @@ class WorkflowVerbs:
         page = _int(args, "page", 1, 1000) if "page" in args else 1
         head = _ref(args, "head") if "head" in args else None
         base = _ref(args, "base") if "base" in args else None
-        q = f"state={state}&per_page={limit}&page={page}&sort=created&direction=asc"
+        # Newest first, like gh pr list: a caller paging to a cap (lane retire reads at most
+        # 1000 rows) needs the recent window, not the oldest one (Seer finding on PR #1515).
+        # The bounded-inventory verb below keeps created-ascending on purpose; its contract
+        # says so and its consumers reconcile against live state.
+        q = f"state={state}&per_page={limit}&page={page}&sort=created&direction=desc"
         if head is not None:
             q += "&head=" + quote(repo.split("/")[0] + ":" + head, safe="")
         if base is not None:
@@ -4294,7 +4287,15 @@ class WorkflowVerbs:
                 and row["state"] != state
             ):
                 raise RelayGitHubError(502, "PR list row unverifiable")
-            item = {"number": row["number"], "state": row["state"], "draft": row["draft"]}
+            merged_at = row.get("merged_at")
+            if merged_at is not None and not isinstance(merged_at, str):
+                raise RelayGitHubError(502, "PR list row unverifiable")
+            item = {
+                "number": row["number"],
+                "state": row["state"],
+                "draft": row["draft"],
+                "merged_at": merged_at,
+            }
             for key in ("head", "base"):
                 part = row.get(key)
                 if (
@@ -4467,7 +4468,7 @@ class WorkflowVerbs:
                     size > 4096
                     or find_secret(value)
                     or re.search(
-                        r"\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}",
+                        PROVIDER_PATTERN,
                         value,
                     )
                 ):
@@ -4885,9 +4886,7 @@ class WorkflowVerbs:
             or len(raw) > 255
             or "\x00" in name
             or find_secret(name)
-            or re.search(
-                r"\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}", name
-            )
+            or re.search(PROVIDER_PATTERN, name)
         ):
             raise Refused("check-run name withheld")
         status = value.get("status")
@@ -4931,9 +4930,7 @@ class WorkflowVerbs:
             or len(name) > 255
             or "\x00" in name
             or find_secret(name)
-            or re.search(
-                r"\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}", name
-            )
+            or re.search(PROVIDER_PATTERN, name)
         ):
             raise Refused("invalid check name")
         try:
@@ -5747,13 +5744,7 @@ class WorkflowVerbs:
             raw = text.encode("utf-8")
         except UnicodeError:
             raise Refused("invalid blob text") from None
-        if (
-            len(raw) > cap
-            or find_secret(text)
-            or re.search(
-                r"\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}", text
-            )
-        ):
+        if len(raw) > cap or find_secret(text) or re.search(PROVIDER_PATTERN, text):
             raise Refused("invalid blob text")
         sha = hashlib.sha1(
             b"blob " + str(len(raw)).encode() + b"\0" + raw, usedforsecurity=False
@@ -5810,9 +5801,7 @@ class WorkflowVerbs:
             ):
                 raise RelayGitHubError(502, "git commit parent unverifiable")
             parents.append(value["sha"])
-        if find_secret(core["message"]) or re.search(
-            r"\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}", core["message"]
-        ):
+        if find_secret(core["message"]) or re.search(PROVIDER_PATTERN, core["message"]):
             raise Refused("credential-shaped commit message refused")
 
         def native(part):
@@ -5927,7 +5916,7 @@ class WorkflowVerbs:
             len(encoded) > 500
             or find_secret(message)
             or re.search(
-                r"\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}",
+                PROVIDER_PATTERN,
                 message,
             )
         ):

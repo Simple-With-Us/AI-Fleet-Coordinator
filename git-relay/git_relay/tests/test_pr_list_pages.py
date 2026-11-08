@@ -30,11 +30,12 @@ class PrListPages(unittest.TestCase):
         self.assertFalse(out["snapshot"])
         self.assertTrue(out["has_more"])
         self.assertNotIn("title", out["pulls"][0])
+        self.assertIsNone(out["pulls"][0]["merged_at"])
         self.assertEqual(
             c.calls[0],
             (
                 "GET",
-                f"/repos/{REPO}/pulls?state=open&per_page=1&page=2&sort=created&direction=asc&head="
+                f"/repos/{REPO}/pulls?state=open&per_page=1&page=2&sort=created&direction=desc&head="
                 + REPO.split("/")[0]
                 + "%3Arelease%2Fa&base=main",
                 None,
@@ -44,6 +45,13 @@ class PrListPages(unittest.TestCase):
         m = Minter()
         WorkflowVerbs.for_action(c, Policy(), m, "swu-wise", "wf_pr_list_page", REPO)
         self.assertEqual(m.calls[0][2], {"pull_requests": "read", "metadata": "read"})
+
+    def test_merged_at_is_carried_so_sweeps_can_tell_merged_from_closed(self):
+        row = self.row(state="closed", merged_at="2026-11-07T05:00:00Z")
+        out = self.handle(Client([row])).run("wf_pr_list_page", {"repo": REPO, "state": "all"})
+        self.assertEqual(out["pulls"][0]["merged_at"], "2026-11-07T05:00:00Z")
+        with self.assertRaises(RelayGitHubError):
+            self.handle(Client([self.row(merged_at=123)])).run("wf_pr_list_page", {"repo": REPO})
 
     def test_malformed_duplicate_or_filter_mismatch_refused(self):
         for value, args in [
