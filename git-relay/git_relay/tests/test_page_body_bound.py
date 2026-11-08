@@ -125,13 +125,24 @@ class PrListPageEndToEnd(unittest.TestCase):
         handle = WorkflowVerbs(
             client_for(data, seen), Policy(), "swu-wise", "own", "swu-wise", "wf_pr_list_page", REPO
         )
-        out = handle.run("wf_pr_list_page", {"repo": REPO, "state": "all", "page": 11, "per_page": 50})
+        out = handle.run(
+            "wf_pr_list_page", {"repo": REPO, "state": "all", "page": 11, "per_page": 50}
+        )
         self.assertEqual(len(out["pulls"]), 50)
         self.assertTrue(out["has_more"])
         self.assertEqual(out["page"], 11)
         self.assertEqual(
             sorted(out["pulls"][1]),
-            ["base_ref", "base_sha", "draft", "head_ref", "head_sha", "merged_at", "number", "state"],
+            [
+                "base_ref",
+                "base_sha",
+                "draft",
+                "head_ref",
+                "head_sha",
+                "merged_at",
+                "number",
+                "state",
+            ],
         )
         self.assertEqual(out["pulls"][1]["merged_at"], "2026-10-01T00:00:00Z")
         self.assertIsNone(out["pulls"][0]["merged_at"])
