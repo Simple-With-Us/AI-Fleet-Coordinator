@@ -43,7 +43,9 @@ MAX_BUNDLE_BYTES = 8 * 1024 * 1024
 # exporter it calls (its systemd units stay repo-only under agent_sync/server/).
 # The 155th is agent_sync/muster_service.py (AFC-654), the read-only Operator service `simple-chat`
 # dispatches for Muster's Seats panel.
-MAX_FILES = 155
+# The 156th to 158th are agent_sync/platform_letter_zcode.py and platform_letter_cursor.py (the Z Code and Cursor
+# session-letter adapters) and agent_sync/cursor_cloud_letters.py (the Cursor Cloud letter sweep).
+MAX_FILES = 158
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MARKER = "# fleet-cli managed wrapper v1"
 # Retention:  a receive keeps the newest KEEP_RELEASES releases and deletes older ones, but never `current`,

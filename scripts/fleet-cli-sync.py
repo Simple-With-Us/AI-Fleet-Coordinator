@@ -44,7 +44,9 @@ RECEIVER_PATH = "scripts/fleet-cli-release.py"
 # The 154th is agent_sync/operator_sheets_drain.mjs (OPS-1037), the production drain runner.
 # The 155th is agent_sync/muster_service.py (AFC-654), the read-only Operator service `simple-chat`
 # dispatches for Muster's Seats panel.
-MAX_FILES = 155
+# The 156th to 158th are agent_sync/platform_letter_zcode.py and platform_letter_cursor.py (the Z Code and Cursor
+# session-letter adapters) and agent_sync/cursor_cloud_letters.py (the Cursor Cloud letter sweep).
+MAX_FILES = 158
 MAX_BYTES = 8 * 1024 * 1024
 OVERALL_SECONDS = 90
 SSH_SECONDS = 65
