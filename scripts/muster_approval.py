@@ -908,11 +908,13 @@ def open_state_dir(config):
     return _open_directory(config.state_dir, config.uid, 0o077)
 
 
-def _open_state_file(dir_fd, name, uid, flags, create=False):
+def _open_state_file(dir_fd, name, uid, flags, create=False, unlinked_ok=False):
     """(descriptor, created) for a file in the state directory, or None when it is absent.
 
     Opened with O_NOFOLLOW and O_CLOEXEC, then fstat-checked: a regular file, owned by `uid`, with no
-    group or other bit and exactly one link.  `create` makes an absent file with O_CREAT | O_EXCL and mode 0600."""
+    group or other bit and exactly one link.  `create` makes an absent file with O_CREAT | O_EXCL and mode 0600.
+    `unlinked_ok` relaxes "exactly one link" to "one link or none":  only the read of the stored list asks for it,
+    and only a read-only handle gets it (see the check below)."""
     base = flags | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
     created = False
     try:
@@ -934,17 +936,19 @@ def _open_state_file(dir_fd, name, uid, flags, create=False):
         raise StateUnsafe("a state file cannot be opened") from None
     try:
         info = os.fstat(fd)
-        # One name only: a second hard link could let another path write what this one reads.  A
-        # read-only handle may have no name left (nlink 0): an unlocked reader that opened the stored list
-        # just before a chain's rename sees its old inode unlinked, and the file is whole (it changes only
-        # by rename), so that is no fault.  A handle that can write to a file nothing links to is refused.
-        writable = bool(flags & (os.O_WRONLY | os.O_RDWR))
+        # One name only: a second hard link could let another path write what this one reads.  The
+        # stored list alone may have no name left (nlink 0): an unlocked reader that opened it just before
+        # a chain's rename sees its old inode unlinked, and the file is whole (it changes only by rename),
+        # so that is no fault.  Nothing else is replaced by rename while it is read (the helper key never
+        # is), and a handle that can write to a file nothing links to is refused whatever the caller asks,
+        # so every other file keeps exactly one link.
+        may_be_unlinked = unlinked_ok and not flags & (os.O_WRONLY | os.O_RDWR)
         if (
             not stat.S_ISREG(info.st_mode)
             or info.st_uid != uid
             or info.st_mode & 0o077
             or info.st_nlink > 1
-            or (info.st_nlink == 0 and writable)
+            or (info.st_nlink == 0 and not may_be_unlinked)
         ):
             raise StateUnsafe("a state file is not a private regular file")
     except BaseException:
@@ -1264,7 +1268,7 @@ def load_stored_list(dir_fd, uid):
 
     OPEN-5: the file is never created here.  Absent is `no list`; empty, unreadable or malformed is
     `state_unsafe`, never `none`, so that damage cannot roll the helper back to a first list."""
-    opened = _open_state_file(dir_fd, STATE_TRUST_NAME, uid, os.O_RDONLY)
+    opened = _open_state_file(dir_fd, STATE_TRUST_NAME, uid, os.O_RDONLY, unlinked_ok=True)
     if opened is None:
         return None
     fd = opened[0]

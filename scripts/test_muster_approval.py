@@ -11509,17 +11509,33 @@ class UnlockedReaderTests(Checks):
 
         return mock.patch.object(os, "fstat", fstat)
 
-    def test_a_read_only_open_of_a_file_with_no_link_left_is_accepted(self):
+    def test_a_read_only_open_of_the_stored_list_with_no_link_left_is_accepted(self):
         env = Env(self, stored="v1")
         dir_fd = ma.open_state_dir(env.module_config(NOW))
         self.addCleanup(os.close, dir_fd)
         with self.no_link(env.state / TRUST_NAME):
             self.assertEqual(ma.load_stored_list(dir_fd, UID).version, 1)
-            opened = ma._open_state_file(dir_fd, TRUST_NAME, UID, os.O_RDONLY)
+            opened = ma._open_state_file(dir_fd, TRUST_NAME, UID, os.O_RDONLY, unlinked_ok=True)
             os.close(opened[0])
-        # And the helper key, read the same way.
+
+    def test_nothing_but_the_stored_list_accepts_a_file_with_no_link_left(self):
+        # Section 11 asks for exactly one link; only the stored list, which a chain replaces by rename,
+        # may be seen with none (the finding on PR 1543).  The helper key is never replaced that way.
+        env = Env(self, stored="v1")
+        dir_fd = ma.open_state_dir(env.module_config(NOW))
+        self.addCleanup(os.close, dir_fd)
         with self.no_link(env.state / "muster-helper.key"):
-            self.assertIsNotNone(ma.load_helper_key(dir_fd, UID))
+            with self.assertRaises(ma.KeyUnusable):
+                ma.load_helper_key(dir_fd, UID)
+            with self.assertRaises(ma.StateUnsafe):
+                ma._open_state_file(dir_fd, "muster-helper.key", UID, os.O_RDONLY)
+        # The default of the opener is the strict rule, for the stored list's name as for any other.
+        with self.no_link(env.state / TRUST_NAME), self.assertRaises(ma.StateUnsafe):
+            ma._open_state_file(dir_fd, TRUST_NAME, UID, os.O_RDONLY)
+        # Through the flow: the helper key with no link left is the unusable key, so the route is unsigned.
+        with self.no_link(env.state / "muster-helper.key"):
+            answer, code, _ = module_request(env, CURRENT_COMMAND, CURRENT_STDIN, NOW)
+        self.assertEqual((answer, code), (ma.unsigned_helper_key_missing(), 2))
 
     def test_every_unlocked_read_of_the_stored_list_survives_it(self):
         # Y2 (an approval), K2 (`current`) and C2 (a chain) all read the list without a lock.
@@ -11553,6 +11569,9 @@ class UnlockedReaderTests(Checks):
                 write_file(env.state / name, b"", 0o600)
                 with self.no_link(env.state / name), self.assertRaises(ma.StateUnsafe):
                     ma._open_state_file(dir_fd, name, UID, flags)
+                # Asking for the stored list's allowance does not help a handle that can write.
+                with self.no_link(env.state / name), self.assertRaises(ma.StateUnsafe):
+                    ma._open_state_file(dir_fd, name, UID, flags, unlinked_ok=True)
         # Through the flow: a plan counts in the rate file, which is opened to be written.
         env = Env(self, stored="v1")
         module_request(env, PLAN_COMMAND, job_stdin(), NOW)
