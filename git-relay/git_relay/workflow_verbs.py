@@ -5482,14 +5482,22 @@ class WorkflowVerbs:
 
                     try:
                         size = verify_same_path(
-                            self._get, repo, value["source_commit"], path, sha, mode,
-                            MAX_FILE_RAW, source_cache,
+                            self._get,
+                            repo,
+                            value["source_commit"],
+                            path,
+                            sha,
+                            mode,
+                            MAX_FILE_RAW,
+                            source_cache,
                         )
                     except RelayGitHubError as exc:
                         if exc.code == "response_too_large":
                             raise Refused("source object proof exceeds bounds") from None
                         if exc.status in (0, 408) or exc.status >= 500:
-                            raise PreReadUnavailable("source proof unavailable; no write attempted") from None
+                            raise PreReadUnavailable(
+                                "source proof unavailable; no write attempted"
+                            ) from None
                         raise
                     except (ValueError, TypeError, KeyError):
                         raise Refused("same-path source object proof refused") from None
