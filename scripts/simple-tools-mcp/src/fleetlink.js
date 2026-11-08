@@ -4,7 +4,7 @@
 // or put on a team's side with view or edit access.
 //
 // Each call goes to FleetLink's own MCP endpoint (POST /mcp, tools/call) with
-// one server credential, FLEETLINK_AGENT_SECRET (FleetLink's SIMPLE_TOOLS_SECRET),
+// one server credential, FLEETLINK_AGENT_SECRET (FleetLink's DEPLOY.md lists its shared secrets as retired),
 // and the acting seat in X-Fleet-Seat.  FleetLink gives every seat its own
 // bot account (usr_agent_<seat>) under Jay's, an admin of the Fleet team with
 // Jay and every other seat, with FleetLink's widest limits, so the seat comes
@@ -464,7 +464,7 @@ export function mapFleetLinkError(error, { write = false } = {}) {
       break;
   }
   if (status === 401) {
-    return new ToolError("not_authorized", `FleetLink refused this seat's credential (HTTP 401).  The owner checks the seat's entry in ${FLEETLINK_SEAT_TOKENS} (a revoked bot token) or ${FLEETLINK_SECRET} here and SIMPLE_TOOLS_SECRET on FleetLink (DEPLOY.md, "FleetLink").`, { extra: { status } });
+    return new ToolError("not_authorized", `FleetLink refused this seat's credential (HTTP 401).  The owner checks the seat's entry in ${FLEETLINK_SEAT_TOKENS} (a revoked bot token) or ${FLEETLINK_SECRET} here (DEPLOY.md, "FleetLink").`, { extra: { status } });
   }
   if (status === 403) {
     const said = error.upstreamMessage ? fleetlinkMessage(error.upstreamMessage) : "";

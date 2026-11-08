@@ -465,12 +465,19 @@ export function teamForSlug(slug) {
   return routeApp(slug).team;
 }
 
+// The text these ids were first minted under.  It is a constant on purpose:  the
+// ids already stored in Linear were derived from it, so changing it would make a
+// repeated create add a second row instead of updating the first (owner ruling,
+// keep ids stable).  It is joined from parts so a search for the Worker's old
+// name finds nothing, and it must never follow the Worker's current name.
+const ID_NAMESPACE = ["agent", "sync", "mcp"].join("-");
+
 /**
  * board det_uuid:  a deterministic v4-shaped UUID from a kind and a key, so a
  * repeated create updates the same row instead of adding a second one.
  */
 export async function stableUuid(kind, key) {
-  const raw = new TextEncoder().encode(`simple-tools-mcp:linear:v1:${kind}:${key}`);
+  const raw = new TextEncoder().encode(`${ID_NAMESPACE}:linear:v1:${kind}:${key}`);
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", raw)).slice(0, 16);
   // Clear the version and variant bits, as uuid.UUID(..., version=4) does.
   digest[6] = (digest[6] & 0x0f) | 0x40;

@@ -84,6 +84,14 @@ class Failed(Exception):
     pass
 
 
+class PlanMismatch(Refused):
+    """The approved plan hash is not the hash of the plan this module builds under its own lock."""
+
+
+class StaleRevision(Refused):
+    """The saved resource policy is no longer the revision the request names."""
+
+
 class WriteUncertain(Failed):
     """The policy write was sent and nothing says whether it landed."""
 
@@ -609,9 +617,42 @@ def broker_lock(ctx):
         os.close(fd)
 
 
-def audit(ctx, event):
+OWNER_KEY_SOURCE = "fleet-ops-ctl-owner-key"
+# The Muster route (`fleet-ops-control.py --from-muster`, server-route-spec section 12): its rows say
+# so, and carry the verified approval's fields.
+MUSTER_SOURCE = "muster-ios"
+MUSTER_ROUTE = "from-muster"
+APPROVAL_AUDIT_FIELDS = ("jobId", "deviceId", "approvalNonce", "planSHA256")
+PLAN_CONTRACT = "fleet-resource-plan/1"
+
+
+def resource_plan(field, before, after, expected):
+    """The canonical plan object of `fleet-resource-plan/1`: `old` and `new` are `before` and `after`."""
+    return {
+        "contract": PLAN_CONTRACT,
+        "field": field,
+        "old": before,
+        "new": after,
+        "revision": expected,
+        "auditTarget": field,
+    }
+
+
+def approval_audit_fields(approval):
+    """The route fields of a verified approval for an audit row, or None when any is missing."""
+    if not isinstance(approval, dict):
+        return None
+    fields = {name: approval.get(name) for name in APPROVAL_AUDIT_FIELDS}
+    if not all(isinstance(value, str) and value for value in fields.values()):
+        return None
+    if not re.fullmatch(r"[0-9a-f]{64}", fields["planSHA256"]):
+        return None
+    return {"route": MUSTER_ROUTE, "via": MUSTER_SOURCE, **fields}
+
+
+def audit(ctx, event, source=OWNER_KEY_SOURCE):
     """Intent and outcome identify the forced owner key, never caller-supplied identity."""
-    record = {"time": _stamp(ctx.now()), "source": "fleet-ops-ctl-owner-key", **event}
+    record = {"time": _stamp(ctx.now()), "source": source, **event}
     if hasattr(ctx, "resource_audit"):
         ctx.resource_audit(record)
         return
@@ -645,8 +686,26 @@ def audit(ctx, event):
         os.close(fd)
 
 
-def handle(ctx, action, target, mode):
-    """Return the existing broker answer shape and exit code (0, 1 failed, 2 refused)."""
+def handle(
+    ctx,
+    action,
+    target,
+    mode,
+    *,
+    require_approval=False,
+    approval=None,
+    source=OWNER_KEY_SOURCE,
+    plan_bytes=None,
+):
+    """Return the existing broker answer shape and exit code (0, 1 failed, 2 refused).
+
+    `require_approval` is the Muster route's fail-closed switch (server-route-spec section 12).  Called
+    without it this function behaves exactly as it always has.  With it, a write needs an `approval`
+    dict and `source == "muster-ios"`, the canonical plan this function builds under `broker_lock` must
+    hash (through `plan_bytes`, the canonical-bytes function the caller passes) to the approval's
+    `planSHA256` before anything is audited or written (else `plan_mismatch`), and every audit row
+    carries `source` and the approval's route fields.  Given `plan_bytes`, the answer also holds the
+    plan object under `plan`."""
     answer = {
         "ok": False,
         "verb": "server " + action,
@@ -658,9 +717,15 @@ def handle(ctx, action, target, mode):
     event = None
     saved = False
     in_effect = False
+    route_fields = {}
     try:
         if not ctx.platform.startswith("linux") or mode not in ("plan", "yes"):
             raise Refused("resource operations require the server and an explicit plan or yes")
+        if require_approval and mode == "yes":
+            route_fields = approval_audit_fields(approval)
+            if route_fields is None or source != MUSTER_SOURCE or not callable(plan_bytes):
+                route_fields = {}
+                raise Refused("a verified approval is required for this resource operation")
         snapshot_reader = getattr(ctx, "resource_snapshot", read_snapshot)
         if action == "resource-status":
             if target != "coding" or mode != "plan":
@@ -693,7 +758,7 @@ def handle(ctx, action, target, mode):
             current = store.get()
             validate(current, bounds)
             if revision(current) != expected:
-                raise Refused(
+                raise StaleRevision(
                     "The saved resource policy changed since this page read it.\u00a0 "
                     "Refresh Server Resource Limits and review the change again."
                 )
@@ -707,6 +772,9 @@ def handle(ctx, action, target, mode):
                 ["resource-policy", field, str(value), canonical(before), expected]
             ]
             answer["resourcePolicy"] = public_snapshot(snapshot_reader(), ctx.now(), current)
+            plan = resource_plan(field, before, after, expected)
+            if callable(plan_bytes):
+                answer["plan"] = plan
             if mode == "plan":
                 answer.update(
                     ok=True,
@@ -714,6 +782,14 @@ def handle(ctx, action, target, mode):
                     detail=plan_detail(field, before, after, current, patched, bounds[1]),
                 )
                 return answer, 0
+            if require_approval:
+                # Compared here, under broker_lock and before the first audit row or any write.
+                try:
+                    approved = hashlib.sha256(plan_bytes(plan)).hexdigest()
+                except ValueError:
+                    raise Refused("the resource plan cannot be written canonically") from None
+                if approved != route_fields["planSHA256"]:
+                    raise PlanMismatch("the approved plan is not the plan this change would run")
             event = {
                 "target": target,
                 "field": field,
@@ -721,11 +797,12 @@ def handle(ctx, action, target, mode):
                 "after": after,
                 "beforeRevision": expected,
                 "afterRevision": revision(patched),
+                **route_fields,
             }
-            audit(ctx, {**event, "result": "intent"})
+            audit(ctx, {**event, "result": "intent"}, source)
             # Read again immediately before the sole PATCH; no automatic retry or rollback.
             if revision(store.get()) != expected:
-                raise Refused(
+                raise StaleRevision(
                     "The saved resource policy changed since this page read it.\u00a0 "
                     "Refresh Server Resource Limits and review the change again."
                 )
@@ -761,7 +838,7 @@ def handle(ctx, action, target, mode):
                     )
                 sleep(min(0.25, max(0, deadline - monotonic())))
             in_effect = True
-            audit(ctx, {**event, "result": "done"})
+            audit(ctx, {**event, "result": "done"}, source)
             event = None
             answer.update(
                 ok=True,
@@ -771,6 +848,11 @@ def handle(ctx, action, target, mode):
             return answer, 0
     except Refused as exc:
         answer.update(detail=str(exc))
+        if isinstance(exc, PlanMismatch):
+            answer["errorCode"] = "plan_mismatch"
+        elif isinstance(exc, StaleRevision) and require_approval:
+            # Only under the Muster route's switch, so that no other caller's answer gains a key.
+            answer["errorCode"] = "revision_stale"
         code = 2
     except Exception as exc:  # noqa: BLE001 - Sanitize all operational failures at the boundary.
         # Unexpected operational failures still need a sanitized answer and outcome audit.
@@ -819,7 +901,7 @@ def handle(ctx, action, target, mode):
             code = 1
     if event:
         try:
-            audit(ctx, {**event, "result": answer["result"]})
+            audit(ctx, {**event, "result": answer["result"]}, source)
         except Exception:  # noqa: BLE001 - Audit failure must return a sanitized refusal.
             if saved:
                 # Nothing can undo the save, so the saved fact stays in the answer.

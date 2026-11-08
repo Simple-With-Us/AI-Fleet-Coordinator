@@ -10,6 +10,7 @@
   python3 scripts/fleet-ops-control.py server redeploy RESOURCE_UUID      (--plan | --yes) [--json]
   python3 scripts/fleet-ops-control.py server eavesdropper-status server --plan [--json]
   python3 scripts/fleet-ops-control.py --from-ssh                         (the forced command)
+  python3 scripts/fleet-ops-control.py --from-muster                      (the forced command of muster-exec)
   python3 scripts/fleet-ops-control.py --check-token                      (install check, not over ssh)
 
 `scripts/fleet-ops-control.json` is the one allowlist.  A label, a unit or an update that is
@@ -64,6 +65,18 @@ What it promises:
 An update is submitted until a new successful service invocation is observed; API acceptance
 of a redeploy is also submitted.  Neither is called completed from submission alone.
 
+`--from-muster` is the forced command of the `muster-exec` key (`server-route-spec.md`, version 5).
+`SSH_ORIGINAL_COMMAND` holds four words (`server VERB TARGET --plan|--yes`) and standard input one
+JSON document.  A plan or a read needs no approval and is rate limited; a run needs an approval
+signed by an enrolled device's approval key, inside a two-minute window, with a fresh nonce recorded
+before anything runs, and only if the plan this helper builds hashes to the approved hash.  Every
+answer is signed with the helper's own key.  All of that is `muster_approval.py`, a sibling file
+loaded by its fixed place, never through `sys.path`, and only when it is owned as the installed
+layout requires.  This branch reads one environment variable, `SSH_ORIGINAL_COMMAND`, first, and then empties
+the environment (leaving a fixed HOME and PATH) before the approval module and `cryptography` are
+loaded: its paths come from constants and the account database.  `muster trust-list chain` is not
+built, so the route is inert (every approval is `no_trust_list`) until that slice lands.
+
 Exit status: 0 planned, submitted or done, 1 a command failed (or, for `server
 eavesdropper-status` alone, the status could not be read: result `unavailable`, with no
 command failed), 2 refused.
@@ -75,6 +88,9 @@ import argparse
 import contextlib
 import datetime
 import fcntl
+import hashlib
+import hmac
+import importlib.util
 import json
 import os
 import re
@@ -89,7 +105,6 @@ import time
 import types
 import urllib.error
 import urllib.parse
-import urllib.request
 from pathlib import Path
 
 TOOL = "fleet-ops-control"
@@ -178,6 +193,63 @@ EAVESDROPPER_UNAVAILABLE = {
     "not_json": "the status file is not a JSON object",
     "module_unavailable": "the status reduction module is not installed beside the helper",
 }
+# The `--from-muster` entry (`muster-exec`'s forced command).  The approval engine is the sibling
+# file `muster_approval.py`, loaded by its fixed place (beside this file, in the installed layout and
+# in a checkout alike) and never through sys.path.  The environment of this branch is fixed: nothing
+# a caller sets can move a path, a key, the clock or a child's PATH.
+MUSTER_ENTRY = "--from-muster"
+MUSTER_MODULE_FILE = "muster_approval.py"
+MUSTER_ROUTE = "from-muster"
+MUSTER_VIA = "muster-ios"
+MUSTER_CHILD_ENV = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"}
+MUSTER_UPDATE_ROUTES = ("sudo-system-update", "root-system-update")
+# The shared /etc/muster reader has one source file in the repository, `scripts/muster_agent/`, and the
+# installer copies it flat beside the helper; the loader looks beside the helper first (the installed
+# layout) and then in that folder (a checkout).
+MUSTER_TRUST_FILES_NAME = "muster_trust_files.py"
+MUSTER_AGENT_DIR = "muster_agent"
+MUSTER_MODULE_MAX_BYTES = 512 * 1024
+# What the audit names a Coolify resource when the application's name is not known (never a uuid).
+COOLIFY_AUDIT_TARGET = "coolify resource"
+# Section 4: a plan refusal's `reason` is the planner's own `error_code`, passed through unchanged.  These
+# are the codes that count: the eight the spec names, then three of the same kind (the update recheck
+# at run time and the two receipt codes of `update-status`) that it does not name yet.
+MUSTER_PLANNER_CODES = (
+    "update_busy",
+    "authorization_unavailable",
+    "update_route_unavailable",
+    "update_executable_unavailable",
+    "unit_status_unavailable",
+    "unit_status_invalid",
+    "unit_unavailable",
+    "unit_type_unsupported",
+    "update_route_changed",
+    "receipt_context_mismatch",
+    "receipt_context_unavailable",
+)
+# A refusal that has no code of its own gets one of these: the target, its action or the redeploy
+# permission is not on the allowlist; the status report is missing, unsafe, stale, foreign or does not
+# list the application; the resource policy's saved revision is not the one the request names.
+MUSTER_PLAN_REASONS = MUSTER_PLANNER_CODES + ("allowlist_miss", "report_stale", "revision_stale")
+MUSTER_AUDIT_VALUE_RE = re.compile(r"[A-Za-z0-9._@:-]{1,128}")
+MUSTER_AUDIT_NAMES = (
+    "route",
+    "via",
+    "jobId",
+    "deviceId",
+    "approvalNonce",
+    "planSHA256",
+    "errorCode",
+)
+# The one answer that needs no key, and the one a missing or untrusted module gives (server-route-spec
+# section 13): every verifier treats it as unauthenticated.
+MUSTER_UNSIGNED_ANSWER = {
+    "protocol": "muster-helper/1",
+    "kind": "refusal",
+    "body": {"contract": "muster-signed-refusal/1", "errorCode": "helper_key_missing"},
+    "keyId": None,
+    "signature": None,
+}
 # pm2 runs the way Muster's own pm2 client runs it: a pinned node and the pm2 script,
 # never a PATH lookup a caller could shadow.
 NODE_CANDIDATES = ("/opt/homebrew/bin/node", "/usr/local/bin/node")
@@ -255,9 +327,12 @@ CHILD_ENV_KEEP = (
 class Refused(Exception):
     """The request is not allowed.  The text is a fixed phrase that names no secret."""
 
-    def __init__(self, message, *, error_code=None):
+    def __init__(self, message, *, error_code=None, reason=None):
         super().__init__(message)
         self.error_code = error_code
+        # For the `--from-muster` route only (server-route-spec section 4): one of its four
+        # plan-refusal reasons.  A refusal that has none is not a plan refusal there.
+        self.reason = reason or (error_code if error_code in MUSTER_PLANNER_CODES else None)
 
 
 class Failed(Exception):
@@ -266,10 +341,14 @@ class Failed(Exception):
     `completed` is how many commands of the plan finished before this one, when the run
     was a chain;  None when it was not."""
 
-    def __init__(self, message, *, error_code=None, completed=None):
+    def __init__(self, message, *, error_code=None, completed=None, timed_out=False):
         super().__init__(message)
         self.error_code = error_code
         self.completed = completed
+        # True when the action was started and its end could not be observed (a command killed at its
+        # time limit, or a request that may have been sent and got no answer).  The `--from-muster` route
+        # calls such a run `unknown`, never `failed` (server-route-spec section 13); no answer carries it.
+        self.timed_out = timed_out
 
 
 # MARK: - The allowlist
@@ -562,25 +641,51 @@ def run_bounded_read(argv, timeout, env, max_bytes, stderr_max=DOCKER_STDERR_MAX
                 pass
 
 
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    """Never follow a 3xx: the token must not be sent to another origin."""
+class NoAnswer(int):
+    """Zero, the status of a GET that got no answer, and `sent` true: the request may have reached
+    the server (a timeout, a reset, an answer cut short), so its effect cannot be told.  A plain 0 is
+    a GET that never left (a refused connection, a name that did not resolve, a bad URL)."""
 
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
+    sent = True
 
 
 def http_get(url, headers, timeout=HTTP_TIMEOUT):
-    """The HTTP status of one GET, or 0 when there was no answer.  The body is discarded."""
-    opener = urllib.request.build_opener(_NoRedirect)
-    request = urllib.request.Request(url, method="GET", headers=headers)
+    """The HTTP status of one GET, or 0 when there was no answer.  The body is discarded.
+
+    A `NoAnswer` (it is 0 too) means the request may have been sent.  `urllib.request` is imported
+    here and not at the top of the file so that `ssl`, the proxy variables and the opener are set up
+    only when a GET is made, after the `--from-muster` branch has emptied the environment.  That is
+    all it does: OpenSSL reads its configuration when `hashlib` is imported at the top of the file,
+    before the environment is emptied, so a clean start comes from the forced command line, which
+    starts the interpreter with an empty environment (the module docstring of `muster_approval`)."""
+    import http.client
+    import socket
+    import urllib.request
+
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        """Never follow a 3xx: the token must not be sent to another origin."""
+
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+
+    opener = urllib.request.build_opener(NoRedirect)
+    try:
+        request = urllib.request.Request(url, method="GET", headers=headers)
+    except ValueError:
+        return 0
     try:
         with opener.open(request, timeout=timeout) as response:
             response.read(64 * 1024)
             return response.status
     except urllib.error.HTTPError as exc:
         return exc.code
-    except (urllib.error.URLError, OSError, ValueError):
-        return 0
+    except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as exc:
+        reason = getattr(exc, "reason", exc)
+        if isinstance(exc, ValueError) or isinstance(
+            reason, (ConnectionRefusedError, socket.gaierror, FileNotFoundError, PermissionError)
+        ):
+            return 0
+        return NoAnswer(0)
 
 
 class Context:
@@ -702,9 +807,9 @@ def server_unit_commands(ctx, config, action, unit):
         raise Refused("the unit is not a valid unit name")
     entry = config["units"].get(unit)
     if entry is None:
-        raise Refused("the unit is not in the allowlist")
+        raise Refused("the unit is not in the allowlist", reason="allowlist_miss")
     if action not in entry["actions"]:
-        raise Refused("that action is not allowed for this unit")
+        raise Refused("that action is not allowed for this unit", reason="allowlist_miss")
     return [_systemctl_argv(entry["scope"], action, unit)], f"{entry['scope']} unit"
 
 
@@ -721,7 +826,7 @@ def server_logs_commands(ctx, config, unit):
         raise Refused("the unit is not a valid unit name")
     entry = config["units"].get(unit)
     if entry is None:
-        raise Refused("the unit is not in the allowlist")
+        raise Refused("the unit is not in the allowlist", reason="allowlist_miss")
     argv = (
         [_journalctl()]
         + (["--user"] if entry["scope"] == "user" else [])
@@ -766,9 +871,10 @@ def _module_trusted(info, owners):
     return info.st_uid in owners and not info.st_mode & 0o022
 
 
-def _read_module_source(ctx):
-    """The reducer module's bytes from the helper's own folder, or None when it is missing or
-    not trusted.
+def _read_module_source(ctx, parts=(REDUCED_STATUS_NAME,), max_bytes=REDUCED_STATUS_MAX_BYTES):
+    """The bytes of a module under the helper's own folder, or None when it is missing or not
+    trusted.  `parts` is its path below that folder (the reducer by default) and `max_bytes` its
+    size limit.
 
     The folder and then the file are opened with O_NOFOLLOW (so a symlink is refused), both are
     judged by fstat on the descriptor that was opened, and the bytes are read from that same
@@ -792,14 +898,20 @@ def _read_module_source(ctx):
         # A checkout folder must be the calling account's own, or root's: nobody else's.
         if not _module_trusted(info, (TRUSTED_MODULE_UID, ctx.uid)):
             return None
-        file_fd = os.open(
-            REDUCED_STATUS_NAME, os.O_RDONLY | os.O_NONBLOCK | nofollow | cloexec, dir_fd=fd
-        )
+        for folder in parts[:-1]:
+            # A folder below the helper's own (the checkout's `muster_agent/`) is held to the same
+            # owner and mode rule, opened without following a link.
+            fd = os.open(folder, directory_flags, dir_fd=fd)
+            opened.append(fd)
+            info = os.fstat(fd)
+            if not stat.S_ISDIR(info.st_mode) or not _module_trusted(info, owners):
+                return None
+        file_fd = os.open(parts[-1], os.O_RDONLY | os.O_NONBLOCK | nofollow | cloexec, dir_fd=fd)
         opened.append(file_fd)
         info = os.fstat(file_fd)
         if not stat.S_ISREG(info.st_mode) or not _module_trusted(info, owners):
             return None
-        if info.st_size > REDUCED_STATUS_MAX_BYTES:
+        if info.st_size > max_bytes:
             return None
         chunks = []
         total = 0
@@ -808,7 +920,7 @@ def _read_module_source(ctx):
             if not chunk:
                 return b"".join(chunks)
             total += len(chunk)
-            if total > REDUCED_STATUS_MAX_BYTES:
+            if total > max_bytes:
                 return None
             chunks.append(chunk)
     except OSError:
@@ -979,7 +1091,7 @@ def server_update_commands(ctx, config, name):
         raise Refused("the update name is not valid")
     entry = config["updates"].get(name)
     if entry is None:
-        raise Refused("the update is not in the allowlist")
+        raise Refused("the update is not in the allowlist", reason="allowlist_miss")
     before = update_unit_state(ctx, entry)
     require_update_idle(before)
     return [update_command(ctx, name, entry)], (
@@ -1103,6 +1215,13 @@ def update_failure_code(status, output):
     return "update_submit_failed"
 
 
+def end_not_seen(status):
+    """True when a child that was started has no observed end: killed at its time limit (124) or by a
+    signal (a negative status, such as -9 from the memory controller).  The `--from-muster` route
+    reports such a run `unknown`, never `failed`."""
+    return status == 124 or status < 0
+
+
 def execute_update(ctx, config, target, commands):
     entry = config["updates"][target]
     # Recheck immediately before submission, rather than trusting an earlier plan.
@@ -1123,6 +1242,7 @@ def execute_update(ctx, config, target, commands):
         raise Failed(
             "the update submission was not confirmed",
             error_code=update_failure_code(status, output),
+            timed_out=end_not_seen(status),
         )
     answer = dict(
         ok=True,
@@ -1299,7 +1419,15 @@ def captured_update_baseline(ctx, invocation):
                 row.get("host") == "server"
                 and row.get("verb") == "server update"
                 and row.get("target") == "fleet-cli"
-                and row.get("route") in ("sudo-system-update", "root-system-update")
+                and (
+                    row.get("route") in MUSTER_UPDATE_ROUTES
+                    # A `--from-muster` run keeps the update route in `updateRoute`.
+                    or (
+                        row.get("route") == MUSTER_ROUTE
+                        and row.get("via") == MUSTER_VIA
+                        and row.get("updateRoute") in MUSTER_UPDATE_ROUTES
+                    )
+                )
                 and row.get("result") in ("submitted", "done", "failed")
                 and type(baseline) is int
                 and 0 <= baseline <= UINT64_MAX
@@ -1334,7 +1462,7 @@ def coolify_resource(ctx, uuid):
     try:
         fd = os.open(str(path), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     except OSError:
-        raise Refused("there is no server status report") from None
+        raise Refused("there is no server status report", reason="report_stale") from None
     try:
         info = os.fstat(fd)
         if (
@@ -1343,7 +1471,9 @@ def coolify_resource(ctx, uuid):
             or info.st_mode & 0o022
             or info.st_size > STATUS_MAX_BYTES
         ):
-            raise Refused("the server status report is not a private regular file")
+            raise Refused(
+                "the server status report is not a private regular file", reason="report_stale"
+            )
         with os.fdopen(fd, "rb", closefd=False) as handle:
             raw = handle.read(STATUS_MAX_BYTES + 1)
     finally:
@@ -1351,19 +1481,21 @@ def coolify_resource(ctx, uuid):
     try:
         doc = json.loads(raw.decode("utf-8"))
     except (ValueError, UnicodeDecodeError):
-        raise Refused("the server status report is not JSON") from None
+        raise Refused("the server status report is not JSON", reason="report_stale") from None
     if not isinstance(doc, dict) or doc.get("tool") != "fleet-server-status":
-        raise Refused("the server status report is not from fleet-server-status")
+        raise Refused(
+            "the server status report is not from fleet-server-status", reason="report_stale"
+        )
     generated = _parse_time(doc.get("generatedAt"))
     if generated is None or ctx.now() - generated > STATUS_MAX_AGE_SECONDS:
-        raise Refused("the server status report is stale")
+        raise Refused("the server status report is stale", reason="report_stale")
     for row in doc.get("coolify") or []:
         if isinstance(row, dict) and row.get("uuid") == uuid:
             refusal = redeploy_refusal(row)
             if refusal:
-                raise Refused(refusal)
+                raise Refused(refusal, reason="report_stale")
             return row
-    raise Refused("the uuid is not in the latest server status report")
+    raise Refused("the uuid is not in the latest server status report", reason="report_stale")
 
 
 def redeploy_refusal(row):
@@ -1579,12 +1711,12 @@ def plan_request(ctx, config, scope, action, target):
     if action == "redeploy":
         _server_only(ctx)
         if not config["redeploy"]:
-            raise Refused("redeploy is not allowed")
+            raise Refused("redeploy is not allowed", reason="allowlist_miss")
         if not UUID_RE.fullmatch(target or ""):
             raise Refused("the uuid is not valid")
         row = coolify_resource(ctx, target)
         query = urllib.parse.urlencode({"uuid": target})
-        name = row.get("name") if isinstance(row.get("name"), str) else "coolify resource"
+        name = row.get("name") if isinstance(row.get("name"), str) else COOLIFY_AUDIT_TARGET
         # A redeploy covers the whole application, so the audit names it and not one service.
         service = row.get("service")
         if isinstance(service, str) and name.endswith(f" ({service})"):
@@ -1606,7 +1738,10 @@ def execute(ctx, scope, action, target, commands):
         finally:
             token = ""
         if not 200 <= status < 300:
-            raise Failed(f"Coolify answered HTTP {status}" if status else "Coolify did not answer")
+            raise Failed(
+                f"Coolify answered HTTP {status}" if status else "Coolify did not answer",
+                timed_out=bool(getattr(status, "sent", False)),
+            )
         return f"Coolify accepted the redeploy (HTTP {status})"
     env = ctx.pm2_env() if scope == "pm2" else ctx.child_env()
     finished = 0
@@ -1614,7 +1749,11 @@ def execute(ctx, scope, action, target, commands):
         status, _ = ctx.runner(argv, timeout=COMMAND_TIMEOUT, env=env)
         if status != 0:
             verb = next((a for a in argv[1:] if not a.startswith("-") and "/" not in a), action)
-            raise Failed(f"{os.path.basename(argv[0])} {verb} exited {status}", completed=finished)
+            raise Failed(
+                f"{os.path.basename(argv[0])} {verb} exited {status}",
+                completed=finished,
+                timed_out=end_not_seen(status),
+            )
         finished += 1
     return "done" if commands else "nothing to do"
 
@@ -1670,7 +1809,7 @@ def execute_logs(ctx, commands):
         max_bytes=LOG_MAX_BYTES * 4,
     )
     if status != 0:
-        raise Failed(f"journalctl exited {status}")
+        raise Failed(f"journalctl exited {status}", timed_out=end_not_seen(status))
     text, lines = truncate_logs(out or b"")
     return f"{lines} journal lines", text, lines
 
@@ -1687,9 +1826,14 @@ def audit(
     verified=None,
     baseline=None,
     row_id=None,
+    extra=None,
 ):
     """One JSON line, 0600, appended.  Never command output, never a uuid or a hostname.
-    A finished logs run adds its line count and nothing of the text."""
+    A finished logs run adds its line count and nothing of the text.
+
+    `extra` is the `--from-muster` route's own fields (server-route-spec section 14): only the names
+    in MUSTER_AUDIT_NAMES, each a short plain word or null.  The row's `route` is then `from-muster`,
+    and the update route, if any, moves to `updateRoute`."""
     row = {
         "time": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "host": "mac" if ctx.platform.startswith("darwin") else "server",
@@ -1703,14 +1847,19 @@ def audit(
         row["id"] = row_id
     if lines is not None:
         row["lines"] = lines
-    if route in ("sudo-system-update", "root-system-update"):
-        row["route"] = route
+    if route in MUSTER_UPDATE_ROUTES:
+        row["updateRoute" if isinstance(extra, dict) else "route"] = route
     if isinstance(invocation_id, str) and re.fullmatch(r"[0-9a-f]{32}", invocation_id):
         row["invocationID"] = invocation_id
     if isinstance(verified, bool):
         row["verified"] = verified
     if type(baseline) is int and 0 <= baseline <= UINT64_MAX:
         row["baselineStartMonotonic"] = baseline
+    if isinstance(extra, dict):
+        for name in MUSTER_AUDIT_NAMES:
+            value = extra.get(name)
+            if name in extra and (value is None or MUSTER_AUDIT_VALUE_RE.fullmatch(str(value))):
+                row[name] = value
     path = ctx.audit_path
     try:
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -1734,7 +1883,82 @@ def audit(
         os.close(fd)
 
 
-def handle(ctx, scope, action, target, mode):
+def plan_object(scope, action, target, commands, audit_target):
+    """The canonical plan object of `fleet-ops-plan/1` (server-route-spec section 13).
+
+    The one shape both the signed plan and the approval's hash are made from."""
+    return {
+        "contract": "fleet-ops-plan/1",
+        "scope": scope,
+        "action": action,
+        "target": target,
+        "commands": commands,
+        "auditTarget": printable_ascii(audit_target),
+    }
+
+
+def printable_ascii(text):
+    """`text` with each code point outside 0x20 to 0x7E replaced by one `?` (no run collapsed, nothing
+    trimmed), so that a plan's bytes are always canonical.  The audit keeps the real name; only the
+    plan the phone reads and hashes is changed, and only the `--from-muster` route builds it."""
+    return "".join(char if 0x20 <= ord(char) <= 0x7E else "?" for char in str(text))
+
+
+def muster_audit_extra(approval):
+    """The route's audit fields from a verified approval dict, or None when any is missing."""
+    if not isinstance(approval, dict):
+        return None
+    extra = {"route": MUSTER_ROUTE, "via": MUSTER_VIA}
+    for name in ("jobId", "deviceId", "approvalNonce", "planSHA256"):
+        value = approval.get(name)
+        if not isinstance(value, str) or not MUSTER_AUDIT_VALUE_RE.fullmatch(value):
+            return None
+        extra[name] = value
+    if not re.fullmatch(r"[0-9a-f]{64}", extra["planSHA256"]):
+        return None
+    return extra
+
+
+def muster_refusal_code(answer):
+    """`plan_mismatch` when a refused `--yes` run was refused for that, else None.
+
+    It is the only refusal the route keeps after the nonce is spent; any other is a failed run."""
+    return "plan_mismatch" if answer.get("errorCode") == "plan_mismatch" else None
+
+
+def redeploy_audit_target(scope, action, target, audit_target):
+    """What the audit names a redeploy: the application's name once the planner knew it, else
+    `coolify resource`, and never the uuid.  Every other verb keeps its own target."""
+    if scope == "server" and action == "redeploy" and audit_target in (None, target):
+        return COOLIFY_AUDIT_TARGET
+    return target if audit_target is None else audit_target
+
+
+def check_approved_plan(approval, plan_bytes, plan):
+    """Refuse unless `plan` hashes to the approval's `planSHA256`.  Nothing has run yet."""
+    try:
+        digest = hashlib.sha256(plan_bytes(plan)).hexdigest()
+    except ValueError:
+        raise Refused("the plan cannot be written canonically", error_code="plan_refused") from None
+    if not hmac.compare_digest(digest, approval["planSHA256"]):
+        raise Refused(
+            "the approved plan is not the plan this request would run", error_code="plan_mismatch"
+        )
+
+
+def handle(
+    ctx,
+    scope,
+    action,
+    target,
+    mode,
+    *,
+    require_approval=False,
+    approval=None,
+    lock_held=False,
+    plan_bytes=None,
+    reason_out=None,
+):
     """The whole request: the JSON answer and the exit status.  `mode` is plan, yes or None."""
     answer = {
         "ok": False,
@@ -1744,11 +1968,23 @@ def handle(ctx, scope, action, target, mode):
         "result": "refused",
         "detail": "",
     }
+    # The keyword arguments belong to the `--from-muster` route (server-route-spec section 12) and
+    # change nothing for a caller that does not pass them.  `require_approval` is its fail-closed
+    # switch: a run (`--yes`) then needs a verified `approval` dict and `plan_bytes`, the canonical
+    # bytes function, and the plan built below must hash to the approval's `planSHA256` before
+    # anything runs.  `lock_held` says the caller already holds the one action lock (and a logs run
+    # then takes it too, as the route requires).  Every audit row carries the route's fields.
     audit_target = target
     log_lines = None
+    extra = None
     try:
         if mode not in ("plan", "yes"):
             raise Refused("pass --plan to see the commands or --yes to run them")
+        if require_approval and mode == "yes":
+            extra = muster_audit_extra(approval)
+            if extra is None or scope != "server" or not callable(plan_bytes):
+                extra = None
+                raise Refused("a verified approval is required", error_code="approval_required")
         config = load_config(ctx.config_path)
         if scope == "server" and action == "update-status":
             receipt, code = update_status(ctx, config, target, mode)
@@ -1822,7 +2058,9 @@ def handle(ctx, scope, action, target, mode):
             return answer, 0
         if scope == "server" and action in ("resource-status", "resource-policy"):
             if not config["resourcePolicy"]:
-                raise Refused("coding resource controls are not in the allowlist")
+                raise Refused(
+                    "coding resource controls are not in the allowlist", reason="allowlist_miss"
+                )
             # -I omits the script directory. Only this reviewed sibling directory is
             # added; neither the request nor the environment selects an import path.
             scripts = str(Path(__file__).resolve().parent)
@@ -1830,17 +2068,68 @@ def handle(ctx, scope, action, target, mode):
                 sys.path.insert(0, scripts)
             from fleet_resource_control import handle as handle_resource
 
+            # The route's switch goes down to fleet_resource_control, which compares the plan hash
+            # itself, under its own lock.
+            routed = (
+                {
+                    "require_approval": True,
+                    "approval": approval,
+                    "source": MUSTER_VIA,
+                    "plan_bytes": plan_bytes,
+                }
+                if require_approval
+                else {}
+            )
             if mode == "yes" and action == "resource-policy":
                 # A write holds the same one-action lock as every other `--yes` write.
-                with action_lock(ctx):
-                    return handle_resource(ctx, action, target, mode)
-            return handle_resource(ctx, action, target, mode)
+                with contextlib.ExitStack() as held:
+                    if not lock_held:
+                        held.enter_context(action_lock(ctx))
+                    if isinstance(reason_out, dict):
+                        reason_out["started"] = True  # the write itself decides: see above
+                    resource_answer, resource_code = handle_resource(
+                        ctx, action, target, mode, **routed
+                    )
+                if isinstance(reason_out, dict) and resource_answer.get("errorCode") == (
+                    "revision_stale"
+                ):
+                    reason_out["reason"] = "revision_stale"
+                if require_approval:
+                    # A `--from-muster` request leaves one row in the helper's own audit as well.
+                    audit_run(
+                        ctx,
+                        scope,
+                        action,
+                        target,
+                        target.split(".", 1)[0],
+                        resource_answer,
+                        None,
+                        extra,
+                    )
+                return resource_answer, resource_code
+            return handle_resource(ctx, action, target, mode, **routed)
         with contextlib.ExitStack() as held:
-            # A logs run only reads the journal, so it takes no write lock.
-            if mode == "yes" and not (scope == "server" and action == "logs"):
+            # A logs run only reads the journal, so it takes no write lock; a `--from-muster` run
+            # takes it for logs too, unless the caller already holds it.
+            if (
+                mode == "yes"
+                and not lock_held
+                and (require_approval or not (scope == "server" and action == "logs"))
+            ):
                 held.enter_context(action_lock(ctx))
             commands, note, audit_target = plan_request(ctx, config, scope, action, target)
+            if require_approval and mode == "yes":
+                check_approved_plan(
+                    approval,
+                    plan_bytes,
+                    plan_object(scope, action, target, commands, audit_target),
+                )
             answer["commands"] = commands
+            if mode == "yes" and isinstance(reason_out, dict):
+                # From here an execute function may begin the action.  The `--from-muster` backend
+                # reads this, so that an exception out of this function after this point is `unknown`
+                # and one before it is `failed`; no answer carries it.
+                reason_out["started"] = True
             if mode == "plan":
                 answer.update(ok=True, result="planned", detail=note)
                 code = 0
@@ -1871,6 +2160,9 @@ def handle(ctx, scope, action, target, mode):
         answer.update(ok=False, result="refused", detail=str(exc))
         if exc.error_code:
             answer["errorCode"] = exc.error_code
+        if isinstance(reason_out, dict):
+            # The `--from-muster` backend asks for the planner's reason; the answer never carries it.
+            reason_out["reason"] = exc.reason
         code = 2
     except Failed as exc:
         answer.update(ok=False, result="failed", detail=str(exc))
@@ -1878,36 +2170,379 @@ def handle(ctx, scope, action, target, mode):
             answer["errorCode"] = exc.error_code
         if exc.completed is not None:
             answer["completedCommands"] = exc.completed
+        if exc.timed_out and require_approval:
+            # Started and killed at its time limit: the route's word is `unknown`, in the answer and
+            # in the one audit row (section 13).  A caller without the route's switch still gets
+            # `failed`, as ever.
+            answer["result"] = "unknown"
         code = 1
     if mode == "yes" and not (scope == "server" and action == "update-status"):
-        if scope == "server" and action == "redeploy" and audit_target == target:
-            audit_target = "coolify resource"  # refused before the name was known: no uuid
-        route = None
-        if scope == "server" and action == "update":
-            direct = [UPDATE_SYSTEMCTL, "start", "--no-block", FLEET_CLI_UPDATE_UNIT]
-            if answer["commands"] == [[SUDO, "-n"] + direct]:
-                route = "sudo-system-update"
-            elif ctx.uid == 0 and answer["commands"] == [direct]:
-                route = "root-system-update"
-        row_id = secrets.token_hex(6)
-        written_target = (audit_target or "")[:120]
-        if audit(
-            ctx,
-            scope,
-            action,
-            written_target,
-            answer["result"],
-            lines=log_lines if answer["result"] == "done" else None,
-            route=route,
-            invocation_id=answer.get("invocationID"),
-            verified=answer.get("verified"),
-            baseline=answer.get("baselineStartMonotonic"),
-            row_id=row_id,
-        ):
-            # Only a row that was written is named, so the caller never links to nothing.
-            answer["auditID"] = row_id
-            answer["auditTarget"] = written_target
+        audit_run(ctx, scope, action, target, audit_target, answer, log_lines, extra)
     return answer, code
+
+
+def audit_run(ctx, scope, action, target, audit_target, answer, log_lines, extra):
+    """The one audit row of a `--yes` request, and the `auditID` and `auditTarget` it adds to `answer`."""
+    if scope == "server" and action == "redeploy":
+        audit_target = redeploy_audit_target(scope, action, target, audit_target)
+    route = None
+    if scope == "server" and action == "update":
+        direct = [UPDATE_SYSTEMCTL, "start", "--no-block", FLEET_CLI_UPDATE_UNIT]
+        if answer["commands"] == [[SUDO, "-n"] + direct]:
+            route = "sudo-system-update"
+        elif ctx.uid == 0 and answer["commands"] == [direct]:
+            route = "root-system-update"
+    written_result = answer["result"]
+    if extra is not None and written_result == "refused":
+        if muster_refusal_code(answer) == "plan_mismatch":
+            extra = dict(extra, errorCode="plan_mismatch")
+        else:
+            # The nonce is spent by now, so any other refusal of the run is a fault of the run, and
+            # its one row says `failed` (section 14); an error code belongs to a refusal only.
+            written_result = "failed"
+    row_id = secrets.token_hex(6)
+    written_target = (audit_target or "")[:120]
+    if audit(
+        ctx,
+        scope,
+        action,
+        written_target,
+        written_result,
+        lines=log_lines if written_result == "done" else None,
+        route=route,
+        invocation_id=answer.get("invocationID"),
+        verified=answer.get("verified"),
+        baseline=answer.get("baselineStartMonotonic"),
+        row_id=row_id,
+        extra=extra,
+    ):
+        # Only a row that was written is named, so the caller never links to nothing.
+        answer["auditID"] = row_id
+        answer["auditTarget"] = written_target
+
+
+# MARK: - The --from-muster entry
+
+
+def _compile_module(source, file_name, module_name, required_attr):
+    """A fresh module run in memory from `source`, or None when it fails to load.
+
+    No import system, no sys.path, no __pycache__ and no second open of any path, as for the
+    reducer."""
+    try:
+        code = compile(source, file_name, "exec", dont_inherit=True)
+        module = types.ModuleType(module_name)
+        exec(code, module.__dict__)  # noqa: S102 - the bytes were just judged trusted
+    except (Exception, SystemExit):  # noqa: BLE001 - any load failure is the same answer
+        return None
+    return module if callable(getattr(module, required_attr, None)) else None
+
+
+def _load_muster_module(ctx, candidates, module_name, required_attr):
+    """A sibling module of this file, or None when it cannot be trusted or loaded.
+
+    `candidates` are its places below the helper's folder, tried in order; the first that exists
+    and is trusted is the one.  The bytes come from `_read_module_source` (the same open-by-descriptor,
+    fstat-judged read as the reducer's, with its installed-layout and checkout owner rules), so
+    nothing in the request or the environment selects a file, and a file swapped in after the check
+    changes nothing."""
+    for parts in candidates:
+        source = _read_module_source(ctx, parts, MUSTER_MODULE_MAX_BYTES)
+        if source is not None:
+            return _compile_module(source, parts[-1], module_name, required_attr)
+    return None
+
+
+def _load_muster_modules(ctx):
+    """(muster_approval, muster_trust_files) or None.  Both are needed, or neither is used.
+
+    The shared /etc/muster reader is installed flat beside the helper, and the repository keeps its
+    one source file in `muster_agent/` (server-route-spec section 10), so a checkout is read from there."""
+    trust_files = _load_muster_module(
+        ctx,
+        ((MUSTER_TRUST_FILES_NAME,), (MUSTER_AGENT_DIR, MUSTER_TRUST_FILES_NAME)),
+        "muster_trust_files",
+        "read_trust_files",
+    )
+    approval = _load_muster_module(
+        ctx, ((MUSTER_MODULE_FILE,),), "muster_approval", "handle_request"
+    )
+    if trust_files is None or approval is None:
+        return None
+    return approval, trust_files
+
+
+class _MusterLock:
+    """The one action lock, with its refusals turned into the approval module's own."""
+
+    def __init__(self, ctx, module):
+        self._ctx = ctx
+        self._module = module
+        self._held = None
+
+    def __enter__(self):
+        self._held = action_lock(self._ctx)
+        try:
+            self._held.__enter__()
+        except Refused as exc:
+            if exc.error_code == "action_busy":
+                raise self._module.LockBusy from None
+            raise self._module.LockUnsafe from None
+        return self
+
+    def __exit__(self, *exc_info):
+        return self._held.__exit__(*exc_info)
+
+
+def _sibling(name):
+    """A module of the helper's own folder, through the one path the other verbs use."""
+    scripts = str(Path(__file__).resolve().parent)
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
+    return importlib.import_module(name)
+
+
+class _MusterBackend:
+    """What `muster_approval` needs from this process: the plan, the read, the run, the audit row and
+    the one action lock.  Each is the helper's own shared function, called as it always is, plus the
+    route's `require_approval` where a run is concerned."""
+
+    def __init__(self, ctx, module):
+        self.ctx = ctx
+        self.module = module
+
+    def lock(self):
+        return _MusterLock(self.ctx, self.module)
+
+    def target_ok(self, verb, target):
+        """True when `target` has the shape this verb's target must have (server-route-spec section 4).
+
+        This is grammar only, so that the module can refuse `bad_command` at P2 before it counts the
+        request.  Whether the word names something the allowlist allows is for the planner, which
+        refuses `plan_refused` with the reason `allowlist_miss`."""
+        if verb in ACTIONS or verb == "logs":
+            return UNIT_RE.fullmatch(target) is not None
+        if verb == "update":
+            return UPDATE_RE.fullmatch(target) is not None
+        if verb == "redeploy":
+            return UUID_RE.fullmatch(target) is not None
+        if verb == "update-status":
+            match = UPDATE_STATUS_RE.fullmatch(target)
+            return match is not None and int(match.group(2)) <= UINT64_MAX
+        if verb == "resource-status":
+            return target == "coding"
+        if verb == "resource-policy":
+            try:
+                _sibling("fleet_resource_control").parse_target(target)
+            except Exception:  # noqa: BLE001 - its own refusal class, and any fault, mean no
+                return False
+            return True
+        if verb == "seat-inventory":
+            inventory = _sibling("fleet_seat_inventory")
+            return inventory.PLATFORM_RE.fullmatch(target) is not None and (
+                target in inventory.PLATFORMS
+            )
+        return False
+
+    def plan_bytes(self, verb, target):
+        """The canonical plan bytes that a run of this verb and target would hash.
+
+        Refuses with BackendRefused when the shared planner refuses: its `code` is the planner's reason
+        (its own `error_code` when it gives one, else `allowlist_miss`, `report_stale` or
+        `revision_stale`), or None for a fault that is no refusal (the module answers
+        `internal_error`)."""
+        ctx = self.ctx
+        try:
+            config = load_config(ctx.config_path)
+            if verb == "resource-policy":
+                if not config["resourcePolicy"]:
+                    raise Refused(
+                        "coding resource controls are not in the allowlist", reason="allowlist_miss"
+                    )
+                handle_resource = _sibling("fleet_resource_control").handle
+                answer, code = handle_resource(
+                    ctx,
+                    verb,
+                    target,
+                    "plan",
+                    require_approval=True,
+                    source=MUSTER_VIA,
+                    plan_bytes=self.module.canonical_bytes,
+                )
+                if code != 0 or not isinstance(answer.get("plan"), dict):
+                    raise Refused(
+                        answer.get("detail") or "the resource plan cannot be built",
+                        reason="revision_stale"
+                        if answer.get("errorCode") == "revision_stale"
+                        else None,
+                    )
+                plan = answer["plan"]
+            else:
+                commands, _note, audit_target = plan_request(ctx, config, "server", verb, target)
+                plan = plan_object("server", verb, target, commands, audit_target)
+            return self.module.canonical_bytes(plan)
+        except Refused as exc:
+            raise self.module.BackendRefused(str(exc), exc.reason) from None
+        except Failed as exc:
+            raise self.module.BackendRefused(str(exc)) from None
+        except ValueError:
+            raise self.module.BackendRefused("the plan cannot be written canonically") from None
+
+    def read(self, verb, target):
+        reason = {}
+        answer, _code = handle(self.ctx, "server", verb, target, "plan", reason_out=reason)
+        if answer.get("result") == "refused":
+            raise self.module.BackendRefused(answer.get("detail", ""), reason.get("reason"))
+        output = json.dumps(answer, sort_keys=True).encode("utf-8")
+        return self.module.ReadResult(answer.get("detail", ""), output)
+
+    def run(self, verb, target, approval):
+        reason = {}
+        try:
+            answer, _code = handle(
+                self.ctx,
+                "server",
+                verb,
+                target,
+                "yes",
+                require_approval=True,
+                approval=approval,
+                lock_held=True,
+                plan_bytes=self.module.canonical_bytes,
+                reason_out=reason,
+            )
+        except Exception:
+            # An exception out of the shared function: the module needs to know whether it was
+            # raised before the action could have begun (`failed`) or after (`unknown`).
+            raise self.module.RunFault(started=bool(reason.get("started"))) from None
+        result = answer.get("result")
+        detail = answer.get("detail", "")
+        if result == "refused":
+            if answer.get("errorCode") == "plan_mismatch":
+                return self.module.RunResult(
+                    "refused", detail, None, answer.get("auditID"), "plan_mismatch"
+                )
+            # Any other refusal inside the run happens after the nonce is spent, so for the route it
+            # is a fault of the run: the module answers a `failed` result that names the reason.
+            why = reason.get("reason")
+            named = f"plan_refused: {why}" if why in MUSTER_PLAN_REASONS else "internal_error"
+            return self.module.RunResult("refused", named, None, answer.get("auditID"))
+        # `unknown` (a policy write that was sent and not confirmed) stays `unknown`: section 13's
+        # word for work that was started and whose end could not be observed.  Anything else that is
+        # not done or submitted is a failure.
+        outcome = {"done": "done", "submitted": "submitted", "unknown": "unknown"}.get(
+            result, "failed"
+        )
+        return self.module.RunResult(outcome, detail, answer.get("output"), answer.get("auditID"))
+
+    def audit(self, scope, verb, target, result, fields):
+        """One row for the module: its target goes through the same mapping as the helper's own rows,
+        so a Coolify uuid is never written."""
+        written = redeploy_audit_target(scope, verb, target, None)
+        return audit(self.ctx, scope, verb, written, result, extra=fields)
+
+
+def _muster_config(module, hooks):
+    """The configuration of this run: production's, unless a test hands one in."""
+    settings = hooks.get("config")
+    if settings is None:
+        return module.production_config()
+    if settings.get("clock") is not None:
+        clock = settings["clock"]
+    elif "now" in settings:
+        fixed = settings["now"]
+
+        def clock():
+            return fixed
+    else:
+        clock = time.time
+    return module.MusterConfig(
+        etc_dir=settings["etc_dir"],
+        state_dir=settings["state_dir"],
+        root_uid=settings["root_uid"],
+        uid=settings["uid"],
+        clock=clock,
+        clock_state=settings.get("clock_state"),
+    )
+
+
+def _empty_environment(home):
+    """Empty this process's environment, leaving a fixed HOME and PATH.
+
+    What this covers: what the code loaded after this point reads from the environment (the proxy
+    variables of `urllib.request`, which the helper imports inside the function that uses it, the
+    settings of `ssl` and of `cryptography`, which the modules this entry loads afterwards import, and
+    the locale), and the environment the children get (a fixed HOME and PATH; `os.environ.clear` also
+    clears the C environment).  What it does not cover, because it comes first: the interpreter's own
+    start and the standard modules imported at the top of the file.  `hashlib` is one, and OpenSSL
+    reads its configuration (`OPENSSL_CONF`) when `hashlib` is imported, so that variable is honoured
+    before this runs.  `python3 -I` ignores the `PYTHON*` variables and sshd passes only the names its
+    `AcceptEnv` allows, but a clean start is the forced command's: it starts the interpreter with an
+    empty environment and passes `SSH_ORIGINAL_COMMAND` through by name (`env -i` alone would drop the
+    one variable that is read first)."""
+    os.environ.clear()
+    os.environ["HOME"] = home
+    os.environ["PATH"] = MUSTER_CHILD_ENV["PATH"]
+
+
+def run_from_muster(argv, ctx=None, out=None, muster=None):
+    """The `--from-muster` entry: one request in, one signed answer out.  Returns the exit status.
+
+    The forced command passes nothing but `argv`: `ctx`, `out` and `muster` are for the tests.
+    `muster` is a dict with optional `config` (settings for `MusterConfig`), `ssh_command` and `stdin`
+    (bytes); without it everything is production's: constants, the account database, the real
+    clock, `SSH_ORIGINAL_COMMAND` and standard input.  The one environment variable this branch reads
+    is `SSH_ORIGINAL_COMMAND`, read first; the environment is then emptied (see
+    `_empty_environment`) before the approval module and `cryptography` are loaded, and the child
+    environment is fixed.
+
+    NOT BUILT: `muster trust-list chain` (the module's docstring says what that means: the route is
+    inert, every approval is `no_trust_list`, until the chain slice lands)."""
+    out = out or sys.stdout
+    hooks = muster or {}
+    try:
+        ssh_command = (
+            hooks["ssh_command"]
+            if "ssh_command" in hooks
+            else os.environ.get("SSH_ORIGINAL_COMMAND")
+        )
+        import pwd
+
+        home = Path(pwd.getpwuid(os.geteuid()).pw_dir)
+        _empty_environment(str(home))
+        if ctx is None:
+            ctx = Context(home=home, environ={"HOME": str(home), **MUSTER_CHILD_ENV})
+        modules = _load_muster_modules(ctx)
+        if modules is None:
+            out.write(
+                json.dumps(MUSTER_UNSIGNED_ANSWER, sort_keys=True, separators=(",", ":")) + "\n"
+            )
+            return 2
+        module, trust_files = modules
+        config = _muster_config(module, hooks)
+        if "stdin" in hooks:
+            data = hooks["stdin"]
+
+            def read_stdin(limit):
+                return data[: limit + 1]
+        else:
+
+            def read_stdin(limit):
+                return module.read_stdin_limited(0, limit)
+
+        answer, code = module.handle_request(
+            config,
+            _MusterBackend(ctx, module),
+            ssh_command,
+            argv == [MUSTER_ENTRY],
+            read_stdin,
+            trust_files,
+        )
+        out.write(module.encode_answer(answer))
+        return code
+    except Exception:  # noqa: BLE001 - nothing may escape as a traceback
+        out.write(json.dumps(MUSTER_UNSIGNED_ANSWER, sort_keys=True, separators=(",", ":")) + "\n")
+        return 2
 
 
 # MARK: - Command line
@@ -2011,8 +2646,11 @@ def emit(answer, as_json, out):
         out.write(sanitize_for_terminal(answer["output"]))
 
 
-def main(argv=None, ctx=None, out=None):
+def main(argv=None, ctx=None, out=None, muster=None):
     argv = list(sys.argv[1:] if argv is None else argv)
+    if MUSTER_ENTRY in argv:
+        # Before anything reads the environment into a Context: this branch builds its own.
+        return run_from_muster(argv, ctx, out, muster)
     ctx = ctx or Context()
     out = out or sys.stdout
     if "--from-ssh" in argv:

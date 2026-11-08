@@ -520,7 +520,7 @@ At deploy (AFC-331):  the tool names change (`post` is now `zulip_post`, and so 
 
 ## FleetLink (AFC-328)
 
-The `fleetlink_*` tools need one Worker secret, `FLEETLINK_AGENT_SECRET`:  `fls_` plus 64 hex.  FleetLink holds the same value as its own Worker secret `SIMPLE_TOOLS_SECRET` (FleetLink `docs/multi-user.md`, "Agent Accounts").  Without it the FleetLink tools answer `not_configured` and everything else works.  The value lives in Infisical, project "AI Fleet Coordinator", `prod`, `/fleetlink`, as `FLEETLINK_AGENT_SECRET` (INFISICAL.md).  It was made and installed on both Workers on Thu, Oct 15, 2026.  To reinstall it here, read it with the INFISICAL_AUTOMATION identity and pipe it straight in, with the Step 1 credentials exported in the same subshell.  Never print it:
+The `fleetlink_*` tools need one Worker secret, `FLEETLINK_AGENT_SECRET`:  `fls_` plus 64 hex.  FleetLink's own `DEPLOY.md` now lists its shared static credentials as retired and deleted from its Worker, so check its "Agent Accounts" section (`docs/multi-user.md`) before relying on this secret.  Without it the FleetLink tools answer `not_configured` and everything else works.  The value lives in Infisical, project "AI Fleet Coordinator", `prod`, `/fleetlink`, as `FLEETLINK_AGENT_SECRET` (INFISICAL.md).  It was made and installed on both Workers on Thu, Oct 15, 2026.  To reinstall it here, read it with the INFISICAL_AUTOMATION identity and pipe it straight in, with the Step 1 credentials exported in the same subshell.  Never print it:
 
 ```bash
 (
@@ -531,7 +531,7 @@ The `fleetlink_*` tools need one Worker secret, `FLEETLINK_AGENT_SECRET`:  `fls_
 )
 ```
 
-On FleetLink's side, the same value goes to `SIMPLE_TOOLS_SECRET` on the `fleetlink` Worker.  Its deploy (`FLEETLINK_SECRETS=keep`) keeps the secret, and `wrangler secret put SIMPLE_TOOLS_SECRET` or the Workers secrets API replaces it.  Rotate by installing a new value on both sides, FleetLink first:  until this Worker has the new value too, the tools answer `not_authorized` with HTTP 401.
+FleetLink no longer holds a matching shared secret, so there is nothing to install on its side.  A seat signs in with its own token (below), and the tools answer `not_authorized` with HTTP 401 when FleetLink refuses a credential.
 
 **Seat tokens.**  A seat that has its own FleetLink bot token signs in with it instead of the server credential, so it works under that token's limits:  the fleet's tokens are minted to follow Jay's limits as they change (FleetLink `limits_from: "manager"`).  The tokens live in Infisical `/fleetlink` as `FLEETLINK_TOKEN_<SEAT>` (hyphens as underscores), and the Worker reads them from one secret, `FLEETLINK_SEAT_TOKENS`, a JSON object of seat to token (`{"JET": "fla_…", "GB-FIXER": "fla_…"}`), because the Worker is near its binding limit.  Build it in memory from Infisical for every hosted seat and GB identity, and pipe it to `wrangler secret put FLEETLINK_SEAT_TOKENS`;  never print it.  A malformed bundle is ignored whole and every seat falls back to `FLEETLINK_AGENT_SECRET`.  Re-run it after minting a token for a new seat.
 

@@ -16,7 +16,7 @@ import { FakeLinear, TOKEN_URL, GRAPHQL_URL, opOf } from "./fake-linear.mjs";
 import { testEnv } from "./helpers.mjs";
 import { memoryQuota } from "./quota-helper.mjs";
 import {
-  LINEAR_TOOLS, LINEAR_SCOPE, FLAT_LABELS, LinearClient, LinearError, appNameOk, seatTagForSeat, routeApp, commentId,
+  LINEAR_TOOLS, LINEAR_SCOPE, FLAT_LABELS, LinearClient, LinearError, appNameOk, seatTagForSeat, routeApp, commentId, stableUuid, stableRelationId,
   neutralizeLinearMentions, linearGraphqlErrorMeta, mapLinearError, linearCommentCreateInput, M_COMMENT,
   LINEAR_SECRETS, LINEAR_SEATS, OWN_APP_LINEAR_PREFIXES,
 } from "../src/linear.js";
@@ -671,6 +671,12 @@ test("the same comment twice sends one comment id, and the second call returns t
   // body and session, so the retry updated the comment it already sent.
   assert.equal(fake.findIssue("issue-305").comments.length, 1);
   assert.match(first.id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+});
+
+test("stored Linear ids keep their original values, so a repeated create updates the same row", async () => {
+  // Pinned from the namespace the ids were first minted under.  Renaming the Worker must not change them.
+  assert.equal(await stableUuid("issue", "BF:slug:uid-1"), "93d67229-42e3-459b-ada7-22480b7ea0fb");
+  assert.equal(await stableRelationId("issue-1", "issue-2"), "f6112e44-f4a0-4c65-906f-31427d96fb26");
 });
 
 test("commentId is fixed per issue, seat, verb, body and session, and different the next day", async () => {

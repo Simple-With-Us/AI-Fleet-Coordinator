@@ -25,6 +25,7 @@ from . import chat_catalog as CC
 from . import config as C
 from . import live as L
 from . import muse_bridge as MB
+from . import router as R
 from . import wakes as W
 
 BRIDGE_VERSION = "muse-inbox-bridge-v2"
@@ -411,6 +412,98 @@ class MacBridge:
             + "\nEND UNTRUSTED SOURCE MESSAGE\n"
         )
 
+    # ---- the model gate (phase 1:  record only) ------------------------------------------------
+    def _legal_chat(self, item: Mapping[str, Any], row: Mapping[str, Any]) -> bool:
+        """Whether a listed chat could be this message's destination whatever the model answers:  the
+        checks `_decide` makes on the model's pick that do not depend on what the model says (the
+        risk answer is the one that does, and is left out)."""
+        seat = row.get("seat")
+        return bool(
+            row.get("platform") != "native-routine"
+            and not row.get("stale")
+            and (row.get("capabilities") or {}).get("wake")
+            and seat in ("GROK", "CURSOR", "CODEX")
+            and (seat != "CODEX" or row.get("platform") == "codex")
+            and seat in self.daemon.seats
+            and self.daemon.seats[seat].cfg.enabled
+            and (item.get("type") != "private" or seat == item["source_seat"])
+        )
+
+    def _gate_facts(
+        self, item: Mapping[str, Any], resources: list[dict[str, Any]] | None
+    ) -> dict[str, Any]:
+        """The facts `wakes.model_gate_verdict` reads for one consult.  An export holds only rows no
+        live session took, so no lease holds the message.  With `resources` None (the claim row,
+        written before the catalog is read) only the item's own facts are known.  Each fact is guarded
+        on its own:  one that cannot be read is left out."""
+        facts: dict[str, Any] = {
+            "live_lease": False,
+            "private_dm": item.get("type") == "private",
+            # `_decide` refuses a non-owner item unless the model answers risk low, so only an
+            # owner item can be routed with no risk answer.
+            "risk_screen_needed": item.get("owner") is not True,
+        }
+        try:
+            facts["eyes"] = R.strip_no_wake(str(item.get("content") or ""))[1]
+        except Exception:  # noqa: BLE001 - a fact that cannot be read is not known
+            pass
+        if resources is not None:
+            try:
+                if item.get("native") is True and not any(
+                    self._legal_chat(item, row) for row in resources
+                ):
+                    facts["native_only"] = True
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                facts["same_seat_wake_resources"] = sum(
+                    1
+                    for row in resources
+                    if row.get("seat") == item["source_seat"]
+                    and not row.get("stale")
+                    and (row.get("capabilities") or {}).get("wake")
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        return facts
+
+    def _gate_verdict(
+        self, item: Mapping[str, Any], resources: list[dict[str, Any]] | None = None
+    ) -> W.GateVerdict:
+        """Why this consult is needed.  It never raises:  a failure is the `gate_error` verdict and the
+        consult goes on exactly as before."""
+        try:
+            return W.gate_verdict_safe("bridge_consult", self._gate_facts(item, resources))
+        except Exception:  # noqa: BLE001 - the gate must never block a decision
+            return W.GateVerdict("gate_error", False, W.GATE_RULES["gate_error"])
+
+    def _gate_log(self, item: Mapping[str, Any], verdict: W.GateVerdict) -> None:
+        """One `model-gate` event per consult that starts a model.  The bridge has no wake id, so the
+        source seat and message id name it."""
+        try:
+            self.daemon.log.write(
+                "model-gate",
+                seat=item.get("source_seat"),
+                wake_id=None,
+                message_id=item.get("id"),
+                purpose="bridge_consult",
+                code=verdict.code,
+                avoidable=verdict.avoidable,
+                rule=verdict.rule,
+            )
+        except Exception:  # noqa: BLE001 - a log that cannot be written never stops a decision
+            pass
+
+    @staticmethod
+    def _gate_stamp(decision: Mapping[str, Any], verdict: W.GateVerdict | None) -> dict[str, Any]:
+        """The gate fields every stored decision carries, whatever its kind.  The consult's own verdict
+        when one was decided, `no_model` for a record no model produced (a pre-check or a budget held
+        it), and `gate_error` for a model start that left no verdict."""
+        if verdict is not None:
+            return W.gate_fields(verdict)
+        code = "gate_error" if decision.get("model_attempted") is True else "no_model"
+        return {"gate": code, "gate_avoidable": False}
+
     def _prompt(self, item: Mapping[str, Any], resources: list[dict[str, Any]]) -> str:
         return CONTRACT.read_text(encoding="utf-8") + self._prompt_body(item, resources)
 
@@ -461,10 +554,21 @@ class MacBridge:
         consult_runtime: str = MB.MUSE,
         backup_model: str | None = None,
         backup_expected_models: tuple | None = None,
+        gate: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        decision = self._decide_inner(
-            item, binary, model, consult_runtime, backup_model, backup_expected_models
-        )
+        """One decision for one source message.  When it starts a model, the model gate's verdict for
+        that start is put in `gate["verdict"]` (the caller stores it with the decision).  The returned
+        decision is the same as it was before the gate existed."""
+        # The verdict reaches `_decide_inner` through the bridge itself, not through its arguments:
+        # the bridge is serial, and that keeps the call exactly as it was for anything that stands in
+        # for `_decide_inner` (the backup tests do).
+        self._gate_out = gate
+        try:
+            decision = self._decide_inner(
+                item, binary, model, consult_runtime, backup_model, backup_expected_models
+            )
+        finally:
+            self._gate_out = None
         if consult_runtime != MB.MUSE:
             # The ledger and the log name which runtime answered and which model served it, so a
             # wake answered by the backup is never mistaken for one answered by the primary, and
@@ -495,10 +599,29 @@ class MacBridge:
             return {"kind": "hold", "reason": "paused"}
         resources = self._resources(item)
         prompt = self.daemon.scrub(self._prompt(item, resources))
+        # Why a model is needed, decided once for either runtime (phase 1: record only).  It is logged
+        # where a request is certain to be made: just before the Muse run, and for the backup once
+        # `_consult_backup` has returned, or has raised (a runner that died after its request,
+        # say).  A failure that starts no model (the key cannot be read, a 4xx rejection that is
+        # not charged) logs nothing and unwinds the claim.
+        verdict = self._gate_verdict(item, resources)
+        out = getattr(self, "_gate_out", None)
+        if out is not None:
+            out["verdict"] = verdict
         if consult_runtime == MB.OPENROUTER:
             # The declared known-cap mode:  the capped primary is never invoked, and the backup
             # answers under the same contract, the same strict schema and the same validation.
-            outcome, parsed, served = self._consult_backup(item, backup_model or "")
+            try:
+                outcome, parsed, served = self._consult_backup(item, backup_model or "")
+            except BridgeBackupPending:
+                raise
+            except Exception:
+                # The request may have been made and charged (the claim row already counts it), so a
+                # runner that raised is logged as a start like a Muse run that raised.  The exception
+                # goes on exactly as before.
+                self._gate_log(item, verdict)
+                raise
+            self._gate_log(item, verdict)
             if outcome == "ambiguous":
                 # Charged with an ambiguous outcome - the provider may hold an answer we never
                 # read, so the row is NOT final:  it is retained pending review, never retried
@@ -549,6 +672,7 @@ class MacBridge:
         else:
             wake_dir = os.path.join(L.listener_dir(self.daemon.root), "muse-bridge-wake")
             L.private_dir(wake_dir)
+            self._gate_log(item, verdict)
             result = self.daemon.muse_runner.run(
                 A.muse_argv(binary, model),
                 A.muse_env(self.daemon.env, self.daemon.home, self.daemon.wake_path),
@@ -788,11 +912,14 @@ class MacBridge:
                         self._last_backup_hold = backup_hold_reason
                     continue
                 budget_reason = self._budget_reason(item, envelope.get("budget"), decisions)
+                verdict: W.GateVerdict | None = None
                 if budget_reason:
                     decision = {"kind": "hold", "reason": budget_reason}
                 else:
                     # Claim before model execution.  An interrupted call is held for review
-                    # instead of spending another turn or fanning out on restart.
+                    # instead of spending another turn or fanning out on restart.  The claim carries
+                    # the gate's first answer, from the item alone, so a crash mid-consult still
+                    # leaves a record of why the model was needed.
                     decisions[key] = {
                         "kind": "hold",
                         "reason": "model_interrupted",
@@ -804,8 +931,10 @@ class MacBridge:
                         "topic_key": L.topic_key(
                             str(item.get("channel") or ""), str(item.get("topic") or "")
                         ),
+                        **W.gate_fields(self._gate_verdict(item)),
                     }
                     self._save(state)
+                    gate: dict[str, Any] = {}
                     try:
                         decision = self._decide(
                             item,
@@ -816,6 +945,7 @@ class MacBridge:
                             backup_expected_models=(
                                 decl.expected_models if decl is not None else None
                             ),
+                            gate=gate,
                         )
                     except BridgeBackupPending as exc:
                         # A pre-charge backup failure after the claim:  unwind the claim so the
@@ -830,8 +960,10 @@ class MacBridge:
                             )
                             self._last_backup_hold = reason
                         continue
+                    verdict = gate.get("verdict")
                 decisions[key] = dict(
                     decision,
+                    **self._gate_stamp(decision, verdict),
                     at=time.time(),
                     source_seat=seat,
                     id=item["id"],
