@@ -435,6 +435,56 @@ def _wake_loop_status_line(status: dict[str, Any]) -> str | None:
     return "wake loop prevention: " + ("ON" if enabled else "OFF (topic loop guard bypassed)")
 
 
+def _bridge_gate_counts(root: str, now: float) -> dict[str, Any] | None:
+    """The Mac bridge's consult counts per seat, from `muse-bridge-mac.json`, or None when the file is
+    there and cannot be trusted.  A file that does not exist is a real zero (`{}`): a Mac that has not
+    consulted yet.  A file that cannot be read, is not JSON, or is not the bridge's shape is None, and
+    status then prints no bridge line at all, because a false zero would say the bridge is quiet."""
+    path = os.path.join(L.listener_dir(root), "muse-bridge-mac.json")
+    try:
+        with open(path, "rb") as fh:
+            data = json.loads(fh.read())
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError, RecursionError):
+        return None
+    decisions = data.get("decisions") if isinstance(data, dict) else None
+    if not isinstance(decisions, dict):
+        return None
+    try:
+        return W.gate_counts([d for d in decisions.values() if isinstance(d, dict)], now, W.DAY)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _gate_status_lines(
+    root: str,
+    seat: str,
+    bridge_counts: dict[str, Any] | None,
+    now: float,
+    *,
+    ledger: bool,
+    bridged: bool,
+) -> list[str]:
+    """The model gate's status lines for one seat (phase 1): `model starts 24h N (avoidable M)` from the
+    seat's own wake ledger, and `bridge consults 24h N (avoidable M)` from the Mac bridge's decisions.  The
+    ledger is read from its END, down to the window, so the cost is the day and not the 90 days a ledger
+    keeps.  Read-only, and never a reason for `status` to fail.  A line is printed only when what it
+    counts could be read: a ledger that cannot be read leaves its line out, and `bridge_counts` None (a
+    server listener, which has no bridge file, or a file that cannot be trusted) leaves out the bridge line."""
+    lines: list[str] = []
+    if ledger:
+        try:
+            rows = W.rows_since(L.SeatPaths(root, seat).wakes, now - W.DAY)
+            if rows is not None:
+                lines.append(W.gate_line(W.gate_counts(rows, now, W.DAY).get(seat)))
+        except Exception:  # noqa: BLE001
+            pass
+    if bridge_counts is not None and (bridged or seat in bridge_counts):
+        lines.append(W.bridge_line(bridge_counts.get(seat)))
+    return lines
+
+
 def cmd_status(rt: Any, args: argparse.Namespace) -> int:
     root = _root(rt)
     home = _home(rt)
@@ -538,6 +588,14 @@ def cmd_status(rt: Any, args: argparse.Namespace) -> int:
             lines.append("%-12s NOT LOADED  nothing is captured for this seat" % seat)
             for problem in why or []:
                 lines.append("  RED %s" % problem)
+        # The Mac bridge's decisions, read once:  each carries the gate of its own consult.  Only a Mac
+        # listener has the file, so a server listener never prints a bridge line, and a file that cannot
+        # be trusted prints none either (None), where a missing one is a real zero.
+        bridge_counts = (
+            _bridge_gate_counts(root, time.time())
+            if (status.get("instance") or "mac") == "mac"
+            else None
+        )
         for seat, s in sorted((status.get("seats") or {}).items()):
             routine = s.get("routine") or {}
             if s.get("wake") == "claude":
@@ -602,6 +660,17 @@ def cmd_status(rt: Any, args: argparse.Namespace) -> int:
                     routes,
                 )
             )
+            bridged = bool(s.get("muse_bridge"))
+            for gate_text in _gate_status_lines(
+                root,
+                seat,
+                bridge_counts,
+                time.time(),
+                ledger=s.get("wake") != "inbox"
+                or bridged,  # an unbridged inbox seat starts no model
+                bridged=bridged,
+            ):
+                lines.append("  " + gate_text)
             for red in s.get("red") or []:
                 lines.append("  RED %s" % red)
             held = _held_line(s.get("held_back"))
@@ -618,6 +687,14 @@ def cmd_status(rt: Any, args: argparse.Namespace) -> int:
                         lease.get("pending"),
                     )
                 )
+        # A seat of the server that the Mac bridge consulted for is not in this listener's own status.  Its
+        # consults are in the Mac's bridge file, so they are shown; its wake ledger is on the server, which
+        # this command does not read, so its starts and forwards are not.
+        for remote in sorted(set(bridge_counts or {}) - set(status.get("seats") or {})):
+            lines.append(
+                "%-12s %s  (not a seat of this listener: only the Mac bridge's consults are visible here)"
+                % (remote, W.bridge_line(bridge_counts[remote]))
+            )
         loop_status = _wake_loop_status_line(status)
         if loop_status:
             lines.append(loop_status)

@@ -3635,6 +3635,157 @@ class Daemon:
             max_held=A.MCODE_FALLBACK_MAX_HELD,
         )
 
+    # ---- the model gate (phase 1:  record only) ------------------------------------------------
+    @staticmethod
+    def _gate_sender_tag(message: Mapping[str, Any]) -> str | None:
+        """The seat tag the sender signs with, read the way the router reads it for the no-wake marker."""
+        email = message.get("sender_email")
+        return seat_tag_for({"is_bot": True, "email": email}) if email else None
+
+    def _gate_legal_chat(
+        self, runner: SeatRunner, pending: W.Pending, row: Mapping[str, Any]
+    ) -> bool:
+        """Whether `select_chat` would accept this listed chat as a destination on the checks that do not
+        depend on what the model answers: wake-capable, not stale, its seat enabled on this listener,
+        and for a private message the same seat.  (The risk answer for a peer-triggered message is the
+        one check left out, and `risk_screen_needed` carries it.)"""
+        seat = row.get("seat")
+        destination = self.seats.get(seat) if isinstance(seat, str) else None
+        return bool(
+            isinstance(row.get("id"), str)
+            and row["id"]
+            and (row.get("capabilities") or {}).get("wake") is True
+            and row.get("stale") is False
+            and destination is not None
+            and destination.cfg.enabled
+            and (pending.type != "private" or seat == runner.seat)
+        )
+
+    def _gate_facts(
+        self,
+        runner: SeatRunner,
+        pending: W.Pending,
+        *,
+        messages: Sequence[Mapping[str, Any]],
+        letter: str,
+        chat_context: Sequence[Mapping[str, Any]] | None,
+        live_lease: bool | None = None,
+        fallback_reason: str | None = None,
+    ) -> dict[str, Any]:
+        """The facts `wakes.model_gate_verdict` reads, from what the wake already holds.  A fact that
+        cannot be read, or that is not known at this start, is left out (not known) and the rest still
+        count.  Nothing here changes a wake, and nothing here probes what the wake did not already read
+        (no lease scan, no second registry open): `live_lease` is stated only by a caller that just
+        checked, and the tagged letter's holders were recorded on `pending` by the step that asked the
+        registry.  What it does read is the chat-nudges file, for `bound_chat` on a GROK, CURSOR or CODEX seat."""
+        facts: dict[str, Any] = {
+            "letter": letter or "",
+            "risk_screen_needed": not pending.owner_ids,
+        }
+        if live_lease is not None:
+            facts["live_lease"] = bool(live_lease)
+        if fallback_reason:
+            facts["fallback_reason"] = fallback_reason
+        try:
+            # Every trigger, because a coalesced wake that one marked message and one plain message
+            # caused was legitimately woken by the plain one.
+            facts["eyes"] = bool(messages) and all(
+                R.strip_no_wake(str(m.get("content") or ""), self._gate_sender_tag(m))[1]
+                for m in messages
+            )
+        except Exception:  # noqa: BLE001 - a fact that cannot be read is not known
+            pass
+        if letter:
+            candidates = pending.letter_candidates
+            if type(candidates) is int:
+                facts["letter_candidates"] = candidates
+            if isinstance(pending.letter_holder_on_seat, bool):
+                facts["letter_holder_on_seat"] = pending.letter_holder_on_seat
+        try:
+            lowered = " ".join(str(m.get("content") or "") for m in messages).lower()
+            if chat_context and lowered:
+                facts["exact_chat_ids"] = sum(
+                    1
+                    for row in chat_context
+                    if self._gate_legal_chat(runner, pending, row) and row["id"].lower() in lowered
+                )
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            # Not for a broadcast (`@all` and its kin):  the router hands those to the fanout and skips
+            # the binding on purpose, so a bound topic says nothing about a wake that carries one.
+            if (
+                runner.seat in ("GROK", "CURSOR", "CODEX")
+                and pending.type != "private"
+                and not any(R.broadcast_tokens(str(m.get("content") or "")) for m in messages)
+            ):
+                key = L.topic_key(pending.channel, pending.topic)
+                bindings = (self.chat_queue(runner.seat).snapshot().get("bindings")) or {}
+                facts["bound_chat"] = any(
+                    isinstance(b, Mapping)
+                    and L.topic_key(str(b.get("channel") or ""), str(b.get("topic") or "")) == key
+                    for b in bindings.values()
+                )
+        except Exception:  # noqa: BLE001
+            pass
+        return facts
+
+    def _model_gate(
+        self,
+        runner: SeatRunner,
+        pending: W.Pending,
+        purpose: str,
+        *,
+        history: Sequence[Mapping[str, Any]] = (),
+        messages: Sequence[Mapping[str, Any]] | None = None,
+        letter: str = "",
+        chat_context: Sequence[Mapping[str, Any]] | None = None,
+        live_lease: bool | None = None,
+        fallback_reason: str | None = None,
+    ) -> W.GateVerdict:
+        """Why this model start is needed, as a verdict.  The trigger messages are `messages`, or the
+        ones found in `history`.  It never raises, and a failure anywhere in it is the `gate_error`
+        verdict, so the wake goes on exactly as before."""
+        try:
+            facts = self._gate_facts(
+                runner,
+                pending,
+                messages=self._gate_messages(history, pending) if messages is None else messages,
+                letter=letter,
+                chat_context=chat_context,
+                live_lease=live_lease,
+                fallback_reason=fallback_reason,
+            )
+            return W.gate_verdict_safe(purpose, facts)
+        except Exception:  # noqa: BLE001 - the gate must never block a wake
+            return W.GateVerdict("gate_error", False, W.GATE_RULES["gate_error"])
+
+    def _gate_log(
+        self, runner: SeatRunner, pending: W.Pending, purpose: str, verdict: W.GateVerdict
+    ) -> None:
+        """One `model-gate` log event per model start: the wake, the seat, the purpose and the
+        verdict.  A log that cannot be written never stops the wake."""
+        try:
+            self.log.write(
+                "model-gate",
+                seat=runner.seat,
+                wake_id=pending.wake_id,
+                purpose=purpose,
+                code=verdict.code,
+                avoidable=verdict.avoidable,
+                rule=verdict.rule,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    @staticmethod
+    def _gate_messages(
+        history: Sequence[Mapping[str, Any]], pending: W.Pending
+    ) -> list[Mapping[str, Any]]:
+        """The trigger messages, the only text a deterministic rule reads."""
+        triggers = set(pending.trigger_ids)
+        return [m for m in history if m.get("id") in triggers]
+
     def run_wake(self, runner: SeatRunner, pending: W.Pending) -> None:
         now = self.clock.time()
         lease_id = self.takeover(runner, pending)
@@ -3749,6 +3900,22 @@ class Daemon:
         # against and the run is covered by a plan the user already pays for (config.wake_max_usd).
         # An OpenRouter call reserves nothing either (config.wake_max_usd says why).
         # The row still names the adapter, so the ledger says which runtime answered.
+        # The model gate records why a model is needed (phase 1:  record only, nothing here depends on
+        # the answer).  It is decided before the `started` row so that row and every later one carry it,
+        # and logged only when the primary actually runs:  a skipped primary starts nothing.
+        purpose = "select_destination" if chat_context else "compose_reply"
+        verdict = self._model_gate(
+            runner,
+            pending,
+            purpose,
+            history=history,
+            letter=letter,
+            chat_context=chat_context,
+            live_lease=False,  # known:  `takeover` found none just above
+        )
+        pending.note_gate(verdict)
+        if primary_skipped is None:
+            self._gate_log(runner, pending, purpose, verdict)
         runner.ledger.append(
             pending.row(
                 "started",
@@ -3823,6 +3990,28 @@ class Daemon:
                     primary_failure = "invalid result: %s" % invalid
             if primary_failure:
                 primary_error = primary_failure
+                # The gate's verdict for a fallback start is decided before `run_fallback` can start
+                # one, and recorded only if it did (it returns None for every hold and for no fallback).
+                fallback_reason = (
+                    "primary_unavailable"
+                    if primary_skipped is not None
+                    else "primary_invalid_result"
+                    if str(primary_failure).startswith("invalid result:")
+                    else "primary_failed"
+                )
+                fallback_gate = (
+                    self._model_gate(
+                        runner,
+                        pending,
+                        "fallback",
+                        history=history,
+                        letter=letter,
+                        chat_context=chat_context,
+                        fallback_reason=fallback_reason,
+                    )
+                    if runner.cfg.fallback
+                    else None
+                )
                 fallback = self.run_fallback(
                     runner,
                     fallback_prompt,
@@ -3833,6 +4022,9 @@ class Daemon:
                     bool(result.refused),
                 )
                 if fallback is not None:
+                    if fallback_gate is not None:
+                        pending.note_gate_fallback(fallback_gate, fallback_reason)
+                        self._gate_log(runner, pending, "fallback", fallback_gate)
                     self.log.write(
                         "wake-fallback-result",
                         seat=runner.seat,
@@ -3890,6 +4082,17 @@ class Daemon:
                             excerpt = []
                         first = result
                         inspect_prompt = self.chat_inspection_prompt(prompt, excerpt)
+                        # The second model start of this wake:  the model asked to read one listed chat.
+                        inspect_gate = self._model_gate(
+                            runner,
+                            pending,
+                            "inspect",
+                            history=history,
+                            letter=letter,
+                            chat_context=chat_context,
+                        )
+                        pending.note_gate_inspect(inspect_gate)
+                        self._gate_log(runner, pending, "inspect", inspect_gate)
                         second = self.muse_runner.run(
                             argv,
                             muse_env,
@@ -5991,6 +6194,14 @@ class Daemon:
         # Cross-platform on purpose:  see operator_candidates.  A platform-scoped query returns at
         # most one row, which would make this send unreachable.
         candidates = self.operator_candidates("", letter)
+        # Handed to the model gate, which must not open the registry again for the same letter.
+        try:
+            pending.letter_candidates = len(candidates)
+            pending.letter_holder_on_seat = len(candidates) == 1 and (
+                str(candidates[0].get("seat") or "").upper() == str(runner.seat).upper()
+            )
+        except Exception:  # noqa: BLE001 - recording it for the gate never stops the ask
+            pass
         if len(candidates) == 1:
             return
         if not candidates:
@@ -7138,6 +7349,11 @@ class Daemon:
             listed.pop()
             data = A.routine_bytes(body)
         held_count = held["count"] if held else 0
+        # The model gate (phase 1:  record only):  why this routine start was needed.  The routine is a
+        # remote agent, so the forward is the model start;  the verdict rides on this row and every later one.
+        gate = self._model_gate(runner, pending, "routine", messages=[row], live_lease=False)
+        pending.note_gate(gate)
+        self._gate_log(runner, pending, "routine", gate)
         runner.ledger.append(
             pending.row(
                 "started",
