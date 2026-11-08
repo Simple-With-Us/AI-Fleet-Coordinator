@@ -40,6 +40,8 @@
     {
       "name": "fleetlink_list_shares",
       "properties": [
+        "before",
+        "include_expired",
         "limit",
         "q",
         "scope",

@@ -505,6 +505,12 @@ def summary(data: Mapping[str, Any]) -> dict[str, Any]:
         and all(isinstance(s, dict) and _is_str(s.get("slug")) for s in shares)
     ):
         out["slugs"] = [s["slug"] for s in shares]
+    cursor = data.get("next")
+    if "next" in data and (
+        cursor is None
+        or (isinstance(cursor, str) and re.fullmatch(r"[0-9]{1,16}:shr_[A-Za-z0-9]{1,64}", cursor))
+    ):
+        out["next"] = cursor
     teams = data.get("teams")
     if (
         isinstance(teams, list)

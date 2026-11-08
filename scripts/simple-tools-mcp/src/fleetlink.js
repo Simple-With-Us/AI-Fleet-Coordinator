@@ -88,7 +88,7 @@ export const FLEETLINK_TOOLS = Object.freeze([
     name: "fleetlink_list_shares",
     title: "FleetLink List Shares",
     description: "Live shares this seat can see:  scope mine (default), teams (every team, the other seats' shared work), team with team_id, and an optional q search.  Read-only.",
-    inputSchema: object({ scope: { type: "string", enum: ["mine", "bots", "team", "teams", "all"] }, team_id: TEAM_ID, q: { type: "string", maxLength: 100 }, limit: { type: "integer", minimum: 1, maximum: 200 } }),
+    inputSchema: object({ scope: { type: "string", enum: ["mine", "bots", "team", "teams", "all"] }, team_id: TEAM_ID, q: { type: "string", maxLength: 100 }, limit: { type: "integer", minimum: 1, maximum: 200 }, before: { type: "string", pattern: "^\\d{1,16}:shr_[A-Za-z0-9]{1,64}$" }, include_expired: { type: "boolean", description: "Expired own-share metadata only; scope mine required. No deleted history or expired file access." } }),
     annotations: READ,
   },
   {
@@ -420,7 +420,13 @@ export class FleetLinkClient {
     const envelope = RpcResult.safeParse(body);
     if (!envelope.success) throw new FleetLinkError("unexpected", { status });
     const { content, isError } = envelope.data.result;
-    if (isError === true) return { ok: false, message: content[0].text };
+    if (isError === true) {
+      // Only a fixed status code may cross this boundary, never arbitrary
+      // upstream fields. Write error and unknown-outcome behavior is unchanged.
+      const code = envelope.data.result.structuredContent?.code;
+      return { ok: false, message: content[0].text,
+        ...(typeof code === "string" && ["not_found", "gone"].includes(code) ? { code } : {}) };
+    }
     const data = ToolData.safeParse(parseBody(content[0].text));
     if (!data.success) throw new FleetLinkError("unexpected", { status });
     return { ok: true, data: data.data };
@@ -505,7 +511,10 @@ export function fleetlinkSummary(data) {
     };
   }
   const shares = SlugList.safeParse(data?.shares);
-  if (shares.success) out.slugs = shares.data.map((s) => s.slug);
+  if (shares.success) {
+    out.slugs = shares.data.map((s) => s.slug);
+  }
+  if (data?.next === null || (typeof data?.next === "string" && /^\d{1,16}:shr_[A-Za-z0-9]{1,64}$/.test(data.next) && !/[\r\n]/.test(data.next))) out.next = data.next;
   const teams = TeamList.safeParse(data?.teams);
   if (teams.success) out.team_ids = teams.data.map((t) => t.id);
   const upload = UploadData.safeParse(data?.upload);
