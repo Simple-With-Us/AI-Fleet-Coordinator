@@ -2215,12 +2215,14 @@ def openrouter_request_body(model: str, system: str, user: str, schema: str) -> 
                 "schema": json.loads(schema),
             },
         },
+        "provider": {"require_parameters": True},
         "temperature": OPENROUTER_TEMPERATURE,
         "max_tokens": OPENROUTER_MAX_TOKENS,
         "reasoning": dict(OPENROUTER_REASONING),
         "stream": False,
     }
     if model.startswith("@preset/"):
+        body.pop("provider")
         # No `provider` object for a preset.  The owner chose the live preset (WhatsApp, Nov 7 2026,
         # 6:34 PM CT), so its provider block (order, fallbacks, exclusions, data collection) is his
         # dashboard's to set.  OpenRouter documents request-over-preset as a shallow merge, and
