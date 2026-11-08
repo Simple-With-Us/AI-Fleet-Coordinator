@@ -236,7 +236,14 @@ class Writes(unittest.TestCase):
         # adversarial: the declared size lies low while the decoded bytes exceed the
         # per-file raw budget - refused on the measured length, never the receipt
         big = b"a" * (MAX_REF_BLOB_RAW + 1)
-        c = Client({"sha": blob_sha, "encoding": "base64", "size": 2, "content": base64.b64encode(big).decode()})
+        c = Client(
+            {
+                "sha": blob_sha,
+                "encoding": "base64",
+                "size": 2,
+                "content": base64.b64encode(big).decode(),
+            }
+        )
         with self.assertRaises(Refused):
             self.handle(c, a).run(a, {**base, "files": files})
         self.assertEqual(len(c.calls), 1, "refused before any tree write")
