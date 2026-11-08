@@ -652,16 +652,18 @@ class CoordinatorSelfIdTests(unittest.TestCase):
         # AFC is the repo acronym, never a seat or a signature.  Before the
         # Nov 5 post-header rule the coordinator signed `[AFC] sync-N`; since
         # then AFC appears only in the header's repo list after the folder
-        # mark.  Either way the sender is never FLEET.
+        # mark.  Either way the sender is never FLEET.  Apostrophes are
+        # compared straight, so a typographic one in the handbook passes too.
+        plain = text.replace("’", "'")
         self.assertIn(
             "`AFC` is AI-Fleet-Coordinator and `OPS` is Fleet-OPS:  repo acronyms used for "
             "board items, topics and links, never seats, bots or signatures.",
-            text,
+            plain,
         )
         self.assertTrue(
-            "[AFC] sync-N" in text
-            or "with `AFC` or `OPS` in the header’s repo list after `📁`, never as the sender"
-            in text,
+            "[AFC] sync-N" in plain
+            or "with `AFC` or `OPS` in the header's repo list after `📁`, never as the sender"
+            in plain,
             "the AFC bullet must say how AFC appears in a post",
         )
         # The fleet-wide wake rule now lives in "Undirected, Directed, and
