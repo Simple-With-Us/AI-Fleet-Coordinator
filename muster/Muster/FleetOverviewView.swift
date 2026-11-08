@@ -178,6 +178,9 @@ struct FleetOverviewView: View {
         switch place {
         case .complianceGrid:
             guard let redCount = monitor.redCount else { return "?" }
+            // An old check,  as after a long sleep,  is not a clean grid.
+            if let checkedAt = monitor.lastRunAt,
+               !SeatCheckFreshness.isCurrent(checkedAt: checkedAt, now: watch.now) { return "?" }
             return redCount > 0 ? "\(redCount)" : nil
         case .services:
             // Measured against the watch's tick,  the clock the Mac card and the menu use,  so

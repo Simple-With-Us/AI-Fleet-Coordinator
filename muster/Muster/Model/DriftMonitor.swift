@@ -128,8 +128,11 @@ final class DispatchDriftTicker: DriftTicking {
     func start(interval: TimeInterval, work: @escaping () -> Void) {
         stop()
         let timer = DispatchSource.makeTimerSource(queue: queue)
+        // Wall-clock time,  not uptime:  uptime stops while the Mac sleeps,  so a timer on it
+        // would wait out the rest of its interval after a long sleep.  On the wall clock the
+        // deadline has passed by then,  and it fires as soon as the Mac wakes.
         timer.schedule(
-            deadline: .now() + interval,
+            wallDeadline: .now() + interval,
             repeating: interval,
             leeway: .seconds(60)
         )
