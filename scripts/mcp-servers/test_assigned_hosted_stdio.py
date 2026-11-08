@@ -534,6 +534,32 @@ class DiskCacheTests(unittest.TestCase):
         self.assertEqual(self.adapter().call(INITIALIZE)["result"], INIT_RESULT)
         self.assertEqual(self.upstream.methods, ["initialize", "initialize", "initialize"])
 
+    def test_a_modern_initialize_never_sets_the_version_that_later_legacy_frames_send(self):
+        modern_result = {**INIT_RESULT, "protocolVersion": "2026-07-28", "resultType": "complete"}
+        seen = []
+
+        def server(request, timeout):
+            seen.append({key.lower(): value for key, value in request.header_items()})
+            body = json.loads(request.data)
+            result = modern_result if body["method"] == "initialize" else {"tools": []}
+            reply = {"jsonrpc": "2.0", "id": body["id"], "result": result}
+            return Response(json.dumps(reply).encode())
+
+        adapter = self.adapter(upstream=server)
+        modern = frame(
+            "initialize", 2, protocolVersion="2025-06-18", _meta={mod.META_VERSION: "2026-07-28"}
+        )
+        adapter.call(modern)
+        self.assertEqual(seen[-1]["mcp-protocol-version"], "2026-07-28")
+        self.assertIsNone(adapter.protocol)
+        adapter.call(frame("tools/list", 3))  # A legacy frame: its body names no version.
+        self.assertEqual(seen[-1]["mcp-protocol-version"], mod.DEFAULT_PROTOCOL)
+        self.assertNotIn("mcp-method", seen[-1])
+        legacy = self.adapter()
+        legacy.call(INITIALIZE)
+        # A legacy initialize still negotiates the version.
+        self.assertEqual(legacy.protocol, INIT_RESULT["protocolVersion"])
+
     def test_an_empty_session_id_counts_as_no_session(self):
         upstream = Upstream(session="")
         adapter = self.adapter(upstream=upstream)

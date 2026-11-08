@@ -38,6 +38,9 @@ const MODERN = [
   { label: "tools/list", frame: modern("tools/list"), supported: true, named: false },
   { label: "server/discover", frame: modern("server/discover"), supported: true, named: false },
   { label: "ping", frame: modern("ping"), supported: false, named: false },
+  // A modern-form initialize needs the version header too:  without it the SDK refuses it with the same -32020, and with
+  // both headers it gets past the header check (the Worker serves no initialize on the modern path, so it answers 404).
+  { label: "initialize", frame: modern("initialize", { protocolVersion: VERSION, capabilities: {}, clientInfo: { name: "t", version: "1" } }), supported: false, named: false },
   { label: "prompts/get", frame: modern("prompts/get", { name: "daily" }), supported: false, named: true },
   { label: "resources/read", frame: modern("resources/read", { uri: "file:///notes/a b.md" }), supported: false, named: true },
   { label: "tasks/get", frame: modern("tasks/get", { taskId: "task-1" }), supported: false, named: true },

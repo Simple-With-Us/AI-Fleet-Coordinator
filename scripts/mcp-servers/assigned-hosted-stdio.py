@@ -448,7 +448,10 @@ class Adapter:
                     protocol = result["result"].get("protocolVersion")
                     if not isinstance(protocol, str) or not re.fullmatch(r"[!-~]{1,128}", protocol):
                         return failure(message)
-                    self.protocol = protocol
+                    # Only a legacy initialize negotiates the version that later legacy
+                    # frames send.  A modern one names its own version in every request.
+                    if not names_envelope(message):
+                        self.protocol = protocol
                     self.session = session
                 self.remember(message, result, session)
                 return result
