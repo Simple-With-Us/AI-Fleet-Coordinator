@@ -3,7 +3,7 @@
 Fakes only:  no network, no real key.  The transport and key source are
 injected;  time is real but tokens are synthetic.  The Worker-minted
 cross-language vector pins the exact claims format
-scripts/agent-sync-mcp/src/gr-assert.js must keep producing (its
+scripts/simple-tools-mcp/src/gr-assert.js must keep producing (its
 gr-assert.test.mjs pins the same token).
 """
 
@@ -232,7 +232,7 @@ class ResolveTest(unittest.TestCase):
         self.assertEqual(sent["action"], "open_pr")
         self.assertEqual(sent["body_sha256"], BODY_SHA)
         expected_sig = hmac.new(KEY.encode(), call["body"], hashlib.sha256).hexdigest()
-        self.assertEqual(call["headers"]["X-Agent-Sync-Signature"], expected_sig)
+        self.assertEqual(call["headers"]["X-Simple-Tools-Signature"], expected_sig)
 
     def test_the_request_binding_is_enforced_before_any_callback(self):
         token, claims = mint()

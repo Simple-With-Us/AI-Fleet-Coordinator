@@ -5,7 +5,7 @@
   "workers": {
     "simple-tools-mcp": {
       "repo": "Simple-With-Us/AI-Fleet-Coordinator",
-      "config": "scripts/agent-sync-mcp/wrangler.jsonc",
+      "config": "scripts/simple-tools-mcp/wrangler.jsonc",
       "status": "gated",
       "workers_dev": false,
       "limits": { "cpu_ms": 300, "subrequests": 200 },

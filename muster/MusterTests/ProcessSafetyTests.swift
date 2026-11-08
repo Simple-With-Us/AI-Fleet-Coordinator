@@ -172,7 +172,7 @@ final class ProcessSafetyTests: XCTestCase {
         XCTAssertTrue(reason.contains("no such file"), reason)
     }
 
-    func test_agentSync_kills_a_child_that_ignores_SIGTERM() async throws {
+    func test_simpleTools_kills_a_child_that_ignores_SIGTERM() async throws {
         let base = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("muster-safety-\(UUID().uuidString)", isDirectory: true)
         let scripts = base.appendingPathComponent("scripts", isDirectory: true)
@@ -182,10 +182,10 @@ final class ProcessSafetyTests: XCTestCase {
             .write(to: command, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: command.path)
         let location = EngineLocation(root: base, interpreter: URL(fileURLWithPath: "/usr/bin/python3"))
-        let runner = AgentSyncCLI(location: { location })
+        let runner = SimpleToolsCLI(location: { location })
 
         let start = Date()
-        let result = try await runner.run(AgentSyncInvocation(["status"], timeout: 1))
+        let result = try await runner.run(SimpleToolsInvocation(["status"], timeout: 1))
 
         XCTAssertTrue(result.timedOut)
         XCTAssertLessThan(Date().timeIntervalSince(start), 10)

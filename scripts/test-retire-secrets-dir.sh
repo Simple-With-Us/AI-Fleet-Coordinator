@@ -193,7 +193,7 @@ printf 'source ~/.secrets/dummy.env\n' > "$RETIRE_HOME/apps/real-reader.py"
 mkdir -p "$RETIRE_HOME/apps/tests" && printf 'source ~/.secrets/dummy.env\n' > "$RETIRE_HOME/apps/tests/mac-test.py"
 write_plist rt-dirty.plist com.test.rtdirty "$RETIRE_HOME/apps/dirtyco/real.py"
 out="$(RETIRE_ALLOW="$here/retire-secrets-dir.allow" bash "$script" check 2>/dev/null)"; rc=$?
-for f in extensions/x/out.js .backup-x/a.sh AGENT-SYNC.md.orig AGENT-SYNC.md.pre-sync-1 apps/output.json .monitor-mac/findings.json upstream/v/a.ts handbook-sync/allowlist.json dirtyco:tests/t.py; do
+for f in extensions/x/out.js .backup-x/a.sh FLEET-PROTOCOL.md.orig FLEET-PROTOCOL.md.pre-sync-1 apps/output.json .monitor-mac/findings.json upstream/v/a.ts handbook-sync/allowlist.json dirtyco:tests/t.py; do
   check "the real allowlist hides $f" hasnt "$f"
 done
 mkdir -p "$RETIRE_HOME/bin" && printf 'source ~/.secrets/dummy.env\n' > "$RETIRE_HOME/bin/infisical-secrets-sync.sh"

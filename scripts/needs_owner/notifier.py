@@ -229,10 +229,12 @@ class Notifier:
         if self.lock:
             self.lock.touch()
 
-    def agent_sync(self, verb: str, *args: str, stdin: str | None = None):
+    def simple_tools(self, verb: str, *args: str, stdin: str | None = None):
         """`simple-chat VERB --as CLAUDE --session needsown ARGS...`:  the seat and session go right after the verb, because
         everything after a `--` is message text."""
-        return self.runner.agent_sync(verb, "--as", SEAT, "--session", SESSION, *args, stdin=stdin)
+        return self.runner.simple_tools(
+            verb, "--as", SEAT, "--session", SESSION, *args, stdin=stdin
+        )
 
     # ---- reading Zulip ----------------------------------------------------------------------
     def read(
@@ -251,7 +253,7 @@ class Notifier:
         ]
         if since:
             argv += ["--since", str(since)]
-        result = self.agent_sync(*argv)
+        result = self.simple_tools(*argv)
         if not result.ok:
             return None
         rows = []
@@ -271,7 +273,7 @@ class Notifier:
     def verify(self, message_id: int, topic: str, after: int) -> bool | None:
         """True when `simple-chat verify-owner-msg` verifies the message, False when it says it is not the owner's, None when
         it could not say (the network, a missing owner pin)."""
-        result = self.agent_sync(
+        result = self.simple_tools(
             "verify-owner-msg",
             str(message_id),
             "--channel",
@@ -296,7 +298,7 @@ class Notifier:
             and isinstance(cached.get("id"), int)
         ):
             return cached["id"]
-        result = self.agent_sync("channels", "--json")
+        result = self.simple_tools("channels", "--json")
         if not result.ok:
             return None
         try:
@@ -322,7 +324,7 @@ class Notifier:
             argv += ["--to", to]
         else:
             argv += ["--to-owner"]
-        result = self.agent_sync(*argv, "--", "-", stdin=body)
+        result = self.simple_tools(*argv, "--", "-", stdin=body)
         if not result.ok:
             return False, None
         return True, notifymod._message_id(result)
@@ -713,7 +715,7 @@ class Notifier:
         """The recent topics of #Work-In-Progress (`simple-chat topics --json`), fetched once a run.  None when it failed."""
         if not self._topic_rows_read:
             self._topic_rows_read = True
-            result = self.agent_sync(
+            result = self.simple_tools(
                 "topics", "--json", "--channel", CHANNEL, "--limit", str(TOPIC_LIST_LIMIT)
             )
             rows = None
@@ -869,7 +871,9 @@ class Notifier:
         return "rejected" if problems else "ignored"
 
     def post_reply(self, message_id: int, body: str) -> tuple[bool, int | None]:
-        result = self.agent_sync("reply", "--json", "--id", str(message_id), "--", "-", stdin=body)
+        result = self.simple_tools(
+            "reply", "--json", "--id", str(message_id), "--", "-", stdin=body
+        )
         return result.ok, (notifymod._message_id(result) if result.ok else None)
 
     def mirror(self, topic: str, message_id: int, request: replies.Request) -> str:
@@ -984,7 +988,7 @@ def run(args: argparse.Namespace, io: Any, seat: str) -> int:
         runner.env.setdefault("AGENT_SESSION", SESSION)
         state = ledger.State(directory, lambda: now().timestamp())
         state.load()
-        probe = runner.agent_sync("whoami", "--as", SEAT, "--session", SESSION, "--json")
+        probe = runner.simple_tools("whoami", "--as", SEAT, "--session", SESSION, "--json")
         owner_id = None
         if probe.ok:
             try:

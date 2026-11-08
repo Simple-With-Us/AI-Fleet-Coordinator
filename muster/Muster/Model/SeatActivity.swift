@@ -9,10 +9,10 @@ import Foundation
 //
 // The sources are:
 //
-//   * the Mac eavesdropper's own published state,  `~/.agent-sync/listener/status.json`,
+//   * the Mac eavesdropper's own published state,  `~/.simple-tools/listener/status.json`,
 //     which holds the open sessions (the leases it holds alive),  the state of each seat
 //     it runs,  the wake it is running and the provider quota it reads
-//   * the seat partition (`docs/protocols/agent-sync-partition.toml`),  which says which
+//   * the seat partition (`docs/protocols/simple-tools-partition.toml`),  which says which
 //     machine's eavesdropper holds each seat
 //   * the fleet chat CLI (`simple-chat`),  which holds the seat's last Zulip post
 //
@@ -70,7 +70,7 @@ enum SeatFact<Value: Equatable & Sendable>: Equatable, Sendable {
 
 // MARK: - The eavesdropper's own state
 
-/// The eavesdropper's published state,  as `~/.agent-sync/listener/status.json` holds it.
+/// The eavesdropper's published state,  as `~/.simple-tools/listener/status.json` holds it.
 ///
 /// The file is the eavesdropper's own account of itself,  rewritten every two seconds while
 /// it runs (`daemon.status`).  It is not the CLI's envelope:  the CLI wraps this document in

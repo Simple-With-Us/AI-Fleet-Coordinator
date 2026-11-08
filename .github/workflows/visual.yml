@@ -8,7 +8,7 @@ on:
       - "scripts/safari-start/**"
       # The admin/consent/error specs render this Worker's pages.js straight
       # from source, so its changes must run the visual suite (kody 4372747419).
-      - "scripts/agent-sync-mcp/**"
+      - "scripts/simple-tools-mcp/**"
       - "visual-tests/**"
       - ".github/workflows/visual.yml"
   workflow_dispatch:

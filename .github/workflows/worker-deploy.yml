@@ -8,8 +8,8 @@ on:
     # scripts/worker-targets.json on every trigger; a test keeps those inside this
     # list.  The deploy files are here only so a change to them runs their tests.
     paths:
-      - 'scripts/agent-sync-mcp/**'
-      - 'scripts/agent_sync/mcp/*.json'
+      - 'scripts/simple-tools-mcp/**'
+      - 'scripts/simple_tools/mcp/*.json'
       - 'fleet-apps.json'
       - 'scripts/deploy-mapped-worker.py'
       - 'scripts/test-deploy-mapped-worker.py'
@@ -48,10 +48,10 @@ jobs:
         with:
           node-version: 26
       - run: npm ci --ignore-scripts
-        working-directory: scripts/agent-sync-mcp
-      - run: echo "$GITHUB_WORKSPACE/scripts/agent-sync-mcp/node_modules/.bin" >> "$GITHUB_PATH"
+        working-directory: scripts/simple-tools-mcp
+      - run: echo "$GITHUB_WORKSPACE/scripts/simple-tools-mcp/node_modules/.bin" >> "$GITHUB_PATH"
       - run: npm test
-        working-directory: scripts/agent-sync-mcp
+        working-directory: scripts/simple-tools-mcp
       - run: python3 scripts/test-deploy-mapped-worker.py
       - name: Load scoped deploy credential from Fleet-OPS
         env:

@@ -52,14 +52,14 @@ See [Muster Resource Controls](docs/muster-resource-controls.md) for validation,
 | `MUSTER_SPARKLE_ED_PRIVATE_KEY` | `/muster-sparkle` | Secret Sparkle EdDSA private key (base64 32-byte seed);  read by the release job with `INFISICAL_MUSTER_SPARKLE_READ_TOKEN` |
 | `INFISICAL_MAC_CERTS_READ_TOKEN`, `INFISICAL_ASC_READ_TOKEN`, `INFISICAL_MUSTER_SPARKLE_READ_TOKEN` | `/github-actions` | Secret service tokens (`muster-ci-mac-certs-read`, `muster-ci-asc-read`, `muster-ci-sparkle-read`), read-only, expire May 5, 2027;  the secret sync `ai-fleet-coordinator-gh-actions` copies them to this repository's Actions secrets |
 
-## Hosted Agent-Sync: Cursor Cloud
+## Hosted Simple-Tools: Cursor Cloud
 
 The CURSOR seat uses the existing `cursor-bot@simplewithus.zulipchat.com` member
 bot.  Its credential pair belongs in this project, `prod`, folder `/zulip`,
 separately from the recall-service settings cache and the generated fleet-knobs
 inventory below.  Store or update the source of truth in Infisical first, then
 copy the credential to the Worker through the secure owner handoff in
-[scripts/agent-sync-mcp/DEPLOY.md](scripts/agent-sync-mcp/DEPLOY.md#add-cursor-cloud-afc-294).
+[scripts/simple-tools-mcp/DEPLOY.md](scripts/simple-tools-mcp/DEPLOY.md#add-cursor-cloud-afc-294).
 
 | Key | Kind | Worker binding / provisioning |
 |---|---|---|
@@ -72,7 +72,7 @@ before copying the key, and the hosted Worker repeats those checks at runtime.
 
 ### Cursor Shared-Agent Tool Budgets
 
-`AGENT_SYNC_CURSOR_TOOL_BUDGETS` is a JSON policy in AFC `prod` `/zulip`,
+`SIMPLE_TOOLS_CURSOR_TOOL_BUDGETS` is a JSON policy in AFC `prod` `/zulip`,
 copied to the same encrypted Worker binding.  Config validation rejects unknown
 kinds, invalid limits and pacing changes outside Linear.  Missing policy retains
 the existing limits.  The policy applies only to CURSOR, across all its grants, and only ever raises a default:  each window is the larger of the policy and the built-in limit (owner 2026-10-19), so Cursor's 100 Zulip writes an hour now count as 120.
@@ -313,13 +313,13 @@ Copy `.env.example` (non-sensitive keys) and set the secrets in your shell, or p
 |---|---|
 | `fleet-secrets run [--path /] [--only A,B] -- CMD [ARG...]` | Fetches once, then `exec`s `CMD` with the secrets as environment variables (a variable of the same name is replaced).  `--only` injects just those keys and exits 3 if one is absent.  PATH, HOME, USER, SHELL, TMPDIR, `LD_*`, `DYLD_*` and a few interpreter variables are never injected by `run`, and `--only` naming one of them is a usage error (exit 2).  Every `INFISICAL_*` key is in that list too, so a stored `INFISICAL_TOKEN` or client secret never reaches the command.  The fleet-secrets auth variables (`INFISICAL_TOKEN` and the universal-auth client id and secret) are removed from the started command's environment. |
 | `fleet-secrets get NAME [--path /] [--project fleet-ops\|ai-fleet-coordinator]` | Prints exactly one value to stdout with no trailing newline.  Exit 3 and a message naming the key if it is absent.  `--project` picks the Infisical project (read-only, default Fleet-OPS);  the FleetLink seat tokens are read with `--project ai-fleet-coordinator --path /fleetlink`. |
-| `fleet-secrets names [--path /] [--project fleet-ops\|ai-fleet-coordinator]` | Key names only, one per line.  `--project ai-fleet-coordinator` is the one read-only second project (the FleetLink seat tokens live in its `/fleetlink`);  its id comes from `INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID` or `~/.agent-sync/ai-fleet-coordinator-project-id`. |
+| `fleet-secrets names [--path /] [--project fleet-ops\|ai-fleet-coordinator]` | Key names only, one per line.  `--project ai-fleet-coordinator` is the one read-only second project (the FleetLink seat tokens live in its `/fleetlink`);  its id comes from `INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID` or `~/.simple-tools/ai-fleet-coordinator-project-id`. |
 | `fleet-secrets set NAME --path /linear` | Creates or updates one Fleet-OPS prod secret, but ONLY names on the built-in allowlist `core.WRITE_ALLOWLIST` (now `^CACHE_[A-Z0-9_]+$` under `/linear`, the minted Linear tokens `simple-board` keeps);  anything else exits 2 before auth.  Widening the list takes a reviewed code change, never a flag or environment variable (a general write would let any agent overwrite any secret through the shared identity) (AFC-359).  The value comes from standard input (one trailing newline removed), never an argument.  It writes over REST with the machine identity's token (Keychain or `INFISICAL_TOKEN`);  the CLI's own login session is refused because it cannot hand a token to a REST call.  It never creates a folder:  a missing one fails with `folder-missing` and writes nothing.  Prints `created|updated NAME at PATH`, never the value.  Exit 4 on a failed write. |
 | `fleet-secrets doctor [--json]` | Booleans, the CLI version and counts only:  CLI present, project id resolvable, auth mode, session valid, a test fetch, key count, unresolved-reference count.  Exit 1 when something is wrong. |
 
 Exit codes:  0 ok, 2 usage or a refused setting, 3 key absent, 4 fetch or auth failure, 5 unresolved reference, 126 or 127 the command could not start.
 
-**Where the values come from.**  Project Fleet-OPS, environment `prod` (the only one;  a non-prod `INFISICAL_ENVIRONMENT` or `INFISICAL_ENV` is refused).  Root `/` holds every key as an Infisical reference that expands to the real value, under the names the flat file used.  Folder `/global-api-keys` holds the same values as plain secrets.  Every key in the flat file is at root (checked Sun, Oct 18, 2026:  eleven names that were missing, the `AGENT_SYNC_*`, `B2_*_BUCKET_NAME` and `USAGE_*` tokens, `ANTIGRAVITY_INGEST_TOKEN` and `PAGERDUTY_API_KEY`, now have root references), so `--path` is only needed for keys that live in a folder alone.  The repo is public, so the project id is never committed:  it comes from `INFISICAL_FLEET_OPS_PROJECT_ID`, then the first line of `~/.agent-sync/fleet-ops-project-id` (the same two sources and error text as `scripts/agent_sync/zulip.py`), and the command fails closed when neither holds a UUID.
+**Where the values come from.**  Project Fleet-OPS, environment `prod` (the only one;  a non-prod `INFISICAL_ENVIRONMENT` or `INFISICAL_ENV` is refused).  Root `/` holds every key as an Infisical reference that expands to the real value, under the names the flat file used.  Folder `/global-api-keys` holds the same values as plain secrets.  Every key in the flat file is at root (checked Sun, Oct 18, 2026:  eleven names that were missing, the `SIMPLE_TOOLS_*`, `B2_*_BUCKET_NAME` and `USAGE_*` tokens, `ANTIGRAVITY_INGEST_TOKEN` and `PAGERDUTY_API_KEY`, now have root references), so `--path` is only needed for keys that live in a folder alone.  The repo is public, so the project id is never committed:  it comes from `INFISICAL_FLEET_OPS_PROJECT_ID`, then the first line of `~/.simple-tools/fleet-ops-project-id` (the same two sources and error text as `scripts/simple_tools/zulip.py`), and the command fails closed when neither holds a UUID.
 
 **Auth, first match wins.**  (1) `INFISICAL_TOKEN` already in the environment (mode `token`, for a cloud worker).  (2) On Linux only (the Hetzner server, which has no keychain), the server's universal-auth identity in `INFISICAL_AUTOMATION_CLIENT_ID` and `INFISICAL_AUTOMATION_CLIENT_SECRET` in the environment (mode `automation-env`):  an identity handed to the process in its environment always beats a keychain one, and `run` never passes the pair on.  Only one of the two is an error (`automation-env-incomplete`).  (3) A universal-auth machine identity in the login Keychain (mode `keychain`):  generic passwords with service `fleet-secrets` and accounts `infisical-client-id` and `infisical-client-secret`.  (4) The same two items in the System keychain, `/Library/Keychains/System.keychain` (mode `system-keychain`), which is the path for pm2 and any other boot-time job:  pm2 is started by `/Library/LaunchDaemons/com.pm2.daemon.plist`, so its jobs run as `jay` in the launchd System session, where the login Keychain is unreachable.  The command reads an item with `security find-generic-password -s fleet-secrets -a ACCOUNT -w` (plus the System keychain path for mode 4), captures it, runs `infisical login --method=universal-auth --plain` with the client id and secret in the child's environment (`INFISICAL_UNIVERSAL_AUTH_CLIENT_ID` and `_CLIENT_SECRET`), and hands the access token to the export call as `INFISICAL_TOKEN`.  Neither the secret nor the token is ever in an argument list, and neither reaches the command `run` starts.  Only one of the two items in a keychain is an error (`keychain-incomplete`), not a quiet fallback.  (5) The Infisical CLI's own login session (mode `session`), which is how a login shell works.  A LaunchAgent should use mode 3 or 4 once the machine identity exists, because a user session expires.  `doctor` reports `keychain_client_*_present` and `system_keychain_client_*_present` as booleans and the chosen `auth_mode`.  The System keychain items are written with `-A` (any application may read them without a prompt), so any account on this Mac can read the automation identity;  the owner accepted that on 2026-10-18 (OPS-818).  Rotate the machine identity in Infisical to revoke.
 
@@ -400,7 +400,7 @@ Owner ruling (2026-10-18):  nothing on this Mac or in a fleet repo reads `~/.sec
 | `botfleet-developer-id-export-*/` | `/botfleet-developer-id-export` (`DEVELOPER_ID_P12_BASE64`, `P12_PASSWORD`) |
 | `google-sheets-sa.json` | `/google-sheets-sa`, `GOOGLE_SHEETS_SA` |
 | `seat-mcp.env`, `grok-acp.env`, `senate-relay.env`, `icloud-mail.env`, `provider-knob-sync.env` | `/seat-mcp`, `/grok-acp`, `/senate-relay`, `/icloud-mail`, `/provider-knob-sync` |
-| `agent-sync.env`, `fleetlink-auth.env`, `fleetlink-handbook.env`, `fleet-share-hmac.env` | `/agent-sync`, `/fleetlink-auth`, `/fleetlink-handbook`, `/fleet-share-hmac` |
+| `simple-tools.env`, `fleetlink-auth.env`, `fleetlink-handbook.env`, `fleet-share-hmac.env` | `/simple-tools`, `/fleetlink-auth`, `/fleetlink-handbook`, `/fleet-share-hmac` |
 | `usage-monitor*.env`, `backblaze-*.env`, `ct-r2-weekly-archive.env` | `/usage-monitor`, `/usage-monitor-bills`, `/backblaze-monitor`, `/backblaze-app-keys`, `/ct-r2-weekly-archive` |
 | `composio-session-id` | `/composio-session-id`, `COMPOSIO_SESSION_ID` (line 1 the session id, line 2 the MCP url) |
 | `global-api-keys` | root `/` and `/global-api-keys` |
@@ -408,7 +408,7 @@ Owner ruling (2026-10-18):  nothing on this Mac or in a fleet repo reads `~/.sec
 
 The names for every other file match its name (lower case, dashes), with one folder per file.
 
-**State is not a secret.**  A file that a program rewrites while it runs (Echo's OAuth bundle, watermarks, health files, token caches) lives outside `~/.secrets`:  `~/.agent-sync/echo`, `~/.agent-sync/echo-linear`, `~/.cache/fleet-linear/` (directories 0700, files 0600).  `ECHO_OAUTH_JSON` in `/agent-sync` is only a bootstrap seed and goes stale on the first token refresh.
+**State is not a secret.**  A file that a program rewrites while it runs (Echo's OAuth bundle, watermarks, health files, token caches) lives outside `~/.secrets`:  `~/.simple-tools/echo`, `~/.simple-tools/echo-linear`, `~/.cache/fleet-linear/` (directories 0700, files 0600).  `ECHO_OAUTH_JSON` in `/simple-tools` is only a bootstrap seed and goes stale on the first token refresh.
 
 **Cutover** (`scripts/retire-secrets-dir.sh`, tested by `scripts/test-retire-secrets-dir.sh`, allowlist `scripts/retire-secrets-dir.allow`).  The script never deletes anything.
 
@@ -434,7 +434,7 @@ The Worker uses these same canonical names: var `ZULIP_CLAUDE_EMAIL` and secret
 `ZULIP_CLAUDE_API_KEY`.  After authorization, the owner-operated installer
 verifies the stored identity and provisions the Worker secret.  Its live
 identity check requires the CLAUDE bot and member role 400 before writing.
-See [the CLAUDE rollout](scripts/agent-sync-mcp/DEPLOY.md#add-hosted-claude-afc-296).
+See [the CLAUDE rollout](scripts/simple-tools-mcp/DEPLOY.md#add-hosted-claude-afc-296).
 
 ## Server fleet-tools update signal (2026-10-19)
 
@@ -454,15 +454,15 @@ Canonical location: AI Fleet Coordinator, `prod`, `/fleetlink`.
 
 | Key | Kind | Status |
 | --- | --- | --- |
-| `FLEETLINK_AGENT_SECRET` | secret | Created and read back 2026-10-15.  Installed as Worker secret `FLEETLINK_AGENT_SECRET` on `agent-sync-mcp` and as `AGENT_SYNC_SECRET` on FleetLink's `fleetlink-api`.  Never copy it to source, chat or a client. |
-| `FLEETLINK_TOKEN_<SEAT>` | secret | One per fleet bot (hyphens as underscores, such as `FLEETLINK_TOKEN_GROK_WEB`):  that bot's FleetLink API token, minted to follow Jay's limits as they change.  Read by the Agent-Sync Worker (bundled as `FLEETLINK_SEAT_TOKENS`) and written to `~/.secrets/FleetLink/<SEAT>.env` on hosts where the seat runs `fleetlink`.  No expiry. |
+| `FLEETLINK_AGENT_SECRET` | secret | Created and read back 2026-10-15.  Installed as Worker secret `FLEETLINK_AGENT_SECRET` on `simple-tools-mcp`.  FleetLink's own `DEPLOY.md` lists its matching shared secret as retired and deleted.  Never copy it to source, chat or a client. |
+| `FLEETLINK_TOKEN_<SEAT>` | secret | One per fleet bot (hyphens as underscores, such as `FLEETLINK_TOKEN_GROK_WEB`):  that bot's FleetLink API token, minted to follow Jay's limits as they change.  Read by the Simple-Tools Worker (bundled as `FLEETLINK_SEAT_TOKENS`) and written to `~/.secrets/FleetLink/<SEAT>.env` on hosts where the seat runs `fleetlink`.  No expiry. |
 
-The stdio Agent-Sync server (`simple-chat mcp`, every Mac and server seat) serves the `fleetlink_*` tools too, as each identity's own FleetLink bot and never with `FLEETLINK_AGENT_SECRET`.  It runs `fleetlink` with that seat's token from `FLEETLINK_TOKEN_<SEAT>` in its environment, else `FLEETLINK_TOKEN` (only when no launcher is set and `AGENT_SEAT` is unset or the same seat;  the server sets `AGENT_SEAT` to the seat it resolved from `--as` or `--default-seat` when the environment named none), else the file `~/.secrets/FleetLink/<SEAT>.env` (hyphens as underscores, `FLEETLINK_TOKEN=...`, a regular file the user owns with mode 0600 or 0400), which it hands to the child as `FLEETLINK_AUTH_FILE` without reading it.  With none of them, those tools answer `not_configured` naming the key to set (`docs/protocols/agent-sync-mcp.md` section 2.2).
+The stdio Simple-Tools server (`simple-chat mcp`, every Mac and server seat) serves the `fleetlink_*` tools too, as each identity's own FleetLink bot and never with `FLEETLINK_AGENT_SECRET`.  It runs `fleetlink` with that seat's token from `FLEETLINK_TOKEN_<SEAT>` in its environment, else `FLEETLINK_TOKEN` (only when no launcher is set and `AGENT_SEAT` is unset or the same seat;  the server sets `AGENT_SEAT` to the seat it resolved from `--as` or `--default-seat` when the environment named none), else the file `~/.secrets/FleetLink/<SEAT>.env` (hyphens as underscores, `FLEETLINK_TOKEN=...`, a regular file the user owns with mode 0600 or 0400), which it hands to the child as `FLEETLINK_AUTH_FILE` without reading it.  With none of them, those tools answer `not_configured` naming the key to set (`docs/protocols/simple-tools-mcp.md` section 2.2).
 
-The Agent-Sync MCP Worker sends it, with the acting seat in `X-Fleet-Seat`, to
+The Simple-Tools MCP Worker sends it, with the acting seat in `X-Fleet-Seat`, to
 FleetLink's `/mcp`, which maps each seat to its own FleetLink agent account.
 Rotate both Workers from this one value, FleetLink first.  See
-[the FleetLink runbook](scripts/agent-sync-mcp/DEPLOY.md#fleetlink-afc-328).
+[the FleetLink runbook](scripts/simple-tools-mcp/DEPLOY.md#fleetlink-afc-328).
 
 
 ## WhatsApp Wake Bridge (AFC-477, Not Provisioned)

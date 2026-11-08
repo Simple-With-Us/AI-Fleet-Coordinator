@@ -12,7 +12,7 @@
   ~/.local/state/fleet-tools/vms/, which Muster's Virtual Machines panel reads (AFC-576).  With
   no config it does nothing, and a VM that fails never fails the run (docs/protocols/fleet-vm-status.md).
   The runtime is simple-tools-runtime, the managed checkout com.jay.simple-tools-runtime-sync
-  keeps on main;  the older agent-sync-runtime path no longer exists.
+  keeps on main.
   Install:  cp this file to ~/Library/LaunchAgents/ and
             launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.jay.fleet-tools-doctor.plist
   Stop:     launchctl bootout gui/$(id -u)/com.jay.fleet-tools-doctor

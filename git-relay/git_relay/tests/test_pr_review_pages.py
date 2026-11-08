@@ -88,7 +88,10 @@ class ReviewPages(unittest.TestCase):
         self.assertEqual(len(c.calls), 3)
 
     def test_embedded_provider_body_withheld_and_unicode_scalar_refused(self):
-        for body in ["prefixsk-proj-" + "X" * 32, "prefixsk_live_" + "X" * 32]:
+        for body in [
+            "prefixsk-proj-" + "X" * 74 + "T3BlbkFJ" + "Y" * 74,
+            "prefixsk_live_" + "X" * 32,
+        ]:
             out = self.handle(
                 Client(self.pr(), [self.row(body=body)], self.pr()), "wf_pr_reviews_page"
             ).run("wf_pr_reviews_page", self.args())
@@ -97,3 +100,11 @@ class ReviewPages(unittest.TestCase):
             self.handle(Client(self.pr(), [self.row(body="\ud800")]), "wf_pr_reviews_page").run(
                 "wf_pr_reviews_page", self.args()
             )
+
+    def test_ordinary_scoped_filename_review_body_not_withheld(self):
+        for body in ["disk-admin-guide-for-the-server", "task-ant-guide-for-the-server"]:
+            out = self.handle(
+                Client(self.pr(), [self.row(body=body)], self.pr()), "wf_pr_reviews_page"
+            ).run("wf_pr_reviews_page", self.args())
+            self.assertFalse(out["reviews"][0]["body_withheld"])
+            self.assertEqual(out["reviews"][0]["body"], body)

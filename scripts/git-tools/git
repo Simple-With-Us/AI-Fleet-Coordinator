@@ -130,7 +130,7 @@ INPUT_LIMITS = {
 }
 DEFAULT_INPUT_LIMIT = 65536
 
-# The error codes the hosted server can return (the ToolError codes in scripts/agent-sync-mcp/src), kept in
+# The error codes the hosted server can return (the ToolError codes in scripts/simple-tools-mcp/src), kept in
 # step with scripts/linear-board/board.  Anything else, including a code that merely looks safe, prints as
 # "error".
 _REMOTE_CODES = frozenset(
@@ -335,25 +335,42 @@ def _remote_post(url: str, headers: dict, body: bytes, timeout: float) -> tuple[
                 expected = None
             if getattr(r, "chunked", False) or r.headers.get("Transfer-Encoding"):
                 expected = None
-            sock = getattr(getattr(getattr(r, "fp", None), "raw", None), "_sock", None)
-            if sock is None:
-                # Without the socket the remaining budget cannot be applied to each read, so a stalled body could
-                # outlast the deadline:  fail closed rather than read unbounded.
-                raise _TransportError(True, "transport")
+            raw_fp = getattr(getattr(r, "fp", None), "raw", None)
+            sock = None
+            # Try every place a response keeps its socket, and accept only an object that can
+            # really set a timeout.
+            for candidate in (
+                getattr(raw_fp, "_sock", None),
+                getattr(getattr(r, "connection", None), "sock", None),
+                raw_fp,
+            ):
+                if callable(getattr(candidate, "settimeout", None)):
+                    sock = candidate
+                    break
+            # The socket is only a way to tighten the per-read timeout to the remaining
+            # budget.  Some responses that have genuinely arrived do not expose it
+            # (wrapped / buffered transports, proxies, test doubles):  requiring it
+            # discarded a complete answer as a transport failure (AFC-638).  When it
+            # is absent, read anyway:  the opener's own timeout (the full budget
+            # passed to op.open) still bounds any single blocking read, and the
+            # deadline is re-checked before and after every chunk below, so a
+            # slow-drip body is cut off at the first chunk after the deadline, at most one
+            # per-read timeout late.
             while True:
                 if expected is not None and total >= expected:
                     break
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise _TransportError(True, "deadline")
-                try:
-                    sock.settimeout(remaining)
-                except OSError:
-                    if expected is None and total > 0:
-                        break
-                    if expected is not None and total > 0:
-                        raise _TransportError(True, "truncated response") from None
-                    raise _TransportError(True, "transport") from None
+                if sock is not None:
+                    try:
+                        sock.settimeout(remaining)
+                    except OSError:
+                        if expected is None and total > 0:
+                            break
+                        if expected is not None and total > 0:
+                            raise _TransportError(True, "truncated response") from None
+                        raise _TransportError(True, "transport") from None
                 read_size = 65536
                 if expected is not None:
                     read_size = min(read_size, expected - total)
@@ -401,15 +418,15 @@ def _remote_post(url: str, headers: dict, body: bytes, timeout: float) -> tuple[
 
 def _error_code_of(result: dict) -> str | None:
     """The hosted server's error code from a tools/call-style result:  structuredContent, then
-    `_meta["agent-sync/error"]`, then the first text part that is a JSON object.  Only allow-listed codes
+    `_meta["simple-tools/error"]`, then the first text part that is a JSON object.  Only allow-listed codes
     are recognized;  anything else (or nothing) is None."""
     candidates = []
     sc = result.get("structuredContent")
     if isinstance(sc, dict):
         candidates.append(sc)
     meta = result.get("_meta")
-    if isinstance(meta, dict) and isinstance(meta.get("agent-sync/error"), dict):
-        candidates.append(meta["agent-sync/error"])
+    if isinstance(meta, dict) and isinstance(meta.get("simple-tools/error"), dict):
+        candidates.append(meta["simple-tools/error"])
     for part in result.get("content") or []:
         if isinstance(part, dict) and isinstance(part.get("text"), str):
             try:
@@ -427,7 +444,7 @@ def _error_code_of(result: dict) -> str | None:
 
 
 # The closed refusal reasons the hosted front attaches to a relay_refused result
-# (scripts/agent-sync-mcp/src/gr-refusal.js REFUSAL_REASONS, kept in step).  Only an exact member is ever
+# (scripts/simple-tools-mcp/src/gr-refusal.js REFUSAL_REASONS, kept in step).  Only an exact member is ever
 # shown, so the relay's own prose, an upstream body and anything a server made up are never copied.
 _REFUSAL_REASONS = frozenset(
     (
@@ -464,8 +481,8 @@ def _refusal_detail_of(result: dict) -> str:
     if isinstance(sc, dict):
         candidates.append(sc)
     meta = result.get("_meta")
-    if isinstance(meta, dict) and isinstance(meta.get("agent-sync/error"), dict):
-        candidates.append(meta["agent-sync/error"])
+    if isinstance(meta, dict) and isinstance(meta.get("simple-tools/error"), dict):
+        candidates.append(meta["simple-tools/error"])
     for part in result.get("content") or []:
         if isinstance(part, dict) and isinstance(part.get("text"), str):
             try:
@@ -594,13 +611,21 @@ def _failure(exc: "_TransportError", write: bool) -> str:
             + (_REMOTE_UNKNOWN if write and exc.sent else "")
             + " (no direct fallback)"
         )
-    if write and exc.sent:
-        return (
-            "the hosted endpoint did not answer"
-            + _REMOTE_UNKNOWN
-            + " (no direct fallback)"
-        )
-    return "the hosted endpoint could not be reached (no direct fallback)"
+    if not exc.sent:
+        # Provably never left this host (DNS, refused connection, certificate
+        # check):  the endpoint really could not be reached.
+        return "the hosted endpoint could not be reached (no direct fallback)"
+    # The request may have been sent:  `sent` is only False for failures that provably never
+    # left, so a timeout wrapped in URLError (a connect timeout cannot be told from a send
+    # timeout, and a write must be treated as possibly sent) lands here too.  So this does not
+    # assert that the endpoint was reachable, only that no answer arrived (deadline, closed SSL
+    # socket, transport error).  Saying "could not be reached" for the common case sent seats
+    # chasing a phantom outage and falling back to gh (AFC-638).
+    return (
+        "the hosted endpoint's answer was lost or never arrived"
+        + (_REMOTE_UNKNOWN if write else "")
+        + " (no direct fallback)"
+    )
 
 
 def _status_message(status: int, write: bool) -> str:
@@ -617,12 +642,12 @@ _SCANNER = None
 
 
 def _scanner():
-    """The fleet's secret scanner (scripts/agent_sync/secretscan.py, standard library only), loaded by path.
+    """The fleet's secret scanner (scripts/simple_tools/secretscan.py, standard library only), loaded by path.
     If it cannot be loaded nothing is sent:  there is no unscanned route."""
     global _SCANNER
     if _SCANNER is not None:
         return _SCANNER
-    path = Path(os.path.realpath(__file__)).parent.parent / "agent_sync" / "secretscan.py"
+    path = Path(os.path.realpath(__file__)).parent.parent / "simple_tools" / "secretscan.py"
     try:
         spec = importlib.util.spec_from_file_location("_git_secretscan", str(path))
         module = importlib.util.module_from_spec(spec)
@@ -755,7 +780,7 @@ def remote_call(tool: str, arguments: dict, write: bool, bearer: str, deadline: 
         # retry-after is the only other field ever shown, and only bounded.
         retry = None
         meta = result.get("_meta")
-        for source in (sc if isinstance(sc, dict) else {}, meta.get("agent-sync/error") if isinstance(meta, dict) and isinstance(meta.get("agent-sync/error"), dict) else {}):
+        for source in (sc if isinstance(sc, dict) else {}, meta.get("simple-tools/error") if isinstance(meta, dict) and isinstance(meta.get("simple-tools/error"), dict) else {}):
             value = source.get("retry_after_s", source.get("retry_after"))
             if isinstance(value, (int, float)) and not isinstance(value, bool) and 0 <= value <= 86400:
                 retry = value
