@@ -256,7 +256,8 @@ or returned.
 
 ## Bounds and failure shape
 
-Request bodies are capped at 64 KiB, text fields at 32 KiB, GitHub responses at 1 MiB, and every
+Request bodies are capped at 64 KiB, text fields at 32 KiB, GitHub responses at 1 MiB (8 MiB for a
+paged GET other than a compare, whose raw rows are far larger than the rows the relay returns), and every
 GitHub call has a 30 s timeout.  Workflow-dispatch inputs are a flat object of at most 32 scalar
 values (strings capped at 1024 characters).  Neither the GitHub client nor the Infisical client
 follows 3xx redirects, so a bearer can never be forwarded to another origin.  Errors: 401
