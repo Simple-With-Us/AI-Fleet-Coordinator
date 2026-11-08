@@ -146,15 +146,21 @@ dirty_count() {
 
 # One fetch under a five-minute watchdog, so a stalled origin holds one repo, never the
 # whole sequential sweep.  BSD macOS has no timeout(1), so the watchdog is a sleep+kill.
+# The watchdog writes nowhere and takes its sleep down with it when it is stopped:  a
+# bare `( sleep 300 && kill ) &` leaves the sleep running for five minutes after the
+# fetch ends, an orphan per tick that also holds the caller's stdout and stderr open.
 fetch_bounded() {
   git -C "$1" fetch origin --quiet 2>/dev/null &
   local fetch_pid=$!
-  # The watchdog's own output is closed and its sleep is killed with it:  an orphaned
-  # sleep that kept the caller's pipe open would hold the whole run for five minutes.
-  ( sleep 300 >/dev/null 2>&1 && kill "$fetch_pid" 2>/dev/null ) >/dev/null 2>&1 &
+  (
+    exec >/dev/null 2>&1 </dev/null
+    sleep 300 &
+    sleep_pid=$!
+    trap 'kill "$sleep_pid" 2>/dev/null; exit 0' TERM
+    wait "$sleep_pid" && kill "$fetch_pid" 2>/dev/null
+  ) &
   local watchdog=$!
   wait "$fetch_pid"; local code=$?
-  pkill -P "$watchdog" 2>/dev/null || true
   kill "$watchdog" 2>/dev/null
   wait "$watchdog" 2>/dev/null
   return "$code"
@@ -177,7 +183,8 @@ local_only_branches() {
 report_facts() {
   # The fourth argument marks a mirror-only clone:  its refs/remotes/origin/* are never
   # fetched here, so comparing against them would read pushed branches as local-only.
-  local d="$1" name="$2" cur="$3" mirror_only="${4:-0}" n stashes branches=""
+  # branches starts empty:  under `set -u` a mirror-only clone would otherwise read it unset and abort the whole sweep.
+  local d="$1" name="$2" cur="$3" mirror_only="${4:-0}" n branches="" stashes
   n="$(dirty_count "$d")"
   if [ "${n:-0}" -gt 0 ]; then
     log "NOTE  $name  dirty tree ($n path(s)); left alone"
@@ -279,12 +286,13 @@ fi
 LOCK_DIR="$LOG_DIR/run.lock"
 if [ -d "$LOCK_DIR" ]; then
   if [ -n "$(find "$LOCK_DIR" -maxdepth 0 -mmin +30 2>/dev/null)" ]; then
-    log "NOTE  stale run lock taken over (older than 30 minutes)"
-    # The lock is an empty directory, so rmdir is enough;  one that cannot be removed skips the tick.
+    # The lock is an empty directory this script made, so rmdir is enough;  one that is
+    # not empty holds something else and is left for the owner, never deleted.
     if ! rmdir "$LOCK_DIR" 2>/dev/null; then
-      log "NOTE  stale run lock could not be removed; this tick skips"
+      log "HOLD  stale run lock is not empty; left alone, this tick skips"
       exit 0
     fi
+    log "NOTE  stale run lock taken over (older than 30 minutes)"
   else
     log "NOTE  previous sweep still running; this tick skips"
     exit 0

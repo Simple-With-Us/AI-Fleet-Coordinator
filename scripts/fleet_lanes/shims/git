@@ -305,7 +305,9 @@ fi
 # runs in the background because POSIX sh has no timeout, with its own file descriptors so nothing can hold a caller's pipe open.
 # A sleep that could not run answers non-zero and kills nothing.  Callers parse git's output, and a broken interpreter talks (a loader
 # error, a traceback), so Python gets none of the caller's streams.  A deny reason comes back through a file, and is printed here.
-_fleet_note=$(/usr/bin/mktemp 2>/dev/null)
+# mktemp honours TMPDIR, and a TMPDIR that names a missing folder makes it fail;  /tmp is the fallback, so a warning or a deny reason
+# is never lost to the environment.
+_fleet_note=$(/usr/bin/mktemp 2>/dev/null || /usr/bin/mktemp /tmp/fleet-git-shim.XXXXXX 2>/dev/null)
 FLEET_GIT_SHIM_DENY_NOTE=$_fleet_note "$_fleet_py" -I "$_fleet_mod" "$@" </dev/null >/dev/null 2>&1 &
 _fleet_pid=$!
 (
@@ -330,8 +332,11 @@ if [ $_fleet_rc -eq 77 ]; then
   /bin/rm -f "$_fleet_note" 2>/dev/null
   exit 128
 fi
-if [ $_fleet_rc -eq 78 ] && [ -s "$_fleet_note" ]; then
-  /bin/cat "$_fleet_note" >&2  # the mirror rule's warning:  git still runs
+if [ $_fleet_rc -eq 78 ]; then
+  # The mirror rule's warning:  git still runs.  Python decided and logged it, so an empty note is no failure to record.
+  if [ -s "$_fleet_note" ]; then
+    /bin/cat "$_fleet_note" >&2
+  fi
   _fleet_rc=0
 fi
 /bin/rm -f "$_fleet_note" 2>/dev/null

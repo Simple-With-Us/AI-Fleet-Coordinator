@@ -207,11 +207,25 @@ class LeavesEverythingElseAlone(KeeperCase):
         self.assertTrue(stray.is_dir())
         self.assertIn("STRAY-WORKTREE  alpha-wt", log)
 
+    def test_a_stale_lock_that_is_not_empty_is_left_and_nothing_runs(self) -> None:
+        clone = self.make("Alpha")
+        new = self.push_upstream("Alpha")
+        lock = self.logs / "run.lock"
+        lock.mkdir(parents=True)
+        (lock / "keep.txt").write_text("x\n")
+        old = 1_000_000_000
+        os.utime(lock, (old, old))
+        log = self.run_keeper(allow="Alpha")
+        self.assertTrue((lock / "keep.txt").exists())
+        self.assertNotEqual(self.git(clone, "rev-parse", "HEAD"), new)
+        self.assertIn("HOLD  stale run lock is not empty", log)
+
     def test_the_script_runs_no_destructive_git_command(self) -> None:
         # Log lines are prose (one tells the owner how to remove a stray worktree);  every other line is code.
         code = [ln for ln in SCRIPT.read_text().splitlines() if not ln.lstrip().startswith(("#", "log "))]
         verbs = set()
         for ln in code:
+            # `-c key=value` takes an argument, so the word after it is still an option, not the verb.
             for m in re.finditer(r'\bgit(?: -C "?\$\{?\w+\}?"?)? (?:-c \S+ |-\S+ )*([a-z][a-z-]*)', ln):
                 verbs.add(m.group(1))
         read_or_ff = {"rev-parse", "status", "for-each-ref", "show-ref", "stash", "branch", "fetch", "merge", "merge-base", "rev-list"}
