@@ -73,5 +73,6 @@ class RuntimeProof:
         # Both reviewed baseline and candidate dispatch this action. The default
         # branch refusal and null-object fences make this probe write-free.
         return self.patch_refusal("Bounded workflow elevation runtime proof") == (
-            400, {"error": "default branch is not writable"}
+            400,
+            {"error": "default branch is not writable"},
         )
