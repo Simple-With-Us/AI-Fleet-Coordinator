@@ -4290,7 +4290,15 @@ class WorkflowVerbs:
                 and row["state"] != state
             ):
                 raise RelayGitHubError(502, "PR list row unverifiable")
-            item = {"number": row["number"], "state": row["state"], "draft": row["draft"]}
+            merged_at = row.get("merged_at")
+            if merged_at is not None and not isinstance(merged_at, str):
+                raise RelayGitHubError(502, "PR list row unverifiable")
+            item = {
+                "number": row["number"],
+                "state": row["state"],
+                "draft": row["draft"],
+                "merged_at": merged_at,
+            }
             for key in ("head", "base"):
                 part = row.get(key)
                 if (
