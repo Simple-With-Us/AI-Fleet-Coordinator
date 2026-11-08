@@ -45,6 +45,66 @@ enum CellState: String {
     }
 }
 
+/// Why a cell has no rule behind it,  so its words can be true in each case.
+///
+/// An empty cell is not always a hole in the coverage:  during a run,  after a failed run
+/// and with an unreadable manifest,  the app simply does not know yet.  "No rule covers
+/// this pair" is said only when the manifest was read and names no rule for the pair.
+enum CellGap: Equatable {
+    /// The manifest was read,  and it names no rule and no cover for this seat and kind.
+    case noRule
+    /// The manifest names a rule,  and a run is checking it now with no earlier answer.
+    /// A run that re-checks an answer which left the rule out keeps `notInAnswer`.
+    case beingChecked
+    /// The manifest names a rule,  and the engine has not answered:  no run has finished,
+    /// or the last one failed.
+    case notAnswered
+    /// The manifest names a rule,  and the engine's answer has no result for it.
+    case notInAnswer
+    /// The manifest was not read,  so the app does not know the rules for this pair.
+    case noManifest
+    /// The manifest changed and could not be read again,  and the last copy that could be
+    /// read names no rule for this pair.  The current file may name one,  so this is not
+    /// called a hole in the coverage.
+    case manifestStale
+
+    /// The clause the tooltip puts after the seat and kind.
+    var clause: String {
+        switch self {
+        case .noRule:
+            return "no rule covers this pair."
+        case .manifestStale:
+            return "the manifest could not be read again, and its last good copy names no rule for this pair."
+        case .beingChecked:
+            return "being checked now, and the engine has not answered yet."
+        case .notAnswered:
+            return "the engine has not answered, so nothing is known about this pair yet."
+        case .notInAnswer:
+            return "the manifest names a rule for this pair, and the engine's answer has no result for it."
+        case .noManifest:
+            return "the manifest was not read, so the rules for this pair are not known."
+        }
+    }
+
+    /// The sentence the detail panel shows when the cell has no rule to show.
+    var sentence: String {
+        switch self {
+        case .noRule:
+            return "No rule covers this seat and kind."
+        case .manifestStale:
+            return "The manifest could not be read again, and its last good copy names no rule for this seat and kind."
+        case .beingChecked:
+            return "This seat and kind are being checked now, and the engine has not answered yet."
+        case .notAnswered:
+            return "The engine has not answered, so nothing is known about this seat and kind yet."
+        case .notInAnswer:
+            return "The manifest names a rule for this seat and kind, and the engine's answer has no result for it."
+        case .noManifest:
+            return "The manifest was not read, so the rules for this seat and kind are not known."
+        }
+    }
+}
+
 /// One cell of the grid:  one seat against one config kind.
 struct GridCell: Identifiable {
     let seat: String
@@ -54,8 +114,22 @@ struct GridCell: Identifiable {
     let rules: [CheckResult]
     /// Why this seat and kind do not apply, when a cover says so.
     let coverReason: String?
+    /// Why the cell has no rule behind it,  when it has none and no cover.
+    var gap: CellGap? = nil
+    /// Whether a run is checking this cell now.
+    ///
+    /// The cell keeps the last answer while a run is in flight,  so its state is the last
+    /// run's and not a failure:  a view marks it as being checked,  and never paints the
+    /// run itself as red.  A run that fails clears the cell,  so nothing stale stays
+    /// on screen as current.
+    var isBeingChecked: Bool = false
 
     var id: String { "\(seat)/\(kind.rawValue)" }
+
+    /// Whether the cell has nothing to show but a run in flight:  a rule,  no earlier
+    /// answer and no cover.  Its state is `unknown` so nothing reads as proven,  and a view
+    /// draws it as being checked rather than as a red UNKNOWN.
+    var isCheckingWithNoAnswer: Bool { isBeingChecked && gap == .beingChecked }
 
     /// The proof level the cell's rules require, the strongest of them.
     ///
@@ -137,19 +211,29 @@ struct GridCell: Identifiable {
     /// partly proven names the part that is not.
     var tooltip: String {
         if rules.isEmpty {
-            return coverReason ?? "\(seat) / \(kind.title):  no rule covers this pair."
+            if let coverReason { return coverReason }
+            let line = "\(seat) / \(kind.title):  \(gap?.clause ?? "there is no result for this pair.")"
+            // A rule the last answer left out is that answer's finding,  and the run now in
+            // flight may change it.
+            let fromLastAnswer = isBeingChecked && gap == .notInAnswer
+            return fromLastAnswer ? "\(line)\n\(GridCell.checkingLine)" : line
         }
         if isNoGuard {
             let why = coverReason ?? rules.first?.reason ?? ""
             return "\(seat) / \(kind.title):  no guard to check.\n\(why)\nNo guard was proven here, so this is not a pass."
+                + (isBeingChecked ? "\n\(GridCell.checkingLine)" : "")
         }
         var lines = ["\(seat) / \(kind.title):  \(state.rawValue)"]
         for rule in rules {
             lines.append("\(rule.ruleId):  \(rule.checkLine)")
         }
         lines.append(proofDescription)
+        if isBeingChecked { lines.append(GridCell.checkingLine) }
         return lines.joined(separator: "\n")
     }
+
+    /// The line a cell's tooltip ends with while a run checks it.
+    static let checkingLine = "Being checked now.\u{00A0} This is the answer from the last run."
 
     /// The proof the cell REACHED,  in words,  and the proof it still needs.
     ///
@@ -252,11 +336,22 @@ enum GridBuilder {
     /// One cell per seat and kind, in column order.
     ///
     /// A pair with no rule and no cover is `unknown`, never a blank:  silence is not a
-    /// pass, and a hole in the grid is a hole in the coverage, not a healthy cell.
+    /// pass, and a hole in the grid is a hole in the coverage, not a healthy cell.  The
+    /// cell says why it is empty (`CellGap`),  so its words are true in each case.
+    ///
+    /// `checking` is whether a run is in flight:  the results are then the last run's,
+    /// and every cell is marked as being checked.  `answered` is whether the results came
+    /// from an engine answer at all,  which is false before the first run lands and after a
+    /// run fails.  `manifestCurrent` is false when the manifest changed and could not be
+    /// read again,  so `manifest` is the last copy that could:  a pair it names no rule for
+    /// is then not called a hole in the coverage.
     static func build(
         roster: [String],
         manifest: SeatManifest?,
-        results: [CheckResult]
+        results: [CheckResult],
+        checking: Bool = false,
+        answered: Bool = true,
+        manifestCurrent: Bool = true
     ) -> [GridCell] {
         var cells: [GridCell] = []
         for seat in roster {
@@ -272,7 +367,18 @@ enum GridBuilder {
                             kind: kind,
                             state: reason == nil ? .unknown : .covered,
                             rules: [],
-                            coverReason: reason
+                            coverReason: reason,
+                            gap: reason == nil
+                                ? gap(
+                                    seat: seat,
+                                    kind: kind,
+                                    manifest: manifest,
+                                    checking: checking,
+                                    answered: answered,
+                                    manifestCurrent: manifestCurrent
+                                )
+                                : nil,
+                            isBeingChecked: checking
                         )
                     )
                 } else {
@@ -288,13 +394,38 @@ enum GridBuilder {
                             state: worstState(of: matching),
                             rules: matching,
                             coverReason: noGuard
-                                ? manifest?.coverReason(seat: seat, kind: kind) : nil
+                                ? manifest?.coverReason(seat: seat, kind: kind) : nil,
+                            isBeingChecked: checking
                         )
                     )
                 }
             }
         }
         return cells
+    }
+
+    /// Why a pair with no result and no cover is empty.
+    ///
+    /// The manifest decides first:  with no manifest the rules are not known,  and a
+    /// manifest that names no rule for the pair is a true hole in the coverage whatever
+    /// the engine is doing,  unless the manifest is only the last good copy of a file that
+    /// could not be read again.  Otherwise the pair has a rule,  and the engine's state says
+    /// why it has no result:  being checked only while no answer has landed,  because an
+    /// answer that left the rule out is a finding even while the next run checks it.
+    static func gap(
+        seat: String,
+        kind: ConfigKind,
+        manifest: SeatManifest?,
+        checking: Bool,
+        answered: Bool,
+        manifestCurrent: Bool = true
+    ) -> CellGap {
+        guard let manifest else { return .noManifest }
+        if manifest.rules(seat: seat, kind: kind).isEmpty {
+            return manifestCurrent ? .noRule : .manifestStale
+        }
+        if checking && !answered { return .beingChecked }
+        return answered ? .notInAnswer : .notAnswered
     }
 
     /// The worst state among a cell's rules.
