@@ -101,8 +101,11 @@ class WakeDeferTests(DaemonHarness):
         set_pause(daemon.root, None, wakes_only=False, by="drain", now=self.clock.time(), defer=True)
         self.clock.advance(30)
         daemon.tick()
-        # Deferred, not dropped:  the pending wake is still parked and no drop row exists.
-        self.assertEqual(len(daemon.coalescer.pending), 1)
+        # Deferred, not dropped:  the wake survives the drain (parked in the deferred-restore
+        # queue until a tick restores it to the coalescer) and no drop row exists.
+        self.assertEqual(
+            len(daemon.coalescer.pending) + daemon._deferred_restores.qsize(), 1
+        )
         self.assertEqual([r for r in self.ledger() if r["state"] == "dropped"], [])
         clear_pause(daemon.root, None)
         self.clock.advance(30)
@@ -509,8 +512,11 @@ class RunWakeDrainTests(DaemonHarness):
             daemon.root, None, wakes_only=False, by="drain", now=self.clock.time(), defer=True
         )
         daemon.run_wake(runner, pending)
-        # Re-armed, not dropped:  the pending wake is back in the coalescer, no drop row.
-        self.assertEqual(len(daemon.coalescer.pending), 1)
+        # Re-armed, not dropped:  the wake survives (handed to the deferred-restore queue;
+        # the next tick restores it to the coalescer) and no drop row exists.
+        self.assertEqual(
+            len(daemon.coalescer.pending) + daemon._deferred_restores.qsize(), 1
+        )
         self.assertEqual([r for r in self.ledger() if r["state"] == "dropped"], [])
         # The re-armed wake runs once the marker lifts.
         clear_pause(daemon.root, None)
