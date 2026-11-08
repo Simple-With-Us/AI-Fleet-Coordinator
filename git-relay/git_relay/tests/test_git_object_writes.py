@@ -196,14 +196,16 @@ class Writes(unittest.TestCase):
         # secret-shaped referenced content is refused before any tree write
         secret = blob(b"ghp_" + b"a" * 30)
         c = Client(secret)
-        with self.assertRaises(Refused):
+        # Pin the message, so the test fails if the scan stops being what refuses it.
+        with self.assertRaisesRegex(Refused, "^credential-shaped content refused$"):
             self.handle(c, a).run(a, {**base, "files": files_for(secret)})
         self.assertEqual(len(c.calls), 1)
         # non-utf-8 referenced content is refused (text trees only)
         non_utf = blob(b"\xff\xfe\x00")
         c = Client(non_utf)
-        with self.assertRaises(Refused):
+        with self.assertRaisesRegex(Refused, "^referenced blob is not utf-8 text$"):
             self.handle(c, a).run(a, {**base, "files": files_for(non_utf)})
+        self.assertEqual(len(c.calls), 1)
         # GitHub wraps blob base64 at 60 columns: wrapped content still decodes
         wrapped = blob(b"hi")
         wrapped["content"] = wrapped["content"][:2] + "\n" + wrapped["content"][2:]
@@ -244,9 +246,31 @@ class Writes(unittest.TestCase):
                 "content": base64.b64encode(big).decode(),
             }
         )
-        with self.assertRaises(Refused):
+        with self.assertRaisesRegex(Refused, "^referenced blob exceeds the per-file raw budget$"):
             self.handle(c, a).run(a, {**base, "files": files})
         self.assertEqual(len(c.calls), 1, "refused before any tree write")
+
+    def test_referenced_blob_cap_fits_the_github_response_bound(self):
+        import base64
+        import json
+
+        from git_relay.github_client import MAX_BODY
+
+        # The largest accepted reference, as GitHub's JSON blob reply carries it
+        # (base64 wrapped at 60 columns, each newline escaped), fits the client's
+        # body bound, so the per-reference cap is reachable rather than dead code.
+        raw = b"a" * MAX_REF_BLOB_RAW
+        b64 = base64.b64encode(raw).decode()
+        wrapped = "\n".join(b64[i : i + 60] for i in range(0, len(b64), 60)) + "\n"
+        reply = {
+            "sha": "a" * 40,
+            "node_id": "B_" + "k" * 60,
+            "size": len(raw),
+            "url": "https://api.github.com/repos/%s/git/blobs/%s" % (REPO, "a" * 40),
+            "content": wrapped,
+            "encoding": "base64",
+        }
+        self.assertLessEqual(len(json.dumps(reply).encode()), MAX_BODY)
 
     def test_tree_blob_pre_read_failures_release_retryable(self):
         a = "wf_git_tree_create"
@@ -419,7 +443,9 @@ class RepeatedReferenceTests(unittest.TestCase):
         self.assertGreater(len(raw) * count, MAX_FILES_RAW)
         args, blob = self.fixture(raw, count=count)
         client = Client(blob)
-        with self.assertRaises(Refused):
+        # Each reference is within the per-reference cap, so only the cumulative
+        # budget can refuse this tree.
+        with self.assertRaisesRegex(Refused, "^file content budget exceeded$"):
             self.handle(client).run("wf_git_tree_create", args)
         self.assertEqual(
             len(client.calls), 1, "all references charged, no repeated GET or tree POST"
