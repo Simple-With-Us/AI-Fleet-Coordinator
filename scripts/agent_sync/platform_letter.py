@@ -16,7 +16,7 @@ Mac, the one allocator for every host and every platform.  A chat on the Mac re
 server reaches it over one SSH hop to the Mac (the destination in SESSION_LETTER_REMOTE, or the hook's --remote), by
 running `~/.local/bin/platform-letter registry ...` there, so the Mac's own managed runtime makes the write.  The
 registry side refuses a host that has no registry file and never creates one: a second file would issue letters that
-collide with the Mac's.  A platform keeps its own namespace (`codex`, `opencode`, `muse`, `grok`, `antigravity`, `zcode`, `cursor`): a
+collide with the Mac's.  A platform keeps its own namespace (`codex`, `opencode`, `muse`, `grok`, `antigravity`, `cursor`): a
 letter is unique inside it, and `claude` and `minimax` are reserved to their own hooks.
 
 The letters.  Every chat takes a pair (AA to ZZ, 676 per platform).  A main chat takes the doubled pairs in order
@@ -1441,7 +1441,7 @@ def reminder(spec: PlatformSpec, note: Mapping[str, Any]) -> str:
 def untitled_context(
     body: Mapping[str, Any], env: Mapping[str, str], seat: str, sid: str, display: str, product: str
 ) -> str:
-    """The context line for a platform whose hooks cannot set a chat's title (Z Code, Cursor), from one `json` style
+    """The context line for a platform whose hooks cannot set a chat's title (such as Cursor), from one `json` style
     answer (`{"context", "label"}`):  the chat is told its letter and how it is addressed, and that its title does not
     carry the letter.  Any other line (no letter yet, another seat's) is the library's own, as it is."""
     context = _text(
