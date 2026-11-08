@@ -14,7 +14,14 @@ def synthetic_provider(prefix, leading=""):
     # A bare prefix inside another word is ambiguous. Use the established full
     # legacy structure for embedded legacy adversarial cases, not an arbitrary
     # longer word. Boundary-start legacy rows still test markerless shapes.
-    body = "X" * 20 + "T3BlbkFJ" + "Y" * 20 if prefix == "sk-" and leading else "X" * 32
+    body = "X" * 32
+    if leading:
+        if prefix == "sk-":
+            body = "X" * 20 + "T3BlbkFJ" + "Y" * 20
+        elif prefix == "sk-ant-":
+            body = "api03-" + "X" * 93 + "AA"
+        elif prefix == "sk-proj-":
+            body = "X" * 74 + "T3BlbkFJ" + "Y" * 74
     return leading + prefix + body
 
 

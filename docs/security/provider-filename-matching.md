@@ -6,16 +6,18 @@ not enough evidence of a secret. There is no per-filename allowlist.
 
 ## Detection boundary
 
-- Ambiguous bare OpenAI prefixes require a lexical left boundary, or an API key,
+- Ambiguous bare and short markerless scoped OpenAI/Anthropic prefixes require a lexical left boundary, or an API key,
   token, secret or password assignment context (including quoted JSON keys).
-- Known scoped OpenAI and Anthropic prefixes, Stripe prefixes and the established
-  full legacy OpenAI marker shape remain detectable inside other words.
+- Complete supported OpenAI scoped marker shapes (58/74 characters on each side
+  of T3BlbkFJ), Anthropic api03/admin01 shapes (93 characters plus AA), Stripe
+  prefixes and the established full legacy OpenAI marker shape remain detectable
+  inside other words. These are scanner-corpus formats, not proof of a live key.
 - The existing general scanner still handles bearer contexts and other providers.
   Exact loaded-bearer and provenance known-value checks are independent and unchanged.
 - No maximum provider key length is assumed. Existing minimum heuristic lengths
   are retained, not asserted to be exhaustive vendor format guarantees.
 
-A nonmarker legacy-looking value concatenated directly to a word with no
+A short markerless scoped or nonmarker legacy-looking value concatenated directly to a word with no
 credential context no longer trips this heuristic alone. That string cannot be
 reliably distinguished from an ordinary filename using its letters alone. This
 is an explicit detection tradeoff, not a zero-false-negative claim. Real values
@@ -27,6 +29,14 @@ Tests retain boundary-start markerless shapes and unseparated distinctive
 provider shapes, plus full legacy-marker shapes in outbound text and git paths.
 New tests cover ordinary longer filenames, punctuation, equals/colon assignments,
 quoted JSON, bearer contexts and unchanged provenance loaded-value refusal.
+Regressions include disk-admin-guide-for-the-server and task-ant-guide-for-the-server,
+plus generated scoped ordinary paths, all supported OpenAI 58/74 combinations, both
+Anthropic api03/admin01 formats, scoped credential assignments, bearer contexts and
+loaded-value refusal. No known supported corpus format loses detection. Unknown
+undocumented markerless formats embedded directly in words can lose heuristic
+detection; boundary-start, context and loaded-value checks remain. This uncertainty
+is explicit, not an assertion that vendor formats are exhaustive.
+
 Synthetic strings are not live credentials. The old arbitrary embedded bare
 prefix row is replaced with an established synthetic legacy structure; it is
 not silently kept as an impossible all-words contract.
@@ -48,3 +58,6 @@ The fixed historical patch-1429 manifest is deliberately not altered.
 - Established scanner source, not an exhaustive vendor specification:
   https://raw.githubusercontent.com/gitleaks/gitleaks/v8.30.1/cmd/generate/config/rules/openai.go
 - Legacy-marker limitation discussion: https://github.com/gitleaks/gitleaks/pull/1148
+
+- Established Anthropic scanner corpus, including Admin keys:
+  https://raw.githubusercontent.com/gitleaks/gitleaks/v8.30.1/cmd/generate/config/rules/anthropic.go

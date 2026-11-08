@@ -13,6 +13,10 @@ class ProviderWords(unittest.TestCase):
             "scripts/test-disk-janitor-cleanmymac-safety.sh",
             "mac-disk-reclaim-policy-current",
             "risk-bunchofotherthings",
+            "disk-admin-guide-for-the-server",
+            "task-ant-guide-for-the-server",
+            "docs/disk-proj-ordinary-guide-for-the-server.md",
+            "docs/task-svcacct-ordinary-guide-for-the-server.txt",
             "disk-" + "ordinaryfilename" * 5,
             "risk-" + "ordinaryfilename" * 5,
         ]:
@@ -32,10 +36,31 @@ class ProviderWords(unittest.TestCase):
         ]:
             self.assertTrue(WorkflowVerbs._provider_token_text(value))
 
-    def test_distinctive_formats_detected_with_unseparated_prefixes(self):
-        for prefix in ["sk-ant-", "sk-proj-", "sk-svcacct-", "sk-admin-", "sk_live_", "sk_test_"]:
+    def test_complete_supported_formats_detected_with_unseparated_prefixes(self):
+        tokens = ["sk_" + scope + "_" + "a" * 32 for scope in ["live", "test"]]
+        tokens += ["sk-ant-" + kind + "-" + "a" * 93 + "AA" for kind in ["api03", "admin01"]]
+        tokens += [
+            "sk-" + kind + "-" + "a" * left + "T3BlbkFJ" + "b" * right
+            for kind in ["proj", "svcacct", "admin"]
+            for left in [58, 74]
+            for right in [58, 74]
+        ]
+        for token in tokens:
             for context in ["", "prefix", "value=", "Bearer ", "https://invalid/"]:
-                self.assertTrue(WorkflowVerbs._provider_token_text(context + prefix + "a" * 32))
+                with self.subTest(token_prefix=token[:20], context=context):
+                    self.assertTrue(WorkflowVerbs._provider_token_text(context + token))
+
+    def test_ambiguous_scoped_heuristic_requires_boundary_or_credential_context(self):
+        for prefix in ["sk-ant-", "sk-proj-", "sk-svcacct-", "sk-admin-"]:
+            token = prefix + "a" * 32
+            for context in ["", "/", "(", "API_KEY=prefix", "token: prefix", '{"SECRET": "prefix']:
+                with self.subTest(prefix=prefix, context=context):
+                    self.assertTrue(WorkflowVerbs._provider_token_text(context + token))
+            self.assertFalse(WorkflowVerbs._provider_token_text("prefix" + token))
+            self.assertIsNotNone(find_secret("Authorization: Bearer prefix" + token))
+            raw = ("docs/prefix" + token + ".txt\n").encode()
+            with self.assertRaises(ValueError):
+                apply_patch(raw, [dict(start=len(raw), end=len(raw), text="safe\n")], known=[token])
 
     def test_complete_legacy_shape_detected_with_unseparated_prefix(self):
         token = "sk-" + "a" * 20 + "T3BlbkFJ" + "b" * 20
