@@ -5595,11 +5595,12 @@ class WorkflowVerbs:
         if not isinstance(files, list) or not 1 <= len(files) <= 20:
             raise Refused("invalid files")
         entries, seen, total, referenced_total = [], set(), 0, 0
+        source_cache = {}
         validated_blobs = {}
         for value in files:
             if not isinstance(value, dict):
                 raise Refused("invalid file")
-            _only(value, ("path", "text", "sha", "mode"))
+            _only(value, ("path", "text", "sha", "mode", "source_commit"))
             path = _path(value)
             if find_secret(path) or self._provider_token_text(path):
                 raise Refused("credential-shaped file path refused")
@@ -5610,6 +5611,7 @@ class WorkflowVerbs:
                 or path in seen
                 or any(path.startswith(x + "/") or x.startswith(path + "/") for x in seen)
                 or (text is None) == (sha is None)
+                or ("source_commit" in value and sha is None)
             ):
                 raise Refused("invalid file content or path")
             if sha is not None:
@@ -5620,6 +5622,79 @@ class WorkflowVerbs:
                 # the raw work budget (MAX_FILES_RAW), not the transport cap.
                 if not isinstance(sha, str) or not _SHA.fullmatch(sha):
                     raise Refused("invalid file content or path")
+                if "source_commit" in value:
+                    from .same_path_reuse import verify_same_path
+
+                    try:
+                        size = verify_same_path(
+                            self._get,
+                            repo,
+                            value["source_commit"],
+                            path,
+                            sha,
+                            mode,
+                            MAX_FILE_RAW,
+                            source_cache,
+                        )
+                    except RelayGitHubError as exc:
+                        if exc.code == "response_too_large":
+                            raise Refused("source object proof exceeds bounds") from None
+                        if exc.status in (0, 408) or exc.status >= 500:
+                            raise PreReadUnavailable(
+                                "source proof unavailable; no write attempted"
+                            ) from None
+                        raise
+                    except (ValueError, TypeError, KeyError):
+                        raise Refused("same-path source object proof refused") from None
+                    # Metadata provenance is necessary, not a secret-scan waiver.
+                    # Fetch exact bytes and apply absolute live/provider guards even
+                    # for a release-reviewed unchanged fixture object.
+                    key = ("fixture-bytes", repo, sha)
+                    try:
+                        if key not in source_cache:
+                            blob = _obj(self._get(f"/repos/{repo}/git/blobs/{sha}"))
+                            if (
+                                blob.get("sha") != sha
+                                or blob.get("encoding") != "base64"
+                                or type(blob.get("size")) is not int
+                                or not isinstance(blob.get("content"), str)
+                            ):
+                                raise ValueError("invalid reviewed blob receipt")
+                            raw = base64.b64decode("".join(blob["content"].split()), validate=True)
+                            if (
+                                len(raw) > MAX_FILE_RAW
+                                or len(raw) != blob["size"]
+                                or hashlib.sha1(
+                                    b"blob " + str(len(raw)).encode() + b"\0" + raw
+                                ).hexdigest()
+                                != sha
+                            ):
+                                raise ValueError("invalid reviewed blob identity")
+                            source_cache[key] = raw.decode("utf-8", "strict")
+                        decoded = source_cache[key]
+                        if len(decoded.encode("utf-8")) != size:
+                            raise ValueError("reviewed source size mismatch")
+                        # Always execute the full scanner. Only the exact immutable
+                        # reviewed fixture may retain its baseline shaped finding.
+                        find_secret(decoded)
+                        if self._provider_token_text(decoded) or (
+                            self.bearer and self.bearer in decoded
+                        ):
+                            raise ValueError("absolute credential guard")
+                    except RelayGitHubError as exc:
+                        if exc.status in (0, 408) or exc.status >= 500:
+                            raise PreReadUnavailable(
+                                "reviewed blob unavailable; no write attempted"
+                            ) from None
+                        raise
+                    except (ValueError, TypeError, KeyError, UnicodeError, binascii.Error):
+                        raise Refused("reviewed fixture bytes refused") from None
+                    referenced_total += size
+                    if referenced_total > MAX_FILES_RAW:
+                        raise Refused("file content budget exceeded")
+                    seen.add(path)
+                    entries.append({"path": path, "mode": mode, "type": "blob", "sha": sha})
+                    continue
                 if sha not in validated_blobs:
                     # The pre-read runs before any dispatch:  a transient upstream
                     # failure here means NO write was attempted, so it releases the
@@ -6378,7 +6453,7 @@ class WorkflowVerbs:
 
     def wf_file_patch(self, repo, args):
         """Pinned same-path patch. Existing generic matches remain a residual risk."""
-        from .provenance_patch import apply_patch
+        from .reviewed_preservation import apply_reviewed_patch, reviewed_base
 
         _only(
             args,
@@ -6429,16 +6504,22 @@ class WorkflowVerbs:
                 != blob_sha
             ):
                 raise ValueError()
-            # Full base/output dedicated/provider scans are never baseline-exempt.
+            # Only immutable, reviewed source/output fixture pairs can preserve
+            # dedicated source lines. Registry is empty until owner policy approval.
+            preserve = reviewed_base(repo, path, raw)
+            # Scan every complete input, even an eligible reviewed fixture. A
+            # finding may be retained only after exact output/origin validation.
+            base_finding = find_secret(raw.decode("utf-8"))
             if (
-                find_secret(raw.decode("utf-8"))
+                (base_finding and not preserve)
                 or self._provider_token_text(raw.decode("utf-8"))
                 or self.bearer in raw.decode("utf-8")
             ):
                 raise ValueError()
-            result = apply_patch(raw, args.get("edits"), known=[self.bearer])
+            result = apply_reviewed_patch(repo, path, raw, args.get("edits"), known=[self.bearer])
+            result_finding = find_secret(result.decode("utf-8"))
             if (
-                find_secret(result.decode("utf-8"))
+                (result_finding and not preserve)
                 or self._provider_token_text(result.decode("utf-8"))
                 or self.bearer
                 and self.bearer in result.decode("utf-8")

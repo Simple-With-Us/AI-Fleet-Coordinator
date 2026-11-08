@@ -207,9 +207,21 @@ gap this attestation exists to close:
 | `scripts/simple-tools-mcp/test/gr-front.test.mjs` | `b46549565f659d145f30d6ff1ede3af6515de64d` | `9de759b53f8cb987b16ade0a9cf99ff69d999659519a620b292f4aa748eee3b9` |
 | `scripts/simple-tools-mcp/test/gr-workflow-v1.test.mjs` | `9a36132edd4b6614209c2f6dd12a9df13a939c05` | `1caec47629a7a4592051b25efcfd229cfe662471027c13eb3c5d812952816e95` |
 | `scripts/simple-tools-mcp/test/integration.workerd.mjs` | `f122a279489d871d7fc3f71c97acd5e2ec9dcfaf` | `2b76ceeed6f6fdf66f6e04523d05cc9652e00377e82bcb55268ceaf143e10f8c` |
-| `scripts/simple_tools/tests/test_infisical_api_route.py` | `7f962a62b00f7db6660168db818735142d897278` | `34041aaa826e24b919621c7d5ed6703c2b602beda05449dd9801a13e02d67090` |
+| `scripts/simple_tools/tests/test_infisical_api_route.py` | `0c8b4ed4acf205c619f970824a7eba4d7e3a96b3` | `3ee7aac6e82c0f22bbadc29ba915cc05054c7d5e3c0962f9c84f9db5b8f94d88` |
 | `scripts/simple_tools/tests/test_mcp_extras.py` | `eaf0c913742de23ef19e5c655a01dc3e5ef071c7` | `d31c6f0a7f84f17dd0d480714a5d0be9f05fad97d3a3ef5d519da68b304bc95a` |
 | `scripts/fleet_lanes/tests/test_install_mcp.py` | `6b2392ff3238806f7ad251b347e424b8bb99b57d` | `a0b944f012a3fa8c27dfe52cab1c53ef8893ec4f945e6b62eb6c297f42e8853b` |
+
+The table records the current 13-entry source registry, not an installed-state claim.
+The Infisical API-route row is separately refreshed from immutable main
+27801add4cfd5ea09fa8d2cbc3307e509779c1b9, source blob
+03f2ca24e1de1a47fd7aa1bb031e1e68f064c76e, through the five rename/import/env
+edits recorded in docs/security/preservation-pending-manifest.json. Its complete
+credential-containing lines are unchanged. The new REVIEWED_PRESERVATIONS and
+REVIEWED_SAME_PATH_SOURCES registries remain empty; that does not mean the
+existing _REVIEWED_FIXTURES registry is empty or inactive. The refreshed exact
+Infisical row is active in source semantics, but no deployment or runtime use
+is authorized or established by this proposal. Provider and loaded-value guards
+remain independent.
 
 Every attestation addition/change requires normal source review of the complete
 fixture contents and its provenance, evidence that values are synthetic and
