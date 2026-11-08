@@ -424,6 +424,69 @@ def _error_code_of(result: dict) -> str | None:
     return None
 
 
+# The closed refusal reasons the hosted front attaches to a relay_refused result
+# (scripts/agent-sync-mcp/src/gr-refusal.js REFUSAL_REASONS, kept in step).  Only an exact member is ever
+# shown, so the relay's own prose, an upstream body and anything a server made up are never copied.
+_REFUSAL_REASONS = frozenset(
+    (
+        "credential_scan",
+        "seat_policy",
+        "seat_rate_limit",
+        "github_refused",
+        "fence_mismatch",
+        "unauthenticated",
+        "bad_request_content_too_large",
+        "bad_request_default_branch_protected",
+        "bad_request_invalid_arguments",
+        "bad_request_invalid_files",
+        "bad_request_invalid_repository",
+        "bad_request_nothing_to_change",
+        "bad_request_pr_merged",
+        "bad_request_pr_not_issue_target",
+        "bad_request_pr_not_open",
+        "bad_request_review_not_pending",
+        "bad_request_unsupported_action",
+        "bad_request_workflow_path_permission",
+    )
+)
+
+
+def _refusal_detail_of(result: dict) -> str:
+    """` (reason=<closed reason>[, github_status=<4xx>])` from a relay_refused result, else "".
+
+    Reads the same candidates as `_error_code_of`.  `reason` must be an exact member of the closed set;
+    `github_status` must be a real int in 400..499 other than 429 (a bool is not an int here).  Nothing
+    else from the result is shown."""
+    candidates = []
+    sc = result.get("structuredContent")
+    if isinstance(sc, dict):
+        candidates.append(sc)
+    meta = result.get("_meta")
+    if isinstance(meta, dict) and isinstance(meta.get("agent-sync/error"), dict):
+        candidates.append(meta["agent-sync/error"])
+    for part in result.get("content") or []:
+        if isinstance(part, dict) and isinstance(part.get("text"), str):
+            try:
+                obj = strict_loads(part["text"])
+            except (ValueError, RecursionError):
+                continue
+            if isinstance(obj, dict):
+                candidates.append(obj)
+                break
+    for cand in candidates:
+        # The reason must come from the same object that carries the relay_refused code, never
+        # from a different candidate (a sibling object could name another refusal's cause).
+        if cand.get("code") != "relay_refused":
+            continue
+        reason = cand.get("reason")
+        if isinstance(reason, str) and reason in _REFUSAL_REASONS:
+            status = cand.get("github_status")
+            if type(status) is int and 400 <= status <= 499 and status != 429:
+                return f" (reason={reason}, github_status={status})"
+            return f" (reason={reason})"
+    return ""
+
+
 # ----------------------------------------------------------------- answer parsing (mirrors board)
 
 
@@ -686,6 +749,7 @@ def remote_call(tool: str, arguments: dict, write: bool, bearer: str, deadline: 
         code = _error_code_of(result)
         shown = code if code is not None else "error"
         note = _REMOTE_UNKNOWN if write and code == "outcome_unknown" else ""
+        detail = _refusal_detail_of(result) if code == "relay_refused" else ""
         # retry-after is the only other field ever shown, and only bounded.
         retry = None
         meta = result.get("_meta")
@@ -695,7 +759,7 @@ def remote_call(tool: str, arguments: dict, write: bool, bearer: str, deadline: 
                 retry = value
                 break
         after = f", retry after {int(-(-retry // 1))}s" if retry is not None else ""
-        die(f"{tool} failed on the hosted server: {shown}{after}{note}", EXIT_ERROR)
+        die(f"{tool} failed on the hosted server: {shown}{detail}{after}{note}", EXIT_ERROR)
     parts = [
         c.get("text")
         for c in content or []
