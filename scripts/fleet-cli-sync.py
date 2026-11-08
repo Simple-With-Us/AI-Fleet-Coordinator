@@ -45,9 +45,9 @@ RECEIVER_PATH = "scripts/fleet-cli-release.py"
 # The 155th is agent_sync/muster_service.py (AFC-654), the read-only Operator service `simple-chat`
 # dispatches for Muster's Seats panel.
 # The 156th is fleet_lanes/temp_build.py (AFC-618), the build-argv reader `lane`'s guard.py imports.
-# The 157th and 158th are agent_sync/platform_letter_cursor.py (the Cursor session-letter adapter) and
-# agent_sync/cursor_cloud_letters.py (the Cursor Cloud letter sweep).
-MAX_FILES = 158
+# The 157th to 159th are the ZCode letter adapter, the ZC wake bridge and the ZC letter hook wrapper
+# (OPS-1048);  fleet-cli-release.py carries the same ledger.
+MAX_FILES = 159
 MAX_BYTES = 8 * 1024 * 1024
 OVERALL_SECONDS = 90
 SSH_SECONDS = 65

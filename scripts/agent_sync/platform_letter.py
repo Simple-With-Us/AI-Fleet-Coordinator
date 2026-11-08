@@ -16,7 +16,7 @@ Mac, the one allocator for every host and every platform.  A chat on the Mac re
 server reaches it over one SSH hop to the Mac (the destination in SESSION_LETTER_REMOTE, or the hook's --remote), by
 running `~/.local/bin/platform-letter registry ...` there, so the Mac's own managed runtime makes the write.  The
 registry side refuses a host that has no registry file and never creates one: a second file would issue letters that
-collide with the Mac's.  A platform keeps its own namespace (`codex`, `opencode`, `muse`, `grok`, `antigravity`, `cursor`): a
+collide with the Mac's.  A platform keeps its own namespace (`codex`, `opencode`, `muse`, `grok`, `antigravity`): a
 letter is unique inside it, and `claude` and `minimax` are reserved to their own hooks.
 
 The letters.  Every chat takes a pair (AA to ZZ, 676 per platform).  A main chat takes the doubled pairs in order
@@ -78,9 +78,6 @@ from . import session_ids as SI
 ENTRY = "platform-letter"
 SCOPE = "default"
 LOCATIONS = ("mac", "server")
-# The locations the registry side takes:  a hook runs on the Mac or the server, and a chat no hook runs in (a Cursor
-# Cloud agent, which `cursor_cloud_letters` registers from the Cursor API) is in the cloud.
-REGISTRY_LOCATIONS = LOCATIONS + ("cloud",)
 # The two platforms that have their own hooks, sweeps and registry sides: this module never writes their rows.
 RESERVED_PLATFORMS = ("claude", "minimax")
 PLATFORM_RE = re.compile(r"[a-z][a-z0-9-]{1,31}")
@@ -1066,7 +1063,7 @@ def _make_parser() -> Any:
     parser.refused = Refused  # type: ignore[attr-defined]
     parser.add_argument("op", choices=("register", "title", "touch", "close", "show"))
     parser.add_argument("--platform", required=True)
-    parser.add_argument("--location", required=True, choices=REGISTRY_LOCATIONS)
+    parser.add_argument("--location", required=True, choices=LOCATIONS)
     parser.add_argument("--session-id", required=True)
     parser.add_argument("--seat", default="")
     parser.add_argument("--title", default="")
@@ -1356,6 +1353,15 @@ class Chat:
             out = io.StringIO()
             registry_main(argv, env=self.env, stdout=out)
             return _answer(_last_json(out.getvalue()))
+        from . import registry_api as RA
+
+        if RA.base_url(self.env):
+            # The explicit URL is the cutover (registry_api):  a hook on a host off the
+            # registry calls the Operator's API itself, under the location it was installed
+            # with, and never hops over ssh to a host whose own call would land here anyway.
+            out = io.StringIO()
+            registry_main(argv, env=self.env, stdout=out)
+            return _answer(_last_json(out.getvalue()))
         dest = self.remote
         if not DEST_RE.fullmatch(dest):
             # Empty, or something ssh could read as an option: refuse it rather than run it.
@@ -1435,40 +1441,6 @@ def reminder(spec: PlatformSpec, note: Mapping[str, Any]) -> str:
         'Operator session letter: %s, on the %s.  This chat is addressed as "@**%s** %s", and its title '
         'starts with "%s: "; keep that prefix if the chat is renamed.'
         % (ref, note.get("location"), spec.display, label, label)
-    )
-
-
-def untitled_context(
-    body: Mapping[str, Any], env: Mapping[str, str], seat: str, sid: str, display: str, product: str
-) -> str:
-    """The context line for a platform whose hooks cannot set a chat's title (such as Cursor), from one `json` style
-    answer (`{"context", "label"}`):  the chat is told its letter and how it is addressed, and that its title does not
-    carry the letter.  Any other line (no letter yet, another seat's) is the library's own, as it is."""
-    context = _text(
-        body.get("context")
-    )  # not `tidy`:  the library's sentence gaps stay as they are
-    label = _text(body.get("label"))
-    head, mark, _ = context.partition("Operator session letter:")
-    if not (label and mark):
-        return context
-    try:
-        with open(note_path(env, seat, sid), encoding="utf-8") as fh:
-            note = json.load(fh)
-    except (OSError, ValueError):
-        note = {}
-    note = note if isinstance(note, dict) else {}
-    gen = note.get("generation") or 1
-    where = "server" if note.get("location") == "server" else "Mac"
-    ref = "%s %s%s" % (
-        display,
-        label,
-        " (gen %d)" % gen if isinstance(gen, int) and gen > 1 else "",
-    )
-    # Rendered copy:  a sentence gap is U+00A0 plus a space.
-    return (
-        '%sOperator session letter: %s, on the %s.  This chat is addressed as "@**%s** %s".  %s gives a '
-        "hook no way to set a chat's title, so the title does not carry the letter; a name the owner gives this chat "
-        'should start with "%s: ".' % (head, ref, where, display, label, product, label)
     )
 
 
