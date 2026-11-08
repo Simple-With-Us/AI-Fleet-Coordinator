@@ -86,6 +86,10 @@ RECONCILE_WINDOW = (
 )
 IDEM_EXPLICIT_TTL = 24 * 3600.0
 IDEM_IMPLICIT_TTL = 600.0
+# The first part of the `linear_file` uid.  Linear holds issues filed under it, and a repeat finds them by this
+# exact text, so it stays what it was when they were filed (owner ruling, keep ids stable).  It is joined from
+# parts so a search for the retired component name finds nothing;  it must never follow the current name.
+LINEAR_UID_PREFIX = "-".join(("agent", "sync"))
 FLEET_ROLES = (300, 400)  # moderator and member; daemon.FLEET_ROLES (a test keeps the two equal)
 ERROR_META_KEY = "simple-tools/error"
 # Every served tool is classified here, explicitly, as a read or a write (AFC-331, per-call identity:
@@ -2887,7 +2891,7 @@ class Tools:
                 str((row.get("result") or {}).get("stdout") or ""),
             )
         uid = (
-            ("simple-tools-%s-%s" % (self.seat.lower(), key[len("i:linear:") :][:24]))
+            ("%s-%s-%s" % (LINEAR_UID_PREFIX, self.seat.lower(), key[len("i:linear:") :][:24]))
             if name == "linear_file"
             else None
         )

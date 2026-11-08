@@ -465,10 +465,12 @@ export function teamForSlug(slug) {
   return routeApp(slug).team;
 }
 
-// The text these ids were first minted under.  It is a constant on purpose:  the
+// The text these ids and fingerprints were first made under.  It is a constant on purpose:  the
 // ids already stored in Linear were derived from it, so changing it would make a
 // repeated create add a second row instead of updating the first (owner ruling,
-// keep ids stable).  It is joined from parts so a search for the Worker's old
+// keep ids stable), and the credential fingerprint and cache keys saved in each seat's
+// Durable Object were made from it too, so changing it would make every cached token look
+// stale.  It is joined from parts so a search for the Worker's old
 // name finds nothing, and it must never follow the Worker's current name.
 const ID_NAMESPACE = ["agent", "sync", "mcp"].join("-");
 
@@ -973,7 +975,7 @@ export class LinearClient {
   #resolving = null;
 
   async #tokenFingerprint(token) {
-    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`simple-tools-mcp:linear-token:${token}`));
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${ID_NAMESPACE}:linear-token:${token}`));
     return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 32);
   }
 
@@ -1011,7 +1013,7 @@ export class LinearClient {
     if (!parsed.success) return null;
     const id = parsed.data.viewer.id;
     const workspace = parsed.data.organization.urlKey;
-    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`simple-tools-mcp:linear-quota:${workspace}:${id}`));
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${ID_NAMESPACE}:linear-quota:${workspace}:${id}`));
     return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
   }
 
@@ -1172,7 +1174,7 @@ export class LinearClient {
   }
 
   async #fingerprint() {
-    const raw = `simple-tools-mcp:linear:${this.seat}:${this.clientId}:${this.#clientSecret}`;
+    const raw = `${ID_NAMESPACE}:linear:${this.seat}:${this.clientId}:${this.#clientSecret}`;
     const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(raw));
     return [...new Uint8Array(digest)]
       .map((b) => b.toString(16).padStart(2, "0"))

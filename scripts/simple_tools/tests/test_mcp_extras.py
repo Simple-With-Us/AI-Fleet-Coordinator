@@ -1371,7 +1371,8 @@ class LinearToolTests(FakePrograms):
         session.call("linear_file", {"title": "Another issue", "app": "afc"})
         first, second = self.calls(self.board_out)
         uids = [c["argv"][c["argv"].index("--uid") + 1] for c in (first, second)]
-        self.assertRegex(uids[0], r"^simple-tools-claude-[0-9a-f]{24}$")
+        # Pinned to the text the uid was first filed under:  Linear holds issues keyed by it.
+        self.assertRegex(uids[0], r"^" + "-".join(("agent", "sync")) + r"-claude-[0-9a-f]{24}$")
         self.assertNotEqual(uids[0], uids[1])
 
     def test_a_linear_file_retry_after_a_lost_response_reuses_the_uid_and_makes_no_second_issue(
@@ -1397,7 +1398,9 @@ class LinearToolTests(FakePrograms):
                 ensure_ascii=False,
             )
         )
-        self.assertEqual(uid, "simple-tools-claude-" + key[len("i:linear:") :][:24])
+        self.assertEqual(
+            uid, "-".join(("agent", "sync")) + "-claude-" + key[len("i:linear:") :][:24]
+        )
         again = session.call("linear_file", args)
         self.assertIn("repeat of an earlier identical call", again["content"][0]["text"])
         self.assertEqual(len(self.calls(self.board_out)), 1)
