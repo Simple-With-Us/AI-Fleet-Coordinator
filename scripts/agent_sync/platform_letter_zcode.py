@@ -457,33 +457,37 @@ def sweep_main(argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int:
     if not os.path.isfile(path):
         stdout.write(json.dumps({"error": "no ZCode session store at %s" % path}) + "\n")
         return 2
+    shape = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
     try:
         conn = sqlite3.connect("file:%s?mode=ro" % path, uri=True, timeout=5)
         rows = conn.execute(
             "SELECT id FROM session WHERE time_archived IS NOT NULL OR time_deleted IS NOT NULL"
         ).fetchall()
+        every = conn.execute("SELECT id FROM session").fetchall()
         conn.close()
     except sqlite3.Error as exc:
         stdout.write(
             json.dumps({"error": "the store could not be read (%s)" % type(exc).__name__}) + "\n"
         )
         return 2
-    gone = [
-        r[0] for r in rows if isinstance(r[0], str) and re.fullmatch(r"[A-Za-z0-9._-]{1,128}", r[0])
-    ]
+    gone = [r[0] for r in rows if isinstance(r[0], str) and shape.fullmatch(r[0])]
     # Registrations whose session row the store has dropped outright (a hard delete) fire no
     # flag to sweep on:  the live registrations answer what the store no longer knows about.
+    # `known` is EVERY id the store holds, filtered by the same shape as `gone` — a known set
+    # of only the archived/deleted ids would mark every active session dropped (Kody follow-up
+    # on the sweep thread).  The history read asks for one high page because the API pages by
+    # limit only:  more live registrations than the page means missed closes, never false ones.
     from . import registry_api as RA
 
     if RA.base_url(env):
-        answer = RA.call(env, "history", {"platform": PLATFORM, "limit": 200})
+        answer = RA.call(env, "history", {"platform": PLATFORM, "limit": 1000})
         history = answer.get("items") if isinstance(answer, dict) else None
         if isinstance(history, list):
-            known = {r[0] for r in rows} if rows else set()
+            known = {r[0] for r in every if isinstance(r[0], str) and shape.fullmatch(r[0])}
             for row in history:
                 sid = str((row or {}).get("native_session_id") or "")
                 if (
-                    re.fullmatch(r"[A-Za-z0-9._-]{1,128}", sid)
+                    shape.fullmatch(sid)
                     and not (row or {}).get("closed_at")
                     and str((row or {}).get("state") or "") != "closed"
                     and sid not in known

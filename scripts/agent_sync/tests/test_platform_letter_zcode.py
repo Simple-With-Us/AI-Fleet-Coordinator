@@ -281,6 +281,62 @@ class ApiTransport(Base):
         self.assertIn("No Operator letter yet", out)
 
 
+class SweepAgainstApi(Base):
+    """The dropped-session diff against a real registry API:  a registration whose session is
+    ACTIVE in the store is never closed (the false positive Kody's follow-up caught), and one
+    whose row the store has dropped is closed by the diff."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        import secrets
+
+        self.operator_key = secrets.token_hex(24)
+        self.service = RG.RegistryService(self.db, {"OPERATOR": self.operator_key})
+        self.server = API.ListenerReadApi(
+            "127.0.0.1", 0, self.state, {}, registry=self.service
+        )
+        self.server.start()
+        self.addCleanup(self.server.close)
+        host, port = self.server.address
+        self.api_env = self.env(
+            SIMPLE_TOOLS_OPERATOR_REGISTRY_URL="http://%s:%d" % (host, port),
+            SIMPLE_TOOLS_OPERATOR_REGISTRY_PRINCIPAL="OPERATOR",
+            SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY=self.operator_key,
+        )
+
+    def _register(self, sid: str) -> None:
+        OR.register_session(
+            self.db,
+            platform="zcode",
+            verified_host="server",
+            profile_scope="default",
+            native_session_id=sid,
+            seat="ZC",
+            source="sweep test",
+            issuer=OR.ISSUER_OPERATOR,
+        )
+
+    def test_active_registration_is_not_closed_and_dropped_one_is(self) -> None:
+        active, dropped, archived = sess(60), sess(61), sess(62)
+        self.add_session(active, title="Still live")
+        self.add_session(archived, title="Done")
+        conn = sqlite3.connect(self.store)
+        with conn:
+            conn.execute("UPDATE session SET time_archived = 2 WHERE id = ?", (archived,))
+        conn.close()
+        self._register(active)
+        self._register(dropped)
+        self._register(archived)
+        out = io.StringIO()
+        code = Z.main(["sweep", "--apply", "--location", "server"], env=self.api_env, stdout=out)
+        self.assertEqual(code, 0, out.getvalue())
+        registry = OR.SessionRegistry(self.db)
+        live = registry.lookup("zcode", "server", "default", active)
+        self.assertTrue(live and live["label"])  # untouched: it still holds its letter
+        self.assertEqual(registry.lookup("zcode", "server", "default", dropped)["state"], "closed")
+        self.assertEqual(registry.lookup("zcode", "server", "default", archived)["state"], "closed")
+
+
 class TitleWriter(Base):
     def test_rename_writes_generated_title(self) -> None:
         sid = sess(20)
