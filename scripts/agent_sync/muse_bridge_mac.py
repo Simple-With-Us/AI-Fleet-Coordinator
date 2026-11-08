@@ -13,6 +13,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -136,6 +137,18 @@ def pin_drift(root: str, binary: str | None, model: str) -> dict[str, Any] | Non
     return {"pinned_muse": pin.get("muse"), "muse": os.path.realpath(binary)}
 
 
+_MODEL_ID_SHAPE = re.compile(
+    r"[A-Za-z0-9][A-Za-z0-9._:-]{0,63}(/[A-Za-z0-9][A-Za-z0-9._:-]{0,63})?"
+)
+
+
+def _diagnostic_model(name: Any) -> str:
+    """A served model id for a diagnostic, only when it is shaped like an id.  The runner reports
+    what the provider sent, so anything else (a path, free text) is not echoed."""
+    text = name if isinstance(name, str) else ""
+    return text if _MODEL_ID_SHAPE.fullmatch(text) else "<unlisted>"
+
+
 def probe_pin(root: str, env: Mapping[str, str], home: str, wake_path: str) -> dict[str, Any]:
     """Operator-run positive canary for the bridge contract; never run during ordinary startup."""
     binary = resolve_bridge_muse(wake_path)
@@ -199,9 +212,20 @@ def probe_pin(root: str, env: Mapping[str, str], home: str, wake_path: str) -> d
         or obj.get("risk") != "low"
         or result.models != [model]
     ):
+        # Value-free runner facts only:  exit code, byte counts, the stderr digest and the served
+        # model ids that look like a plain id (anything else is shown as <unlisted>).  Never stdout,
+        # stderr text, the prompt, a path or any environment value.
         raise ValueError(
-            "bridge canary did not select its exact fixed resource: %s"
-            % (result.error or "unexpected selection")
+            "bridge canary did not select its exact fixed resource: %s (exit=%s stdout_len=%s "
+            "stderr_len=%s stderr_sha=%s models=%s)"
+            % (
+                result.error or "unexpected selection",
+                result.exit,
+                result.stdout_len,
+                result.stderr_len,
+                (result.stderr_sha or "")[:12],
+                ",".join(_diagnostic_model(m) for m in (result.models or [])[:4]),
+            )
         )
     candidate = {
         "muse": A.binary_pin(binary),
