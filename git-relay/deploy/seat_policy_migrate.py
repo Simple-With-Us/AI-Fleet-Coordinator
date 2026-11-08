@@ -297,6 +297,18 @@ def _restart_and_check(host: Host, unit: sp.Unit) -> bool:
     return host.systemctl("restart", unit.name) == 0 and host.healthy(unit)
 
 
+def _take_lock(path: str):
+    """sp._acquire_transaction_lock, with an unsafe lock path (a symlink, an unwritable
+    directory) turned into a clean Refusal instead of an uncaught OSError.  Nothing has
+    been written when it raises."""
+    try:
+        return sp._acquire_transaction_lock(path)
+    except OSError:
+        raise Refusal(
+            f"the transaction lock file beside {path} cannot be opened safely;  nothing was written"
+        ) from None
+
+
 class _Locks:
     """The transaction locks, taken in a fixed order and released together.
 
@@ -310,7 +322,11 @@ class _Locks:
 
     def acquire(self) -> bool:
         for path in self.paths:
-            fd = sp._acquire_transaction_lock(path)
+            try:
+                fd = _take_lock(path)
+            except Refusal:
+                self.release()
+                raise
             if fd is None:
                 self.release()
                 return False
@@ -399,7 +415,11 @@ def apply(args, host: Host | None = None, crash_after: str | None = None) -> int
     """crash_after is a test hook:  raise right after the named phase is journaled."""
     host = host or Host()
     unit = host.read_unit(args.unit)
-    journal_lock = sp._acquire_transaction_lock(os.path.join(args.journal_dir, "migrate"))
+    try:
+        journal_lock = _take_lock(os.path.join(args.journal_dir, "migrate"))
+    except Refusal as exc:
+        print(f"refusing:  {exc}")
+        return 2
     if journal_lock is None:
         print("refusing:  another migration holds the journal lock")
         return 2
@@ -412,7 +432,12 @@ def apply(args, host: Host | None = None, crash_after: str | None = None) -> int
             print(f"refusing:  {exc}")
             return 2
         locks = _Locks([seats_path, args.backing])
-        if not locks.acquire():
+        try:
+            got = locks.acquire()
+        except Refusal as exc:
+            print(f"refusing:  {exc}")
+            return 2
+        if not got:
             print(
                 "refusing:  an install-seat or migration transaction holds the policy lock;  retry when it finishes"
             )
@@ -525,13 +550,22 @@ def recover(args, host: Host | None = None) -> int:
     if bad:
         print(f"refusing:  {bad}")
         return 2
-    journal_lock = sp._acquire_transaction_lock(os.path.join(args.journal_dir, "migrate"))
+    try:
+        journal_lock = _take_lock(os.path.join(args.journal_dir, "migrate"))
+    except Refusal as exc:
+        print(f"refusing:  {exc}")
+        return 2
     if journal_lock is None:
         print("refusing:  another transaction holds the lock")
         return 2
     locks = _Locks([journal["policy"]["path"], journal["backing"]])
     try:
-        if not locks.acquire():
+        try:
+            got = locks.acquire()
+        except Refusal as exc:
+            print(f"refusing:  {exc}")
+            return 2
+        if not got:
             print("refusing:  an install-seat or migration transaction holds the policy lock")
             return 2
         if journal["phase"] == "healthy":

@@ -562,6 +562,46 @@ class MigrateTests(unittest.TestCase):
         finally:
             os.close(fd)
 
+    def _symlink_lock(self, base):
+        lock = base + ".transaction.lock"
+        target = self.root / "elsewhere"
+        target.write_text("x")
+        os.symlink(target, lock)
+        return target
+
+    def test_apply_refuses_cleanly_on_a_symlinked_policy_lock(self):
+        for which in ("seats", "backing", "journal"):
+            with self.subTest(which=which):
+                self.setUp()
+                base = {
+                    "seats": str(self.seats),
+                    "backing": self.backing,
+                    "journal": str(self.journal / "migrate"),
+                }[which]
+                target = self._symlink_lock(base)
+                rc, out = self.run_cmd(mg.apply)
+                self.assertEqual(rc, 2)
+                self.assertIn("cannot be opened safely", out)
+                self.assertNotIn("Traceback", out)
+                self.assertEqual(target.read_text(), "x")
+                self.assert_unchanged()
+
+    def test_recover_refuses_cleanly_on_a_symlinked_lock(self):
+        self.assertEqual(self.run_cmd(mg.apply)[0], 0)
+        self.host = FakeHost(self.root)
+        self.args = SimpleNamespace(unit=UNIT, journal_dir=str(self.journal))
+        for base in (self.backing, str(self.journal / "migrate")):
+            with self.subTest(base=base):
+                lock = base + ".transaction.lock"
+                if os.path.lexists(lock):
+                    os.unlink(lock)
+                target = self._symlink_lock(base)
+                rc, out = self.run_cmd(mg.recover)
+                self.assertEqual(rc, 2)
+                self.assertIn("cannot be opened safely", out)
+                self.assertEqual(target.read_text(), "x")
+                os.unlink(lock)
+
 
 if __name__ == "__main__":
     unittest.main()
