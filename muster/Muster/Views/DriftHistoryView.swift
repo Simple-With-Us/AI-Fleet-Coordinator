@@ -58,14 +58,19 @@ struct DriftHistoryView: View {
 
     /// What the watcher is doing and what it last found.
     private var status: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        let line = watchLine
+        return VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
+                // Green only when paths are set to be watched:  a watcher that is off or
+                // watching nothing is a warning, whatever its armed flag says.
                 Circle()
-                    .fill(monitor.isWatching ? Color.green : Color.secondary)
+                    .fill(line.tone == .watching ? Color.green : Color.orange)
                     .frame(width: 8, height: 8)
-                Text(watchingText)
+                    .accessibilityHidden(true)
+                Text(line.text)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(line.tone == .watching ? Color.secondary : Color.orange)
+                    .fixedSize(horizontal: false, vertical: true)
                 if let count = monitor.redCount {
                     Text(count == 1 ? "1 red cell" : "\(count) red cells")
                         .font(.caption)
@@ -90,14 +95,14 @@ struct DriftHistoryView: View {
         }
     }
 
-    /// What the watcher is watching,  in words.
-    private var watchingText: String {
-        let paths = monitor.watchedPathCount
-        let seats = monitor.watchedSeats.count
-        guard paths > 0 else {
-            return "No paths are watched,  so nothing can be seen change."
-        }
-        return "Watching \(paths) path(s) the manifest names,  for \(seats) seat(s)."
+    /// What the watcher is set to watch,  in the same words the Overview uses.
+    private var watchLine: GridPresentation.WatchLine {
+        GridPresentation.WatchLine.make(
+            isWatching: monitor.isWatching,
+            pathCount: monitor.watchedPathCount,
+            seatCount: monitor.watchedSeats.count,
+            recheckSeconds: DriftMonitor.safetyNetInterval
+        )
     }
 
     /// The list of turns.
