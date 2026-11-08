@@ -113,7 +113,10 @@ class RuntimeProof:
 # image generation: the old dispatch table refuses the action itself, the newer
 # one refuses the default branch before any provider mutation. Accepting the
 # set, and recording which one answered, is what lets the external proof run
-# without assuming the deployed image's manifest digest was already logged.
+# without assuming the deployed image's manifest digest was already logged. The
+# old-generation refusal is reason-only: install-seat's receipt bind requires
+# the updated image's audited scalars and fails closed against a pre-rollout
+# relay with deployment-order guidance (see _audit_row_binds).
 REFUSALS = frozenset({"unknown action 'wf_file_patch'", "default branch is not writable"})
 
 PROVEN = "proven"
@@ -317,10 +320,14 @@ def _audit_row_binds(record, rows):
     The row the relay wrote for the denied probe carries the allowlisted
     scalars: the same seat, action and repo, a denial outcome, the probe path
     (which names the one-time proof id) and exactly the refusal the proof
-    recorded. The receipt is the operator's signed claim; this is the
-    authoritative half, from the relay's own log.
+    recorded. Only the updated image writes that row: a pre-rollout relay
+    refuses wf_file_patch pre-dispatch as an unknown action and audits the
+    refusal reason alone, with no scalars to bind. The receipt is the
+    operator's signed claim; this is the authoritative half, from the relay's
+    own log.
     """
     matches = 0
+    unbound_refusal = False
     for row in rows or ():
         if (
             isinstance(row, dict)
@@ -328,11 +335,24 @@ def _audit_row_binds(record, rows):
             and row.get("action") == "wf_file_patch"
             and row.get("repo") == record["repo"]
             and row.get("result") in ("bad_request", "denied")
-            and _row_binds_path(row, record["probe_path"])
             and row.get("reason") == record.get("refusal")
         ):
-            matches += 1
+            if _row_binds_path(row, record["probe_path"]):
+                matches += 1
+            elif "path" not in row and "path_sha256" not in row:
+                # The probe reached a relay that predates workflow-file
+                # dispatch: its pre-dispatch refusal row carries the reason
+                # alone, so no proof id can ever bind to it. Deploy the
+                # updated relay image (whose denials audit the allowlisted
+                # scalars), then rerun the install.
+                unbound_refusal = True
     if matches != 1:
+        if unbound_refusal:
+            raise ValueError(
+                "relay predates workflow-file dispatch: its refusal audit row "
+                "carries no bound scalars; deploy the updated relay image, "
+                "then rerun the install"
+            )
         raise ValueError("proof not bound to the relay audit")
 
 
