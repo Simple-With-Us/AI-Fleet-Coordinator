@@ -43,6 +43,45 @@ function patternsOf(schema, where, out = []) {
 
 const sha256 = (text) => createHash("sha256").update(text, "utf8").digest("hex");
 
+const plain = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+const isNumber = (value) => typeof value === "number" && Number.isFinite(value);
+const nonNegativeInteger = (value) => Number.isInteger(value) && value >= 0;
+
+/**
+ * What `_schema_constraints_ok` in git-tools/git requires of the structure around the patterns (everything but the digest
+ * check), because any one failure makes simple-git refuse the whole tools/list answer, not only an unreviewed pattern:
+ * an object at every node, an object `items` (the tuple form, an array, is refused), a list of objects for `anyOf`, string
+ * `type` and `required` entries, numeric bounds, non-negative integer length and item bounds, a list `enum`, at most 200
+ * properties, and no deeper than 8 levels.  A missing or null key counts as absent, as it does there.
+ */
+function shapeProblems(schema, where, depth = 0, out = []) {
+  if (!plain(schema)) return out.push(`${where}: not an object`), out;
+  if (depth > 8) return out.push(`${where}: nested deeper than 8 levels`), out;
+  if (schema.type != null && typeof schema.type !== "string") out.push(`${where}: type is not a string`);
+  if (schema.required != null && !(Array.isArray(schema.required) && schema.required.every((entry) => typeof entry === "string"))) {
+    out.push(`${where}: required is not a list of strings`);
+  }
+  for (const key of ["minimum", "maximum"]) if (key in schema && !isNumber(schema[key])) out.push(`${where}: ${key} is not a number`);
+  for (const key of ["minLength", "maxLength", "minItems", "maxItems"]) {
+    if (key in schema && !nonNegativeInteger(schema[key])) out.push(`${where}: ${key} is not a non-negative integer`);
+  }
+  if (schema.pattern != null && typeof schema.pattern !== "string") out.push(`${where}: pattern is not a string`);
+  if (schema.enum != null && !Array.isArray(schema.enum)) out.push(`${where}: enum is not a list`);
+  if (schema.items != null) shapeProblems(schema.items, `${where}[]`, depth + 1, out);
+  if (schema.properties != null) {
+    if (!plain(schema.properties) || Object.keys(schema.properties).length > 200) {
+      out.push(`${where}: properties is not a map of at most 200 entries`);
+    } else {
+      for (const [key, child] of Object.entries(schema.properties)) shapeProblems(child, `${where}.${key}`, depth + 1, out);
+    }
+  }
+  if (schema.anyOf != null) {
+    if (!Array.isArray(schema.anyOf)) out.push(`${where}: anyOf is not a list`);
+    else schema.anyOf.forEach((variant, index) => shapeProblems(variant, `${where}|${index}`, depth + 1, out));
+  }
+  return out;
+}
+
 test("every pattern a listed gr_ tool carries is in simple-git's reviewed set", () => {
   const known = reviewedDigests();
   const tools = toolListFor("CLAUDE", PRODUCTION).list.filter((tool) => GIT_TOOL_NAME.test(tool.name));
@@ -52,6 +91,12 @@ test("every pattern a listed gr_ tool carries is in simple-git's reviewed set", 
   assert.ok(tools.length > 100, `only ${tools.length} gr_ tools matched simple-git's name rule`);
   assert.ok(advertised.length > 100, `only ${advertised.length} patterns found in their schemas`);
   assert.ok(tools.some((tool) => tool.name === "gr_wf_review_thread_comments"), "the tool that broke simple-git is not listed");
+  // The rest of what simple-git needs of a schema (_schema_ok), since one refused schema also refuses the whole list.
+  const problems = tools.flatMap((tool) => [
+    ...(tool.inputSchema?.type != null && tool.inputSchema.type !== "object" ? [`${tool.name}: the root type is not object`] : []),
+    ...shapeProblems(tool.inputSchema, tool.name),
+  ]);
+  assert.deepEqual(problems, [], "simple-git would refuse these schemas, and then every call");
   const missing = advertised
     .filter(({ pattern }) => !known.has(sha256(pattern)))
     .map(({ where, pattern }) => `${where}: ${pattern}  (sha256 ${sha256(pattern)})`);
@@ -71,4 +116,25 @@ test("the check finds patterns in nested schemas and tells a reviewed digest fro
     "t",
   );
   assert.deepEqual(nested, [{ where: "t.id", pattern: "^x{1,9}$" }, { where: "t.rows[]", pattern: "^y$" }]);
+});
+
+test("the shape check catches what simple-git refuses besides an unreviewed pattern", () => {
+  const ok = { type: "object", required: ["a"], properties: { a: { type: "string", maxLength: 9, pattern: "^a$" }, n: { type: "integer", minimum: 1, maximum: 5 } } };
+  assert.deepEqual(shapeProblems(ok, "t"), []);
+  const refused = {
+    "tuple-form items": { type: "object", properties: { rows: { type: "array", items: [{ type: "string", pattern: "^y$" }] } } },
+    "a non-object anyOf entry": { type: "object", properties: { v: { anyOf: ["string"] } } },
+    "anyOf that is not a list": { type: "object", properties: { v: { anyOf: { type: "string" } } } },
+    "required that is not strings": { type: "object", required: [1] },
+    "a string bound": { type: "object", properties: { n: { type: "integer", maximum: "5" } } },
+    "a negative length": { type: "object", properties: { s: { type: "string", maxLength: -1 } } },
+    "an enum that is not a list": { type: "object", properties: { s: { type: "string", enum: "a" } } },
+    "a properties value that is not a map": { type: "object", properties: ["a"] },
+    "a non-object property": { type: "object", properties: { s: "string" } },
+    "too deep": { type: "object", properties: { a: { properties: { b: { properties: { c: { properties: { d: { properties: { e: { properties: { f: { properties: { g: { properties: { h: { properties: { i: { type: "string" } } } } } } } } } } } } } } } } } } },
+  };
+  for (const [name, schema] of Object.entries(refused)) {
+    assert.notDeepEqual(shapeProblems(schema, "t"), [], name);
+  }
+  assert.notDeepEqual(shapeProblems([], "t"), []);
 });
