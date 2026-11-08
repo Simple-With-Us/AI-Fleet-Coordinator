@@ -151,6 +151,51 @@ final class FleetStore: ObservableObject {
     /// Whether a run is in flight.
     var isRunning: Bool { phase == .running }
 
+    /// When the run in flight started,  on the wall clock,  or nil when none is in flight.
+    ///
+    /// The drift monitor reads it after a wake:  a run that started before the Mac slept read
+    /// the Mac as it was then,  and one that started after the wake is the run the wake asks for.
+    private(set) var runStartedAt: Date?
+
+    /// When the run that landed last started,  on the wall clock,  or nil when none has landed
+    /// or the last refresh found no engine to run.
+    ///
+    /// It is set as the run lands and kept until the next one lands,  because `runStartedAt` is
+    /// already nil by the time the drift monitor hears the run finished.  The monitor reads it
+    /// to tell a run that started after a wake from one that only landed after it.
+    private(set) var lastLandedRunStartedAt: Date?
+
+    // MARK: Compliance rules (GRID-18)
+
+    /// The engine's results for the fleet-wide compliance rules,  from the last answer.
+    ///
+    /// The grid's cells are one seat against one config kind,  so these results reach no
+    /// cell.  They are kept here instead of being dropped.  They are empty before the first
+    /// answer and after a failed run,  and while a run is in flight they are the last answer's
+    /// (`isShowingLastAnswer`).
+    var complianceResults: [CheckResult] {
+        answered ? results.filter { $0.isCompliance } : []
+    }
+
+    /// Every compliance rule the manifest names or the engine answered for,  each with its
+    /// real state,  in manifest order.
+    ///
+    /// A rule the engine did not run,  or cannot run yet,  never reads as passing:  it reads as
+    /// not built,  not in the answer or not answered.
+    var complianceStatuses: [ComplianceRuleStatus] {
+        ComplianceStatusBuilder.build(
+            rules: manifest?.allComplianceRules ?? [],
+            results: results,
+            notImplemented: notImplemented,
+            answered: answered
+        )
+    }
+
+    /// One compliance rule's state,  or nil when neither the manifest nor the engine names it.
+    func complianceStatus(ruleID: String) -> ComplianceRuleStatus? {
+        complianceStatuses.first { $0.ruleID == ruleID }
+    }
+
     /// The app's store:  the engine this Mac has,  run by `EngineRunner`.
     convenience init() {
         self.init(
@@ -433,11 +478,16 @@ final class FleetStore: ObservableObject {
             notImplemented = []
             answered = false
             isChecking = false
+            lastLandedRunStartedAt = nil
             phase = .failed(
                 "no engine checkout was found;  set FLEET_ENGINE_ROOT to a checkout that "
                     + "carries scripts/fleet_config"
             )
             rebuild()
+            // No engine is a run that could not be trusted,  and a watcher has to hear that
+            // like any other failure:  the drift monitor then clears its count and its alerts,
+            // and its safety net waits a whole interval before it asks again.
+            onRunFinished?(false)
             return
         }
         let box = RefreshBox()
@@ -449,6 +499,7 @@ final class FleetStore: ObservableObject {
         }
         refreshBox = box
         refreshLock.unlock()
+        runStartedAt = Date()
         phase = .running
         isChecking = true
         rebuild()
@@ -466,6 +517,8 @@ final class FleetStore: ObservableObject {
     /// Take what the run produced.
     private func apply(_ run: EngineRun) {
         isChecking = false
+        lastLandedRunStartedAt = runStartedAt
+        runStartedAt = nil
         guard let envelope = run.envelope else {
             results = []
             summary = nil

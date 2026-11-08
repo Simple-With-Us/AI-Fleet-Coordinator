@@ -338,6 +338,65 @@ enum GridPresentation {
                 tone: .watching
             )
         }
+
+        /// The line, from what the watcher actually holds (GRID-37).
+        ///
+        /// The paths counted are the ones with a started stream on them, never the ones only
+        /// asked for.  A stream that failed to start makes the line a warning that says how
+        /// many paths are not watched, and none started is "Watching nothing".
+        static func make(
+            isWatching: Bool,
+            coverage: DriftWatchCoverage,
+            seatCount: Int,
+            recheckSeconds: TimeInterval
+        ) -> WatchLine {
+            let minutes = max(1, Int((recheckSeconds / 60).rounded()))
+            let every = minutes == 1 ? "every minute" : "every \(minutes) minutes"
+            let recheck = "Secret store checks cannot be watched, so they are checked again at least \(every)."
+            guard isWatching else {
+                return WatchLine(
+                    text: "Not watching:  a change to a seat's config is seen only when the seat setup is checked again.",
+                    tone: .warning
+                )
+            }
+            guard coverage.pathsAsked > 0 else {
+                return WatchLine(
+                    text: "Watching nothing:  the manifest names no path on the Mac to watch, so a change is seen only at the check \(every).",
+                    tone: .warning
+                )
+            }
+            guard coverage.pathsWatched > 0 else {
+                return WatchLine(
+                    text: "Watching nothing:  none of the \(coverage.streamsAsked) watches on the Mac could be started, so a change is seen only at the check \(every).",
+                    tone: .warning
+                )
+            }
+            let watched = coverage.pathsWatched == 1 ? "1 path" : "\(coverage.pathsWatched) paths"
+            let seats = seatCount == 1 ? "1 seat" : "\(seatCount) seats"
+            guard coverage.isComplete else {
+                let failed = coverage.streamsFailed == 1
+                    ? "1 watch could not be started"
+                    : "\(coverage.streamsFailed) watches could not be started"
+                let unwatched = coverage.unwatchedPaths.count
+                let rest: String
+                if unwatched == 0 {
+                    rest = "every path still has a watch on it"
+                } else if unwatched == 1 {
+                    rest = "a change to 1 path is seen only at the check \(every)"
+                } else {
+                    rest = "a change to \(unwatched) paths is seen only at the check \(every)"
+                }
+                return WatchLine(
+                    text: "Watching \(watched) of \(coverage.pathsAsked) on the Mac for \(seats)." + GridPresentation.gap
+                        + "\(failed), so \(rest).",
+                    tone: .warning
+                )
+            }
+            return WatchLine(
+                text: "Watching \(watched) on the Mac for \(seats)." + GridPresentation.gap + recheck,
+                tone: .watching
+            )
+        }
     }
 
     // MARK: Compliance rules
@@ -348,6 +407,11 @@ enum GridPresentation {
     /// What that list is, and what it is not.
     static let complianceExplanation = "These rules are listed from fleet-seats.json."
         + gap + "Their results are not shown in this grid, so a rule here says only whether its check exists, never that it passed."
+
+    /// What that list is once each rule shows its result from `FleetStore.complianceStatuses`
+    /// (GRID-18).
+    static let complianceResultsExplanation = "These rules are listed from fleet-seats.json, each with the engine's last result for it."
+        + gap + "A rule the engine has not run, or cannot run yet, is never shown as passing."
 
     /// The status a compliance rule shows, in place of a result the app does not have.
     static func complianceStatus(_ rule: ComplianceRule) -> (text: String, isBuilt: Bool) {

@@ -51,14 +51,9 @@ struct MusterApp: App {
         _reconciler = StateObject(wrappedValue: reconciler)
         _watch = StateObject(wrappedValue: PlaceWatch(onWake: {
             Task { await admin.refresh() }
-            // The seat counts are from before the sleep,  and the menu reads them as not known
-            // once they are older than their window.  The engine runs again once the network has
-            // had a moment to come back,  so the counts are current again without waiting for
-            // the safety net.  A run in flight is shared,  never doubled.
-            Task { @MainActor in
-                try? await Task.sleep(nanoseconds: MusterWake.engineDelayNanoseconds)
-                if !store.isRunning { store.refresh() }
-            }
+            // The engine's run after a wake belongs to the drift monitor (GRID-33):  it waits
+            // DriftMonitor.wakeRunDelay for the network,  skips the run when one after the wake
+            // already covers it,  and never starts a second run while one is in flight.
         }))
     }
 
@@ -109,14 +104,6 @@ struct MusterApp: App {
                 .environmentObject(router)
         }
     }
-}
-
-/// What the app does when the Mac wakes,  beyond `PlaceWatch`'s own reads.
-enum MusterWake {
-    /// How long after a wake the engine runs again:  long enough for the network to return
-    /// for the checks that read the secret store,  short enough that the counts are not left
-    /// not known for long.
-    static let engineDelayNanoseconds: UInt64 = 10_000_000_000
 }
 
 /// The app's Settings scene:  four panes of one fixed size,  so the window (which Settings

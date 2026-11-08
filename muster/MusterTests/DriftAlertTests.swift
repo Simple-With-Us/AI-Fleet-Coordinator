@@ -720,8 +720,12 @@ final class DriftMonitorTests: XCTestCase {
         XCTAssertEqual(grid.refreshCount, 2)
     }
 
-    /// The safety net is not held by the floor.
-    func test_the_safety_net_is_not_held_by_the_floor() async throws {
+    /// GRID-33:  the net no longer runs on every tick of its own.  It runs when the last
+    /// trusted run is a whole interval old on the wall clock,  so a run that landed five
+    /// seconds before a tick is not run again,  and once the interval has passed it runs
+    /// without waiting on the watcher's floor.  (This replaces a test that the net ran five
+    /// seconds after a trusted run,  which is the behaviour GRID-33 removes.)
+    func test_the_safety_net_runs_only_once_the_trusted_run_is_an_interval_old() async throws {
         let grid = FakeGrid()
         let watcher = FakeWatcher()
         let scheduler = ManualScheduler()
@@ -739,7 +743,15 @@ final class DriftMonitorTests: XCTestCase {
         clock.advance(by: 5)
         ticker.fire()
         await settle()
-        XCTAssertEqual(grid.refreshCount, 2, "the safety net runs inside the gap")
+        XCTAssertEqual(grid.refreshCount, 1, "a trusted run five seconds ago is current, so the net waits")
+
+        // Look every minute until the trusted run is a whole interval old.
+        for _ in 0..<10 {
+            clock.advance(by: 60)
+            ticker.fire()
+            await settle()
+        }
+        XCTAssertEqual(grid.refreshCount, 2, "the net runs once the trusted run is an interval old")
     }
 
     /// The watcher keeps its streams when a run leaves the watch list as it was,  and is
@@ -913,21 +925,33 @@ final class DriftMonitorTests: XCTestCase {
         XCTAssertTrue(scheduler.liveDelays.isEmpty, "a run was left waiting for the old gap")
     }
 
-    /// The safety net is minutes,  not seconds.
-    func test_the_safety_net_is_slow() {
+    /// The safety net is minutes,  not seconds:  it looks at the clock every minute,  and
+    /// the engine runs only when the last trusted run is ten minutes old.
+    func test_the_safety_net_is_slow() async throws {
         let ticker = ManualTicker()
+        let grid = FakeGrid()
+        let clock = DriftTestClock()
         let monitor = DriftMonitor(
-            grid: FakeGrid(),
+            grid: grid,
             notifier: DriftRecordingNotifier(),
             history: DriftHistoryStore(url: historyURL),
             watcher: FakeWatcher(),
             scheduler: ManualScheduler(),
             ticker: ticker,
-            home: home
+            home: home,
+            clock: { clock.now }
         )
         monitor.start()
-        XCTAssertEqual(ticker.interval, DriftMonitor.safetyNetInterval)
-        XCTAssertGreaterThanOrEqual(ticker.interval ?? 0, 60)
+        XCTAssertEqual(ticker.interval, DriftMonitor.safetyNetCheckInterval)
+        XCTAssertGreaterThanOrEqual(DriftMonitor.safetyNetInterval, 60)
+        grid.finish(cells: [], trusted: true)
+        await settle()
+        for _ in 0..<9 {
+            clock.advance(by: 60)
+            ticker.fire()
+            await settle()
+        }
+        XCTAssertEqual(grid.refreshCount, 0, "nine minutes after a trusted run the net has not run")
     }
 
     /// The history is kept on disk,  and it survives a restart.
@@ -1188,6 +1212,12 @@ final class FakeGrid: DriftGridReading {
     var cells: [GridCell] = []
     var manifest: SeatManifest? = nil
     var isRunning: Bool = false
+    /// When the run in flight started,  which a test sets by hand.
+    var runStartedAt: Date?
+    /// When the run that landed last started,  which `finish` sets.
+    private(set) var lastLandedRunStartedAt: Date?
+    /// The compliance results the next landing carries.
+    var complianceResults: [CheckResult] = []
     var onRunFinished: ((Bool) -> Void)?
     /// How many times the engine was asked to run.
     private(set) var refreshCount: Int = 0
@@ -1196,9 +1226,10 @@ final class FakeGrid: DriftGridReading {
         refreshCount += 1
     }
 
-    /// A run landed.
-    func finish(cells: [GridCell], trusted: Bool) {
+    /// A run landed.  `startedAt` is when it started,  and nil when the grid cannot say.
+    func finish(cells: [GridCell], trusted: Bool, startedAt: Date? = nil) {
         self.cells = cells
+        lastLandedRunStartedAt = startedAt
         onRunFinished?(trusted)
     }
 }
@@ -1225,6 +1256,9 @@ final class FakeWatcher: DriftWatching {
 
     /// The watches the last arm call was given.
     var lastArmed: [DriftWatchList.Watch] { armCalls.last ?? [] }
+
+    /// The watches whose stream started:  the ones it holds.
+    var startedWatches: [DriftWatchList.Watch] { held }
 
     @discardableResult
     func arm(
