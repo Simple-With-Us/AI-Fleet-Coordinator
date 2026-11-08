@@ -645,6 +645,19 @@ class InboxPending:
     missing_named: dict[str, str] = field(default_factory=dict)
 
 
+def _inbox_row_key(row: Mapping[str, Any]) -> str:
+    """Crash-replay dedupe key for a seat-inbox row:  message id + kind + requeue provenance.
+
+    A row a dead or silent lease never took goes back through `_requeue` with
+    `released_from` / `returned_from` set, and it must NOT dedupe against the original
+    append (AFC-652 review fix):  the marker keeps its key distinct, while a crash-replay
+    of the requeue batch itself still dedupes, because the marker is part of the key."""
+    marker = row.get("released_from") or row.get("returned_from") or ""
+    if not isinstance(marker, str):
+        marker = ""
+    return "%s:%s:%s" % (row.get("id"), row.get("kind") or "", marker)
+
+
 class Daemon:
     def __init__(
         self,
@@ -790,6 +803,10 @@ class Daemon:
         self._broadcast_wakes: queue.SimpleQueue[tuple[Mapping[str, Any], frozenset[str]]] = (
             queue.SimpleQueue()
         )
+        # Drain-deferred wakes a worker thread hands back;  only tick() drains this queue too,
+        # for the same reason (AFC-652 review fix:  run_wake must not mutate the coalescer
+        # from a per-seat worker thread).
+        self._deferred_restores: queue.SimpleQueue[W.Pending] = queue.SimpleQueue()
         # The peer-broadcast audits (owner, Oct 27 2026, broadcast_audit.py):  one pending audit
         # per fleet bot's `@all`, keyed by message id, with the time it comes due.  They live in
         # memory only, so a restart drops them:  the cost is one unexplained broadcast, never a
@@ -2273,7 +2290,7 @@ class Daemon:
                         tail_max_seq = max(tail_max_seq, old_seq)
                     old_id = old.get("id")
                     if isinstance(old_id, int) and not isinstance(old_id, bool):
-                        seen.add("%s:%s" % (old_id, old.get("kind") or ""))
+                        seen.add(_inbox_row_key(old))
                 if tail_max_seq >= seq:
                     seq = tail_max_seq + 1
             # The rows+meta are flushed in byte-bounded chunks, not once at the end:  the
@@ -2298,7 +2315,7 @@ class Daemon:
             for row in rows:
                 row_id = row.get("id")
                 if isinstance(row_id, int) and not isinstance(row_id, bool):
-                    row_key = "%s:%s" % (row_id, row.get("kind") or "")
+                    row_key = _inbox_row_key(row)
                     if row_key in seen:
                         continue  # a replay after a crash mid-append never duplicates the row
                     seen.add(row_key)
@@ -2463,7 +2480,10 @@ class Daemon:
                 # it, so re-arming writes no row per cycle;  the stale gate in _wake_block
                 # still bounds a long defer.  An ordinary pause keeps its recorded drop.
                 pending.due = now + self.coalescer.window
-                self.coalescer.restore(pending)
+                # Hand the re-arm to the event thread:  the coalescer is not thread-safe, so
+                # a per-seat worker thread never mutates it.  tick() restores it before the
+                # next take_due, which is still ahead of the new due time.
+                self._deferred_restores.put(pending)
                 self.log.write("wake-deferred", seat=pending.seat, wake_id=pending.wake_id)
             else:
                 self._not_run(runner, pending, reason, now)
@@ -3617,7 +3637,10 @@ class Daemon:
                 # whose turn comes inside the window re-arms instead of dropping.  The second
                 # "accepted" row merges into the same ledger view, so budgets count it once.
                 pending.due = now + self.coalescer.window
-                self.coalescer.restore(pending)
+                # Hand the re-arm to the event thread:  the coalescer is not thread-safe, so
+                # a per-seat worker thread never mutates it.  tick() restores it before the
+                # next take_due, which is still ahead of the new due time.
+                self._deferred_restores.put(pending)
                 self.log.write("wake-deferred", seat=pending.seat, wake_id=pending.wake_id)
             else:
                 self._not_run(runner, pending, reason, now)
@@ -4125,7 +4148,15 @@ class Daemon:
         with self._fanout_lock:
             if message_id in self._fanout_seen:
                 return
-        if self._broadcast_admit(message, c, "fanout", seat=seat) != "driving":
+        admitted = self._broadcast_admit(message, c, "fanout", seat=seat)
+        if admitted is None:
+            # The ledger write failed (logged broadcast-admit-failed):  no durable row exists
+            # for a later boot/tick re-drive, so hand the wake to the event thread like a
+            # fanout that never started (AFC-652 review fix).  The per-seat F4 fence in
+            # _broadcast_wake_after_fanout keeps a later successful admit from doubling it.
+            self._broadcast_wakes.put((message, frozenset()))
+            return
+        if admitted != "driving":
             # The ledger is the durable seen-ring (R1):  the kind is parked by a drain window,
             # already done/terminal, or claimed by the concurrent route that owns it.  Nothing
             # is marked in memory and no work starts.
@@ -5618,6 +5649,15 @@ class Daemon:
             **{k: v for k, v in result.items() if v},
         )
         return result
+
+    def _drain_deferred_restores(self) -> None:
+        """Event thread only (tick):  drain-deferred wakes handed back by worker threads."""
+        while True:
+            try:
+                pending = self._deferred_restores.get_nowait()
+            except queue.Empty:
+                return
+            self.coalescer.restore(pending)
 
     def _drain_broadcast_wakes(self) -> None:
         """Event thread only (tick):  the owner `@all` wakes the fanout handed back."""
@@ -8410,6 +8450,7 @@ class Daemon:
         self._redrive_deferred_broadcasts()
         self._start_due_inbox_retries(now)
         self._start_due_broadcast_audits(now)
+        self._drain_deferred_restores()
         for pending in self.coalescer.take_due(now):
             self.finalize(pending)
         if now - self.last_tick["reap"] >= 10:
