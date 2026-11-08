@@ -256,13 +256,25 @@ struct FleetOverviewView: View {
                         .foregroundStyle(.secondary)
                 }
                 Divider().frame(height: 14)
-                Text(store.commandLine.isEmpty ? "no engine located" : store.commandLine)
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .textSelection(.enabled)
-                    .help(store.commandLine)
+                // Plain words in the bar;  the raw command the app ran is in the tooltip
+                // and one click from the clipboard, for whoever debugs the engine.
+                if store.commandLine.isEmpty {
+                    Text("No engine found")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                } else {
+                    Label("Engine On The Mac", systemImage: "terminal")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .help(store.commandLine)
+                        .contextMenu {
+                            Button("Copy The Command") {
+                                let pasteboard = NSPasteboard.general
+                                pasteboard.clearContents()
+                                pasteboard.setString(store.commandLine, forType: .string)
+                            }
+                        }
+                }
                 Spacer(minLength: 8)
                 Text(generatedText)
                     .font(.system(size: 10))

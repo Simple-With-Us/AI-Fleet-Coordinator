@@ -91,29 +91,66 @@ final class FleetViewFilterBarTests: XCTestCase {
     }
 
     /// FleetView is not in the test bundle, so the order of its reads is pinned by its source:
-    /// the slow work read starts first, and the apps are listed from the local registry before
-    /// the page waits on it (owner's report, November 7, 2026:  the page sat on a spinner).
+    /// the slow work read starts first, through the app's `FleetViewStore`, and the apps are
+    /// listed from the local registry before the page waits on it (owner's report, November 7,
+    /// 2026:  the page sat on a spinner).  The read itself, and the rebuild of the rows before
+    /// the envelope is set, are the store's, and its source is pinned below.
     func testTheAppsListBeforeTheWorkReadReturns() throws {
-        let view = URL(fileURLWithPath: #filePath)
+        let muster = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("Muster/FleetView.swift")
-        let source = try String(contentsOf: view, encoding: .utf8)
-        func position(_ needle: String) throws -> String.Index {
-            try XCTUnwrap(source.range(of: needle)?.lowerBound, "FleetView.swift no longer contains \(needle)")
+            .appendingPathComponent("Muster")
+        let source = try String(contentsOf: muster.appendingPathComponent("FleetView.swift"), encoding: .utf8)
+        func find(_ needle: String, in text: String, file: String) throws -> String.Index {
+            try XCTUnwrap(text.range(of: needle)?.lowerBound, "\(file) no longer contains \(needle)")
         }
-        let startWork = try position("return .success(try await FleetViewService.load())")
+        func position(_ needle: String) throws -> String.Index {
+            try find(needle, in: source, file: "FleetView.swift")
+        }
+        // A visit reads only when the reading on hand is old;  the Refresh button always reads.
+        XCTAssertTrue(source.contains(".task { await load(force: false) }"))
+        XCTAssertTrue(source.contains("Task { await load(force: true) }"))
+        XCTAssertTrue(source.contains("@ObservedObject private var reading = FleetViewStore.shared"))
+        // The view never runs the work read or rebuilds the rows itself.
+        XCTAssertFalse(source.contains("FleetViewService.load()"), "the view runs fleet-view itself")
+        XCTAssertFalse(source.contains("viewOutput: loaded"), "the view rebuilds the rows itself")
+
+        let startWork = try position("await reading.refreshIfOlder(than: Self.visitFreshness, engineRoot: named)")
+        let forceWork = try position("await reading.refresh(engineRoot: named)")
         let readTools = try position("FleetToolsReportReader.readDefault()")
         let listApps = try position("FleetRegistryReader.read(repoRoot: root, viewOutput: nil, toolsReading: tools)")
-        let awaitWork = try position("try await work.value.get()")
+        let awaitWork = try position("await work.value")
         XCTAssertLessThan(startWork, readTools, "the work read must start before the local reads")
+        XCTAssertLessThan(forceWork, readTools, "the forced work read must start before the local reads")
         XCTAssertLessThan(readTools, listApps)
         XCTAssertLessThan(listApps, awaitWork, "the apps must be listed before the page waits on the work read")
+        // The early listing is shown only while the counts are read;  the store's rows take over
+        // when its read lands, so a failed read still clears the page.
+        XCTAssertTrue(source.contains("if countsPending, let earlyRegistry { return earlyRegistry }\n        return reading.registrySummary"))
+        XCTAssertTrue(source.contains("private var countsPending: Bool { loading && envelope == nil }"))
+        // Another checkout's reading never stands in for this one (Kody, PR 1481):  a visit after
+        // the checkout changed reads even inside the window, and an earlier load's listing is
+        // dropped before this load lists its apps.
+        XCTAssertTrue(source.contains("let mustRead = force || checkoutChanged"))
+        XCTAssertTrue(source.contains("if mustRead {\n                await reading.refresh(engineRoot: named)"))
+        let dropListing = try position("if reading.envelope == nil || checkoutChanged {\n            earlyRegistry = nil")
+        XCTAssertLessThan(dropListing, readTools, "the old listing must go before this load lists its apps")
+        XCTAssertTrue(source.contains("if !FleetViewReadingOrigin.checkoutChanged(to: named) {\n                earlyRegistry = listed"))
+
         // The rows are rebuilt with the work read before `envelope` is set, so pending never
         // ends while the rows still hold counts that were not read (Sentry, PR 1450).
-        let rebuild = try position("summary = await Task.detached(priority: .userInitiated) {\n                    FleetRegistryReader.read(repoRoot: root, viewOutput: loaded")
-        let setEnvelope = try position("envelope = loaded\n            registrySummary = summary")
-        XCTAssertLessThan(awaitWork, rebuild)
+        let store = try String(contentsOf: muster.appendingPathComponent("Model/FleetViewStore.swift"), encoding: .utf8)
+        let storeFile = "FleetViewStore.swift"
+        let loadView = try find("let loaded = try await loadView()", in: store, file: storeFile)
+        let rebuild = try find("readRegistry(root, loaded, tools)", in: store, file: storeFile)
+        let setEnvelope = try find("envelope = loaded", in: store, file: storeFile)
+        let setRows = try find("registrySummary = summary", in: store, file: storeFile)
+        XCTAssertLessThan(loadView, rebuild)
         XCTAssertLessThan(rebuild, setEnvelope, "the rows must be rebuilt before the envelope goes on screen")
+        XCTAssertLessThan(setEnvelope, setRows)
+        // Envelope and rows are set in one step, with no suspension between them.
+        let between = store[setEnvelope..<setRows]
+        XCTAssertFalse(between.contains("await"), "the store suspends between setting the envelope and the rows")
+
         // A pending count is a dash, never a zero.
         XCTAssertTrue(source.contains("if countsPending {\n                pendingCell(width: 120)"))
     }

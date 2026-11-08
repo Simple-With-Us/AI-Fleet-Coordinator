@@ -24,6 +24,8 @@ struct ConfigFilePanel: View {
     let artifacts: FleetStore.CellArtifacts
     /// The citation each rule carries in the manifest,  by rule id.
     let sources: [String: String]
+    /// When the run this cell came from checked it (`GridPresentation.asOfLine`).
+    let asOf: String
     /// Called when the operator closes the panel.
     let onClose: () -> Void
 
@@ -64,10 +66,11 @@ struct ConfigFilePanel: View {
             Text(cell.kind.title)
                 .font(.headline)
             HStack(spacing: 5) {
-                Circle()
-                    .fill(cell.state.tint)
-                    .frame(width: 8, height: 8)
-                Text(cell.stateFullName)
+                Image(systemName: cell.gridSymbol)
+                    .font(.system(size: 10, weight: .semibold))
+                    .accessibilityHidden(true)
+                // The grid's one spelling of the state, the same word the badge shows.
+                Text(cell.gridWord)
                     .font(.system(size: 11, weight: .semibold, design: .monospaced))
             }
             .foregroundStyle(cell.state.tint)
@@ -78,9 +81,12 @@ struct ConfigFilePanel: View {
                 .padding(.vertical, 2)
                 .background(Color.secondary.opacity(0.12), in: Capsule())
             Spacer()
-            Text("What this cell refers to,  as it is on this Mac.")
+            // Each rule block says where its evidence is read, so the header says only
+            // which run this is.
+            Text(asOf)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .help("When the check this panel shows was run.\u{00A0} The panel reads the cell again when the next check lands.")
             Button {
                 onClose()
             } label: {
@@ -98,8 +104,8 @@ struct ConfigFilePanel: View {
 
 }
 
-/// One rule of a cell, with the facts the engine measured and the artifact it checks as it
-/// is on this Mac.
+/// One rule of a cell, with the facts the engine measured, where its evidence is read (a
+/// file on the Mac or the secret store), and the artifact it checks.
 ///
 /// The grid's detail panel and the Seat Setup panel both show a rule this way, so a rule
 /// reads the same wherever it is opened.  The same read-only and no-credential rules apply:
@@ -114,50 +120,62 @@ struct RuleArtifactView: View {
         ruleBlock(rule: rule, view: view)
     }
 
+    /// Where this rule's evidence is read:  a file on the Mac, or the secret store.
+    private var location: GridPresentation.RuleLocation {
+        GridPresentation.RuleLocation.of(checkType: rule.checkType)
+    }
+
+    /// The colour of the rule's own state, so a MISSING rule is never orange under a red
+    /// header.
+    private var stateTint: Color {
+        rule.isNotApplicable ? Color.secondary : CellState(checkState: rule.checkState).tint
+    }
+
+    /// Plain words first:  the state and what it found, where it was read, then the
+    /// values.  The ids, the collector and the codes are under Technical Details.
     @ViewBuilder
     private func ruleBlock(rule: CheckResult, view: ConfigFileView?) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(rule.ruleId)
+                Text(GridPresentation.ruleWord(rule))
                     .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                Text(rule.platform)
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(stateTint)
                 if let scope = rule.guardScope {
                     // What this rule asks the guard to cover,  so a PASS here reads as
                     // exactly that and not as a guard that covers everything.
                     Text(scope)
                         .font(.system(size: 10, weight: .semibold, design: .monospaced))
                 }
-                Text(rule.checkType)
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(.secondary)
                 Spacer()
-                Text(rule.state)
-                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(rule.checkState == .passed ? Color.green : Color.orange)
+                // Where the evidence is read, on every rule block:  the Permissions key
+                // rules ask the secret store, not a file on the Mac.
+                Label(location.label, systemImage: location == .secretStore ? "key" : FleetHost.mac.systemImage)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
             }
             Text(rule.reason)
                 .font(.callout)
-                .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            // The citation the manifest carries,  which is the directive or the
-            // message that asked for the rule.  It is empty on every rule today,  and
-            // the panel says so rather than showing a blank line.
-            ProofLine(
-                label: "Source",
-                value: source.flatMap { $0.isEmpty ? nil : $0 } ?? "not cited yet"
-            )
+            // The citation the manifest carries,  which is the directive or the message
+            // that asked for the rule.  A rule that cites none shows no line at all.
+            if let cited = GridPresentation.shownSource(source) {
+                ProofLine(label: "Source", value: cited)
+            }
 
             HStack(alignment: .top, spacing: 18) {
                 ValueTable(title: "Expected", values: rule.expected)
                 ValueTable(title: "Observed", values: rule.observed)
             }
 
-            GroupBox("Last proof") {
+            ProofLine(label: "Proof", value: rule.proofText)
+
+            // The ids, the collector and the codes are for whoever debugs the engine,
+            // so they wait under a disclosure rather than lead the block.
+            DisclosureGroup("Technical Details") {
                 VStack(alignment: .leading, spacing: 4) {
-                    ProofLine(label: "Proof", value: rule.proofText)
+                    ProofLine(label: "Rule", value: rule.ruleId)
+                    ProofLine(label: "Platform", value: rule.platform)
                     ProofLine(label: "Check type", value: rule.checkType)
                     ProofLine(label: "Collector", value: rule.collector)
                     ProofLine(label: "Reason code", value: rule.reasonCode)
@@ -168,8 +186,9 @@ struct RuleArtifactView: View {
                     ProofLine(label: "Counts as failing", value: rule.failing ? "yes" : "no")
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(4)
+                .padding(.top, 4)
             }
+            .font(.caption)
 
             if let view {
                 Divider()
@@ -182,6 +201,15 @@ struct RuleArtifactView: View {
     private func artifactView(_ artifact: ConfigFileView) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
+                // A store folder such as /zulip is not a path on the Mac, so the line
+                // names which of the two it is.
+                if case .unresolved = artifact {
+                    EmptyView()
+                } else {
+                    Text("\(location.pathLabel):")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Text(artifact.path)
                     .font(.system(size: 11, weight: .semibold, design: .monospaced))
                     .textSelection(.enabled)
