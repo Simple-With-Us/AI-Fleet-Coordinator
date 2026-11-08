@@ -25,7 +25,7 @@ Build a small owner-only service, the Muster Hub, as the one thing the phone tal
 
 - The Mac app:  `muster/README.md`, `muster/project.yml`, `MusterApp.swift`, `AutoUpdate.swift`, `Model/MusterNavigation.swift`, `Model/OpsControl.swift`, `Model/EngineRunner.swift`, `Model/ListenerStatus.swift`, `Model/WakeSettings.swift`, `Model/WakeSettingsStore.swift`, `Model/PlaceWatch.swift`, `Model/ServerStatusReport.swift`, `Model/SeatActivity.swift`, `Model/SeatActivityStore.swift`, `Model/FailureReason.swift`, `Model/TrustedCheckout.swift`, `FleetServices/FleetHost.swift`, `FleetServices/FleetSecrets.swift`, `Views/OwnerCheck.swift`, `Views/WakeSettingsView.swift`, `Views/SeatActivityView.swift`, and sweeps of every control, process launch and network call under `Muster/`.
 - PR 1439 and `docs/muster-operator-zulip.md`;  PRs 1457, 1465, 1466, 1469 and 1477 read through the fleet's GitHub tools on November 7 (state, branches, merge times and descriptions, and 1477's file list).
-- `scripts/fleet-ops-control.py`, `scripts/fleet_resource_control.py` (by EE's citations), `scripts/fleet_knobs/setter.py`, `scripts/fleet_rag/infisical_settings.py`, `scripts/fleet-server-status.py`, `scripts/systemd/fleet-server-status.service`, `scripts/fleet_view/collectors.py`, `docs/protocols/fleet-tool-parity.md`, `docs/operator-listener-hosting.md`, `docs/protocols/agent-sync-partition.toml`, `INFISICAL.md`, `.github/workflows/muster-release.yml`.
+- `scripts/fleet-ops-control.py`, `scripts/fleet_resource_control.py` (by EE's citations), `scripts/fleet_knobs/setter.py`, `scripts/fleet_rag/infisical_settings.py`, `scripts/fleet-server-status.py`, `scripts/systemd/fleet-server-status.service`, `scripts/fleet_view/collectors.py`, `docs/protocols/fleet-tool-parity.md`, `docs/operator-listener-hosting.md`, `docs/protocols/simple-tools-partition.toml`, `INFISICAL.md`, `.github/workflows/muster-release.yml`.
 - Live, read-only, on the server:  jay's `authorized_keys` forced commands, `/home/jay/.local/state/fleet-tools/`, `/usr/local/lib/fleet-resource-control/`, `/etc/group`, the system and jay user units, and the line in session BB's transcript that records the owner's answer to Question 5.4.  The sudo rule, the running jay user units and the live report's disk rows are EE's and BB's checks.
 - Both research passes, and every item of EE's six reviews.
 
@@ -58,8 +58,8 @@ Services reads every two minutes app-wide;  the engine runs at launch, on watche
 | `node` (pm2), `/bin/launchctl list/print` | Local command | The Mac | Services, menu |
 | `python3 scripts/fleet-ops-control.py mac|pm2 ...` | Local command | The Mac | Services, Background Agents, menu |
 | `python3 scripts/fleet_seat_inventory.py` | Local command | The Mac | Seat Setup |
-| `~/.agent-sync/listener/status.json`, `listener.toml`, `pause.json`, wake pins, `wakes.jsonl` | Local file | The Mac | Seats (sessions, listener state, quota), Wake & Listener |
-| `~/.agent-sync/listener/knobs.jsonl` | Local file, the knob writer's audit | The Mac | Nothing in Muster today |
+| `~/.simple-tools/listener/status.json`, `listener.toml`, `pause.json`, wake pins, `wakes.jsonl` | Local file | The Mac | Seats (sessions, listener state, quota), Wake & Listener |
+| `~/.simple-tools/listener/knobs.jsonl` | Local file, the knob writer's audit | The Mac | Nothing in Muster today |
 | `~/.local/state/fleet-tools/report.json`, `worker-health.json` | Local file | The Mac | Tools And Worker Health |
 | `~/.local/state/fleet-tools/server-status.json` | Local file, copied every 15 minutes from jay's report on the server | The Mac | Server Status, Overview, menu |
 | `~/.local/state/fleet-tools/vms/*.json` | Local file, unscheduled pull | The Mac | Virtual Machines |
@@ -68,7 +68,7 @@ Services reads every two minutes app-wide;  the engine runs at launch, on watche
 | `~/.local/state/fleet-knobs/lkg.json`, the `INFISICAL.md` registry | Local file | The Mac | Controls |
 | `~/Library/Application Support/Muster/drift-history.json`, `owner-stops.json` | Local file, Muster's own | The Mac | Drift History, Services |
 | `scripts/fleet-ops-control.json` (the Mac checkout's copy) | Local file | The Mac | Verbs per agent, pm2 app and unit;  Server Updates |
-| `docs/protocols/agent-sync-partition.toml` | Local file | The Mac | Seats grouping;  which seats Wake & Listener may change |
+| `docs/protocols/simple-tools-partition.toml` | Local file | The Mac | Seats grouping;  which seats Wake & Listener may change |
 | `fleet-seats.json`, `fleet-apps.json`, the manifest's files, `~/.minimax` | Local file | The Mac | Grid, Seat Setup |
 | BotFleet Server control API and BotFleet MCP Server health on `127.0.0.1` | Network, loopback | The Mac | Services |
 | Recall `GET /admin/settings`, with the admin token fetched by name for each read | Network, https | The Mac to the server | Controls (masked rows) |
@@ -195,7 +195,7 @@ UUIDs reach the phone inside the seal.  The hub never sees them unless `muster-
 | `server-ops-audit-tail`, `resource-policy-audit-tail` | `muster-spool.timer`, last 50 rows | Every 5 minutes, local |
 | `resource-status` | `muster-spool.timer` runs `server resource-status coding --plan --json` as jay | Every 15 minutes:  one Infisical read each run, 96 a day |
 | `server-seat-inventory/<platform>` | `muster-spool.timer` runs `server seat-inventory PLATFORM --plan --json` | Every 6 hours, local |
-| `doctor-report` | `muster-spool.timer` runs `/usr/bin/python3 -I /home/jay/.local/share/fleet-cli/repo/scripts/fleet-tools-doctor.py --json` | Every 3 hours;  its unauthenticated GitHub calls share the server's 60-an-hour budget.  PR 1477 (open) changes which runtime rows the doctor checks (the Mac's `simple-tools-runtime` path and its `com.jay.simple-tools-runtime-sync` LaunchAgent);  the projection copies tool rows by field, never by name, so the rename needs no projection change, but the golden fixtures must come from a doctor run after 1477 lands |
+| `doctor-report` | `muster-spool.timer` runs `/usr/bin/python3 -I /home/jay/.local/share/fleet-cli/repo/scripts/fleet-tools-doctor.py --json` | Every 3 hours;  its unauthenticated GitHub calls share the server's 60-an-hour budget.  PR 1477 (open) changes which runtime rows the doctor checks;  the projection copies tool rows by field, never by name, so it needs no projection change, but the golden fixtures must come from a doctor run after 1477 lands |
 | `fleet-view-lanes` (M3) | A jay timer runs `fleet-view status --json --github-max 0 --linear-max 0` with `FLEET_LANES_ROOT` set | Hourly, local git only |
 | `eavesdropper-status` (M3) | BB's Operator transport, in a host folder `muster-pub` reads | As the Operator writes it;  labelled "reported by the Operator" |
 | `ops-allowlist` | `muster-pub` reads the helper's root-owned `fleet-ops-control.json` | Hourly |
@@ -203,7 +203,7 @@ UUIDs reach the phone inside the seal.  The hub never sees them unless `muster-
 
 ### Eavesdropper-Status:  BB's Reduced Shape (Milestone 3)
 
-BB builds one reducer, `scripts/agent_sync/reduced_status.py`, with a read-only `server eavesdropper-status` helper verb for the Mac (on `fleet-ops-ctl`'s entry, not on `--from-muster`) and the Operator writing the same output to a host folder for `muster-pub`.  It enters the design in Milestone 3, for the server's seats, and replaces Muster's own Mac-side decoding only if its output carries every field of the `seat-activity` projection.  Draft schema `reduced_status v1`:
+BB builds one reducer, `scripts/simple_tools/reduced_status.py`, with a read-only `server eavesdropper-status` helper verb for the Mac (on `fleet-ops-ctl`'s entry, not on `--from-muster`) and the Operator writing the same output to a host folder for `muster-pub`.  It enters the design in Milestone 3, for the server's seats, and replaces Muster's own Mac-side decoding only if its output carries every field of the `seat-activity` projection.  Draft schema `reduced_status v1`:
 
 ```
 {"schema":1,"generated_at":ISO8601Z,"instance":"server"|"mac",
@@ -553,7 +553,7 @@ Not filed.  Team AFC assumed.
 | Muster:  shared attention rules and golden tests | One rules file, both languages, transitions included.  |
 | Muster iOS:  every panel read-only and the iPad sidebar | The remaining panels and the README's iOS column.  |
 | Server:  lanes-only fleet-view timer | Hourly server lanes, merged on the phone.  |
-| agent_sync:  reduced eavesdropper-status and its transports | BB's reducer (PR 1479), verb and Operator host folder;  the reducer emits no titles, bot or user id.  |
+| simple_tools:  reduced eavesdropper-status and its transports | BB's reducer (PR 1479), verb and Operator host folder;  the reducer emits no titles, bot or user id.  |
 | Muster:  push relay, signed events and notification extension | Two fixed payload shapes, deduplicated signed events.  |
 | Muster iOS:  widgets | From the signed widget summary.  |
 | fleet-ops-control:  the --from-muster entry (spec v5.1) | Plan commands, check orders, rate limits, clock check, ledger, helper key, trust-list chain;  the reopen parts after spec 17A.  |
