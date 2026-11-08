@@ -6,14 +6,14 @@ import contextlib
 import io
 import json
 import os
-import subprocess
 import pathlib
 import signal
+import subprocess
 import sys
 import tempfile
 import unittest
-from pathlib import Path
 import urllib.error
+from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -1750,7 +1750,7 @@ class MmReopenStrictTouchTest(unittest.TestCase):
                         p
                         for p in os.environ.get("PATH", "").split(os.pathsep)
                         if "mm-operator-registry" not in p
-                    )
+                    ),
                 },
             ),
             self.assertRaises(M.RegistryError) as caught,
@@ -1835,7 +1835,10 @@ class TransportTests(unittest.TestCase):
         self.assertIn("history", self.log.read_text())
 
     def test_a_missing_transport_is_missing_tool_not_no_registry(self):
-        out = self._call(["history", "--platform=minimax"], MM_OPERATOR_REGISTRY_CMD="definitely-missing-registry-test")
+        out = self._call(
+            ["history", "--platform=minimax"],
+            MM_OPERATOR_REGISTRY_CMD="definitely-missing-registry-test",
+        )
         # Both are non-success transport faults;  which one fires depends on how the
         # host's PATH resolves the name (absent vs. unusable), not on the registry.
         self.assertIn(out.get("code"), ("missing_tool", "remote_unreachable"))
@@ -2322,7 +2325,6 @@ class RemoteRegistryHopTest(unittest.TestCase):
         self.assertIn("--session-id=" + SESSION_ID, args)
 
 
-
 class ReopenOverTheHopTest(unittest.TestCase):
     """A chat that comes back to life gets its letter back, wherever the registry is.
 
@@ -2380,7 +2382,6 @@ class ReopenOverTheHopTest(unittest.TestCase):
             M.reopen_closed("r1")
         self.assertEqual(caught.exception.code, "space_lost")
         self.assertEqual(caught.exception.outcome, "reopen_refused")
-
 
 
 class StopHookTest(unittest.TestCase):
