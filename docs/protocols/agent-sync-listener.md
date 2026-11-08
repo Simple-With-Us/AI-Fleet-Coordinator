@@ -419,20 +419,20 @@ The third local wake type, and the second fallback.  Same contract, same strict
 | | Config | What answers |
 |---|---|---|
 | The seat's wake | `wake = "openrouter"` with `model = "meta/muse-spark-1.3-contributor"` (the default for this wake type) | The Muse contributor tier run through OpenRouter, so the wake does not depend on the muse binary, its pin, or Meta's login or quota |
-| A fallback behind any `claude`, `muse` or `openrouter` wake | `fallback = "openrouter"` with `fallback_model` (default `~deepseek/deepseek-flash-latest`) | A second model, when the primary did not produce a usable answer (below) |
+| A fallback behind any `claude`, `muse` or `openrouter` wake | `fallback = "openrouter"` with `fallback_model` (default `minimax/MiniMax-M3.1-Flash`) | A second model, when the primary did not produce a usable answer (below) |
 
 **Data collection (owner, Oct 30 2026).**  OpenRouter serves `meta/muse-spark-1.3-contributor` only to an account that allows data collection, so that privacy setting has to be on for the account the key belongs to.  The runtime does not set `provider.data_collection` itself, so the account's setting decides.  What goes out on each wake is the daemon's fenced prompt (up to 15 Zulip messages), to OpenRouter and to the model's provider; that is the cost of the contributor tier, and the owner accepted it.  A model OpenRouter will not serve under the account's policy answers with an HTTP error, which is a failure reason like any other and sends the wake to the fallback.
 
 The leading `~` is part of OpenRouter's id for a "latest" alias.  Copy-paste for the Mac's MM seat (neither is installed;  the owner edits `~/.agent-sync/listener.toml`):
 
 ```toml
-# MM answers on the Muse model through OpenRouter, and on DeepSeek Flash when that call fails.
+# MM answers on the Muse model through OpenRouter, and on MiniMax M3.1 Flash when that call fails.
 [seat.MM]
 bot = "MiniMax"
 wake = "openrouter"
 model = "meta/muse-spark-1.3-contributor"
 fallback = "openrouter"
-fallback_model = "~deepseek/deepseek-flash-latest"
+fallback_model = "minimax/MiniMax-M3.1-Flash"
 ```
 
 ```toml
@@ -440,7 +440,7 @@ fallback_model = "~deepseek/deepseek-flash-latest"
 [seat.MM]
 bot = "MiniMax"
 wake = "muse"
-fallback = "openrouter"                # fallback_model defaults to ~deepseek/deepseek-flash-latest
+fallback = "openrouter"                # fallback_model defaults to minimax/MiniMax-M3.1-Flash
 ```
 
 Replace the whole `[seat.MM]` section rather than editing one line.  On an `openrouter` wake the keys that belong to the other runtimes are refused (`muse`, `provider`, `mcode`, `mcode_model`, and `fallback_uncontained_ok` with any OpenRouter fallback), and each refusal downgrades the seat to `inbox` with a RED config line until it is removed.  On the `muse` wake a `fallback = "mcode"` line becomes `fallback = "openrouter"` and `fallback_uncontained_ok` goes.
@@ -686,7 +686,7 @@ live = { per_hour = 6, per_day = 30, per_topic_minutes = 5, owner_per_day = 20, 
 # wake = "openrouter"
 # model = "meta/muse-spark-1.3-contributor"      # the default for this wake type
 # fallback = "openrouter"                         # optional
-# fallback_model = "~deepseek/deepseek-flash-latest"   # the default;  must differ from model
+# fallback_model = "minimax/MiniMax-M3.1-Flash"   # the default;  must differ from model
 # ... or behind the muse binary, answering whenever it cannot (a stale pin, no binary, a failed run):
 # wake = "muse"
 # fallback = "openrouter"
