@@ -135,11 +135,15 @@ class Mode:
     block_classes: tuple[str, ...] = ()
     isolation: str = MODE_OFF
     problems: tuple[str, ...] = field(default=())
+    mirror: str = MODE_DETECT  # a commit or stash in a ~/Code clone:  detect warns, block refuses, own `mirror` line, never a class
 
     def blocks(self, cls: str) -> bool:
         if cls == CLASS_ISOLATION:
             return self.isolation == MODE_BLOCK
         return self.mode == MODE_BLOCK and cls in self.block_classes
+
+    def blocks_mirror(self) -> bool:
+        return self.mode != MODE_OFF and self.mirror == MODE_BLOCK
 
 
 def default_exceptions_path() -> str:
@@ -365,7 +369,7 @@ def mode_file_path(home: str | os.PathLike[str], env: Mapping[str, str] | None =
 def parse_mode(text: str) -> Mode:
     """Unknown words are reported in `problems` and otherwise ignored:  a typo must never turn a block on, and a line that means
     nothing leaves the lines before it standing.  The doctor and the watcher show `problems`."""
-    mode, classes, isolation = MODE_DETECT, (), MODE_OFF
+    mode, classes, isolation, mirror = MODE_DETECT, (), MODE_OFF, MODE_DETECT
     problems: list[str] = []
     for raw in text.splitlines():
         words = raw.split("#", 1)[0].replace(",", " ").split()
@@ -377,6 +381,11 @@ def parse_mode(text: str) -> Mode:
                 isolation = words[1].lower()
             else:
                 problems.append(f"bad isolation line: {raw.strip()}")
+        elif head == "mirror":
+            if len(words) == 2 and words[1].lower() in MODES:
+                mirror = words[1].lower()
+            else:
+                problems.append(f"bad mirror line: {raw.strip()}")
         elif head in MODES:
             if head != MODE_BLOCK:
                 mode, classes = head, ()
@@ -392,13 +401,13 @@ def parse_mode(text: str) -> Mode:
                 mode, classes = head, good
         else:
             problems.append(f"unknown line: {raw.strip()}")
-    return Mode(mode, tuple(classes), isolation, tuple(problems))
+    return Mode(mode, tuple(classes), isolation, tuple(problems), mirror)
 
 
 def read_mode(home: str | os.PathLike[str], env: Mapping[str, str] | None = None) -> Mode:
     env = os.environ if env is None else env
     if (env.get(ENV_GUARD) or "").strip().lower() in OFF_VALUES:
-        return Mode(MODE_OFF, (), MODE_OFF)
+        return Mode(MODE_OFF, (), MODE_OFF, (), MODE_OFF)
     try:
         with open(mode_file_path(home, env), encoding="utf-8") as fh:
             return parse_mode(fh.read(4096))
