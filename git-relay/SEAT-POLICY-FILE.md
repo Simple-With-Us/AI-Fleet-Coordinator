@@ -78,3 +78,19 @@ directory nobody else can write). The restart makes systemd hand the new copy to
 service. This does not migrate a unit onto the credential input. That migration, its
 journal and its rollback stay the separately reviewed step above, and no runtime effect
 is authorized by this document.
+
+### Migrating a file-backed unit onto the credential input
+
+`deploy/seat_policy_migrate.py` (`plan`, `apply`, `recover`) is that separately reviewed
+migration, as source. It does not run itself and no runtime effect is authorized by this
+document. It needs the policy's full canonical digest (`--expect-digest`), a root 0700
+journal directory and a root 0700 directory for the backing file. `EnvironmentFile=` overrides
+`Environment=`, so a drop-in cannot unset the file setting; `apply` instead replaces the one
+`GIT_RELAY_SEATS_FILE=` line in the unit's EnvironmentFile with
+`GIT_RELAY_SEATS_CREDENTIAL=seat-policy`, byte-preserving every other line, and adds one
+drop-in with `LoadCredential=seat-policy:<backing>`. The old policy file is left untouched. A
+root-only fsynced journal holds the before-images first; any failed start, health check or
+served-copy digest check, and any interruption, puts them back. `recover` needs only the
+journal, so it works after a crash, a reboot or with the service stopped. The tests simulate
+a crash after every phase and a fresh-process recovery. A real reboot test on the host is a
+separate released run. Adding a seat stays the proof-gated `install-seat`.
