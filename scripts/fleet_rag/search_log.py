@@ -20,7 +20,7 @@ from .scrub import scrub
 
 # Any spelling of GROK followed by BUILD is an alias for the seat GROK (owner 2026-10-10).  A one-line
 # copy of the GROK row's `aliasPattern` in fleet-apps.json, because this service ships in a container
-# without the agent_sync package;  tests/test_seat_alias.py keeps the two equal.
+# without the simple_tools package;  tests/test_seat_alias.py keeps the two equal.
 GROK_ALIAS_PATTERN = r"^grok[^a-z0-9]*build[^a-z0-9]*$"
 _GROK_ALIAS_RE = re.compile(GROK_ALIAS_PATTERN, re.IGNORECASE | re.ASCII)
 
