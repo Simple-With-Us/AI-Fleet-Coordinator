@@ -19,7 +19,7 @@ So the connection says who may act, and each call says who is acting.  Bots are 
 4. The claimed identity must be in the connection's **allowed set** (section 3), or the call is refused with `identity_not_allowed`, naming the set.
 5. The server resolves that identity's **own** credential and keeps every existing check against it:  Zulip `users/me` must be that bot (`check_bot`), and a Linear write still refuses when the viewer is not that identity's own app.  Taking a bot at its word never means using a key that belongs to someone else.
 6. A launcher pin still wins.  With `AGENT_LAUNCH_SEAT` set, `identity` must equal it (exit 3 / `identity_not_allowed` otherwise), as today.
-7. The post tag is built from the claimed identity:  `[GB-FIXER·session8]`.
+7. The post header uses the claimed identity and the [fleet post-header policy](../../AGENTS.md#fleet-post-headers-owner-ruling): for example `[GB-FIXER 📁AFC]`.  The legacy formatter built `[GB-FIXER·session8]`; that describes legacy output, not the required header or a verified formatter update.  Authentication and runtime session identifiers remain unchanged.
 8. Every write is audited with the connection (grant id or stdio pid and client name from MCP `initialize`), the claimed identity and the tool.  Hosted:  the seat-gate audit log.  Stdio and CLI:  `~/.simple-tools/logs/identity.jsonl` (mode 600, ids only, no bodies).
 
 `whoami` takes `identity` too, and a new `identities` tool lists the connection's allowed set and its default.
