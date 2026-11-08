@@ -858,19 +858,25 @@ class ModernHeaderTests(unittest.TestCase):
         self.assertEqual(mod.encode_header_value("naïve"), "=?base64?bmHDr3Zl?=")
         self.assertEqual(mod.encode_header_value(""), "=?base64??=")
         self.assertEqual(mod.encode_header_value(" lead"), "=?base64?IGxlYWQ=?=")
-        self.assertEqual(mod.encode_header_value("\ud83d"), "=?base64?77+9?=")  # a lone surrogate is U+FFFD
+        self.assertEqual(
+            mod.encode_header_value("\ud83d"), "=?base64?77+9?="
+        )  # a lone surrogate is U+FFFD
         for value in ("trail ", "x\ty\t", "line\nbreak", "😀", "=?base64?abc?=", "\x7f"):
             encoded = mod.encode_header_value(value)
             self.assertTrue(encoded.startswith("=?base64?") and encoded.endswith("?="), value)
         # What the server decodes is what the body says.
         for value in ("naïve", "", " lead", "trail ", "😀", "=?base64?abc?=", "日本語"):
             encoded = mod.encode_header_value(value)
-            self.assertEqual(base64.b64decode(encoded[len("=?base64?") : -len("?=")]).decode("utf-8"), value)
+            self.assertEqual(
+                base64.b64decode(encoded[len("=?base64?") : -len("?=")]).decode("utf-8"), value
+            )
         sent = self.sent(self.modern("tools/call", name="naïve", arguments={}))
         self.assertEqual(sent["mcp-name"], "=?base64?bmHDr3Zl?=")
 
     def test_a_modern_initialize_names_its_version_and_method_and_no_tool(self):
-        headers = self.sent(self.modern("initialize", protocolVersion=self.VERSION, capabilities={}))
+        headers = self.sent(
+            self.modern("initialize", protocolVersion=self.VERSION, capabilities={})
+        )
         self.assertEqual(headers["mcp-protocol-version"], self.VERSION)
         self.assertEqual(headers["mcp-method"], "initialize")
         self.assertNotIn("mcp-name", headers)
@@ -885,14 +891,21 @@ class ModernHeaderTests(unittest.TestCase):
 
     def test_a_malformed_envelope_is_left_for_the_server_to_refuse_with_none_of_the_three(self):
         for claimed in ("two words", "", 20260728, None, ["2026-07-28"], "é"):
-            message = frame("tools/call", 1, name="whoami", arguments={}, _meta={mod.META_VERSION: claimed})
+            message = frame(
+                "tools/call", 1, name="whoami", arguments={}, _meta={mod.META_VERSION: claimed}
+            )
             headers = self.sent(message)
             for name in ("mcp-protocol-version", "mcp-method", "mcp-name"):
                 self.assertNotIn(name, headers, f"{claimed!r} {name}")
 
     def test_a_method_that_cannot_be_a_header_value_sends_no_method_or_name(self):
         for method in ("tools/call\nX-Evil: 1", "tools/ call", "", "é"):
-            message = {"jsonrpc": "2.0", "id": 4, "method": method, "params": {"name": "x", "_meta": {mod.META_VERSION: self.VERSION}}}
+            message = {
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": method,
+                "params": {"name": "x", "_meta": {mod.META_VERSION: self.VERSION}},
+            }
             headers = self.sent(message)
             self.assertNotIn("mcp-method", headers, repr(method))
             self.assertNotIn("mcp-name", headers, repr(method))

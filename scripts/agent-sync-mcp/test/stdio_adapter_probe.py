@@ -23,7 +23,9 @@ class Reply(io.BytesIO):
     status = 200
 
     def __init__(self, frame_id):
-        super().__init__(json.dumps({"jsonrpc": "2.0", "id": frame_id, "result": {"content": []}}).encode())
+        super().__init__(
+            json.dumps({"jsonrpc": "2.0", "id": frame_id, "result": {"content": []}}).encode()
+        )
         self.headers = {"Content-Type": "application/json"}
 
 
@@ -40,6 +42,10 @@ for frame in json.load(sys.stdin):
     sent.clear()
     adapter_module.Adapter(TOKEN, opener).call(frame)
     request = sent[-1]
-    headers = {key.lower(): value for key, value in request.header_items() if key.lower() not in ("authorization", "user-agent")}
+    headers = {
+        key.lower(): value
+        for key, value in request.header_items()
+        if key.lower() not in ("authorization", "user-agent")
+    }
     out.append({"headers": headers, "body": request.data.decode("utf-8")})
 print(json.dumps(out))
