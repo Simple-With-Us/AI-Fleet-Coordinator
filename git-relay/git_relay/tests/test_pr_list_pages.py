@@ -48,14 +48,10 @@ class PrListPages(unittest.TestCase):
 
     def test_merged_at_is_carried_so_sweeps_can_tell_merged_from_closed(self):
         row = self.row(state="closed", merged_at="2026-11-07T05:00:00Z")
-        out = self.handle(Client([row])).run(
-            "wf_pr_list_page", {"repo": REPO, "state": "all"}
-        )
+        out = self.handle(Client([row])).run("wf_pr_list_page", {"repo": REPO, "state": "all"})
         self.assertEqual(out["pulls"][0]["merged_at"], "2026-11-07T05:00:00Z")
         with self.assertRaises(RelayGitHubError):
-            self.handle(Client([self.row(merged_at=123)])).run(
-                "wf_pr_list_page", {"repo": REPO}
-            )
+            self.handle(Client([self.row(merged_at=123)])).run("wf_pr_list_page", {"repo": REPO})
 
     def test_malformed_duplicate_or_filter_mismatch_refused(self):
         for value, args in [

@@ -75,7 +75,12 @@ class WfForwarding(unittest.TestCase):
 
     def _call(self, server, name, args):
         return server.handle(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": name, "arguments": args}}
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": name, "arguments": args},
+            }
         )
 
     def test_a_wf_read_is_forwarded_to_the_relay_action_path(self):
