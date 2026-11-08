@@ -11,11 +11,20 @@ import SwiftUI
 ///
 /// Under the hosts sits the Worker Health card:  the Worker's Linear token health,  from
 /// `~/.local/state/fleet-tools/worker-health.json`,  under the same forty-five minute rule.
+///
+/// Both files are read again every minute and when the Mac wakes,  and the page works their
+/// age and verdict out again every thirty seconds,  so a report left open goes stale when it
+/// crosses its window instead of keeping the answer it had when the page opened.
 struct FleetHostsView: View {
+    /// The last read of the doctor's report,  as the reader gave it.  It is aged on every tick.
     @State private var reading: FleetToolsReading?
-    /// The Worker's own health file,  read beside the doctor's report.
+    /// The Worker's own health file,  read beside the doctor's report,  and aged the same way.
     @State private var workerHealth: WorkerHealthReading?
     @State private var loading = false
+    /// When the two files were last read.
+    @State private var readAt: Date?
+    /// When the Mac last woke,  so a read from before the sleep is not shown as current.
+    @State private var wokeAt: Date?
     /// The host whose rows are open.
     @State private var expandedHost: String?
     /// Which category of checks to display inside an expanded host.
@@ -33,21 +42,18 @@ struct FleetHostsView: View {
             VStack(alignment: .leading, spacing: 16) {
                 header
                 if loading && reading == nil {
-                    Text("Reading the doctor's report…")
+                    Text("Reading the doctor's report\u{2026}")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 } else if let reading {
-                    reportLine(reading)
-                    if let problem = reading.problem {
-                        problemBox(problem)
-                    } else {
-                        hostsSection(reading)
-                    }
-                    if let workerHealth {
-                        workerHealthCard(workerHealth)
+                    // The age and the verdict are worked out again on every tick from the clock,
+                    // so a report that crosses its window between two reads stops reading as
+                    // current at once.
+                    TimelineView(.periodic(from: .now, by: ReportFreshness.tickInterval)) { context in
+                        report(reading, health: workerHealth, now: context.date)
                     }
                 } else {
-                    Text("No report yet.  Refresh to read it.")
+                    Text("No report has been read yet.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
@@ -55,7 +61,28 @@ struct FleetHostsView: View {
             .padding(.horizontal, 22)
             .padding(.vertical, 18)
         }
-        .task { await load() }
+        .rereadsOnTickAndWake(onWake: { wokeAt = Date() }) {
+            await load()
+        }
+    }
+
+    /// The doctor's report and the Worker card at a moment.
+    private func report(_ raw: FleetToolsReading, health: WorkerHealthReading?, now: Date) -> some View {
+        let freshness = raw.freshness(now: now, readAt: readAt, wokeAt: wokeAt)
+        let reading = raw.aged(by: freshness)
+        return VStack(alignment: .leading, spacing: 16) {
+            reportLine(reading, freshness: freshness)
+            if let problem = reading.problem {
+                problemBox(problem)
+            } else {
+                // Past its window,  or read before a wake,  every host reads unproven:  the
+                // rows stay in view as what the report said,  and the note above says why.
+                hostsSection(reading)
+            }
+            if let health {
+                workerHealthCard(health, now: now)
+            }
+        }
     }
 
     // MARK: The header
@@ -69,9 +96,10 @@ struct FleetHostsView: View {
                 Button {
                     Task { await load() }
                 } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
+                    Label("Read The Mac's Reports Again", systemImage: "arrow.clockwise")
                 }
                 .disabled(loading)
+                .help("Reads the doctor's report and the Worker health file this Mac holds.\(ServerStatusCopy.sentenceGap)It runs no doctor and asks no host anything.")
             }
             Text("What the doctor's report says about each host's tools.")
                 .font(.callout)
@@ -79,26 +107,22 @@ struct FleetHostsView: View {
         }
     }
 
-    /// The report itself:  how old it is,  and whether it can be believed.
+    /// The report itself:  who wrote it and how old it is at this moment,  and,  when it is
+    /// not current,  what that means and what to do.
     ///
     /// A report that is out of its window gets no badge of its own:  the hosts carry
-    /// the state,  and a red badge beside "it may not be current" would be alarm the
-    /// panel has no reason to raise.
-    private func reportLine(_ reading: FleetToolsReading) -> some View {
+    /// the state,  and a red badge beside the note would be alarm the panel has no
+    /// reason to raise.
+    private func reportLine(_ reading: FleetToolsReading, freshness: ReportFreshness) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 8) {
+            HStack(alignment: .top, spacing: 8) {
                 if reading.problem == nil && reading.isCurrent {
                     FleetToolsStateBadge(state: reading.verdict, width: 92, checked: PassMeaning.toolsHost)
                 }
-                if let age = reading.age {
-                    Text("Report read \(age) ago")
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(reading.isCurrent ? Color.secondary : Color.orange)
-                }
-                if !reading.isCurrent && reading.problem == nil {
-                    Text("It may not be current.")
-                        .font(.caption)
-                        .foregroundStyle(Color.orange)
+                // The doctor writes this report on this Mac,  so its age is said as that,
+                // never as when the page read it.  A report with a problem says it below.
+                if reading.problem == nil {
+                    ReportAgeText(origin: .doctorOnMac, freshness: freshness)
                 }
                 Spacer(minLength: 0)
             }
@@ -233,13 +257,17 @@ struct FleetHostsView: View {
         .padding(.vertical, 3)
     }
 
-    /// The tip the doctor compared against,  and the commit it ran from.
+    /// When this host was checked,  the tip the doctor compared against,  and the commit it
+    /// ran from.
     private func tipLine(_ host: FleetToolsHostVerdict) -> some View {
         HStack(spacing: 10) {
+            // The age of this host's own half of the report,  worked out at the tick:  when
+            // the host's doctor checked it,  not when this page read the file.
             if let age = host.age {
-                Text("read \(age) ago")
+                Text("checked \(age) ago")
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(.secondary)
+                    .help("When this host's own half of the doctor's report was written.")
             }
             if let tip = host.tip {
                 Text("tip \(tip)")
@@ -408,18 +436,18 @@ struct FleetHostsView: View {
     ///
     /// A file out of its window,  or a Worker the collector could not reach,  shows its
     /// reason and no seat rows:  rows from an old file are not current health evidence.
-    private func workerHealthCard(_ health: WorkerHealthReading) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+    ///
+    /// The file is aged at `now`,  so the card goes stale while it is on screen when the
+    /// file crosses its window.
+    private func workerHealthCard(_ raw: WorkerHealthReading, now: Date) -> some View {
+        let freshness = raw.freshness(now: now, readAt: readAt, wokeAt: wokeAt)
+        let health = raw.aged(by: freshness)
+        return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
                 Text("Worker Health")
                     .font(.headline)
                 if health.problem == nil && health.isCurrent {
                     FleetToolsStateBadge(state: health.state, width: 92)
-                }
-                if let age = health.age {
-                    Text("read \(age) ago")
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(health.isCurrent ? Color.secondary : Color.orange)
                 }
                 Spacer()
                 if let bundle = health.bundle, health.reachable {
@@ -428,14 +456,26 @@ struct FleetHostsView: View {
                         .foregroundStyle(bundle == "ok" ? Color.secondary : Color.red)
                 }
             }
-            Text("The Worker's Linear token for each hosted seat, from its signed health route.\u{00A0} The Worker runs hosted, on neither machine, and the Mac checks it every fifteen minutes.")
+            // Who wrote the file,  and how old it is at this tick.  What a stale file means is
+            // said in the box below,  so it is not said twice.
+            if health.problem == nil, let line = ReportFreshnessCopy.ageLine(workerHealthOrigin, freshness) {
+                Text(line)
+                    .font(.caption)
+                    .foregroundStyle(freshness.verdict.isCurrent ? Color.secondary : Color.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Text("The Worker's Linear token for each hosted seat, from its signed health route.\(ServerStatusCopy.sentenceGap)The Worker runs hosted, on neither machine, and the Mac checks it every fifteen minutes.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             if let problem = health.problem {
                 problemBox(problem)
+            } else if freshness.verdict == .checking {
+                Text("Reading this file again, because the Mac woke since it was read\u{2026}")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
             } else if !health.isCurrent {
-                problemBox("This file is stale.\u{00A0} The collector writes it every fifteen minutes; old rows are not current health evidence.")
+                problemBox(workerStaleNote(freshness))
             } else if !health.reachable {
                 problemBox("The collector could not reach the Worker: \(health.unreachableReason ?? "it did not say why").")
             } else if health.seats.isEmpty {
@@ -455,6 +495,16 @@ struct FleetHostsView: View {
                 .truncationMode(.middle)
         }
         .padding(.top, 8)
+    }
+
+    /// Who writes the Worker's health file:  the Mac's own collector,  not the Worker.
+    private var workerHealthOrigin: ReportOrigin { .macCollector("the Worker health collector") }
+
+    /// What a Worker health file past its window means,  and when a new one comes.
+    private func workerStaleNote(_ freshness: ReportFreshness) -> String {
+        let opening = ReportFreshnessCopy.verdictNote(workerHealthOrigin, freshness)
+            ?? "This file is not current, so its rows are old evidence, not current health."
+        return "\(opening)\(ServerStatusCopy.sentenceGap)The collector on this Mac writes a new one every fifteen minutes."
     }
 
     private func workerSeatRow(_ seat: WorkerHealthSeat) -> some View {
@@ -497,20 +547,32 @@ struct FleetHostsView: View {
 
     // MARK: The read
 
-    /// Read the report off the main thread.
+    /// Reads both files again,  off the main thread.  A read already in flight is not doubled:
+    /// the tick,  the wake and the button all land here.
+    ///
+    /// The read is stamped with the time it started,  not the time it finished,  so bytes read
+    /// before a sleep are never stamped after the wake.  A wake that lands while a read is in
+    /// flight (its own reread is dropped by the guard) gets one more read,  so the page does
+    /// not wait for the next minute to leave "checking".
     private func load() async {
+        guard !loading else { return }
         loading = true
         defer { loading = false }
         let url = FleetToolsReportReader.reportURL()
         let healthURL = WorkerHealthReportReader.reportURL()
-        let (result, health) = await Task.detached(priority: .userInitiated) {
-            (FleetToolsReportReader.read(at: url), WorkerHealthReportReader.read(at: healthURL))
-        }.value
-        reading = result
-        workerHealth = health
-        if expandedHost == nil {
-            expandedHost = result.hosts.first?.host
-        }
+        var started = Date()
+        repeat {
+            started = Date()
+            let (result, health) = await Task.detached(priority: .userInitiated) {
+                (FleetToolsReportReader.read(at: url), WorkerHealthReportReader.read(at: healthURL))
+            }.value
+            reading = result
+            workerHealth = health
+            readAt = started
+            if expandedHost == nil {
+                expandedHost = result.hosts.first?.host
+            }
+        } while ReadStamp.wokeDuringRead(started: started, wokeAt: wokeAt)
     }
 }
 

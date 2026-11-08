@@ -283,6 +283,124 @@ final class FleetGridTests: XCTestCase {
         XCTAssertNotEqual(WakeSettingState.unpublished.label, "PASS")
     }
 
+    // MARK: GRID-10:  an empty cell says why it is empty
+
+    /// "No rule covers this pair" is said only when the manifest was read and names no
+    /// rule;  a pair with a rule says the engine has not answered,  is checking,  or left it
+    /// out,  and a pair with no manifest says the rules are not known.
+    func test_an_empty_cell_says_why_it_is_empty() throws {
+        let loaded = try manifest()
+        func cell(
+            _ kind: ConfigKind,
+            manifest: SeatManifest?,
+            checking: Bool = false,
+            answered: Bool = true
+        ) throws -> GridCell {
+            let cells = GridBuilder.build(
+                roster: ["CLAUDE"],
+                manifest: manifest,
+                results: [],
+                checking: checking,
+                answered: answered
+            )
+            return try XCTUnwrap(cells.first { $0.kind == kind })
+        }
+        // The manifest names no instructions rule for CLAUDE:  a true hole.
+        let hole = try cell(.instructions, manifest: loaded)
+        XCTAssertEqual(hole.gap, .noRule)
+        XCTAssertTrue(hole.tooltip.contains("no rule covers this pair"))
+        // The manifest names a hooks rule, so the words follow the engine.
+        let waiting = try cell(.hooks, manifest: loaded, answered: false)
+        XCTAssertEqual(waiting.gap, .notAnswered)
+        XCTAssertFalse(waiting.tooltip.contains("no rule covers"))
+        let checking = try cell(.hooks, manifest: loaded, checking: true, answered: false)
+        XCTAssertEqual(checking.gap, .beingChecked)
+        XCTAssertTrue(checking.isCheckingWithNoAnswer)
+        XCTAssertTrue(checking.tooltip.contains("being checked now"))
+        XCTAssertEqual(try cell(.hooks, manifest: loaded).gap, .notInAnswer)
+        // With no manifest the rules are not known, whatever the engine is doing.
+        let unread = try cell(.hooks, manifest: nil, answered: false)
+        XCTAssertEqual(unread.gap, .noManifest)
+        XCTAssertTrue(unread.tooltip.contains("manifest was not read"))
+        XCTAssertFalse(unread.tooltip.contains("no rule covers"))
+        // Every state stays fail closed:  an empty cell is unknown, never a pass.
+        XCTAssertEqual(checking.state, .unknown)
+        XCTAssertEqual(unread.state, .unknown)
+    }
+
+    /// A rule the last answer left out stays a finding while the next run checks it:  it is
+    /// not "being checked with no answer",  so the Red and Needing Attention filters keep its
+    /// seat,  and its tooltip says the engine answered without it.
+    func test_a_rule_the_last_answer_left_out_stays_a_finding_during_a_run() throws {
+        let cells = GridBuilder.build(
+            roster: ["CLAUDE"],
+            manifest: try manifest(),
+            results: [],
+            checking: true,
+            answered: true
+        )
+        let hooks = try XCTUnwrap(cells.first { $0.kind == .hooks })
+        XCTAssertEqual(hooks.gap, .notInAnswer)
+        XCTAssertTrue(hooks.isBeingChecked)
+        XCTAssertFalse(hooks.isCheckingWithNoAnswer)
+        XCTAssertEqual(hooks.state, .unknown)
+        XCTAssertTrue(GridStateFilter.red.includes([hooks], commonCheckedAt: nil))
+        XCTAssertTrue(GridStateFilter.attention.includes([hooks], commonCheckedAt: nil))
+        XCTAssertFalse(hooks.tooltip.contains("has not answered"), hooks.tooltip)
+        XCTAssertTrue(hooks.tooltip.hasSuffix(GridCell.checkingLine), hooks.tooltip)
+    }
+
+    /// With only the last good copy of a manifest that changed and could not be read again,
+    /// a pair it names no rule for is not called a hole in the coverage.
+    func test_a_stale_manifest_does_not_say_no_rule_covers_the_pair() throws {
+        let cells = GridBuilder.build(
+            roster: ["CLAUDE"],
+            manifest: try manifest(),
+            results: [],
+            manifestCurrent: false
+        )
+        let instructions = try XCTUnwrap(cells.first { $0.kind == .instructions })
+        XCTAssertEqual(instructions.gap, .manifestStale)
+        XCTAssertFalse(instructions.tooltip.contains("no rule covers"), instructions.tooltip)
+        XCTAssertTrue(instructions.tooltip.contains("last good copy"), instructions.tooltip)
+        XCTAssertEqual(instructions.state, .unknown)
+        // A pair the copy names a rule for is unchanged.
+        XCTAssertEqual(try XCTUnwrap(cells.first { $0.kind == .hooks }).gap, .notInAnswer)
+    }
+
+    /// A cell with an answer keeps it while a run checks it,  and says so.
+    func test_a_cell_being_checked_keeps_its_answer_and_says_so() throws {
+        let envelope = try EnvelopeDecoder.decode(Data(Fixtures.envelope.utf8))
+        let cells = GridBuilder.build(
+            roster: ["CLAUDE"],
+            manifest: try manifest(),
+            results: envelope.results,
+            checking: true
+        )
+        let hooks = try XCTUnwrap(cells.first { $0.kind == .hooks })
+        XCTAssertEqual(hooks.state, .passed)
+        XCTAssertTrue(hooks.isBeingChecked)
+        XCTAssertFalse(hooks.isCheckingWithNoAnswer)
+        XCTAssertTrue(hooks.tooltip.hasSuffix(GridCell.checkingLine))
+    }
+
+    /// A cell still being checked with no earlier answer does not list its seat as needing
+    /// attention;  the same cell once the engine has not answered does.
+    func test_a_cell_being_checked_for_the_first_time_is_not_a_finding() {
+        let checking = GridCell(
+            seat: "MM", kind: .hooks, state: .unknown, rules: [], coverReason: nil,
+            gap: .beingChecked, isBeingChecked: true
+        )
+        let unanswered = GridCell(
+            seat: "MM", kind: .hooks, state: .unknown, rules: [], coverReason: nil,
+            gap: .notAnswered
+        )
+        XCTAssertFalse(GridStateFilter.attention.includes([checking], commonCheckedAt: nil))
+        XCTAssertFalse(GridStateFilter.red.includes([checking], commonCheckedAt: nil))
+        XCTAssertTrue(GridStateFilter.attention.includes([unanswered], commonCheckedAt: nil))
+        XCTAssertTrue(GridStateFilter.all.includes([checking], commonCheckedAt: nil))
+    }
+
     /// The manifest's cover reason is what a covered cell shows.
     func test_the_cover_reason_comes_from_the_manifest() throws {
         let manifest = try manifest()

@@ -1,4 +1,4 @@
-"""Default-off Mac Muse bridge for local and server Agent-Sync inboxes.
+"""Default-off Muse inbox bridge of the simple-chat listener, for local and server seat inboxes.
 
 This worker owns one decision ledger and the tested tool-less Muse runtime.  Server inboxes are
 pulled through the existing ``coolify`` SSH alias; decisions return through a fixed server-local
@@ -8,6 +8,8 @@ command.  The server alone can invoke its configured routine.  The Mac never rea
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import hashlib
 import json
 import os
@@ -273,6 +275,26 @@ class SSHExchange:
         return answer
 
 
+def backup_request_key(item: Mapping[str, Any]) -> str:
+    """The durable, deterministic review key for one bridge row's backup consult.
+
+    It names the row in pending-review listings and logs.  It is NOT a reservation and reaches
+    neither the provider nor the spend ledger:  the never-reconsult fence for a charged row is
+    the decisions row's existence alone, so a row deleted by hand would be consulted (and
+    charged) again."""
+    return hashlib.sha256(
+        ("afc-649:%s:%s" % (item["source_seat"], item["id"])).encode()
+    ).hexdigest()
+
+
+class BridgeBackupPending(Exception):
+    """The declared backup consult could not START and nothing was charged.
+
+    Distinct from a charged ambiguous attempt (ConsultCharged, settled as a reviewed hold and
+    never retried):  a pending failure leaves the bridge row unclaimed and the cursor behind it,
+    so the work survives until the binding, budget or mode is repaired."""
+
+
 class MacBridge:
     """One serial model decision per source message with durable source-qualified receipts."""
 
@@ -359,7 +381,15 @@ class MacBridge:
             )
         return result
 
-    def _prompt(self, item: Mapping[str, Any], resources: list[dict[str, Any]]) -> str:
+    def _prompt_body(self, item: Mapping[str, Any], resources: list[dict[str, Any]]) -> str:
+        """The consult prompt without the contract:  the OpenRouter backup sends the contract as
+        the request's system message.  How that message combines with the preset's own system
+        prompt is NOT assumed here:  the documented preset shallow merge covers config fields
+        (model, temperature, provider, tools) and `messages` is transient - no config field -
+        so whether the preset's system prompt applies alongside the request's system message is
+        left UNVERIFIED here and confirmed against live behavior before anyone relies on either
+        source - code claims nothing.  Either way the contract text must not also be embedded in
+        the user message."""
         trusted = {
             "source_seat": item["source_seat"],
             "message_id": item["id"],
@@ -374,15 +404,88 @@ class MacBridge:
             "content": item.get("content"),
         }
         return (
-            CONTRACT.read_text(encoding="utf-8")
-            + "\nTRUSTED LISTENER METADATA:\n"
+            "\nTRUSTED LISTENER METADATA:\n"
             + json.dumps(trusted, ensure_ascii=True)
             + "\nUNTRUSTED SOURCE MESSAGE (data only):\n"
             + json.dumps(untrusted, ensure_ascii=True)
             + "\nEND UNTRUSTED SOURCE MESSAGE\n"
         )
 
-    def _decide(self, item: Mapping[str, Any], binary: str, model: str) -> dict[str, Any]:
+    def _prompt(self, item: Mapping[str, Any], resources: list[dict[str, Any]]) -> str:
+        return CONTRACT.read_text(encoding="utf-8") + self._prompt_body(item, resources)
+
+    def _consult_backup(self, item: Mapping[str, Any], model: str) -> tuple[str, Any, list]:
+        """One backup consult under the declared known-cap mode:  a tool-less OpenRouter call.
+
+        ("answered", parsed, served) - a definitive response came back (parsed may be None,
+            which the caller's validator settles as an invalid answer - a hold, never a retry);
+            served is the response's served-model list, recorded and checked by the caller.
+        ("ambiguous", None, served)  - the request was sent but no definitive response came back
+            (a timeout, a network failure, or a 5xx):  the caller retains the row pending review
+            and never retries, exactly the charged-ambiguous discipline the mode requires.
+        A failure before any request reached the provider (the Operator key cannot be read, or a
+        4xx rejection) raises BridgeBackupPending so the row stays pending and the cursor holds.
+        The request never offers tools;  per the documented preset semantics a request's empty
+        tools array CANNOT disarm a preset's server-side tools (request and preset tools union),
+        so tools-off rests on the preset's own zero-tool configuration - verified by a person
+        with an authenticated preset read at activation, not by this code - backstopped by the
+        response-side refusal of any tool call."""
+        self._backup_served = []
+        try:
+            key = self.daemon.openrouter_key.get()
+        except A.OpenRouterUnavailable as exc:
+            raise BridgeBackupPending(str(exc)[:120]) from exc
+        prompt = self.daemon.scrub(self._prompt_body(item, self._resources(item)))
+        result = self.daemon.openrouter_runner.run(
+            model,
+            prompt,
+            W.schema_text(strict=True),
+            key,
+            system=CONTRACT.read_text(encoding="utf-8"),
+        )
+        served = [m for m in (getattr(result, "models", None) or []) if isinstance(m, str) and m]
+        self._backup_served = served
+        if result.error is None:
+            return "answered", result.parsed, served
+        status = result.http_status
+        if status is not None and 400 <= status < 500:
+            raise BridgeBackupPending("openrouter HTTP %d" % status)
+        return "ambiguous", None, served
+
+    def _decide(
+        self,
+        item: Mapping[str, Any],
+        binary: str,
+        model: str,
+        *,
+        consult_runtime: str = MB.MUSE,
+        backup_model: str | None = None,
+        backup_expected_models: tuple | None = None,
+    ) -> dict[str, Any]:
+        decision = self._decide_inner(
+            item, binary, model, consult_runtime, backup_model, backup_expected_models
+        )
+        if consult_runtime != MB.MUSE:
+            # The ledger and the log name which runtime answered and which model served it, so a
+            # wake answered by the backup is never mistaken for one answered by the primary, and
+            # a preset silently serving a different model is visible in the durable row.  The
+            # bridge is serial, so the consult's served-model stash belongs to this decision.
+            decision = dict(
+                decision,
+                runtime=consult_runtime,
+                served_models=list(getattr(self, "_backup_served", None) or []),
+            )
+        return decision
+
+    def _decide_inner(
+        self,
+        item: Mapping[str, Any],
+        binary: str,
+        model: str,
+        consult_runtime: str,
+        backup_model: str | None = None,
+        backup_expected_models: tuple | None = None,
+    ) -> dict[str, Any]:
         source = item["source_seat"]
         if item.get("blocked") is True:
             return {"kind": "hold", "reason": "loop_guard"}
@@ -391,41 +494,93 @@ class MacBridge:
         if item.get("paused") is True or L.paused(self.daemon.root, source, wakes=True):
             return {"kind": "hold", "reason": "paused"}
         resources = self._resources(item)
-        wake_dir = os.path.join(L.listener_dir(self.daemon.root), "muse-bridge-wake")
-        L.private_dir(wake_dir)
         prompt = self.daemon.scrub(self._prompt(item, resources))
-        result = self.daemon.muse_runner.run(
-            A.muse_argv(binary, model),
-            A.muse_env(self.daemon.env, self.daemon.home, self.daemon.wake_path),
-            wake_dir,
-            prompt,
-            schema=W.schema_text(strict=True),
-        )
-        if not result.ok or result.models != [model]:
-            if item.get("native") is True:
-                # The consult run itself failed (owner ruling, 2026-11-03):  degrade to the
-                # deterministic route rather than holding the wake.  A native item's
-                # deterministic outcome is the seat's own routine -- the native target is in
-                # the offered resources for exactly this seat, and the server runs that same
-                # routine when the model chooses it -- so the degrade returns the same
-                # decision shape a model-chosen native route returns.  The pre-checks above
-                # (loop guard, stale, paused) already ran, and submit re-verifies the source
-                # row, so the degrade inherits every guard the model's answer would have met.
-                # Items with no native target (local Mac items, server seats without an http
-                # wake) have no deterministic route inside the bridge and keep the hold below.
+        if consult_runtime == MB.OPENROUTER:
+            # The declared known-cap mode:  the capped primary is never invoked, and the backup
+            # answers under the same contract, the same strict schema and the same validation.
+            outcome, parsed, served = self._consult_backup(item, backup_model or "")
+            if outcome == "ambiguous":
+                # Charged with an ambiguous outcome - the provider may hold an answer we never
+                # read, so the row is NOT final:  it is retained pending review, never retried
+                # (the decisions row below is the whole never-reconsult fence;  deleting that
+                # row by hand would re-charge), and never delivered.  The cursor can move past
+                # it because the state file is the durable retention;  independent rows are
+                # unaffected.
                 self.daemon.log.write(
-                    "muse-bridge-consult-degraded",
+                    "muse-bridge-backup-review-required",
                     seat=source,
                     id=item["id"],
-                    reason="model_unavailable",
+                    request_key=backup_request_key(item),
+                    ledger=self.path,
                 )
                 return {
-                    "kind": "native",
-                    "target": MB.native_target_id(source),
+                    "kind": "hold",
+                    "reason": "backup_consult_charged_ambiguous",
+                    "review": "pending",
+                    "request_key": backup_request_key(item),
                     "model_attempted": True,
                 }
-            return {"kind": "hold", "reason": "model_unavailable", "model_attempted": True}
-        obj, why = W.validate(result.parsed)
+            expected = list(backup_expected_models) if backup_expected_models else []
+            if expected and (not served or any(entry not in expected for entry in served)):
+                # Charged with an answer from a model outside the declared expectation - a
+                # dashboard-side edit changed what the preset serves.  Same discipline as a
+                # charged ambiguous outcome:  retained pending review, never retried, never
+                # delivered;  the decisions row is the never-reconsult fence.
+                self.daemon.log.write(
+                    "muse-bridge-backup-review-required",
+                    seat=source,
+                    id=item["id"],
+                    reason="served_model_unexpected",
+                    served_models=served,
+                    request_key=backup_request_key(item),
+                    ledger=self.path,
+                )
+                return {
+                    "kind": "hold",
+                    "reason": "backup_consult_served_model_unexpected",
+                    "review": "pending",
+                    "request_key": backup_request_key(item),
+                    "served_models": list(served),
+                    "model_attempted": True,
+                }
+            # The backup returns the parsed decision object; validate it directly.  Routing
+            # it back through the text parser would discard every backup answer.
+            obj, why = W.validate(parsed)
+        else:
+            wake_dir = os.path.join(L.listener_dir(self.daemon.root), "muse-bridge-wake")
+            L.private_dir(wake_dir)
+            result = self.daemon.muse_runner.run(
+                A.muse_argv(binary, model),
+                A.muse_env(self.daemon.env, self.daemon.home, self.daemon.wake_path),
+                wake_dir,
+                prompt,
+                schema=W.schema_text(strict=True),
+            )
+            if not result.ok or result.models != [model]:
+                if item.get("native") is True:
+                    # The consult run itself failed (owner ruling, 2026-11-03):  degrade to the
+                    # deterministic route rather than holding the wake.  A native item's
+                    # deterministic outcome is the seat's own routine -- the native target is in
+                    # the offered resources for exactly this seat, and the server runs that same
+                    # routine when the model chooses it -- so the degrade returns the same
+                    # decision shape a model-chosen native route returns.  The pre-checks above
+                    # (loop guard, stale, paused) already ran, and submit re-verifies the source
+                    # row, so the degrade inherits every guard the model's answer would have met.
+                    # Items with no native target (local Mac items, server seats without an http
+                    # wake) have no deterministic route inside the bridge and keep the hold below.
+                    self.daemon.log.write(
+                        "muse-bridge-consult-degraded",
+                        seat=source,
+                        id=item["id"],
+                        reason="model_unavailable",
+                    )
+                    return {
+                        "kind": "native",
+                        "target": MB.native_target_id(source),
+                        "model_attempted": True,
+                    }
+                return {"kind": "hold", "reason": "model_unavailable", "model_attempted": True}
+            obj, why = W.validate(result.parsed)
         if (
             why
             or not isinstance(obj, dict)
@@ -598,6 +753,12 @@ class MacBridge:
         if envelope.get("gap"):
             self.daemon.log.write("muse-bridge-gap", seat=seat, oldest=envelope.get("oldest"))
             return
+        bridge_clock = getattr(self.daemon, "clock", None)
+        consult_runtime, decl, backup_hold_reason = MB.select_consult_runtime(
+            getattr(getattr(self.daemon, "config", None), "muse_bridge_consult_backup", None),
+            now=bridge_clock.time() if bridge_clock is not None else time.time(),
+        )
+        pending_hold = False
         for item in envelope.get("items", []):
             # A malformed item is skipped and reported, never retried:  raising here would leave
             # the cursor behind, and every later tick would re-export the same bad batch.
@@ -614,6 +775,18 @@ class MacBridge:
             key = self._key(item)
             decision = decisions.get(key)
             if decision is None:
+                if backup_hold_reason is not None:
+                    # The declared backup mode cannot run (misconfigured, or past its stated
+                    # review time):  leave the row unclaimed and the cursor behind it, so pending
+                    # work survives until the mode is re-declared or removed.  Never silently
+                    # revert to the capped primary and never consume the row.
+                    pending_hold = True
+                    if getattr(self, "_last_backup_hold", None) != backup_hold_reason:
+                        self.daemon.log.write(
+                            "muse-bridge-backup-held", seat=seat, reason=backup_hold_reason
+                        )
+                        self._last_backup_hold = backup_hold_reason
+                    continue
                 budget_reason = self._budget_reason(item, envelope.get("budget"), decisions)
                 if budget_reason:
                     decision = {"kind": "hold", "reason": budget_reason}
@@ -633,7 +806,30 @@ class MacBridge:
                         ),
                     }
                     self._save(state)
-                    decision = self._decide(item, binary, model)
+                    try:
+                        decision = self._decide(
+                            item,
+                            binary,
+                            model,
+                            consult_runtime=consult_runtime,
+                            backup_model=decl.model if decl is not None else None,
+                            backup_expected_models=(
+                                decl.expected_models if decl is not None else None
+                            ),
+                        )
+                    except BridgeBackupPending as exc:
+                        # A pre-charge backup failure after the claim:  unwind the claim so the
+                        # row was never consumed, and hold the cursor behind it.
+                        decisions.pop(key, None)
+                        self._save(state)
+                        pending_hold = True
+                        reason = str(exc)[:120] or "backup_unavailable"
+                        if getattr(self, "_last_backup_hold", None) != reason:
+                            self.daemon.log.write(
+                                "muse-bridge-backup-held", seat=seat, reason=reason
+                            )
+                            self._last_backup_hold = reason
+                        continue
                 decisions[key] = dict(
                     decision,
                     at=time.time(),
@@ -644,10 +840,20 @@ class MacBridge:
                         str(item.get("channel") or ""), str(item.get("topic") or "")
                     ),
                 )
+                if decision.get("review") == "pending":
+                    # The cursor advances past a retained row; keep the item payload with it
+                    # so operator resolution finalizes from durable state, never re-export.
+                    decisions[key]["item"] = dict(item)
+                    decisions[key]["remote"] = remote
                 self._save(state)  # persist before any remote or chat delivery
                 decision = decisions[key]  # the stored row keeps the budget fields
             if decision.get("delivery") in ("done", "refused"):
                 continue  # settled on an earlier pass:  never delivered twice, never delivered late
+            if decision.get("review") == "pending":
+                # Retained for operator review after a charged ambiguous backup attempt:  never
+                # delivered, never marked settled, never re-consulted.  The row stays in the
+                # durable decisions map;  other rows process normally.
+                continue
             try:
                 self._deliver(item, decision, remote=remote)
             except DeliveryRefused as exc:
@@ -667,8 +873,14 @@ class MacBridge:
             self.daemon.log.write(
                 "muse-bridge-decision", seat=seat, id=item["id"], kind=decision["kind"]
             )
-        cursors[seat] = envelope["next"]
-        self._save(state)
+        if pending_hold:
+            # Keep the cursor behind the held rows so the next tick re-exports them;  decided
+            # rows are deduplicated by the decisions map, so only the held work retries.  The
+            # hold reason was already logged once above.
+            self._save(state)
+        else:
+            cursors[seat] = envelope["next"]
+            self._save(state)
 
     def run_once(self) -> None:
         cfg = self.daemon.config
@@ -702,6 +914,12 @@ class MacBridge:
             # The marker clears only when the pin itself matches again;  clearing it on a
             # drift proceed would re-log the same drift on the next tick.
             self._last_pin_drift = None
+        with _state_file_lock(self.path):
+            self._run_once_locked(model=model, binary=binary)
+
+    def _run_once_locked(self, *, model: str, binary: str) -> None:
+        """The state read-modify-write of one tick, run under the bridge ledger lock."""
+        cfg = self.daemon.config
         state = self._state()
         cursors = state.setdefault("cursors", {})
         decisions = state.setdefault("decisions", {})
@@ -746,16 +964,139 @@ class MacBridge:
                     self.daemon.log.write(
                         "muse-bridge-source-error", seat=seat, error=type(exc).__name__
                     )
+        self._finalize_resolved_reviews(state, decisions)
+
+    def _finalize_resolved_reviews(self, state: dict[str, Any], decisions: dict[str, Any]) -> None:
+        """Deliver retained backup rows the operator has resolved.  The cursor already
+        advanced past a retained row, so resolution reaches it here, from the durable state
+        file - never by re-export and never by re-consult."""
+        for key, decision in list(decisions.items()):
+            if not isinstance(decision, dict):
+                continue
+            if decision.get("review") != "resolved" or decision.get("delivery") in (
+                "done",
+                "refused",
+            ):
+                continue
+            item = decision.get("item")
+            if not isinstance(item, dict) or "source_seat" not in item or "id" not in item:
+                self.daemon.log.write(
+                    "muse-bridge-review-undeliverable",
+                    reason="retained row is missing its item payload",
+                )
+                # Settle it:  an unrestorable row would otherwise match this filter and log on every tick.
+                decisions[key] = dict(
+                    decision,
+                    delivery="refused",
+                    refused_reason="retained row is missing its item payload",
+                )
+                self._save(state)
+                continue
+            try:
+                self._deliver(item, decision, remote=decision.get("remote") is True)
+            except DeliveryRefused as exc:
+                decisions[key] = dict(decision, delivery="refused", refused_reason=str(exc)[:200])
+                self._save(state)
+                continue
+            decisions[key] = dict(decisions[key], delivery="done")
+            self._save(state)
+            self.daemon.log.write(
+                "muse-bridge-review-delivered",
+                seat=item.get("source_seat"),
+                id=item.get("id"),
+            )
+
+
+@contextlib.contextmanager
+def _state_file_lock(path: str):
+    """Exclusive advisory lock around one bridge-state read-modify-write - a whole daemon tick
+    or one operator resolve - so the two never interleave their read/save of the durable
+    ledger.  Acquired once per critical section; never re-entered (flock does not nest on a
+    second descriptor in the same process)."""
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    fd = os.open(path + ".lock", os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
+def list_pending_reviews(root: str) -> list[dict[str, Any]]:
+    """Every backup consult row retained for operator review (charged, ambiguous, never
+    retried).  Read-only, straight from the durable state file:  the review locator that
+    survives restart and cursor advancement, so a retained row is never lost."""
+    path = os.path.join(L.listener_dir(root), STATE_NAME)
+    row = L.read_json(path)
+    decisions = row.get("decisions") if isinstance(row, dict) else None
+    if not isinstance(decisions, dict):
+        return []
+    out = []
+    for key, decision in decisions.items():
+        if isinstance(decision, dict) and decision.get("review") == "pending":
+            out.append(
+                {
+                    "key": key,
+                    "seat": decision.get("source_seat"),
+                    "id": decision.get("id"),
+                    "reason": decision.get("reason"),
+                    "request_key": decision.get("request_key"),
+                    "at": decision.get("at"),
+                    "ledger": path,
+                }
+            )
+    return sorted(out, key=lambda row: (row.get("at") or 0, str(row.get("key"))))
+
+
+def resolve_pending_review(root: str, seat: str, message_id: int) -> dict[str, Any]:
+    """Mark one pending-review row as operator-reviewed.
+
+    Reviewed means the operator accepts the row will not be answered by the backup:  the next
+    tick finalizes it through the normal hold delivery path.  The consult is NEVER re-issued:
+    the decisions row keeps blocking re-consult, which is the only fence - no request key
+    reaches the provider, so deleting the row by hand would consult (and charge) again."""
+    path = os.path.join(L.listener_dir(root), STATE_NAME)
+    with _state_file_lock(path):
+        row = L.read_json(path)
+        decisions = row.get("decisions") if isinstance(row, dict) else None
+        if not isinstance(decisions, dict):
+            raise ValueError("Mac bridge ledger is unreadable")
+        for key, decision in decisions.items():
+            if (
+                isinstance(decision, dict)
+                and decision.get("review") == "pending"
+                and decision.get("source_seat") == seat
+                and decision.get("id") == message_id
+            ):
+                decisions[key] = dict(decision, review="resolved", resolved_at=time.time())
+                L.write_json(path, row)
+                return {"resolved": key, "seat": seat, "id": message_id}
+    raise ValueError("no pending-review row for %s/%s" % (seat, message_id))
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Mac Muse bridge runtime verification")
-    parser.add_argument("command", choices=("status", "probe", "pin"))
+    parser.add_argument("command", choices=("status", "probe", "pin", "reviews", "resolve"))
+    parser.add_argument("command_args", nargs="*", help="resolve takes SEAT MESSAGE_ID")
     args = parser.parse_args(argv)
     env = os.environ
     root = L.state_root(env)
     home = env.get("HOME") or os.path.expanduser("~")
     wake_path = A.default_wake_path(home)
+    if args.command == "reviews":
+        sys.stdout.write(json.dumps(list_pending_reviews(root)) + "\n")
+        return 0
+    if args.command == "resolve":
+        if len(args.command_args) != 2:
+            parser.error("resolve takes SEAT MESSAGE_ID")
+        try:
+            message_id = int(args.command_args[1])
+        except ValueError:
+            parser.error("MESSAGE_ID must be an integer")
+        sys.stdout.write(
+            json.dumps(resolve_pending_review(root, args.command_args[0], message_id)) + "\n"
+        )
+        return 0
     if args.command == "probe":
         result = probe_pin(root, env, home, wake_path)
     elif args.command == "pin":

@@ -140,7 +140,13 @@ final class FleetViewFilterBarTests: XCTestCase {
         // ends while the rows still hold counts that were not read (Sentry, PR 1450).
         let store = try String(contentsOf: muster.appendingPathComponent("Model/FleetViewStore.swift"), encoding: .utf8)
         let storeFile = "FleetViewStore.swift"
-        let loadView = try find("let loaded = try await loadView()", in: store, file: storeFile)
+        // The slow work read starts first, the local tools report is read while it runs, and
+        // only then does the store wait on the work read (PR 1477).
+        let startView = try find("async let pendingView = loadView()", in: store, file: storeFile)
+        let toolsRead = try XCTUnwrap(store.range(of: "readTools()", range: startView..<store.endIndex)?.lowerBound,
+                                      "FleetViewStore.swift no longer reads the tools report after starting the work read")
+        let loadView = try find("let loaded = try await pendingView", in: store, file: storeFile)
+        XCTAssertLessThan(toolsRead, loadView, "the tools report must be read while the work read runs")
         let rebuild = try find("readRegistry(root, loaded, tools)", in: store, file: storeFile)
         let setEnvelope = try find("envelope = loaded", in: store, file: storeFile)
         let setRows = try find("registrySummary = summary", in: store, file: storeFile)

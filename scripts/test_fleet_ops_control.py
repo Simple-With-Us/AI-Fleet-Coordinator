@@ -1149,6 +1149,7 @@ GOLDEN_ACTIONS = {
     "serverUpdate": "update",
     "coolifyRedeploy": "redeploy",
     "resourceStatus": "resource-status",
+    "eavesdropperStatus": "eavesdropper-status",
 }
 
 

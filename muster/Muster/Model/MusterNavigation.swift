@@ -535,8 +535,12 @@ enum GridStateFilter: String, CaseIterable, Identifiable {
     /// seats it opens on are the same cells.  With no shared check time which results were
     /// checked at another time is not known, as the card's count is then unknown, so every
     /// seat stays in view:  an empty grid would be a zero the Overview does not claim.
+    ///
+    /// A cell that is being checked with no earlier answer is not yet a finding,  so it
+    /// does not put its seat under a state filter:  a first run must not list every seat
+    /// as needing attention while it is still checking.
     func includes(_ cells: [GridCell], commonCheckedAt: Date?) -> Bool {
-        let states = cells.map(\.state)
+        let states = cells.filter { !$0.isCheckingWithNoAnswer }.map(\.state)
         switch self {
         case .all: return true
         case .attention:

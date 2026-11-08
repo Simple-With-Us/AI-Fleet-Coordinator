@@ -75,10 +75,14 @@ struct FleetView: View {
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
-                if let stamp = refreshClock.headerText {
-                    Text(stamp)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
+                // The collection's age is worked out again on every tick,  so an open page never
+                // keeps a frozen age,  and its tint turns as the collection gets old.
+                TimelineView(.periodic(from: .now, by: ReportFreshness.tickInterval)) { context in
+                    if let stamp = refreshClock.headerText(now: context.date) {
+                        Text(stamp)
+                            .font(.callout)
+                            .foregroundStyle(headerTint(now: context.date))
+                    }
                 }
                 Button {
                     Task { await load(force: true) }
@@ -135,6 +139,17 @@ struct FleetView: View {
         }
         .padding(24)
         .task { await load(force: false) }
+    }
+
+    /// The header line's tint at a moment:  secondary while the collection is fresh,  and amber
+    /// once it gets old.  Past an hour the line itself says "not current";  it stays amber,  the
+    /// colour every not-current age in the app uses,  because red is kept for a real failure.
+    /// The words say each state,  and the colour only repeats them.
+    private func headerTint(now: Date) -> Color {
+        switch FleetViewFreshness.tone(collectedAt: refreshClock.collectedAt, now: now) {
+        case .fresh: return .secondary
+        case .aging, .notCurrent: return .orange
+        }
     }
 
     // MARK: Sections

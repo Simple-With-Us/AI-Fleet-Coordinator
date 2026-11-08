@@ -408,6 +408,29 @@ struct ServerActionGate: Equatable {
     }
 }
 
+/// When a panel's file read counts as made.
+enum ReadStamp {
+    /// True when the Mac woke after a read started:  the bytes may be from before the sleep,
+    /// so the panel reads once more instead of showing them as read after the wake.  A read is
+    /// stamped with its start for the same reason.
+    static func wokeDuringRead(started: Date, wokeAt: Date?) -> Bool {
+        guard let wokeAt else { return false }
+        return wokeAt > started
+    }
+}
+
+extension ServerAskResult {
+    /// The newest word from the server:  the last Ask The Server Now,  or a read a panel made of
+    /// the server itself,  whichever came later.  A direct read that came back is an answer as
+    /// good as an ask,  so a panel that has just read the server is not turned off by an older
+    /// failed try,  and an ask that failed after it still counts.
+    static func latest(asked: ServerAskResult?, directReadAt: Date?) -> ServerAskResult? {
+        guard let directReadAt else { return asked }
+        if let asked, asked.at > directReadAt { return asked }
+        return ServerAskResult(answered: true, at: directReadAt)
+    }
+}
+
 // MARK: - The server:  what "changed" means
 
 /// The words for the server report's file list.

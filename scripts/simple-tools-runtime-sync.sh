@@ -1,12 +1,12 @@
 #!/bin/bash
-# agent-sync-runtime-sync.sh  --  keep the agent-sync runtime checkout on AFC origin/main.
+# simple-tools-runtime-sync.sh  --  keep the simple-tools runtime checkout on AFC origin/main.
 #
 # The always-on Zulip listener (com.jay.operator) and the `simple-chat` CLI run from a
 # dedicated managed checkout, never from the human integration tree ~/Code/AI-Fleet-Coordinator:
 #
-#   /Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime     (detached worktree, locked)
+#   /Users/jay/apps/lanes/_managed/fleet/simple-tools-runtime     (detached worktree, locked)
 #
-# LaunchAgent com.jay.agent-sync-runtime-sync runs this every 120 seconds.  Each run:
+# LaunchAgent com.jay.simple-tools-runtime-sync runs this every 120 seconds.  Each run:
 #   1. fetches origin (60 second cap);
 #   2. if origin/main differs from the runtime HEAD AND the worktree has no tracked changes, checks out
 #      origin/main detached;
@@ -16,21 +16,21 @@
 #      or docs/protocols/agent-sync-partition.toml, kickstarts the listener so it loads the new code.
 # A dirty runtime worktree is logged and skipped.  It is never reset, cleaned or stashed.
 #
-# Pause:   touch ~/.agent-sync/runtime-sync.pause   (resume: rm it)
-#          or  launchctl bootout gui/$(id -u)/com.jay.agent-sync-runtime-sync
-# Log:     ~/apps/logs/agent-sync-runtime-sync.log   (no-op runs are silent)
-# Tracked copy: scripts/agent-sync-runtime-sync.sh in AI-Fleet-Coordinator.  The live copy is a regular file
-# at ~/apps/agent-sync-runtime-sync.sh, never a symlink into the checkout it updates (a checkout would
+# Pause:   touch ~/.simple-tools/runtime-sync.pause   (resume: rm it)
+#          or  launchctl bootout gui/$(id -u)/com.jay.simple-tools-runtime-sync
+# Log:     ~/apps/logs/simple-tools-runtime-sync.log   (no-op runs are silent)
+# Tracked copy: scripts/simple-tools-runtime-sync.sh in AI-Fleet-Coordinator.  The live copy is a regular file
+# at ~/apps/simple-tools-runtime-sync.sh, never a symlink into the checkout it updates (a checkout would
 # rewrite the script while bash is reading it).
 set -u
 
-RUNTIME="${AGENT_SYNC_RUNTIME:-/Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime}"
+RUNTIME="${SIMPLE_TOOLS_RUNTIME:-${AGENT_SYNC_RUNTIME:-/Users/jay/apps/lanes/_managed/fleet/simple-tools-runtime}}"
 LISTENER_LABEL="${AGENT_SYNC_LISTENER_LABEL:-com.jay.operator}"
-STATE_DIR="$HOME/.agent-sync"
+STATE_DIR="$HOME/.simple-tools"
 LOCK_DIR="$STATE_DIR/runtime-sync.lock"
 PAUSE_FILE="$STATE_DIR/runtime-sync.pause"
 BAD_FILE="$STATE_DIR/runtime-sync.bad-sha"
-LOG="${AGENT_SYNC_RUNTIME_SYNC_LOG:-$HOME/apps/logs/agent-sync-runtime-sync.log}"
+LOG="${AGENT_SYNC_RUNTIME_SYNC_LOG:-$HOME/apps/logs/simple-tools-runtime-sync.log}"
 GIT_TIMEOUT=60
 RESTART_RE='^(scripts/agent_sync/|scripts/simple-chat$|plugins/simple-chat/|\.claude-plugin/|docs/protocols/agent-sync-partition\.toml$)'
 PLUGIN_RE='^(plugins/simple-chat/|\.claude-plugin/)'

@@ -415,14 +415,21 @@ struct VirtualMachinesView: View {
 
     /// Reads the copies again,  off the main thread.  A read already in flight is not doubled:
     /// the tick and the button both land here.
+    ///
+    /// The read is stamped with the time it started,  so bytes read before a sleep are never
+    /// stamped after the wake,  and a wake that lands mid-read gets one more read.
     private func load() async {
         guard !loading else { return }
         loading = true
         defer { loading = false }
         let url = VmStatusReportReader.directoryURL()
-        fleet = await Task.detached(priority: .utility) {
-            VmStatusReportReader.readDirectory(at: url)
-        }.value
-        readAt = Date()
+        var started = Date()
+        repeat {
+            started = Date()
+            fleet = await Task.detached(priority: .utility) {
+                VmStatusReportReader.readDirectory(at: url)
+            }.value
+            readAt = started
+        } while ReadStamp.wokeDuringRead(started: started, wokeAt: wokeAt)
     }
 }

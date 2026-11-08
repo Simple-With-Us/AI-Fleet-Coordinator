@@ -154,7 +154,7 @@ jobs:
         python3 scripts/test_fleet_cli_runtime.py
         python3 scripts/test_fleet_cli_git_update.py
         (cd scripts/git-tools && python3 -m unittest test_git_remote test_simple_git_wrapper test_helper_plan -v)
-        bash -n scripts/agent-sync-runtime-sync.sh
+        bash -n scripts/simple-tools-runtime-sync.sh
     # systemd unit templates (the fleet CLI updater unit):  the measured host
     # quirk that %h expands to the root account's home inside a system unit even
     # when User= names another account, the unit's own internal consistency, and
