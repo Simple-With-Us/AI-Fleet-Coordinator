@@ -819,7 +819,7 @@
    "consumers": [
     {
      "name": "simple-notes, the stdio MCP and the notes runner",
-     "path": "scripts/agent_sync/notes_client.py"
+     "path": "scripts/simple_tools/notes_client.py"
     }
    ],
    "requires": [],

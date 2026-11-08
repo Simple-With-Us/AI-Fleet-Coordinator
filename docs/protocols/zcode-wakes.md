@@ -3,7 +3,7 @@
 Owner request, Sat, Nov 7, 2026 (OPS-1048):  the Operator should find the moments ZCode needs
 waking (a message tagged the seat), and reach the specific ZCode thread that belongs to it, on
 the Mac and on the server.  The session letters half of that request is PR #1454
-(`docs/protocols/` has no lettering text here;  `scripts/agent_sync/README.md`, Platform
+(`docs/protocols/` has no lettering text here;  `scripts/simple_tools/README.md`, Platform
 Session Letters, does).  This document is the wake half:  what exists, what is wired, and the
 one decision still open.
 
@@ -12,7 +12,7 @@ one decision still open.
     Zulip tag @ZC or DM zc-bot
       -> the listener that holds the seat (partition:  ZC = "mac", the Mac instance today)
            records the message in the seat inbox   (works since Nov 6, OPS-1039)
-      -> [seat.ZC] wake = "http"  POSTs agent-sync-wake/1, bearer-signed with ZC_ROUTINE_KEY
+      -> [seat.ZC] wake = "http"  POSTs simple-tools-wake/1, bearer-signed with ZC_ROUTINE_KEY
            -> afc-zc-wake-bridge on jay-server (tailnet address only, port 8791)
                 validates the contract, remembers the wake id (dedupe),
                 resolves the lettered target session from the Operator registry
@@ -34,7 +34,7 @@ marked seen only after the POST is answered.
   secret), `config.json` (the delivery switch and command template), `seen.json`,
   `delivery.jsonl`.  `zc-wake-bridge deliver --wake-id ... --topic ...` runs one delivery by
   hand, the same code the POST path runs.
-- `scripts/agent_sync/server/zc-wake-bridge.service`  the unit template.  It sources the shared
+- `scripts/simple_tools/server/zc-wake-bridge.service`  the unit template.  It sources the shared
   registry env file (`~/.local/bin/mm-registry-env`) exactly as the letter hooks do, binds the
   address `/etc/zc-wake-bridge.env` names (the tailnet IP;  loopback without one), and runs the
   checkout out of fleet-cli `current`, so a release move never leaves a dead path.
@@ -74,7 +74,7 @@ a working key for the MiniMax entry.  Flipping it is one config file:
 
 ## Verification to date
 
-- Bridge suite:  10 tests (`cd scripts && python3 -m unittest agent_sync.tests.test_zc_wake_bridge`):
+- Bridge suite:  10 tests (`cd scripts && python3 -m unittest simple_tools.tests.test_zc_wake_bridge`):
   the contract and seat checks, bearer and key-file discipline (a group-readable key is a 503),
   dedupe, delivery-disabled, topic-match over recency, the subagent/off-host/closed skips, and
   one delivery through the CLI path with the launcher mark set.

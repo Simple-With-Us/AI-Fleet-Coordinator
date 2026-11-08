@@ -49,7 +49,7 @@ What it promises:
     accepts only a `server` verb, one target, one of `--plan` or `--yes` and an optional
     `--json`.  Anything more is refused.
   * `server eavesdropper-status server --plan` reads the server eavesdropper's `status.json`
-    with `docker exec --user agentsync eavesdropper /bin/cat /data/listener/status.json` (docker
+    with `docker exec --user simpletools eavesdropper /bin/cat /data/listener/status.json` (docker
     group membership, no sudo, run as the container's own unprivileged account, a pinned
     environment with an empty private docker config, at most 1 MiB, 15 seconds) and answers it
     reduced to names, counts, tokens and times by `scripts/reduced_status.py`.  It
@@ -58,8 +58,9 @@ What it promises:
     text) and the exit status is 1, although no command failed.
   * `server unit-status UNIT --plan` reads one listed unit (an entry of the allowlist's server `units`
     or its `watch` list, in the scope the entry names) with one fixed `systemctl [--user] show`, no
-    sudo, and answers its ActiveState, SubState, Result, last exit time and (for a timer) next elapse
-    as bounded tokens and ISO-8601 UTC times, with the helper's own clock as `checkedAt`.  It takes no
+    sudo, and answers its ActiveState, SubState, Result, last exit time and (for a timer) last
+    trigger and next elapse as bounded tokens and ISO-8601 UTC times, with the helper's own
+    clock as `checkedAt`.  It takes no
     lock, writes no audit row for a plan and refuses `--yes` (audited, like every refused `--yes`).  A
     unit that systemctl cannot show, or shows in a way this reader does not accept, is refused with
     an `errorCode`, never with systemd's own text.  The `--from-muster` route does not offer it.
@@ -156,15 +157,15 @@ SYSTEMCTL_CANDIDATES = ("/usr/bin/systemctl", "/bin/systemctl")
 JOURNALCTL_CANDIDATES = ("/usr/bin/journalctl", "/bin/journalctl")
 DOCKER_CANDIDATES = ("/usr/bin/docker", "/bin/docker")
 # `server eavesdropper-status` reads the status document of the server's eavesdropper (the
-# listener daemon) out of its container with one fixed argv, `docker exec --user agentsync
+# listener daemon) out of its container with one fixed argv, `docker exec --user simpletools
 # eavesdropper /bin/cat /data/listener/status.json`: no shell, no sudo, no flag or path from the
 # request.  The caller's account needs only membership of the `docker` group, and the read runs
 # as the container's own unprivileged account (the file is 0600 and that account's), never as
-# root.  /data is the daemon's AGENT_SYNC_STATE_DIR, a docker volume, and the listener's own
+# root.  /data is the daemon's SIMPLE_TOOLS_STATE_DIR, a docker volume, and the listener's own
 # `listener_dir` puts status.json at <state dir>/listener/status.json.
 EAVESDROPPER_TARGET = "server"
 EAVESDROPPER_CONTAINER = "eavesdropper"
-EAVESDROPPER_USER = "agentsync"
+EAVESDROPPER_USER = "simpletools"
 EAVESDROPPER_CAT = "/bin/cat"
 EAVESDROPPER_STATUS_PATH = "/data/listener/status.json"
 EAVESDROPPER_STATUS_MAX_BYTES = 1024 * 1024
@@ -324,10 +325,14 @@ UPDATE_PROPERTIES = (
 )
 # `server unit-status UNIT --plan`: one `systemctl [--user] show` of a listed unit, asked for these
 # properties and no others.  A timer has no main process, so it is not asked for a last exit time
-# (systemd has no such property on it and prints none), and a service has no next elapse.
+# (systemd has no such property on it and prints none), and a service has no next elapse or last
+# trigger.  A timer is asked instead for when it last fired its job and when it fires next.
 UNIT_STATUS_PROPERTIES = ("LoadState", "ActiveState", "SubState", "Result")
 UNIT_STATUS_SERVICE_PROPERTIES = UNIT_STATUS_PROPERTIES + ("ExecMainExitTimestamp",)
-UNIT_STATUS_TIMER_PROPERTIES = UNIT_STATUS_PROPERTIES + ("NextElapseUSecRealtime",)
+UNIT_STATUS_TIMER_PROPERTIES = UNIT_STATUS_PROPERTIES + (
+    "NextElapseUSecRealtime",
+    "LastTriggerUSec",
+)
 # What the reader keeps of the output: a real answer is a few hundred bytes, so one byte past this
 # is a refusal and never a truncated read (the capped runner keeps the tail of what it is given).
 UNIT_STATUS_MAX_BYTES = 4096
@@ -1078,7 +1083,7 @@ def read_eavesdropper_status(ctx):
     """(the status.json document, None) or (None, a reason word from EAVESDROPPER_UNAVAILABLE).
 
     One argv, run without a shell and without sudo:
-    `docker exec --user agentsync eavesdropper /bin/cat /data/listener/status.json`.  The environment is
+    `docker exec --user simpletools eavesdropper /bin/cat /data/listener/status.json`.  The environment is
     pinned (`_docker_env`, with an empty private temporary directory as the docker config), the
     read stops at the first byte past the limit and answers `too_large` at once, and the reason
     word is all a caller learns of a failure: docker's own words are only compared with known
@@ -1086,7 +1091,7 @@ def read_eavesdropper_status(ctx):
 
     Privilege: the caller's account reaches the docker socket (root:docker, mode 0660) through its
     membership of the `docker` group, so no sudo, no sudoers entry and no root shell is used.
-    `--user agentsync` runs `cat` as the container's own unprivileged account, which owns the
+    `--user simpletools` runs `cat` as the container's own unprivileged account, which owns the
     0600 file, so the read is no wider than that account's.  The container, the user and the
     path are constants here, so no word from a request can reach docker."""
     argv = [
@@ -1604,7 +1609,10 @@ def unit_status(ctx, config, target, mode):
         lastExitAt=None if timer else unit_status_time(state["ExecMainExitTimestamp"]),
     )
     if timer:
+        # Only a timer has these two: when it fires next (null for a timer that runs by a monotonic
+        # clock) and when it last fired its job (null when systemd has none).
         answer["nextElapseAt"] = unit_status_time(state["NextElapseUSecRealtime"])
+        answer["lastTriggerAt"] = unit_status_time(state["LastTriggerUSec"])
     answer["checkedAt"] = datetime.datetime.fromtimestamp(
         ctx.now(), datetime.timezone.utc
     ).strftime("%Y-%m-%dT%H:%M:%SZ")

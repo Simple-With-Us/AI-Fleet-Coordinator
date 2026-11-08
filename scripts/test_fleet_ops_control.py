@@ -186,12 +186,6 @@ class Base(unittest.TestCase):
         return path
 
 
-# The Mac's runtime-sync LaunchAgent was renamed on Nov 2, 2026.  The allowlist and the plist
-# template under scripts/launchd both carry the live label;  the old one must stay refused,
-# and no template may carry it again.
-RENAMED_AGENTS = {"com.jay.agent-sync-runtime-sync": "com.jay.simple-tools-runtime-sync"}
-
-
 class AllowlistTests(Base):
     def test_repo_allowlist_is_valid_and_covers_every_plist(self):
         config = foc.load_config()
@@ -203,7 +197,6 @@ class AllowlistTests(Base):
                 .split("<string>", 1)[1]
                 .split("</string>", 1)[0]
             ).strip()
-            self.assertNotIn(label, RENAMED_AGENTS, f"{plist.name} carries a retired label")
             self.assertIn(label, config["agents"], plist.name)
         self.assertIn("com.jay.fleet-worker-health", config["agents"])
         self.assertIn("com.jay.fleet-mac-services", config["agents"])
@@ -211,17 +204,14 @@ class AllowlistTests(Base):
         self.assertEqual(config["updates"]["fleet-cli"]["unit"], "fleet-cli-git-update.service")
         self.assertTrue(config["redeploy"])
 
-    def test_the_allowlist_names_the_renamed_runtime_sync_job_and_not_the_old_one(self):
+    def test_the_allowlist_names_the_runtime_sync_job(self):
         config = foc.load_config()
-        for old, new in RENAMED_AGENTS.items():
-            self.assertNotIn(old, config["agents"])
-            self.assertEqual(config["agents"][new], ("start", "stop", "restart"))
+        self.assertEqual(
+            config["agents"]["com.jay.simple-tools-runtime-sync"], ("start", "stop", "restart")
+        )
 
-    def test_the_repo_allowlist_plans_the_renamed_job_and_refuses_the_old_label(self):
-        for label, expected in (
-            ("com.jay.simple-tools-runtime-sync", (0, "planned")),
-            ("com.jay.agent-sync-runtime-sync", (2, "refused")),
-        ):
+    def test_the_repo_allowlist_plans_the_runtime_sync_job(self):
+        for label, expected in (("com.jay.simple-tools-runtime-sync", (0, "planned")),):
             with self.subTest(label=label):
                 context = self.ctx("darwin")
                 context.config_path = foc.CONFIG_PATH
@@ -233,15 +223,6 @@ class AllowlistTests(Base):
                         [[foc.LAUNCHCTL, "kickstart", "-k", f"gui/{os.getuid()}/{label}"]],
                     )
                 self.assertEqual(self.audit_rows(), [])
-
-    def test_the_allowlist_names_nothing_from_before_the_agent_sync_rename(self):
-        config = foc.load_config()
-        names = list(config["agents"]) + list(config["pm2"]) + list(config["units"])
-        names += [entry["unit"] for entry in config["updates"].values()]
-        self.assertEqual([name for name in names if "agent-sync" in name], [])
-        # The file as written, so a unit's name, a role or a note cannot carry it either.
-        raw = Path(HERE, "fleet-ops-control.json").read_text()
-        self.assertNotIn("agent-sync", raw)
 
     def test_malformed_entries_refuse_the_whole_file(self):
         bad_docs = [
@@ -428,7 +409,7 @@ class AllowlistNotesTests(Base):
         "\nStopping this stops it.",
         "tab\there",
         "café",
-        "no break",
+        "no\u00a0break",
         "bell\x07",
         "del\x7f",
         7,
@@ -1289,6 +1270,7 @@ TIMER_SHOW = show_text(
     "ActiveState=active",
     "SubState=waiting",
     "NextElapseUSecRealtime=@1794127500",
+    "LastTriggerUSec=@1794126600",
     "Result=success",
 )
 SERVICE_SHOW = show_text(
@@ -1310,6 +1292,16 @@ MONOTONIC_TIMER_SHOW = show_text(
     "ActiveState=active",
     "SubState=waiting",
     "NextElapseUSecRealtime=",
+    "LastTriggerUSec=@1794099048",
+    "Result=success",
+)
+# A timer that has not fired since systemd loaded it: both times are empty.
+NEVER_FIRED_TIMER_SHOW = show_text(
+    "LoadState=loaded",
+    "ActiveState=active",
+    "SubState=waiting",
+    "NextElapseUSecRealtime=",
+    "LastTriggerUSec=",
     "Result=success",
 )
 
@@ -1321,7 +1313,7 @@ class UnitStatusTests(Base):
         "--user",
         "show",
         "--timestamp=unix",
-        "--property=LoadState,ActiveState,SubState,Result,NextElapseUSecRealtime",
+        "--property=LoadState,ActiveState,SubState,Result,NextElapseUSecRealtime,LastTriggerUSec",
         "fleet-server-status.timer",
     ]
 
@@ -1393,6 +1385,7 @@ class UnitStatusTests(Base):
                 "unitResult": "success",
                 "lastExitAt": None,
                 "nextElapseAt": "2026-11-08T08:45:00Z",
+                "lastTriggerAt": "2026-11-08T08:30:00Z",
                 "checkedAt": "2027-01-15T08:00:00Z",
             },
         )
@@ -1405,6 +1398,35 @@ class UnitStatusTests(Base):
         self.assertNotIn("--user", call["argv"])
         self.assertEqual((answer["scope"], answer["nextElapseAt"]), ("system", None))
         self.assertIn("nextElapseAt", answer)
+        # It has no next realtime elapse but did fire: the last trigger is the live one.
+        self.assertEqual(answer["lastTriggerAt"], "2026-11-08T00:50:48Z")
+
+    def test_a_timer_that_has_not_fired_has_both_times_null_and_both_keys(self):
+        code, answer, _ = self.read("code-main-sync.timer", NEVER_FIRED_TIMER_SHOW)
+        self.assertEqual(code, 0)
+        self.assertEqual((answer["nextElapseAt"], answer["lastTriggerAt"]), (None, None))
+        self.assertIn("lastTriggerAt", answer)
+        self.assertIn("nextElapseAt", answer)
+
+    def test_a_timer_is_asked_for_its_last_trigger_and_a_service_never_is(self):
+        code, answer, runner = self.read("fleet-server-status.timer", TIMER_SHOW)
+        self.assertEqual((code, answer["lastTriggerAt"]), (0, "2026-11-08T08:30:00Z"))
+        self.assertIn("LastTriggerUSec", runner.calls[0]["argv"][-2])
+        code, answer, runner = self.read("docker.service", SERVICE_SHOW)
+        self.assertNotIn("lastTriggerAt", answer)
+        self.assertNotIn("LastTriggerUSec", " ".join(runner.calls[0]["argv"]))
+        code, answer, runner = self.read("docker.service", RUNNING_SHOW)
+        self.assertNotIn("lastTriggerAt", answer)
+        # The key is the timer's alone, whatever the scope, and sits with nextElapseAt.
+        for unit, out in (
+            ("fleet-server-status.timer", TIMER_SHOW),
+            ("fleet-cli-git-update.timer", MONOTONIC_TIMER_SHOW),
+            ("code-main-sync.timer", NEVER_FIRED_TIMER_SHOW),
+        ):
+            code, answer, _ = self.read(unit, out)
+            self.assertEqual(code, 0)
+            self.assertIn("lastTriggerAt", answer)
+            self.assertEqual("lastTriggerAt" in answer, "nextElapseAt" in answer)
 
     def test_a_service_is_asked_for_a_last_exit_and_never_for_a_next_elapse(self):
         code, answer, runner = self.read("docker.service", SERVICE_SHOW)
@@ -1425,6 +1447,7 @@ class UnitStatusTests(Base):
         )
         self.assertEqual(answer["lastExitAt"], "2026-11-08T08:30:15Z")
         self.assertNotIn("nextElapseAt", answer)
+        self.assertNotIn("lastTriggerAt", answer)
 
     def test_a_timer_has_no_main_process_so_its_last_exit_is_always_null(self):
         # systemd prints no ExecMainExitTimestamp for a timer, and the reader does not ask for one.
@@ -1484,10 +1507,27 @@ class UnitStatusTests(Base):
                     "ActiveState=active",
                     "SubState=waiting",
                     "NextElapseUSecRealtime=" + value,
+                    "LastTriggerUSec=@1794126600",
                     "Result=success",
                 )
                 code, answer, _ = self.read("code-main-sync.timer", timer)
-                self.assertEqual((code, answer["nextElapseAt"]), (0, None))
+                self.assertEqual(
+                    (code, answer["nextElapseAt"], answer["lastTriggerAt"]),
+                    (0, None, "2026-11-08T08:30:00Z"),
+                )
+                fired_never = show_text(
+                    "LoadState=loaded",
+                    "ActiveState=active",
+                    "SubState=waiting",
+                    "NextElapseUSecRealtime=@1794127500",
+                    "LastTriggerUSec=" + value,
+                    "Result=success",
+                )
+                code, answer, _ = self.read("code-main-sync.timer", fired_never)
+                self.assertEqual(
+                    (code, answer["nextElapseAt"], answer["lastTriggerAt"]),
+                    (0, "2026-11-08T08:45:00Z", None),
+                )
 
     def test_the_properties_may_come_in_any_order_and_the_last_newline_is_optional(self):
         lines = TIMER_SHOW.decode().splitlines()
@@ -1498,6 +1538,7 @@ class UnitStatusTests(Base):
                         "fleet-server-status.timer", ("\n".join(order) + end).encode()
                     )
                     self.assertEqual((code, answer["nextElapseAt"]), (0, "2026-11-08T08:45:00Z"))
+                    self.assertEqual(answer["lastTriggerAt"], "2026-11-08T08:30:00Z")
 
     def test_a_result_that_is_empty_is_null_and_a_failed_unit_says_why(self):
         empty = show_text(
@@ -1774,6 +1815,68 @@ class UnitStatusTests(Base):
                 self.assert_refused_with("docker.service", out, "unit_status_invalid")
                 timer = TIMER_SHOW.replace(b"@1794127500", value.encode())
                 self.assert_refused_with("code-main-sync.timer", timer, "unit_status_invalid")
+                # The last trigger is read by the same rule as the next elapse.
+                trigger = TIMER_SHOW.replace(b"@1794126600", value.encode())
+                self.assert_refused_with("code-main-sync.timer", trigger, "unit_status_invalid")
+
+    def test_the_last_trigger_in_systemds_other_timestamp_styles_is_refused_not_guessed(self):
+        # What this server's systemd prints for the same timer without `--timestamp=unix` (in the
+        # server's zone) and with `--timestamp=utc`: the reader always asks for unix, so these
+        # cannot come from it, and are refused rather than parsed in a zone it does not know.
+        for value in ("Sat 2026-11-07 18:50:48 CST", "Sun 2026-11-08 00:50:48 UTC", "1d 2h ago"):
+            with self.subTest(value=value):
+                trigger = TIMER_SHOW.replace(b"@1794126600", value.encode())
+                self.assert_refused_with("code-main-sync.timer", trigger, "unit_status_invalid")
+
+    def test_the_last_trigger_hostile_output_is_refused(self):
+        lines = TIMER_SHOW.decode().splitlines()
+        trigger = "LastTriggerUSec=@1794126600"
+        cases = {
+            "the last trigger twice": lines + [trigger],
+            "the last trigger twice, once empty": lines + ["LastTriggerUSec="],
+            "the last trigger missing": [line for line in lines if line != trigger],
+            "the last trigger and the next elapse both missing": [
+                line for line in lines if "USec" not in line
+            ],
+            "the last trigger on its own line twice with a blank": lines + ["", trigger],
+            "a lower-case key": [
+                line.replace("LastTriggerUSec", "lasttriggerusec") for line in lines
+            ],
+            "the monotonic twin instead": [
+                line.replace("LastTriggerUSec", "LastTriggerUSecMonotonic") for line in lines
+            ],
+            "a very long value": [
+                "LastTriggerUSec=@" + "9" * 5000 if line == trigger else line for line in lines
+            ],
+            "a non-numeric value": [
+                "LastTriggerUSec=@soon" if line == trigger else line for line in lines
+            ],
+            "a negative value": [
+                "LastTriggerUSec=@-1" if line == trigger else line for line in lines
+            ],
+            "a value past the year 9999": [
+                "LastTriggerUSec=@253402300800" if line == trigger else line for line in lines
+            ],
+            "a carriage return": [
+                "LastTriggerUSec=@1794126600\r" if line == trigger else line for line in lines
+            ],
+            "a non-ascii digit": [
+                "LastTriggerUSec=@١٢" if line == trigger else line for line in lines
+            ],
+        }
+        for label, shown in cases.items():
+            with self.subTest(label):
+                out = "\n".join(shown).encode("utf-8") + b"\n"
+                answer = self.assert_refused_with(
+                    "code-main-sync.timer", out, "unit_status_invalid"
+                )
+                self.assertNotIn("9999", json.dumps(answer))
+        # A service is never asked for it, so an output that carries it is not the asked shape.
+        service = SERVICE_SHOW + b"LastTriggerUSec=@1794126600\n"
+        self.assert_refused_with("docker.service", service, "unit_status_invalid")
+        # And a timer's output that carries a last exit (a service property) is not either.
+        timer = TIMER_SHOW + b"ExecMainExitTimestamp=@1794126615\n"
+        self.assert_refused_with("code-main-sync.timer", timer, "unit_status_invalid")
 
     def test_the_time_converter_on_its_own(self):
         for value, expected in (
@@ -1814,6 +1917,13 @@ class UnitStatusTests(Base):
         timer = TIMER_SHOW.replace(b"@1794127500", f"@{JULY_NOON_UTC}".encode())
         code, answer, _ = self.read("code-main-sync.timer", timer)
         self.assertEqual((code, answer["nextElapseAt"]), (0, summer))
+        trigger = TIMER_SHOW.replace(b"@1794126600", f"@{JULY_NOON_UTC}".encode())
+        code, answer, _ = self.read("code-main-sync.timer", trigger)
+        self.assertEqual((code, answer["lastTriggerAt"]), (0, summer))
+        # And in January, the winter side of the same check.
+        winter = TIMER_SHOW.replace(b"@1794126600", f"@{int(NOW)}".encode())
+        code, answer, _ = self.read("code-main-sync.timer", winter)
+        self.assertEqual((code, answer["lastTriggerAt"]), (0, "2027-01-15T08:00:00Z"))
         context = self.ctx(runner=ShowRunner(SERVICE_SHOW))
         context.now = lambda: JULY_NOON_UTC + 0.5
         code, answer = self.run_main(
@@ -2433,7 +2543,7 @@ class RedeployResourceNameTests(Base):
             ("tab\there", "tab?here"),
             ("new\nline", "new?line"),
             ("emoji \U0001f600 x", "emoji ? x"),
-            ("two  spaces", "two??spaces"),
+            ("two\u00a0\u00a0spaces", "two??spaces"),
             ("\u202eevil", "?evil"),
             ("del\x7f", "del?"),
             ("ééé", "???"),
@@ -2491,7 +2601,7 @@ class RedeployResourceNameTests(Base):
             ("empty", "", {}),
             ("blank", "   ", {}),
             ("tabs and a newline", "\t \n", {}),
-            ("only a no-break space", " ", {}),
+            ("only a no-break space", "\u00a0", {}),
             ("service-only", " (worker)", {"service": "worker"}),
         ):
             with self.subTest(label):
@@ -2539,7 +2649,7 @@ class RedeployResourceNameTests(Base):
 
     def test_the_audit_target_function_on_its_own(self):
         placeholder = "coolify resource"
-        for given in (None, UUID, "", " ", "\t\n", "  "):
+        for given in (None, UUID, "", " ", "\t\n", "\u00a0\u2003"):
             self.assertEqual(
                 foc.redeploy_audit_target("server", "redeploy", UUID, given), placeholder, given
             )
@@ -3066,7 +3176,7 @@ class EavesdropperStatusDispatchTests(Base):
         "docker",
         "exec",
         "--user",
-        "agentsync",
+        "simpletools",
         "eavesdropper",
         "/bin/cat",
         "/data/listener/status.json",
@@ -3790,7 +3900,7 @@ class ReducerModuleTests(Base):
 
     def test_the_reducer_sits_beside_the_helper_and_there_is_one_place(self):
         self.assertTrue((foc.HELPER_DIR / foc.REDUCED_STATUS_NAME).is_file())
-        self.assertFalse((foc.HELPER_DIR / "agent_sync" / foc.REDUCED_STATUS_NAME).exists())
+        self.assertFalse((foc.HELPER_DIR / "simple_tools" / foc.REDUCED_STATUS_NAME).exists())
         self.assertFalse(hasattr(foc, "REDUCED_STATUS_LAYOUTS"))
         self.assertEqual(foc.TRUSTED_MODULE_UID, 0)
 

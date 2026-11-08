@@ -17,7 +17,7 @@ class WorkerHealthReader(unittest.TestCase):
     def test_signature_matches_the_worker_scheme(self):
         body = fwh.request_body(1_800_000_000)
         self.assertEqual(
-            json.loads(body), {"contract": "agent-sync-health/1", "sent_at": 1_800_000_000}
+            json.loads(body), {"contract": "simple-tools-health/1", "sent_at": 1_800_000_000}
         )
         self.assertEqual(len(fwh.sign("k" * 40, body)), 64)
         self.assertNotEqual(fwh.sign("k" * 40, body), fwh.sign("j" * 40, body))
@@ -26,7 +26,7 @@ class WorkerHealthReader(unittest.TestCase):
         doc = fwh.document(
             200,
             {
-                "contract": "agent-sync-health/1",
+                "contract": "simple-tools-health/1",
                 "worst": "warn",
                 "bundle": "ok",
                 "seats": [{"seat": "ECHO", "state": "warn"}],

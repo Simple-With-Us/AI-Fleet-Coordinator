@@ -4,7 +4,7 @@ one wake into a prompt in a specific Antigravity conversation (AFC-665, owner re
 
 The chain.  A message that tags @AG or DMs the seat lands in the seat's inbox on the listener
 that holds it.  When the seat's section carries wake = "http", the listener POSTs the fixed
-agent-sync-wake/1 contract to the seat's routine URL, signed with the routine key.  This bridge
+simple-tools-wake/1 contract to the seat's routine URL, signed with the routine key.  This bridge
 is that routine's receiver:  it answers the POST, remembers the wake id, resolves which lettered
 Antigravity conversation the wake belongs to, and runs the delivery command in that conversation.
 
@@ -42,7 +42,7 @@ from typing import Any
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 
-CONTRACT = "agent-sync-wake/1"
+CONTRACT = "simple-tools-wake/1"
 SEAT = "AG"
 PLATFORM = "antigravity"
 DEFAULT_PORT = 8792
@@ -185,8 +185,8 @@ def registry_history(env: dict[str, str], limit: int = 50) -> list[dict[str, Any
             return answer.get("items") or [] if isinstance(answer, dict) else []
         except (OSError, ValueError):
             return []
-    from agent_sync import platform_letter as PL
-    from agent_sync import registry_api as RA
+    from simple_tools import platform_letter as PL
+    from simple_tools import registry_api as RA
 
     merged = dict(PL.with_registry_env(env))
     answer = RA.call(merged, "history", {"platform": PLATFORM, "limit": limit}, timeout=10)
@@ -407,7 +407,7 @@ def deliver(
         spawn_env = {
             "HOME": env.get("HOME") or os.path.expanduser("~"),
             "PATH": env.get("PATH") or "/usr/local/bin:/usr/bin:/bin",
-            "AGENT_LAUNCHER": "agent-sync-wake",
+            "AGENT_LAUNCHER": "simple-tools-wake",
             "AGENT_LAUNCH_SEAT": SEAT,
             "AGENT_SEAT": SEAT,
         }
@@ -551,8 +551,8 @@ def make_handler(env: dict[str, str], config: dict[str, Any], receipts: list[dic
 
 
 def serve(env: dict[str, str], bind: str, port: int, config: dict[str, Any]) -> int:
-    from agent_sync import platform_letter as PL
-    from agent_sync import registry_api as RA
+    from simple_tools import platform_letter as PL
+    from simple_tools import registry_api as RA
 
     env = dict(PL.with_registry_env(env))
     if not RA.base_url(env):

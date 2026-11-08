@@ -4,7 +4,7 @@ import Foundation
 ///
 /// The Operator is the fleet's service bot:  the eavesdropper posts its digest, its notices and
 /// its typing through the Operator's own Zulip identity, and builds that client on first use from
-/// Fleet-OPS `/zulip_operator` (`docs/protocols/agent-sync-listener.md`).  The Mac needs no
+/// Fleet-OPS `/zulip_operator` (`docs/protocols/simple-tools-listener.md`).  The Mac needs no
 /// `[seat.OPERATOR]` section for that, so a file without one is not a fault.
 ///
 /// The app reads no credentials,  so it cannot say whether the Operator's key exists.  What
