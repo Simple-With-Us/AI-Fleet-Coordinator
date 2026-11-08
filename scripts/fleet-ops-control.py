@@ -7,6 +7,7 @@
   python3 scripts/fleet-ops-control.py server logs UNIT                   (--plan | --yes) [--json]
   python3 scripts/fleet-ops-control.py server update NAME                 (--plan | --yes) [--json]
   python3 scripts/fleet-ops-control.py server update-status fleet-cli.ID.BASELINE --plan [--json]
+  python3 scripts/fleet-ops-control.py server unit-status UNIT            --plan [--json]
   python3 scripts/fleet-ops-control.py server redeploy RESOURCE_UUID      (--plan | --yes) [--json]
   python3 scripts/fleet-ops-control.py server eavesdropper-status server --plan [--json]
   python3 scripts/fleet-ops-control.py --from-ssh                         (the forced command)
@@ -26,7 +27,10 @@ What it promises:
     stderr is bounded and classified into fixed error codes, never returned verbatim.
     `server logs` is the deliberate exception: a `--yes` run returns
     the last 200 journal lines (at most 64 KiB, with a truncation note when cut) in the
-    answer's `output`, while a `--plan` carries no log text at all.  Mac LaunchAgents have
+    answer's `output`, while a `--plan` carries no log text at all.  The journal it reads is the
+    entry's `logsUnit`, which is the unit itself unless the entry names another, and for a timer
+    is the service the timer starts (`x.timer` reads `x.service`), because a timer's own journal
+    holds only Started and Stopped.  Mac LaunchAgents have
     no log verb, because launchd has no uniform log file to tail.  `pm2` verbs act on the
     Mac pm2 applications the allowlist names, with one `pm2 start|stop|restart NAME` argv
     and no ecosystem fallback.  A `start` first reads `pm2 jlist`:  a stale record (online
@@ -52,6 +56,14 @@ What it promises:
     takes no lock, writes no audit row for a plan and refuses `--yes`.  When the status cannot be
     read the result is `unavailable` with an `errorCode` word (never a path or docker's own
     text) and the exit status is 1, although no command failed.
+  * `server unit-status UNIT --plan` reads one listed unit (an entry of the allowlist's server `units`
+    or its `watch` list, in the scope the entry names) with one fixed `systemctl [--user] show`, no
+    sudo, and answers its ActiveState, SubState, Result, last exit time and (for a timer) last
+    trigger and next elapse as bounded tokens and ISO-8601 UTC times, with the helper's own
+    clock as `checkedAt`.  It takes no
+    lock, writes no audit row for a plan and refuses `--yes` (audited, like every refused `--yes`).  A
+    unit that systemctl cannot show, or shows in a way this reader does not accept, is refused with
+    an `errorCode`, never with systemd's own text.  The `--from-muster` route does not offer it.
   * Every `--yes` run appends one JSON line to `~/.local/state/fleet-tools/ops-audit.jsonl`
     (0600): time, host role, verb, target and result.  No command output is recorded, and a
     redeploy is recorded by its resource name, never its uuid.  Each row also has a short
@@ -311,6 +323,35 @@ UPDATE_PROPERTIES = (
     "ExecMainStartTimestampMonotonic",
     "ExecMainExitTimestampMonotonic",
 )
+# `server unit-status UNIT --plan`: one `systemctl [--user] show` of a listed unit, asked for these
+# properties and no others.  A timer has no main process, so it is not asked for a last exit time
+# (systemd has no such property on it and prints none), and a service has no next elapse or last
+# trigger.  A timer is asked instead for when it last fired its job and when it fires next.
+UNIT_STATUS_PROPERTIES = ("LoadState", "ActiveState", "SubState", "Result")
+UNIT_STATUS_SERVICE_PROPERTIES = UNIT_STATUS_PROPERTIES + ("ExecMainExitTimestamp",)
+UNIT_STATUS_TIMER_PROPERTIES = UNIT_STATUS_PROPERTIES + (
+    "NextElapseUSecRealtime",
+    "LastTriggerUSec",
+)
+# What the reader keeps of the output: a real answer is a few hundred bytes, so one byte past this
+# is a refusal and never a truncated read (the capped runner keeps the tail of what it is given).
+UNIT_STATUS_MAX_BYTES = 4096
+UNIT_STATUS_TIMEOUT = 10
+# systemd's state words (`active`, `start-pre`, `auto-restart`, `exit-code`, `start-limit-hit`...):
+# lowercase letters, digits and dashes.  Anything else is not passed on.
+UNIT_STATE_RE = re.compile(r"[a-z][a-z0-9-]{0,31}")
+# `--timestamp=unix` spells a time `@SECONDS`; `0`, `@0`, `n/a` and an empty value mean "never".
+UNIT_TIME_RE = re.compile(r"@([0-9]{1,20})")
+UNIT_TIME_UNSET = ("", "n/a", "0")
+# The load states that mean the unit is not there to be read, in systemd's words.
+UNIT_NOT_LOADED = ("not-found", "masked", "error", "bad-setting")
+# The words an allowlist entry's optional `role` may use (the collector's own list), and the shape of
+# its optional `stopConsequence`: one line of printable ASCII, at most 200 characters, no leading or
+# trailing space.  Neither is used by the helper; it checks them so that a bad one cannot reach Muster.
+# The copy therefore stays plain ASCII with ordinary spaces (no U+00A0 sentence gap), because a value
+# that breaks the rule refuses the whole allowlist and the installer checks only schemaVersion.
+UNIT_ROLES = ("reporting", "updater")
+STOP_CONSEQUENCE_RE = re.compile(r"[\x21-\x7e](?:[\x20-\x7e]{0,198}[\x21-\x7e])?")
 # The only variables a launchctl or systemctl child sees.  A pm2 child also needs
 # PM2_HOME, which names a directory and never a credential.
 CHILD_ENV_KEEP = (
@@ -381,31 +422,54 @@ def validate_config(doc):
     if not isinstance(mac, dict) or not isinstance(server, dict):
         bad("sections")
     agents = {}
-    for row in mac.get("agents") or []:
+    for row in _rows(mac.get("agents"), bad, "mac.agents"):
         if not isinstance(row, dict) or not isinstance(row.get("label"), str):
             bad("mac.agents")
         label = row["label"]
         if not LABEL_RE.fullmatch(label) or label in agents:
             bad("mac.agents label")
         agents[label] = _actions(row, bad)
+        _notes(row, bad)
     pm2_apps = {}
-    for row in mac.get("pm2Apps") or []:
+    for row in _rows(mac.get("pm2Apps"), bad, "mac.pm2Apps"):
         if not isinstance(row, dict) or not isinstance(row.get("name"), str):
             bad("mac.pm2Apps")
         name = row["name"]
         if not PM2_RE.fullmatch(name) or name in pm2_apps:
             bad("mac.pm2Apps name")
         pm2_apps[name] = _actions(row, bad)
+        _notes(row, bad)
     units = {}
-    for row in server.get("units") or []:
+    for row in _rows(server.get("units"), bad, "server.units"):
         if not isinstance(row, dict) or not isinstance(row.get("unit"), str):
             bad("server.units")
         unit = row["unit"]
         if not UNIT_RE.fullmatch(unit) or unit in units or row.get("scope") not in SCOPES:
             bad("server.units unit")
-        units[unit] = {"scope": row["scope"], "actions": _actions(row, bad)}
+        units[unit] = {
+            "scope": row["scope"],
+            "actions": _actions(row, bad),
+            "logsUnit": _logs_unit(row, unit, bad),
+        }
+        _notes(row, bad)
+    # The units that are read and granted nothing: `server unit-status` may read them and no other
+    # verb names them.  A unit named in both lists keeps its `units` entry.
+    watch = {}
+    for row in _rows(server.get("watch"), bad, "server.watch"):
+        if not isinstance(row, dict) or not isinstance(row.get("unit"), str):
+            bad("server.watch")
+        unit = row["unit"]
+        if not UNIT_RE.fullmatch(unit) or row.get("scope") not in SCOPES:
+            bad("server.watch unit")
+        known = units.get(unit) or watch.get(unit)
+        if known is not None and known["scope"] != row["scope"]:
+            # One name in two scopes: a status request names a unit and no scope, so it could not
+            # tell which of the two it was asking about.
+            bad("server.watch scope")
+        if unit not in units:
+            watch.setdefault(unit, {"scope": row["scope"]})
     updates = {}
-    for row in server.get("updates") or []:
+    for row in _rows(server.get("updates"), bad, "server.updates"):
         if not isinstance(row, dict):
             bad("server.updates")
         name, unit = row.get("name"), row.get("unit")
@@ -429,6 +493,7 @@ def validate_config(doc):
         "agents": agents,
         "pm2": pm2_apps,
         "units": units,
+        "watch": watch,
         "updates": updates,
         "redeploy": bool(coolify.get("redeploy", False)),
         "resourcePolicy": server.get("resourcePolicy", False),
@@ -440,6 +505,48 @@ def _actions(row, bad):
     if not isinstance(actions, list) or not actions or any(a not in ACTIONS for a in actions):
         bad("actions")
     return tuple(actions)
+
+
+def _rows(value, bad, what):
+    """The entries of one allowlist list: `value` when it is a list, an empty list when the key is
+    absent or empty (Python's truth rule, as every `or` default here reads it and as Muster's own
+    reader of the file does), and a refusal for anything else, so that a list given as a number, a
+    string, a flag or an object is a malformed file and not a traceback that takes every verb down."""
+    if not value:
+        return []
+    if not isinstance(value, list):
+        bad(f"{what} is not a list")
+    return value
+
+
+def _logs_unit(row, unit, bad):
+    """The unit `server logs` reads the journal of, for the allowlist entry `row` of `unit`.
+
+    An entry may name it (`logsUnit`, a unit name of the same safe shape, read in the entry's own
+    scope).  Otherwise a timer reads the service it starts, `x.timer` reading `x.service`, because a
+    timer's own journal holds only Started and Stopped, and any other unit reads itself."""
+    if "logsUnit" in row:
+        logs_unit = row["logsUnit"]
+        if not isinstance(logs_unit, str) or not UNIT_RE.fullmatch(logs_unit):
+            bad("server.units logsUnit")
+        return logs_unit
+    if unit.endswith(".timer"):
+        # The unit name already matched UNIT_RE, so its stem and the new suffix do too.
+        return unit[: -len(".timer")] + ".service"
+    return unit
+
+
+def _notes(row, bad):
+    """Check the owner copy an entry may carry: `role` (one word of UNIT_ROLES) and `stopConsequence`
+    (what stopping it costs, one line of printable ASCII).  The helper acts on neither, so a bad one
+    refuses the file rather than reach Muster."""
+    if "role" in row and (not isinstance(row["role"], str) or row["role"] not in UNIT_ROLES):
+        bad("role")
+    if "stopConsequence" in row and (
+        not isinstance(row["stopConsequence"], str)
+        or not STOP_CONSEQUENCE_RE.fullmatch(row["stopConsequence"])
+    ):
+        bad("stopConsequence")
 
 
 # MARK: - Running things
@@ -827,10 +934,11 @@ def server_logs_commands(ctx, config, unit):
     entry = config["units"].get(unit)
     if entry is None:
         raise Refused("the unit is not in the allowlist", reason="allowlist_miss")
+    # The journal of the entry's `logsUnit`: the service a timer starts, else the unit itself.
     argv = (
         [_journalctl()]
         + (["--user"] if entry["scope"] == "user" else [])
-        + ["-u", unit, "-n", str(LOG_MAX_LINES), "--no-pager"]
+        + ["-u", entry["logsUnit"], "-n", str(LOG_MAX_LINES), "--no-pager"]
     )
     return [argv], f"last {LOG_MAX_LINES} journal lines, read only"
 
@@ -1448,6 +1556,126 @@ def captured_update_baseline(ctx, invocation):
     )
 
 
+def unit_status(ctx, config, target, mode):
+    """The answer fields of `server unit-status UNIT --plan`, or Refused.
+
+    A read of one unit the allowlist lists (an entry of `units` or of `watch`, in the scope that
+    entry names) with one fixed `systemctl [--user] show`: no sudo, the pinned child environment, a
+    bounded capture and a time limit.  Nothing is changed, so there is no lock and no audit row for a
+    plan, and `--yes` is refused.  Every value in the answer is a short token matched against a
+    pattern, an ISO-8601 UTC time or null, and nothing of systemd's own text is passed on: what
+    this reader does not accept is refused with a fixed `errorCode`, as `update-status` does."""
+    _server_only(ctx)
+    if mode != "plan":
+        raise Refused("unit status is read only; pass --plan", error_code="read_only_required")
+    if not UNIT_RE.fullmatch(target or ""):
+        raise Refused("the unit is not a valid unit name")
+    entry = config["units"].get(target)
+    if entry is None:
+        entry = config["watch"].get(target)
+    if entry is None:
+        raise Refused("the unit is not in the allowlist", reason="allowlist_miss")
+    timer = target.endswith(".timer")
+    properties = UNIT_STATUS_TIMER_PROPERTIES if timer else UNIT_STATUS_SERVICE_PROPERTIES
+    status, raw = ctx.runner(
+        _systemctl_argv(
+            entry["scope"],
+            "show",
+            "--timestamp=unix",
+            "--property=" + ",".join(properties),
+            target,
+        ),
+        timeout=UNIT_STATUS_TIMEOUT,
+        env=ctx.child_env(),
+        want_stdout=True,
+        # One byte more than the limit, so that an answer past it is seen to be past it.
+        max_bytes=UNIT_STATUS_MAX_BYTES + 1,
+    )
+    if status != 0:
+        raise Refused("the unit status is unavailable", error_code="unit_status_unavailable")
+    state = unit_status_state(raw or b"", properties)
+    # `lastExitAt` is when the main process last exited, and systemd clears it when that process runs
+    # again: it is null for a timer (no main process) and for any service that is running now, so
+    # always for a long-running one such as docker.service.
+    answer = dict(
+        ok=True,
+        result="planned",
+        detail="read-only status of a listed unit",
+        unit=target,
+        scope=entry["scope"],
+        activeState=state["ActiveState"],
+        subState=state["SubState"],
+        unitResult=state["Result"] or None,
+        lastExitAt=None if timer else unit_status_time(state["ExecMainExitTimestamp"]),
+    )
+    if timer:
+        # Only a timer has these two: when it fires next (null for a timer that runs by a monotonic
+        # clock) and when it last fired its job (null when systemd has none).
+        answer["nextElapseAt"] = unit_status_time(state["NextElapseUSecRealtime"])
+        answer["lastTriggerAt"] = unit_status_time(state["LastTriggerUSec"])
+    answer["checkedAt"] = datetime.datetime.fromtimestamp(
+        ctx.now(), datetime.timezone.utc
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return answer
+
+
+def unit_status_state(raw, properties):
+    """{property: value} from the bytes of one `systemctl show`, or Refused with a fixed code.
+
+    Strict: one `KEY=VALUE` line per asked property, in any order, newline separated, ASCII only, no
+    other key, no repeated key, no blank line, at most UNIT_STATUS_MAX_BYTES.  A unit that is not there
+    (`not-found`, `masked`...) is `unit_unavailable`, any other load state than `loaded` and every
+    other departure from the shape is `unit_status_invalid`."""
+
+    def invalid():
+        return Refused("the unit status is invalid", error_code="unit_status_invalid")
+
+    if len(raw) > UNIT_STATUS_MAX_BYTES:
+        raise invalid()
+    try:
+        text = raw.decode("ascii")
+    except UnicodeDecodeError:
+        raise invalid() from None
+    lines = text.split("\n")
+    if lines[-1] == "":
+        lines.pop()
+    state = {}
+    for line in lines:
+        key, sep, value = line.partition("=")
+        if not sep or key not in properties or key in state:
+            raise invalid()
+        state[key] = value
+    if state.get("LoadState") in UNIT_NOT_LOADED:
+        raise Refused("the unit is missing or unavailable", error_code="unit_unavailable")
+    if set(state) != set(properties) or state["LoadState"] != "loaded":
+        raise invalid()
+    for key in ("ActiveState", "SubState"):
+        if not UNIT_STATE_RE.fullmatch(state[key]):
+            raise invalid()
+    # A unit that has no result yet says so with an empty one.
+    if state["Result"] and not UNIT_STATE_RE.fullmatch(state["Result"]):
+        raise invalid()
+    return state
+
+
+def unit_status_time(value):
+    """ISO-8601 UTC (`2026-11-08T05:15:00Z`) for a `--timestamp=unix` value (`@1794127500`), None for
+    one that says never (empty, `n/a`, `0` or `@0`), and Refused for anything else."""
+    if value in UNIT_TIME_UNSET:
+        return None
+    match = UNIT_TIME_RE.fullmatch(value)
+    if match is None:
+        raise Refused("the unit status is invalid", error_code="unit_status_invalid")
+    seconds = int(match.group(1))
+    if seconds == 0:
+        return None
+    try:
+        moment = datetime.datetime.fromtimestamp(seconds, datetime.timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        raise Refused("the unit status is invalid", error_code="unit_status_invalid") from None
+    return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def _server_only(ctx):
     if not ctx.platform.startswith("linux"):
         raise Refused("server verbs run only on the server")
@@ -1929,8 +2157,11 @@ def muster_refusal_code(answer):
 def redeploy_audit_target(scope, action, target, audit_target):
     """What the audit names a redeploy: the application's name once the planner knew it, else
     `coolify resource`, and never the uuid.  Every other verb keeps its own target."""
-    if scope == "server" and action == "redeploy" and audit_target in (None, target):
-        return COOLIFY_AUDIT_TARGET
+    if scope == "server" and action == "redeploy":
+        # A name that is missing, equal to the uuid or blank (empty or only whitespace, which is what a
+        # service-only name is once its service is taken off) is not a name: it is the placeholder too.
+        if audit_target is None or audit_target == target or not audit_target.strip():
+            return COOLIFY_AUDIT_TARGET
     return target if audit_target is None else audit_target
 
 
@@ -1990,6 +2221,11 @@ def handle(
             receipt, code = update_status(ctx, config, target, mode)
             answer.update(receipt)
             return answer, code
+        if scope == "server" and action == "unit-status":
+            # A read of one listed unit's state: no lock, no sudo and no audit row for a plan.  Only
+            # `--plan` is accepted, and a refused `--yes` is audited like every refused `--yes`.
+            answer.update(unit_status(ctx, config, target, mode))
+            return answer, 0
         if scope == "server" and action == "seat-inventory":
             # A read of names and counts under this account's home, so it takes no lock, asks
             # for no sudo and writes no audit row.  Only `--plan` is accepted:  there is
@@ -2118,6 +2354,19 @@ def handle(
             ):
                 held.enter_context(action_lock(ctx))
             commands, note, audit_target = plan_request(ctx, config, scope, action, target)
+            if scope == "server" and action == "logs":
+                # The unit whose journal the plan reads, for the caller to show.  Only this answer
+                # carries it: the signed `--from-muster` plan does not, and its commands name it.
+                answer["logsUnit"] = config["units"][target]["logsUnit"]
+            if scope == "server" and action == "redeploy":
+                # The name the audit row records (`redeploy_audit_target`, so the placeholder for a
+                # missing, blank or uuid name), in the printable ASCII that the signed plan's
+                # `auditTarget` uses.  The audit row keeps the real name and the answer carries the
+                # printable form.  Muster shows it as the authoritative name, and the `--yes`
+                # answer repeats it.
+                answer["resourceName"] = printable_ascii(
+                    redeploy_audit_target(scope, action, target, audit_target)
+                )
             if require_approval and mode == "yes":
                 check_approved_plan(
                     approval,
@@ -2587,6 +2836,7 @@ def parse_ssh_command(text):
     if plain[1] not in ACTIONS + (
         "update",
         "update-status",
+        "unit-status",
         "redeploy",
         "logs",
         "resource-status",
