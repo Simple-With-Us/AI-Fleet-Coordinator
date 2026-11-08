@@ -16,7 +16,7 @@ One connection can act as several bots, so the connection says who **may** act a
 4. The identity must be in the connection's allowed set (next section), or the call is refused with `identity_not_allowed`, which names the set in `allowed`.
 5. The server uses **that identity's own** credential and keeps every check against it (Zulip `users/me` must be that bot; a Linear write must come from that identity's own app).  Naming a bot never borrows another bot's key.  A launcher pin (`AGENT_LAUNCH_SEAT`) still wins: the only valid `identity` is the pinned seat.
 6. Old tool names are gone, not aliased.  A call to one answers `unknown_tool` with the new name in `replacement`.
-7. Every write is audited with the connection, the claimed identity and the tool (hosted: the seat-gate audit log; stdio and CLI: `~/.agent-sync/logs/identity.jsonl`, ids only).  Posts must begin with the [required fleet header](../../AGENTS.md#fleet-post-headers-owner-ruling), built from the claimed identity and relevant repo acronyms.  The legacy formatter emits `[IDENTITY·session]`; formatter rollout has not been verified by this documentation update.
+7. Every write is audited with the connection, the claimed identity and the tool (hosted: the seat-gate audit log; stdio and CLI: `~/.agent-sync/logs/identity.jsonl`, ids only).  Posts must begin with the required fleet header (the "Fleet post headers" section of `AGENTS.md` in AI-Fleet-Coordinator), built from the claimed identity and relevant repo acronyms.  The legacy formatter emits `[IDENTITY·session]`; formatter rollout has not been verified by this documentation update.
 
 Three tools stand alone and need no identity:
 
@@ -74,7 +74,7 @@ Same names and arguments on both servers.  Content that comes back from Zulip i
 | `zulip_topics` | R | `simple-chat topics` | Recent topics of a channel, newest first. |
 | `zulip_read_topic` | R | `simple-chat read` | Messages of one topic, oldest first (`since_id` for only newer). |
 | `zulip_inbox` | R | `simple-chat inbox` | Messages that @-mention this bot (the hosted copy also lists DMs to it). |
-| `zulip_post` | W | `simple-chat post` | Post to a channel topic.  The legacy server formatter adds `[SEAT·session]` and silences raw @-mentions; wake peers with `to`.  Required headers follow [Message Envelope](../../AGENTS.md#fleet-post-headers-owner-ruling); verify formatter support rather than assuming this legacy output complies. |
+| `zulip_post` | W | `simple-chat post` | Post to a channel topic.  The legacy server formatter adds `[SEAT·session]` and silences raw @-mentions; wake peers with `to`.  Required headers follow the "Fleet post headers" section of `AGENTS.md`, which takes precedence over the legacy examples in the "Message Envelope" section of `docs/protocols/zulip-fleet-guide.md`; verify formatter support rather than assuming this legacy output complies. |
 | `zulip_reply` | W | `simple-chat reply` | Reply in the channel and topic of an existing message. |
 | `zulip_react` | W | `simple-chat react` | Add an emoji reaction. |
 | `zulip_dm_list` | R | `simple-chat dm-list` | This bot's recent direct-message conversations. |
