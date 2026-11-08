@@ -152,7 +152,9 @@ def from_spec(text):
     """The part of the fixture that section 16 of the spec prints, read out of its text."""
 
     def block_after(label):
-        return re.search(re.escape(label) + r".*?```(?:json)?\n(.*?)\n```", text, re.DOTALL).group(1)
+        return re.search(re.escape(label) + r".*?```(?:json)?\n(.*?)\n```", text, re.DOTALL).group(
+            1
+        )
 
     fixture = {"specVersion": 5 if "Spec version 5" in text[:200] else 4}
     fixture["keys"] = {}
@@ -239,7 +241,9 @@ def from_spec(text):
     fixture["illustrativePlan"] = block_after("### Illustrative Plan")
     fixture["chainVectors"] = [
         {"id": row[0], "expected": row[3]}
-        for row in (r.split(" | ") for r in re.findall(r"^\| (T\d+ [^\n]*) \|$", text, re.MULTILINE))
+        for row in (
+            r.split(" | ") for r in re.findall(r"^\| (T\d+ [^\n]*) \|$", text, re.MULTILINE)
+        )
     ]
     return fixture
 
