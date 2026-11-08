@@ -7,6 +7,7 @@ The committed fixtures under scripts/tests/fixtures/routines/ are synthetic.  An
 at run time from pieces, so no scanner (gitleaks, GitHub push protection) ever sees a whole one in the source.
 The real routine texts are private and never appear in this repository.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -29,7 +30,7 @@ def _load():
     loader = importlib.machinery.SourceFileLoader("check_routine_prompts", str(SCRIPT))
     spec = importlib.util.spec_from_loader(loader.name, loader)
     mod = importlib.util.module_from_spec(spec)
-    sys.modules[loader.name] = mod       # @dataclass looks its module up here
+    sys.modules[loader.name] = mod  # @dataclass looks its module up here
     loader.exec_module(mod)
     return mod
 
@@ -52,13 +53,15 @@ def rules(name: str, text: str, **kw) -> set[str]:
 
 def clean(extra: str = "") -> str:
     """A text that passes every rule for a non-GB file."""
-    return "# Sample\n\nSay it plainly.  Then stop.\n\nReminder:  \"%s.\"\n%s" % (REMINDER, extra)
+    return '# Sample\n\nSay it plainly.  Then stop.\n\nReminder:  "%s."\n%s' % (REMINDER, extra)
 
 
 def gb_text(role: str, extra: str = "") -> str:
-    return ("# Block\n\nYou are GB-%s.  Check GET /users/me for %s-grok-bot@example.test first.\n"
-            "Start each post with [GB-%s] on its own line.\n\nReminder:  \"%s.\"\n%s"
-            % (role, role.lower(), role, REMINDER, extra))
+    return (
+        "# Block\n\nYou are GB-%s.  Check GET /users/me for %s-grok-bot@example.test first.\n"
+        'Start each post with [GB-%s] on its own line.\n\nReminder:  "%s."\n%s'
+        % (role, role.lower(), role, REMINDER, extra)
+    )
 
 
 class FixtureTests(unittest.TestCase):
@@ -83,7 +86,9 @@ class FixtureTests(unittest.TestCase):
             "gb-plumber.md": {"gb-label"},
         }
         on_disk = {p.name for p in (FIXTURES / "bad").glob("*.md")}
-        self.assertEqual(on_disk, set(expected), "a bad fixture was added or removed without a test")
+        self.assertEqual(
+            on_disk, set(expected), "a bad fixture was added or removed without a test"
+        )
         for name, want in expected.items():
             path = FIXTURES / "bad" / name
             self.assertEqual(rules(str(path), path.read_text(encoding="utf-8")), want, name)
@@ -102,8 +107,8 @@ class LengthTests(unittest.TestCase):
         self.assertNotIn("too-long", rules("a.md", pad(20000)))
         self.assertIn("too-long", rules("a.md", pad(20001)))
         # An emoji is two UTF-16 code units, which is what BotFleet's JavaScript length counts.
-        self.assertEqual(chk.utf16_length("\U0001F600"), 2)
-        self.assertIn("too-long", rules("a.md", pad(19999) + "\U0001F600"))
+        self.assertEqual(chk.utf16_length("\U0001f600"), 2)
+        self.assertIn("too-long", rules("a.md", pad(19999) + "\U0001f600"))
 
     def test_max_chars_flag(self):
         code, out, _ = run("--max-chars", "100", str(FIXTURES / "good"))
@@ -112,16 +117,23 @@ class LengthTests(unittest.TestCase):
 
     def test_pasted_pair_is_checked_as_one_routine(self):
         # Each file fits under 700 characters;  a block pasted with its core does not.
-        sizes = {p.name: len(p.read_text(encoding="utf-8")) for p in (FIXTURES / "good").glob("*.md")}
+        sizes = {
+            p.name: len(p.read_text(encoding="utf-8")) for p in (FIXTURES / "good").glob("*.md")
+        }
         limit = max(sizes["gb-deployer.md"], sizes["open-loops-digest.md"]) + 10
         self.assertGreater(sizes["gb-deployer.md"] + sizes["open-loops-digest.md"], limit)
         code, out, _ = run("--max-chars", str(limit), str(FIXTURES / "good"))
         self.assertEqual(code, 1)
         self.assertIn("gb-deployer.md+open-loops-digest.md: too-long", out)
-        self.assertNotIn("open-loops-digest.md: too-long", out.replace("gb-deployer.md+open-loops-digest.md", ""))
+        self.assertNotIn(
+            "open-loops-digest.md: too-long", out.replace("gb-deployer.md+open-loops-digest.md", "")
+        )
 
     def test_join_checks_the_given_files_as_one_routine(self):
-        block, core = FIXTURES / "good" / "gb-deployer.md", FIXTURES / "good" / "open-loops-digest.md"
+        block, core = (
+            FIXTURES / "good" / "gb-deployer.md",
+            FIXTURES / "good" / "open-loops-digest.md",
+        )
         self.assertEqual(run("--join", str(block), str(core))[0], 0)
         limit = max(len(block.read_text()), len(core.read_text())) + 10
         code, out, _ = run("--join", "--max-chars", str(limit), str(block), str(core))
@@ -140,14 +152,23 @@ class MentionPathSlackTests(unittest.TestCase):
         self.assertEqual(rules("a.md", text), set())
 
     def test_code_paths(self):
-        for path in ("~/Code/App/x.py", "/Users/jay/Code/App", "$HOME/Code/App", "${HOME}/Code/App"):
+        for path in (
+            "~/Code/App/x.py",
+            "/Users/jay/Code/App",
+            "$HOME/Code/App",
+            "${HOME}/Code/App",
+        ):
             self.assertIn("code-path", rules("a.md", clean("Open %s.\n" % path)), path)
         for fine in ("~/apps/lanes/App", "/Users/jay/apps/state/x", "the Code tab", "~/Codex/x"):
             self.assertNotIn("code-path", rules("a.md", clean("Open %s.\n" % fine)), fine)
 
     def test_slack_helper(self):
-        for bad in ("slack-post", "slack_post",
-                    "https://hooks.slack.com/services/x", "https://slack.com/api/chat.postMessage"):
+        for bad in (
+            "slack-post",
+            "slack_post",
+            "https://hooks.slack.com/services/x",
+            "https://slack.com/api/chat.postMessage",
+        ):
             self.assertIn("slack-helper", rules("a.md", clean("Use %s.\n" % bad)), bad)
         self.assertNotIn("slack-helper", rules("a.md", clean("Slack was retired on Oct 7.\n")))
 
@@ -169,9 +190,18 @@ class SentenceGapTests(unittest.TestCase):
         self.assertEqual(self.gaps("It ends here.\nThen more."), [])
 
     def test_abbreviations_versions_and_list_markers_pass(self):
-        for fine in ("Use a tool, e.g. Python.", "That is, i.e. this one.", "Compare vs. the old one.",
-                     "See v1.2.3 for details.", "1. Decisions Waiting", "  - 2. Next item", "## 3. Send",
-                     "A. Decisions Waiting", "  - b. Next item", "## C. Send"):
+        for fine in (
+            "Use a tool, e.g. Python.",
+            "That is, i.e. this one.",
+            "Compare vs. the old one.",
+            "See v1.2.3 for details.",
+            "1. Decisions Waiting",
+            "  - 2. Next item",
+            "## 3. Send",
+            "A. Decisions Waiting",
+            "  - b. Next item",
+            "## C. Send",
+        ):
             self.assertEqual(self.gaps(fine), [], fine)
 
     def test_a_boundary_after_no_is_flagged(self):
@@ -195,9 +225,16 @@ class SentenceGapTests(unittest.TestCase):
     def test_the_bad_fixture_pins_both_shapes(self):
         text = (FIXTURES / "bad" / "single-space-gap.md").read_text(encoding="utf-8")
         lines = text.split("\n")
-        want = [number for number, line in enumerate(lines, 1)
-                if line in ("The digest is short. It always ends with a link.", "Answer no. Then stop.",
-                            "Pick option A. Then wait.")]
+        want = [
+            number
+            for number, line in enumerate(lines, 1)
+            if line
+            in (
+                "The digest is short. It always ends with a link.",
+                "Answer no. Then stop.",
+                "Pick option A. Then wait.",
+            )
+        ]
         self.assertEqual(len(want), 3)
         self.assertEqual(self.gaps(text), want)
 
@@ -223,19 +260,30 @@ class ReminderTests(unittest.TestCase):
     def test_reminder_forms(self):
         body = "Say it plainly.  Then stop.\n\n"
         self.assertIn("reminder-missing", rules("a.md", body))
-        for form in ("%s." % REMINDER, REMINDER, REMINDER.replace(" ", "\n"), REMINDER.replace(" ", " "),
-                     "  ".join(REMINDER.split(" "))):
+        for form in (
+            "%s." % REMINDER,
+            REMINDER,
+            REMINDER.replace(" ", "\n"),
+            REMINDER.replace(" ", " "),
+            "  ".join(REMINDER.split(" ")),
+        ):
             self.assertNotIn("reminder-missing", rules("a.md", body + '"%s"\n' % form), repr(form))
 
     def test_a_reworded_reminder_is_missing(self):
-        text = "Say it plainly.  Then stop.\n\n\"I often distract away from things but never intend to undo " \
-               "what I said unless explicitly told.\"\n"
+        text = (
+            'Say it plainly.  Then stop.\n\n"I often distract away from things but never intend to undo '
+            'what I said unless explicitly told."\n'
+        )
         self.assertIn("reminder-missing", rules("a.md", text))
 
 
 class SecretTests(unittest.TestCase):
     def kinds(self, line: str) -> set[str]:
-        return {f.message for f in chk.check_text("a.md", clean(line + "\n")) if f.rule == "secret-shaped"}
+        return {
+            f.message
+            for f in chk.check_text("a.md", clean(line + "\n"))
+            if f.rule == "secret-shaped"
+        }
 
     def test_each_f3_prefix_is_caught(self):
         samples = {
@@ -262,10 +310,12 @@ class SecretTests(unittest.TestCase):
         self.assertTrue(self.kinds("Use -----BEGIN RSA " + "PRIVATE KEY-----"))
 
     def test_names_of_secrets_are_not_secrets(self):
-        for fine in ("Use LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET from your card.",
-                     "Set FLEET_FACTS_SIGNING_KEY in the environment.",
-                     "Read the secret card and the token you were given.",
-                     "A commit abcdef0123456789abcdef0123456789abcdef01 is fine."):
+        for fine in (
+            "Use LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET from your card.",
+            "Set FLEET_FACTS_SIGNING_KEY in the environment.",
+            "Read the secret card and the token you were given.",
+            "A commit abcdef0123456789abcdef0123456789abcdef01 is fine.",
+        ):
             self.assertEqual(self.kinds(fine), set(), fine)
 
     def test_finding_never_prints_the_secret(self):
@@ -304,10 +354,14 @@ class GbLabelTests(unittest.TestCase):
     def test_a_core_never_carries_a_gb_label(self):
         text = clean("Start posts with [GB-DEPLOYER] here.\n")
         self.assertEqual(rules("open-loops-digest.md", text), {"gb-label"})
-        self.assertEqual(rules("open-loops-digest.md", text, gb_role="DEPLOYER") - {"gb-label"}, set())
+        self.assertEqual(
+            rules("open-loops-digest.md", text, gb_role="DEPLOYER") - {"gb-label"}, set()
+        )
 
     def test_bf_names_are_not_gb_labels(self):
-        self.assertEqual(rules("backup-health.md", clean("BF-Plumber and GB-Plumber share this core.\n")), set())
+        self.assertEqual(
+            rules("backup-health.md", clean("BF-Plumber and GB-Plumber share this core.\n")), set()
+        )
 
 
 class PlaceholderTests(unittest.TestCase):
@@ -315,7 +369,9 @@ class PlaceholderTests(unittest.TestCase):
         text = clean("Post in topic <C2 ID> open-loops heartbeat.\n")
         self.assertEqual(rules("a.md", text), set())
         self.assertEqual(rules("a.md", text, placeholders=True), {"placeholder"})
-        self.assertEqual(rules("a.md", clean("TODO fill in.\n"), placeholders=True), {"placeholder"})
+        self.assertEqual(
+            rules("a.md", clean("TODO fill in.\n"), placeholders=True), {"placeholder"}
+        )
 
 
 class PrivateFolderTests(unittest.TestCase):

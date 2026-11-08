@@ -37,13 +37,14 @@ that is not text is turned into text first (`None` is empty).
 Python 3.11+, standard library only, and no imports from this package:  the secret scanner and the
 routine-text checker load their siblings by path.
 """
+
 from __future__ import annotations
 
 import re
 import unicodedata
 from typing import Any
 
-__all__ = ["render_untrusted", "FULLWIDTH_AT", "ELLIPSIS", "EMPTY"]
+__all__ = ["ELLIPSIS", "EMPTY", "FULLWIDTH_AT", "render_untrusted"]
 
 FULLWIDTH_AT = "\uff20"
 ELLIPSIS = "\u2026"

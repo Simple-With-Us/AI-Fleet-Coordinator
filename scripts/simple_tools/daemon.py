@@ -701,7 +701,8 @@ class Daemon:
         self.stdout = stdout or sys.stdout
         tee = (
             self.stdout
-            if self.env.get("SIMPLE_TOOLS_LOG_STDOUT", "").strip().casefold() in ("1", "true", "yes")
+            if self.env.get("SIMPLE_TOOLS_LOG_STDOUT", "").strip().casefold()
+            in ("1", "true", "yes")
             else None
         )
         self.log = JsonLog(os.path.join(L.logs_dir(self.root), "listener.log"), self.scrub, tee=tee)

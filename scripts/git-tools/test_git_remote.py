@@ -2058,7 +2058,9 @@ class TestReview1199(unittest.TestCase):
 REAL_SCANNER = Path(os.path.realpath(str(IMPL))).parent.parent / "simple_tools" / "secretscan.py"
 
 
-@unittest.skipUnless(REAL_SCANNER.is_file(), "scripts/simple_tools/secretscan.py not available here")
+@unittest.skipUnless(
+    REAL_SCANNER.is_file(), "scripts/simple_tools/secretscan.py not available here"
+)
 class TestRealSharedScanner(unittest.TestCase):
     """The actual fleet scanner, loaded exactly the way the implementation loads it."""
 

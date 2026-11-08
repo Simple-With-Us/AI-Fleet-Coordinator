@@ -3,6 +3,7 @@
 Only authenticated metadata is persisted.  The daemon later fetches the message through the
 configured seat's Zulip API client before routing it, so webhook fields never become router input.
 """
+
 from __future__ import annotations
 
 import hmac
@@ -11,8 +12,9 @@ import os
 import re
 import tempfile
 import threading
+from collections.abc import Callable, Mapping
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Callable, Mapping
+from typing import Any
 from urllib.parse import urlsplit
 
 from . import live as L
@@ -36,19 +38,26 @@ class DurableSpool:
     @staticmethod
     def _name(seat: str, message_id: int) -> str:
         normalized = seat.upper()
-        if (not _SEAT_RE.fullmatch(normalized) or isinstance(message_id, bool) or
-                not isinstance(message_id, int) or message_id <= 0):
+        if (
+            not _SEAT_RE.fullmatch(normalized)
+            or isinstance(message_id, bool)
+            or not isinstance(message_id, int)
+            or message_id <= 0
+        ):
             raise ValueError("invalid spool identity")
         return "%s-%d.json" % (normalized, message_id)
 
     def add(self, seat: str, message_id: int) -> bool:
         """Atomically persist identity; return False only for a valid existing event row."""
         name = self._name(seat, message_id)
-        payload = json.dumps({"seat": seat.upper(), "message_id": message_id},
-                             sort_keys=True, separators=(",", ":")).encode("utf-8")
+        payload = json.dumps(
+            {"seat": seat.upper(), "message_id": message_id}, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
         path = os.path.join(self.directory, name)
         with self.lock:
-            pending_count = sum(1 for item in os.listdir(self.directory) if _FILE_RE.fullmatch(item))
+            pending_count = sum(
+                1 for item in os.listdir(self.directory) if _FILE_RE.fullmatch(item)
+            )
             exists = os.path.exists(path)
             if pending_count >= MAX_PENDING_EVENTS and not exists:
                 raise OverflowError("webhook spool is full")
@@ -113,8 +122,11 @@ class DurableSpool:
             except (OSError, UnicodeDecodeError, ValueError):
                 continue
             message_id = int(raw_id)
-            if (self._name(seat, message_id) == name and isinstance(row, dict) and
-                    row == {"seat": seat, "message_id": message_id}):
+            if (
+                self._name(seat, message_id) == name
+                and isinstance(row, dict)
+                and row == {"seat": seat, "message_id": message_id}
+            ):
                 rows.append(row)
         return sorted(rows, key=lambda row: (row["message_id"], row["seat"]))
 
@@ -138,11 +150,19 @@ class DurableSpool:
 class OutgoingWebhookServer:
     """A small threaded HTTP receiver.  Tokens are never retained on disk or included in logs."""
 
-    def __init__(self, bind: str, port: int, tokens: Mapping[str, str],
-                 accept: Callable[[str, str, int], str],
-                 log: Callable[..., None] | None = None) -> None:
-        self.tokens = {seat.upper(): token for seat, token in tokens.items()
-                       if _SEAT_RE.fullmatch(seat.upper()) and isinstance(token, str) and token}
+    def __init__(
+        self,
+        bind: str,
+        port: int,
+        tokens: Mapping[str, str],
+        accept: Callable[[str, str, int], str],
+        log: Callable[..., None] | None = None,
+    ) -> None:
+        self.tokens = {
+            seat.upper(): token
+            for seat, token in tokens.items()
+            if _SEAT_RE.fullmatch(seat.upper()) and isinstance(token, str) and token
+        }
         self.accept = accept
         self.log = log or (lambda *_args, **_kwargs: None)
         owner = self
@@ -191,16 +211,20 @@ class OutgoingWebhookServer:
                 except OSError:
                     pass
 
-            def do_POST(self) -> None:  # noqa: N802
+            def do_POST(self) -> None:
                 self.close_connection = True
                 parsed_path = urlsplit(self.path)
                 path = parsed_path.path
                 prefix = "/zulip/outgoing/"
-                if (parsed_path.query or parsed_path.fragment or not path.startswith(prefix) or
-                        not _SEAT_RE.fullmatch(path[len(prefix):])):
+                if (
+                    parsed_path.query
+                    or parsed_path.fragment
+                    or not path.startswith(prefix)
+                    or not _SEAT_RE.fullmatch(path[len(prefix) :])
+                ):
                     self._respond(404, {"error": "not found"})
                     return
-                seat = path[len(prefix):].upper()
+                seat = path[len(prefix) :].upper()
                 expected = owner.tokens.get(seat)
                 if expected is None:
                     self._respond(404, {"error": "not found"})
@@ -232,8 +256,9 @@ class OutgoingWebhookServer:
                     self._respond(400, {"error": "invalid request"})
                     return
                 token = body.get("token")
-                if (not isinstance(token, str) or
-                        not hmac.compare_digest(token.encode("utf-8"), expected.encode("utf-8"))):
+                if not isinstance(token, str) or not hmac.compare_digest(
+                    token.encode("utf-8"), expected.encode("utf-8")
+                ):
                     owner.log("outgoing-webhook-rejected", seat=seat, reason="authentication")
                     self._respond(401, {"error": "unauthorized"})
                     return
@@ -241,9 +266,15 @@ class OutgoingWebhookServer:
                 trigger = body.get("trigger")
                 message = body.get("message")
                 message_id = message.get("id") if isinstance(message, dict) else None
-                if (not isinstance(bot_email, str) or len(bot_email) > 320 or
-                        not isinstance(trigger, str) or len(trigger) > 80 or
-                        isinstance(message_id, bool) or not isinstance(message_id, int) or message_id <= 0):
+                if (
+                    not isinstance(bot_email, str)
+                    or len(bot_email) > 320
+                    or not isinstance(trigger, str)
+                    or len(trigger) > 80
+                    or isinstance(message_id, bool)
+                    or not isinstance(message_id, int)
+                    or message_id <= 0
+                ):
                     self._respond(400, {"error": "invalid request"})
                     return
                 try:
@@ -251,8 +282,12 @@ class OutgoingWebhookServer:
                 except Exception:
                     status = "unavailable"
                 if status in ("accepted", "duplicate"):
-                    owner.log("outgoing-webhook-accepted", seat=seat, id=message_id,
-                              duplicate=status == "duplicate")
+                    owner.log(
+                        "outgoing-webhook-accepted",
+                        seat=seat,
+                        id=message_id,
+                        duplicate=status == "duplicate",
+                    )
                     self._respond(200, {"response_not_required": True})
                 elif status == "unavailable":
                     owner.log("outgoing-webhook-deferred", seat=seat)
@@ -262,8 +297,12 @@ class OutgoingWebhookServer:
                     self._respond(401, {"error": "unauthorized"})
 
         self.server = Server((bind, port), Handler)
-        self.thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.2},
-                                       name="zulip-outgoing-webhook", daemon=True)
+        self.thread = threading.Thread(
+            target=self.server.serve_forever,
+            kwargs={"poll_interval": 0.2},
+            name="zulip-outgoing-webhook",
+            daemon=True,
+        )
 
     @property
     def address(self) -> tuple[str, int]:

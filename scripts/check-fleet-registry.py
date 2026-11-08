@@ -37,13 +37,13 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from public_activity_repos import PUBLIC_REPOS
 from simple_tools.identity import (
     GROK_ALIAS_PATTERN,
     SeatRegistryError,
     parse_seat_registry,
 )
 from simple_tools.zulip import DEFAULT_CHANNEL, REALM, credential_file_name
-from public_activity_repos import PUBLIC_REPOS
 
 ROOT = Path(__file__).resolve().parents[1]
 REGISTRY = ROOT / "fleet-apps.json"

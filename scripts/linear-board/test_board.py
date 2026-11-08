@@ -1674,7 +1674,9 @@ class BearerTransportSeamTests(unittest.TestCase):
         m = re.search(r"KNOWN_SEATS = Object\.freeze\(\[([^\]]+)\]\)", cfg)
         self.assertIsNotNone(m)
         seats = re.findall(r'"([A-Z][A-Z0-9-]*)"', m.group(1))
-        gb = json.loads((root / "simple_tools" / "mcp" / "gb-identities.json").read_text())["enabled"]
+        gb = json.loads((root / "simple_tools" / "mcp" / "gb-identities.json").read_text())[
+            "enabled"
+        ]
         # This pins only what the hosted verifier answers TODAY.  It is not the fleet roster:  other active
         # tags (AG, CLUTCH, FX, GROK, MC, MM, OPENCODE, BotFleet roles) have no verifier identity yet and
         # need verifier/admin work, not an alias map here.

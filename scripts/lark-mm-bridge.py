@@ -56,9 +56,7 @@ from pathlib import Path
 # checkout and is not on the interpreter's path.  Add it before the import, so
 # the bridge does not depend on how it was launched.  A copy run from a checkout
 # uses its own scripts folder first (AFC-490).
-_RUNTIME_SCRIPTS = (
-    "~/apps/lanes/_managed/fleet/simple-tools-runtime/scripts",
-)
+_RUNTIME_SCRIPTS = ("~/apps/lanes/_managed/fleet/simple-tools-runtime/scripts",)
 
 
 def _runtime_scripts_dir(home=None, isdir=os.path.isdir, here=None):

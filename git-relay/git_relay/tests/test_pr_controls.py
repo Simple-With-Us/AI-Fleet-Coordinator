@@ -158,7 +158,11 @@ class PrControls(unittest.TestCase):
             (relay / "policy.py", '"wf_pr_close"', 1),
             (relay / "server.py", '"wf_pr_close"', 1),
             # One entry in the tool specs and one in the response keys.
-            (root / "scripts" / "simple-tools-mcp" / "src" / "gr-workflow-v1.js", "wf_pr_close:", 2),
+            (
+                root / "scripts" / "simple-tools-mcp" / "src" / "gr-workflow-v1.js",
+                "wf_pr_close:",
+                2,
+            ),
         ):
             with self.subTest(path=path.name):
                 if not path.exists():

@@ -82,7 +82,8 @@ class SimpleToolsRows(unittest.TestCase):
     def test_live_copy_ignores_repo_case_but_not_acronym_case(self) -> None:
         text = "fleet-ops and ops, DEALDEX and DD\n"
         self.assertEqual(
-            reg.simple_tools_errors(APPS, text, "live", fold_repo=True), ["live missing acronym OPS"]
+            reg.simple_tools_errors(APPS, text, "live", fold_repo=True),
+            ["live missing acronym OPS"],
         )
         self.assertEqual(
             reg.simple_tools_errors(APPS, text, "coordinator"),

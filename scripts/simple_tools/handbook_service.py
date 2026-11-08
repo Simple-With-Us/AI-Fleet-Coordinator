@@ -176,7 +176,9 @@ def execute(args, *, env=None, client=None, credentials=None):
     # Reserve before sending.  An uncertain result is never replayed automatically.
     fingerprint = hashlib.sha256((CHANNEL + "\0" + TOPIC + "\0" + body).encode()).hexdigest()
     ledger_path = str(
-        Path(env.get("HOME", str(Path.home()))) / ".simple-tools" / "handbook-operator-delivery.json"
+        Path(env.get("HOME", str(Path.home())))
+        / ".simple-tools"
+        / "handbook-operator-delivery.json"
     )
     marker = "handbook-ref:" + fingerprint
     body += "\n\n" + marker
