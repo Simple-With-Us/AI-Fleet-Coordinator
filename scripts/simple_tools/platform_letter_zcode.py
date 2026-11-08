@@ -298,10 +298,13 @@ def zcode_entry(command: str, timeout: int, event: str) -> dict[str, Any]:
     matcher checks, and the rest of the words (hook, --platform, --location, --remote) pass
     through unchanged.  The wrapper path is derived from the command's own prefix, so the
     home the install ran under decides it, never the home of whichever process builds the
-    entry later."""
+    entry later:  the wrapper sits in a `zc-letter` directory BESIDE the `platform-letter`
+    the install command names (`<home>/.local/bin/zc-letter/platform-letter`) — one dirname
+    up from it, not two."""
     parts = shlex.split(command)
-    home_prefix = os.path.dirname(os.path.dirname(parts[0]))  # <home>/.local/bin/platform-letter
-    parts[0] = os.path.join(home_prefix, "zc-letter", "platform-letter")
+    bin_dir = os.path.dirname(parts[0])  # <home>/.local/bin
+    # the command is a shell-word list, so the rebuilt path is quoted again (a home with a space in it)
+    parts[0] = shlex.quote(os.path.join(bin_dir, "zc-letter", "platform-letter"))
     return PL.command_entry(" ".join(parts), timeout, event)
 
 
