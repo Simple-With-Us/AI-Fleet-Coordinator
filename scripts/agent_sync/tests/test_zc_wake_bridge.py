@@ -228,6 +228,51 @@ class Receiver(Base):
         self.assertEqual(status, 503, answer)
         self.assertNotEqual(answer.get("reason"), "already-seen")
 
+    def test_concurrent_duplicate_wake_delivers_once(self) -> None:
+        # Two posts of one wake id while the first delivery is still running:  the second is
+        # answered "in-flight" and starts no second turn, and the id is marked seen once the
+        # first delivery is handled.
+        import threading
+        from http.server import ThreadingHTTPServer
+
+        slow = dict(self.config)
+        slow["command_template"] = [
+            "/bin/sh", "-c",
+            "sleep 1; printf '%%s\n' \"$1\" >> '%s'" % self.fake_path,
+            "bridge", "{session_id}", "{wake_text}",
+        ]
+        env = self.env(**self.registry_env(self.rows(
+            {"native_session_id": "sess_once", "title": "Once only", "verified_host": "server",
+             "state": "open", "assigned_at": 1, "retired_at": None, "closed_at": None},
+        )))
+        server = ThreadingHTTPServer(("127.0.0.1", 0), B.make_handler(env, slow, []))
+        server.daemon_threads = True
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        host, bound = server.server_address[:2]
+        body = json.dumps(self.wake(wake_id="w-twice")).encode()
+        answers: list[tuple[int, dict]] = []
+
+        def fire() -> None:
+            request = urllib.request.Request(
+                "http://%s:%d/wake/ZC" % (host, bound), data=body, method="POST",
+                headers={"Content-Type": "application/json",
+                         "Authorization": "Bearer %s" % self.key},
+            )
+            with urllib.request.urlopen(request, timeout=20) as response:
+                answers.append((response.status, json.loads(response.read().decode())))
+
+        first = threading.Thread(target=fire)
+        first.start()
+        time.sleep(0.3)
+        fire()
+        first.join(timeout=20)
+        self.assertEqual(sorted(a.get("reason") for _, a in answers), ["in-flight", "ok"], answers)
+        self.assertEqual(sorted(bool(a.get("delivered")) for _, a in answers), [False, True])
+        self.assertEqual(open(self.fake_path).read().split(), ["sess_once"])
+        self.assertIn("w-twice", B.seen_ids(B.state_dir(env) / "seen.json"))
+
     def test_topic_target_never_starts_without_sess_prefix(self) -> None:
         # A crafted registry row whose native id is argv-shaped ("-p") is not a target.
         env = self.env(**self.registry_env(self.rows(

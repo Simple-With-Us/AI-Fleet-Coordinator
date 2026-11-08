@@ -71,6 +71,11 @@ STOP_WORDS = frozenset(
 #: Dedupe is check-and-mutate against one file:  one lock guards both halves, so two posts of
 #: the same wake id cannot both pass the check (ThreadingHTTPServer answers on threads).
 _SEEN_LOCK = threading.Lock()
+#: Wake ids whose delivery is running now, reserved under _SEEN_LOCK.  The seen file is only
+#: written after a delivery is handled (a failed one must stay retryable), so without this
+#: reservation a second post of the same id during a minutes-long delivery would pass the
+#: seen check and start a second ZCode turn.
+_INFLIGHT: set[str] = set()
 
 ENV_URL = "SIMPLE_TOOLS_OPERATOR_REGISTRY_URL"
 ENV_PRINCIPAL = "SIMPLE_TOOLS_OPERATOR_REGISTRY_PRINCIPAL"
@@ -470,23 +475,37 @@ def make_handler(env: dict[str, str], config: dict[str, Any], receipts: list[dic
                 if wake_id in seen_ids(seen_path):
                     self._answer(200, {"delivered": False, "reason": "already-seen", "wake_id": wake_id})
                     return
-            receipt = deliver(
-                env,
-                config,
-                wake_id=wake_id,
-                topic=str(payload.get("topic") or ""),
-                channel=str(payload.get("channel") or ""),
-                link=str(payload.get("zulip_link") or ""),
-            )
-            receipts.append({"wake_id": wake_id, **receipt})
-            del receipts[:-50]
-            if receipt.get("delivered") or receipt.get("reason") == "delivery-disabled":
+                if wake_id in _INFLIGHT:
+                    # The first post of this id is still delivering;  its own answer decides
+                    # whether the listener retries, so this duplicate starts nothing.
+                    self._answer(200, {"delivered": False, "reason": "in-flight", "wake_id": wake_id})
+                    return
+                _INFLIGHT.add(wake_id)
+            handled = False
+            try:
+                receipt = deliver(
+                    env,
+                    config,
+                    wake_id=wake_id,
+                    topic=str(payload.get("topic") or ""),
+                    channel=str(payload.get("channel") or ""),
+                    link=str(payload.get("zulip_link") or ""),
+                )
                 # The wake is handled:  delivered, or the owner has delivery switched off and
                 # the receipt is the record of it.  Anything else answers 503 so the
                 # listener's own retry brings the wake back, and the id stays unmarked - a
                 # failed delivery is never permanently already-seen.
+                handled = bool(receipt.get("delivered")) or receipt.get("reason") == "delivery-disabled"
+            finally:
+                # Release the reservation and record a handled wake in one step, so no other
+                # post of this id can slip between the two.
                 with _SEEN_LOCK:
-                    remember_id(seen_path, wake_id)
+                    _INFLIGHT.discard(wake_id)
+                    if handled:
+                        remember_id(seen_path, wake_id)
+            receipts.append({"wake_id": wake_id, **receipt})
+            del receipts[:-50]
+            if handled:
                 self._answer(200, {"wake_id": wake_id, **receipt})
             else:
                 self._answer(503, {"wake_id": wake_id, **receipt})
