@@ -487,8 +487,10 @@ def _credential_backing_refusal(path: str) -> str | None:
 
     It is read by systemd as root and handed to a service uid that no host file can own,
     so it must be a plain private file nobody else can write or swap:  not a symlink,
-    one link, owned by root (or by the user running this, as policy_input.py accepts),
-    mode 0400 or 0600, in a directory nobody else can write."""
+    one link, owned by the user running this (root when run as root, as policy_input.py
+    accepts), mode 0400 or 0600, in a directory nobody else can write.  A non-root
+    operator is refused a root-owned file here, because it could neither read nor replace
+    it."""
     try:
         info = os.lstat(path)
     except OSError:
@@ -496,7 +498,7 @@ def _credential_backing_refusal(path: str) -> str | None:
     if (
         not stat.S_ISREG(info.st_mode)
         or info.st_nlink != 1
-        or info.st_uid not in (0, os.geteuid())
+        or info.st_uid != os.geteuid()
         or stat.S_IMODE(info.st_mode) not in (0o400, 0o600)
     ):
         return "the credential backing file must be a private regular file (0400 or 0600, not a symlink)"
@@ -538,7 +540,7 @@ def _acquire_transaction_lock(seats_path: str):
     on timeout (caller refuses the transaction);  the fd releases on close.
     """
     lock_path = seats_path + ".transaction.lock"
-    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     deadline = time.monotonic() + TRANSACTION_LOCK_WAIT_S
     while True:
         try:
@@ -619,11 +621,32 @@ def install_seat(args, unit: Unit) -> int:
     """
     sys.path.insert(0, unit.relay)
     try:
-        from git_relay import deploy_proof, seat_add_policy
+        from git_relay import deploy_proof, policy_input, seat_add_policy
     finally:
         sys.path.remove(unit.relay)
     path, credential = _seat_policy_source(unit)
-    lock_fd = _acquire_transaction_lock(path)
+    if credential:
+        # The relay accepts the credential input only under one systemd credential
+        # directory, which systemd derives from the unit name.  A unit named otherwise
+        # would pass every gate here and then fail the health gate at startup, so it is
+        # refused before anything is written.
+        if f"/run/credentials/{unit.name}" != policy_input.SEAT_CREDENTIAL_DIRECTORY:
+            print(
+                "refusing:  the unit's systemd credential directory is not the one the relay "
+                "accepts for the policy credential"
+            )
+            return 2
+        # Validate the backing file and its directory BEFORE the transaction lock creates
+        # a file beside it as root.  The same check runs again under the lock.
+        refusal = _credential_backing_refusal(path)
+        if refusal:
+            print(f"refusing:  {refusal}")
+            return 2
+    try:
+        lock_fd = _acquire_transaction_lock(path)
+    except OSError:
+        print("refusing:  the transaction lock file cannot be opened safely;  nothing was written")
+        return 2
     if lock_fd is None:
         print("refusing:  another install-seat transaction holds the lock;  retry when it finishes")
         return 2
@@ -656,7 +679,11 @@ def _install_seat_locked(
         return 2
     with open(path, encoding="utf-8") as fh:
         before_text = fh.read()
-    current = json.loads(before_text)
+    try:
+        current = json.loads(before_text)
+    except ValueError:
+        print("refusing:  the live policy is not valid JSON;  nothing was written")
+        return 2
     if canonical_digest(current) != args.expect_before:
         print("refusing:  the live policy is not the reviewed one (--expect-before mismatch)")
         return 2
