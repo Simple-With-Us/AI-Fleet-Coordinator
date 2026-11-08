@@ -5220,12 +5220,12 @@ class Daemon:
             # same attempt cap.
             if isinstance(exc, OPV.OperatorUnavailable):
                 failure = BAUD.RETRY
-                self._operator_refused("broadcast-audit", exc, seat=seat, id=message_id)
             else:
                 failure = BAUD.dm_failure_outcome(exc)
-            # Durable before the completion log:  once a peer-broadcast-all row exists,
-            # the ledger already shows its outcome, so nothing can read the log saying
-            # failed while the durable row still shows the previous attempts/due.
+            # Durable before EVERY log row for this transition - the completion row and the
+            # classification refusal alike:  once either exists, the ledger already shows its
+            # outcome, so nothing can read a log saying failed/refused while the durable row
+            # still shows the previous attempts/due.
             if failure == BAUD.UNKNOWN:
                 self._fail_broadcast_effect(
                     mid,
@@ -5252,6 +5252,8 @@ class Daemon:
                 else:
                     reason = "reminder send failed permanently (%s)" % type(exc).__name__
                 self._fail_broadcast_effect(mid, "audit", reason)
+            if isinstance(exc, OPV.OperatorUnavailable):
+                self._operator_refused("broadcast-audit", exc, seat=seat, id=message_id)
             self.log.write(
                 "peer-broadcast-all",
                 id=message_id,
