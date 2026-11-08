@@ -303,7 +303,8 @@ def zcode_entry(command: str, timeout: int, event: str) -> dict[str, Any]:
     up from it, not two."""
     parts = shlex.split(command)
     bin_dir = os.path.dirname(parts[0])  # <home>/.local/bin
-    parts[0] = os.path.join(bin_dir, "zc-letter", "platform-letter")
+    # the command is a shell-word list, so the rebuilt path is quoted again (a home with a space in it)
+    parts[0] = shlex.quote(os.path.join(bin_dir, "zc-letter", "platform-letter"))
     return PL.command_entry(" ".join(parts), timeout, event)
 
 

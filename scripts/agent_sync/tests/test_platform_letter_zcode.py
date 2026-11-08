@@ -11,6 +11,7 @@ import io
 import json
 import os
 import sqlite3
+import shlex
 import subprocess
 import tempfile
 import time
@@ -461,6 +462,13 @@ class Install(Base):
         self.assertEqual(answer["changed"], [])
         code, out = self.install("--location", "server", "--check")
         self.assertEqual(code, 0)
+
+    def test_entry_keeps_shell_quoting_for_a_home_with_a_space(self) -> None:
+        command = PL.command_for("/home/a b", "zcode", "server")
+        entry = Z.zcode_entry(command, 10, "SessionStart")
+        words = shlex.split(entry["hooks"][0]["command"])
+        self.assertEqual(words[0], "/home/a b/.local/bin/zc-letter/platform-letter")
+        self.assertEqual(words[1:3], ["hook", "--platform"])
 
     def test_remove_takes_only_ours(self) -> None:
         self.install("--location", "server")
