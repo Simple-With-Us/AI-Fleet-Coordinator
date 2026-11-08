@@ -227,7 +227,7 @@ class LinkTests(unittest.TestCase):
             "https://simplewithus.zulipchat.com/#narrow/channel/12-%s/topic/OWNER.20x/near/5" % linkmod.CHANNEL))
 
     def test_the_realm_comes_from_the_environment(self) -> None:
-        link = linkmod.make_topic_link("OWNER x", 5, environ={"AGENT_SYNC_REALM": "https://other.zulipchat.com"})
+        link = linkmod.make_topic_link("OWNER x", 5, environ={"SIMPLE_TOOLS_REALM": "https://other.zulipchat.com"})
         self.assertTrue(link.startswith("https://other.zulipchat.com/"))
 
     def test_f3_is_still_the_one_that_cleans(self) -> None:

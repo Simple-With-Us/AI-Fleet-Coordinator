@@ -9,13 +9,13 @@ macOS AppleScript banners for wake events via a thin Mac client.  Jay accepted
 
 ## What moves
 
-- The Operator's eavesdropper, the Zulip listener daemon (`agent_sync` package, not yet renamed: live inbox, wake ledger, held-back
+- The Operator's eavesdropper, the Zulip listener daemon (`simple_tools` package: live inbox, wake ledger, held-back
   queue, leases) and its signed read API (`listener_api.py`, port 8788).
 - Nothing about the bridge changes; seats keep using the Worker MCP as today.
 
 ## What appears
 
-- `agent_sync/wake_alerter.py` (this PR):  the thin wake client, two modes.
+- `simple_tools/wake_alerter.py` (this PR):  the thin wake client, two modes.
   Default (the Mac):  one macOS banner per new wake id, bodies never reach a
   banner.  Hook mode (`OPERATOR_ALERTER_HOOK` set):  run one configured
   command per new wake instead - this is the headless-wake path for
@@ -63,7 +63,7 @@ wake event should be able to start real work without a human screen.  The
 wake alerter's hook mode provides it:
 
 - A supervisor on the server runs
-  `python3 -m agent_sync.wake_alerter --loop 60` with
+  `python3 -m simple_tools.wake_alerter --loop 60` with
   `OPERATOR_ALERTER_HOOK=/opt/fleet/muse-wake.sh {seat} {wake_id} {channel} {topic}`.
   The hook receives wake METADATA only ({seat}/{channel}/{topic}/{wake_id}/
   {state} argv placeholders plus OPERATOR_WAKE_* env vars) - never message
@@ -93,7 +93,7 @@ wake alerter's hook mode provides it:
 
 - New Coolify app from this repo (main branch, webhook deploy like the other
   Fleet Infra apps):  base directory `scripts/`, start
-  `python3 -m agent_sync.listener_cli daemon run` (the daemon's normal entry),
+  `python3 -m simple_tools.listener_cli daemon run` (the daemon's normal entry),
   Python 3.11+ image.
 - Bind the read API to the TAILSCALE interface only (no Traefik, no public
   port, no DNS):  `listener.example.ts.net:8788`.

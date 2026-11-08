@@ -155,7 +155,7 @@ def canonical_hint(raw):
 
 # The whoami verification cache:  one small JSON row beside the seat's
 # idempotency state (<state>/<SEAT>/mcp-idem.json), in the state root
-# agent_sync.state resolves ($AGENT_SYNC_STATE_DIR, else ~/.agent-sync).
+# simple_tools.state resolves ($SIMPLE_TOOLS_STATE_DIR, else ~/.simple-tools).
 # The rule is mirrored here, not imported, so this file stays self-contained
 # for its vendored copies.  Every cache anomaly - missing, malformed, loose
 # permissions, wrong owner, a different bearer's hash, a stale or future
@@ -164,7 +164,7 @@ def canonical_hint(raw):
 # change an outcome.
 VERIFY_CACHE_TTL_SECONDS = 3600.0
 VERIFY_CACHE_FILE = "fleet-bearer-verify.json"
-STATE_DIR_ENV = "AGENT_SYNC_STATE_DIR"
+STATE_DIR_ENV = "SIMPLE_TOOLS_STATE_DIR"
 
 
 class GatewayTransport:
@@ -340,7 +340,7 @@ class Client:
         if not re.fullmatch(r"[A-Z0-9][A-Z0-9-]{0,39}", self.seat):
             return None
         override = self._env.get(STATE_DIR_ENV, "")
-        root = Path(override).expanduser() if override else Path.home() / ".agent-sync"
+        root = Path(override).expanduser() if override else Path.home() / ".simple-tools"
         if not root.is_dir():
             return None
         seat_dir = root / self.seat

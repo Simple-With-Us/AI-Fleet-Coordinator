@@ -154,7 +154,7 @@ jobs:
         python3 scripts/test_fleet_cli_runtime.py
         python3 scripts/test_fleet_cli_git_update.py
         (cd scripts/git-tools && python3 -m unittest test_git_remote test_simple_git_wrapper test_helper_plan -v)
-        bash -n scripts/agent-sync-runtime-sync.sh
+        bash -n scripts/simple-tools-runtime-sync.sh
     # systemd unit templates (the fleet CLI updater unit):  the measured host
     # quirk that %h expands to the root account's home inside a system unit even
     # when User= names another account, the unit's own internal consistency, and
@@ -233,7 +233,7 @@ jobs:
     - name: simple-chat CLI tests
       timeout-minutes: 12
       run: |
-        cd scripts && python3 -m unittest discover -s agent_sync/tests -t . -v
+        cd scripts && python3 -m unittest discover -s simple_tools/tests -t . -v
         python3 -m unittest discover -s whatsapp_bridge/tests -t . -v
     # The Operator's session registry and the MM seat's letter hook:  the letter
     # allocation, the two letter spaces, the registry CLI, and the secret scan that
@@ -550,12 +550,12 @@ jobs:
     - name: Board CLI Infisical tests
       timeout-minutes: 10
       run: python3 scripts/linear-board/test_board_infisical.py
-    # Agent-Sync parity (AFC-329):  `board commands|run|api|mcp` serve the hosted server's Linear catalogs from
-    # scripts/linear-board/catalog/ (pinned to the server's export by the agent-sync-mcp node test
+    # Simple-Tools parity (AFC-329):  `board commands|run|api|mcp` serve the hosted server's Linear catalogs from
+    # scripts/linear-board/catalog/ (pinned to the server's export by the simple-tools-mcp node test
     # linear-catalog-parity).  This replays the server's documents and guard verdicts against board's Python
     # ports, checks board lists exactly the exported names, and runs the verbs against a mock Linear and a fake
     # official MCP server (about a minute).
-    - name: Board CLI Agent-Sync parity
+    - name: Board CLI Simple-Tools parity
       timeout-minutes: 10
       run: python3 scripts/linear-board/test_board_parity.py
     # Infisical's only environment is prod (owner 2026-10-10).  The lint fails on a dev or
@@ -580,7 +580,7 @@ jobs:
         cache: npm
         cache-dependency-path: |
           visual-tests/package-lock.json
-          scripts/agent-sync-mcp/package-lock.json
+          scripts/simple-tools-mcp/package-lock.json
     - name: Verify operator start routing
       timeout-minutes: 10
       run: node --test scripts/safari-start/worker.test.mjs
@@ -613,13 +613,13 @@ jobs:
     - name: ST-MCP Worker unit tests
       timeout-minutes: 10
       run: |
-        npm ci --ignore-scripts --prefix scripts/agent-sync-mcp
-        node --test scripts/agent-sync-mcp/test/*.test.mjs
+        npm ci --ignore-scripts --prefix scripts/simple-tools-mcp
+        node --test scripts/simple-tools-mcp/test/*.test.mjs
     # The scoped-folder copy script (AFC-478) against a mocked Infisical and a fake
     # fleet-secrets:  names-only output, collisions, exit codes and reruns.
     - name: ST-MCP scoped-folder copy script tests
       timeout-minutes: 10
-      run: python3 -I scripts/agent-sync-mcp/scripts/test_populate_scoped_folders.py
+      run: python3 -I scripts/simple-tools-mcp/scripts/test_populate_scoped_folders.py
     - name: Kody defer and deferred sweep tests
       timeout-minutes: 10
       run: node --test scripts/kody-defer/*.test.mjs scripts/kody-deferred-sweep.test.mjs

@@ -93,7 +93,7 @@ The p8 private keys, the service-account JSON and the refresh tokens are the rea
 | `/mac-certs`, `/apple-certs`, `/codecaps-sparkle-ed25519-key`, `/ios-dist-p12-pass`, `/botfleet-developer-id-export`, `/authkey-*` (4), `/ct-authkey-*`, `/st-authkey-*` | 18 | certificates, private keys and their passphrases:  signing and verification material, never a bearer |
 | `/github` | 1 | `GITHUB_MA_TOTP_SECRET`, a TOTP shared secret |
 | `/congress-sqlite-web-password`, `/coolify-hetzner-admin-password`, `/coolify-login-hetzner` | 3 | human or admin passwords |
-| `/seat-mcp`, `/mac-collab`, `/grok-acp`, `/provider-knob-sync`, `/senate-relay`, `/agent-sync` | 28 | loopback or fleet-internal services;  the proxy bypasses `localhost` and `127.0.0.1` by design |
+| `/seat-mcp`, `/mac-collab`, `/grok-acp`, `/provider-knob-sync`, `/senate-relay`, `/simple-tools` | 28 | loopback or fleet-internal services;  the proxy bypasses `localhost` and `127.0.0.1` by design |
 | `/oracle-cloud-api-key`, `/oracle-usage-monitor` | 2 | cloud-console and billing credentials, not an agent API call |
 | `/usage-monitor*`, `/backblaze-monitor`, `/cloudflare-jay-email`, `/receipt-lifecycle-audit-token` | 20 | telemetry and audit, read by daemons that never leave the Mac |
 

@@ -1,4 +1,4 @@
-"""Offline checks for scripts/agent_sync/server/install-operator-sheets-drain.sh (OPS-1037).
+"""Offline checks for scripts/simple_tools/server/install-operator-sheets-drain.sh (OPS-1037).
 
 No network, no Infisical, no real docker and no systemd change.  The shell script runs three
 ways:  in --dry-run or up to a refusal against this checkout;  in its test mode
@@ -26,7 +26,7 @@ from pathlib import Path
 from unittest import mock
 
 HERE = Path(__file__).resolve().parent
-SCRIPT = HERE / "agent_sync" / "server" / "install-operator-sheets-drain.sh"
+SCRIPT = HERE / "simple_tools" / "server" / "install-operator-sheets-drain.sh"
 FAKE_TOKEN = "st" + "." + "fixture" + "-not-a-real-token-" + "0123456789"
 PEM_BEGIN = "-----BEGIN " + "PRIVATE KEY-----"
 PEM_END = "-----END " + "PRIVATE KEY-----"
@@ -255,7 +255,7 @@ class StubbedInstallTests(unittest.TestCase):
 
     def make_repo(self, drain=REVIEWED_DRAIN, timer=REVIEWED_TIMER):
         repo = self.tmp / "repo"
-        agent = repo / "scripts" / "agent_sync"
+        agent = repo / "scripts" / "simple_tools"
         (agent / "server").mkdir(parents=True)
         (repo / "scripts" / "fleet_secrets").mkdir()
         (repo / "scripts" / "fleet_secrets" / "core.py").write_text("")
@@ -280,7 +280,7 @@ class StubbedInstallTests(unittest.TestCase):
             "STUB_LOG": str(self.log),
         }
         base.update(env)
-        script = self.repo / "scripts" / "agent_sync" / "server" / SCRIPT.name
+        script = self.repo / "scripts" / "simple_tools" / "server" / SCRIPT.name
         return subprocess.run(
             ["bash", str(script)], env=base, capture_output=True, text=True, timeout=60
         )
@@ -355,7 +355,7 @@ class StubbedInstallTests(unittest.TestCase):
         self.assertFalse((self.units / "operator-sheets-drain.service").exists())
 
     def test_a_dirty_checkout_is_refused_before_any_change(self):
-        (self.repo / "scripts" / "agent_sync" / "operator_sheets_google.mjs").write_text("edit\n")
+        (self.repo / "scripts" / "simple_tools" / "operator_sheets_google.mjs").write_text("edit\n")
         result = self.run_install()
         self.assertEqual(result.returncode, 1)
         self.assertIn("uncommitted changes", result.stderr)
@@ -514,7 +514,9 @@ class PythonBlockTests(unittest.TestCase):
         self.assertEqual(self.block.resolve_knobs({}, {}), ({}, []))
         with self.assertRaises(self.block.InstallError) as caught:
             self.block.resolve_knobs({}, {"OPERATOR_SHEETS_PAGE_LIMIT": "999999"})
-        self.assertIn("OPERATOR_SHEETS_PAGE_LIMIT (kept from the existing drain.env)", str(caught.exception))
+        self.assertIn(
+            "OPERATOR_SHEETS_PAGE_LIMIT (kept from the existing drain.env)", str(caught.exception)
+        )
 
     def test_env_changes_name_settings_only(self):
         old = b"OPERATOR_SHEETS_WORKBOOK_ID=a\nOPERATOR_SHEETS_LOCK=/x\nHAND_SET=1\n"

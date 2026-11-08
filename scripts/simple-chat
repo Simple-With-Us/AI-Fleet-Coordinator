@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""simple-chat: the fleet's Zulip coordination CLI.  See scripts/agent_sync/README.md.
+"""simple-chat: the fleet's Zulip coordination CLI.  See scripts/simple_tools/README.md.
 
 This file is symlinked as ~/.local/bin/simple-chat, so it resolves its own real path before it
 puts the scripts directory on sys.path.
@@ -30,7 +30,7 @@ if (
     and sys.argv[1] in ("attach", "detach")
     and os.environ.get("SIMPLE_CHAT_REMOTE", "").strip() != "1"
 ):
-    from agent_sync.attach import main as attach_main  # noqa: E402
+    from simple_tools.attach import main as attach_main  # noqa: E402
 
     sys.exit(attach_main(sys.argv[2:], command=sys.argv[1]))
 
@@ -39,18 +39,18 @@ if (
 # turns remote mode on for every seat, so the hook must run whether or not SIMPLE_CHAT_REMOTE is set:  skipped, it
 # would fall through to the CLI's argument parser and exit 2, which blocks the prompt.
 if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "letter":
-    from agent_sync.claude_letter import main as letter_main  # noqa: E402
+    from simple_tools.claude_letter import main as letter_main  # noqa: E402
 
     sys.exit(letter_main(sys.argv[2:]))
 
 # Deterministic handbook service is not a roster seat or an admin API escape hatch.
 if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "handbook-service":
-    from agent_sync.handbook_service import main as handbook_main
+    from simple_tools.handbook_service import main as handbook_main
     sys.exit(handbook_main(sys.argv[2:]))
 
 # Muster's read-only Operator service (AFC-654):  not a roster seat, never routed to a seat's hosted server.
 if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "muster-service":
-    from agent_sync.muster_service import main as muster_main
+    from simple_tools.muster_service import main as muster_main
     sys.exit(muster_main(sys.argv[2:]))
 
 # --- seat remote defaults (host helper, optional) ---
@@ -144,7 +144,7 @@ def _seat_defaults(command):
 
 # --- end seat remote defaults ---
 
-from agent_sync.cli import main  # noqa: E402
+from simple_tools.cli import main  # noqa: E402
 
 if __name__ == "__main__":
     _seat_defaults("simple-chat")

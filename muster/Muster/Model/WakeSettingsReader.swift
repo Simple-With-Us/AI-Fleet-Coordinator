@@ -9,11 +9,11 @@ import Foundation
 
 /// Where the eavesdropper keeps its state on this Mac.
 struct ListenerStateLocation: Equatable {
-    /// The eavesdropper's state directory:  `~/.agent-sync`.
+    /// The eavesdropper's state directory:  `~/.simple-tools`.
     var root: URL
 
     init(home: URL = FileManager.default.homeDirectoryForCurrentUser) {
-        self.root = home.appendingPathComponent(".agent-sync", isDirectory: true)
+        self.root = home.appendingPathComponent(".simple-tools", isDirectory: true)
     }
 
     /// The configuration file.
@@ -133,7 +133,7 @@ struct WakeSettingsReader {
     /// Where the state lives.
     var location: ListenerStateLocation
     /// The command line,  for the eavesdropper's own account of itself.
-    var runner: AgentSyncRunning
+    var runner: SimpleToolsRunning
     /// The seats to show.
     var roster: [String]
     /// Where the seat partition is,  or nil when the checkout could not be found.
@@ -146,7 +146,7 @@ struct WakeSettingsReader {
 
     init(
         location: ListenerStateLocation = ListenerStateLocation(),
-        runner: AgentSyncRunning = AgentSyncCLI(),
+        runner: SimpleToolsRunning = SimpleToolsCLI(),
         roster: [String] = [],
         partitionURL: URL? = ListenerPartition.defaultURL(),
         now: @escaping () -> Date = { Date() },
@@ -215,7 +215,7 @@ struct WakeSettingsReader {
         // The eavesdropper's own account of itself.
         var status: ListenerStatus?
         do {
-            let result = try await runner.run(AgentSyncInvocation.status())
+            let result = try await runner.run(SimpleToolsInvocation.status())
             if result.exitCode == 0, let data = result.stdout.data(using: .utf8) {
                 status = try? JSONDecoder().decode(ListenerStatus.self, from: data)
                 if status == nil {
@@ -326,7 +326,7 @@ struct WakeSettingsReader {
         return sources
     }
 
-    /// The kill switch, `~/.agent-sync/listener/pause.json`:  a JSON object keyed by scope (a seat
+    /// The kill switch, `~/.simple-tools/listener/pause.json`:  a JSON object keyed by scope (a seat
     /// tag, or `*` for every seat).  An entry that is not an object is no pause, as the eavesdropper
     /// reads it.  A file that is there and cannot be read is unreadable, never no pause.
     func readPauseFile() -> WakePauseFile {
