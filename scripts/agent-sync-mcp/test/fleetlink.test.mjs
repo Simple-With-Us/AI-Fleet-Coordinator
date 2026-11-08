@@ -432,3 +432,15 @@ test("list summaries keep only a bounded next cursor and preserve exhaustion", a
     assert.equal(result.structuredContent.next, next === "bad cursor" ? undefined : next);
   }
 });
+
+
+test("valid cursor survives malformed share metadata rather than implying exhaustion", async () => {
+  for (const shares of [[{ slug: 7 }], Array.from({length: 201}, () => SHARE), null]) {
+    for (const next of ["1794000000:shr_abc123", null, "bad cursor"]) {
+      const { tools } = harness({ respond: () => ({ data: { shares, next } }) });
+      const result = await tools.call("fleetlink_list_shares", {});
+      assert.equal(result.structuredContent.next, next === "bad cursor" ? undefined : next);
+      assert.equal(result.structuredContent.slugs, undefined);
+    }
+  }
+});
