@@ -1881,11 +1881,17 @@ class TransportTests(unittest.TestCase):
     def test_https_reopen_and_held_win_over_stale_local_store(self):
         self.registry.write_bytes(b"stale")
         url = "https://operator.example.test"
-        answers = [{"record_id": "r1", "label": "AB", "outcome": "reopened"},
-                   {"letters": ["AB", "AA"]}]
+        answers = [
+            {"record_id": "r1", "label": "AB", "outcome": "reopened"},
+            {"letters": ["AB", "AA"]},
+        ]
         with (
-            mock.patch.dict(os.environ, dict(self._env,
-                SIMPLE_TOOLS_OPERATOR_REGISTRY_URL=url, MM_OPERATOR_REGISTRY_CMD="")),
+            mock.patch.dict(
+                os.environ,
+                dict(
+                    self._env, SIMPLE_TOOLS_OPERATOR_REGISTRY_URL=url, MM_OPERATOR_REGISTRY_CMD=""
+                ),
+            ),
             mock.patch.object(M, "_registry_https_call", side_effect=answers) as https,
             mock.patch.object(M, "remote_registry_call") as command,
         ):
@@ -1901,11 +1907,17 @@ class TransportTests(unittest.TestCase):
     def test_https_failure_does_not_fall_back_to_stale_local_store(self):
         self.registry.write_bytes(b"stale")
         with (
-            mock.patch.dict(os.environ, dict(self._env,
-                SIMPLE_TOOLS_OPERATOR_REGISTRY_URL="https://operator.example.test",
-                MM_OPERATOR_REGISTRY_CMD="")),
-            mock.patch.object(M, "_registry_https_call",
-                return_value={"error": "unavailable", "code": "timeout"}),
+            mock.patch.dict(
+                os.environ,
+                dict(
+                    self._env,
+                    SIMPLE_TOOLS_OPERATOR_REGISTRY_URL="https://operator.example.test",
+                    MM_OPERATOR_REGISTRY_CMD="",
+                ),
+            ),
+            mock.patch.object(
+                M, "_registry_https_call", return_value={"error": "unavailable", "code": "timeout"}
+            ),
             mock.patch.object(M, "remote_registry_call") as command,
         ):
             with self.assertRaises(M.RegistryError):
