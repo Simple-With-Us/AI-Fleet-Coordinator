@@ -8,7 +8,7 @@
 # LaunchAgent and shell script without its secrets.  Re-run this after the package changes.
 #
 # It writes no secret and no project id.  The Fleet-OPS project id is read at run time from
-# INFISICAL_FLEET_OPS_PROJECT_ID or ~/.agent-sync/fleet-ops-project-id (see INFISICAL.md).
+# INFISICAL_FLEET_OPS_PROJECT_ID or ~/.simple-tools/fleet-ops-project-id (see INFISICAL.md).
 set -euo pipefail
 
 if ! declare -F _fleet_secrets_uname_s >/dev/null 2>&1; then

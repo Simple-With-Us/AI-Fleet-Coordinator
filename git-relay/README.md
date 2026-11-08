@@ -13,13 +13,13 @@ connection as well;  GR-MCP is the other route, and the tool names are the same 
 ## git-relay owns per-bot GitHub token minting (owner decision 2026-10-22, Q5)
 
 git-relay is the ONE path in the fleet that mints per-bot GitHub App tokens.  The OPS-966
-Operator GitHub token broker (`scripts/agent_sync/operator_github*.py`,
-`scripts/agent_sync/github_token_router.py`, `scripts/operator/github_tokens/repo_token.py`) is
+Operator GitHub token broker (`scripts/simple_tools/operator_github*.py`,
+`scripts/simple_tools/github_token_router.py`, `scripts/operator/github_tokens/repo_token.py`) is
 NOT a minting path:  it stays disabled by default, and both of its mint primitives now fail
 closed naming git-relay, before any App credential is read.  That code is retained for review
 history and was not deleted;  it simply cannot mint.
 
-`scripts/agent_sync/tests/test_github_relay_minting_owner.py` is the executable form of this:
+`scripts/simple_tools/tests/test_github_relay_minting_owner.py` is the executable form of this:
 it fails if a second unguarded mint site ever appears in the repository, if the broker's guard
 is bypassed, or if the broker's real router can reach a mint.
 

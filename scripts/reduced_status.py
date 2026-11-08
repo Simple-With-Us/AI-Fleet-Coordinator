@@ -6,7 +6,7 @@ config errors, none of which belongs on an owner's screen or on the wire to the 
 `reduce_status` is the one place that turns it into the document the apps read.  It is pure and
 stdlib only: no file, no network and no clock except the `now` the caller passes.  It is also
 kept beside `fleet-ops-control.py` (in `scripts/` of a checkout, flat in the installed folder on
-the server) and not in the agent_sync package, which the fleet CLI release ships under a file
+the server) and not in the simple_tools package, which the fleet CLI release ships under a file
 budget, so it imports nothing from that package.
 
 The rules that hold for every field:

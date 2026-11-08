@@ -49,7 +49,7 @@ final class SeatActivityTests: XCTestCase {
     }
     """
 
-    /// The seat partition,  in the shape of `docs/protocols/agent-sync-partition.toml`.
+    /// The seat partition,  in the shape of `docs/protocols/simple-tools-partition.toml`.
     private let partitionTOML = """
     version = 1
 
@@ -147,7 +147,7 @@ final class SeatActivityTests: XCTestCase {
     ) throws -> ListenerStateLocation {
         let root = try scratchDirectory(fileManager: fileManager)
         var location = ListenerStateLocation(home: root)
-        location.root = root.appendingPathComponent(".agent-sync", isDirectory: true)
+        location.root = root.appendingPathComponent(".simple-tools", isDirectory: true)
         try fileManager.createDirectory(at: location.root, withIntermediateDirectories: true)
         if let state {
             let listener = location.root.appendingPathComponent("listener", isDirectory: true)
@@ -167,7 +167,7 @@ final class SeatActivityTests: XCTestCase {
     /// A partition file in a temporary directory,  or a path to nothing.
     private func partitionFile(_ text: String?) throws -> URL {
         let root = try scratchDirectory()
-        let url = root.appendingPathComponent("agent-sync-partition.toml")
+        let url = root.appendingPathComponent("simple-tools-partition.toml")
         if let text {
             try text.write(to: url, atomically: true, encoding: .utf8)
         }

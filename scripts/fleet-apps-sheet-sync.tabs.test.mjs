@@ -9,8 +9,8 @@ import {
 const read = (rel) => readFileSync(new URL(`../${rel}`, import.meta.url), "utf8");
 const fleetApps = JSON.parse(read("fleet-apps.json"));
 const facts = JSON.parse(read("scripts/fleet-apps-sheet-facts.json"));
-const partition = parsePartition(read("docs/protocols/agent-sync-partition.toml"));
-const serverSeats = parseServerListener(read("scripts/agent_sync/server/listener.toml"));
+const partition = parsePartition(read("docs/protocols/simple-tools-partition.toml"));
+const serverSeats = parseServerListener(read("scripts/simple_tools/server/listener.toml"));
 const { seatAppNames, teamKeys } = parseBoardCli(read("scripts/linear-board/board"));
 const seatsRows = buildSeatsTab({ fleetApps, partition, serverSeats, seatAppNames, facts }, "NOW");
 

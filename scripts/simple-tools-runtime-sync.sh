@@ -12,8 +12,8 @@
 #      origin/main detached;
 #   3. smoke-tests the new code (`simple-chat --version`); on failure it goes back to the old commit and
 #      remembers the bad commit so it is not retried until origin/main moves again;
-#   4. if the change touched scripts/agent_sync/, scripts/simple-chat, plugins/simple-chat/, .claude-plugin/
-#      or docs/protocols/agent-sync-partition.toml, kickstarts the listener so it loads the new code.
+#   4. if the change touched scripts/simple_tools/, scripts/simple-chat, plugins/simple-chat/, .claude-plugin/
+#      or docs/protocols/simple-tools-partition.toml, kickstarts the listener so it loads the new code.
 # A dirty runtime worktree is logged and skipped.  It is never reset, cleaned or stashed.
 #
 # Pause:   touch ~/.simple-tools/runtime-sync.pause   (resume: rm it)
@@ -24,15 +24,15 @@
 # rewrite the script while bash is reading it).
 set -u
 
-RUNTIME="${SIMPLE_TOOLS_RUNTIME:-${AGENT_SYNC_RUNTIME:-/Users/jay/apps/lanes/_managed/fleet/simple-tools-runtime}}"
-LISTENER_LABEL="${AGENT_SYNC_LISTENER_LABEL:-com.jay.operator}"
+RUNTIME="${SIMPLE_TOOLS_RUNTIME:-/Users/jay/apps/lanes/_managed/fleet/simple-tools-runtime}"
+LISTENER_LABEL="${SIMPLE_TOOLS_LISTENER_LABEL:-com.jay.operator}"
 STATE_DIR="$HOME/.simple-tools"
 LOCK_DIR="$STATE_DIR/runtime-sync.lock"
 PAUSE_FILE="$STATE_DIR/runtime-sync.pause"
 BAD_FILE="$STATE_DIR/runtime-sync.bad-sha"
-LOG="${AGENT_SYNC_RUNTIME_SYNC_LOG:-$HOME/apps/logs/simple-tools-runtime-sync.log}"
+LOG="${SIMPLE_TOOLS_RUNTIME_SYNC_LOG:-$HOME/apps/logs/simple-tools-runtime-sync.log}"
 GIT_TIMEOUT=60
-RESTART_RE='^(scripts/agent_sync/|scripts/simple-chat$|plugins/simple-chat/|\.claude-plugin/|docs/protocols/agent-sync-partition\.toml$)'
+RESTART_RE='^(scripts/simple_tools/|scripts/simple-chat$|plugins/simple-chat/|\.claude-plugin/|docs/protocols/simple-tools-partition\.toml$)'
 PLUGIN_RE='^(plugins/simple-chat/|\.claude-plugin/)'
 
 export PATH="/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"

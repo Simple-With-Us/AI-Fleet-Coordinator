@@ -55,8 +55,8 @@ import urllib.parse
 import urllib.request
 from collections.abc import Iterator
 
-from agent_sync import secretscan
-from agent_sync.operator_registry import (
+from simple_tools import secretscan
+from simple_tools.operator_registry import (
     letter_space_of,
     pairs_after,
     registry_db_path,
@@ -149,12 +149,12 @@ def location() -> str:
 
 def registry_db() -> str:
     """The local registry file, or "" when this host keeps no copy."""
-    override = os.environ.get("AGENT_SYNC_OPERATOR_REGISTRY")
+    override = os.environ.get("SIMPLE_TOOLS_OPERATOR_REGISTRY")
     if override:
         path = os.path.expanduser(override)
         return path if os.path.isfile(path) else ""
-    root = os.environ.get("AGENT_SYNC_STATE_DIR") or os.path.join(
-        os.path.expanduser("~"), ".agent-sync"
+    root = os.environ.get("SIMPLE_TOOLS_STATE_DIR") or os.path.join(
+        os.path.expanduser("~"), ".simple-tools"
     )
     path = registry_db_path(root, os.environ)
     return path if os.path.isfile(path) else ""
@@ -185,7 +185,7 @@ def repo_scripts_dir() -> str:
     )
     for candidate in candidates:
         if os.path.isdir(candidate) and os.path.isfile(
-            os.path.join(candidate, "agent_sync", "operator_registry.py")
+            os.path.join(candidate, "simple_tools", "operator_registry.py")
         ):
             return candidate
     return ""
@@ -373,7 +373,7 @@ def _registry_https_call(args: list[str], base_url: str, *, timeout: int) -> dic
     names (default SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY itself):  the `key_env` pattern the
     listener already uses, so the key is named, never carried in this file, and never
     logged.  The URL must be https, except for a loopback stub in a test."""
-    from agent_sync import listener_registry as RG
+    from simple_tools import listener_registry as RG
 
     op = args[0] if args else ""
     if op not in RG.OPS:
@@ -570,7 +570,7 @@ def registry_call(args: list[str], *, timeout: int = 25) -> dict:
         # The hop has its own bound:  it has to finish inside the hook's timeout, not
         # inside the timeout the local call would use.
         return remote_registry_call(args)
-    cmd = [sys.executable, "-m", "agent_sync.operator_registry"] + args + ["--db", local_db]
+    cmd = [sys.executable, "-m", "simple_tools.operator_registry"] + args + ["--db", local_db]
     previous = _install_signal_handlers()
     proc = None
     try:
@@ -990,7 +990,7 @@ def held_letters(session_id: str) -> tuple[str, ...]:
     db = registry_db()
     if not db:
         return ()
-    from agent_sync import operator_registry as OR
+    from simple_tools import operator_registry as OR
 
     # The read-only handle:  it never writes, never creates the file, and never takes
     # a write lock against the Operator's registration writes.

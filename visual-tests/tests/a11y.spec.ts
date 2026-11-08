@@ -4,7 +4,7 @@ import { serveRepo, serveErrors } from './serve-repo';
 
 /**
  * Accessibility pin: zero serious-or-worse violations on both pages, at both
- * viewport widths (reuses the agent-sync specs' viewport loop).
+ * viewport widths (reuses the simple-tools specs' viewport loop).
  */
 const viewports = [{ width: 1440, height: 1000 }, { width: 390, height: 844 }];
 

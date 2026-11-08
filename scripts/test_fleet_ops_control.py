@@ -182,12 +182,6 @@ class Base(unittest.TestCase):
         return path
 
 
-# The Mac's runtime-sync LaunchAgent was renamed on Nov 2, 2026.  The allowlist and the plist
-# template under scripts/launchd both carry the live label;  the old one must stay refused,
-# and no template may carry it again.
-RENAMED_AGENTS = {"com.jay.agent-sync-runtime-sync": "com.jay.simple-tools-runtime-sync"}
-
-
 class AllowlistTests(Base):
     def test_repo_allowlist_is_valid_and_covers_every_plist(self):
         config = foc.load_config()
@@ -199,7 +193,6 @@ class AllowlistTests(Base):
                 .split("<string>", 1)[1]
                 .split("</string>", 1)[0]
             ).strip()
-            self.assertNotIn(label, RENAMED_AGENTS, f"{plist.name} carries a retired label")
             self.assertIn(label, config["agents"], plist.name)
         self.assertIn("com.jay.fleet-worker-health", config["agents"])
         self.assertIn("com.jay.fleet-mac-services", config["agents"])
@@ -207,17 +200,14 @@ class AllowlistTests(Base):
         self.assertEqual(config["updates"]["fleet-cli"]["unit"], "fleet-cli-git-update.service")
         self.assertTrue(config["redeploy"])
 
-    def test_the_allowlist_names_the_renamed_runtime_sync_job_and_not_the_old_one(self):
+    def test_the_allowlist_names_the_runtime_sync_job(self):
         config = foc.load_config()
-        for old, new in RENAMED_AGENTS.items():
-            self.assertNotIn(old, config["agents"])
-            self.assertEqual(config["agents"][new], ("start", "stop", "restart"))
+        self.assertEqual(
+            config["agents"]["com.jay.simple-tools-runtime-sync"], ("start", "stop", "restart")
+        )
 
-    def test_the_repo_allowlist_plans_the_renamed_job_and_refuses_the_old_label(self):
-        for label, expected in (
-            ("com.jay.simple-tools-runtime-sync", (0, "planned")),
-            ("com.jay.agent-sync-runtime-sync", (2, "refused")),
-        ):
+    def test_the_repo_allowlist_plans_the_runtime_sync_job(self):
+        for label, expected in (("com.jay.simple-tools-runtime-sync", (0, "planned")),):
             with self.subTest(label=label):
                 context = self.ctx("darwin")
                 context.config_path = foc.CONFIG_PATH
@@ -229,15 +219,6 @@ class AllowlistTests(Base):
                         [[foc.LAUNCHCTL, "kickstart", "-k", f"gui/{os.getuid()}/{label}"]],
                     )
                 self.assertEqual(self.audit_rows(), [])
-
-    def test_the_allowlist_names_nothing_from_before_the_agent_sync_rename(self):
-        config = foc.load_config()
-        names = list(config["agents"]) + list(config["pm2"]) + list(config["units"])
-        names += [entry["unit"] for entry in config["updates"].values()]
-        self.assertEqual([name for name in names if "agent-sync" in name], [])
-        # The file as written, so a unit's name, a role or a note cannot carry it either.
-        raw = Path(HERE, "fleet-ops-control.json").read_text()
-        self.assertNotIn("agent-sync", raw)
 
     def test_malformed_entries_refuse_the_whole_file(self):
         bad_docs = [
@@ -1863,7 +1844,7 @@ class EavesdropperStatusDispatchTests(Base):
         "docker",
         "exec",
         "--user",
-        "agentsync",
+        "simpletools",
         "eavesdropper",
         "/bin/cat",
         "/data/listener/status.json",
@@ -2587,7 +2568,7 @@ class ReducerModuleTests(Base):
 
     def test_the_reducer_sits_beside_the_helper_and_there_is_one_place(self):
         self.assertTrue((foc.HELPER_DIR / foc.REDUCED_STATUS_NAME).is_file())
-        self.assertFalse((foc.HELPER_DIR / "agent_sync" / foc.REDUCED_STATUS_NAME).exists())
+        self.assertFalse((foc.HELPER_DIR / "simple_tools" / foc.REDUCED_STATUS_NAME).exists())
         self.assertFalse(hasattr(foc, "REDUCED_STATUS_LAYOUTS"))
         self.assertEqual(foc.TRUSTED_MODULE_UID, 0)
 

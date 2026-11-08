@@ -924,55 +924,55 @@ class RoleLaneResolveTests(unittest.TestCase):
 
 
 class RoleLaneStandaloneTests(unittest.TestCase):
-    """The installed standalone lane copy ships no agent_sync (AFC-620):  role resolution reads
+    """The installed standalone lane copy ships no simple_tools (AFC-620):  role resolution reads
     layout's parsed role_lanes, and the launcher contract is applied from the environment alone."""
 
-    def _no_agent_sync(self):
+    def _no_simple_tools(self):
         return mock.patch.dict(
-            sys.modules, {"agent_sync": None, "agent_sync.identity": None}
+            sys.modules, {"simple_tools": None, "simple_tools.identity": None}
         )
 
-    def test_a_role_resolves_without_agent_sync(self) -> None:
-        with self._no_agent_sync():
+    def test_a_role_resolves_without_simple_tools(self) -> None:
+        with self._no_simple_tools():
             seat = K.resolve_seat({"AGENT_SEAT": "BF-FIXER"}, REGISTRY)
         self.assertEqual(
             (seat.name, seat.suffix, seat.branch_prefixes),
             ("BF-FIXER", "bf-fixer", ("bf-fixer/",)),
         )
 
-    def test_a_launch_conflict_is_refused_without_agent_sync(self) -> None:
+    def test_a_launch_conflict_is_refused_without_simple_tools(self) -> None:
         env = {
             "AGENT_LAUNCHER": "botfleet",
             "AGENT_LAUNCH_SEAT": "BF-FIXER",
             "AGENT_SEAT": "BF-DEPLOYER",
         }
-        with self._no_agent_sync(), self.assertRaises(K.Refusal) as ctx:
+        with self._no_simple_tools(), self.assertRaises(K.Refusal) as ctx:
             K.resolve_seat(env, REGISTRY)
         self.assertIn("assigned BF-FIXER", str(ctx.exception))
 
-    def test_a_launch_seat_alone_resolves_without_agent_sync(self) -> None:
+    def test_a_launch_seat_alone_resolves_without_simple_tools(self) -> None:
         env = {"AGENT_LAUNCHER": "botfleet", "AGENT_LAUNCH_SEAT": "BF-FIXER"}
-        with self._no_agent_sync():
+        with self._no_simple_tools():
             seat = K.resolve_seat(env, REGISTRY)
         self.assertEqual((seat.name, seat.suffix), ("BF-FIXER", "bf-fixer"))
 
-    def test_a_matching_launch_and_agent_seat_resolve_without_agent_sync(self) -> None:
+    def test_a_matching_launch_and_agent_seat_resolve_without_simple_tools(self) -> None:
         env = {
             "AGENT_LAUNCHER": "botfleet",
             "AGENT_LAUNCH_SEAT": "BF-FIXER",
             "AGENT_SEAT": "bf-fixer",
         }
-        with self._no_agent_sync():
+        with self._no_simple_tools():
             seat = K.resolve_seat(env, REGISTRY)
         self.assertEqual(seat.name, "BF-FIXER")
 
-    def test_a_launcher_without_a_seat_is_refused_without_agent_sync(self) -> None:
-        with self._no_agent_sync(), self.assertRaises(K.Refusal) as ctx:
+    def test_a_launcher_without_a_seat_is_refused_without_simple_tools(self) -> None:
+        with self._no_simple_tools(), self.assertRaises(K.Refusal) as ctx:
             K.resolve_seat({"AGENT_LAUNCHER": "botfleet"}, REGISTRY)
         self.assertIn("AGENT_LAUNCH_SEAT is not", str(ctx.exception))
 
-    def test_an_unlisted_role_is_refused_without_agent_sync(self) -> None:
-        with self._no_agent_sync(), self.assertRaises(K.Refusal) as ctx:
+    def test_an_unlisted_role_is_refused_without_simple_tools(self) -> None:
+        with self._no_simple_tools(), self.assertRaises(K.Refusal) as ctx:
             K.resolve_seat({"AGENT_SEAT": "GB-KODY"}, REGISTRY)
         self.assertIn("no known role", str(ctx.exception))
 
@@ -1118,7 +1118,7 @@ class ResolveTests(unittest.TestCase):
         # CURSOR's cursor/ until F2 (2026-10-11) and so put one prefix on two seats.
         partition = tomllib.loads(
             (
-                SCRIPTS_DIR.parent / "docs" / "protocols" / "agent-sync-partition.toml"
+                SCRIPTS_DIR.parent / "docs" / "protocols" / "simple-tools-partition.toml"
             ).read_text(encoding="utf-8")
         )["seats"]
         for name in laneless:

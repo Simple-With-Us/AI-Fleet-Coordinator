@@ -1,6 +1,6 @@
 // The ingress's credential scanner against the fleet's Python one
-// (scripts/agent_sync/secretscan.py), over the Python suite's own samples
-// (scripts/agent_sync/tests/test_secretscan_fleet.py):  every fleet token
+// (scripts/simple_tools/secretscan.py), over the Python suite's own samples
+// (scripts/simple_tools/tests/test_secretscan_fleet.py):  every fleet token
 // kind must be refused here with the same kind name, and ordinary text that
 // only looks a little like a token must pass.
 //
@@ -26,8 +26,8 @@ const SCRIPTS = path.join(ROOT, "scripts");
 
 const PROGRAM = [
   "import json",
-  "from agent_sync.secretscan import scan",
-  "from agent_sync.tests import test_secretscan_fleet as t",
+  "from simple_tools.secretscan import scan",
+  "from simple_tools.tests import test_secretscan_fleet as t",
   "samples = [[kind, text, scan(text)] for kind, text in t.samples()]",
   "clean = [[text, scan(text)] for text in t.clean_texts() if text not in t.source_expressions()]",
   "source = t.source_expressions()",
