@@ -2723,6 +2723,22 @@ class StrongerWriteTests(unittest.TestCase):
                     collector.write_report(link / "report.json", {})
             self.assertEqual(list(real.iterdir()), [])
 
+    def test_the_folder_is_fsynced_after_the_rename(self):
+        # BACKEND-36:  the rename only survives a power cut once the folder itself is synced.
+        synced = []
+        real_fsync = os.fsync
+
+        def record(fd):
+            synced.append(os.fstat(fd).st_ino)
+            return real_fsync(fd)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "state" / "server-status.json"
+            with mock.patch.object(collector.os, "fsync", side_effect=record):
+                collector.write_report(target, {"schemaVersion": 1})
+            self.assertIn(target.parent.stat().st_ino, synced)
+            self.assertIn(target.stat().st_ino, synced)
+
 
 class WholeRunTests(unittest.TestCase):
     """Whole runs of `main`, each reading the report the one before it wrote."""

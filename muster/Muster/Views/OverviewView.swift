@@ -24,10 +24,16 @@ struct OverviewView: View {
         _gridRequest = gridRequest
     }
 
+    /// True unless the last seat check is older than its window,  as after a long sleep.  An
+    /// old check's counts are not current,  so they read as not known until a new one lands.
+    private var seatCheckIsCurrent: Bool {
+        monitor.lastRunAt.map { SeatCheckFreshness.isCurrent(checkedAt: $0, now: watch.now) } ?? true
+    }
+
     private var counts: OverviewCounts {
         OverviewCounts.make(
             cells: store.cells,
-            trusted: store.phase == .loaded,
+            trusted: store.phase == .loaded && seatCheckIsCurrent,
             commonCheckedAt: store.commonCheckedAt
         )
     }
@@ -52,7 +58,8 @@ struct OverviewView: View {
                 }
                 VStack(alignment: .leading, spacing: 4) {
                     verdictRow
-                    if let meaning = RunVerdict.meaning(phase: store.phase, verdict: store.summary?.overallVerdict) {
+                    if seatCheckIsCurrent,
+                       let meaning = RunVerdict.meaning(phase: store.phase, verdict: store.summary?.overallVerdict) {
                         Text(meaning)
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -145,8 +152,10 @@ struct OverviewView: View {
     /// The verdict,  its failing count and when the Mac last checked.
     private var verdictRow: some View {
         HStack(spacing: 10) {
-            RunVerdictLabel(verdict: RunVerdict.make(phase: store.phase, verdict: store.summary?.overallVerdict))
-            if let failing = RunVerdict.failingText(store.summary) {
+            RunVerdictLabel(verdict: SeatCheckFreshness.verdict(
+                RunVerdict.make(phase: store.phase, verdict: store.summary?.overallVerdict),
+                isCurrent: seatCheckIsCurrent))
+            if seatCheckIsCurrent, let failing = RunVerdict.failingText(store.summary) {
                 Text(failing)
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -154,10 +163,13 @@ struct OverviewView: View {
                 ProgressView().controlSize(.small)
             }
             Spacer()
-            if let lastRunAt = monitor.lastRunAt {
-                Text("Last checked at \(FleetTime.clock(lastRunAt))")
+            // With its age and a day word,  at the menu's own moment,  so a check from last
+            // night never reads as this morning's,  and an old one says it is not current.
+            if let line = SeatCheckFreshness.overviewLine(checkedAt: monitor.lastRunAt, now: watch.now) {
+                let current = monitor.lastRunAt.map { SeatCheckFreshness.isCurrent(checkedAt: $0, now: watch.now) } ?? false
+                Text(line)
                     .font(.callout)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(current ? Color.secondary : Color.orange)
             }
         }
     }

@@ -72,15 +72,16 @@ from __future__ import annotations
 import argparse
 import calendar
 import concurrent.futures
+import errno
 import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
 import stat
 import subprocess
 import sys
-import tempfile
 import time
 import urllib.request
 from collections.abc import Callable
@@ -107,8 +108,9 @@ FLEET_TOOLS = (
 COMMANDS = (*FLEET_TOOLS, "fleetlink")
 # The Mac keeps lane and fleet-mode in ~/apps rather than on PATH.
 COMMAND_FALLBACK_DIRS = (HOME / "apps",)
-# Where a Mac finds the published runtime (the server reads RUNTIME/current).
-MAC_RUNTIME = HOME / "apps/lanes/_managed/fleet/agent-sync-runtime"
+# Where a Mac finds the published runtime (the server reads RUNTIME/current).  It was
+# agent-sync-runtime until the Nov 2, 2026 rename;  that folder is gone on the Mac.
+MAC_RUNTIME = HOME / "apps/lanes/_managed/fleet/simple-tools-runtime"
 # The simple-tools commands the Mac links into the managed runtime:  command name -> entry script.
 MAC_SIMPLE_TOOLS = (
     ("simple-chat", "simple-chat"),
@@ -259,7 +261,11 @@ GITHUB_TIMEOUT = 8
 # more try afterwards, on its own.
 REGISTRY_WORKERS = 4
 GRACE_MINUTES = 70  # an hourly timer that fired within this window is still on schedule
-MAC_UPDATER_LABEL = "com.jay.agent-sync-runtime-sync"
+# The Mac's runtime sync job (scripts/launchd/com.jay.simple-tools-runtime-sync.plist), every 120 s.
+MAC_UPDATER_LABEL = "com.jay.simple-tools-runtime-sync"
+# The sync script's own log (~/apps/simple-tools-runtime-sync.sh, $LOG).  launchd's own stdout and
+# stderr files keep their pre-rename names on the Mac, but no-op runs write nothing to any of them.
+MAC_UPDATER_LOG = "~/apps/logs/simple-tools-runtime-sync.log"
 SERVER_TIMERS = ("fleet-cli-git-update.timer", "fleet-tools-doctor.timer")
 # The collector is a systemd user unit for the forced-command user (scripts/systemd), so it
 # runs only while that user's manager does:  with linger on, or while someone is logged in.
@@ -1019,7 +1025,7 @@ def check_mac_updater(
     previous: dict | None = None,
     clock: Callable = time.time,
 ) -> dict:
-    """com.jay.agent-sync-runtime-sync:  loaded, not paused, exiting cleanly, and still being started
+    """com.jay.simple-tools-runtime-sync:  loaded, not paused, exiting cleanly, and still being started
     (its launchd run counter moved since the previous report)."""
     job = launchd_job(MAC_UPDATER_LABEL, runner) or {"label": MAC_UPDATER_LABEL, "loaded": None}
     prev = previous_host(previous, "mac")
@@ -1057,7 +1063,7 @@ def check_mac_updater(
         report.add(
             check,
             "FAIL",
-            f"{why}:  see ~/apps/logs/agent-sync-runtime-sync.log",
+            f"{why}:  see {MAC_UPDATER_LOG}",
             state="stale",
             reason=why,
             **fields,
@@ -3322,38 +3328,63 @@ def combined_report(docs: list) -> dict:
 
 def write_report(path: Path, report_doc: dict) -> None:
     """Atomic and private:  a 0600 temporary file in the same folder, fsynced, then renamed over.
-    The folder must be a real directory (a symlink is refused), created 0700 when absent."""
+    The folder must be a real directory, created 0700 when absent.  It is opened once with
+    O_NOFOLLOW, and the temporary file, the rename and the folder fsync all go through that one
+    descriptor, so a folder swapped for a symlink after the check cannot redirect the report
+    (Kody, PR 1477).  A symlinked folder is refused with ValueError."""
     if path.parent.is_symlink():
         raise ValueError(f"refusing to write the report through a symlinked folder:  {path.parent}")
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    fd, tmp = tempfile.mkstemp(prefix=".report.", suffix=".tmp", dir=str(path.parent))
+    dir_fd = open_report_folder(path.parent)
     try:
-        os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "w") as handle:
-            json.dump(report_doc, handle, indent=2)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp, path)
-    except BaseException:
+        tmp = f".report.{os.getpid()}.{secrets.token_hex(8)}.tmp"
+        fd = os.open(
+            tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=dir_fd
+        )
         try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-    # The rename has already replaced the report atomically;  syncing the folder only makes that
-    # rename survive a power cut.  Some file systems refuse a directory fsync, and a lost rename only
-    # leaves the previous report, which a reader ages out to unknown, so this step is best effort.
-    try:
-        dir_fd = os.open(str(path.parent), os.O_RDONLY)
-    except OSError:
-        return
-    try:
-        os.fsync(dir_fd)
-    except OSError:
-        pass
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w") as handle:
+                json.dump(report_doc, handle, indent=2)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp, path.name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        except BaseException:
+            try:
+                os.unlink(tmp, dir_fd=dir_fd)
+            except OSError:
+                pass
+            raise
+        # The rename has already replaced the report atomically;  syncing the folder makes that rename
+        # survive a power cut, as the other collectors do.  A file system that does not support a folder
+        # fsync says so with EINVAL or ENOTSUP, and only that answer is let through:  a lost rename then
+        # leaves the previous report, which a reader ages out to unknown.  Any other failure is raised.
+        try:
+            os.fsync(dir_fd)
+        except OSError as error:
+            if error.errno not in FOLDER_FSYNC_UNSUPPORTED:
+                raise
     finally:
         os.close(dir_fd)
+
+
+def open_report_folder(folder: Path) -> int:
+    """The report folder as a descriptor, refusing a symlink (ELOOP) or a non-folder (ENOTDIR) at the
+    moment it is opened, not before."""
+    try:
+        return os.open(str(folder), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as error:
+        if error.errno in (errno.ELOOP, errno.ENOTDIR):
+            raise ValueError(
+                f"refusing to write the report through a symlinked folder:  {folder}"
+            ) from error
+        raise
+
+
+# The errors a file system gives when it does not support fsync on a folder at all.
+FOLDER_FSYNC_UNSUPPORTED = frozenset(
+    getattr(errno, name) for name in ("EINVAL", "ENOTSUP", "EOPNOTSUPP") if hasattr(errno, name)
+)
 
 
 def state_counts(doc: dict) -> str:

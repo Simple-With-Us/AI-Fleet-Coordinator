@@ -25,6 +25,9 @@ struct ResourceLimitsView: View {
     private let readReport: ReportReader
     private let onReviewChange: ReviewChange
     @ObservedObject private var controller = OpsController.shared
+    /// What the menu knows about reaching the server,  so a change is not offered as if it
+    /// could run when the Mac already knows the server cannot be reached.
+    @EnvironmentObject private var watch: PlaceWatch
     @Environment(\.scenePhase) private var scenePhase
     /// When the timer reads next.  It runs only while the app is in front (ForegroundPolling).
     @State private var polling = ForegroundPolling(interval: TimeInterval(ResourceLimitsView.autoRefreshSeconds))
@@ -50,6 +53,7 @@ struct ResourceLimitsView: View {
             VStack(alignment: .leading, spacing: 18) {
                 header
                 receiptStatus
+                serverGateNote
                 if let snapshot = reading.snapshot {
                     summaryCard(snapshot)
                     cpuCard(snapshot)
@@ -152,6 +156,44 @@ struct ResourceLimitsView: View {
         guard let checkedAt = reading.directReceiptAt else { return nil }
         let age = max(0, Int(now.timeIntervalSince(checkedAt)))
         return "Checked at \(FleetTime.clock(checkedAt)), \(age) seconds ago.\u{00A0} The page reads the server again every \(Self.autoRefreshSeconds) seconds while it is open and Muster is in front."
+    }
+
+    // MARK: - Whether a change can be sent
+
+    /// Whether a change can be sent for review,  from the same reach the menu,  Server Status
+    /// and Server Updates read.  This page's own direct read of the server counts as an answer,
+    /// so a page that has just read the server is not turned off by the doctor's older failed
+    /// try.
+    private var serverGate: ServerActionGate {
+        ServerActionGate.make(reach: ServerReach.make(status: watch.status, tools: watch.tools),
+                              asked: ServerAskResult.latest(asked: watch.asked,
+                                                            directReadAt: reading.directReceiptAt))
+    }
+
+    /// Why changes are turned off,  or the warning beside them,  with Ask The Server Now when
+    /// the Mac could not reach the server.  Nothing shows when there is nothing to say,  and a
+    /// warning that the Mac has no current word from the server is not shown beside a direct
+    /// read this page has just made,  which is that word.
+    @ViewBuilder
+    private var serverGateNote: some View {
+        let gate = serverGate
+        if let note = gate.note, gate.blocked || !hasReviewableReceipt {
+            HStack(alignment: .top, spacing: 10) {
+                Text(note)
+                    .font(.callout)
+                    .foregroundStyle(gate.blocked ? Color.orange : Color.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+                if gate.blocked {
+                    if watch.isAsking {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Button("Ask The Server Now") { watch.askServer() }
+                            .help("Tries the read-only route to the server.\(ServerStatusCopy.sentenceGap)It changes nothing.")
+                    }
+                }
+            }
+        }
     }
 
     /// No values at all.  The reason above already says why,  with its own next step,  so
@@ -518,10 +560,14 @@ struct ResourceLimitsView: View {
         let validation = value.flatMap { field.validate(value: $0, in: snapshot) }
         let moved = drafts.movedValue(field, in: snapshot)
         let typingInvalid = field == .cpuWeight && weightTextInvalid
+        // A server the Mac could not reach turns the review off,  with the reason above.
+        let gate = serverGate
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
                 Button("Review Change") { review(field) }
-                    .disabled(!hasReviewableReceipt || !edited || validation != nil || moved != nil || typingInvalid)
+                    .disabled(!hasReviewableReceipt || !edited || validation != nil || moved != nil || typingInvalid
+                              || gate.blocked)
+                    .help(gate.blocked ? (gate.note ?? "") : "")
                 if edited {
                     Button("Revert") { revert(field) }
                 }
@@ -608,7 +654,8 @@ struct ResourceLimitsView: View {
     }
 
     private func send(_ field: ResourcePolicyField) {
-        guard let snapshot = reading.snapshot,
+        guard !serverGate.blocked,
+              let snapshot = reading.snapshot,
               let revision = snapshot.reviewRevision,
               drafts.isEdited(field),
               drafts.movedValue(field, in: snapshot) == nil,
