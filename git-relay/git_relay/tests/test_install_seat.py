@@ -5,7 +5,9 @@ the health check are stubbed, so nothing here touches a runtime. The receipt is
 a real signed deploy_proof receipt bound to the exact before/after digests.
 """
 
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import sys
@@ -373,6 +375,60 @@ class InstallSeatTests(unittest.TestCase):
             self.assertEqual(self.install(self.args2(), self.credential_unit()), 2)
         finally:
             os.chmod(self.seats_path.parent, 0o700)
+        self.assertEqual(json.loads(self.seats_path.read_text()), self.policy)
+
+    def run_refused(self, unit):
+        """The install exit code and what it printed."""
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = self.install(self.args2(), unit)
+        return rc, out.getvalue()
+
+    def lock_path(self):
+        return Path(str(self.seats_path) + ".transaction.lock")
+
+    def test_the_credential_input_refuses_a_unit_whose_credential_directory_is_not_accepted(self):
+        unit = self.credential_unit(name="other-relay.service")
+        rc, _ = self.run_refused(unit)
+        self.assertEqual(rc, 2)
+        self.assertFalse(self.lock_path().exists())
+        self.assertEqual(json.loads(self.seats_path.read_text()), self.policy)
+
+    def test_an_unsafe_backing_directory_is_refused_before_the_lock_file_is_created(self):
+        unit = self.credential_unit()
+        os.chmod(self.seats_path.parent, 0o777)
+        try:
+            rc, _ = self.run_refused(unit)
+        finally:
+            os.chmod(self.seats_path.parent, 0o700)
+        self.assertEqual(rc, 2)
+        self.assertFalse(self.lock_path().exists())
+
+    def test_a_symlinked_transaction_lock_is_refused_not_followed(self):
+        unit = self.credential_unit()
+        target = self.seats_path.parent / "elsewhere"
+        self.lock_path().symlink_to(target)
+        rc, _ = self.run_refused(unit)
+        self.assertEqual(rc, 2)
+        self.assertFalse(target.exists())
+        self.assertEqual(json.loads(self.seats_path.read_text()), self.policy)
+
+    def test_a_malformed_backing_file_is_a_pathfree_refusal_not_a_traceback(self):
+        unit = self.credential_unit()
+        for text in ("", "not json"):
+            self.seats_path.write_text(text)
+            os.chmod(self.seats_path, 0o600)
+            rc, out = self.run_refused(unit)
+            self.assertEqual(rc, 2)
+            self.assertIn("refusing", out)
+            self.assertNotIn(str(self.seats_path), out)
+
+    def test_a_nonroot_operator_is_refused_a_backing_file_it_does_not_own(self):
+        unit = self.credential_unit()
+        with mock.patch.object(sp.os, "geteuid", return_value=os.geteuid() + 1):
+            rc, out = self.run_refused(unit)
+        self.assertEqual(rc, 2)
+        self.assertIn("refusing", out)
         self.assertEqual(json.loads(self.seats_path.read_text()), self.policy)
 
     def test_read_unit_carries_the_policy_credential_and_refuses_a_duplicate(self):
