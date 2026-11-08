@@ -99,19 +99,24 @@ struct ConfigFileRead: Equatable {
     /// Whether the file looks like JSON and was cut off,  so it could not be read as JSON
     /// and its values were hidden line by line.
     let cutOffJSON: Bool
+    /// Whether the line reader could not check a line's values one by one,  so it hid every
+    /// value on each line that could hold one.
+    let failedClosed: Bool
 
     init(
         state: State,
         view: ConfigFileView,
         redactedCount: Int = 0,
         reformatted: Bool = false,
-        cutOffJSON: Bool = false
+        cutOffJSON: Bool = false,
+        failedClosed: Bool = false
     ) {
         self.state = state
         self.view = view
         self.redactedCount = redactedCount
         self.reformatted = reformatted
         self.cutOffJSON = cutOffJSON
+        self.failedClosed = failedClosed
     }
 
     /// A one-line summary of what the body holds,  for the line beside the path.
@@ -176,6 +181,9 @@ struct ConfigFileRead: Equatable {
                 "The file was cut off before its end, so it could not be read as JSON, and its secret values were found line by line."
             )
         }
+        if failedClosed {
+            notes.append(ConfigFileReader.failedClosedNote)
+        }
         return notes
     }
 }
@@ -190,6 +198,10 @@ enum ConfigFileReader {
 
     /// What the panel says about a path that is not there.
     static let missingMessage = "This path is not on this Mac, so there is no file to show."
+
+    /// What the panel says when the line reader could not check values one by one.
+    static let failedClosedNote =
+        "The reader could not check this file's values one by one, so every value on a line that could hold one is hidden."
 
     /// What the panel says about a path that is there and could not be read.
     static func unreadableMessage(_ reason: String) -> String {
@@ -257,7 +269,8 @@ enum ConfigFileReader {
             view: .file(path: target, text: hidden.text, truncated: truncated, redacted: hidden.replaced > 0),
             redactedCount: hidden.replaced,
             reformatted: hidden.reformatted,
-            cutOffJSON: hidden.cutOffJSON
+            cutOffJSON: hidden.cutOffJSON,
+            failedClosed: hidden.failedClosed
         )
     }
 
@@ -527,19 +540,65 @@ enum ConfigFileReader {
         return false
     }
 
-    /// Whether a word is a flag or a scheme whose next argument is a secret.
+    /// Whether a word is a flag whose next argument is a secret.
     ///
-    /// `--token`,  `--api-key` and `Bearer` say the next word is a credential,  and
-    /// `-H` and `--header` say it is a header,  which may be one.  `-H` is compared as it is
-    /// written,  because `-h` is help or human-readable sizes (`df -h`,  `serve -h 0.0.0.0`)
-    /// and never a header.
+    /// `--token` and `--api-key` say the next word is a credential,  and `-H` and
+    /// `--header` say it is a header,  which may be one.  `-H` is compared as it is written,
+    /// because `-h` is help or human-readable sizes (`df -h`,  `serve -h 0.0.0.0`) and never
+    /// a header.
+    ///
+    /// `Bearer` and `Basic` are not flags:  `--auth-mode basic --port 8080` names a mode,  and
+    /// the word after it is the next flag.  `NextElement.credentialAfter` hides the word after
+    /// a scheme unless that word is a flag,  a phrase or a prose word.
     static func isSecretFlag(_ word: String) -> Bool {
         if word == "-H" { return true }
         let lowered = word.lowercased()
-        if ["--header", "bearer", "basic"].contains(lowered) { return true }
+        if lowered == "--header" { return true }
         guard lowered.hasPrefix("-"), !lowered.contains("=") else { return false }
         let name = lowered.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
         return !name.isEmpty && isSecretKey(name)
+    }
+
+    /// What one element of a list says about the element after it.
+    enum NextElement: Equatable {
+        /// Nothing:  the next element is judged on its own.
+        case free
+        /// A secret flag (`--token`,  `-H`):  the next element is hidden whatever it is.
+        case secret
+        /// A scheme word (`Bearer`,  `Basic`):  the next element is hidden unless it is a flag,
+        /// a phrase or a prose word,  so `["--auth-mode", "basic", "--port", "8080"]` keeps
+        /// `--port`.
+        case credentialAfter(scheme: String)
+    }
+
+    /// What an element of a list says about the element after it.
+    static func nextElement(after word: String) -> NextElement {
+        if isSecretFlag(word) { return .secret }
+        let lowered = word.lowercased()
+        if lowered == "bearer" || lowered == "basic" { return .credentialAfter(scheme: lowered) }
+        return .free
+    }
+
+    /// Whether an element is hidden because of the element before it.
+    ///
+    /// After a scheme word,  the element is hidden when it is one word,  not a flag,  and not
+    /// one of the words prose puts after a scheme (`Bearer tokens`).  So a flag such as
+    /// `--port` and a phrase stay shown,  and every other word stays hidden as it always was,
+    /// short or lowercase ones included:  a list element right after `Bearer` is the token far
+    /// more often than not,  and the flag and the phrase are still judged on their own shape.
+    static func hides(_ element: String, after rule: NextElement) -> Bool {
+        switch rule {
+        case .free:
+            return false
+        case .secret:
+            return true
+        case .credentialAfter:
+            let word = element.trimmingCharacters(in: .whitespaces)
+            guard !word.isEmpty,
+                  !word.hasPrefix("-"),
+                  !word.contains(where: { $0.isWhitespace }) else { return false }
+            return !schemeProse.contains(word.lowercased())
+        }
     }
 
     /// Whether a string value is a secret,  by its shape or by a credential inside it.
@@ -557,6 +616,17 @@ enum ConfigFileReader {
         let reformatted: Bool
         /// Whether a cut-off JSON file was hidden line by line.
         let cutOffJSON: Bool
+        /// Whether the line reader ran without its expressions and hid every value on each
+        /// line that could hold one,  rather than checking them one by one.
+        let failedClosed: Bool
+
+        init(text: String, replaced: Int, reformatted: Bool, cutOffJSON: Bool, failedClosed: Bool = false) {
+            self.text = text
+            self.replaced = replaced
+            self.reformatted = reformatted
+            self.cutOffJSON = cutOffJSON
+            self.failedClosed = failedClosed
+        }
     }
 
     /// Replace every secret value in a JSON or TOML text with a mark.
@@ -576,12 +646,49 @@ enum ConfigFileReader {
     /// done (a secret key holds an object,  or the file escapes a value another way) is
     /// the document rewritten,  and the result says so.  Anything that is not JSON is
     /// redacted line by line,  which keeps every other line byte for byte.
-    static func redaction(of text: String, truncated: Bool = false) -> Redaction {
+    ///
+    /// `expressions` are the line reader's patterns.  A test passes a set with one missing,
+    /// to check that the reader then hides more,  never less.
+    static func redaction(
+        of text: String,
+        truncated: Bool = false,
+        expressions: LineExpressions = .standard
+    ) -> Redaction {
         if let json = redactJSONDocument(text) { return json }
         var count = 0
-        let out = redactLines(text, count: &count)
-        let looksLikeJSON = text.first(where: { !$0.isWhitespace }) == "{"
-        return Redaction(text: out, replaced: count, reformatted: false, cutOffJSON: truncated && looksLikeJSON)
+        let out = redactLines(text, expressions: expressions, count: &count)
+        return Redaction(
+            text: out,
+            replaced: count,
+            reformatted: false,
+            cutOffJSON: truncated && opensLikeJSON(text),
+            failedClosed: !expressions.isComplete
+        )
+    }
+
+    /// Whether a text opens the way a JSON document does:  with `{`,  or with `[` and then a
+    /// value.
+    ///
+    /// A TOML table header opens with `[` too,  and holds a name:  `[mcp_servers]`,
+    /// `[[servers]]`,  `[1password]` and `[2fa.keys]` are not JSON,  and `[{`,  `["a"`,  `[1,`
+    /// and a bare `[` cut off are.  A digit or a `-` opens a number only when the run of number
+    /// characters after it ends at a `,`,  a `]`,  a space or the end of the text.
+    static func opensLikeJSON(_ text: String) -> Bool {
+        var rest = text.drop(while: { $0.isWhitespace })
+        guard let first = rest.first else { return false }
+        if first == "{" { return true }
+        guard first == "[" else { return false }
+        while let next = rest.first, next == "[" || next.isWhitespace {
+            rest = rest.dropFirst()
+        }
+        // Nothing after the brackets:  the cut came inside an array.
+        guard let value = rest.first else { return true }
+        if value == "\"" || value == "{" || value == "]" { return true }
+        guard value == "-" || value.isNumber else { return false }
+        let numberCharacters: Set<Character> = ["-", "+", ".", "e", "E", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]
+        let afterNumber = rest.drop(while: { numberCharacters.contains($0) })
+        guard let end = afterNumber.first else { return true }
+        return end == "," || end == "]" || end.isWhitespace
     }
 
     // MARK: JSON
@@ -633,58 +740,69 @@ enum ConfigFileReader {
     /// The text with every JSON string literal of the values replaced by the mark's,  or
     /// nil when a value is not written the way JSON writes it.
     ///
+    /// One pass over the text finds each string literal from its opening quote to its
+    /// closing one,  so the work grows with the file and not with the file times the number
+    /// of hidden values.  A literal inside another string is never seen as a literal of its
+    /// own,  because the pass is inside that string when it reaches it.
+    ///
     /// Only a literal in a value's place is replaced:  one followed by a `:` is a key,  and
     /// a key keeps its name even when a hidden value is spelled the same,  so
-    /// `{"token": "token"}` keeps its key.  A literal whose opening quote is escaped is
-    /// inside another string and is left alone too.
+    /// `{"token": "token"}` keeps its key.  When a hidden value is never found in a value's
+    /// place,  as when the file escapes it another way,  the result is nil and the caller
+    /// rewrites the document instead.
     private static func replacingLiterals(_ values: Set<String>, in text: String) -> String? {
         guard let mark = jsonLiteral(redactionMark) else { return nil }
-        var out = text
-        for value in values.sorted(by: { $0.count > $1.count }) {
-            guard let literal = jsonLiteral(value),
-                  let replaced = replacingValueLiteral(literal, with: mark, in: out) else { return nil }
-            out = replaced
+        var wanted: Set<[UInt8]> = []
+        var wantedLengths: Set<Int> = []
+        for value in values {
+            guard let literal = jsonLiteral(value) else { return nil }
+            let encoded = Array(literal.utf8)
+            wanted.insert(encoded)
+            wantedLengths.insert(encoded.count)
         }
-        return out
-    }
-
-    /// The text with each value-place occurrence of a literal replaced,  or nil when there
-    /// is none.
-    private static func replacingValueLiteral(_ literal: String, with mark: String, in text: String) -> String? {
-        var out = ""
-        var replaced = false
-        var copiedTo = text.startIndex
-        var searchFrom = text.startIndex
-        while searchFrom < text.endIndex,
-              let found = text.range(of: literal, options: .literal, range: searchFrom..<text.endIndex) {
-            var after = found.upperBound
-            while after < text.endIndex, text[after].isWhitespace { after = text.index(after: after) }
-            let isKey = after < text.endIndex && text[after] == ":"
-            if isKey || isEscaped(found.lowerBound, in: text) {
-                searchFrom = text.index(after: found.lowerBound)
+        let quote = UInt8(ascii: "\"")
+        let backslash = UInt8(ascii: "\\")
+        let colon = UInt8(ascii: ":")
+        let bytes = Array(text.utf8)
+        let markBytes = Array(mark.utf8)
+        var out: [UInt8] = []
+        out.reserveCapacity(bytes.count)
+        var found: Set<[UInt8]> = []
+        var copiedTo = 0
+        var index = 0
+        while index < bytes.count {
+            guard bytes[index] == quote else {
+                index += 1
                 continue
             }
-            out += text[copiedTo..<found.lowerBound]
-            out += mark
-            copiedTo = found.upperBound
-            searchFrom = found.upperBound
-            replaced = true
+            let start = index
+            index += 1
+            while index < bytes.count, bytes[index] != quote {
+                index += bytes[index] == backslash ? 2 : 1
+            }
+            // A string that never closes is not the JSON that was parsed.
+            guard index < bytes.count else { return nil }
+            index += 1
+            let end = index
+            guard wantedLengths.contains(end - start) else { continue }
+            let literal = Array(bytes[start..<end])
+            guard wanted.contains(literal) else { continue }
+            var after = end
+            while after < bytes.count, isJSONWhitespace(bytes[after]) { after += 1 }
+            if after < bytes.count, bytes[after] == colon { continue }
+            out.append(contentsOf: bytes[copiedTo..<start])
+            out.append(contentsOf: markBytes)
+            copiedTo = end
+            found.insert(literal)
         }
-        guard replaced else { return nil }
-        out += text[copiedTo...]
-        return out
+        guard found.count == wanted.count else { return nil }
+        out.append(contentsOf: bytes[copiedTo..<bytes.count])
+        return String(decoding: out, as: UTF8.self)
     }
 
-    /// Whether the character at an index follows an odd run of backslashes.
-    private static func isEscaped(_ index: String.Index, in text: String) -> Bool {
-        var backslashes = 0
-        var position = index
-        while position > text.startIndex {
-            position = text.index(before: position)
-            guard text[position] == "\\" else { break }
-            backslashes += 1
-        }
-        return backslashes % 2 == 1
+    /// Whether a byte is one of the four that JSON allows between tokens.
+    private static func isJSONWhitespace(_ byte: UInt8) -> Bool {
+        byte == 0x20 || byte == 0x09 || byte == 0x0A || byte == 0x0D
     }
 
     /// One string as a JSON literal,  quotes included.
@@ -698,7 +816,8 @@ enum ConfigFileReader {
     /// One JSON value, with the secret values inside it replaced.
     ///
     /// A string anywhere is checked,  in a list as well as under a key,  and a string in
-    /// a list that follows a secret flag (`--token`,  `-H`) is hidden too.
+    /// a list that follows a secret flag (`--token`,  `-H`) is hidden too,  as is one that
+    /// follows a scheme word (`Bearer`,  `Basic`) and is not a flag,  a phrase or a prose word.
     private static func redactJSON(_ value: Any, findings: inout JSONFindings) -> Any {
         if let map = value as? [String: Any] {
             var out: [String: Any] = [:]
@@ -713,23 +832,23 @@ enum ConfigFileReader {
         }
         if let list = value as? [Any] {
             var out: [Any] = []
-            var hideNext = false
+            var next = NextElement.free
             for element in list {
                 guard let text = element as? String else {
-                    hideNext = false
+                    next = .free
                     out.append(redactJSON(element, findings: &findings))
                     continue
                 }
                 if text.isEmpty || text == redactionMark {
-                    hideNext = false
+                    next = .free
                     out.append(text)
-                } else if hideNext || isSecretString(text) {
-                    hideNext = false
+                } else if hides(text, after: next) || isSecretString(text) {
+                    next = .free
                     findings.count += 1
                     findings.strings.insert(text)
                     out.append(redactionMark)
                 } else {
-                    hideNext = isSecretFlag(text)
+                    next = nextElement(after: text)
                     out.append(text)
                 }
             }
@@ -761,40 +880,114 @@ enum ConfigFileReader {
 
     private static let quoteCharacters = CharacterSet(charactersIn: "\"'")
 
-    /// `name = value` and `name: value` pairs inside a line,  as an inline table holds them.
+    /// The patterns the line reader checks a line's pieces with.
     ///
-    /// The look-behind and the possessive runs keep the scan linear on a long line.  A
-    /// value that opens a table or a list matches only its opening character,  so the scan
-    /// goes on into it:  in `env = {API_KEY="abc"}` the inner pair is matched as a pair,
-    /// and a bare value never runs on through the braces after it.
-    private static let pairExpression = try? NSRegularExpression(
-        pattern: #"(?<![A-Za-z0-9_.\-"'])([A-Za-z0-9_.\-]++|"[^"\n]*+"|'[^'\n]*+')([ \t]*[=:][ \t]*)("(?:[^"\\]|\\.)*+"|'[^'\n]*+'|[\{\[]|[^\s,\{\}\[\]]++)"#
-    )
+    /// Each is compiled once.  A pattern that failed to compile is nil,  and then the reader
+    /// fails closed:  it hides every value on each line it would have checked,  rather than
+    /// checking none of them.  A test builds a set with one missing to hold it to that.
+    struct LineExpressions {
+        /// `name = value` and `name: value` pairs inside a line,  as an inline table holds them.
+        let pair: NSRegularExpression?
+        /// Every quoted string in a line.
+        let quoted: NSRegularExpression?
 
-    /// Every quoted string in a line.
-    private static let quotedExpression = try? NSRegularExpression(
-        pattern: #""(?:[^"\\\n]|\\.)*+"|'[^'\n]*+'"#
-    )
+        /// Whether both patterns compiled,  so a line's pieces can be checked one by one.
+        var isComplete: Bool { pair != nil && quoted != nil }
+
+        /// The reader's own patterns.
+        ///
+        /// In the pair pattern,  the look-behind and the possessive runs keep the scan linear on
+        /// a long line.  A value that opens a table or a list matches only its opening
+        /// character,  so the scan goes on into it:  in `env = {API_KEY="abc"}` the inner pair
+        /// is matched as a pair,  and a bare value never runs on through the braces after it.
+        static let standard = LineExpressions(
+            pair: try? NSRegularExpression(
+                pattern: #"(?<![A-Za-z0-9_.\-"'])([A-Za-z0-9_.\-]++|"[^"\n]*+"|'[^'\n]*+')([ \t]*[=:][ \t]*)("(?:[^"\\]|\\.)*+"|'[^'\n]*+'|[\{\[]|[^\s,\{\}\[\]]++)"#
+            ),
+            quoted: try? NSRegularExpression(
+                pattern: #""(?:[^"\\\n]|\\.)*+"|'[^'\n]*+'"#
+            )
+        )
+    }
 
     /// Hide the secret values of a text that is not JSON,  one line at a time.
-    private static func redactLines(_ text: String, count: inout Int) -> String {
-        var hideNext = false
+    private static func redactLines(_ text: String, expressions: LineExpressions, count: inout Int) -> String {
+        var next = NextElement.free
         var lines: [String] = []
         for line in text.components(separatedBy: "\n") {
-            lines.append(redactLine(line, hideNext: &hideNext, count: &count))
+            guard let pair = expressions.pair, let quoted = expressions.quoted else {
+                lines.append(hidingEveryValue(in: line, count: &count))
+                continue
+            }
+            lines.append(redactLine(line, pair: pair, quoted: quoted, next: &next, count: &count))
         }
         return lines.joined(separator: "\n")
     }
 
+    /// One line with every value it could hold hidden,  for a reader that cannot check the
+    /// line's pieces one by one.
+    ///
+    /// A line the reader would check (one with a `=`,  a `:` or a quote) keeps its key and
+    /// separator and loses the rest,  and any other line,  a table header among them,  holds no
+    /// value and is kept.
+    ///
+    /// The text before the separator is kept only when it is a key:  a bare name
+    /// (`[A-Za-z0-9_.-]+`) or one closed quoted name,  with only spaces between it and the
+    /// separator.  Anything else loses all but its indent,  because a `=` or `:` inside a list
+    /// element (`"c2VjcmV0LXZhbHVl==",`,  `"sk-abc:def",`) is part of the value,  not a
+    /// separator,  and keeping the text before it would show the value.
+    private static func hidingEveryValue(in line: String, count: inout Int) -> String {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty,
+              trimmed != redactionMark,
+              line.contains(where: { $0 == "=" || $0 == ":" || $0 == "\"" || $0 == "'" }) else { return line }
+        count += 1
+        let indent = line.prefix(while: { $0 == " " || $0 == "\t" })
+        guard let valueStart = keyedValueStart(in: line, after: indent.endIndex) else {
+            return String(indent) + redactionMark
+        }
+        let padding = line[valueStart...].prefix(while: { $0 == " " || $0 == "\t" })
+        return String(line[..<valueStart]) + String(padding) + redactionMark
+    }
+
+    /// Where the value starts on a line that opens with a key and a separator,  just after the
+    /// `=` or `:`,  or nil when the line does not open that way.
+    private static func keyedValueStart(in line: String, after start: String.Index) -> String.Index? {
+        guard start < line.endIndex else { return nil }
+        var index = start
+        let first = line[index]
+        if first == "\"" || first == "'" {
+            // One quoted name,  closed before any separator.
+            index = line.index(after: index)
+            guard let close = line[index...].firstIndex(of: first) else { return nil }
+            index = line.index(after: close)
+        } else {
+            let bare = line[index...].prefix(while: { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_" || $0 == "." || $0 == "-") })
+            guard !bare.isEmpty else { return nil }
+            index = bare.endIndex
+        }
+        while index < line.endIndex, line[index] == " " || line[index] == "\t" {
+            index = line.index(after: index)
+        }
+        guard index < line.endIndex, line[index] == "=" || line[index] == ":" else { return nil }
+        return line.index(after: index)
+    }
+
     /// One line of a TOML or INI document, with a secret value replaced.
     ///
-    /// `hideNext` carries a secret flag at the end of one line of a list to the value on
-    /// the next line,  as a list written one element per line has it.
-    private static func redactLine(_ line: String, hideNext: inout Bool, count: inout Int) -> String {
+    /// `next` carries a secret flag or a scheme word at the end of one line of a list to the
+    /// value on the next line,  as a list written one element per line has it.
+    private static func redactLine(
+        _ line: String,
+        pair: NSRegularExpression,
+        quoted: NSRegularExpression,
+        next: inout NextElement,
+        count: inout Int
+    ) -> String {
         let trimmed = line.trimmingCharacters(in: .whitespaces)
         // A table header or the end of a list:  a flag before it has no value left to hide.
         if trimmed.hasPrefix("]") || trimmed.hasPrefix("}") || (trimmed.hasPrefix("[") && !trimmed.contains("=")) {
-            hideNext = false
+            next = .free
         }
         if let separator = line.firstIndex(where: { $0 == "=" || $0 == ":" }) {
             let key = String(line[line.startIndex..<separator]).trimmingCharacters(in: .whitespaces)
@@ -810,12 +1003,12 @@ enum ConfigFileReader {
             let nothingToHide = rest.isEmpty || rest == "[]" || rest == "{}" || value == redactionMark
             if !nothingToHide, isSecretKey(bareKey) || (!opensCollection && isSecretString(value)) {
                 count += 1
-                hideNext = false
+                next = .free
                 let prefix = String(line[..<valueStart]) + String(padding)
                 return prefix + marked(like: rest)
             }
         }
-        return redactPieces(in: line, hideNext: &hideNext, count: &count)
+        return redactPieces(in: line, pair: pair, quoted: quoted, next: &next, count: &count)
     }
 
     /// The pairs of an inline table and the quoted strings of a list,  each checked.
@@ -823,19 +1016,31 @@ enum ConfigFileReader {
     /// `http_headers = { Authorization = "Bearer x" }` and
     /// `args = ["--header", "Authorization: Bearer x"]` both carry a credential that the
     /// line's own key does not name.
-    private static func redactPieces(in line: String, hideNext: inout Bool, count: inout Int) -> String {
+    private static func redactPieces(
+        in line: String,
+        pair: NSRegularExpression,
+        quoted: NSRegularExpression,
+        next: inout NextElement,
+        count: inout Int
+    ) -> String {
         // A secret key that opens a table or a list inside the line,  as
         // `a = { credentials = {user="x"} }` has it:  everything from its value to the end
         // of the line goes,  because the pieces inside belong to the secret.
-        if let cut = secretCollectionStart(in: line) {
-            let head = redactPieces(in: (line as NSString).substring(to: cut), hideNext: &hideNext, count: &count)
+        if let cut = secretCollectionStart(in: line, pair: pair) {
+            let head = redactPieces(
+                in: (line as NSString).substring(to: cut),
+                pair: pair,
+                quoted: quoted,
+                next: &next,
+                count: &count
+            )
             count += 1
-            hideNext = false
+            next = .free
             return head + redactionMark
         }
         var text = line
         if text.contains("=") || text.contains(":") {
-            text = replacingMatches(in: text, expression: pairExpression) { groups in
+            text = replacingMatches(in: text, expression: pair) { groups in
                 guard groups.count > 3 else { return nil }
                 let key = groups[1].trimmingCharacters(in: quoteCharacters)
                 let value = groups[3].trimmingCharacters(in: quoteCharacters)
@@ -847,20 +1052,20 @@ enum ConfigFileReader {
             }
         }
         if text.contains("\"") || text.contains("'") {
-            text = replacingMatches(in: text, expression: quotedExpression) { groups in
+            text = replacingMatches(in: text, expression: quoted) { groups in
                 let whole = groups[0]
                 guard whole.count >= 2 else { return nil }
                 let content = String(whole.dropFirst().dropLast())
                 if content.isEmpty || content == redactionMark {
-                    hideNext = false
+                    next = .free
                     return nil
                 }
-                if hideNext || isSecretString(content) {
-                    hideNext = false
+                if hides(content, after: next) || isSecretString(content) {
+                    next = .free
                     count += 1
                     return marked(like: whole)
                 }
-                hideNext = isSecretFlag(content)
+                next = nextElement(after: content)
                 return nil
             }
         }
@@ -869,8 +1074,8 @@ enum ConfigFileReader {
 
     /// Where the value of the first secret-keyed pair that opens a table or a list starts,
     /// in UTF-16 units,  or nil when the line has none.
-    private static func secretCollectionStart(in line: String) -> Int? {
-        guard let expression = pairExpression, line.contains("{") || line.contains("[") else { return nil }
+    private static func secretCollectionStart(in line: String, pair expression: NSRegularExpression) -> Int? {
+        guard line.contains("{") || line.contains("[") else { return nil }
         let source = line as NSString
         for match in expression.matches(in: line, range: NSRange(location: 0, length: source.length)) {
             guard match.numberOfRanges > 3 else { continue }
@@ -897,10 +1102,9 @@ enum ConfigFileReader {
     /// the replacements are made from the end,  so each range still points at its match.
     private static func replacingMatches(
         in text: String,
-        expression: NSRegularExpression?,
+        expression: NSRegularExpression,
         transform: ([String]) -> String?
     ) -> String {
-        guard let expression else { return text }
         let source = text as NSString
         let matches = expression.matches(in: text, range: NSRange(location: 0, length: source.length))
         guard !matches.isEmpty else { return text }

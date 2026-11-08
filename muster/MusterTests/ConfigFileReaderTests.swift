@@ -517,4 +517,177 @@ final class ConfigFileReaderTests: XCTestCase {
         XCTAssertEqual(reason, ConfigFileReader.notTextMessage)
         XCTAssertEqual(read.view.summary, "not shown")
     }
+
+    // MARK: PR 1477 review:  scheme words,  fail closed,  one pass,  cut-off arrays
+
+    /// `basic` and `bearer` as plain list elements name a mode,  so the next flag is kept.
+    func test_a_scheme_word_before_a_flag_hides_nothing() {
+        XCTAssertFalse(ConfigFileReader.isSecretFlag("basic"))
+        XCTAssertFalse(ConfigFileReader.isSecretFlag("Bearer"))
+        XCTAssertTrue(ConfigFileReader.isSecretFlag("--token"))
+        XCTAssertTrue(ConfigFileReader.isSecretFlag("--api-key"))
+        XCTAssertTrue(ConfigFileReader.isSecretFlag("--header"))
+        XCTAssertTrue(ConfigFileReader.isSecretFlag("-H"))
+        let json = #"{"args": ["--auth-mode", "basic", "--port", "8080"], "more": ["Bearer", "tokens", "basic", "credentials"]}"#
+        let hidden = ConfigFileReader.redaction(of: json)
+        XCTAssertEqual(hidden.text, json)
+        XCTAssertEqual(hidden.replaced, 0)
+        let toml = #"args = ["--auth-mode", "basic", "--port", "8080"]"#
+        XCTAssertEqual(ConfigFileReader.redact(toml), toml)
+        let manyLines = """
+        args = [
+          "--auth-mode",
+          "bearer",
+          "--port",
+          "8080",
+        ]
+        """
+        XCTAssertEqual(ConfigFileReader.redact(manyLines), manyLines)
+    }
+
+    /// The element after `basic` or `bearer` is hidden unless it is a flag,  a phrase or a
+    /// prose word.
+    func test_a_scheme_word_before_a_credential_hides_it() {
+        let encoded = "dXNlcjpw" + "YXNz"  // made up;  split so the secret scanner does not flag it
+        let shaped = "abc123" + "xyz789"
+        let json = #"{"args": ["--auth-mode", "basic", ""# + encoded + #"", "--port", "8080"]}"#
+        let hidden = ConfigFileReader.redaction(of: json)
+        XCTAssertFalse(hidden.text.contains(encoded), hidden.text)
+        XCTAssertTrue(hidden.text.contains(#""--port", "8080""#), hidden.text)
+        XCTAssertEqual(hidden.replaced, 1)
+        XCTAssertFalse(hidden.reformatted)
+        let bearer = ConfigFileReader.redaction(of: #"{"args": ["Bearer", ""# + shaped + #""]}"#)
+        XCTAssertFalse(bearer.text.contains(shaped), bearer.text)
+        XCTAssertEqual(bearer.replaced, 1)
+        let toml = ConfigFileReader.redact(#"args = ["Bearer", ""# + shaped + #"", "--port", "8080"]"#)
+        XCTAssertFalse(toml.contains(shaped), toml)
+        XCTAssertTrue(toml.contains(#""--port", "8080""#), toml)
+        let manyLines = ConfigFileReader.redact("args = [\n  \"basic\",\n  \"" + encoded + "\",\n]")
+        XCTAssertFalse(manyLines.contains(encoded), manyLines)
+        // Short,  all-lowercase and mid-length values after a scheme word stay hidden,  as
+        // they were before scheme words stopped being flags.
+        let short = "x1y2" + "z3"
+        let lower = "abcdef" + "ghijk"
+        for value in [short, lower] {
+            for scheme in ["Bearer", "Basic"] {
+                let list = ConfigFileReader.redaction(of: #"{"args": [""# + scheme + #"", ""# + value + #""]}"#)
+                XCTAssertFalse(list.text.contains(value), list.text)
+                XCTAssertEqual(list.replaced, 1)
+                let line = ConfigFileReader.redact(#"args = [""# + scheme + #"", ""# + value + #""]"#)
+                XCTAssertFalse(line.contains(value), line)
+            }
+        }
+    }
+
+    /// A line pattern that did not compile makes the line reader hide more,  never less,
+    /// and the read says so.
+    func test_a_missing_line_pattern_hides_every_value_and_says_so() {
+        let standard = ConfigFileReader.LineExpressions.standard
+        XCTAssertTrue(standard.isComplete)
+        let tableLine = #"env = { ZULIP_KEY = ""# + "sh" + #"ort", MODE = "strict" }"#
+        let text = "[mcp_servers.sentry]\n" + tableLine + "\nmodel = \"gpt-5\"\n"
+        let working = ConfigFileReader.redaction(of: text)
+        XCTAssertFalse(working.failedClosed)
+        XCTAssertFalse(working.text.contains("\"short\""), working.text)
+        XCTAssertTrue(working.text.contains("\"strict\""), working.text)
+        let broken = [
+            ConfigFileReader.LineExpressions(pair: nil, quoted: standard.quoted),
+            ConfigFileReader.LineExpressions(pair: standard.pair, quoted: nil),
+        ]
+        for expressions in broken {
+            XCTAssertFalse(expressions.isComplete)
+            let hidden = ConfigFileReader.redaction(of: text, expressions: expressions)
+            XCTAssertTrue(hidden.failedClosed)
+            XCTAssertFalse(hidden.text.contains("short"), hidden.text)
+            XCTAssertEqual(hidden.text, "[mcp_servers.sentry]\nenv = <redacted>\nmodel = <redacted>\n")
+            XCTAssertEqual(hidden.replaced, 2)
+        }
+        let flagged = ConfigFileReader.redaction(
+            of: "args = [\n  \"--to" + "ken\",\n  \"t0" + "ken\",\n]",
+            expressions: broken[1]
+        )
+        XCTAssertFalse(flagged.text.contains("t0ken"), flagged.text)
+        // A `=` or `:` inside a list element is part of the value,  not a separator,  so no
+        // piece of the element is kept before it.
+        let padded = "c2VjcmV0" + "LXZhbHVl=="
+        let colon = "sk-abc" + ":def"
+        let list = "args = [\n  \"--to" + "ken\",\n  \"" + padded + "\",\n  '" + colon + "',\n]\n\"quoted.name\" = \"kept\"\n"
+        for expressions in broken {
+            let hidden = ConfigFileReader.redaction(of: list, expressions: expressions)
+            for piece in ["c2VjcmV0", "LXZhbHVl", "sk-abc", "def"] {
+                XCTAssertFalse(hidden.text.contains(piece), hidden.text)
+            }
+            XCTAssertEqual(
+                hidden.text,
+                "args = <redacted>\n  <redacted>\n  <redacted>\n  <redacted>\n]\n\"quoted.name\" = <redacted>\n"
+            )
+            XCTAssertEqual(hidden.replaced, 5)
+        }
+        let read = ConfigFileRead(
+            state: .text,
+            view: .file(path: "~/x.toml", text: "env = <redacted>", truncated: false, redacted: true),
+            redactedCount: 1,
+            failedClosed: true
+        )
+        XCTAssertTrue(read.notes.contains(ConfigFileReader.failedClosedNote))
+    }
+
+    /// Many secrets in one JSON file are all hidden where they stand,  and every key stays.
+    func test_many_json_secrets_are_hidden_in_place() {
+        let total = 400
+        var original = "{\n"
+        var expected = "{\n"
+        for index in 0..<total {
+            let value = "Ab\(index)" + String(repeating: "x9", count: 12)
+            let comma = index < total - 1 ? "," : ""
+            original += "  \"entry\(index)\": \"\(value)\"\(comma)\n"
+            expected += "  \"entry\(index)\": \"<redacted>\"\(comma)\n"
+        }
+        original += "}"
+        expected += "}"
+        let hidden = ConfigFileReader.redaction(of: original)
+        XCTAssertEqual(hidden.replaced, total)
+        XCTAssertFalse(hidden.reformatted)
+        XCTAssertEqual(hidden.text, expected)
+    }
+
+    /// A value quoted inside another string is part of that string and is left alone,  and a
+    /// hidden value the file escapes another way makes the reader rewrite the document.
+    func test_in_place_json_hiding_reads_whole_literals() {
+        let shaped = "abc" + "123"
+        let quotedInside = #"{"note": "say \""# + shaped + #"\" here", "args": ["--token", ""# + shaped + #""]}"#
+        let hidden = ConfigFileReader.redaction(of: quotedInside)
+        XCTAssertEqual(hidden.text, #"{"note": "say \""# + shaped + #"\" here", "args": ["--token", "<redacted>"]}"#)
+        XCTAssertFalse(hidden.reformatted)
+        let escaped = ConfigFileReader.redaction(of: #"{"apiKey": "a\/b-"# + #"LIVE_VALUE", "path": "/x"}"#)
+        XCTAssertTrue(escaped.reformatted)
+        XCTAssertEqual(escaped.replaced, 1)
+        XCTAssertFalse(escaped.text.contains("LIVE_VALUE"), escaped.text)
+        XCTAssertTrue(escaped.text.contains("/x"), escaped.text)
+    }
+
+    /// A JSON array cut off at the limit reads as cut-off JSON,  as an object does,  and a
+    /// TOML table header does not.
+    func test_a_cut_off_json_array_is_called_cut_off_json() {
+        let cut = #"[{"mcpServers":{"x":{"command":"npx","env":{"API_KEY":"abc"}}}},{"model":"gpt-"#
+        let hidden = ConfigFileReader.redaction(of: cut, truncated: true)
+        XCTAssertTrue(hidden.cutOffJSON)
+        XCTAssertFalse(hidden.text.contains(#""abc""#), hidden.text)
+        XCTAssertTrue(hidden.text.contains("npx"), hidden.text)
+        XCTAssertEqual(hidden.replaced, 1)
+        XCTAssertFalse(ConfigFileReader.redaction(of: cut, truncated: false).cutOffJSON)
+        XCTAssertTrue(ConfigFileReader.redaction(of: "\n  [\n  {\"command\": \"npx\",", truncated: true).cutOffJSON)
+        XCTAssertTrue(ConfigFileReader.opensLikeJSON("["))
+        XCTAssertTrue(ConfigFileReader.opensLikeJSON("  [1, 2"))
+        XCTAssertTrue(ConfigFileReader.opensLikeJSON("[-1.5e3,"))
+        XCTAssertTrue(ConfigFileReader.opensLikeJSON("[12"))
+        XCTAssertTrue(ConfigFileReader.opensLikeJSON("[ 7 ]"))
+        // A TOML table header whose bare name starts with a digit or a `-` is not a number.
+        XCTAssertFalse(ConfigFileReader.opensLikeJSON("[1password]\nx = 1"))
+        XCTAssertFalse(ConfigFileReader.opensLikeJSON("[2fa.keys]\nx = 1"))
+        XCTAssertFalse(ConfigFileReader.opensLikeJSON("[-x]\ny = 2"))
+        XCTAssertFalse(ConfigFileReader.redaction(of: "[1password]\nx = 1\n", truncated: true).cutOffJSON)
+        XCTAssertFalse(ConfigFileReader.redaction(of: "[mcp_servers.x]\ncommand = \"npx\"\n", truncated: true).cutOffJSON)
+        XCTAssertFalse(ConfigFileReader.redaction(of: "[[servers]]\nname = \"x\"\n", truncated: true).cutOffJSON)
+    }
 }
