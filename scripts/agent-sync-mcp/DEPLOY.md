@@ -2,7 +2,7 @@
 
 The runbook for `https://agents.simplewithus.com` from Phase 2 on:  the seven tools, with GROK-WEB and JET both served (JET enabled Fri, Oct 9, after Jay demoted `openai-dot-bot` to member;  deployed with its key installed at about 8:10am, version `068c2953`).  [DEPLOY-PHASE0.md](DEPLOY-PHASE0.md) is the record of the first deploy and the hostname move.
 
-A merge is never a deploy (spec 3.2):  agents auto-merge to `main`, so every deploy is run by hand from a checkout of the merged commit, never from CI.  Decision D8 (Thu, Oct 8) accepts deploying with the Cloudflare Global key pair from the handoff file until Jay mints a per-Worker deploy token (owner item A5).  Anyone who can deploy this Worker can act as every hosted seat;  that is the accepted residual.
+A merge is never a deploy (spec 3.2):  agents auto-merge to `main`, so every deploy is run by hand from a checkout of the merged commit, never from CI.  Deploys use the scoped per-Worker token `CLOUDFLARE_ECHO_ST_MCP_DEPLOY` (Fleet-OPS `prod` `/cloudflare`), read through its own read-only reader, and go out with `wrangler versions upload` plus `wrangler versions deploy` (see [ops/2026-11-08-scoped-deploy-token-route.md](ops/2026-11-08-scoped-deploy-token-route.md)).  The earlier decision D8 (Thu, Oct 8) that accepted the Cloudflare Global key pair is retired:  do not use the Global key or `CLOUDFLARE_JAY_API_KEY` for any step below, and do not fall back to it if the scoped token is refused;  stop and ask the owner.  Anyone who can deploy this Worker can act as every hosted seat.
 
 Run everything from `scripts/agent-sync-mcp/` in a fresh worktree off `origin/main` (never `~/Code/AI-Fleet-Coordinator`).  Never merge stderr into output (`2>&1`) on a command that touches a credential.
 
@@ -101,12 +101,15 @@ perl -e 'alarm 900; exec @ARGV' npm run test:workerd
 (
   set +x
   export CLOUDFLARE_ACCOUNT_ID=3a9368057468d0909cafaa85df12d1b7
-  CLOUDFLARE_EMAIL="$(fleet-secrets get CLOUDFLARE_JAY_ACCOUNT_EMAIL)"
-  CLOUDFLARE_API_KEY="$(fleet-secrets get CLOUDFLARE_JAY_API_KEY)"
-  export CLOUDFLARE_EMAIL CLOUDFLARE_API_KEY
-  WRANGLER_SEND_METRICS=false perl -e 'alarm 600; exec @ARGV' npx --no-install wrangler deploy
+  # CLOUDFLARE_API_TOKEN is read in-process from CLOUDFLARE_ECHO_ST_MCP_DEPLOY with the scoped reader,
+  # never printed, logged or passed in argv.  The Global key is retired.
+  WRANGLER_SEND_METRICS=false perl -e 'alarm 600; exec @ARGV' npx --no-install wrangler versions upload --message "<what and which commit>"
+  # then promote the printed Worker Version ID:
+  WRANGLER_SEND_METRICS=false perl -e 'alarm 600; exec @ARGV' npx --no-install wrangler versions deploy <version-id>@100 --yes
 )
 ```
+
+Do not run plain `wrangler deploy` with the scoped token:  its custom-domain step fails with code 10084.  On 2026-11-08 wrangler printed "No targets deployed" for that failed run, but do not assume what a failed run left live:  run `npx wrangler deployments list` and check which version holds 100% before and after.
 
 The same Worker, KV namespace, `SeatGate` class (migration `v1`, no new migration) and custom domain as Phase 0.  From this deploy on, every Phase 0 grant is dead:  its props carry no `phase: 2`, so `/mcp` answers 401 and a refresh gets `invalid_grant`.
 
@@ -161,9 +164,9 @@ The recall tools (spec 1.1) need three Worker secrets.  Without them they answer
 (
   set +x
   export CLOUDFLARE_ACCOUNT_ID=3a9368057468d0909cafaa85df12d1b7
-  CLOUDFLARE_EMAIL="$(fleet-secrets get CLOUDFLARE_JAY_ACCOUNT_EMAIL)"
-  CLOUDFLARE_API_KEY="$(fleet-secrets get CLOUDFLARE_JAY_API_KEY)"
-  export CLOUDFLARE_EMAIL CLOUDFLARE_API_KEY
+  # CLOUDFLARE_API_TOKEN: the scoped deploy token, read in-process as in Step 1.  The Global key is retired.
+  # Whether the scoped token may run `wrangler secret put` is not yet verified:  if Cloudflare refuses it,
+  # stop and ask the owner.  Do not fall back to the Global key.
   put() { [ -n "$2" ] || { echo "missing $1" >&2; return 1; }; printf %s "$2" | WRANGLER_SEND_METRICS=false npx --no-install wrangler secret put "$1" >/dev/null && echo "set $1"; }
   put RECALL_API_TOKEN "$(fleet-secrets get RECALL_API_TOKEN)"
   put RECALL_ACCESS_CLIENT_ID "$(fleet-secrets get AGENTS_JAYS_SERVICES_ACCESS_SERVICE_TOKEN_CF_ACCESS_CLIENT_ID)"
@@ -183,9 +186,9 @@ Run from this directory, in the same subshell shape as Step 2b.  Never print a v
 (
   set +x
   export CLOUDFLARE_ACCOUNT_ID=3a9368057468d0909cafaa85df12d1b7
-  CLOUDFLARE_EMAIL="$(fleet-secrets get CLOUDFLARE_JAY_ACCOUNT_EMAIL)"
-  CLOUDFLARE_API_KEY="$(fleet-secrets get CLOUDFLARE_JAY_API_KEY)"
-  export CLOUDFLARE_EMAIL CLOUDFLARE_API_KEY
+  # CLOUDFLARE_API_TOKEN: the scoped deploy token, read in-process as in Step 1.  The Global key is retired.
+  # Whether the scoped token may run `wrangler secret put` is not yet verified:  if Cloudflare refuses it,
+  # stop and ask the owner.  Do not fall back to the Global key.
   put() { [ -n "$2" ] || { echo "missing $1" >&2; return 1; }; printf %s "$2" | WRANGLER_SEND_METRICS=false npx --no-install wrangler secret put "$1" >/dev/null && echo "set $1"; }
   # Read the pair from wherever the owner keeps seat credentials (see below), then:
   # put LINEAR_GROK_WEB_CLIENT_ID     "<the client id>"
@@ -398,8 +401,8 @@ Jay regenerates the bot's key in Zulip (the old one dies at once), updates `ZULI
 ## Open owner items
 
 - **A4:**  Infisical's Cloudflare Workers sync for the hosted keys, with "Disable Secret Deletion" (replaces step 2).
-- **A5:**  a per-Worker deploy token, kept out of agents' reach (replaces the Global key in step 1).
-- **A1 and D8:**  a key location no agent identity can read.  Until then the INFISICAL_AUTOMATION identity and the Global key can both reach GROK-WEB's key, which D8 accepts.
+- **A5:**  done for deploys:  the scoped per-Worker token and its reader replaced the Global key (2026-11-08 record in `ops/`).  Whether that token may also run `wrangler secret put` is unverified.
+- **A1 and D8:**  a key location no agent identity can read.  Until then the INFISICAL_AUTOMATION identity can reach GROK-WEB's key.  The Global key is retired and not a deploy route.
 - **ECHO and WISE:**  connect one at a time from the Instinct app's own computer ([ARMING-JAY.md](ARMING-JAY.md), "Connect Echo" and "Connect Wise").  The Worker serves both and both keys are installed (Fri, Oct 9, about 10:24pm);  the client id comes from the first attempt.
 - **JET:**  arm it and connect ChatGPT ([ARMING-JAY.md](ARMING-JAY.md)).  The bot is a member, the Worker serves JET and its key is installed (Fri, Oct 9, about 8:10am), so nothing else blocks it.
 
@@ -593,3 +596,7 @@ Hosted-OAuth parity (the `gr_*` tools on a seat's OAuth connection, not only on 
 ### 7. Seat cutover
 
 Per seat, at its own pace:  mint or confirm its shared bearer on the admin page, point the seat at GR-MCP (stdio) or the Worker's `gr_*` tools, verify one action end to end, then retire that seat's interim AFC-460 shell/cache path.  The interim path stays working for seats that have not moved;  retiring it fleet-wide is its own owner decision.
+
+## 2026-11-08 addendum: scoped per-Worker deploy token uses `versions upload` + `versions deploy`
+
+The per-Worker deploy token (`CLOUDFLARE_ECHO_ST_MCP_DEPLOY`, Fleet-OPS `prod` `/cloudflare`, read through the scoped reader registered on the Fleet Reference "Infisical Service Tokens" tab) cannot complete plain `wrangler deploy`: the custom-domain trigger step fails with Cloudflare code 10084 ("The zone "agents.simplewithus.com" does not exist on your account") because the scoped token cannot see the zone. The script upload succeeds and wrangler reported "No targets deployed" on 2026-11-08, with the existing custom-domain attachment untouched;  check `npx wrangler deployments list` rather than assuming what a failed run left live. Deploy instead with `npx wrangler versions upload --message ...` followed by `npx wrangler versions deploy <version-id>@100 --yes` - a traffic-only promotion that does not touch triggers or domains. Full record with the verbatim error and promotion proof: [ops/2026-11-08-scoped-deploy-token-route.md](ops/2026-11-08-scoped-deploy-token-route.md). Do not widen the token or return to the retired Global-key route without the owner.
