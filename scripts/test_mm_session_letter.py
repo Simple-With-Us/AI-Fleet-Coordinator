@@ -1878,6 +1878,42 @@ class TransportTests(unittest.TestCase):
         self.assertIn("--parent-session-id=parent-session-1", logged)
         self.assertEqual(self.registry.read_bytes(), b"stale")  # untouched
 
+    def test_https_reopen_and_held_win_over_stale_local_store(self):
+        self.registry.write_bytes(b"stale")
+        url = "https://operator.example.test"
+        answers = [{"record_id": "r1", "label": "AB", "outcome": "reopened"},
+                   {"letters": ["AB", "AA"]}]
+        with (
+            mock.patch.dict(os.environ, dict(self._env,
+                SIMPLE_TOOLS_OPERATOR_REGISTRY_URL=url, MM_OPERATOR_REGISTRY_CMD="")),
+            mock.patch.object(M, "_registry_https_call", side_effect=answers) as https,
+            mock.patch.object(M, "remote_registry_call") as command,
+        ):
+            self.assertEqual(M.reopen_closed("r1", "parent-session-1")["label"], "AB")
+            self.assertEqual(M.held_letters("session-0001"), ("AB", "AA"))
+        self.assertEqual(https.call_count, 2)
+        self.assertEqual([c.args[0][0] for c in https.call_args_list], ["reopen", "held"])
+        self.assertTrue(all(c.args[1] == url for c in https.call_args_list))
+        self.assertIn("--parent-session-id=parent-session-1", https.call_args_list[0].args[0])
+        command.assert_not_called()
+        self.assertEqual(self.registry.read_bytes(), b"stale")
+
+    def test_https_failure_does_not_fall_back_to_stale_local_store(self):
+        self.registry.write_bytes(b"stale")
+        with (
+            mock.patch.dict(os.environ, dict(self._env,
+                SIMPLE_TOOLS_OPERATOR_REGISTRY_URL="https://operator.example.test",
+                MM_OPERATOR_REGISTRY_CMD="")),
+            mock.patch.object(M, "_registry_https_call",
+                return_value={"error": "unavailable", "code": "timeout"}),
+            mock.patch.object(M, "remote_registry_call") as command,
+        ):
+            with self.assertRaises(M.RegistryError):
+                M.reopen_closed("r1")
+            self.assertEqual(M.held_letters("session-0001"), ())
+        command.assert_not_called()
+        self.assertEqual(self.registry.read_bytes(), b"stale")
+
     def test_reopen_closed_space_lost_from_the_transport_keeps_its_code(self):
         self._transport(answer='{"error": "the pair went to another chat", "code": "space_lost"}')
         with (

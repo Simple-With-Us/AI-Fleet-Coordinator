@@ -88,6 +88,13 @@ def load(home: Path | None = None):
     home = Path.home() if home is None else Path(home)
     fd = None
     try:
+        # Prove absence before the no-follow custody walk. A symlinked ancestor
+        # may lead to no optional config at all. lstat never follows a final
+        # reader.json symlink, so a dangling config link still refuses below.
+        try:
+            os.lstat(home.joinpath(*CONFIG_PARTS))
+        except FileNotFoundError:
+            return None
         try:
             fd = os.open(home, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
             info = os.fstat(fd)

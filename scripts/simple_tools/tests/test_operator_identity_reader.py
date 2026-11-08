@@ -10,6 +10,7 @@ import tempfile
 import unittest
 import uuid
 from pathlib import Path
+from unittest import mock
 
 from simple_tools import operator_identity_reader as OIR
 
@@ -88,6 +89,33 @@ class ReaderTest(unittest.TestCase):
     def test_absent_config_means_no_reader(self):
         self.path.unlink()
         self.assertIsNone(OIR.load(self.home))
+
+    def test_symlinked_config_directory_with_no_reader_means_absent(self):
+        directory = self.home / ".config"
+        moved = self.home / "dotfiles"
+        directory.rename(moved)
+        directory.symlink_to(moved, target_is_directory=True)
+        self.path.unlink()
+        self.assertIsNone(OIR.load(self.home))
+
+    def test_symlinked_config_directory_with_reader_still_refuses(self):
+        directory = self.home / ".config"
+        moved = self.home / "dotfiles"
+        directory.rename(moved)
+        directory.symlink_to(moved, target_is_directory=True)
+        with self.assertRaises(OIR.ReaderError):
+            OIR.load(self.home)
+
+    def test_dangling_reader_symlink_is_not_absence(self):
+        self.path.unlink()
+        self.path.symlink_to(self.home / "missing-reader")
+        with self.assertRaises(OIR.ReaderError):
+            OIR.load(self.home)
+
+    def test_inaccessible_optional_config_is_not_absence(self):
+        with mock.patch.object(OIR.os, "lstat", side_effect=PermissionError):
+            with self.assertRaises(OIR.ReaderError):
+                OIR.load(self.home)
 
     def test_reader_for_does_not_cache_absence(self):
         self.path.unlink()

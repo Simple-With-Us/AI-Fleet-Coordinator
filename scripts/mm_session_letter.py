@@ -783,7 +783,11 @@ def reopen_closed(record_id: str, parent_session_id: str = "") -> dict:
     transport, a host that has no local registry file routes the same way.
     """
     db = registry_db()
-    if transport() or not db:
+    if (
+        (os.environ.get("SIMPLE_TOOLS_OPERATOR_REGISTRY_URL") or "").strip()
+        or transport()
+        or not db
+    ):
         argv = [
             "reopen",
             "--record-id=" + record_id,
@@ -1032,7 +1036,11 @@ def held_letters(session_id: str) -> tuple[str, ...]:
     is read and fixed again, while a title that loses an acronym is not.
     """
     db = registry_db()
-    if transport() or not db:
+    if (
+        (os.environ.get("SIMPLE_TOOLS_OPERATOR_REGISTRY_URL") or "").strip()
+        or transport()
+        or not db
+    ):
         # The canonical store answers.  A transport fault returns the empty history, and
         # that empty history never stands in for a stale local file:  the caller falls
         # back to the shape rules, which is the safe direction.
