@@ -1,0 +1,465 @@
+{
+  "status": "PROPOSAL ONLY",
+  "active": false,
+  "preservation": [
+    {
+      "repo": "Simple-With-Us/AI-Fleet-Coordinator",
+      "path": "scripts/fleet_lanes/tests/test_install_mcp.py",
+      "source_path": "scripts/fleet_lanes/tests/test_install_mcp.py",
+      "source_commit": "8ac91e28906a26b677338ec8bf844bc0d3bd061e",
+      "base_sha256": "09ffbff844379d950e6f8bd6e40d78848b66210b7e3e640a6148294cda6c75e2",
+      "target_sha256": "e59b1610dde3808e1924433de8c80513662a6c60767d85aeafd40b6674c3b6c7",
+      "edits": [
+        {
+          "start": 2273,
+          "end": 2306,
+          "text": "    def simple_chat(self) -> str:\n"
+        },
+        {
+          "start": 5260,
+          "end": 5341,
+          "text": "        self.assertEqual(argv, [self.simple_chat, \"mcp\", \"--default-seat\", \"MC\"])\n"
+        },
+        {
+          "start": 15104,
+          "end": 15225,
+          "text": "class SimpleChatTests(HomeCase):\n    def test_only_fixed_seat_tools_get_simple_chat_and_never_a_pinned_seat(self) -> None:\n"
+        },
+        {
+          "start": 16299,
+          "end": 16388,
+          "text": "                self.assertEqual(argv, [self.simple_chat, \"mcp\", \"--default-seat\", seat])\n"
+        },
+        {
+          "start": 16692,
+          "end": 16767,
+          "text": "    def test_unknown_key_with_same_argv_is_not_proof_of_ownership(self) -> None:\n"
+        },
+        {
+          "start": 16807,
+          "end": 17056,
+          "text": "        foreign = {\"command\": self.simple_chat, \"args\": [\"mcp\", \"--default-seat\", \"MC\"]}\n        self.write(\".config/muse/settings.json\", json.dumps({\"mcpServers\": {\"owner-chat\": foreign}}))\n"
+        },
+        {
+          "start": 17246,
+          "end": 17290,
+          "text": "        self.assertEqual(doc[\"owner-chat\"], foreign)\n"
+        },
+        {
+          "start": 17332,
+          "end": 17368,
+          "text": ""
+        },
+        {
+          "start": 17369,
+          "end": 17466,
+          "text": "    def test_known_hosted_wrapper_entry_is_not_rewritten(self) -> None:\n"
+        },
+        {
+          "start": 17506,
+          "end": 18305,
+          "text": "        foreign = {\"command\": self.path(\".local/libexec/mc-simple-tools\")}\n        self.write(\".config/muse/settings.json\", json.dumps({\"mcpServers\": {\"mc-simple-tools\": foreign}}))\n"
+        },
+        {
+          "start": 18433,
+          "end": 18507,
+          "text": "        self.assertEqual(doc[\"mc-simple-tools\"], foreign)\n        self.run_cli(\"remove\", \"muse\", \"--with-simple-chat\")\n        self.assertEqual(self.load(\".config/muse/settings.json\")[\"mcpServers\"][\"mc-simple-tools\"], foreign)\n"
+        },
+        {
+          "start": 18508,
+          "end": 19167,
+          "text": "    def test_refused_current_entry_preserves_all_foreign_entries(self) -> None:\n        self.mkdir(*TOOL_DIRS.values())\n        entries = {\"owner-chat\": {\"command\": \"/owner/hosted\"},\n                   \"simple-chat\": {\"command\": \"/owner/custom\"}}\n        self.write(\".config/muse/settings.json\", json.dumps({\"mcpServers\": entries}))\n        self.run_cli(\"apply\", \"muse\", \"--with-simple-chat\")\n        self.assertEqual({key: self.load(\".config/muse/settings.json\")[\"mcpServers\"][key] for key in entries}, entries)\n"
+        },
+        {
+          "start": 19168,
+          "end": 19269,
+          "text": "    def test_clutch_apply_and_remove_preserve_unknown_blocks(self) -> None:\n"
+        },
+        {
+          "start": 19463,
+          "end": 19923,
+          "text": "        foreign = current.replace(\"mcp-simple-chat\", \"mcp-owner-chat\")\n        self.write(path, current + foreign)\n        self.run_cli(\"apply\", \"clutch\", \"--with-simple-chat\", \"--no-dsh-check\")\n        self.assertIn(foreign, self.read(path))\n        self.assertEqual(self.read(path).count(\"fleet:begin mcp-simple-chat\"), 1)\n        self.run_cli(\"remove\", \"clutch\", \"--with-simple-chat\", \"--no-dsh-check\")\n        self.assertIn(foreign, self.read(path))\n"
+        },
+        {
+          "start": 19924,
+          "end": 19997,
+          "text": "    def test_without_the_flag_simple_chat_is_never_written(self) -> None:\n"
+        },
+        {
+          "start": 26601,
+          "end": 26675,
+          "text": "    def test_the_simple_chat_block_is_created_with_a_header(self) -> None:\n"
+        },
+        {
+          "start": 27237,
+          "end": 27310,
+          "text": "        self.assertIn('        command: \"%s\"\\n' % self.simple_chat, text)\n"
+        },
+        {
+          "start": 28644,
+          "end": 28728,
+          "text": "        text = self.read(self.patch()).replace(self.simple_chat, \"/old/simple-chat\")\n"
+        },
+        {
+          "start": 28971,
+          "end": 29015,
+          "text": "        self.assertIn(self.simple_chat, new)\n"
+        },
+        {
+          "start": 37334,
+          "end": 37430,
+          "text": "    def test_from_another_seat_the_simple_chat_probe_is_skipped_and_never_started(self) -> None:\n"
+        }
+      ],
+      "active": false,
+      "policy_approval_pending": true,
+      "source_review_pending": true
+    },
+    {
+      "repo": "Simple-With-Us/AI-Fleet-Coordinator",
+      "path": "scripts/simple_tools/tests/test_claude_letter.py",
+      "source_path": "scripts/agent_sync/tests/test_claude_letter.py",
+      "source_commit": "8ac91e28906a26b677338ec8bf844bc0d3bd061e",
+      "base_sha256": "ea2dd468ed680e534ededd8c554176e0b55f087cbf6b77e8f20446d96288545e",
+      "target_sha256": "dac88beb815fad7b2a92646f0104daafbc5a5e85240e6d5dce51bdacd236cff5",
+      "edits": [
+        {
+          "start": 326,
+          "end": 344,
+          "text": ""
+        },
+        {
+          "start": 590,
+          "end": 728,
+          "text": "from simple_tools import claude_app_lineage as AL\nfrom simple_tools import claude_letter as CL\nfrom simple_tools import operator_registry as OR\n"
+        },
+        {
+          "start": 1294,
+          "end": 1397,
+          "text": "        env = {\"HOME\": self.home, \"SIMPLE_TOOLS_STATE_DIR\": self.state, \"CLAUDE_CODE_ENTRYPOINT\": \"cli\"}\n"
+        },
+        {
+          "start": 18171,
+          "end": 18290,
+          "text": "        # of the three markers that matter is enough on its own, which is what exercises the SIMPLE_TOOLS_ATTACH=0 line.\n"
+        },
+        {
+          "start": 18484,
+          "end": 18522,
+          "text": "            \"SIMPLE_TOOLS_ATTACH\": \"0\",\n"
+        },
+        {
+          "start": 18686,
+          "end": 18767,
+          "text": "        for key in (\"AGENT_LAUNCHER\", \"AGENT_LAUNCH_SEAT\", \"SIMPLE_TOOLS_ATTACH\"):\n"
+        },
+        {
+          "start": 19015,
+          "end": 19113,
+          "text": "        self.assertTrue(CL.in_scope({\"CLAUDE_CODE_ENTRYPOINT\": \"cli\", \"SIMPLE_TOOLS_ATTACH\": \"1\"}))\n"
+        },
+        {
+          "start": 19402,
+          "end": 19470,
+          "text": "            env={\"HOME\": self.home, \"SIMPLE_TOOLS_STATE_DIR\": other},\n"
+        },
+        {
+          "start": 94244,
+          "end": 94308,
+          "text": "            AGENT_SESSION=\"bf-thread-1\", SIMPLE_TOOLS_ATTACH=\"0\",\n"
+        },
+        {
+          "start": 94663,
+          "end": 94754,
+          "text": "        for env in (botfleet, {\"SIMPLE_TOOLS_ATTACH\": \"0\"}, {\"AGENT_LAUNCHER\": \"opencode\"}):\n"
+        },
+        {
+          "start": 102445,
+          "end": 102558,
+          "text": "class RegistryRemoteTests(Base):\n    \"\"\"LETTER_REGISTRY_REMOTE:  the registry host named outright, decoupled from where the chat runs.\n"
+        },
+        {
+          "start": 102559,
+          "end": 102810,
+          "text": "    A Mac chat (platform darwin, no location override) registers locally while no destination is\n    named, and over the hop once one is:  the destination wins, a failure of it is an error answer\n    and never a quiet local write, and this host keeps no registry file of its own.\"\"\"\n"
+        },
+        {
+          "start": 102811,
+          "end": 102901,
+          "text": "    class RemoteSsh:\n        \"\"\"The hop to the registry host:  checks the command's shape and runs the registry side\n        in process against the REMOTE state dir, so the two sides never share a file.\"\"\"\n\n        def __init__(self, test: \"RegistryRemoteTests\", fail: Exception | None = None):\n            self.test, self.fail, self.calls = test, fail, []\n\n        def __call__(self, cmd, **kwargs):\n            self.calls.append(cmd)\n            if self.fail is not None:\n                raise self.fail\n            self.test.assertEqual(\n                cmd[:7], [\"ssh\", \"-T\", \"-o\", \"BatchMode=yes\", \"-o\", \"ConnectTimeout=4\", \"--\"]\n            )\n            self.test.assertEqual(cmd[7], \"registry-host\")\n            words = shlex.split(cmd[8])\n            self.test.assertEqual(words[:3], [\"$HOME/.local/bin/simple-chat\", \"letter\", \"registry\"])\n            out = io.StringIO()\n            code = CL.registry_main(words[3:], env=self.test.remote_env(), stdout=out)\n            return SimpleNamespace(stdout=out.getvalue(), returncode=code)\n\n        def ops(self) -> list[str]:\n            return [shlex.split(c[8])[3] for c in self.calls]\n\n    def setUp(self) -> None:\n        super().setUp()\n        self.remote_state = os.path.join(self.tmp.name, \"remote-state\")\n        self.remote_db = os.path.join(self.remote_state, \"operator\", \"registry.sqlite3\")\n        OR.SessionRegistry(self.remote_db).close_db()  # the canonical registry, on the registry host\n        os.remove(self.db)  # once the registry lives elsewhere this host keeps no copy at all\n\n    def remote_env(self, **extra: str) -> dict[str, str]:\n        return self.env(SIMPLE_TOOLS_STATE_DIR=self.remote_state, **extra)\n\n    def mac_hook(self, payload: dict, runner, **extra: str):\n"
+        },
+        {
+          "start": 102929,
+          "end": 103465,
+          "text": "        env = self.env(**extra)\n        code = CL.hook(env, io.StringIO(json.dumps(payload)), out, runner=runner, platform=\"darwin\")\n"
+        },
+        {
+          "start": 103499,
+          "end": 103658,
+          "text": "        text = out.getvalue().strip()\n        return json.loads(text)[\"hookSpecificOutput\"] if text else None\n"
+        },
+        {
+          "start": 103659,
+          "end": 104708,
+          "text": "    def start(self, sid: str, runner, **extra: str):\n        return self.mac_hook(\n            {\"hook_event_name\": \"SessionStart\", \"session_id\": sid, \"source\": \"startup\"}, runner, **extra\n        )\n"
+        },
+        {
+          "start": 104709,
+          "end": 105252,
+          "text": "    def remote_lookup(self, sid: str, location: str = \"mac\") -> dict | None:\n        reg = OR.SessionRegistry(self.remote_db)\n        try:\n            return reg.lookup(CL.PLATFORM, location, CL.SCOPE, sid)\n        finally:\n            reg.close_db()\n"
+        },
+        {
+          "start": 105253,
+          "end": 106175,
+          "text": "    def test_a_mac_session_registers_over_the_hop_and_keeps_no_local_file(self) -> None:\n        ssh = self.RemoteSsh(self)\n        out = self.start(\"a-0001\", ssh, LETTER_REGISTRY_REMOTE=\"registry-host\")\n        self.assertEqual(ssh.ops(), [\"register\"])\n        rec = self.remote_lookup(\"a-0001\")\n        self.assertIsNotNone(rec)\n        self.assertIsNone(self.remote_lookup(\"a-0001\", location=\"server\"),\n                          \"the location stays where the session runs\")\n        self.assertFalse(os.path.exists(self.db), \"no local registry file is created\")\n"
+        },
+        {
+          "start": 106176,
+          "end": 107424,
+          "text": "    def test_a_mac_session_without_the_setting_registers_locally_as_before(self) -> None:\n        OR.SessionRegistry(self.db).close_db()  # the Mac's registry exists, as it does today\n        ssh = self.RemoteSsh(self, fail=AssertionError(\"the hop must not be tried\"))\n        out = self.start(\"a-0002\", ssh)\n        self.assertEqual(ssh.calls, [])\n        self.assertTrue(os.path.exists(self.db), \"the Mac-local registry is used\")\n        reg = OR.SessionRegistry(self.db)\n        try:\n            self.assertIsNotNone(reg.lookup(CL.PLATFORM, \"mac\", CL.SCOPE, \"a-0002\"))\n        finally:\n            reg.close_db()\n"
+        },
+        {
+          "start": 107425,
+          "end": 108618,
+          "text": "    def test_a_failed_hop_is_an_error_answer_and_never_a_local_fallback(self) -> None:\n        ssh = self.RemoteSsh(self, fail=OSError(\"no route\"))\n        out = self.start(\"a-0003\", ssh, LETTER_REGISTRY_REMOTE=\"registry-host\")\n        self.assertEqual(ssh.ops(), [\"register\"])\n        self.assertIn(\"No Operator letter yet\", (out or {}).get(\"additionalContext\", \"\"))\n        self.assertFalse(os.path.exists(self.db), \"a failed hop never becomes a local write\")\n        self.assertIsNone(self.remote_lookup(\"a-0003\"))\n"
+        },
+        {
+          "start": 108619,
+          "end": 110341,
+          "text": "    def test_a_destination_that_is_not_plain_is_refused_by_its_own_name(self) -> None:\n        ssh = self.RemoteSsh(self, fail=AssertionError(\"a refused destination is never run\"))\n        out = self.start(\"a-0004\", ssh, LETTER_REGISTRY_REMOTE=\"-oProxyCommand=touch /tmp/x\")\n        self.assertEqual(ssh.calls, [])\n        self.assertIn(\"LETTER_REGISTRY_REMOTE does not name an ssh destination\",\n                      (out or {}).get(\"additionalContext\", \"\"))\n        self.assertFalse(os.path.exists(self.db))\n\n    def test_the_parent_is_resolved_where_the_app_record_is(self) -> None:\n        # Chat A is started on this Mac;  the desktop app then starts chat B from A.  The registry\n        # host holds no copy of the app's records, so the hook names the parent it resolved here.\n        from simple_tools.tests.test_claude_app_lineage import write as write_app_record\n\n        write_app_record(self.home, \"local_11111111-1111-4111-8111-111111111111\",\n                         {\"cliSessionId\": \"33333333-3333-4333-8333-333333333333\"})\n        write_app_record(self.home, \"local_22222222-2222-4222-8222-222222222222\",\n                         {\"cliSessionId\": \"44444444-4444-4444-8444-444444444444\",\n                          \"spawnedFrom\": {\"sessionId\": \"local_11111111-1111-4111-8111-111111111111\",\n                                          \"title\": \"t\", \"handOff\": True}})\n        ssh = self.RemoteSsh(self)\n        self.start(\"33333333-3333-4333-8333-333333333333\", ssh,\n                   LETTER_REGISTRY_REMOTE=\"registry-host\",\n                   CLAUDE_CODE_HOST_SESSION_ID=\"local_11111111-1111-4111-8111-111111111111\")\n        self.start(\"44444444-4444-4444-8444-444444444444\", ssh,\n                   LETTER_REGISTRY_REMOTE=\"registry-host\",\n                   CLAUDE_CODE_HOST_SESSION_ID=\"local_22222222-2222-4222-8222-222222222222\")\n        self.assertEqual(ssh.ops(), [\"register\", \"register\"])\n        argv = shlex.split(ssh.calls[1][8])\n        self.assertIn(\"--parent-session-id=33333333-3333-4333-8333-333333333333\", argv)\n        child = self.remote_lookup(\"44444444-4444-4444-8444-444444444444\")\n        self.assertIsNotNone(child)\n        parent = self.remote_lookup(\"33333333-3333-4333-8333-333333333333\")\n        self.assertEqual(child[\"label\"][0], parent[\"label\"][0], \"the child takes the parent's pair\")\n"
+        }
+      ],
+      "active": false,
+      "policy_approval_pending": true,
+      "source_review_pending": true
+    },
+    {
+      "repo": "Simple-With-Us/AI-Fleet-Coordinator",
+      "path": "scripts/simple_tools/tests/test_server_rollout.py",
+      "source_path": "scripts/agent_sync/tests/test_server_rollout.py",
+      "source_commit": "8ac91e28906a26b677338ec8bf844bc0d3bd061e",
+      "base_sha256": "a7dd31b6b705036a45c622c84b21f8bcc7debefb126827a4b0fe962383295dc4",
+      "target_sha256": "90a2aa829662f067238e91101c4f77b3147bfda85bbc8ff24f647c656d8c5b79",
+      "edits": [
+        {
+          "start": 483,
+          "end": 483,
+          "text": "import uuid\n"
+        },
+        {
+          "start": 509,
+          "end": 544,
+          "text": "from simple_tools import config as C\n"
+        },
+        {
+          "start": 588,
+          "end": 644,
+          "text": "SERVER_DIR = REPO / \"scripts\" / \"simple_tools\" / \"server\"\n"
+        },
+        {
+          "start": 1090,
+          "end": 1198,
+          "text": "    spec = importlib.util.spec_from_file_location(\"simple_tools_server_\" + name, SERVER_DIR / (name + \".py\"))\n"
+        },
+        {
+          "start": 1849,
+          "end": 1946,
+          "text": "    def __init__(self, client_id: str, client_secret: str, secrets_map: dict[str, str],\n                 operator: dict[str, str] | None = None) -> None:\n"
+        },
+        {
+          "start": 2043,
+          "end": 2043,
+          "text": "        # The Fleet-OPS project's /zulip_operator folder;  None is a host whose project has no such folder.\n        self.operator = operator\n"
+        },
+        {
+          "start": 2102,
+          "end": 2102,
+          "text": "        self.pin = \"st.\" + secrets.token_hex(16)\n"
+        },
+        {
+          "start": 3250,
+          "end": 3330,
+          "text": "                dedicated = self.headers.get(\"Authorization\") == \"Bearer \" + fake.pin\n                if not dedicated and self.headers.get(\"Authorization\") != \"Bearer \" + fake.token:\n"
+        },
+        {
+          "start": 4071,
+          "end": 4071,
+          "text": "                    if dedicated:\n                        metadata.update(projectId=InfisicalEnvTests.FLEET_OPS,\n                                        workspace=InfisicalEnvTests.FLEET_OPS,\n                                        scopes=[{\"environment\": \"prod\", \"secretPath\": \"/zulip_operator\"}])\n"
+        },
+        {
+          "start": 4380,
+          "end": 4380,
+          "text": "                if \"secretPath=%2Fzulip_operator\" in self.path:\n                    if fake.operator is None or \"environment=prod\" not in self.path:\n                        return self._send(404, {\"message\": \"no folder\"})\n                    return self._send(200, {\"secrets\": [\n                        {\"secretKey\": k, \"secretValue\": v, \"workspace\": InfisicalEnvTests.FLEET_OPS,\n                         \"environment\": \"prod\", \"secretPath\": \"/zulip_operator\", \"type\": \"shared\"}\n                        for k, v in fake.operator.items()]})\n"
+        },
+        {
+          "start": 5650,
+          "end": 5724,
+          "text": "        self.tmp = Path(tempfile.mkdtemp(prefix=\"simple-tools-infisical-\"))\n"
+        },
+        {
+          "start": 6337,
+          "end": 6548,
+          "text": "            \"ZULIP_BF_BUILDER_API_KEY\": \"bf-\" + secrets.token_hex(8),     # a BotFleet bot:  not a server seat\n            \"ZULIP_CLAUDE_API_KEY\": \"zk-\" + secrets.token_hex(8),         # CLAUDE:  a server seat now\n            \"ZULIP_GROK_BUILD_API_KEY\": \"gb-\" + secrets.token_hex(8),     # GROK-BUILD:  on no instance\n"
+        },
+        {
+          "start": 7529,
+          "end": 7598,
+          "text": "                     \"ZULIP_ALERT_GB_FIXER_KEY\", \"ZULIP_JET_EMAIL\", \"ZULIP_CLAUDE_API_KEY\"):\n"
+        },
+        {
+          "start": 7703,
+          "end": 7808,
+          "text": "        for name in (\"ZULIP_ALERT_GB_FIXER_HEADER\", \"ZULIP_BF_BUILDER_API_KEY\", \"ZULIP_GROK_BUILD_API_KEY\"):\n"
+        },
+        {
+          "start": 8093,
+          "end": 8210,
+          "text": "        self.assertIn(\"loaded 6 variables from Infisical (prod /zulip; 1 replaced a container value, 5 other\", line)\n"
+        },
+        {
+          "start": 8505,
+          "end": 8597,
+          "text": "                      SENTRY_API_TOKEN=\"sntrys_never\", SIMPLE_TOOLS_SENTRY_DSN_OTHER=\"never\")\n"
+        },
+        {
+          "start": 8856,
+          "end": 8967,
+          "text": "        self.assertNotIn(\"SIMPLE_TOOLS_SENTRY_DSN_OTHER\", out)\n        self.assertIn(\"loaded 7 variables\", line)\n"
+        },
+        {
+          "start": 9629,
+          "end": 9679,
+          "text": "        self.assertIn(\"loaded 6 variables\", line)\n"
+        },
+        {
+          "start": 12252,
+          "end": 12507,
+          "text": "        # CLAUDE moved to the server in the single-server consolidation, so its names load there now.\n        self.assertIn(\"ZULIP_CLAUDE_API_KEY\", names)\n        self.assertIn(\"CLAUDE_ZULIP_KEY\", names)\n        for name in (\"ZULIP_GROK_BUILD_API_KEY\", \"ZULIP_BF_BUILDER_EMAIL\", \"ZULIP_EMAIL\", \"ZULIP_API_KEY\",\n                     \"ZULIP_ZC_API_KEY\", \"ZULIP_KIMI_API_KEY\", \"ZULIP_AMP_API_KEY\", \"ZULIP_SITE\", \"ZULIP_ALERT_GB_TRADER_HEADER\"):\n"
+        },
+        {
+          "start": 12549,
+          "end": 12549,
+          "text": "\n    # Runtime-derived fixture id:  deterministic, no committed inventory-shaped literal.\n    FLEET_OPS = str(uuid.uuid5(uuid.NAMESPACE_URL, \"simple-tools/tests/server-rollout/fleet-ops\"))\n\n    def operator_folder_reads(self, fake: FakeInfisical) -> list[str]:\n        return [p for m, p in fake.requests if m == \"GET\" and \"zulip_operator\" in p]\n\n    def test_the_operator_service_identity_loads_from_its_own_project(self) -> None:\n        ops = {\n            \"ZULIP_OPERATOR_EMAIL\": \"operator-bot@zulip.test\",\n            \"ZULIP_OPERATOR_API_KEY\": \"zk-\" + secrets.token_hex(12),\n            \"OPERATOR_ZULIP_USER_ID\": \"1217148\",\n            \"OPERATOR_ZULIP_EMAIL\": \"operator-bot@zulip.test\",\n            \"ZULIP_CLAUDE_API_KEY\": \"not-the-operator-folder's-name\",  # not a service name:  dropped here\n        }\n        with FakeInfisical(self.cid, self.csecret, self.values, operator=ops) as fake:\n            out, line = IE.operator_service_identity(self.env(fake, INFISICAL_FLEET_OPS_PROJECT_ID=self.FLEET_OPS, INFISICAL_OPERATOR_VOICE_TOKEN=fake.pin))\n        for name in (\"OPERATOR_ZULIP_USER_ID\", \"OPERATOR_ZULIP_EMAIL\"):\n            self.assertEqual(out[name], ops[name], \"%s comes from the Fleet-OPS folder\" % name)\n        # The credential pair is NEVER injected into the environment, even though the folder\n        # carries it:  the Operator's credentials reach the daemon only through the\n        # scoped-service-token reader, per the owner's clarified normal method.\n        self.assertNotIn(\"ZULIP_OPERATOR_EMAIL\", out)\n        self.assertNotIn(\"ZULIP_OPERATOR_API_KEY\", out)\n        self.assertNotIn(\"ZULIP_CLAUDE_API_KEY\", out, \"the helper returns only service pins\")\n        self.assertIn(\"Operator service identity from /zulip_operator: 2 of 2\", line)\n        reads = self.operator_folder_reads(fake)\n        self.assertEqual(len(reads), 1)\n        self.assertIn(\"workspaceId=%s\" % self.FLEET_OPS, reads[0])\n        for value in ops.values():\n            self.assertNotIn(value, line)\n\n    def test_a_folder_pin_that_disagrees_with_the_host_pin_is_refused(self) -> None:\n        ops = {\n            \"ZULIP_OPERATOR_EMAIL\": \"operator-bot@zulip.test\",\n            \"ZULIP_OPERATOR_API_KEY\": \"zk-\" + secrets.token_hex(12),\n            \"OPERATOR_ZULIP_USER_ID\": \"1217148\",\n            \"OPERATOR_ZULIP_EMAIL\": \"other-bot@zulip.test\",\n        }\n        env = self.env  # bound before the with, for readability below\n        with FakeInfisical(self.cid, self.csecret, self.values, operator=ops) as fake:\n            out, line = IE.operator_service_identity(env(fake, INFISICAL_FLEET_OPS_PROJECT_ID=self.FLEET_OPS, INFISICAL_OPERATOR_VOICE_TOKEN=fake.pin,\n                                         OPERATOR_ZULIP_EMAIL=\"operator-bot@zulip.test\"))\n        self.assertNotIn(\"OPERATOR_ZULIP_USER_ID\", out, \"both pins are refused on a disagreement\")\n        self.assertNotIn(\"OPERATOR_ZULIP_EMAIL\", out, \"the conflicting folder cannot override the host\")\n        self.assertNotIn(\"ZULIP_OPERATOR_API_KEY\", out, \"the pair never loads, pin or no pin\")\n        self.assertIn(\"Operator service pins refused (folder pin disagrees with the host pin)\", line)\n        self.assertNotIn(ops[\"ZULIP_OPERATOR_API_KEY\"], line)\n        self.assertNotIn(\"other-bot@zulip.test\", line)\n\n    def test_the_operator_credential_pair_is_never_injected(self) -> None:\n        # Even with no pins anywhere, the folder's credential pair does not enter the\n        # environment:  no Zulip key pair rides env on the normal service-token path.\n        ops = {\n            \"ZULIP_OPERATOR_EMAIL\": \"someone-else@zulip.test\",\n            \"ZULIP_OPERATOR_API_KEY\": \"zk-\" + secrets.token_hex(12),\n        }\n        with FakeInfisical(self.cid, self.csecret, self.values, operator=ops) as fake:\n            out, line = IE.operator_service_identity(self.env(fake, INFISICAL_FLEET_OPS_PROJECT_ID=self.FLEET_OPS, INFISICAL_OPERATOR_VOICE_TOKEN=fake.pin))\n        self.assertNotIn(\"ZULIP_OPERATOR_API_KEY\", out)\n        self.assertNotIn(\"ZULIP_OPERATOR_EMAIL\", out)\n        self.assertNotIn(ops[\"ZULIP_OPERATOR_API_KEY\"], line)\n        self.assertNotIn(\"someone-else@zulip.test\", line)\n\n    def test_a_non_numeric_operator_user_id_is_refused_alone(self) -> None:\n        ops = {\n            \"ZULIP_OPERATOR_EMAIL\": \"operator-bot@zulip.test\",\n            \"ZULIP_OPERATOR_API_KEY\": \"zk-\" + secrets.token_hex(12),\n            \"OPERATOR_ZULIP_USER_ID\": \"not-a-number\",\n            \"OPERATOR_ZULIP_EMAIL\": \"operator-bot@zulip.test\",\n        }\n        with FakeInfisical(self.cid, self.csecret, self.values, operator=ops) as fake:\n            out, line = IE.operator_service_identity(self.env(fake, INFISICAL_FLEET_OPS_PROJECT_ID=self.FLEET_OPS, INFISICAL_OPERATOR_VOICE_TOKEN=fake.pin))\n        self.assertNotIn(\"OPERATOR_ZULIP_USER_ID\", out)\n        self.assertNotIn(\"ZULIP_OPERATOR_API_KEY\", out, \"the pair never loads\")\n        self.assertIn(\"OPERATOR_ZULIP_USER_ID refused (not a positive id)\", line)\n        self.assertNotIn(\"not-a-number\", line)\n\n    def test_no_operator_folder_is_a_note_not_a_stop(self) -> None:\n        with FakeInfisical(self.cid, self.csecret, self.values) as fake:  # operator=None: no such folder\n            out, line = IE.operator_service_identity(self.env(fake, INFISICAL_FLEET_OPS_PROJECT_ID=self.FLEET_OPS, INFISICAL_OPERATOR_VOICE_TOKEN=fake.pin))\n        self.assertNotIn(\"ZULIP_OPERATOR_API_KEY\", out)\n        self.assertIn(\"Operator service identity not loaded\", line)\n        self.assertEqual(len(self.operator_folder_reads(fake)), 1, \"the folder was asked for once\")\n\n    def test_operator_pins_never_reuse_primary_listener_token(self):\n        with FakeInfisical(self.cid, self.csecret, self.values, operator={\"OPERATOR_ZULIP_USER_ID\": \"12\"}) as fake:\n            out, line = IE.build_env(self.env(fake, INFISICAL_FLEET_OPS_PROJECT_ID=self.FLEET_OPS))\n        self.assertNotIn(\"OPERATOR_ZULIP_USER_ID\", out)\n        self.assertEqual(self.operator_folder_reads(fake), [])\n        self.assertIn(\"no dedicated token\", line)\n\n    def test_the_allowlist_covers_every_name_the_sample_seats_read(self) -> None:\n        # The loader and the shipped config must agree exactly:  every email_env/key_env a server\n        # seat section reads is allowlisted, or the loader never injects it and the seat cannot\n        # connect.  GROK's section reads the GROK_BUILD stem names (its bot file is Grok-Build).\n        sample = tomllib.loads((SERVER_DIR / \"listener.toml\").read_text())\n        names = IE.allowed_names(IE.server_codes(IE.PARTITION_DEFAULT))\n        read = set()\n        for section in sample.get(\"seat\", {}).values():\n            for field in (\"email_env\", \"key_env\"):\n                if section.get(field):\n                    read.add(section[field])\n        self.assertTrue(read, \"the sample's seat sections name their variables\")\n        self.assertEqual(read - names, set())\n        self.assertIn(\"GROK_BUILD_ZULIP_KEY\", read & names)\n"
+        },
+        {
+          "start": 13554,
+          "end": 13638,
+          "text": "        self.assertIn(\"simple-chat: loaded 6 variables from Infisical\", run.stderr)\n"
+        },
+        {
+          "start": 13768,
+          "end": 13871,
+          "text": "        env = {**env, \"SIMPLE_TOOLS_STATE_DIR\": str(self.tmp / \"data\"), \"SIMPLE_TOOLS_INSTANCE\": \"server\"}\n"
+        },
+        {
+          "start": 14449,
+          "end": 14533,
+          "text": "        self.assertIn(\"simple-chat: loaded 6 variables from Infisical\", run.stderr)\n"
+        },
+        {
+          "start": 17496,
+          "end": 17566,
+          "text": "        self.tmp = Path(tempfile.mkdtemp(prefix=\"simple-tools-apply-\"))\n"
+        },
+        {
+          "start": 26021,
+          "end": 26220,
+          "text": "        # A seat that is on no instance in the server's live file is a partition problem the merge cannot fix.\n        self.live.write_text(self.live.read_text() + '\\n[seat.GROK-BUILD]\\nbot = \"Grok\"\\nwake = \"http\"\\n')\n"
+        },
+        {
+          "start": 26409,
+          "end": 26451,
+          "text": "        self.assertIn(\"seat GROK-BUILD\", out)\n"
+        }
+      ],
+      "active": false,
+      "policy_approval_pending": true,
+      "source_review_pending": true
+    },
+    {
+      "repo": "Simple-With-Us/AI-Fleet-Coordinator",
+      "path": "scripts/simple-tools-mcp/package-lock.json",
+      "source_path": "scripts/agent-sync-mcp/package-lock.json",
+      "source_commit": "8ac91e28906a26b677338ec8bf844bc0d3bd061e",
+      "base_sha256": "be70b1dbccf425d1515fa5ebcdd3c5d5699b13d3292798c6ddd9480dd356b960",
+      "target_sha256": "f4ba42e3005e2a394cc21fa96e556b75c0f34c60159a44282e38f01d8fb3a3b2",
+      "edits": [
+        {
+          "start": 2,
+          "end": 30,
+          "text": "  \"name\": \"simple-tools-mcp\",\n"
+        },
+        {
+          "start": 129,
+          "end": 161,
+          "text": "      \"name\": \"simple-tools-mcp\",\n"
+        }
+      ],
+      "active": false,
+      "policy_approval_pending": true,
+      "source_review_pending": true
+    }
+  ],
+  "same_path_reuse": [
+    {
+      "repo": "Simple-With-Us/AI-Fleet-Coordinator",
+      "source_commit": "3ce1e3f8fc40f7376cbf2be658781e6386399b4d",
+      "path": "scripts/hetzner/test_fleet_coding_memory.py",
+      "blob_sha": "39b05e26546a5f96f085528df29ea772c3323f9e",
+      "mode": "100644",
+      "size": 44362,
+      "active": false,
+      "source_review_pending": true
+    },
+    {
+      "repo": "Simple-With-Us/AI-Fleet-Coordinator",
+      "source_commit": "3ce1e3f8fc40f7376cbf2be658781e6386399b4d",
+      "path": "scripts/simple_tools/mcp/fixtures.jsonl",
+      "blob_sha": "7a556de1bff0185b2f943fb822b5e43ac166a40a",
+      "mode": "100644",
+      "size": 15630,
+      "active": false,
+      "source_review_pending": true
+    },
+    {
+      "repo": "Simple-With-Us/AI-Fleet-Coordinator",
+      "source_commit": "3ce1e3f8fc40f7376cbf2be658781e6386399b4d",
+      "path": "scripts/simple_tools/tests/test_operator_send.py",
+      "blob_sha": "f6b1a1a622810b4bb3e898f7ca67e0c56cc02a5d",
+      "mode": "100644",
+      "size": 36330,
+      "active": false,
+      "source_review_pending": true
+    },
+    {
+      "repo": "Simple-With-Us/AI-Fleet-Coordinator",
+      "source_commit": "3ce1e3f8fc40f7376cbf2be658781e6386399b4d",
+      "path": "scripts/simple_tools/tests/test_platform_letter.py",
+      "blob_sha": "3598c4b841b95ed12132727275a3b9a5a6eb1241",
+      "mode": "100644",
+      "size": 122505,
+      "active": false,
+      "source_review_pending": true
+    },
+    {
+      "repo": "Simple-With-Us/AI-Fleet-Coordinator",
+      "source_commit": "3ce1e3f8fc40f7376cbf2be658781e6386399b4d",
+      "path": "scripts/test-lark-mm-bridge.py",
+      "blob_sha": "287b0c42cb7234deb9fd03d359ed6e52fe40959e",
+      "mode": "100644",
+      "size": 104969,
+      "active": false,
+      "source_review_pending": true
+    },
+    {
+      "repo": "Simple-With-Us/AI-Fleet-Coordinator",
+      "source_commit": "3ce1e3f8fc40f7376cbf2be658781e6386399b4d",
+      "path": "scripts/test_operator_provenance.py",
+      "blob_sha": "d3c23c8fd8b3ea6b73897c6ab456355a488e3f0a",
+      "mode": "100644",
+      "size": 3973,
+      "active": false,
+      "source_review_pending": true
+    }
+  ]
+}
