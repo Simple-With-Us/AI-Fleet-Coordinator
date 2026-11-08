@@ -5,9 +5,9 @@ import XCTest
 //
 // No test here starts a process or reaches the network:  the runner is a fake, and the answers
 // are fixed text.  `plannedAnswer` is a real answer:  it is the helper's planned envelope around
-// the output of `reduce_status` (scripts/agent_sync/reduced_status.py, PR 1479) run on a status
+// the output of `reduce_status` (scripts/simple_tools/reduced_status.py, PR 1479) run on a status
 // document shaped like that PR's own test fixture (`status_document` in
-// scripts/agent_sync/tests/test_reduced_status.py), with `now` at 2:00 PM on Nov 8, 2026.
+// scripts/simple_tools/tests/test_reduced_status.py), with `now` at 2:00 PM on Nov 8, 2026.
 
 /// Answers every run with one result, and records the argv it was asked to run.
 private final class EavesdropperRunner: OpsRunning, @unchecked Sendable {

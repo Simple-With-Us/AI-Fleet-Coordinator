@@ -152,7 +152,7 @@ final class ListenerConfigFileTests: XCTestCase {
     }
 
     /// A cap a table does not hold yet is added to it,  and the rest of the line stays.  The exact
-    /// lines here are parsed by `tomllib` in `scripts/agent_sync/tests/test_check_config.py`.
+    /// lines here are parsed by `tomllib` in `scripts/simple_tools/tests/test_check_config.py`.
     func test_a_write_adds_a_key_to_an_existing_table() throws {
         let document = ListenerConfigDocument(text: """
         [seat.MM]
