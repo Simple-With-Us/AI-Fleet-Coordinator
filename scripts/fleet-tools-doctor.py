@@ -31,6 +31,11 @@ fleet-server-status of at most 512 KiB.  On the Mac, `--remote` with `--write P
 valid `serverStatus` to ~/.local/state/fleet-tools/server-status.json (0600, atomically) and
 leaves it out of the combined report.
 
+AFC-576:  on the server, `--json` also carries `appProcesses`, the fleet-app process scan of
+scripts/fleet_app_processes.py (no argv, no environment).  On the Mac, `--write PATH` also
+scans the Mac and writes it, with the server's scan, to app-processes.json beside PATH;  the
+server's scan never enters the combined report.  A scan that fails never fails the doctor.
+
 `--vms` pulls each VM named in ~/.config/fleet-tools/vm-hosts.json over its read-only
 forced-command key (the key prints `fleet-vm-status.py --json`) into
 ~/.local/state/fleet-tools/vms/<label>.json, 0600 and atomically.  A missing config is a
@@ -3319,6 +3324,21 @@ def pull_vms(
     return [result for result in results if result is not None]
 
 
+def app_processes():
+    """AFC-576:  scripts/fleet_app_processes.py beside this file, or None when it cannot load.
+    Loaded by path, because `python3 -I` leaves this folder off sys.path."""
+    try:
+        import importlib.util
+
+        path = Path(__file__).resolve().parent / "fleet_app_processes.py"
+        spec = importlib.util.spec_from_file_location("fleet_app_processes", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    except Exception:
+        return None
+
+
 def combined_report(docs: list) -> dict:
     apply_skew(docs)
     return {
@@ -3646,6 +3666,12 @@ def run(
     elif host == "mac" and args.write:
         server = unreachable_server(f"{NO_ROUTE} (no --remote given)")
     vms = pull_vms(runner=runner) if args.vms else []
+    scan = app_processes()  # AFC-576:  the fleet-app process scan
+    if scan and host == "mac" and report_path:
+        mac_scan = scan.scan_host("mac", runner=runner, home=HOME)
+        scan.keep(server, mac_scan, report_path.parent / scan.REPORT_NAME, write_report)
+    elif server is not None:
+        server.pop("appProcesses", None)
     combined = None
     if args.write:
         docs = json.loads(
@@ -3661,6 +3687,8 @@ def run(
             status = read_server_status()
             if status is not None:
                 doc["serverStatus"] = status
+            if scan:
+                doc["appProcesses"] = scan.scan_host("server", runner=runner, home=HOME)
         print(json.dumps(doc, indent=2))
     elif report_path:
         far = ""
