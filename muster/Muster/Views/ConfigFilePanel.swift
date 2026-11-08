@@ -192,19 +192,30 @@ struct RuleArtifactView: View {
             }
             switch artifact {
             case .file(_, let text, let truncated, _):
-                if truncated {
-                    Text("The file is longer than the panel reads, so this is its first part.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                // An instruction file carries the onboarding marks (AFC-444);  every other
+                // artifact reads as the plain text it is.
+                if rule.configKind == .instructions {
+                    InstructionFilePreview(
+                        text: text,
+                        platform: rule.platform,
+                        seatTags: [rule.seat],
+                        truncated: truncated
+                    )
+                } else {
+                    if truncated {
+                        Text("The file is longer than the panel reads, so this is its first part.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    ScrollView(.horizontal, showsIndicators: true) {
+                        Text(text.isEmpty ? "(the file is empty)" : text)
+                            .font(.system(size: 11, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(10)
+                    }
+                    .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 7))
                 }
-                ScrollView(.horizontal, showsIndicators: true) {
-                    Text(text.isEmpty ? "(the file is empty)" : text)
-                        .font(.system(size: 11, design: .monospaced))
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(10)
-                }
-                .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 7))
             case .directory(_, let entries):
                 if entries.isEmpty {
                     Text("The directory is empty.")
