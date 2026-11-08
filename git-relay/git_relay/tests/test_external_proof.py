@@ -4,11 +4,9 @@ Forged, stale, replayed and wrong-seat receipts are refused; a timeout is an
 inconclusive record that is never signed and whose retry carries a fresh id.
 """
 
-import io
 import json
 import time
 import unittest
-import socket
 
 from git_relay.deploy_proof import (
     INCONCLUSIVE,
@@ -89,7 +87,7 @@ class ExternalProofTests(unittest.TestCase):
         self.assertEqual(record["outcome"], REFUSED)
 
     def test_timeout_is_inconclusive_and_never_signed(self):
-        relay = FakeRelay(fail_probe=socket.timeout("timed out"))
+        relay = FakeRelay(fail_probe=TimeoutError("timed out"))
         record = proof(relay)("swu-zc", "proof-0003")
         self.assertEqual(record["outcome"], INCONCLUSIVE)
         self.assertEqual(record["stage"], "probe")
@@ -103,7 +101,7 @@ class ExternalProofTests(unittest.TestCase):
         self.assertNotEqual(retry["proof_id"], record["proof_id"])
 
     def test_read_timeout_is_inconclusive(self):
-        record = proof(FakeRelay(fail_read=socket.timeout("timed out")))("swu-zc", "p2")
+        record = proof(FakeRelay(fail_read=TimeoutError("timed out")))("swu-zc", "p2")
         self.assertEqual((record["outcome"], record["stage"]), (INCONCLUSIVE, "read"))
 
 
@@ -123,9 +121,13 @@ class ReceiptGateTests(unittest.TestCase):
 
     def test_forged_receipts_are_refused(self):
         with self.assertRaisesRegex(ValueError, "forged"):
-            verify_receipt(b"another key", self.receipt, seat="swu-zc", now=self.now, seen_proof_ids=set())
-        tampered = {"record": dict(self.receipt["record"], refusal="default branch is not writable!"),
-                    "hmac": self.receipt["hmac"]}
+            verify_receipt(
+                b"another key", self.receipt, seat="swu-zc", now=self.now, seen_proof_ids=set()
+            )
+        tampered = {
+            "record": dict(self.receipt["record"], refusal="default branch is not writable!"),
+            "hmac": self.receipt["hmac"],
+        }
         with self.assertRaisesRegex(ValueError, "forged"):
             verify_receipt(KEY, tampered, seat="swu-zc", now=self.now, seen_proof_ids=set())
 
