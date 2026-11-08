@@ -238,6 +238,20 @@ def _gates(host: Host, unit: sp.Unit, args) -> dict:
         raise Refusal(bad)
     if os.path.lexists(args.backing):
         raise Refusal(f"{args.backing} already exists;  refusing to overwrite or adopt it")
+    # The EnvironmentFile is replaced by a new regular file that copies its owner and mode.  A
+    # symlink's own metadata (mode 0777) must never be copied onto a file the root-run service
+    # reads, so a non-regular EnvironmentFile is refused before anything is read or written.
+    try:
+        config_info = os.lstat(unit.config)
+    except OSError:
+        raise Refusal(f"{unit.config} is unreadable") from None
+    if not stat.S_ISREG(config_info.st_mode):
+        raise Refusal(f"{unit.config} must be a regular file, not a symlink or other type")
+    # Environment= and EnvironmentFile= merge per variable, so a seat selector set in
+    # Environment= would sit beside the credential selector and the relay would refuse to start.
+    for var in (sp.SEATS_FILE_VAR, sp.SEATS_VAR, sp.SEATS_CREDENTIAL_VAR):
+        if var in (unit.environment or {}):
+            raise Refusal(f"the unit sets {var} in Environment=;  migrate it by hand first")
     with open(unit.config, "rb") as fh:
         config_bytes = fh.read()
     new_config, seats_path = _config_edit(config_bytes)
@@ -593,6 +607,24 @@ def recover(args, host: Host | None = None) -> int:
         if not got:
             print("refusing:  an install-seat or migration transaction holds the policy lock")
             return 2
+        # The journal was read before the locks.  An apply or another recover may have finished
+        # since, so act only on a fresh copy that passes the same validation and names the same
+        # files the locks were taken on.
+        fresh = _read_journal(args.journal_dir)
+        if fresh is None:
+            print("refusing:  the journal was removed while taking the locks")
+            return 2
+        bad = _validate_journal(fresh, host, args.unit)
+        if bad:
+            print(f"refusing:  {bad}")
+            return 2
+        if (fresh["policy"]["path"], fresh["backing"]) != (
+            journal["policy"]["path"],
+            journal["backing"],
+        ):
+            print("refusing:  the journal changed while taking the locks;  run recover again")
+            return 2
+        journal = fresh
         if journal["phase"] == "healthy":
             try:
                 with open(journal["backing"], "rb") as fh:

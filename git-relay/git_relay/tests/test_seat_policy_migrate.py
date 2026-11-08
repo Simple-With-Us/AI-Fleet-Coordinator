@@ -100,6 +100,7 @@ class FakeHost(mg.Host):
         return text
 
     unit_name = UNIT
+    extra_env = None
 
     def relay_credential_directory(self, unit):
         return "/run/credentials/git-relay.service"
@@ -110,7 +111,11 @@ class FakeHost(mg.Host):
             relay=self.relay,
             config=str(self.root / "config.env"),
             apps_token="/etc/git-relay/apps.infisical-token",
-            environment={"GIT_RELAY_HOST": "127.0.0.1", "GIT_RELAY_PORT": "8471"},
+            environment={
+                "GIT_RELAY_HOST": "127.0.0.1",
+                "GIT_RELAY_PORT": "8471",
+                **(self.extra_env or {}),
+            },
             user="git-relay",
             dynamic_user=True,
             seat_credential=self._backing(),
@@ -625,6 +630,47 @@ class MigrateTests(unittest.TestCase):
         self.assertIn("never deletes a journal", out)
         self.assertTrue((self.journal / mg.JOURNAL).exists())
         self.assert_unchanged()
+
+    def test_a_symlinked_environment_file_is_refused_before_anything_is_written(self):
+        real = self.root / "real-config.env"
+        real.write_bytes(self.config.read_bytes())
+        self.config.unlink()
+        os.symlink(real, self.config)
+        for fn in (mg.plan, mg.apply):
+            with self.subTest(fn=fn.__name__):
+                rc, out = self.run_cmd(fn)
+                self.assertEqual(rc, 2)
+                self.assertIn("must be a regular file", out)
+                self.assertTrue(os.path.islink(self.config))
+                self.assertEqual(self.host.calls, [])
+                self.assertFalse(os.path.lexists(self.backing))
+
+    def test_a_seat_selector_in_environment_is_refused(self):
+        for var in (sp.SEATS_FILE_VAR, sp.SEATS_VAR, sp.SEATS_CREDENTIAL_VAR):
+            with self.subTest(var=var):
+                self.host.extra_env = {var: "x"}
+                rc, out = self.run_cmd(mg.apply)
+                self.assertEqual(rc, 2)
+                self.assertIn("in Environment=", out)
+                self.assert_unchanged()
+                self.assertEqual(self.host.calls, [])
+
+    def test_recover_acts_only_on_a_journal_that_is_still_there_after_the_locks(self):
+        self.assertEqual(self.run_cmd(mg.apply)[0], 0)
+        self.host = FakeHost(self.root)
+        self.args = SimpleNamespace(unit=UNIT, journal_dir=str(self.journal))
+        real_acquire = mg._Locks.acquire
+
+        def acquire_then_lose_the_journal(locks):
+            got = real_acquire(locks)
+            (self.journal / mg.JOURNAL).unlink()
+            return got
+
+        with mock.patch.object(mg._Locks, "acquire", acquire_then_lose_the_journal):
+            rc, out = self.run_cmd(mg.recover)
+        self.assertEqual(rc, 2)
+        self.assertIn("journal was removed while taking the locks", out)
+        self.assertEqual(self.host.calls, [])
 
 
 if __name__ == "__main__":
