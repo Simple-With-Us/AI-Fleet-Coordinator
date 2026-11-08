@@ -444,7 +444,7 @@ enum FleetRegistryReader {
         // The Operator is a listener service, not a command line tool:  the simple-chat CLI's
         // version says nothing about it, so no tool row stands in for it.
         "operator": CodingAppMetadata(title: "The Operator", cli: nil, runsOn: "A service, whose state is not read here"),
-        "botfleet": CodingAppMetadata(title: "BotFleet Personas", cli: nil, runsOn: FleetRegistryReader.notTracked),
+        "botfleet": CodingAppMetadata(title: "BotFleet Bots", cli: nil, runsOn: FleetRegistryReader.notTracked),
     ]
 
     /// Read `fleet-apps.json` at the repository root and build the combined summary.
