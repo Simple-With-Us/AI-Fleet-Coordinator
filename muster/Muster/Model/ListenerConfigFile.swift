@@ -1,6 +1,6 @@
 import Foundation
 
-// The eavesdropper's own configuration file:  `~/.agent-sync/listener.toml`.
+// The eavesdropper's own configuration file:  `~/.simple-tools/listener.toml`.
 //
 // This is not a general TOML implementation.  It reads and writes the shape the eavesdropper
 // actually uses:  scalars,  string arrays,  and inline tables such as

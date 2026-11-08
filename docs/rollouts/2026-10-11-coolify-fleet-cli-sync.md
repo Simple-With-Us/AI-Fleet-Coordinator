@@ -6,7 +6,7 @@ CODEX on the existing Coolify host has Codex installed but lacks the fleet CLIs 
 
 - `scripts/fleet-cli-release.py`: bounded manifest validation, isolated smoke checks, immutable releases, atomic activation, configuration-preserving initial installation, and pause/rollback controls.
 - `scripts/fleet-cli-sync.py`: published-commit and origin validation, Git blob extraction, bounded strict SSH transport, verified receipts, and durable retry state.
-- `scripts/agent-sync-runtime-sync.sh`: an opt-in, time-bounded hook inside the existing updater lock.
+- `scripts/simple-tools-runtime-sync.sh`: an opt-in, time-bounded hook inside the existing updater lock.
 - Focused offline test suites, CI coverage, and the operator protocol in `docs/protocols/coolify-fleet-cli-sync.md`.
 
 ## Decisions / trade-offs

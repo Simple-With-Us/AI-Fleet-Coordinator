@@ -1,0 +1,623 @@
+#!/usr/bin/env python3
+"""ag-wake-bridge:  the webhook the Operator's http wake reaches, and the deliverer that turns
+one wake into a prompt in a specific Antigravity conversation (AFC-665, owner request Nov 8, 2026).
+
+The chain.  A message that tags @AG or DMs the seat lands in the seat's inbox on the listener
+that holds it.  When the seat's section carries wake = "http", the listener POSTs the fixed
+simple-tools-wake/1 contract to the seat's routine URL, signed with the routine key.  This bridge
+is that routine's receiver:  it answers the POST, remembers the wake id, resolves which lettered
+Antigravity conversation the wake belongs to, and runs the delivery command in that conversation.
+
+It holds no Zulip key and no listener state.  Its one secret is the routine key, read from a
+0600 file on every request.  Its registry access is the Operator's read API, signed as the
+OPERATOR principal from the environment (or loaded from ~/.local/bin/mm-registry-env on both the
+server and the Mac).  Message bodies never pass through it:  the wake payload carries metadata
+and a bounded excerpt, and the delivered prompt names the thread, never quotes it.
+
+Usage:
+  ag-wake-bridge serve [--bind ADDR] [--port N] [--config FILE] [--state DIR]
+  ag-wake-bridge deliver --wake-id ID [--topic T] [--channel C] [--link URL] [--config FILE]
+
+Python 3.11+, standard library only.
+"""
+
+from __future__ import annotations
+
+import argparse
+import fcntl
+import hmac
+import json
+import os
+import re
+import sqlite3
+import sys
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import Any
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+CONTRACT = "simple-tools-wake/1"
+SEAT = "AG"
+PLATFORM = "antigravity"
+DEFAULT_PORT = 8792
+MAX_BODY = 64 * 1024
+MAX_TITLE = 120
+SEEN_CAP = 200
+# Antigravity conversation ids are UUIDs; requiring a strict hex UUID prevents a crafted
+# registry row from ever steering an argv token that a child could read as a flag.
+TARGET_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE
+)
+WAKE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+WORD_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{2,}")
+STOP_WORDS = frozenset(
+    "the a an and or of to in on for with at by from antigravity agy afc ops ale this that".split()
+)
+STORE_PRODUCTS = ("antigravity-cli", "antigravity")
+
+_SEEN_LOCK = threading.Lock()
+_INFLIGHT: set[str] = set()
+
+ENV_URL = "SIMPLE_TOOLS_OPERATOR_REGISTRY_URL"
+ENV_PRINCIPAL = "SIMPLE_TOOLS_OPERATOR_REGISTRY_PRINCIPAL"
+ENV_KEY = "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY"
+
+WAKE_TEXT = (
+    "[{seat}\u00b7wake] Wake id {wake_id}.\u00a0 Read your inbox with `simple-chat inbox --peek`, "
+    "respond in the thread that tagged you, and follow your seat rules.\u00a0 This prompt was "
+    "delivered by the Operator's wake bridge; the message metadata and text are not quoted here "
+    "on purpose."
+)
+
+DEFAULT_CONFIG = {
+    "delivery_enabled": False,
+    "command_template": ["agy", "--conversation", "{session_id}", "-p", "{wake_text}"],
+    "timeout_seconds": 900,
+    "target_host": "server",
+}
+
+
+def state_dir(env: dict[str, str]) -> Path:
+    base = env.get("AG_WAKE_STATE") or os.path.join(
+        str(env.get("HOME") or os.path.expanduser("~")), ".local", "state"
+    )
+    return Path(base) / "ag-wake"
+
+
+def load_config(path: Path, *, required: bool = False) -> dict[str, Any]:
+    """The delivery configuration.  A file the caller named explicitly (the flag, or the env
+    var) must exist and must parse:  a config that cannot be read is a refusal that names the
+    path, never a silent run on defaults."""
+    config = dict(DEFAULT_CONFIG)
+    text = ""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        if required:
+            raise SystemExit("ag-wake-bridge: the config file %s is not there" % path)
+        return config
+    except OSError as exc:
+        raise SystemExit(
+            "ag-wake-bridge: the config file %s is unreadable (%s)" % (path, type(exc).__name__)
+        )
+    try:
+        loaded = json.loads(text)
+    except ValueError as exc:
+        raise SystemExit(
+            "ag-wake-bridge: the config file %s is not valid JSON (%s)" % (path, exc)
+        )
+    if not isinstance(loaded, dict):
+        raise SystemExit("ag-wake-bridge: the config file %s is not a JSON object" % path)
+    for key in DEFAULT_CONFIG:
+        if key not in loaded:
+            continue
+        value = loaded[key]
+        if key == "delivery_enabled":
+            if not isinstance(value, bool):
+                raise SystemExit("ag-wake-bridge: %s: delivery_enabled must be a boolean" % path)
+        elif key == "command_template":
+            if (
+                not isinstance(value, list)
+                or not value
+                or not all(isinstance(part, str) and part for part in value)
+            ):
+                raise SystemExit(
+                    "ag-wake-bridge: %s: command_template must be a non-empty list of strings"
+                    % path
+                )
+        elif key == "timeout_seconds":
+            if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+                raise SystemExit(
+                    "ag-wake-bridge: %s: timeout_seconds must be a positive whole number" % path
+                )
+        elif key == "target_host":
+            if value not in ("mac", "server", ""):
+                raise SystemExit(
+                    "ag-wake-bridge: %s: target_host must be mac, server or empty" % path
+                )
+        config[key] = value
+    return config
+
+
+def read_key(env: dict[str, str]) -> str:
+    path = Path(env.get("AG_WAKE_KEY_FILE") or str(state_dir(env) / "routine-key"))
+    try:
+        key = path.read_text(encoding="utf-8").strip()
+        mode = os.stat(path).st_mode & 0o777
+    except OSError:
+        return ""
+    if mode & 0o077 or len(key) < 16:
+        return ""
+    return key
+
+
+def store_paths(env: dict[str, str]) -> list[Path]:
+    explicit = (env.get("AG_WAKE_STORE") or "").strip()
+    if explicit:
+        return [Path(explicit)]
+    home = str(env.get("HOME") or os.path.expanduser("~"))
+    return [
+        Path(home) / ".gemini" / product / "conversation_summaries.db"
+        for product in STORE_PRODUCTS
+    ]
+
+
+# --------------------------------------------------------------------------------------------
+# The registry read:  which lettered sessions are live, and which one the wake belongs to.
+# --------------------------------------------------------------------------------------------
+
+
+def registry_history(env: dict[str, str], limit: int = 50) -> list[dict[str, Any]]:
+    """The Operator registry's antigravity rows, over its read API.  Empty on any failure."""
+    seam = (env.get("AG_WAKE_HISTORY_FILE") or "").strip()
+    if seam:
+        try:
+            with open(seam, encoding="utf-8") as fh:
+                answer = json.load(fh)
+            if isinstance(answer, list):
+                return answer
+            return answer.get("items") or [] if isinstance(answer, dict) else []
+        except (OSError, ValueError):
+            return []
+    from simple_tools import platform_letter as PL
+    from simple_tools import registry_api as RA
+
+    merged = dict(PL.with_registry_env(env))
+    answer = RA.call(merged, "history", {"platform": PLATFORM, "limit": limit}, timeout=10)
+    if not isinstance(answer, dict) or "error" in answer:
+        return []
+    rows = answer.get("rows") or answer.get("records") or answer.get("items") or []
+    return rows if isinstance(rows, list) else []
+
+
+def _parse_timestamp(value: Any) -> float:
+    """An epoch timestamp or an ISO-8601 timestamp string (`alias_assignments.assigned_at`) as a
+    comparable float; 0.0 when unset or unparseable."""
+    if value is None or isinstance(value, bool):
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    if not text:
+        return 0.0
+    try:
+        return float(text)
+    except ValueError:
+        pass
+    try:
+        from datetime import datetime
+
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
+
+
+def _words(text: str) -> set[str]:
+    return {w for w in WORD_RE.findall(text or "") if w.lower() not in STOP_WORDS}
+
+
+def pick_target(
+    rows: list[dict[str, Any]], topic: str, stores: Path | list[Path], target_host: str
+) -> tuple[str, str]:
+    """(native session id, why) for the best live row, or ("", reason).  Rows that resolve to a
+    sub-agent or killed conversation in the summaries store, or that live on another host, never
+    win."""
+    store_list = [stores] if isinstance(stores, Path) else list(stores)
+    topic_words = _words(topic)
+    best: tuple[float, float, str] = (0.0, 0.0, "")
+    fallback: tuple[float, str] = (0.0, "")
+    candidates: list[tuple[float, str, str]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if (
+            row.get("retired_at")
+            or row.get("closed_at")
+            or str(row.get("state") or "") == "closed"
+        ):
+            continue
+        host = str(row.get("verified_host") or "")
+        if target_host and host and host != target_host:
+            continue
+        sid = str(row.get("native_session_id") or "")
+        if not TARGET_RE.fullmatch(sid):
+            continue
+        candidates.append((_parse_timestamp(row.get("assigned_at")), sid, str(row.get("title") or "")))
+    excluded = _excluded_ids(store_list, [sid for _, sid, _ in candidates])
+    for seen, sid, title in candidates:
+        if sid in excluded:
+            continue
+        title_words = _words(title)
+        overlap = len(topic_words & title_words) if topic_words else 0
+        if overlap > 0 and (float(overlap), seen) > best[:2]:
+            best = (float(overlap), seen, sid)
+        if seen > fallback[0]:
+            fallback = (seen, sid)
+    if best[2]:
+        return best[2], "topic-match"
+    if fallback[1]:
+        return fallback[1], "most-recent"
+    return "", "no-live-session"
+
+
+def _excluded_ids(stores: list[Path], sids: list[str]) -> set[str]:
+    """The ids among `sids` that any summaries database marks as a sub-agent or killed."""
+    if not sids:
+        return set()
+    excluded: set[str] = set()
+    placeholders = ",".join("?" * len(sids))
+    for store in stores:
+        if not store.is_file():
+            continue
+        conn = None
+        try:
+            conn = sqlite3.connect("file:%s?mode=ro" % store, uri=True, timeout=5)
+            cols = {
+                str(r[1])
+                for r in conn.execute("PRAGMA table_info(conversation_summaries)").fetchall()
+            }
+            if "conversation_id" not in cols:
+                continue
+            checks: list[str] = []
+            if "parent_conversation_id" in cols:
+                checks.append("COALESCE(parent_conversation_id, '') != ''")
+            if "nesting_depth" in cols:
+                checks.append("COALESCE(nesting_depth, 0) > 0")
+            if "killed" in cols:
+                checks.append("COALESCE(killed, 0) != 0")
+            if not checks:
+                continue
+            where = " OR ".join(checks)
+            rows = conn.execute(
+                "SELECT conversation_id FROM conversation_summaries"
+                " WHERE (%s) AND conversation_id IN (%s)" % (where, placeholders),
+                sids,
+            ).fetchall()
+            excluded.update(str(r[0]) for r in rows if r and r[0])
+        except sqlite3.Error:
+            continue
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except sqlite3.Error:
+                    pass
+    return excluded
+
+
+# --------------------------------------------------------------------------------------------
+# Delivery:  one prompt into one session, once, with a lock and a receipt.
+# --------------------------------------------------------------------------------------------
+
+
+def _seen_list(path: Path) -> list[str]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, list):
+            return []
+        return list(dict.fromkeys(str(x) for x in data if x is not None))
+    except (OSError, ValueError):
+        return []
+
+
+def seen_ids(path: Path) -> set[str]:
+    return set(_seen_list(path))
+
+
+def remember_id(path: Path, wake_id: str) -> None:
+    existing = _seen_list(path)
+    if wake_id in existing:
+        existing.remove(wake_id)
+    existing.append(wake_id)
+    ids = existing[-SEEN_CAP:]
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    tmp = path.with_suffix(".tmp")
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(ids) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+        dir_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def session_lock(store_dir: Path, sid: str):
+    store_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    return open(
+        os.open(str(store_dir / ("session-%s.lock" % sid)), os.O_CREAT | os.O_RDWR, 0o600), "w"
+    )
+
+
+def deliver(
+    env: dict[str, str],
+    config: dict[str, Any],
+    *,
+    wake_id: str,
+    topic: str,
+    channel: str,
+    link: str,
+    log_path: Path | None = None,
+) -> dict[str, Any]:
+    """Resolve the target and run the delivery command.  Never raises."""
+    if not config.get("delivery_enabled"):
+        return {"delivered": False, "reason": "delivery-disabled"}
+    if not WAKE_ID_RE.fullmatch(wake_id or ""):
+        return {"delivered": False, "reason": "bad-wake-id"}
+    stores = store_paths(env)
+    try:
+        rows = registry_history(env)
+    except Exception:  # noqa: BLE001 - an unreadable registry is an undelivered wake, never a crash
+        rows = []
+    try:
+        sid, why = pick_target(rows, topic, stores, str(config.get("target_host") or "server"))
+    except Exception:  # noqa: BLE001 - a malformed row never crashes delivery
+        sid, why = "", "no-live-session"
+    if not sid:
+        return {"delivered": False, "reason": why}
+    text = WAKE_TEXT.format(seat=SEAT, wake_id=wake_id)
+    argv = [
+        str(part).replace("{session_id}", sid).replace("{wake_text}", text)
+        for part in (config.get("command_template") or [])
+    ]
+    if not argv:
+        return {"delivered": False, "reason": "no-command"}
+    lock_path = state_dir(env)
+    with session_lock(lock_path, sid) as lock:
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return {"delivered": False, "reason": "session-busy", "session_id": sid}
+        spawn_env = {
+            "HOME": env.get("HOME") or os.path.expanduser("~"),
+            "PATH": env.get("PATH") or "/usr/local/bin:/usr/bin:/bin",
+            "AGENT_LAUNCHER": "simple-tools-wake",
+            "AGENT_LAUNCH_SEAT": SEAT,
+            "AGENT_SEAT": SEAT,
+        }
+        try:
+            import subprocess
+
+            proc = subprocess.run(
+                argv,
+                env=spawn_env,
+                capture_output=True,
+                timeout=int(config.get("timeout_seconds") or 900),
+                check=False,
+            )
+            delivered = proc.returncode == 0
+            reason = "ok" if delivered else "command-failed-%d" % proc.returncode
+        except subprocess.TimeoutExpired:
+            delivered, reason = False, "command-timeout"
+        except OSError as exc:
+            delivered, reason = False, "command-error-%s" % type(exc).__name__
+    receipt = {
+        "at": time.time(),
+        "wake_id": wake_id,
+        "session_id": sid,
+        "picked": why,
+        "delivered": delivered,
+        "reason": reason,
+    }
+    if log_path is None:
+        log_path = state_dir(env) / "delivery.jsonl"
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with open(log_path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(receipt, sort_keys=True) + "\n")
+    except OSError:
+        pass
+    return receipt
+
+
+# --------------------------------------------------------------------------------------------
+# The HTTP receiver.
+# --------------------------------------------------------------------------------------------
+
+
+def make_handler(env: dict[str, str], config: dict[str, Any], receipts: list[dict[str, Any]]):
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, fmt: str, *args: Any) -> None:
+            pass
+
+        def _answer(self, code: int, payload: dict[str, Any]) -> None:
+            body = (json.dumps(payload) + "\n").encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self) -> None:
+            if self.path == "/health":
+                self._answer(200, {"ok": True, "seat": SEAT})
+            else:
+                self._answer(404, {"error": "not found"})
+
+        def do_POST(self) -> None:
+            key = read_key(env)
+            if not key:
+                self._answer(503, {"error": "the routine key is missing or unreadable"})
+                return
+            auth = self.headers.get("Authorization") or ""
+            if not hmac.compare_digest(
+                auth.encode("utf-8"), ("Bearer %s" % key).encode("utf-8")
+            ):
+                self._answer(401, {"error": "bad bearer"})
+                return
+            if not re.fullmatch(r"/wake/[A-Z0-9][A-Z0-9_-]{0,31}", self.path or ""):
+                self._answer(404, {"error": "not found"})
+                return
+            raw_length = (self.headers.get("Content-Length") or "").strip()
+            if not raw_length.isdigit() or len(raw_length) > 9:
+                self._answer(400, {"error": "Content-Length missing or malformed"})
+                return
+            length = int(raw_length)
+            if length <= 0 or length > MAX_BODY:
+                self._answer(413, {"error": "body size refused"})
+                return
+            try:
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            except (ValueError, UnicodeDecodeError):
+                self._answer(400, {"error": "body is not JSON"})
+                return
+            if not isinstance(payload, dict) or payload.get("contract") != CONTRACT:
+                self._answer(400, {"error": "unknown contract"})
+                return
+            if str(payload.get("seat") or "") != SEAT:
+                self._answer(403, {"error": "seat mismatch"})
+                return
+            wake_id = str(payload.get("wake_id") or "")
+            if not WAKE_ID_RE.fullmatch(wake_id):
+                self._answer(400, {"error": "wake_id missing or malformed"})
+                return
+            seen_path = state_dir(env) / "seen.json"
+            with _SEEN_LOCK:
+                if wake_id in seen_ids(seen_path):
+                    self._answer(
+                        200, {"delivered": False, "reason": "already-seen", "wake_id": wake_id}
+                    )
+                    return
+                if wake_id in _INFLIGHT:
+                    self._answer(
+                        200, {"delivered": False, "reason": "in-flight", "wake_id": wake_id}
+                    )
+                    return
+                _INFLIGHT.add(wake_id)
+            handled = False
+            try:
+                receipt = deliver(
+                    env,
+                    config,
+                    wake_id=wake_id,
+                    topic=str(payload.get("topic") or ""),
+                    channel=str(payload.get("channel") or ""),
+                    link=str(payload.get("zulip_link") or ""),
+                )
+                handled = (
+                    bool(receipt.get("delivered"))
+                    or receipt.get("reason") == "delivery-disabled"
+                )
+            finally:
+                with _SEEN_LOCK:
+                    _INFLIGHT.discard(wake_id)
+                    if handled:
+                        remember_id(seen_path, wake_id)
+            receipts.append({"wake_id": wake_id, **receipt})
+            del receipts[:-50]
+            if handled:
+                self._answer(200, {"wake_id": wake_id, **receipt})
+            else:
+                self._answer(503, {"wake_id": wake_id, **receipt})
+
+    return Handler
+
+
+def serve(env: dict[str, str], bind: str, port: int, config: dict[str, Any]) -> int:
+    from simple_tools import platform_letter as PL
+    from simple_tools import registry_api as RA
+
+    env = dict(PL.with_registry_env(env))
+    if not RA.base_url(env):
+        raise SystemExit(
+            "ag-wake-bridge: %s is not set: the registry environment is missing"
+            " (source the host's shared registry env file first)" % RA.URL_ENV
+        )
+    key_env = (env.get(RA.KEY_REF_ENV) or "").strip() or RA.KEY_ENV
+    if not (env.get(key_env) or "").strip():
+        raise SystemExit(
+            "ag-wake-bridge: %s is not set: the registry environment is missing"
+            " (source the host's shared registry env file first)" % key_env
+        )
+    if not read_key(env):
+        raise SystemExit(
+            "ag-wake-bridge: the routine key file is missing, short, or group-readable"
+            " (AG_WAKE_KEY_FILE, default %s)" % (state_dir(env) / "routine-key")
+        )
+    receipts: list[dict[str, Any]] = []
+    server = ThreadingHTTPServer((bind, port), make_handler(env, config, receipts))
+    server.daemon_threads = True
+    print("ag-wake-bridge listening on %s:%d for seat %s" % (bind, port, SEAT), flush=True)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    env = dict(os.environ)
+    parser = argparse.ArgumentParser(prog="ag-wake-bridge")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+    p_serve = sub.add_parser("serve")
+    p_serve.add_argument("--bind", default="127.0.0.1")
+    p_serve.add_argument("--port", type=int, default=DEFAULT_PORT)
+    p_deliver = sub.add_parser("deliver")
+    p_deliver.add_argument("--wake-id", required=True)
+    p_deliver.add_argument("--topic", default="")
+    p_deliver.add_argument("--channel", default="")
+    p_deliver.add_argument("--link", default="")
+    for p in (p_serve, p_deliver):
+        p.add_argument("--config", default="")
+    args = parser.parse_args(argv)
+    config_path = Path(
+        args.config
+        or env.get("AG_WAKE_CONFIG")
+        or str(state_dir(env) / "config.json")
+    )
+    config = load_config(config_path, required=bool(args.config or env.get("AG_WAKE_CONFIG")))
+    if args.cmd == "serve":
+        return serve(env, args.bind, args.port, config)
+    receipt = deliver(
+        env,
+        config,
+        wake_id=args.wake_id,
+        topic=args.topic,
+        channel=args.channel,
+        link=args.link,
+    )
+    print(json.dumps(receipt, sort_keys=True))
+    return 0 if receipt.get("delivered") else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

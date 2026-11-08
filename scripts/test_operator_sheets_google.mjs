@@ -1,4 +1,4 @@
-// Tests for agent_sync/operator_sheets_google.mjs (AFC-428).  No network: fetch is injected.
+// Tests for simple_tools/operator_sheets_google.mjs (AFC-428).  No network: fetch is injected.
 // Run: node --test scripts/test_operator_sheets_google.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -6,7 +6,7 @@ import { generateKeyPairSync, createVerify } from "node:crypto";
 import {
   OperatorSheetsGoogle, OperatorSheetsError, createServiceAccountTokenProvider,
   SESSION_HEADERS, EVENT_HEADERS,
-} from "./agent_sync/operator_sheets_google.mjs";
+} from "./simple_tools/operator_sheets_google.mjs";
 
 const SPREADSHEET = "sheet_ABC-123";
 const IDS = { sessions: 2033000102, events: 2033000103 };
@@ -427,8 +427,8 @@ test("oversized, deep or malformed responses fail closed", async () => {
 
 test("the header contract's three copies stay equal (registry, exporter, adapter)", async () => {
   const { readFileSync } = await import("node:fs");
-  const exporter = await import("./agent_sync/operator_sheets_export.mjs");
-  const registry = readFileSync(new URL("./agent_sync/operator_registry.py", import.meta.url), "utf8");
+  const exporter = await import("./simple_tools/operator_sheets_export.mjs");
+  const registry = readFileSync(new URL("./simple_tools/operator_registry.py", import.meta.url), "utf8");
   const tuple = (name) => {
     const block = registry.match(new RegExp(name + " = \\((.*?)\\)", "s"));
     assert.ok(block, name + " tuple present in operator_registry.py");

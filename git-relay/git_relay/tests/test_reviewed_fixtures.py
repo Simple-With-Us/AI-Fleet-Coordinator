@@ -1,6 +1,7 @@
 """Exact-content attestation boundary tests. No network or live credentials."""
 
 import base64
+import unittest
 from hashlib import sha256
 from unittest import TestCase
 from unittest.mock import patch
@@ -96,14 +97,20 @@ class RepoTreeConsistencyTests(TestCase):
 
     repo_root = __import__("pathlib").Path(__file__).resolve().parents[3]
 
-    # Same-path files whose current main bytes legitimately differ from the
-    # attested (post-rename) bytes: the rename edits their content in place.
-    # Empties when the rename lands; then every existing path must digest-match.
+    # Files whose bytes legitimately differ from the attested ones: the rename
+    # that landed spells their credential-shaped test text in pieces, so the
+    # files no longer contain anything the scanner refuses and need no
+    # attestation.  Every other existing path must digest-match.
     KNOWN_PRE_RENAME_DRIFT = frozenset(
         {
             "scripts/fleet_lanes/tests/test_install_mcp.py",
-            "scripts/test-lark-mm-bridge.py",
-            "scripts/test_operator_provenance.py",
+            "scripts/simple-tools-mcp/DEPLOY-PHASE0.md",
+            "scripts/simple-tools-mcp/test/gr-workflow-v1.test.mjs",
+            "scripts/simple-tools-mcp/test/integration.workerd.mjs",
+            "scripts/simple_tools/mcp/fixtures.jsonl",
+            "scripts/simple_tools/tests/test_infisical_api_route.py",
+            "scripts/simple_tools/tests/test_mcp_extras.py",
+            "scripts/simple_tools/tests/test_operator_send.py",
         }
     )
 
@@ -134,3 +141,22 @@ class RepoTreeConsistencyTests(TestCase):
                     REPO, path, ("fixture = 'gh" + "p_" + "A" * 30 + "'\n").encode()
                 )
             )  # no registry entry may excuse bytes other than the exact attested ones
+
+
+class CurrentManifestScopeTests(unittest.TestCase):
+    def test_single_refresh_is_bound_to_manifest_and_existing_destination(self):
+        import json
+        from pathlib import Path
+
+        from git_relay.reviewed_fixtures import _REVIEWED_FIXTURES
+
+        root = Path(__file__).resolve().parents[3]
+        doc = json.loads((root / "docs/security/preservation-pending-manifest.json").read_text())
+        self.assertFalse(doc["active"])
+        rows = doc["single_exact_attestation_refresh"]
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row["path"], "scripts/simple_tools/tests/test_infisical_api_route.py")
+        self.assertEqual(len(row["edits"]), 5)
+        self.assertIn((row["repo"], row["path"], row["result_sha256"]), _REVIEWED_FIXTURES)
+        self.assertEqual(len(_REVIEWED_FIXTURES), 13)

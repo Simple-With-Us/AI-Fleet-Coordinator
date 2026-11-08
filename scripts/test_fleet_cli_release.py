@@ -81,7 +81,7 @@ class ReleaseTests(unittest.TestCase):
         return release.receive(json.dumps(bundle or self.bundle).encode(), self.home, install)
 
     def test_notes_service_reader_required_only_for_new_bundles(self):
-        path = "scripts/agent_sync/notes_service_reader.py"
+        path = "scripts/simple_tools/notes_service_reader.py"
         self.assertTrue(release.allowed_path(path))
         self.assertIn(path, release.TOOL_REQUIRED)
         self.assertNotIn(path, release.BASE_REQUIRED)
@@ -91,7 +91,7 @@ class ReleaseTests(unittest.TestCase):
             release.decode_bundle(json.dumps(self.bundle).encode())
 
     def test_bearer_gate_required_only_for_new_bundles(self):
-        path = "scripts/agent_sync/mcp/bearer_gate.py"
+        path = "scripts/simple_tools/mcp/bearer_gate.py"
         self.assertTrue(release.allowed_path(path))
         self.assertIn(path, release.TOOL_REQUIRED)
         self.assertNotIn(path, release.BASE_REQUIRED)
@@ -103,19 +103,19 @@ class ReleaseTests(unittest.TestCase):
     def test_allowlist_excludes_operator_data_and_noncanonical_paths(self):
         for path in [
             ".secrets/Linear/CODEX.env",
-            "scripts/agent_sync/server/listener.toml",
-            "scripts/agent_sync/tests/test_client.py",
-            "AGENT-SYNC.md",
+            "scripts/simple_tools/server/listener.toml",
+            "scripts/simple_tools/tests/test_client.py",
+            "FLEET-PROTOCOL.md",
             "../../escape",
             "/tmp/escape",
             "scripts//simple-chat",
-            "scripts/agent_sync/../bad.py",
-            "scripts/agent_sync/.env",
-            "scripts/agent_sync/cache.sqlite",
+            "scripts/simple_tools/../bad.py",
+            "scripts/simple_tools/.env",
+            "scripts/simple_tools/cache.sqlite",
         ]:
             self.assertFalse(release.allowed_path(path), path)
 
-    def test_board_ships_with_its_agent_sync_catalog(self):
+    def test_board_ships_with_its_simple_tools_catalog(self):
         # `board commands`, `board run` and `board mcp` read these beside board;  a release without them
         # would leave those verbs dead on the host.
         root = Path(__file__).resolve().parent.parent
@@ -126,7 +126,7 @@ class ReleaseTests(unittest.TestCase):
             self.assertLessEqual((root / path).stat().st_size, release.MAX_FILE_BYTES, path)
         for path in (
             "scripts/linear-board/catalog/other.json",
-            "scripts/linear-board/testdata/agent-sync-fixtures.json",
+            "scripts/linear-board/testdata/simple-tools-fixtures.json",
             "scripts/linear-board/catalog/../board",
         ):
             self.assertFalse(release.allowed_path(path), path)
@@ -196,7 +196,7 @@ class ReleaseTests(unittest.TestCase):
         self.assertIn("scripts/fleet_rag/recall_presentation.py", release.REQUIRED)
         root = Path(__file__).resolve().parent.parent
         candidates = set(release.EXACT)
-        for directory in ("scripts/agent_sync", "scripts/agent_sync/mcp"):
+        for directory in ("scripts/simple_tools", "scripts/simple_tools/mcp"):
             candidates.update(
                 path.relative_to(root).as_posix() for path in (root / directory).glob("*.py")
             )
@@ -662,21 +662,21 @@ class ReleaseTests(unittest.TestCase):
         self.receive(make_bundle("new"))
         current = release.release_at(self.base, "current")
         meta = json.loads((current / "release.json").read_text())
-        del meta["files"]["scripts/agent_sync/cli.py"]
+        del meta["files"]["scripts/simple_tools/cli.py"]
         (current / "release.json").write_text(json.dumps(meta))
         with self.assertRaisesRegex(release.Refused, "invalid_release_metadata"):
             release.control(self.home, "status")
 
-    def test_renamed_entry_points_are_new_bundle_only(self):
-        # #860 r4:  a retained pre-rename release carries scripts/agent-sync, not the three cutover
-        # entry points, so they must live in TOOL_REQUIRED (new bundles carry them) rather than
-        # BASE_REQUIRED (which would make status and rollback refuse the rollback target itself).
+    def test_entry_points_are_new_bundle_only(self):
+        # A retained older release may not carry the three entry points, so they must live in
+        # TOOL_REQUIRED (new bundles carry them) rather than BASE_REQUIRED (which would make status
+        # and rollback refuse the rollback target itself).
         for path in ("scripts/simple-chat", "scripts/simple-notes", "scripts/simple-board"):
             self.assertIn(path, release.TOOL_REQUIRED, path)
             self.assertNotIn(
                 path,
                 release.BASE_REQUIRED,
-                "a retained pre-rename release stays a valid rollback target: " + path,
+                "a retained older release stays a valid rollback target: " + path,
             )
 
     def test_smoke_runs_the_new_tools(self):
@@ -701,7 +701,7 @@ class ReleaseTests(unittest.TestCase):
     def test_file_count_boundary_preserves_decode_and_refusal(self):
         # All entries are allowed and digest-valid, so count is the only boundary.
         for number in range(release.MAX_FILES - len(self.bundle["files"])):
-            self.bundle["files"][f"scripts/agent_sync/boundary_{number}.py"] = {
+            self.bundle["files"][f"scripts/simple_tools/boundary_{number}.py"] = {
                 "mode": 0o644,
                 "sha256": hashlib.sha256(b"# boundary\n").hexdigest(),
                 "data": base64.b64encode(b"# boundary\n").decode(),
@@ -709,7 +709,7 @@ class ReleaseTests(unittest.TestCase):
         self.bundle["bundle_sha256"] = release.manifest_digest(self.bundle["files"])
         raw = json.dumps(self.bundle).encode()
         self.assertEqual(len(release.decode_bundle(raw)[1]), release.MAX_FILES)
-        self.bundle["files"]["scripts/agent_sync/one_too_many.py"] = next(
+        self.bundle["files"]["scripts/simple_tools/one_too_many.py"] = next(
             iter(self.bundle["files"].values())
         )
         self.bundle["bundle_sha256"] = release.manifest_digest(self.bundle["files"])
@@ -755,72 +755,11 @@ class ReleaseTests(unittest.TestCase):
             release.release_at(self.base, "current").name, self.bundle["bundle_sha256"]
         )
 
-    def test_install_migrates_a_prerenamed_codex_registration_instead_of_refusing(self):
-        # A host installed before the CLI rename carries the legacy wrapper path;  the release must
-        # rewrite it (the old wrapper execs scripts/agent-sync, which this release no longer ships).
-        config = self.home / ".codex/config.toml"
-        config.parent.mkdir()
-        legacy = str(self.home / ".local/bin/agent-sync-codex-mcp")
-        config.write_bytes(
-            (
-                'model = "existing-worker"\n'
-                "# Local CODEX-only fleet MCP; no credentials or pinned seat.\n"
-                "[mcp_servers.agent-sync]\n"
-                'command = "%s"\n'
-                'env_vars = ["AGENT_LAUNCHER", "AGENT_LAUNCH_SEAT", "AGENT_SEAT", "AGENT_TAG",'
-                ' "AGENT_SESSION"]\n' % legacy
-            ).encode()
-        )
-        config.chmod(0o600)
-        result = self.receive()
-        self.assertEqual(result["status"], "activated")
-        parsed = tomllib.loads(config.read_text())
-        self.assertEqual(parsed["model"], "existing-worker")
-        self.assertEqual(
-            parsed["mcp_servers"]["simple-chat"]["command"],
-            str(self.home / ".local/bin/simple-chat-codex-mcp"),
-        )
-        self.assertNotIn("agent-sync", config.read_text())
-        self.assertNotIn("agent-sync", parsed["mcp_servers"])
-
-    def test_update_path_migrates_the_prerenamed_codex_registration_too(self):
-        self.receive()
-        config = self.home / ".codex/config.toml"
-        legacy = str(self.home / ".local/bin/agent-sync-codex-mcp")
-        config.write_bytes(
-            (
-                '[mcp_servers.agent-sync]\ncommand = "%s"\n'
-                'env_vars = ["AGENT_LAUNCHER", "AGENT_LAUNCH_SEAT", "AGENT_SEAT", "AGENT_TAG",'
-                ' "AGENT_SESSION"]\n' % legacy
-            ).encode()
-        )
-        self.receive(make_bundle("two"), install=False)
-        self.assertEqual(
-            tomllib.loads(config.read_text())["mcp_servers"]["simple-chat"]["command"],
-            str(self.home / ".local/bin/simple-chat-codex-mcp"),
-        )
-
-    def test_a_renamed_wrapper_under_the_old_key_is_migrated_to_the_new_key(self):
-        config = self.home / ".codex/config.toml"
-        config.parent.mkdir()
-        command = str(self.home / ".local/bin/simple-chat-codex-mcp")
-        config.write_bytes(
-            (
-                '[mcp_servers.agent-sync]\ncommand = "%s"\n'
-                'env_vars = ["AGENT_LAUNCHER", "AGENT_LAUNCH_SEAT", "AGENT_SEAT", "AGENT_TAG",'
-                ' "AGENT_SESSION"]\n' % command
-            ).encode()
-        )
-        self.receive()
-        parsed = tomllib.loads(config.read_text())
-        self.assertEqual(list(parsed["mcp_servers"]), ["simple-chat"])
-        self.assertEqual(parsed["mcp_servers"]["simple-chat"]["command"], command)
-
     def test_a_hand_edited_codex_registration_is_still_refused(self):
         config = self.home / ".codex/config.toml"
         config.parent.mkdir()
-        config.write_bytes(b'[mcp_servers.agent-sync]\ncommand = "/owner/custom"\n')
-        with self.assertRaisesRegex(release.Refused, "existing_agent_sync_mcp_conflict"):
+        config.write_bytes(b'[mcp_servers.simple-chat]\ncommand = "/owner/custom"\n')
+        with self.assertRaisesRegex(release.Refused, "existing_simple_chat_mcp_conflict"):
             self.receive()
 
     def _write_assigned_codex_registration(self):
@@ -870,27 +809,14 @@ class ReleaseTests(unittest.TestCase):
                 ).encode()
                 config.write_bytes(raw)
                 with self.assertRaisesRegex(release.Refused, "existing_simple_chat_mcp_conflict"):
-                    release.new_wrapper_plan(self.home)
+                    release.install_plan(self.home)
                 self.assertEqual(config.read_bytes(), raw)
-
-    def test_assigned_and_legacy_keys_together_are_still_refused(self):
-        config, raw = self._write_assigned_codex_registration()
-        legacy = release.codex_mcp_expected(self.home / ".local/bin")
-        raw += (
-            "[mcp_servers.agent-sync]\ncommand = " + json.dumps(legacy["command"]) + "\n"
-            "env_vars = " + json.dumps(legacy["env_vars"]) + "\n"
-        ).encode()
-        config.write_bytes(raw)
-        with self.assertRaisesRegex(release.Refused, "existing_agent_sync_mcp_conflict"):
-            release.new_wrapper_plan(self.home)
-        self.assertEqual(config.read_bytes(), raw)
 
     def test_non_table_codex_shapes_are_refused_not_an_internal_error(self):
         config = self.home / ".codex/config.toml"
         config.parent.mkdir()
         for text, code in (
             ('mcp_servers = "x"\n', "invalid_codex_config"),
-            ('[mcp_servers]\nagent-sync = "x"\n', "existing_agent_sync_mcp_conflict"),
             ('[mcp_servers]\nsimple-chat = "x"\n', "existing_simple_chat_mcp_conflict"),
         ):
             with self.subTest(text=text):
@@ -898,43 +824,12 @@ class ReleaseTests(unittest.TestCase):
                 with self.assertRaisesRegex(release.Refused, code):
                     self.receive()
 
-    def test_migrate_refuses_non_table_mcp_servers_directly(self):
+    def test_install_plan_refuses_non_table_mcp_servers_directly(self):
         config = self.home / ".codex/config.toml"
         config.parent.mkdir()
         config.write_bytes(b'mcp_servers = "x"\n')
         with self.assertRaisesRegex(release.Refused, "invalid_codex_config"):
-            release.migrate_codex_mcp(self.home, {})
-
-    def test_update_path_refuses_non_table_shapes(self):
-        self.receive()
-        config = self.home / ".codex/config.toml"
-        for text, code in (
-            ('mcp_servers = "x"\n', "invalid_codex_config"),
-            ('[mcp_servers]\nagent-sync = "x"\n', "existing_agent_sync_mcp_conflict"),
-        ):
-            with self.subTest(text=text):
-                config.write_bytes(text.encode())
-                with self.assertRaisesRegex(release.Refused, code):
-                    self.receive(make_bundle("two"), install=False)
-
-    def test_legacy_table_with_extra_key_is_a_conflict_not_a_migration(self):
-        config = self.home / ".codex/config.toml"
-        config.parent.mkdir()
-        expected = release.codex_mcp_expected(self.home / ".local/bin")
-        text = (
-            "[mcp_servers.agent-sync]\ncommand = " + json.dumps(expected["command"]) + "\n"
-            "env_vars = " + json.dumps(expected["env_vars"]) + "\ntimeout = 30\n"
-        ).encode()
-        config.write_bytes(text)
-        with self.assertRaisesRegex(release.Refused, "existing_agent_sync_mcp_conflict"):
-            self.receive()
-        self.assertEqual(config.read_bytes(), text)
-        config.unlink()
-        self.receive()
-        config.write_bytes(text)
-        with self.assertRaisesRegex(release.Refused, "existing_agent_sync_mcp_conflict"):
-            self.receive(make_bundle("two"), install=False)
-        self.assertEqual(config.read_bytes(), text)
+            release.install_plan(self.home)
 
     def test_update_keeps_configuration_and_wrappers_untouched(self):
         self.receive()
@@ -1144,7 +1039,7 @@ class ReleaseTests(unittest.TestCase):
     def test_conflicting_mcp_is_not_overwritten(self):
         config = self.home / ".codex/config.toml"
         config.parent.mkdir()
-        original = b'[mcp_servers.agent-sync]\ncommand = "/owner/custom"\n'
+        original = b'[mcp_servers.simple-chat]\ncommand = "/owner/custom"\n'
         config.write_bytes(original)
         with self.assertRaisesRegex(release.Refused, "mcp_conflict"):
             self.receive()
@@ -1204,15 +1099,15 @@ class ReleaseTests(unittest.TestCase):
 
 
 class ShippedDataFilesTests(unittest.TestCase):
-    """Every data file the agent_sync package reads at run time ships in a release.  The .py
+    """Every data file the simple_tools package reads at run time ships in a release.  The .py
     modules are allowed by pattern;  JSON and similar files must be named in EXACT one by one, and
     a new one that is not breaks the server's `simple-chat mcp` at startup (eavesdropper-tools.json,
     2026-10-16)."""
 
-    def test_every_tracked_agent_sync_data_file_is_allowed(self):
+    def test_every_tracked_simple_tools_data_file_is_allowed(self):
         root = Path(__file__).resolve().parent.parent
         tracked = subprocess.run(
-            ["git", "-C", str(root), "ls-files", "scripts/agent_sync"],
+            ["git", "-C", str(root), "ls-files", "scripts/simple_tools"],
             capture_output=True,
             text=True,
             check=True,
@@ -1232,13 +1127,13 @@ class ShippedDataFilesTests(unittest.TestCase):
     def test_listener_tools_is_required_of_new_bundles_only(self):
         # A new bundle must carry it (simple-chat mcp reads it at startup), but retained releases
         # are judged by BASE_REQUIRED, so the ones built before it stay valid rollback targets.
-        self.assertIn("scripts/agent_sync/mcp/eavesdropper-tools.json", release.TOOL_REQUIRED)
-        self.assertNotIn("scripts/agent_sync/mcp/eavesdropper-tools.json", release.BASE_REQUIRED)
+        self.assertIn("scripts/simple_tools/mcp/eavesdropper-tools.json", release.TOOL_REQUIRED)
+        self.assertNotIn("scripts/simple_tools/mcp/eavesdropper-tools.json", release.BASE_REQUIRED)
 
     def test_fleetlink_tools_is_shipped_and_required_of_new_bundles_only(self):
         # The fleetlink_* contract:  simple-chat mcp reads it at startup, so a new bundle must carry it,
         # and an older retained release (built before the stdio FleetLink tools) stays a valid rollback target.
-        path = "scripts/agent_sync/mcp/fleetlink-tools.json"
+        path = "scripts/simple_tools/mcp/fleetlink-tools.json"
         self.assertIn(path, release.EXACT)
         self.assertTrue(release.allowed_path(path))
         self.assertIn(path, release.TOOL_REQUIRED)

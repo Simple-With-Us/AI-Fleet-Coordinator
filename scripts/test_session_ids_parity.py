@@ -1,6 +1,6 @@
 """AFC-361:  every copy of the session-id contract equals fleet-apps.json `sessionIds`.
 
-The board CLI, apple-notes-coding.sh, agent_sync/session_ids.py and agent-sync-mcp/src/session-ids.js each carry a
+The board CLI, apple-notes-coding.sh, simple_tools/session_ids.py and simple-tools-mcp/src/session-ids.js each carry a
 copy, because three of them ship without a package.  This test fails when a copy drifts.
 Run:  cd scripts && python3 -m unittest test_session_ids_parity
 """
@@ -22,7 +22,7 @@ REPO = HERE.parent
 REGISTRY = json.loads((REPO / "fleet-apps.json").read_text(encoding="utf-8"))["sessionIds"]
 BOARD = HERE / "linear-board" / "board"
 NOTES_SH = HERE / "apple-notes-coding.sh"
-JS = HERE / "agent-sync-mcp" / "src" / "session-ids.js"
+JS = HERE / "simple-tools-mcp" / "src" / "session-ids.js"
 
 
 def _tuples(d):
@@ -103,7 +103,7 @@ class PythonParity(unittest.TestCase):
     def test_constants(self):
         sys.path.insert(0, str(HERE))
         try:
-            from agent_sync import session_ids as S
+            from simple_tools import session_ids as S
         finally:
             sys.path.pop(0)
         self.assertEqual(S.ID_PATTERN, REGISTRY["idPattern"])

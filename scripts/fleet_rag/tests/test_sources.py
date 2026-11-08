@@ -220,7 +220,7 @@ class FileSourceTests(unittest.TestCase):
         (repo / "node_modules" / "x" / "README.md").write_text("# nm\n")
         (repo / ".claude" / "skills" / "s1" / "SKILL.md").write_text("---\nname: s1\n---\n# S1\n")
         extra = self.root / "FLEET-PROTOCOL.md"
-        extra.write_text("# Agent sync\n")
+        extra.write_text("# Simple tools\n")
         (repo / "docs" / "dist").mkdir()
         (repo / "docs" / "dist" / "out.md").write_text("# dist\n")
         (repo / "docs" / "vendor").mkdir()
@@ -617,7 +617,7 @@ class ExtraDocWalkerTests(unittest.TestCase):
         (um / "README.md").write_text("# Usage Monitor\n")
 
         self.apps.mkdir()
-        (self.apps / "FLEET-PROTOCOL.md").write_text("# Agent sync protocol\n")
+        (self.apps / "FLEET-PROTOCOL.md").write_text("# Simple tools protocol\n")
         (self.apps / "COOLIFY.md").write_text("# Coolify\n")
         (self.apps / "SOCRATIC-TRADE-EFFORT-LOG.md").write_text("# ST effort\n")
         (self.apps / "EFFORT-LOG-PROTOCOL.md").write_text("# Protocol\n")
@@ -718,11 +718,11 @@ class MirrorSkipTests(unittest.TestCase):
         return kept, skipped
 
     def test_rule_a_live_apps_copy_beats_the_repo_mirror(self):
-        live_sync = self._w(self.apps / "FLEET-PROTOCOL.md", "# Agent sync (live)\n")
+        live_sync = self._w(self.apps / "FLEET-PROTOCOL.md", "# Simple tools (live)\n")
         live_mlp = self._w(self.apps / "MAC-LOCAL-PROCESSES.md", "# Mac local processes (live)\n")
         live_ui = self._w(self.apps / "FLEET-UI-COPY.md")
         self._w(self.apps / "README.md", "# apps readme\n")
-        mirror_sync = self._w(self.fleet / "FLEET-PROTOCOL.md", "# Agent sync (mirror)\n")
+        mirror_sync = self._w(self.fleet / "FLEET-PROTOCOL.md", "# Simple tools (mirror)\n")
         mirror_mlp = self._w(self.fleet / "docs" / "MAC-LOCAL-PROCESSES.md", "# mirror\n")
         mirror_ui = self._w(self.fleet / "FLEET-UI-COPY.md")
         fleet_readme = self._w(self.fleet / "README.md", "# Fleet coordinator\n")
@@ -889,10 +889,10 @@ class MirrorSkipTests(unittest.TestCase):
     def _handbook(self):
         """The shapes build.mjs makes: public pages, a private page, a ruling log whose front matter says public by
         mistake, the README, and generated/FLEET-PROTOCOL.md; plus the live file and the AFC mirror that hold the same text."""
-        live = self._w(self.apps / "FLEET-PROTOCOL.md", f"# Agent sync (live)\n\n{self.RULE}\n")
-        mirror = self._w(self.fleet / "FLEET-PROTOCOL.md", f"# Agent sync (mirror)\n\n{self.RULE}\n")
+        live = self._w(self.apps / "FLEET-PROTOCOL.md", f"# Simple tools (live)\n\n{self.RULE}\n")
+        mirror = self._w(self.fleet / "FLEET-PROTOCOL.md", f"# Simple tools (mirror)\n\n{self.RULE}\n")
         generated = self._w(
-            self.ops / "generated" / "FLEET-PROTOCOL.md", f"# Agent sync (generated)\n\n{self.RULE}\n"
+            self.ops / "generated" / "FLEET-PROTOCOL.md", f"# Simple tools (generated)\n\n{self.RULE}\n"
         )
         h = self.ops / "handbook"
         public = [
@@ -982,7 +982,7 @@ class MirrorSkipTests(unittest.TestCase):
         hits = [d.path for d in docs if self.RULE in d.text_markdown]
         self.assertEqual(hits, [str(mirror)])
 
-    def test_rule_d_keeps_the_public_pages_when_no_agent_sync_copy_is_ingested(self):
+    def test_rule_d_keeps_the_public_pages_when_no_simple_tools_copy_is_ingested(self):
         live, mirror, generated, public, private = self._handbook()
         live.unlink()
         mirror.unlink()  # nothing else holds the text:  the public pages are the only copy
@@ -1003,7 +1003,7 @@ class MirrorSkipTests(unittest.TestCase):
         self.assertEqual(skipped, {})
         self.assertEqual(len([d for d in docs if self.RULE in d.text_markdown]), 1)
 
-    def test_rule_d_is_not_satisfied_by_another_repos_agent_sync_copy(self):
+    def test_rule_d_is_not_satisfied_by_another_repos_simple_tools_copy(self):
         live, mirror, generated, public, private = self._handbook()
         live.unlink()
         mirror.unlink()
@@ -1018,7 +1018,7 @@ class MirrorSkipTests(unittest.TestCase):
     def test_a_live_file_the_walk_rejects_does_not_hide_its_mirrors(self):
         live, mirror, generated, public, private = self._handbook()
         live.write_text(
-            f"# Agent sync (live)\n\n{self.RULE}\n" + "x" * (sources.DOC_MAX_BYTES + 10)
+            f"# Simple tools (live)\n\n{self.RULE}\n" + "x" * (sources.DOC_MAX_BYTES + 10)
         )
         docs = list(
             sources.iter_docs(
@@ -1063,7 +1063,7 @@ class MirrorSkipTests(unittest.TestCase):
                 )
             )
         kept = {d.path for d in docs}
-        # the walk finishes, and since no AGENT-SYNC.md could be read the public pages are the only copy
+        # the walk finishes, and since no FLEET-PROTOCOL.md could be read the public pages are the only copy
         self.assertNotIn(str(mirror), kept)
         for page in public:
             self.assertIn(str(page), kept, page)
@@ -1071,8 +1071,8 @@ class MirrorSkipTests(unittest.TestCase):
     def test_a_live_file_and_mirror_the_walk_both_reject_do_not_hide_the_pages(self):
         live, mirror, generated, public, private = self._handbook()
         big = "x" * (sources.DOC_MAX_BYTES + 10)
-        live.write_text(f"# Agent sync (live)\n\n{self.RULE}\n{big}")
-        mirror.write_text(f"# Agent sync (mirror)\n\n{self.RULE}\n{big}")
+        live.write_text(f"# Simple tools (live)\n\n{self.RULE}\n{big}")
+        mirror.write_text(f"# Simple tools (mirror)\n\n{self.RULE}\n{big}")
         docs = list(
             sources.iter_docs(
                 self.fleet,
@@ -1147,17 +1147,17 @@ class MirrorSkipTests(unittest.TestCase):
         self.assertIsNone(r(elsewhere, ops_repos=ops, live_basenames=live))
         # without an ops repo the rule is off, so existing callers are unchanged
         self.assertIsNone(r(pub, live_basenames=live))
-        # without an ingested AGENT-SYNC.md the public pages and generated/ are the only copy, so they stay
+        # without an ingested FLEET-PROTOCOL.md the public pages and generated/ are the only copy, so they stay
         self.assertIsNone(r(pub, ops_repos=ops))
         self.assertIsNone(r(gen, ops_repos=ops, live_basenames={"MAC-LOCAL-PROCESSES.md"}))
         # the caller may say a copy is ingested that is not live (the coordinator's mirror), or that none is
         self.assertEqual(
-            r(pub, ops_repos=ops, agent_sync_ingested=True), sources.SKIP_HANDBOOK_MIRROR
+            r(pub, ops_repos=ops, simple_tools_ingested=True), sources.SKIP_HANDBOOK_MIRROR
         )
         self.assertEqual(
-            r(gen, ops_repos=ops, agent_sync_ingested=True), sources.SKIP_HANDBOOK_MIRROR
+            r(gen, ops_repos=ops, simple_tools_ingested=True), sources.SKIP_HANDBOOK_MIRROR
         )
-        self.assertIsNone(r(pub, ops_repos=ops, live_basenames=live, agent_sync_ingested=False))
+        self.assertIsNone(r(pub, ops_repos=ops, live_basenames=live, simple_tools_ingested=False))
 
     def test_rule_d_public_page_reads_only_the_front_matter(self):
         rel = pathlib.PurePath("handbook/chat/posting.md")
@@ -1497,14 +1497,13 @@ class ChatLogTests(unittest.TestCase):
 
 
 
-class ProtocolDocRename(unittest.TestCase):
-    """The protocol document was renamed;  readers know the current name only."""
+class ProtocolDocName(unittest.TestCase):
+    """Readers know the protocol document by its one name."""
 
     def test_only_the_current_name_is_known_and_the_extra_docs_list_it(self) -> None:
         self.assertEqual(set(sources.PROTOCOL_DOC_NAMES), {"FLEET-PROTOCOL.md"})
         names = {p.name for p in sources.EXTRA_DOCS}
         self.assertTrue({"FLEET-PROTOCOL.md"} <= names)
-        self.assertNotIn("AGENT-SYNC.md", names)
 
 if __name__ == "__main__":
     unittest.main()

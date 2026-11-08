@@ -43,9 +43,21 @@ struct MacAgent: Decodable, Identifiable, Equatable {
     /// timed out),  or nil when it read it.  A value that is not text reads as
     /// `unreadable`:  the key's presence alone says the agent was not observed.
     let error: String?
+    /// `reporting` or `updater`,  when the allowlist says what depends on this agent.  Any
+    /// other word is not reported.
+    let role: String?
+    /// What stopping this agent costs,  in owner copy:  one printable-ASCII line of 1 to 200
+    /// characters,  as the allowlist gives it.  Text of any other shape is not reported.
+    let stopConsequence: String?
+
+    /// The roles the allowlist can give an agent,  the same words the server's units use.
+    static let roles: Set<String> = ["reporting", "updater"]
+    /// The longest stop consequence the collector carries.
+    static let stopConsequenceLimit = 200
 
     enum CodingKeys: String, CodingKey {
         case label, plistInRepo, installed, loaded, pid, lastExitStatus, controllable, error
+        case role, stopConsequence
     }
 
     /// An agent decodes field by field.  A flag that is missing or unreadable is false:
@@ -61,6 +73,45 @@ struct MacAgent: Decodable, Identifiable, Equatable {
         lastExitStatus = try? container.decodeIfPresent(Int.self, forKey: .lastExitStatus)
         controllable = (try? container.decodeIfPresent(Bool.self, forKey: .controllable)) == true
         error = MacServicesReport.decodeError(container, forKey: .error)
+        let roleWord = try? container.decodeIfPresent(String.self, forKey: .role)
+        role = roleWord.flatMap { MacAgent.roles.contains($0) ? $0 : nil }
+        let consequence = try? container.decodeIfPresent(String.self, forKey: .stopConsequence)
+        stopConsequence = consequence.flatMap { MacAgent.isStopConsequence($0) ? $0 : nil }
+    }
+
+    /// One printable-ASCII line of 1 to `stopConsequenceLimit` characters.
+    static func isStopConsequence(_ text: String) -> Bool {
+        (1...stopConsequenceLimit).contains(text.unicodeScalars.count)
+            && text.unicodeScalars.allSatisfy { (0x20...0x7E).contains($0.value) }
+    }
+
+    /// What depends on this agent,  from its role,  in a sentence;  nil when it has no role.
+    var roleSentence: String? {
+        switch role {
+        case "reporting": return "This agent writes a report Muster reads."
+        case "updater": return "This agent keeps the fleet tools on the Mac up to date."
+        default: return nil
+        }
+    }
+
+    /// What a plan to stop this agent says beyond the general stop warning:  what depends on
+    /// it,  then what stopping it costs,  as the allowlist gives them.  Nil when it says neither.
+    var stopNote: String? {
+        let parts = [roleSentence, stopConsequence].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: ServerStatusCopy.sentenceGap)
+    }
+
+    /// The stop note for the plan of `action`,  from the agents the Mac last read:  only for a
+    /// stop of a LaunchAgent,  and only from the row of that label.
+    static func stopNote(for action: OpsAction, agents: [MacAgent]) -> String? {
+        guard case .macAgent(let verb, let label) = action, verb == .stop else { return nil }
+        return agents.first { $0.label == label }?.stopNote
+    }
+
+    /// True when the plan of `action` may carry a stop note,  so the sheet reads the agents.
+    static func mayHaveStopNote(_ action: OpsAction?) -> Bool {
+        guard case .macAgent(let verb, _)? = action else { return false }
+        return verb == .stop
     }
 
     /// True when the collector read this agent's launchd state,  so `loaded` is an

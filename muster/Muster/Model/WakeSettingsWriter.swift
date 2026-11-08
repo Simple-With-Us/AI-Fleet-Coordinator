@@ -8,7 +8,7 @@ import Foundation
 //   * only a seat the seat partition gives to the Mac is ever written, and a partition that cannot
 //     be read refuses every seat.  The eavesdropper refuses to run with a section for any other seat,
 //     enabled or not, so one such section stops the whole Mac eavesdropper at its next start
-//     (`agent_sync/config.py` `partition_errors`, `daemon.py` `refuse_start`).
+//     (`simple_tools/config.py` `partition_errors`, `daemon.py` `refuse_start`).
 //   * only the value that changed is rewritten, so a comment or a key this app does not know about
 //     survives
 //   * a section holding a line this app cannot read is not written:  the unread line may already
@@ -359,7 +359,7 @@ extension WakeSettingKey {
     }
 
     /// The values a setting may take, when it is a short fixed list.  These come from the eavesdropper:
-    /// `KNOWN_WAKES` and `KNOWN_FALLBACKS` in `agent_sync/config.py`.
+    /// `KNOWN_WAKES` and `KNOWN_FALLBACKS` in `simple_tools/config.py`.
     var choices: [String]? {
         switch self {
         case .wakeType: return WakeType.allCases.map(\.rawValue)
@@ -396,7 +396,7 @@ extension WakeSettingKey {
         if isNumeric {
             guard let number = Double(trimmed) else { return nil }
             // A cap is a count or an amount, so a negative or a non-finite one is not a value this
-            // app can write.  `agent_sync/config.py` would refuse the setting when it read the
+            // app can write.  `simple_tools/config.py` would refuse the setting when it read the
             // file, and the seat would fall back to an inbox wake after a reload:  a bad number
             // must never reach the file.
             guard number.isFinite, number >= 0 else { return nil }
