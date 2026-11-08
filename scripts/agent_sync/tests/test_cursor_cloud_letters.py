@@ -5,6 +5,7 @@ registry;  the Cursor API and `simple-chat dm` are replaced."""
 
 from __future__ import annotations
 
+import datetime
 import io
 import json
 import os
@@ -20,8 +21,14 @@ A1 = "bc-11111111-aaaa-4bbb-8ccc-000000000001"
 A2 = "bc-22222222-aaaa-4bbb-8ccc-000000000002"
 
 
-def agent(sid: str, title: str) -> dict:
-    return {"session_id": sid, "title": title, "url": "https://cursor.com/agents?id=" + sid, "platform": "cursor-cloud"}
+def stamp(hours_ago: float) -> str:
+    when = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=hours_ago)
+    return when.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def agent(sid: str, title: str, hours_ago: float = 1) -> dict:
+    return {"session_id": sid, "title": title, "url": "https://cursor.com/agents?id=" + sid, "platform": "cursor-cloud",
+            "updated_at": stamp(hours_ago)}
 
 
 class Fake:
@@ -150,6 +157,37 @@ class SweepTests(unittest.TestCase):
         self.agents = everyone
         self.run_sweep()
         self.assertEqual(len(self.dm.calls), 1)
+
+
+    def test_an_agent_untouched_past_the_window_takes_no_letter_and_wakes_no_bot(self) -> None:
+        self.agents = [agent(A1, "GB-Director: an old chat", hours_ago=24 * 20), agent(A2, "fix the login page")]
+        out = self.run_sweep()
+        self.assertEqual((out["agents"], out["stale"]), (1, 1))
+        self.assertEqual(self.dm.calls, [])
+        reg = OR.SessionRegistry(self.db)
+        try:
+            self.assertIsNone(reg.lookup("cursor", "cloud", PL.SCOPE, A1))
+        finally:
+            reg.close_db()
+        self.assertRegex(self.label(A2), r"^[A-Z]{2}$")
+
+    def test_an_agent_with_no_readable_time_is_skipped(self) -> None:
+        no_time = agent(A1, "GB-Director: tidy the board")
+        del no_time["updated_at"]
+        self.agents = [no_time, dict(agent(A2, "GB-Fixer: x"), updated_at="yesterday")]
+        out = self.run_sweep()
+        self.assertEqual((out["agents"], out["stale"]), (0, 2))
+        self.assertEqual(self.dm.calls, [])
+
+
+class RecentTests(unittest.TestCase):
+    def test_window(self) -> None:
+        now = datetime.datetime(2026, 11, 8, 12, 0, tzinfo=datetime.timezone.utc).timestamp()
+        self.assertTrue(CCL.recent({"updated_at": "2026-11-08T00:00:01.000Z"}, now))
+        self.assertTrue(CCL.recent({"updated_at": "2026-11-07T00:00:00+00:00"}, now))
+        self.assertFalse(CCL.recent({"updated_at": "2026-11-06T23:59:59Z"}, now))
+        self.assertFalse(CCL.recent({"updated_at": "2026-11-08T00:00:00"}, now))  # no zone:  not trusted
+        self.assertFalse(CCL.recent({}, now))
 
 
 class TitleTests(unittest.TestCase):
