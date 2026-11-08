@@ -73,8 +73,10 @@ export const GRANT_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
 // and src/identity-cache.js states the full trade.
 export const GATE_IDENTITY_CACHE_MS = 60 * 60 * 1000;
 
-// The seat's shared hourly wake envelope:  BOTH wake paths (eavesdropper and
-// webhook) draw on it atomically inside eventClaimWake/webhookWakeClaim.
+// The webhook wake route's hourly envelope, charged atomically inside
+// webhookWakeClaim and counted over every wake claim (listener wakes
+// included), so the webhook route can never push the seat past it.  The
+// eavesdropper's listener wake is never charged or refused by it.
 // A deploy-time reviewed change is the EVENT_WAKE_RATE_LIMIT var, never a
 // source edit;  the constant is the compiled default.  Defined here (not
 // seat-state.js) because loadConfig validates the var, and seat-state.js

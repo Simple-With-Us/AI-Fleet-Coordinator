@@ -24,11 +24,14 @@
 // field would arrive next to the model labeled "data", and a label is not
 // isolation, so there is no note at all.
 //
-// Dedupe, budget and custody are the CANONICAL ones, shared with the listener
-// wake (seat-state.js):  one wake_seen ledger for both paths, so the same
-// wake_id can never cause an event twice across paths, and one hourly
-// envelope (the seat's existing wake budget), so this ingress can never
-// double it.  Delivery ends the claim by custody:
+// Dedupe is the CANONICAL one, shared with the listener wake (seat-state.js):
+// one wake_seen ledger for both paths, so the same wake_id can never cause an
+// event twice across paths.  The hourly budget and the wake_tomb custody cap
+// apply to THIS route only:  the budget counts every claim in wake_seen
+// (listener wakes included), so this ingress can never push the seat past
+// it, but the Zulip listener itself keeps its documented contract (no budget,
+// no custody cap, its own retries and its 503 retry answer) whatever
+// WEBHOOK_WAKE_ENABLED says.  Delivery ends the claim by custody:
 //   - a receiver answered 2xx               -> "delivered"   (settled, spent)
 //   - authoritative rejection / 410 / lapsed -> "rejected"/"gone"/"not_live"
 //   - no live subscription                   -> "no_subscriber"
@@ -58,9 +61,10 @@ export const WEBHOOK_WAKE_MAX_AGE_S = 5 * 60;
 export const WEBHOOK_WAKE_MAX_SKEW_S = 60;
 // The shortest key the Worker accepts.  `openssl rand -hex 32` gives 64.
 export const WEBHOOK_WAKE_MIN_KEY_LEN = 32;
-// The webhook path draws on the seat's ONE hourly wake envelope, shared with
-// the listener wake and charged inside seat-state's canonical eventClaimWake
-// for BOTH paths:  at most this many wakes an hour across both paths.
+// The webhook route's hourly envelope, charged inside seat-state's canonical
+// eventClaimWake for this route only and counted over both paths' claims:
+// the route is refused once the seat has this many wakes in the hour, from
+// either path.  The listener wake itself is never refused by it.
 export const WEBHOOK_WAKE_RATE_LIMIT = WAKE_RATE_LIMIT;
 export const WEBHOOK_WAKE_RATE_WINDOW_MS = WAKE_RATE_WINDOW_MS;
 

@@ -208,22 +208,35 @@ test("UNKNOWN custody is terminal:  no GC horizon, no cap eviction, fail-closed 
   assert.equal((await S.eventClaimWake(store, { wakeId: "w-crash" }, t2)).verdict, "duplicate", "fenced claims never expire into a re-arm");
 });
 
-test("fail-closed:  a full custody ledger refuses NEW admissions instead of evicting unknowns", async () => {
+test("fail-closed:  a full custody ledger refuses NEW webhook admissions instead of evicting unknowns", async () => {
   const store = S.memoryStore();
   // Fill the custody ledger to the cap with tombstones.
   const tomb = {};
   for (let i = 0; i < S.WAKE_CUSTODY_CAP; i++) tomb[`old-${i}`] = T0;
   await store.put("wake_tomb", tomb);
   // A tombstoned id is still a duplicate (custody check first)...
-  assert.equal((await S.eventClaimWake(store, { wakeId: "old-0" }, T0 + 1)).verdict, "duplicate");
-  // ...and a NEW wake is refused, fail-closed:  nothing is evicted for it.
-  const refused = await S.eventClaimWake(store, { wakeId: "w-new" }, T0 + 1);
+  assert.equal((await S.webhookWakeClaim(store, { wakeId: "old-0" }, T0 + 1)).verdict, "duplicate");
+  // ...and a NEW webhook wake is refused, fail-closed:  nothing is evicted for it.
+  const refused = await S.webhookWakeClaim(store, { wakeId: "wh-new" }, T0 + 1);
   assert.equal(refused.verdict, "rate_limited");
   assert.equal((await store.get("wake_tomb"))[`old-${S.WAKE_CUSTODY_CAP - 1}`], T0, "no unknown was evicted");
   // Under the cap again, admission resumes.
   const tomb2 = { "old-0": T0 };
   await store.put("wake_tomb", tomb2);
-  assert.equal((await S.eventClaimWake(store, { wakeId: "w-new" }, T0 + 2)).verdict, "go");
+  assert.equal((await S.webhookWakeClaim(store, { wakeId: "wh-new" }, T0 + 2)).verdict, "go");
+});
+
+test("the custody cap never refuses a Zulip listener (zulip.mention) claim", async () => {
+  const store = S.memoryStore();
+  const tomb = {};
+  for (let i = 0; i < S.WAKE_CUSTODY_CAP + 5; i++) tomb[`old-${i}`] = T0;
+  await store.put("wake_tomb", tomb);
+  const claim = await S.eventClaimWake(store, { wakeId: "w-listener" }, T0 + 1);
+  assert.equal(claim.verdict, "go", "the listener keeps its contract with the webhook route's ledger full");
+  await S.eventSettleWake(store, { wakeId: "w-listener", token: claim.token, outcome: "delivered" }, T0 + 1);
+  assert.equal(Object.keys(await store.get("wake_tomb")).length, S.WAKE_CUSTODY_CAP + 5, "nothing evicted, nothing added");
+  // And no budget applies without one:  a listener claim is never rate_limited.
+  for (let i = 0; i < 20; i++) assert.equal((await S.eventClaimWake(store, { wakeId: `w-many-${i}` }, T0 + 2 + i)).verdict, "go");
 });
 
 test("eventSubLive says why a subscription may no longer receive an event", async () => {

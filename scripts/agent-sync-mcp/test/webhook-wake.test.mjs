@@ -372,21 +372,21 @@ test("webhookWakeReply:  counts only, custody-honest, no secrets or URLs", () =>
 
 // ---------------------------------------------------------------- reviewer blockers (2026-11-05)
 
-test("the shared envelope binds the LISTENER path too: eventClaimWake with budget", async () => {
+test("the envelope binds the webhook route only:  a full hour refuses the next webhook wake, never a listener wake", async () => {
   const store = state.memoryStore();
   // Six webhook wakes claim the hour...
   for (let i = 0; i < WEBHOOK_WAKE_RATE_LIMIT; i++) {
     const c = await state.webhookWakeClaim(store, { wakeId: `wh-${i}` }, NOW_MS);
     assert.equal(c.verdict, "go");
   }
-  // ...and the seventh LISTENER wake is rate_limited at the canonical entry.
-  const limited = await state.eventClaimWake(store, { wakeId: "listener-7", messageId: null, name: EVENT_NAME, budget: { max: WEBHOOK_WAKE_RATE_LIMIT, windowMs: WEBHOOK_WAKE_RATE_WINDOW_MS } }, NOW_MS);
+  // ...the seventh WEBHOOK wake is rate_limited...
+  const limited = await state.webhookWakeClaim(store, { wakeId: "wh-7" }, NOW_MS);
   assert.equal(limited.verdict, "rate_limited");
   assert.ok(limited.retryAfterS >= 1);
-  // Without the budget argument the listener claim path is unchanged.
-  const store2 = state.memoryStore();
-  const plain = await state.eventClaimWake(store2, { wakeId: "listener-plain", messageId: null, name: EVENT_NAME }, NOW_MS);
-  assert.equal(plain.verdict, "go");
+  // ...and the LISTENER wake, claimed as serveWake claims it (no budget), is
+  // admitted:  its documented contract has no hourly limit.
+  const listener = await state.eventClaimWake(store, { wakeId: "listener-7", messageId: null, name: EVENT_NAME }, NOW_MS);
+  assert.equal(listener.verdict, "go");
 });
 
 test("dedupe before budget: a settled duplicate at the cap is a duplicate, never 429", async () => {
@@ -427,7 +427,7 @@ test("UNKNOWN fence: a claim marked dispatched is never re-armed after a crash",
   const reclaim = await state.webhookWakeClaim(store, { wakeId: wake.wake_id }, later);
   assert.equal(reclaim.verdict, "duplicate", "a dispatched-but-unsettled wake stays spent");
   // The listener path agrees:  same ledger, same fence.
-  const reclaim2 = await state.eventClaimWake(store, { wakeId: wake.wake_id, messageId: null, name: EVENT_NAME, budget: { max: 6, windowMs: 60 * 60 * 1000 } }, later);
+  const reclaim2 = await state.eventClaimWake(store, { wakeId: wake.wake_id, messageId: null, name: EVENT_NAME }, later);
   assert.equal(reclaim2.verdict, "duplicate");
   // Without the mark (crash BEFORE dispatch) the claim still re-arms:  no
   // remote effect exists, so retrying the same id is safe.
@@ -528,14 +528,6 @@ test("the claim boundary refuses ids outside the route's syntax and Object.proto
   assert.equal((await state.webhookWakeClaim(store, { wakeId: "ok.id:1-2_3" }, NOW_MS)).verdict, "go");
 });
 
-test("listener wakeReply maps rate_limited to 429", async () => {
-  const { wakeReply } = await import("../src/events.js");
-  const reply = wakeReply({ verdict: "rate_limited", retryAfterS: 42 });
-  assert.equal(reply.status, 429);
-  assert.equal(reply.body.rate_limited, true);
-  assert.equal(reply.retryAfterS, 42);
-});
-
 test("the hourly envelope survives the ledger GC: 16 minutes on, a 7th wake is still refused", async () => {
   const store = state.memoryStore();
   for (let i = 0; i < WEBHOOK_WAKE_RATE_LIMIT; i++) {
@@ -543,7 +535,7 @@ test("the hourly envelope survives the ledger GC: 16 minutes on, a 7th wake is s
   }
   const at16 = NOW_MS + 16 * 60 * 1000;
   assert.equal((await state.webhookWakeClaim(store, { wakeId: "gc-7" }, at16)).verdict, "rate_limited", "the 15-minute GC must not erase the window's accounting");
-  assert.equal((await state.eventClaimWake(store, { wakeId: "gc-7b", messageId: null, name: EVENT_NAME, budget: { max: WEBHOOK_WAKE_RATE_LIMIT, windowMs: WEBHOOK_WAKE_RATE_WINDOW_MS } }, at16)).verdict, "rate_limited", "listener path agrees");
+  assert.equal((await state.eventClaimWake(store, { wakeId: "gc-7b", messageId: null, name: EVENT_NAME }, at16)).verdict, "go", "the listener wake is never budgeted");
   const at61 = NOW_MS + 61 * 60 * 1000 + 1000;
   assert.equal((await state.webhookWakeClaim(store, { wakeId: "gc-7" }, at61)).verdict, "go", "the window itself still rolls");
 });

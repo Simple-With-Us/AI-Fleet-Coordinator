@@ -987,11 +987,14 @@ export const WAKE_SEEN_MS = 15 * MINUTE_MS; // > the wake's 5-minute sent_at win
 // failure), so the eavesdropper's last retry claims again a wake whose isolate died
 // mid-delivery.
 export const WAKE_LEASE_MS = 15 * 1000;
-// One hourly wake envelope per seat, shared by BOTH wake paths (listener and
-// webhook):  it is charged inside eventClaimWake itself, so no path can push
-// the seat past it and the charge is atomic with the claim.
+// The webhook route's hourly wake envelope:  charged inside eventClaimWake
+// (atomic with the claim) only for webhookWakeClaim, and counted over every
+// claim in wake_seen, listener wakes included, so the webhook route can never
+// push the seat past it.  The listener wake is never budgeted.
 export const WAKE_RATE_WINDOW_MS = 60 * MINUTE_MS;
-// Ordinary wake_seen entries must outlive the shared hourly budget window:
+// Ordinary wake_seen entries must outlive the webhook route's hourly budget
+// window (the listener cannot observe the longer retention:  its wakes are
+// refused once sent_at is five minutes old):
 // the old 15-minute GC erased the window's accounting (six claims at T, then
 // a 7th admitted at T+16m against an empty-looking ledger).
 export const WAKE_SEEN_WINDOW_MS = WAKE_RATE_WINDOW_MS + MINUTE_MS;
@@ -1002,10 +1005,11 @@ export const WAKE_SEEN_WINDOW_MS = WAKE_RATE_WINDOW_MS + MINUTE_MS;
 // no remote effect happened, so neither a GC horizon nor a cap trim may ever
 // make such an id claimable again.  Only a token-valid settle that RESOLVES
 // custody (delivered / an authoritative refusal / provable zero-dispatch
-// "retry") removes the id.  The ledger is bounded by FAIL-CLOSED admission:
-// once WAKE_CUSTODY_CAP unknown ids are held, NEW wakes are refused
-// (rate_limited) until an operator reconciles custody;  unknowns are never
-// evicted to make room.
+// "retry") removes the id.  Only the webhook route creates custody, and the
+// ledger is bounded by FAIL-CLOSED admission on that route alone:  once
+// WAKE_CUSTODY_CAP unknown ids are held, NEW webhook wakes are refused
+// (rate_limited) until custody is reconciled;  unknowns are never evicted to
+// make room.  The Zulip listener wake is never refused by the cap.
 export const WAKE_CUSTODY_CAP = 1024;
 async function wakeTomb(store) {
   return (await store.get("wake_tomb")) ?? {};
@@ -1201,8 +1205,10 @@ async function putWakeSeen(store, seen) {
  * (liveSubs), and eventSubLive checks each one again before every attempt.
  * Only subscriptions to `name` (zulip.mention) are returned and counted, so a
  * spike subscription (AFC-477) never changes a wake's answer.
- * With `budget` ({max, windowMs}) the seat's shared hourly envelope is
- * charged here, after dedupe:  {verdict: "rate_limited", retryAfterS}.
+ * With `budget` ({max, windowMs}, passed only by webhookWakeClaim) the hourly
+ * envelope is charged here, after dedupe, and with name fleet.webhook a full
+ * custody ledger refuses the claim:  both answer {verdict: "rate_limited",
+ * retryAfterS}.  The listener (zulip.mention, no budget) never gets that verdict.
  * Returns {verdict: "go", subs, token}, {verdict: "duplicate"},
  * {verdict: "in_flight", retryAfterS} or {verdict: "paused"}.
  */
@@ -1220,25 +1226,37 @@ export async function eventClaimWake(store, { wakeId, messageId = null, name = E
   if (prior && Number.isFinite(prior.until) && prior.until > now) {
     return { verdict: "in_flight", retryAfterS: Math.max(1, Math.ceil((prior.until - now) / 1000)) };
   }
+  // Fail-closed bound, for the webhook route ONLY (name fleet.webhook, from
+  // webhookWakeClaim):  when the held UNKNOWN custody reaches the cap, refuse
+  // NEW webhook admissions instead of evicting unknowns.  The Zulip listener
+  // (zulip.mention) is never refused by it:  only the webhook route creates
+  // custody (the listener never marks dispatched or settles "uncertain"), so a
+  // full ledger may stop the route that filled it but never the listener's
+  // documented wake contract (docs/protocols/agent-sync-mcp.md,
+  // eavesdropper-server.md).  Releasing held entries is the webhook route's
+  // reconciliation design, required before that route is enabled.
+  if (name === WEBHOOK_EVENT_NAME) {
+    const custody = Object.keys(tomb).length;
+    if (custody >= WAKE_CUSTODY_CAP) {
+      await audit(store, { event: "event_wake_custody_full", wake_ref: wakeRefOf(wakeId), custody }, now);
+      return { verdict: "rate_limited", retryAfterS: 3600 };
+    }
+  }
   // UNKNOWN fence:  an expired claim already marked dispatched (the webhook
   // path marks before its first POST) may have caused a remote effect - the
   // request died between dispatch and settle.  It is never re-armed:  the id
   // stays spent.  Claims without the mark reclaim as before (no dispatch, no
   // remote effect), so the listener's behavior is unchanged.
-  // Fail-closed bound:  when the held UNKNOWN custody reaches the cap, refuse
-  // NEW admissions instead of evicting unknowns.
-  const custody = Object.keys(tomb).length;
-  if (custody >= WAKE_CUSTODY_CAP) {
-    await audit(store, { event: "event_wake_custody_full", wake_ref: wakeRefOf(wakeId), custody }, now);
-    return { verdict: "rate_limited", retryAfterS: 3600 };
-  }
   if (prior?.s === "claimed" && prior.dispatched === true) {
     await audit(store, { event: "event_wake_reclaim_fenced", wake_ref: wakeRefOf(wakeId) }, now);
     return { verdict: "duplicate" };
   }
-  // The seat's shared hourly envelope, charged here at the canonical entry so
-  // BOTH wake paths draw on it atomically.  Dedupe first:  a settled or
-  // in-flight id is a duplicate, never a budget charge.
+  // The hourly envelope, charged only when the caller passes `budget`, which
+  // only the webhook route does (webhookWakeClaim).  It counts every claim in
+  // wake_seen, listener wakes included, so the webhook route can never push
+  // the seat past the envelope;  the listener itself is never charged or
+  // refused by it.  Dedupe first:  a settled or in-flight id is a duplicate,
+  // never a budget charge.
   if (budget) {
     // Sound accounting:  the budget is counted from wake_seen, which holds at
     // most WAKE_SEEN_CAP entries trimmed oldest-first, so a max above that
@@ -1423,11 +1441,12 @@ export async function spikeClaim(store, { spikeId, max = 3, windowMs = 60 * MINU
   return { verdict: "go", subs: mine.map((sub) => ({ ...sub })) };
 }
 
-// Jet's additive webhook wake (owner ask 2026-11-04).  Dedupe and budget are
-// the CANONICAL ones, shared with the listener wake:  the budget reads the
-// same wake_seen ledger eventClaimWake writes, so listener and webhook wakes
-// draw on ONE hourly envelope (the seat's existing wake budget) and the new
-// ingress can never double it;  the claim itself IS eventClaimWake, so a
+// Jet's additive webhook wake (owner ask 2026-11-04).  Dedupe is the
+// CANONICAL one, shared with the listener wake, and the budget reads the same
+// wake_seen ledger eventClaimWake writes:  listener claims count toward this
+// route's hourly envelope, so the new ingress can never push the seat past
+// it, while the listener itself is never budgeted or custody-capped (its
+// documented contract is unchanged).  The claim itself IS eventClaimWake, so a
 // wake_id claimed, in flight or settled on EITHER path can never cause a
 // second event on the other.  Custody after delivery is src/webhook-wake.js's
 // contract (uncertain tombstones, never re-arms).  Budget first:  a

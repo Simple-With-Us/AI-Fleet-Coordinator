@@ -694,9 +694,10 @@ export async function deliverEvent(
     const result = await signedPost(fetchFn, { url: sub.url, subId: sub.id, secrets: signingSecrets(sub, now()), webhookId: event.eventId, body, timeoutMs, now });
     // Post-receipt cleanup can never change the outcome:  the response is
     // already back.  body.cancel() throwing SYNCHRONOUSLY (rather than a
-    // rejected promise, which .catch already absorbs) must not escape either -
-    // an exception out of this function is classified by fanOut as UNKNOWN
-    // custody, never as a false zero-dispatch.
+    // rejected promise, which .catch already absorbs) must not escape either:
+    // the webhook path (src/webhook-wake.js) classifies an exception out of
+    // this function as UNKNOWN custody, and the listener as a retry, so a
+    // received answer must never turn into either.
     if (result.response) {
       try {
         await result.response.body?.cancel().catch(() => {});
@@ -733,19 +734,9 @@ export async function fanOut({ gate, wake, subs, allowed, fetchFn, now = Date.no
         const event = { eventId: await eventIdFor(wake.wake_id, sub.id), name: EVENT_NAME, timestamp, data, cursor: null };
         let result;
         try {
-          // backoff: [] - exactly ONE attempt, as on the webhook path:  an
-          // internal retry could repeat an uncertain POST (timeout, 5xx) that
-          // the tombstone cannot undo.  One attempt, then custody
-          // classification in wakeOutcome.
-          result = await deliverEvent(fetchFn, sub, event, { now, deadline, backoff: [], isLive: () => gate.eventSubLive({ subId: sub.id }), ...(sleep ? { sleep } : {}) });
+          result = await deliverEvent(fetchFn, sub, event, { now, deadline, isLive: () => gate.eventSubLive({ subId: sub.id }), ...(sleep ? { sleep } : {}) });
         } catch {
-          // An unexpected throw can follow a REAL dispatch (a sync throw in
-          // signing or post-receipt cleanup):  from inside a catch nothing
-          // proves the POST never happened, so attempts is conservatively
-          // non-zero.  wakeOutcome then reads this as dispatched with an
-          // unknown fate - "uncertain" custody, tombstoned - never a
-          // fabricated zero-dispatch "retry" that re-arms the same wake id.
-          result = { outcome: "failed", status: null, attempts: 1 };
+          result = { outcome: "failed", status: null, attempts: 0 };
         }
         try {
           await gate.eventDeliveryResult({ subId: sub.id, outcome: result.outcome, status: result.status, attempts: result.attempts, reason: result.reason, wakeRef: String(wake.wake_id).slice(0, 40), messageId: wake.message_id });
@@ -759,37 +750,25 @@ export async function fanOut({ gate, wake, subs, allowed, fetchFn, now = Date.no
 }
 
 /**
- * One outcome for a whole wake from fanOut's results, by custody:
- * "no_subscriber" when nothing matched, "delivered" when any delivery got a
- * 2xx, "retry" ONLY for provable zero-dispatch (no attempt made), the
- * permanent drops "rejected" (4xx, redirect), "gone" (410) and "not_live"
- * (paused, revoked, unsubscribed or lapsed) when every dispatch met an
- * authoritative answer, and "uncertain" - tombstoned, never re-armed - for
- * anything else after a dispatch (5xx, 408, 429, timeout, network).
+ * One outcome for a whole wake from fanOut's results:  "no_subscriber" when
+ * nothing matched, "delivered" when any delivery got a 2xx, "retry" when none
+ * did and at least one failed in a way worth retrying (5xx, 408, 429, a
+ * timeout, a network error), else the permanent drop:  "rejected" (another
+ * 4xx or a redirect), "gone" (410) or "not_live" (paused, revoked,
+ * unsubscribed or lapsed since the claim).
  */
 export function wakeOutcome(results) {
   if (results.length === 0) return "no_subscriber";
   if (results.some((r) => r.outcome === "delivered")) return "delivered";
-  // A zero-attempt result (a liveness failure before any send) has no remote
-  // effect and is custody-neutral.  "retry" is reserved for PROVABLE
-  // zero-dispatch:  no attempt was made at all, so the SAME wake may come
-  // back.
-  const dispatched = results.filter((r) => (r.attempts ?? 0) > 0);
-  if (dispatched.length === 0) {
-    return results.every((r) => r.outcome === "not_live") ? "not_live" : "retry";
-  }
-  // Every dispatch met an authoritative answer:  a permanent drop.
-  if (dispatched.every((r) => ["rejected", "gone"].includes(r.outcome))) {
-    return ["rejected", "gone"].find((outcome) => dispatched.some((r) => r.outcome === outcome));
-  }
-  // A dispatch's fate is unknown (5xx, 408, 429, timeout, network):  the wake
-  // is tombstoned, never re-armed - firing again could repeat a turn.
-  return "uncertain";
+  if (results.some((r) => r.outcome === "failed")) return "retry";
+  return ["rejected", "gone", "not_live"].find((outcome) => results.some((r) => r.outcome === outcome)) ?? "rejected";
 }
 
 /**
  * End a claim with SeatGate.eventSettleWake, trying once more if the call
- * throws (a transient Durable Object error).  A repeat is safe:  the settle is
+ * throws (a transient Durable Object error).  Used by the webhook wake path
+ * only (src/webhook-wake.js);  the listener's deliverWake keeps its single
+ * settle and its 503 retry contract.  A repeat is safe:  the settle is
  * token-checked, so if the first call landed and only its answer was lost, the
  * second is a stale no-op ({ok: false}), never a second settle.  Returns true
  * when a call completed, false when both threw (the claim's state is then
@@ -809,14 +788,12 @@ export async function settleWithOneRetry(gate, args) {
 
 /**
  * Deliver one claimed wake (`claim` from SeatGate.eventClaimWake) and end its
- * claim with SeatGate.eventSettleWake:  "retry" (provable zero-dispatch
- * only) forgets the wake so the eavesdropper's next attempt claims it again,
- * any other outcome settles it - "uncertain" tombstones it forever.  Never
- * throws:  an unexpected failure after a possible dispatch is "uncertain",
- * before any dispatch it is a "retry".
+ * claim with SeatGate.eventSettleWake:  "retry" forgets the wake so the
+ * eavesdropper's next attempt claims it again, any other outcome settles it.
+ * Never throws:  anything unexpected is a "retry".
  *
  * `channels` resolves the seat's ChannelSet from Zulip (null when there is no
- * key or the bot is refused).  It runs before any dispatch, so a Zulip
+ * key or the bot is refused).  It runs here, inside the try, so a Zulip
  * failure is a "retry" (503, the eavesdropper sends the wake again), never a
  * permanent refusal.  A DM wake whose held_back names no stream skips it;  a
  * DM is still delivered when it fails, with any channel item in held_back
@@ -828,14 +805,8 @@ export async function deliverWake({ gate, wake, claim, channels = async () => nu
   let outcome = "retry";
   let delivered = 0;
   let streamId = null;
-  let allowed = null;
-  let refused = false;
-  // Whether the dispatch fence was attempted:  from then on a tombstone may
-  // exist that only a successful settle removes.
-  let markAttempted = false;
   try {
-    // Channel resolution happens BEFORE any dispatch, so its failure is a
-    // provable zero-dispatch "retry" (503, the listener sends the wake again).
+    let allowed = null;
     if (wakeNeedsChannels(wake)) {
       if (isDirectWake(wake)) allowed = await channels().catch(() => null);
       else allowed = await channels();
@@ -843,53 +814,22 @@ export async function deliverWake({ gate, wake, claim, channels = async () => nu
     if (wakeChannelRefusal(wake, allowed)) {
       outcome = "channel_refused";
       streamId = Number.isSafeInteger(wake.stream_id) ? wake.stream_id : null;
-      refused = true;
+    } else {
+      const results = await fanOut({ gate, wake, subs: claim.subs, allowed, fetchFn, now, sleep, deadline });
+      outcome = wakeOutcome(results);
+      delivered = results.filter((r) => r.outcome === "delivered").length;
     }
   } catch {
-    console.log(JSON.stringify({ event: "wake_channels_failed" }));
-    refused = true;
+    console.log(JSON.stringify({ event: "wake_fanout_failed" }));
+    outcome = "retry";
+    delivered = 0;
   }
-  if (!refused) {
-    // UNKNOWN fence (the webhook path's contract, applied to the listener
-    // too):  mark the claim before the first dispatch, so a crash between
-    // a callback POST and the settle is never re-armed by lease expiry
-    // (seat-state eventClaimWake), on EITHER path.  No mark, no dispatch:
-    // provably no remote effect, so the claim releases as "retry" and the
-    // SAME wake may come back.
-    let marked = { ok: true };
-    if (claim.subs.length > 0) {
-      markAttempted = true;
-      try {
-        marked = await gate.eventMarkDispatched({ wakeId: wake.wake_id, token: claim.token });
-      } catch {
-        marked = { ok: false };
-      }
-    }
-    if (!marked.ok) {
-      outcome = "retry";
-    } else {
-      try {
-        const results = await fanOut({ gate, wake, subs: claim.subs, allowed, fetchFn, now, sleep, deadline });
-        outcome = wakeOutcome(results);
-        delivered = results.filter((r) => r.outcome === "delivered").length;
-      } catch {
-        // A dispatch may already have happened:  tombstone, never re-arm.
-        console.log(JSON.stringify({ event: "wake_fanout_failed" }));
-        outcome = "uncertain";
-        delivered = 0;
-      }
-    }
-  }
-  if (!(await settleWithOneRetry(gate, { wakeId: wake.wake_id, token: claim.token, outcome, delivered, streamId }))) {
+  try {
+    await gate.eventSettleWake({ wakeId: wake.wake_id, token: claim.token, outcome, delivered, streamId });
+  } catch {
+    // A delivered wake then stays claimed until its lease runs out;  a "retry"
+    // is answered 503 anyway, and the eavesdropper's retry claims it after that.
     console.log(JSON.stringify({ event: "wake_settle_failed", outcome }));
-    // Once the dispatch fence was attempted, a tombstone may stand that only
-    // the failed settle would have removed, and the eavesdropper's retry of
-    // the same wake would then be answered "duplicate".  So a "retry" may no
-    // longer be promised (503 would ask for a retry that cannot deliver):
-    // report custody as held instead.  With no fence attempt (a channel
-    // failure before it) no tombstone exists:  the claim's lease runs out and
-    // the retry claims it again, so "retry" stays honest.
-    if (outcome === "retry" && markAttempted) outcome = "uncertain";
   }
   return { verdict: "go", outcome, subscribers, delivered };
 }
@@ -909,7 +849,6 @@ export async function deliverWake({ gate, wake, claim, channels = async () => nu
 export function wakeReply(result) {
   if (result.verdict === "duplicate") return { status: 200, body: { ok: true, duplicate: true } };
   if (result.verdict === "in_flight") return { status: 503, body: { ok: false, in_flight: true }, retryAfterS: Math.max(1, result.retryAfterS ?? 1) };
-  if (result.verdict === "rate_limited") return { status: 429, body: { ok: false, rate_limited: true }, retryAfterS: Math.max(1, result.retryAfterS ?? 1) };
   if (result.verdict === "paused") return { status: 202, body: { ok: true, paused: true, subscribers: 0 } };
   if (result.outcome === "retry") return { status: 503, body: { ok: false, retry: true, subscribers: result.subscribers, delivered: 0 } };
   return { status: 202, body: { ok: true, subscribers: result.subscribers, delivered: result.delivered, outcome: result.outcome } };

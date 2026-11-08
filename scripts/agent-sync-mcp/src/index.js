@@ -88,7 +88,6 @@ import { SeatEvents, deliverWake, wakeReply, WAKE_BUDGET_MS, EVENT_NAME } from "
 import { verifyWake, wakePathSeat, readBodyBytes, WAKE_SIGNATURE_HEADER, WAKE_MAX_BODY } from "./wake.js";
 import { verifyHealth, healthKey, healthReport, HEALTH_SIGNATURE_HEADER, HEALTH_MAX_BODY } from "./health.js";
 import { serveWa } from "./wa/index.js";
-import { WAKE_RATE_WINDOW_MS } from "./seat-state.js";
 import { resolveSecret, resolveWakeKeys, infisicalStats, infisicalMode, prefetchFolder } from "./infisical.js";
 import { verifySpike, spikePathSeat, spikeKey, deliverSpike, spikeReply, SPIKE_SIGNATURE_HEADER, SPIKE_MAX_BODY, SPIKE_RATE_LIMIT, SPIKE_RATE_WINDOW_MS } from "./spike.js";
 import {
@@ -828,10 +827,11 @@ async function serveWake(request, env, ctx, config) {
     return jsonResponse({ ok: true, disabled: true, subscribers: 0 }, 202);
   }
   const seatGate = gate(env, seat);
-  // The seat's ONE hourly wake envelope, shared with the webhook wake path
-  // and charged atomically inside eventClaimWake (the canonical entry), so
-  // neither path can push the seat past it.
-  const claim = await seatGate.eventClaimWake({ wakeId: wake.wake_id, messageId: wake.message_id, name: EVENT_NAME, budget: { max: config.eventWakeRateLimit, windowMs: WAKE_RATE_WINDOW_MS } });
+  // The listener path keeps its documented contract whatever
+  // WEBHOOK_WAKE_ENABLED says (docs/protocols/agent-sync-mcp.md):  no hourly
+  // budget and no custody cap here.  Only the flagged webhook route
+  // (serveWebhookWake, SeatGate.webhookWakeClaim) is budgeted and custody-capped.
+  const claim = await seatGate.eventClaimWake({ wakeId: wake.wake_id, messageId: wake.message_id, name: EVENT_NAME });
   let result = claim;
   if (claim.verdict === "go") {
     // The answer waits for the deliveries, and waitUntil keeps them (and the
