@@ -7,7 +7,7 @@
 # CHECKOUT/scripts/, and creates ~/.agent-sync (mode 700, the state directory).  CHECKOUT defaults
 # to the managed runtime checkout
 # /Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime,
-# a detached worktree on origin/main that LaunchAgent com.jay.agent-sync-runtime-sync keeps current.
+# a detached worktree on origin/main that LaunchAgent com.jay.simple-tools-runtime-sync keeps current.
 # Never point it at the human integration tree ~/Code/AI-Fleet-Coordinator:  a daemon resets that tree,
 # and a stuck merge there stops it updating.  With --dry-run it only prints what it would do.
 #
