@@ -632,7 +632,11 @@ class CoordinatorSelfIdTests(unittest.TestCase):
         self.assertIn("| MM | `MiniMax` | `minimax/` |", text)
         self.assertNotRegex(text, r"(?m)^\| DSH \|")
         self.assertIn("DSH, DeepSeek Harness (2026-09-19)", text)
-        self.assertIn("`[MM]`", text)
+        # A post header names MiniMax as MM.  The Nov 5 post-header rule
+        # replaced the bare `[MM]` example with `[MM: HH.1.M 📁AFC, OPS]`,
+        # so accept either header form but never the old MINIMAX tag.
+        self.assertRegex(text, r"`\[MM(?:\]|: )")
+        self.assertNotIn("[MINIMAX", text)
         self.assertNotIn("| **MiniMax (`MINIMAX`)** |", text)
         self.assertNotIn("| **DeepSeek (`DEEPSEEK`)** |", text)
         coord = _coord()
@@ -645,7 +649,20 @@ class CoordinatorSelfIdTests(unittest.TestCase):
         text = _protocol_doc_path().read_text(encoding="utf-8")
         self.assertIn("| `AFC` |", text)
         self.assertIn("Simple-With-Us/AI-Fleet-Coordinator", text)
-        self.assertIn("[AFC] sync-N", text)
+        # AFC is the repo acronym, never a seat or a signature.  Before the
+        # Nov 5 post-header rule the coordinator signed `[AFC] sync-N`; since
+        # then AFC appears only in the header's repo list after the folder
+        # mark.  Either way the sender is never FLEET.
+        self.assertIn(
+            "`AFC` is AI-Fleet-Coordinator and `OPS` is Fleet-OPS:  repo acronyms used for "
+            "board items, topics and links, never seats, bots or signatures.",
+            text,
+        )
+        self.assertTrue(
+            "[AFC] sync-N" in text
+            or "with `AFC` or `OPS` in the header’s repo list after `📁`, never as the sender" in text,
+            "the AFC bullet must say how AFC appears in a post",
+        )
         # The fleet-wide wake rule now lives in "Undirected, Directed, and
         # Fleet-Wide"; `fleet` is a recipient only, never a sender or an acronym.
         self.assertIn("### Undirected, Directed, and Fleet-Wide", text)
