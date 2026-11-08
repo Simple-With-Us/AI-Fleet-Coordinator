@@ -87,56 +87,122 @@ enum GridPresentation {
 
     // MARK: Where a seat's config lives
 
-    /// Whether a seat's config is on the Mac at all.
+    /// Where a seat runs, and, apart from that, whether its rules check anything on the Mac.
     ///
-    /// The manifest carries no host field yet, so this is decided from what the manifest
-    /// does carry:  a seat with no rule has nothing on the Mac to check, and its covers say
-    /// where it runs instead.  The cover's own sentence is shown, never parsed.
+    /// A seat's place comes only from its manifest entry's `runsOn` list (GRID-4).  A seat
+    /// without the key is a seat whose place is not known, and it is shown that way:  its
+    /// place is never guessed from its rules (the fleet config design, section 6.1).  Where
+    /// its rules check is a separate fact, which its tooltip and row still state.  A cover's
+    /// own sentence is shown, never parsed.
     enum SeatLocation: Equatable {
-        case onTheMac
-        case notOnTheMac(reason: String?)
+        /// The manifest does not name the seat.
         case notKnown
+        /// The manifest names the seat but not where it runs.  `rulesCheckTheMac` is true
+        /// when the manifest has a rule for the seat, which is read on the Mac;  `reason` is
+        /// the first cover's sentence for a seat with no rule, and nil otherwise.
+        case placeNotSaid(rulesCheckTheMac: Bool, reason: String?)
+        /// The manifest's `runsOn` names where the seat runs.  `checkedOnTheMac` and
+        /// `reason` are as for `placeNotSaid`.
+        case runsOn(places: Set<SeatRunPlace>, checkedOnTheMac: Bool, reason: String?)
 
         static func of(seat: String, manifest: SeatManifest?) -> SeatLocation {
             guard let manifest, let entry = manifest.seats[seat] else { return .notKnown }
-            guard entry.rules.isEmpty else { return .onTheMac }
-            let reason = ConfigKind.columnOrder.lazy
-                .compactMap { manifest.coverReason(seat: seat, kind: $0) }
-                .first
-            return .notOnTheMac(reason: reason)
+            let checked = !entry.rules.isEmpty
+            let reason = checked
+                ? nil
+                : ConfigKind.columnOrder.lazy
+                    .compactMap { manifest.coverReason(seat: seat, kind: $0) }
+                    .first
+            guard !entry.runsOn.isEmpty else {
+                return .placeNotSaid(rulesCheckTheMac: checked, reason: reason)
+            }
+            return .runsOn(places: entry.runsOn, checkedOnTheMac: checked, reason: reason)
         }
+
+        /// Whether the manifest says the seat runs on the Mac, which the chip's colour
+        /// follows:  a seat on the Mac is drawn plain, and any other is marked.  A seat whose
+        /// place is not said is never on the Mac here, whatever its rules check.
+        var runsOnTheMac: Bool {
+            switch self {
+            case .runsOn(let places, _, _): return places.contains(.mac)
+            case .placeNotSaid, .notKnown: return false
+            }
+        }
+
+        /// How the chip is drawn:  plain for a seat the manifest says runs on the Mac (alone or
+        /// with other places), and marked for any other, including a place that is not known,
+        /// which should draw the eye.
+        enum ChipTone: Equatable {
+            case plain
+            case marked
+        }
+
+        var chipTone: ChipTone { runsOnTheMac ? .plain : .marked }
 
         /// The chip under the seat's tag.
         var chip: String {
             switch self {
-            case .onTheMac: return FleetHost.mac.onTitle
-            case .notOnTheMac: return "Not \(FleetHost.mac.onTitle)"
-            case .notKnown: return "Place Not Known"
+            case .notKnown, .placeNotSaid: return "Place Not Known"
+            case .runsOn(let places, _, _): return SeatRunPlace.title(places)
             }
         }
 
         /// The line under a seat's row, when the row needs one to be read right.
+        ///
+        /// A seat that runs somewhere other than the Mac says where (GRID-5).  A seat whose
+        /// place is not said and whose rules check the Mac needs no line:  its chip and
+        /// tooltip say it all.
         var note: String? {
             switch self {
-            case .onTheMac:
-                return nil
-            case .notOnTheMac(let reason):
+            case .placeNotSaid(let checked, let reason):
+                guard !checked else { return nil }
                 let why = reason.map { GridPresentation.gap + $0 } ?? ""
-                return "Not on the Mac, so nothing here is checked for it.\(why)"
+                return "The manifest does not say where this seat runs, and no rule checks anything on the Mac for it.\(why)"
             case .notKnown:
                 return "The manifest does not name this seat, so where its config lives is not known."
+            case .runsOn(let places, let checked, let reason):
+                let runs = "Runs \(SeatRunPlace.prose(places))"
+                let why = reason.map { GridPresentation.gap + $0 } ?? ""
+                switch (places.contains(.mac), checked) {
+                case (true, true):
+                    return nil
+                case (true, false):
+                    return "\(runs), but the manifest names nothing on the Mac to check for it.\(why)"
+                case (false, true):
+                    return "\(runs), not on the Mac;  only what the Mac holds for it is checked here."
+                case (false, false):
+                    return "\(runs), not on the Mac, so nothing here is checked for it.\(why)"
+                }
             }
         }
 
         /// The chip's tooltip.
         var help: String {
             switch self {
-            case .onTheMac:
-                return "This seat's config files are read on the Mac."
-            case .notOnTheMac:
-                return "This seat does not run on the Mac, so the Mac holds none of its config."
+            case .placeNotSaid(let checked, _):
+                let rules = checked
+                    ? "Its rules check files on the Mac."
+                    : "No rule checks anything on the Mac for it."
+                return "The manifest does not say where this seat runs." + GridPresentation.gap + rules
             case .notKnown:
                 return "The manifest does not name this seat."
+            case .runsOn(let places, let checked, _):
+                let runs = "This seat runs \(SeatRunPlace.prose(places))"
+                let elsewhere = places.subtracting([.mac])
+                switch (places.contains(.mac), checked) {
+                case (true, true):
+                    let rest = elsewhere.isEmpty
+                        ? ""
+                        : ", and its config \(SeatRunPlace.prose(elsewhere)) is not checked here"
+                    return "\(runs)." + GridPresentation.gap + "Its config files are read on the Mac\(rest)."
+                case (true, false):
+                    return "\(runs), but the manifest names no config file on the Mac for it."
+                case (false, true):
+                    return "\(runs), not on the Mac." + GridPresentation.gap
+                        + "Only the files the Mac holds for it are read here."
+                case (false, false):
+                    return "\(runs), not on the Mac, so the Mac holds none of its config."
+                }
             }
         }
     }

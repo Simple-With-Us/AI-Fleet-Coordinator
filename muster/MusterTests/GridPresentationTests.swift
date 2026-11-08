@@ -59,27 +59,42 @@ final class GridPresentationTests: XCTestCase {
         XCTAssertTrue(GridPresentation.scopeExplanation.contains(gap))
     }
 
-    /// A seat with rules is read on the Mac;  a seat with none says it is not on the Mac,
-    /// in its cover's own sentence;  a seat the manifest does not name is not known.
-    func test_a_seats_location_comes_from_its_rules_and_covers() throws {
+    /// The fixture has no `runsOn`, so no seat's place is known:  a seat with rules says its
+    /// rules check the Mac, a seat with none carries its cover's own sentence, and a seat
+    /// the manifest does not name is not known.  The rules never decide the place.
+    func test_without_runs_on_a_seats_place_is_not_known() throws {
         let manifest = try manifest()
-        XCTAssertEqual(GridPresentation.SeatLocation.of(seat: "CLAUDE", manifest: manifest), .onTheMac)
+        XCTAssertEqual(
+            GridPresentation.SeatLocation.of(seat: "CLAUDE", manifest: manifest),
+            .placeNotSaid(rulesCheckTheMac: true, reason: nil)
+        )
         XCTAssertEqual(
             GridPresentation.SeatLocation.of(seat: "ECHO", manifest: manifest),
-            .notOnTheMac(reason: "Echo runs elsewhere.")
+            .placeNotSaid(rulesCheckTheMac: false, reason: "Echo runs elsewhere.")
         )
         XCTAssertEqual(GridPresentation.SeatLocation.of(seat: "NOBODY", manifest: manifest), .notKnown)
         XCTAssertEqual(GridPresentation.SeatLocation.of(seat: "CLAUDE", manifest: nil), .notKnown)
     }
 
-    /// The chip and the row's note say it in words, and only a seat that needs a note gets one.
+    /// The chip says the place is not known, and the tooltip and the row's note state only
+    /// where the rules check, never where the seat runs.
     func test_the_location_chip_and_note() {
-        XCTAssertEqual(GridPresentation.SeatLocation.onTheMac.chip, "On The Mac")
-        XCTAssertNil(GridPresentation.SeatLocation.onTheMac.note)
-        let away = GridPresentation.SeatLocation.notOnTheMac(reason: "Echo runs elsewhere.")
-        XCTAssertEqual(away.chip, "Not On The Mac")
-        XCTAssertEqual(away.note, "Not on the Mac, so nothing here is checked for it.\(gap)Echo runs elsewhere.")
+        let checked = GridPresentation.SeatLocation.placeNotSaid(rulesCheckTheMac: true, reason: nil)
+        XCTAssertEqual(checked.chip, "Place Not Known")
+        XCTAssertNil(checked.note)
+        XCTAssertFalse(checked.runsOnTheMac)
+        XCTAssertEqual(checked.help, "The manifest does not say where this seat runs.\(gap)Its rules check files on the Mac.")
+        let covered = GridPresentation.SeatLocation.placeNotSaid(rulesCheckTheMac: false, reason: "Echo runs elsewhere.")
+        XCTAssertEqual(covered.chip, "Place Not Known")
+        XCTAssertEqual(
+            covered.note,
+            "The manifest does not say where this seat runs, and no rule checks anything on the Mac for it.\(gap)Echo runs elsewhere."
+        )
+        XCTAssertFalse(covered.runsOnTheMac)
+        XCTAssertEqual(covered.help, "The manifest does not say where this seat runs.\(gap)No rule checks anything on the Mac for it.")
+        XCTAssertEqual(GridPresentation.SeatLocation.notKnown.chip, "Place Not Known")
         XCTAssertNotNil(GridPresentation.SeatLocation.notKnown.note)
+        XCTAssertFalse(GridPresentation.SeatLocation.notKnown.runsOnTheMac)
     }
 
     /// The Permissions key rule reads the secret store, and every other check reads the Mac.
