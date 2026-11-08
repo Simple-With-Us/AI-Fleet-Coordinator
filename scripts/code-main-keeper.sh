@@ -60,8 +60,12 @@ ALLOWLIST_DEFAULT=(
   "congress-trading-shared"
 )
 if [ -n "${CODE_MAIN_KEEPER_ALLOWLIST+x}" ]; then
-  # shellcheck disable=SC2206  # names never hold a space or a glob;  a name that does is not on the list
+  # Globbing is off for the split, so a wildcard in the value stays a literal name and
+  # the list never depends on the daemon's working directory.
+  set -f
+  # shellcheck disable=SC2206  # names never hold a space;  a name that does is not on the list
   ALLOWLIST=(${CODE_MAIN_KEEPER_ALLOWLIST})
+  set +f
 else
   ALLOWLIST=("${ALLOWLIST_DEFAULT[@]}")
 fi
@@ -130,7 +134,27 @@ detect_stray_worktrees() {
 
 # Count of paths `git status` lists, untracked included.  A mirror with anything in it is not clean.
 dirty_count() {
-  git -C "$1" status --porcelain 2>/dev/null | grep -c . || true
+  local out
+  if ! out="$(git -C "$1" status --porcelain 2>/dev/null)"; then
+    # A status that cannot run reads as dirty, never clean:  a locked or unreadable
+    # clone is never fetched and never moved.
+    printf '1\n'
+    return
+  fi
+  printf '%s\n' "$out" | grep -c . || true
+}
+
+# One fetch under a five-minute watchdog, so a stalled origin holds one repo, never the
+# whole sequential sweep.  BSD macOS has no timeout(1), so the watchdog is a sleep+kill.
+fetch_bounded() {
+  git -C "$1" fetch origin --quiet 2>/dev/null &
+  local fetch_pid=$!
+  ( sleep 300 && kill "$fetch_pid" 2>/dev/null ) &
+  local watchdog=$!
+  wait "$fetch_pid"; local code=$?
+  kill "$watchdog" 2>/dev/null
+  wait "$watchdog" 2>/dev/null
+  return "$code"
 }
 
 # Branches under refs/heads that origin does not have, other than main: work that exists nowhere but this clone.
@@ -148,7 +172,9 @@ local_only_branches() {
 
 # What the owner should know about a clone, whatever happens to it.  Acts on nothing.
 report_facts() {
-  local d="$1" name="$2" cur="$3" n branches stashes
+  # The fourth argument marks a mirror-only clone:  its refs/remotes/origin/* are never
+  # fetched here, so comparing against them would read pushed branches as local-only.
+  local d="$1" name="$2" cur="$3" mirror_only="${4:-0}" n branches stashes
   n="$(dirty_count "$d")"
   if [ "${n:-0}" -gt 0 ]; then
     log "NOTE  $name  dirty tree ($n path(s)); left alone"
@@ -156,7 +182,9 @@ report_facts() {
   if [ "$cur" != "main" ]; then
     log "NOTE  $name  on '${cur:-detached}', not main; left alone"
   fi
-  branches="$(local_only_branches "$d")"
+  if [ "$mirror_only" -eq 0 ]; then
+    branches="$(local_only_branches "$d")"
+  fi
   if [ -n "$branches" ]; then
     # A count and the first five names:  a busy clone holds hundreds, and a line of them buries the log.
     set -- $branches
@@ -180,7 +208,7 @@ sync_one() {
 
   if ! on_allowlist "$name"; then
     log "NOTE  $name  mirror only (not on the allowlist); not fetched, not moved"
-    report_facts "$d" "$name" "$cur"
+    report_facts "$d" "$name" "$cur" 1
     return 0
   fi
 
@@ -200,8 +228,8 @@ sync_one() {
     return 0
   fi
 
-  if ! git -C "$d" fetch origin --quiet 2>/dev/null; then
-    log "HOLD  $name  git fetch failed"
+  if ! fetch_bounded "$d"; then
+    log "HOLD  $name  git fetch failed or stalled"
     return 0
   fi
   if ! git -C "$d" rev-parse --verify --quiet origin/main >/dev/null 2>&1; then
@@ -222,8 +250,15 @@ sync_one() {
     return 0
   fi
 
+  # The fetch above is the window an agent write can land in, so the tree is checked
+  # again here, immediately before the move:  a tree the keeper just declared clean is
+  # never carried forward by a verdict the fetch made stale.
+  if [ "$(dirty_count "$d")" -gt 0 ]; then
+    log "HOLD  $name  tree changed during fetch; not touched"
+    return 0
+  fi
   behind="$(git -C "$d" rev-list --count HEAD..origin/main 2>/dev/null || echo '?')"
-  if git -C "$d" merge --ff-only origin/main >/dev/null 2>&1; then
+  if git -C "$d" -c core.hooksPath=/dev/null merge --ff-only --no-overwrite-ignore origin/main >/dev/null 2>&1; then
     log "SYNC  $name  ff-only +$behind -> $(git -C "$d" rev-parse --short HEAD)"
   else
     log "HOLD  $name  merge --ff-only refused; not touched"
@@ -234,6 +269,25 @@ sync_one() {
 if command -v renice >/dev/null 2>&1; then
   renice 15 $$ >/dev/null 2>&1 || true
 fi
+
+# One sweep at a time:  a tick that lands while the previous sweep still runs skips
+# itself, so fetches and merges never stack on one repo.  A lock left by a crashed run
+# is stale after thirty minutes and is taken over.
+LOCK_DIR="$LOG_DIR/run.lock"
+if [ -d "$LOCK_DIR" ]; then
+  if [ -n "$(find "$LOCK_DIR" -maxdepth 0 -mmin +30 2>/dev/null)" ]; then
+    log "NOTE  stale run lock taken over (older than 30 minutes)"
+    rmdir "$LOCK_DIR" 2>/dev/null || rm -rf "$LOCK_DIR"
+  else
+    log "NOTE  previous sweep still running; this tick skips"
+    exit 0
+  fi
+fi
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+  log "NOTE  run lock lost the race; this tick skips"
+  exit 0
+fi
+trap 'rmdir "$LOCK_DIR" 2>/dev/null' EXIT
 
 discover_repos
 detect_stray_worktrees
