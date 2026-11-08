@@ -42,15 +42,22 @@ struct CellBadge: View {
     /// is dimmed and never reads as current.
     var pastLimit: Bool = false
 
+    /// Whether a run is checking the cell,  and how the badge says so.
+    private var checking: GridPresentation.BadgeChecking { GridPresentation.BadgeChecking.of(cell) }
+
+    /// The badge's colour:  the state's,  or neutral for a cell being checked with no
+    /// earlier answer,  which is not a red UNKNOWN.
+    private var tint: Color { checking.isNeutral ? Color.secondary : cell.state.tint }
+
     var body: some View {
         HStack(spacing: 5) {
             // A symbol as well as a colour,  so a state never rests on its colour alone.
-            Image(systemName: cell.gridSymbol)
+            Image(systemName: GridPresentation.badgeSymbol(for: cell))
                 .font(.system(size: 8, weight: .semibold))
-                .foregroundStyle(cell.state.tint)
+                .foregroundStyle(tint)
                 .accessibilityHidden(true)
             // The grid's one spelling of the state (GridPresentation),  in full.
-            Text(cell.gridWord)
+            Text(GridPresentation.badgeWord(for: cell))
                 .font(.system(size: 10, weight: .semibold, design: .monospaced))
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
@@ -68,12 +75,25 @@ struct CellBadge: View {
         }
         .padding(.horizontal, 7)
         .frame(width: width, height: 30)
-        .background(cell.state.background, in: RoundedRectangle(cornerRadius: 7))
+        .background(checking.isNeutral ? Color.secondary.opacity(0.1) : cell.state.background,
+                    in: RoundedRectangle(cornerRadius: 7))
         .overlay {
             RoundedRectangle(cornerRadius: 7)
-                .strokeBorder(cell.borderColor(age != nil), lineWidth: 1)
+                .strokeBorder(checking.isNeutral ? Color.secondary.opacity(0.3) : cell.borderColor(age != nil),
+                              lineWidth: 1)
         }
-        .opacity(pastLimit ? 0.45 : 1)
+        // A static mark rather than a spinner per cell:  ninety spinners would cost the
+        // run the grid is waiting on (PERF-2).
+        .overlay(alignment: .topTrailing) {
+            if checking == .lastAnswer {
+                Image(systemName: GridPresentation.recheckSymbol)
+                    .font(.system(size: 7, weight: .bold))
+                    .foregroundStyle(.secondary)
+                    .padding(3)
+                    .accessibilityHidden(true)
+            }
+        }
+        .opacity(GridPresentation.badgeOpacity(checking: checking, pastLimit: pastLimit))
         .contentShape(Rectangle())
     }
 }
@@ -151,6 +171,12 @@ struct FleetGridView: View {
                             .padding(.bottom, 12)
                         filterBar
                             .padding(.bottom, 12)
+                        // A run in flight keeps the last answer on screen,  and says so in
+                        // neutral words:  checking again is not a fault.
+                        if store.isChecking, let note = store.checkingNote {
+                            checkingBanner(note)
+                                .padding(.bottom, 10)
+                        }
                         if let banner = GridPresentation.pastLimitBanner(cells: store.cells, now: now) {
                             pastLimitBanner(banner)
                                 .padding(.bottom, 10)
@@ -167,6 +193,12 @@ struct FleetGridView: View {
                             .padding(.top, 18)
                         if let manifest = store.manifest {
                             complianceSection(manifest)
+                                .padding(.top, 22)
+                        }
+                        // The engine's own list of rules it cannot run,  from the last trusted
+                        // run.  A failed run empties it,  and then nothing is shown.
+                        if !store.notImplemented.isEmpty {
+                            notImplementedSection(store.notImplemented)
                                 .padding(.top, 22)
                         }
                     }
@@ -213,8 +245,8 @@ struct FleetGridView: View {
             }
         }
         // A filter that hides the open cell's row closes the panel, so the panel never
-        // explains a cell the grid is not showing.  A run in flight rebuilds every cell as
-        // unknown for a moment, so the panel waits for the run to land before it decides.
+        // explains a cell the grid is not showing.  A run in flight can change which seats a
+        // filter shows, so the panel waits for the run to land before it decides.
         .onChange(of: visibleRoster) { _, roster in
             closePanelIfGone(roster: roster)
         }
@@ -252,6 +284,64 @@ struct FleetGridView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// The neutral line over the grid while a run checks it (`FleetStore.checkingNote`).
+    private func checkingBanner(_ text: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: GridPresentation.recheckSymbol)
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+            Text(text)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(10)
+        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    /// The rules the engine names and cannot run yet,  folded at the foot of the grid.
+    private func notImplementedSection(_ rules: [NotImplementedRule]) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Divider()
+            DisclosureGroup {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(GridPresentation.notImplementedExplanation)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    ForEach(Array(rules.enumerated()), id: \.offset) { _, rule in
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 8) {
+                                Text(rule.ruleId)
+                                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                    .textSelection(.enabled)
+                                if !rule.ownerSeat.isEmpty {
+                                    Text("owner: \(rule.ownerSeat)")
+                                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 1)
+                                        .background(Color.secondary.opacity(0.14), in: Capsule())
+                                }
+                                Spacer()
+                            }
+                            Text(rule.reason)
+                                .font(.system(size: 10))
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, 6)
+            } label: {
+                Text(GridPresentation.notImplementedTitle(count: rules.count))
+                    .font(.headline)
+            }
         }
     }
 
@@ -539,6 +629,9 @@ struct FleetGridView: View {
     /// sentence, rather than only in a tooltip.
     private func row(for seat: String, now: Date) -> some View {
         let location = GridPresentation.SeatLocation.of(seat: seat, manifest: store.manifest)
+        // The surfaces the engine names for this seat and does not check (GRID-19),  from
+        // the last trusted run;  a failed run empties the list,  so no line is shown then.
+        let notChecked = GridPresentation.notCheckedLines(store.uncoveredSurfaces(seat: seat))
         return VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 8) {
                 VStack(alignment: .leading, spacing: 2) {
@@ -563,7 +656,7 @@ struct FleetGridView: View {
                         }
                         .buttonStyle(.plain)
                         .help(GridPresentation.tooltip(for: cell, pastLimit: pastLimit))
-                        .accessibilityLabel("\(seat), \(cell.kind.title):  \(cell.gridWord)")
+                        .accessibilityLabel("\(seat), \(cell.kind.title):  \(GridPresentation.spokenWord(for: cell))")
                     } else {
                         Color.clear.frame(width: columnWidth, height: 30)
                     }
@@ -576,6 +669,13 @@ struct FleetGridView: View {
                     .lineLimit(2)
                     .padding(.leading, seatWidth + 8)
                     .help(note)
+            }
+            ForEach(Array(notChecked.enumerated()), id: \.offset) { _, line in
+                Text(line)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.leading, seatWidth + 8)
             }
         }
         .padding(.vertical, 3)
