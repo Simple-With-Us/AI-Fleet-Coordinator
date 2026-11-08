@@ -426,7 +426,7 @@ The third local wake type, and the second fallback.  Same contract, same strict
 The leading `~` is part of OpenRouter's id for a "latest" alias.  Copy-paste for the Mac's MM seat (neither is installed;  the owner edits `~/.agent-sync/listener.toml`):
 
 ```toml
-# MM answers on the Muse model through OpenRouter, and on DeepSeek Flash when that call fails.
+# MM answers on the Muse model through OpenRouter, and on MiniMax M3.1 Flash when that call fails.
 [seat.MM]
 bot = "MiniMax"
 wake = "openrouter"
