@@ -97,6 +97,9 @@ final class GridFollowupWiringTests: XCTestCase {
         let look = GridPresentation.ComplianceRuleLook.of(flagged)
         XCTAssertNotEqual(look.colourState, .passed)
         XCTAssertEqual(look.colourState, .unknown)
+        // The word follows the escalated state, so the badge never shows a calm word on red.
+        XCTAssertEqual(look.word, CellState.unknown.gridWord)
+        XCTAssertNotEqual(look.word, flagged.word)
     }
 
     /// A rule with no result claims nothing:  the neutral colour, never green and never red,

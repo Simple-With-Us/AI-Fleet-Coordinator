@@ -480,7 +480,8 @@ enum GridPresentation {
     /// with no result (not built yet, left out of the answer, or not answered) claims nothing,
     /// so it wears the neutral colour:  never green, and never red.
     struct ComplianceRuleLook: Equatable {
-        /// The word the badge shows:  the status's own (`ComplianceRuleStatus.word`).
+        /// The word the badge shows:  the status's own (`ComplianceRuleStatus.word`), or the
+        /// drawn state's grid word when a failing flag escalated a calm-looking state.
         let word: String
         let symbol: String
         /// The state whose colour the rule wears, or nil for the neutral colour.
@@ -492,7 +493,10 @@ enum GridPresentation {
                 // A result the engine flagged as failing while its state reads calm:  the
                 // flag wins, so the rule never wears a calm colour over a failure.
                 let shown = status.isFailing && !state.isRed && state != .drift ? CellState.unknown : state
-                return ComplianceRuleLook(word: status.word, symbol: shown.gridSymbol, colourState: shown)
+                // The word follows the state drawn, so a calm word never sits on the red it was
+                // escalated to;  an answer that was not escalated keeps the status's own word.
+                let word = shown == state ? status.word : shown.gridWord
+                return ComplianceRuleLook(word: word, symbol: shown.gridSymbol, colourState: shown)
             case .notBuilt:
                 return ComplianceRuleLook(word: status.word, symbol: "hammer", colourState: nil)
             case .notInAnswer:
