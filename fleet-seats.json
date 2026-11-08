@@ -1882,32 +1882,32 @@
         {
           "kind": "instructions",
           "platforms": [],
-          "reason": "The Grok Bot personas run as Cursor cloud agents, so this Mac holds no rules file for it."
+          "reason": "Grok Bot runs as Cursor cloud agents, so this Mac holds no rules file for it."
         },
         {
           "kind": "hooks",
           "platforms": [],
-          "reason": "The Grok Bot personas run as Cursor cloud agents, so this Mac holds no hook config for it."
+          "reason": "Grok Bot runs as Cursor cloud agents, so this Mac holds no hook config for it."
         },
         {
           "kind": "mcp",
           "platforms": [],
-          "reason": "The Grok Bot personas run as Cursor cloud agents, so this Mac holds no MCP config for it."
+          "reason": "Grok Bot runs as Cursor cloud agents, so this Mac holds no MCP config for it."
         },
         {
           "kind": "skills",
           "platforms": [],
-          "reason": "The Grok Bot personas run as Cursor cloud agents, so this Mac holds no skills home for it."
+          "reason": "Grok Bot runs as Cursor cloud agents, so this Mac holds no skills home for it."
         },
         {
           "kind": "subagents",
           "platforms": [],
-          "reason": "The Grok Bot personas run as Cursor cloud agents, so this Mac holds no sub-agent definitions for it."
+          "reason": "Grok Bot runs as Cursor cloud agents, so this Mac holds no sub-agent definitions for it."
         },
         {
           "kind": "permissions",
           "platforms": [],
-          "reason": "Grok Bot has no Zulip credential of its own:  its GB-<ROLE> personas are owner-managed and hold no zuliprc."
+          "reason": "Grok Bot has no Zulip credential of its own:  its GB-<ROLE> bots are owner-managed and hold no zuliprc."
         }
       ],
       "platforms": [],
