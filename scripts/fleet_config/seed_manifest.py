@@ -1137,8 +1137,8 @@ def _build_seats() -> dict[str, dict[str, object]]:
     )
     seats["GROK-BOT"] = _hosted_seat(
         "GROK-BOT",
-        "The Grok Bot personas run as Cursor cloud agents",
-        "Grok Bot has no Zulip credential of its own:  its GB-<ROLE> personas are "
+        "Grok Bot runs as Cursor cloud agents",
+        "Grok Bot has no Zulip credential of its own:  its GB-<ROLE> bots are "
         "owner-managed and hold no zuliprc.",
     )
     seats["ECHO"] = _hosted_seat(
