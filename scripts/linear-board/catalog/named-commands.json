@@ -888,7 +888,7 @@
             "type": "string"
           },
           "max_chars": {
-            "default": 24000,
+            "default": 64000,
             "maximum": 64000,
             "minimum": 1000,
             "type": "integer"
