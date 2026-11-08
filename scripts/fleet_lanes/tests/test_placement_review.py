@@ -1761,7 +1761,7 @@ class CliExits(WatchRoundTwo):
         self.assertEqual(len(run.named("simple-chat", "dm")), 2)
 
     def test_the_words_this_relies_on_are_in_the_clis(self) -> None:
-        text = (REPO / "scripts" / "agent_sync" / "cli.py").read_text(encoding="utf-8")
+        text = (REPO / "scripts" / "simple_tools" / "cli.py").read_text(encoding="utf-8")
         self.assertGreaterEqual(text.count(W.CHAT_MAYBE_SENT), 2)
         self.assertIn("(already filed; unchanged)", (REPO / "scripts" / "linear-board" / "board").read_text(encoding="utf-8"))
 
