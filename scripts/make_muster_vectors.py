@@ -152,7 +152,7 @@ def from_spec(text):
     """The part of the fixture that section 16 of the spec prints, read out of its text."""
 
     def block_after(label):
-        return re.search(re.escape(label) + r".*?```(?:json)?\n(.*?)\n```", text, re.S).group(1)
+        return re.search(re.escape(label) + r".*?```(?:json)?\n(.*?)\n```", text, re.DOTALL).group(1)
 
     fixture = {"specVersion": 5 if "Spec version 5" in text[:200] else 4}
     fixture["keys"] = {}
@@ -239,7 +239,7 @@ def from_spec(text):
     fixture["illustrativePlan"] = block_after("### Illustrative Plan")
     fixture["chainVectors"] = [
         {"id": row[0], "expected": row[3]}
-        for row in (r.split(" | ") for r in re.findall(r"^\| (T\d+ [^\n]*) \|$", text, re.M))
+        for row in (r.split(" | ") for r in re.findall(r"^\| (T\d+ [^\n]*) \|$", text, re.MULTILINE))
     ]
     return fixture
 
@@ -425,7 +425,7 @@ def _resource_context(ctx, frc):
     store = Store()
     ctx.resource_store = store
     ctx.resource_host_bounds = lambda: (16, 32 * frc.GIB)
-    ctx.resource_snapshot = lambda: {}
+    ctx.resource_snapshot = dict
     ctx.resource_audit = lambda event: None
     # A fake clock that a sleep advances, so that a wait the broker makes for the controller to report
     # the policy in effect ends at its deadline instead of for ever, whatever code is behind it.
