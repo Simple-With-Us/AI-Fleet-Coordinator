@@ -42,7 +42,8 @@ does it today.
     mostly deterministic and does not converse with users, and that the Muse spark 1.3 contributor
     or the MiniMax M3.1 fallback is for the headless consultant.  **Superseded in its first half
     on Oct 26, 2026**, by the ruling below:  the Operator may converse, in a direct message.  The
-    consultant boundary in this bullet is unchanged.
+    consultant boundary in this bullet is **refined on Nov 7, 2026** by the wake ruling below:  the
+    consultant runs only when deterministic code cannot decide, on the owner's own OpenRouter preset.
 *  The Operator being able to speak to anyone and to converse with them, and doing that in a
     direct message rather than a channel post, so that conversations do not get bloated:  Jay, in
     the MiniMax Code pane on Oct 26, 2026, verbatim, "operator can speak to anyone or converse with
@@ -56,6 +57,17 @@ does it today.
     Jay left out, because they carry no project detail.  A message with detail, such as the
     candidate list, is unchanged and keeps Jay in the conversation.  The Operator's clarifying
     question is not part of this yet:  its reply leg is not built.
+*  The wake design:  Jay, to session AA on Nov 7, 2026, verbatim, "Wake agent should use operator
+    for headless agent when needed only if unable to determine with deterministic code, and then
+    should use a preset I made on openrouter", "Only the operator does headless runs sometimes",
+    "Seat wake doesn't need an agent" and "Consultant is an agent needed minority of the time
+    hopefully".  The preset is his own, built on the Muse spark 1.3 contributor ("Not just normal
+    one").  ECHO reports it as `@preset/operator-inbox-router` version 3 (served by
+    `meta/muse-spark-1.3-contributor`, backup `minimax/minimax-m3.1-flash`);  it is held, and applied
+    nowhere, until ECHO's coordinator releases it.  Jay also objected to the Operator ever being
+    called "MM-wake":  the wake tag is `[OPERATOR·wake]`, and a wake is not tied to MM or to any
+    seat.  This is a ruling, not current behaviour:  per-seat model wakes still run until Phase 2,
+    and PR #1506 only records how often each start was avoidable (section 3.2).
 
 1.  **The Operator is the thing that listens.**  It holds the eavesdropper, it runs on the server,
     and it is the service identity the fleet talks to.
@@ -71,8 +83,9 @@ does it today.
     Operator cannot pair the message with a specific thread to receive it.  Jay's Oct 26
     ruling adds that the Operator may converse at all, and that it does so in a direct message
     rather than in a channel post, so that conversations do not get bloated.  Jay's consultant
-    boundary is separate:  the Muse spark 1.3 contributor or the MiniMax M3.1 fallback is for the
-    headless consultant, not for the Operator's own voice, and separating incoming content from
+    boundary is separate:  the headless consultant (since Nov 7, 2026, run only when deterministic
+    code cannot decide, on the owner's own OpenRouter preset) is not the Operator's own voice,
+    and separating incoming content from
     authority, and consultation from execution, are the barriers that make that safe.  Jay's own
     note is that a barrier may also help with prompt-injection risk, which is a rationale and not
     a proof of immunity.
@@ -91,6 +104,14 @@ does it today.
 7.  **It wakes a seat on the seat's own surface.**  MM on Lark, Jet on WhatsApp, and every other
     seat on Zulip.  The registry already records where a session lives, so the surface is a
     property of the session rather than a choice the Operator makes per message.
+
+8.  **A seat wake needs no agent, and only the Operator starts a model, sometimes.**  Jay's Nov 7,
+    2026 ruling, quoted above:  a seat wake is deterministic delivery, and the Operator starts its
+    headless consultant only when deterministic code cannot decide, on the owner's own OpenRouter
+    preset.  A wake belongs to no seat's tag:  it is `[OPERATOR·wake]`, never "MM-wake".  The running
+    code does not do this yet:  a seat configured with a `claude`, `muse` or `openrouter` wake still
+    starts a model for itself, and converging those onto the Operator's one consultant run is Phase 2,
+    which is pending (section 3.2).
 
 ## 2: What already exists
 
@@ -223,10 +244,13 @@ Three concrete changes carry that:
     **Oct 30, 2026 addition.**  The Operator now also RELAYS a headless wake's reply (owner
     ruling, Oct 30, 2026: automation that composes text for a seat never posts as the seat's bot,
     and the owner said yes to the reply going out as the Operator in the trigger's topic).  That
-    relay keeps the `[SEAT·wake] re=<id>` tag on its first line.  It is not the Operator wearing
-    a seat's tag in its own voice: the sender line says Operator, and the tag is the label the
-    loop guard and the router read (a `·wake` post never wakes anyone) and the label that says
-    which seat's consultant wrote the text.  The Operator's own messages (its questions, its
+    relay's first line is `[OPERATOR·wake] re=<id>` (`wakes.compose_reply`, `OPERATOR_TAG`), not
+    a seat's tag:  the owner ruled the same day that the tag is the Operator's, and on Nov 7, 2026
+    he objected to the Operator ever being called "MM-wake", because a wake is tied to no seat.
+    The tag is the label the loop guard and the router read (a `·wake` post never wakes anyone),
+    and the seat the wake was for is in the wake ledger row.  A seat's own `[SEAT·wake]` tag
+    survives only in an `http` routine's `reply_prefix`, which that routine posts as itself.  The
+    Operator's own messages (its questions, its
     status messages, the `@all` reminder, tagged `[OPERATOR·note]`) keep their own tags.  See
     `agent-sync-listener.md`, "The Operator's voice".
 
@@ -266,12 +290,31 @@ message alone (`ZulipClient.operator_status_dm`, `operator_send.py`, Oct 29, 202
 Operator direct message still has to carry Jay.
 
 **The headless consultant is a different thing.**  Jay's boundary is that the Muse spark 1.3
-contributor or the MiniMax M3.1 fallback is for the headless consultant, and it is not the
+contributor or the MiniMax M3.1 fallback (Oct 25, 2026;  refined on Nov 7, 2026 to the owner's
+own OpenRouter preset, built on that contributor model) is for the headless consultant, and it is
+not the
 Operator's own voice.  So the Operator's deterministic outputs and the consultant's reasoning are
 separate, and the consultant is not what the Operator listens with.  Jay's own note is that
 separating incoming content from authority, and consultation from execution, are the useful
 barriers here, and that a barrier may also help with prompt-injection risk, which is a rationale
 and not a proof of immunity.
+
+**When the consultant runs (owner, Nov 7, 2026).**  "Wake agent should use operator for headless
+agent when needed only if unable to determine with deterministic code, and then should use a preset
+I made on openrouter", "Only the operator does headless runs sometimes", "Seat wake doesn't need an
+agent" and "Consultant is an agent needed minority of the time hopefully".  So the consultant is the
+only model run, it is the Operator's, and it starts only when deterministic code cannot decide.  What
+runs today is not that yet:  a seat configured with a `claude`, `muse` or `openrouter` wake still
+starts a model for itself, with any configured fallback behind it, and the Mac bridge consult runs
+on the pinned Muse binary unless an operator declares its known-cap OpenRouter mode.  PR #1506 adds
+a record-only model gate that records, for every model start, why it happened and whether a
+deterministic rule could have decided it, and `simple-chat status` counts the avoidable ones;  it
+changes no decision (`agent-sync-listener.md`, section 3.4a).  Phase 2 is pending and not built:
+PR #1506 lists AA's readings of these lines, which are readings and not rulings, that it would
+remove the `claude`, `muse` and `openrouter` seat wakes and their fallbacks in favour of the
+Operator's one consultant run, fix the per-seat model run an `@all` starts, and move the Mac bridge
+consult onto the owner's preset.  ECHO's candidate for that preset, `@preset/operator-inbox-router`
+version 3, is held and applied nowhere until ECHO's coordinator releases it.
 
 **The direct message consequence, and what Jay has now ruled.**  AFC-469, merged on Oct 25, 2026,
 says a direct message may go out only when the owner is in the conversation, checked by user id.
