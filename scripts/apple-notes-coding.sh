@@ -67,7 +67,7 @@
 # The action log (AFC-486):  every run that gets past argument parsing appends one JSON line to
 # $APPLE_NOTES_ACTION_LOG (default ~/Library/Logs/fleet/apple-notes-actions.jsonl, "off" turns it off):  what was
 # asked, how it ended and how long it took, never a note's text.  AGENT_NOTES_CALLER (default script),
-# AGENT_NOTES_REQUEST_ID and AGENT_NOTES_REQUESTER name who asked;  the callers in scripts/agent_sync/notes.py set
+# AGENT_NOTES_REQUEST_ID and AGENT_NOTES_REQUESTER name who asked;  the callers in scripts/simple_tools/notes.py set
 # them.  A preview (APPLE_NOTES_PRINT_HTML=1 on a create or update) writes nothing to Notes and logs nothing.
 #
 # Exit codes:  0 done (a create/update whose pin was skipped is still 0), 2 usage or session error,
@@ -782,7 +782,7 @@ _pin_retry_on() {
   if [[ -z "${_PIN_RETRY:-}" ]]; then
     local knob="" here candidate
     here="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
-    for candidate in "$here" "$HOME/apps/needs-owner" "${AGENT_SYNC_RUNTIME:-$HOME/apps/lanes/_managed/fleet/agent-sync-runtime}/scripts"; do
+    for candidate in "$here" "$HOME/apps/needs-owner" "${SIMPLE_TOOLS_RUNTIME:-$HOME/apps/lanes/_managed/fleet/simple-tools-runtime}/scripts"; do
       if [[ -n "$candidate" && -d "$candidate/fleet_knobs" ]] && command -v python3 >/dev/null 2>&1; then
         knob="$(cd "$candidate" && python3 -m fleet_knobs get APPLE_NOTES_PIN_RETRY 2>/dev/null)" || knob=""
         [[ -n "$knob" ]] && break
@@ -2458,7 +2458,7 @@ def fleet_dates(markup, gap_entity=False):
             parts[i] = _one_space_gaps(_ISO.sub(_fleet_date, part), gap_entity)
     return ''.join(parts)
 
-# Owner 2026-10-19:  a one-space sentence gap is widened too (the same rule as scripts/agent_sync/textfmt.py
+# Owner 2026-10-19:  a one-space sentence gap is widened too (the same rule as scripts/simple_tools/textfmt.py
 # single_gaps), so
 # a note reads the same whoever wrote it.  Known abbreviations, dotted words, initials and list markers are skipped.
 _ABBREV = frozenset('mr mrs ms dr st jr sr vs etc e.g i.e eg ie cf al approx dept est fig no nos vol ca mt ft sq'.split())
@@ -2668,7 +2668,7 @@ if [[ "$MODE" == "pin" ]]; then
 else
   _pin_outcome="note saved unpinned"
 fi
-#  The "pin skipped:" line is read back by agent_sync.notes, which keeps the first 200 characters of the
+#  The "pin skipped:" line is read back by simple_tools.notes, which keeps the first 200 characters of the
 #  reason.  Each reason ends with $_pin_outcome, which tells a caller the note was saved, so every reason
 #  has to fit in 200 characters with a long lock path or that tail is cut off
 #  (scripts/test_apple_notes_pin.py checks the length of each one).

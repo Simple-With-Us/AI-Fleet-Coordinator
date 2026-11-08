@@ -189,22 +189,6 @@ class SeatAndMcpTests(unittest.TestCase):
             {name.strip() for name in missing.split(",")}, {"simple-chat", "fleetlink"}
         )
 
-    def test_mcp_registrations_report_the_retired_name_as_drift(self):
-        self.touch(
-            ".codex/config.toml",
-            "[mcp_servers.agent-sync]\ncommand = 'x'\n[mcp_servers.fleetlink]\nurl = 'y'\n",
-        )
-        self.touch(".claude.json", json.dumps({"mcpServers": {"agent-sync": {}}}))
-        rows = self.mcp_rows()
-        self.assertEqual(rows["mcp:codex"]["status"], "WARN")
-        self.assertIn(
-            "pre-rename name agent-sync, canonical simple-chat", rows["mcp:codex"]["detail"]
-        )
-        self.assertEqual(rows["mcp:claude"]["status"], "WARN")
-        self.assertIn(
-            "pre-rename name agent-sync, canonical simple-chat", rows["mcp:claude"]["detail"]
-        )
-
     def test_an_unreadable_token_listing_is_reported_as_unknown(self):
         self.touch(".codex/config.toml", "[mcp_servers.simple-chat]\ncommand = 'x'\n")
         self.touch(".claude.json", json.dumps({"mcpServers": {"simple-chat": {}}}))
@@ -219,23 +203,6 @@ class SeatAndMcpTests(unittest.TestCase):
         rows = {r["check"]: r for r in report.rows}
         self.assertEqual(rows["mcp:claude"]["status"], "FAIL")
         self.assertIn("missing CLAUDE", rows["mcp:claude"]["detail"])
-
-    def test_both_names_registered_name_the_retired_key_as_the_drift(self):
-        self.touch(
-            ".codex/config.toml",
-            "[mcp_servers.simple-chat]\ncommand = 'x'\n"
-            "[mcp_servers.agent-sync]\ncommand = 'y'\n"
-            "[mcp_servers.fleetlink]\nurl = 'z'\n",
-        )
-        self.touch(
-            ".claude.json",
-            json.dumps({"mcpServers": {"simple-chat": {}, "agent-sync": {}}}),
-        )
-        rows = self.mcp_rows()
-        for seat in ("mcp:codex", "mcp:claude"):
-            self.assertEqual(rows[seat]["status"], "WARN")
-            self.assertIn("pre-rename name agent-sync, canonical simple-chat", rows[seat]["detail"])
-            self.assertNotIn("pre-rename name simple-chat", rows[seat]["detail"])
 
     def test_a_seat_without_a_fleetlink_token_is_not_asked_to_register_it(self):
         self.touch(".codex/config.toml", "[mcp_servers.simple-chat]\ncommand = 'x'\n")
@@ -252,13 +219,7 @@ class SeatAndMcpTests(unittest.TestCase):
         self.assertEqual(rows["mcp:claude"]["status"], "WARN")
         self.assertIn("missing fleetlink", rows["mcp:claude"]["detail"])
 
-    def test_registered_env_reads_the_server_under_either_accepted_name(self):
-        self.touch(
-            ".codex/config.toml",
-            "[mcp_servers.agent-sync]\ncommand = 'x'\n"
-            "[mcp_servers.agent-sync.env]\nLANG = 'C.UTF-8'\n",
-        )
-        self.assertEqual(doctor.registered_env("CODEX", home=self.home), {"LANG": "C.UTF-8"})
+    def test_registered_env_reads_the_server_registration(self):
         self.touch(
             ".codex/config.toml",
             "[mcp_servers.simple-chat]\ncommand = 'x'\n"
@@ -529,7 +490,7 @@ class SeatAndMcpTests(unittest.TestCase):
                 return subprocess.CompletedProcess(argv, 0, "b" * 40 + "\trefs/heads/main", "")
             if "diff" in argv:
                 return subprocess.CompletedProcess(
-                    argv, 0, "scripts/agent_sync/mcp/eavesdropper-tools.json", ""
+                    argv, 0, "scripts/simple_tools/mcp/eavesdropper-tools.json", ""
                 )
             return subprocess.CompletedProcess(argv, 1, "", "")
 
@@ -558,7 +519,7 @@ class SeatAndMcpTests(unittest.TestCase):
             def changed(argv, **kw):
                 if "diff" in argv:
                     return subprocess.CompletedProcess(
-                        argv, 0, "scripts/agent_sync/cli.py\nscripts/linear-board/board", ""
+                        argv, 0, "scripts/simple_tools/cli.py\nscripts/linear-board/board", ""
                     )
                 return runner(argv, **kw)
 
@@ -575,7 +536,7 @@ class SeatAndMcpTests(unittest.TestCase):
                 return subprocess.CompletedProcess(
                     argv,
                     0,
-                    "scripts/agent_sync/tests/test_x.py\nscripts/linear-board/README.md",
+                    "scripts/simple_tools/tests/test_x.py\nscripts/linear-board/README.md",
                     "",
                 )
             return subprocess.CompletedProcess(argv, 0, "b" * 40 + "\trefs/heads/main", "")
@@ -726,7 +687,7 @@ class SeatAndMcpTests(unittest.TestCase):
         report.add("tool:gitleaks", "FAIL", "not installed;  required on the server")
         self.assertTrue(doctor.post_changes(report, runner))  # a real change still posts
 
-    def test_post_survives_a_missing_agent_sync(self):
+    def test_post_survives_a_missing_simple_tools(self):
         def runner(argv, **kw):
             raise FileNotFoundError("simple-chat")
 
@@ -2197,7 +2158,7 @@ class NotesServiceTests(unittest.TestCase):
         self.assertEqual(self.rows("mac")["notes:action-log"]["state"], "stale")
 
     def test_the_doctor_counts_the_copies_the_script_keeps(self):
-        from agent_sync import notes as N
+        from simple_tools import notes as N
 
         self.assertEqual(doctor.NOTES_LOG_ROTATIONS, N.ACTION_LOG_ROTATIONS)
 

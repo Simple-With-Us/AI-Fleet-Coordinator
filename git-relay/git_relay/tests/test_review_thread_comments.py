@@ -135,6 +135,6 @@ class ReviewReplies(unittest.TestCase):
         for name in [
             "scripts/git-tools/git",
             "scripts/git-tools/export_catalog.py",
-            "scripts/agent-sync-mcp/src/gr-workflow-v1.js",
+            "scripts/simple-tools-mcp/src/gr-workflow-v1.js",
         ]:
             self.assertIn(ACTION, (root / name).read_text())

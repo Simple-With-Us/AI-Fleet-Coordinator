@@ -96,14 +96,20 @@ class RepoTreeConsistencyTests(TestCase):
 
     repo_root = __import__("pathlib").Path(__file__).resolve().parents[3]
 
-    # Same-path files whose current main bytes legitimately differ from the
-    # attested (post-rename) bytes: the rename edits their content in place.
-    # Empties when the rename lands; then every existing path must digest-match.
+    # Files whose bytes legitimately differ from the attested ones: the rename
+    # that landed spells their credential-shaped test text in pieces, so the
+    # files no longer contain anything the scanner refuses and need no
+    # attestation.  Every other existing path must digest-match.
     KNOWN_PRE_RENAME_DRIFT = frozenset(
         {
             "scripts/fleet_lanes/tests/test_install_mcp.py",
-            "scripts/test-lark-mm-bridge.py",
-            "scripts/test_operator_provenance.py",
+            "scripts/simple-tools-mcp/DEPLOY-PHASE0.md",
+            "scripts/simple-tools-mcp/test/gr-workflow-v1.test.mjs",
+            "scripts/simple-tools-mcp/test/integration.workerd.mjs",
+            "scripts/simple_tools/mcp/fixtures.jsonl",
+            "scripts/simple_tools/tests/test_infisical_api_route.py",
+            "scripts/simple_tools/tests/test_mcp_extras.py",
+            "scripts/simple_tools/tests/test_operator_send.py",
         }
     )
 

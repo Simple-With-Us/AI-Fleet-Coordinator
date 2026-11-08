@@ -39,7 +39,7 @@ HOME_FILES = (
     "~/.claude/CLAUDE.md",
     "~/AGENTS.md",
     "~/.codex/AGENTS.md",
-    "~/.cursor/rules/agent-sync-zulip.mdc",
+    "~/.cursor/rules/simple-tools-zulip.mdc",
     "~/.gemini/config/AGENTS.md",
     "~/.grok/GROK.md",
     "~/.fx/AGENTS.md",

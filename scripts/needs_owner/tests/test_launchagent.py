@@ -42,7 +42,7 @@ class LaunchAgentTests(unittest.TestCase):
     def test_it_carries_no_identity_variable_launcher_or_secret(self) -> None:
         env = self.plist["EnvironmentVariables"]
         self.assertEqual(sorted(env), ["HOME", "PATH"], "no identity variable and no secret:  the seat comes from the bearer locator")
-        self.assertTrue(env["PATH"].startswith("/Users/jay/.local/bin:/opt/homebrew/bin"), "board and agent-sync live in ~/.local/bin")
+        self.assertTrue(env["PATH"].startswith("/Users/jay/.local/bin:/opt/homebrew/bin"), "board and simple-chat live in ~/.local/bin")
         self.assertEqual(env["HOME"], "/Users/jay")
 
     def test_it_logs_to_one_file_of_ids(self) -> None:
