@@ -11,7 +11,7 @@ from __future__ import annotations
 from array import array
 from hashlib import sha256
 
-from . import patch_secretscan
+from . import patch_secretscan, secret_scan
 from .provenance_patch import MAX_BYTES, apply_patch
 
 # (repository, destination path, complete source SHA256, complete result SHA256).
@@ -45,7 +45,7 @@ def _render(base: bytes, edits: list[dict]) -> tuple[bytes, array]:
             raise ValueError("invalid edit interval")
         base[:start].decode("utf-8", "strict")
         base[:end].decode("utf-8", "strict")
-        if patch_secretscan.scan(text) is not None:
+        if patch_secretscan.scan(text) is not None or secret_scan.find_secret(text) is not None:
             raise ValueError("credential-shaped insertion")
         inserted = text.encode("utf-8", "strict")
         out.extend(base[cursor:start])
@@ -86,7 +86,7 @@ def apply_reviewed_patch(repo: str, path: str, base: bytes, edits: list[dict], k
         offsets.append(offsets[-1] + len(char.encode("utf-8")))
     checked = set()
     matches = []
-    for _, pattern in patch_secretscan._PATTERNS:
+    for _, pattern in (*patch_secretscan._PATTERNS, *secret_scan._PATTERNS):
         matches.extend(pattern.finditer(text))
         if len(matches) > 4096:
             raise ValueError("pattern match budget exceeded")

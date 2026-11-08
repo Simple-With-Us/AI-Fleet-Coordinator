@@ -174,6 +174,17 @@ class ReviewedPreservationTests(unittest.TestCase):
             result,
         )
 
+    def test_short_bearer_matches_use_both_scanners_for_origin(self):
+        # Main outbound guard starts at16, the packaged scanner bearer row at24.
+        line = ("Bearer " + "a" * 16 + "\n").encode()
+        base, result = line + b"old\n", line + b"new\n"
+        edit = dict(start=len(line), end=len(base), text="new\n")
+        self.assertEqual(self.run_candidate(base, [edit], result), result)
+        with self.assertRaises(ValueError):
+            self.run_candidate(b"old\n", [dict(start=0, end=4, text=result.decode())], result)
+        with self.assertRaises(ValueError):
+            self.run_candidate(base, [dict(start=0, end=0, text="prefix ")], b"prefix " + base)
+
 
 class PreservationWorkflowTests(unittest.TestCase):
     def setup_case(self, prefix):

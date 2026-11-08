@@ -11,6 +11,9 @@ from __future__ import annotations
 
 import re
 
+MAX_TREE_ENTRIES = 512
+MAX_CACHED_TREE_ENTRIES = 2048
+
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 
 # Proposal only. No caller approval flag and no active source records.
@@ -51,9 +54,12 @@ def verify_same_path(get, repo, commit, path, blob, mode, max_bytes, cache):
                 or value.get("sha") != tree
                 or value.get("truncated") is not False
                 or not isinstance(value.get("tree"), list)
-                or len(value["tree"]) > 100
+                or len(value["tree"]) > MAX_TREE_ENTRIES
             ):
                 raise ValueError("unverifiable source tree")
+            total = sum(len(v) for k, v in cache.items() if k[0] == "tree")
+            if total + len(value["tree"]) > MAX_CACHED_TREE_ENTRIES:
+                raise ValueError("source tree inventory budget exceeded")
             entries = {}
             for entry in value["tree"]:
                 if (

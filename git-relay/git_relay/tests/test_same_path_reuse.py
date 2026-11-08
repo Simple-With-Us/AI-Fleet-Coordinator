@@ -129,7 +129,7 @@ class ReuseTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.run_proof(rows)
         rows = receipts()
-        rows[1]["tree"] = [{"path": str(n)} for n in range(101)]
+        rows[1]["tree"] = [{"path": str(n)} for n in range(same_path_reuse.MAX_TREE_ENTRIES + 1)]
         with self.assertRaises(ValueError):
             self.run_proof(rows)
 
@@ -302,3 +302,47 @@ class ReviewedByteGuards(ReuseWorkflowTests):
                 with self.assertRaises(Refused):
                     self.handle(client, args)
             self.assertTrue(all(call[0] == "GET" for call in client.calls))
+
+
+class TreeBoundsTests(unittest.TestCase):
+    def test_realistic_scripts_inventory_is_bounded_but_supported(self):
+        rows = receipts()
+        rows[1]["tree"].extend({"path": "safe-%d" % n} for n in range(265))
+        record = (REPO, COMMIT, "dir/file.txt", BLOB, "100644")
+        c = Client(*rows)
+        with patch.object(same_path_reuse, "REVIEWED_SAME_PATH_SOURCES", frozenset([record])):
+            self.assertEqual(
+                verify_same_path(
+                    lambda p: c._call("GET", p),
+                    REPO,
+                    COMMIT,
+                    "dir/file.txt",
+                    BLOB,
+                    "100644",
+                    20,
+                    {},
+                ),
+                12,
+            )
+
+    def test_cumulative_tree_inventory_is_bounded(self):
+        rows = receipts()
+        record = (REPO, COMMIT, "dir/file.txt", BLOB, "100644")
+        c = Client(*rows)
+        cache = {
+            ("tree", REPO, "e" * 40): {
+                str(n): {} for n in range(same_path_reuse.MAX_CACHED_TREE_ENTRIES)
+            }
+        }
+        with patch.object(same_path_reuse, "REVIEWED_SAME_PATH_SOURCES", frozenset([record])):
+            with self.assertRaises(ValueError):
+                verify_same_path(
+                    lambda p: c._call("GET", p),
+                    REPO,
+                    COMMIT,
+                    "dir/file.txt",
+                    BLOB,
+                    "100644",
+                    20,
+                    cache,
+                )
