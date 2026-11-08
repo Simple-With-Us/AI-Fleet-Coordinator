@@ -6123,9 +6123,7 @@ class WorkflowVerbs:
             sha = entry["sha"]
         return None
 
-    def _patch_executable(
-        self, repo, branch, head, base_tree, path, raw, message, repo_info
-    ):
+    def _patch_executable(self, repo, branch, head, base_tree, path, raw, message, repo_info):
         """Called only after wf_file_patch's complete source/provenance scans.
 
         Git-data retains the mode. Fixed updateRefs beforeOid supplies the atomic
@@ -6134,15 +6132,11 @@ class WorkflowVerbs:
         node_id = repo_info.get("node_id")
         if not isinstance(node_id, str) or not 1 <= len(node_id) <= 200:
             raise Refused("repository node identity unavailable")
-        expected_blob = hashlib.sha1(
-            b"blob " + str(len(raw)).encode() + b"\0" + raw
-        ).hexdigest()
+        expected_blob = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
 
         def post(suffix, body):
             return _obj(
-                self.client._call(
-                    "POST", f"/repos/{repo}/git/{suffix}", body, bearer=self.bearer
-                )
+                self.client._call("POST", f"/repos/{repo}/git/{suffix}", body, bearer=self.bearer)
             )
 
         # A durable object may exist after the first POST; never release for replay.
@@ -6171,12 +6165,8 @@ class WorkflowVerbs:
             if not isinstance(tree_sha, str) or not _SHA.fullmatch(tree_sha):
                 raise Refused("patch tree receipt unverifiable; branch unchanged")
             if self._entry_mode(repo, tree_sha, path, {}) != "100755":
-                raise Refused(
-                    "patch executable mode receipt unverifiable; branch unchanged"
-                )
-            commit = post(
-                "commits", {"message": message, "tree": tree_sha, "parents": [head]}
-            )
+                raise Refused("patch executable mode receipt unverifiable; branch unchanged")
+            commit = post("commits", {"message": message, "tree": tree_sha, "parents": [head]})
             new_head = commit.get("sha")
             if (
                 not isinstance(new_head, str)
@@ -6187,9 +6177,7 @@ class WorkflowVerbs:
                 raise Refused("patch commit receipt unverifiable; branch unchanged")
             # Verify immutable content before publishing the ref, not just its metadata.
             published = _obj(
-                self._get(
-                    f"/repos/{repo}/contents/{quote(path, safe='/')}?ref={new_head}"
-                )
+                self._get(f"/repos/{repo}/contents/{quote(path, safe='/')}?ref={new_head}")
             )
             encoded = published.get("content")
             if not isinstance(encoded, str):
@@ -6197,9 +6185,7 @@ class WorkflowVerbs:
             try:
                 got = base64.b64decode("".join(encoded.split()), validate=True)
             except (KeyError, TypeError, ValueError, binascii.Error):
-                raise Refused(
-                    "patch immutable bytes unverifiable; branch unchanged"
-                ) from None
+                raise Refused("patch immutable bytes unverifiable; branch unchanged") from None
             if (
                 published.get("type") != "file"
                 or published.get("path") != path
@@ -6226,9 +6212,7 @@ class WorkflowVerbs:
             receipt = self._fixed_graph(query, variables, "updateRefs")
             if receipt.get("clientMutationId") != new_head:
                 raise WriteOutcomeUnknown("patch ref update receipt unverifiable")
-            ref = _obj(
-                self._get(f"/repos/{repo}/git/ref/heads/{quote(branch, safe='/')}")
-            )
+            ref = _obj(self._get(f"/repos/{repo}/git/ref/heads/{quote(branch, safe='/')}"))
             if _sub(ref, "object").get("sha") != new_head:
                 raise WriteOutcomeUnknown("patch ref receipt unverifiable")
             return {"branch": branch, "path": path, "commit": new_head}
