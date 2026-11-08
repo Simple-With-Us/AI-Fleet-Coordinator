@@ -1,0 +1,22 @@
+#!/bin/sh
+# The ZC seat's session-letter hook command (OPS-1048).  A hook process inherits no
+# profile, so this wrapper is what sources the host's shared Operator registry env file
+# (the URL and the signing key the hooks sign with), and then runs the checkout's real
+# platform-letter.  The checkout is resolved at run time:  the Mac's managed fleet runtime
+# first, then the server's fleet-cli current, then the host's integration tree, so a merge
+# updates the hook with the checkout and a release move never leaves a dead path.
+# Anything missing is a no-op:  a hook must never break a chat.
+[ -f "$HOME/.local/bin/mm-registry-env" ] && . "$HOME/.local/bin/mm-registry-env"
+# The integration tree is host configuration:  the host names its volume root in
+# FLEET_SERVER_VOLUME (the lane tools read the same variable), so this file carries no path.
+vol_code="${FLEET_SERVER_VOLUME:-}/Code/AI-Fleet-Coordinator/scripts/platform-letter"
+real=
+for candidate in \
+  "$HOME/apps/lanes/_managed/fleet/agent-sync-runtime/scripts/platform-letter" \
+  "$HOME/.local/share/fleet-cli/current/scripts/platform-letter" \
+  "$HOME/Code/AI-Fleet-Coordinator/scripts/platform-letter" \
+  "$vol_code"; do
+  if [ -f "$candidate" ]; then real="$candidate"; break; fi
+done
+[ -n "$real" ] || exit 0
+exec "$real" "$@"

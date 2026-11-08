@@ -61,8 +61,8 @@ struct DriftHistoryView: View {
         let line = watchLine
         return VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
-                // Green only when paths are set to be watched:  a watcher that is off or
-                // watching nothing is a warning, whatever its armed flag says.
+                // Green only when every watch asked for started:  a watcher that is off,
+                // watching nothing or missing a stream is a warning, whatever its armed flag says.
                 Circle()
                     .fill(line.tone == .watching ? Color.green : Color.orange)
                     .frame(width: 8, height: 8)
@@ -86,23 +86,73 @@ struct DriftHistoryView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            // The paths no started watch covers (GRID-37),  folded under the line.
+            UnwatchedPathsDisclosure(coverage: monitor.watchCoverage)
             if let problem = monitor.historyProblem {
                 Text(problem)
                     .font(.caption)
                     .foregroundStyle(Color.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            // The fleet-wide rules failing in the last trusted run (GRID-18):  they reach no
+            // cell,  so the red count above leaves them out.
+            if !monitor.complianceFailures.isEmpty {
+                complianceFailures(monitor.complianceFailures)
+                    .padding(.top, 6)
+            }
         }
     }
 
-    /// What the watcher is set to watch,  in the same words the Overview uses.
+    /// What the watcher actually holds,  in the same words the Overview uses (GRID-37):  a
+    /// stream that failed to start makes the line a warning.
     private var watchLine: GridPresentation.WatchLine {
         GridPresentation.WatchLine.make(
             isWatching: monitor.isWatching,
-            pathCount: monitor.watchedPathCount,
+            coverage: monitor.watchCoverage,
             seatCount: monitor.watchedSeats.count,
             recheckSeconds: DriftMonitor.safetyNetInterval
         )
+    }
+
+    /// The compliance results failing now,  each with its rule,  its place in the app's words,
+    /// the engine's state and what the engine said.
+    private func complianceFailures(_ failures: [DriftComplianceFailure]) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(GridPresentation.complianceFailuresTitle(count: failures.count))
+                .font(.headline)
+            Text(GridPresentation.complianceFailuresExplanation)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            ForEach(failures) { failure in
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(GridPresentation.colourState(of: failure).tint)
+                            .frame(width: 7, height: 7)
+                            .accessibilityHidden(true)
+                        Text(failure.ruleID)
+                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                            .textSelection(.enabled)
+                        Text(failure.placeTitle)
+                            .font(.system(size: 9, weight: .semibold))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 1)
+                            .background(Color.accentColor.opacity(0.12), in: Capsule())
+                        Text(failure.state)
+                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        Spacer()
+                    }
+                    if !failure.reason.isEmpty {
+                        Text(failure.reason)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+        }
     }
 
     /// The list of turns.
@@ -126,6 +176,37 @@ struct DriftHistoryView: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.vertical, 8)
+    }
+}
+
+/// The paths no started watch covers,  folded under the watch line (GRID-37).  It shows
+/// nothing when every path has a watch on it.  The Overview uses it too.
+struct UnwatchedPathsDisclosure: View {
+    let coverage: DriftWatchCoverage
+
+    var body: some View {
+        if let title = GridPresentation.unwatchedPathsTitle(coverage) {
+            DisclosureGroup {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(GridPresentation.unwatchedPathsExplanation)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    ForEach(Array(GridPresentation.unwatchedPathLines(coverage).enumerated()), id: \.offset) { _, path in
+                        Text(path)
+                            .font(.system(size: 10, design: .monospaced))
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, 4)
+            } label: {
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Color.orange)
+            }
+        }
     }
 }
 
