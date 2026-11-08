@@ -29,7 +29,7 @@ from agent_sync import zulip as Z
 from agent_sync.tests.fake_openrouter import FakeOpenRouter, Reply, completion
 
 MODEL = "meta/muse-spark-1.3-contributor"
-FALLBACK_MODEL = "~deepseek/deepseek-flash-latest"
+FALLBACK_MODEL = "minimax/MiniMax-M3.1-Flash"
 PROMPT_MARKER = "UNIQUE-PROMPT-MARKER-4471"
 GOOD = {
     "action": "reply",
@@ -451,6 +451,7 @@ class ConfigCase(unittest.TestCase):
             MODEL,
             FALLBACK_MODEL,
             "deepseek/deepseek-v4-flash",
+            "minimax/MiniMax-M3.1-Flash",
             "Qwen/Qwen3-8B",
             "~anthropic/claude-sonnet-latest",
             "@preset/operator-inbox-router",
