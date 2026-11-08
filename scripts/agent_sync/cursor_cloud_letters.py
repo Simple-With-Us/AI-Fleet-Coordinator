@@ -140,8 +140,15 @@ def register(
     if transport is None and local_registry(env):
         transport = in_process(env)
     chat = PL.Chat(
-        SPEC, env, LOCATION, str(agent["session_id"]), runner=runner, now=now, remote=remote,
-        transport=transport, seat=PC.SEAT,
+        SPEC,
+        env,
+        LOCATION,
+        str(agent["session_id"]),
+        runner=runner,
+        now=now,
+        remote=remote,
+        transport=transport,
+        seat=PC.SEAT,
     )
     return chat.registry("register", title=PL.bare(agent.get("title") or ""))
 
@@ -171,7 +178,11 @@ def send_dm(bot: str, text: str, env: Mapping[str, str], runner: Runner) -> str:
     try:
         proc = runner(
             ["simple-chat", "dm", "--to", bot, "--", text],
-            capture_output=True, text=True, timeout=DM_TIMEOUT, stdin=subprocess.DEVNULL, env=dict(env),
+            capture_output=True,
+            text=True,
+            timeout=DM_TIMEOUT,
+            stdin=subprocess.DEVNULL,
+            env=dict(env),
         )
     except subprocess.TimeoutExpired:
         return "unknown"
@@ -237,7 +248,11 @@ def sweep(
         told = state.get(sid) if isinstance(state.get(sid), dict) else {}
         current = PL.one_line(agent.get("title"))
         wanted = {"bot": bot, "label": label, "generation": generation}
-        if bot and not current.startswith(label + ": ") and {k: told.get(k) for k in wanted} != wanted:
+        if (
+            bot
+            and not current.startswith(label + ": ")
+            and {k: told.get(k) for k in wanted} != wanted
+        ):
             if clock() - started > budget:
                 row["dm"] = "deferred"  # the next run sends it
             else:
@@ -264,7 +279,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="cursor_cloud_letters")
     sub = parser.add_subparsers(dest="command", required=True)
     s = sub.add_parser("sweep", help="give open Cursor Cloud agents letters and tell their GB bots")
-    s.add_argument("--dry-run", action="store_true", help="read the agents and print what it would do")
+    s.add_argument(
+        "--dry-run", action="store_true", help="read the agents and print what it would do"
+    )
     s.add_argument("--remote", default="", help="the ssh destination that holds the registry")
     args = parser.parse_args(argv)
     env = os.environ

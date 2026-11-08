@@ -61,7 +61,9 @@ def cursor_kind(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
     conversation (beforeSubmitPrompt has no such field) is judged by the mark.  A conversation with no mark and no
     field is a local chat, such as one resumed from before the install, which never had a sessionStart here."""
     try:
-        safe = SI.check(_text(payload.get("conversation_id")), "the conversation id")  # no "/" can reach the path
+        safe = SI.check(
+            _text(payload.get("conversation_id")), "the conversation id"
+        )  # no "/" can reach the path
     except ValueError:
         safe = ""
     flag = payload.get("is_background_agent")
@@ -168,4 +170,6 @@ def entry(command: str, timeout: int, event: str) -> dict[str, Any]:
     return {"command": command, "timeout": timeout, "failClosed": False}
 
 
-INSTALL = PL.JsonHookInstaller(path=HOOKS_FILE, events=HOOK_TIMEOUTS, locate=versioned_hooks, build=entry)
+INSTALL = PL.JsonHookInstaller(
+    path=HOOKS_FILE, events=HOOK_TIMEOUTS, locate=versioned_hooks, build=entry
+)
