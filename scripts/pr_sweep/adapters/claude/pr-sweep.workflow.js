@@ -22,6 +22,8 @@ export const meta = {
 //
 // args (all optional except cli):
 //   cli      the pr-sweep shim of a fresh AI-Fleet-Coordinator checkout, e.g. ~/apps/lanes/AI-Fleet-Coordinator/claude-pr-sweep-run/scripts/pr-sweep
+//   lane     the sweep's own lane directory; the CLI and `lane prune` run from it (default ~ and ~/apps/lane).
+//            Pass it on a host whose lane guard refuses commands that do not start in a lane, such as the server.
 //   seat     the seat tag (default CLAUDE); workers inherit it
 //   prs      ["owner/repo#n", ...] to sweep only these (default: the whole inventory)
 //   repos    "BotFleet,DealDex" to limit the inventory
@@ -35,7 +37,7 @@ if (!A.cli) throw new Error('pass args.cli: the scripts/pr-sweep shim of a fresh
 const CLI = A.cli
 const SEAT = A.seat || 'CLAUDE'
 const ROUNDS = A.rounds || 3
-const RUN = `cd ~ && AGENT_SEAT=${SEAT} ${CLI}`
+const RUN = `cd ${A.lane || '~'} && AGENT_SEAT=${SEAT} ${CLI}`
 const MODEL = { small: 'haiku', mid: 'sonnet', frontier: 'opus' }
 const key = (full, n) => full + '#' + n
 
@@ -204,7 +206,7 @@ if (A.deploy !== false && Object.keys(merged).length) {
 // ---------- prune ----------
 phase('Prune')
 const prune = await agent([
-  `Run exactly: cd ~ && AGENT_SEAT=${SEAT} ~/apps/lane prune` + (A.prune === 'apply' ? ' --apply' : ''),
+  `Run exactly: cd ${A.lane || '~'} && AGENT_SEAT=${SEAT} ${A.lane ? 'lane' : '~/apps/lane'} prune` + (A.prune === 'apply' ? ' --apply' : ''),
   'Change nothing else.  Return the summary line, the counts of removable or removed and kept lanes, and the kept lanes with their reasons (at most 40 lines).',
 ].join('\n'), { label: 'lane prune', phase: 'Prune', model: 'haiku', effort: 'low' })
 
