@@ -51,6 +51,7 @@ REPORT_SECTIONS = {
     "hostMetrics": dict,
     "resourcePolicy": dict,
     "collection": dict,
+    "hostConfig": list,
 }
 REQUIRED_SECTIONS = ("schemaVersion", "tool", "host", "coolify", "processes", "files")
 # The fields each row may carry.  The ones that hold a string to replace are named on their own.
@@ -78,7 +79,30 @@ ROW_FIELDS = {
     ),
     "applications": ("uuid", "name", "containers", "services"),
     "processes": ("pid", "owner", "name", "cpuPercent", "memoryBytes", "belongsTo"),
-    "files": ("path", "bytes", "modifiedAt", "sha256", "drift", "missingSince"),
+    "files": (
+        "path",
+        "bytes",
+        "modifiedAt",
+        "sha256",
+        "drift",
+        "missingSince",
+        "changedAt",
+        "intent",
+        "intentReason",
+    ),
+    "hostConfig": (
+        "kind",
+        "path",
+        "unit",
+        "scope",
+        "state",
+        "bytes",
+        "modifiedAt",
+        "sha256",
+        "changedAt",
+        "source",
+        "matchesSource",
+    ),
     "removedCheckouts": ("repo", "files", "noticedAt"),
     "services": (
         "unit",
@@ -112,6 +136,7 @@ STRING_FIELDS = {
     "removedCheckouts": ("repo",),
     "services": ("unit", "job", "description"),
     "failedUnits": ("unit", "description"),
+    "hostConfig": ("kind", "path", "unit", "scope", "state", "source"),
 }
 
 
@@ -265,6 +290,21 @@ def sanitize_file(tokens, index, row):
     return result
 
 
+def sanitize_host_row(tokens, index, row):
+    """A host config row with its path,  its unit and its source replaced,  keeping each suffix."""
+    result = dict(row)
+    path = row.get("path") or ""
+    result["path"] = "/srv/example/host/%s%s" % (tokens.token("host-file", path), Path(path).suffix)
+    if row.get("unit"):
+        result["unit"] = sanitize_unit(tokens, row["unit"])
+    if row.get("source"):
+        source = row["source"]
+        result["source"] = "scripts/%s%s" % (tokens.token("source", source), Path(source).suffix)
+    if row.get("sha256"):
+        result["sha256"] = "%016x" % (index + 1)
+    return result
+
+
 def sanitize_service(tokens, row):
     result = dict(row)
     result.pop("description", None)
@@ -321,6 +361,11 @@ def sanitize_report(report):
         )
     if isinstance(report.get("hostMetrics"), dict):
         result["hostMetrics"] = sanitize_metrics(tokens, report["hostMetrics"])
+    if "hostConfig" in report:
+        result["hostConfig"] = [
+            sanitize_host_row(tokens, index, row)
+            for index, row in enumerate(report.get("hostConfig") or [])
+        ]
     if isinstance(report.get("resourcePolicy"), dict):
         policy = dict(report["resourcePolicy"])
         if policy.get("policyRevision"):

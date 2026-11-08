@@ -338,6 +338,65 @@ enum GridPresentation {
                 tone: .watching
             )
         }
+
+        /// The line, from what the watcher actually holds (GRID-37).
+        ///
+        /// The paths counted are the ones with a started stream on them, never the ones only
+        /// asked for.  A stream that failed to start makes the line a warning that says how
+        /// many paths are not watched, and none started is "Watching nothing".
+        static func make(
+            isWatching: Bool,
+            coverage: DriftWatchCoverage,
+            seatCount: Int,
+            recheckSeconds: TimeInterval
+        ) -> WatchLine {
+            let minutes = max(1, Int((recheckSeconds / 60).rounded()))
+            let every = minutes == 1 ? "every minute" : "every \(minutes) minutes"
+            let recheck = "Secret store checks cannot be watched, so they are checked again at least \(every)."
+            guard isWatching else {
+                return WatchLine(
+                    text: "Not watching:  a change to a seat's config is seen only when the seat setup is checked again.",
+                    tone: .warning
+                )
+            }
+            guard coverage.pathsAsked > 0 else {
+                return WatchLine(
+                    text: "Watching nothing:  the manifest names no path on the Mac to watch, so a change is seen only at the check \(every).",
+                    tone: .warning
+                )
+            }
+            guard coverage.pathsWatched > 0 else {
+                return WatchLine(
+                    text: "Watching nothing:  none of the \(coverage.streamsAsked) watches on the Mac could be started, so a change is seen only at the check \(every).",
+                    tone: .warning
+                )
+            }
+            let watched = coverage.pathsWatched == 1 ? "1 path" : "\(coverage.pathsWatched) paths"
+            let seats = seatCount == 1 ? "1 seat" : "\(seatCount) seats"
+            guard coverage.isComplete else {
+                let failed = coverage.streamsFailed == 1
+                    ? "1 watch could not be started"
+                    : "\(coverage.streamsFailed) watches could not be started"
+                let unwatched = coverage.unwatchedPaths.count
+                let rest: String
+                if unwatched == 0 {
+                    rest = "every path still has a watch on it"
+                } else if unwatched == 1 {
+                    rest = "a change to 1 path is seen only at the check \(every)"
+                } else {
+                    rest = "a change to \(unwatched) paths is seen only at the check \(every)"
+                }
+                return WatchLine(
+                    text: "Watching \(watched) of \(coverage.pathsAsked) on the Mac for \(seats)." + GridPresentation.gap
+                        + "\(failed), so \(rest).",
+                    tone: .warning
+                )
+            }
+            return WatchLine(
+                text: "Watching \(watched) on the Mac for \(seats)." + GridPresentation.gap + recheck,
+                tone: .watching
+            )
+        }
     }
 
     // MARK: Compliance rules
@@ -348,6 +407,11 @@ enum GridPresentation {
     /// What that list is, and what it is not.
     static let complianceExplanation = "These rules are listed from fleet-seats.json."
         + gap + "Their results are not shown in this grid, so a rule here says only whether its check exists, never that it passed."
+
+    /// What that list is once each rule shows its result from `FleetStore.complianceStatuses`
+    /// (GRID-18).
+    static let complianceResultsExplanation = "These rules are listed from fleet-seats.json, each with the engine's last result for it."
+        + gap + "A rule the engine has not run, or cannot run yet, is never shown as passing."
 
     /// The status a compliance rule shows, in place of a result the app does not have.
     static func complianceStatus(_ rule: ComplianceRule) -> (text: String, isBuilt: Bool) {
@@ -469,9 +533,17 @@ struct GridSelection: Hashable {
     var cellID: String { "\(seat)/\(kind.rawValue)" }
 
     /// The key the panel's file read runs under:  the cell and the run it came from.
-    func readKey(generatedAt: Date?) -> String {
-        let run = generatedAt.map { String($0.timeIntervalSince1970) } ?? "no-run"
-        return "\(cellID)@\(run)"
+    ///
+    /// Before any trusted run there is no run time, so the store's phase stands in for it:  a
+    /// first run that fails then reads the panel again, and the empty-cell words say why
+    /// instead of keeping what they said while it was checking.  Once a run has landed the key
+    /// is the run alone, so a later check does not blank the panel while it runs.
+    func readKey(generatedAt: Date?, phase: FleetStore.Phase? = nil) -> String {
+        if let generatedAt {
+            return "\(cellID)@\(String(generatedAt.timeIntervalSince1970))"
+        }
+        let state = phase.map { String(describing: $0) } ?? "unknown"
+        return "\(cellID)@no-run:\(state)"
     }
 
     /// True while the seat's row is on screen, so a filter that hides it closes the panel.
@@ -487,5 +559,150 @@ struct GridSelection: Hashable {
     func shouldClose(visibleRoster: [String], isRunning: Bool, cellExists: Bool) -> Bool {
         guard !isRunning else { return false }
         return !cellExists || !isShown(in: visibleRoster)
+    }
+}
+
+// MARK: - A run in flight
+
+extension GridPresentation {
+    /// How a badge draws while a run is in flight (SHELL-14, GRID-8, PERF-2).
+    ///
+    /// The store keeps the last answer on screen while it checks again, so a cell is not a
+    /// failure just because a run is in flight:  it keeps its state's colour, dimmed.  A cell
+    /// with no earlier answer is still `unknown` underneath (nothing reads as proven), but it
+    /// draws as a neutral CHECKING, never as a red UNKNOWN, because nothing is known yet
+    /// either way.
+    enum BadgeChecking: Equatable {
+        /// No run is checking the cell, so it draws as its state.
+        case settled
+        /// A run is checking the cell's last answer again.
+        case lastAnswer
+        /// A run is checking a cell that has no earlier answer.
+        case noAnswerYet
+
+        static func of(_ cell: GridCell) -> BadgeChecking {
+            if cell.isCheckingWithNoAnswer { return .noAnswerYet }
+            return cell.isBeingChecked ? .lastAnswer : .settled
+        }
+
+        /// Whether the badge draws in the neutral colour instead of its state's.
+        var isNeutral: Bool { self == .noAnswerYet }
+    }
+
+    /// The word a cell with no answer yet shows while a run checks it.
+    static let checkingWord = "CHECKING"
+    /// Its symbol.
+    static let checkingSymbol = "hourglass"
+    /// The mark on a badge whose last answer is being checked again, and on the banner.
+    static let recheckSymbol = "arrow.triangle.2.circlepath"
+
+    /// The word the badge shows.
+    static func badgeWord(for cell: GridCell) -> String {
+        BadgeChecking.of(cell) == .noAnswerYet ? checkingWord : cell.gridWord
+    }
+
+    /// The symbol the badge shows.
+    static func badgeSymbol(for cell: GridCell) -> String {
+        BadgeChecking.of(cell) == .noAnswerYet ? checkingSymbol : cell.gridSymbol
+    }
+
+    /// What a screen reader hears for the badge, so the dimming is not the only sign that
+    /// the answer is being checked again.
+    static func spokenWord(for cell: GridCell) -> String {
+        switch BadgeChecking.of(cell) {
+        case .settled: return cell.gridWord
+        case .lastAnswer: return "\(cell.gridWord), being checked again"
+        case .noAnswerYet: return "being checked, no answer yet"
+        }
+    }
+
+    /// How opaque the badge is:  dimmed while its last answer is checked again, and dimmer
+    /// still when its results are past the time limit the engine set.
+    static func badgeOpacity(checking: BadgeChecking, pastLimit: Bool) -> Double {
+        var opacity = 1.0
+        if checking == .lastAnswer { opacity = min(opacity, 0.6) }
+        if pastLimit { opacity = min(opacity, 0.45) }
+        return opacity
+    }
+
+    /// Whether the engine's answer is on screen, for the counts and the panels that say
+    /// "the engine has not answered":  a finished run, or the last answer kept while a run
+    /// checks again.  Without the second, every count went to a dash during every run.
+    static func engineAnswerShown(phase: FleetStore.Phase, showingLastAnswer: Bool) -> Bool {
+        phase == .loaded || showingLastAnswer
+    }
+
+    // MARK: Not checked (GRID-19)
+
+    /// The lines under a seat's row for the surfaces the engine names and does not check.
+    static func notCheckedLines(_ surfaces: [UncoveredSurface]) -> [String] {
+        surfaces.map { "Not checked:  \($0.surface) \u{2014} \($0.reason)" }
+    }
+
+    /// The heading over the rules the engine cannot run yet, with how many there are.
+    static func notImplementedTitle(count: Int) -> String {
+        "Rules The Engine Cannot Run Yet (\(count))"
+    }
+
+    /// What that list is.
+    static let notImplementedExplanation = "The engine names these rules and cannot run them yet."
+        + ServerStatusCopy.sentenceGap + "No cell in the grid shows their result, so none of them reads as passing."
+
+    // MARK: The file in the detail panel (GRID-31, GRID-30, PERF-28, COPY-63)
+
+    /// The sentence that says a file was cut at the panel's limit.  It is the same sentence
+    /// `ConfigFileRead.notes` gives, and the instruction preview prints its own copy.
+    static let truncationNote = "The file is longer than the panel reads, so this is its first part."
+
+    /// The notes the panel shows above a file's body.
+    ///
+    /// They are the reader's own (`ConfigFileRead.notes`).  The instruction preview says
+    /// the file was cut off itself, so the panel leaves that one out there rather than say
+    /// it twice.  Without a reading, a cut-off file still says so.
+    static func readNotes(_ read: ConfigFileRead?, truncated: Bool, previewShowsTruncation: Bool) -> [String] {
+        let notes = read?.notes ?? (truncated ? [truncationNote] : [])
+        guard previewShowsTruncation else { return notes }
+        return notes.filter { $0 != truncationNote }
+    }
+
+    /// The longest piece of one line the panel draws as one text.
+    static let displayLineLimit = 1_000
+
+    /// Each artifact's display lines, split once when the panel's files are read (off the main
+    /// thread), so a redraw never splits a file again.  Nil for anything that is not a file's
+    /// text;  a directory already arrives as its entries.
+    static func splitLines(for views: [ConfigFileView]) -> [[String]?] {
+        views.map { view in
+            if case .file(_, let text, _, _) = view, !text.isEmpty {
+                return displayLines(text)
+            }
+            return nil
+        }
+    }
+
+    /// A file's text as the lines the panel draws, one text each, so a large file is laid
+    /// out a line at a time and never as one giant text (PERF-28).
+    ///
+    /// Any line break counts, Windows ones included.  A file that ends in a line break does
+    /// not end in an empty line on screen.  An empty line is a space, so it keeps its
+    /// height.  A line longer than the limit, such as minified JSON, is drawn in pieces.
+    static func displayLines(_ text: String, limit: Int = displayLineLimit) -> [String] {
+        let raw = text.split(omittingEmptySubsequences: false, whereSeparator: { $0.isNewline })
+        let size = max(1, limit)
+        var lines: [String] = []
+        for (index, line) in raw.enumerated() {
+            if index == raw.count - 1, line.isEmpty, raw.count > 1 { break }
+            if line.isEmpty {
+                lines.append(" ")
+                continue
+            }
+            var start = line.startIndex
+            while start < line.endIndex {
+                let end = line.index(start, offsetBy: size, limitedBy: line.endIndex) ?? line.endIndex
+                lines.append(String(line[start..<end]))
+                start = end
+            }
+        }
+        return lines
     }
 }
