@@ -18,7 +18,7 @@ Command (from `scripts/agent-sync-mcp/` at the artifact checkout, wrangler 4.154
 
     npx wrangler deploy
 
-Result: the script uploaded ("Uploaded simple-tools-mcp (3.23 sec)") but promotion did not happen; the trigger step failed:
+Result: the script uploaded ("Uploaded simple-tools-mcp (3.23 sec)") but the trigger step failed and wrangler reported no targets deployed:
 
     ✘ [ERROR] Trigger configuration for "simple-tools-mcp" was only partially updated:
 
@@ -30,7 +30,7 @@ Result: the script uploaded ("Uploaded simple-tools-mcp (3.23 sec)") but promoti
 
     No targets deployed for simple-tools-mcp (0.86 sec)
 
-Cause: the scoped per-Worker token is bound to account `3a9368057468d0909cafaa85df12d1b7` and cannot see the `simplewithus.com` zone, so the custom-domain attach call fails. No production impact: the pre-existing custom domain attachment was untouched (`GET /health` stayed 200) and no new version was promoted by the failed run.
+Cause: the scoped per-Worker token is bound to account `3a9368057468d0909cafaa85df12d1b7` and cannot see the `simplewithus.com` zone, so the custom-domain attach call fails. Observed after the failed run: the pre-existing custom domain attachment was untouched (`GET /health` stayed 200) and wrangler said "No targets deployed".  Do not assume what a failed `wrangler deploy` leaves live in general:  check `npx wrangler deployments list` for the version at 100% before and after.
 
 ## What worked
 
