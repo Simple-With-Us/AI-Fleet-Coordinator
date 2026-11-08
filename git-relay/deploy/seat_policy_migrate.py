@@ -58,9 +58,7 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-_spec = importlib.util.spec_from_file_location(
-    "deploy_seat_policy", HERE / "seat_policy.py"
-)
+_spec = importlib.util.spec_from_file_location("deploy_seat_policy", HERE / "seat_policy.py")
 sp = importlib.util.module_from_spec(_spec)
 sys.modules.setdefault("deploy_seat_policy", sp)
 _spec.loader.exec_module(sp)
@@ -159,12 +157,10 @@ def _private_dir_refusal(path: str, label: str) -> str | None:
         st = os.lstat(path)
     except OSError:
         return f"{label} {path} is unreadable"
-    if (
-        not stat.S_ISDIR(st.st_mode)
-        or not _trusted(st.st_uid)
-        or stat.S_IMODE(st.st_mode) & 0o077
-    ):
-        return f"{label} {path} must be a real directory, root-owned (or the running user), mode 0700"
+    if not stat.S_ISDIR(st.st_mode) or not _trusted(st.st_uid) or stat.S_IMODE(st.st_mode) & 0o077:
+        return (
+            f"{label} {path} must be a real directory, root-owned (or the running user), mode 0700"
+        )
     return None
 
 
@@ -191,13 +187,9 @@ def _config_edit(config_bytes: bytes) -> tuple[bytes, str]:
     returns the new bytes and the absolute seats-file path the old line named."""
     text = config_bytes.decode("utf-8")
     lines = text.split("\n")
-    hits = [
-        i for i, line in enumerate(lines) if line.startswith(sp.SEATS_FILE_VAR + "=")
-    ]
+    hits = [i for i, line in enumerate(lines) if line.startswith(sp.SEATS_FILE_VAR + "=")]
     if len(hits) != 1:
-        raise Refusal(
-            f"expected exactly one {sp.SEATS_FILE_VAR} line, found {len(hits)}"
-        )
+        raise Refusal(f"expected exactly one {sp.SEATS_FILE_VAR} line, found {len(hits)}")
     for other in (sp.SEATS_VAR, sp.SEATS_CREDENTIAL_VAR):
         if any(line.startswith(other + "=") for line in lines):
             raise Refusal(
@@ -236,18 +228,14 @@ def _gates(host: Host, unit: sp.Unit, args) -> dict:
     if bad:
         raise Refusal(bad)
     if os.path.lexists(args.backing):
-        raise Refusal(
-            f"{args.backing} already exists;  refusing to overwrite or adopt it"
-        )
+        raise Refusal(f"{args.backing} already exists;  refusing to overwrite or adopt it")
     with open(unit.config, "rb") as fh:
         config_bytes = fh.read()
     new_config, seats_path = _config_edit(config_bytes)
     # The state directory of a DynamicUser unit is not durable backup, and the backing file
     # must not sit where the service (or a path it can write) could replace it.
     if os.path.dirname(os.path.realpath(seats_path)) == os.path.realpath(backing_dir):
-        raise Refusal(
-            "the backing directory must not be the directory of the current seats file"
-        )
+        raise Refusal("the backing directory must not be the directory of the current seats file")
     if os.path.realpath(backing_dir).startswith(os.path.realpath("/var/lib") + os.sep):
         raise Refusal(
             "the backing directory must not be under /var/lib (a service state directory)"
@@ -256,13 +244,9 @@ def _gates(host: Host, unit: sp.Unit, args) -> dict:
         policy_bytes = fh.read()
     policy = json.loads(policy_bytes)
     if sp.canonical_digest(policy) != args.expect_digest:
-        raise Refusal(
-            "the live policy is not the reviewed one (--expect-digest mismatch)"
-        )
+        raise Refusal("the live policy is not the reviewed one (--expect-digest mismatch)")
     if any("token" in cfg for cfg in policy.values()):
-        raise Refusal(
-            "a seat carries a static token;  the shared-only policy cannot hold it"
-        )
+        raise Refusal("a seat carries a static token;  the shared-only policy cannot hold it")
     sp.validate_with(unit.relay, policy)
     dropin = _dropin_path(host, unit.name)
     if os.path.lexists(dropin):
@@ -348,9 +332,7 @@ def _validate_journal(journal: dict, host: Host, unit_name: str) -> str | None:
     one this tool creates, the before-images must match their digests and be a real
     pre-migration shape, and modes and owners must be plain integers in range."""
     try:
-        if journal.get("v") != 1 or journal.get("phase") not in PHASES + (
-            "restore-unhealthy",
-        ):
+        if journal.get("v") != 1 or journal.get("phase") not in PHASES + ("restore-unhealthy",):
             return "unknown journal version or phase"
         if journal.get("unit") != unit_name:
             return "the journal is for another unit"
@@ -361,21 +343,14 @@ def _validate_journal(journal: dict, host: Host, unit_name: str) -> str | None:
         if sha(journal["unit_text"].encode()) != journal["unit_text_sha256"]:
             return "the journal's unit text fails its own digest"
         for key in ("uid", "gid", "mode"):
-            if (
-                not isinstance(config[key], int)
-                or isinstance(config[key], bool)
-                or config[key] < 0
-            ):
+            if not isinstance(config[key], int) or isinstance(config[key], bool) or config[key] < 0:
                 return f"journal config {key} is not a plain number"
         if config["mode"] & ~0o777:
             return "journal config mode has special bits"
         unit = host.read_unit(unit_name)
         if config["path"] != unit.config:
             return "the journal's config path is not the unit's EnvironmentFile"
-        if (
-            dropin["path"] != _dropin_path(host, unit_name)
-            or dropin["existed"] is not False
-        ):
+        if dropin["path"] != _dropin_path(host, unit_name) or dropin["existed"] is not False:
             return "the journal's drop-in is not the one this tool creates"
         _edited, seats_path = _config_edit(bytes.fromhex(config["bytes_hex"]))
         if seats_path != policy["path"] or not os.path.isabs(journal["backing"]):
@@ -408,11 +383,7 @@ def _restore_from(journal: dict, journal_dir: str, host: Host, unit_name: str) -
     ok = host.healthy(unit)
     journal["phase"] = "restored" if ok else "restore-unhealthy"
     _write_journal(journal_dir, journal)
-    print(
-        "restored and healthy"
-        if ok
-        else "THE RESTORE IS NOT HEALTHY:  check the unit now"
-    )
+    print("restored and healthy" if ok else "THE RESTORE IS NOT HEALTHY:  check the unit now")
     return ok
 
 
@@ -428,9 +399,7 @@ def apply(args, host: Host | None = None, crash_after: str | None = None) -> int
     """crash_after is a test hook:  raise right after the named phase is journaled."""
     host = host or Host()
     unit = host.read_unit(args.unit)
-    journal_lock = sp._acquire_transaction_lock(
-        os.path.join(args.journal_dir, "migrate")
-    )
+    journal_lock = sp._acquire_transaction_lock(os.path.join(args.journal_dir, "migrate"))
     if journal_lock is None:
         print("refusing:  another migration holds the journal lock")
         return 2
@@ -450,9 +419,7 @@ def apply(args, host: Host | None = None, crash_after: str | None = None) -> int
             return 2
         existing = _read_journal(args.journal_dir)
         if existing is not None:
-            print(
-                f"refusing:  a journal exists (phase {existing['phase']});  run recover first"
-            )
+            print(f"refusing:  a journal exists (phase {existing['phase']});  run recover first")
             return 2
         try:
             g = _gates(host, unit, args)
@@ -558,18 +525,14 @@ def recover(args, host: Host | None = None) -> int:
     if bad:
         print(f"refusing:  {bad}")
         return 2
-    journal_lock = sp._acquire_transaction_lock(
-        os.path.join(args.journal_dir, "migrate")
-    )
+    journal_lock = sp._acquire_transaction_lock(os.path.join(args.journal_dir, "migrate"))
     if journal_lock is None:
         print("refusing:  another transaction holds the lock")
         return 2
     locks = _Locks([journal["policy"]["path"], journal["backing"]])
     try:
         if not locks.acquire():
-            print(
-                "refusing:  an install-seat or migration transaction holds the policy lock"
-            )
+            print("refusing:  an install-seat or migration transaction holds the policy lock")
             return 2
         if journal["phase"] == "healthy":
             try:
