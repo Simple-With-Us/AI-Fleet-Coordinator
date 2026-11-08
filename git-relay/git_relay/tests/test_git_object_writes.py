@@ -339,3 +339,46 @@ class Writes(unittest.TestCase):
                     with self.assertRaises(Refused):
                         self.handle(client, action).run(action, args)
                     self.assertEqual(client.calls, [])
+
+
+class RepeatedReferenceTests(unittest.TestCase):
+    def handle(self, client):
+        return WorkflowVerbs(client, Policy(), "swu-wise", "own", "swu-wise", "wf_git_tree_create", REPO)
+
+    def fixture(self, raw, count=2):
+        import base64
+        import hashlib
+        sha = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw, usedforsecurity=False).hexdigest()
+        files = [{"path": "file-%s.txt" % n, "sha": sha, "mode": "100644"} for n in range(count)]
+        blob = {"sha": sha, "encoding": "base64", "size": len(raw), "content": base64.b64encode(raw).decode()}
+        return {"repo": REPO, "base_tree": SHA, "files": files}, blob
+
+    def test_one_download_but_every_destination_is_scanned(self):
+        from unittest.mock import patch
+        args, blob = self.fixture(b"safe\n")
+        client = Client(blob, {"sha": "b"*40, "truncated": False, "tree": []})
+        with patch("git_relay.workflow_verbs.unreviewed_file_secret", return_value=None) as check:
+            out = self.handle(client).run("wf_git_tree_create", args)
+        self.assertEqual(out["tree"]["files"], 2)
+        self.assertEqual(len([c for c in client.calls if c[0] == "GET"]), 1)
+        self.assertEqual([c.args[1] for c in check.call_args_list], ["file-0.txt", "file-1.txt"])
+
+    def test_one_path_approval_cannot_bless_another(self):
+        from unittest.mock import patch
+        args, blob = self.fixture(b"safe\n")
+        client = Client(blob)
+        with patch("git_relay.workflow_verbs.unreviewed_file_secret", side_effect=[None, "credential"]):
+            with self.assertRaises(Refused):
+                self.handle(client).run("wf_git_tree_create", args)
+        self.assertEqual(len(client.calls), 1)
+        self.assertEqual(client.calls[0][0], "GET")
+
+    def test_repeated_bytes_are_charged_for_every_reference(self):
+        from git_relay.workflow_verbs import MAX_FILES_RAW
+        raw = b"x" * (MAX_FILES_RAW // 3 + 1)
+        self.assertLessEqual(len(raw), MAX_FILE_RAW)
+        args, blob = self.fixture(raw, count=3)
+        client = Client(blob)
+        with self.assertRaises(Refused):
+            self.handle(client).run("wf_git_tree_create", args)
+        self.assertEqual(len(client.calls), 1, "all references charged, no repeated GET or tree POST")
