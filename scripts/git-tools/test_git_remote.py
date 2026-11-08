@@ -2017,6 +2017,77 @@ class TestReview1199(unittest.TestCase):
         )
         self.assertIn(git._REMOTE_UNKNOWN, git._failure(exc, True))
 
+    # AFC-638:  a response that arrived without an exposed raw socket must be
+    # read, not discarded, and a sent request whose answer is lost must not be
+    # reported as "could not be reached".
+    def _remote_post_without_sock(self, chunks, headers, fp="raw-none"):
+        chunks = list(chunks)
+
+        class Response:
+            status = 200
+
+            def __init__(self):
+                self.headers = headers
+                self.chunked = False
+                if fp == "raw-none":
+                    self.fp = types.SimpleNamespace(raw=types.SimpleNamespace(_sock=None))
+                elif fp == "no-raw":
+                    self.fp = types.SimpleNamespace()
+                else:
+                    self.fp = None
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read1(self, size):
+                if chunks:
+                    return chunks.pop(0)
+                return b""
+
+        class FakeOpener:
+            def open(self, req, timeout=None):
+                return Response()
+
+        with mock.patch.object(git.urllib.request, "build_opener", lambda *handlers: FakeOpener()):
+            return git._remote_post(git.REMOTE_MCP_URL, {}, b"{}", 5)
+
+    def test_response_without_a_socket_returns_its_body(self):
+        body = b'{"jsonrpc":"2.0","id":1,"result":{}}'
+        for fp in ("raw-none", "no-raw", "none"):
+            (status, ctype, raw) = self._remote_post_without_sock(
+                [body[:10], body[10:], b""],
+                {
+                    "Content-Type": "application/json",
+                    "Content-Length": str(len(body)),
+                    "Connection": "close",
+                },
+                fp=fp,
+            )
+            self.assertEqual((status, raw), (200, body), fp)
+
+    def test_response_without_a_socket_unknown_length_reads_to_eof(self):
+        (status, ctype, raw) = self._remote_post_without_sock(
+            [b"abc", b""], {"Content-Type": "application/json", "Connection": "close"}
+        )
+        self.assertEqual((status, ctype, raw), (200, "application/json", b"abc"))
+
+    def test_sent_failure_says_the_answer_was_lost_not_unreachable(self):
+        for reason in ("transport", "deadline", "unreachable"):
+            read_msg = git._failure(git._TransportError(True, reason), False)
+            self.assertIn("answer was lost", read_msg, reason)
+            self.assertNotIn("could not be reached", read_msg, reason)
+            write_msg = git._failure(git._TransportError(True, reason), True)
+            self.assertIn("answer was lost", write_msg, reason)
+            self.assertIn(git._REMOTE_UNKNOWN, write_msg, reason)
+
+    def test_unsent_failure_still_says_could_not_be_reached(self):
+        msg = git._failure(git._TransportError(False, "unreachable"), True)
+        self.assertIn("could not be reached", msg)
+        self.assertNotIn("may or may not have been applied", msg)
+
     # 5. The program name cannot carry newline/tab into stderr lines.
     def test_prog_escapes_newline_and_tab(self):
         with mock.patch.dict(os.environ, {"SIMPLE_GIT_ARGV0": "evil\nname\there"}):

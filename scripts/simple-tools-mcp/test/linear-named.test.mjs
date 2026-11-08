@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { parse } from 'graphql';
 import { HostedTools, HOSTED_TOOL_LIST } from '../src/hosted-tools.js';
 import { LINEAR_NAMED_COMMANDS, LINEAR_NAMED_TOOLS, LINEAR_NAMED_BY_NAME } from '../src/linear-named-specs.js';
-import { buildNamedOperation } from '../src/linear-named.js';
+import { buildNamedOperation, NAMED_DEFAULT_MAX_CHARS } from '../src/linear-named.js';
 import { loadConfig } from '../src/config.js';
 import { testEnv } from './helpers.mjs';
 import * as S from '../src/seat-state.js';
@@ -31,6 +31,15 @@ function fixture(scopes = ['zulip:read', 'zulip:write']) {
 const argsFor = (entry) => Object.fromEntries(Object.entries(entry.args).filter(([, a]) => a.required).map(([name, a]) => [name,
   a.schema.type === 'object' ? {} : a.schema.type === 'boolean' ? true : a.schema.type === 'integer' ? 1 : 'resource',
 ]));
+
+test('document reads default to the 64,000 response budget (AFC-664 item 8)', () => {
+  assert.equal(NAMED_DEFAULT_MAX_CHARS.linear_get_document, 64000);
+  assert.deepEqual(Object.keys(NAMED_DEFAULT_MAX_CHARS), ['linear_get_document']);
+  const tool = LINEAR_NAMED_TOOLS.find((t) => t.name === 'linear_get_document');
+  assert.equal(tool.inputSchema.properties.max_chars.default, 64000);
+  const other = LINEAR_NAMED_TOOLS.find((t) => t.name === 'linear_get_issue');
+  assert.equal(other.inputSchema.properties.max_chars.default, 24000);
+});
 
 test('named tool catalog is unique, discoverable, closed and bound to the seat', () => {
   assert.ok(LINEAR_NAMED_TOOLS.length >= 140);

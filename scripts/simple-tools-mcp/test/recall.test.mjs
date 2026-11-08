@@ -18,7 +18,7 @@ import { ZulipClient } from "../src/zulip.js";
 import * as S from "../src/seat-state.js";
 import { loadConfig } from "../src/config.js";
 import { TOOLS, ERROR_META_KEY, schemaProblem } from "../src/contract.js";
-import { RecallClient, recallClientFromEnv, recallBaseUrl, RECALL_TOOLS, HIT_TEXT_LIMIT, RECALL_USER_AGENT } from "../src/recall.js";
+import { RecallClient, recallClientFromEnv, recallBaseUrl, RECALL_TOOLS, HIT_TEXT_LIMIT, RECALL_USER_AGENT, RECALL_TIMEOUT_MS, RECALL_SEARCH_TIMEOUT_MS } from "../src/recall.js";
 import { GR_TOOLS } from "../src/gr-tools.js";
 import { NOTES_TOOLS } from "../src/notes.js";
 import { FakeZulip, BOT_EMAIL } from "./fake-zulip.mjs";
@@ -213,6 +213,35 @@ test("recallClientFromEnv:  null unless all three secrets and the exact base URL
   assert.equal(recallBaseUrl("https://recall.jays.services/"), "https://recall.jays.services");
   // The secrets are private fields:  a stray stringify of the client shows none.
   noSecrets(JSON.stringify(recallClientFromEnv(full, { fetch })));
+});
+
+// ---------------------------------------------------------------- timeouts
+
+test("a search waits longer than a write: the read budget is 45 s, the write budget stays 10 s", async () => {
+  assert.equal(RECALL_TIMEOUT_MS, 10_000);
+  assert.equal(RECALL_SEARCH_TIMEOUT_MS, 45_000);
+  // A fake upstream that answers after 60 ms but gives up when its signal aborts.
+  const slow = (init) =>
+    new Promise((resolve, reject) => {
+      const timer = setTimeout(() => resolve(new Response('{"ok":true,"hits":[]}', { status: 200 })), 60);
+      init.signal.addEventListener("abort", () => {
+        clearTimeout(timer);
+        reject(init.signal.reason);
+      });
+    });
+  const client = new RecallClient({
+    baseUrl: "https://recall.example.test", token: TOKEN, accessId: ACCESS_ID, accessSecret: ACCESS_SECRET,
+    fetch: async (_url, init) => slow(init), timeoutMs: 20, searchTimeoutMs: 400,
+  });
+  const found = await client.search({ query: "x", limit: 3 });
+  assert.equal(found.ok, true, "the search outlives the write budget");
+  await assert.rejects(client.contribute({ text: LESSON, category: "lesson" }), (error) => error.kind === "timeout", "a write still times out at the write budget");
+  await assert.rejects(client.stats(), (error) => error.kind === "timeout", "stats keeps the short budget");
+  const tight = new RecallClient({
+    baseUrl: "https://recall.example.test", token: TOKEN, accessId: ACCESS_ID, accessSecret: ACCESS_SECRET,
+    fetch: async (_url, init) => slow(init), timeoutMs: 20, searchTimeoutMs: 20,
+  });
+  await assert.rejects(tight.search({ query: "x" }), (error) => error.kind === "timeout", "a search past its own budget still times out");
 });
 
 // ---------------------------------------------------------------- the request

@@ -1,6 +1,7 @@
 #!/usr/bin/env -S python3 -I
 """Assigned-bearer stdio transport. No secret reader, token minting or retries."""
 
+import base64
 import hashlib
 import http.client
 import json
@@ -26,6 +27,21 @@ PROTOCOL_RE = re.compile(r"[!-~]{1,128}")
 # A modern request names its own version here and needs no handshake.  The server refuses
 # a header that disagrees with it, so it outranks both of the versions above.
 META_VERSION = "io.modelcontextprotocol/protocolVersion"
+# Such a request must also say what its body says in the standard headers (SEP-2243), or the
+# server answers 400, code -32020, "the request headers and body disagree":  Mcp-Method on every
+# request, and Mcp-Name on the methods below, carrying the body field named here.  This is the
+# table and the encoding the SDK's own client uses (MCP_NAME_HEADER_SOURCE, encodeMcpParamValue).
+NAME_FIELD = {
+    "tools/call": "name",
+    "prompts/get": "name",
+    "resources/read": "uri",
+    "tasks/get": "taskId",
+    "tasks/update": "taskId",
+    "tasks/cancel": "taskId",
+}
+BASE64_PREFIX = "=?base64?"
+BASE64_SUFFIX = "?="
+METHOD_RE = re.compile(r"[!-~]{1,128}")
 BEARER_REFUSED_MESSAGE = (
     "The hosted server refused this connection's assigned bearer: it is invalid, expired, "
     "revoked, paused or not accepted for MCP, or the server could not load its credentials. "
@@ -176,6 +192,35 @@ def names_envelope(message):
     params = message.get("params")
     meta = params.get("_meta") if isinstance(params, dict) else None
     return isinstance(meta, dict) and META_VERSION in meta
+
+
+def needs_base64(value):
+    """True when a header value is not safe plain ASCII (RFC 9110 5.5):  empty, edge space or tab,
+    a byte outside 0x20 to 0x7E and tab, or already shaped like the Base64 form."""
+    if not value or value != value.strip(" \t"):
+        return True
+    if value.startswith(BASE64_PREFIX) and value.endswith(BASE64_SUFFIX):
+        return True
+    return any(ord(char) != 9 and not 32 <= ord(char) <= 126 for char in value)
+
+
+def encode_header_value(value):
+    """Plain when safe, else =?base64?<UTF-8 in Base64>?=.  A lone surrogate becomes U+FFFD,
+    as a JavaScript TextEncoder makes it."""
+    if not needs_base64(value):
+        return value
+    text = value.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
+    return BASE64_PREFIX + base64.b64encode(text.encode("utf-8")).decode("ascii") + BASE64_SUFFIX
+
+
+def name_header(message):
+    """The Mcp-Name value for this request's method, or None when the method has none or the
+    body field is not a string (the server then judges the body)."""
+    method = message.get("method")
+    params = message.get("params")
+    field = NAME_FIELD.get(method) if isinstance(method, str) else None
+    value = params.get(field) if field and isinstance(params, dict) else None
+    return encode_header_value(value) if isinstance(value, str) else None
 
 
 def is_bearer_refusal(error):
@@ -333,10 +378,19 @@ class Adapter:
         }
         if self.session:
             headers["Mcp-Session-Id"] = self.session
-        # An initialize is what negotiates the version, so it never names one.
         version = self.request_version(message)
-        if method != "initialize" and version:
+        # A request that names its own version in its envelope is served on the modern path, which
+        # wants the version, the method and, for some methods, the name in headers too.  The
+        # envelope's own version outranks everything, an initialize included.
+        modern = "id" in message and names_envelope(message) and version is not None
+        # An initialize that names no version is what negotiates one, so it sends none.
+        if modern or (method != "initialize" and version):
             headers["MCP-Protocol-Version"] = version
+        if modern and isinstance(method, str) and METHOD_RE.fullmatch(method):
+            headers["Mcp-Method"] = method
+            name = name_header(message)
+            if name is not None:
+                headers["Mcp-Name"] = name
         encoded = json.dumps(message).encode()
         if not file_frame_allowed(message, len(encoded)):
             raise TransportFailure("Input frame too large.")
@@ -394,7 +448,10 @@ class Adapter:
                     protocol = result["result"].get("protocolVersion")
                     if not isinstance(protocol, str) or not re.fullmatch(r"[!-~]{1,128}", protocol):
                         return failure(message)
-                    self.protocol = protocol
+                    # Only a legacy initialize negotiates the version that later legacy
+                    # frames send.  A modern one names its own version in every request.
+                    if not names_envelope(message):
+                        self.protocol = protocol
                     self.session = session
                 self.remember(message, result, session)
                 return result

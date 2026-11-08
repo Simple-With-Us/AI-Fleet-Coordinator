@@ -61,7 +61,12 @@ export const LINEAR_NAMED_COMMANDS = Object.freeze([
 export const LINEAR_NAMED_BY_NAME = Object.freeze(Object.fromEntries(LINEAR_NAMED_COMMANDS.map((c) => [c.name, c])));
 export const LINEAR_NAMED_TOOLS = Object.freeze(LINEAR_NAMED_COMMANDS.map((command) => {
   const properties = Object.fromEntries(Object.entries(command.args).map(([name, arg]) => [name, { ...arg.schema, ...(arg.description ? { description: arg.description } : {}), ...(name === "id" ? { minLength: 1 } : {}) }]));
-  properties.max_chars = outputLimit;
+  // A document read returns one whole document:  the fleet's own deficiency
+  // log passed 26K characters and the shared 24,000 default made it
+  // unreadable in one call (response_too_large), while a 12.5K document read
+  // fine.  Document reads therefore advertise the 64,000 ceiling as their
+  // default;  callNamedLinear applies the same default server-side.
+  properties.max_chars = command.name === "linear_get_document" ? { ...outputLimit, default: 64000 } : outputLimit;
   if (command.selection) properties.selection = selection;
   const required = Object.entries(command.args).filter(([, arg]) => arg.required).map(([name]) => name);
   if (command.write) {

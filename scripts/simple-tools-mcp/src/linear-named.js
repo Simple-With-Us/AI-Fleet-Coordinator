@@ -42,9 +42,15 @@ export function buildNamedOperation(name, args) {
   return { entry, document, variables };
 }
 
+// The response budget applied when the caller omits max_chars, per tool.
+// Only document reads differ:  one whole document routinely passes the
+// shared 24,000 default (the 26.7K-char deficiency log did), and 64,000 is
+// the existing ceiling for every Linear read.
+export const NAMED_DEFAULT_MAX_CHARS = Object.freeze({ linear_get_document: 64000 });
+
 export function callNamedLinear(tools, name, args, audit) {
   const { entry, document, variables } = buildNamedOperation(name, args);
-  const shared = { variables, max_chars: args.max_chars };
+  const shared = { variables, max_chars: args.max_chars ?? NAMED_DEFAULT_MAX_CHARS[name] };
   return entry.write
     ? apiMutation(tools, { ...shared, mutation: document, idempotency_key: args.idempotency_key, session: args.session }, audit)
     : apiQuery(tools, { ...shared, query: document });
