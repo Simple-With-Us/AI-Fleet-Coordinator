@@ -41,7 +41,9 @@ MAX_BUNDLE_BYTES = 8 * 1024 * 1024
 # AFC-412 PR2 exporter as a data file (AFC-412 PR3, this PR).
 # The 154th is agent_sync/operator_sheets_drain.mjs, the OPS-1037 production drain runner shipped beside the
 # exporter it calls (its systemd units stay repo-only under agent_sync/server/).
-MAX_FILES = 154
+# The 155th is agent_sync/muster_service.py (AFC-654), the read-only Operator service `simple-chat`
+# dispatches for Muster's Seats panel.
+MAX_FILES = 155
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MARKER = "# fleet-cli managed wrapper v1"
 # Retention:  a receive keeps the newest KEEP_RELEASES releases and deletes older ones, but never `current`,
@@ -473,9 +475,16 @@ HELPER_COMMANDS = {
     "scripts/simple-chat": "simple-chat",
     "scripts/simple-board": "simple-board",
     "scripts/recall": "recall",
-    # NOT scripts/simple-git:  each Git CLI user supplies their OWN bearer (env or the hidden prompt)
-    # and the server decides identity and permissions from it, so its wrapper never reads or runs the
-    # host seat helper on any path.  The helper stays wired for the commands above.
+    # simple-git: a process that DECLARES a seat (AGENT_SEAT, AGENT_TAG or the launcher seat) gets that
+    # seat's OWN bearer from the host helper, the same as the commands above.  A process that declares
+    # no seat gets nothing from the helper and supplies its own bearer (env or the hidden prompt), and
+    # the server still decides identity and permissions from the bearer it receives.  The helper refuses
+    # an inherited bearer that is not the declared seat's own, and conflicting declarations, and the
+    # implementation then checks the declared seat against the seat the server reports.  The helper
+    # must carry the simple-git entry (scripts/git-tools/testdata/seat-remote-defaults.capture.py);  a
+    # helper without it refuses the command, so a host whose helper is older keeps its existing plain
+    # wrapper until the helper is updated and the wrapper is installed again.
+    "scripts/simple-git": "simple-git",
 }
 HELPER_PATH = ".config/fleet-cli/seat-remote-defaults.py"
 

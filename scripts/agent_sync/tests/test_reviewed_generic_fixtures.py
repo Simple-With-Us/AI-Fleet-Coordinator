@@ -18,12 +18,29 @@ class ReviewedGenericTests(unittest.TestCase):
             (self.repo, self.path, hashlib.sha256(body.encode()).hexdigest())
         }))
 
-    def test_release_registry_only_has_reviewed_exact_botfleet_entry(self):
+    def test_registry_contains_only_the_full_content_reviews(self):
         self.assertEqual(secretscan._REVIEWED_GENERIC_FIXTURES, frozenset({
-            ("Simple-With-Us/BotFleet", "server/config.test.ts",
-             "466868a395827bb284e392b277dff7e0f16adad66fe68306a5dfc22fff28bf19")
+            (
+                "Simple-With-Us/BotFleet",
+                "server/config.test.ts",
+                "466868a395827bb284e392b277dff7e0f16adad66fe68306a5dfc22fff28bf19",
+            ),
+            (
+                "Simple-With-Us/CodeCaps",
+                "ios/CodeCapsCompanion/Widgets/WidgetPresentation.swift",
+                "d6bd7e7ff0a69af9cfd4002f1e21db90f66b87315a4dc69cbd2fc1c585be0b2b",
+            ),
         }))
         self.assertIsNotNone(secretscan.scan_file(self.repo, self.path, self.body))
+
+    def test_approved_path_does_not_approve_other_bytes_or_quoted_credentials(self):
+        for repo, path, _digest in secretscan._REVIEWED_GENERIC_FIXTURES:
+            for body in (
+                self.body,
+                "let token = Widget" + "Presentation.shortCadence(cadence: cadence, label: label)\n",
+                "let token = '" + "b" * 32 + "'\n",
+            ):
+                self.assertIsNotNone(secretscan.scan_file(repo, path, body))
 
     def test_only_exact_bytes_repo_path(self):
         with self.approve(self.body):

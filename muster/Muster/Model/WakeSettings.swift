@@ -610,6 +610,48 @@ struct WakeUsage: Equatable {
     }
 }
 
+/// What reading the kill switch file (`~/.agent-sync/listener/pause.json`) found.
+enum WakePauseFile: Equatable {
+    /// Muster did not read it.
+    case notRead
+    /// The file is not there.
+    case missing
+    /// The file's entries, by scope:  a seat tag, or `*` for every seat.
+    case entries([String: ListenerStatus.PauseEntry])
+    /// The file is there and could not be read.  The text says why.
+    case unreadable(String)
+}
+
+/// Where the panel read the pause a seat is under.
+enum WakePauseSource: Equatable {
+    /// A current status from the running eavesdropper.
+    case currentStatus
+    /// The pause file itself, because the status is not current or could not be read.
+    case pauseFile
+    /// The last status, which is not current, because the pause file was not read.
+    case lastStatus
+    /// Nothing says whether a pause is in force.  The text says why.  The panel never shows this
+    /// as no pause.
+    case notKnown(String)
+
+    /// Why the pause is not known, when it is not.
+    var notKnownReason: String? {
+        if case .notKnown(let why) = self { return why }
+        return nil
+    }
+}
+
+/// The pause a seat is under, and where the panel read it.
+struct WakePauseFacts: Equatable {
+    var paused: Bool = false
+    var wakesPaused: Bool = false
+    var scope: String?
+    var by: String?
+    var at: Date?
+    var everySeat: Bool = false
+    var source: WakePauseSource = .currentStatus
+}
+
 /// One seat's wake settings.
 struct WakeSeat: Identifiable, Equatable {
     /// The seat tag,  like "MM".
@@ -706,8 +748,35 @@ struct WakeSeat: Identifiable, Equatable {
     /// Who set the pause that covers this seat, and when.
     var pauseBy: String? = nil
     var pauseAt: Date? = nil
+    /// Where the pause facts came from.  Under a status that is not current they come from the
+    /// pause file itself, and a file that cannot be read leaves them not known, never unpaused.
+    var pauseSource: WakePauseSource = .currentStatus
+    /// Whether this seat's live facts (held-back wakes, red warnings, chat nudges, quota and the
+    /// fallback) come from a current status.  When they do not, they are the eavesdropper's last
+    /// word as of `liveAsOf`, and the panel says so and never calls them "now".
+    var liveIsCurrent: Bool = true
+    /// When the status those live facts come from was published.
+    var liveAsOf: Date? = nil
+    /// Held-back wakes the eavesdropper lost past both its caps and still owes.
+    var heldBackEvicted: Int = 0
+    /// Held-back wakes now kept in the compact overflow.  They are still delivered by id.
+    var heldBackOverflow: Int = 0
+    /// Held-back wakes that expired, since the eavesdropper started counting.
+    var heldBackExpiredTotal: Int = 0
+    /// Held-back wakes lost past both caps, since the eavesdropper started counting.
+    var heldBackEvictedTotal: Int = 0
+    /// Whether the OpenRouter fallback is answering in the seat's place, because its own wake
+    /// cannot run.
+    var fallbackStandsIn: Bool = false
+    /// Why the seat's own wake cannot run, as the eavesdropper says, while the fallback answers.
+    var fallbackPrimaryHold: String? = nil
 
     var id: String { seat }
+
+    /// Whether the fallback is answering for this seat, as a current status says.
+    var fallbackIsAnswering: Bool {
+        fallbackStandsIn && liveIsCurrent
+    }
 
     /// The settings that are not a plain pass.
     var problems: [WakeSetting] {
@@ -755,11 +824,127 @@ struct WakeSeat: Identifiable, Equatable {
     }
 
     /// Whether the seat belongs under the Problems Only filter.
+    ///
+    /// An exhausted quota is not one while a current status says the fallback answers in the
+    /// seat's place:  its wakes are still answered.  Wakes lost past the caps and still owed are.
     var needsAttention: Bool {
-        !problems.isEmpty || !redWarnings.isEmpty || quotaExhausted
-            || hasRefusedSection || !skippedReasons.isEmpty
-            || pinState.isProblem || usageProblem != nil || tornRecentRows > 0
-            || connected == false
+        // In parts, so the type checker never meets one long chain.
+        let settingsOrWarnings = !problems.isEmpty || !redWarnings.isEmpty
+        let quota = quotaExhausted && !fallbackIsAnswering
+        let section = hasRefusedSection || !skippedReasons.isEmpty
+        let pinOrUse = pinState.isProblem || usageProblem != nil || tornRecentRows > 0
+        let lost: Bool = heldBackEvicted > 0
+        let pauseNotKnown: Bool = pauseSource.notKnownReason != nil
+        let disconnected: Bool = connected == false
+        return settingsOrWarnings || quota || section || pinOrUse || lost || pauseNotKnown || disconnected
+    }
+}
+
+/// One fact the panel shows about a seat, and whether it is a problem.
+struct WakeFact: Equatable {
+    let text: String
+    let emphasised: Bool
+}
+
+extension WakeSeat {
+    /// What a live fact carries when the status it comes from is not current, and nothing when
+    /// it is.  Such a fact is the eavesdropper's last word, so it never says "now".
+    func notCurrentSuffix(now: Date = Date()) -> String {
+        guard !liveIsCurrent else { return "" }
+        if let at = liveAsOf {
+            return ", as of \(FleetTime.when(at, now: now)), not current"
+        }
+        return ", not current"
+    }
+
+    /// The held-back parts of the seat's one-line summary:  the wakes held for later, and those
+    /// lost past the caps and still owed.  Each is marked when the status is not current.
+    var heldBackSummary: [String] {
+        let mark = liveIsCurrent ? "" : " (not current)"
+        var parts: [String] = []
+        if heldBackQueueCount > 0 {
+            parts.append("\(heldBackQueueCount) held for later" + mark)
+        }
+        if heldBackEvicted > 0 {
+            let wakes = heldBackEvicted == 1 ? "1 held wake" : "\(heldBackEvicted) held wakes"
+            parts.append("\(wakes) lost and still owed" + mark)
+        }
+        return parts
+    }
+
+    /// The pause the seat is under, in words:  what it stops, which entry, who set it and when,
+    /// and where the panel read it.  Nil when no pause is in force and that is known.
+    func pauseText(now: Date = Date()) -> String? {
+        if let why = pauseSource.notKnownReason {
+            return "Pause not known:  \(why)"
+        }
+        guard paused || wakesPaused else { return nil }
+        let what = paused ? "Paused" : "Wakes Paused"
+        let scope = pauseScope == "*" ? " by the pause on every seat" : ""
+        let by = pauseBy.map { " by \($0)" } ?? ""
+        let at = pauseAt.map { " at \(FleetTime.when($0, now: now))" } ?? ""
+        let source: String
+        switch pauseSource {
+        case .currentStatus, .notKnown: source = ""
+        case .pauseFile: source = ", from the pause file"
+        case .lastStatus:
+            source = liveAsOf.map { ", as of \(FleetTime.when($0, now: now)), not current" } ?? ", not current"
+        }
+        return "\(what)\(scope)\(by)\(at)\(source)"
+    }
+
+    /// The held-back wakes, the chat nudges, the quota and the fallback, as the eavesdropper
+    /// published them.  Under a status that is not current each one says so, and none says "now".
+    func liveFacts(now: Date = Date()) -> [WakeFact] {
+        var facts: [WakeFact] = []
+        let suffix = notCurrentSuffix(now: now)
+        let held = liveIsCurrent ? "held for later now" : "held for later"
+        if heldBackQueueCount > 0 || heldBackTotalCount > 0 || heldBackEvicted > 0 {
+            let reasons = heldBackReasons.sorted { $0.key < $1.key }
+                .map { "\($0.value) \(WakeLedger.words(forReason: $0.key))" }
+                .joined(separator: ", ")
+            let oldest = heldBackOldestAge.map { ", oldest \(FleetTime.age(Int($0)))" } ?? ""
+            let why = reasons.isEmpty ? "" : " (\(reasons))"
+            let overflow = heldBackOverflow > 0 ? ", \(heldBackOverflow) of them in the overflow and still owed by id" : ""
+            facts.append(WakeFact(
+                text: "\(held):  \(heldBackQueueCount)\(why)\(oldest)\(overflow)\(suffix)",
+                emphasised: heldBackQueueCount > 0
+            ))
+            var lifetime = "held since start:  \(heldBackTotalCount), \(heldBackSurfacedCount) shown to the seat"
+            if heldBackExpiredTotal > 0 { lifetime += ", \(heldBackExpiredTotal) expired" }
+            if heldBackEvictedTotal > 0 { lifetime += ", \(heldBackEvictedTotal) lost past the caps" }
+            facts.append(WakeFact(text: lifetime + suffix, emphasised: false))
+        }
+        if heldBackEvicted > 0 {
+            let wakes = heldBackEvicted == 1 ? "1 held wake" : "\(heldBackEvicted) held wakes"
+            facts.append(WakeFact(
+                text: "\(wakes) lost past the caps and still owed\(suffix)",
+                emphasised: true
+            ))
+        }
+        if chatNudgesPending > 0 || chatNudgesBlocked > 0 || chatNudgesAccepted > 0 {
+            facts.append(WakeFact(
+                text: "chat nudges:  \(chatNudgesPending) pending, \(chatNudgesBlocked) blocked, \(chatNudgesAccepted) accepted\(suffix)",
+                emphasised: chatNudgesBlocked > 0
+            ))
+        }
+        if quotaRemaining != nil || quotaExhausted {
+            var text = quotaExhausted ? "quota exhausted" : "quota \(Int(quotaRemaining ?? 0))% left"
+            if quotaExhausted, let remaining = quotaRemaining {
+                text += " (\(Int(remaining))% reported)"
+            }
+            if let source = quotaSource { text += ", from \(source)" }
+            if let reason = quotaReason, !reason.isEmpty { text += ":  \(reason)" }
+            if let reset = quotaResetAt { text += ", resets \(FleetTime.when(reset, now: now))" }
+            facts.append(WakeFact(text: text + suffix, emphasised: quotaExhausted && !fallbackIsAnswering))
+        }
+        if fallbackStandsIn {
+            let verb = liveIsCurrent ? "is answering" : "was answering"
+            var text = "the OpenRouter fallback \(verb) in this seat's place"
+            if let hold = fallbackPrimaryHold, !hold.isEmpty { text += ":  \(hold)" }
+            facts.append(WakeFact(text: text + suffix, emphasised: false))
+        }
+        return facts
     }
 }
 
@@ -797,6 +982,26 @@ struct WakeSettingsModel: Equatable {
     var configPath: String = ""
     /// What the Mac's eavesdropper itself reports is wrong with its configuration.
     var listenerErrors: [String] = []
+    /// Whether the Operator can post (`status.operator_voice`),  from the same status as the
+    /// rest of the panel and judged by the same currency.
+    var operatorVoice: OperatorVoiceReading = .notRead("Muster has not read the eavesdropper yet.")
+    /// Whether resume-wake is verified on this Mac, from the eavesdropper's status.  Nil unless
+    /// that status is current:  a stopped eavesdropper, or an old status, cannot say what resumes
+    /// a session now, as Seat Activity rules too.
+    var rewake: RewakeVerification?
+    /// The instance the status names, when it is not the Mac's.
+    var foreignInstance: String?
+
+    /// Why the header calls a running eavesdropper's status not current, and nil when it is
+    /// current or the eavesdropper is not running.  A status another instance wrote is named as
+    /// that, since it can be fresh and still not be the Mac's.
+    var notCurrentReason: String? {
+        guard runState == .running, !statusIsCurrent else { return nil }
+        if let instance = foreignInstance {
+            return "Not current:  the eavesdropper on this machine says it is the \(instance) instance, not the Mac's, so its values here are not what the Mac's eavesdropper uses."
+        }
+        return "Not current:  a running eavesdropper publishes every few seconds, so its values here may not be what it uses now."
+    }
 
     /// Every seat that has something wrong.
     var seatsWithProblems: [WakeSeat] {
@@ -848,6 +1053,8 @@ struct WakeSettingsSources {
     var usageProblems: [String: String] = [:]
     /// Ledger rows inside the last day that could not be read, by seat.
     var tornRows: [String: Int] = [:]
+    /// The kill switch file, read so the pause is known when the status is not current.
+    var pauseFile: WakePauseFile = .notRead
 }
 
 // MARK: - The builder
@@ -856,9 +1063,13 @@ struct WakeSettingsSources {
 enum WakeSettingsBuilder {
     /// Whether what a status says is current:  a running eavesdropper that published within the
     /// limit of the read.  A stopped one's file is its last word, not what anything is using.
+    /// A status another instance wrote is not the Mac's at all, as Seat Activity rules too.
     /// Without a read time the age is not judged.
     static func statusIsCurrent(_ sources: WakeSettingsSources) -> Bool {
         guard let status = sources.status, status.running == true else { return false }
+        if let instance = status.status?.instance, instance != ListenerPartition.thisInstance {
+            return false
+        }
         guard let readAt = sources.readAt else { return true }
         guard let updated = status.updated else { return false }
         return abs(readAt.timeIntervalSince(updated)) <= WakeSettingsModel.maximumStatusAge
@@ -893,13 +1104,28 @@ enum WakeSettingsBuilder {
             model.problems.append("The seat partition could not be read, so every seat is read only.\u{00A0} \(why)")
         }
         model.problems.append(contentsOf: model.seats.compactMap(\.refusedSectionProblem))
+        var foreignInstance: String?
         if let instance = sources.status?.status?.instance, instance != ListenerPartition.thisInstance {
-            model.problems.append("The eavesdropper on this machine says it is the \(instance) instance, not the Mac's.")
+            foreignInstance = instance
+            model.problems.append("The eavesdropper on this machine says it is the \(instance) instance, not the Mac's, so nothing it says is shown as current.")
+        }
+        // The pause file decides the pause when the status is not current, so a file that could
+        // not be read is named once, with why.
+        if !model.statusIsCurrent, case .unreadable(let why) = sources.pauseFile {
+            model.problems.append("Whether a pause is in force is not known, because the eavesdropper's status is not current and the pause file could not be read.\u{00A0} \(why)")
         }
         let reporting = model.seats.filter { !$0.host.isElsewhere && $0.connected != nil }
         model.reportingSeats = reporting.count
         model.connectedSeats = reporting.filter { $0.connected == true }.count
         model.daemonSettings = daemonSettings(sources)
+        model.operatorVoice = OperatorVoiceReading.current(
+            sources.status, runState: model.runState, statusIsCurrent: model.statusIsCurrent)
+        model.foreignInstance = foreignInstance
+        // Resume-wake is a claim about what the Mac's eavesdropper does now, so only a current
+        // status makes it.  `statusIsCurrent` already rules out another instance's status.
+        if model.statusIsCurrent {
+            model.rewake = sources.status?.status?.rewake
+        }
         return model
     }
 
@@ -914,8 +1140,11 @@ enum WakeSettingsBuilder {
         let live = host.isElsewhere ? nil : sources.status?.seat(published)
         let pins: [String: PinEvidence] = host.isElsewhere ? [:] : (sources.pins[tag] ?? [:])
         // A seat the file turns off is reported under `disabled` and not under `seats`, so a running
-        // eavesdropper has told Muster about it.  An old status from a stopped one has not.
+        // eavesdropper has told Muster about it.  An old status from a stopped one has not, and nor
+        // has one another instance wrote:  its list is about its own file, not the Mac's.
+        let statusIsTheMacs = sources.status?.status?.instance.map { $0 == ListenerPartition.thisInstance } ?? true
         let seatOff = sources.status?.running == true
+            && statusIsTheMacs
             && sources.status?.status?.disabled?.contains(published) == true
         let section = "seat.\(tag)"
         let current = statusIsCurrent(sources)
@@ -998,7 +1227,13 @@ enum WakeSettingsBuilder {
                 statusIsCurrent: current,
                 statusRead: sources.status != nil
             )
-        let pause = host.isElsewhere ? nil : pauseEntry(seat: published, status: sources.status)
+        let pause = host.isElsewhere
+            ? WakePauseFacts()
+            : pauseFacts(seat: published, live: live, sources: sources, current: current)
+        let heldBack = live?.heldBack
+        // The fallback answers in the seat's place only while its own wake cannot run, and the
+        // eavesdropper then leaves the quota out of the seat's red warnings on purpose.
+        let fallbackStandsIn = live?.fallback?.stands_in == true
         return WakeSeat(
             seat: tag,
             host: host,
@@ -1011,17 +1246,17 @@ enum WakeSettingsBuilder {
             recentWakes: host.isElsewhere ? [] : (sources.recentWakes[tag] ?? []),
             pin: ownPin,
             fallbackPin: fallbackPin(fallback: fallback, live: live, pins: pins),
-            paused: live?.paused ?? false,
-            wakesPaused: live?.wakesPaused ?? false,
-            pauseScope: host.isElsewhere ? nil : pauseScope(seat: published, status: sources.status),
+            paused: pause.paused,
+            wakesPaused: pause.wakesPaused,
+            pauseScope: pause.scope,
             // A last-known value is not a current success:  an old status, or one a stopped
             // eavesdropper left, does not say the seat is connected now.
             connected: current ? live?.connected : nil,
-            everySeatPaused: !host.isElsewhere && sources.status?.pause["*"] != nil,
+            everySeatPaused: pause.everySeat,
             redWarnings: live?.red ?? [],
-            heldBackQueueCount: live?.heldBack?.count ?? 0,
-            heldBackTotalCount: live?.heldBack?.totals?.held ?? 0,
-            heldBackSurfacedCount: live?.heldBack?.totals?.surfaced ?? 0,
+            heldBackQueueCount: heldBack?.count ?? 0,
+            heldBackTotalCount: heldBack?.totals?.held ?? 0,
+            heldBackSurfacedCount: heldBack?.totals?.surfaced ?? 0,
             chatNudgesPending: live?.chatNudges?.pending ?? 0,
             chatNudgesBlocked: live?.chatNudges?.blocked ?? 0,
             chatNudgesAccepted: live?.chatNudges?.accepted ?? 0,
@@ -1029,7 +1264,9 @@ enum WakeSettingsBuilder {
             quotaExhausted: live?.quota?.exhausted ?? false,
             quotaSource: live?.quota?.source,
             skippedReasons: host.isElsewhere ? [] : (sources.status?.status?.skipped_seats?[published] ?? []),
-            disabledInFile: !host.isElsewhere && (sources.status?.status?.disabled?.contains(published) ?? false),
+            // As for the settings rows' SEAT OFF:  only a running eavesdropper has told Muster the
+            // file turns the seat off.  A stopped one's old list is not that word.
+            disabledInFile: seatOff && !host.isElsewhere,
             liveWakeText: live?.wake,
             pinState: seatPin,
             fallbackRuntime: fallback,
@@ -1043,11 +1280,80 @@ enum WakeSettingsBuilder {
             routine: live?.routine,
             quotaReason: live?.quota?.reason,
             quotaResetAt: live?.quota?.reset_at.flatMap(FleetTime.parse),
-            heldBackReasons: live?.heldBack?.reasons ?? [:],
-            heldBackOldestAge: live?.heldBack?.oldest_age,
-            pauseBy: pause?.by,
-            pauseAt: pause?.ts.map { Date(timeIntervalSince1970: $0) }
+            heldBackReasons: heldBack?.reasons ?? [:],
+            heldBackOldestAge: heldBack?.oldest_age,
+            pauseBy: pause.by,
+            pauseAt: pause.at,
+            pauseSource: pause.source,
+            liveIsCurrent: live == nil || current,
+            liveAsOf: live == nil ? nil : sources.status?.updated,
+            heldBackEvicted: heldBack?.evicted ?? 0,
+            heldBackOverflow: heldBack?.overflow ?? 0,
+            heldBackExpiredTotal: heldBack?.totals?.expired ?? 0,
+            heldBackEvictedTotal: heldBack?.totals?.evicted ?? 0,
+            fallbackStandsIn: fallbackStandsIn,
+            fallbackPrimaryHold: fallbackStandsIn ? live?.fallback?.primary_hold : nil
         )
+    }
+
+    /// The pause a seat is under, and where it was read.
+    ///
+    /// A current status says it.  Otherwise the pause file itself does, because the status is old,
+    /// a stopped eavesdropper's last word, or not read at all.  A pause file that is not there is
+    /// no pause, as the eavesdropper reads it.  Only when the file was not read is the last
+    /// status all there is, and the panel then says it is not current.  A pause file that cannot
+    /// be read leaves the pause not known:  never no pause.  Whichever source is used,
+    /// the entry named is the one that has the effect, by the rule Seat Activity uses too.
+    static func pauseFacts(
+        seat published: String,
+        live: ListenerStatus.Seat?,
+        sources: WakeSettingsSources,
+        current: Bool
+    ) -> WakePauseFacts {
+        func fromStatus(_ status: ListenerStatus, source: WakePauseSource) -> WakePauseFacts {
+            let covering = SeatActivityBuilder.coveringPause(
+                for: published, in: status.pause, wakesOnly: { $0.wakes_only }
+            )
+            return WakePauseFacts(
+                paused: live?.paused ?? false,
+                wakesPaused: live?.wakesPaused ?? false,
+                scope: covering?.scope,
+                by: covering?.entry.by,
+                at: covering?.entry.ts.map { Date(timeIntervalSince1970: $0) },
+                everySeat: status.pause["*"] != nil,
+                source: source
+            )
+        }
+        if current, let status = sources.status {
+            return fromStatus(status, source: .currentStatus)
+        }
+        switch sources.pauseFile {
+        case .entries(let entries):
+            let covering = SeatActivityBuilder.coveringPause(
+                for: published, in: entries, wakesOnly: { $0.wakes_only }
+            )
+            return WakePauseFacts(
+                paused: covering?.kind == .full,
+                // The eavesdropper's own `wakes_paused` is true under either kind of pause.
+                wakesPaused: covering != nil,
+                scope: covering?.scope,
+                by: covering?.entry.by,
+                at: covering?.entry.ts.map { Date(timeIntervalSince1970: $0) },
+                everySeat: entries["*"] != nil,
+                source: .pauseFile
+            )
+        case .unreadable(let why):
+            return WakePauseFacts(source: .notKnown(why))
+        case .missing:
+            // No pause file is no pause, as the eavesdropper reads it, whatever an old status
+            // still lists:  the file was read, and it decides.
+            return WakePauseFacts(source: .pauseFile)
+        case .notRead:
+            if let status = sources.status {
+                return fromStatus(status, source: .lastStatus)
+            }
+            return WakePauseFacts(source: .notKnown("Neither the eavesdropper's status nor the pause file was read."))
+        }
     }
 
     /// What a seat's status says when it is not current.
@@ -1059,6 +1365,9 @@ enum WakeSettingsBuilder {
             return "The eavesdropper is not running, so this is the last value it published, not one it uses now."
         case nil:
             return "The eavesdropper's status does not say whether it is running, so this may not be what it uses now."
+        }
+        if let instance = sources.status?.status?.instance, instance != ListenerPartition.thisInstance {
+            return "The eavesdropper on this machine says it is the \(instance) instance, not the Mac's, so this is not what the Mac's eavesdropper uses."
         }
         guard let updated = sources.status?.updated, let readAt = sources.readAt else {
             return "The eavesdropper's status does not say when it was written, so this may not be current."
@@ -1482,21 +1791,6 @@ enum WakeSettingsBuilder {
         return .notHolding(evidence.judged(pinned: false, why: why), why: why)
     }
 
-    /// The pause entry that covers this seat:  its own first, then the one on every seat.
-    private static func pauseEntry(seat: String, status: ListenerStatus?) -> ListenerStatus.PauseEntry? {
-        guard let pause = status?.pause else { return nil }
-        return pause[seat] ?? pause["*"]
-    }
-
-    /// The scope the pause names,  when it covers this seat.
-    private static func pauseScope(seat: String, status: ListenerStatus?) -> String? {
-        guard let pause = status?.pause else { return nil }
-        for scope in [seat, "*"] {
-            if pause[scope] != nil { return scope }
-        }
-        return nil
-    }
-
     /// The daemon-wide settings.
     ///
     /// The host load gate stays off,  by the owner's ruling:  `0` means the eavesdropper never
@@ -1518,16 +1812,24 @@ enum WakeSettingsBuilder {
         }
         let configured = sources.config.value(section: "daemon", key: "host_wake_load_per_core")
         let isOff = (configured?.displayText ?? "0") == "0"
+        // A key the file does not hold is shown as nothing in the file's column, never as a 0 the
+        // file does not hold:  the default is the eavesdropper's, and the note says so.
+        let note: String
+        if configured == nil {
+            note = "The file holds nothing, so the eavesdropper's default is in effect:  0, which is off, so it never holds a wake for load."
+        } else if isOff {
+            note = "Off:  the eavesdropper never holds a wake for load."
+        } else {
+            note = "The owner ruled this gate stays off."
+        }
         return [
             WakeSetting(
                 seat: "daemon",
                 key: .hostLoadGate,
-                configured: configured ?? .number(0),
+                configured: configured,
                 live: nil,
                 state: isOff ? .off : .drift,
-                note: isOff
-                    ? "Off:  the eavesdropper never holds a wake for load."
-                    : "The owner ruled this gate stays off."
+                note: note
             ),
         ]
     }

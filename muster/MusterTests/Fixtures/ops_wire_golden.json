@@ -7,7 +7,8 @@
     {"action": "logs", "target": "fleet-server-status.timer", "mode": "yes", "line": "server logs fleet-server-status.timer --yes --json"},
     {"action": "serverUpdate", "target": "fleet-cli", "mode": "plan", "line": "server update fleet-cli --plan --json"},
     {"action": "coolifyRedeploy", "target": "abc123def456", "mode": "yes", "line": "server redeploy abc123def456 --yes --json"},
-    {"action": "resourceStatus", "target": "coding", "mode": "plan", "line": "server resource-status coding --plan --json"}
+    {"action": "resourceStatus", "target": "coding", "mode": "plan", "line": "server resource-status coding --plan --json"},
+    {"action": "eavesdropperStatus", "target": "server", "mode": "plan", "line": "server eavesdropper-status server --plan --json"}
   ],
   "refusedAtGate": [
     "-- server restart fleet-server-status.timer --plan --json",

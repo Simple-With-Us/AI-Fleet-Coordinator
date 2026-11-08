@@ -606,7 +606,7 @@ class BridgeWorkerTest(unittest.TestCase):
         self.daemon.config = _mac_config("ECHO")
         self.bridge.exchange = FakeExchange()
         self.bridge._budget_reason = lambda *args: None
-        self.bridge._decide = lambda *args: {
+        self.bridge._decide = lambda *args, **kwargs: {
             "kind": "hold",
             "reason": "no_target",
             "model_attempted": True,

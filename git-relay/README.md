@@ -4,7 +4,7 @@ git-relay knows each seat from its bearer token and picks the credential by task
 runs under the owner's scoped PR-only token (the only copy lives in the service's
 environment), and every other GitHub task runs under the seat's own GitHub App token, which
 git-relay mints and refreshes from App keys in Infisical.  Every call is checked against per-seat
-policy and written to the audit log, allowed or denied.
+policy, and every denial, failure and write is written to the audit log (a successful read is not).
 
 The MCP wrapper is **GR-MCP**:  `git-relay mcp`.  It is the GitHub work's own MCP server.  The
 bearer-token arrangement is shared with ST-MCP, so a seat may find these tools on its ST-MCP
@@ -103,7 +103,7 @@ power is the INTERSECTION of the relay policy and the underlying GitHub credenti
 either side restricts the seat, and no policy entry can grant what GitHub already denies.  Policy
 lives in reviewed config (GIT_RELAY_SEATS_JSON sourced from a reviewed file or Infisical), so
 permission changes ship without touching GitHub App settings;  every change is a reviewed PR (or an
-audited Infisical write), and every call - allowed or denied - is in the audit log.
+audited Infisical write), and every denial, failure and write is in the audit log (a successful read is not).
 
 ## Policy
 
@@ -132,7 +132,7 @@ returned to the caller as a retryable refusal.
 
 [deploy/seat-policy.json](deploy/seat-policy.json) is the production policy.  It holds no secret:
 every seat is `auth: shared` and signs in with its own admin-minted bearer.  It lists one entry
-for each of the 39 identities the Worker can mint a bearer for, each acting as the `swu-` App
+for each of the 41 identities in this file (source, not live: the live seats file differs, for example it also carries BF-BUILDER, which is omitted here), each acting as the `swu-` App
 whose GitHub description names that seat.  Five slugs are not `swu-<identity>`:  MA is
 `swu-rob`, GROK is `swu-grok-build`, MM is `swu-minimax`, JET-CHAT is `swu-jet` and AMP is `swu-amp-agent` (`swu-amp` is reserved for an account).  JET-CHAT is the full Jet login on its own policy entry; the original JET wake-only login has no Git entry (Q7).  Seats share the `fleet` profile
 (the same actions, repositories and permission ceiling);  Since the 2026-11-01 every-repo widening (owner instruction) the fleet profile names the two verified namespaces, `Simple-With-Us/*` and `jaywedgeworth22/*`;  Echo's profile survives but resolves to the same set.  The fleet profile carries a 178-action list (8 relay actions, including `git_read`, plus 170 workflow actions, including `wf_pr_close` and `wf_pr_reopen`) and the live 10-key mint ceiling.  `swu-amp-agent` and `swu-wise` keep the host's exact live action ordering through their own pinned profiles (the same set, ceiling and repositories as fleet).  BF-BUILDER is dropped (owner 2026-11-01:  BF-ENGINEER replaced it):  it has no entry, so the relay authenticates no BF-BUILDER bearer.  Every GB seat and every BF bot, including BF-TRADER and BF-ENGINEER, is on the fleet profile.  `git_relay/tests/test_seat_policy_file.py` holds the file to the relay's SeatPolicy, the
@@ -226,9 +226,11 @@ relay's HTTP API directly, where the response goes only to that caller.
 
 ## Read-only git
 
-`GET /git/<owner>/<repo>[.git]/info/refs?service=git-upload-pack` and `POST /git/<owner>/<repo>[.git]/git-upload-pack` serve `git fetch` and `git clone` under the action `git_read`, as the seat's own GitHub App, with the seat's bearer in the `Authorization` header.  The relay mints a `contents:read` token for that one repo and keeps it, so the caller never holds a GitHub credential.  Pushing has no route and answers 403.  Each request writes one audit row and draws on the seat's hourly quota, at most four transfers run at once and two per seat, and a later one answers 503.  A long want list needs `http.postBuffer` set to 8 MiB, because the route refuses a chunked request.  The code is `git_relay/git_read.py`.
+`GET /git/<owner>/<repo>[.git]/info/refs?service=git-upload-pack` and `POST /git/<owner>/<repo>[.git]/git-upload-pack` serve `git fetch` and `git clone` under the action `git_read`, as the seat's own GitHub App, with the seat's bearer in the `Authorization` header.  The relay mints a `contents:read` token for that one repo and keeps it, so the caller never holds a GitHub credential.  Pushing has no route and answers 403.  A refused, denied or failed request writes one audit row (a successful fetch writes none), and each request draws on the seat's hourly quota, at most four transfers run at once and two per seat, and a later one answers 503.  A long want list needs `http.postBuffer` set to 8 MiB, because the route refuses a chunked request.  The code is `git_relay/git_read.py`.
 
 ## Audit
+
+Owner ruling Fri, Nov 6, 2026:  successful reads leave the audit log.  A call that ends `ok` on a read action (`git_read` and the `wf_` reads, `SeatPolicy.audits`) writes no row;  every denial, failure and write still writes one, and so does `mint_token`, which issues a credential.
 
 One JSON object per line at `GIT_RELAY_AUDIT_PATH` (default `git-relay-audit.jsonl`), fsynced after
 every write: timestamp, seat, action, repo, result (ok / denied / bad_request / unavailable /
@@ -275,6 +277,7 @@ credential (never cached in the store) and a re-mint is safe under the minter's 
 | --- | --- | --- |
 | GITHUB_TOKEN | (required) | Scoped PR-only token; the only credential the service holds |
 | GIT_RELAY_SEATS_JSON | (required) | Seat tokens, action allowlists, repo allowlists |
+| GIT_RELAY_VERIFY_CACHE_S | 3600 | Seconds one relay process reuses a positive `sbt_`/`gbb_` bearer verify, capped at 3600 and never past the bearer's expiry;  0 verifies live on every call.  A pause or revocation can reach that bearer's Git calls, writes included, up to this late (owner ruling Fri, Nov 6, 2026).  The hour runs from the Worker's own live check (`verified_at` in its answer), so the Worker's cache and this one together stay within one hour, and an older positive answer never replaces a newer refusal.  Refusals are remembered for 30 seconds as refusals only. |
 | GIT_RELAY_AUDIT_PATH | git-relay-audit.jsonl | Audit log location |
 | GIT_RELAY_OUTCOMES_PATH | git-relay-outcomes.json | Write idempotency outcome store |
 | GIT_RELAY_HOST | 127.0.0.1 | Bind address |

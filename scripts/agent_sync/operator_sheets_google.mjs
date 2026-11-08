@@ -92,9 +92,9 @@ const TABLES = Object.freeze({
 
 // A workbook profile: tab titles and headers are configuration, not constants
 // (OPS-1037). The default profile above is the original workbook; the SWU Operator
-// workbook's tabs are titled 'Sessions' / 'Events' and its Sessions tab carries a
-// 10-column subset of the session layout. A profile never renames anything in the
-// workbook - it only tells the transport what is actually there.
+// workbook's tabs are titled 'Sessions' / 'Events' and carry the full 16-column
+// session layout and the 9-column event layout. A profile never renames anything in
+// the workbook - it only tells the transport what is actually there.
 function normalizeTables(tables) {
   if (tables === null || tables === undefined) return TABLES;
   if (typeof tables !== 'object') fail('invalid_config');
@@ -175,7 +175,10 @@ async function requestJSON(fetchImpl, url, init, timeoutMs, mutation = false, va
     if (!response.ok) {
       // A non-success response body can contain echoed data.  Never include it.
       await response.body?.cancel();
-      const rejected = [400, 401, 403, 404, 409, 412, 413, 422].includes(response.status);
+      // 429 is a quota refusal:  Google rejects the request before applying it, so the
+      // outcome is certain (nothing was written), never an uncertain write.  The caller
+      // owns the back-off and retry (OPERATOR-SHEETS-ADAPTER.md, Errors And Retries).
+      const rejected = [400, 401, 403, 404, 409, 412, 413, 422, 429].includes(response.status);
       fail('http_error', {
         status: response.status, uncertain: mutation && !rejected,
         retryAfterSeconds: retryAfter(response),

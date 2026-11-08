@@ -504,6 +504,19 @@ class SeatPolicy:
             return True if spec is None else bool(spec[1])
         return True
 
+    @classmethod
+    def audits(cls, action: str, outcome: str) -> bool:
+        """Whether a finished, authenticated call writes an audit row.
+
+        Owner ruling 2026-11-06:  successful reads leave the audit log.  A call is skipped only when
+        it ended "ok" and its action is a known read (is_write False).  Every failure, denial and
+        write still records, and so does mint_token:  it changes no repository state but issues a
+        credential, which the log must show.
+        """
+        if outcome != "ok" or action == "mint_token":
+            return True
+        return action not in cls.ALL_ACTIONS or cls.is_write(action)
+
     def _rate_ok(self, seat: str, now: float, write: bool = False) -> str | None:
         """Charge one call, and one write when `write`, or None and nothing charged when either bucket is full."""
         with self._lock:

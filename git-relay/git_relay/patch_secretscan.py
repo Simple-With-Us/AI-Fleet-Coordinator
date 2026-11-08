@@ -151,15 +151,20 @@ def scan(text: str, known: Iterable[str] = ()) -> str | None:
 
 # Exact generic-fixture approvals are release code, never caller input. Each
 # entry requires immutable full-content review and a durable review record in
-# the source change. Empty until that review is completed and findings fixed.
-# Full-content inspection record: docs/reviews/botfleet-1551-config-fixture.md.
-# This release-code entry is inactive until its own normal review/deployment.
+# the source change. See docs/security/reviewed-generic-fixtures.md.
+# BotFleet full-content inspection record: docs/reviews/botfleet-1551-config-fixture.md.
+# The BotFleet release-code entry is inactive until its own normal review/deployment.
 _REVIEWED_GENERIC_FIXTURES: frozenset[tuple[str, str, str]] = frozenset(
     {
         (
             "Simple-With-Us/BotFleet",
             "server/config.test.ts",
             "466868a395827bb284e392b277dff7e0f16adad66fe68306a5dfc22fff28bf19",
+        ),
+        (
+            "Simple-With-Us/CodeCaps",
+            "ios/CodeCapsCompanion/Widgets/WidgetPresentation.swift",
+            "d6bd7e7ff0a69af9cfd4002f1e21db90f66b87315a4dc69cbd2fc1c585be0b2b",
         ),
     }
 )
