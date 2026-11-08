@@ -2,7 +2,7 @@
 
 **Retired on the Hetzner server, 2026-10-19.**  The server now runs the fleet tools from a git checkout of main (`docs/protocols/fleet-cli-from-git.md`).  Its receiver is paused with a `retired` note, and the Mac's opt-in marker `~/.agent-sync/coolify-cli-sync.enabled` is renamed to `.disabled`, so nothing below runs any more.  The page stays as the record of the old path.
 
-The Mac's existing `com.jay.agent-sync-runtime-sync` job publishes a narrow set of fleet CLI code to the existing `root@coolify` SSH target.  Its existing two-minute schedule remains the only update trigger.  Coolify does not receive a new listener, timer, or service, and active Codex sessions are not restarted.
+The Mac's existing `com.jay.simple-tools-runtime-sync` job (`com.jay.agent-sync-runtime-sync` until Nov 2, 2026) publishes a narrow set of fleet CLI code to the existing `root@coolify` SSH target.  Its existing two-minute schedule remains the only update trigger.  Coolify does not receive a new listener, timer, or service, and active Codex sessions are not restarted.
 
 This is a code distribution path.  It does not provision authentication, create chats, route wakes, or change fleet seat ownership.  CODEX and JET remain separate app identities.
 
@@ -55,7 +55,7 @@ From the published managed runtime, inspect the bounded bundle with `python3 scr
 
 The private Mac state at `~/.agent-sync/coolify-cli-sync/state.json` records the last check time and outcome, including cached skips, separately from the last successful remote receipt.  This distinguishes an executing scheduled hook from an old installation record.
 
-The Mac opt-in marker is `~/.agent-sync/coolify-cli-sync.enabled`.  Remove that marker to disable future pushes.  The existing Mac runtime pause mechanism also pauses this hook.  The hook runs before the Mac fetch, so a newly selected Mac revision normally reaches Coolify on the following scheduled run.
+The Mac opt-in marker is `coolify-cli-sync.enabled` in the runtime-sync job's state folder, `~/.simple-tools/` since Nov 2, 2026 and `~/.agent-sync/` before.  Remove that marker to disable future pushes.  The existing Mac runtime pause mechanism also pauses this hook.  The hook runs before the Mac fetch, so a newly selected Mac revision normally reaches Coolify on the following scheduled run.
 
 On Coolify, use:
 

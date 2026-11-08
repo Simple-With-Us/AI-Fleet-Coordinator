@@ -361,7 +361,7 @@ class TransportTests(Fixture):
 
 class HookTests(unittest.TestCase):
     def test_opt_in_hook_precedes_fetch_and_no_change_exit_inside_existing_lock(self):
-        hook = Path(__file__).with_name("agent-sync-runtime-sync.sh").read_text()
+        hook = Path(__file__).with_name("simple-tools-runtime-sync.sh").read_text()
         start = hook.index("# Code-only Coolify CLI sync")
         self.assertGreater(start, hook.index("trap 'rmdir"))
         self.assertLess(start, hook.index("if ! rgit fetch"))

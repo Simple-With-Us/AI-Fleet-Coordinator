@@ -134,9 +134,11 @@ class LinearProjectsHook:
         *,
         clock: Callable[[], float] = time.time,
         log: Callable[..., None] | None = None,
+        drain_armed: Callable[[], bool] | None = None,
     ) -> None:
         self.clock = clock
         self.log = log or (lambda *_args, **_kwargs: None)
+        self._drain_armed = drain_armed or (lambda: False)
         self._secrets_loader = secrets_loader
         self._runner = runner
         try:
@@ -284,6 +286,11 @@ class LinearProjectsHook:
                 slug=slug,
             )
             return 200, {"ok": True, "ignored": True}
+        if self._drain_armed():
+            # Drain armed (AFC-652, F6):  refuse admission so Linear keeps custody and retries;
+            # the reconcile worker is read-idempotent, so the retried event re-runs it whole.
+            self.log("linear-projects-drained", code=code, slug=slug)
+            return 503, {"error": "drain"}
         self.log("linear-projects-queued", code=code, slug=slug, action=str(action)[:40])
         self._enqueue()
         return 200, {"ok": True, "queued": True}
