@@ -1,23 +1,25 @@
 # Secret scanning config.  It keeps every default gitleaks rule and adds one narrow exception.
 #
 # docs/muster-ios/server-route-spec.md carries test vectors for the Muster iOS server route
-# (PR #1484).  Their device keys are P-256 public keys:  base64 SubjectPublicKeyInfo, which always
-# begins with the fixed header MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE.  A public key is not a secret,
-# but generic-api-key reads the field names (ownerKey, requestKey and the like) as the keyword.
+# (PR #1484), and scripts/fixtures/muster-vectors-v5.json carries the same vectors as data for the
+# server's tests.  Their device keys are P-256 public keys:  base64 SubjectPublicKeyInfo, which
+# always begins with the fixed header MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE.  A public key is not a
+# secret, but generic-api-key reads the field names (ownerKey, requestKey and the like) as the
+# keyword.
 #
-# The exception is limited three ways:  only the generic-api-key rule, only that one file, and only
-# a matched value that is a whole P-256 public key.  Anything else in that file, and every other
-# rule, is still reported.  Per-commit lines in .gitleaksignore are still the way to silence a
+# The exception is limited three ways:  only the generic-api-key rule, only those two files, and
+# only a matched value that is a whole P-256 public key.  Anything else in those files, and every
+# other rule, is still reported.  Per-commit lines in .gitleaksignore are still the way to silence a
 # one-off historical finding.
 
 [extend]
 useDefault = true
 
 [[allowlists]]
-description = "P-256 public keys in the Muster iOS route spec's test vectors"
+description = "P-256 public keys in the Muster iOS route spec's test vectors and their fixture"
 targetRules = ["generic-api-key"]
 condition = "AND"
-paths = ['''^docs/muster-ios/server-route-spec\.md$''']
+paths = ['''^(docs/muster-ios/server-route-spec\.md|scripts/fixtures/muster-vectors-v5\.json)$''']
 regexTarget = "secret"
 # A P-256 SubjectPublicKeyInfo is 91 bytes:  122 base64 characters before the "==" padding, which
 # the spec's base64url form leaves off.  So the header is followed by exactly 86 characters, from
