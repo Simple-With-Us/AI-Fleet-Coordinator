@@ -157,9 +157,80 @@ TOOL_NAMES = {t["name"] for t in TOOLS}
 MAX_DISPATCH_INPUTS = 32
 MAX_DISPATCH_INPUT_VALUE = 1024
 
+# ---------------------------------------------------------------- wf verbs
+# The relay's workflow verbs (git_relay.workflow_verbs.SPECS, the same list the
+# HTTP relay gates on in SeatPolicy.WORKFLOW_ACTIONS) are exposed here as
+# pass-through tools named exactly like the relay actions, so a seat running
+# GR-MCP locally reaches the same verbs the hosted front serves as gr_wf_*.
+# The wrapper does NOT re-implement their argument shapes or policy:  every
+# call is forwarded to the relay's /v1/<action>, where check_shape, the seat
+# policy allowlist, rate caps and the audit log apply exactly as for an HTTP
+# caller.  Locally the wrapper only checks the envelope (a repo string and a
+# bounded argument object) before forwarding.
+#
+# Five verbs are deliberately not exposed:  their request bodies can exceed
+# this stdio transport's MAX_LINE, so a call could never be carried whole
+# (wf_file_put, wf_files_put, wf_git_blob_create, wf_git_tree_create and the
+# binary asset upload).  Seats use the hosted front for those.
+WF_EXCLUDED = frozenset(
+    {
+        "wf_file_put",
+        "wf_files_put",
+        "wf_git_blob_create",
+        "wf_git_tree_create",
+        "wf_release_asset_upload_binary",
+    }
+)
+MAX_WF_ARGS = 64
+
+
+def _wf_actions() -> dict[str, bool]:
+    """{action: writes} from the relay's own SPECS, or {} when unavailable.
+
+    Fail closed:  if the verb list cannot be loaded, GR-MCP simply keeps its
+    original seven tools rather than guessing an action list."""
+    try:
+        from .workflow_verbs import SPECS
+    except Exception:
+        return {}
+    return {
+        action: bool(writes)
+        for action, (_perms, writes) in SPECS.items()
+        if action not in WF_EXCLUDED
+    }
+
+
+WF_ACTIONS = _wf_actions()
+WF_WRITES = frozenset(action for action, writes in WF_ACTIONS.items() if writes)
+
+TOOLS += [
+    {
+        "name": action,
+        "description": (
+            f"Relay workflow verb {action} ({'write' if WF_ACTIONS[action] else 'read'}); "
+            "the relay enforces seat policy and the exact argument shape."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"repo": {"type": "string", "description": "owner/name"}},
+            "required": ["repo"],
+        },
+    }
+    for action in sorted(WF_ACTIONS)
+]
+TOOL_NAMES = {t["name"] for t in TOOLS}
+
 
 def _validate_args(name: str, args: dict) -> str | None:
     """Enforce the advertised tool schema server-side before anything is forwarded."""
+    if name in WF_ACTIONS:
+        # Envelope only:  the relay owns the exact per-verb shape (check_shape)
+        # and the seat policy;  duplicating either here would drift.
+        if not isinstance(args.get("repo"), str) or not args["repo"]:
+            return "argument 'repo' is required"
+        if len(args) > MAX_WF_ARGS:
+            return f"too many arguments (capped at {MAX_WF_ARGS})"
+        return None
     schema = next(t["inputSchema"] for t in TOOLS if t["name"] == name)
     props = schema.get("properties", {})
     for required in schema.get("required", []):
@@ -274,13 +345,19 @@ class RelayMcp:
             if payload.get("outcome") in ("unknown", "pending"):
                 return _tool_failure(message, "outcome_unknown")
         except urllib.error.HTTPError as exc:
-            # Every exposed tool writes.  A server error or replay hold can
-            # follow an accepted write, so never call it a definite refusal.
+            # The original seven tools all write, and so do the wf write
+            # verbs:  a server error or replay hold can follow an accepted
+            # write, so never call it a definite refusal.  A wf read verb is
+            # the exception:  its failure wrote nothing.
             try:
                 raw = exc.read(MAX_LINE + 1)
                 error = json.loads(raw) if len(raw) <= MAX_LINE else None
             except (OSError, ValueError):
                 error = None
+            if name in WF_ACTIONS and name not in WF_WRITES:
+                if isinstance(error, dict):
+                    return _tool_failure(message, "relay_refused", exc.code)
+                return _tool_failure(message, "unavailable", exc.code)
             if isinstance(error, dict) and error.get("outcome") in ("unknown", "pending"):
                 return _tool_failure(message, "outcome_unknown", exc.code)
             if (
