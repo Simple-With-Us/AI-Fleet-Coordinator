@@ -19,17 +19,33 @@ struct FleetView: View {
         case attention, pullRequests, claims, apps, codingApps, lanes
     }
 
+    /// How old the page's reading may be before a visit reads again.  Inside it, coming back to
+    /// the page shows the reading on hand at once and runs no `fleet-view status` (about 17
+    /// GitHub calls, a Linear call and two git processes a lane);  the Refresh button always reads.
+    static let visitFreshness: TimeInterval = 60
+
     @EnvironmentObject private var store: FleetStore
-    @State private var envelope: FleetViewEnvelope?
-    @State private var registrySummary = FleetRegistrySummary()
+    /// The page's reading, held for the whole app (`FleetViewStore`), so it outlives this view.
+    @ObservedObject private var reading = FleetViewStore.shared
+    /// The apps and coding apps listed from fleet-apps.json while the work read runs.  Shown
+    /// only while the counts are pending:  the store's rows take over when its read lands.
+    @State private var earlyRegistry: FleetRegistrySummary?
     @State private var filter = FleetViewFilter()
-    @State private var failure: FleetViewFailure?
-    @State private var loading = false
-    @State private var refreshClock = FleetViewRefreshClock()
     @State private var collapsed: Set<PageSection> = [.lanes]
     @State private var openRepos: Set<String> = []
 
-    private var failed: Bool { failure != nil }
+    private var envelope: FleetViewEnvelope? { reading.envelope }
+    private var failure: FleetViewFailure? { reading.failure }
+    private var loading: Bool { reading.loading }
+    private var refreshClock: FleetViewRefreshClock { reading.refreshClock }
+    private var failed: Bool { reading.failed }
+
+    /// The rows on screen:  the early listing while the counts are read, else the store's rows,
+    /// which it rebuilds with the work read before it sets the envelope.
+    private var registrySummary: FleetRegistrySummary {
+        if countsPending, let earlyRegistry { return earlyRegistry }
+        return reading.registrySummary
+    }
 
     /// The apps are listed but this refresh's work read has not come back:  their lane, pull
     /// request and claim counts are being read, which is neither zero nor a failure.
@@ -59,13 +75,17 @@ struct FleetView: View {
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
-                if let stamp = refreshClock.headerText {
-                    Text(stamp)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
+                // The collection's age is worked out again on every tick,  so an open page never
+                // keeps a frozen age,  and its tint turns as the collection gets old.
+                TimelineView(.periodic(from: .now, by: ReportFreshness.tickInterval)) { context in
+                    if let stamp = refreshClock.headerText(now: context.date) {
+                        Text(stamp)
+                            .font(.callout)
+                            .foregroundStyle(headerTint(now: context.date))
+                    }
                 }
                 Button {
-                    Task { await refresh() }
+                    Task { await load(force: true) }
                 } label: {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }
@@ -118,7 +138,18 @@ struct FleetView: View {
             }
         }
         .padding(24)
-        .task { await refresh() }
+        .task { await load(force: false) }
+    }
+
+    /// The header line's tint at a moment:  secondary while the collection is fresh,  and amber
+    /// once it gets old.  Past an hour the line itself says "not current";  it stays amber,  the
+    /// colour every not-current age in the app uses,  because red is kept for a real failure.
+    /// The words say each state,  and the colour only repeats them.
+    private func headerTint(now: Date) -> Color {
+        switch FleetViewFreshness.tone(collectedAt: refreshClock.collectedAt, now: now) {
+        case .fresh: return .secondary
+        case .aging, .notCurrent: return .orange
+        }
     }
 
     // MARK: Sections
@@ -732,69 +763,76 @@ struct FleetView: View {
             .frame(minWidth: 64, alignment: .leading)
     }
 
-    private func refresh() async {
-        loading = true
-        defer { loading = false }
-        let root = store.engineRoot ?? EngineLocator.locate()?.root
+    /// Reads the page through the app's store:  a visit reads only when the reading on hand is
+    /// older than `visitFreshness` (`force` false), and the Refresh button always reads.  A
+    /// visit after the checkout changed always reads too, since the store's window counts only
+    /// age (Kody, PR 1481).  The store keeps one read in flight, fails closed, and rebuilds the
+    /// rows with the work read before it sets the envelope, so pending never ends while the rows
+    /// still hold counts that were not read (Sentry, PR 1450).
+    @MainActor
+    private func load(force: Bool) async {
+        let reading = self.reading
+        let named = store.engineRoot
+        let checkoutChanged = FleetViewReadingOrigin.checkoutChanged(to: named)
+        FleetViewReadingOrigin.record(named)
+        let mustRead = force || checkoutChanged
         // The work read (`fleet_view status`) is the slow one:  it reads pull requests across the
-        // fleet's repos, Linear claims and every lane, and took 8.5 s on the server.  It starts
-        // first and runs while the local reads below finish, so the page never waits on it to
-        // list the apps.
-        let work = Task.detached(priority: .userInitiated) { () -> Result<FleetViewEnvelope, Error> in
-            do {
-                return .success(try await FleetViewService.load())
-            } catch {
-                return .failure(error)
+        // fleet's repos, Linear claims and every lane, and took 8.5 s on the server.  It is asked
+        // for first and runs while the local reads below finish, so the page never waits on it
+        // to list the apps.  (The store reads the tools report, a local file, just before it
+        // starts `fleet_view`.)  A visit inside the window to the same checkout starts nothing,
+        // and one during a read of the same checkout joins it.
+        let work = Task { @MainActor in
+            if mustRead {
+                await reading.refresh(engineRoot: named)
+            } else {
+                await reading.refreshIfOlder(than: Self.visitFreshness, engineRoot: named)
             }
         }
-        let tools = await Task.detached(priority: .userInitiated) {
-            FleetToolsReportReader.readDefault()
-        }.value
         // With no work read on screen yet, the apps and coding apps show at once from
         // fleet-apps.json and the tools report.  Their lane, pull request and claim counts say
         // they are being read (`countsPending`), never zero, until the work read comes back.
-        if envelope == nil, let root {
-            registrySummary = await Task.detached(priority: .userInitiated) {
+        // A listing from an earlier load is dropped first, so another checkout's apps never
+        // show under this load's pending counts (Kody, PR 1481).
+        if reading.envelope == nil || checkoutChanged {
+            earlyRegistry = nil
+        }
+        if reading.envelope == nil, let root = named ?? EngineLocator.locate()?.root {
+            let tools = await Task.detached(priority: .userInitiated) {
+                FleetToolsReportReader.readDefault()
+            }.value
+            let listed = await Task.detached(priority: .userInitiated) {
                 FleetRegistryReader.read(repoRoot: root, viewOutput: nil, toolsReading: tools)
             }.value
-        }
-        do {
-            let loaded = try await work.value.get()
-            // The rows are rebuilt with the work read before either goes on screen, then both
-            // are set together:  setting `envelope` first ends `countsPending` while the rows
-            // still hold the counts that were not read, which flashed them red (Sentry, PR 1450).
-            let summary: FleetRegistrySummary
-            if let root {
-                summary = await Task.detached(priority: .userInitiated) {
-                    FleetRegistryReader.read(repoRoot: root, viewOutput: loaded, toolsReading: tools)
-                }.value
-            } else {
-                // Never leave the last run's rows beside a fresh one, and never let a checkout
-                // Muster cannot find read as a filter that hides every app (FLEETVIEW-30).
-                summary = FleetRegistrySummary(
-                    problem: "Muster could not find the AI-Fleet-Coordinator checkout, so apps and coding apps cannot be listed.\u{00A0} The pull requests, claims and lanes on this page are from this refresh."
-                )
+            // A later load for another checkout may have started while this listing was read;
+            // its listing, not this one, belongs on screen.
+            if !FleetViewReadingOrigin.checkoutChanged(to: named) {
+                earlyRegistry = listed
             }
-            envelope = loaded
-            registrySummary = summary
-            failure = nil
-            refreshClock.recordSuccess(generatedAt: loaded.generatedAt)
-        } catch {
-            // Fail closed:  clear the lists, never show the last green.  The registry
-            // rows go with them:  read back without the run's answer they carry lane,
-            // pull request and claim counts of zero, which reads as a fleet measured
-            // and found idle rather than one this refresh could not see.  The banner
-            // above the list says the counts are unknown;  nothing under it may spell
-            // a number of its own.  The words are worked out off the main thread, because
-            // stderr can be 4 MB, and the lists clear after that, so the page is never empty
-            // with no banner.
-            let described = await Task.detached(priority: .userInitiated) {
-                FleetViewFailure(error: error)
-            }.value
-            envelope = nil
-            failure = described
-            refreshClock.recordFailure()
-            registrySummary = FleetRegistrySummary()
         }
+        await work.value
+    }
+}
+
+/// The checkout the page last asked the store to read, kept for the app's life like the
+/// store's reading itself.  `FleetViewStore.refreshIfOlder` counts only the reading's age, so
+/// without this a return to the page inside the window after the checkout changed would show
+/// the old checkout's apps, pull requests, claims and lanes (Kody, PR 1481).
+@MainActor
+private enum FleetViewReadingOrigin {
+    /// Whether the page has asked for a read yet in this run of the app.
+    private static var asked = false
+    /// The checkout that read was asked for, or nil when the store was left to find it.
+    private static var engineRoot: URL?
+
+    /// Whether `named` is another checkout than the one the last read was asked for.  Before
+    /// any read there is nothing to differ from.
+    static func checkoutChanged(to named: URL?) -> Bool {
+        asked && engineRoot != named
+    }
+
+    static func record(_ named: URL?) {
+        asked = true
+        engineRoot = named
     }
 }

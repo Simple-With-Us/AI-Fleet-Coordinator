@@ -162,11 +162,15 @@ final class FleetViewStore: ObservableObject {
         let readRegistry = loader.readRegistry
         let loadView = loader.loadView
         let root = engineRoot ?? loader.locateRoot()
+        // The slow read (fleet-view:  GitHub, Linear and git) starts first, and the local tools
+        // report is read while it runs, so the page waits for the slow read only (session AA,
+        // with PR 1481).  `async let` keeps it a child of this read, so it is cancelled with it.
+        async let pendingView = loadView()
         let tools = await Task.detached(priority: .userInitiated) {
             readTools()
         }.value
         do {
-            let loaded = try await loadView()
+            let loaded = try await pendingView
             let summary: FleetRegistrySummary
             if let root {
                 summary = await Task.detached(priority: .userInitiated) {
