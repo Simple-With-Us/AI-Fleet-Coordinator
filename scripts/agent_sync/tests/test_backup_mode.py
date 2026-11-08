@@ -1,5 +1,8 @@
+import json
 import time
 import unittest
+
+from agent_sync import adapters as A
 
 from agent_sync.muse_bridge import (
     HOLD,
@@ -131,6 +134,35 @@ class SelectTest(unittest.TestCase):
         )
         self.assertEqual(runtime, OPENROUTER)
         self.assertIsNone(hold)
+
+class PresetRequestShapeTests(unittest.TestCase):
+    """What the request does and does not say about a preset's tools (see the adapters comment)."""
+
+    def test_a_preset_request_sends_an_empty_tools_array_and_tool_choice_none(self):
+        body = A.openrouter_request_body("@preset/some-slug", "sys", "user", "{}")
+        self.assertEqual(body["tools"], [])
+        self.assertEqual(body["tool_choice"], "none")
+
+    def test_a_plain_model_request_sends_neither(self):
+        body = A.openrouter_request_body("provider/name", "sys", "user", "{}")
+        self.assertNotIn("tools", body)
+        self.assertNotIn("tool_choice", body)
+
+    def test_an_answer_carrying_a_tool_call_is_refused_with_no_text(self):
+        raw = json.dumps(
+            {
+                "model": "provider/name",
+                "choices": [
+                    {
+                        "finish_reason": "tool_calls",
+                        "message": {"content": "{}", "tool_calls": [{"id": "x"}]},
+                    }
+                ],
+            }
+        ).encode()
+        text, _usage, _served, why = A.openrouter_answer(raw)
+        self.assertIsNone(text)
+        self.assertIn("tool call", why)
 
 
 if __name__ == "__main__":
