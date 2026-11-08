@@ -469,9 +469,17 @@ struct GridSelection: Hashable {
     var cellID: String { "\(seat)/\(kind.rawValue)" }
 
     /// The key the panel's file read runs under:  the cell and the run it came from.
-    func readKey(generatedAt: Date?) -> String {
-        let run = generatedAt.map { String($0.timeIntervalSince1970) } ?? "no-run"
-        return "\(cellID)@\(run)"
+    ///
+    /// Before any trusted run there is no run time, so the store's phase stands in for it:  a
+    /// first run that fails then reads the panel again, and the empty-cell words say why
+    /// instead of keeping what they said while it was checking.  Once a run has landed the key
+    /// is the run alone, so a later check does not blank the panel while it runs.
+    func readKey(generatedAt: Date?, phase: FleetStore.Phase? = nil) -> String {
+        if let generatedAt {
+            return "\(cellID)@\(String(generatedAt.timeIntervalSince1970))"
+        }
+        let state = phase.map { String(describing: $0) } ?? "unknown"
+        return "\(cellID)@no-run:\(state)"
     }
 
     /// True while the seat's row is on screen, so a filter that hides it closes the panel.
@@ -595,6 +603,18 @@ extension GridPresentation {
 
     /// The longest piece of one line the panel draws as one text.
     static let displayLineLimit = 1_000
+
+    /// Each artifact's display lines, split once when the panel's files are read (off the main
+    /// thread), so a redraw never splits a file again.  Nil for anything that is not a file's
+    /// text;  a directory already arrives as its entries.
+    static func splitLines(for views: [ConfigFileView]) -> [[String]?] {
+        views.map { view in
+            if case .file(_, let text, _, _) = view, !text.isEmpty {
+                return displayLines(text)
+            }
+            return nil
+        }
+    }
 
     /// A file's text as the lines the panel draws, one text each, so a large file is laid
     /// out a line at a time and never as one giant text (PERF-28).

@@ -265,4 +265,40 @@ final class GridWiringTests: XCTestCase {
         XCTAssertEqual(pieces.joined(), long)
         XCTAssertEqual(GridPresentation.displayLines("abc", limit: 0), ["a", "b", "c"])
     }
+
+    /// Files are split into lines once, at read time:  a file's text becomes its lines, and
+    /// anything that is not a file's text (or an empty file) gets none.
+    func test_files_are_split_once_when_read() throws {
+        let views: [ConfigFileView] = [
+            .file(path: "/a", text: "one\ntwo\n", truncated: false, redacted: false),
+            .file(path: "/b", text: "", truncated: false, redacted: false),
+            .directory(path: "/c", entries: ["x", "y"]),
+        ]
+        let lines = GridPresentation.splitLines(for: views)
+        XCTAssertEqual(lines.count, 3)
+        XCTAssertEqual(lines[0], ["one", "two"])
+        XCTAssertNil(lines[1])
+        XCTAssertNil(lines[2])
+        // The grid splits them in its detached read and hands them to the panel.
+        let grid = try source("Views/FleetGridView.swift")
+        XCTAssertTrue(grid.contains("GridPresentation.splitLines(for: artifacts.views)"))
+        XCTAssertTrue(grid.contains("lines: loadedLines,"))
+        let panel = try source("Views/ConfigFilePanel.swift")
+        XCTAssertTrue(panel.contains("LazyTextLines(lines: lines)"))
+    }
+
+    /// Before any trusted run the panel's read key follows the store's phase, so a failed
+    /// first run reads the panel again;  once a run has landed the key is the run alone.
+    func test_the_read_key_follows_the_phase_only_before_a_run() throws {
+        let selection = GridSelection(seat: "CLAUDE", kind: .hooks)
+        let checking = selection.readKey(generatedAt: nil, phase: .running)
+        let failed = selection.readKey(generatedAt: nil, phase: .failed("the engine stopped"))
+        XCTAssertNotEqual(checking, failed)
+        let run = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-11-07T20:00:00Z"))
+        XCTAssertEqual(selection.readKey(generatedAt: run, phase: .running),
+                       selection.readKey(generatedAt: run, phase: .loaded),
+                       "a later check does not blank the panel while it runs")
+        let grid = try source("Views/FleetGridView.swift")
+        XCTAssertTrue(grid.contains("selection.readKey(generatedAt: store.generatedAt, phase: store.phase)"))
+    }
 }

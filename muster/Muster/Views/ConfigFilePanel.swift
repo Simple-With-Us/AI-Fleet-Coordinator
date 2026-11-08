@@ -26,6 +26,10 @@ struct ConfigFilePanel: View {
     let sources: [String: String]
     /// When the run this cell came from checked it (`GridPresentation.asOfLine`).
     let asOf: String
+    /// Each rule's file split into display lines when it was read, lined up with
+    /// `artifacts.views` (`GridPresentation.splitLines(for:)`).  Empty leaves each rule to
+    /// split its own text.
+    var lines: [[String]?] = []
     /// Called when the operator closes the panel.
     let onClose: () -> Void
 
@@ -51,7 +55,8 @@ struct ConfigFilePanel: View {
                                 rule: rule,
                                 view: artifacts.views.indices.contains(index) ? artifacts.views[index] : nil,
                                 source: sources[rule.ruleId],
-                                read: artifacts.reads.indices.contains(index) ? artifacts.reads[index] : nil
+                                read: artifacts.reads.indices.contains(index) ? artifacts.reads[index] : nil,
+                                lines: lines.indices.contains(index) ? lines[index] : nil
                             )
                         }
                     }
@@ -124,6 +129,10 @@ struct RuleArtifactView: View {
     /// (not text, unreadable, missing) kept apart and the words for each.  Nil leaves the
     /// panel to say what `view` alone can.
     var read: ConfigFileRead? = nil
+    /// The file's display lines, split once when the file was read (off the main thread,
+    /// `GridPresentation.displayLines`), so a redraw never splits half a megabyte again.  Nil
+    /// splits `view`'s text here, as Seat Setup does.
+    var lines: [String]? = nil
 
     var body: some View {
         ruleBlock(rule: rule, view: view)
@@ -285,8 +294,12 @@ struct RuleArtifactView: View {
                     .padding(10)
             } else {
                 // A line at a time, so a file of half a megabyte is not one giant text
-                // (PERF-28).
-                LazyTextLines(text: text)
+                // (PERF-28), from lines split once at read time when the caller has them.
+                if let lines {
+                    LazyTextLines(lines: lines)
+                } else {
+                    LazyTextLines(text: text)
+                }
             }
         case .directory(_, let entries):
             if entries.isEmpty {

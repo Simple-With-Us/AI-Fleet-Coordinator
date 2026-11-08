@@ -119,6 +119,8 @@ struct FleetGridView: View {
     @State private var selection: GridSelection?
     /// Artifacts for the selected cell, read off the main thread by `.task`.
     @State private var loadedArtifacts: FleetStore.CellArtifacts?
+    /// The loaded files' display lines, split once with them (`GridPresentation.splitLines`).
+    @State private var loadedLines: [[String]?] = []
     /// The cell and run the loaded artifacts belong to (`GridSelection.readKey`).
     @State private var loadedArtifactsKey: String?
     /// When the Mac last woke, so the check time and the time limits are measured again
@@ -207,7 +209,7 @@ struct FleetGridView: View {
                 }
             }
             if let selection, let cell = selectedCell {
-                let readKey = selection.readKey(generatedAt: store.generatedAt)
+                let readKey = selection.readKey(generatedAt: store.generatedAt, phase: store.phase)
                 PanelResizeHandle(height: panelHeightBinding)
                 Group {
                     if let artifacts = loadedArtifacts, loadedArtifactsKey == readKey {
@@ -216,6 +218,7 @@ struct FleetGridView: View {
                             artifacts: artifacts,
                             sources: store.ruleSources(seat: cell.seat, kind: cell.kind),
                             asOf: GridPresentation.asOfLine(generatedAt: store.generatedAt),
+                            lines: loadedLines,
                             onClose: { self.selection = nil }
                         )
                     } else {
@@ -229,11 +232,15 @@ struct FleetGridView: View {
                 .task(id: readKey) {
                     loadedArtifacts = nil
                     loadedArtifactsKey = nil
-                    let loaded = await Task.detached(priority: .userInitiated) {
-                        store.artifacts(for: cell)
+                    // The files are split into display lines here, off the main thread, once
+                    // per read, so the panel's redraws never split them again.
+                    let (loaded, lines) = await Task.detached(priority: .userInitiated) {
+                        let artifacts = store.artifacts(for: cell)
+                        return (artifacts, GridPresentation.splitLines(for: artifacts.views))
                     }.value
                     guard !Task.isCancelled else { return }
                     loadedArtifacts = loaded
+                    loadedLines = lines
                     loadedArtifactsKey = readKey
                 }
             }
