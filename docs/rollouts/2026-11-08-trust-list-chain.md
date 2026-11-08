@@ -93,4 +93,19 @@ Not interpretations, because the spec says them: a concurrent chain can meet `ac
 
 ## Deployed
 
-Not deployed yet.
+Deployed by hand on November 8, 2026 at 10:06 AM from main `0c83f9592` (PR 1543), the helper first and the module second, as section 4 says.  Each file was replaced through a candidate beside it, hash-checked against the repository file, and renamed into place.
+
+| File | Before | After |
+| --- | --- | --- |
+| `fleet-ops-control.py` | `ead2d0927153…` | `bf83a9e2be38…` |
+| `muster_approval.py` | `fbe9db7d437c…` | `fbd212aec173…` |
+
+Both old files were backed up first, each hash-checked against the installed file it copied, in the server's backup folder `fleet-ops-control-trust-chain-20261108T160614Z` (root, mode 0700).  Rollback restores the module first and then the helper from that folder, each through a hash-checked candidate.  No other installed file changed, and the allowlist, `fleet_resource_control.py` and `muster_trust_files.py` were byte for byte main's before and after.
+
+Read after the swap:
+
+- The installed module imports on its own and has the chain parse and the temporary-file sweep.
+- `--from-muster` on the server still answers the fixed unsigned `helper_key_missing`, as it must:  there is no helper key and no `/etc/muster` yet, so the route is inert.
+- Through the Mac route, `unit-status`, `logs`, `eavesdropper-status` (29 seats running) and `resource-status` still answer.
+
+Nothing was sent to the chain verb on the live server.  The route goes live only when the owner's steps in section 3 exist and the owner delivers a first chain.
