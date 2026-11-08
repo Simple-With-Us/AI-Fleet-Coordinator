@@ -14,7 +14,9 @@ What Cursor gives a hook (read from the cursor-agent 2026.10.22 build, Nov 7, 20
   `cursor_cloud_letters` instead, which reads them from the Cursor API, so the hook leaves them alone.
 
 Cursor's chats live in the `cursor` letter namespace, which the registry folds `cursor-local` and `cursor-cloud` into.
-A chat is closed on `sessionEnd`, which Cursor sends when the chat is closed or deleted.
+Nothing is closed on an end.  The CLI sends `sessionEnd` when its process exits, and a chat resumed later with
+`--resume` gets no `sessionStart`, so closing on that end would leave a resumed chat with no letter.  The prompt event
+registers a chat the hook has not seen, and the registry's 36 hour sweep frees the letters of idle chats.
 
 Python 3.11+, standard library only.
 """
@@ -37,7 +39,7 @@ SOURCE = "cursor-letter-hook"
 DISPLAY = "Cursor"
 
 HOOKS_FILE = os.path.join(".cursor", "hooks.json")
-HOOK_TIMEOUTS = {"sessionStart": 20, "beforeSubmitPrompt": 15, "sessionEnd": 15}
+HOOK_TIMEOUTS = {"sessionStart": 20, "beforeSubmitPrompt": 15}
 CONTEXT_EVENTS = ("sessionStart", "beforeSubmitPrompt")
 
 
@@ -63,8 +65,8 @@ SPEC = PL.PlatformSpec(
     session_id=PL.from_payload("conversation_id"),
     kind=cursor_kind,
     current_title=no_title,
-    events={"sessionStart": "start", "beforeSubmitPrompt": "prompt", "sessionEnd": "end"},
-    close_reasons=None,
+    events={"sessionStart": "start", "beforeSubmitPrompt": "prompt"},
+    close_reasons=(),
     output="json",
 )
 
@@ -139,6 +141,4 @@ def entry(command: str, timeout: int, event: str) -> dict[str, Any]:
     return {"command": command, "timeout": timeout, "failClosed": False}
 
 
-INSTALL = PL.JsonHookInstaller(
-    path=HOOKS_FILE, events=HOOK_TIMEOUTS, locate=versioned_hooks, build=entry
-)
+INSTALL = PL.JsonHookInstaller(path=HOOKS_FILE, events=HOOK_TIMEOUTS, locate=versioned_hooks, build=entry)

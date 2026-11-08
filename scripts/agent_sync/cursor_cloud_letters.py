@@ -126,15 +126,8 @@ def register(
     if transport is None and local_registry(env):
         transport = in_process(env)
     chat = PL.Chat(
-        SPEC,
-        env,
-        LOCATION,
-        str(agent["session_id"]),
-        runner=runner,
-        now=now,
-        remote=remote,
-        transport=transport,
-        seat=PC.SEAT,
+        SPEC, env, LOCATION, str(agent["session_id"]), runner=runner, now=now, remote=remote,
+        transport=transport, seat=PC.SEAT,
     )
     return chat.registry("register", title=PL.bare(agent.get("title") or ""))
 
@@ -156,11 +149,7 @@ def send_dm(bot: str, text: str, env: Mapping[str, str], runner: Runner) -> str:
     try:
         proc = runner(
             ["simple-chat", "dm", "--to", bot, "--", text],
-            capture_output=True,
-            text=True,
-            timeout=DM_TIMEOUT,
-            stdin=subprocess.DEVNULL,
-            env=dict(env),
+            capture_output=True, text=True, timeout=DM_TIMEOUT, stdin=subprocess.DEVNULL, env=dict(env),
         )
     except subprocess.TimeoutExpired:
         return "unknown"
@@ -176,6 +165,7 @@ def sweep(
     env: Mapping[str, str],
     *,
     discover: Callable[[], list[dict[str, Any]]] | None = None,
+    complete: Callable[[], bool] | None = None,
     runner: Runner = subprocess.run,
     transport: Transport | None = None,
     remote: str = "",
@@ -187,8 +177,15 @@ def sweep(
     if discover is None:
         from .cursor_chat_transport import CursorCloudTransport
 
-        discover = CursorCloudTransport().discover
+        cloud = CursorCloudTransport()
+        discover = cloud.discover
+
+        def complete() -> bool:
+            return getattr(cloud, "last_discovery_status", "") == "complete"
+
     agents = discover()
+    # Whether the discovery saw every open agent:  only then is an agent missing from it gone.
+    whole = complete() if complete is not None else True
     state = read_state(env)
     rows = []
     for agent in agents:
@@ -213,31 +210,28 @@ def sweep(
         told = state.get(sid) if isinstance(state.get(sid), dict) else {}
         current = PL.one_line(agent.get("title"))
         wanted = {"bot": bot, "label": label, "generation": generation}
-        if (
-            bot
-            and not current.startswith(label + ": ")
-            and {k: told.get(k) for k in wanted} != wanted
-        ):
+        if bot and not current.startswith(label + ": ") and {k: told.get(k) for k in wanted} != wanted:
             outcome = send_dm(bot, message(bot, agent, label, generation, words), env, runner)
             row["dm"] = outcome
             if outcome != "not-started":
                 state[sid] = dict(wanted, outcome=outcome, at=now)
         rows.append(row)
     if not dry_run:
-        open_ids = {str(a.get("session_id") or "") for a in agents}
-        for sid in [k for k in state if k not in open_ids]:
-            del state[sid]  # the agent is gone; its letter is the registry's to free
+        if whole:
+            # Only a discovery that saw every open agent says one is gone:  a partial list (a page that failed, or
+            # more agents than the cap) would forget what a bot was told, and tell it again next time.
+            open_ids = {str(a.get("session_id") or "") for a in agents}
+            for sid in [k for k in state if k not in open_ids]:
+                del state[sid]  # the agent is gone; its letter is the registry's to free
         write_state(env, state)
-    return {"agents": len(agents), "rows": rows}
+    return {"agents": len(agents), "complete": whole, "rows": rows}
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="cursor_cloud_letters")
     sub = parser.add_subparsers(dest="command", required=True)
     s = sub.add_parser("sweep", help="give open Cursor Cloud agents letters and tell their GB bots")
-    s.add_argument(
-        "--dry-run", action="store_true", help="read the agents and print what it would do"
-    )
+    s.add_argument("--dry-run", action="store_true", help="read the agents and print what it would do")
     s.add_argument("--remote", default="", help="the ssh destination that holds the registry")
     args = parser.parse_args(argv)
     env = os.environ

@@ -89,10 +89,18 @@ class HookTests(Base):
         self.assertIsNone(self.lookup())
         self.assertEqual(self.calls, [])
 
-    def test_the_end_closes_the_letter(self) -> None:
+    def test_an_end_closes_nothing_so_a_resumed_chat_keeps_its_letter(self) -> None:
         self.hook(payload("sessionStart"))
+        label = self.lookup()["label"]
         self.assertEqual(self.hook(payload("sessionEnd")), {})
-        self.assertEqual(self.calls[-1][0], "close")
+        self.assertNotIn("close", [c[0] for c in self.calls])
+        self.hook(payload("beforeSubmitPrompt"))  # a CLI `--resume` sends no sessionStart
+        self.assertEqual(self.lookup()["label"], label)
+
+    def test_a_chat_first_seen_at_a_prompt_takes_a_letter(self) -> None:
+        answer = self.hook(payload("beforeSubmitPrompt"))
+        label = self.lookup()["label"]
+        self.assertIn('"@**Cursor** %s"' % label, answer["additional_context"])
 
     def test_a_broken_payload_answers_an_empty_object(self) -> None:
         out = io.StringIO()

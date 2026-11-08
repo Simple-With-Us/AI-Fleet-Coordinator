@@ -117,6 +117,16 @@ class SweepTests(unittest.TestCase):
         self.run_sweep()
         self.assertNotIn(A1, CCL.read_state(self.env))
 
+    def test_a_partial_discovery_forgets_nothing_and_tells_no_bot_twice(self) -> None:
+        self.run_sweep()
+        everyone = list(self.agents)
+        self.agents = [self.agents[1]]
+        self.run_sweep(complete=lambda: False)
+        self.assertIn(A1, CCL.read_state(self.env))
+        self.agents = everyone
+        self.run_sweep()
+        self.assertEqual(len(self.dm.calls), 1)
+
 
 class TitleTests(unittest.TestCase):
     def test_bot_of(self) -> None:

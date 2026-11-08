@@ -1444,9 +1444,7 @@ def untitled_context(
     """The context line for a platform whose hooks cannot set a chat's title (Z Code, Cursor), from one `json` style
     answer (`{"context", "label"}`):  the chat is told its letter and how it is addressed, and that its title does not
     carry the letter.  Any other line (no letter yet, another seat's) is the library's own, as it is."""
-    context = _text(
-        body.get("context")
-    )  # not `tidy`:  the library's sentence gaps stay as they are
+    context = _text(body.get("context"))  # not `tidy`:  the library's sentence gaps stay as they are
     label = _text(body.get("label"))
     head, mark, _ = context.partition("Operator session letter:")
     if not (label and mark):
@@ -1459,11 +1457,7 @@ def untitled_context(
     note = note if isinstance(note, dict) else {}
     gen = note.get("generation") or 1
     where = "server" if note.get("location") == "server" else "Mac"
-    ref = "%s %s%s" % (
-        display,
-        label,
-        " (gen %d)" % gen if isinstance(gen, int) and gen > 1 else "",
-    )
+    ref = "%s %s%s" % (display, label, " (gen %d)" % gen if isinstance(gen, int) and gen > 1 else "")
     # Rendered copy:  a sentence gap is U+00A0 plus a space.
     return (
         '%sOperator session letter: %s, on the %s.  This chat is addressed as "@**%s** %s".  %s gives a '
