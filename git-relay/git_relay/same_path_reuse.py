@@ -1,8 +1,9 @@
-"""Metadata-only proof of exact same-path object reuse in one repository.
+"""Metadata proof of exact same-path object reuse in one repository.
 
 A blob SHA alone is not provenance. The immutable source commit, containing
 nonrecursive trees, original path, object type, mode, size and blob SHA are
-all checked. No blob content is fetched or accepted through this operation.
+all checked here. The workflow then fetches and verifies the blob bytes,
+runs the full scanner and enforces loaded/provider guards before tree creation.
 This does not approve synthesized content, raw uploads or relocation.
 """
 

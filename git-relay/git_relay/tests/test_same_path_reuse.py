@@ -1,4 +1,6 @@
 import unittest
+import base64
+import hashlib
 from unittest.mock import patch
 
 from git_relay import same_path_reuse
@@ -8,7 +10,14 @@ from git_relay.server import PreReadUnavailable
 from git_relay.tests.test_workflow_verbs import REPO, SHA, Client, Policy
 from git_relay.workflow_verbs import Refused, WorkflowVerbs
 
-COMMIT, ROOT, DIR, BLOB = "a" * 40, "b" * 40, "c" * 40, "d" * 40
+RAW = b"safe fixture"
+COMMIT, ROOT, DIR = "a" * 40, "b" * 40, "c" * 40
+BLOB = hashlib.sha1(b"blob " + str(len(RAW)).encode() + b"\0" + RAW).hexdigest()
+
+
+def blob_receipt(raw=RAW):
+    return {"sha": BLOB, "size": len(raw), "encoding": "base64", "content": base64.b64encode(raw).decode()}
+
 
 
 def receipts(size=12):
@@ -158,7 +167,7 @@ class ReuseWorkflowTests(unittest.TestCase):
         ).run("wf_git_tree_create", args)
 
     def test_fixed_tree_payload_and_no_ref_or_blob_operation(self):
-        client = Client(*receipts(), {"sha": "f" * 40, "truncated": False, "tree": []})
+        client = Client(*receipts(), blob_receipt(), {"sha": "f" * 40, "truncated": False, "tree": []})
         self.assertEqual(self.handle(client, self.args())["tree"]["files"], 1)
         self.assertEqual(
             client.calls[-1][:3],
@@ -220,9 +229,9 @@ class ReuseWorkflowTests(unittest.TestCase):
     def test_raw_budget_is_charged_for_every_reference(self):
         from git_relay.workflow_verbs import MAX_FILE_RAW, MAX_FILES_RAW
 
-        size = MAX_FILE_RAW
+        size = len(RAW)
         args = self.args()
-        count = MAX_FILES_RAW // size + 1
+        count = 2
         self.assertLessEqual(count, 20)
         # The same source path cannot be renamed; repeated path entries are refused.
         # Use distinct original paths, each proved by its own exact source entry.
@@ -238,8 +247,51 @@ class ReuseWorkflowTests(unittest.TestCase):
                 for f in args["files"]
             ],
         }
-        client = Client({"sha": COMMIT, "tree": {"sha": ROOT}}, tree)
-        with self.assertRaises(Refused):
+        client = Client({"sha": COMMIT, "tree": {"sha": ROOT}}, tree, blob_receipt())
+        with patch("git_relay.workflow_verbs.MAX_FILES_RAW", size), self.assertRaises(Refused):
             self.handle(client, args)
         self.assertTrue(all(x[0] == "GET" for x in client.calls))
-        self.assertEqual(len(client.calls), 2)
+        self.assertEqual(len(client.calls), 3)
+
+
+class ReviewedByteGuards(ReuseWorkflowTests):
+    def custom_client(self, raw):
+        digest = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+        rows = receipts(len(raw))
+        rows[-1]["tree"][0]["sha"] = digest
+        blob = blob_receipt(raw)
+        blob["sha"] = digest
+        args = self.args()
+        args["files"][0]["sha"] = digest
+        records = {(REPO, COMMIT, "dir/file.txt", digest, "100644")}
+        return args, Client(*rows, blob, {"sha": "f" * 40, "truncated": False, "tree": []}), records
+
+    def test_loaded_and_provider_values_refused_even_in_reviewed_object(self):
+        for raw in [b"own", ("sk-" + "a" * 24).encode()]:
+            args, client, records = self.custom_client(raw)
+            with patch.object(same_path_reuse, "REVIEWED_SAME_PATH_SOURCES", records):
+                with self.assertRaises(Refused):
+                    self.handle(client, args)
+            self.assertTrue(all(call[0] == "GET" for call in client.calls))
+
+    def test_exact_reviewed_fixture_still_executes_full_scan(self):
+        args, client, records = self.custom_client(("Authorization: Bearer " + "a" * 24).encode())
+        with patch.object(same_path_reuse, "REVIEWED_SAME_PATH_SOURCES", records):
+            with patch("git_relay.workflow_verbs.find_secret", return_value="baseline") as scan:
+                # Path/message guards also use find_secret, so allow the path.
+                scan.side_effect = lambda text: "baseline" if "Authorization:" in text else None
+                self.assertEqual(self.handle(client, args)["tree"]["files"], 1)
+                self.assertTrue(any("Authorization:" in call.args[0] for call in scan.call_args_list))
+
+    def test_blob_receipt_substitution_refused_before_tree_write(self):
+        for update in [{"sha": "e" * 40}, {"size": 999}, {"encoding": "utf8"}, {"content": "!"}]:
+            args, client, records = self.custom_client(RAW)
+            # Client stores its scripted replies in order.
+            rows = receipts()
+            blob = blob_receipt()
+            blob.update(update)
+            client = Client(*rows, blob)
+            with patch.object(same_path_reuse, "REVIEWED_SAME_PATH_SOURCES", records):
+                with self.assertRaises(Refused):
+                    self.handle(client, args)
+            self.assertTrue(all(call[0] == "GET" for call in client.calls))

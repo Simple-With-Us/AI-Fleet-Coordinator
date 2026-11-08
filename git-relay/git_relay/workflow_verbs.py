@@ -5501,6 +5501,48 @@ class WorkflowVerbs:
                         raise
                     except (ValueError, TypeError, KeyError):
                         raise Refused("same-path source object proof refused") from None
+                    # Metadata provenance is necessary, not a secret-scan waiver.
+                    # Fetch exact bytes and apply absolute live/provider guards even
+                    # for a release-reviewed unchanged fixture object.
+                    key = ("fixture-bytes", repo, sha)
+                    try:
+                        if key not in source_cache:
+                            blob = _obj(self._get(f"/repos/{repo}/git/blobs/{sha}"))
+                            if (
+                                blob.get("sha") != sha
+                                or blob.get("encoding") != "base64"
+                                or type(blob.get("size")) is not int
+                                or not isinstance(blob.get("content"), str)
+                            ):
+                                raise ValueError("invalid reviewed blob receipt")
+                            raw = base64.b64decode(
+                                "".join(blob["content"].split()), validate=True
+                            )
+                            if (
+                                len(raw) > MAX_FILE_RAW
+                                or len(raw) != blob["size"]
+                                or hashlib.sha1(
+                                    b"blob " + str(len(raw)).encode() + b"\0" + raw
+                                ).hexdigest() != sha
+                            ):
+                                raise ValueError("invalid reviewed blob identity")
+                            source_cache[key] = raw.decode("utf-8", "strict")
+                        decoded = source_cache[key]
+                        if len(decoded.encode("utf-8")) != size:
+                            raise ValueError("reviewed source size mismatch")
+                        # Always execute the full scanner. Only the exact immutable
+                        # reviewed fixture may retain its baseline shaped finding.
+                        find_secret(decoded)
+                        if self._provider_token_text(decoded) or (self.bearer and self.bearer in decoded):
+                            raise ValueError("absolute credential guard")
+                    except RelayGitHubError as exc:
+                        if exc.status in (0, 408) or exc.status >= 500:
+                            raise PreReadUnavailable(
+                                "reviewed blob unavailable; no write attempted"
+                            ) from None
+                        raise
+                    except (ValueError, TypeError, KeyError, UnicodeError, binascii.Error):
+                        raise Refused("reviewed fixture bytes refused") from None
                     referenced_total += size
                     if referenced_total > MAX_FILES_RAW:
                         raise Refused("file content budget exceeded")
