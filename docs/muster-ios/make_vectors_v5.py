@@ -57,8 +57,32 @@ def b64u(data):
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
 
 
+B64U_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+
+
 def unb64u(text):
-    return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+    """Strict base64url (v5.4):  the alphabet only, no padding, a possible length, no stray trailing bits."""
+    if not isinstance(text, str) or not re.fullmatch(r"[A-Za-z0-9_-]*", text) or len(text) % 4 == 1:
+        raise ValueError("not base64url")
+    data = base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+    if b64u(data) != text:
+        raise ValueError("base64url with stray trailing bits")
+    return data
+
+
+# DER SubjectPublicKeyInfo of an uncompressed P-256 point (v5.4):  this prefix, then 04 || X || Y, 91 bytes.
+P256_SPKI_PREFIX = bytes.fromhex("3059301306072a8648ce3d020106082a8648ce3d030107034200")
+
+
+def load_key(text):
+    """The P-256 key of a base64url SubjectPublicKeyInfo that is exactly the 91-byte uncompressed form."""
+    der = unb64u(text)
+    if len(der) != 91 or not der.startswith(P256_SPKI_PREFIX) or der[26] != 0x04:
+        raise ValueError("not the 91-byte SubjectPublicKeyInfo of an uncompressed P-256 point")
+    key = serialization.load_der_public_key(der)
+    if not isinstance(key, ec.EllipticCurvePublicKey) or not isinstance(key.curve, ec.SECP256R1):
+        raise ValueError("not a P-256 key")
+    return key
 
 
 def spki(key):
@@ -106,15 +130,36 @@ def sign(key, data):
 
 
 def verify(pub_b64, sig_b64, data):
+    """v5.4:  the key and the signature are decoded strictly, so stray trailing bits fail the check."""
     try:
-        serialization.load_der_public_key(unb64u(pub_b64)).verify(unb64u(sig_b64), data, ecdsa())
+        load_key(pub_b64).verify(unb64u(sig_b64), data, ecdsa())
         return True
-    except (InvalidSignature, ValueError):
+    except (InvalidSignature, ValueError, TypeError):
         return False
 
 
 def t(text):
     return datetime.datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.UTC)
+
+
+def real_time(text):
+    """v5.4:  §2's form and a real calendar time (no 23:59:60, no February 30, no year 0000)."""
+    if not isinstance(text, str) or not re.fullmatch(
+        r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", text
+    ):
+        return False
+    try:
+        datetime.datetime(
+            int(text[0:4]),
+            int(text[5:7]),
+            int(text[8:10]),
+            int(text[11:13]),
+            int(text[14:16]),
+            int(text[17:19]),
+        )
+    except ValueError:
+        return False
+    return True
 
 
 def reopen_check(version, device_id, code):
@@ -190,9 +235,10 @@ def make_list(
     owner_key=None,
     signer=None,
     previous=None,
+    contract="muster-trust-list/1",
 ):
     body = {
-        "contract": "muster-trust-list/1",
+        "contract": contract,
         "version": version,
         "previousSHA256": previous
         if previous is not None
@@ -313,6 +359,157 @@ bad["T15"] = {
 }
 
 
+def stray_bit(text):
+    """The same base64url with one stray trailing bit set in its last character (v5.4).  The bytes a lenient
+    decoder reads are unchanged;  only canonical base64url refuses it.  Possible only when the byte length is
+    not a multiple of 3."""
+    data = unb64u(text)
+    assert len(data) % 3, "no stray bits at this length"
+    last = B64U_ALPHABET.index(text[-1])
+    assert last & 1 == 0
+    changed = text[:-1] + B64U_ALPHABET[last | 1]
+    assert base64.urlsafe_b64decode(changed + "=" * (-len(changed) % 4)) == data
+    return changed
+
+
+def first_fit(make, field):
+    """The first list `make(i)` builds whose signature in `field` has a byte length that can carry stray bits.
+    Signing is deterministic (RFC 6979), so the search always ends at the same list;  without it the search
+    could end elsewhere, so it refuses to run on a cryptography that lacks deterministic signing."""
+    try:
+        ec.ECDSA(hashes.SHA256(), deterministic_signing=True)
+    except TypeError as exc:
+        raise RuntimeError("cryptography does not support deterministic ECDSA signing") from exc
+    for i in range(50):
+        lst = make(i)
+        if len(unb64u(field(lst))) % 3:
+            return lst
+    sys.exit("no list fits")
+
+
+# T26 (v5.4):  a first list whose owner signature carries a stray trailing bit (check 4, owner_signature).
+_t26 = first_fit(
+    lambda i: make_list(1, None, f"2026-11-07T20:{i:02d}:30Z", [DA]),
+    lambda lst: lst["ownerSignature"],
+)
+bad["T26"] = dict(_t26, ownerSignature=stray_bit(_t26["ownerSignature"]))
+# T27 (v5.4):  rule A whose one countersignature carries a stray trailing bit (rule A, countersignature).
+_t27 = first_fit(
+    lambda i: make_list(2, L1, f"2026-11-07T20:{10 + i:02d}:30Z", [DA, DB], countersigners=[A_]),
+    lambda lst: lst["countersignatures"][0]["signature"],
+)
+bad["T27"] = dict(
+    _t27,
+    countersignatures=[
+        dict(
+            _t27["countersignatures"][0],
+            signature=stray_bit(_t27["countersignatures"][0]["signature"]),
+        )
+    ],
+)
+
+
+# ---------------------------------------------------------------- P3:  section 5's and 8's structure (v5.4 strictness)
+DEVICE_ID = re.compile(r"d-[0-9a-f]{24}")
+HEX64 = re.compile(r"[0-9a-f]{64}")
+SIG_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,100}")
+SERVICE_NAMES = {
+    "macPublisher",
+    "macExecutor",
+    "macAgreement",
+    "serverPublisher",
+    "serverExecutor",
+    "serverExecutorAgreement",
+    "serverHelper",
+}
+
+
+def p3_failure(entry):
+    """What P3 refuses in one signed list (`bad_input`), or None.  Keys are decoded and loaded here;  a
+    signature only has its pattern checked here, and its decoding is judged when it is verified."""
+
+    def key_ok(value):
+        try:
+            load_key(value)
+            return True
+        except (ValueError, TypeError):
+            return False
+
+    if not isinstance(entry, dict) or set(entry) != {"body", "ownerSignature", "countersignatures"}:
+        return "entry keys"
+    b = entry["body"]
+    if not isinstance(b, dict) or set(b) != {
+        "contract",
+        "version",
+        "previousSHA256",
+        "issuedAt",
+        "ownerKey",
+        "closed",
+        "devices",
+        "services",
+        "reopenTag",
+    }:
+        return "body keys"
+    if b["contract"] != "muster-trust-list/1":
+        return "contract"
+    if type(b["version"]) is not int or not 1 <= b["version"] <= 2**53 - 1:
+        return "version"
+    for name in ("previousSHA256", "reopenTag"):
+        if b[name] is not None and not (isinstance(b[name], str) and HEX64.fullmatch(b[name])):
+            return name
+    if not real_time(b["issuedAt"]):
+        return "issuedAt"
+    if not key_ok(b["ownerKey"]):
+        return "ownerKey"
+    if type(b["closed"]) is not bool:
+        return "closed"
+    if not isinstance(b["devices"], list) or len(b["devices"]) > 64:
+        return "devices"
+    for d in b["devices"]:
+        if not isinstance(d, dict) or set(d) != {
+            "deviceId",
+            "name",
+            "approvalKey",
+            "requestKey",
+            "readingKey",
+            "notificationKey",
+        }:
+            return "device keys"
+        if not (isinstance(d["deviceId"], str) and DEVICE_ID.fullmatch(d["deviceId"])):
+            return "deviceId"
+        if not (isinstance(d["name"], str) and 1 <= len(d["name"]) <= 40):
+            return "name"
+        if not all(
+            key_ok(d[k]) for k in ("approvalKey", "requestKey", "readingKey", "notificationKey")
+        ):
+            return "device key"
+    s = b["services"]
+    if not isinstance(s, dict) or set(s) != SERVICE_NAMES:
+        return "services"
+    if not all(v is None or key_ok(v) for v in s.values()):
+        return "service key"
+    if not (
+        isinstance(entry["ownerSignature"], str) and SIG_PATTERN.fullmatch(entry["ownerSignature"])
+    ):
+        return "ownerSignature"
+    cs = entry["countersignatures"]
+    if not isinstance(cs, list) or len(cs) > 64:
+        return "countersignatures"
+    for c in cs:
+        if (
+            not isinstance(c, dict)
+            or set(c) != {"deviceId", "signature"}
+            or not (isinstance(c["deviceId"], str) and DEVICE_ID.fullmatch(c["deviceId"]))
+            or not (isinstance(c["signature"], str) and SIG_PATTERN.fullmatch(c["signature"]))
+        ):
+            return "countersignature"
+    try:
+        canonical(entry)
+    except ValueError:
+        return "not canonical"
+    return None
+
+
 # ---------------------------------------------------------------- reference checker:  section 8's numbered order
 def history_key(history, version):
     for h in history:
@@ -322,7 +519,11 @@ def history_key(history, version):
 
 
 def check_chain(held, chain, history, records, frozen=False):
-    """frozen=True is version 5 as frozen:  every rule C entry is refused reopen_unavailable after checks 1 to 7."""
+    """frozen=True is version 5 as frozen:  every rule C entry is refused reopen_unavailable after checks 1 to 7.
+    v5.4:  P3 reads the whole document before any check, so one malformed entry is bad_input for the request."""
+    for entry in chain:
+        if p3_failure(entry) is not None:
+            return "bad_input", entry
     prev = held
     for entry in chain:
         b = entry["body"]
@@ -572,6 +773,20 @@ chain_cases = [
         "server_keys_removed",
         "Adds device B, countersigned by device A, and sets serverHelper to null, leaving no server key (§17A A8, settled in v5.3).",
     ),
+    (
+        "T26 owner signature with a stray trailing bit",
+        None,
+        [bad["T26"]],
+        "owner_signature",
+        "A first list whose ownerSignature has a stray trailing bit set in its last base64url character:  a lenient decoder reads the same valid DER, but the base64url is not canonical, so check 4 fails (v5.4).",
+    ),
+    (
+        "T27 countersignature with a stray trailing bit",
+        L1,
+        [bad["T27"]],
+        "countersignature",
+        "Adds device B, countersigned by device A, but the countersignature has a stray trailing bit set in its last base64url character, so rule A's countersignature condition fails (v5.4).",
+    ),
 ]
 for name, held, chain, expect, _ in chain_cases:
     history = CASE_HISTORY.get(name.split(" ")[0], HISTORY)
@@ -581,6 +796,67 @@ for name, held, chain, expect, _ in chain_cases:
 # T24's list is refused only by the history it runs under, and the genuine v1 passes under it.
 assert check_chain(None, [bad["T24"]], HISTORY, RECORDS)[0] == "accepted"
 assert check_chain(None, [L1], HISTORY_ROTATED, RECORDS)[0] == "accepted"
+# v5.4:  every list this script prints passes P3, so the helper never refuses one of them as bad_input.
+for _entry in [L1, L2, L3, L4, L4b] + list(bad.values()):
+    assert p3_failure(_entry) is None, p3_failure(_entry)
+
+
+# v5.4:  the strictness §16's harness cases build, each re-signed so that only its one fault remains.
+def _compressed(key):
+    point = key.public_key().public_bytes(
+        serialization.Encoding.X962, serialization.PublicFormat.CompressedPoint
+    )
+    return b64u(bytes.fromhex("3039301306072a8648ce3d020106082a8648ce3d030107032200") + point)
+
+
+def _hybrid(key):
+    der = spki(key)
+    return b64u(der[:26] + bytes([0x06 | (der[-1] & 1)]) + der[27:])
+
+
+for _label, _lst in [
+    (
+        "compressed owner key",
+        make_list(1, None, "2026-11-07T20:00:00Z", [DA], owner_key=_compressed(owner)),
+    ),
+    (
+        "hybrid owner key",
+        make_list(1, None, "2026-11-07T20:00:00Z", [DA], owner_key=_hybrid(owner)),
+    ),
+    (
+        "compressed service key",
+        make_list(
+            1,
+            None,
+            "2026-11-07T20:00:00Z",
+            [DA],
+            services=dict(SERVICES, serverExecutor=_compressed(helper)),
+        ),
+    ),
+    (
+        "owner key with a stray bit",
+        make_list(1, None, "2026-11-07T20:00:00Z", [DA], owner_key=stray_bit(OWNER)),
+    ),
+    (
+        "owner key with padding",
+        make_list(1, None, "2026-11-07T20:00:00Z", [DA], owner_key=OWNER + "=="),
+    ),
+    ("leap second", make_list(1, None, "2026-11-07T23:59:60Z", [DA])),
+    ("February 30", make_list(1, None, "2026-02-30T20:00:00Z", [DA])),
+    ("year 0000", make_list(1, None, "0000-11-07T20:00:00Z", [DA])),
+    (
+        "another contract",
+        make_list(1, None, "2026-11-07T20:00:00Z", [DA], contract="muster-trust-list/2"),
+    ),
+]:
+    assert check_chain(None, [_lst], HISTORY, RECORDS)[0] == "bad_input", _label
+    # The same fault in the second entry of a chain still refuses the whole request at P3.
+    assert check_chain(None, [L1, dict(_lst)], HISTORY, RECORDS)[0] == "bad_input", _label
+# v5.4, check 7 says "exactly when":  an open first list with no device is closed_rule.
+assert (
+    check_chain(None, [make_list(1, None, "2026-11-07T20:00:00Z", [])], HISTORY, RECORDS)[0]
+    == "closed_rule"
+)
 # Version 5 as frozen (Milestones 1 to 4):  a rule C entry is refused reopen_unavailable.
 frozen_cases = [
     (
@@ -1277,6 +1553,8 @@ for key in [
     "T21",
     "T24",
     "T25",
+    "T26",
+    "T27",
 ]:
     w(f"**{key} list**, entry SHA-256 `{entry_hash(bad[key])}`:")
     w("")
@@ -1306,7 +1584,8 @@ for name, held, chain, expect, why in chain_cases:
     w(f"| {name} | {hv} | {cv} | {out} | {fin} | {why} |")
 w("")
 w(
-    "T9 was retired, and a vector's number is never reused, so the table has no T9.  T24 and T25 were added in version 5.3;  neither is a rule C row."
+    "T9 was retired, and a vector's number is never reused, so the table has no T9.  T24 and T25 were added in version 5.3, and T26 and T27 in version 5.4;  none of them is a rule C row.  "
+    "T26 and T27 carry the same DER signature bytes a lenient base64url decoder would read, so a verifier that does not hold base64url to its canonical form (§5, v5.4) accepts them, and the helper refuses them."
 )
 w("")
 w("### Frozen Version 5 Vector")
@@ -1401,7 +1680,22 @@ w(
     "a list stored after C2 where none was held, and a list removed after C2 (`trust_list_changed` at C4 each);  "
     "a fault at C5 before the rename (`internal_error`, nothing stored, and the temporary file gone);  "
     "a fault at C5 after the rename (`internal_error`, the list held, and the same chain sent again is `version_gap`);  "
-    "and a failed audit append at C5 after the rename (the signed `ack` is answered and the list is held)."
+    "a failed audit append at C5 after the rename (the signed `ack` is answered and the list is held);  "
+    "from version 5.4, each at P3 and `bad_input`, never a §8 reason, and not counted, with the list re-signed so that only its one fault remains (`make_vectors_v5.py` asserts each):  "
+    "an `ownerKey`, a device key or a `services` key that is a compressed point (a 33-byte point in a 59-byte SubjectPublicKeyInfo) or a hybrid point (the 91-byte form with `06` or `07` where `04` belongs);  "
+    "a key whose last base64url character has a stray trailing bit set, or that ends in `=` padding;  "
+    "an `issuedAt` of `2026-11-07T23:59:60Z`, `2026-02-30T20:00:00Z` or `0000-11-07T20:00:00Z`;  "
+    "a body whose `contract` is `muster-trust-list/2`;  "
+    "and any of these in the second entry of a chain whose first entry is valid (the whole request is `bad_input`);  "
+    "also from version 5.4:  an approval whose `signature` has a stray trailing bit set (`bad_signature` at Y5);  "
+    "a first list with `closed` false and `devices` empty (`chain_refused`, reason `closed_rule`:  check 7 holds `closed` true exactly when there is no device);  "
+    "a reader that opens `muster-trust.json` just before a chain's rename and `fstat`s it just after (link count 0:  accepted, and it reads the old list);  "
+    "a second hard link to `muster-trust.json` (`state_unsafe`);  "
+    "a FIFO in place of `muster-trust.json`, the ledger or the rate file (the open does not hang, and the answer is `state_unsafe`);  "
+    "`pin_unsafe` for a chain, `bad_command` for `muster trust-list chain --yes` with a fifth word, and `mode_not_allowed` for `muster trust-list chain --plan` (each with `claimed` `{}` and no `chain`), against `bad_input` and `rate_limited` for a chain (`chain` `null` and no `claimed`);  "
+    "the T24 list held under the rotated history (`state_unsafe` at C2 with `helperTrustListVersion` `null`);  "
+    "a signing fault at C5 after the rename that repeats when the refusal is signed (the unsigned `helper_key_missing`, and the list held) and one that does not (the signed `internal_error`, and the list held);  "
+    "and a failed directory `fsync` at C5 (`internal_error`, the list held, and no audit row)."
 )
 
 with open(SPEC, encoding="utf-8") as f:
