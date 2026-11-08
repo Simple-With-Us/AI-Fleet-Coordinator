@@ -125,6 +125,29 @@ class WfForwarding(unittest.TestCase):
         self.assertTrue(reply["result"]["isError"])
         self.assertIn("outcome_unknown", reply["result"]["content"][0]["text"])
 
+    def test_a_wf_read_timeout_is_unavailable_not_an_unknown_write(self):
+        # Seer finding on PR #1515: the timeout branch ignored read/write entirely.
+        def opener(req, timeout=None):
+            raise TimeoutError("timed out")
+
+        reply = self._call(self._server(opener), "wf_pr_list_page", {"repo": "o/r"})
+        self.assertTrue(reply["result"]["isError"])
+        text = reply["result"]["content"][0]["text"]
+        self.assertIn("unavailable", text)
+        self.assertNotIn("outcome_unknown", text)
+
+    def test_a_wf_write_timeout_keeps_the_unknown_outcome_guard(self):
+        def opener(req, timeout=None):
+            raise TimeoutError("timed out")
+
+        reply = self._call(
+            self._server(opener),
+            "wf_pr_close",
+            {"repo": "o/r", "number": 3, "expected_head_sha": "a" * 40},
+        )
+        self.assertTrue(reply["result"]["isError"])
+        self.assertIn("outcome_unknown", reply["result"]["content"][0]["text"])
+
     def test_an_unlisted_wf_name_is_an_unknown_tool(self):
         reply = self._call(self._server(None), "wf_files_put", {"repo": "o/r"})
         self.assertEqual(reply["error"]["code"], -32602)

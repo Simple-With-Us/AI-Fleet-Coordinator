@@ -334,15 +334,25 @@ class RelayMcp:
                 "Content-Type": "application/json",
             },
         )
+        # A wf read verb writes nothing whatever happens to its answer, so none of its
+        # failures is an unknown write outcome (Seer finding on PR #1515):  reads get the
+        # retryable "unavailable" guidance in every branch below, writes keep the guard.
+        is_read = name in WF_ACTIONS and name not in WF_WRITES
         try:
             with self._opener(req, timeout=TIMEOUT_SECONDS) as resp:
                 raw = resp.read(MAX_LINE + 1)
             if len(raw) > MAX_LINE:
+                if is_read:
+                    return _tool_failure(message, "unavailable", retryable=True)
                 return _tool_failure(message, "outcome_unknown")
             payload = json.loads(raw)
             if not isinstance(payload, dict):
+                if is_read:
+                    return _tool_failure(message, "unavailable", retryable=True)
                 return _tool_failure(message, "outcome_unknown")
             if payload.get("outcome") in ("unknown", "pending"):
+                if is_read:
+                    return _tool_failure(message, "unavailable", retryable=True)
                 return _tool_failure(message, "outcome_unknown")
         except urllib.error.HTTPError as exc:
             # The original seven tools all write, and so do the wf write
@@ -354,7 +364,7 @@ class RelayMcp:
                 error = json.loads(raw) if len(raw) <= MAX_LINE else None
             except (OSError, ValueError):
                 error = None
-            if name in WF_ACTIONS and name not in WF_WRITES:
+            if is_read:
                 if isinstance(error, dict):
                     return _tool_failure(message, "relay_refused", exc.code)
                 return _tool_failure(message, "unavailable", exc.code)
@@ -376,6 +386,8 @@ class RelayMcp:
                 return _tool_failure(message, "outcome_unknown", exc.code)
             return _tool_failure(message, "relay_refused", exc.code)
         except (OSError, ValueError):
+            if is_read:
+                return _tool_failure(message, "unavailable", retryable=True)
             return _tool_failure(message, "outcome_unknown")
         return _result(message, {"content": [{"type": "text", "text": json.dumps(payload)}]})
 

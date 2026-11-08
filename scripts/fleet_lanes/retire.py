@@ -81,8 +81,8 @@ from . import layout as L
 
 __all__ = [
     "EMPTY_LANE_HOURS",
-    "GH_BULK_LIMIT",
     "RECENT_MINUTES",
+    "RELAY_BULK_LIMIT",
     "Facts",
     "PrView",
     "Runner",
