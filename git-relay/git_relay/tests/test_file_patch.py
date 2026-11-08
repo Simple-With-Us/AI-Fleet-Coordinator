@@ -162,7 +162,9 @@ class ExecutablePatchTests(PatchTests):
         args, old = self.setup_case()
         old[0]["node_id"] = "R_repository"
         old[5]["tree"][0]["mode"] = "100755"
-        raw = base64.b64decode(old[3]["content"]).replace(b"other = old", b"other = new")
+        raw = base64.b64decode(old[3]["content"]).replace(
+            b"other = old", b"other = new"
+        )
         tree_sha, new = "d" * 40, "e" * 40
         tail = [
             {"sha": blob(raw)},
@@ -235,7 +237,6 @@ class ExecutablePatchTests(PatchTests):
             with self.subTest(at=at), self.assertRaises(WriteOutcomeUnknown):
                 Multi(c).run("wf_file_patch", args)
 
-
     def test_non_string_and_invalid_published_content_is_unknown(self):
         for value in [None, [], {}, 12, "%%%"]:
             args, replies = self.executable_case()
@@ -247,15 +248,18 @@ class ExecutablePatchTests(PatchTests):
 
     def test_post_write_upstream_rejections_are_unknown(self):
         from git_relay.github_client import RelayGitHubError
+
         for at in [6, 7, 8, 9, 10, 11, 12, 13]:
             args, replies = self.executable_case()
             replies[at] = RelayGitHubError(403, "refused")
+
             class RaisingClient(Client):
                 def _call(self, *args, **kwargs):
                     reply = super()._call(*args, **kwargs)
                     if isinstance(reply, Exception):
                         raise reply
                     return reply
+
             c = RaisingClient(*replies)
             with self.subTest(at=at), self.assertRaises(WriteOutcomeUnknown):
                 Multi(c).run("wf_file_patch", args)

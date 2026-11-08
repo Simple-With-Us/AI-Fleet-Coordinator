@@ -6148,7 +6148,8 @@ class WorkflowVerbs:
         # A durable object may exist after the first POST; never release for replay.
         try:
             blob = post(
-                "blobs", {"content": base64.b64encode(raw).decode(), "encoding": "base64"}
+                "blobs",
+                {"content": base64.b64encode(raw).decode(), "encoding": "base64"},
             )
             if blob.get("sha") != expected_blob:
                 raise Refused("patch blob receipt unverifiable; branch unchanged")
@@ -6186,7 +6187,9 @@ class WorkflowVerbs:
                 raise Refused("patch commit receipt unverifiable; branch unchanged")
             # Verify immutable content before publishing the ref, not just its metadata.
             published = _obj(
-                self._get(f"/repos/{repo}/contents/{quote(path, safe='/')}?ref={new_head}")
+                self._get(
+                    f"/repos/{repo}/contents/{quote(path, safe='/')}?ref={new_head}"
+                )
             )
             encoded = published.get("content")
             if not isinstance(encoded, str):
@@ -6223,12 +6226,16 @@ class WorkflowVerbs:
             receipt = self._fixed_graph(query, variables, "updateRefs")
             if receipt.get("clientMutationId") != new_head:
                 raise WriteOutcomeUnknown("patch ref update receipt unverifiable")
-            ref = _obj(self._get(f"/repos/{repo}/git/ref/heads/{quote(branch, safe='/')}"))
+            ref = _obj(
+                self._get(f"/repos/{repo}/git/ref/heads/{quote(branch, safe='/')}")
+            )
             if _sub(ref, "object").get("sha") != new_head:
                 raise WriteOutcomeUnknown("patch ref receipt unverifiable")
             return {"branch": branch, "path": path, "commit": new_head}
         except (RelayGitHubError, ValueError, TypeError, KeyError, AttributeError):
-            raise WriteOutcomeUnknown("patch object/ref outcome unverifiable; never replay") from None
+            raise WriteOutcomeUnknown(
+                "patch object/ref outcome unverifiable; never replay"
+            ) from None
 
     def wf_file_patch(self, repo, args):
         """Pinned same-path patch. Existing generic matches remain a residual risk."""
