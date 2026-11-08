@@ -45,7 +45,8 @@ class CheckConfig(ListenerHarness):
         self.assertIn("seat MA is configured here", " ".join(answer["refused"]))
 
     def test_a_section_for_an_unlisted_seat_is_refused(self) -> None:
-        code, answer = self.check(self.current + '\n[seat.KIMI]\nwake = "inbox"\n')
+        # BF-PRODUCER is deliberately never on the partition (see its note there).
+        code, answer = self.check(self.current + '\n[seat.BF-PRODUCER]\nwake = "inbox"\n')
         self.assertEqual(code, 1)
         self.assertIn("does not list it", " ".join(answer["refused"]))
 

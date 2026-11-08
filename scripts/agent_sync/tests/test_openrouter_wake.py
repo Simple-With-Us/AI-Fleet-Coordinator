@@ -453,6 +453,8 @@ class ConfigCase(unittest.TestCase):
             "deepseek/deepseek-v4-flash",
             "Qwen/Qwen3-8B",
             "~anthropic/claude-sonnet-latest",
+            "@preset/operator-inbox-router",
+            "@preset/a",
         ):
             self.assertEqual(self.seat(wake="openrouter", model=good).errors, [], good)
             self.assertEqual(self.seat(wake="muse", fallback="openrouter", fallback_model=good).errors, [], good)
@@ -470,6 +472,12 @@ class ConfigCase(unittest.TestCase):
             "meta/x\n",
             "meta/" + "x" * 90,
             "$(id)/x",
+            "@preset/",
+            "@preset/ x",
+            "@preset/$(id)",
+            "@preset/" + "x" * 90,
+            " @preset/x",
+            "preset@preset/x",
             5,
         ):
             wake = self.seat(wake="openrouter", model=bad)

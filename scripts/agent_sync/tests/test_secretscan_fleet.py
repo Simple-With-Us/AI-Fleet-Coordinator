@@ -36,7 +36,7 @@ def b64(n: int) -> str:
 
 def samples() -> list[tuple[str, str]]:
     """(expected kind, a text carrying one token of that kind)."""
-    return [
+    return [("bearer token" if text.startswith("Authorization:") else "assigned secret", text) for text in assignment_literals()] + [
         ("Linear API key", "key: " + "lin_" + "api_" + alnum(40)),
         ("Linear API key", "lin_" + "oauth_" + alnum(40)),
         ("Linear API key", "webhook " + "lin_" + "wh_" + alnum(36)),
@@ -58,6 +58,53 @@ def samples() -> list[tuple[str, str]]:
         ("assigned credential", "FLEET_FACTS_" + "TOKEN=" + alnum(24)),
         ("assigned credential", "SOME_SERVICE_PASS" + "WORD='" + alnum(20) + "'"),
     ]
+
+
+class SourceAssignmentTests(unittest.TestCase):
+    def test_only_complete_unquoted_expressions_pass(self):
+        for text in source_expressions():
+            self.assertIsNone(scan(text), text)
+
+    def test_word_shaped_literals_and_near_expressions_are_still_refused(self):
+        for text in assignment_literals():
+            self.assertIsNotNone(scan(text), text)
+
+    def test_loaded_credential_always_wins(self):
+        text = source_expressions()[0]
+        self.assertEqual(scan(text, ["process.env.COMPOSIO_API_KEY"]), "a loaded credential")
+
+
+def source_expressions():
+    # A parameterized assignment matrix, just like the pre-existing token samples.
+    # Explicit source samples and literal reject cases; this is not a literal allowlist.
+    rows = [
+        ("cfg.composio.apiKey", "process.env.COMPOSIO_API_KEY"),
+        ("if (process.env.BOX_TOKEN !== undefined) cfg.box.token", "process.env.BOX_TOKEN"),
+        ("cfg.secret", "import.meta.env.PROVIDER_SECRET"),
+    ]
+    return [f"{lhs} = {rhs};" for lhs, rhs in rows]
+
+
+def assignment_literals():
+    values = ["fake-primary-read", "st.main-not-real", "SENTINEL_CLIENT_SECRET", "stsProviderCredential", "process.env.COMPOSIO_API_KEY"]
+    rows = [("password", repr(value)) for value in values]
+    rows += [("password", value) for value in values[:4]]
+    rows += [
+        ("apiKey", "process.env.COMPOSIO_API_KEY_extraLiteral"),
+        ("apiKey", "process.env.COMPOSIO_API_KEY + 'literal'"),
+        ("const token", chr(34) + "stsProviderCredential(provider)" + chr(34)),
+        ("apiKey", "stsProviderCredential(provider) + 'literal'"),
+        ("x", repr("token" + " = " + "process.env.COMPOSIO_API_KEY") + ";"),
+    ]
+    # Calls do not prove a nonliteral value: a credential can carry a call suffix.
+    rows += [
+        ("token", alnum(24).lower() + "(a)"),
+        ("const apiKey", "stsProviderCredential(provider)"),
+        ("token", "auth." + alnum(24).lower() + "(a)"),
+    ]
+    out = [f"{lhs} = {rhs}" for lhs, rhs in rows]
+    out += ["Authorization: " + "Bearer " + values[-1], "token" + ": " + values[-1]]
+    return out
 
 
 class EveryKindIsFlaggedTests(unittest.TestCase):
@@ -102,7 +149,7 @@ class EveryKindIsFlaggedTests(unittest.TestCase):
 def clean_texts() -> list[str]:
     """Text that only looks a little like a token and must not be flagged (the Worker's scanner is run over
     these too:  scripts/agent-sync-mcp/test/secretscan-parity.test.mjs)."""
-    return [
+    return source_expressions() + [
         "git sha " + hexs(40), "uuid 9f1c2b3a-4d5e-6f70-8192-a3b4c5d6e7f8", "lin_api_ is the prefix of a Linear key",
         "lin_api_short", "xai-grok-bot-routines", "xai-" + "ab", "sntrys_ tokens start like that", "sntrys_abc",
         "Saint st.louis and ghost.example.com", "st.a.b.c", "| a | b |\n|---|---|\n| 3 | 4 |", "3 | 4", "12|short",

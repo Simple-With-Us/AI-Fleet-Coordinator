@@ -20,7 +20,7 @@ Hostnames other than the public entry point below, Access policies, secret names
 
 Limits are per invocation, and Cloudflare documents some per-isolate flexibility, so `cpu_ms` is a strong guard and not an exact one.  Subrequests count `fetch()` and calls to Cloudflare services such as KV, D1 and R2.  Without a limit a Paid Worker gets 10,000 subrequests and 30 seconds of CPU per invocation.
 
-A limit in a config takes effect only when that config is deployed.  Merging it changes nothing live.  The live limits came from direct API uploads made on purpose to apply these caps, at about 7:42 PM on Nov 4, 2026, with `alert-ingress` raised to 200 ms and 50 subrequests at about 9:03 PM and `usage-monitor-receipt-inbox` raised to 500 ms at about 9:55 PM.  The current `alert-ingress` and `pr-conflict-watch` versions from those uploads have no `workers/tag`.  A deploy or API upload replaces the live values with what it declares, and an upload without declared limits removes the live limits: a `simple-tools-mcp` upload at about 8:25 PM the same evening carried none, which dropped its 300 ms and 200 subrequests until they were applied again at about 9:49 PM.  So deploy only from a tree that has these limits, and read the live settings back afterwards.
+A limit in a config takes effect only when that config is deployed.  Merging it changes nothing live.  The live limits came from direct API uploads made on purpose to apply these caps, at about 7:42 PM on Nov 4, 2026, with `alert-ingress` raised to 200 ms and 50 subrequests at about 9:03 PM and `usage-monitor-receipt-inbox` raised to 500 ms at about 9:55 PM.  The current `alert-ingress` version from those uploads has no `workers/tag`.  A deploy or API upload replaces the live values with what it declares, and an upload without declared limits removes the live limits: a `simple-tools-mcp` upload at about 8:25 PM the same evening carried none, which dropped its 300 ms and 200 subrequests until they were applied again at about 9:49 PM.  So deploy only from a tree that has these limits, and read the live settings back afterwards.
 
 ## The CI Check
 
@@ -37,7 +37,7 @@ A registry row fails when its status is not `auto`, `gated`, `frozen` or `retire
 
 This check covers this repository.  Usage-Monitor's rows record its intended values, and nothing enforces them yet.
 
-A row's `workers_dev` is the state that should be live, so the watchdog's daily comparison can report a Worker that has it on while its row says off.  It is on only for `alert-ingress` and `pr-conflict-watch`, which are served from it.
+A row's `workers_dev` is the state that should be live, so the watchdog's daily comparison can report a Worker that has it on while its row says off.  It is on only for `alert-ingress`, which is served from it.
 
 ### Registry Status
 
@@ -54,7 +54,7 @@ A row's `workers_dev` is the state that should be live, so the watchdog's daily 
 
 `free_plan_allows_cpu_ms` is `false` because removing the limit loses nothing on Free, while keeping it may stop the deploy.  Cloudflare's configuration page says limits are supported only on the Standard usage model, and a review reported API error 100328 for a declared `cpu_ms` on Free.  Neither has been tested here, and checklist step 7 settles it.
 
-`python3 scripts/check-worker-guards.py --plan free` rehearses it without changing the file.  Today that flags `limits.cpu_ms` in all five tracked configs, and `scripts/agent-sync-mcp/wrangler.jsonc` at 200 subrequests.
+`python3 scripts/check-worker-guards.py --plan free` rehearses it without changing the file.  Today that flags `limits.cpu_ms` in all three tracked configs, and `scripts/agent-sync-mcp/wrangler.jsonc` at 200 subrequests.
 
 ## The Workers
 
@@ -82,17 +82,13 @@ Measured figures are from the audit of Nov 3-4, 2026.  CPU figures are a 14-day
 - **Deploy:** `alert-workers-deploy.yml` is the intended path.  Status `auto`.  It has been failing on a stale credential receipt, and any `wrangler.toml` change needs a manual reconcile by design.
 - **Limits:** 200 ms CPU, 50 subrequests, sampling 1.  Peak 36 ms CPU in the Durable Object.  A sweep spends one Zulip call per promoted incident, then one or more per touched topic, so about 17 to 25 incidents promoting in separate topics in one sweep can reach 50.  Past the limit `sendEventOnce` has already recorded `unknown` and never resends, yet the sweep still stores the incident as announced, so its log line is lost for good, and that topic's standing message stays stale until its next event.  That loss falls in a mass outage.  50 is the most the Free plan allows, so the real fix is in the code: stop promoting when the sweep's budget runs low, and leave the rest pending for the next sweep.
 
-### pr-conflict-watch
+### pr-conflict-watch (Retired)
 
-- **Purpose:** tells the owning seat in Zulip when a pull request goes into conflict.
-- **Request flow:** a GitHub webhook is verified, `pull_request`, `check_suite` and `check_run` events are read for pull request numbers, and up to four lookups run in `waitUntil`: a GitHub read, a KV read, and a Zulip post and KV write on a transition.
-- **Storage:** one KV namespace with 14-day TTLs.
-- **Triggers:** fetch only, on workers.dev.
-- **Consumers:** Zulip topics in the alerts channel.  It never writes to GitHub.
-- **Source:** `workers/pr-conflict-watch/zulip-cutover` is live.  The parent directory is a never-deployed variant, and `scripts/worker-targets.json` still names it.
-- **Deploy:** status `gated`.  `alert-workers-deploy.yml` skips it until a verified-delivery receipt exists, so the last deploy was by hand.
-- **State:** every GitHub call has returned 401 since Oct 21, so it has posted no alert since then, yet it still takes about 11,600 requests a day.  Retiring it or repairing it is an open owner decision.
-- **Limits:** 50 ms CPU, 20 subrequests, sampling 0.1, with observability on.  CPU p99 about 10 ms.  One pull request costs at most 6 subrequests, so a delivery naming more than 3 slow pull requests can run out.  Each failure is caught and logged per pull request, and the next delivery looks again.
+- **Retired:** on 2026-11-06, at the owner's request.  Every GitHub call it made had returned 401 since Oct 21, so it had posted no conflict alert since then, and its KV namespace had no operations after Oct 22.  It still took 2,000 to 18,000 GitHub webhook requests a day from the account's shared 100,000.
+- **What it did:** told the owning seat in Zulip when a pull request went into conflict.  GitHub repository webhooks for `pull_request`, `check_suite` and `check_run` posted to its workers.dev hostname, and it kept per-pull-request state in one KV namespace with 14-day TTLs.
+- **Source:** removed from this repository on 2026-11-06.  No pipeline names it, and its `scripts/worker-registry.json` row was deleted with the live Worker.  Nothing redeploys it:  its source is gone, and `test_retired_pr_conflict_watch_is_gone` and the "not a target" tests fail if a row or target comes back.
+- **Deleted on 2026-11-06:**  the live Worker (with its Worker secrets) and its KV namespace `pr-conflict-watch-state`, and its registry row.  **Left to do outside this repository:**  remove the GitHub repository webhooks that still point at its workers.dev URL (they now fail, and no longer reach the account), revoke its old GitHub token if it was a personal or App token, and delete any Infisical folder `/pr-conflict-watch` and token `pr-conflict-watch-read` if they were ever made.  BotFleet still assumes the Worker alerts pull-request authors:  the Deployer bot's prompt (`bots.json` and `webhooks.json` in the BotFleet server's data folder) says conflict alerts come from it, and the 10:00 and 21:00 stale-PR sweep routine (`routines.json`) says it already alerted the author.  The owner or the BotFleet seat changes those through BotFleet's own admin path, not by hand-editing the runtime files, so that the sweep or the Deployer alerts the author itself, or the owner accepts that conflicts go unannounced.
+- **Limits:** the registry's 50 ms CPU and 20 subrequests stay on the live Worker until it is deleted.
 
 ### expenses-jays-services
 
@@ -163,13 +159,13 @@ The day resets at 6 PM Chicago (7 PM during daylight saving).  One buggy day on
 | Worker | Peak | Allocation | How |
 | --- | --- | --- | --- |
 | simple-tools-mcp | 98,272 | 80,000 | Local handshakes in the adapter, fewer calls per tool use |
-| pr-conflict-watch | 18,313 | 3,000 | Filter its webhook events.  0 if retired |
+| pr-conflict-watch | 18,313 | 0 | Retired and deleted on 2026-11-06 |
 | alert-ingress | 745 | 2,500 | Includes 288 cron runs, and leaves room for more alerts |
 | expenses-jays-services | 96 | 50 | Hourly cron |
 | usage-monitor-receipt-inbox | 50 | 150 | |
 | usage-monitor-receipt-lifecycle-auditor | 2 | 5 | |
 | CI and watchdog probes | | 100 | |
-| Reserve, never allocated | | 14,195 | Protects alerts |
+| Reserve, never allocated | | 17,195 | Protects alerts |
 
 80,000 is about 5 times the 14-day average of 15,487 requests a day for MCP, but only 0.81 of the Nov 3 peak.  10 times today's average cannot fit by trimming.  It needs at least half of MCP's HTTP traffic off the Worker.
 
@@ -182,8 +178,8 @@ The day resets at 6 PM Chicago (7 PM during daylight saving).  One buggy day on
 | Durable Object duration | 13,000 GB-s | about 3,300 (SeatGate, inferred) | Fine today.  10 times MCP would not be |
 | D1 rows written | 100,000 | 73,824 steady (expenses) | Under 20,000 after the sync fix, with an expected 100-200 |
 | D1 rows read | 5,000,000 | small | Fine |
-| KV reads | 100,000 | 12,630 (pr-conflict-watch, before its 401s) | Its token repair would bring this back |
-| KV writes | 1,000 | 490 (pr-conflict-watch, Oct 11) | Fine since its alert-on-dirty change |
+| KV reads | 100,000 | 12,630 (pr-conflict-watch, before its 401s) | 0 from it, retired on 2026-11-06 |
+| KV writes | 1,000 | 490 (pr-conflict-watch, Oct 11) | 0 from it, retired on 2026-11-06 |
 | KV lists | 1,000 | 921 (MCP OAuth) | MCP 400, alert-ingress 200, reserve 400 |
 | Crons | 5 | 3 | Fine |
 | CPU per invocation | 10 ms | MCP p99 79 ms, expenses 29 ms, inbox 41 ms | Rehearse.  30 days show no CPU kills, and enforcement may change |
@@ -204,7 +200,7 @@ In order.  Do not skip ahead.
 
 1. Deploy these limits at Paid values, with the watchdog and a deployer that will not undo a stop.
 2. Fix the deploy pipeline, and ship the merged SeatGate work after testing its audit flush under a client disconnect in workerd.
-3. Land the CPU, Durable Object, KV list, D1 and pr-conflict-watch fixes from the per-Worker work.
+3. Land the CPU, Durable Object, KV list and D1 fixes from the per-Worker work.
 4. Rehearse: deploy `cpu_ms` 10 and `subrequests` 50 to 10% of each Worker, then 100%, and fix every failure.
 5. Require 7 straight days with requests under 85,000, Durable Object requests under 85,000, KV lists under 700, D1 rows written under 50,000, and under 0.1% CPU exceeded.
 6. Decide R2: remove it, or accept it with the watchdog.

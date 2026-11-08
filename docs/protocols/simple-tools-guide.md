@@ -227,7 +227,7 @@ A seat reaches these tools with its own bearer token.  ST-MCP shares the same b
 
 PR-write authoring runs under the owner's scoped PR-only token on purpose: a pull request is authored as the owner, so the review bots read it the way they expect.  Everything else runs under the seat's own GitHub App token, which the relay mints and refreshes itself.  git-relay is the only path in the fleet that mints per-bot GitHub App tokens, so the GR-MCP tool surface never hands a seat an App id, a private key or a token with an expiry to manage.  What a minted token can do is the seat's own policy: the mint is capped at that seat's allowed repos and at its mint-permission ceiling (`contents`, `pull_requests`, `issues`, `actions` or `metadata`, each read or write as the policy says), so a seat pushes only where its own policy gives that ceiling `contents: write`.
 
-Per-seat policy is an allowlist layer over that credential: allowed actions, allowed repos, a mint-permission ceiling and an hourly call cap.  It can only narrow what the credential allows, never exceed it.  Every call, allowed or denied, is written to the audit log, and a non-idempotent write is gated by an outcome record, so a replay never lands twice.
+Per-seat policy is an allowlist layer over that credential: allowed actions, allowed repos, a mint-permission ceiling and an hourly call cap.  It can only narrow what the credential allows, never exceed it.  Every denial, failure and write is written to the audit log (a successful read is not), and a non-idempotent write is gated by an outcome record, so a replay never lands twice.
 
 **Status.** git-relay and GR-MCP are implemented, policy-checked and tested, but **not deployed**: no seat is pointed at it and no running service has been verified.  The owner has chosen the host and the rollout is staged; until the owner decides the cutover, the relay is not an available route: do not plan work that assumes it is live, and do not assume any other GitHub path or credential is available to a seat either.  What a seat may use today is whatever its own environment and owner have set up and verified.
 
@@ -354,7 +354,24 @@ Tool errors come back with `isError: true` and an object `{code, message, retrya
 | `forbidden` | The Operator does not let this host act for that seat (its `[notes_queue]` seat lists) |
 | `claim_held` | Linear: another seat holds the claim |
 | `zulip_error`, `unavailable`, `internal` | Upstream failure.  `unavailable` may be retryable (check `retryable`) |
+| `relay_refused` | The hosted `gr_*` tools: git-relay refused the call (definite, nothing written).  The answer carries a `reason` when the cause is known; see "Why a `gr_*` Call Was Refused" below.  No `reason` means the relay's verdict was not one it recognises: read `message` |
 | `relay` (HTTP status) | git-relay and GR-MCP do not use the codes above: a refusal arrives as a tool error carrying the relay's own HTTP status.  See the GitHub section |
+
+### Why a `gr_*` Call Was Refused
+
+A hosted `gr_*` refusal (`code: "relay_refused"`) names its cause in a `reason` field.  The reason comes from a closed list, mapped from the relay's own fixed refusal strings and its numeric GitHub status, so it is never the relay's or GitHub's prose.  A refusal the list does not cover keeps the plain answer with no `reason`.
+
+| `reason` | What it means and what to do |
+|---|---|
+| `seat_policy` | The relay's allowlist for this seat does not permit the action or repository (or the seat's App ceiling is too low).  Retrying will not help; the seat's relay policy has to change |
+| `seat_rate_limit` | The seat used its hourly call or write quota.  Wait, then retry |
+| `github_refused` | GitHub itself refused it. `github_status` is the numeric status: 403 is permission or a branch rule, 405 is a merge block, 422 is a rejected change.  Fix the cause on GitHub; the seat policy is not the problem |
+| `fence_mismatch` | The head, base, ref or state the call expected is no longer what the relay read just before the write.  Read the current state and send the call again with the fresh value |
+| `credential_scan` | The content looked like a credential.  The code is `refused_secret` instead; nothing was written |
+| `unauthenticated` | The relay did not accept the seat's credential |
+| `bad_request_<id>` | A fixed relay verdict on the request itself: `bad_request_pr_not_issue_target` (a pull request sent to an issue tool), `bad_request_default_branch_protected`, `bad_request_pr_not_open`, `bad_request_pr_merged`, `bad_request_workflow_path_permission`, `bad_request_review_not_pending`, `bad_request_nothing_to_change`, `bad_request_invalid_files`, `bad_request_invalid_arguments`, `bad_request_unsupported_action`, `bad_request_invalid_repository`, `bad_request_content_too_large` |
+
+A `seat_policy` or `bad_request_*` reason is a refusal by the relay itself, so no GitHub call was made.  Only `github_refused` means GitHub was asked and said no.
 
 Exit codes of the `simple-chat` CLI: 0 ok, 2 usage, 3 credentials, realm or identity refused, 4 wait timeout, 5 Zulip API error, 6 network error, 7 `verify-owner-msg` did not verify.  `simple-board` exits 1 error, 2 usage, 3 claim held, 4 no credentials, 5 rate limit, and 6 when no seat is verified or an authentication check failed.  Exit 7 is retired: it was the writes-off switch, and the bearer-verified seat is the only write gate now.
 

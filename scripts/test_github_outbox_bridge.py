@@ -531,6 +531,54 @@ class RuleTests(unittest.TestCase):
             "repo: <project> must be the first body line",
         )
 
+    def test_compact_intro_shapes_and_folder_list_rules(self):
+        """Canonical compact intros are accepted.  Empty or FLEET-only 📁 is not, even with repo:."""
+        accepted = (
+            ("[JET 📁AFC]\nclaim: ship", "JET"),
+            ("[JET 📁ST,CTS]\nclaim: both", "JET"),
+            ("[MM: HH.1.M 📁AFC,OPS]\nclaim: multi", "MM"),
+            ("[GB-PLUMBER 📁AFC →CODEX]\nclaim: ask", "GB-PLUMBER"),
+            ("👀 [GB-DIRECTOR 📁AFC]\nclaim: quiet", "GB-DIRECTOR"),
+            ("👀[BF-PLUMBER 📁OPS]\ncloseout: done", "BF-PLUMBER"),
+            ("[JET 📁OPS]\nclaim: fleet-ops", "JET"),
+            ("[JET 📁FLEET,AFC]\nclaim: real code wins", "JET"),
+            ("[INSTINCT->CLAUDE] x\nrepo: fleet-infra", SEAT),
+            ("[INSTINCT] hello\nrepo: AFC", SEAT),
+        )
+        for body, seat in accepted:
+            with self.subTest(body=body, seat=seat):
+                self.assertIsNone(bridge.header_error(body, seat))
+        rejected = (
+            "[JET 📁]\nrepo: AFC\nclaim: salvage",
+            "[JET 📁,]\nrepo: AFC",
+            "[JET 📁 →CODEX]\nrepo: AFC",
+            "[JET 📁 ]\nrepo: AFC\nclaim: spaces",
+            "[JET 📁FLEET]\nrepo: AFC\nclaim: not a folder code",
+            "[JET 📁FLEET,]\nclaim: bad",
+            "[MM: HH.1.M 📁]\nrepo: AFC\nclaim: empty multi",
+        )
+        for body in rejected:
+            with self.subTest(body=body):
+                seat = "MM" if body.startswith("[MM") else "JET"
+                self.assertEqual(
+                    bridge.header_error(body, seat),
+                    "repo: <project> must be the first body line",
+                )
+        # Status still needs repo: when the folder list is real.
+        self.assertEqual(
+            bridge.header_error("[JET 📁AFC,OPS] sync-1\nstate: WIP", "JET"),
+            "repo: <project> must be the first body line",
+        )
+        self.assertTrue(bridge.is_own_post("👀 [GB-DIRECTOR 📁AFC]\nclaim: x", "GB-DIRECTOR"))
+        self.assertTrue(bridge.is_own_post("[MM: HH.1.M 📁AFC,OPS]\nclaim: x", "MM"))
+        self.assertTrue(bridge.skim_match("[JET 📁AFC]", "JET"))
+        self.assertTrue(bridge.skim_match("[MM: HH.1.M 📁AFC,OPS]", "MM"))
+        self.assertTrue(bridge.skim_match("[GB-PLUMBER 📁AFC →CODEX]", "CODEX"))
+        self.assertTrue(bridge.skim_match("👀 [GB-DIRECTOR 📁AFC]", "GB-DIRECTOR"))
+        self.assertFalse(bridge.skim_match("[JET 📁AFC →CODEX]", "CURSOR"))
+        self.assertTrue(bridge.skim_match("[JET 📁OPS →CODEX]", "CODEX"))
+        self.assertFalse(bridge.is_own_post("[JET 📁AFC]\nclaim: x", "MM"))
+
     def test_malformed_folder_not_salvaged_by_body_repo(self):
         """Jet remaining #1: body repo: must not salvage empty/malformed 📁 lists."""
         for bad in (

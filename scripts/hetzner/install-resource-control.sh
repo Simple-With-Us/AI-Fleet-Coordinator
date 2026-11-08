@@ -91,6 +91,7 @@ def install(source_directory):
             'fleet-ops-control.json',
             'fleet_resource_control.py',
             'fleet_seat_inventory.py',
+            'reduced_status.py',
         ):
             payload[name] = read_source(source, name)
         config = json.loads(payload['fleet-ops-control.json'])

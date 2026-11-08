@@ -588,17 +588,17 @@ test("paused seats get paused from recall too", async () => {
   assert.equal(upstream.requests.length, 0);
 });
 
-test("audit:  one row per call, no query text, contribute keeps only its length and idem ref", async () => {
+test("audit:  a row per write and per error (a successful read writes none), no query text, contribute keeps only its length and idem ref", async () => {
   const { tools, gate, logs } = harness();
   await tools.call("recall_search", { query: "very private question" });
   await tools.call("recall_contribute", { text: LESSON, category: "lesson" });
   await tools.call("recall_search", { query: "y", limit: 99 });
   const rows = (await gate.callTail(10)).reverse();
-  assert.deepEqual(rows.map((r) => [r.tool, r.outcome]), [["recall_search", "ok"], ["recall_contribute", "ok"], ["recall_search", "error"]]);
-  assert.equal(rows[2].error_code, "invalid_argument");
-  assert.equal(rows[1].body_len, [...LESSON].length);
-  assert.match(rows[1].idem_ref, /^[0-9a-f]{12}$/);
-  assert.equal(rows[1].seat, "GROK-WEB");
+  assert.deepEqual(rows.map((r) => [r.tool, r.outcome]), [["recall_contribute", "ok"], ["recall_search", "error"]]);
+  assert.equal(rows[1].error_code, "invalid_argument");
+  assert.equal(rows[0].body_len, [...LESSON].length);
+  assert.match(rows[0].idem_ref, /^[0-9a-f]{12}$/);
+  assert.equal(rows[0].seat, "GROK-WEB");
   const everything = JSON.stringify(rows) + logs.join("\n");
   assert.ok(!everything.includes("very private question"));
   assert.ok(!everything.includes("Grok on the web caches"));

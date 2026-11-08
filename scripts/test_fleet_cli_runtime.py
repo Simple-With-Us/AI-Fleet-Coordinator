@@ -272,7 +272,7 @@ class ActualRuntime(unittest.TestCase):
         sender = importlib.util.module_from_spec(sender_spec)
         sender_spec.loader.exec_module(sender)
         self.assertEqual(sender.MAX_FILES, self.receiver.MAX_FILES)
-        self.assertEqual(self.receiver.MAX_FILES, 153)
+        self.assertEqual(self.receiver.MAX_FILES, 155)
         self.assertIn("scripts/fleet_rag/recall_presentation.py", self.bundle["files"])
         self.assertIn("scripts/agent_sync/mcp/bearer_gate.py", self.bundle["files"])
         self.assertIn("scripts/agent_sync/listener_registry.py", self.bundle["files"])
@@ -282,14 +282,15 @@ class ActualRuntime(unittest.TestCase):
             self.assertIn(path, self.bundle["files"])
             self.assertIn(path, self.receiver.TOOL_REQUIRED)
             self.assertNotIn(path, self.receiver.BASE_REQUIRED)
-        # simple-git is NOT a helper command:  each CLI user supplies their own bearer and the server
-        # decides identity and permissions from it.  Its installed wrapper never reads or runs the
-        # host seat helper;  the other remote commands keep their wiring.
-        self.assertNotIn("scripts/simple-git", self.receiver.HELPER_COMMANDS)
+        # simple-git is a helper command:  a seat that declares itself gets its OWN bearer from the host
+        # helper, and an undeclared caller supplies its own.  The implementation file is never wired.
+        # This fixture home has no helper, so the installed wrapper is the plain one with no credential path.
+        self.assertEqual(self.receiver.HELPER_COMMANDS.get("scripts/simple-git"), "simple-git")
         self.assertNotIn("scripts/git-tools/git", self.receiver.HELPER_COMMANDS)
         installed = (self.home / ".local/bin/simple-git").read_text()
+        self.assertFalse((self.home / ".config/fleet-cli/seat-remote-defaults.py").exists())
         self.assertNotIn("runpy", installed)
-        self.assertNotIn("seat-remote-defaults", installed)
+        self.assertNotIn(".secrets", installed)
 
         status = self.receiver.control(self.home, "status")
         self.assertEqual(status["status"], "ready")

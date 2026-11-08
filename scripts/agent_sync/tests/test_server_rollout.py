@@ -143,7 +143,7 @@ class InfisicalEnvTests(unittest.TestCase):
             "ZULIP_ALERT_GB_FIXER_KEY": "crsr_" + secrets.token_hex(16),
             "ZULIP_ALERT_GB_FIXER_HEADER": "Authorization: Bearer crsr_never",
             "ZULIP_JET_EMAIL": "openai-dot-bot@zulip.test",
-            "ZULIP_BF_COMPILER_API_KEY": "bf-" + secrets.token_hex(8),     # a BotFleet bot:  not a server seat
+            "ZULIP_BF_BUILDER_API_KEY": "bf-" + secrets.token_hex(8),      # the retired BotFleet seat:  not a server seat
             "ZULIP_CLAUDE_API_KEY": "mac-" + secrets.token_hex(8),         # a Mac seat
             "ZULIP_SITE": "https://evil.test",                             # never from Infisical
             "PATH": "/nowhere",
@@ -164,7 +164,7 @@ class InfisicalEnvTests(unittest.TestCase):
         for name in ("ZULIP_GB_FIXER_EMAIL", "ZULIP_GB_FIXER_API_KEY", "ZULIP_ALERT_GB_FIXER_ENDPOINT",
                      "ZULIP_ALERT_GB_FIXER_KEY", "ZULIP_JET_EMAIL"):
             self.assertEqual(out[name], self.values[name], "%s comes from Infisical, which wins" % name)
-        for name in ("ZULIP_ALERT_GB_FIXER_HEADER", "ZULIP_BF_COMPILER_API_KEY", "ZULIP_CLAUDE_API_KEY"):
+        for name in ("ZULIP_ALERT_GB_FIXER_HEADER", "ZULIP_BF_BUILDER_API_KEY", "ZULIP_CLAUDE_API_KEY"):
             self.assertNotIn(name, out)
         self.assertEqual(out["ZULIP_SITE"], "https://simplewithus.zulipchat.com")
         self.assertNotEqual(out["PATH"], "/nowhere")
@@ -232,11 +232,15 @@ class InfisicalEnvTests(unittest.TestCase):
         self.assertIn("ZULIP_ALERT_GB_TRADER_KEY", names)
         self.assertIn("JET_ROUTINE_KEY", names)
         self.assertIn("ZULIP_GROK_WEB_API_KEY", names)
+        # Every live BotFleet seat is a server seat now (owner, Fri, Nov 6), so its pair loads too.
+        self.assertIn("ZULIP_BF_COMPILER_EMAIL", names)
+        self.assertIn("ZULIP_BF_TRADER_API_KEY", names)
         # The Operator's own Zulip identity is the host's to provide:  a user id and an address,
         # never a credential, so they are shared names the loader copies from the store.
         self.assertIn("OPERATOR_ZULIP_USER_ID", names)
         self.assertIn("OPERATOR_ZULIP_EMAIL", names)
-        for name in ("ZULIP_CLAUDE_API_KEY", "ZULIP_BF_COMPILER_EMAIL", "ZULIP_EMAIL", "ZULIP_API_KEY", "ZULIP_SITE",
+        for name in ("ZULIP_CLAUDE_API_KEY", "ZULIP_BF_BUILDER_EMAIL", "ZULIP_ZC_API_KEY", "ZULIP_KIMI_API_KEY",
+                     "ZULIP_AMP_API_KEY", "ZULIP_EMAIL", "ZULIP_API_KEY", "ZULIP_SITE",
                      "ZULIP_ALERT_GB_TRADER_HEADER"):
             self.assertNotIn(name, names)
 

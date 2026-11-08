@@ -73,7 +73,10 @@ struct MiniMaxDetailView: View {
         reading = true
         let roster = Set(store.roster)
         let home = FileManager.default.homeDirectoryForCurrentUser
-        let proofs = store.hookProofs(seat: seat)
+        // While a run checks again the panel shows the last answer, so it takes that
+        // answer's proofs too:  a hook must not read "the engine has no rule" beside counts
+        // that say the engine answered.
+        let proofs = store.hookProofs(seat: seat, includingLastAnswer: store.isShowingLastAnswer)
         let seat = seat
         let loaded = await Task.detached(priority: .userInitiated) {
             // The MiniMax runtime names its own seat agent `mavis`, while the fleet calls
@@ -100,6 +103,13 @@ struct MiniMaxDetailView: View {
         reading ? "Reading" : "Read Again"
     }
 
+    /// Whether the engine's answer is on screen:  a finished run, or the last answer the
+    /// store keeps while a run checks again.  The attention list, the hook rows, the hook
+    /// proofs and the engine line all take the same flag, so they never disagree.
+    private var engineAnswerShown: Bool {
+        GridPresentation.engineAnswerShown(phase: store.phase, showingLastAnswer: store.isShowingLastAnswer)
+    }
+
     /// The engine's state for each config kind of this seat, in column order.
     private var engineEntries: [(kind: ConfigKind, state: CellState)] {
         ConfigKind.columnOrder.compactMap { kind -> (kind: ConfigKind, state: CellState)? in
@@ -121,7 +131,7 @@ struct MiniMaxDetailView: View {
                         surface: surface,
                         seat: seat,
                         engine: engineEntries,
-                        engineAnswered: store.phase == .loaded
+                        engineAnswered: engineAnswerShown
                     )
                     if items.isEmpty {
                         Label {
@@ -161,7 +171,11 @@ struct MiniMaxDetailView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                Text(MiniMaxCopy.engineLine(phase: store.phase, generatedAt: store.generatedAt))
+                Text(MiniMaxCopy.engineLine(
+                    phase: store.phase,
+                    generatedAt: store.generatedAt,
+                    showingLastAnswer: store.isShowingLastAnswer
+                ))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
@@ -215,7 +229,7 @@ struct MiniMaxDetailView: View {
             } else {
                 VStack(alignment: .leading, spacing: 12) {
                     ForEach(surface.hooks) { hook in
-                        HookRow(hook: hook, engineAnswered: store.phase == .loaded)
+                        HookRow(hook: hook, engineAnswered: engineAnswerShown)
                         if hook.id != surface.hooks.last?.id {
                             Divider()
                         }

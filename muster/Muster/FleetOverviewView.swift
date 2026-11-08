@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// The window's root:  the sidebar's places in one detail column, over one shared run.
@@ -33,23 +34,33 @@ struct FleetOverviewView: View {
     }
 
     /// The window's size is the window's own, and not the natural height of whichever panel is
-    /// showing.  Several panels are as tall as their content (Tools And Worker Health is 1449
-    /// points, Seats 1345) and the window grew to match and kept that as its minimum, so on a
-    /// 923-point laptop screen its bottom edge sat below the display with no way to shrink it.
-    /// The split view sits in an overlay, which is proposed the window's room and takes no part
-    /// in the window's size.  The minimum is wide enough for every panel's columns and
-    /// controls, which overlapped each other in a narrower window (Controls' tabs, the Apps &
-    /// Work filter bar), and short enough for any laptop screen.
+    /// showing.  PR 1414 recorded panels asking for 1449 points (Tools And Worker Health) and
+    /// 1345 (Seats).  In PR 1442's test harness the 1449 came from the place strip's line
+    /// measured at zero width (a 1344-point strip), not from the panel's content;  PR 1442 did
+    /// not measure the Seats figure.  The root frame (`musterWindowSize`) keeps the window's
+    /// minimum, wide enough for every panel's columns and short enough for any laptop screen,
+    /// so the window never grows to a panel's natural height, and it holds the split view to
+    /// the window's top.
+    ///
+    /// The owner's November 6 report (AFC-616) was both columns' first rows sitting above the
+    /// window's top, under the title bar, with no way to scroll to them.  PR 1442 reproduced
+    /// this in a test harness, and its 1085-point split view matches the column height saved
+    /// on the owner's Mac:  text with a vertical `fixedSize` outside the panel's ScrollView
+    /// (for example the place strip's line before AFC-616, a failure banner's reason, or the
+    /// label above Apps & Work's list), measured at zero width, claimed a minimum taller than
+    /// the window, and the split view grew to it.  The column cap (`musterColumnHeight`) on
+    /// both columns is the fix.  `MusterWindowLayoutTests` hosts `MusterMainSplit` with
+    /// `musterWindowSize`, so it fails if either stops doing its part, but it does not compile
+    /// this view:  keep both here.
     var body: some View {
-        Color.clear
-            .frame(minWidth: 1160, idealWidth: 1160, maxWidth: .infinity,
-                   minHeight: 560, idealHeight: 780, maxHeight: .infinity)
-            .overlay { splitView }
+        splitView
+            .musterWindowSize()
     }
 
     private var splitView: some View {
         let menu = MachineMenu(MachineMenuInputs(admin: admin, monitor: monitor, watch: watch, router: router))
-        return NavigationSplitView {
+        // MusterMainSplit caps both columns (musterColumnHeight) and sets the sidebar's widths.
+        return MusterMainSplit {
             List(selection: $destination) {
                 Section {
                     sidebarRow(.overview, menu: menu)
@@ -61,7 +72,6 @@ struct FleetOverviewView: View {
                 }
             }
             .navigationTitle("Muster")
-            .navigationSplitViewColumnWidth(min: 200, ideal: 230, max: 300)
         } detail: {
             VStack(spacing: 0) {
                 if let place = destination.place {
@@ -147,12 +157,16 @@ struct FleetOverviewView: View {
     /// One place in the sidebar,  with the badge its own reader gives,  or none.
     @ViewBuilder
     private func sidebarRow(_ place: MusterDestination, menu: MachineMenu) -> some View {
-        let label = Label(place.title, systemImage: place.systemImage).tag(place)
-        if let badge = sidebarBadge(place, menu: menu) {
-            label.badge(Text(badge))
-        } else {
-            label
-        }
+        // One view for every row, with the tag outermost:  the list selects by the tag it finds
+        // on the row, so a row with a badge and a row without one are built the same way.
+        let badge = sidebarBadge(place, menu: menu)
+        let words = place == .services
+            ? badge.map { SidebarBadges.servicesWords($0, readIsCurrent: SidebarBadges.readIsCurrent(readAt: admin.lastReadAt, now: watch.now)) }
+            : nil
+        Label(place.title, systemImage: place.systemImage)
+            .badge(badge.map { Text($0) })
+            .modifier(BadgeWords(words: words))
+            .tag(place)
     }
 
     /// The badge a row carries.  Each one is its own reader's number:  nil reads unknown,
@@ -164,6 +178,9 @@ struct FleetOverviewView: View {
         switch place {
         case .complianceGrid:
             guard let redCount = monitor.redCount else { return "?" }
+            // An old check,  as after a long sleep,  is not a clean grid.
+            if let checkedAt = monitor.lastRunAt,
+               !SeatCheckFreshness.isCurrent(checkedAt: checkedAt, now: watch.now) { return "?" }
             return redCount > 0 ? "\(redCount)" : nil
         case .services:
             // Measured against the watch's tick,  the clock the Mac card and the menu use,  so
@@ -175,7 +192,7 @@ struct FleetOverviewView: View {
             return PlaceHealthWords.badge(menu.server.health)
         case .overview, .macAgents, .driftHistory, .wakeAndListener, .seatDetail,
              .serverResourceLimits, .serverUpdates, .appsAndWork, .seats, .controls,
-             .hosts, .virtualMachines, .actionHistory:
+             .hosts, .appProcesses, .virtualMachines, .actionHistory:
             return nil
         }
     }
@@ -216,6 +233,8 @@ struct FleetOverviewView: View {
             OperationsView(part: .updates)
         case .hosts:
             FleetHostsView()
+        case .appProcesses:
+            AppProcessesView()
         case .virtualMachines:
             VirtualMachinesView()
         case .actionHistory:
@@ -239,13 +258,25 @@ struct FleetOverviewView: View {
                         .foregroundStyle(.secondary)
                 }
                 Divider().frame(height: 14)
-                Text(store.commandLine.isEmpty ? "no engine located" : store.commandLine)
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .textSelection(.enabled)
-                    .help(store.commandLine)
+                // Plain words in the bar;  the raw command the app ran is in the tooltip
+                // and one click from the clipboard, for whoever debugs the engine.
+                if store.commandLine.isEmpty {
+                    Text("No engine found")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                } else {
+                    Label("Engine On The Mac", systemImage: "terminal")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .help(store.commandLine)
+                        .contextMenu {
+                            Button("Copy The Command") {
+                                let pasteboard = NSPasteboard.general
+                                pasteboard.clearContents()
+                                pasteboard.setString(store.commandLine, forType: .string)
+                            }
+                        }
+                }
                 Spacer(minLength: 8)
                 Text(generatedText)
                     .font(.system(size: 10))
@@ -294,11 +325,22 @@ struct RunVerdictLabel: View {
 }
 
 /// The banner that says why the last run cannot be trusted.
+///
+/// It shows only the end of a long reason (`FailureReason`), so at the detail column's width
+/// a traceback cannot make one banner more than about 220 points tall, however long it is.
+/// Up to three banners can stack over the panel (a failed run, the manifest and the
+/// registry), so at the window's smallest height all three together can still leave the
+/// panel little room.  The full reason is one click away.
+///
+/// The reason keeps its vertical `fixedSize` so none of it is cut.  Measured at zero width
+/// it claims a minimum far taller than the window (PR 1442), and the detail column's cap
+/// (`musterColumnHeight`) is what keeps that out of the window's layout (AFC-616).
 struct FailureBanner: View {
     let reason: String
     var title: String = "The engine did not answer, so every cell reads unknown."
 
     var body: some View {
+        let shown = FailureReason.display(reason)
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.red)
@@ -306,11 +348,21 @@ struct FailureBanner: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(.callout.weight(.medium))
-                Text(reason)
+                Text(shown.text)
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
+                if shown.isShortened {
+                    Button("Copy Full Reason") {
+                        let pasteboard = NSPasteboard.general
+                        pasteboard.clearContents()
+                        pasteboard.setString(reason, forType: .string)
+                    }
+                    .buttonStyle(.link)
+                    .font(.caption)
+                    .help("Copies the whole reason, including the lines the banner leaves out.")
+                }
             }
             Spacer(minLength: 0)
         }
@@ -327,6 +379,21 @@ extension ThemeChoice {
         case .system: return nil
         case .light: return .light
         case .dark: return .dark
+        }
+    }
+}
+
+/// The words behind a badge, as the row's help and VoiceOver value:  nothing is added to a
+/// row that has none, so its own tooltip and VoiceOver reading stay as they were.
+private struct BadgeWords: ViewModifier {
+    let words: String?
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let words {
+            content.help(words).accessibilityValue(Text(words))
+        } else {
+            content
         }
     }
 }

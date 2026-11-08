@@ -36,7 +36,9 @@ struct FleetServicesPanel: View {
         }
         .task {
             router.reloadAllowlist()
-            await admin.refresh()
+            // A return to the panel shows the read on hand when it is fresh, rather than running
+            // pm2 and launchctl again;  the Check button below always reads.
+            await admin.refreshIfOlder()
         }
     }
 

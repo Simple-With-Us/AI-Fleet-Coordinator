@@ -41,7 +41,10 @@ RECEIVER_PATH = "scripts/fleet-cli-release.py"
 # (the operator-registry CLI, the platform-letter registry side) use to reach that API.
 # The 153rd is agent_sync/operator_sheets_google.mjs;  must equal the receiver cap in
 # fleet-cli-release.py or build_bundle() rejects the newly included adapter.
-MAX_FILES = 153
+# The 154th is agent_sync/operator_sheets_drain.mjs (OPS-1037), the production drain runner.
+# The 155th is agent_sync/muster_service.py (AFC-654), the read-only Operator service `simple-chat`
+# dispatches for Muster's Seats panel.
+MAX_FILES = 155
 MAX_BYTES = 8 * 1024 * 1024
 OVERALL_SECONDS = 90
 SSH_SECONDS = 65

@@ -353,7 +353,8 @@ test("dm_send:  text that looks like a secret is refused before any request, and
   assert.equal(fake.requests.length, before, "no request, not even users/me");
   ok(await tools.call("zulip_dm_send", { user_ids: [jay.user_id], text: "the body that must not be stored" }), "zulip_dm_send");
   ok(await tools.call("zulip_dm_read", { user_ids: [jay.user_id] }), "zulip_dm_read");
-  const [read, sent, , refusedRow] = await S.callTail(gate.store, 10);
+  // A successful read writes no row (owner 2026-11-06), so the newest row is the send.
+  const [sent, , refusedRow] = await S.callTail(gate.store, 10);
   assert.equal(sent.tool, "zulip_dm_send");
   assert.deepEqual(sent.recipient_ids, [jay.user_id]);
   assert.equal(sent.message_id, fake.messages.at(-1).id);
@@ -361,8 +362,6 @@ test("dm_send:  text that looks like a secret is refused before any request, and
   assert.ok(Number.isInteger(sent.body_len) && /^[0-9a-f]{12}$/.test(sent.idem_ref));
   assert.equal(sent.channel_id, undefined);
   assert.equal(sent.topic, undefined);
-  assert.equal(read.tool, "zulip_dm_read");
-  assert.deepEqual(read.recipient_ids, [jay.user_id]);
   assert.equal(refusedRow.error_code, "refused_secret");
   const everything = JSON.stringify([await S.callTail(gate.store, 20), logs, await S.tail(gate.store, 50)]);
   const [, basic] = basicForms(BOT_EMAIL, fake.key);
