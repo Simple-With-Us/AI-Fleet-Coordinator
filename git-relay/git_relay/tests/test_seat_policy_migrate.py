@@ -49,7 +49,11 @@ class FakeHost(mg.Host):
     """systemd, as far as the migration depends on it."""
 
     def __init__(self, root: Path, healthy=True, relay="/nonexistent-relay"):
-        super().__init__(wait=1, credentials_root=str(root / "run-credentials"), dropin_root=str(root / "systemd"))
+        super().__init__(
+            wait=1,
+            credentials_root=str(root / "run-credentials"),
+            dropin_root=str(root / "systemd"),
+        )
         self.root = root
         self.healthy_after_restart = healthy
         self.relay = relay
@@ -190,14 +194,23 @@ class MigrateTests(unittest.TestCase):
         self.assertEqual(Path(self.backing).read_bytes(), self.policy_bytes)
         self.assertEqual(os.stat(self.backing).st_mode & 0o777, 0o600)
         self.assertEqual(
-            self.host._dropin().read_text(), f"[Service]\nLoadCredential=seat-policy:{self.backing}\n"
+            self.host._dropin().read_text(),
+            f"[Service]\nLoadCredential=seat-policy:{self.backing}\n",
         )
-        self.assertEqual(self.seats.read_bytes(), self.policy_bytes)  # old file untouched
-        self.assertEqual([c for c in self.host.calls if c[0] == "restart"], [("restart", UNIT)])
+        self.assertEqual(
+            self.seats.read_bytes(), self.policy_bytes
+        )  # old file untouched
+        self.assertEqual(
+            [c for c in self.host.calls if c[0] == "restart"], [("restart", UNIT)]
+        )
         journal = json.loads((self.journal / mg.JOURNAL).read_text())
         self.assertEqual(journal["phase"], "healthy")
-        self.assertEqual(bytes.fromhex(journal["config"]["bytes_hex"]), self.config_bytes)
-        self.assertEqual(bytes.fromhex(journal["policy"]["bytes_hex"]), self.policy_bytes)
+        self.assertEqual(
+            bytes.fromhex(journal["config"]["bytes_hex"]), self.config_bytes
+        )
+        self.assertEqual(
+            bytes.fromhex(journal["policy"]["bytes_hex"]), self.policy_bytes
+        )
 
     def test_installer_accepts_the_migrated_unit(self):
         self.assertEqual(self.run_cmd(mg.apply)[0], 0)
@@ -266,7 +279,9 @@ class MigrateTests(unittest.TestCase):
 
     def test_already_on_credential_refuses(self):
         self.host._dropin().parent.mkdir(parents=True)
-        self.host._dropin().write_text(f"[Service]\nLoadCredential=seat-policy:{self.backing}\n")
+        self.host._dropin().write_text(
+            f"[Service]\nLoadCredential=seat-policy:{self.backing}\n"
+        )
         self._refused()
 
     def test_existing_journal_refuses_until_recovered(self):
@@ -288,7 +303,9 @@ class MigrateTests(unittest.TestCase):
         self.assertEqual(self.config.read_bytes(), self.config_bytes)
         self.assertFalse(self.host._dropin().exists())
         self.assertEqual(self.seats.read_bytes(), self.policy_bytes)
-        self.assertEqual(json.loads((self.journal / mg.JOURNAL).read_text())["phase"], "restored")
+        self.assertEqual(
+            json.loads((self.journal / mg.JOURNAL).read_text())["phase"], "restored"
+        )
         self.assertEqual(os.stat(self.config).st_mode & 0o777, 0o600)
 
     def test_missing_backing_is_a_start_failure_and_is_restored(self):
@@ -315,27 +332,44 @@ class MigrateTests(unittest.TestCase):
         self.assertFalse(self.host._dropin().exists())
 
     def test_crash_after_each_phase_restores_in_process(self):
-        for phase in ("backing-written", "config-edited", "dropin-written", "restarted"):
+        for phase in (
+            "backing-written",
+            "config-edited",
+            "dropin-written",
+            "restarted",
+        ):
             with self.subTest(phase=phase):
                 self.setUp()
-                rc, out = self.run_cmd(mg.apply, crash_after=phase)
+                rc, _out = self.run_cmd(mg.apply, crash_after=phase)
                 self.assertIsInstance(rc, RuntimeError)
                 self.assertEqual(self.config.read_bytes(), self.config_bytes)
                 self.assertFalse(self.host._dropin().exists())
                 self.assertEqual(self.seats.read_bytes(), self.policy_bytes)
-                self.assertEqual(json.loads((self.journal / mg.JOURNAL).read_text())["phase"], "restored")
+                self.assertEqual(
+                    json.loads((self.journal / mg.JOURNAL).read_text())["phase"],
+                    "restored",
+                )
 
     def test_hard_crash_then_fresh_recover_from_the_journal_alone(self):
         """The process dies with no cleanup (power loss, kill -9, reboot):  the restore path
         itself never ran.  A new process with no memory recovers from the journal."""
-        for phase in ("backing-written", "config-edited", "dropin-written", "restarted"):
+        for phase in (
+            "backing-written",
+            "config-edited",
+            "dropin-written",
+            "restarted",
+        ):
             with self.subTest(phase=phase):
                 self.setUp()
-                with mock.patch.object(mg, "_restore_from", side_effect=RuntimeError("power loss")):
+                with mock.patch.object(
+                    mg, "_restore_from", side_effect=RuntimeError("power loss")
+                ):
                     rc, _ = self.run_cmd(mg.apply, crash_after=phase)
                 self.assertIsInstance(rc, RuntimeError)
                 journal = json.loads((self.journal / mg.JOURNAL).read_text())
-                self.assertEqual(journal["phase"], phase)  # last journaled phase survives
+                self.assertEqual(
+                    journal["phase"], phase
+                )  # last journaled phase survives
                 fresh = FakeHost(self.root)
                 fresh.healthy_after_restart = True
                 self.host = fresh
@@ -350,22 +384,31 @@ class MigrateTests(unittest.TestCase):
                 self.assertEqual(rc, 0, out)
                 self.assertEqual(self.config.read_bytes(), self.config_bytes)
 
-    def test_recover_works_with_the_service_stopped_and_after_a_completed_migration(self):
+    def test_recover_works_with_the_service_stopped_and_after_a_completed_migration(
+        self,
+    ):
         self.assertEqual(self.run_cmd(mg.apply)[0], 0)
-        self.host = FakeHost(self.root)  # new process after a reboot:  nothing in memory
+        self.host = FakeHost(
+            self.root
+        )  # new process after a reboot:  nothing in memory
         self.args = SimpleNamespace(unit=UNIT, journal_dir=str(self.journal))
         rc, out = self.run_cmd(mg.recover)
         self.assertEqual(rc, 0, out)
         self.assertEqual(self.config.read_bytes(), self.config_bytes)
         self.assertFalse(self.host._dropin().exists())
-        self.assertEqual([c[0] for c in self.host.calls][:2], ["daemon-reload", "restart"])
+        self.assertEqual(
+            [c[0] for c in self.host.calls][:2], ["daemon-reload", "restart"]
+        )
 
     def test_recover_refuses_a_tampered_journal_wrong_unit_or_no_journal(self):
         self.args = SimpleNamespace(unit=UNIT, journal_dir=str(self.journal))
         self.assertEqual(self.run_cmd(mg.recover)[0], 2)  # no journal
         self.args = SimpleNamespace(
-            unit=UNIT, backing=self.backing, journal_dir=str(self.journal),
-            expect_digest=self.digest, allow_non_root=True,
+            unit=UNIT,
+            backing=self.backing,
+            journal_dir=str(self.journal),
+            expect_digest=self.digest,
+            allow_non_root=True,
         )
         self.assertEqual(self.run_cmd(mg.apply)[0], 0)
         path = self.journal / mg.JOURNAL
@@ -391,18 +434,29 @@ class MigrateTests(unittest.TestCase):
     # crash windows, locking, journal validation
     def test_no_journaled_phase_leaves_a_unit_whose_next_start_fails(self):
         """A restart or reboot at ANY phase boundary (nothing cleaned up) must still start."""
-        for phase in ("backing-written", "dropin-written", "config-edited", "restarted"):
+        for phase in (
+            "backing-written",
+            "dropin-written",
+            "config-edited",
+            "restarted",
+        ):
             with self.subTest(phase=phase):
                 self.setUp()
-                with mock.patch.object(mg, "_restore_from", side_effect=RuntimeError("power loss")):
+                with mock.patch.object(
+                    mg, "_restore_from", side_effect=RuntimeError("power loss")
+                ):
                     self.run_cmd(mg.apply, crash_after=phase)
                 fresh = FakeHost(self.root)
                 self.assertEqual(fresh.systemctl("restart", UNIT), 0)
 
     def test_phases_run_in_the_safe_order(self):
         self.assertEqual(self.run_cmd(mg.apply)[0], 0)
-        self.assertLess(mg.PHASES.index("backing-written"), mg.PHASES.index("dropin-written"))
-        self.assertLess(mg.PHASES.index("dropin-written"), mg.PHASES.index("config-edited"))
+        self.assertLess(
+            mg.PHASES.index("backing-written"), mg.PHASES.index("dropin-written")
+        )
+        self.assertLess(
+            mg.PHASES.index("dropin-written"), mg.PHASES.index("config-edited")
+        )
 
     def test_a_busy_policy_lock_refuses_and_changes_nothing(self):
         for which in ("seats", "backing"):
@@ -439,7 +493,10 @@ class MigrateTests(unittest.TestCase):
         for when in ("daemon-reload", "restart"):
             with self.subTest(when=when):
                 self.setUp()
-                changed = (json.dumps({**self.policy, "swu-new": dict(ROW)}, sort_keys=True) + "\n").encode()
+                changed = (
+                    json.dumps({**self.policy, "swu-new": dict(ROW)}, sort_keys=True)
+                    + "\n"
+                ).encode()
 
                 def mutate(args, changed=changed, when=when):
                     if args[0] == when:
@@ -472,7 +529,9 @@ class MigrateTests(unittest.TestCase):
         victim.write_text("keep")
 
         def digest_fix(j, key):
-            j[key]["sha256"] = hashlib.sha256(bytes.fromhex(j[key]["bytes_hex"])).hexdigest()
+            j[key]["sha256"] = hashlib.sha256(
+                bytes.fromhex(j[key]["bytes_hex"])
+            ).hexdigest()
 
         cases = {
             "config path elsewhere": lambda j: j["config"].update(path=str(victim)),
@@ -486,7 +545,9 @@ class MigrateTests(unittest.TestCase):
             "other unit": lambda j: j.update(unit="other.service"),
             "bad version": lambda j: j.update(v=2),
             "unit text tampered": lambda j: j.update(unit_text="x"),
-            "policy before-image tampered": lambda j: j["policy"].update(bytes_hex=b"{}".hex()),
+            "policy before-image tampered": lambda j: j["policy"].update(
+                bytes_hex=b"{}".hex()
+            ),
             "backing not absolute": lambda j: j.update(backing="relative"),
             "missing field": lambda j: j.pop("policy"),
         }
@@ -495,16 +556,22 @@ class MigrateTests(unittest.TestCase):
                 self.setUp()
                 path, journal = self._journal()
                 self._recover_refused(path, journal, mutate)
-                self.assertEqual(victim.read_text() if victim.exists() else "keep", "keep")
+                self.assertEqual(
+                    victim.read_text() if victim.exists() else "keep", "keep"
+                )
 
         # a consistent forgery of the config bytes whose digest matches but whose shape is not a
         # pre-migration config, and one whose policy path disagrees with its config line
         for name, mutate in {
             "config before-image already migrated": lambda j: (
-                j["config"].update(bytes_hex=b"GIT_RELAY_SEATS_CREDENTIAL=seat-policy\n".hex()),
+                j["config"].update(
+                    bytes_hex=b"GIT_RELAY_SEATS_CREDENTIAL=seat-policy\n".hex()
+                ),
                 digest_fix(j, "config"),
             ),
-            "policy path disagrees with config": lambda j: j["policy"].update(path=str(victim)),
+            "policy path disagrees with config": lambda j: j["policy"].update(
+                path=str(victim)
+            ),
         }.items():
             with self.subTest(name=name):
                 self.setUp()
