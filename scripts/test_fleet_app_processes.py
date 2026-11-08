@@ -571,7 +571,7 @@ class AppsAndRulesTests(unittest.TestCase):
             "scripts/systemd",
             "scripts/host",
             "scripts/hetzner",
-            "scripts/agent_sync/server",
+            "scripts/simple_tools/server",
         ):
             units += [
                 path.name.replace("@.service", "@instance.service")
