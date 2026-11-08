@@ -43,13 +43,14 @@ MAX_BUNDLE_BYTES = 8 * 1024 * 1024
 # exporter it calls (its systemd units stay repo-only under agent_sync/server/).
 # The 155th is agent_sync/muster_service.py (AFC-654), the read-only Operator service `simple-chat`
 # dispatches for Muster's Seats panel.
-# The 156th is agent_sync/platform_letter_zcode.py, the ZCode session-letter adapter (OPS-1048).
-# The 157th is scripts/zc-wake-bridge, the ZC seat's wake webhook receiver and deliverer (OPS-1048;  its systemd
+# The 156th is fleet_lanes/temp_build.py (AFC-618), the build-argv reader `lane`'s guard.py imports.
+# The 157th is agent_sync/platform_letter_zcode.py, the ZCode session-letter adapter (OPS-1048).
+# The 158th is scripts/zc-wake-bridge, the ZC seat's wake webhook receiver and deliverer (OPS-1048;  its systemd
 # unit template stays repo-only under agent_sync/server/).
-# The 158th is scripts/zcode-letter-hook/platform-letter, the ZC letter hook's wrapper (OPS-1048):  the copy the
+# The 159th is scripts/zcode-letter-hook/platform-letter, the ZC letter hook's wrapper (OPS-1048):  the copy the
 # install writes to ~/.local/bin/zc-letter/platform-letter, which sources the shared registry env before it execs
 # the checkout's real platform-letter.
-MAX_FILES = 158
+MAX_FILES = 159
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MARKER = "# fleet-cli managed wrapper v1"
 # Retention:  a receive keeps the newest KEEP_RELEASES releases and deletes older ones, but never `current`,
@@ -81,7 +82,7 @@ RECALL_MODULES = (
 KNOB_MODULES = ("__init__", "knobs", "lkg", "registry", "source", "values")
 SCOPED_READER_MODULES = ("__init__", "core")
 # `lane` runs from these fleet_lanes modules plus its bash shim (fleet-apps.json is already shipped).
-LANE_MODULES = ("__init__", "doctor", "guard", "lane", "layout", "placement")
+LANE_MODULES = ("__init__", "doctor", "guard", "lane", "layout", "placement", "temp_build")
 AFC331_FILES = (
     "scripts/agent_sync/mcp/notes-tools.json",
     "scripts/agent_sync/mcp/recall-tools.json",
