@@ -339,7 +339,7 @@ def check_chain(held, chain, history, records, frozen=False):
         if key is None or b["ownerKey"] != key:  # 3
             return "owner_key", entry
         closing = [h for h in history if h["toVersion"] == b["version"]]
-        if closing and closing[0]["toSHA256"] != sha(bb):  # 3, v5.3
+        if any(h["toSHA256"] != sha(bb) for h in closing):  # 3, v5.3:  every line for this version
             return "history_hash", entry
         if not verify(key, entry["ownerSignature"], b"muster-trust-list/1\n" + bb):  # 4
             return "owner_signature", entry

@@ -318,7 +318,9 @@ def chain_vector(lists, row):
         "history": "historyRotated" if vector_id.startswith("T24 ") else "history",
         "ruleC": rule_c_at is not None,
         "frozenExpected": frozen,
-        "proposalExpected": expected_cell,
+        # T23 sits in the frozen table, so its printed cell is the frozen answer;  under the OPEN proposal
+        # it is T4's chain (held v3, chain v4), which the proposal acknowledges.
+        "proposalExpected": "ack" if vector_id.startswith("T23 ") else expected_cell,
     }
 
 

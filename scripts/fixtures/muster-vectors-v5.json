@@ -1301,7 +1301,7 @@
    "held": "v3",
    "history": "history",
    "id": "T23 v4 under version 5 as frozen",
-   "proposalExpected": "`chain_refused`, reason `reopen_unavailable`",
+   "proposalExpected": "ack",
    "ruleC": true
   }
  ],
