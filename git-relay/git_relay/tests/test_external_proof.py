@@ -6,6 +6,7 @@ audit log; a timeout is an inconclusive record that is never signed and whose
 retry carries a fresh id. The replay store survives a process restart.
 """
 
+import hashlib
 import json
 import os
 import tempfile
@@ -21,6 +22,7 @@ from git_relay.deploy_proof import (
     ExternalProof,
     ReplayStore,
     probe_path,
+    read_audit_rows,
     sign_receipt,
     verify_receipt,
 )
@@ -328,6 +330,80 @@ class ReceiptGateTests(unittest.TestCase):
         self.assertFalse(self.store.seen("proof-1001"))
         # The same receipt inside its window then verifies: only acceptance stores.
         self.assertEqual(self.verify(self.receipt)["proof_id"], "proof-1001")
+
+    def test_a_redacted_probe_path_binds_by_hash_and_length(self):
+        # A long mixed-class proof id makes the probe path credential-shaped to
+        # the relay's audit hygiene: the log then carries path_sha256/path_len,
+        # never the path. Binding hash+length of the expected path is the same
+        # string equality under that privacy rule; the path stays withheld.
+        long_id = "Proof2026MixedClassIdExtraLong01"
+        record = proof(FakeRelay())("swu-zc", long_id, BEFORE, AFTER)
+        row = audit_row(record)
+        del row["path"]
+        row["path_sha256"] = hashlib.sha256(record["probe_path"].encode()).hexdigest()
+        row["path_len"] = len(record["probe_path"])
+        receipt = sign_receipt(KEY, record)
+        self.verify(receipt, audit_rows=[row], store_id=False)
+        self.assertFalse(self.store.seen(long_id))
+        self.assertEqual(self.verify(receipt, audit_rows=[row])["proof_id"], long_id)
+
+    def test_a_redacted_probe_path_with_a_wrong_hash_or_length_is_refused(self):
+        long_id = "Proof2026MixedClassIdExtraLong02"
+        record = proof(FakeRelay())("swu-zc", long_id, BEFORE, AFTER)
+        row = audit_row(record)
+        del row["path"]
+        row["path_sha256"] = hashlib.sha256(record["probe_path"].encode()).hexdigest()
+        row["path_len"] = len(record["probe_path"])
+        wrong_hash = dict(row, path_sha256=hashlib.sha256(b"deploy-proof/other.probe").hexdigest())
+        wrong_len = dict(row, path_len=row["path_len"] + 1)
+        # A path that is present but different never falls back to the hash.
+        both = dict(row, path="deploy-proof/other.probe")
+        for bad in (wrong_hash, wrong_len, both):
+            with self.assertRaisesRegex(ValueError, "relay audit"):
+                self.verify(sign_receipt(KEY, record), audit_rows=[bad])
+        self.assertFalse(self.store.seen(long_id))
+
+
+class ReadAuditRowsTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.path = os.path.join(self.dir.name, "audit.jsonl")
+
+    def tearDown(self):
+        self.dir.cleanup()
+
+    def write_rows(self, rows):
+        with open(self.path, "w") as fh:
+            fh.writelines(json.dumps(row) + "\n" for row in rows)
+
+    def test_a_small_log_parses_every_row(self):
+        rows = [{"n": i, "seat": "swu-zc"} for i in range(5)]
+        self.write_rows(rows)
+        self.assertEqual(read_audit_rows(self.path), rows)
+
+    def test_a_log_past_the_cap_is_tailed_not_refused(self):
+        rows = [{"n": i, "pad": "x" * 40} for i in range(50)]
+        self.write_rows(rows)
+        window = read_audit_rows(self.path, max_bytes=512)
+        # Only whole recent rows: the partial first line of the window is dropped.
+        self.assertGreater(len(window), 0)
+        self.assertLess(len(window), len(rows))
+        self.assertEqual(window, rows[-len(window) :])
+
+    def test_a_malformed_line_in_the_window_still_refuses(self):
+        with open(self.path, "w") as fh:
+            fh.write('{"ok": 1}\nnot json at all\n{"ok": 2}\n')
+        with self.assertRaises(ValueError):
+            read_audit_rows(self.path)
+        pad = '{"pad": "%s"}\n' % ("x" * 200)
+        with open(self.path, "w") as fh:
+            fh.write(pad * 40 + "broken line\n")
+        with self.assertRaises(ValueError):
+            read_audit_rows(self.path, max_bytes=1024)
+
+    def test_a_missing_log_is_an_os_error_for_the_caller(self):
+        with self.assertRaises(OSError):
+            read_audit_rows(self.path)
 
 
 if __name__ == "__main__":

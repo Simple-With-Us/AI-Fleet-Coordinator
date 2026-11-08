@@ -560,6 +560,9 @@ def _install_seat_locked(args, unit: Unit, path: str, deploy_proof, seat_add_pol
         return 2
     with open(args.row_json, encoding="utf-8") as fh:
         row = json.load(fh)
+    if not isinstance(row, dict):
+        print("refusing:  the seat row file is not a JSON object")
+        return 2
     try:
         result = seat_add_policy.prepare(current, args.seat, row, args.expect_before)
     except ValueError as exc:

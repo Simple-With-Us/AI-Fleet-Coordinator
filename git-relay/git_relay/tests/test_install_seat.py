@@ -300,6 +300,12 @@ class InstallSeatTests(unittest.TestCase):
         rc = self.install(self.args2(), unit)
         self.assertEqual(rc, 0)
 
+    def test_a_non_object_seat_row_file_refuses_cleanly(self):
+        self.row_path.write_text(json.dumps(["not", "a", "seat", "object"]))
+        rc = self.install(self.args2(), self.unit)
+        self.assertEqual(rc, 2)
+        self.assertEqual(json.loads(self.seats_path.read_text()), self.policy)
+
     def test_a_missing_audit_log_refuses_closed(self):
         (self.relay_dir / sp.DEFAULT_AUDIT).unlink()
         rc = self.install(self.args2(), self.unit)

@@ -295,6 +295,22 @@ class ReplayStore:
                 os.unlink(tmp)
 
 
+def _row_binds_path(row, probe_path):
+    """The probe path, or its exact redacted stand-in.
+
+    The relay's audit hygiene (audit.py) hashes any detail value that looks
+    credential-shaped: a long mixed-class probe path is logged as
+    path_sha256 + path_len with the path itself withheld. Binding the hash
+    and length of the expected probe path is the same string equality under
+    the relay's privacy rule; the path never has to be readable to bind.
+    """
+    if "path" in row:
+        return row.get("path") == probe_path
+    return row.get("path_sha256") == hashlib.sha256(probe_path.encode()).hexdigest() and row.get(
+        "path_len"
+    ) == len(probe_path)
+
+
 def _audit_row_binds(record, rows):
     """Exactly one actual relay audit row must name this proof run.
 
@@ -312,7 +328,7 @@ def _audit_row_binds(record, rows):
             and row.get("action") == "wf_file_patch"
             and row.get("repo") == record["repo"]
             and row.get("result") in ("bad_request", "denied")
-            and row.get("path") == record["probe_path"]
+            and _row_binds_path(row, record["probe_path"])
             and row.get("reason") == record.get("refusal")
         ):
             matches += 1
@@ -321,13 +337,24 @@ def _audit_row_binds(record, rows):
 
 
 def read_audit_rows(path, max_bytes=4 * 1024 * 1024):
-    """Parse the relay's append-only audit log into rows; any malformed line refuses."""
+    """Parse recent relay audit rows; any malformed line refuses closed.
+
+    The log is append-only and a verification needs its most recent rows, so
+    at most the last max_bytes are read: a log that grows past the cap never
+    blocks a proof. The window can open mid-line, so the first partial line
+    is dropped; a malformed complete line still refuses.
+    """
+    size = os.path.getsize(path)
     with open(path, "rb") as fh:
-        raw = fh.read(max_bytes + 1)
-    if len(raw) > max_bytes:
-        raise ValueError("audit log too large to verify against")
+        if size > max_bytes:
+            fh.seek(-max_bytes, os.SEEK_END)
+        raw = fh.read(max_bytes)
+    text = raw.decode("utf-8")
+    if size > max_bytes:
+        newline = text.find("\n")
+        text = "" if newline == -1 else text[newline + 1 :]
     rows = []
-    for line in raw.decode("utf-8").splitlines():
+    for line in text.splitlines():
         if line.strip():
             row = json.loads(line)
             if isinstance(row, dict):
