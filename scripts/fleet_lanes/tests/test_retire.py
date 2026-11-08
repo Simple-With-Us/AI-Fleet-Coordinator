@@ -12,6 +12,7 @@ AGENT_SEAT leaks in.
 from __future__ import annotations
 
 import datetime as dt
+import inspect
 import io
 import json
 import os
@@ -288,7 +289,12 @@ class World:
         def exec_fn(a: list[str], cwd, child_env, timeout) -> D.CmdResult:
             calls.append(list(a))
             if override is not None:
-                forced = override(list(a))
+                # An override that declares a `cwd` parameter is told which tree is asking.
+                forced = (
+                    override(list(a), cwd=cwd)
+                    if "cwd" in inspect.signature(override).parameters
+                    else override(list(a))
+                )
                 if forced is not None:
                     return forced
             if a[0] == "gh":
@@ -767,32 +773,46 @@ class PruneTests(WorldCase):
     def test_a_lowercase_github_origin_reads_the_relay_in_the_registry_spelling(self) -> None:
         # The server's origin is github.com/simple-with-us/...;  GitHub ignores case, but the
         # relay's seat policy does not, and it refused the lowercase owner (reason seat_policy).
-        lane = self.w.new_lane("pr13-sweep")
-        self.w.commit(lane)
-        self.w.push(lane, "feature/thirteen")
-        self.w.merged_pr(lane, "feature/thirteen", number=13)
+        apps = (
+            ("DealDex", 13, "feature/thirteen"),
+            ("Socratic-Trade", 14, "feature/fourteen"),
+        )
+        for repo, number, head in apps:
+            lane = self.w.new_lane(f"pr{number}-sweep", repo=repo)
+            self.w.commit(lane)
+            self.w.push(lane, head)
+            self.w.merged_pr(lane, head, number=number, repo=repo)
 
-        asked: list[list[str]] = []
+        asked: set[str] = set()
 
-        def lowercase_origin(argv: list[str]) -> D.CmdResult | None:
-            if "remote.origin.url" in argv:
-                asked.append(argv)
-                return D.CmdResult(0, "https://github.com/simple-with-us/DealDex.git\n", "")
+        def lowercase_origin(
+            argv: list[str], cwd: Path | str | None = None
+        ) -> D.CmdResult | None:
+            # Each integration tree answers with the lowercase form of ITS OWN repo.
+            name = Path(str(cwd)).name
+            if "remote.origin.url" in argv and name in self.w.trees:
+                asked.add(name)
+                url = f"https://github.com/simple-with-us/{name}.git\n"
+                return D.CmdResult(0, url, "")
             return None
 
         res = self.w.run("prune", "--json", override=lowercase_origin)
         self.assertEqual(res.rc, 0, res.err)
-        self.assertTrue(asked, "the origin URL was never asked for")
-        row = res.row("claude-pr13-sweep")
-        self.assertEqual(row["action"], "remove", row)
-        self.assertIn("PR #13 merged", row["reason"])
+        self.assertEqual(asked, {"DealDex", "Socratic-Trade"})
+        for _, number, _ in apps:
+            row = res.row(f"claude-pr{number}-sweep")
+            self.assertEqual(row["action"], "remove", row)
+            self.assertIn(f"PR #{number} merged", row["reason"])
         queries = [
             json.loads(call[call.index("--args-json") + 1])
             for call in res.calls
             if call[:1] == ["simple-git"]
         ]
         self.assertTrue(queries)
-        self.assertEqual({q["repo"] for q in queries}, {"Simple-With-Us/DealDex"})
+        self.assertEqual(
+            {q["repo"] for q in queries},
+            {"Simple-With-Us/DealDex", "Simple-With-Us/Socratic-Trade"},
+        )
 
     def test_dirty_untracked_and_unpushed_lanes_are_kept(self) -> None:
         dirty = self.w.new_lane("dirty")
