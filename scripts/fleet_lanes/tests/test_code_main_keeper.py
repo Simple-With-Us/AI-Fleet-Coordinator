@@ -212,7 +212,7 @@ class LeavesEverythingElseAlone(KeeperCase):
         code = [ln for ln in SCRIPT.read_text().splitlines() if not ln.lstrip().startswith(("#", "log "))]
         verbs = set()
         for ln in code:
-            for m in re.finditer(r'\bgit(?: -C "?\$\{?\w+\}?"?)? (?:-\S+ )*([a-z][a-z-]*)', ln):
+            for m in re.finditer(r'\bgit(?: -C "?\$\{?\w+\}?"?)? (?:-c \S+ |-\S+ )*([a-z][a-z-]*)', ln):
                 verbs.add(m.group(1))
         read_or_ff = {"rev-parse", "status", "for-each-ref", "show-ref", "stash", "branch", "fetch", "merge", "merge-base", "rev-list"}
         self.assertEqual(verbs - read_or_ff, set(), verbs)
