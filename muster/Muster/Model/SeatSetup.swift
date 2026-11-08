@@ -38,7 +38,7 @@ enum SeatSetup {
     /// One thing on a seat that needs a look, in plain words.
     struct Attention: Equatable {
         let kind: ConfigKind
-        /// The cell's state, as the grid prints it.
+        /// The cell's state, in the grid's one spelling (`GridCell.gridWord`).
         let state: String
         /// What the engine said about the worst rule behind the cell.
         let text: String
@@ -61,7 +61,7 @@ enum SeatSetup {
     /// Whether a cell is something to look at.
     ///
     /// A state the platform simply does not have (UNSUPPORTED), a pair that does not apply
-    /// (COVERED) and a seat with no guard to check are facts about the platform and not
+    /// (DOES NOT APPLY) and a seat with no guard to check are facts about the platform and not
     /// problems with the seat, so they are shown in the panel and are not raised here.
     static func needsALook(_ cell: GridCell) -> Bool {
         if cell.isNoGuard { return false }
@@ -93,7 +93,7 @@ enum SeatSetup {
             } else {
                 text = reason.isEmpty ? "The engine gave no reason." : reason
             }
-            return Attention(kind: kind, state: cell.stateFullName, text: text)
+            return Attention(kind: kind, state: cell.gridWord, text: text)
         }
     }
 
@@ -111,6 +111,6 @@ enum SeatSetup {
         let asked = cell.askedRules.count
         let rules = asked == 1 ? "1 rule" : "\(asked) rules"
         let checked = cell.checkedAt == nil ? "not checked yet" : "checked \(cell.ageText) ago"
-        return "\(cell.stateFullName), \(rules), proof \(cell.proofBadgeText), \(checked)"
+        return "\(cell.gridWord), \(rules), proof \(cell.proofBadgeText), \(checked)"
     }
 }

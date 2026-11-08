@@ -51,6 +51,9 @@ struct MusterApp: App {
         _reconciler = StateObject(wrappedValue: reconciler)
         _watch = StateObject(wrappedValue: PlaceWatch(onWake: {
             Task { await admin.refresh() }
+            // The engine's run after a wake belongs to the drift monitor (GRID-33):  it waits
+            // DriftMonitor.wakeRunDelay for the network,  skips the run when one after the wake
+            // already covers it,  and never starts a second run while one is in flight.
         }))
     }
 

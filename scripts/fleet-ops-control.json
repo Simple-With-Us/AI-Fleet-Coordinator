@@ -2,7 +2,6 @@
   "schemaVersion": 1,
   "mac": {
     "agents": [
-      {"label": "com.jay.agent-sync-runtime-sync", "actions": ["start", "stop", "restart"]},
       {"label": "com.jay.botfleet-server", "actions": ["start", "stop", "restart"]},
       {"label": "com.jay.fleet-gdrive-backup", "actions": ["start", "stop", "restart"]},
       {"label": "com.jay.fleet-mac-services", "actions": ["start", "stop", "restart"]},
@@ -21,6 +20,7 @@
       {"label": "com.jay.operator-notes-runner", "actions": ["start", "stop", "restart"]},
       {"label": "com.jay.operator-wake-alerter", "actions": ["start", "stop", "restart"]},
       {"label": "com.jay.sim-idle-reaper", "actions": ["start", "stop", "restart"]},
+      {"label": "com.jay.simple-tools-runtime-sync", "actions": ["start", "stop", "restart"]},
       {"label": "com.jays.weekly-fleet-mode-digest", "actions": ["start", "stop", "restart"]}
     ],
     "pm2Apps": [

@@ -99,12 +99,20 @@ _SHA = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 _GH_REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _REVIEW = re.compile(r"^review-pr-([0-9]{1,9})(?:-([a-z0-9]+(?:-[a-z0-9]+)*))?$")
 _BRANCH_KEY = re.compile(r"^branch\.(.+)\.(merge|remote)$")
+_ORIGIN_BLOB = re.compile(r"^refs/remotes/origin/([^:]+):(.+)$")
 _REVPARSE_SOLO = frozenset(
     {"--absolute-git-dir", "--git-common-dir", "--show-toplevel"}
 )
 
 
 # --------------------------------------------------------------------------- the allowlist and the runner
+
+
+def _rel_path_ok(path: str) -> bool:
+    """A plain repo-relative path: no NUL or newline, not absolute, not option-like, no `.` or `..` part."""
+    if not path or "\x00" in path or "\n" in path or path[0] in "/-":
+        return False
+    return not any(part in ("", ".", "..") for part in path.split("/"))
 
 
 def _git_key(
@@ -134,7 +142,18 @@ def _git_key(
         return "git"
     if len(a) == 4 and a[:3] == ["rev-parse", "--verify", "-q"]:
         rev = a[3].removesuffix("^{commit}")
-        return "git" if (rev == "HEAD" or _SHA.match(rev)) else None
+        if rev == "HEAD" or _SHA.match(rev):
+            return "git"
+        m = _ORIGIN_BLOB.match(a[3])
+        return (
+            "git"
+            if (
+                m
+                and _rel_path_ok(m.group(2))
+                and K.valid_ref_name("origin/" + m.group(1))
+            )
+            else None
+        )
     if len(a) == 3 and a[:2] == ["config", "--get"]:
         if a[2] == "remote.origin.url":
             return "git"
@@ -149,6 +168,12 @@ def _git_key(
         )
     if a == ["symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD"]:
         return "git"
+    if a == ["status", "--porcelain", "--untracked-files=all"]:
+        return "git"
+    if len(a) == 3 and a[:2] == ["hash-object", "--"]:
+        return "git" if _rel_path_ok(a[2]) else None
+    if len(a) == 3 and a[:2] == ["checkout", "--"]:
+        return "git" if _rel_path_ok(a[2]) else None
     if a == ["ls-remote", "--heads", "origin"]:
         return "net"
     return None
@@ -287,6 +312,9 @@ class Facts:
     git_ops: list[str] = field(default_factory=list)
     keep_marker: bool = False
     dirty: int | None = None
+    # dirty paths whose bytes equal origin/<default>'s blob at the same path (published through the GitHub API
+    # rather than pushed); they are not in `dirty`, and `_apply` restores exactly these before removing
+    published: list[str] = field(default_factory=list)
     ignored_local: list[str] = field(
         default_factory=list
     )  # git-ignored files that are not build output
@@ -592,6 +620,10 @@ def _inspect(
     )
     f.dirty = _dirty_count(st.out) if st.ok else None
     f.ignored_local = D.split_ignored(st.out)[0] if st.ok else []
+    if st.ok and f.dirty:
+        split = _split_published(run, rec.path, default_branch)
+        if split is not None:
+            f.dirty, f.published = split
     mb = run(
         [
             "git",
@@ -663,6 +695,84 @@ def _dirty_count(porcelain: str) -> int:
     return len(
         [ln for ln in porcelain.splitlines() if ln.strip() and not ln.startswith("!! ")]
     )
+
+
+def _split_published(
+    run: Runner, path: str, default_branch: str
+) -> tuple[int, list[str]] | None:
+    """(unpublished dirty count, published paths) for a lane whose edits went out through the GitHub API.
+
+    A dirty path is published only when HEAD is already in origin/<default> and the path is a plain tracked edit
+    (` M`) or an untracked regular file (`??`) whose working-tree bytes hash to the blob at the same path on
+    origin/<default>.  Everything else (a staged change, a rename, a deletion, a quoted or odd path, a symlink, a
+    missing blob, differing bytes) counts as dirty.  None when git status could not be read."""
+    st = run(["git", "status", "--porcelain", "--untracked-files=all"], cwd=path)
+    if not st.ok:
+        return None
+    lines = [ln for ln in st.out.splitlines() if ln.strip()]
+    mb = run(
+        [
+            "git",
+            "merge-base",
+            "--is-ancestor",
+            "HEAD",
+            f"refs/remotes/origin/{default_branch}",
+        ],
+        cwd=path,
+    )
+    if not mb.ok:
+        return len(lines), []
+    blocking, published = 0, []
+    for ln in lines:
+        code, rel = ln[:2], ln[3:]
+        full = os.path.join(path, rel)
+        if (
+            code not in (" M", "??")
+            or not _rel_path_ok(rel)
+            or " -> " in rel
+            or os.path.islink(full)
+            or not os.path.isfile(full)
+        ):
+            blocking += 1
+            continue
+        mine = run(["git", "hash-object", "--", rel], cwd=path)
+        theirs = run(
+            [
+                "git",
+                "rev-parse",
+                "--verify",
+                "-q",
+                f"refs/remotes/origin/{default_branch}:{rel}",
+            ],
+            cwd=path,
+        )
+        if (
+            mine.ok
+            and theirs.ok
+            and _SHA.match(mine.out.strip())
+            and mine.out.strip() == theirs.out.strip()
+        ):
+            published.append(rel)
+        else:
+            blocking += 1
+    return blocking, published
+
+
+def _restore_published(run: Runner, path: str, paths: Sequence[str]) -> str | None:
+    """Put each published path back to HEAD's state (checkout for a tracked edit, delete for an untracked file),
+    so `git worktree remove` runs without --force.  The error text on the first failure, else None."""
+    for rel in paths:
+        full = os.path.join(path, rel)
+        if run(["git", "checkout", "--", rel], cwd=path).ok:
+            continue
+        # an untracked file has nothing to check out: remove just that regular file
+        try:
+            if os.path.islink(full) or not os.path.isfile(full):
+                return f"{rel}: not a regular file"
+            os.remove(full)
+        except OSError as exc:
+            return f"{rel}: {exc}"
+    return None
 
 
 def _contains(run: Runner, path: str, oid: str) -> bool:
@@ -1031,12 +1141,45 @@ def _apply(ctx: K.Ctx, run: Runner, plan: _Plan, seats: set | None) -> None:
                     ],
                     cwd=ln.rec.path,
                 )
-                if not st.ok or _dirty_count(st.out) or D.split_ignored(st.out)[0]:
+                split = (
+                    _split_published(run, ln.rec.path, ln.facts.default_branch)
+                    if st.ok and _dirty_count(st.out)
+                    else (0, [])
+                )
+                if (
+                    not st.ok
+                    or split is None
+                    or split[0]
+                    or D.split_ignored(st.out)[0]
+                ):
                     row.action, row.reason = (
                         "keep",
                         "changed since it was inspected (git status)",
                     )
                     continue
+                if split[1]:
+                    err = _restore_published(run, ln.rec.path, split[1])
+                    st2 = run(
+                        [
+                            "git",
+                            "status",
+                            "--porcelain",
+                            "--ignored",
+                            "--untracked-files=normal",
+                        ],
+                        cwd=ln.rec.path,
+                    )
+                    if err or not st2.ok or _dirty_count(st2.out):
+                        row.action, row.reason = (
+                            "keep",
+                            "could not restore published files"
+                            + (f" ({err})" if err else ""),
+                        )
+                        continue
+                    row.note = (
+                        f"restored {len(split[1])} file"
+                        f"{'s' if len(split[1]) != 1 else ''} identical to origin/{ln.facts.default_branch}"
+                    )
                 res = run(["git", "worktree", "remove", ln.rec.path], cwd=tree)
                 if not res.ok:
                     row.action, row.reason = (

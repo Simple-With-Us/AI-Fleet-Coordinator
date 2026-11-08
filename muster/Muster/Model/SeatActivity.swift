@@ -16,11 +16,12 @@ import Foundation
 //     machine's eavesdropper holds each seat
 //   * the fleet chat CLI (`simple-chat`),  which holds the seat's last Zulip post
 //
-// Muster runs on the Mac and reads only the Mac's eavesdropper.  A seat the partition
-// gives to the server is shown as held by the server,  and its eavesdropper columns say
-// that they are not read here:  never Unknown in orange,  and never zero.  A session that
-// runs on the server attaches to no eavesdropper this Mac can read,  so every session
-// count here is a count of sessions on the Mac.
+// This model reads only the Mac's eavesdropper.  A seat the partition gives to the server
+// is shown as held by the server,  and its Mac eavesdropper facts say that they are not read
+// here:  never Unknown in orange,  and never zero.  Every session count here is a count of
+// sessions the Mac's eavesdropper holds.  The view shows a server seat's state from the
+// server's own eavesdropper instead (`ServerSeatRowPresentation`,  read through
+// `ServerEavesdropperStatusStore`),  which this model never mixes into its own facts.
 //
 // The panel is read only.  It runs `users` and `search`,  and nothing else:  the runner
 // in `SeatActivityReader` refuses any other verb.
@@ -260,11 +261,20 @@ struct ListenerStateDocument: Decodable, Equatable, Sendable {
     var pause: [String: PauseEntry]?
     /// The seats the eavesdropper runs,  by tag.
     var seats: [String: Seat]?
+    /// Whether resume-wake is verified for terminal sessions on this machine.
+    var rewakeVerifiedCLI: Bool?
+    /// Whether resume-wake is verified for Desktop sessions on this machine.
+    var rewakeVerifiedDesktop: Bool?
+    /// The one flag an eavesdropper from before the two above published for both.
+    var rewakeVerified: Bool?
 
     enum CodingKeys: String, CodingKey {
         case pid, version, updated, instance, disabled, pause, seats
         case partitionFile = "partition_file"
         case skippedSeats = "skipped_seats"
+        case rewakeVerifiedCLI = "rewake_verified_cli"
+        case rewakeVerifiedDesktop = "rewake_verified_desktop"
+        case rewakeVerified = "rewake_verified"
     }
 
     init(from decoder: Decoder) throws {
@@ -278,11 +288,53 @@ struct ListenerStateDocument: Decodable, Equatable, Sendable {
         skippedSeats = try? container.decodeIfPresent([String: [String]].self, forKey: .skippedSeats)
         pause = try? container.decodeIfPresent([String: PauseEntry].self, forKey: .pause)
         seats = try? container.decodeIfPresent([String: Seat].self, forKey: .seats)
+        rewakeVerifiedCLI = try? container.decodeIfPresent(Bool.self, forKey: .rewakeVerifiedCLI)
+        rewakeVerifiedDesktop = try? container.decodeIfPresent(Bool.self, forKey: .rewakeVerifiedDesktop)
+        rewakeVerified = try? container.decodeIfPresent(Bool.self, forKey: .rewakeVerified)
+    }
+
+    /// Whether resume-wake is verified on this machine,  as the eavesdropper says.
+    var rewake: RewakeVerification {
+        RewakeVerification(
+            terminal: rewakeVerifiedCLI ?? rewakeVerified,
+            desktop: rewakeVerifiedDesktop ?? rewakeVerified
+        )
     }
 
     /// When the eavesdropper last published,  as a date.
     var publishedAt: Date? {
         updated.map { Date(timeIntervalSince1970: $0) }
+    }
+}
+
+/// Whether resume-wake (a session woken again on a new message) is verified on this machine,
+/// as the eavesdropper publishes it (`rewake_verified_cli`, `rewake_verified_desktop`).
+///
+/// Nil is the eavesdropper not saying,  never "not verified".
+struct RewakeVerification: Equatable, Sendable {
+    /// Terminal sessions.
+    var terminal: Bool?
+    /// Desktop sessions.
+    var desktop: Bool?
+
+    /// The answer in one sentence.
+    var sentence: String {
+        guard terminal != nil || desktop != nil else {
+            return "The eavesdropper does not say whether resume-wake is verified on this Mac."
+        }
+        func word(_ flag: Bool?) -> String {
+            switch flag {
+            case true?: return "verified"
+            case false?: return "not verified"
+            case nil: return "not said"
+            }
+        }
+        return "Resume-wake on this Mac:  terminal sessions \(word(terminal)), Desktop sessions \(word(desktop))."
+    }
+
+    /// Whether a session on this Mac may not be woken again on a new message.
+    var isProblem: Bool {
+        terminal == false || desktop == false
     }
 }
 
@@ -337,7 +389,7 @@ enum SeatPlace: Equatable, Sendable {
     var notHereReason: String {
         switch self {
         case .server:
-            return "The server's eavesdropper holds this seat,  and Muster reads only the Mac's,  so this is not read here."
+            return "The server's eavesdropper holds this seat,  so the Mac's eavesdropper says nothing about it,  and this is not read here."
         case .noEavesdropper:
             return "No eavesdropper holds this seat,  so no eavesdropper reports on it."
         case .markedForTheServer:
@@ -383,7 +435,7 @@ enum SeatPlaceGroup: String, CaseIterable, Identifiable, Sendable {
         case .mac:
             return "The Mac's eavesdropper holds these seats,  and their sessions,  state and quota come from it."
         case .server:
-            return "The server's eavesdropper holds these seats.  Muster cannot read it yet,  so only their last post is shown."
+            return "The server's eavesdropper holds these seats.  Muster reads it through the server's control helper,  and each row shows what the server says about that seat,  beside its last post."
         case .noEavesdropper:
             return "No eavesdropper holds these seats,  so only their last post is shown."
         case .notKnown:
@@ -543,6 +595,9 @@ struct SeatSession: Identifiable, Equatable, Sendable {
     var topics: Int?
     /// How many items wait in the session's live inbox.
     var pending: Int?
+    /// Whether a rewake watcher holds the lease,  so the session is woken again on a new
+    /// message.  Nil when the eavesdropper did not say.
+    var watcher: Bool?
 
     init(lease: ListenerStateDocument.Lease, index: Int) {
         id = lease.leaseID ?? "lease-\(index)"
@@ -554,17 +609,32 @@ struct SeatSession: Identifiable, Equatable, Sendable {
         why = lease.why.map(SeatActivityText.label).flatMap { $0.isEmpty ? nil : $0 }
         topics = lease.topics
         pending = lease.pending
+        watcher = lease.watcher
     }
 
     /// The session in one line:  its letter and title,  where it runs,  and what it holds.
     var line: String {
         var parts: [String] = []
-        let name = [letter, title].compactMap { $0 }.joined(separator: " ")
-        parts.append(name.isEmpty ? "A session with no registered name" : name)
+        if let letter {
+            parts.append([letter, title].compactMap { $0 }.joined(separator: " "))
+        } else {
+            parts.append(SeatActivityText.noLetter + (title.map { ":  \($0)" } ?? ""))
+        }
         if let platform { parts.append(platform) }
         if let verifiedHost { parts.append(verifiedHost.inProse) }
         if let topics { parts.append(topics == 1 ? "1 topic" : "\(topics) topics") }
         if let pending, pending > 0 { parts.append("\(pending) waiting") }
+        // Only a session that has not ended can be woken again, so only its watcher matters.
+        if alive != false {
+            switch watcher {
+            case true?:
+                break
+            case false?:
+                parts.append("no rewake watcher (a new message will not wake it again)")
+            case nil:
+                parts.append("rewake watcher not said")
+            }
+        }
         switch alive {
         case true?:
             break
@@ -738,6 +808,9 @@ struct SeatActivityModel: Equatable, Sendable {
     var listenerPath: String = ""
     /// When the Mac's eavesdropper wrote the state the panel used,  when it was used.
     var listenerWrittenAt: Date?
+    /// Whether resume-wake is verified on this Mac,  from the state the panel used.  Nil when
+    /// that state was not used.
+    var rewake: RewakeVerification?
     /// Where the seat partition came from.
     var partitionPath: String = ""
     /// The seats the partition gives to the server that have no row,  because the app's
@@ -833,9 +906,11 @@ struct SeatActivityModel: Equatable, Sendable {
         }
         let server = rows.filter { $0.place == .server }.count + otherServerSeats.count
         if server > 0 {
+            // What the server's eavesdropper says about them is in their rows,  from its own
+            // store (`ServerEavesdropperStatusStore`),  not in this model.
             sentences.append(server == 1
-                ? "1 seat is held by the server,  which Muster cannot read yet."
-                : "\(server) seats are held by the server,  which Muster cannot read yet.")
+                ? "1 seat is held by the server."
+                : "\(server) seats are held by the server.")
         }
         let unknown = rows.filter { $0.place.group == .notKnown }.count
         if unknown > 0 {
@@ -896,6 +971,7 @@ enum SeatActivityBuilder {
         model.requestCeiling = sources.requestCeiling
         model.listenerPath = sources.listenerPath
         model.listenerWrittenAt = sources.listener?.publishedAt
+        model.rewake = sources.listener?.rewake
         model.partitionPath = sources.partitionPath
         model.rosterProblem = sources.rosterProblem
 
@@ -1079,13 +1155,28 @@ enum SeatActivityBuilder {
     /// full pause in either scope wins over a wakes-only one.
     static func pauseKind(for seat: String, listener: ListenerStateDocument) -> PauseKind? {
         guard let pause = listener.pause else { return nil }
-        var found: PauseKind?
-        for scope in [seat, "*"] {
+        return coveringPause(for: seat, in: pause, wakesOnly: { $0.wakesOnly })?.kind
+    }
+
+    /// The kill switch entry that has the effect on a seat,  and its scope:  a full pause in
+    /// either scope first,  and only then a wakes-only one.  The scopes are read in the
+    /// eavesdropper's own order (`live.paused`):  `*` first,  then the seat.
+    ///
+    /// Both panels use this,  so they never name different pauses for one seat.  It takes any
+    /// entry type,  because Seat Activity,  the Wake panel's status and the pause file each
+    /// decode their own.
+    static func coveringPause<Entry>(
+        for seat: String,
+        in pause: [String: Entry],
+        wakesOnly: (Entry) -> Bool?
+    ) -> (scope: String, entry: Entry, kind: PauseKind)? {
+        var found: (scope: String, entry: Entry, kind: PauseKind)?
+        for scope in ["*", seat] {
             guard let entry = pause[scope] else { continue }
-            if entry.wakesOnly == true {
-                found = found ?? .wakesOnly
+            if wakesOnly(entry) == true {
+                if found == nil { found = (scope: scope, entry: entry, kind: .wakesOnly) }
             } else {
-                return .full
+                return (scope: scope, entry: entry, kind: .full)
             }
         }
         return found
@@ -1105,6 +1196,11 @@ enum SeatActivityText {
 
     /// The gap between two sentences on screen:  a real U+00A0,  then a normal space.
     static let sentenceGap = "\u{00A0} "
+
+    /// What a session's line says when it has no letter.  The eavesdropper leaves the letter
+    /// out both when the session never registered one and when its registry lookup failed, and
+    /// it does not say which, so the line claims neither.
+    static let noLetter = "No letter reported"
 
     /// Text written with the code's two-space gaps,  made right for the screen.
     ///
