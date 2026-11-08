@@ -1446,6 +1446,162 @@ class ChatCatalog:
         finally:
             conn.close()
 
+    # --------------------------------------------------------------- Antigravity
+
+    def _antigravity_dbs(self) -> list[Path]:
+        found: list[Path] = []
+        for product in ("antigravity-cli", "antigravity"):
+            db = self.home / ".gemini" / product / "conversation_summaries.db"
+            if db.is_symlink() or not db.is_file() or not _within(db, self.home):
+                continue
+            found.append(db)
+        return found
+
+    @staticmethod
+    def _antigravity_cwd(raw_uris: Any) -> str | None:
+        if not isinstance(raw_uris, str) or not raw_uris.strip():
+            return None
+        try:
+            items = json.loads(raw_uris)
+        except ValueError:
+            items = [raw_uris.strip()]
+        if not isinstance(items, list):
+            return None
+        for item in items:
+            if not isinstance(item, str) or not item.strip():
+                continue
+            text = item.strip()
+            if text.startswith("file://"):
+                from urllib.parse import unquote, urlparse
+
+                parsed = unquote(urlparse(text).path)
+                if parsed:
+                    return parsed
+            elif text.startswith("/"):
+                return text
+        return None
+
+    def _antigravity_row(
+        self,
+        sid: str,
+        title: Any,
+        created_at: Any,
+        updated_at: Any,
+        workspace_uris: Any,
+    ) -> dict[str, Any] | None:
+        session_key = sid.strip() if isinstance(sid, str) else ""
+        if not session_key:
+            return None
+        cwd = self._antigravity_cwd(workspace_uris)
+        clean_title = _safe_text(title, max_chars=180) or ("Antigravity chat " + session_key[:12])
+        stamp = _timestamp(updated_at, created_at)
+        return self._row(
+            "antigravity",
+            "AG",
+            session_key,
+            cwd=cwd,
+            title=clean_title,
+            updated_at=stamp,
+            status="metadata-only",
+            wake=False,
+            source="antigravity-summaries",
+        )
+
+    def _scan_antigravity(self) -> list[dict[str, Any]]:
+        """Read Antigravity conversation metadata from ~/.gemini/antigravity{-cli,}/conversation_summaries.db."""
+        dbs = self._antigravity_dbs()
+        if not dbs:
+            return [self._unavailable("antigravity", "AG", "no Antigravity summaries database")]
+        by_sid: dict[str, dict[str, Any]] = {}
+        usable_db = False
+        for db in dbs:
+            conn = None
+            try:
+                conn = sqlite3.connect(f"file:{quote(str(db))}?mode=ro", uri=True, timeout=0.25)
+                conn.execute("PRAGMA query_only = ON")
+                cols = {
+                    str(r[1])
+                    for r in conn.execute("PRAGMA table_info(conversation_summaries)").fetchall()
+                }
+                if "conversation_id" not in cols:
+                    continue
+                usable_db = True
+                title_expr = "title" if "title" in cols else "''"
+                created_expr = "created_at" if "created_at" in cols else "''"
+                updated_expr = "updated_at" if "updated_at" in cols else "''"
+                uris_expr = "workspace_uris" if "workspace_uris" in cols else "''"
+                where = "WHERE COALESCE(killed, 0) = 0" if "killed" in cols else ""
+                order = (
+                    "ORDER BY updated_at DESC"
+                    if "updated_at" in cols
+                    else ("ORDER BY created_at DESC" if "created_at" in cols else "")
+                )
+                query = (
+                    f"SELECT conversation_id, {title_expr}, {created_expr}, {updated_expr}, {uris_expr}"
+                    f" FROM conversation_summaries {where} {order} LIMIT ?"
+                )
+                for cid, title, created_at, updated_at, workspace_uris in conn.execute(
+                    query, (MAX_FILES_PER_SOURCE,)
+                ):
+                    row = self._antigravity_row(cid, title, created_at, updated_at, workspace_uris)
+                    if row is None:
+                        continue
+                    prev = by_sid.get(row["session_id"])
+                    if prev is None or (row.get("updated_at") or 0) > (prev.get("updated_at") or 0):
+                        by_sid[row["session_id"]] = row
+            except (sqlite3.Error, OSError, ValueError):
+                continue
+            finally:
+                if conn is not None:
+                    conn.close()
+        if not usable_db:
+            return [
+                self._unavailable("antigravity", "AG", "Antigravity summaries schema unavailable")
+            ]
+        rows = sorted(
+            by_sid.values(),
+            key=lambda r: (r.get("updated_at") or 0, r["id"]),
+            reverse=True,
+        )[:MAX_FILES_PER_SOURCE]
+        return rows or [self._unavailable("antigravity", "AG", "no Antigravity sessions")]
+
+    def _find_antigravity(self, sid: str) -> dict[str, Any] | None:
+        best: dict[str, Any] | None = None
+        for db in self._antigravity_dbs():
+            conn = None
+            try:
+                conn = sqlite3.connect(f"file:{quote(str(db))}?mode=ro", uri=True, timeout=0.25)
+                conn.execute("PRAGMA query_only = ON")
+                cols = {
+                    str(r[1])
+                    for r in conn.execute("PRAGMA table_info(conversation_summaries)").fetchall()
+                }
+                if "conversation_id" not in cols:
+                    continue
+                title_expr = "title" if "title" in cols else "''"
+                created_expr = "created_at" if "created_at" in cols else "''"
+                updated_expr = "updated_at" if "updated_at" in cols else "''"
+                uris_expr = "workspace_uris" if "workspace_uris" in cols else "''"
+                killed_check = "AND COALESCE(killed, 0) = 0" if "killed" in cols else ""
+                query = (
+                    f"SELECT conversation_id, {title_expr}, {created_expr}, {updated_expr}, {uris_expr}"
+                    f" FROM conversation_summaries WHERE conversation_id = ? {killed_check} LIMIT 1"
+                )
+                fetched = conn.execute(query, (sid,)).fetchone()
+                if fetched is None:
+                    continue
+                row = self._antigravity_row(*fetched)
+                if row is not None and (
+                    best is None or (row.get("updated_at") or 0) > (best.get("updated_at") or 0)
+                ):
+                    best = row
+            except (sqlite3.Error, OSError, ValueError):
+                continue
+            finally:
+                if conn is not None:
+                    conn.close()
+        return best
+
     def _scan(
         self,
         *,
@@ -1468,6 +1624,7 @@ class ChatCatalog:
             (self._scan_fx, "fx", "FX"),
             (self._scan_opencode, "opencode", "OPENCODE"),
             (self._scan_cursor_local, "cursor-local", "CURSOR"),
+            (self._scan_antigravity, "antigravity", "AG"),
         ]
         # Failure isolation:  one platform's scanner raising must degrade that
         # platform to an unavailable row, never take down the whole scan (or die
@@ -1479,8 +1636,6 @@ class ChatCatalog:
             except Exception:
                 groups.append([self._unavailable(platform, seat, "scan error")])
         rows = [row for group in groups for row in group]
-        for platform, seat in (("antigravity", "AG"),):
-            rows.append(self._unavailable(platform, seat, "adapter not available"))
         unique: dict[str, dict[str, Any]] = {}
         for row in rows:
             unique[row["id"]] = row
@@ -1626,9 +1781,9 @@ class ChatCatalog:
                 row = self._find_grok(sid)
             elif name == "opencode":
                 row = self._find_opencode(sid)
+            elif name == "antigravity":
+                row = self._find_antigravity(sid)
             else:
-                # Follow-up:  platforms with no local store here (antigravity) have no
-                # by-id lookup yet, so a tagged chat on one stays unfound.
                 return None
         except Exception:
             return None
