@@ -1607,6 +1607,8 @@ class CommandTests(Checks):
         self.assertEqual(set(ma.CHANGE_VERBS), helper)
         self.assertEqual(set(ma.READ_VERBS), {"resource-status", "seat-inventory", "update-status"})
         self.assertNotIn("eavesdropper-status", ma.CHANGE_VERBS + ma.READ_VERBS)
+        # The helper's `server unit-status` is for the ssh route only until the spec offers it here.
+        self.assertNotIn("unit-status", ma.CHANGE_VERBS + ma.READ_VERBS)
 
 
 class InputTests(Checks):
@@ -3673,11 +3675,23 @@ class HelperTests(Checks):
     def test_a_logs_run_takes_the_lock_and_returns_the_text(self):
         env = Env(self)
         journalctl = "/usr/bin/journalctl"
+        # A timer's logs plan reads the journal of the service it starts (its `logsUnit`); the plan
+        # still names the timer as its target and audit target.
         plan = foc.plan_object(
             "server",
             "logs",
             "fleet-server-status.timer",
-            [[journalctl, "--user", "-u", "fleet-server-status.timer", "-n", "200", "--no-pager"]],
+            [
+                [
+                    journalctl,
+                    "--user",
+                    "-u",
+                    "fleet-server-status.service",
+                    "-n",
+                    "200",
+                    "--no-pager",
+                ]
+            ],
             "fleet-server-status.timer",
         )
         digest = hashlib.sha256(ma.canonical_bytes(plan)).hexdigest()
@@ -3715,7 +3729,7 @@ class HelperTests(Checks):
                     "/usr/bin/journalctl",
                     "--user",
                     "-u",
-                    "fleet-server-status.timer",
+                    "fleet-server-status.service",
                     "-n",
                     "200",
                     "--no-pager",
@@ -3839,6 +3853,9 @@ class HelperTests(Checks):
             "mac restart com.jay.fleet-tools-doctor --plan",
             "pm2 restart shellular --yes",
             "server eavesdropper-status server --plan",
+            "server unit-status fleet-server-status.timer --plan",
+            "server unit-status docker.service --plan",
+            "server unit-status fleet-server-status.timer --yes",
         ):
             with self.subTest(command=command):
                 answer, code, runner, _ = helper_request(env, command, job_stdin(), NOW)
@@ -5961,11 +5978,23 @@ class PlannerBytesTests(Checks):
                 system,
             ),
             (
-                "logs, user scope",
+                # A timer reads the journal of the service it starts (its `logsUnit`), and the
+                # plan's target and audit target stay the timer.
+                "logs, user scope, a timer",
                 "logs",
                 unit,
                 1000,
-                [[self.JOURNALCTL, "--user", "-u", unit, "-n", "200", "--no-pager"]],
+                [
+                    [
+                        self.JOURNALCTL,
+                        "--user",
+                        "-u",
+                        "fleet-server-status.service",
+                        "-n",
+                        "200",
+                        "--no-pager",
+                    ]
+                ],
                 unit,
             ),
             (
@@ -6727,7 +6756,17 @@ class TimeoutOutcomeTests(Checks):
             "server",
             "logs",
             "fleet-server-status.timer",
-            [[journalctl, "--user", "-u", "fleet-server-status.timer", "-n", "200", "--no-pager"]],
+            [
+                [
+                    journalctl,
+                    "--user",
+                    "-u",
+                    "fleet-server-status.service",
+                    "-n",
+                    "200",
+                    "--no-pager",
+                ]
+            ],
             "fleet-server-status.timer",
         )
         digest = hashlib.sha256(ma.canonical_bytes(plan)).hexdigest()

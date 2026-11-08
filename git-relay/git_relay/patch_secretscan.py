@@ -15,8 +15,8 @@ SECRET, TOKEN, PASSWORD or API_KEY assigned a 16 character value.  `scripts/chec
 keeps a local fallback list of the main kinds (not `lin_wh_`, the JWT or the Infisical assignment) for
 when it runs outside the repo and cannot load this file;  inside the repo this scanner is the one that
 runs, and whatever the fallback flags, this flags too (test_secretscan_fleet pins it).
-The hosted MCP Worker keeps a JavaScript copy of the list (`scripts/agent-sync-mcp/src/contract.js`);
-`scripts/agent-sync-mcp/test/secretscan-parity.test.mjs` runs this suite's samples through both, so add a
+The hosted MCP Worker keeps a JavaScript copy of the list (`scripts/simple-tools-mcp/src/contract.js`);
+`scripts/simple-tools-mcp/test/secretscan-parity.test.mjs` runs this suite's samples through both, so add a
 kind to both in one change.
 
 `redact_fields(obj)` is the per-field form for structured data that is about to be written

@@ -1100,25 +1100,25 @@
      "jobNonce": "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
      "outcome": "done",
      "outputB64": "bGluZSBvbmUKbGluZSB0d28KbmHDr3ZlIHRocmVlCg",
-     "planSHA256": "f568a2a74be62d654cd23657903fbec952a451bfc1778031235d53a561ed7a87",
+     "planSHA256": "1ff02a672f25fa559b0307b2744f694c1fac4426263b4a9f2987f6b0a6d088c4",
      "target": "fleet-server-status.timer"
     },
     "keyId": "38fbd10025f412d0",
     "kind": "result",
     "protocol": "muster-helper/1",
-    "signature": "MEYCIQCzu8FBrgzsjg0o2MdohfFsH391KJhamlEXc7U0QFoFUwIhAOonT3UfSN9pDKxdAA9LfVxstZRo0WvBTc3eb9Mi_Xi8"
+    "signature": "MEQCIGztBYwlK5vP2xkcKxbCYH68WTyJbONvXoEqA1dYMfC3AiBDrQetrpLnCcYDiNa5lShfpssmbRUX4jcimOpNND64qQ"
    },
-   "bodySHA256": "fe6d8f8e63f63c5c6c79a60a94d13276bf2cf24c677e21b88f182cdd406aeeee",
+   "bodySHA256": "578647404937b46a4aac596578a032097e8df1cfc041b0f5f6a7975e4dc9cdc8",
    "command": "server logs fleet-server-status.timer --yes",
    "exitStatus": 0,
    "id": "logsResult",
-   "line": "{\"body\":{\"action\":\"logs\",\"approvalNonce\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"auditId\":\"a1b2c3d4e5f6\",\"contract\":\"muster-signed-result/1\",\"detail\":\"3 journal lines\",\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"finishedAt\":\"2026-11-07T21:00:30Z\",\"helperTrustListVersion\":1,\"host\":\"server\",\"jobId\":\"job7k2m9q4x1\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\",\"outcome\":\"done\",\"outputB64\":\"bGluZSBvbmUKbGluZSB0d28KbmHDr3ZlIHRocmVlCg\",\"planSHA256\":\"f568a2a74be62d654cd23657903fbec952a451bfc1778031235d53a561ed7a87\",\"target\":\"fleet-server-status.timer\"},\"keyId\":\"38fbd10025f412d0\",\"kind\":\"result\",\"protocol\":\"muster-helper/1\",\"signature\":\"MEYCIQCzu8FBrgzsjg0o2MdohfFsH391KJhamlEXc7U0QFoFUwIhAOonT3UfSN9pDKxdAA9LfVxstZRo0WvBTc3eb9Mi_Xi8\"}\n",
-   "lineSHA256": "fb54dcc1ce76be0a2584f2bd96d1b244663b7a975e5e9114cc51bcc08d26aa43",
+   "line": "{\"body\":{\"action\":\"logs\",\"approvalNonce\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"auditId\":\"a1b2c3d4e5f6\",\"contract\":\"muster-signed-result/1\",\"detail\":\"3 journal lines\",\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"finishedAt\":\"2026-11-07T21:00:30Z\",\"helperTrustListVersion\":1,\"host\":\"server\",\"jobId\":\"job7k2m9q4x1\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\",\"outcome\":\"done\",\"outputB64\":\"bGluZSBvbmUKbGluZSB0d28KbmHDr3ZlIHRocmVlCg\",\"planSHA256\":\"1ff02a672f25fa559b0307b2744f694c1fac4426263b4a9f2987f6b0a6d088c4\",\"target\":\"fleet-server-status.timer\"},\"keyId\":\"38fbd10025f412d0\",\"kind\":\"result\",\"protocol\":\"muster-helper/1\",\"signature\":\"MEQCIGztBYwlK5vP2xkcKxbCYH68WTyJbONvXoEqA1dYMfC3AiBDrQetrpLnCcYDiNa5lShfpssmbRUX4jcimOpNND64qQ\"}\n",
+   "lineSHA256": "567da775acee4a0722da98b1d6f4ce2dbb2739a45ed997c21354bd5e2ab64112",
    "now": "2026-11-07T21:00:30Z",
    "setup": {
     "stored": "v1"
    },
-   "stdin": "{\"approval\":{\"action\":\"logs\",\"approvalNonce\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"expiresAt\":\"2026-11-07T21:02:00Z\",\"host\":\"server\",\"issuedAt\":\"2026-11-07T21:00:00Z\",\"jobId\":\"job7k2m9q4x1\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\",\"planSHA256\":\"f568a2a74be62d654cd23657903fbec952a451bfc1778031235d53a561ed7a87\",\"signature\":\"MEUCIQCFk1p5kg5TLi0C1rZVu6iq2EagNqz01QTcZOKykvjsbQIgFrqAE4wgek0L02ea_a286q16MoQ-sm2FcZn0Oag4O2o\",\"target\":\"fleet-server-status.timer\"},\"protocol\":\"muster-helper/1\"}",
+   "stdin": "{\"approval\":{\"action\":\"logs\",\"approvalNonce\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\",\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"expiresAt\":\"2026-11-07T21:02:00Z\",\"host\":\"server\",\"issuedAt\":\"2026-11-07T21:00:00Z\",\"jobId\":\"job7k2m9q4x1\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\",\"planSHA256\":\"1ff02a672f25fa559b0307b2744f694c1fac4426263b4a9f2987f6b0a6d088c4\",\"signature\":\"MEUCIG5Ttt3m152q4Hh6jKfyzER8bkcPS9MK20Mh8_Ge_NDfAiEA_xtMrCnzkdded1XGXnjXhqZpHXaCJRaH34grd4Z46fk\",\"target\":\"fleet-server-status.timer\"},\"protocol\":\"muster-helper/1\"}",
    "title": "An approved journal read: a done result whose outputB64 is the log text (UTF-8)"
   },
   {

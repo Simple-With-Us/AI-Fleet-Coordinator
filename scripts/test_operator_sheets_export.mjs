@@ -1,8 +1,8 @@
-// Tests for agent_sync/operator_sheets_export.mjs (AFC-412 PR2).
+// Tests for simple_tools/operator_sheets_export.mjs (AFC-412 PR2).
 // Run: node --test scripts/test_operator_sheets_export.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { drainOutbox, SESSIONS_HEADERS, EVENTS_HEADERS } from "./agent_sync/operator_sheets_export.mjs";
+import { drainOutbox, SESSIONS_HEADERS, EVENTS_HEADERS } from "./simple_tools/operator_sheets_export.mjs";
 
 function fakeAdapter() {
   const sessions = []; // { rowNumber, cells }
@@ -159,7 +159,7 @@ test('out-of-page physical row number refuses mutation',async()=>{
 
 // Display contract tests (owner rule): America/Chicago conversion, 12-hour AM/PM, no timezone
 // label, text output; invalid/empty pass through; non-timestamp cells unchanged; UTC stays internal.
-import { formatDisplayTimestamp, formatCellsForDisplay } from "./agent_sync/operator_sheets_export.mjs";
+import { formatDisplayTimestamp, formatCellsForDisplay } from "./simple_tools/operator_sheets_export.mjs";
 
 test("formatter converts UTC to America/Chicago 12-hour with AM/PM and no zone label", () => {
   const out = formatDisplayTimestamp("2026-11-04T15:05:31.000Z"); // 9:05:31 AM CST

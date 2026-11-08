@@ -1055,7 +1055,7 @@ struct WakeSettingsView: View {
                 ProgressView()
                     .controlSize(.small)
                 let seconds = max(0, Int(context.date.timeIntervalSince(running.startedAt)))
-                Text("\(running.title) running since \(FleetTime.clock(running.startedAt)), \(seconds / 60)m \(seconds % 60)s so far.\u{00A0} It can take up to \(Int(AgentSyncInvocation.testWakeTimeout / 60)) minutes, and leaving this panel does not stop it.")
+                Text("\(running.title) running since \(FleetTime.clock(running.startedAt)), \(seconds / 60)m \(seconds % 60)s so far.\u{00A0} It can take up to \(Int(SimpleToolsInvocation.testWakeTimeout / 60)) minutes, and leaving this panel does not stop it.")
                     .font(.system(size: 11))
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -1416,7 +1416,7 @@ private struct PendingWakeAction: Identifiable {
             let opening = "This checks \(seat)'s edited settings with the eavesdropper's own rules, writes them to the Mac's eavesdropper configuration file, and asks the eavesdropper to re-read it.\u{00A0} Muster then says whether the eavesdropper took the change."
             return detail.isEmpty ? opening : opening + "\n\n" + detail
         case .testWake:
-            return "This runs \(subject) on this Mac against canned hostile messages.\u{00A0} Nothing is posted, and no wake budget is spent.\u{00A0} It uses the provider's quota and can take up to \(Int(AgentSyncInvocation.testWakeTimeout / 60)) minutes.\u{00A0} You then read its answer and decide whether to pin it."
+            return "This runs \(subject) on this Mac against canned hostile messages.\u{00A0} Nothing is posted, and no wake budget is spent.\u{00A0} It uses the provider's quota and can take up to \(Int(SimpleToolsInvocation.testWakeTimeout / 60)) minutes.\u{00A0} You then read its answer and decide whether to pin it."
         case .pin:
             let pins = "This pins what the last passing test of \(subject) ran, as proved.\u{00A0} The eavesdropper refuses a test over a day old, or one whose binary or model has changed since.\u{00A0} It asks for Touch ID."
             guard let at = candidateAt,

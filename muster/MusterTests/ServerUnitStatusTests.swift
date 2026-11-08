@@ -211,6 +211,62 @@ final class ServerUnitStateDecodingTests: XCTestCase {
             .hasPrefix("No next run time:") == true)
     }
 
+    /// A timer's `lastTriggerAt` is when it last fired,  said on Jay's clock before the next run,
+    /// even when the next run has no wall-clock time.
+    func test_a_timer_says_when_it_last_ran() throws {
+        let answer = unitAnswer(
+            "code-main-sync.timer",
+            #""scope":"system","activeState":"active","subState":"waiting","unitResult":"success","lastExitAt":null,"nextElapseAt":null,"lastTriggerAt":"2026-11-08T15:50:00Z","checkedAt":"2026-11-08T16:02:00Z""#
+        )
+        let state = try XCTUnwrap(parsePlan(answer, .unitStatus(unit: "code-main-sync.timer")).unitState)
+        XCTAssertTrue(state.isTimer)
+        XCTAssertNil(state.nextElapseAt)
+        XCTAssertEqual(state.lastTriggerAt, try date("2026-11-08T15:50:00Z"))
+        XCTAssertEqual(state.timesText(now: try date("2026-11-08T16:05:00Z")),
+                       "Last ran 9:50 AM.\u{00A0} No next run time:  it runs on a schedule counted from boot or its last run.\u{00A0} Last result:  success.")
+
+        // With a next run too,  the last run comes first.
+        let both = unitAnswer(
+            "fleet-server-status.timer",
+            #""scope":"user","activeState":"active","subState":"waiting","unitResult":"success","lastExitAt":null,"nextElapseAt":"2026-11-08T16:15:00Z","lastTriggerAt":"2026-11-08T16:00:00Z","checkedAt":"2026-11-08T16:02:00Z""#
+        )
+        let timer = try XCTUnwrap(parsePlan(both, .unitStatus(unit: "fleet-server-status.timer")).unitState)
+        XCTAssertEqual(timer.timesText(now: try date("2026-11-08T16:05:00Z")),
+                       "Last ran 10:00 AM.\u{00A0} Next run 10:15 AM.\u{00A0} Last result:  success.")
+    }
+
+    /// A timer that has not fired since boot gives `lastTriggerAt` as null,  and one that will not
+    /// parse is left out:  neither says when it last ran.
+    func test_a_timer_with_no_last_run_time_says_nothing_about_it() throws {
+        for value in ["null", #""yesterday""#, "7"] {
+            let answer = unitAnswer(
+                "fleet-server-status.timer",
+                #""scope":"user","activeState":"active","subState":"waiting","unitResult":"success","lastExitAt":null,"nextElapseAt":"2026-11-08T16:15:00Z","lastTriggerAt":"#
+                    + value + #","checkedAt":"2026-11-08T16:02:00Z""#
+            )
+            let state = try XCTUnwrap(parsePlan(answer, .unitStatus(unit: "fleet-server-status.timer")).unitState, value)
+            XCTAssertNil(state.lastTriggerAt, value)
+            XCTAssertEqual(state.timesText(now: try date("2026-11-08T16:05:00Z")),
+                           "Next run 10:15 AM.\u{00A0} Last result:  success.", value)
+        }
+    }
+
+    /// A service carries no `lastTriggerAt` key,  and a stray one on a service is not read.
+    func test_a_service_has_no_last_run_time() throws {
+        let state = try XCTUnwrap(parsePlan(serviceAnswer, .unitStatus(unit: "docker.service")).unitState)
+        XCTAssertFalse(state.isTimer)
+        XCTAssertNil(state.lastTriggerAt)
+
+        let stray = unitAnswer(
+            "docker.service",
+            #""scope":"system","activeState":"active","subState":"running","unitResult":"success","lastExitAt":"2026-11-08T15:40:00Z","lastTriggerAt":"2026-11-08T15:50:00Z","checkedAt":"2026-11-08T16:02:00Z""#
+        )
+        let service = try XCTUnwrap(parsePlan(stray, .unitStatus(unit: "docker.service")).unitState)
+        XCTAssertNil(service.lastTriggerAt)
+        XCTAssertEqual(service.timesText(now: try date("2026-11-08T16:05:00Z")),
+                       "Last exited 9:40 AM.\u{00A0} Last result:  success.")
+    }
+
     /// A null result is no result,  not a word.
     func test_a_unit_with_no_result_yet_keeps_its_state() throws {
         let answer = unitAnswer(

@@ -1095,6 +1095,9 @@ struct OpsResult: Decodable, Equatable {
     /// True when the answer carries the `nextElapseAt` key at all,  null included:  the helper
     /// gives it for a timer only.
     let hasNextElapseAt: Bool
+    /// When a timer last fired,  as the helper spells a time,  or null.  The helper gives the key
+    /// for a timer only.
+    let lastTriggerAt: String?
     /// When the server read the unit.
     let checkedAt: String?
     /// The unit whose journal a `server logs` answer reads:  the service a timer starts,  for a
@@ -1109,7 +1112,7 @@ struct OpsResult: Decodable, Equatable {
         case executionState, verified, invocationID, baselineStartMonotonic, host
         case errorCode, auditID, auditTarget, completedCommands, status
         case unit, scope, activeState, subState, unitResult, lastExitAt, nextElapseAt, checkedAt
-        case logsUnit, resourceName
+        case lastTriggerAt, logsUnit, resourceName
         case oldSource = "old_source"
     }
 
@@ -1149,6 +1152,7 @@ struct OpsResult: Decodable, Equatable {
         lastExitAt = try? container.decodeIfPresent(String.self, forKey: .lastExitAt)
         nextElapseAt = try? container.decodeIfPresent(String.self, forKey: .nextElapseAt)
         hasNextElapseAt = container.contains(.nextElapseAt)
+        lastTriggerAt = try? container.decodeIfPresent(String.self, forKey: .lastTriggerAt)
         checkedAt = try? container.decodeIfPresent(String.self, forKey: .checkedAt)
         logsUnit = try? container.decodeIfPresent(String.self, forKey: .logsUnit)
         resourceName = try? container.decodeIfPresent(String.self, forKey: .resourceName)

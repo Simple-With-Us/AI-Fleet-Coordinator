@@ -12,7 +12,7 @@
 vol_code="${FLEET_SERVER_VOLUME:-}/Code/AI-Fleet-Coordinator/scripts/platform-letter"
 real=
 for candidate in \
-  "$HOME/apps/lanes/_managed/fleet/agent-sync-runtime/scripts/platform-letter" \
+  "$HOME/apps/lanes/_managed/fleet/simple-tools-runtime/scripts/platform-letter" \
   "$HOME/.local/share/fleet-cli/current/scripts/platform-letter" \
   "$HOME/Code/AI-Fleet-Coordinator/scripts/platform-letter" \
   "$vol_code"; do

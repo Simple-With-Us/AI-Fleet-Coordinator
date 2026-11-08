@@ -5,7 +5,7 @@ import Foundation
 //
 // The server's listener (the eavesdropper) runs in a container on the server, and Muster has no
 // route into it.  The server's control helper reads the listener's own status file and cuts it
-// down to names, counts, tokens and times (`scripts/agent_sync/reduced_status.py`, the
+// down to names, counts, tokens and times (`scripts/simple_tools/reduced_status.py`, the
 // reduced_status v1 document).  Muster asks for that document over the existing restricted
 // route with the read-only verb `server eavesdropper-status server --plan --json`
 // (`OpsAction.eavesdropperStatus`).  It changes nothing, so it needs no sheet and no Touch ID.

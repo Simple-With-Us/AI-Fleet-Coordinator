@@ -9,7 +9,8 @@ import Foundation
 // server checks its own copy again.
 //
 // The helper's answer carries systemd's words (`activeState`,  `subState`,  `unitResult`) and
-// three times.  Each word must be in systemd's own shape,  `[a-z][a-z0-9-]{0,31}`,  and anything
+// its times (`lastExitAt`,  `checkedAt`,  and for a timer `nextElapseAt` and `lastTriggerAt`).
+// Each word must be in systemd's own shape,  `[a-z][a-z0-9-]{0,31}`,  and anything
 // else is not reported:  a state Muster cannot vouch for is never shown as one.
 //
 // Right after a `--yes` run of a server unit,  the app's controller reads the unit's state again
@@ -36,12 +37,15 @@ struct ServerUnitState: Equatable {
     /// When a timer next elapses,  or nil for a service,  and for a timer on a monotonic
     /// schedule that has no wall-clock time to give.
     let nextElapseAt: Date?
+    /// When a timer last fired,  or nil for a service,  and for a timer that has not fired since
+    /// boot.
+    let lastTriggerAt: Date?
     /// When the server read the unit.
     let checkedAt: Date
 
     init(unit: String, scope: String? = nil, activeState: String, subState: String,
          unitResult: String? = nil, lastExitAt: Date? = nil, isTimer: Bool = false,
-         nextElapseAt: Date? = nil, checkedAt: Date) {
+         nextElapseAt: Date? = nil, lastTriggerAt: Date? = nil, checkedAt: Date) {
         self.unit = unit
         self.scope = scope
         self.activeState = activeState
@@ -50,6 +54,7 @@ struct ServerUnitState: Equatable {
         self.lastExitAt = lastExitAt
         self.isTimer = isTimer
         self.nextElapseAt = nextElapseAt
+        self.lastTriggerAt = lastTriggerAt
         self.checkedAt = checkedAt
     }
 
@@ -75,6 +80,7 @@ struct ServerUnitState: Equatable {
             lastExitAt: answer.lastExitAt.flatMap(FleetTime.parse),
             isTimer: answer.hasNextElapseAt,
             nextElapseAt: answer.nextElapseAt.flatMap(FleetTime.parse),
+            lastTriggerAt: answer.hasNextElapseAt ? answer.lastTriggerAt.flatMap(FleetTime.parse) : nil,
             checkedAt: checked
         )
     }
@@ -106,11 +112,14 @@ struct ServerUnitState: Equatable {
         return isNewer(thanReport: reportGeneratedAt) ? "\(text), newer than the server's report" : text
     }
 
-    /// The times,  in a sentence each:  when a timer runs next,  when a service last exited,
-    /// and how it last ended.  Nil when the answer gave none of them.
+    /// The times,  in a sentence each:  when a timer last ran and runs next,  when a service
+    /// last exited,  and how it last ended.  Nil when the answer gave none of them.
     func timesText(now: Date = Date()) -> String? {
         var sentences: [String] = []
         if isTimer {
+            if let last = lastTriggerAt {
+                sentences.append("Last ran \(FleetTime.when(last, now: now)).")
+            }
             if let next = nextElapseAt {
                 sentences.append("Next run \(FleetTime.when(next, now: now)).")
             } else {

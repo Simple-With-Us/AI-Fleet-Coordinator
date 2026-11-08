@@ -202,6 +202,7 @@ SPECS = {
     "wf_pr_reopen": ({"pull_requests": "write"}, True),
     "wf_automerge_enable": ({"pull_requests": "write", "contents": "write"}, True),
     "wf_automerge_disable": ({"pull_requests": "write", "contents": "write"}, True),
+    "wf_review_thread_comments": ({"pull_requests": "read"}, False),
     "wf_review_threads": ({"pull_requests": "read"}, False),
     "wf_assignees_add": ({"issues": "write"}, True),
     "wf_assignees_remove": ({"issues": "write"}, True),
@@ -3526,6 +3527,148 @@ class WorkflowVerbs:
     def wf_review_thread_unresolve(self, repo, args):
         _only(args, ("repo", "number", "thread_id"))
         return self._review_thread_state(repo, args, False)
+
+    def wf_review_thread_comments(self, repo, args):
+        """Bounded reply page; text is untrusted and head observations not atomic."""
+        _only(args, ("repo", "number", "thread_id", "expected_head_sha", "cursor"))
+        number, head = _int(args, "number"), _sha(args, "expected_head_sha")
+        thread_id, cursor = args.get("thread_id"), args.get("cursor")
+        if not isinstance(thread_id, str) or not re.fullmatch(
+            r"PRRT_[A-Za-z0-9_-]{1,200}", thread_id
+        ):
+            raise Refused("invalid review thread")
+        if cursor is not None and (
+            not isinstance(cursor, str) or not re.fullmatch(r"[A-Za-z0-9_/=+-]{1,256}", cursor)
+        ):
+            raise Refused("invalid cursor")
+        self._pull_at_commit(repo, number, head)
+        query = "query($id:ID!, $cursor:String) { node(id:$id) { ... on PullRequestReviewThread { id isResolved isOutdated pullRequest { number repository { nameWithOwner } } comments(first:5, after:$cursor) { pageInfo { hasNextPage endCursor } nodes { databaseId:fullDatabaseId body url author { login } replyTo { databaseId:fullDatabaseId } pullRequestReview { databaseId:fullDatabaseId commit { oid } } } } } } }"
+        thread = self._fixed_graph(query, {"id": thread_id, "cursor": cursor}, "node", write=False)
+
+        def bad():
+            raise RelayGitHubError(502, "review thread page unverifiable")
+
+        if not isinstance(thread, dict) or thread.get("id") != thread_id:
+            bad()
+        pull = thread.get("pullRequest")
+        if (
+            not isinstance(pull, dict)
+            or type(pull.get("number")) is not int
+            or pull["number"] != number
+            or not isinstance(pull.get("repository"), dict)
+            or pull["repository"].get("nameWithOwner") != repo
+        ):
+            bad()
+        if type(thread.get("isResolved")) is not bool or type(thread.get("isOutdated")) is not bool:
+            bad()
+        connection = thread.get("comments")
+        if (
+            not isinstance(connection, dict)
+            or not isinstance(connection.get("nodes"), list)
+            or len(connection["nodes"]) > 5
+        ):
+            bad()
+        page = connection.get("pageInfo")
+        if not isinstance(page, dict) or type(page.get("hasNextPage")) is not bool:
+            bad()
+        end = page.get("endCursor")
+        if end is not None and (
+            not isinstance(end, str) or not re.fullmatch(r"[A-Za-z0-9_/=+-]{1,256}", end)
+        ):
+            bad()
+        if page["hasNextPage"] and (not end or end == cursor or not connection["nodes"]):
+            bad()
+
+        def identifier(value):
+            if isinstance(value, str) and re.fullmatch(r"[1-9][0-9]{0,11}", value):
+                value = int(value)
+            if type(value) is not int or not 0 < value <= 10**12:
+                bad()
+            return value
+
+        rows, seen, total = [], set(), 0
+        for row in connection["nodes"]:
+            if not isinstance(row, dict):
+                bad()
+            row["databaseId"] = identifier(row.get("databaseId"))
+            if row["databaseId"] in seen:
+                bad()
+            seen.add(row["databaseId"])
+            body = row.get("body")
+            if not isinstance(body, str) or "\x00" in body:
+                bad()
+            try:
+                body_size = len(body.encode("utf-8"))
+            except UnicodeEncodeError:
+                raise RelayGitHubError(502, "PR discussion body unverifiable") from None
+            if body_size > 65536:
+                bad()
+            total += body_size
+            if total > 131072:
+                bad()
+            author, review, reply = (
+                row.get("author"),
+                row.get("pullRequestReview"),
+                row.get("replyTo"),
+            )
+            if author is not None and (
+                not isinstance(author, dict)
+                or not isinstance(author.get("login"), str)
+                or len(author["login"]) > 100
+            ):
+                bad()
+            if (
+                not isinstance(review, dict)
+                or not isinstance(review.get("commit"), dict)
+                or not isinstance(review["commit"].get("oid"), str)
+                or not _SHA.fullmatch(review["commit"]["oid"])
+            ):
+                bad()
+            if reply is not None and (not isinstance(reply, dict) or not reply.get("databaseId")):
+                bad()
+            review["databaseId"] = identifier(review.get("databaseId"))
+            if reply is not None:
+                reply["databaseId"] = identifier(reply.get("databaseId"))
+            url = row.get("url")
+            if (
+                not isinstance(url, str)
+                or url != f"https://github.com/{repo}/pull/{number}#discussion_r{row['databaseId']}"
+            ):
+                bad()
+            withheld = bool(
+                find_secret(body)
+                or self.bearer
+                and self.bearer in body
+                or re.search(
+                    PROVIDER_PATTERN + "|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}", body
+                )
+            )
+            rows.append(
+                {
+                    "id": row["databaseId"],
+                    "body": "<withheld: credential-shaped text>" if withheld else body,
+                    "body_withheld": withheld,
+                    "url": url,
+                    "author": author["login"] if author else None,
+                    "review_id": review["databaseId"],
+                    "commit_id": review["commit"]["oid"],
+                    "reply_to_id": reply["databaseId"] if reply else None,
+                }
+            )
+        self._pull_at_commit(repo, number, head)
+        return self._context_size(
+            {
+                "number": number,
+                "head_sha": head,
+                "thread_id": thread_id,
+                "is_resolved": thread["isResolved"],
+                "is_outdated": thread["isOutdated"],
+                "comments": rows,
+                "has_more": page["hasNextPage"],
+                "end_cursor": end,
+                "snapshot": False,
+            }
+        )
 
     def wf_review_threads(self, repo, args):
         _only(args, ("repo", "number", "cursor"))

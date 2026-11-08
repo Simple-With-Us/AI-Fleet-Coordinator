@@ -113,7 +113,7 @@ wf_file_history wf_runs_page wf_workflows_page wf_pr_files_page wf_issue_parent 
 wf_issue_blocked_by wf_issue_blocking wf_commit_statuses wf_git_blob_get wf_git_commit_get wf_git_tree_get
 wf_release_asset_download wf_job_log wf_run_logs wf_artifact_download wf_milestones wf_milestone_get
 wf_deployments wf_deployment_get wf_deployment_statuses wf_environments wf_environment_get wf_release_list
-wf_release_get wf_tag_get wf_review_threads wf_issue_list wf_issue_get wf_pr_get wf_pr_reviews wf_pr_comments
+wf_release_get wf_tag_get wf_review_thread_comments wf_review_threads wf_issue_list wf_issue_get wf_pr_get wf_pr_reviews wf_pr_comments
 wf_issue_comments wf_commit_get wf_compare wf_branch_get wf_repo_get wf_labels wf_workflows wf_run_get
 wf_run_artifacts wf_release_assets wf_release_asset_get wf_pr_list wf_pr_files wf_file_get wf_tree wf_branches
 wf_commits wf_code_search wf_runs wf_run_jobs wf_checks wf_merge_queue_entry wf_job_get wf_workflow_get
@@ -130,7 +130,7 @@ INPUT_LIMITS = {
 }
 DEFAULT_INPUT_LIMIT = 65536
 
-# The error codes the hosted server can return (the ToolError codes in scripts/agent-sync-mcp/src), kept in
+# The error codes the hosted server can return (the ToolError codes in scripts/simple-tools-mcp/src), kept in
 # step with scripts/linear-board/board.  Anything else, including a code that merely looks safe, prints as
 # "error".
 _REMOTE_CODES = frozenset(
@@ -160,6 +160,8 @@ _REMOTE_CODES = frozenset(
         "forbidden",
         "fleetlink_seat_disabled",
         "fleetlink_refused",
+        "fleetlink_not_found",
+        "fleetlink_expired",
         "dm_not_allowed",
         "budget_exhausted",
     )
@@ -416,15 +418,15 @@ def _remote_post(url: str, headers: dict, body: bytes, timeout: float) -> tuple[
 
 def _error_code_of(result: dict) -> str | None:
     """The hosted server's error code from a tools/call-style result:  structuredContent, then
-    `_meta["agent-sync/error"]`, then the first text part that is a JSON object.  Only allow-listed codes
+    `_meta["simple-tools/error"]`, then the first text part that is a JSON object.  Only allow-listed codes
     are recognized;  anything else (or nothing) is None."""
     candidates = []
     sc = result.get("structuredContent")
     if isinstance(sc, dict):
         candidates.append(sc)
     meta = result.get("_meta")
-    if isinstance(meta, dict) and isinstance(meta.get("agent-sync/error"), dict):
-        candidates.append(meta["agent-sync/error"])
+    if isinstance(meta, dict) and isinstance(meta.get("simple-tools/error"), dict):
+        candidates.append(meta["simple-tools/error"])
     for part in result.get("content") or []:
         if isinstance(part, dict) and isinstance(part.get("text"), str):
             try:
@@ -442,7 +444,7 @@ def _error_code_of(result: dict) -> str | None:
 
 
 # The closed refusal reasons the hosted front attaches to a relay_refused result
-# (scripts/agent-sync-mcp/src/gr-refusal.js REFUSAL_REASONS, kept in step).  Only an exact member is ever
+# (scripts/simple-tools-mcp/src/gr-refusal.js REFUSAL_REASONS, kept in step).  Only an exact member is ever
 # shown, so the relay's own prose, an upstream body and anything a server made up are never copied.
 _REFUSAL_REASONS = frozenset(
     (
@@ -479,8 +481,8 @@ def _refusal_detail_of(result: dict) -> str:
     if isinstance(sc, dict):
         candidates.append(sc)
     meta = result.get("_meta")
-    if isinstance(meta, dict) and isinstance(meta.get("agent-sync/error"), dict):
-        candidates.append(meta["agent-sync/error"])
+    if isinstance(meta, dict) and isinstance(meta.get("simple-tools/error"), dict):
+        candidates.append(meta["simple-tools/error"])
     for part in result.get("content") or []:
         if isinstance(part, dict) and isinstance(part.get("text"), str):
             try:
@@ -640,12 +642,12 @@ _SCANNER = None
 
 
 def _scanner():
-    """The fleet's secret scanner (scripts/agent_sync/secretscan.py, standard library only), loaded by path.
+    """The fleet's secret scanner (scripts/simple_tools/secretscan.py, standard library only), loaded by path.
     If it cannot be loaded nothing is sent:  there is no unscanned route."""
     global _SCANNER
     if _SCANNER is not None:
         return _SCANNER
-    path = Path(os.path.realpath(__file__)).parent.parent / "agent_sync" / "secretscan.py"
+    path = Path(os.path.realpath(__file__)).parent.parent / "simple_tools" / "secretscan.py"
     try:
         spec = importlib.util.spec_from_file_location("_git_secretscan", str(path))
         module = importlib.util.module_from_spec(spec)
@@ -778,7 +780,7 @@ def remote_call(tool: str, arguments: dict, write: bool, bearer: str, deadline: 
         # retry-after is the only other field ever shown, and only bounded.
         retry = None
         meta = result.get("_meta")
-        for source in (sc if isinstance(sc, dict) else {}, meta.get("agent-sync/error") if isinstance(meta, dict) and isinstance(meta.get("agent-sync/error"), dict) else {}):
+        for source in (sc if isinstance(sc, dict) else {}, meta.get("simple-tools/error") if isinstance(meta, dict) and isinstance(meta.get("simple-tools/error"), dict) else {}):
             value = source.get("retry_after_s", source.get("retry_after"))
             if isinstance(value, (int, float)) and not isinstance(value, bool) and 0 <= value <= 86400:
                 retry = value

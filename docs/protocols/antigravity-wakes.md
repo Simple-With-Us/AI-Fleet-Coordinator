@@ -8,7 +8,7 @@ Mac alongside all other platforms.
 
     Zulip tag @AG or DM ag-bot
       -> the listener that holds the seat records the message in the seat inbox
-      -> [seat.AG] wake = "http" POSTs agent-sync-wake/1, bearer-signed with AG_ROUTINE_KEY
+      -> [seat.AG] wake = "http" POSTs simple-tools-wake/1, bearer-signed with AG_ROUTINE_KEY
            -> ag-wake-bridge on the target host (tailnet or loopback address, port 8792)
                 validates the contract, remembers the wake id (dedupe),
                 resolves the lettered target conversation from the Operator registry
@@ -30,7 +30,7 @@ after the POST is handled.
   the only secret), `config.json` (the delivery switch, `target_host` and command template),
   `seen.json` and `delivery.jsonl`.  `ag-wake-bridge deliver --wake-id ... --topic ...` runs one
   delivery by hand using the same code path as the POST handler.
-- `scripts/agent_sync/server/ag-wake-bridge.service`:  the systemd unit template for the server
+- `scripts/simple_tools/server/ag-wake-bridge.service`:  the systemd unit template for the server
   (port 8792).  On the Mac, `ag-wake-bridge serve --bind 127.0.0.1 --port 8792` runs with
   `target_host` set to `"mac"` in `~/.local/state/ag-wake/config.json`.
 - Cross-platform registry environment loading:  `platform_letter.with_registry_env` automatically
