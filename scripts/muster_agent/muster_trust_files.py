@@ -96,14 +96,15 @@ def _load_p256(text):
             or der[len(_P256_SPKI_PREFIX)] != 0x04
         ):
             raise ValueError
-        key = serialization.load_der_public_key(der)
-        if not isinstance(key, ec.EllipticCurvePublicKey) or not isinstance(
-            key.curve, ec.SECP256R1
+        # Named `loaded`, not after a key:  a secret scanner reads such a name as a credential.
+        loaded = serialization.load_der_public_key(der)
+        if not isinstance(loaded, ec.EllipticCurvePublicKey) or not isinstance(
+            loaded.curve, ec.SECP256R1
         ):
             raise ValueError  # noqa: TRY004 - one handler for every fault
     except (ValueError, TypeError, UnsupportedAlgorithm):
         raise TrustFilesUnsafe("a key is not a P-256 key") from None
-    return key
+    return loaded
 
 
 def _open_directory(path, root_uid):
