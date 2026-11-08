@@ -3359,6 +3359,40 @@ class HostConfigTests(unittest.TestCase):
         source = tmp / "source"
         return source, tmp / "etc", tmp / "broker", source / "scripts" / "fleet-ops-control.json"
 
+    def test_a_unit_file_that_resolves_into_a_credential_path_is_never_hashed(self):
+        # Kody, PR 1487:  the path systemd names looks harmless, but its target does not.
+        with tempfile.TemporaryDirectory() as tmp:
+            source, etc, broker, control = self.layout(tmp)
+            hidden = Path(tmp) / "vault" / "secrets"
+            hidden.mkdir(parents=True)
+            (hidden / "example.service").write_text("[Service]\nEnvironment=K=%s\n" % self.SECRET)
+            (etc / "example.service").symlink_to(hidden / "example.service")
+            answer, _asked = self.systemd(etc)
+            rows = collector.collect_host_config(
+                control, {}, answer, source_root=source, broker_dir=broker, now=NOW, platform="linux"
+            )
+            self.assertNotIn(str(etc / "example.service"), {row["path"] for row in rows})
+            self.assertIn(str(etc / "example.timer"), {row["path"] for row in rows})
+            self.assertNotIn("vault", json.dumps(rows))
+
+    def test_one_pass_digests_match_the_bounded_read(self):
+        # Kody, PR 1487:  each watched file is hashed once, streamed, with the same answers.
+        with tempfile.TemporaryDirectory() as tmp:
+            for size in (0, 5, 65536, 65536 * 3 + 7):
+                path = Path(tmp) / ("f%d" % size)
+                path.write_bytes(bytes(range(256)) * (size // 256) + b"x" * (size % 256))
+                data = collector.read_bounded(path)
+                self.assertEqual(
+                    collector.file_digests(path), (collector.short_digest(data), collector.blob_ids(data))
+                )
+            link = Path(tmp) / "link"
+            link.symlink_to(Path(tmp) / "f5")
+            self.assertIsNone(collector.file_digests(link))
+            self.assertIsNone(collector.file_digests(Path(tmp)))
+            big = Path(tmp) / "big"
+            big.write_bytes(b"x" * 11)
+            self.assertIsNone(collector.file_digests(big, limit=10))
+
     def test_digests_are_reported_and_contents_never_are(self):
         with tempfile.TemporaryDirectory() as tmp:
             rows = self.collect(tmp)

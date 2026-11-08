@@ -478,6 +478,41 @@ def blob_ids(data):
     }
 
 
+def file_digests(path, limit=FILE_READ_LIMIT):
+    """`(short sha256,  blob ids)` for a regular file in one streamed pass,  or None when it is
+    not one,  is a link,  is too large or cannot be read (Kody,  PR 1487:  one pass,  never the
+    whole file held).  The blob header needs the length first,  so it is taken from `fstat`;  a
+    file whose size changes while it is read falls back to one bounded read,  so its row is
+    never dropped for that."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    except OSError:
+        return None
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
+            return None
+        header = b"blob %d\x00" % info.st_size
+        plain, sha1_blob, sha256_blob = hashlib.sha256(), hashlib.sha1(header), hashlib.sha256(header)
+        seen = 0
+        while seen <= info.st_size:
+            chunk = os.read(descriptor, 65536)
+            if not chunk:
+                break
+            seen += len(chunk)
+            plain.update(chunk)
+            sha1_blob.update(chunk)
+            sha256_blob.update(chunk)
+    except OSError:
+        return None
+    finally:
+        os.close(descriptor)
+    if seen != info.st_size:
+        data = read_bounded(path, limit)
+        return None if data is None else (short_digest(data), blob_ids(data))
+    return plain.hexdigest()[:16], {"sha1": sha1_blob.hexdigest(), "sha256": sha256_blob.hexdigest()}
+
+
 def changed_at(before, digest, modified, moment):
     """When a file's content last changed,  carried across reports.
 
@@ -1604,12 +1639,11 @@ def collect_files(code_root, previous, limit=200, now=None, git=None):
             info = path.stat()
         except (OSError, ValueError):
             continue
-        data = read_bounded(path)
-        if data is None:
+        digests = file_digests(path)
+        if digests is None:
             continue
-        digest = short_digest(data)
+        digest, contents[str(path)] = digests
         present.add(str(path))
-        contents[str(path)] = blob_ids(data)
         rows.append(
             {
                 "path": str(path),
@@ -1991,13 +2025,14 @@ def collect_host_config(
     rows = []
     listed = set()
     for unit, scope, kind, place in installed_unit_files(units, run_command):
-        if place in listed or is_secret_path(place):
+        # A unit file can be a link (`systemctl link`),  so it is read where it really is,  and
+        # neither end may look like a credential (Kody,  PR 1487).
+        real = Path(os.path.realpath(place))
+        if place in listed or is_secret_path(place) or is_secret_path(real):
             continue
         listed.add(place)
         row = {"kind": kind, "path": place, "unit": unit, "scope": scope}
         source = shipped.get(unit) if kind == "unit" else None
-        # A unit file can be a link (`systemctl link`),  so it is read where it really is.
-        real = Path(os.path.realpath(place))
         rows.append(host_file_row(row, real, previous, moment, source, source_root))
     if host_role(platform) == "server":
         rows += broker_rows(broker_dir, previous, moment, source_root)
