@@ -49,23 +49,22 @@ class FakeHost(mg.Host):
     """systemd, as far as the migration depends on it."""
 
     def __init__(self, root: Path, healthy=True, relay="/nonexistent-relay"):
-        super().__init__(
-            wait=1,
-            credentials_root=str(root / "run-credentials"),
-            dropin_root=str(root / "systemd"),
-        )
+        super().__init__(wait=1, credentials_root=str(root / "run-credentials"), dropin_root=str(root / "systemd"))
         self.root = root
         self.healthy_after_restart = healthy
         self.relay = relay
         self.calls = []
         self.serve_corrupt = False
         self.fail_restart_until_restore = False
+        self.on_call = None  # callable(args) run at the start of every systemctl call
 
     def _dropin(self):
         return Path(self.dropin_root) / f"{UNIT}.d" / mg.DROPIN_NAME
 
     def systemctl(self, *args):
         self.calls.append(args)
+        if self.on_call:
+            self.on_call(args)
         if args[0] != "restart":
             return 0
         config = (self.root / "config.env").read_text()
@@ -191,8 +190,7 @@ class MigrateTests(unittest.TestCase):
         self.assertEqual(Path(self.backing).read_bytes(), self.policy_bytes)
         self.assertEqual(os.stat(self.backing).st_mode & 0o777, 0o600)
         self.assertEqual(
-            self.host._dropin().read_text(),
-            f"[Service]\nLoadCredential=seat-policy:{self.backing}\n",
+            self.host._dropin().read_text(), f"[Service]\nLoadCredential=seat-policy:{self.backing}\n"
         )
         self.assertEqual(self.seats.read_bytes(), self.policy_bytes)  # old file untouched
         self.assertEqual([c for c in self.host.calls if c[0] == "restart"], [("restart", UNIT)])
@@ -325,9 +323,7 @@ class MigrateTests(unittest.TestCase):
                 self.assertEqual(self.config.read_bytes(), self.config_bytes)
                 self.assertFalse(self.host._dropin().exists())
                 self.assertEqual(self.seats.read_bytes(), self.policy_bytes)
-                self.assertEqual(
-                    json.loads((self.journal / mg.JOURNAL).read_text())["phase"], "restored"
-                )
+                self.assertEqual(json.loads((self.journal / mg.JOURNAL).read_text())["phase"], "restored")
 
     def test_hard_crash_then_fresh_recover_from_the_journal_alone(self):
         """The process dies with no cleanup (power loss, kill -9, reboot):  the restore path
@@ -368,11 +364,8 @@ class MigrateTests(unittest.TestCase):
         self.args = SimpleNamespace(unit=UNIT, journal_dir=str(self.journal))
         self.assertEqual(self.run_cmd(mg.recover)[0], 2)  # no journal
         self.args = SimpleNamespace(
-            unit=UNIT,
-            backing=self.backing,
-            journal_dir=str(self.journal),
-            expect_digest=self.digest,
-            allow_non_root=True,
+            unit=UNIT, backing=self.backing, journal_dir=str(self.journal),
+            expect_digest=self.digest, allow_non_root=True,
         )
         self.assertEqual(self.run_cmd(mg.apply)[0], 0)
         path = self.journal / mg.JOURNAL
@@ -394,6 +387,150 @@ class MigrateTests(unittest.TestCase):
             hashlib.sha256(self.config_bytes).hexdigest()
             == json.loads((self.journal / mg.JOURNAL).read_text())["config"]["sha256"]
         )
+
+    # crash windows, locking, journal validation
+    def test_no_journaled_phase_leaves_a_unit_whose_next_start_fails(self):
+        """A restart or reboot at ANY phase boundary (nothing cleaned up) must still start."""
+        for phase in ("backing-written", "dropin-written", "config-edited", "restarted"):
+            with self.subTest(phase=phase):
+                self.setUp()
+                with mock.patch.object(mg, "_restore_from", side_effect=RuntimeError("power loss")):
+                    self.run_cmd(mg.apply, crash_after=phase)
+                fresh = FakeHost(self.root)
+                self.assertEqual(fresh.systemctl("restart", UNIT), 0)
+
+    def test_phases_run_in_the_safe_order(self):
+        self.assertEqual(self.run_cmd(mg.apply)[0], 0)
+        self.assertLess(mg.PHASES.index("backing-written"), mg.PHASES.index("dropin-written"))
+        self.assertLess(mg.PHASES.index("dropin-written"), mg.PHASES.index("config-edited"))
+
+    def test_a_busy_policy_lock_refuses_and_changes_nothing(self):
+        for which in ("seats", "backing"):
+            with self.subTest(which=which):
+                self.setUp()
+                path = str(self.seats) if which == "seats" else self.backing
+                fd = sp._acquire_transaction_lock(path)
+                try:
+                    with mock.patch.object(mg.sp, "TRANSACTION_LOCK_WAIT_S", 0):
+                        self._refused()
+                finally:
+                    os.close(fd)
+                self.assert_unchanged()
+                self.assertFalse((self.journal / mg.JOURNAL).exists())
+
+    def test_install_seat_style_lock_is_held_for_the_whole_run(self):
+        seen = []
+
+        def probe(args):
+            fd = None
+            try:
+                with mock.patch.object(mg.sp, "TRANSACTION_LOCK_WAIT_S", 0):
+                    fd = mg.sp._acquire_transaction_lock(str(self.seats))
+            finally:
+                seen.append(fd is None)
+                if fd is not None:
+                    os.close(fd)
+
+        self.host.on_call = probe
+        self.assertEqual(self.run_cmd(mg.apply)[0], 0)
+        self.assertTrue(seen and all(seen))
+
+    def test_policy_changed_during_the_migration_restores_and_keeps_the_change(self):
+        for when in ("daemon-reload", "restart"):
+            with self.subTest(when=when):
+                self.setUp()
+                changed = (json.dumps({**self.policy, "swu-new": dict(ROW)}, sort_keys=True) + "\n").encode()
+
+                def mutate(args, changed=changed, when=when):
+                    if args[0] == when:
+                        self.seats.write_bytes(changed)
+
+                self.host.on_call = mutate
+                rc, out = self.run_cmd(mg.apply)
+                self.assertEqual(rc, 3, out)
+                self.assertIn("changed during the migration", out)
+                self.assertEqual(self.config.read_bytes(), self.config_bytes)
+                self.assertFalse(self.host._dropin().exists())
+                self.assertEqual(self.seats.read_bytes(), changed)  # never overwritten
+
+    def _journal(self):
+        self.assertEqual(self.run_cmd(mg.apply)[0], 0)
+        path = self.journal / mg.JOURNAL
+        return path, json.loads(path.read_text())
+
+    def _recover_refused(self, path, journal, mutate):
+        mutate(journal)
+        path.write_text(json.dumps(journal))
+        self.args = SimpleNamespace(unit=UNIT, journal_dir=str(self.journal))
+        before = self.config.read_bytes()
+        rc, out = self.run_cmd(mg.recover)
+        self.assertEqual(rc, 2, out)
+        self.assertEqual(self.config.read_bytes(), before)
+
+    def test_recover_validates_every_field_it_writes_or_deletes(self):
+        victim = self.root / "victim.txt"
+        victim.write_text("keep")
+
+        def digest_fix(j, key):
+            j[key]["sha256"] = hashlib.sha256(bytes.fromhex(j[key]["bytes_hex"])).hexdigest()
+
+        cases = {
+            "config path elsewhere": lambda j: j["config"].update(path=str(victim)),
+            "dropin path elsewhere": lambda j: j["dropin"].update(path=str(victim)),
+            "dropin existed": lambda j: j["dropin"].update(existed=True),
+            "uid not a number": lambda j: j["config"].update(uid="0"),
+            "negative gid": lambda j: j["config"].update(gid=-5),
+            "bool mode": lambda j: j["config"].update(mode=True),
+            "setuid mode": lambda j: j["config"].update(mode=0o4755),
+            "unknown phase": lambda j: j.update(phase="done"),
+            "other unit": lambda j: j.update(unit="other.service"),
+            "bad version": lambda j: j.update(v=2),
+            "unit text tampered": lambda j: j.update(unit_text="x"),
+            "policy before-image tampered": lambda j: j["policy"].update(bytes_hex=b"{}".hex()),
+            "backing not absolute": lambda j: j.update(backing="relative"),
+            "missing field": lambda j: j.pop("policy"),
+        }
+        for name, mutate in cases.items():
+            with self.subTest(name=name):
+                self.setUp()
+                path, journal = self._journal()
+                self._recover_refused(path, journal, mutate)
+                self.assertEqual(victim.read_text() if victim.exists() else "keep", "keep")
+
+        # a consistent forgery of the config bytes whose digest matches but whose shape is not a
+        # pre-migration config, and one whose policy path disagrees with its config line
+        for name, mutate in {
+            "config before-image already migrated": lambda j: (
+                j["config"].update(bytes_hex=b"GIT_RELAY_SEATS_CREDENTIAL=seat-policy\n".hex()),
+                digest_fix(j, "config"),
+            ),
+            "policy path disagrees with config": lambda j: j["policy"].update(path=str(victim)),
+        }.items():
+            with self.subTest(name=name):
+                self.setUp()
+                path, journal = self._journal()
+                self._recover_refused(path, journal, mutate)
+
+    def test_rollback_of_a_completed_migration_refuses_when_the_policy_moved_on(self):
+        self.assertEqual(self.run_cmd(mg.apply)[0], 0)
+        Path(self.backing).write_bytes(self.policy_bytes + b" ")  # a later install-seat
+        self.host = FakeHost(self.root)
+        self.args = SimpleNamespace(unit=UNIT, journal_dir=str(self.journal))
+        rc, out = self.run_cmd(mg.recover)
+        self.assertEqual(rc, 2, out)
+        self.assertIn("rolling back would drop", out)
+        self.assertIn(b"GIT_RELAY_SEATS_CREDENTIAL", self.config.read_bytes())
+
+    def test_recover_waits_on_the_same_locks(self):
+        self.assertEqual(self.run_cmd(mg.apply)[0], 0)
+        self.host = FakeHost(self.root)
+        self.args = SimpleNamespace(unit=UNIT, journal_dir=str(self.journal))
+        fd = sp._acquire_transaction_lock(self.backing)
+        try:
+            with mock.patch.object(mg.sp, "TRANSACTION_LOCK_WAIT_S", 0):
+                self.assertEqual(self.run_cmd(mg.recover)[0], 2)
+        finally:
+            os.close(fd)
 
 
 if __name__ == "__main__":
