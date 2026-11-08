@@ -16,7 +16,7 @@ from contextlib import redirect_stdout
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from agent_sync import operator_registry as R
+from simple_tools import operator_registry as R
 
 
 def make_db(tmp):
