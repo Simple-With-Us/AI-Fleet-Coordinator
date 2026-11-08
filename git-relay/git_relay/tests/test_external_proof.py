@@ -151,8 +151,16 @@ class ExternalProofTests(unittest.TestCase):
 
     def test_an_unpathable_proof_id_is_refused_before_any_call(self):
         relay = FakeRelay()
-        with self.assertRaises(ValueError):
-            proof(relay)("swu-zc", "bad/id with spaces", BEFORE, AFTER)
+        for bad_id in ("bad/id with spaces", "", None, 7):
+            with self.assertRaises(ValueError):
+                proof(relay)("swu-zc", bad_id, BEFORE, AFTER)
+        self.assertEqual(relay.requests, [])
+
+    def test_an_empty_or_nonstring_seat_is_refused_before_any_call(self):
+        relay = FakeRelay()
+        for bad_seat in ("", None, 7):
+            with self.assertRaises(ValueError):
+                proof(relay)(bad_seat, "proof-0008", BEFORE, AFTER)
         self.assertEqual(relay.requests, [])
 
     def test_timeout_is_inconclusive_and_never_signed(self):

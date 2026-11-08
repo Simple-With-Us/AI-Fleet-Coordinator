@@ -155,6 +155,11 @@ class ExternalProof(RuntimeProof):
     USER_AGENT = "swu-git-relay-external-proof/2"
 
     def __call__(self, seat, proof_id, policy_before, policy_after):
+        # The record and its audit correlation are only meaningful for an
+        # actual seat and proof id:  refuse empty or non-string inputs before
+        # anything is built or called.  probe_path validates the id's shape.
+        if not isinstance(seat, str) or not seat:
+            raise ValueError("invalid seat")
         path = probe_path(proof_id)
         record = {
             "v": self.VERSION,
