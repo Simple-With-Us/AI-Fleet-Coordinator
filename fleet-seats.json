@@ -1911,7 +1911,10 @@
         }
       ],
       "platforms": [],
-      "rules": []
+      "rules": [],
+      "runsOn": [
+        "cloud"
+      ]
     },
     "GROK-WEB": {
       "notApplicable": [
@@ -3161,6 +3164,10 @@
           "source": "",
           "ttlSeconds": 900
         }
+      ],
+      "runsOn": [
+        "mac",
+        "server"
       ]
     }
   }

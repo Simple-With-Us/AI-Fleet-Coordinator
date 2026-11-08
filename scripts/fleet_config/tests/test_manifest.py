@@ -213,6 +213,70 @@ class UncoveredSurfaceTests(ManifestFixture):
             self.load(self._document([{"reason": "no surface named"}]))
 
 
+class RunsOnTests(ManifestFixture):
+    """A seat may say where it runs and which seat it mirrors;  both keys are optional."""
+
+    def _document(self, **claude: Any) -> dict[str, Any]:
+        seat: dict[str, Any] = {"platforms": [], "rules": [], "notApplicable": []}
+        seat.update(claude)
+        return _manifest_dict(
+            {"CLAUDE": seat, "CODEX": {"platforms": [], "rules": [], "notApplicable": []}}
+        )
+
+    def test_a_seat_that_says_nothing_reads_as_place_not_known(self) -> None:
+        seat = self.load(self._document()).seat("CLAUDE")
+        self.assertEqual((seat.runs_on, seat.copy_of), ((), ""))
+
+    def test_a_seat_may_run_on_one_or_more_places(self) -> None:
+        for places in (["server"], ["mac", "server"], ["mac", "server", "vm", "cloud"]):
+            with self.subTest(places=places):
+                seat = self.load(self._document(runsOn=places)).seat("CLAUDE")
+                self.assertEqual(seat.runs_on, tuple(places))
+
+    def test_the_place_words_are_exactly_these_four(self) -> None:
+        self.assertEqual(manifest_module.RUN_PLACES, ("mac", "server", "vm", "cloud"))
+
+    def test_a_bad_runs_on_is_refused_and_names_the_seat(self) -> None:
+        for bad in (
+            [],
+            None,
+            "server",
+            ["laptop"],
+            ["Mac"],
+            ["mac", "mac"],
+            [1],
+            [None],
+            ["mac", ""],
+            {"mac": True},
+        ):
+            with self.subTest(runsOn=bad), self.assertRaises(ManifestError) as caught:
+                self.load(self._document(runsOn=bad))
+            self.assertIn("seat CLAUDE runsOn", str(caught.exception))
+
+    def test_copy_of_may_name_a_live_seat(self) -> None:
+        seat = self.load(self._document(copyOf="CODEX")).seat("CLAUDE")
+        self.assertEqual(seat.copy_of, "CODEX")
+
+    def test_a_bad_copy_of_is_refused(self) -> None:
+        for bad, why in (
+            ("GHOST", "does not hold"),
+            ("MONET", "does not hold"),
+            ("GROK-BUILD", "does not hold"),
+            ("CLAUDE", "the seat itself"),
+            ("", "must name a seat"),
+            ("  ", "must name a seat"),
+            (None, "must name a seat"),
+            (["CODEX"], "must name a seat"),
+            (3, "must name a seat"),
+        ):
+            with self.subTest(copyOf=bad), self.assertRaises(ManifestError) as caught:
+                self.load(self._document(copyOf=bad))
+            self.assertIn(why, str(caught.exception))
+
+    def test_the_schema_version_stays_two_because_the_keys_are_additive(self) -> None:
+        self.assertEqual(manifest_module.MANIFEST_SCHEMA_VERSION, 2)
+
+
 class CoverageTests(ManifestFixture):
     """Every (seat, platform, kind) triple needs a rule or an explicit cover."""
 
@@ -554,6 +618,11 @@ class SeededManifestTests(unittest.TestCase):
         live = registry_seat_tags(REGISTRY_FILE)
         seeded = sorted(seat.seat for seat in self.manifest.seats)
         self.assertEqual(seeded, sorted(live))
+
+    def test_the_seed_says_where_only_the_seats_whose_place_the_fleet_has_stated(self) -> None:
+        placed = {seat.seat: seat.runs_on for seat in self.manifest.seats if seat.runs_on}
+        self.assertEqual(placed, {"ZC": ("mac", "server"), "GROK-BOT": ("cloud",)})
+        self.assertTrue(all(seat.copy_of == "" for seat in self.manifest.seats))
 
     def test_the_seed_generator_reproduces_the_file_byte_for_byte(self) -> None:
         from fleet_config import seed_manifest

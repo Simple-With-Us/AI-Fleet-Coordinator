@@ -45,6 +45,7 @@ __all__ = [
     "MANIFEST_FILENAME",
     "MANIFEST_SCHEMA_VERSION",
     "REGISTRY_FILENAME",
+    "RUN_PLACES",
     "ManifestError",
     "default_manifest_path",
     "default_registry_path",
@@ -72,6 +73,12 @@ REGISTRY_FILENAME = "fleet-apps.json"
 
 # The top-level key the fleet-wide compliance family lives under.
 COMPLIANCE_RULES_KEY = "complianceRules"
+
+# The place words a seat's optional ``runsOn`` list may hold (Muster's seat grid reads them).
+# Both ``runsOn`` and ``copyOf`` are additive optional keys of a seat entry, so the schema
+# version stays 2:  a reader that does not know them ignores them, and a seat that omits
+# them is a seat whose place is not known.
+RUN_PLACES = ("mac", "server", "vm", "cloud")
 
 # The check types each kind supports, from design doc section 5.  A rule whose check
 # type is not listed for its kind is rejected:  the pairing is fixed, so a rule can
@@ -278,6 +285,41 @@ def _int_field(value: object, default: int | None, what: str) -> int | None:
     raise ManifestError("%s must be a number, not %r" % (what, value))
 
 
+def _parse_runs_on(tag: str, raw: dict) -> tuple[str, ...]:
+    """The seat's ``runsOn`` places, () when the key is absent, or ManifestError.
+
+    A present key is a non-empty list of distinct words from ``RUN_PLACES``;  a null, an
+    empty list or a repeated word is an error rather than a quiet "not known"."""
+    if "runsOn" not in raw:
+        return ()
+    value = raw["runsOn"]
+    what = "seat %s runsOn" % tag
+    if not isinstance(value, list) or not value:
+        raise ManifestError("%s must be a non-empty list of places" % what)
+    for place in value:
+        if not isinstance(place, str) or place not in RUN_PLACES:
+            raise ManifestError(
+                "%s has the place %r, which is not one of %s" % (what, place, ", ".join(RUN_PLACES))
+            )
+    if len(set(value)) != len(value):
+        raise ManifestError("%s names a place more than once" % what)
+    return tuple(value)
+
+
+def _parse_copy_of(tag: str, raw: dict) -> str:
+    """The seat this one mirrors, "" when the key is absent, or ManifestError.
+
+    That the name is a live registry seat is checked by ``load_manifest``, which holds the roster."""
+    if "copyOf" not in raw:
+        return ""
+    value = raw["copyOf"]
+    if not isinstance(value, str) or not value.strip():
+        raise ManifestError("seat %s copyOf must name a seat" % tag)
+    if value == tag:
+        raise ManifestError("seat %s copyOf names the seat itself" % tag)
+    return value
+
+
 def _parse_seat(tag: str, raw: object) -> SeatManifest:
     """One seat entry into a ``SeatManifest``.  The key is the registry tag."""
     if not isinstance(raw, dict):
@@ -315,6 +357,8 @@ def _parse_seat(tag: str, raw: object) -> SeatManifest:
         rules=rules,
         not_applicable=tuple(covers),
         uncovered=tuple(uncovered),
+        runs_on=_parse_runs_on(tag, raw),
+        copy_of=_parse_copy_of(tag, raw),
     )
 
 
@@ -353,6 +397,12 @@ def load_manifest(
     if missing:
         raise ManifestError("live registry seats with no manifest entry: %s" % ", ".join(missing))
     seats = tuple(_parse_seat(tag, raw_seats[tag]) for tag in live if tag in raw_seats)
+    for seat in seats:
+        if seat.copy_of and seat.copy_of not in live:
+            raise ManifestError(
+                "seat %s copyOf names %s, which the registry does not hold as a live seat"
+                % (seat.seat, seat.copy_of)
+            )
     compliance = _parse_compliance_rules(data.get(COMPLIANCE_RULES_KEY))
     seen: dict[str, str] = {}
     for seat in seats:
