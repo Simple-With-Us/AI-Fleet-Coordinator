@@ -135,6 +135,7 @@ def entry_hash(entry):
 
 # ---------------------------------------------------------------- keys
 owner = test_key("owner")
+new_owner = test_key("owner after rotation (T24 only)")
 rogue_owner = test_key("rogue owner (not pinned)")
 helper = test_key("server helper")
 devA = {r: test_key("device A " + r) for r in ("approval", "request", "reading", "notification")}
@@ -285,6 +286,17 @@ bad = {
     "T21": make_list(
         4, L3, "2026-11-07T20:50:00Z", [DC], countersigners=[C_], reopen_code=CODE_UNUSED
     ),
+    # v5.3:  a version 1 other than the one the rotated history closed (check 3, history_hash).
+    "T24": make_list(1, None, "2026-11-07T20:05:00Z", [DA]),
+    # v5.3 (§17A A8):  rule A that removes both server keys.
+    "T25": make_list(
+        2,
+        L1,
+        "2026-11-07T20:10:00Z",
+        [DA, DB],
+        countersigners=[A_],
+        services=dict(SERVICES, serverHelper=None),
+    ),
 }
 # T15:  the same body as v4, countersigned by A instead of C (a tampered copy a hostile hub could make)
 bad["T15"] = {
@@ -326,6 +338,9 @@ def check_chain(held, chain, history, records, frozen=False):
         key = history_key(history, b["version"])
         if key is None or b["ownerKey"] != key:  # 3
             return "owner_key", entry
+        closing = [h for h in history if h["toVersion"] == b["version"]]
+        if any(h["toSHA256"] != sha(bb) for h in closing):  # 3, v5.3:  every line for this version
+            return "history_hash", entry
         if not verify(key, entry["ownerSignature"], b"muster-trust-list/1\n" + bb):  # 4
             return "owner_signature", entry
         ids = [d["deviceId"] for d in b["devices"]]
@@ -398,11 +413,21 @@ def check_chain(held, chain, history, records, frozen=False):
                 return "first_rule", entry
             if not cs or not cs_ok(prev["body"]["devices"]):
                 return "countersignature", entry
+            if server_keys_removed():  # v5.3, §17A A8
+                return "server_keys_removed", entry
         prev = entry
     return "accepted", None
 
 
 HISTORY = [{"fromVersion": 1, "ownerKey": OWNER, "toSHA256": None, "toVersion": None}]
+# v5.3, T24 only:  the owner key rotated after version 1, so the closed line names v1's body hash.
+NEW_OWNER = b64u(spki(new_owner))
+HISTORY_ROTATED = [
+    {"fromVersion": 1, "ownerKey": OWNER, "toSHA256": sha(canonical(L1["body"])), "toVersion": 1},
+    {"fromVersion": 2, "ownerKey": NEW_OWNER, "toSHA256": None, "toVersion": None},
+]
+HISTORY_ROTATED_LINES = "".join(canonical(h).decode() + "\n" for h in HISTORY_ROTATED)
+CASE_HISTORY = {"T24": HISTORY_ROTATED}  # every other chain vector runs under HISTORY
 chain_cases = [
     ("T1 first list", None, [L1], "accepted", "Holding nothing, version 1 under rule First."),
     ("T2 rule A", L1, [L2], "accepted", "Adds device B, countersigned by device A from version 1."),
@@ -533,11 +558,29 @@ chain_cases = [
         "accepted",
         "Signed at 20:55 with the same code and device:  a server could hold this instead of v4 (R5).",
     ),
+    (
+        "T24 a version 1 the rotated history did not close",
+        None,
+        [bad["T24"]],
+        "history_hash",
+        "Under the rotated history, whose closed line names v1's body hash:  another version 1, signed by the key that history assigns to version 1, so only check 3's history hash fails (v5.3).",
+    ),
+    (
+        "T25 rule A that removes both server keys",
+        L1,
+        [bad["T25"]],
+        "server_keys_removed",
+        "Adds device B, countersigned by device A, and sets serverHelper to null, leaving no server key (§17A A8, settled in v5.3).",
+    ),
 ]
 for name, held, chain, expect, _ in chain_cases:
-    got, _ = check_chain(held, chain, HISTORY, RECORDS)
+    history = CASE_HISTORY.get(name.split(" ")[0], HISTORY)
+    got, _ = check_chain(held, chain, history, RECORDS)
     if got != expect:
         sys.exit(f"{name}: expected {expect}, reference says {got}")
+# T24's list is refused only by the history it runs under, and the genuine v1 passes under it.
+assert check_chain(None, [bad["T24"]], HISTORY, RECORDS)[0] == "accepted"
+assert check_chain(None, [L1], HISTORY_ROTATED, RECORDS)[0] == "accepted"
 # Version 5 as frozen (Milestones 1 to 4):  a rule C entry is refused reopen_unavailable.
 frozen_cases = [
     (
@@ -1119,6 +1162,7 @@ w(
 w("")
 for label, key in [
     ("owner", owner),
+    ("owner after rotation (T24 only)", new_owner),
     ("rogue owner (not pinned)", rogue_owner),
     ("server helper", helper),
     ("device A approval", devA["approval"]),
@@ -1188,6 +1232,14 @@ w(
     f"The retired first code's check group for version 4 and device C was `{reopen_check(4, FP_C, CODE_UNUSED)}`."
 )
 w("")
+w(
+    "`/etc/muster/owner-history.jsonl` for T24 only (two lines, v5.3:  the owner key rotated after version 1, so the closed line names version 1's body hash, and `owner.pub` holds the `owner after rotation (T24 only)` key):"
+)
+w("")
+w("```")
+w(HISTORY_ROTATED_LINES.rstrip("\n"))
+w("```")
+w("")
 w("### Trust Lists")
 w("")
 for label, lst in [
@@ -1223,6 +1275,8 @@ for key in [
     "T19",
     "T20",
     "T21",
+    "T24",
+    "T25",
 ]:
     w(f"**{key} list**, entry SHA-256 `{entry_hash(bad[key])}`:")
     w("")
@@ -1235,7 +1289,8 @@ w("")
 w(
     "Each is `muster trust-list chain --yes` with the lists named, under the pin, history and record above.  The reason is the first failing check in §8's numbered order;  each bad list fails exactly one check.  "
     "**The rule C rows (T4, T5, T8, T15, T18, T20, T21 and T22) give the OPEN proposal's outcomes.  A Milestone 1 to 4 builder skips them, or expects `chain_refused` with reason `reopen_unavailable` for each rule C entry (T5 is refused at its fourth entry), as T23 below shows.**  "
-    "`Final` gives the version 4 proposal's classification, which is OPEN (§17A, A2);  version 5 records and reports nothing as final.  Until the chain slice lands, the helper answers each of these requests `bad_command` (§4), so a helper harness runs these against the chain slice;  the other verifiers check them now."
+    "`Final` gives the version 4 proposal's classification, which is OPEN (§17A, A2);  version 5 records and reports nothing as final.  Until the chain slice lands, the helper answers each of these requests `bad_command` (§4), so a helper harness runs these against the chain slice;  the other verifiers check them now.  "
+    "T24 runs under the rotated history printed above (T24 only);  every other row runs under the one-line history."
 )
 w("")
 w("| Vector | Held Before | Chain | Expected | Final | Why |")
@@ -1249,6 +1304,10 @@ for name, held, chain, expect, why in chain_cases:
     out = "ack" if expect == "accepted" else f"`chain_refused`, reason `{expect}`"
     fin = "" if expect == "accepted" else ("yes" if expect in FINAL else "no")
     w(f"| {name} | {hv} | {cv} | {out} | {fin} | {why} |")
+w("")
+w(
+    "T9 was retired, and a vector's number is never reused, so the table has no T9.  T24 and T25 were added in version 5.3;  neither is a rule C row."
+)
 w("")
 w("### Frozen Version 5 Vector")
 w("")
@@ -1335,7 +1394,14 @@ for label, ans in [
 w("### Cases Without Fixed Bytes")
 w("")
 w(
-    "A harness builds these:  `pin_unsafe` (owner.pub group-writable, owned by jay, or a symbolic link;  the same for the reopen record when it exists, or a record line that does not match its pattern);  `helper_key_missing` (the key file absent, a symbolic link, mode 0644, or unparseable);  `input_too_large` (4,097 bytes);  `bad_input` (a duplicate key, `NaN`, a non-ASCII string, or a chain entry missing a body field);  a valid approval whose stdin keys are in another order with extra spaces (accepted, since formatting does not matter);  `state_unsafe` (`muster-nonces.jsonl` mode 0644, `muster-trust.json` a symbolic link or empty, or an unparseable rate file);  a torn final ledger fragment (truncated, then the approval proceeds);  a complete final ledger line without a line feed (a line feed is appended, and that nonce stays spent);  a corrupt middle line (`ledger_corrupt`);  `rate_limited` (two `plan` requests for one `verb target` within the spacing, two different approvals for one `verb target` within 2 seconds, the class's hourly cap reached, or `muster-rate.lock` held elsewhere for more than 2 seconds);  a `yes` approval refused `rate_limited` at Y8b (its nonce not in the ledger afterwards, and no audit row), then retried inside its window and accepted;  60 approvals with bad signatures, then V1 (accepted:  none of the 60 used the `yes` budget);  V1 replayed 60 times after it ran (`replayed_nonce` each time, and a fresh approval for the same `verb target` 2 seconds after V1 is accepted);  `bad_command` for `muster trust-list chain --yes` until the chain slice lands (before its input is read, and no audit row);  the acknowledgement with nothing held (`closed` false, `signedByCurrentKey` false, `helperTrustListVersion` and `trustListSHA256` null);  `plan_refused` with `revision_stale` (a `resource-policy` target naming a revision older than the saved policy's);  a redeploy row named `Café App` (the muster plan's `auditTarget` is `Caf? App`, and the `--from-ssh` route's `audit_target` is unchanged);  `trust_list_changed` (the stored list replaced between Y2 and Y7);  a replay of V1 long after its window (`expired` at Y6, before the ledger is read, and no audit row);  V1 replayed inside its window after the clock was stepped forward more than seven days and back (`replayed_nonce`:  the ledger kept its nonce, which is within the last 4,096 lines);  a ledger of more than 4,096 lines rewritten under the lock (only lines beyond the last 4,096 whose `expiresAt` is more than seven days before `now` are dropped, a line whose `expiresAt` is after `now` stays, and the rewrite is `fsync`ed, renamed and its directory `fsync`ed);  a ledger over 4 MiB (`ledger_corrupt`);  V1's `approvalNonce` in another approval from another device or another job (`replayed_nonce`);  V1's high-S twin sent after V1 ran (`replayed_nonce`);  `clock_unsynced` (V1 with the clock reported unsynchronised, and no audit row);  V1 at `now` = 21:02:00.001 (`expired`);  rate boundaries (a second `plan` request exactly 5 seconds after the first passes, at 4.999 seconds is `rate_limited`;  an event exactly 3,600 seconds old still counts;  a rate file with 811 events is `state_unsafe`);  `plan_refused` (`update_busy` with the update's unit activating;  `report_stale` with a 46-minute-old report;  each with `helperTrustListVersion` `null`, since R2 comes before the list is read);  an unsafe state directory (mode 0755:  `helper_key_missing`);  a fault after Y8c before the action began (a signed result with outcome `failed`, `detail` `plan_refused: <reason>` or `internal_error`, and one audit row whose `result` is `failed`);  a fault once the run began (outcome `unknown`, `detail` `the helper stopped unexpectedly while running`, and one audit row whose `result` is `unknown`);  a command killed at its limit, and a Coolify GET that timed out, was reset or got a cut answer (`unknown` each);  a refused connection to Coolify (`failed`);  an empty reopen record (accepted as no lines);  a record whose last line has no line feed (`pin_unsafe`)."
+    "A harness builds these:  `pin_unsafe` (owner.pub group-writable, owned by jay, or a symbolic link;  the same for the reopen record when it exists, or a record line that does not match its pattern);  `helper_key_missing` (the key file absent, a symbolic link, mode 0644, or unparseable);  `input_too_large` (4,097 bytes);  `bad_input` (a duplicate key, `NaN`, a non-ASCII string, or a chain entry missing a body field);  a valid approval whose stdin keys are in another order with extra spaces (accepted, since formatting does not matter);  `state_unsafe` (`muster-nonces.jsonl` mode 0644, `muster-trust.json` a symbolic link or empty, or an unparseable rate file);  a torn final ledger fragment (truncated, then the approval proceeds);  a complete final ledger line without a line feed (a line feed is appended, and that nonce stays spent);  a corrupt middle line (`ledger_corrupt`);  `rate_limited` (two `plan` requests for one `verb target` within the spacing, two different approvals for one `verb target` within 2 seconds, the class's hourly cap reached, or `muster-rate.lock` held elsewhere for more than 2 seconds);  a `yes` approval refused `rate_limited` at Y8b (its nonce not in the ledger afterwards, and no audit row), then retried inside its window and accepted;  60 approvals with bad signatures, then V1 (accepted:  none of the 60 used the `yes` budget);  V1 replayed 60 times after it ran (`replayed_nonce` each time, and a fresh approval for the same `verb target` 2 seconds after V1 is accepted);  `bad_command` for `muster trust-list chain --yes` until the chain slice lands (before its input is read, and no audit row);  the acknowledgement with nothing held (`closed` false, `signedByCurrentKey` false, `helperTrustListVersion` and `trustListSHA256` null);  `plan_refused` with `revision_stale` (a `resource-policy` target naming a revision older than the saved policy's);  a redeploy row named `Café App` (the muster plan's `auditTarget` is `Caf? App`, and the `--from-ssh` route's `audit_target` is unchanged);  `trust_list_changed` (the stored list replaced between Y2 and Y7);  a replay of V1 long after its window (`expired` at Y6, before the ledger is read, and no audit row);  V1 replayed inside its window after the clock was stepped forward more than seven days and back (`replayed_nonce`:  the ledger kept its nonce, which is within the last 4,096 lines);  a ledger of more than 4,096 lines rewritten under the lock (only lines beyond the last 4,096 whose `expiresAt` is more than seven days before `now` are dropped, a line whose `expiresAt` is after `now` stays, and the rewrite is `fsync`ed, renamed and its directory `fsync`ed);  a ledger over 4 MiB (`ledger_corrupt`);  V1's `approvalNonce` in another approval from another device or another job (`replayed_nonce`);  V1's high-S twin sent after V1 ran (`replayed_nonce`);  `clock_unsynced` (V1 with the clock reported unsynchronised, and no audit row);  V1 at `now` = 21:02:00.001 (`expired`);  rate boundaries (a second `plan` request exactly 5 seconds after the first passes, at 4.999 seconds is `rate_limited`;  an event exactly 3,600 seconds old still counts;  a rate file with 811 events is `state_unsafe`);  `plan_refused` (`update_busy` with the update's unit activating;  `report_stale` with a 46-minute-old report;  each with `helperTrustListVersion` `null`, since R2 comes before the list is read);  an unsafe state directory (mode 0755:  `helper_key_missing`);  a fault after Y8c before the action began (a signed result with outcome `failed`, `detail` `plan_refused: <reason>` or `internal_error`, and one audit row whose `result` is `failed`);  a fault once the run began (outcome `unknown`, `detail` `the helper stopped unexpectedly while running`, and one audit row whose `result` is `unknown`);  a command killed at its limit, and a Coolify GET that timed out, was reset or got a cut answer (`unknown` each);  a refused connection to Coolify (`failed`);  an empty reopen record (accepted as no lines);  a record whose last line has no line feed (`pin_unsafe`);  "
+    "once the chain slice lands (v5.3):  after T1, `muster-trust.json` holds v1's canonical bytes with no line feed, and its SHA-256 is v1's entry SHA-256;  "
+    "a stored list written by someone else with spaces and a line feed (accepted, since readers take any formatting);  "
+    "the T24 list held under the rotated history, whose closed line names another body hash for version 1 (`state_unsafe` at C2);  "
+    "a list stored after C2 where none was held, and a list removed after C2 (`trust_list_changed` at C4 each);  "
+    "a fault at C5 before the rename (`internal_error`, nothing stored, and the temporary file gone);  "
+    "a fault at C5 after the rename (`internal_error`, the list held, and the same chain sent again is `version_gap`);  "
+    "and a failed audit append at C5 after the rename (the signed `ack` is answered and the list is held)."
 )
 
 with open(SPEC, encoding="utf-8") as f:

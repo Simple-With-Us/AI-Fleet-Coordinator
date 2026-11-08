@@ -108,6 +108,7 @@ def key_pub(label):
 
 for label in [
     "owner",
+    "owner after rotation (T24 only)",
     "rogue owner (not pinned)",
     "server helper",
     "device A approval",
@@ -181,7 +182,7 @@ for m in re.finditer(
     if body_h:
         check(H(canon(lst["body"])) == body_h, "body hash " + name)
     check(H(canon(lst)) == entry_h, "entry hash " + name)
-check(len(lists) == 20, "list count %d" % len(lists))
+check(len(lists) == 22, "list count %d" % len(lists))
 alias = {
     "v1": "Version 1",
     "v2": "Version 2 (rule A)",
@@ -195,15 +196,41 @@ def L(n):
     return lists[alias.get(n, n)]
 
 
+# -------- the rotated history (v5.3, T24 only)
+rot_raw = block_after("`/etc/muster/owner-history.jsonl` for T24 only").splitlines()
+rotated = [json.loads(x) for x in rot_raw]
+check(
+    [canon(h).decode() for h in rotated] == rot_raw
+    and rotated
+    == [
+        {
+            "fromVersion": 1,
+            "ownerKey": OWNER,
+            "toSHA256": H(canon(L("v1")["body"])),
+            "toVersion": 1,
+        },
+        {
+            "fromVersion": 2,
+            "ownerKey": key_pub("owner after rotation (T24 only)"),
+            "toSHA256": None,
+            "toVersion": None,
+        },
+    ],
+    "rotated history",
+)
+HISTORY_OF = {"T24": rotated}  # every other row runs under the one-line history
+
+
 # -------- chain checker:  every check, not only the first
-def hist_key(v):
-    for h in history:
+def hist_key(v, hist):
+    for h in hist:
         if h["fromVersion"] <= v and (h["toVersion"] is None or v <= h["toVersion"]):
             return h["ownerKey"]
 
 
-def failures(prev, e, frozen=False):
+def failures(prev, e, frozen=False, hist=None):
     """Every failing check.  frozen=True is version 5 as frozen:  rule C is not available."""
+    hist = history if hist is None else hist
     b, f = e["body"], []
     bb = canon(b)
     if b["version"] != (1 if prev is None else prev["body"]["version"] + 1):
@@ -212,9 +239,11 @@ def failures(prev, e, frozen=False):
         f.append("first_rule")
     if prev is not None and b["previousSHA256"] != H(canon(prev["body"])):
         f.append("previous_hash")
-    k = hist_key(b["version"])
+    k = hist_key(b["version"], hist)
     if b["ownerKey"] != k:
         f.append("owner_key")
+    if any(h["toVersion"] == b["version"] and h["toSHA256"] != H(bb) for h in hist):
+        f.append("history_hash")
     if not ok(k, e["ownerSignature"], b"muster-trust-list/1\n" + bb):
         f.append("owner_signature")
     ids = [d["deviceId"] for d in b["devices"]]
@@ -235,14 +264,18 @@ def failures(prev, e, frozen=False):
             for c in cs
         )
 
-    def svc():
+    def keys_removed():
         p = prev["body"]["services"]
-        if not all(v is None or v == p[k2] for k2, v in b["services"].items()):
-            f.append("services_changed")
         if (p["serverHelper"] or p["serverPublisher"]) and not (
             b["services"]["serverHelper"] or b["services"]["serverPublisher"]
         ):
             f.append("server_keys_removed")
+
+    def svc():
+        p = prev["body"]["services"]
+        if not all(v is None or v == p[k2] for k2, v in b["services"].items()):
+            f.append("services_changed")
+        keys_removed()
 
     if prev is None:
         if b["closed"] or cs or b["reopenTag"]:
@@ -274,6 +307,7 @@ def failures(prev, e, frozen=False):
             f.append("first_rule")
         if not cs or not cs_valid(prev["body"]["devices"]):
             f.append("countersignature")
+        keys_removed()  # v5.3, §17A A8
     return f
 
 
@@ -282,6 +316,7 @@ ORDER = [
     "first_rule",
     "previous_hash",
     "owner_key",
+    "history_hash",
     "owner_signature",
     "duplicate_device",
     "countersignature",
@@ -306,14 +341,17 @@ FINAL = {
 rows = re.findall(
     r"^\| (T\d+ [^|]+) \| ([^|]+) \| ([^|]+) \| ([^|]+) \| ([^|]*) \|", text, re.MULTILINE
 )
-check(len(rows) == 22, "chain rows %d" % len(rows))
+check(len(rows) == 24, "chain rows %d" % len(rows))
 check(any(r[0].startswith("T23 ") for r in rows), "the frozen vector T23 is printed")
+check(not any(r[0].startswith("T9 ") for r in rows), "T9 stays retired")
+check("so the table has no T9" in text, "the T9 note is printed")
 for name, held, chain, expect, final in rows:
     frozen = name.startswith("T23 ")
+    hist = HISTORY_OF.get(name.split(" ")[0], history)
     prev = None if held.strip() == "nothing" else L(held.strip())
     allf = []
     for c in [x.strip() for x in chain.split(",")]:
-        allf = failures(prev, L(c), frozen=frozen)
+        allf = failures(prev, L(c), frozen=frozen, hist=hist)
         if allf:
             break
         prev = L(c)
@@ -324,6 +362,11 @@ for name, held, chain, expect, final in rows:
         check(len(allf) == 1 and allf[0] == exp, name + f": expected only {exp}, got {allf}")
         check((final.strip() == "yes") == (exp in FINAL), name + " final column")
     print(f"{name.strip():45} all failing checks: {allf or 'none'}")
+
+check(
+    failures(None, lists["T24 list"]) == [] and failures(None, L("v1"), hist=rotated) == [],
+    "T24 fails only under the rotated history, and v1 passes under it",
+)
 
 # -------- recovery table
 t15h, v4h = H(canon(lists["T15 list"])), H(canon(L("v4")))
