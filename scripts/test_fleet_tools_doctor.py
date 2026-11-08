@@ -1732,7 +1732,10 @@ class ReportAndRunTests(HomeCase):
         self.assertEqual(len(text.strip().splitlines()), 1)
         self.assertIn("server unreachable:", text)
         self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
-        self.assertEqual(sorted(p.name for p in path.parent.iterdir()), ["report.json"])
+        # AFC-576:  the app-process report is written beside it.
+        self.assertEqual(
+            sorted(p.name for p in path.parent.iterdir()), ["app-processes.json", "report.json"]
+        )
         report = json.loads(path.read_text())
         self.assertEqual((report["schemaVersion"], report["tool"]), (1, "fleet-tools-doctor"))
         self.assertEqual([h["host"] for h in report["hosts"]], ["mac", "server"])
@@ -1913,9 +1916,10 @@ class ServerStatusTests(HomeCase):
         path = self.status_path()
         self.assertEqual(json.loads(path.read_text()), self.status())
         self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
-        # Atomic:  no temporary file is left beside the two reports.
+        # Atomic:  no temporary file is left beside the reports (AFC-576 adds the app-process one).
         self.assertEqual(
-            sorted(p.name for p in path.parent.iterdir()), ["report.json", "server-status.json"]
+            sorted(p.name for p in path.parent.iterdir()),
+            ["app-processes.json", "report.json", "server-status.json"],
         )
 
     def test_the_mac_drops_an_invalid_status_and_keeps_the_previous_file(self):

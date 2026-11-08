@@ -304,6 +304,12 @@ jobs:
     - name: Fleet tools doctor tests
       timeout-minutes: 10
       run: python3 scripts/test_fleet_tools_doctor.py
+    # The fleet-app process scan the doctor carries (AFC-576):  identity matching, the server's
+    # half over the doctor's route, the Mac's report, and no argv or environment ever written.
+    # Fake ps, launchctl, /proc and pm2 pid files only.
+    - name: Fleet app processes tests
+      timeout-minutes: 10
+      run: python3 scripts/test_fleet_app_processes.py
     # Zulip bot provisioning script (AFC-359):  runs against a fake Zulip on 127.0.0.1 and a fake fleet-secrets.
     - name: Zulip provision bots tests
       timeout-minutes: 10
