@@ -21,7 +21,6 @@ from pathlib import Path
 from typing import Any
 
 from . import adapters as A
-from . import backup_mode as BM
 from . import chat_catalog as CC
 from . import config as C
 from . import live as L
@@ -459,14 +458,14 @@ class MacBridge:
         binary: str,
         model: str,
         *,
-        consult_runtime: str = BM.MUSE,
+        consult_runtime: str = MB.MUSE,
         backup_model: str | None = None,
         backup_expected_models: tuple | None = None,
     ) -> dict[str, Any]:
         decision = self._decide_inner(
             item, binary, model, consult_runtime, backup_model, backup_expected_models
         )
-        if consult_runtime != BM.MUSE:
+        if consult_runtime != MB.MUSE:
             # The ledger and the log name which runtime answered and which model served it, so a
             # wake answered by the backup is never mistaken for one answered by the primary, and
             # a preset silently serving a different model is visible in the durable row.  The
@@ -496,7 +495,7 @@ class MacBridge:
             return {"kind": "hold", "reason": "paused"}
         resources = self._resources(item)
         prompt = self.daemon.scrub(self._prompt(item, resources))
-        if consult_runtime == BM.OPENROUTER:
+        if consult_runtime == MB.OPENROUTER:
             # The declared known-cap mode:  the capped primary is never invoked, and the backup
             # answers under the same contract, the same strict schema and the same validation.
             outcome, parsed, served = self._consult_backup(item, backup_model or "")
@@ -755,7 +754,7 @@ class MacBridge:
             self.daemon.log.write("muse-bridge-gap", seat=seat, oldest=envelope.get("oldest"))
             return
         bridge_clock = getattr(self.daemon, "clock", None)
-        consult_runtime, decl, backup_hold_reason = BM.select_consult_runtime(
+        consult_runtime, decl, backup_hold_reason = MB.select_consult_runtime(
             getattr(getattr(self.daemon, "config", None), "muse_bridge_consult_backup", None),
             now=bridge_clock.time() if bridge_clock is not None else time.time(),
         )
@@ -985,6 +984,13 @@ class MacBridge:
                     "muse-bridge-review-undeliverable",
                     reason="retained row is missing its item payload",
                 )
+                # Settle it:  an unrestorable row would otherwise match this filter and log on every tick.
+                decisions[key] = dict(
+                    decision,
+                    delivery="refused",
+                    refused_reason="retained row is missing its item payload",
+                )
+                self._save(state)
                 continue
             try:
                 self._deliver(item, decision, remote=decision.get("remote") is True)
@@ -1083,11 +1089,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "resolve":
         if len(args.command_args) != 2:
             parser.error("resolve takes SEAT MESSAGE_ID")
+        try:
+            message_id = int(args.command_args[1])
+        except ValueError:
+            parser.error("MESSAGE_ID must be an integer")
         sys.stdout.write(
-            json.dumps(
-                resolve_pending_review(root, args.command_args[0], int(args.command_args[1]))
-            )
-            + "\n"
+            json.dumps(resolve_pending_review(root, args.command_args[0], message_id)) + "\n"
         )
         return 0
     if args.command == "probe":

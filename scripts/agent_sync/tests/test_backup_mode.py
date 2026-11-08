@@ -1,7 +1,7 @@
 import time
 import unittest
 
-from agent_sync.backup_mode import (
+from agent_sync.muse_bridge import (
     HOLD,
     MUSE,
     OPENROUTER,
@@ -80,6 +80,12 @@ class ParseTest(unittest.TestCase):
     def test_non_numeric_times_rejected(self):
         self.assertIsNone(parse_declaration({**GOOD, "review_by": "soon"}))
         self.assertIsNone(parse_declaration({**GOOD, "declared_at": True}))
+
+    def test_non_finite_times_rejected(self):
+        # NaN compares false against everything, so it would never reach the review-by hold.
+        for bad in (float("nan"), float("inf"), float("-inf")):
+            self.assertIsNone(parse_declaration({**GOOD, "review_by": bad}))
+            self.assertIsNone(parse_declaration({**GOOD, "declared_at": bad}))
 
     def test_backwards_window_rejected(self):
         self.assertIsNone(parse_declaration({**GOOD, "review_by": GOOD["declared_at"]}))

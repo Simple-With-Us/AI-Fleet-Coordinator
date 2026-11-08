@@ -19,7 +19,7 @@ import types
 import unittest
 
 from agent_sync import adapters as A
-from agent_sync import backup_mode as BM
+from agent_sync import muse_bridge as BM
 from agent_sync import config as C
 from agent_sync import live as L
 from agent_sync import muse_bridge_mac as MBM
