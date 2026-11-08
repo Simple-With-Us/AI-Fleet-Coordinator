@@ -513,8 +513,8 @@ export function fleetlinkSummary(data) {
   const shares = SlugList.safeParse(data?.shares);
   if (shares.success) {
     out.slugs = shares.data.map((s) => s.slug);
-    if (data.next === null || (typeof data.next === "string" && /^\d{1,16}:shr_[A-Za-z0-9]{1,64}$/.test(data.next))) out.next = data.next;
   }
+  if (data?.next === null || (typeof data?.next === "string" && /^\d{1,16}:shr_[A-Za-z0-9]{1,64}$/.test(data.next) && !/[\r\n]/.test(data.next))) out.next = data.next;
   const teams = TeamList.safeParse(data?.teams);
   if (teams.success) out.team_ids = teams.data.map((t) => t.id);
   const upload = UploadData.safeParse(data?.upload);
