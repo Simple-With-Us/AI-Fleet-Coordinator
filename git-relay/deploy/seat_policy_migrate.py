@@ -131,7 +131,12 @@ class Host:
         self.dropin_root = dropin_root
 
     def systemctl(self, *args) -> int:
-        return subprocess.run(["systemctl", *args], check=False).returncode
+        try:
+            return subprocess.run(
+                ["systemctl", *args], check=False, timeout=SYSTEMCTL_TIMEOUT
+            ).returncode
+        except subprocess.TimeoutExpired:
+            return 124
 
     def cat(self, unit: str) -> str:
         return sp._systemctl("cat", unit)
@@ -150,6 +155,9 @@ class Host:
 
     def healthy(self, unit: sp.Unit) -> bool:
         return sp._healthy(unit.health, unit.name, self.wait)
+
+
+SYSTEMCTL_TIMEOUT = 60
 
 
 def _stat_info(path: str) -> dict:
@@ -177,8 +185,16 @@ def _read_journal(journal_dir: str) -> dict | None:
     path = os.path.join(journal_dir, JOURNAL)
     if not os.path.exists(path):
         return None
-    with open(path, encoding="utf-8") as fh:
-        return json.load(fh)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            journal = json.load(fh)
+    except (OSError, ValueError) as exc:
+        raise Refusal(
+            f"the journal {path} is unreadable or corrupt ({type(exc).__name__})"
+        ) from None
+    if not isinstance(journal, dict):
+        raise Refusal(f"the journal {path} is not a journal object")
+    return journal
 
 
 def _write_journal(journal_dir: str, journal: dict) -> None:
@@ -263,14 +279,24 @@ def _gates(host: Host, unit: sp.Unit, args) -> dict:
         raise Refusal(
             "the backing directory must not be under /var/lib (a service state directory)"
         )
-    with open(seats_path, "rb") as fh:
-        policy_bytes = fh.read()
-    policy = json.loads(policy_bytes)
+    try:
+        with open(seats_path, "rb") as fh:
+            policy_bytes = fh.read()
+        policy = json.loads(policy_bytes)
+    except (OSError, ValueError) as exc:
+        raise Refusal(
+            f"the live policy {seats_path} is unreadable ({type(exc).__name__})"
+        ) from None
+    if not isinstance(policy, dict):
+        raise Refusal("the live policy is not a JSON object")
     if sp.canonical_digest(policy) != args.expect_digest:
         raise Refusal("the live policy is not the reviewed one (--expect-digest mismatch)")
     if any("token" in cfg for cfg in policy.values()):
         raise Refusal("a seat carries a static token;  the shared-only policy cannot hold it")
-    sp.validate_with(unit.relay, policy)
+    try:
+        sp.validate_with(unit.relay, policy)
+    except (ValueError, KeyError, TypeError, ImportError) as exc:
+        raise Refusal(f"the live policy is invalid: {exc}") from None
     # systemd derives the credential directory from the unit name, and the relay accepts the
     # credential input only under one directory.  A unit named otherwise would pass every gate here
     # and then fail the relay's startup health check after two restarts, so refuse before writing.
@@ -394,6 +420,8 @@ def _validate_journal(journal: dict, host: Host, unit_name: str) -> str | None:
                 return f"journal config {key} is not a plain number"
         if config["mode"] & ~0o777:
             return "journal config mode has special bits"
+        if not _trusted(config["uid"]) or config["mode"] & 0o022:
+            return "journal config owner or mode would leave the EnvironmentFile writable by others"
         unit = host.read_unit(unit_name)
         if config["path"] != unit.config:
             return "the journal's config path is not the unit's EnvironmentFile"
@@ -473,7 +501,11 @@ def apply(args, host: Host | None = None, crash_after: str | None = None) -> int
                 "refusing:  an install-seat or migration transaction holds the policy lock;  retry when it finishes"
             )
             return 2
-        existing = _read_journal(args.journal_dir)
+        try:
+            existing = _read_journal(args.journal_dir)
+        except Refusal as exc:
+            print(f"refusing:  {exc}")
+            return 2
         if existing is not None:
             if existing.get("phase") == "restored":
                 print(
@@ -581,7 +613,20 @@ def apply(args, host: Host | None = None, crash_after: str | None = None) -> int
 
 def recover(args, host: Host | None = None) -> int:
     host = host or Host()
-    journal = _read_journal(args.journal_dir)
+    # The journal is the only thing that tells this tool what to write as root, so it is trusted
+    # only from a directory only root (or the running user) can write, as plan and apply require.
+    if os.geteuid() != 0 and not getattr(args, "allow_non_root", False):
+        print("refusing:  run as root on the relay host")
+        return 2
+    bad = _private_dir_refusal(args.journal_dir, "journal directory")
+    if bad:
+        print(f"refusing:  {bad}")
+        return 2
+    try:
+        journal = _read_journal(args.journal_dir)
+    except Refusal as exc:
+        print(f"refusing:  {exc}")
+        return 2
     if journal is None:
         print("refusing:  no journal in " + args.journal_dir)
         return 2
@@ -610,7 +655,11 @@ def recover(args, host: Host | None = None) -> int:
         # The journal was read before the locks.  An apply or another recover may have finished
         # since, so act only on a fresh copy that passes the same validation and names the same
         # files the locks were taken on.
-        fresh = _read_journal(args.journal_dir)
+        try:
+            fresh = _read_journal(args.journal_dir)
+        except Refusal as exc:
+            print(f"refusing:  {exc}")
+            return 2
         if fresh is None:
             print("refusing:  the journal was removed while taking the locks")
             return 2

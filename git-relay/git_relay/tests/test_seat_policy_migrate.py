@@ -367,7 +367,9 @@ class MigrateTests(unittest.TestCase):
                 fresh = FakeHost(self.root)
                 fresh.healthy_after_restart = True
                 self.host = fresh
-                self.args = SimpleNamespace(unit=UNIT, journal_dir=str(self.journal))
+                self.args = SimpleNamespace(
+                    unit=UNIT, journal_dir=str(self.journal), allow_non_root=True
+                )
                 rc, out = self.run_cmd(mg.recover)
                 self.assertEqual(rc, 0, out)
                 self.assertEqual(self.config.read_bytes(), self.config_bytes)
@@ -383,7 +385,7 @@ class MigrateTests(unittest.TestCase):
     ):
         self.assertEqual(self.run_cmd(mg.apply)[0], 0)
         self.host = FakeHost(self.root)  # new process after a reboot:  nothing in memory
-        self.args = SimpleNamespace(unit=UNIT, journal_dir=str(self.journal))
+        self.args = SimpleNamespace(unit=UNIT, journal_dir=str(self.journal), allow_non_root=True)
         rc, out = self.run_cmd(mg.recover)
         self.assertEqual(rc, 0, out)
         self.assertEqual(self.config.read_bytes(), self.config_bytes)
@@ -391,7 +393,7 @@ class MigrateTests(unittest.TestCase):
         self.assertEqual([c[0] for c in self.host.calls][:2], ["daemon-reload", "restart"])
 
     def test_recover_refuses_a_tampered_journal_wrong_unit_or_no_journal(self):
-        self.args = SimpleNamespace(unit=UNIT, journal_dir=str(self.journal))
+        self.args = SimpleNamespace(unit=UNIT, journal_dir=str(self.journal), allow_non_root=True)
         self.assertEqual(self.run_cmd(mg.recover)[0], 2)  # no journal
         self.args = SimpleNamespace(
             unit=UNIT,
@@ -403,11 +405,13 @@ class MigrateTests(unittest.TestCase):
         self.assertEqual(self.run_cmd(mg.apply)[0], 0)
         path = self.journal / mg.JOURNAL
         journal = json.loads(path.read_text())
-        self.args = SimpleNamespace(unit="other.service", journal_dir=str(self.journal))
+        self.args = SimpleNamespace(
+            unit="other.service", journal_dir=str(self.journal), allow_non_root=True
+        )
         self.assertEqual(self.run_cmd(mg.recover)[0], 2)
         journal["config"]["bytes_hex"] = b"tampered\n".hex()
         path.write_text(json.dumps(journal))
-        self.args = SimpleNamespace(unit=UNIT, journal_dir=str(self.journal))
+        self.args = SimpleNamespace(unit=UNIT, journal_dir=str(self.journal), allow_non_root=True)
         rc, out = self.run_cmd(mg.recover)
         self.assertEqual(rc, 2)
         self.assertIn("fails its own digest", out)
@@ -501,7 +505,7 @@ class MigrateTests(unittest.TestCase):
     def _recover_refused(self, path, journal, mutate):
         mutate(journal)
         path.write_text(json.dumps(journal))
-        self.args = SimpleNamespace(unit=UNIT, journal_dir=str(self.journal))
+        self.args = SimpleNamespace(unit=UNIT, journal_dir=str(self.journal), allow_non_root=True)
         before = self.config.read_bytes()
         rc, out = self.run_cmd(mg.recover)
         self.assertEqual(rc, 2, out)
@@ -555,7 +559,7 @@ class MigrateTests(unittest.TestCase):
         self.assertEqual(self.run_cmd(mg.apply)[0], 0)
         Path(self.backing).write_bytes(self.policy_bytes + b" ")  # a later install-seat
         self.host = FakeHost(self.root)
-        self.args = SimpleNamespace(unit=UNIT, journal_dir=str(self.journal))
+        self.args = SimpleNamespace(unit=UNIT, journal_dir=str(self.journal), allow_non_root=True)
         rc, out = self.run_cmd(mg.recover)
         self.assertEqual(rc, 2, out)
         self.assertIn("rolling back would drop", out)
@@ -564,7 +568,7 @@ class MigrateTests(unittest.TestCase):
     def test_recover_waits_on_the_same_locks(self):
         self.assertEqual(self.run_cmd(mg.apply)[0], 0)
         self.host = FakeHost(self.root)
-        self.args = SimpleNamespace(unit=UNIT, journal_dir=str(self.journal))
+        self.args = SimpleNamespace(unit=UNIT, journal_dir=str(self.journal), allow_non_root=True)
         fd = sp._acquire_transaction_lock(self.backing)
         try:
             with mock.patch.object(mg.sp, "TRANSACTION_LOCK_WAIT_S", 0):
@@ -599,7 +603,7 @@ class MigrateTests(unittest.TestCase):
     def test_recover_refuses_cleanly_on_a_symlinked_lock(self):
         self.assertEqual(self.run_cmd(mg.apply)[0], 0)
         self.host = FakeHost(self.root)
-        self.args = SimpleNamespace(unit=UNIT, journal_dir=str(self.journal))
+        self.args = SimpleNamespace(unit=UNIT, journal_dir=str(self.journal), allow_non_root=True)
         for base in (self.backing, str(self.journal / "migrate")):
             with self.subTest(base=base):
                 lock = base + ".transaction.lock"
@@ -658,7 +662,7 @@ class MigrateTests(unittest.TestCase):
     def test_recover_acts_only_on_a_journal_that_is_still_there_after_the_locks(self):
         self.assertEqual(self.run_cmd(mg.apply)[0], 0)
         self.host = FakeHost(self.root)
-        self.args = SimpleNamespace(unit=UNIT, journal_dir=str(self.journal))
+        self.args = SimpleNamespace(unit=UNIT, journal_dir=str(self.journal), allow_non_root=True)
         real_acquire = mg._Locks.acquire
 
         def acquire_then_lose_the_journal(locks):
@@ -671,6 +675,76 @@ class MigrateTests(unittest.TestCase):
         self.assertEqual(rc, 2)
         self.assertIn("journal was removed while taking the locks", out)
         self.assertEqual(self.host.calls, [])
+
+    def _applied(self):
+        self.assertEqual(self.run_cmd(mg.apply)[0], 0)
+        self.host = FakeHost(self.root)
+        self.args = SimpleNamespace(unit=UNIT, journal_dir=str(self.journal), allow_non_root=True)
+
+    def test_a_corrupt_journal_is_a_clean_refusal_for_apply_and_recover(self):
+        self._applied()
+        path = self.journal / mg.JOURNAL
+        for junk in (b'{"v": 1, "pha', b"[]", b"\xff\xfe"):
+            path.write_bytes(junk)
+            for fn in (mg.recover, mg.apply):
+                with self.subTest(junk=junk, fn=fn.__name__):
+                    rc, out = self.run_cmd(fn)
+                    self.assertEqual(rc, 2)
+                    self.assertIn("refusing", out)
+                    self.assertEqual(self.host.calls, [])
+
+    def test_recover_refuses_a_journal_directory_others_can_write(self):
+        self._applied()
+        os.chmod(self.journal, 0o777)
+        rc, out = self.run_cmd(mg.recover)
+        self.assertEqual(rc, 2)
+        self.assertIn("journal directory", out)
+        self.assertEqual(self.host.calls, [])
+
+    def test_recover_refuses_without_root_unless_allowed(self):
+        self._applied()
+        self.args.allow_non_root = False
+        if os.geteuid() != 0:
+            rc, out = self.run_cmd(mg.recover)
+            self.assertEqual(rc, 2)
+            self.assertIn("run as root", out)
+            self.assertEqual(self.host.calls, [])
+
+    def test_a_journal_that_restores_a_writable_or_foreign_owned_config_is_refused(self):
+        self._applied()
+        path = self.journal / mg.JOURNAL
+        good = json.loads(path.read_text())
+        for key, value in (("mode", 0o666), ("mode", 0o620), ("uid", os.geteuid() + 12345)):
+            forged = json.loads(json.dumps(good))
+            forged["config"][key] = value
+            path.write_text(json.dumps(forged))
+            with self.subTest(key=key, value=value):
+                rc, out = self.run_cmd(mg.recover)
+                self.assertEqual(rc, 2)
+                self.assertIn("writable by others", out)
+                self.assertEqual(self.host.calls, [])
+
+    def test_an_invalid_live_policy_is_a_clean_refusal(self):
+        def bad(relay, seats):
+            raise type("PolicyError", (ValueError,), {})("seat x: unknown action")
+
+        with mock.patch.object(mg.sp, "validate_with", bad):
+            for fn in (mg.plan, mg.apply):
+                with self.subTest(fn=fn.__name__):
+                    rc, out = self.run_cmd(fn)
+                    self.assertEqual(rc, 2)
+                    self.assertIn("the live policy is invalid", out)
+        self.assert_unchanged()
+
+    def test_a_hung_systemctl_is_cut_off_and_reported_as_124(self):
+        import subprocess
+
+        def hang(cmd, **kw):
+            self.assertEqual(kw.get("timeout"), mg.SYSTEMCTL_TIMEOUT)
+            raise subprocess.TimeoutExpired(cmd, kw["timeout"])
+
+        with mock.patch.object(mg.subprocess, "run", hang):
+            self.assertEqual(mg.Host().systemctl("restart", UNIT), 124)
 
 
 if __name__ == "__main__":
